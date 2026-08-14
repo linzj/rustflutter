@@ -291,6 +291,27 @@ float rf_paragraph_longest_line(RfParagraph* paragraph) {
   return static_cast<float>(paragraph->paragraph->GetLongestLine());
 }
 
+float rf_paragraph_baseline(RfParagraph* paragraph) {
+  if (paragraph == nullptr || paragraph->paragraph == nullptr) {
+    return 0.0f;
+  }
+  return static_cast<float>(paragraph->paragraph->GetAlphabeticBaseline());
+}
+
+float rf_paragraph_min_intrinsic_width(RfParagraph* paragraph) {
+  if (paragraph == nullptr || paragraph->paragraph == nullptr) {
+    return 0.0f;
+  }
+  return static_cast<float>(paragraph->paragraph->GetMinIntrinsicWidth());
+}
+
+float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph) {
+  if (paragraph == nullptr || paragraph->paragraph == nullptr) {
+    return 0.0f;
+  }
+  return static_cast<float>(paragraph->paragraph->GetMaxIntrinsicWidth());
+}
+
 // -- Layer tree ---------------------------------------------------------------
 
 RfLayerTree* rf_layer_tree_new(int32_t width, int32_t height) {

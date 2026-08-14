@@ -270,6 +270,14 @@ void rf_paragraph_layout(RfParagraph* paragraph, float max_width);
 float rf_paragraph_width(RfParagraph* paragraph);
 float rf_paragraph_height(RfParagraph* paragraph);
 float rf_paragraph_longest_line(RfParagraph* paragraph);
+// Distance from the paragraph's top to the first line's alphabetic baseline.
+// What CrossAxisAlignment::Baseline aligns on.
+float rf_paragraph_baseline(RfParagraph* paragraph);
+// Widths the paragraph would take if it could choose: the narrowest that
+// avoids splitting a word, and the width of the whole thing on one line.
+// Valid without a prior layout.
+float rf_paragraph_min_intrinsic_width(RfParagraph* paragraph);
+float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph);
 
 // -- Layer tree -------------------------------------------------------------
 

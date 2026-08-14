@@ -310,6 +310,9 @@ pub(crate) mod sys {
         pub fn rf_paragraph_width(paragraph: *mut RfParagraph) -> f32;
         pub fn rf_paragraph_height(paragraph: *mut RfParagraph) -> f32;
         pub fn rf_paragraph_longest_line(paragraph: *mut RfParagraph) -> f32;
+        pub fn rf_paragraph_baseline(paragraph: *mut RfParagraph) -> f32;
+        pub fn rf_paragraph_min_intrinsic_width(paragraph: *mut RfParagraph) -> f32;
+        pub fn rf_paragraph_max_intrinsic_width(paragraph: *mut RfParagraph) -> f32;
 
         pub fn rf_layer_tree_new(width: c_int, height: c_int) -> *mut RfLayerTree;
         pub fn rf_layer_tree_free(tree: *mut RfLayerTree);
@@ -359,6 +362,27 @@ impl Color {
 
     pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color::argb(0xFF, r, g, b)
+    }
+
+    pub const fn alpha(self) -> u8 {
+        (self.0 >> 24) as u8
+    }
+
+    pub const fn red(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+
+    pub const fn green(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    pub const fn blue(self) -> u8 {
+        self.0 as u8
+    }
+
+    /// The same colour at a different alpha.
+    pub const fn with_alpha(self, alpha: u8) -> Color {
+        Color::argb(alpha, self.red(), self.green(), self.blue())
     }
 }
 
@@ -523,6 +547,22 @@ impl Paragraph {
     /// Width of the widest line -- the paragraph's actual ink extent.
     pub fn longest_line(&self) -> f32 {
         unsafe { sys::rf_paragraph_longest_line(self.raw) }
+    }
+
+    /// Distance from the top of the paragraph to the first line's alphabetic
+    /// baseline. What baseline alignment lines up on.
+    pub fn baseline(&self) -> f32 {
+        unsafe { sys::rf_paragraph_baseline(self.raw) }
+    }
+
+    /// The narrowest width that does not split a word.
+    pub fn min_intrinsic_width(&self) -> f32 {
+        unsafe { sys::rf_paragraph_min_intrinsic_width(self.raw) }
+    }
+
+    /// The width the text would take on a single line.
+    pub fn max_intrinsic_width(&self) -> f32 {
+        unsafe { sys::rf_paragraph_max_intrinsic_width(self.raw) }
     }
 }
 

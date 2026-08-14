@@ -17,9 +17,13 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(test)]
+mod engine_test_stubs;
+
 pub mod app;
 pub mod engine;
 pub mod painting;
+pub mod render;
 pub mod widgets;
 
 pub use app::{
@@ -101,7 +105,10 @@ impl App {
 
         let mut canvas = Canvas::new(width, height);
         canvas.draw_color(self.background);
-        root.paint(&mut canvas, Offset::ZERO);
+        {
+            let mut context = render::PaintContext::new(&mut canvas);
+            root.paint(&mut context, Offset::ZERO);
+        }
         let display_list = canvas.build();
 
         let mut tree = LayerTree::new(self.width, self.height);

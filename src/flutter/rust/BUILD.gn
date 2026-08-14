@@ -58,7 +58,10 @@ if (enable_unittests) {
     sources = [
       "rustflutter/src/app.rs",
       "rustflutter/src/engine.rs",
+      "rustflutter/src/engine_test_stubs.rs",
       "rustflutter/src/lib.rs",
+      "rustflutter/src/painting.rs",
+      "rustflutter/src/render.rs",
       "rustflutter/src/widgets.rs",
     ]
 
@@ -102,6 +105,7 @@ group("rust") {
     ":rust_ffi_unittests",
     ":rustflutter_unittests",
     "//flutter/rust/cli:rustflutter_cli",
+    "//flutter/rust/examples/gallery",
     "//flutter/rust/examples/hello_world",
     "//flutter/rust/ffi:engine_ffi",
     "//flutter/rust/host",

@@ -24,7 +24,8 @@ use std::os::raw::c_int;
 use std::sync::OnceLock;
 
 use crate::engine::{self, Canvas, Color, LayerTree};
-use crate::widgets::{BoxedWidget, Constraints, Offset, Size};
+use crate::render::{BoxConstraints, PaintContext, RenderBox};
+use crate::widgets::{BoxedWidget, Offset, Size};
 
 // -- The platform's view of a view --------------------------------------------
 
@@ -221,11 +222,14 @@ impl AppInstance {
 
         // Constraints down, sizes up -- the RenderBox protocol. The root is
         // forced to the view size, which is what RenderView does upstream.
-        root.layout(Constraints::tight(context.size.width, context.size.height));
+        root.layout(BoxConstraints::tight(context.size.width, context.size.height));
 
         let mut canvas = Canvas::new(context.size.width, context.size.height);
         canvas.draw_color(background);
-        root.paint(&mut canvas, Offset::ZERO);
+        {
+            let mut paint_context = PaintContext::new(&mut canvas);
+            root.paint(&mut paint_context, Offset::ZERO);
+        }
         let display_list = canvas.build();
 
         let mut tree = LayerTree::new(physical_width, physical_height);
