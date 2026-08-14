@@ -41,6 +41,8 @@ vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建�
 ```
 
 `run` 会用 ninja 构建并打开窗口。加 `-- --png out.png` 走无头渲染（CI 用）。
+删除应用用 `rustflutter remove my_app`——直接删目录会在 `projects/BUILD.gn` 里
+留下悬空标签，之后每次 `gn gen` 都会失败。
 
 需要 PATH 上有 `rustc`（本机验证于 1.93.0，edition 2024）。
 

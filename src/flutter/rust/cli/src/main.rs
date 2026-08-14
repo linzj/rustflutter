@@ -43,6 +43,7 @@ pub extern "C" fn rustflutter_cli_main() -> c_int {
             Ok(())
         }
         ["create", name, rest @ ..] => create(name, rest),
+        ["remove", name] => remove(name),
         ["list"] => list(),
         ["build", name] => build(name),
         ["run", name, rest @ ..] => run(name, rest),
@@ -72,6 +73,7 @@ USAGE:
 
 COMMANDS:
     create <name> [--title <text>]   Scaffold a new app under {PROJECTS_DIR}
+    remove <name>                    Delete an app and drop it from the build
     list                             List the apps in this checkout
     build <name>                     Build an app with ninja
     run <name> [-- <app args>]       Build an app and run it
@@ -193,6 +195,25 @@ fn project_names(root: &Path) -> Result<Vec<String>, Error> {
         }
     }
     Ok(names)
+}
+
+/// Deletes a project and refreshes the group.
+///
+/// Deleting the directory by hand leaves a dangling label in
+/// `projects/BUILD.gn`, which makes every subsequent `gn gen` fail -- so
+/// removal has to go through the same place that maintains that file.
+fn remove(name: &str) -> Result<(), Error> {
+    let root = source_root()?;
+    let project_dir = root.join(PROJECTS_DIR).join(name);
+    if !project_dir.is_dir() {
+        return Err(Error::NoSuchProject(name.to_string()));
+    }
+
+    fs::remove_dir_all(&project_dir)?;
+    refresh_projects_group(&root)?;
+
+    println!("Removed `{name}`. Re-run gn so the build graph drops the target.");
+    Ok(())
 }
 
 // -- list / build / run -------------------------------------------------------
@@ -325,6 +346,7 @@ enum Error {
     BuildFailed(String),
     RunFailed(String),
     MissingExecutable(PathBuf),
+    NoSuchProject(String),
 }
 
 impl From<io::Error> for Error {
@@ -360,6 +382,7 @@ impl std::fmt::Display for Error {
             Error::MissingExecutable(p) => {
                 write!(f, "built, but {} was not produced", p.display())
             }
+            Error::NoSuchProject(n) => write!(f, "no project named `{n}`"),
         }
     }
 }
