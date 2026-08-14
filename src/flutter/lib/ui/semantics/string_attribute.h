@@ -5,8 +5,10 @@
 #ifndef FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_H_
 #define FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_H_
 
-#include "flutter/lib/ui/dart_wrapper.h"
-#include "third_party/tonic/dart_library_natives.h"
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace flutter {
 
@@ -52,36 +54,27 @@ struct LocaleStringAttribute : StringAttribute {
 };
 
 //------------------------------------------------------------------------------
-/// The peer class for all of the StringAttribute subclasses in semantics.dart.
-class NativeStringAttribute
-    : public RefCountedDartWrappable<NativeStringAttribute> {
-  DEFINE_WRAPPERTYPEINFO();
-  FML_FRIEND_MAKE_REF_COUNTED(NativeStringAttribute);
+/// Convenience constructors. Upstream these attributes were only ever built
+/// from Dart via NativeStringAttribute; that peer class is gone, so the
+/// framework layer constructs them directly.
+inline StringAttributePtr MakeSpellOutAttribute(int32_t start, int32_t end) {
+  auto attribute = std::make_shared<SpellOutStringAttribute>();
+  attribute->start = start;
+  attribute->end = end;
+  attribute->type = StringAttributeType::kSpellOut;
+  return attribute;
+}
 
- public:
-  ~NativeStringAttribute() override;
-
-  //----------------------------------------------------------------------------
-  /// The init method for SpellOutStringAttribute constructor
-  static void initSpellOutStringAttribute(Dart_Handle string_attribute_handle,
-                                          int32_t start,
-                                          int32_t end);
-
-  //----------------------------------------------------------------------------
-  /// The init method for LocaleStringAttribute constructor
-  static void initLocaleStringAttribute(Dart_Handle string_attribute_handle,
-                                        int32_t start,
-                                        int32_t end,
-                                        std::string locale);
-
-  //----------------------------------------------------------------------------
-  /// Returns the c++ representataion of StringAttribute.
-  const StringAttributePtr GetAttribute() const;
-
- private:
-  NativeStringAttribute();
-  StringAttributePtr attribute_;
-};
+inline StringAttributePtr MakeLocaleAttribute(int32_t start,
+                                              int32_t end,
+                                              std::string locale) {
+  auto attribute = std::make_shared<LocaleStringAttribute>();
+  attribute->start = start;
+  attribute->end = end;
+  attribute->type = StringAttributeType::kLocale;
+  attribute->locale = std::move(locale);
+  return attribute;
+}
 
 }  // namespace flutter
 

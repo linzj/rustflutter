@@ -18,7 +18,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::path::Path;
 
-mod sys {
+pub(crate) mod sys {
     use std::os::raw::{c_char, c_int};
 
     pub enum RfPaint {}
@@ -431,6 +431,18 @@ impl LayerTree {
 
     pub fn size(&self) -> (i32, i32) {
         (self.width, self.height)
+    }
+
+    /// Gives the underlying handle to the caller and forgets it here.
+    ///
+    /// Used to hand a finished frame to the shell through `RfAppHost::render`,
+    /// which takes ownership and converts it into a `flow::LayerTree`. Nothing
+    /// else should call this: leaking is the failure mode if the receiver drops
+    /// the pointer.
+    pub(crate) fn into_raw(self) -> *mut sys::RfLayerTree {
+        let raw = self.raw;
+        std::mem::forget(self);
+        raw
     }
 }
 

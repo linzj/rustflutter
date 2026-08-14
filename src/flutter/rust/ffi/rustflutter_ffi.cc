@@ -343,6 +343,21 @@ void rf_layer_tree_add_display_list(RfLayerTree* tree,
       /*is_complex=*/false, /*will_change=*/false));
 }
 
+namespace flutter {
+
+std::unique_ptr<LayerTree> RfLayerTreeTake(RfLayerTree* handle) {
+  if (handle == nullptr || handle->width <= 0 || handle->height <= 0) {
+    delete handle;
+    return nullptr;
+  }
+  auto tree = std::make_unique<LayerTree>(
+      handle->root, DlISize(handle->width, handle->height));
+  delete handle;
+  return tree;
+}
+
+}  // namespace flutter
+
 // -- Rasterization ------------------------------------------------------------
 
 namespace {

@@ -2,17 +2,85 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 #
-# rustflutter M0 stub.
+# rustflutter: lib/ui is split in two.
 #
-# lib/ui is Tier C: the C++ engine-object wrappers are present, but 73 of them
-# still inherit RefCountedDartWrappable<T> / take Dart_Handle constructor
-# arguments, so nothing here compiles yet. De-Dart-ifying them is M2 work; see
-# PORTING_STATUS.md.
+#   :ui_types   The parts of lib/ui that are plain C++ -- viewport metrics,
+#               pointer/key packets, platform messages, semantics nodes, the
+#               font collection, the image generator registry. These never
+#               touched Dart to begin with (measured: 0 Dart references in all
+#               but five files, and those five only had binding entry points
+#               bolted onto otherwise plain data). shell/common depends on this
+#               and nothing more.
 #
-# The real build rules are preserved in BUILD.gn.upstream. This stub exists so
-# that the //flutter/lib/ui label still resolves for the shell and embedder
-# BUILD.gn files that reference it (they are Tier B and equally not built yet),
-# without dragging unbuildable sources into the graph.
+#   :ui         The dart:ui object wrappers -- Canvas, Path, Paint, Paragraph,
+#               SceneBuilder, Image and friends. 73 of them still inherit
+#               RefCountedDartWrappable<T> or take Dart_Handle constructor
+#               arguments, so they do not compile. De-Dart-ifying them is M4;
+#               until then this stays an empty group so the label resolves.
+#               The real rules are preserved in BUILD.gn.upstream.
+
+source_set("ui_types") {
+  sources = [
+    "floating_point.h",
+    "io_manager.h",
+    "painting/image_generator.cc",
+    "painting/image_generator.h",
+    "painting/image_generator_registry.cc",
+    "painting/image_generator_registry.h",
+    "semantics/custom_accessibility_action.cc",
+    "semantics/custom_accessibility_action.h",
+    "semantics/semantics_flags.h",
+    "semantics/semantics_node.cc",
+    "semantics/semantics_node.h",
+    "semantics/string_attribute.h",
+    "snapshot_delegate.h",
+    "text/asset_manager_font_provider.cc",
+    "text/asset_manager_font_provider.h",
+    "text/font_collection.cc",
+    "text/font_collection.h",
+    "window/hit_test_response.h",
+    "window/key_data.cc",
+    "window/key_data.h",
+    "window/key_data_packet.cc",
+    "window/key_data_packet.h",
+    "window/platform_message.cc",
+    "window/platform_message.h",
+    "window/platform_message_response.cc",
+    "window/platform_message_response.h",
+    "window/point_data.h",
+    "window/pointer_data.cc",
+    "window/pointer_data.h",
+    "window/pointer_data_packet.cc",
+    "window/pointer_data_packet.h",
+    "window/pointer_data_packet_converter.cc",
+    "window/pointer_data_packet_converter.h",
+    "window/view_focus.cc",
+    "window/view_focus.h",
+    "window/viewport_metrics.cc",
+    "window/viewport_metrics.h",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [
+    "//flutter/shell/common:platform_message_handler",
+    "//flutter/shell/common:snapshot_pixel_format",
+    "//flutter/txt",
+  ]
+
+  deps = [
+    "//flutter/assets",
+    "//flutter/common",
+    "//flutter/common/graphics",
+    "//flutter/display_list",
+    "//flutter/flow",
+    "//flutter/fml",
+    "//flutter/skia",
+    "//flutter/test_font",
+    "//flutter/third_party/rapidjson",
+  ]
+}
 
 group("ui") {
+  public_deps = [ ":ui_types" ]
 }

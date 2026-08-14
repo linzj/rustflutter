@@ -17,9 +17,11 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod app;
 pub mod engine;
 pub mod widgets;
 
+pub use app::{Application, BuildContext, ViewMetrics};
 pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
     TextStyle,
@@ -30,9 +32,10 @@ pub use widgets::{
 
 /// Everything a typical app needs in one import.
 pub mod prelude {
+    pub use crate::app::{Application, BuildContext};
     pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
     pub use crate::widgets::{
-        Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
+        BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
     };
     pub use crate::App;
 }

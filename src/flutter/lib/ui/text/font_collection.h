@@ -11,7 +11,6 @@
 #include "flutter/assets/asset_manager.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/memory/ref_ptr.h"
-#include "third_party/tonic/typed_data/typed_list.h"
 #include "txt/font_collection.h"
 
 namespace flutter {
@@ -32,9 +31,16 @@ class FontCollection {
 
   void RegisterTestFonts();
 
-  static void LoadFontFromList(Dart_Handle font_data_handle,
-                               Dart_Handle callback,
-                               const std::string& family_name);
+  //----------------------------------------------------------------------------
+  /// Registers a font from an in-memory buffer under `family_name`.
+  ///
+  /// Upstream this was `LoadFontFromList(Dart_Handle, Dart_Handle, ...)`, a
+  /// dart:ui binding that took a Uint8List and a completion callback. The
+  /// framework layer calls this directly and is synchronous, so the buffer is
+  /// a plain span and there is no callback.
+  void LoadFontFromBuffer(const uint8_t* data,
+                          size_t length,
+                          const std::string& family_name);
 
  private:
   std::shared_ptr<txt::FontCollection> collection_;

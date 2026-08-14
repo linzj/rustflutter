@@ -8,6 +8,7 @@ source_set("engine_ffi") {
   sources = [
     "rustflutter_ffi.cc",
     "rustflutter_ffi.h",
+    "rustflutter_ffi_internal.h",
   ]
 
   if (is_win) {

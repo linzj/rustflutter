@@ -7,8 +7,6 @@
 #include <mutex>
 
 #include "flutter/lib/ui/text/asset_manager_font_provider.h"
-#include "flutter/lib/ui/ui_dart_state.h"
-#include "flutter/lib/ui/window/platform_configuration.h"
 #include "flutter/test_font/test_font_data.h"
 #include "rapidjson/document.h"
 #include "rapidjson/rapidjson.h"
@@ -16,10 +14,6 @@
 #include "third_party/skia/include/core/SkGraphics.h"
 #include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkTypeface.h"
-#include "third_party/tonic/dart_args.h"
-#include "third_party/tonic/dart_library_natives.h"
-#include "third_party/tonic/logging/dart_invoke.h"
-#include "third_party/tonic/typed_data/typed_list.h"
 #include "txt/asset_font_manager.h"
 #include "txt/platform.h"
 #include "txt/test_font_manager.h"
@@ -148,31 +142,23 @@ void FontCollection::RegisterTestFonts() {
   collection_->DisableFontFallback();
 }
 
-void FontCollection::LoadFontFromList(Dart_Handle font_data_handle,
-                                      Dart_Handle callback,
-                                      const std::string& family_name) {
-  tonic::Uint8List font_data(font_data_handle);
-  UIDartState::ThrowIfUIOperationsProhibited();
-  FontCollection& font_collection = UIDartState::Current()
-                                        ->platform_configuration()
-                                        ->client()
-                                        ->GetFontCollection();
-
-  std::unique_ptr<SkStreamAsset> font_stream = std::make_unique<SkMemoryStream>(
-      font_data.data(), font_data.num_elements(), true);
+void FontCollection::LoadFontFromBuffer(const uint8_t* data,
+                                        size_t length,
+                                        const std::string& family_name) {
+  // `true` copies the buffer: the caller owns `data` and may free it as soon as
+  // this returns, whereas the typeface outlives the call.
+  std::unique_ptr<SkStreamAsset> font_stream =
+      std::make_unique<SkMemoryStream>(data, length, true);
   sk_sp<SkFontMgr> font_mgr = txt::GetDefaultFontManager();
   sk_sp<SkTypeface> typeface = font_mgr->makeFromStream(std::move(font_stream));
   txt::TypefaceFontAssetProvider& font_provider =
-      font_collection.dynamic_font_manager_->font_provider();
+      dynamic_font_manager_->font_provider();
   if (family_name.empty()) {
     font_provider.RegisterTypeface(typeface);
   } else {
     font_provider.RegisterTypeface(typeface, family_name);
   }
-  font_collection.collection_->ClearFontFamilyCache();
-
-  font_data.Release();
-  tonic::DartInvoke(callback, {tonic::ToDart(0)});
+  collection_->ClearFontFamilyCache();
 }
 
 }  // namespace flutter

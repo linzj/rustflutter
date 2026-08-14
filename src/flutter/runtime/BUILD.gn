@@ -1,0 +1,39 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# rustflutter: the runtime layer, rebuilt.
+#
+# Upstream //flutter/runtime is the Dart VM embedding -- DartVM, DartIsolate,
+# DartSnapshot, IsolateConfiguration, the service isolate, tonic. All of it was
+# dropped when this repository was imported. What comes back here is only the
+# part the shell actually needs: the RuntimeDelegate contract and a
+# RuntimeController that drives a Rust framework instead of an isolate.
+
+source_set("runtime") {
+  sources = [
+    "platform_data.cc",
+    "platform_data.h",
+    "runtime_controller.cc",
+    "runtime_controller.h",
+    "runtime_delegate.cc",
+    "runtime_delegate.h",
+    "rust_app_api.h",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [
+    "//flutter/assets",
+    "//flutter/common",
+    "//flutter/flow",
+    "//flutter/fml",
+    "//flutter/lib/ui:ui_types",
+    "//flutter/shell/common:display",
+    "//flutter/shell/common:platform_message_handler",
+  ]
+
+  # The C ABI header lives with the FFI implementation, and RfLayerTreeTake is
+  # defined there.
+  deps = [ "//flutter/rust/ffi:engine_ffi" ]
+}
