@@ -1,0 +1,27 @@
+# 构建产物
+out/
+target/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.pdb
+
+# DEPS 拉取的依赖（本地为指向 K:\flutter 的 junction），不入库
+src/third_party/
+src/flutter/third_party/
+src/flutter/buildtools/
+src/flutter/prebuilts/
+
+# 工具缓存
+.dart_tool/
+__pycache__/
+.gn_cache/
+compile_commands.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
