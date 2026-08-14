@@ -19,6 +19,7 @@
 
 pub mod app;
 pub mod engine;
+pub mod painting;
 pub mod widgets;
 
 pub use app::{
@@ -30,6 +31,10 @@ pub use app::run;
 pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
     TextStyle,
+};
+pub use painting::{
+    BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap, StrokeJoin,
+    TileMode,
 };
 pub use widgets::{
     BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
@@ -43,6 +48,10 @@ pub mod prelude {
     #[cfg(not(test))]
     pub use crate::app::run;
     pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
+    pub use crate::painting::{
+        BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap,
+        StrokeJoin, TileMode,
+    };
     pub use crate::widgets::{
         BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
     };

@@ -4,6 +4,8 @@
 
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 
+#include "flutter/rust/ffi/rustflutter_ffi_handles.h"
+
 #include <cstring>
 #include <memory>
 #include <string>
@@ -55,34 +57,6 @@ flutter::DlColor ToDlColor(uint32_t argb) {
 
 }  // namespace
 
-// Handle types are plain structs wrapping the engine objects so that the C ABI
-// never exposes a C++ type, and so ownership is obvious on the Rust side.
-
-struct RfPaint {
-  flutter::DlPaint paint;
-};
-
-struct RfCanvas {
-  explicit RfCanvas(const flutter::DlRect& cull)
-      : builder(cull, /*prepare_rtree=*/false) {}
-  flutter::DisplayListBuilder builder;
-};
-
-struct RfDisplayList {
-  sk_sp<flutter::DisplayList> list;
-};
-
-struct RfParagraph {
-  std::unique_ptr<txt::Paragraph> paragraph;
-  bool laid_out = false;
-};
-
-struct RfLayerTree {
-  int32_t width = 0;
-  int32_t height = 0;
-  std::shared_ptr<flutter::ContainerLayer> root =
-      std::make_shared<flutter::ContainerLayer>();
-};
 
 // -- Process setup ------------------------------------------------------------
 
@@ -338,7 +312,7 @@ void rf_layer_tree_add_display_list(RfLayerTree* tree,
       display_list->list == nullptr) {
     return;
   }
-  tree->root->Add(std::make_shared<flutter::DisplayListLayer>(
+  tree->Current().Add(std::make_shared<flutter::DisplayListLayer>(
       flutter::DlPoint(offset_x, offset_y), display_list->list,
       /*is_complex=*/false, /*will_change=*/false));
 }

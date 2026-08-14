@@ -26,6 +26,8 @@ pub(crate) mod sys {
     pub enum RfDisplayList {}
     pub enum RfParagraph {}
     pub enum RfLayerTree {}
+    pub enum RfPath {}
+    pub enum RfImage {}
 
     unsafe extern "C" {
         pub fn rf_initialize(icu_data_path: *const c_char) -> c_int;
@@ -35,6 +37,228 @@ pub(crate) mod sys {
         pub fn rf_paint_set_color(paint: *mut RfPaint, argb: u32);
         pub fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int, width: f32);
         pub fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int);
+        pub fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32);
+        pub fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int);
+        pub fn rf_paint_set_stroke_cap(paint: *mut RfPaint, cap: c_int);
+        pub fn rf_paint_set_stroke_join(paint: *mut RfPaint, join: c_int);
+        pub fn rf_paint_set_blur(paint: *mut RfPaint, sigma: f32);
+        pub fn rf_paint_clear_blur(paint: *mut RfPaint);
+        pub fn rf_paint_set_linear_gradient(
+            paint: *mut RfPaint,
+            x0: f32,
+            y0: f32,
+            x1: f32,
+            y1: f32,
+            colors: *const u32,
+            stops: *const f32,
+            stop_count: c_int,
+            tile_mode: c_int,
+        );
+        pub fn rf_paint_set_radial_gradient(
+            paint: *mut RfPaint,
+            center_x: f32,
+            center_y: f32,
+            radius: f32,
+            colors: *const u32,
+            stops: *const f32,
+            stop_count: c_int,
+            tile_mode: c_int,
+        );
+        pub fn rf_paint_set_sweep_gradient(
+            paint: *mut RfPaint,
+            center_x: f32,
+            center_y: f32,
+            start_degrees: f32,
+            end_degrees: f32,
+            colors: *const u32,
+            stops: *const f32,
+            stop_count: c_int,
+            tile_mode: c_int,
+        );
+        pub fn rf_paint_clear_shader(paint: *mut RfPaint);
+
+        pub fn rf_path_new() -> *mut RfPath;
+        pub fn rf_path_free(path: *mut RfPath);
+        pub fn rf_path_set_fill_type(path: *mut RfPath, fill_type: c_int);
+        pub fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32);
+        pub fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32);
+        pub fn rf_path_quadratic_to(path: *mut RfPath, cx: f32, cy: f32, x: f32, y: f32);
+        pub fn rf_path_cubic_to(
+            path: *mut RfPath,
+            cx1: f32,
+            cy1: f32,
+            cx2: f32,
+            cy2: f32,
+            x: f32,
+            y: f32,
+        );
+        pub fn rf_path_close(path: *mut RfPath);
+        pub fn rf_path_add_rect(path: *mut RfPath, left: f32, top: f32, right: f32, bottom: f32);
+        pub fn rf_path_add_oval(path: *mut RfPath, left: f32, top: f32, right: f32, bottom: f32);
+        pub fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32);
+        pub fn rf_path_add_rounded_rect(
+            path: *mut RfPath,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            radius_x: f32,
+            radius_y: f32,
+        );
+
+        pub fn rf_canvas_draw_line(
+            canvas: *mut RfCanvas,
+            x0: f32,
+            y0: f32,
+            x1: f32,
+            y1: f32,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_draw_oval(
+            canvas: *mut RfCanvas,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_draw_path(
+            canvas: *mut RfCanvas,
+            path: *const RfPath,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_draw_arc(
+            canvas: *mut RfCanvas,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            start_degrees: f32,
+            sweep_degrees: f32,
+            use_center: c_int,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_draw_image(
+            canvas: *mut RfCanvas,
+            image: *const RfImage,
+            x: f32,
+            y: f32,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_draw_image_rect(
+            canvas: *mut RfCanvas,
+            image: *const RfImage,
+            src_left: f32,
+            src_top: f32,
+            src_right: f32,
+            src_bottom: f32,
+            dst_left: f32,
+            dst_top: f32,
+            dst_right: f32,
+            dst_bottom: f32,
+            paint: *const RfPaint,
+        );
+
+        pub fn rf_canvas_save(canvas: *mut RfCanvas);
+        pub fn rf_canvas_save_layer(
+            canvas: *mut RfCanvas,
+            bounds_ltrb: *const f32,
+            paint: *const RfPaint,
+        );
+        pub fn rf_canvas_restore(canvas: *mut RfCanvas);
+        pub fn rf_canvas_save_count(canvas: *mut RfCanvas) -> c_int;
+        pub fn rf_canvas_restore_to_count(canvas: *mut RfCanvas, count: c_int);
+        pub fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy: f32);
+        pub fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32);
+        pub fn rf_canvas_rotate(canvas: *mut RfCanvas, degrees: f32);
+        pub fn rf_canvas_skew(canvas: *mut RfCanvas, sx: f32, sy: f32);
+        pub fn rf_canvas_transform(
+            canvas: *mut RfCanvas,
+            a: f32,
+            b: f32,
+            c: f32,
+            d: f32,
+            e: f32,
+            f: f32,
+        );
+        pub fn rf_canvas_clip_rect(
+            canvas: *mut RfCanvas,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            clip_op: c_int,
+            anti_alias: c_int,
+        );
+        pub fn rf_canvas_clip_rounded_rect(
+            canvas: *mut RfCanvas,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            radius_x: f32,
+            radius_y: f32,
+            clip_op: c_int,
+            anti_alias: c_int,
+        );
+        pub fn rf_canvas_clip_path(
+            canvas: *mut RfCanvas,
+            path: *const RfPath,
+            clip_op: c_int,
+            anti_alias: c_int,
+        );
+
+        pub fn rf_layer_tree_push_transform(
+            tree: *mut RfLayerTree,
+            a: f32,
+            b: f32,
+            c: f32,
+            d: f32,
+            e: f32,
+            f: f32,
+        );
+        pub fn rf_layer_tree_push_offset(tree: *mut RfLayerTree, dx: f32, dy: f32);
+        pub fn rf_layer_tree_push_clip_rect(
+            tree: *mut RfLayerTree,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            clip_behavior: c_int,
+        );
+        pub fn rf_layer_tree_push_clip_rounded_rect(
+            tree: *mut RfLayerTree,
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+            radius_x: f32,
+            radius_y: f32,
+            clip_behavior: c_int,
+        );
+        pub fn rf_layer_tree_push_clip_path(
+            tree: *mut RfLayerTree,
+            path: *const RfPath,
+            clip_behavior: c_int,
+        );
+        pub fn rf_layer_tree_push_opacity(
+            tree: *mut RfLayerTree,
+            alpha: u8,
+            offset_x: f32,
+            offset_y: f32,
+        );
+        pub fn rf_layer_tree_push_backdrop_blur(
+            tree: *mut RfLayerTree,
+            sigma_x: f32,
+            sigma_y: f32,
+        );
+        pub fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32);
+        pub fn rf_layer_tree_pop(tree: *mut RfLayerTree);
+
+        pub fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage;
+        pub fn rf_image_free(image: *mut RfImage);
+        pub fn rf_image_width(image: *const RfImage) -> c_int;
+        pub fn rf_image_height(image: *const RfImage) -> c_int;
 
         pub fn rf_canvas_new(width: f32, height: f32) -> *mut RfCanvas;
         pub fn rf_canvas_free(canvas: *mut RfCanvas);
@@ -174,7 +398,7 @@ pub enum Style {
 
 /// Fill/stroke description handed to draw calls.
 pub struct Paint {
-    raw: *mut sys::RfPaint,
+    pub(crate) raw: *mut sys::RfPaint,
 }
 
 impl Paint {
@@ -310,7 +534,7 @@ impl Drop for Paragraph {
 
 /// Records drawing commands into an engine `DisplayList`.
 pub struct Canvas {
-    raw: *mut sys::RfCanvas,
+    pub(crate) raw: *mut sys::RfCanvas,
 }
 
 impl Canvas {
@@ -378,7 +602,7 @@ impl Drop for DisplayList {
 /// takes exactly this object from the framework and everything downstream
 /// (rasterizer -> display_list -> Impeller) runs unmodified.
 pub struct LayerTree {
-    raw: *mut sys::RfLayerTree,
+    pub(crate) raw: *mut sys::RfLayerTree,
     width: i32,
     height: i32,
 }

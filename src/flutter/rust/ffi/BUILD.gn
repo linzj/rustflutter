@@ -8,6 +8,8 @@ source_set("engine_ffi") {
   sources = [
     "rustflutter_ffi.cc",
     "rustflutter_ffi.h",
+    "rustflutter_ffi_draw.cc",
+    "rustflutter_ffi_handles.h",
     "rustflutter_ffi_internal.h",
   ]
 

@@ -29,6 +29,8 @@ typedef struct RfCanvas RfCanvas;
 typedef struct RfDisplayList RfDisplayList;
 typedef struct RfParagraph RfParagraph;
 typedef struct RfLayerTree RfLayerTree;
+typedef struct RfPath RfPath;
+typedef struct RfImage RfImage;
 
 // Colors are 0xAARRGGBB, matching Flutter's dart:ui Color encoding.
 
@@ -47,6 +49,86 @@ void rf_paint_set_color(RfPaint* paint, uint32_t argb);
 // stroke = 0 fills, stroke != 0 strokes with the given width.
 void rf_paint_set_stroke(RfPaint* paint, int32_t stroke, float width);
 void rf_paint_set_anti_alias(RfPaint* paint, int32_t anti_alias);
+// 0..1. Multiplies into the paint's alpha.
+void rf_paint_set_opacity(RfPaint* paint, float opacity);
+// Index into flutter::DlBlendMode, in declaration order (3 = srcOver, the
+// default).
+void rf_paint_set_blend_mode(RfPaint* paint, int32_t blend_mode);
+void rf_paint_set_stroke_cap(RfPaint* paint, int32_t cap);    // 0 butt 1 round 2 square
+void rf_paint_set_stroke_join(RfPaint* paint, int32_t join);  // 0 miter 1 round 2 bevel
+// Gaussian blur applied to the shape's coverage mask.
+void rf_paint_set_blur(RfPaint* paint, float sigma);
+void rf_paint_clear_blur(RfPaint* paint);
+
+// Gradients. `colors` is `stop_count` packed 0xAARRGGBB values; `stops` is
+// `stop_count` positions in 0..1, or NULL for an even distribution.
+// tile_mode: 0 clamp, 1 repeat, 2 mirror, 3 decal.
+void rf_paint_set_linear_gradient(RfPaint* paint,
+                                  float x0,
+                                  float y0,
+                                  float x1,
+                                  float y1,
+                                  const uint32_t* colors,
+                                  const float* stops,
+                                  int32_t stop_count,
+                                  int32_t tile_mode);
+void rf_paint_set_radial_gradient(RfPaint* paint,
+                                  float center_x,
+                                  float center_y,
+                                  float radius,
+                                  const uint32_t* colors,
+                                  const float* stops,
+                                  int32_t stop_count,
+                                  int32_t tile_mode);
+void rf_paint_set_sweep_gradient(RfPaint* paint,
+                                 float center_x,
+                                 float center_y,
+                                 float start_degrees,
+                                 float end_degrees,
+                                 const uint32_t* colors,
+                                 const float* stops,
+                                 int32_t stop_count,
+                                 int32_t tile_mode);
+void rf_paint_clear_shader(RfPaint* paint);
+
+// -- Path -------------------------------------------------------------------
+//
+// Built imperatively, then handed to rf_canvas_draw_path or a clip. A path may
+// be used any number of times; the handle stays valid until freed.
+
+RfPath* rf_path_new(void);
+void rf_path_free(RfPath* path);
+// 0 non-zero winding (the default), 1 even-odd.
+void rf_path_set_fill_type(RfPath* path, int32_t fill_type);
+void rf_path_move_to(RfPath* path, float x, float y);
+void rf_path_line_to(RfPath* path, float x, float y);
+void rf_path_quadratic_to(RfPath* path, float cx, float cy, float x, float y);
+void rf_path_cubic_to(RfPath* path,
+                      float cx1,
+                      float cy1,
+                      float cx2,
+                      float cy2,
+                      float x,
+                      float y);
+void rf_path_close(RfPath* path);
+void rf_path_add_rect(RfPath* path,
+                      float left,
+                      float top,
+                      float right,
+                      float bottom);
+void rf_path_add_oval(RfPath* path,
+                      float left,
+                      float top,
+                      float right,
+                      float bottom);
+void rf_path_add_circle(RfPath* path, float x, float y, float radius);
+void rf_path_add_rounded_rect(RfPath* path,
+                              float left,
+                              float top,
+                              float right,
+                              float bottom,
+                              float radius_x,
+                              float radius_y);
 
 // -- Canvas (DisplayListBuilder) --------------------------------------------
 
@@ -76,6 +158,98 @@ void rf_canvas_draw_paragraph(RfCanvas* canvas,
                               RfParagraph* paragraph,
                               float x,
                               float y);
+void rf_canvas_draw_line(RfCanvas* canvas,
+                         float x0,
+                         float y0,
+                         float x1,
+                         float y1,
+                         const RfPaint* paint);
+void rf_canvas_draw_oval(RfCanvas* canvas,
+                         float left,
+                         float top,
+                         float right,
+                         float bottom,
+                         const RfPaint* paint);
+void rf_canvas_draw_path(RfCanvas* canvas,
+                         const RfPath* path,
+                         const RfPaint* paint);
+void rf_canvas_draw_arc(RfCanvas* canvas,
+                        float left,
+                        float top,
+                        float right,
+                        float bottom,
+                        float start_degrees,
+                        float sweep_degrees,
+                        int32_t use_center,
+                        const RfPaint* paint);
+// Draws `image` with its top-left at (x, y). `paint` may be NULL.
+void rf_canvas_draw_image(RfCanvas* canvas,
+                          const RfImage* image,
+                          float x,
+                          float y,
+                          const RfPaint* paint);
+// Scales the source rect into the destination rect.
+void rf_canvas_draw_image_rect(RfCanvas* canvas,
+                               const RfImage* image,
+                               float src_left,
+                               float src_top,
+                               float src_right,
+                               float src_bottom,
+                               float dst_left,
+                               float dst_top,
+                               float dst_right,
+                               float dst_bottom,
+                               const RfPaint* paint);
+
+// -- Canvas state -----------------------------------------------------------
+//
+// The usual save/restore stack. `save_layer` starts an offscreen group that is
+// composited with `paint` on restore -- what group opacity and blend modes
+// need. Pass NULL bounds to let the engine work them out.
+
+void rf_canvas_save(RfCanvas* canvas);
+void rf_canvas_save_layer(RfCanvas* canvas,
+                          const float* bounds_ltrb,  // 4 floats, or NULL
+                          const RfPaint* paint);
+void rf_canvas_restore(RfCanvas* canvas);
+int32_t rf_canvas_save_count(RfCanvas* canvas);
+void rf_canvas_restore_to_count(RfCanvas* canvas, int32_t count);
+
+void rf_canvas_translate(RfCanvas* canvas, float dx, float dy);
+void rf_canvas_scale(RfCanvas* canvas, float sx, float sy);
+void rf_canvas_rotate(RfCanvas* canvas, float degrees);
+void rf_canvas_skew(RfCanvas* canvas, float sx, float sy);
+// A 2D affine in the order [a c e / b d f]: x2 = a*x + c*y + e.
+void rf_canvas_transform(RfCanvas* canvas,
+                         float a,
+                         float b,
+                         float c,
+                         float d,
+                         float e,
+                         float f);
+
+// clip_op: 0 intersect, 1 difference.
+void rf_canvas_clip_rect(RfCanvas* canvas,
+                         float left,
+                         float top,
+                         float right,
+                         float bottom,
+                         int32_t clip_op,
+                         int32_t anti_alias);
+void rf_canvas_clip_rounded_rect(RfCanvas* canvas,
+                                 float left,
+                                 float top,
+                                 float right,
+                                 float bottom,
+                                 float radius_x,
+                                 float radius_y,
+                                 int32_t clip_op,
+                                 int32_t anti_alias);
+void rf_canvas_clip_path(RfCanvas* canvas,
+                         const RfPath* path,
+                         int32_t clip_op,
+                         int32_t anti_alias);
+
 // Consumes nothing; the canvas stays usable but Build is normally called once.
 RfDisplayList* rf_canvas_build(RfCanvas* canvas);
 
@@ -107,6 +281,62 @@ void rf_layer_tree_add_display_list(RfLayerTree* tree,
                                     RfDisplayList* display_list,
                                     float offset_x,
                                     float offset_y);
+
+// Container layers. Each push makes a new layer the current parent; pop returns
+// to the previous one. Unbalanced pushes leave the tree deeper than intended;
+// pop on an empty stack is ignored.
+//
+// Upstream these are what SceneBuilder.push* build. They matter for
+// compositing rather than drawing: a transform or opacity the compositor knows
+// about can be re-applied without repainting the subtree, and a platform view
+// can only be hoisted out of a layer, never out of a display list.
+// clip_behavior: 0 none, 1 hard edge, 2 anti-alias, 3 anti-alias with save
+// layer.
+void rf_layer_tree_push_transform(RfLayerTree* tree,
+                                  float a,
+                                  float b,
+                                  float c,
+                                  float d,
+                                  float e,
+                                  float f);
+void rf_layer_tree_push_offset(RfLayerTree* tree, float dx, float dy);
+void rf_layer_tree_push_clip_rect(RfLayerTree* tree,
+                                  float left,
+                                  float top,
+                                  float right,
+                                  float bottom,
+                                  int32_t clip_behavior);
+void rf_layer_tree_push_clip_rounded_rect(RfLayerTree* tree,
+                                          float left,
+                                          float top,
+                                          float right,
+                                          float bottom,
+                                          float radius_x,
+                                          float radius_y,
+                                          int32_t clip_behavior);
+void rf_layer_tree_push_clip_path(RfLayerTree* tree,
+                                  const RfPath* path,
+                                  int32_t clip_behavior);
+void rf_layer_tree_push_opacity(RfLayerTree* tree,
+                                uint8_t alpha,
+                                float offset_x,
+                                float offset_y);
+// Blurs everything already painted behind the layer.
+void rf_layer_tree_push_backdrop_blur(RfLayerTree* tree,
+                                      float sigma_x,
+                                      float sigma_y);
+// Blurs the layer's own subtree.
+void rf_layer_tree_push_blur(RfLayerTree* tree, float sigma_x, float sigma_y);
+void rf_layer_tree_pop(RfLayerTree* tree);
+
+// -- Images -----------------------------------------------------------------
+
+// Decodes an encoded image (PNG, JPEG, WebP, GIF, BMP) into a CPU-backed
+// image. Returns NULL if the bytes could not be decoded.
+RfImage* rf_image_decode(const uint8_t* data, size_t length);
+void rf_image_free(RfImage* image);
+int32_t rf_image_width(const RfImage* image);
+int32_t rf_image_height(const RfImage* image);
 
 // -- Rasterization ----------------------------------------------------------
 

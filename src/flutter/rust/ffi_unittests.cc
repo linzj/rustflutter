@@ -4,6 +4,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "flutter/rust/ffi/rustflutter_ffi.h"
@@ -155,6 +159,234 @@ TEST(RustFFI, PaintsTextIntoTheSurface) {
   rf_display_list_free(display_list);
   rf_canvas_free(canvas);
   rf_paragraph_free(paragraph);
+}
+
+// -- M4: paths, gradients, transforms, clips, layers, images ------------------
+
+namespace {
+
+// Rasterizes one display list at `size` and returns the pixels. Frees the
+// intermediates; the caller only cares about the result.
+std::vector<uint8_t> Rasterize(RfDisplayList* display_list,
+                               int32_t width,
+                               int32_t height) {
+  RfLayerTree* tree = rf_layer_tree_new(width, height);
+  rf_layer_tree_add_display_list(tree, display_list, 0, 0);
+  std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4u);
+  const int32_t result =
+      rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size());
+  rf_layer_tree_free(tree);
+  if (result != 0) {
+    pixels.clear();
+  }
+  return pixels;
+}
+
+}  // namespace
+
+// A path is a real outline, not a bounding box: the far corner of a triangle's
+// bounding box must stay unpainted.
+TEST(RustFFI, FillsAPath) {
+  constexpr int32_t kSize = 64;
+  constexpr uint32_t kBackground = 0xFF000000;
+  constexpr uint32_t kFill = 0xFF00FF00;
+
+  RfPath* path = rf_path_new();
+  ASSERT_NE(path, nullptr);
+  rf_path_move_to(path, 0, 0);
+  rf_path_line_to(path, 63, 0);
+  rf_path_line_to(path, 0, 63);
+  rf_path_close(path);
+
+  RfCanvas* canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_color(canvas, kBackground);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_color(paint, kFill);
+  rf_paint_set_anti_alias(paint, 0);
+  rf_canvas_draw_path(canvas, path, paint);
+
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> pixels = Rasterize(display_list, kSize, kSize);
+  ASSERT_FALSE(pixels.empty());
+
+  // Inside the triangle.
+  EXPECT_EQ(PixelAt(pixels, kSize, 4, 4), kFill);
+  EXPECT_EQ(PixelAt(pixels, kSize, 20, 20), kFill);
+  // The bottom-right corner is inside the bounding box but outside the shape.
+  EXPECT_EQ(PixelAt(pixels, kSize, 60, 60), kBackground);
+
+  rf_display_list_free(display_list);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+  rf_path_free(path);
+}
+
+// A gradient must actually vary across the geometry.
+TEST(RustFFI, FillsWithALinearGradient) {
+  constexpr int32_t kWidth = 64;
+  constexpr int32_t kHeight = 16;
+  const uint32_t colors[2] = {0xFFFF0000, 0xFF0000FF};
+
+  RfCanvas* canvas = rf_canvas_new(kWidth, kHeight);
+  rf_canvas_draw_color(canvas, 0xFF000000);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_anti_alias(paint, 0);
+  rf_paint_set_linear_gradient(paint, 0, 0, kWidth, 0, colors, nullptr, 2,
+                               /*tile_mode=*/0);
+  rf_canvas_draw_rect(canvas, 0, 0, kWidth, kHeight, paint);
+
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> pixels = Rasterize(display_list, kWidth, kHeight);
+  ASSERT_FALSE(pixels.empty());
+
+  const uint32_t left = PixelAt(pixels, kWidth, 1, 8);
+  const uint32_t right = PixelAt(pixels, kWidth, kWidth - 2, 8);
+  // Red dominates on the left, blue on the right, and the two ends differ.
+  EXPECT_GT((left >> 16) & 0xFF, (left >> 0) & 0xFF);
+  EXPECT_GT((right >> 0) & 0xFF, (right >> 16) & 0xFF);
+  EXPECT_NE(left, right);
+
+  rf_display_list_free(display_list);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+}
+
+// Transform and clip both have to survive save/restore.
+TEST(RustFFI, TransformsAndClips) {
+  constexpr int32_t kSize = 64;
+  constexpr uint32_t kBackground = 0xFF000000;
+  constexpr uint32_t kFill = 0xFFFFFFFF;
+
+  RfCanvas* canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_color(canvas, kBackground);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_color(paint, kFill);
+  rf_paint_set_anti_alias(paint, 0);
+
+  const int32_t base = rf_canvas_save_count(canvas);
+  rf_canvas_save(canvas);
+  // Shift right by 32 and clip to the left half of *that* space, so only the
+  // 32..48 band can be painted.
+  rf_canvas_translate(canvas, 32, 0);
+  rf_canvas_clip_rect(canvas, 0, 0, 16, kSize, /*clip_op=*/0, /*anti_alias=*/0);
+  rf_canvas_draw_rect(canvas, 0, 0, kSize, kSize, paint);
+  rf_canvas_restore(canvas);
+  EXPECT_EQ(rf_canvas_save_count(canvas), base);
+
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> pixels = Rasterize(display_list, kSize, kSize);
+  ASSERT_FALSE(pixels.empty());
+
+  EXPECT_EQ(PixelAt(pixels, kSize, 16, 32), kBackground);  // left of the shift
+  EXPECT_EQ(PixelAt(pixels, kSize, 40, 32), kFill);        // inside the band
+  EXPECT_EQ(PixelAt(pixels, kSize, 56, 32), kBackground);  // clipped away
+
+  rf_display_list_free(display_list);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+}
+
+// The compositor's layer stack: a transform layer moves its subtree, and an
+// opacity layer blends it. Neither is expressible in a single display list.
+TEST(RustFFI, ComposesThroughTheLayerStack) {
+  constexpr int32_t kSize = 64;
+  constexpr uint32_t kFill = 0xFFFFFFFF;
+
+  RfCanvas* background_canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_color(background_canvas, 0xFF000000);
+  RfDisplayList* background = rf_canvas_build(background_canvas);
+
+  RfCanvas* canvas = rf_canvas_new(kSize, kSize);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_color(paint, kFill);
+  rf_paint_set_anti_alias(paint, 0);
+  rf_canvas_draw_rect(canvas, 0, 0, 16, 16, paint);
+  RfDisplayList* square = rf_canvas_build(canvas);
+
+  RfLayerTree* tree = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_add_display_list(tree, background, 0, 0);
+  // Move the square to (32, 32) and draw it at half opacity.
+  rf_layer_tree_push_offset(tree, 32, 32);
+  rf_layer_tree_push_opacity(tree, 128, 0, 0);
+  rf_layer_tree_add_display_list(tree, square, 0, 0);
+  rf_layer_tree_pop(tree);
+  rf_layer_tree_pop(tree);
+
+  std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+
+  // The square is where the transform put it, not where it was recorded.
+  EXPECT_EQ(PixelAt(pixels, kSize, 8, 8), 0xFF000000);
+  const uint32_t moved = PixelAt(pixels, kSize, 40, 40);
+  const uint32_t red = (moved >> 16) & 0xFF;
+  // Half of white over black, with a little room for rounding.
+  EXPECT_GT(red, 100u);
+  EXPECT_LT(red, 160u);
+
+  rf_layer_tree_free(tree);
+  rf_display_list_free(square);
+  rf_display_list_free(background);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+  rf_canvas_free(background_canvas);
+}
+
+// Round-trips an image through the encoder and the decoder, then draws it.
+TEST(RustFFI, DecodesAndDrawsAnImage) {
+  constexpr int32_t kSize = 32;
+  constexpr uint32_t kFill = 0xFF3366CC;
+
+  // Produce a PNG by rendering one.
+  RfCanvas* source_canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_color(source_canvas, kFill);
+  RfDisplayList* source = rf_canvas_build(source_canvas);
+  RfLayerTree* source_tree = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_add_display_list(source_tree, source, 0, 0);
+
+  const std::string png_path =
+      (std::filesystem::temp_directory_path() / "rf_image_test.png").string();
+  ASSERT_EQ(rf_layer_tree_write_png(source_tree, png_path.c_str()), 0);
+
+  std::ifstream file(png_path, std::ios::binary);
+  ASSERT_TRUE(file.good());
+  std::vector<uint8_t> encoded((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+  file.close();
+  ASSERT_FALSE(encoded.empty());
+
+  RfImage* image = rf_image_decode(encoded.data(), encoded.size());
+  ASSERT_NE(image, nullptr);
+  EXPECT_EQ(rf_image_width(image), kSize);
+  EXPECT_EQ(rf_image_height(image), kSize);
+
+  // Draw it into the top-left corner of a larger surface.
+  constexpr int32_t kCanvasSize = 64;
+  RfCanvas* canvas = rf_canvas_new(kCanvasSize, kCanvasSize);
+  rf_canvas_draw_color(canvas, 0xFF000000);
+  rf_canvas_draw_image(canvas, image, 0, 0, nullptr);
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> pixels =
+      Rasterize(display_list, kCanvasSize, kCanvasSize);
+  ASSERT_FALSE(pixels.empty());
+
+  EXPECT_EQ(PixelAt(pixels, kCanvasSize, 16, 16), kFill);
+  EXPECT_EQ(PixelAt(pixels, kCanvasSize, 48, 48), 0xFF000000);
+
+  rf_display_list_free(display_list);
+  rf_canvas_free(canvas);
+  rf_image_free(image);
+  rf_layer_tree_free(source_tree);
+  rf_display_list_free(source);
+  rf_canvas_free(source_canvas);
+  std::filesystem::remove(png_path);
+}
+
+// Rejecting bad input is part of the contract: a decoder that returns a handle
+// for garbage would crash later instead of here.
+TEST(RustFFI, RejectsUndecodableImageData) {
+  const uint8_t garbage[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+  EXPECT_EQ(rf_image_decode(garbage, sizeof(garbage)), nullptr);
+  EXPECT_EQ(rf_image_decode(nullptr, 0), nullptr);
 }
 
 }  // namespace testing
