@@ -8,7 +8,6 @@
 #include "flutter/flow/frame_timings.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/fml/trace_event.h"
-#include "third_party/dart/runtime/include/dart_tools_api.h"
 
 namespace flutter {
 
@@ -113,7 +112,7 @@ void Animator::BeginFrame(
   FML_DCHECK(producer_continuation_);
   const fml::TimePoint frame_target_time =
       frame_timings_recorder_->GetVsyncTargetTime();
-  dart_frame_deadline_ = frame_target_time.ToEpochDelta();
+  frame_deadline_ = frame_target_time.ToEpochDelta();
   uint64_t frame_number = frame_timings_recorder_->GetFrameNumber();
   delegate_.OnAnimatorBeginFrame(frame_target_time, frame_number);
 }
@@ -170,9 +169,10 @@ void Animator::EndFrame() {
           // If there's no frame scheduled, but we're not yet past the last
           // vsync deadline, bail.
           if (!self->frame_scheduled_) {
-            auto now =
-                fml::TimeDelta::FromMicroseconds(Dart_TimelineGetMicros());
-            if (now > self->dart_frame_deadline_) {
+            // Upstream this read Dart_TimelineGetMicros(); the clock is the
+            // same, and fml owns it.
+            auto now = fml::TimePoint::Now().ToEpochDelta();
+            if (now > self->frame_deadline_) {
               TRACE_EVENT0("flutter", "BeginFrame idle callback");
               self->delegate_.OnAnimatorNotifyIdle(
                   now + fml::TimeDelta::FromMilliseconds(100));
@@ -284,7 +284,7 @@ void Animator::AwaitVSync() {
         }
       });
   if (has_rendered_) {
-    delegate_.OnAnimatorNotifyIdle(dart_frame_deadline_);
+    delegate_.OnAnimatorNotifyIdle(frame_deadline_);
   }
 }
 

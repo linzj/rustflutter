@@ -29,9 +29,7 @@
 #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
 #include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/platform_message.h"
-#include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/platform_data.h"
-#include "flutter/runtime/service_protocol.h"
 #include "flutter/shell/common/animator.h"
 #include "flutter/shell/common/display_manager.h"
 #include "flutter/shell/common/engine.h"
@@ -46,21 +44,6 @@
 
 namespace flutter {
 
-/// Error exit codes for the Dart isolate.
-enum class DartErrorCode {
-  // NOLINTBEGIN(readability-identifier-naming)
-  /// No error has occurred.
-  NoError = 0,
-  /// The Dart error code for an API error.
-  ApiError = 253,
-  /// The Dart error code for a compilation error.
-  CompilationError = 254,
-  /// The Dart error code for an unknown error.
-  UnknownError = 255
-  // NOLINTEND(readability-identifier-naming)
-};
-
-/// Values for |Shell::SetGpuAvailability|.
 enum class GpuAvailability {
   /// Indicates that GPU operations should be permitted.
   kAvailable = 0,
@@ -114,26 +97,22 @@ class Shell final : public PlatformView::Delegate,
                     public Animator::Delegate,
                     public Engine::Delegate,
                     public Rasterizer::Delegate,
-                    public ServiceProtocol::Handler,
                     public ResourceCacheLimitItem {
  public:
   template <class T>
   using CreateCallback = std::function<std::unique_ptr<T>(Shell&)>;
+  //----------------------------------------------------------------------------
+  /// How the shell builds its engine. Upstream this also carried a DartVM, an
+  /// isolate snapshot, an IO manager, a Skia unref queue, a snapshot delegate
+  /// and the runtime stage backend -- every one of them an argument to
+  /// UIDartState. The Rust framework needs none of them.
   typedef std::function<std::unique_ptr<Engine>(
       Engine::Delegate& delegate,
       const PointerDataDispatcherMaker& dispatcher_maker,
-      DartVM& vm,
-      fml::RefPtr<const DartSnapshot> isolate_snapshot,
-      TaskRunners task_runners,
+      const TaskRunners& task_runners,
       const PlatformData& platform_data,
-      Settings settings,
-      std::unique_ptr<Animator> animator,
-      fml::WeakPtr<IOManager> io_manager,
-      fml::RefPtr<SkiaUnrefQueue> unref_queue,
-      fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
-      const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
-      const std::shared_future<impeller::RuntimeStageBackend>&
-          runtime_stage_backend)>
+      const Settings& settings,
+      std::unique_ptr<Animator> animator)>
       EngineCreateCallback;
 
   //----------------------------------------------------------------------------
@@ -304,14 +283,6 @@ class Shell final : public PlatformView::Delegate,
   ///             warning. The shell will attempt to purge caches. Current, only
   ///             the rasterizer cache is purged.
   void NotifyLowMemoryWarning() const;
-
-  //----------------------------------------------------------------------------
-  /// @brief      Used by embedders to flush the microtask queue. Required
-  ///             when running with merged platform and UI threads, in which
-  ///             case the embedder is responsible for flushing the microtask
-  ///             queue.
-  void FlushMicrotaskQueue() const;
-
   //----------------------------------------------------------------------------
   /// @brief      Used by embedders to check if all shell subcomponents are
   ///             initialized. It is the embedder's responsibility to make this
@@ -376,37 +347,6 @@ class Shell final : public PlatformView::Delegate,
   /// @return     Returns if shell reloads system fonts successfully.
   ///
   bool ReloadSystemFonts();
-
-  //----------------------------------------------------------------------------
-  /// @brief      Used by embedders to get the last error from the Dart UI
-  ///             Isolate, if one exists.
-  ///
-  /// @return     Returns the last error code from the UI Isolate.
-  ///
-  std::optional<DartErrorCode> GetUIIsolateLastError() const;
-
-  //----------------------------------------------------------------------------
-  /// @brief      Used by embedders to check if the Engine is running and has
-  ///             any live ports remaining. For example, the Flutter tester uses
-  ///             this method to check whether it should continue to wait for
-  ///             a running test or not.
-  ///
-  /// @return     Returns if the shell has an engine and the engine has any live
-  ///             Dart ports.
-  ///
-  bool EngineHasLivePorts() const;
-
-  //----------------------------------------------------------------------------
-  /// @brief      Used by embedders to check if the Engine is running and has
-  ///             any microtasks that have been queued but have not yet run.
-  ///             The Flutter tester uses this as a signal that a test is still
-  ///             running.
-  ///
-  /// @return     Returns if the shell has an engine and the engine has pending
-  ///             microtasks.
-  ///
-  bool EngineHasPendingMicrotasks() const;
-
   //----------------------------------------------------------------------------
   /// @brief     Accessor for the disable GPU SyncSwitch.
   // |Rasterizer::Delegate|
@@ -416,15 +356,6 @@ class Shell final : public PlatformView::Delegate,
   //----------------------------------------------------------------------------
   /// @brief     Marks the GPU as available or unavailable.
   void SetGpuAvailability(GpuAvailability availability);
-
-  //----------------------------------------------------------------------------
-  /// @brief      Get a pointer to the Dart VM used by this running shell
-  ///             instance.
-  ///
-  /// @return     The Dart VM pointer.
-  ///
-  DartVM* GetDartVM();
-
   //----------------------------------------------------------------------------
   /// @brief      Notifies the display manager of the updates.
   ///
@@ -459,25 +390,7 @@ class Shell final : public PlatformView::Delegate,
   const std::shared_ptr<fml::ConcurrentTaskRunner>
   GetConcurrentWorkerTaskRunner() const;
 
-  // Infer the VM ref and the isolate snapshot based on the settings.
-  //
-  // If the VM is already running, the settings are ignored, but the returned
-  // isolate snapshot always prioritize what is specified by the settings, and
-  // falls back to the one VM was launched with.
-  //
-  // This function is what Shell::Create uses to infer snapshot settings.
-  //
-  // TODO(dkwingsmt): Extracting this method is part of a bigger change. If the
-  // entire change is not eventually landed, we should merge this method back
-  // to Create. https://github.com/flutter/flutter/issues/136826
-  static std::pair<DartVMRef, fml::RefPtr<const DartSnapshot>>
-  InferVmInitDataFromSettings(Settings& settings);
-
  private:
-  using ServiceProtocolHandler =
-      std::function<bool(const ServiceProtocol::Handler::ServiceProtocolMap&,
-                         rapidjson::Document*)>;
-
   /// A collection of message channels (by name) that have sent at least one
   /// message from a non-platform thread. Used to prevent printing the error
   /// log more than once per channel, as a badly behaving plugin may send
@@ -490,7 +403,6 @@ class Shell final : public PlatformView::Delegate,
       resource_cache_limit_calculator_;
   size_t resource_cache_limit_;
   const Settings settings_;
-  DartVMRef vm_;
   mutable std::mutex time_recorder_mutex_;
   std::optional<fml::TimePoint> latest_frame_target_time_;
   std::unique_ptr<PlatformView> platform_view_;  // on platform task runner
@@ -511,12 +423,6 @@ class Shell final : public PlatformView::Delegate,
   std::promise<fml::WeakPtr<ShellIOManager>> weak_io_manager_promise_;
   std::shared_ptr<fml::BasicTaskRunner> shutdown_safe_io_task_runner_;
 
-  std::unordered_map<std::string_view,  // method
-                     std::pair<fml::RefPtr<fml::TaskRunner>,
-                               ServiceProtocolHandler>  // task-runner/function
-                                                        // pair
-                     >
-      service_protocol_handlers_;
   bool is_set_up_ = false;
   bool is_added_to_service_protocol_ = false;
   uint64_t next_pointer_flow_id_ = 0;
@@ -572,8 +478,7 @@ class Shell final : public PlatformView::Delegate,
   // How many frames have been timed since last report.
   size_t UnreportedFramesCount() const;
 
-  Shell(DartVMRef vm,
-        const TaskRunners& task_runners,
+  Shell(const TaskRunners& task_runners,
         fml::RefPtr<fml::RasterThreadMerger> parent_merger,
         const std::shared_ptr<ResourceCacheLimitCalculator>&
             resource_cache_limit_calculator,
@@ -581,7 +486,6 @@ class Shell final : public PlatformView::Delegate,
         bool is_gpu_disabled);
 
   static std::unique_ptr<Shell> CreateShellOnPlatformThread(
-      DartVMRef vm,
       fml::RefPtr<fml::RasterThreadMerger> parent_merger,
       std::shared_ptr<ShellIOManager> parent_io_manager,
       const std::shared_ptr<ResourceCacheLimitCalculator>&
@@ -589,13 +493,12 @@ class Shell final : public PlatformView::Delegate,
       const TaskRunners& task_runners,
       const PlatformData& platform_data,
       const Settings& settings,
-      fml::RefPtr<const DartSnapshot> isolate_snapshot,
       const Shell::CreateCallback<PlatformView>& on_create_platform_view,
       const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
       const EngineCreateCallback& on_create_engine,
       bool is_gpu_disabled);
 
-  static std::unique_ptr<Shell> CreateWithSnapshot(
+  static std::unique_ptr<Shell> CreateWithParent(
       const PlatformData& platform_data,
       const TaskRunners& task_runners,
       const fml::RefPtr<fml::RasterThreadMerger>& parent_thread_merger,
@@ -603,8 +506,6 @@ class Shell final : public PlatformView::Delegate,
       const std::shared_ptr<ResourceCacheLimitCalculator>&
           resource_cache_limit_calculator,
       Settings settings,
-      DartVMRef vm,
-      fml::RefPtr<const DartSnapshot> isolate_snapshot,
       const CreateCallback<PlatformView>& on_create_platform_view,
       const CreateCallback<Rasterizer>& on_create_rasterizer,
       const EngineCreateCallback& on_create_engine,
@@ -688,16 +589,6 @@ class Shell final : public PlatformView::Delegate,
   OnPlatformViewGetShutdownSafeIOTaskRunner() const override;
 
   // |PlatformView::Delegate|
-  void LoadDartDeferredLibrary(
-      intptr_t loading_unit_id,
-      std::unique_ptr<const fml::Mapping> snapshot_data,
-      std::unique_ptr<const fml::Mapping> snapshot_instructions) override;
-
-  void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
-                                    const std::string error_message,
-                                    bool transient) override;
-
-  // |PlatformView::Delegate|
   void UpdateAssetResolverByType(
       std::unique_ptr<AssetResolver> updated_asset_resolver,
       AssetResolver::AssetResolverType type) override;
@@ -742,21 +633,11 @@ class Shell final : public PlatformView::Delegate,
   void OnPreEngineRestart() override;
 
   // |Engine::Delegate|
-  void OnRootIsolateCreated() override;
-
-  // |Engine::Delegate|
-  void UpdateIsolateDescription(const std::string isolate_name,
-                                int64_t isolate_port) override;
-
-  // |Engine::Delegate|
   void SetNeedsReportTimings(bool value) override;
 
   // |Engine::Delegate|
   std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
       const std::vector<std::string>& supported_locale_data) override;
-
-  // |Engine::Delegate|
-  void RequestDartDeferredLibrary(intptr_t loading_unit_id) override;
 
   // |Engine::Delegate|
   fml::TimePoint GetCurrentTimePoint() override;
@@ -784,77 +665,6 @@ class Shell final : public PlatformView::Delegate,
   bool ShouldDiscardLayerTree(int64_t view_id,
                               const flutter::LayerTree& tree) override;
 
-  // |ServiceProtocol::Handler|
-  fml::RefPtr<fml::TaskRunner> GetServiceProtocolHandlerTaskRunner(
-      std::string_view method) const override;
-
-  // |ServiceProtocol::Handler|
-  bool HandleServiceProtocolMessage(
-      std::string_view method,  // one if the extension names specified above.
-      const ServiceProtocolMap& params,
-      rapidjson::Document* response) override;
-
-  // |ServiceProtocol::Handler|
-  ServiceProtocol::Handler::Description GetServiceProtocolDescription()
-      const override;
-
-  // Service protocol handler
-  bool OnServiceProtocolScreenshot(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolScreenshotSKP(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolRunInView(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolFlushUIThreadTasks(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolSetAssetBundlePath(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolGetDisplayRefreshRate(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  //
-  // The returned SkSLs are base64 encoded. Decode before storing them to
-  // files.
-  bool OnServiceProtocolGetSkSLs(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolEstimateRasterCacheMemory(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  //
-  // Forces the FontCollection to reload the font manifest. Used to support
-  // hot reload for fonts.
-  bool OnServiceProtocolReloadAssetFonts(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Service protocol handler
-  bool OnServiceProtocolGetPipelineUsage(
-      const ServiceProtocol::Handler::ServiceProtocolMap& params,
-      rapidjson::Document* response);
-
-  // Send a system font change notification.
   void SendFontChangeNotification();
 
   // |ResourceCacheLimitItem|

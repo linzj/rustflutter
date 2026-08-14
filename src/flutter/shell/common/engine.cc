@@ -10,10 +10,8 @@
 #include <utility>
 #include <vector>
 
-#include "flutter/assets/native_assets.h"
 #include "flutter/common/settings.h"
 #include "flutter/fml/trace_event.h"
-#include "flutter/impeller/core/runtime_types.h"
 #include "flutter/lib/ui/text/font_collection.h"
 #include "flutter/shell/common/animator.h"
 #include "rapidjson/document.h"
@@ -25,35 +23,19 @@ static constexpr char kLifecycleChannel[] = "flutter/lifecycle";
 static constexpr char kNavigationChannel[] = "flutter/navigation";
 static constexpr char kLocalizationChannel[] = "flutter/localization";
 static constexpr char kSettingsChannel[] = "flutter/settings";
-static constexpr char kIsolateChannel[] = "flutter/isolate";
 
-namespace {
-fml::MallocMapping MakeMapping(const std::string& str) {
-  return fml::MallocMapping::Copy(str.c_str(), str.length());
-}
-}  // namespace
-
-Engine::Engine(
-    Delegate& delegate,
-    const PointerDataDispatcherMaker& dispatcher_maker,
-    const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
-    const TaskRunners& task_runners,
-    const Settings& settings,
-    std::unique_ptr<Animator> animator,
-    const fml::WeakPtr<IOManager>& io_manager,
-    const std::shared_ptr<FontCollection>& font_collection,
-    std::unique_ptr<RuntimeController> runtime_controller,
-    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
+Engine::Engine(Delegate& delegate,
+               const PointerDataDispatcherMaker& dispatcher_maker,
+               const TaskRunners& task_runners,
+               const Settings& settings,
+               std::unique_ptr<Animator> animator,
+               const std::shared_ptr<FontCollection>& font_collection,
+               std::unique_ptr<RuntimeController> runtime_controller)
     : delegate_(delegate),
       settings_(settings),
       animator_(std::move(animator)),
       runtime_controller_(std::move(runtime_controller)),
       font_collection_(font_collection),
-      image_decoder_(ImageDecoder::Make(settings_,
-                                        task_runners,
-                                        image_decoder_task_runner,
-                                        io_manager,
-                                        gpu_disabled_switch)),
       task_runners_(task_runners),
       weak_factory_(this) {
   pointer_data_dispatcher_ = dispatcher_maker(*this);
@@ -61,91 +43,24 @@ Engine::Engine(
 
 Engine::Engine(Delegate& delegate,
                const PointerDataDispatcherMaker& dispatcher_maker,
-               DartVM& vm,
-               fml::RefPtr<const DartSnapshot> isolate_snapshot,
                const TaskRunners& task_runners,
                const PlatformData& platform_data,
                const Settings& settings,
-               std::unique_ptr<Animator> animator,
-               fml::WeakPtr<IOManager> io_manager,
-               const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
-               fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
-               const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
-               const std::shared_future<impeller::RuntimeStageBackend>&
-                   runtime_stage_backend)
+               std::unique_ptr<Animator> animator)
     : Engine(delegate,
              dispatcher_maker,
-             vm.GetConcurrentWorkerTaskRunner(),
              task_runners,
              settings,
              std::move(animator),
-             io_manager,
              std::make_shared<FontCollection>(),
-             nullptr,
-             gpu_disabled_switch) {
-  runtime_controller_ = std::make_unique<RuntimeController>(
-      *this,                                 // runtime delegate
-      &vm,                                   // VM
-      std::move(isolate_snapshot),           // isolate snapshot
-      settings_.idle_notification_callback,  // idle notification callback
-      platform_data,                         // platform data
-      settings_.isolate_create_callback,     // isolate create callback
-      settings_.isolate_shutdown_callback,   // isolate shutdown callback
-      settings_.persistent_isolate_data,     // persistent isolate data
-      UIDartState::Context{
-          task_runners_,                           // task runners
-          std::move(snapshot_delegate),            // snapshot delegate
-          std::move(io_manager),                   // io manager
-          unref_queue,                             // Skia unref queue
-          image_decoder_->GetWeakPtr(),            // image decoder
-          image_generator_registry_.GetWeakPtr(),  // image generator registry
-          settings_.advisory_script_uri,           // advisory script uri
-          settings_.advisory_script_entrypoint,    // advisory script entrypoint
-          settings_
-              .skia_deterministic_rendering_on_cpu,  // deterministic rendering
-          vm.GetConcurrentWorkerTaskRunner(),        // concurrent task runner
-          runtime_stage_backend,                     // runtime stage
-          settings_.enable_impeller,                 // enable impeller
-          settings_.enable_flutter_gpu               // enable impeller
-      });
-}
-
-std::unique_ptr<Engine> Engine::Spawn(
-    Delegate& delegate,
-    const PointerDataDispatcherMaker& dispatcher_maker,
-    const Settings& settings,
-    std::unique_ptr<Animator> animator,
-    const std::string& initial_route,
-    const fml::WeakPtr<IOManager>& io_manager,
-    fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
-    const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch) const {
-  auto result = std::make_unique<Engine>(
-      /*delegate=*/delegate,
-      /*dispatcher_maker=*/dispatcher_maker,
-      /*image_decoder_task_runner=*/
-      runtime_controller_->GetDartVM()->GetConcurrentWorkerTaskRunner(),
-      /*task_runners=*/task_runners_,
-      /*settings=*/settings,
-      /*animator=*/std::move(animator),
-      /*io_manager=*/io_manager,
-      /*font_collection=*/font_collection_,
-      /*runtime_controller=*/nullptr,
-      /*gpu_disabled_switch=*/gpu_disabled_switch);
-  result->runtime_controller_ = runtime_controller_->Spawn(
-      /*p_client=*/*result,
-      /*advisory_script_uri=*/settings.advisory_script_uri,
-      /*advisory_script_entrypoint=*/settings.advisory_script_entrypoint,
-      /*idle_notification_callback=*/settings.idle_notification_callback,
-      /*isolate_create_callback=*/settings.isolate_create_callback,
-      /*isolate_shutdown_callback=*/settings.isolate_shutdown_callback,
-      /*persistent_isolate_data=*/settings.persistent_isolate_data,
-      /*io_manager=*/io_manager,
-      /*image_decoder=*/result->GetImageDecoderWeakPtr(),
-      /*image_generator_registry=*/result->GetImageGeneratorRegistry(),
-      /*snapshot_delegate=*/std::move(snapshot_delegate));
-  result->initial_route_ = initial_route;
-  result->asset_manager_ = asset_manager_;
-  return result;
+             nullptr) {
+  // Upstream this constructor also threaded a DartVM, an isolate snapshot, the
+  // isolate create/shutdown callbacks and a UIDartState::Context through to the
+  // runtime controller. None of that survives a statically linked framework:
+  // what the controller needs is the delegate, the task runners, and whatever
+  // the platform has told us so far.
+  runtime_controller_ =
+      std::make_unique<RuntimeController>(*this, task_runners_, platform_data);
 }
 
 Engine::~Engine() = default;
@@ -161,10 +76,6 @@ void Engine::SetupDefaultFontManager() {
 
 std::shared_ptr<AssetManager> Engine::GetAssetManager() {
   return asset_manager_;
-}
-
-fml::TaskRunnerAffineWeakPtr<ImageDecoder> Engine::GetImageDecoderWeakPtr() {
-  return image_decoder_->GetWeakPtr();
 }
 
 fml::TaskRunnerAffineWeakPtr<ImageGeneratorRegistry>
@@ -194,11 +105,6 @@ bool Engine::UpdateAssetManager(
     font_collection_->RegisterTestFonts();
   }
 
-  if (native_assets_manager_ == nullptr) {
-    native_assets_manager_ = std::make_shared<NativeAssetsManager>();
-  }
-  native_assets_manager_->RegisterNativeAssets(asset_manager_);
-
   return true;
 }
 
@@ -209,7 +115,14 @@ bool Engine::Restart(RunConfiguration configuration) {
     return false;
   }
   delegate_.OnPreEngineRestart();
-  runtime_controller_ = runtime_controller_->Clone();
+
+  // Upstream cloned the runtime controller so the new isolate inherited the
+  // old one's platform state. Rebuilding it from the state it already holds
+  // gets the same result without a VM to clone inside of.
+  PlatformData platform_data = runtime_controller_->GetPlatformData();
+  runtime_controller_ =
+      std::make_unique<RuntimeController>(*this, task_runners_, platform_data);
+
   UpdateAssetManager(nullptr);
   return Run(std::move(configuration)) == Engine::RunStatus::Success;
 }
@@ -221,7 +134,6 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
   }
 
   last_entry_point_ = configuration.GetEntrypoint();
-  last_entry_point_library_ = configuration.GetEntrypointLibrary();
 #if (FLUTTER_RUNTIME_MODE == FLUTTER_RUNTIME_MODE_DEBUG)
   // This is only used to support restart.
   last_entry_point_args_ = configuration.GetEntrypointArgs();
@@ -231,51 +143,18 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
 
   UpdateAssetManager(configuration.GetAssetManager());
 
-  if (runtime_controller_->IsRootIsolateRunning()) {
+  if (runtime_controller_->IsRunning()) {
     return RunStatus::FailureAlreadyRunning;
   }
 
-  // If the embedding prefetched the default font manager, then set up the
-  // font manager later in the engine launch process.  This makes it less
-  // likely that the setup will need to wait for the prefetch to complete.
-  auto root_isolate_create_callback = [&]() {
-    if (settings_.prefetched_default_font_manager) {
-      SetupDefaultFontManager();
-    }
-  };
-
-  if (settings_.merged_platform_ui_thread ==
-      Settings::MergedPlatformUIThread::kMergeAfterLaunch) {
-    // Queue a task to the UI task runner that sets the owner of the root
-    // isolate.  This task runs after the thread merge and will therefore be
-    // executed on the platform thread.  The task will run before any tasks
-    // queued by LaunchRootIsolate that execute the app's Dart code.
-    task_runners_.GetUITaskRunner()->PostTask([engine = GetWeakPtr()]() {
-      if (engine) {
-        engine->runtime_controller_->SetRootIsolateOwnerToCurrentThread();
-      }
-    });
+  // If the embedding prefetched the default font manager, set it up before the
+  // framework can ask for a typeface.
+  if (settings_.prefetched_default_font_manager) {
+    SetupDefaultFontManager();
   }
 
-  if (!runtime_controller_->LaunchRootIsolate(
-          settings_,                                 //
-          root_isolate_create_callback,              //
-          configuration.GetEntrypoint(),             //
-          configuration.GetEntrypointLibrary(),      //
-          configuration.GetEntrypointArgs(),         //
-          configuration.TakeIsolateConfiguration(),  //
-          native_assets_manager_,                    //
-          configuration.GetEngineId()))              //
-  {
+  if (!runtime_controller_->LaunchApplication()) {
     return RunStatus::Failure;
-  }
-
-  auto service_id = runtime_controller_->GetRootIsolateServiceID();
-  if (service_id.has_value()) {
-    std::unique_ptr<PlatformMessage> service_id_message =
-        std::make_unique<flutter::PlatformMessage>(
-            kIsolateChannel, MakeMapping(service_id.value()), nullptr);
-    HandlePlatformMessage(std::move(service_id_message));
   }
 
   if (settings_.merged_platform_ui_thread ==
@@ -303,30 +182,6 @@ void Engine::ReportTimings(std::vector<int64_t> timings) {
 
 void Engine::NotifyIdle(fml::TimeDelta deadline) {
   runtime_controller_->NotifyIdle(deadline);
-}
-
-std::optional<uint32_t> Engine::GetUIIsolateReturnCode() {
-  return runtime_controller_->GetRootIsolateReturnCode();
-}
-
-Dart_Port Engine::GetUIIsolateMainPort() {
-  return runtime_controller_->GetMainPort();
-}
-
-std::string Engine::GetUIIsolateName() {
-  return runtime_controller_->GetIsolateName();
-}
-
-bool Engine::UIIsolateHasLivePorts() {
-  return runtime_controller_->HasLivePorts();
-}
-
-bool Engine::UIIsolateHasPendingMicrotasks() {
-  return runtime_controller_->HasPendingMicrotasks();
-}
-
-tonic::DartErrorHandleType Engine::GetUIIsolateLastError() {
-  return runtime_controller_->GetLastError();
 }
 
 void Engine::AddView(int64_t view_id,
@@ -362,14 +217,15 @@ void Engine::DispatchPlatformMessage(std::unique_ptr<PlatformMessage> message) {
   } else if (channel == kSettingsChannel) {
     HandleSettingsPlatformMessage(message.get());
     return;
-  } else if (!runtime_controller_->IsRootIsolateRunning() &&
+  } else if (!runtime_controller_->IsRunning() &&
              channel == kNavigationChannel) {
-    // If there's no runtime_, we may still need to set the initial route.
+    // If the framework is not up yet, we may still need to set the initial
+    // route.
     HandleNavigationPlatformMessage(std::move(message));
     return;
   }
 
-  if (runtime_controller_->IsRootIsolateRunning() &&
+  if (runtime_controller_->IsRunning() &&
       runtime_controller_->DispatchPlatformMessage(std::move(message))) {
     return;
   }
@@ -430,7 +286,7 @@ bool Engine::HandleLocalizationPlatformMessage(PlatformMessage* message) {
   }
   const size_t strings_per_locale = 4;
   if (method->value == "setLocale") {
-    // Decode and pass the list of locale data onwards to dart.
+    // Decode and pass the list of locale data onwards to the framework.
     auto args = root.FindMember("args");
     if (args == root.MemberEnd() || !args->value.IsArray()) {
       return false;
@@ -553,15 +409,6 @@ void Engine::HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) {
   }
 }
 
-void Engine::OnRootIsolateCreated() {
-  delegate_.OnRootIsolateCreated();
-}
-
-void Engine::UpdateIsolateDescription(const std::string isolate_name,
-                                      int64_t isolate_port) {
-  delegate_.UpdateIsolateDescription(isolate_name, isolate_port);
-}
-
 std::unique_ptr<std::vector<std::string>> Engine::ComputePlatformResolvedLocale(
     const std::vector<std::string>& supported_locale_data) {
   return delegate_.ComputePlatformResolvedLocale(supported_locale_data);
@@ -623,21 +470,12 @@ const std::string& Engine::GetLastEntrypoint() const {
   return last_entry_point_;
 }
 
-const std::string& Engine::GetLastEntrypointLibrary() const {
-  return last_entry_point_library_;
-}
-
 const std::vector<std::string>& Engine::GetLastEntrypointArgs() const {
   return last_entry_point_args_;
 }
 
 std::optional<int64_t> Engine::GetLastEngineId() const {
   return last_engine_id_;
-}
-
-// |RuntimeDelegate|
-void Engine::RequestDartDeferredLibrary(intptr_t loading_unit_id) {
-  return delegate_.RequestDartDeferredLibrary(loading_unit_id);
 }
 
 std::weak_ptr<PlatformMessageHandler> Engine::GetPlatformMessageHandler()
@@ -649,29 +487,6 @@ void Engine::SendChannelUpdate(std::string name, bool listening) {
   delegate_.OnEngineChannelUpdate(std::move(name), listening);
 }
 
-void Engine::LoadDartDeferredLibrary(
-    intptr_t loading_unit_id,
-    std::unique_ptr<const fml::Mapping> snapshot_data,
-    std::unique_ptr<const fml::Mapping> snapshot_instructions) {
-  if (runtime_controller_->IsRootIsolateRunning()) {
-    runtime_controller_->LoadDartDeferredLibrary(
-        loading_unit_id, std::move(snapshot_data),
-        std::move(snapshot_instructions));
-  } else {
-    LoadDartDeferredLibraryError(loading_unit_id, "No running root isolate.",
-                                 true);
-  }
-}
-
-void Engine::LoadDartDeferredLibraryError(intptr_t loading_unit_id,
-                                          const std::string& error_message,
-                                          bool transient) {
-  if (runtime_controller_->IsRootIsolateRunning()) {
-    runtime_controller_->LoadDartDeferredLibraryError(loading_unit_id,
-                                                      error_message, transient);
-  }
-}
-
 const std::weak_ptr<VsyncWaiter> Engine::GetVsyncWaiter() const {
   return animator_->GetVsyncWaiter();
 }
@@ -679,14 +494,6 @@ const std::weak_ptr<VsyncWaiter> Engine::GetVsyncWaiter() const {
 void Engine::SetDisplays(const std::vector<DisplayData>& displays) {
   runtime_controller_->SetDisplays(displays);
   ScheduleFrame();
-}
-
-void Engine::ShutdownPlatformIsolates() {
-  runtime_controller_->ShutdownPlatformIsolates();
-}
-
-void Engine::FlushMicrotaskQueue() {
-  runtime_controller_->FlushMicrotaskQueue();
 }
 
 }  // namespace flutter

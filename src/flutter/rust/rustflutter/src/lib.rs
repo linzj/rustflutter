@@ -21,7 +21,7 @@ pub mod app;
 pub mod engine;
 pub mod widgets;
 
-pub use app::{Application, BuildContext, ViewMetrics};
+pub use app::{Application, ApplicationFactory, BuildContext, ViewMetrics, register_application};
 pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
     TextStyle,
@@ -32,7 +32,7 @@ pub use widgets::{
 
 /// Everything a typical app needs in one import.
 pub mod prelude {
-    pub use crate::app::{Application, BuildContext};
+    pub use crate::app::{Application, BuildContext, register_application};
     pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
     pub use crate::widgets::{
         BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,

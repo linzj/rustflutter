@@ -142,6 +142,10 @@ bool RuntimeController::SetViewportMetrics(int64_t view_id,
   return false;
 }
 
+bool RuntimeController::SendViewFocusEvent(const ViewFocusEvent& event) {
+  return app_ != nullptr && ViewExists(event.view_id());
+}
+
 // -- Platform state -----------------------------------------------------------
 
 bool RuntimeController::SetDisplays(const std::vector<DisplayData>& displays) {

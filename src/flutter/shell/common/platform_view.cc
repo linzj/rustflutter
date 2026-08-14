@@ -197,19 +197,6 @@ PlatformView::ComputePlatformResolvedLocales(
   return out;
 }
 
-void PlatformView::RequestDartDeferredLibrary(intptr_t loading_unit_id) {}
-
-void PlatformView::LoadDartDeferredLibrary(
-    intptr_t loading_unit_id,
-    std::unique_ptr<const fml::Mapping> snapshot_data,
-    std::unique_ptr<const fml::Mapping> snapshot_instructions) {}
-
-void PlatformView::LoadDartDeferredLibraryError(
-    intptr_t loading_unit_id,
-    const std::string
-        error_message,  // NOLINT(performance-unnecessary-value-param)
-    bool transient) {}
-
 void PlatformView::UpdateAssetResolverByType(
     std::unique_ptr<AssetResolver> updated_asset_resolver,
     AssetResolver::AssetResolverType type) {

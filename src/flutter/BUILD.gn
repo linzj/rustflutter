@@ -75,7 +75,7 @@ group("tier_a") {
     "//flutter/fml",
     "//flutter/impeller",
     "//flutter/lib/ui:ui_types",
-    "//flutter/runtime",
+    "//flutter/shell/common",
     "//flutter/txt",
   ]
 }

@@ -124,7 +124,7 @@ class SamplingProfiler {
    * for the VM Service to show the thread name of the isolate.
    *
    */
-  void UpdateDartVMServiceThreadName() const;
+  void UpdateProfilerThreadName() const;
 
   FML_DISALLOW_COPY_AND_ASSIGN(SamplingProfiler);
 };

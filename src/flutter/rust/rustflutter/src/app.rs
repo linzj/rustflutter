@@ -13,9 +13,15 @@
 //! `RendererBinding`: the former receives the platform's calls, the latter
 //! turns a frame request into layout, paint and `window.render()`.
 
+// The C ABI module at the bottom is the only user of most of this file, and it
+// is compiled out under cfg(test) -- see the comment there. Without this, the
+// test build reports every type it touches as dead.
+#![cfg_attr(test, allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_int;
+use std::sync::OnceLock;
 
 use crate::engine::{self, Canvas, Color, LayerTree};
 use crate::widgets::{BoxedWidget, Constraints, Offset, Size};
@@ -87,8 +93,8 @@ pub struct BuildContext {
 
 /// The root of a rustflutter application.
 ///
-/// Register an implementation with the [`crate::app!`] macro; the shell
-/// instantiates it once and calls `build` every frame.
+/// Hand one to [`register_application`] before starting the shell; it is
+/// instantiated once and `build` is called every frame.
 pub trait Application {
     /// Builds the widget tree for one view.
     fn build(&mut self, context: &BuildContext) -> BoxedWidget;
@@ -103,19 +109,25 @@ pub trait Application {
     fn begin_frame(&mut self, _frame_time_micros: i64, _frame_number: u64) {}
 }
 
-// The app crate provides this through the `app!` macro. Declaring it here and
-// resolving it at link time is what lets the framework be a library while the
-// entry point lives in the application.
-unsafe extern "C" {
-    fn rustflutter_create_application() -> *mut c_void;
-}
+/// Builds the application's root object. Registered before the shell starts.
+pub type ApplicationFactory = Box<dyn Fn() -> Box<dyn Application> + Send + Sync>;
 
-// The crate's own test binary has no application to link against, so it
-// provides the symbol itself. `app!` would be a duplicate definition here.
-#[cfg(test)]
-#[unsafe(no_mangle)]
-pub extern "C" fn rustflutter_create_application() -> *mut c_void {
-    std::ptr::null_mut()
+static APPLICATION_FACTORY: OnceLock<ApplicationFactory> = OnceLock::new();
+
+/// Tells the framework what to run.
+///
+/// An application calls this from `main` before starting the shell. The first
+/// registration wins; later ones are ignored and return `false`.
+///
+/// Upstream the equivalent is the Dart isolate looking up `main` by name in the
+/// app's kernel snapshot. Resolving it at run time rather than link time is
+/// what lets the framework stay a plain library: a binary that links it but
+/// never registers an application -- a test, a tool -- still links.
+pub fn register_application<F>(factory: F) -> bool
+where
+    F: Fn() -> Box<dyn Application> + Send + Sync + 'static,
+{
+    APPLICATION_FACTORY.set(Box::new(factory)).is_ok()
 }
 
 // -- The instance the shell holds ---------------------------------------------
@@ -194,149 +206,137 @@ pub enum RfApp {}
 
 // -- The C ABI ----------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_create(host: *const c_void) -> *mut RfApp {
-    if host.is_null() {
-        return std::ptr::null_mut();
-    }
-    // ICU has to be up before the first Paragraph is shaped, and the shell may
-    // build one during the very first frame.
-    engine::initialize();
+// Excluded from `cfg(test)`. These are `#[no_mangle]`, so the linker keeps them
+// alive whether or not anything calls them, and each one reaches the engine FFI
+// in rust/ffi. The crate's own `#[test]` binary is built by rustc directly and
+// does not link the C++ engine, so retaining them would leave every rf_* symbol
+// undefined. The functions are exercised end to end by rust_ffi_unittests
+// instead, which does link it.
+#[cfg(not(test))]
+mod abi {
+    use super::*;
 
-    let host = unsafe { *(host as *const RfAppHost) };
-    let instance = Box::new(AppInstance {
-        host,
-        application: None,
-        views: HashMap::new(),
-        view_order: Vec::new(),
-        frame_number: 0,
-        frame_time_micros: 0,
-    });
-    Box::into_raw(instance) as *mut RfApp
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_destroy(app: *mut RfApp) {
-    if app.is_null() {
-        return;
-    }
-    drop(unsafe { Box::from_raw(app as *mut AppInstance) });
-}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_create(host: *const c_void) -> *mut RfApp {
+        if host.is_null() {
+            return std::ptr::null_mut();
+        }
+        // ICU has to be up before the first Paragraph is shaped, and the shell may
+        // build one during the very first frame.
+        engine::initialize();
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_launch(app: *mut RfApp) -> c_int {
-    let Some(instance) = instance(app) else {
-        return -1;
-    };
-    if instance.application.is_some() {
-        return -2;
+        let host = unsafe { *(host as *const RfAppHost) };
+        let instance = Box::new(AppInstance {
+            host,
+            application: None,
+            views: HashMap::new(),
+            view_order: Vec::new(),
+            frame_number: 0,
+            frame_time_micros: 0,
+        });
+        Box::into_raw(instance) as *mut RfApp
     }
 
-    let raw = unsafe { rustflutter_create_application() };
-    if raw.is_null() {
-        return -3;
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_destroy(app: *mut RfApp) {
+        if app.is_null() {
+            return;
+        }
+        drop(unsafe { Box::from_raw(app as *mut AppInstance) });
     }
-    instance.application =
-        Some(*unsafe { Box::from_raw(raw as *mut Box<dyn Application>) });
 
-    // Nothing is on screen until the first vsync, so ask for one.
-    instance.schedule_frame();
-    0
-}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_launch(app: *mut RfApp) -> c_int {
+        let Some(instance) = instance(app) else {
+            return -1;
+        };
+        if instance.application.is_some() {
+            return -2;
+        }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_add_view(
-    app: *mut RfApp,
-    view_id: i64,
-    metrics: *const ViewMetrics,
-) {
-    let Some(instance) = instance(app) else { return };
-    if metrics.is_null() {
-        return;
+        let Some(factory) = APPLICATION_FACTORY.get() else {
+            // Nothing called register_application. The shell has no framework to
+            // drive, which is a programming error rather than a runtime condition.
+            return -3;
+        };
+        instance.application = Some(factory());
+
+        // Nothing is on screen until the first vsync, so ask for one.
+        instance.schedule_frame();
+        0
     }
-    if instance.views.insert(view_id, unsafe { *metrics }).is_none() {
-        instance.view_order.push(view_id);
-    }
-    instance.schedule_frame();
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_remove_view(app: *mut RfApp, view_id: i64) {
-    let Some(instance) = instance(app) else { return };
-    instance.views.remove(&view_id);
-    instance.view_order.retain(|id| *id != view_id);
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_set_view_metrics(
-    app: *mut RfApp,
-    view_id: i64,
-    metrics: *const ViewMetrics,
-) {
-    let Some(instance) = instance(app) else { return };
-    if metrics.is_null() {
-        return;
-    }
-    if let Some(slot) = instance.views.get_mut(&view_id) {
-        *slot = unsafe { *metrics };
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_add_view(
+        app: *mut RfApp,
+        view_id: i64,
+        metrics: *const ViewMetrics,
+    ) {
+        let Some(instance) = instance(app) else { return };
+        if metrics.is_null() {
+            return;
+        }
+        if instance.views.insert(view_id, unsafe { *metrics }).is_none() {
+            instance.view_order.push(view_id);
+        }
         instance.schedule_frame();
     }
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_begin_frame(
-    app: *mut RfApp,
-    frame_time_micros: i64,
-    frame_number: u64,
-) {
-    let Some(instance) = instance(app) else { return };
-    instance.frame_time_micros = frame_time_micros;
-    instance.frame_number = frame_number;
-    if let Some(application) = instance.application.as_mut() {
-        application.begin_frame(frame_time_micros, frame_number);
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_remove_view(app: *mut RfApp, view_id: i64) {
+        let Some(instance) = instance(app) else { return };
+        instance.views.remove(&view_id);
+        instance.view_order.retain(|id| *id != view_id);
     }
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_draw_frame(app: *mut RfApp) {
-    let Some(instance) = instance(app) else { return };
-    let views = instance.view_order.clone();
-    for view_id in views {
-        instance.draw_view(view_id);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_app_dispatch_pointer_packet(
-    app: *mut RfApp,
-    _data: *const u8,
-    _length: usize,
-) {
-    // Pointer routing needs a hit-testable render tree, which arrives with M5.
-    // Accepting and dropping the packet keeps the shell's contract intact.
-    let _ = instance(app);
-}
-
-/// Declares the root of an application.
-///
-/// ```ignore
-/// struct HelloWorld;
-/// impl rustflutter::Application for HelloWorld { /* ... */ }
-/// rustflutter::app!(HelloWorld);
-/// ```
-///
-/// Expands to the `rustflutter_create_application` symbol the framework
-/// resolves at link time -- the equivalent of Dart's `main()` being found by
-/// name in the app's isolate.
-#[macro_export]
-macro_rules! app {
-    ($root:expr) => {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn rustflutter_create_application() -> *mut ::core::ffi::c_void {
-            let application: ::std::boxed::Box<dyn $crate::Application> =
-                ::std::boxed::Box::new($root);
-            ::std::boxed::Box::into_raw(::std::boxed::Box::new(application))
-                as *mut ::core::ffi::c_void
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_set_view_metrics(
+        app: *mut RfApp,
+        view_id: i64,
+        metrics: *const ViewMetrics,
+    ) {
+        let Some(instance) = instance(app) else { return };
+        if metrics.is_null() {
+            return;
         }
-    };
+        if let Some(slot) = instance.views.get_mut(&view_id) {
+            *slot = unsafe { *metrics };
+            instance.schedule_frame();
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_begin_frame(
+        app: *mut RfApp,
+        frame_time_micros: i64,
+        frame_number: u64,
+    ) {
+        let Some(instance) = instance(app) else { return };
+        instance.frame_time_micros = frame_time_micros;
+        instance.frame_number = frame_number;
+        if let Some(application) = instance.application.as_mut() {
+            application.begin_frame(frame_time_micros, frame_number);
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_draw_frame(app: *mut RfApp) {
+        let Some(instance) = instance(app) else { return };
+        let views = instance.view_order.clone();
+        for view_id in views {
+            instance.draw_view(view_id);
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_dispatch_pointer_packet(
+        app: *mut RfApp,
+        _data: *const u8,
+        _length: usize,
+    ) {
+        // Pointer routing needs a hit-testable render tree, which arrives with M5.
+        // Accepting and dropping the packet keeps the shell's contract intact.
+        let _ = instance(app);
+    }
 }

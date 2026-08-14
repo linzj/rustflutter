@@ -25,7 +25,7 @@ class ShellTest;
 
 /// Executor of animations.
 ///
-/// In conjunction with the |VsyncWaiter| it allows callers (typically Dart
+/// In conjunction with the |VsyncWaiter| it allows callers (typically the
 /// code) to schedule work that ends up generating a |LayerTree|.
 class Animator final {
  public:
@@ -139,7 +139,7 @@ class Animator final {
   std::unordered_map<int64_t, std::unique_ptr<LayerTreeTask>>
       layer_trees_tasks_;
   uint64_t frame_request_number_ = 1;
-  fml::TimeDelta dart_frame_deadline_;
+  fml::TimeDelta frame_deadline_;
   std::shared_ptr<FramePipeline> layer_tree_pipeline_;
   fml::Semaphore pending_frame_semaphore_;
   FramePipeline::ProducerContinuation producer_continuation_;

@@ -33,7 +33,7 @@ void SamplingProfiler::Start() {
       << num_samples_per_sec_;
   double delay_between_samples = 1.0 / num_samples_per_sec_;
   auto task_delay = fml::TimeDelta::FromSecondsF(delay_between_samples);
-  UpdateDartVMServiceThreadName();
+  UpdateProfilerThreadName();
   is_running_ = true;
   SampleRepeatedly(task_delay);
 }
@@ -88,13 +88,10 @@ void SamplingProfiler::SampleRepeatedly(fml::TimeDelta task_delay) const {
       task_delay);
 }
 
-void SamplingProfiler::UpdateDartVMServiceThreadName() const {
-  FML_CHECK(profiler_task_runner_);
-
-  profiler_task_runner_->PostTask(
-      [label = thread_label_ + std::string{".profiler"}]() {
-        Dart_SetThreadName(label.c_str());
-      });
+void SamplingProfiler::UpdateProfilerThreadName() const {
+  // Upstream this named the profiler thread through Dart_SetThreadName so the
+  // VM Service could show it. With no VM there is no service to report to, and
+  // fml::Thread already names its own threads at creation.
 }
 
 }  // namespace flutter

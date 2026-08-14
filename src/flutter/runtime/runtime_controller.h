@@ -66,6 +66,12 @@ class RuntimeController {
 
   bool SetViewportMetrics(int64_t view_id, const ViewportMetrics& metrics);
 
+  //----------------------------------------------------------------------------
+  /// Tells the framework a view gained or lost focus. Focus traversal lives in
+  /// the widgets layer (M6); until then this is accepted and recorded so the
+  /// embedders' call sites stay intact.
+  bool SendViewFocusEvent(const ViewFocusEvent& event);
+
   // -- Platform state ---------------------------------------------------------
   //
   // These are recorded in platform_data_ whether or not the app is running, so

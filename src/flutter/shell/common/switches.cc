@@ -35,39 +35,6 @@ struct SwitchDesc {
 #define DEF_SWITCHES_END };
 // clang-format on
 
-// List of common and safe VM flags to allow to be passed directly to the VM.
-#if FLUTTER_RELEASE
-
-// clang-format off
-static const std::string kAllowedDartFlags[] = {
-    "--enable-isolate-groups",
-    "--no-enable-isolate-groups",
-};
-// clang-format on
-
-#else
-
-// clang-format off
-static const std::string kAllowedDartFlags[] = {
-    "--enable-isolate-groups",
-    "--no-enable-isolate-groups",
-    "--enable_mirrors",
-    "--enable-service-port-fallback",
-    "--max_profile_depth",
-    "--profile_period",
-    "--random_seed",
-    "--sample-buffer-duration",
-    "--trace-kernel",
-    "--trace-reload",
-    "--trace-reload-verbose",
-    "--write-service-info",
-    "--max_subtype_cache_entries",
-    "--enable-asserts",
-};
-// clang-format on
-
-#endif  // FLUTTER_RELEASE
-
 // Include switch_defs.h again for the struct definition.
 #include "flutter/shell/common/switch_defs.h"
 
@@ -159,23 +126,6 @@ static std::vector<std::string> ParseCommaDelimited(const std::string& input) {
     result.push_back(token);
   }
   return result;
-}
-
-static bool IsAllowedDartVMFlag(const std::string& flag) {
-  for (uint32_t i = 0; i < std::size(kAllowedDartFlags); ++i) {
-    const std::string& allowed = kAllowedDartFlags[i];
-    // Check that the prefix of the flag matches one of the allowed flags. This
-    // is to handle cases where flags take arguments, such as in
-    // "--max_profile_depth 1".
-    //
-    // We don't need to worry about cases like "--safe --sneaky_dangerous" as
-    // the VM will discard these as a single unrecognized flag.
-    if (flag.length() >= allowed.length() &&
-        std::equal(allowed.begin(), allowed.end(), flag.begin())) {
-      return true;
-    }
-  }
-  return false;
 }
 
 template <typename T>
@@ -468,18 +418,9 @@ Settings SettingsFromCommandLine(const fml::CommandLine& command_line,
   settings.prefetched_default_font_manager = command_line.HasOption(
       FlagForSwitch(Switch::PrefetchedDefaultFontManager));
 
-  std::string all_dart_flags;
-  if (command_line.GetOptionValue(FlagForSwitch(Switch::DartFlags),
-                                  &all_dart_flags)) {
-    // Assume that individual flags are comma separated.
-    std::vector<std::string> flags = ParseCommaDelimited(all_dart_flags);
-    for (const auto& flag : flags) {
-      if (!IsAllowedDartVMFlag(flag)) {
-        FML_LOG(FATAL) << "Encountered disallowed Dart VM flag: " << flag;
-      }
-      settings.dart_flags.push_back(flag);
-    }
-  }
+  // Upstream --dart-flags was checked against an allow-list and forwarded to
+  // the VM. There is no VM to forward to, so the switch is accepted and
+  // ignored rather than made an error: embedders and tooling still pass it.
 
 #if !FLUTTER_RELEASE
   command_line.GetOptionValue(FlagForSwitch(Switch::LogTag), &settings.log_tag);
