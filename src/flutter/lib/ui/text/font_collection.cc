@@ -9,7 +9,7 @@
 #include "flutter/lib/ui/text/asset_manager_font_provider.h"
 #include "flutter/lib/ui/ui_dart_state.h"
 #include "flutter/lib/ui/window/platform_configuration.h"
-#include "flutter/runtime/test_font_data.h"
+#include "flutter/test_font/test_font_data.h"
 #include "rapidjson/document.h"
 #include "rapidjson/rapidjson.h"
 #include "third_party/skia/include/core/SkFontMgr.h"

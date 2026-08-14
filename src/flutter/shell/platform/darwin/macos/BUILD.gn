@@ -189,7 +189,6 @@ shared_library("flutter_framework_dylib") {
 }
 
 test_fixtures("flutter_desktop_darwin_fixtures") {
-  dart_main = "framework/Source/fixtures/flutter_desktop_test.dart"
 
   fixtures = [ "//flutter/third_party/icu/common/icudtl.dat" ]
 }
@@ -261,7 +260,6 @@ executable("flutter_desktop_darwin_unittests") {
     "//flutter/shell/platform/embedder:embedder_test_utils",
     "//flutter/testing",
     "//flutter/testing:autoreleasepool_test",
-    "//flutter/testing:dart",
     "//flutter/testing:skia",
     "//flutter/testing:testing_lib",
     "//flutter/third_party/ocmock",

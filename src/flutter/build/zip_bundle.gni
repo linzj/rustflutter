@@ -4,7 +4,7 @@
 
 import("//flutter/common/config.gni")
 import("//flutter/shell/version/version.gni")
-import("$dart_src/runtime/runtime_args.gni")
+# rustflutter: dart runtime_args.gni is gone with the Dart SDK.
 
 if (flutter_runtime_mode == "jit_release") {
   android_zip_archive_dir = "android-$target_cpu-jit-release"
@@ -13,12 +13,9 @@ if (flutter_runtime_mode == "jit_release") {
   if (flutter_runtime_mode != "debug") {
     android_zip_archive_dir += "-$flutter_runtime_mode"
   }
-  if (dart_dynamic_modules) {
-    android_zip_archive_dir += "-ddm"
-  }
-  if (dart_disable_secure_socket) {
-    android_zip_archive_dir += "-size-exp"
-  }
+  # rustflutter: the -ddm / -size-exp archive suffixes keyed off
+  # dart_dynamic_modules and dart_disable_secure_socket, both Dart VM build
+  # args that no longer exist.
 }
 
 # Creates a zip file in the $root_build_dir/zip_archives folder.
@@ -53,7 +50,7 @@ template("zip_bundle") {
   generated_file(license_target) {
     source_path = rebase_path(".", "//flutter")
     license_path =
-        rebase_path("//flutter/sky/packages/sky_engine/LICENSE", "//flutter")
+        rebase_path("//flutter/LICENSE", "//flutter")
     git_url = "https://github.com/flutter/engine/tree/$engine_version"
     sky_engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/$engine_version/sky_engine.zip"
     outputs = [ license_readme ]

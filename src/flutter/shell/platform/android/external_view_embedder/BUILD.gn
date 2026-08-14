@@ -54,7 +54,6 @@ executable("android_external_view_embedder_unittests") {
     "//flutter/shell/platform/android/surface",
     "//flutter/shell/platform/android/surface:surface_mock",
     "//flutter/testing",
-    "//flutter/testing:dart",
     "//flutter/testing:skia",
   ]
 }

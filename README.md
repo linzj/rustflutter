@@ -13,10 +13,30 @@
 
 ## 当前状态
 
-本目录目前**只完成了源码搬迁**，尚不可构建。已拷入 2,967 个 C/C++ 文件、约 56.9 万行，
-占用 49 MB。third_party（13 GB，其中 Dart SDK 独占 4 GB）不拷贝，后续由 DEPS 拉取。
+**M0 完成**：渲染栈在无 Dart 的情况下构建通过，Rust 已接入构建系统。
 
-逐目录的分级、待改文件清单、以及下一步任务，见 **[PORTING_STATUS.md](PORTING_STATUS.md)**。
+```
+gn gen  →  985 targets from 264 files
+ninja   →  2581/2581, exit 0        # impeller + display_list + flow + txt + fml
+[  PASSED  ] 2 tests.               # C++ 调用 Rust staticlib
+```
+
+已拷入 2,967 个 C/C++ 文件、约 56.9 万行，占用 49 MB。third_party（13 GB，其中 Dart SDK
+独占 4 GB）不入库：CI 由 `DEPS` 拉取，本地用 junction 指向已有的 flutter checkout。
+
+下一步是 M1（用 Rust 构造 `LayerTree` 出第一帧）。逐目录分级、待改文件清单、
+以及 M0 的完整改动记录，见 **[PORTING_STATUS.md](PORTING_STATUS.md)**。
+
+## 构建
+
+```sh
+cd src
+vpython3 flutter/tools/gn --unoptimized --no-rbe
+ninja -C out/host_debug_unopt flutter:flutter
+./out/host_debug_unopt/rust_ffi_unittests.exe
+```
+
+需要 PATH 上有 `rustc`（本机验证于 1.93.0，edition 2024）。
 
 ## 关键设计前提
 

@@ -1,0 +1,28 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# rustflutter: salvaged verbatim from //flutter/runtime:test_font, which was
+# deleted along with the Dart VM. The font data itself has no Dart coupling;
+# txt's tests need it for deterministic text rendering.
+
+import("//flutter/common/config.gni")
+
+source_set("test_font") {
+  sources = [
+    "test_font_data.cc",
+    "test_font_data.h",
+  ]
+  deps = [
+    "//flutter/skia",
+    "//flutter/txt",
+  ]
+  public_configs = [ "//flutter:config" ]
+  defines = []
+  if (flutter_runtime_mode == "debug" || current_toolchain == host_toolchain) {
+    # Though the test font data is small, we dont want to add to the binary size
+    # on the device (in profile and release modes). We only add the same on the
+    # host test shells and the debug device shell.
+    defines += [ "EMBED_TEST_FONT_DATA=1" ]
+  }
+}

@@ -186,7 +186,6 @@ source_set("flutter_linux_sources") {
   ]
 
   deps = [
-    "$dart_src/runtime:dart_api",
     "//flutter/fml",
     "//flutter/shell/platform/common:common_cpp_enums",
     "//flutter/shell/platform/common:common_cpp_input",
@@ -309,7 +308,6 @@ executable("flutter_linux_unittests") {
     ":flutter_linux_fixtures",
     ":flutter_linux_gschemas",
     ":flutter_linux_sources",
-    "//flutter/runtime:libdart",
     "//flutter/shell/platform/common:common_cpp_enums",
     "//flutter/shell/platform/embedder:embedder_headers",
     "//flutter/shell/platform/embedder:embedder_test_utils",
@@ -336,7 +334,6 @@ zip_bundle("flutter_gtk") {
   deps = [
     ":flutter_linux_gtk",
     ":publish_headers_linux",
-    "$dart_src/runtime/bin:gen_snapshot",
   ]
   sources = get_target_outputs(":publish_headers_linux")
   tmp_files = []

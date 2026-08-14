@@ -62,7 +62,6 @@ source_set("common_cpp_isolate_scope") {
   sources = [ "isolate_scope.cc" ]
 
   deps = [
-    "$dart_src/runtime:dart_api",
     "//flutter/fml",
   ]
 }
@@ -177,7 +176,6 @@ if (enable_unittests) {
     deps = [
       ":common_cpp_core",
       ":common_cpp_core_fixtures",
-      "$dart_src/runtime:libdart_jit",
       "//flutter/testing",
     ]
 

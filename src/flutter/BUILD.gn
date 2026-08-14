@@ -78,6 +78,15 @@ group("tier_a") {
   ]
 }
 
+# The Rust side. Nothing depends on it yet -- M0 only proves it builds and
+# links; M1 wires it to flow::LayerTree.
+group("rust") {
+  public_deps = [ "//flutter/rust" ]
+}
+
 group("flutter") {
-  public_deps = [ ":tier_a" ]
+  public_deps = [
+    ":rust",
+    ":tier_a",
+  ]
 }

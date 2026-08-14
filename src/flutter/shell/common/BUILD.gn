@@ -139,19 +139,16 @@ source_set("common") {
     ":snapshot_pixel_format",
     "//flutter/shell/version",
     "//flutter/third_party/rapidjson",
-    "//flutter/third_party/tonic",
     "//flutter/txt",
   ]
 
   deps = [
-    "$dart_src/runtime:dart_api",
     "//flutter/assets",
     "//flutter/common",
     "//flutter/common/graphics",
     "//flutter/flow",
     "//flutter/fml",
     "//flutter/lib/ui",
-    "//flutter/runtime",
     "//flutter/shell/common:base64",
     "//flutter/shell/geometry",
     "//flutter/shell/profiling",
@@ -189,8 +186,6 @@ template("shell_host_executable") {
 
     deps += [
       ":common",
-      "//flutter/lib/snapshot",
-      "//flutter/runtime:libdart",
     ]
 
     public_configs = [ "//flutter:export_dynamic_symbols" ]
@@ -206,7 +201,6 @@ if (enable_unittests) {
   }
 
   test_fixtures("shell_unittests_fixtures") {
-    dart_main = "fixtures/shell_test.dart"
 
     fixtures = [
       "fixtures/shelltest_screenshot.png",
@@ -225,8 +219,6 @@ if (enable_unittests) {
       ":shell_unittests_fixtures",
       "//flutter/benchmarking",
       "//flutter/flow",
-      "//flutter/testing:dart",
-      "//flutter/testing:fixture_test",
       "//flutter/testing:testing_lib",
     ]
   }
@@ -255,7 +247,6 @@ if (enable_unittests) {
     public_deps = [
       "//flutter/common/graphics",
       "//flutter/flow",
-      "//flutter/runtime",
       "//flutter/shell/common",
       "//flutter/testing",
     ]
@@ -266,8 +257,6 @@ if (enable_unittests) {
       "//flutter/common",
       "//flutter/lib/ui",
       "//flutter/skia",
-      "//flutter/testing:dart",
-      "//flutter/testing:fixture_test",
       "//flutter/third_party/rapidjson",
     ]
 
@@ -344,7 +333,6 @@ if (enable_unittests) {
       "//flutter/shell/common:base64",
       "//flutter/shell/profiling:profiling_unittests",
       "//flutter/shell/version",
-      "//flutter/testing:fixture_test",
       "//flutter/third_party/googletest:gmock",
     ]
 

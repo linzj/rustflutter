@@ -207,7 +207,6 @@ source_set("flutter_framework_source") {
     "//flutter/common/graphics",
     "//flutter/fml",
     "//flutter/lib/ui",
-    "//flutter/runtime",
     "//flutter/shell/common",
     "//flutter/shell/platform/common:common_cpp_input",
     "//flutter/shell/platform/darwin/common",
@@ -343,7 +342,6 @@ if (enable_ios_unittests) {
       "//flutter/third_party/ocmock:ocmock_shared",
       "//flutter/third_party/rapidjson",
       "//flutter/third_party/spring_animation",
-      "//flutter/third_party/tonic",
       "//flutter/txt",
     ]
     public_configs = [

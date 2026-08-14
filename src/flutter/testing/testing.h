@@ -37,14 +37,6 @@ const char* GetFixturesPath();
 const char* GetTestingAssetsPath();
 
 //------------------------------------------------------------------------------
-/// @brief      Returns the default path to kernel_blob.bin. This file is within
-///             the directory returned by `GetFixturesPath()`.
-///
-/// @return     The kernel file path.
-///
-std::string GetDefaultKernelFilePath();
-
-//------------------------------------------------------------------------------
 /// @brief      Opens the fixtures directory for the unit-test harness.
 ///
 /// @return     The file descriptor of the fixtures directory.

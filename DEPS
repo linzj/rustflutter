@@ -1,0 +1,432 @@
+# The dependencies referenced by rustflutter.
+#
+# Derived from flutter/flutter DEPS @ cf97bfbcb9f by dropping every Dart SDK,
+# Dart pub, Fuchsia and web-toolchain entry. Revisions of the kept entries are
+# unchanged from upstream so they can still be rolled against it.
+#
+# Note: this file describes the intended dependency set. Locally the tree is
+# wired up with directory junctions into an existing flutter checkout rather
+# than a real `gclient sync`; see PORTING_STATUS.md.
+
+vars = {
+  'android_git': 'https://android.googlesource.com',
+  'chromium_git': 'https://chromium.googlesource.com',
+  'flutter_git': 'https://flutter.googlesource.com',
+  'skia_git': 'https://skia.googlesource.com',
+  'llvm_git': 'https://llvm.googlesource.com',
+  'skia_revision': '3ad790ab4d6d596efae0d70e4b8bf7d339121984',
+  'clang_version': 'git_revision:80743bd43fd5b38fedc503308e7a652e23d3ec93',
+  'reclient_version': 're_client_version:0.185.0.db415f21-gomaip',
+  'gcloud_version': 'version:2@444.0.0.chromium.3',
+  'dart_boringssl_rev': '619e6bc3deda4e0d2fe4ad3fc439ae4fc1e00caf',
+  'ocmock_rev': 'c4ec0e3a7a9f56cfdbd0aa01f4f97bb4b75c5ef8',
+  'download_android_deps': 'host_os == "mac" or (host_os == "linux" and host_cpu == "x64")',
+  'download_jdk': True,
+  'download_windows_deps': 'host_os == "win"',
+  'download_linux_deps': 'host_os == "linux"',
+  'use_rbe': False,
+  'upstream_abseil-cpp': 'https://github.com/abseil/abseil-cpp.git',
+  'upstream_angle': 'https://github.com/google/angle.git',
+  'upstream_benchmark': 'https://github.com/google/benchmark.git',
+  'upstream_boringssl': 'https://github.com/openssl/openssl.git',
+  'upstream_brotli': 'https://github.com/google/brotli.git',
+  'upstream_flatbuffers': 'https://github.com/google/flatbuffers.git',
+  'upstream_freetype2': 'https://gitlab.freedesktop.org/freetype/freetype.git',
+  'upstream_glfw': 'https://github.com/glfw/glfw.git',
+  'upstream_googletest': 'https://github.com/google/googletest.git',
+  'upstream_gtest-parallel': 'https://github.com/google/gtest-parallel.git',
+  'upstream_harfbuzz': 'https://github.com/harfbuzz/harfbuzz.git',
+  'upstream_icu': 'https://github.com/unicode-org/icu.git',
+  'upstream_imgui': 'https://github.com/ocornut/imgui.git',
+  'upstream_inja': 'https://github.com/pantor/inja.git',
+  'upstream_json': 'https://github.com/nlohmann/json.git',
+  'upstream_libcxx': 'https://github.com/llvm-mirror/libcxx.git',
+  'upstream_libcxxabi': 'https://github.com/llvm-mirror/libcxxabi.git',
+  'upstream_libexpat': 'https://github.com/libexpat/libexpat.git',
+  'upstream_libjpeg-turbo': 'https://github.com/libjpeg-turbo/libjpeg-turbo.git',
+  'upstream_libpng': 'https://github.com/glennrp/libpng.git',
+  'upstream_libtess2': 'https://github.com/memononen/libtess2.git',
+  'upstream_libwebp': 'https://chromium.googlesource.com/webm/libwebp.git',
+  'upstream_ocmock': 'https://github.com/erikdoe/ocmock.git',
+  'upstream_pyyaml': 'https://github.com/yaml/pyyaml.git',
+  'upstream_rapidjson': 'https://github.com/Tencent/rapidjson.git',
+  'upstream_shaderc': 'https://github.com/google/shaderc.git',
+  'upstream_skia': 'https://skia.googlesource.com/skia.git',
+  'upstream_sqlite': 'https://github.com/sqlite/sqlite.git',
+  'upstream_VulkanMemoryAllocator': 'https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git',
+  'upstream_wuffs-mirror-release-c': 'https://github.com/google/wuffs-mirror-release-c.git',
+  'upstream_yapf': 'https://github.com/google/yapf.git',
+  'upstream_zlib': 'https://github.com/madler/zlib.git',
+}
+
+allowed_hosts = [
+  'boringssl.googlesource.com',
+  'chrome-infra-packages.appspot.com',
+  'chromium.googlesource.com',
+  'flutter.googlesource.com',
+  'llvm.googlesource.com',
+  'skia.googlesource.com',
+]
+
+deps = {
+  'engine/src/flutter/third_party/depot_tools':
+  Var('chromium_git') + '/chromium/tools/depot_tools.git@580b4ff3f5cd0dcaa2eacda28cefe0f45320e8f7',
+  'engine/src/flutter/third_party/rapidjson':
+  Var('flutter_git') + '/third_party/rapidjson@47253cab97e9cfe99dbd6b90836fc11589d7d802',
+  'engine/src/flutter/third_party/harfbuzz':
+  Var('flutter_git') + '/third_party/harfbuzz@49844c32a7a3f6be371355a1213c952a3f4a44e7',
+  'engine/src/flutter/third_party/libcxx':
+  Var('llvm_git') + '/llvm-project/libcxx@bd557f6f764d1e40b62528a13b124ce740624f8f',
+  'engine/src/flutter/third_party/libcxxabi':
+  Var('llvm_git') + '/llvm-project/libcxxabi@a4dda1589d37a7e4b4f7a81ebad01b1083f2e726',
+  'engine/src/flutter/third_party/llvm_libc':
+  Var('llvm_git') + '/llvm-project/libc@5af39a19a1ad51ce93972cdab206dcd3ff9b6afa',
+  'engine/src/flutter/third_party/glfw':
+  Var('flutter_git') + '/third_party/glfw@9352d8fe93cd443be18157abe81f16500549aec0',
+  'engine/src/flutter/third_party/shaderc':
+  Var('flutter_git') + '/third_party/shaderc@70b1130380fcbf1d1e9719ee78ba7202a5161424',
+  'engine/src/flutter/third_party/vulkan-deps':
+  Var('chromium_git') + '/vulkan-deps@0582f446e54aa4ea389c89cd027067ee0f5459aa',
+  'engine/src/flutter/third_party/vulkan-deps/glslang/src':
+  Var('flutter_git') + '/third_party/glslang@fdbdca9263a4c09dbfb4a51c76e3e9d9f52bc504',
+  'engine/src/flutter/third_party/vulkan-deps/lunarg-vulkantools/src':
+  Var('chromium_git') + '/external/github.com/LunarG/VulkanTools@be9744eb74f522c6829c5e8d842cc29dce8259bd',
+  'engine/src/flutter/third_party/vulkan-deps/spirv-cross/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/SPIRV-Cross@b8fcf307f1f347089e3c46eb4451d27f32ebc8d3',
+  'engine/src/flutter/third_party/vulkan-deps/spirv-headers/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/SPIRV-Headers@c63848ecf2200425511319fd8bf2c17b751e501e',
+  'engine/src/flutter/third_party/vulkan-deps/spirv-tools/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/SPIRV-Tools@58fe144fdc8847b303be51d4f8fcc9e7da17056e',
+  'engine/src/flutter/third_party/vulkan-deps/vulkan-headers/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/Vulkan-Headers@0307c70bfbf0646d56a604384b2a91525cefea15',
+  'engine/src/flutter/third_party/vulkan-deps/vulkan-loader/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/Vulkan-Loader@ddaf5c7c2302b07ef2385727c9a54b073ebb563e',
+  'engine/src/flutter/third_party/vulkan-deps/vulkan-tools/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/Vulkan-Tools@b7ae55b37cda76d16368c302f37cb0c7ea2f8409',
+  'engine/src/flutter/third_party/vulkan-deps/vulkan-utility-libraries/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/Vulkan-Utility-Libraries@8183a0b86632bf1107553eab1e69d7b85d455477',
+  'engine/src/flutter/third_party/vulkan-deps/vulkan-validation-layers/src':
+  Var('chromium_git') + '/external/github.com/KhronosGroup/Vulkan-ValidationLayers@9a47aeb53821f5fe54b715fa9fc9d74b66077c46',
+  'engine/src/flutter/third_party/flatbuffers':
+  Var('chromium_git') + '/external/github.com/google/flatbuffers@067bfdbde9b10c1beb5d6b02d67ae9db8b96f736',
+  'engine/src/flutter/third_party/icu':
+  Var('chromium_git') + '/chromium/deps/icu.git@d578f2e8b7bd5938e21cfb6bf15c079e0aa5b738',
+  'engine/src/flutter/third_party/gtest-parallel':
+  Var('chromium_git') + '/external/github.com/google/gtest-parallel@38191e2733d7cbaeaef6a3f1a942ddeb38a2ad14',
+  'engine/src/flutter/third_party/benchmark':
+  Var('chromium_git') + '/external/github.com/google/benchmark@431abd149fd76a072f821913c0340137cc755f36',
+  'engine/src/flutter/third_party/googletest':
+  Var('chromium_git') + '/external/github.com/google/googletest@e9907112b47255d50b4d343e7e2160bce8dc85d1',
+  'engine/src/flutter/third_party/brotli':
+  Var('skia_git') + '/external/github.com/google/brotli.git@350100a5bb9d9671aca85213b2ec7a70a361b0cd',
+  'engine/src/flutter/third_party/yapf':
+  Var('flutter_git') + '/third_party/yapf@212c5b5ad8e172d2d914ae454c121c89cccbcb35',
+  'engine/src/flutter/third_party/boringssl/src':
+  'https://boringssl.googlesource.com/boringssl.git@' + Var('dart_boringssl_rev'),
+  'engine/src/flutter/third_party/expat':
+  Var('chromium_git') + '/external/github.com/libexpat/libexpat.git@8e49998f003d693213b538ef765814c7d21abada',
+  'engine/src/flutter/third_party/freetype2':
+  Var('flutter_git') + '/third_party/freetype2@be4bcb57914154fc1b9e2900bf8e4b516057e2b8',
+  'engine/src/flutter/third_party/skia':
+  Var('skia_git') + '/skia.git@' + Var('skia_revision'),
+  'engine/src/flutter/third_party/ocmock':
+  Var('flutter_git') + '/third_party/ocmock@' + Var('ocmock_rev'),
+  'engine/src/flutter/third_party/libjpeg-turbo/src':
+  Var('flutter_git') + '/third_party/libjpeg-turbo@0fb821f3b2e570b2783a94ccd9a2fb1f4916ae9f',
+  'engine/src/flutter/third_party/libpng':
+  Var('flutter_git') + '/third_party/libpng@b6004397d2ab98f0250376d9b357337b7f422d13',
+  'engine/src/flutter/third_party/libwebp':
+  Var('chromium_git') + '/webm/libwebp.git@ca332209cb5567c9b249c86788cb2dbf8847e760',
+  'engine/src/flutter/third_party/wuffs':
+  Var('skia_git') + '/external/github.com/google/wuffs-mirror-release-c.git@600cd96cf47788ee3a74b40a6028b035c9fd6a61',
+  'engine/src/flutter/third_party/zlib':
+  Var('chromium_git') + '/chromium/src/third_party/zlib.git@7eda07b1e067ef3fd7eea0419c88b5af45c9a776',
+  'engine/src/flutter/third_party/cpu_features/src':
+  Var('chromium_git') + '/external/github.com/google/cpu_features.git@936b9ab5515dead115606559502e3864958f7f6e',
+  'engine/src/flutter/third_party/inja':
+  Var('flutter_git') + '/third_party/inja@88bd6112575a80d004e551c98cf956f88ff4d445',
+  'engine/src/flutter/third_party/libtess2':
+  Var('flutter_git') + '/third_party/libtess2@725e5e08ec8751477565f1d603fd7eb9058c277c',
+  'engine/src/flutter/third_party/pyyaml':
+  Var('flutter_git') + '/third_party/pyyaml.git@03c67afd452cdff45b41bfe65e19a2fb5b80a0e8',
+  'engine/src/flutter/third_party/swiftshader':
+  Var('flutter_git') + '/third_party/swiftshader.git@1be9f83618f8ba258431c0c13d7a083eb193df11',
+  'engine/src/flutter/third_party/angle':
+  Var('flutter_git') + '/third_party/angle@cc08479fbcc181697fa837069ce1103c58c15528',
+  'engine/src/flutter/third_party/vulkan_memory_allocator':
+  Var('chromium_git') + '/external/github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator@c788c52156f3ef7bc7ab769cb03c110a53ac8fcb',
+  'engine/src/third_party/abseil-cpp':
+  Var('chromium_git') + '/chromium/src/third_party/abseil-cpp@ff6e8ce3e932c16cebd1611c8fc42c45080a0e55',
+  'engine/src/flutter/third_party/imgui':
+  Var('flutter_git') + '/third_party/imgui.git@2a1b69f05748ad909f03acf4533447cac1331611',
+  'engine/src/flutter/third_party/json':
+  Var('flutter_git') + '/third_party/json.git@17d9eacd248f58b73f4d1be518ef649fe2295642',
+  'engine/src/flutter/third_party/gradle': {
+    'packages': [
+      {
+        'version': 'version:9.3.1',
+        'package': 'flutter/gradle',
+      },
+    ],
+    'condition': 'download_android_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/android_tools/trace_to_text': {
+    'packages': [
+      {
+        'version': 'git_tag:v25.0',
+        'package': 'perfetto/trace_to_text/${{platform}}',
+      },
+    ],
+    'condition': 'download_android_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/android_tools/google-java-format': {
+    'packages': [
+      {
+        'package': 'flutter/android/google-java-format',
+        'version': 'version:1.7-1',
+      },
+    ],
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/android_tools': {
+    'packages': [
+      {
+        'package': 'flutter/android/sdk/all/${{platform}}',
+        'version': 'version:37v2',
+      },
+    ],
+    'condition': 'download_android_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/android_embedding_dependencies': {
+    'packages': [
+      {
+        'package': 'flutter/android/embedding_bundle',
+        'version': 'last_updated:2025-10-15T09:53:03-0700',
+      },
+    ],
+    'condition': 'download_android_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/java/openjdk': {
+    'packages': [
+      {
+        'package': 'flutter/java/openjdk/${{platform}}',
+        'version': 'version:21',
+      },
+    ],
+    'condition': 'not (host_os == "linux" and host_cpu == "arm64")',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/gn': {
+    'packages': [
+      {
+        'package': 'gn/gn/${{platform}}',
+        'version': 'git_revision:81b24e01531ecf0eff12ec9359a555ec3944ec4e',
+      },
+    ],
+    'dep_type': 'cipd',
+  },
+  'third_party/ninja': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/ninja/${{platform}}',
+        'version': 'version:2@1.11.1.chromium.4',
+      },
+    ],
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/mac-x64/clang': {
+    'packages': [
+      {
+        'package': 'fuchsia/third_party/clang/mac-amd64',
+        'version': Var('clang_version'),
+      },
+    ],
+    'condition': 'host_os == "mac"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/mac-arm64/clang': {
+    'packages': [
+      {
+        'package': 'fuchsia/third_party/clang/mac-arm64',
+        'version': Var('clang_version'),
+      },
+    ],
+    'condition': 'host_os == "mac" and host_cpu == "arm64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/linux-x64/clang': {
+    'packages': [
+      {
+        'package': 'fuchsia/third_party/clang/linux-amd64',
+        'version': Var('clang_version'),
+      },
+    ],
+    'condition': 'host_os == "linux" or host_os == "mac"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/linux-arm64/clang': {
+    'packages': [
+      {
+        'package': 'fuchsia/third_party/clang/linux-arm64',
+        'version': Var('clang_version'),
+      },
+    ],
+    'condition': 'host_os == "linux" and host_cpu == "arm64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/windows-x64/clang': {
+    'packages': [
+      {
+        'package': 'fuchsia/third_party/clang/windows-amd64',
+        'version': Var('clang_version'),
+      },
+    ],
+    'condition': 'download_windows_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/linux-x64/reclient': {
+    'packages': [
+      {
+        'package': 'infra/rbe/client/${{platform}}',
+        'version': Var('reclient_version'),
+      },
+    ],
+    'condition': 'use_rbe and host_os == "linux" and host_cpu == "x64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/mac-arm64/reclient': {
+    'packages': [
+      {
+        'package': 'infra/rbe/client/${{platform}}',
+        'version': Var('reclient_version'),
+      },
+    ],
+    'condition': 'use_rbe and host_os == "mac" and host_cpu == "arm64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/mac-x64/reclient': {
+    'packages': [
+      {
+        'package': 'infra/rbe/client/${{platform}}',
+        'version': Var('reclient_version'),
+      },
+    ],
+    'condition': 'use_rbe and host_os == "mac" and host_cpu == "x64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/windows-x64/reclient': {
+    'packages': [
+      {
+        'package': 'infra/rbe/client/${{platform}}',
+        'version': Var('reclient_version'),
+      },
+    ],
+    'condition': 'use_rbe and download_windows_deps',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/build/rbe': {
+    'packages': [
+      {
+        'package': 'flutter_internal/rbe/reclient_cfgs',
+        'version': '0vARzGeIZgIhW7zVfWuqIPQ_HXMLDccjAstykWZKjaEC',
+      },
+    ],
+    'condition': 'use_rbe',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/linux-x64/gcloud': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/gcloud/${{platform}}',
+        'version': Var('gcloud_version'),
+      },
+    ],
+    'condition': 'use_rbe and host_os == "linux" and host_cpu == "x64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/buildtools/mac-arm64/gcloud': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/gcloud/${{platform}}',
+        'version': Var('gcloud_version'),
+      },
+    ],
+    'condition': 'use_rbe and host_os == "mac" and host_cpu == "arm64"',
+    'dep_type': 'cipd',
+  },
+  'engine/src/flutter/third_party/google_fonts_for_unit_tests': {
+    'packages': [
+      {
+        'package': 'flutter/flutter_font_fallbacks',
+        'version': 'eafae0f49fbf9af7858049ad666b7223bdd7588162d8a687ec7870eb5952055d',
+      },
+    ],
+    'dep_type': 'cipd',
+  },
+}
+
+hooks = [
+  {
+    'name': 'win_toolchain',
+    'condition': 'download_windows_deps',
+    'pattern': '.',
+    'action': [
+      'python3',
+      'engine/src/build/vs_toolchain.py',
+      'update',
+    ],
+  },
+  {
+    'name': 'dia_dll',
+    'pattern': '.',
+    'condition': 'download_windows_deps',
+    'action': [
+      'python3',
+      'engine/src/flutter/tools/dia_dll.py',
+    ],
+  },
+  {
+    'name': 'linux_sysroot_x64',
+    'pattern': '.',
+    'condition': 'download_linux_deps',
+    'action': [
+      'python3',
+      'engine/src/build/linux/sysroot_scripts/install-sysroot.py',
+      '--arch=x64',
+    ],
+  },
+  {
+    'name': 'linux_sysroot_arm64',
+    'pattern': '.',
+    'condition': 'download_linux_deps',
+    'action': [
+      'python3',
+      'engine/src/build/linux/sysroot_scripts/install-sysroot.py',
+      '--arch=arm64',
+    ],
+  },
+  {
+    'name': 'linux_sysroot_riscv64',
+    'pattern': '.',
+    'condition': 'download_linux_deps',
+    'action': [
+      'python3',
+      'engine/src/build/linux/sysroot_scripts/install-sysroot.py',
+      '--arch=riscv64',
+    ],
+  },
+  {
+    'name': 'Find the iOS and macOS SDKs',
+    'pattern': '.',
+    'condition': 'host_os == "mac"',
+    'action': [
+      'python3',
+      'engine/src/build/mac/darwin_sdk.py',
+      '--as-gclient-hook',
+    ],
+  },
+]

@@ -304,11 +304,8 @@ if (enable_unittests) {
       "//flutter/testing:testing_lib",
     ]
 
-    if (!is_wasm) {
-      public_deps += [
-        "$dart_src/runtime:libdart_jit",  # for tracing
-      ]
-    }
+    # rustflutter: libdart_jit was linked only for the Dart Timeline symbols
+    # that fml/trace_event.h used to pull in; that dependency is gone.
   }
 
   executable("display_list_benchmarks") {

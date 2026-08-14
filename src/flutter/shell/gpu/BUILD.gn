@@ -84,8 +84,6 @@ if (test_enable_vulkan) {
              ":gpu_surface_vulkan",
              "//flutter/fml",
              "//flutter/impeller/fixtures",
-             "//flutter/runtime",
-             "//flutter/runtime:libdart",
              "//flutter/testing",
              "//flutter/testing:vulkan",
              "//flutter/third_party/swiftshader/src/Vulkan:swiftshader_libvulkan_static",
@@ -135,8 +133,6 @@ if (is_mac) {
              ":gpu_surface_metal",
              "//flutter/fml",
              "//flutter/impeller/fixtures",
-             "//flutter/runtime",
-             "//flutter/runtime:libdart",
              "//flutter/testing",
            ] + gpu_common_deps
   }

@@ -61,7 +61,25 @@
 
 #include "flutter/fml/macros.h"
 #include "flutter/fml/time/time_point.h"
-#include "third_party/dart/runtime/include/dart_tools_api.h"
+
+// rustflutter: replaces Dart_Timeline_Event_Type, which used to come from
+// third_party/dart/runtime/include/dart_tools_api.h. Only the enum was ever
+// used here -- no Dart API function is called from this file -- so the type is
+// declared locally. Members and their order match the upstream enum so the
+// Chrome-trace phase characters emitted downstream are unchanged.
+typedef enum {
+  FlTimeline_Event_Begin,          // Phase = 'B'.
+  FlTimeline_Event_End,            // Phase = 'E'.
+  FlTimeline_Event_Instant,        // Phase = 'i'.
+  FlTimeline_Event_Duration,       // Phase = 'X'.
+  FlTimeline_Event_Async_Begin,    // Phase = 'b'.
+  FlTimeline_Event_Async_End,      // Phase = 'e'.
+  FlTimeline_Event_Async_Instant,  // Phase = 'n'.
+  FlTimeline_Event_Counter,        // Phase = 'C'.
+  FlTimeline_Event_Flow_Begin,     // Phase = 's'.
+  FlTimeline_Event_Flow_Step,      // Phase = 't'.
+  FlTimeline_Event_Flow_End,       // Phase = 'f'.
+} FlTimeline_Event_Type;
 
 #if (FLUTTER_RELEASE && !defined(OS_FUCHSIA) && !defined(FML_OS_ANDROID))
 #define FLUTTER_TIMELINE_ENABLED 0
@@ -219,7 +237,7 @@ typedef void (*TimelineEventHandler)(const char*,
                                      int64_t,
                                      intptr_t,
                                      const int64_t*,
-                                     Dart_Timeline_Event_Type,
+                                     FlTimeline_Event_Type,
                                      intptr_t,
                                      const char**,
                                      const char**);
@@ -240,7 +258,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg id,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& names,
                         const std::vector<std::string>& values);
 
@@ -249,7 +267,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg id,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& names,
                         const std::vector<std::string>& values);
 
@@ -308,7 +326,7 @@ void TraceCounter(TraceArg category,
 #if FLUTTER_TIMELINE_ENABLED
   auto split = SplitArguments(args...);
   TraceTimelineEvent(category, name, identifier, /*flow_id_count=*/0,
-                     /*flow_ids=*/nullptr, Dart_Timeline_Event_Counter,
+                     /*flow_ids=*/nullptr, FlTimeline_Event_Counter,
                      split.first, split.second);
 #endif  // FLUTTER_TIMELINE_ENABLED
 }
@@ -330,7 +348,7 @@ void TraceEvent(TraceArg category,
 #if FLUTTER_TIMELINE_ENABLED
   auto split = SplitArguments(std::move(args)...);
   TraceTimelineEvent(category, name, 0, flow_id_count, flow_ids,
-                     Dart_Timeline_Event_Begin, split.first, split.second);
+                     FlTimeline_Event_Begin, split.first, split.second);
 #endif  // FLUTTER_TIMELINE_ENABLED
 }
 
@@ -380,7 +398,7 @@ void TraceEventAsyncComplete(TraceArg category_group,
                      identifier,                       // identifier
                      0,                                // flow_id_count
                      nullptr,                          // flow_ids
-                     Dart_Timeline_Event_Async_Begin,  // type
+                     FlTimeline_Event_Async_Begin,  // type
                      split.first,                      // names
                      split.second                      // values
   );
@@ -391,7 +409,7 @@ void TraceEventAsyncComplete(TraceArg category_group,
                      identifier,                     // identifier
                      0,                              // flow_id_count
                      nullptr,                        // flow_ids
-                     Dart_Timeline_Event_Async_End,  // type
+                     FlTimeline_Event_Async_End,  // type
                      split.first,                    // names
                      split.second                    // values
   );

@@ -61,28 +61,9 @@ source_set("testing") {
   public_configs = [ ":dynamic_symbols" ]
 }
 
-source_set("dart") {
-  testonly = true
-
-  sources = [
-    "dart_isolate_runner.cc",
-    "dart_isolate_runner.h",
-    "elf_loader.cc",
-    "elf_loader.h",
-    "test_dart_native_resolver.cc",
-    "test_dart_native_resolver.h",
-  ]
-
-  public_deps = [
-    ":testing_lib",
-    "$dart_src/runtime/bin:elf_loader",
-    "//flutter/common",
-    "//flutter/runtime",
-    "//flutter/runtime:libdart",
-    "//flutter/skia",
-    "//flutter/third_party/tonic",
-  ]
-}
+# rustflutter: source_set("dart") (dart_isolate_runner / elf_loader /
+# test_dart_native_resolver), the vmservice snapshot targets and
+# source_set("fixture_test") (dart_fixture) were removed with the Dart VM.
 
 source_set("skia") {
   testonly = true
@@ -97,38 +78,6 @@ source_set("skia") {
     ":testing_lib",
     "//flutter/skia",
   ]
-}
-
-dart_snapshot_kernel("vmservice_kernel") {
-  dart_main = "//flutter/shell/vmservice/empty.dart"
-  dart_kernel = "$target_gen_dir/assets/vmservice_kernel.bin"
-}
-
-dart_snapshot_aot("vmservice_snapshot") {
-  dart_kernel = "$target_gen_dir/assets/vmservice_kernel.bin"
-  dart_elf_filename = "libvmservice_snapshot.so"
-  deps = [ ":vmservice_kernel" ]
-}
-
-source_set("fixture_test") {
-  testonly = true
-
-  sources = [
-    "dart_fixture.cc",
-    "dart_fixture.h",
-    "fixture_test.cc",
-    "fixture_test.h",
-  ]
-
-  public_deps = [
-    ":dart",
-    "//flutter/common",
-    "//flutter/runtime",
-  ]
-
-  if (flutter_runtime_mode == "profile") {
-    public_deps += [ ":vmservice_snapshot" ]
-  }
 }
 
 if (is_mac || is_ios) {

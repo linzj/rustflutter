@@ -1,0 +1,40 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//flutter/testing/testing.gni")
+
+# The Rust FFI layer, built as a staticlib so it links into the engine the same
+# way any other engine source_set does.
+static_library("ffi") {
+  crate_name = "rustflutter_ffi"
+  crate_root = "ffi/src/lib.rs"
+  sources = [ "ffi/src/lib.rs" ]
+}
+
+# C++ side of the M0 boundary check: calls into the Rust staticlib and asserts
+# the values come back correctly. This is what proves the toolchain works --
+# linking alone would not.
+if (enable_unittests) {
+  # Supplies the flutter::testing::GetFixturesPath() definition that
+  # testing_lib references. No actual fixtures are needed here.
+  test_fixtures("rust_ffi_fixtures") {
+    fixtures = []
+  }
+
+  executable("rust_ffi_unittests") {
+    testonly = true
+
+    sources = [ "ffi_unittests.cc" ]
+
+    deps = [
+      ":ffi",
+      ":rust_ffi_fixtures",
+      "//flutter/testing",
+    ]
+  }
+}
+
+group("rust") {
+  deps = [ ":ffi" ]
+}

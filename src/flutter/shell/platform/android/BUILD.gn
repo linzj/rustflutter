@@ -171,8 +171,6 @@ source_set("flutter_shell_native_src") {
     "//flutter/impeller/toolkit/gles",
     "//flutter/impeller/toolkit/glvk",
     "//flutter/lib/ui",
-    "//flutter/runtime",
-    "//flutter/runtime:libdart",
     "//flutter/shell/common",
     "//flutter/shell/platform/android/context",
     "//flutter/shell/platform/android/external_view_embedder",
@@ -826,7 +824,6 @@ if (host_os == "linux" &&
     analyze_snapshot_bin = "analyze_snapshot"
     analyze_snapshot_out_dir =
         get_label_info(
-            "$dart_src/runtime/bin:analyze_snapshot($host_toolchain)",
             "root_out_dir")
     analyze_snapshot_path = "$analyze_snapshot_out_dir/$analyze_snapshot_bin"
 

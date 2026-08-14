@@ -98,7 +98,6 @@ void PrintUsage(const std::string& executable_name) {
 
   std::cerr << "Skia Version: " << GetSkiaVersion() << std::endl;
 
-  std::cerr << "Dart Version: " << GetDartVersion() << std::endl << std::endl;
 
   std::cerr << "Available Flags:" << std::endl;
 

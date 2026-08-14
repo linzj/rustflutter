@@ -1,0 +1,22 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# rustflutter: Rust toolchain settings.
+#
+# Upstream Flutter has no Rust in DEPS at all, so there is nothing to inherit
+# here. For now `rustc` resolves off PATH, which is enough for local M0/M1 work.
+# Before CI, this should be pinned the same way clang is -- a CIPD package in
+# DEPS under //flutter/buildtools/$host_os-$host_cpu/rust -- and rustc_path
+# pointed at it, so builds are hermetic and reproducible.
+
+declare_args() {
+  # Absolute path or PATH-resolvable name of the rustc driver.
+  rustc_path = "rustc"
+
+  # Rust edition passed to every crate built by the GN rules below.
+  rust_edition = "2024"
+
+  # Extra flags appended to every rustc invocation.
+  extra_rustflags = []
+}

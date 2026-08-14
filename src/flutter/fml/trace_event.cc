@@ -32,7 +32,7 @@ inline void FlutterTimelineEvent(const char* label,
                                  int64_t timestamp1_or_async_id,
                                  intptr_t flow_id_count,
                                  const int64_t* flow_ids,
-                                 Dart_Timeline_Event_Type type,
+                                 FlTimeline_Event_Type type,
                                  intptr_t argument_count,
                                  const char** argument_names,
                                  const char** argument_values) {
@@ -77,7 +77,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg identifier,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& c_names,
                         const std::vector<std::string>& values) {
   const auto argument_count = std::min(c_names.size(), values.size());
@@ -107,7 +107,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg identifier,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& c_names,
                         const std::vector<std::string>& values) {
   TraceTimelineEvent(category_group,                  // group
@@ -131,7 +131,7 @@ void TraceEvent0(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Begin,  // event type
+                       FlTimeline_Event_Begin,  // event type
                        0,                          // argument_count
                        nullptr,                    // argument_names
                        nullptr                     // argument_values
@@ -151,7 +151,7 @@ void TraceEvent1(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Begin,  // event type
+                       FlTimeline_Event_Begin,  // event type
                        1,                          // argument_count
                        arg_names,                  // argument_names
                        arg_values                  // argument_values
@@ -173,7 +173,7 @@ void TraceEvent2(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Begin,  // event type
+                       FlTimeline_Event_Begin,  // event type
                        2,                          // argument_count
                        arg_names,                  // argument_names
                        arg_values                  // argument_values
@@ -186,7 +186,7 @@ void TraceEventEnd(TraceArg name) {
                        0,                        // timestamp1_or_async_id
                        0,                        // flow_id_count
                        nullptr,                  // flow_ids
-                       Dart_Timeline_Event_End,  // event type
+                       FlTimeline_Event_End,  // event type
                        0,                        // argument_count
                        nullptr,                  // argument_names
                        nullptr                   // argument_values
@@ -203,7 +203,7 @@ void TraceEventAsyncBegin0(TraceArg category_group,
                        id,             // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Async_Begin,  // event type
+                       FlTimeline_Event_Async_Begin,  // event type
                        0,                                // argument_count
                        nullptr,                          // argument_names
                        nullptr                           // argument_values
@@ -218,7 +218,7 @@ void TraceEventAsyncEnd0(TraceArg category_group,
                        id,                             // timestamp1_or_async_id
                        0,                              // flow_id_count
                        nullptr,                        // flow_ids
-                       Dart_Timeline_Event_Async_End,  // event type
+                       FlTimeline_Event_Async_End,  // event type
                        0,                              // argument_count
                        nullptr,                        // argument_names
                        nullptr                         // argument_values
@@ -239,7 +239,7 @@ void TraceEventAsyncBegin1(TraceArg category_group,
                        id,             // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Async_Begin,  // event type
+                       FlTimeline_Event_Async_Begin,  // event type
                        1,                                // argument_count
                        arg_names,                        // argument_names
                        arg_values                        // argument_values
@@ -258,7 +258,7 @@ void TraceEventAsyncEnd1(TraceArg category_group,
                        id,                             // timestamp1_or_async_id
                        0,                              // flow_id_count
                        nullptr,                        // flow_ids
-                       Dart_Timeline_Event_Async_End,  // event type
+                       FlTimeline_Event_Async_End,  // event type
                        1,                              // argument_count
                        arg_names,                      // argument_names
                        arg_values                      // argument_values
@@ -274,7 +274,7 @@ void TraceEventInstant0(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Instant,  // event type
+                       FlTimeline_Event_Instant,  // event type
                        0,                            // argument_count
                        nullptr,                      // argument_names
                        nullptr                       // argument_values
@@ -294,7 +294,7 @@ void TraceEventInstant1(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Instant,  // event type
+                       FlTimeline_Event_Instant,  // event type
                        1,                            // argument_count
                        arg_names,                    // argument_names
                        arg_values                    // argument_values
@@ -316,7 +316,7 @@ void TraceEventInstant2(TraceArg category_group,
                        0,              // timestamp1_or_async_id
                        flow_id_count,  // flow_id_count
                        reinterpret_cast<const int64_t*>(flow_ids),  // flow_ids
-                       Dart_Timeline_Event_Instant,  // event type
+                       FlTimeline_Event_Instant,  // event type
                        2,                            // argument_count
                        arg_names,                    // argument_names
                        arg_values                    // argument_values
@@ -331,7 +331,7 @@ void TraceEventFlowBegin0(TraceArg category_group,
                        id,       // timestamp1_or_async_id
                        0,        // flow_id_count
                        nullptr,  // flow_ids
-                       Dart_Timeline_Event_Flow_Begin,  // event type
+                       FlTimeline_Event_Flow_Begin,  // event type
                        0,                               // argument_count
                        nullptr,                         // argument_names
                        nullptr                          // argument_values
@@ -346,7 +346,7 @@ void TraceEventFlowStep0(TraceArg category_group,
                        id,                             // timestamp1_or_async_id
                        0,                              // flow_id_count
                        nullptr,                        // flow_ids
-                       Dart_Timeline_Event_Flow_Step,  // event type
+                       FlTimeline_Event_Flow_Step,  // event type
                        0,                              // argument_count
                        nullptr,                        // argument_names
                        nullptr                         // argument_values
@@ -359,7 +359,7 @@ void TraceEventFlowEnd0(TraceArg category_group, TraceArg name, TraceIDArg id) {
                        id,                            // timestamp1_or_async_id
                        0,                             // flow_id_count
                        nullptr,                       // flow_ids
-                       Dart_Timeline_Event_Flow_End,  // event type
+                       FlTimeline_Event_Flow_End,  // event type
                        0,                             // argument_count
                        nullptr,                       // argument_names
                        nullptr                        // argument_values
@@ -392,7 +392,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg identifier,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& c_names,
                         const std::vector<std::string>& values) {}
 
@@ -401,7 +401,7 @@ void TraceTimelineEvent(TraceArg category_group,
                         TraceIDArg identifier,
                         size_t flow_id_count,
                         const uint64_t* flow_ids,
-                        Dart_Timeline_Event_Type type,
+                        FlTimeline_Event_Type type,
                         const std::vector<const char*>& c_names,
                         const std::vector<std::string>& values) {}
 

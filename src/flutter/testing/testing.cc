@@ -15,9 +15,8 @@ std::string GetCurrentTestName() {
   return ::testing::UnitTest::GetInstance()->current_test_info()->name();
 }
 
-std::string GetDefaultKernelFilePath() {
-  return fml::paths::JoinPaths({GetFixturesPath(), "kernel_blob.bin"});
-}
+// rustflutter: GetDefaultKernelFilePath() returned the path of the Dart
+// kernel_blob.bin fixture; it went away with the Dart VM.
 
 fml::UniqueFD OpenFixturesDirectory() {
   auto fixtures_directory =

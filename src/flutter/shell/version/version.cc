@@ -20,8 +20,4 @@ const char* GetSkiaVersion() {
   return SKIA_VERSION;
 }
 
-const char* GetDartVersion() {
-  return DART_VERSION;
-}
-
 }  // namespace flutter

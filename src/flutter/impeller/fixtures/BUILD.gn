@@ -220,7 +220,6 @@ impellerc("flutter_gpu_shaders") {
 }
 
 test_fixtures("flutter_gpu_fixtures") {
-  dart_main = "dart_tests.dart"
 
   fixtures = filter_include(get_target_outputs(":flutter_gpu_shaders"),
                             [

@@ -13,7 +13,6 @@ const char* GetFlutterContentHash();
 
 const char* GetSkiaVersion();
 
-const char* GetDartVersion();
 
 }  // namespace flutter
 

@@ -351,11 +351,17 @@ def setup_git_versions():
 
   engine_path = os.path.join(SRC_ROOT, 'flutter')
   revision_args['engine_version'] = get_repository_version(engine_path)
-  revision_args['content_hash'] = get_content_hash()
+
+  # rustflutter: content_aware_hash lives in the flutter/flutter monorepo root,
+  # which this standalone checkout does not have. Fall back to the engine
+  # revision. dart_version is gone with the Dart SDK.
+  try:
+    revision_args['content_hash'] = get_content_hash()
+  except (OSError, subprocess.CalledProcessError):
+    revision_args['content_hash'] = revision_args['engine_version']
+
   skia_path = os.path.join(SRC_ROOT, 'flutter', 'third_party', 'skia')
   revision_args['skia_version'] = get_repository_version(skia_path)
-
-  revision_args['dart_version'] = get_repository_version(get_dart_path())
 
   return revision_args
 
@@ -598,8 +604,8 @@ def to_gn_args(args):
   # backwards across a small range of git commits. Since Flutter doesn't need
   # the wiggle room, to avoid running the python script, we instead set the SDK
   # hash to the exact git commit.
-  sdk_hash = gn_args['dart_version']
-  gn_args['dart_sdk_verification_hash'] = sdk_hash if len(sdk_hash) <= 10 else sdk_hash[:10]
+  # rustflutter: no Dart SDK, so no VM/front-end hash to reconcile.
+  # (strip_dart_args() would drop this key anyway.)
 
   # Desktop embeddings can have more dependencies than the engine library,
   # which can be problematic in some build environments (e.g., building on
@@ -831,7 +837,19 @@ def to_gn_args(args):
   if args.darwin_extension_safe:
     gn_args['darwin_extension_safe'] = True
 
-  return gn_args
+  return strip_dart_args(gn_args)
+
+
+# rustflutter: the Dart SDK is not part of this checkout, so none of the
+# dart_* GN args are declared by any BUILD.gn we still have. Passing them
+# would make `gn gen` fail with "Build argument had no effect". The upstream
+# emission sites are left untouched so that diffs against upstream stay small;
+# the keys are simply dropped here instead.
+_DART_ARG_PREFIXES = ('dart_', 'full_dart_')
+
+
+def strip_dart_args(gn_args):
+  return {k: v for k, v in gn_args.items() if not k.startswith(_DART_ARG_PREFIXES)}
 
 
 # When building for WASM, almost all GN args used in the Flutter SDK

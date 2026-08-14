@@ -108,22 +108,86 @@
 
 ---
 
-## 三、下一步
+## 三、M0 —— 已完成 ✅
 
-当前树**尚不可构建**——GN 里仍有指向已删除 Dart target 的引用，这是预期状态。
+目标是让这棵树能编译，并接入 Rust 工具链。四项全部达成，Windows x64 host 构建实测通过。
 
-### M0 — 让这棵树能编译
-1. 写新的 `DEPS`：从上游 `K:\flutter\DEPS` 裁掉全部 `dart_*` 条目（20 余项），
-   保留 skia / icu / harfbuzz / angle / vulkan-deps / freetype 等渲染依赖
-2. 清理 GN：移除 `//flutter/runtime`、`//third_party/dart`、`//third_party/tonic` 的依赖边
-3. 先只构建 Tier A（impeller + display_list + flow + txt + fml），验证渲染栈可独立编译
-4. 接入 Rust 工具链：DEPS 加 CIPD rust toolchain（参考 Chromium `third_party/rust-toolchain`），
-   `src/build/` 加 `rust_static_library` GN 模板，空 crate 链进产物
+### 1. 依赖裁剪
 
-### M1 — Dart-free 一帧（go/no-go 验证点）
-在 `flutter/rust/` 下用 Rust 手工构造一棵 `LayerTree`（单个纯色矩形），
-经 `Rasterizer::Draw` 出图。目标是**几周内**拿到第一张正确的 PNG。
+`DEPS` 由上游过滤生成（生成脚本见提交说明），保留条目的 revision 与上游一致，便于后续 roll：
+
+| | 上游 | rustflutter |
+|---|---:|---:|
+| vars | 105 | 48 |
+| deps | 118 | 67 |
+| hooks | 14 | 6 |
+
+丢弃的 51 个 deps：Dart SDK 30、Dart pub 包 10、web 工具链 5、Dart SDK 的 C 依赖 3
+（cpu_features / re2 / sqlite）、Fuchsia 3。保留 boringssl——它不是 Dart 依赖，
+`common/graphics/persistent_cache` 用它算 shader 缓存键。
+
+**本地不执行 `gclient sync`**：13 GB 依赖用目录 junction 指向已有的
+`K:\flutter\engine\src`，零下载、零额外磁盘。`DEPS` 描述的是 CI 应拉取的依赖集。
+
+### 2. GN 去 Dart 化
+
+实测共 **62 条依赖边 / 19 个 BUILD.gn** 指向已删除的 Dart 目标，已全部清除。
+另有若干处需要真实改造而非删除：
+
+| 位置 | 处理 |
+|---|---|
+| `fml/trace_event.{h,cc}` | **只用了 `Dart_Timeline_Event_Type` 这个枚举，一个 Dart 函数都没调**。就地声明等价枚举（成员与顺序照搬，保证下游 Chrome-trace phase 字符不变），`display_list` 和 `flow` 对 `libdart_jit` 的链接边随之消失 |
+| `testing/testing.gni` | 摘掉 3 个 Dart 快照模板与 `test_fixtures` 的 `dart_main` 分支；fixtures 定位 / 拷贝 / `enable_unittests` 原样保留 |
+| `testing/BUILD.gn` | 删除 `source_set("dart")`、vmservice 快照、`fixture_test`（及对应 10 个源文件） |
+| `runtime:test_font` | **抢救**——字体数据本身零 Dart 耦合，移到 `//flutter/test_font`，txt 的测试依赖它 |
+| `shell/version` | 删除 `GetDartVersion()` 与 `DART_VERSION` define |
+| `testing/testing.cc` | 删除 `GetDefaultKernelFilePath()`（返回 Dart kernel_blob.bin 路径） |
+| `tools/gn` | 补 `strip_dart_args()` 过滤所有 `dart_*` GN 参数；`content_hash` 在缺少 monorepo 脚本时回落到 engine revision |
+| ANGLE 的 `gclient_args.gni` | ANGLE 硬编码 import 了 Dart SDK 里的这个生成文件。在 GN **secondary source 树**里放了 shim，从而既不需要 `third_party/dart` 目录存在，也不必给 ANGLE 打补丁 |
+| `lib/ui/BUILD.gn` | 桩化为空 group（原文件存为 `BUILD.gn.upstream`），使 `//flutter/lib/ui` 标签可解析而不把不可编译的源码拖进图 |
+
+### 3. Tier A 构建通过
+
+```
+gn gen  →  985 targets from 264 files
+ninja   →  2581/2581,  exit 0
+```
+
+产出 2,874 个编译单元，全树无任何 Dart 产物。
+
+### 4. Rust 工具链已接入
+
+- `src/build/toolchain/rust.gni`：`rustc_path` / `rust_edition` / `extra_rustflags` 三个 build arg
+- `src/build/toolchain/win/BUILD.gn`：新增 `rust_rlib` / `rust_staticlib` / `rust_bin` 三个 GN tool
+  （注意本仓库 pin 的 GN 是 2285，不支持 rust tool 上的 `depsformat` 与 `*_output_extension`，
+  输出扩展名直接写死在 `outputs` 里）
+- `flutter/rust/ffi`：Rust staticlib，导出 `extern "C"` 符号
+- `flutter/rust:rust_ffi_unittests`：C++ 侧调用 Rust 并断言返回值
+
+```
+[1/1] RUST(STATICLIB) obj/flutter/rust/ffi.lib
+[  PASSED  ] 2 tests.
+```
+
+**Rust ↔ C++ 边界已实测打通。**
+
+> 当前 `rustc_path` 默认走 PATH（本机 rustc 1.93.0，edition 2024）。进 CI 前应像 clang 一样
+> 用 CIPD 固定到 `//flutter/buildtools/$host_os-$host_cpu/rust`，保证构建可复现。
+> 目前只写了 Windows toolchain 的 rust tool，mac/linux/android 需照做。
+
+---
+
+## 四、下一步：M1 — Dart-free 一帧（go/no-go 验证点）
+
+在 `flutter/rust/` 下用 Rust 手工构造一棵 `flow::LayerTree`（单个纯色矩形），
+经 `Rasterizer::Draw` 出图，拿到第一张正确的 PNG。
+
+具体路径已经清晰：`RuntimeDelegate::Render()` 的入参就是 `LayerTree`，
+而 `flow`（22,373 行）零 Dart 耦合、已完整编译通过，`lib/ui/compositing/`
+（657 行，SceneBuilder / Scene）就是构造它的现成 C++ 代码——M1 的工作是给这 657 行
+套一层 `extern "C"`，而不是重写。
+
 这一步成本低、信息量最大，是整个方案的成立性验证。
 
-M2 及之后的路线见此前讨论（Rust 版 dart:ui 等价层 → 输入与帧调度 →
-rendering 层 5.2 万行 → widgets 层 15.9 万行 → material/cupertino 可选）。
+M2 及之后：Rust 版 dart:ui 等价层（`lib/ui` 的 73 个文件机械式去包装）→ 输入与帧调度 →
+rendering 层 5.2 万行 → widgets 层 15.9 万行 → material/cupertino 可选。

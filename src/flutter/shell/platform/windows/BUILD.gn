@@ -211,7 +211,6 @@ shared_library("flutter_windows") {
 }
 
 test_fixtures("flutter_windows_fixtures") {
-  dart_main = "fixtures/main.dart"
   fixtures = []
 }
 
@@ -294,9 +293,7 @@ executable("flutter_windows_unittests") {
     "//flutter/shell/platform/embedder:embedder_as_internal_library",
     "//flutter/shell/platform/embedder:embedder_test_utils",
     "//flutter/testing",
-    "//flutter/testing:dart",
     "//flutter/third_party/rapidjson",
-    "//flutter/third_party/tonic",
   ]
 }
 
