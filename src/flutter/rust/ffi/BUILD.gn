@@ -1,0 +1,35 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The C++ side of the Rust <-> engine boundary. Everything it touches
+# (display_list, flow, txt) is Dart-free upstream code used unmodified.
+source_set("engine_ffi") {
+  sources = [
+    "rustflutter_ffi.cc",
+    "rustflutter_ffi.h",
+  ]
+
+  if (is_win) {
+    sources += [ "rustflutter_window_win.cc" ]
+  } else {
+    sources += [ "rustflutter_window_stub.cc" ]
+  }
+
+  deps = [
+    "//flutter/display_list",
+    "//flutter/flow",
+    "//flutter/fml",
+    "//flutter/skia",
+    "//flutter/txt",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  if (is_win) {
+    libs = [
+      "gdi32.lib",
+      "user32.lib",
+    ]
+  }
+}

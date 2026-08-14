@@ -1,0 +1,16 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The framework crate. Apps depend on this; it in turn declares the extern "C"
+# imports that //flutter/rust/ffi:engine_ffi provides at final link.
+rust_library("rustflutter") {
+  crate_name = "rustflutter"
+  crate_root = "src/lib.rs"
+
+  sources = [
+    "src/engine.rs",
+    "src/lib.rs",
+    "src/widgets.rs",
+  ]
+}

@@ -78,13 +78,14 @@ group("tier_a") {
   ]
 }
 
-# The Rust side. Nothing depends on it yet -- M0 only proves it builds and
-# links; M1 wires it to flow::LayerTree.
+# The Rust framework, its engine FFI shim, the CLI and the apps.
 group("rust") {
+  testonly = true
   public_deps = [ "//flutter/rust" ]
 }
 
 group("flutter") {
+  testonly = true
   public_deps = [
     ":rust",
     ":tier_a",

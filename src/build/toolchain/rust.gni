@@ -10,6 +10,13 @@
 # DEPS under //flutter/buildtools/$host_os-$host_cpu/rust -- and rustc_path
 # pointed at it, so builds are hermetic and reproducible.
 
+# Note on rust_bin: the tool is declared in the win toolchain, but apps and the
+# CLI are built as Rust staticlibs behind a three-line C++ shim instead. Letting
+# rustc own the final link on Windows means re-deriving the MSVC linker path and
+# the system library list that the C++ toolchain already gets right, and rustc
+# appends .lib to GN's already-suffixed lib names. The shim pattern sidesteps
+# both, and the apps need it anyway since they link the C++ engine.
+
 declare_args() {
   # Absolute path or PATH-resolvable name of the rustc driver.
   rustc_path = "rustc"

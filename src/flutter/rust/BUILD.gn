@@ -2,19 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/toolchain/rust.gni")
 import("//flutter/testing/testing.gni")
 
-# The Rust FFI layer, built as a staticlib so it links into the engine the same
-# way any other engine source_set does.
-static_library("ffi") {
-  crate_name = "rustflutter_ffi"
-  crate_root = "ffi/src/lib.rs"
-  sources = [ "ffi/src/lib.rs" ]
-}
-
-# C++ side of the M0 boundary check: calls into the Rust staticlib and asserts
-# the values come back correctly. This is what proves the toolchain works --
-# linking alone would not.
 if (enable_unittests) {
   # Supplies the flutter::testing::GetFixturesPath() definition that
   # testing_lib references. No actual fixtures are needed here.
@@ -28,13 +18,91 @@ if (enable_unittests) {
     sources = [ "ffi_unittests.cc" ]
 
     deps = [
-      ":ffi",
+      ":rust_lib",
       ":rust_ffi_fixtures",
+      "//flutter/rust/ffi:engine_ffi",
       "//flutter/testing",
     ]
+
+    if (is_win) {
+      libs = [
+        "advapi32.lib",
+        "bcrypt.lib",
+        "ntdll.lib",
+        "userenv.lib",
+        "ws2_32.lib",
+      ]
+    }
+  }
+}
+
+# The framework crate wrapped as a staticlib, so C++ targets can link it.
+static_library("rust_lib") {
+  crate_name = "rustflutter_staticlib"
+  crate_root = "staticlib.rs"
+
+  sources = [ "staticlib.rs" ]
+
+  deps = [ "//flutter/rust/rustflutter" ]
+}
+
+# The framework crate's own #[test] functions. See run_rust_tests.py for why
+# this is an action rather than a GN rust target.
+if (enable_unittests) {
+  action("rustflutter_unittests") {
+    testonly = true
+
+    script = "run_rust_tests.py"
+
+    sources = [
+      "rustflutter/src/engine.rs",
+      "rustflutter/src/lib.rs",
+      "rustflutter/src/widgets.rs",
+    ]
+
+    if (is_win) {
+      _binary = "$root_out_dir/rustflutter_unittests.exe"
+    } else {
+      _binary = "$root_out_dir/rustflutter_unittests"
+    }
+    _stamp = "$target_gen_dir/rustflutter_unittests.stamp"
+    outputs = [ _stamp ]
+
+    args = [
+      "--crate-root",
+      rebase_path("rustflutter/src/lib.rs", root_build_dir),
+      "--crate-name",
+      "rustflutter_unittests",
+      "--output",
+      rebase_path(_binary, root_build_dir),
+      "--rustc",
+      rustc_path,
+      "--edition",
+      rust_edition,
+      "--stamp",
+      rebase_path(_stamp, root_build_dir),
+    ]
+
+    if (is_win) {
+      args += [
+        "--linker",
+        rebase_path("//flutter/buildtools/windows-x64/clang/bin/lld-link.exe",
+                    root_build_dir),
+      ]
+    }
   }
 }
 
 group("rust") {
-  deps = [ ":ffi" ]
+  testonly = true
+
+  deps = [
+    ":rust_ffi_unittests",
+    ":rustflutter_unittests",
+    "//flutter/rust/cli:rustflutter_cli",
+    "//flutter/rust/examples/hello_world",
+    "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/projects",
+    "//flutter/rust/rustflutter",
+  ]
 }

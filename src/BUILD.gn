@@ -6,5 +6,6 @@
 # The upstream wasm/dist groups are dropped until those layers are ported.
 
 group("default") {
-  deps = [ "//flutter:tier_a" ]
+  testonly = true
+  deps = [ "//flutter" ]
 }
