@@ -16,6 +16,7 @@ executable("hello_world_app") {
   deps = [
     ":hello_world_app_rs",
     "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/host",
   ]
 
   if (is_win) {

@@ -264,16 +264,125 @@ FFI 集成测试不是烟雾测试：它构造 LayerTree、经引擎光栅化、
   既绕开这些问题，也是应用本来就需要的（它们要链接 C++ 引擎）。
   Rust 单测则通过 `run_rust_tests.py` 显式指定 `lld-link` 来构建运行。
 - Rust 工具链目前只在 Windows toolchain 里声明；mac/linux/android 需照做。
-- 窗口层只有 Windows 实现，且是静态一帧，没有事件循环与重绘驱动。
+- 窗口层只有 Windows 实现，且是静态一帧，没有事件循环与重绘驱动。（M2 已解决）
 
 ---
 
-## 五、下一步
+## 五、M2 —— 已完成 ✅
 
-M2 及之后：Rust 版 dart:ui 等价层（`lib/ui` 的 73 个文件机械式去包装）→
-输入与帧调度（20 个入向回调）→ rendering 层 5.2 万行 → widgets 层 15.9 万行 →
-material/cupertino 可选。
+接管 `shell/common` 的 Engine / RuntimeController。这一步的价值不在代码量，
+而在它**一次解锁四样东西**：真正的 vsync 帧调度、引擎自己的线程模型、
+`Rasterizer` 流水线、以及平台嵌入层的接入点。
 
-最有价值的下一步是**接管 `shell/common` 的 Engine / RuntimeController**：
-它同时解锁 Impeller 生产渲染路径、真正的 vsync 帧调度、以及各平台嵌入层——
-也就是把现在这个权宜的 Win32 呈现层换成引擎自己的窗口栈。
+### 1. `lib/ui` 拆成两个目标（M2.1）
+
+`lib/ui:ui_types` —— shell 需要的那部分，全部是普通 C++：
+viewport metrics、pointer/key packet、platform message、semantics node、
+font collection、image generator registry。实测 shell 依赖的 10 个头文件里
+9 个对 Dart 的引用数为 0，只有 5 个文件需要动刀：
+
+| 文件 | 改动 |
+|---|---|
+| `semantics/string_attribute.{h,cc}` | 删掉 `NativeStringAttribute`（纯 Dart peer 类），改为普通构造函数；.cc 删除 |
+| `semantics/semantics_flags.{h,cc}` | 删掉 `NativeSemanticsFlags`；.cc 删除 |
+| `semantics/custom_accessibility_action.h` | 去掉 3 个 tonic include |
+| `text/font_collection.{h,cc}` | `LoadFontFromList(Dart_Handle, Dart_Handle, ...)` → `LoadFontFromBuffer(const uint8_t*, size_t, ...)` |
+
+`lib/ui:ui` 仍是空 group——73 个 `RefCountedDartWrappable` 包装类是 M4 的活。
+
+### 2. `//flutter/runtime` 重建（M2.2）
+
+上游这个目录是 Dart VM 嵌入层（DartVM / DartIsolate / DartSnapshot /
+IsolateConfiguration / service isolate / tonic），导入时整个删掉了。
+现在回来的只有 shell 真正需要的部分：
+
+- `runtime_delegate.h` —— 上游的契约减去四个 Dart VM 专有成员
+  （`OnRootIsolateCreated`、`UpdateIsolateDescription`、`RequestDartDeferredLibrary`，
+  以及随之而去的 `dart_api.h`）。**最要紧的那一个成员原样保留**：
+  `Render(int64_t view_id, std::unique_ptr<LayerTree>, float dpr)`。
+- `runtime_controller.{h,cc}` —— 持有一个 `RfApp`（静态链接的 Rust 框架实例）
+  而不是 root isolate，通过 `rf_app_*` C ABI 而不是 20 个
+  `tonic::DartPersistentValue` 回调与框架通信。**调用方向和时序完全不变**，
+  这正是 Engine / Animator / Rasterizer / 各嵌入层能原样不动的原因。
+- `platform_data.{h,cc}` —— 从上游原样拷回。
+
+Rust 侧 `rustflutter/src/app.rs` 实现 `rf_app_*`：视图管理、begin/draw frame、
+每个视图一次 `render` 回调交出 layer tree。应用实现 `Application` trait，
+用 `register_application` 在**运行期**注册。
+
+> 这里改过一次设计。最初让应用通过 `app!` 宏导出一个 `#[no_mangle]` 符号，
+> 由链接期解析——结果是每个链接了框架却没有应用的二进制（单测、CLI 工具）
+> 都链不上。改成运行期注册后，框架回到"一个普通库"的位置。
+
+### 3. `shell/common` 去 Dart 化（M2.3）
+
+| 文件 | 行数 | 主要改动 |
+|---|---|---|
+| `engine.{h,cc}` | 692 → 499 | 构造函数不再穿 DartVM / isolate snapshot / SkiaUnrefQueue / SnapshotDelegate / `UIDartState::Context`；`Run()` 调 `LaunchApplication` 而非 `LaunchRootIsolate`；`Restart()` 用自己的 `PlatformData` 重建控制器而不是 clone isolate |
+| `shell.{h,cc}` | 2527 → 1881 | 去掉 `DartVMRef`，去掉整个 VM service protocol（Shell 曾是 `ServiceProtocol::Handler`，11 个端点全部注册在 VM 上）；`GetConcurrentWorkerTaskRunner` 自己持有线程池；`Shell::Spawn` 明确失败——spawn 共享的是 isolate group，这里没有这种东西 |
+| `animator.cc` | — | `Dart_TimelineGetMicros()` → `fml::TimePoint::Now()`（同一个时钟） |
+| `run_configuration.{h,cc}` | — | 去掉 `IsolateConfiguration`：没有快照要加载，所以配置恒为 valid |
+| `platform_view.{h,cc}` | — | 删掉 deferred-library 钩子 |
+| `switches.cc` | — | `--dart-flags` 接受并忽略，不再对着 allow-list 检查 |
+| `shell/profiling/sampling_profiler.cc` | — | 不再给一个不存在的 service 命名线程 |
+
+### 4. 真正的 Shell 跑起来（M2.4）
+
+新增 `//flutter/rust/host` —— 上游由 `shell/platform/<os>` 承担的角色，
+但小得多：没有 platform channel、没有 plugin registrar、没有 embedder C API，
+只有一个窗口、线程模型和 shell。
+
+```
+主线程     Win32 窗口 + 消息循环（窗口消息只投递给创建它的线程）
+platform   Shell 生命周期、PlatformView
+ui         Animator → Engine → RuntimeController → Rust
+raster     Rasterizer → GPUSurfaceSoftware → 帧缓冲
+io         ShellIOManager
+```
+
+窗口线程刻意**不是** platform 线程：让它兼任意味着要把 `fml::MessageLoop`
+和 `GetMessage` 交错起来，那是 Windows 嵌入层花掉真实复杂度的地方。
+窗口学到的（尺寸、关闭）投递给 platform task runner；
+raster 线程产出的帧用 `PostMessage` 投回窗口线程，两边不直接碰对方的状态。
+
+**验证**：
+
+```
+帧率       175 帧 / 2.917 秒 = 60.0 fps，帧间隔精确 16,666 µs
+像素       #0E1626（背景）/ #1B2A3A（卡片），与 headless PNG 一致
+重排       系统把窗口缩到 644×461 后自动重新布局
+           → WM_SIZE → SetViewportMetrics → ScheduleFrame → build → render 全通
+构建       ninja 全绿，7 个 Rust 单测 + 5 个 FFI 单测通过
+脚手架     rustflutter create → gn → run 全流程可用，生成的应用同样跑在 Shell 上
+```
+
+![Hello World on the Shell](docs/hello_world_shell.png)
+
+### M2 未做的：Impeller
+
+呈现走的是 `GPUSurfaceSoftware`（Skia CPU 光栅）。Impeller 需要窗口上有
+GL 或 Vulkan 上下文——在 Windows 上就是 ANGLE，也就是上游
+`AngleSurfaceManager` 那一块。这是独立的一步，不影响 M2 已经解锁的其余部分：
+帧从 `Animator` 出发，经 `Pipeline` 到 `Rasterizer`，换 `Surface` 实现即可。
+
+### M2 已知限制
+
+- 呈现是软件光栅，见上。
+- 指针事件已接到 `rf_app_dispatch_pointer_packet`，但没有可命中测试的渲染树
+  可路由（M5），当前收下即丢。
+- 平台通道、语义、deferred loading 在 `RuntimeController` 里都是接受即返回。
+- host 只有 Windows 实现；`rf_host_run` 之上的一切（Shell、ThreadHost、
+  Animator、Rasterizer、软件 surface）都是可移植的，每个平台缺的只是
+  一个窗口和一个消息循环。
+
+---
+
+## 六、下一步
+
+M3 输入与帧调度（20 个入向回调 + gestures 1.4 万行）→
+M4 补齐 dart:ui 等价层（`lib/ui` 剩余 73 个文件机械式去包装 + 接入 flow
+其余 Layer 类型）→ M5 rendering 层 5.2 万行 → M6 widgets 层 15.9 万行 →
+M7 组件库（material 17.6 万 + cupertino 4.8 万，建议重新设计而非移植）。
+
+横向：Impeller 的 GL/Vulkan surface、mac/linux/android 的 Rust toolchain 与
+host、rustc 用 CIPD 固定、无障碍、文本编辑与输入法。

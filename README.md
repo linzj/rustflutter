@@ -13,17 +13,19 @@
 
 ## 当前状态
 
-**M0 + M1 完成**：渲染栈在无 Dart 的情况下构建通过，Rust 框架层可以驱动引擎出帧，
-`create` / `run` 项目流程可用，Hello World 在窗口中正确显示。
+**M0 + M1 + M2 完成**：整个 shell 在无 Dart 的情况下构建通过，
+应用跑在引擎自己的 Shell 上——真正的线程模型、vsync 驱动的帧调度、
+`Rasterizer` 流水线。`create` / `run` 项目流程可用。
 
 ```
-gn gen  →  998 targets from 270 files
-ninja   →  2581/2581 (Tier A),  exit 0
+gn gen  →  1001 targets from 272 files
+ninja   →  exit 0
 rustflutter_unittests   →  7 passed
 rust_ffi_unittests      →  5 passed
+帧率                    →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
 ```
 
-![Hello World](docs/hello_world.png)
+![Hello World](docs/hello_world_shell.png)
 
 ## 快速开始
 
@@ -40,7 +42,8 @@ vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建�
 ./out/host_debug_unopt/rustflutter run my_app
 ```
 
-`run` 会用 ninja 构建并打开窗口。加 `-- --png out.png` 走无头渲染（CI 用）。
+`run` 会用 ninja 构建并打开窗口，帧由 vsync 驱动。
+加 `-- --png out.png` 走无头单帧渲染（CI 用，不起 shell）。
 删除应用用 `rustflutter remove my_app`——直接删目录会在 `projects/BUILD.gn` 里
 留下悬空标签，之后每次 `gn gen` 都会失败。
 
@@ -51,25 +54,46 @@ vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建�
 ```rust
 use rustflutter::prelude::*;
 
-fn build() -> impl Widget {
-    Center::new(
-        Container::new()
-            .with_color(Color::rgb(0x1B, 0x2A, 0x3A))
-            .with_corner_radius(16.0)
-            .with_padding(EdgeInsets::symmetric(48.0, 36.0))
-            .with_child(
-                Text::new("Hello, World!")
-                    .with_size(52.0)
-                    .with_weight(700)
-                    .with_color(Color::WHITE),
-            ),
-    )
+struct AppRoot;
+
+impl Application for AppRoot {
+    fn build(&mut self, _context: &BuildContext) -> BoxedWidget {
+        Box::new(Center::new(
+            Container::new()
+                .with_color(Color::rgb(0x1B, 0x2A, 0x3A))
+                .with_corner_radius(16.0)
+                .with_padding(EdgeInsets::symmetric(48.0, 36.0))
+                .with_child(
+                    Text::new("Hello, World!")
+                        .with_size(52.0)
+                        .with_weight(700)
+                        .with_color(Color::WHITE),
+                ),
+        ))
+    }
+}
+
+fn main() {
+    register_application(|| Box::new(AppRoot));
+    run(&RunOptions::default()).unwrap();
 }
 ```
 
 布局遵循与 Flutter `RenderBox` 相同的协议：**约束下行、尺寸上行、父级定位子级**。
-`Text` 的整形排版走引擎自己的 `txt` / skparagraph，绘制进真实的 `DisplayList`，
-再由引擎的光栅化路径出像素。
+`Text` 的整形排版走引擎自己的 `txt` / skparagraph，绘制进真实的 `DisplayList`。
+
+每一帧的路径是引擎原本的那条：
+
+```
+VsyncWaiter → Animator → Engine → RuntimeController
+    → Application::build → 布局 → 绘制 → LayerTree
+    → Pipeline → Rasterizer → Surface → 屏幕
+```
+
+帧是按需的，不是自由运行的：没有请求时引擎在最后一帧之后进入空闲，
+所以一个静态界面留在屏幕上不花任何代价。动画通过
+`FrameScheduler::request_frame` 继续（等价于 dart:ui 的
+`PlatformDispatcher.scheduleFrame`）。
 
 ## 关键设计前提
 
@@ -104,11 +128,13 @@ src/
     ├── flow/              Layer 树与合成     ── 原样保留
     ├── txt/               文字排版           ── 原样保留
     ├── fml/               线程模型           ── 原样保留（去 Dart Timeline）
-    ├── shell/             壳层与平台嵌入      ── 保留（4 文件待改）
-    ├── lib/ui/            引擎对象包装层      ── 待去 Dart 化（73 文件）
+    ├── shell/             壳层与平台嵌入      ── 已去 Dart 化
+    ├── runtime/           RuntimeController   ── 重建：驱动 Rust 而非 isolate
+    ├── lib/ui/            引擎对象包装层      ── :ui_types 可用，其余待去 Dart 化（73 文件）
     └── rust/                                 ← Rust 侧
-        ├── ffi/           C ABI + C++ 实现（引擎边界、窗口呈现）
-        ├── rustflutter/   框架 crate（engine 绑定 + widgets）
+        ├── ffi/           C ABI + C++ 实现（引擎边界）
+        ├── host/          窗口 + 线程模型 + Shell 启动
+        ├── rustflutter/   框架 crate（engine 绑定 + app + widgets）
         ├── cli/           `rustflutter` 命令行工具
         ├── examples/      示例应用
         └── projects/      `rustflutter create` 生成的应用

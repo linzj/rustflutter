@@ -1,0 +1,36 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The host that puts a real Shell behind a real window. Upstream this role is
+# played by shell/platform/<os>; this is the same job at a fraction of the size,
+# because there are no platform channels, no plugin registrar and no embedder
+# C API to serve -- only a window, the thread model, and the shell.
+source_set("host") {
+  sources = [ "rustflutter_host.h" ]
+
+  if (is_win) {
+    sources += [ "rustflutter_host_win.cc" ]
+  } else {
+    sources += [ "rustflutter_host_stub.cc" ]
+  }
+
+  public_configs = [ "//flutter:config" ]
+
+  deps = [
+    "//flutter/common",
+    "//flutter/fml",
+    "//flutter/lib/ui:ui_types",
+    "//flutter/runtime",
+    "//flutter/shell/common",
+    "//flutter/shell/gpu:gpu_surface_software",
+    "//flutter/skia",
+  ]
+
+  if (is_win) {
+    libs = [
+      "gdi32.lib",
+      "user32.lib",
+    ]
+  }
+}

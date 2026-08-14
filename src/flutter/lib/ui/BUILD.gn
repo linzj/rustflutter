@@ -25,6 +25,8 @@ source_set("ui_types") {
     "io_manager.h",
     "painting/image_generator.cc",
     "painting/image_generator.h",
+    "painting/image_generator_apng.cc",
+    "painting/image_generator_apng.h",
     "painting/image_generator_registry.cc",
     "painting/image_generator_registry.h",
     "semantics/custom_accessibility_action.cc",

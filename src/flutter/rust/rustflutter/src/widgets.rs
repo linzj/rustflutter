@@ -145,6 +145,18 @@ pub trait Widget {
 
 pub type BoxedWidget = Box<dyn Widget>;
 
+/// So a boxed widget can be used anywhere a widget can -- as a child, as a
+/// layout root, as the return of `Application::build`.
+impl<W: Widget + ?Sized> Widget for Box<W> {
+    fn layout(&mut self, constraints: Constraints) -> Size {
+        (**self).layout(constraints)
+    }
+
+    fn paint(&self, canvas: &mut Canvas, offset: Offset) {
+        (**self).paint(canvas, offset)
+    }
+}
+
 // -- Text ---------------------------------------------------------------------
 
 /// A run of text, shaped by the engine's `txt` / skparagraph stack.

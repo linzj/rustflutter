@@ -76,6 +76,49 @@ struct RfAppHost {
 
 // -- What an app implements ---------------------------------------------------
 
+/// Lets an application ask for another frame.
+///
+/// Equivalent to dart:ui's `PlatformDispatcher.scheduleFrame`. Frames are on
+/// demand, not free-running: without a request the engine goes idle after the
+/// last one, which is why a static UI costs nothing to keep on screen.
+#[derive(Clone, Copy)]
+pub struct FrameScheduler {
+    host: RfAppHost,
+}
+
+impl Default for FrameScheduler {
+    /// A scheduler with nowhere to send the request. Requesting a frame on it
+    /// does nothing, which is what the headless single-frame path wants.
+    fn default() -> FrameScheduler {
+        FrameScheduler {
+            host: RfAppHost {
+                user_data: std::ptr::null_mut(),
+                render: None,
+                schedule_frame: None,
+            },
+        }
+    }
+}
+
+impl FrameScheduler {
+    /// Requests one more frame. Repeated calls within a frame coalesce.
+    pub fn request_frame(&self) {
+        if let Some(schedule) = self.host.schedule_frame {
+            unsafe { schedule(self.host.user_data) };
+        }
+    }
+}
+
+/// Context handed to [`Application::begin_frame`].
+pub struct FrameContext {
+    /// Frame number, monotonically increasing from 1.
+    pub frame_number: u64,
+    /// Time the frame is targeted at, in microseconds since epoch.
+    pub frame_time_micros: i64,
+    /// Ask for the frame after this one -- how an animation keeps going.
+    pub scheduler: FrameScheduler,
+}
+
 /// Context handed to [`Application::build`] each frame.
 pub struct BuildContext {
     /// Which view is being built. Single-window apps only ever see the
@@ -89,6 +132,8 @@ pub struct BuildContext {
     pub frame_number: u64,
     /// Time the frame is targeted at, in microseconds since epoch.
     pub frame_time_micros: i64,
+    /// Ask for another frame, e.g. because this build started an animation.
+    pub scheduler: FrameScheduler,
 }
 
 /// The root of a rustflutter application.
@@ -105,8 +150,9 @@ pub trait Application {
     }
 
     /// Advances animations. Called before `build`, matching dart:ui's
-    /// `onBeginFrame` running ahead of `onDrawFrame`.
-    fn begin_frame(&mut self, _frame_time_micros: i64, _frame_number: u64) {}
+    /// `onBeginFrame` running ahead of `onDrawFrame` -- an animation that
+    /// starts here is visible to the build that follows it in the same frame.
+    fn begin_frame(&mut self, _context: &FrameContext) {}
 }
 
 /// Builds the application's root object. Registered before the shell starts.
@@ -168,6 +214,7 @@ impl AppInstance {
             metrics,
             frame_number: self.frame_number,
             frame_time_micros: self.frame_time_micros,
+            scheduler: FrameScheduler { host: self.host },
         };
         let background = application.background();
         let mut root = application.build(&context);
@@ -203,6 +250,71 @@ fn instance<'a>(app: *mut RfApp) -> Option<&'a mut AppInstance> {
 /// Opaque to C; every `rf_app_*` function casts it back to `AppInstance`.
 #[allow(non_camel_case_types)]
 pub enum RfApp {}
+
+// -- Starting the shell -------------------------------------------------------
+
+// Gated the same way as the C ABI below: the crate's `#[test]` binary is linked
+// by rustc without the C++ engine, so a reference to rf_host_run would leave it
+// undefined.
+#[cfg(not(test))]
+mod host_sys {
+    use std::os::raw::{c_char, c_int};
+
+    #[repr(C)]
+    pub struct RfHostOptions {
+        pub width: c_int,
+        pub height: c_int,
+        pub title: *const c_char,
+        pub icu_data_path: *const c_char,
+        pub enable_impeller: c_int,
+    }
+
+    unsafe extern "C" {
+        pub fn rf_host_run(options: *const RfHostOptions) -> c_int;
+    }
+}
+
+/// How the window and the shell are configured.
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    /// Client-area size in physical pixels.
+    pub width: i32,
+    pub height: i32,
+    pub title: String,
+    /// Render with Impeller instead of the Skia software surface. Not wired to
+    /// a GL context yet, so leave it off.
+    pub impeller: bool,
+}
+
+impl Default for RunOptions {
+    fn default() -> RunOptions {
+        RunOptions {
+            width: 800,
+            height: 600,
+            title: String::from("rustflutter"),
+            impeller: false,
+        }
+    }
+}
+
+/// Opens a window, starts the shell, and blocks until the window closes.
+///
+/// Call [`register_application`] first. From here on the engine is in charge:
+/// frames come from vsync, and each one runs
+/// `Animator -> Engine -> RuntimeController -> Application::build`.
+#[cfg(not(test))]
+pub fn run(options: &RunOptions) -> Result<(), i32> {
+    let title = std::ffi::CString::new(options.title.as_str()).map_err(|_| -1)?;
+    let raw = host_sys::RfHostOptions {
+        width: options.width,
+        height: options.height,
+        title: title.as_ptr(),
+        icu_data_path: std::ptr::null(),
+        enable_impeller: if options.impeller { 1 } else { 0 },
+    };
+    let code = unsafe { host_sys::rf_host_run(&raw) };
+    if code == 0 { Ok(()) } else { Err(code) }
+}
 
 // -- The C ABI ----------------------------------------------------------------
 
@@ -315,8 +427,15 @@ mod abi {
         let Some(instance) = instance(app) else { return };
         instance.frame_time_micros = frame_time_micros;
         instance.frame_number = frame_number;
+        // Copy the host out first: `application` borrows `instance` mutably,
+        // and the scheduler needs the host at the same time.
+        let scheduler = FrameScheduler { host: instance.host };
         if let Some(application) = instance.application.as_mut() {
-            application.begin_frame(frame_time_micros, frame_number);
+            application.begin_frame(&FrameContext {
+                frame_number,
+                frame_time_micros,
+                scheduler,
+            });
         }
     }
 
