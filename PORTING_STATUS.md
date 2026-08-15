@@ -346,7 +346,7 @@ Rust 侧 `rustflutter/src/app.rs` 实现 `rf_app_*`：视图管理、begin/draw 
 
 新增 `//flutter/rust/host` —— 上游由 `shell/platform/<os>` 承担的角色，
 但小得多：没有 platform channel、没有 plugin registrar、没有 embedder C API，
-只有一个窗口、线程模型和 shell。
+只有一个窗口、线程模型和 shell。（平台通道后来补上了，见第十五节。）
 
 ```
 主线程     Win32 窗口 + 消息循环（窗口消息只投递给创建它的线程）
@@ -1043,7 +1043,118 @@ host 的 `WM_KEYDOWN → VK_ESCAPE → WM_CLOSE`。它是调试快捷键，在�
 → 键把查看器从 `photo_003` 走到 `photo_004`、`photo_005`，← 走回
 `photo_004`（均值逐像素相同），Esc 回到网格（画面 distinct 颜色数 108 → 490）。
 
-## 十五、下一步
+## 十五、平台通道 —— 传输层完成
+
+引擎唯一的扩展点，也是唯一一处**不是按框架需要设计、而是按已经存在的东西
+设计**的地方：通道上的字节在每个 Flutter 平台上都一样，所以一个现成插件的
+Android / iOS 那一半，在这里照样能用，它不需要知道另一端换成了 Rust。
+
+### 断点只有一处
+
+引擎侧那条链本来就是通的、就是上游的：
+
+```
+框架 → RfAppHost::send_platform_message → RuntimeController
+     → RuntimeDelegate::HandlePlatformMessage → Engine → Shell → PlatformView → 嵌入层
+嵌入层 → PlatformView::DispatchPlatformMessage → Shell → Engine::DispatchPlatformMessage
+     → RuntimeController::DispatchPlatformMessage → rf_app_dispatch_platform_message → 框架
+```
+
+改动落在 `runtime_controller.{h,cc}` 和 `rust_app_api.h` —— 和键盘那次一样，
+是这个 fork 本来就重写了的两个文件。`Engine::DispatchPlatformMessage` 自己认
+`flutter/settings`、`flutter/localization`、`flutter/navigation` 并就地答掉，
+`flutter/lifecycle` 明确**不**消费（`HandleLifecyclePlatformMessage` 返回 false，
+好让框架也看得到）——这个分工是上游的，没有动。
+
+### 一个整数换一个引用计数对象
+
+回复句柄是 `fml::RefPtr<PlatformMessageResponse>`，过不了 C ABI。所以两个方向
+各有一张表，用整数在边界上顶替它：
+
+| 方向 | id 由谁分配 | 表在哪 |
+|---|---|---|
+| 嵌入层 → 框架 | C++ (`next_response_id_`) | `RuntimeController::pending_responses_` |
+| 框架 → 嵌入层 | Rust (`next_response_id`) | `Messenger::waiting` |
+
+上游不需要这个：Dart 那边有 `PlatformMessageResponse` 的 peer 对象可以挂。
+纯 C 边界没地方挂。
+
+**必须恰好答一次。** 答不上的那条也要答：
+`RuntimeController` 析构时把还挂着的全部 `CompleteEmpty`，`services::detach`
+把还在等的回调全部以 `None` 触发。少答一次不是"没结果"，是嵌入层那边一个
+永远不跑的 task，和一个永远等下去的调用者。
+
+### 框架侧三层，和上游一样是三层
+
+| 层 | 上游 | 这里 |
+|---|---|---|
+| 通道上的字节 | `BinaryMessenger` | `services` 的自由函数 |
+| 值，经编解码器 | `BasicMessageChannel` | `BasicMessageChannel` |
+| 调用与回复 | `MethodChannel` / `EventChannel` | 同名 |
+
+四个编解码器全在，而且**不能只做一个**：通道的编解码器是定义通道的人定的，
+`flutter/platform` 说 JSON，`flutter/mousecursor` 说二进制标准格式。
+
+JSON 是手写的，理由和 `[dependencies]` 是空的一样——上游 C++ 那侧
+（`json_message_codec.cc`）也是包了一层引擎本来就 vendor 的 rapidjson，
+而不是新加一个依赖。
+
+标准编解码器里有一处容易漏：**对齐是格式的一部分**。定长数组要补齐到自己
+元素大小的整数倍，而且是**从整个 buffer 的开头**算起——Dart 那边直接
+`Float64List.view`，偏移没对齐会抛异常。写的人和读的人必须从同一个原点数。
+
+### 提前到达的消息
+
+嵌入层在框架刚起来时就发 `flutter/lifecycle`，那时应用代码一行都还没跑，
+自然也没注册 handler。上游用 `ChannelBuffers` 存着（每通道一深，
+handler 出现时排空），这里照做，理由一样：丢了它，应用就会以为自己处在
+默认状态。
+
+这里比上游多一个状态。上游的 handler 是 Dart 函数，重入调用没问题；
+这里是 `FnMut`，跑的时候被借出去了，所以通道要区分**没人听**和
+**有人听但正在跑**：前者按容量缓冲（会丢旧的），后者无条件排队（不会丢，
+因为这条消息是有人管的，只是还没轮到）。
+
+`RefCell` 也因此从不跨用户代码借用——handler 里再发一条消息是家常便饭，
+借着不放就会自己撞自己。
+
+### host 那侧做了什么
+
+| 通道 | 方向 | 内容 |
+|---|---|---|
+| `flutter/lifecycle` | host → 框架 | 启动 resumed；`WM_ACTIVATE` in/active；最小化 hidden；`WM_DESTROY` detached |
+| `flutter/platform` | 框架 → host | `Clipboard.getData/setData/hasStrings`、`SystemNavigator.pop`、`SystemSound.play` |
+
+剪贴板用 `ScopedClipboard` 重试着开——剪贴板是一把全局锁，别的进程复制完
+可能还按着几毫秒。上游 `ScopedClipboard` 同样重试，同样的理由：第一次就
+失败会让"粘贴"变成偶尔不灵，那比彻底不能用还糟。
+
+`flutter/mousecursor` 没做：它说二进制标准格式，host 这边得有一个 C++ 的
+标准编解码器。框架侧 `SystemMouseCursor::activate` 是通的，发出去没人答，
+回来是空的——和一个 Flutter 应用调用未安装插件拿到的答案是同一个。
+
+### 验证
+
+一个临时探针 app（跑完即删）打在真 shell 上：
+
+```
+PROBE lifecycle Resumed        ← handler 注册之前就发来的，被缓冲住了
+PROBE hasStrings true
+PROBE getData Some("rustflutter probe")     ← setData 出去、getData 回来
+PROBE absent Ok(None)          ← 没人服务的通道，是空回复不是挂住
+PROBE badFormat Err(MethodError { code: "Clipboard.unknownFormat", ... })
+PROBE closing
+PROBE lifecycle Inactive
+PROBE lifecycle Detached       ← SystemNavigator.pop 真把窗口关了，进程自己退出 0
+```
+
+单测 132 → 179（+47）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
+打进去、逐帧读回 GPU framebuffer）照旧 PASS —— `flutter/keydata` 和新的
+通道走的是同一个 `DispatchPlatformMessage`。
+
+---
+
+## 十六、下一步
 
 按价值排序：
 
@@ -1056,8 +1167,11 @@ host 的 `WM_KEYDOWN → VK_ESCAPE → WM_CLOSE`。它是调试快捷键，在�
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-4. **平台通道。** services 3 万行。好消息：`PlatformMessage` 是语言无关的
-   二进制通道，现存插件的 Android/iOS 原生侧全部可复用。
+4. **嵌入层那一侧的通道。** 传输、编解码器、三层通道都有了（第十五节），
+   缺的是 host 里答话的人：`flutter/mousecursor` 要一个 C++ 的标准编解码器，
+   `flutter/textinput` 要输入法，`flutter/settings` 与 `flutter/localization`
+   被 `Engine` 就地答掉，它们说的话要经 `SetUserSettingsData` / `SetLocales`
+   再进框架，而这两个现在只记在 `platform_data_` 里没往下送。
 5. **焦点树。** 键盘现在只到应用级。上游那一摊在框架侧一万六千行，
    其中 `focus_traversal.dart` 单文件 2575 行——光是"Tab 该往哪儿走"。
 6. **键盘的 redispatch。** 让框架能真正吃掉一个键。需要把 `on_key` 的答案

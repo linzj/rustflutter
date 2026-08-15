@@ -4,8 +4,9 @@
 
 # The host that puts a real Shell behind a real window. Upstream this role is
 # played by shell/platform/<os>; this is the same job at a fraction of the size,
-# because there are no platform channels, no plugin registrar and no embedder
-# C API to serve -- only a window, the thread model, and the shell.
+# because there is no plugin registrar and no embedder C API to serve -- only a
+# window, the thread model, the shell, and the two platform channels the engine
+# itself defines.
 source_set("host") {
   sources = [ "rustflutter_host.h" ]
 
@@ -34,6 +35,10 @@ source_set("host") {
     "//flutter/shell/common",
     "//flutter/shell/gpu:gpu_surface_software",
     "//flutter/skia",
+
+    # `flutter/platform` speaks JSON, and this is the JSON the engine already
+    # vendors and parses its own channels with (shell/common/engine.cc).
+    "//flutter/third_party/rapidjson",
   ]
 
   if (is_win) {

@@ -34,6 +34,7 @@ pub mod keyboard;
 pub mod navigation;
 pub mod painting;
 pub mod render;
+pub mod services;
 pub mod widgets;
 
 pub use app::{
@@ -55,6 +56,10 @@ pub use components::{
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
+pub use services::{
+    BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
+    MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
+};
 pub use framework::{
     AnyWidget, Component, ElementTree, Key, RenderWidget, StateHandle, StatefulComponent,
     component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide, single, stateful,
@@ -92,6 +97,11 @@ pub mod prelude {
         theme_of,
     };
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
+    pub use crate::services::system::{
+        AppLifecycleState, Clipboard, HapticFeedback, SystemChrome, SystemMouseCursor,
+        SystemNavigator, SystemSound, SystemSoundType,
+    };
+    pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
         keyed_single, leaf, many, provide, single, stateful,

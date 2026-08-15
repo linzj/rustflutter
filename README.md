@@ -325,8 +325,16 @@ changed, and what is worth doing next are in
   re-posting it to the message queue after the framework has replied, which is
   the bulk of upstream's `KeyboardManager`. There is also no focus tree, so key
   handling is application-wide rather than per-widget.
-- **No text input, platform channels or accessibility.** `flutter/keydata` is
-  decoded; every other channel is dropped.
+- **No text input or accessibility.** Platform channels carry them upstream and
+  the channels are here now, but nothing implements either end: there is no IME
+  and no semantics tree to describe.
+- **The host serves two channels, not twenty.** Platform messages work in both
+  directions, with codecs, replies and buffering; what is missing is embedder
+  code to answer with. The Windows host sends `flutter/lifecycle` and answers
+  `flutter/platform` (clipboard, sound, exit). `flutter/mousecursor`,
+  `flutter/textinput` and the rest reach it and come back unanswered, which the
+  framework reads as "nobody implements this" -- the same answer a Flutter app
+  gets for a plugin it did not install.
 - **There will be no hot reload.** That is a Dart VM capability with no Rust
   equivalent.
 

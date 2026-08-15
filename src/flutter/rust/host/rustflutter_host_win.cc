@@ -69,6 +69,9 @@
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
 namespace flutter {
@@ -405,6 +408,241 @@ class VsyncWaiterWin final : public VsyncWaiter {
 };
 
 //------------------------------------------------------------------------------
+// Platform channels.
+//
+// The half of a platform message that runs outside the framework. Upstream
+// this is a plugin per channel registered on a `BinaryMessenger`; here it is
+// one switch, because there is no plugin system to register with and only the
+// channels the engine itself defines are served.
+//
+// `flutter/platform` speaks JSON -- `{"method": ..., "args": ...}` in, a
+// one-element array out on success and a three-element one on failure. Not a
+// choice: the channel predates the binary codec and its Android, iOS, Linux and
+// macOS halves are all written against JSON.
+
+constexpr char kPlatformChannel[] = "flutter/platform";
+constexpr char kLifecycleChannel[] = "flutter/lifecycle";
+
+/// UTF-16 to UTF-8, for text coming out of the clipboard.
+std::string Narrow(const std::wstring& wide) {
+  if (wide.empty()) {
+    return {};
+  }
+  int length = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(),
+                                   static_cast<int>(wide.size()), nullptr, 0,
+                                   nullptr, nullptr);
+  if (length <= 0) {
+    return {};
+  }
+  std::string out(static_cast<size_t>(length), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()),
+                      out.data(), length, nullptr, nullptr);
+  return out;
+}
+
+std::wstring WidenText(const std::string& utf8) {
+  if (utf8.empty()) {
+    return {};
+  }
+  int length = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                                   static_cast<int>(utf8.size()), nullptr, 0);
+  if (length <= 0) {
+    return {};
+  }
+  std::wstring out(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()),
+                      out.data(), length);
+  return out;
+}
+
+/// Opens the clipboard, retrying briefly.
+///
+/// The clipboard is a single global lock and another process may hold it for a
+/// few milliseconds after a copy. Upstream's `ScopedClipboard` retries for the
+/// same reason; failing on the first attempt would make paste flaky rather than
+/// broken, which is worse.
+class ScopedClipboard {
+ public:
+  explicit ScopedClipboard(HWND owner) {
+    for (int attempt = 0; attempt < 10; ++attempt) {
+      if (OpenClipboard(owner)) {
+        opened_ = true;
+        return;
+      }
+      Sleep(10);
+    }
+  }
+
+  ~ScopedClipboard() {
+    if (opened_) {
+      CloseClipboard();
+    }
+  }
+
+  bool opened() const { return opened_; }
+
+  ScopedClipboard(const ScopedClipboard&) = delete;
+  ScopedClipboard& operator=(const ScopedClipboard&) = delete;
+
+ private:
+  bool opened_ = false;
+};
+
+/// The clipboard's text, or nothing if it holds none.
+std::optional<std::string> ClipboardText(HWND window) {
+  ScopedClipboard clipboard(window);
+  if (!clipboard.opened()) {
+    return std::nullopt;
+  }
+  HANDLE data = GetClipboardData(CF_UNICODETEXT);
+  if (data == nullptr) {
+    return std::nullopt;
+  }
+  auto* text = static_cast<wchar_t*>(GlobalLock(data));
+  if (text == nullptr) {
+    return std::nullopt;
+  }
+  std::string utf8 = Narrow(std::wstring(text));
+  GlobalUnlock(data);
+  return utf8;
+}
+
+bool SetClipboardText(HWND window, const std::string& utf8) {
+  ScopedClipboard clipboard(window);
+  if (!clipboard.opened() || !EmptyClipboard()) {
+    return false;
+  }
+  std::wstring wide = WidenText(utf8);
+  // The clipboard takes ownership of the handle on success, so it is only
+  // freed on the paths where SetClipboardData was not reached.
+  HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
+  if (handle == nullptr) {
+    return false;
+  }
+  auto* destination = static_cast<wchar_t*>(GlobalLock(handle));
+  if (destination == nullptr) {
+    GlobalFree(handle);
+    return false;
+  }
+  memcpy(destination, wide.c_str(), (wide.size() + 1) * sizeof(wchar_t));
+  GlobalUnlock(handle);
+  if (SetClipboardData(CF_UNICODETEXT, handle) == nullptr) {
+    GlobalFree(handle);
+    return false;
+  }
+  return true;
+}
+
+/// A JSON success envelope: the result, wrapped in a one-element array.
+std::string SuccessEnvelope(
+    const std::function<void(rapidjson::Writer<rapidjson::StringBuffer>&)>&
+        write_result) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartArray();
+  write_result(writer);
+  writer.EndArray();
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+std::string NullEnvelope() {
+  return SuccessEnvelope([](auto& writer) { writer.Null(); });
+}
+
+/// A JSON error envelope: code, message and details, in that order.
+std::string ErrorEnvelope(const char* code, const char* message) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartArray();
+  writer.String(code);
+  writer.String(message);
+  writer.Null();
+  writer.EndArray();
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+/// Handles one call on `flutter/platform`.
+///
+/// Returns the reply, or nothing for a method this host does not implement --
+/// which is answered with an empty message rather than an error, because that
+/// is what tells the framework nobody served it. `SystemChannels.platform` is
+/// an `OptionalMethodChannel` precisely so that an unimplemented method is
+/// quiet rather than an exception.
+std::optional<std::string> HandlePlatformCall(HWND window,
+                                              const std::string& method,
+                                              const rapidjson::Value* args) {
+  if (method == "SystemNavigator.pop") {
+    // Posted rather than sent: this runs on the platform thread and the window
+    // belongs to another one, and closing a window from underneath the shell
+    // that is mid-message would tear down the thread answering it.
+    PostMessage(window, WM_CLOSE, 0, 0);
+    return NullEnvelope();
+  }
+
+  if (method == "SystemSound.play") {
+    const bool alert = args != nullptr && args->IsString() &&
+                       std::string(args->GetString()) == "SystemSoundType.alert";
+    MessageBeep(alert ? MB_ICONASTERISK : MB_OK);
+    return NullEnvelope();
+  }
+
+  if (method == "Clipboard.getData") {
+    // The argument is the format, and "text/plain" is the only one the channel
+    // has ever defined. Anything else is a caller error rather than a platform
+    // limitation, so it is an error envelope rather than an empty reply.
+    if (args == nullptr || !args->IsString() ||
+        std::string(args->GetString()) != "text/plain") {
+      return ErrorEnvelope("Clipboard.unknownFormat",
+                           "Only text/plain is supported.");
+    }
+    auto text = ClipboardText(window);
+    if (!text.has_value()) {
+      // Empty clipboard, or one holding something that is not text. Upstream
+      // answers null here; the caller reads that as "nothing to paste".
+      return NullEnvelope();
+    }
+    return SuccessEnvelope([&text](auto& writer) {
+      writer.StartObject();
+      writer.Key("text");
+      writer.String(text->c_str(),
+                    static_cast<rapidjson::SizeType>(text->size()));
+      writer.EndObject();
+    });
+  }
+
+  if (method == "Clipboard.setData") {
+    if (args == nullptr || !args->IsObject()) {
+      return ErrorEnvelope("Clipboard.setDataFailed", "No data to set.");
+    }
+    auto text = args->FindMember("text");
+    if (text == args->MemberEnd() || !text->value.IsString()) {
+      return ErrorEnvelope("Clipboard.setDataFailed", "No text to set.");
+    }
+    if (!SetClipboardText(window, text->value.GetString())) {
+      return ErrorEnvelope("Clipboard.setDataFailed",
+                           "The clipboard could not be written.");
+    }
+    return NullEnvelope();
+  }
+
+  if (method == "Clipboard.hasStrings") {
+    // Deliberately not a read. On some platforms reading the clipboard is
+    // visible to the user, and a paste button only needs to know whether to be
+    // enabled -- which is the whole reason this method exists apart from
+    // getData.
+    const bool has_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0;
+    return SuccessEnvelope([has_text](auto& writer) {
+      writer.StartObject();
+      writer.Key("value");
+      writer.Bool(has_text);
+      writer.EndObject();
+    });
+  }
+
+  return std::nullopt;
+}
+
+//------------------------------------------------------------------------------
 /// The shell's view of the window.
 ///
 /// Lives on the platform thread. AcquireBackingStore and PresentBackingStore
@@ -546,6 +784,67 @@ class HostPlatformView final : public PlatformView,
   /// the key, and the only thing to do with that answer is to re-post the
   /// unhandled ones so the system still sees them -- which this host does not
   /// do, because it never withheld them in the first place.
+  // |PlatformView|
+  //
+  // A message from the framework, on the platform thread. Upstream this is
+  // where an embedder's plugins are dispatched to; here it is the one channel
+  // this host serves. Everything else -- including `flutter/mousecursor`, which
+  // needs the binary codec -- falls through to an empty reply, which the
+  // framework reads as "nobody implements this".
+  void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
+    if (message->channel() != kPlatformChannel) {
+      PlatformView::HandlePlatformMessage(std::move(message));
+      return;
+    }
+
+    const auto& data = message->data();
+    rapidjson::Document document;
+    document.Parse(reinterpret_cast<const char*>(data.GetMapping()),
+                   data.GetSize());
+
+    std::optional<std::string> reply;
+    if (!document.HasParseError() && document.IsObject()) {
+      auto method = document.FindMember("method");
+      if (method != document.MemberEnd() && method->value.IsString()) {
+        auto args = document.FindMember("args");
+        reply = HandlePlatformCall(
+            window_, method->value.GetString(),
+            args == document.MemberEnd() ? nullptr : &args->value);
+      }
+    }
+
+    auto response = message->response();
+    if (!response) {
+      return;
+    }
+    if (!reply.has_value()) {
+      response->CompleteEmpty();
+      return;
+    }
+    response->Complete(std::make_unique<fml::DataMapping>(
+        std::vector<uint8_t>(reply->begin(), reply->end())));
+  }
+
+  //----------------------------------------------------------------------------
+  /// Tells the framework what the application is doing.
+  ///
+  /// One bare string on `flutter/lifecycle`, with no codec and no envelope --
+  /// there is nothing else the channel could ever need to say. `Engine` records
+  /// it on the way past and deliberately does not consume it, so the framework
+  /// sees it too.
+  void SendLifecycleState(const char* state) {
+    auto message = std::make_unique<PlatformMessage>(
+        kLifecycleChannel,
+        fml::MallocMapping::Copy(state, strlen(state)),
+        /*response=*/nullptr);
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+          if (weak) {
+            weak->DispatchPlatformMessage(std::move(message));
+          }
+        }));
+  }
+
   void SendKey(const KeyData& data, const std::string& character) {
     KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
     auto message = std::make_unique<PlatformMessage>(
@@ -656,7 +955,23 @@ struct WindowState {
   /// SyncModifiers knows what it has to correct.
   bool shift_reported = false;
   bool control_reported = false;
+  /// The last lifecycle state the framework was told about, so a window that
+  /// is activated twice does not say so twice. The states are level-triggered:
+  /// each one replaces the last, and repeating one carries no information.
+  std::string lifecycle_state;
 };
+
+/// Reports a lifecycle state, if it is a change.
+void SendLifecycle(WindowState* state, const char* next) {
+  if (state == nullptr || state->platform_view == nullptr) {
+    return;
+  }
+  if (state->lifecycle_state == next) {
+    return;
+  }
+  state->lifecycle_state = next;
+  state->platform_view->SendLifecycleState(next);
+}
 
 //------------------------------------------------------------------------------
 /// Builds a PointerData for one Win32 mouse message.
@@ -1047,6 +1362,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       return 1;
     case WM_SIZE:
       if (state != nullptr) {
+        // Minimised is `hidden` rather than `paused`: the application is still
+        // running and still owns its window, it simply cannot be seen. That is
+        // the distinction an animation should stop on and a timer should not.
+        if (wparam == SIZE_MINIMIZED) {
+          SendLifecycle(state, "AppLifecycleState.hidden");
+        } else if (state->lifecycle_state == "AppLifecycleState.hidden") {
+          SendLifecycle(state, "AppLifecycleState.inactive");
+        }
         // The EGL surface has to be remade on the raster thread, where the GL
         // context lives, before the next frame is presented to it.
         if (state->platform_view != nullptr && state->raster_task_runner) {
@@ -1057,6 +1380,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         SendViewportMetrics(state, LOWORD(lparam), HIWORD(lparam));
       }
       return 0;
+    case WM_ACTIVATE:
+      if (state != nullptr) {
+        SendLifecycle(state, LOWORD(wparam) == WA_INACTIVE
+                                 ? "AppLifecycleState.inactive"
+                                 : "AppLifecycleState.resumed");
+      }
+      break;
     case WM_DPICHANGED: {
       // The window was dragged onto a display with a different scale, or the
       // display's scale changed under it. Windows hands over the rectangle the
@@ -1178,6 +1508,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       break;
     case WM_DESTROY:
+      // The last thing the framework hears. It is sent rather than skipped
+      // because an application may have something to write down before it
+      // goes -- upstream's `detached` is where state restoration saves.
+      SendLifecycle(state, "AppLifecycleState.detached");
       PostQuitMessage(0);
       return 0;
     default:
@@ -1365,6 +1699,12 @@ int32_t rf_host_run(const RfHostOptions* options) {
             state.device_pixel_ratio));
         shell->OnDisplayUpdates(std::move(displays));
         SendViewportMetrics(&state, width, height);
+        // The window is about to be shown. Saying so here rather than waiting
+        // for the WM_ACTIVATE that follows means the framework's first frame
+        // already knows the application is running -- and the messenger holds
+        // the message until something registers a handler, which application
+        // code has not had a chance to do yet.
+        SendLifecycle(&state, "AppLifecycleState.resumed");
       }));
 
   ShowWindow(window, SW_SHOWNORMAL);

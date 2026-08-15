@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "flutter/fml/logging.h"
+#include "flutter/fml/make_copyable.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 
@@ -21,6 +22,66 @@ namespace {
 /// copies of one string upstream; this is the fifth, and it has to match.
 constexpr char kKeyDataChannel[] = "flutter/keydata";
 
+//------------------------------------------------------------------------------
+/// The reply to a message the framework sent.
+///
+/// Upstream's counterpart is PlatformMessageResponseDart, and the two problems
+/// it solves are the two solved here. First, `Complete` is callable from any
+/// thread -- the embedder answers wherever it happens to be, and the framework
+/// may only be touched on the UI thread -- so the answer is posted rather than
+/// delivered. Second, by the time it lands the controller may be gone: an
+/// application that shuts down with a clipboard read outstanding is ordinary,
+/// so the reference is weak and the task simply does nothing if it has expired.
+///
+/// The framework's id travels with it because the C ABI cannot carry a
+/// ref-counted C++ object; see RuntimeController::pending_responses_ for the
+/// same trick in the other direction.
+class RustPlatformMessageResponse : public PlatformMessageResponse {
+ public:
+  void Complete(std::unique_ptr<fml::Mapping> data) override {
+    Post(std::move(data));
+  }
+
+  void CompleteEmpty() override { Post(nullptr); }
+
+ private:
+  RustPlatformMessageResponse(fml::RefPtr<fml::TaskRunner> ui_task_runner,
+                              fml::WeakPtr<RuntimeController> controller,
+                              int64_t response_id)
+      : ui_task_runner_(std::move(ui_task_runner)),
+        controller_(std::move(controller)),
+        response_id_(response_id) {}
+
+  void Post(std::unique_ptr<fml::Mapping> data) {
+    if (is_complete_) {
+      // A response completed twice would deliver a reply to a caller that has
+      // already been answered and released.
+      FML_LOG(ERROR) << "Platform message response completed more than once.";
+      return;
+    }
+    is_complete_ = true;
+    if (!ui_task_runner_) {
+      return;
+    }
+    ui_task_runner_->PostTask(fml::MakeCopyable(
+        [controller = controller_, response_id = response_id_,
+         data = std::move(data)]() mutable {
+          if (controller) {
+            controller->CompletePlatformMessageReply(response_id,
+                                                     std::move(data));
+          }
+        }));
+  }
+
+  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
+  fml::WeakPtr<RuntimeController> controller_;
+  int64_t response_id_ = 0;
+
+  FML_FRIEND_MAKE_REF_COUNTED(RustPlatformMessageResponse);
+  FML_FRIEND_REF_COUNTED_THREAD_SAFE(RustPlatformMessageResponse);
+  FML_DISALLOW_COPY_AND_ASSIGN(RustPlatformMessageResponse);
+};
+
 }  // namespace
 
 RuntimeController::RuntimeController(RuntimeDelegate& client,
@@ -28,9 +89,19 @@ RuntimeController::RuntimeController(RuntimeDelegate& client,
                                      const PlatformData& platform_data)
     : client_(client),
       task_runners_(task_runners),
-      platform_data_(platform_data) {}
+      platform_data_(platform_data),
+      weak_factory_(this) {}
 
 RuntimeController::~RuntimeController() {
+  // Anything the framework was still holding is answered with nothing. The
+  // embedder is waiting on these, and an unanswered response handle is a caller
+  // that never learns its message went nowhere -- on Windows that is a platform
+  // thread task that never runs.
+  for (auto& [response_id, response] : pending_responses_) {
+    response->CompleteEmpty();
+  }
+  pending_responses_.clear();
+
   if (app_ != nullptr) {
     rf_app_destroy(app_);
     app_ = nullptr;
@@ -47,6 +118,10 @@ bool RuntimeController::LaunchApplication() {
   host.user_data = this;
   host.render = &RuntimeController::OnRender;
   host.schedule_frame = &RuntimeController::OnScheduleFrame;
+  host.send_platform_message = &RuntimeController::OnSendPlatformMessage;
+  host.respond_to_platform_message =
+      &RuntimeController::OnRespondToPlatformMessage;
+  host.send_channel_update = &RuntimeController::OnSendChannelUpdate;
 
   app_ = rf_app_create(&host);
   if (app_ == nullptr) {
@@ -272,15 +347,112 @@ bool RuntimeController::DispatchPlatformMessage(
     return false;
   }
   if (message->channel() == kKeyDataChannel) {
+    // Not handed to the messenger, and upstream does not hand it over either:
+    // `flutter/keydata` is the one channel dart:ui reads directly, in
+    // PlatformDispatcher rather than through a MethodChannel, precisely so that
+    // input does not queue behind the plugin system. Its payload is a packed
+    // KeyDataPacket rather than a codec's output, so there is nothing a channel
+    // could do with it anyway.
     DispatchKeyDataPacket(*message);
     return true;
   }
-  // Platform channels are M4 work; the message is dropped rather than leaked.
-  // The keyboard is decoded here rather than waiting for them because upstream
-  // does not treat it as a channel either: `flutter/keydata` is the one channel
-  // dart:ui listens to directly, in PlatformDispatcher rather than in a
-  // MethodChannel, precisely so that input does not wait on the plugin system.
+
+  // A response handle is a ref-counted C++ object and cannot cross a C ABI, so
+  // it stays here and an integer goes over in its place. Zero means the
+  // embedder wants no reply, which is most messages.
+  int64_t response_id = 0;
+  if (message->response()) {
+    response_id = next_response_id_++;
+    pending_responses_[response_id] = message->response();
+  }
+
+  const auto& data = message->data();
+  rf_app_dispatch_platform_message(app_, message->channel().c_str(),
+                                   data.GetMapping(), data.GetSize(),
+                                   response_id);
   return true;
+}
+
+void RuntimeController::CompletePlatformMessageReply(
+    int64_t response_id,
+    std::unique_ptr<fml::Mapping> data) {
+  if (app_ == nullptr) {
+    return;
+  }
+  if (data == nullptr) {
+    // Nothing handled the message. The framework tells this apart from an
+    // empty reply -- it is what raises MissingPluginException upstream -- so
+    // the null has to survive the crossing rather than becoming zero bytes.
+    rf_app_complete_platform_message_reply(app_, response_id, nullptr, 0);
+    return;
+  }
+  rf_app_complete_platform_message_reply(app_, response_id, data->GetMapping(),
+                                         data->GetSize());
+}
+
+void RuntimeController::OnSendPlatformMessage(void* user_data,
+                                              const char* channel,
+                                              const uint8_t* message,
+                                              size_t length,
+                                              int64_t response_id) {
+  auto* controller = static_cast<RuntimeController*>(user_data);
+  if (controller == nullptr || channel == nullptr) {
+    return;
+  }
+
+  fml::RefPtr<PlatformMessageResponse> response;
+  if (response_id != 0) {
+    response = fml::MakeRefCounted<RustPlatformMessageResponse>(
+        controller->task_runners_.GetUITaskRunner(),
+        controller->weak_factory_.GetWeakPtr(), response_id);
+  }
+
+  auto platform_message = std::make_unique<PlatformMessage>(
+      std::string(channel),
+      length == 0 ? fml::MallocMapping()
+                  : fml::MallocMapping::Copy(message, length),
+      std::move(response));
+
+  // Straight to the delegate, which is Engine::HandlePlatformMessage: it
+  // answers `flutter/assets` itself and forwards everything else out through
+  // the shell to the embedder. The same route dart:ui's sendPlatformMessage
+  // takes, minus the isolate.
+  controller->client_.HandlePlatformMessage(std::move(platform_message));
+}
+
+void RuntimeController::OnRespondToPlatformMessage(void* user_data,
+                                                   int64_t response_id,
+                                                   const uint8_t* reply,
+                                                   size_t length) {
+  auto* controller = static_cast<RuntimeController*>(user_data);
+  if (controller == nullptr) {
+    return;
+  }
+  auto found = controller->pending_responses_.find(response_id);
+  if (found == controller->pending_responses_.end()) {
+    // Answered twice, or answered after the message was abandoned. Not fatal;
+    // the handle has already been released either way.
+    return;
+  }
+  auto response = found->second;
+  controller->pending_responses_.erase(found);
+
+  if (reply == nullptr) {
+    response->CompleteEmpty();
+    return;
+  }
+  response->Complete(std::make_unique<fml::DataMapping>(
+      std::vector<uint8_t>(reply, reply + length)));
+}
+
+void RuntimeController::OnSendChannelUpdate(void* user_data,
+                                            const char* channel,
+                                            bool listening) {
+  auto* controller = static_cast<RuntimeController*>(user_data);
+  if (controller == nullptr || channel == nullptr) {
+    return;
+  }
+  controller->client_.SendChannelUpdate(std::string(channel), listening);
 }
 
 bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {

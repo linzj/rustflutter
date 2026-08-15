@@ -71,6 +71,35 @@ typedef struct RfAppHost {
   // Requests another vsync. Equivalent to dart:ui's
   // PlatformDispatcher.scheduleFrame.
   void (*schedule_frame)(void* user_data);
+
+  // Sends a platform message out of the framework, on its way to the embedder.
+  // Equivalent to dart:ui's PlatformDispatcher.sendPlatformMessage.
+  //
+  // `response_id` is an id the *framework* allocated, or 0 if it wants no
+  // reply. When it is non-zero, exactly one
+  // rf_app_complete_platform_message_reply carrying it comes back, whether the
+  // embedder answers or not -- a caller that is never answered waits forever.
+  void (*send_platform_message)(void* user_data,
+                                const char* channel,
+                                const uint8_t* message,
+                                size_t length,
+                                int64_t response_id);
+
+  // Answers a message the embedder sent in. `response_id` is the one that
+  // arrived with it. `reply` is NULL when nothing handled the message, which is
+  // a different fact from a reply of zero bytes: upstream it is the difference
+  // between MissingPluginException and a null result.
+  void (*respond_to_platform_message)(void* user_data,
+                                      int64_t response_id,
+                                      const uint8_t* reply,
+                                      size_t length);
+
+  // Tells the embedder a channel gained or lost its handler. Equivalent to
+  // dart:ui's PlatformDispatcher.sendChannelUpdate; the Windows embedder uses
+  // it to hold back messages nobody would hear.
+  void (*send_channel_update)(void* user_data,
+                              const char* channel,
+                              bool listening);
 } RfAppHost;
 
 // -- Lifecycle ----------------------------------------------------------------
@@ -176,6 +205,37 @@ typedef struct RfKeyEvent {
 // unhandled key from the platform means re-posting it to the message queue
 // afterwards, which is the bulk of upstream's KeyboardManager and is not built.
 bool rf_app_dispatch_key(RfApp* app, const RfKeyEvent* event);
+
+// -- Platform messages --------------------------------------------------------
+//
+// The engine's one extension point, and the only part of this API that is not
+// shaped by what the framework needs but by what already exists: the bytes on a
+// channel are the same bytes on every Flutter platform, so an existing plugin's
+// Android and iOS halves work against this without knowing what is at the other
+// end.
+//
+// Both directions are asynchronous and both may be answered, because neither
+// end is obliged to be ready: an embedder asked for the clipboard has to talk
+// to the operating system, and a framework asked to handle a message may have
+// to wait for a frame. A reply is therefore an id that comes back later rather
+// than a return value.
+
+// Delivers a message from the embedder. `response_id` is 0 when the embedder
+// wants no reply; otherwise the framework must call
+// RfAppHost::respond_to_platform_message with it exactly once. Failing to do so
+// leaks the shell's response handle.
+void rf_app_dispatch_platform_message(RfApp* app,
+                                      const char* channel,
+                                      const uint8_t* message,
+                                      size_t length,
+                                      int64_t response_id);
+
+// Answers a message the framework sent, carrying the id it allocated for it.
+// `reply` is NULL when nothing on the far end handled the message.
+void rf_app_complete_platform_message_reply(RfApp* app,
+                                            int64_t response_id,
+                                            const uint8_t* reply,
+                                            size_t length);
 
 #if defined(__cplusplus)
 }  // extern "C"

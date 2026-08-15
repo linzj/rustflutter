@@ -20,13 +20,14 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int};
 use std::sync::OnceLock;
 
 use crate::engine::{self, Color, LayerTree};
 use crate::framework::{AnyWidget, ElementTree};
 use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::keyboard::{KeyEvent, Keyboard};
+use crate::services;
 use crate::render::{BoxConstraints, PaintContext, RenderBox};
 use crate::widgets::{BoxedWidget, Offset, Size};
 
@@ -76,6 +77,80 @@ struct RfAppHost {
         unsafe extern "C" fn(*mut c_void, i64, *mut engine::sys::RfLayerTree, f64),
     >,
     schedule_frame: Option<unsafe extern "C" fn(*mut c_void)>,
+    send_platform_message: Option<
+        unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize, i64),
+    >,
+    respond_to_platform_message:
+        Option<unsafe extern "C" fn(*mut c_void, i64, *const u8, usize)>,
+    send_channel_update: Option<unsafe extern "C" fn(*mut c_void, *const c_char, bool)>,
+}
+
+/// The shell, as the messenger sees it.
+///
+/// Implements [`services::PlatformSink`] over the host callbacks, which is the
+/// whole of the framework's outward half of a platform message: everything
+/// above it -- codecs, channels, the named ones in
+/// [`services::system`](crate::services::system) -- is ordinary Rust with no
+/// knowledge that a C ABI is down here.
+struct HostSink {
+    host: RfAppHost,
+}
+
+impl HostSink {
+    /// A channel name as a NUL-terminated C string.
+    ///
+    /// Allocated per call rather than cached: a channel name crosses once per
+    /// message, and a message is already a copy of its bytes plus a thread hop.
+    /// A name with an interior NUL cannot be sent at all -- it would arrive
+    /// truncated, on a different channel than the one asked for -- so it is
+    /// refused instead.
+    fn c_channel(channel: &str) -> Option<std::ffi::CString> {
+        std::ffi::CString::new(channel).ok()
+    }
+}
+
+impl services::PlatformSink for HostSink {
+    fn send(&self, channel: &str, message: &[u8], response_id: i64) {
+        let Some(send) = self.host.send_platform_message else {
+            return;
+        };
+        let Some(name) = HostSink::c_channel(channel) else {
+            return;
+        };
+        unsafe {
+            send(
+                self.host.user_data,
+                name.as_ptr(),
+                message.as_ptr(),
+                message.len(),
+                response_id,
+            );
+        }
+    }
+
+    fn respond(&self, response_id: i64, reply: services::ReplyData<'_>) {
+        let Some(respond) = self.host.respond_to_platform_message else {
+            return;
+        };
+        // A null pointer is "nothing handled it", which the shell passes on as
+        // CompleteEmpty. An empty slice would say something different and mean
+        // something different at the far end.
+        let (pointer, length) = match reply {
+            Some(bytes) => (bytes.as_ptr(), bytes.len()),
+            None => (std::ptr::null(), 0),
+        };
+        unsafe { respond(self.host.user_data, response_id, pointer, length) };
+    }
+
+    fn channel_update(&self, channel: &str, listening: bool) {
+        let Some(update) = self.host.send_channel_update else {
+            return;
+        };
+        let Some(name) = HostSink::c_channel(channel) else {
+            return;
+        };
+        unsafe { update(self.host.user_data, name.as_ptr(), listening) };
+    }
 }
 
 // -- What an app implements ---------------------------------------------------
@@ -99,6 +174,9 @@ impl Default for FrameScheduler {
                 user_data: std::ptr::null_mut(),
                 render: None,
                 schedule_frame: None,
+                send_platform_message: None,
+                respond_to_platform_message: None,
+                send_channel_update: None,
             },
         }
     }
@@ -699,6 +777,14 @@ mod abi {
             keyboard: Keyboard::new(),
             advance_ms: 0.0,
         });
+
+        // The messenger is wired up before the application exists, because the
+        // shell may deliver a platform message before `rf_app_launch` -- the
+        // Windows embedder sends the lifecycle state as soon as the window is
+        // up. Buffering catches those, but only once there is somewhere to
+        // buffer them.
+        services::attach(std::rc::Rc::new(HostSink { host }));
+
         Box::into_raw(instance) as *mut RfApp
     }
 
@@ -707,6 +793,10 @@ mod abi {
         if app.is_null() {
             return;
         }
+        // Before the application, so that a handler dropped here cannot be
+        // asked to run against a half-torn-down instance, and so that anything
+        // still waiting on a reply is failed rather than left waiting.
+        services::detach();
         drop(unsafe { Box::from_raw(app as *mut AppInstance) });
     }
 
@@ -917,5 +1007,64 @@ mod abi {
             time_stamp_micros: raw.time_stamp_micros,
         };
         instance.dispatch_key(&mut event)
+    }
+
+    /// Delivers a platform message from the embedder.
+    ///
+    /// Everything but `flutter/keydata` arrives here; that one channel is
+    /// unpacked in `RuntimeController` because its payload is a packed struct
+    /// rather than a codec's output, which is upstream's arrangement too.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_dispatch_platform_message(
+        app: *mut RfApp,
+        channel: *const c_char,
+        message: *const u8,
+        length: usize,
+        response_id: i64,
+    ) {
+        let Some(instance) = instance(app) else { return };
+        if channel.is_null() {
+            return;
+        }
+        // Borrowed for the length of this call, and copied on the way into the
+        // messenger, which may hold it until a handler appears.
+        let name = unsafe { std::ffi::CStr::from_ptr(channel) };
+        let Ok(name) = name.to_str() else {
+            return;
+        };
+        let bytes = if message.is_null() || length == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(message, length) }
+        };
+
+        // A handler almost certainly changed something -- a lifecycle handler
+        // that dims the window, a plugin reply that fills in a list -- and a
+        // frame is the only way that becomes visible. A message that was merely
+        // buffered changed nothing yet, so it does not wake the app.
+        if services::handle_platform_message(name, bytes, response_id) {
+            instance.schedule_frame();
+        }
+    }
+
+    /// Hands the framework the reply to a message it sent.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_complete_platform_message_reply(
+        app: *mut RfApp,
+        response_id: i64,
+        reply: *const u8,
+        length: usize,
+    ) {
+        let Some(instance) = instance(app) else { return };
+        // Null is "nothing handled it", which the caller tells apart from an
+        // empty reply all the way up to MethodChannel::invoke_with_reply.
+        let bytes = if reply.is_null() {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(reply, length) })
+        };
+        if services::complete_reply(response_id, bytes) {
+            instance.schedule_frame();
+        }
     }
 }

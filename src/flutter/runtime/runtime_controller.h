@@ -8,12 +8,14 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/mapping.h"
+#include "flutter/fml/memory/weak_ptr.h"
 #include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/hit_test_response.h"
 #include "flutter/lib/ui/window/key_data.h"
@@ -105,6 +107,17 @@ class RuntimeController {
 
   bool DispatchPlatformMessage(std::unique_ptr<PlatformMessage> message);
 
+  //----------------------------------------------------------------------------
+  /// Hands the framework the reply to a message it sent.
+  ///
+  /// Called on the UI thread by the response object below, which is completed
+  /// wherever the embedder happens to answer -- the platform thread, usually,
+  /// and a worker for anything that had to ask the operating system. `data` is
+  /// null when nothing handled the message, which the framework tells apart
+  /// from an empty reply.
+  void CompletePlatformMessageReply(int64_t response_id,
+                                    std::unique_ptr<fml::Mapping> data);
+
   bool DispatchPointerDataPacket(const PointerDataPacket& packet);
 
   HitTestResponse HitTest(int64_t view_id, const PointData offset);
@@ -121,6 +134,18 @@ class RuntimeController {
                        RfLayerTree* tree,
                        double device_pixel_ratio);
   static void OnScheduleFrame(void* user_data);
+  static void OnSendPlatformMessage(void* user_data,
+                                    const char* channel,
+                                    const uint8_t* message,
+                                    size_t length,
+                                    int64_t response_id);
+  static void OnRespondToPlatformMessage(void* user_data,
+                                         int64_t response_id,
+                                         const uint8_t* reply,
+                                         size_t length);
+  static void OnSendChannelUpdate(void* user_data,
+                                  const char* channel,
+                                  bool listening);
 
   // Fires RuntimeDelegate::OnAllViewsRendered once every view that has metrics
   // has produced a layer tree this frame. The rasterizer waits on this to know
@@ -147,6 +172,22 @@ class RuntimeController {
   PlatformData platform_data_;
   RfApp* app_ = nullptr;
 
+  //----------------------------------------------------------------------------
+  /// Response handles for messages the embedder sent in, keyed by the id the
+  /// framework was given.
+  ///
+  /// The handle cannot cross the C ABI -- it is a ref-counted C++ object -- so
+  /// an integer stands in for it and this map is where the integer is redeemed.
+  /// Upstream needs no such table because Dart holds the response in a
+  /// `PlatformMessageResponse` peer object; a plain C boundary has nowhere to
+  /// put one.
+  ///
+  /// Every entry is either redeemed or, if the framework never answers, freed
+  /// with the controller. Both are on the UI thread.
+  std::unordered_map<int64_t, fml::RefPtr<PlatformMessageResponse>>
+      pending_responses_;
+  int64_t next_response_id_ = 1;
+
   std::unordered_set<int64_t> rendered_views_during_frame_;
   bool frame_in_progress_ = false;
 
@@ -154,6 +195,11 @@ class RuntimeController {
   // earlier than the one before it. See BeginFrame.
   int64_t last_frame_micros_ = std::numeric_limits<int64_t>::min();
   uint64_t last_frame_number_ = 0;
+
+  // Last, so that it is destroyed first and no reply that is still in flight
+  // finds a half-torn-down controller. Handed to every outbound message's
+  // response object; see the comment on RustPlatformMessageResponse.
+  fml::WeakPtrFactory<RuntimeController> weak_factory_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(RuntimeController);
 };
