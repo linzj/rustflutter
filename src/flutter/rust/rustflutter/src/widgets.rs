@@ -24,7 +24,8 @@ pub use crate::render::{
 use crate::painting::{Gradient, Image, RenderPath};
 use crate::render::{
     RenderAlign, RenderBox, RenderClipPath, RenderClipRect, RenderConstrainedBox,
-    RenderDecoratedBox, RenderFlex, RenderImage, RenderOpacity, RenderPadding, RenderParagraph,
+    RenderDecoratedBox, RenderFlex, RenderFullWidth, RenderImage, RenderOpacity, RenderPadding,
+    RenderParagraph,
     RenderPointerRegion, RenderStack, RenderTransform, RenderViewport,
 };
 
@@ -595,6 +596,17 @@ impl ImageView {
 
     pub fn with_fit(image: Image, fit: BoxFit) -> RenderImage {
         RenderImage::new(image).with_fit(fit)
+    }
+}
+
+/// Takes the full width on offer, so that siblings in a column line up rather
+/// than each shrinking to its own contents.
+pub struct FullWidth;
+
+impl FullWidth {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderFullWidth {
+        RenderFullWidth::new().with_child(child)
     }
 }
 

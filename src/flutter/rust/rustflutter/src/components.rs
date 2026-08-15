@@ -360,14 +360,16 @@ impl Component for Card {
         let outline = theme.outline;
         let radius = theme.radius;
         crate::framework::single(child, move |inner| {
-            Box::new(
+            // Full width, so a column of cards has one left edge and one right
+            // edge rather than one pair per card.
+            Box::new(crate::widgets::FullWidth::new(
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(radius)
                     .with_border(1.0, outline)
                     .with_padding(padding)
                     .with_child(inner),
-            )
+            ))
         })
     }
 }

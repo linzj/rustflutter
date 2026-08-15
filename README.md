@@ -21,7 +21,7 @@
 ```
 gn gen  →  1008 targets from 276 files
 ninja   →  exit 0，零警告
-rustflutter_unittests        →  94 passed
+rustflutter_unittests        →  96 passed
 flutter_gallery_unittests    →  10 passed
 rust_ffi_unittests           →  11 passed
 帧率（静止页面）              →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）

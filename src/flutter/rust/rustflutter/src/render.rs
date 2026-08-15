@@ -907,6 +907,97 @@ impl RenderBox for RenderImage {
     }
 }
 
+// -- Single child: full width -------------------------------------------------
+
+/// Takes the full width it is offered, and its child's height.
+///
+/// This is what makes a run of cards in a column line up: without it each one
+/// is as wide as its own contents, so a card holding a sentence and a card
+/// holding a progress bar come out different widths in the same list.
+///
+/// It exists as its own object rather than as a tight-width `SizedBox` because
+/// "the full width" is not a number the caller knows -- and because the width
+/// on offer is not always finite. Inside a horizontally scrolling viewport
+/// there is no full width to take, and forcing one there produces an infinite
+/// box rather than an error. In that case it defers to its child, which does
+/// know how wide it wants to be.
+pub struct RenderFullWidth {
+    child: Option<BoxedRender>,
+    size: Size,
+}
+
+impl RenderFullWidth {
+    pub fn new() -> RenderFullWidth {
+        RenderFullWidth { child: None, size: Size::ZERO }
+    }
+
+    pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
+        self.child = Some(Box::new(child));
+        self
+    }
+}
+
+impl Default for RenderFullWidth {
+    fn default() -> RenderFullWidth {
+        RenderFullWidth::new()
+    }
+}
+
+impl RenderBox for RenderFullWidth {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let inner = if constraints.has_bounded_width() {
+            BoxConstraints {
+                min_width: constraints.max_width,
+                max_width: constraints.max_width,
+                ..constraints
+            }
+        } else {
+            constraints
+        };
+        self.size = match &mut self.child {
+            Some(child) => child.layout(inner),
+            None => inner.constrain(inner.smallest()),
+        };
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            context.paint_child(child.as_ref(), offset);
+        }
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        if let Some(child) = &self.child {
+            child.hit_test(position, result);
+        }
+        true
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| child.min_intrinsic_width(height))
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| child.max_intrinsic_width(height))
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| child.min_intrinsic_height(width))
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| child.max_intrinsic_height(width))
+    }
+}
+
 // -- Single child: constrained box --------------------------------------------
 
 /// Forces extra constraints on its child, or takes a fixed size with no child.
@@ -2390,6 +2481,30 @@ mod tests {
         // difference so both baselines land on the same line.
         assert_eq!(offsets[0].dy, 0.0);
         assert_eq!(offsets[1].dy, 20.0);
+    }
+
+    #[test]
+    fn full_width_takes_what_it_is_offered_not_what_its_child_wants() {
+        let mut box_ = RenderFullWidth::new().with_child(FixedBox::new(30.0, 20.0));
+        let size = box_.layout(BoxConstraints::loose(300.0, 100.0));
+        assert_eq!(size.width, 300.0);
+        // The height still follows the child: only one axis is being forced.
+        assert_eq!(size.height, 20.0);
+    }
+
+    #[test]
+    fn full_width_defers_to_its_child_when_there_is_no_full_width() {
+        // Inside a horizontally scrolling viewport there is no width to fill,
+        // and taking "all of it" would mean an infinite box.
+        let mut box_ = RenderFullWidth::new().with_child(FixedBox::new(30.0, 20.0));
+        let size = box_.layout(BoxConstraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: 0.0,
+            max_height: 100.0,
+        });
+        assert_eq!(size.width, 30.0);
+        assert!(size.width.is_finite());
     }
 
     #[test]
