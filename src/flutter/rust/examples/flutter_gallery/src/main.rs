@@ -135,15 +135,26 @@ fn render_png(
     rustflutter::engine::initialize();
     catalog::register_fonts();
 
+    let screen = || {
+        stateful(Gallery {
+            light,
+            route,
+            slug: slug.map(str::to_string),
+        })
+    };
+
     let mut tree = ElementTree::new();
     // A fixed clock, so the animated demos render the same frame every time.
     // A wall clock would make the motion demo's screenshot differ per run.
     tree.set_frame_time(app::SPINNER_PERIOD_MICROS / 4);
-    tree.rebuild(stateful(Gallery {
-        light,
-        route,
-        slug: slug.map(str::to_string),
-    }));
+    tree.rebuild(screen());
+
+    // Photographs decode on worker threads, and a windowed run simply draws
+    // another frame when they land. There is no other frame here, so the first
+    // build is treated as the one that asks for them and this waits.
+    if rustflutter::painting::wait_for_images() {
+        tree.rebuild(screen());
+    }
 
     let mut root = tree.build_render_tree().expect("the tree has a root");
     root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));

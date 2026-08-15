@@ -495,6 +495,229 @@ pub fn shaped_paragraph_count() -> usize {
     })
 }
 
+// -- Decoding off the UI thread -----------------------------------------------
+
+/// A decoded handle on its way back from a worker thread.
+///
+/// `Image` is a raw engine pointer, so it is not `Send` by default and should
+/// not be: two threads holding one would be a double free waiting to happen.
+/// This wrapper is, and the reason it is sound is the handoff -- the worker
+/// builds the handle, sends it, and never names it again, so the receiving
+/// thread is the only one that can reach it afterwards. `rf_image_decode`
+/// itself shares nothing between calls; its one piece of global state is a
+/// `std::call_once` codec registration.
+struct Handoff(Option<Image>);
+
+// SAFETY: see above. Ownership moves with the value and is never duplicated.
+unsafe impl Send for Handoff {}
+
+struct Request {
+    key: String,
+    data: Vec<u8>,
+}
+
+struct Decoded {
+    key: String,
+    image: Handoff,
+}
+
+/// What is known about one image.
+enum Slot {
+    /// A worker has it; ask again next frame.
+    Decoding,
+    /// Decoded, or decoded and found to be unreadable.
+    Done(Option<Rc<Image>>),
+}
+
+/// The images this thread has asked for, and the workers decoding them.
+///
+/// One pool per thread that builds, which in practice means one: the UI thread.
+/// A pool shared between threads would need results routed back to whoever
+/// asked, and nothing here asks from anywhere else.
+struct ImageCache {
+    entries: HashMap<String, Slot>,
+    requests: std::sync::mpsc::Sender<Request>,
+    results: std::sync::mpsc::Receiver<Decoded>,
+    /// Requests sent and not yet collected.
+    outstanding: usize,
+    /// A decode has landed and nothing has been rebuilt around it yet.
+    arrived: bool,
+}
+
+impl ImageCache {
+    fn new() -> ImageCache {
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<Request>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<Decoded>();
+        let request_rx = std::sync::Arc::new(std::sync::Mutex::new(request_rx));
+
+        // Enough to overlap decoding with building, not so many that a screen
+        // of thumbnails saturates the machine the UI thread is running on.
+        let workers = std::thread::available_parallelism()
+            .map_or(2, |count| count.get().saturating_sub(1).clamp(1, 4));
+        for index in 0..workers {
+            let requests = std::sync::Arc::clone(&request_rx);
+            let results = result_tx.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("rf.image.{index}"))
+                .spawn(move || {
+                    loop {
+                        // The lock is held across the receive on purpose: the
+                        // workers queue on it rather than on the channel, which
+                        // is the same arrangement with one fewer moving part.
+                        // Whoever holds it takes the next request and lets go.
+                        let request = {
+                            let Ok(receiver) = requests.lock() else { return };
+                            receiver.recv()
+                        };
+                        let Ok(request) = request else {
+                            // The cache went away with its thread.
+                            return;
+                        };
+                        let image = Image::decode(&request.data);
+                        let decoded =
+                            Decoded { key: request.key, image: Handoff(image) };
+                        if results.send(decoded).is_err() {
+                            return;
+                        }
+                    }
+                });
+            if spawned.is_err() {
+                // Out of threads. Decoding then falls back to this one, which
+                // is slow but correct -- see `get_or_request`.
+                break;
+            }
+        }
+
+        ImageCache {
+            entries: HashMap::new(),
+            requests: request_tx,
+            results: result_rx,
+            outstanding: 0,
+            arrived: false,
+        }
+    }
+
+    /// Files everything the workers have finished. Cheap, and called from every
+    /// lookup, so a finished decode never waits for a frame boundary to be
+    /// noticed.
+    fn collect(&mut self) {
+        while let Ok(decoded) = self.results.try_recv() {
+            self.outstanding = self.outstanding.saturating_sub(1);
+            self.arrived = true;
+            self.entries
+                .insert(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
+        }
+    }
+
+    fn get_or_request(&mut self, key: &str, data: &[u8]) -> Option<Rc<Image>> {
+        self.collect();
+        match self.entries.get(key) {
+            Some(Slot::Done(image)) => return image.clone(),
+            Some(Slot::Decoding) => return None,
+            None => {}
+        }
+
+        // The bytes are copied because the worker outlives this call and the
+        // caller's slice may not. For baked-in assets that is a few hundred
+        // kilobytes in flight, freed as each decode finishes.
+        let request = Request { key: key.to_string(), data: data.to_vec() };
+        match self.requests.send(request) {
+            Ok(()) => {
+                self.entries.insert(key.to_string(), Slot::Decoding);
+                self.outstanding += 1;
+                None
+            }
+            Err(returned) => {
+                // No workers came up. Decode here rather than never.
+                let image = Image::decode(&returned.0.data).map(Rc::new);
+                self.entries.insert(key.to_string(), Slot::Done(image.clone()));
+                image
+            }
+        }
+    }
+
+    fn get_or_decode(&mut self, key: &str, data: &[u8]) -> Option<Rc<Image>> {
+        self.collect();
+        if let Some(Slot::Done(image)) = self.entries.get(key) {
+            return image.clone();
+        }
+        // Already with a worker: wait for that one rather than decoding the
+        // same bytes a second time.
+        if matches!(self.entries.get(key), Some(Slot::Decoding)) {
+            self.wait();
+            if let Some(Slot::Done(image)) = self.entries.get(key) {
+                return image.clone();
+            }
+        }
+        let image = Image::decode(data).map(Rc::new);
+        self.entries.insert(key.to_string(), Slot::Done(image.clone()));
+        image
+    }
+
+    /// Blocks until every outstanding decode has been filed.
+    fn wait(&mut self) {
+        while self.outstanding > 0 {
+            let Ok(decoded) = self.results.recv() else {
+                // Every worker is gone; nothing else is coming.
+                self.outstanding = 0;
+                break;
+            };
+            self.outstanding -= 1;
+            self.arrived = true;
+            self.entries
+                .insert(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
+        }
+    }
+}
+
+thread_local! {
+    static IMAGES: RefCell<ImageCache> = RefCell::new(ImageCache::new());
+}
+
+/// Whether any image asked for is still being decoded.
+///
+/// A frame that sees this true has drawn without an image it wanted and should
+/// ask for another; that is how the picture arrives once it is ready.
+pub fn images_pending() -> bool {
+    IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        images.collect();
+        images.outstanding > 0
+    })
+}
+
+/// Whether a decode has landed since this was last asked, clearing the flag.
+///
+/// The frame that asked for an image got `None` and drew a placeholder; when
+/// the picture arrives, whoever asked has to be built again to see it. Nothing
+/// here knows who that was, so the answer is "everyone" -- the same full
+/// rebuild a resize triggers, and for the same reason. Upstream is narrower:
+/// the decoder completes a future the image widget is holding, and only that
+/// widget rebuilds. Getting there needs `Image::shared` to know which element
+/// is calling it, which is the same machinery `InheritedWidget` dependency
+/// tracking wants.
+pub fn take_images_arrived() -> bool {
+    IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        images.collect();
+        std::mem::replace(&mut images.arrived, false)
+    })
+}
+
+/// Blocks until every image asked for has been decoded.
+///
+/// Returns whether anything was waited for, so a caller with only one frame to
+/// get right -- a headless render, a golden -- can rebuild once and know the
+/// result is complete.
+pub fn wait_for_images() -> bool {
+    IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        let waited = images.outstanding > 0;
+        images.wait();
+        waited
+    })
+}
+
 /// A decoded image.
 pub struct Image {
     raw: *mut sys::RfImage,
@@ -520,33 +743,35 @@ impl Image {
         (self.width(), self.height())
     }
 
-    /// Decodes `data` the first time `key` is asked for, and returns the same
-    /// handle every time after.
+    /// The image for `key`, decoding it on a worker thread if this is the first
+    /// time it has been asked for.
     ///
-    /// A widget tree is rebuilt every frame, so an image built inside a `build`
-    /// would be decoded sixty times a second to draw the same picture. This is
-    /// the cache that stops it. Entries are never evicted: the images an app
-    /// bakes in are a fixed set, and evicting one would mean decoding it again
-    /// the next frame -- which is the thing being avoided.
+    /// Returns `None` until the decode lands, so a caller has to be able to
+    /// draw without it -- a placeholder, or nothing. That is deliberate, and it
+    /// is what upstream does too: `ImageDecoder` runs on a concurrent worker
+    /// because a screen of photographs decoded on the UI thread is a screen of
+    /// dropped frames. Thirty-eight of Shrine's product shots cost six
+    /// milliseconds, which is a third of a frame spent not building one.
+    ///
+    /// The frame that gets a `None` asks for another frame, so the image
+    /// appears as soon as it is ready; see `images_pending`.
+    ///
+    /// A failed decode is remembered as a failure. A PNG that could not be read
+    /// will not read next frame either, and retrying it sixty times a second is
+    /// the same waste in a different shape.
     ///
     /// Thread-local, because a decoded image is a raw engine handle and the UI
     /// thread is the only one that builds.
     pub fn shared(key: &str, data: &[u8]) -> Option<Rc<Image>> {
-        thread_local! {
-            static CACHE: RefCell<HashMap<String, Option<Rc<Image>>>> =
-                RefCell::new(HashMap::new());
-        }
-        CACHE.with(|cache| {
-            // The miss is cached too. A PNG that failed to decode will fail
-            // again, and retrying it every frame is the same waste in a
-            // different shape.
-            if let Some(hit) = cache.borrow().get(key) {
-                return hit.clone();
-            }
-            let decoded = Image::decode(data).map(Rc::new);
-            cache.borrow_mut().insert(key.to_string(), decoded.clone());
-            decoded
-        })
+        IMAGES.with(|images| images.borrow_mut().get_or_request(key, data))
+    }
+
+    /// Decodes `data` on this thread, blocking until it is done.
+    ///
+    /// For the paths that have exactly one frame to get right and no next frame
+    /// to fall back on -- a headless render, a golden test.
+    pub fn shared_now(key: &str, data: &[u8]) -> Option<Rc<Image>> {
+        IMAGES.with(|images| images.borrow_mut().get_or_decode(key, data))
     }
 }
 
@@ -864,5 +1089,71 @@ mod tests {
         end_text_frame();
         end_text_frame();
         assert_eq!(shaped_paragraph_count(), before);
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    // Every test names its own key: the cache is thread-local and the tests run
+    // on separate threads, but a shared name would still make one test's
+    // request satisfy another's and prove nothing.
+
+    const PNG: &[u8] = b"not really a png, but the stubs do not look";
+
+    #[test]
+    fn the_first_ask_does_not_block_and_returns_nothing() {
+        assert!(Image::shared("async:first", PNG).is_none());
+        assert!(images_pending(), "nothing was queued");
+    }
+
+    #[test]
+    fn the_picture_is_there_once_the_worker_is_done() {
+        assert!(Image::shared("async:lands", PNG).is_none());
+        assert!(wait_for_images(), "there was nothing to wait for");
+        assert!(Image::shared("async:lands", PNG).is_some());
+        assert!(!images_pending());
+    }
+
+    #[test]
+    fn the_same_key_is_decoded_once() {
+        assert!(Image::shared("async:once", PNG).is_none());
+        // Asking again while it is in flight must not queue it a second time.
+        assert!(Image::shared("async:once", PNG).is_none());
+        wait_for_images();
+        let first = Image::shared("async:once", PNG).expect("decoded");
+        let second = Image::shared("async:once", PNG).expect("decoded");
+        assert!(Rc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn an_arrival_is_reported_once() {
+        assert!(!take_images_arrived(), "nothing has arrived yet");
+        assert!(Image::shared("async:arrival", PNG).is_none());
+        wait_for_images();
+        assert!(take_images_arrived(), "the arrival went unreported");
+        // Reported once: a frame that already rebuilt for it must not rebuild
+        // again every frame afterwards.
+        assert!(!take_images_arrived());
+    }
+
+    #[test]
+    fn a_blocking_ask_has_the_picture_straight_away() {
+        // The single-frame path -- a headless render, a golden -- has no next
+        // frame to pick the image up in.
+        assert!(Image::shared_now("async:now", PNG).is_some());
+        assert!(!images_pending());
+    }
+
+    #[test]
+    fn a_blocking_ask_joins_one_already_in_flight() {
+        assert!(Image::shared("async:joins", PNG).is_none());
+        let image = Image::shared_now("async:joins", PNG).expect("decoded");
+        // The same handle the worker produced, not a second decode of the same
+        // bytes.
+        let again = Image::shared("async:joins", PNG).expect("decoded");
+        assert!(Rc::ptr_eq(&image, &again));
+        assert!(!images_pending());
     }
 }

@@ -232,8 +232,13 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // sure every build in the frame reads the same value.
         self.tree.set_frame_time(context.frame_time_micros);
 
+        // A photograph that finished decoding since the last frame is not on
+        // screen until whoever asked for it is built again, and nothing records
+        // who that was -- so everyone is, exactly as for a resize. See
+        // `painting::take_images_arrived` for what the narrow version needs.
+        let images_arrived = crate::painting::take_images_arrived();
         let resized = self.last_size != Some(context.size);
-        let mounted = if self.tree.is_empty() || resized {
+        let mounted = if self.tree.is_empty() || resized || images_arrived {
             let root = self.app.build(context);
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
@@ -444,6 +449,15 @@ impl AppInstance {
         let started = FrameTimings::now();
         let mut root = application.build(&context);
         let built = FrameTimings::now();
+
+        // Something asked for an image that a worker is still decoding, and
+        // drew a placeholder instead. Ask for another frame: the one the
+        // picture lands in is the one that shows it. Upstream reaches the same
+        // place from the other direction -- the decoder completes a future,
+        // which marks the image widget dirty.
+        if crate::painting::images_pending() {
+            context.scheduler.request_frame();
+        }
 
         // Constraints down, sizes up -- the RenderBox protocol. The root is
         // forced to the view size, which is what RenderView does upstream.
