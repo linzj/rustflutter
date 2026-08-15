@@ -1,0 +1,25 @@
+# Lets an application outside this repository depend on the framework by path
+# and build with Cargo, without the application itself becoming a GN target.
+#
+# GN does not read this file -- it compiles `src/lib.rs` directly through the
+# rust_rlib tool, and that remains how the engine's own tests and examples are
+# built. The two describe the same crate: if a dependency is ever added here it
+# has to be added to the GN target too, and there is deliberately nothing in
+# `[dependencies]` so that cannot silently drift.
+
+[package]
+name = "rustflutter"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust UI framework on the Flutter engine"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# None, and not by accident. The framework talks to the engine through the C
+# ABI in `flutter/rust/ffi`, which is linked in rather than compiled here, so
+# there is nothing for Cargo to fetch. An application gets the C++ side by
+# linking `rustflutter_engine.lib`; see the `build.rs` that `rustflutter create`
+# writes.
+[dependencies]

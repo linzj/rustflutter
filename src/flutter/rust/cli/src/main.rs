@@ -4,10 +4,18 @@
 
 //! `rustflutter` -- project tooling.
 //!
-//! The counterpart of `flutter create` / `flutter run`, minus the Dart. Apps
-//! are GN targets under `//flutter/rust/projects`, because they link the C++
-//! engine and the engine is built with GN; `create` writes the project and
-//! refreshes the group that ties them into the build.
+//! The counterpart of `flutter create`, minus the Dart. An application is an
+//! ordinary Cargo project that lives wherever its author wants it: `create`
+//! writes one and then gets out of the way, because `cargo build` is all it
+//! needs afterwards.
+//!
+//! It used to write GN targets inside the engine tree, since the engine is
+//! built with GN and an application has to link it. That made every
+//! application engine code, which it is not -- it put unrelated projects in the
+//! engine's build graph and in its git history, and made every engine upgrade
+//! carry them. `//flutter/rust:rustflutter_engine` fixed the underlying
+//! problem by reducing the C++ side to a single archive, which a `build.rs` can
+//! link without knowing GN exists.
 
 use std::env;
 use std::fs;
@@ -18,7 +26,10 @@ use std::process::Command;
 
 mod templates;
 
-const PROJECTS_DIR: &str = "flutter/rust/projects";
+/// Where the framework crate lives inside a checkout, for the path dependency.
+const FRAMEWORK_DIR: &str = "flutter/rust/rustflutter";
+/// The linker the engine is built with; a generated project uses the same one.
+const LINKER: &str = "flutter/buildtools/windows-x64/clang/bin/lld-link.exe";
 const VERSION: &str = "0.1.0-m1";
 
 /// Entry point, called by the C++ shim in main.cc.
@@ -43,10 +54,8 @@ pub extern "C" fn rustflutter_cli_main() -> c_int {
             Ok(())
         }
         ["create", name, rest @ ..] => create(name, rest),
-        ["remove", name] => remove(name),
-        ["list"] => list(),
-        ["build", name] => build(name),
-        ["run", name, rest @ ..] => run(name, rest),
+        ["build", rest @ ..] => cargo("build", rest),
+        ["run", rest @ ..] => cargo("run", rest),
         [unknown, ..] => Err(Error::Usage(format!("unknown command `{unknown}`"))),
     };
 
@@ -72,15 +81,17 @@ USAGE:
     rustflutter <command> [args]
 
 COMMANDS:
-    create <name> [--title <text>]   Scaffold a new app under {PROJECTS_DIR}
-    remove <name>                    Delete an app and drop it from the build
-    list                             List the apps in this checkout
-    build <name>                     Build an app with ninja
-    run <name> [-- <app args>]       Build an app and run it
+    create <name> [--title <text>] [--path <dir>]
+                                     Scaffold a Cargo project. Written to
+                                     <dir>/<name>, defaulting to ./<name>.
+    build [-- <cargo args>]          `cargo build` in the current project
+    run   [-- <app args>]            `cargo run` in the current project
 
     help, --version
 
-Run from anywhere inside the checkout; the source root is located automatically."
+`create` must be run from inside a checkout, so it can find the framework and
+the engine build to point the new project at. Nothing else has to be: a project
+is a Cargo project and `cargo build` works on it directly."
     );
 }
 
@@ -90,6 +101,7 @@ fn create(name: &str, rest: &[&str]) -> Result<(), Error> {
     validate_name(name)?;
 
     let mut title = titlecase(name);
+    let mut where_to: Option<PathBuf> = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match *arg {
@@ -99,35 +111,64 @@ fn create(name: &str, rest: &[&str]) -> Result<(), Error> {
                     .ok_or_else(|| Error::Usage("--title needs a value".into()))?
                     .to_string();
             }
+            "--path" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| Error::Usage("--path needs a value".into()))?;
+                where_to = Some(PathBuf::from(value));
+            }
             other => return Err(Error::Usage(format!("unexpected argument `{other}`"))),
         }
     }
 
+    // The checkout is needed to write the project, not to build it: it is where
+    // the framework crate and the engine archive are.
     let root = source_root()?;
-    let project_dir = root.join(PROJECTS_DIR).join(name);
+    let engine_out = release_out_dir(&root)?;
+
+    let parent = match where_to {
+        Some(path) => path,
+        None => env::current_dir()?,
+    };
+    let project_dir = parent.join(name);
     if project_dir.exists() {
         return Err(Error::AlreadyExists(project_dir));
     }
 
+    let framework = forward_slashes(&root.join(FRAMEWORK_DIR));
+    let linker = forward_slashes(&root.join(LINKER));
+    let engine = forward_slashes(&engine_out);
+
     fs::create_dir_all(project_dir.join("src"))?;
-    write(&project_dir.join("BUILD.gn"), &templates::build_gn(name))?;
-    write(&project_dir.join("main.cc"), templates::MAIN_CC)?;
+    fs::create_dir_all(project_dir.join(".cargo"))?;
+    write(&project_dir.join("Cargo.toml"), &templates::cargo_toml(name, &framework))?;
+    write(&project_dir.join(".cargo/config.toml"), &templates::cargo_config(&linker))?;
+    write(&project_dir.join("build.rs"), &templates::build_rs(&engine))?;
     write(&project_dir.join("src/main.rs"), &templates::main_rs(name, &title))?;
-    write(&project_dir.join("README.md"), &templates::readme(name))?;
+    write(&project_dir.join(".gitignore"), templates::gitignore())?;
+    write(&project_dir.join("README.md"), &templates::readme(name, &engine))?;
 
-    refresh_projects_group(&root)?;
-
-    let rel = project_dir
-        .strip_prefix(&root)
-        .unwrap_or(&project_dir)
-        .display()
-        .to_string()
-        .replace('\\', "/");
-
-    println!("Created `{name}` in {rel}");
+    println!("Created `{name}` in {}", project_dir.display());
+    if !engine_out.join("obj/flutter/rust/rustflutter_engine.lib").exists() {
+        println!();
+        println!("The engine archive is not built yet. From {}:", root.display());
+        println!("  ninja -C {} flutter/rust:rustflutter_engine", relative_out(&root, &engine_out));
+    }
     println!();
-    println!("  rustflutter run {name}");
+    println!("  cd {}", project_dir.display());
+    println!("  cargo run");
     Ok(())
+}
+
+/// Paths go into generated files, which are read by humans and by Cargo. Both
+/// prefer forward slashes on Windows, and TOML would treat a backslash as an
+/// escape.
+fn forward_slashes(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+fn relative_out(root: &Path, out: &Path) -> String {
+    forward_slashes(out.strip_prefix(root).unwrap_or(out))
 }
 
 fn validate_name(name: &str) -> Result<(), Error> {
@@ -141,7 +182,7 @@ fn validate_name(name: &str) -> Result<(), Error> {
         return Err(Error::Usage(format!(
             "`{name}` is not a valid project name: use lowercase letters, digits \
              and underscores, starting with a letter (it becomes a Rust crate \
-             name and a GN target name)"
+             name)"
         )));
     }
     Ok(())
@@ -161,120 +202,31 @@ fn titlecase(name: &str) -> String {
         .join(" ")
 }
 
-/// Rewrites `projects/BUILD.gn` so every project directory is in the build.
-fn refresh_projects_group(root: &Path) -> Result<(), Error> {
-    let dir = root.join(PROJECTS_DIR);
-    fs::create_dir_all(&dir)?;
-    let mut names = project_names(root)?;
-    names.sort();
+// -- build / run --------------------------------------------------------------
 
-    let deps = names
-        .iter()
-        .map(|n| format!("    \"//{PROJECTS_DIR}/{n}\",\n"))
-        .collect::<String>();
-
-    write(&dir.join("BUILD.gn"), &templates::projects_group(&deps))
-}
-
-fn project_names(root: &Path) -> Result<Vec<String>, Error> {
-    let dir = root.join(PROJECTS_DIR);
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut names = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        // A directory only counts as a project once it has a BUILD.gn.
-        if entry.path().join("BUILD.gn").exists() {
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_string());
-            }
-        }
-    }
-    Ok(names)
-}
-
-/// Deletes a project and refreshes the group.
+/// Hands the command to Cargo in the current directory.
 ///
-/// Deleting the directory by hand leaves a dangling label in
-/// `projects/BUILD.gn`, which makes every subsequent `gn gen` fail -- so
-/// removal has to go through the same place that maintains that file.
-fn remove(name: &str) -> Result<(), Error> {
-    let root = source_root()?;
-    let project_dir = root.join(PROJECTS_DIR).join(name);
-    if !project_dir.is_dir() {
-        return Err(Error::NoSuchProject(name.to_string()));
+/// A thin pass-through, and deliberately so: a generated project is a Cargo
+/// project, so `cargo build` already works and this only saves remembering
+/// that. Anything Cargo can do that this cannot, do with Cargo.
+fn cargo(subcommand: &str, rest: &[&str]) -> Result<(), Error> {
+    if !Path::new("Cargo.toml").is_file() {
+        return Err(Error::NotAProject);
     }
-
-    fs::remove_dir_all(&project_dir)?;
-    refresh_projects_group(&root)?;
-
-    println!("Removed `{name}`. Re-run gn so the build graph drops the target.");
-    Ok(())
-}
-
-// -- list / build / run -------------------------------------------------------
-
-fn list() -> Result<(), Error> {
-    let root = source_root()?;
-    let mut names = project_names(&root)?;
-    names.sort();
-    if names.is_empty() {
-        println!("No projects yet. Create one with `rustflutter create <name>`.");
-        return Ok(());
-    }
-    println!("Projects in {PROJECTS_DIR}:");
-    for name in names {
-        println!("  {name}");
-    }
-    Ok(())
-}
-
-fn build(name: &str) -> Result<(), Error> {
-    let root = source_root()?;
-    let out_dir = out_dir(&root)?;
-    let target = format!("{PROJECTS_DIR}/{name}");
-
-    let status = Command::new("ninja")
-        .arg("-C")
-        .arg(&out_dir)
-        .arg(&target)
-        .current_dir(&root)
-        .status()
-        .map_err(|e| Error::Spawn("ninja".into(), e))?;
-
-    if !status.success() {
-        return Err(Error::BuildFailed(name.to_string()));
-    }
-    Ok(())
-}
-
-fn run(name: &str, rest: &[&str]) -> Result<(), Error> {
-    build(name)?;
-
-    let root = source_root()?;
-    let out_dir = out_dir(&root)?;
-    let exe = out_dir.join(format!("{name}{}", env::consts::EXE_SUFFIX));
-    if !exe.exists() {
-        return Err(Error::MissingExecutable(exe));
-    }
-
-    let app_args: Vec<&str> = match rest.first() {
-        Some(&"--") => rest[1..].to_vec(),
+    let passthrough: Vec<&str> = match rest.first() {
+        Some(&"--") => rest.to_vec(),
+        _ if rest.is_empty() => Vec::new(),
         _ => rest.to_vec(),
     };
 
-    let status = Command::new(&exe)
-        .args(&app_args)
-        .current_dir(&out_dir)
+    let status = Command::new("cargo")
+        .arg(subcommand)
+        .args(&passthrough)
         .status()
-        .map_err(|e| Error::Spawn(exe.display().to_string(), e))?;
+        .map_err(|e| Error::Spawn("cargo".into(), e))?;
 
     if !status.success() {
-        return Err(Error::RunFailed(name.to_string()));
+        return Err(Error::CargoFailed(subcommand.to_string()));
     }
     Ok(())
 }
@@ -295,9 +247,16 @@ fn source_root() -> Result<PathBuf, Error> {
     }
 }
 
-/// Picks the build directory. Prefers an explicit RUSTFLUTTER_OUT, else the
-/// single directory under `out/`, else errors rather than guessing.
-fn out_dir(root: &Path) -> Result<PathBuf, Error> {
+/// Picks the engine build a generated project should link against.
+///
+/// A release one, and not as a preference. rustc links the static CRT, the
+/// release engine is built `/MT` and a debug engine `/MTd`, and mixing the two
+/// fails at the very end of the link with every CRT symbol defined twice. So a
+/// debug build directory is not a worse answer here, it is a broken one.
+///
+/// RUSTFLUTTER_OUT overrides, for a checkout whose release build is named
+/// something else. It is taken at its word -- including the `/MT` part.
+fn release_out_dir(root: &Path) -> Result<PathBuf, Error> {
     if let Ok(explicit) = env::var("RUSTFLUTTER_OUT") {
         let path = root.join("out").join(&explicit);
         return if path.is_dir() { Ok(path) } else { Err(Error::NoOutDir) };
@@ -305,28 +264,26 @@ fn out_dir(root: &Path) -> Result<PathBuf, Error> {
 
     let out = root.join("out");
     if !out.is_dir() {
-        return Err(Error::NoOutDir);
+        return Err(Error::NoReleaseOutDir);
     }
-    let mut candidates: Vec<PathBuf> = fs::read_dir(&out)?
+    let candidates: Vec<PathBuf> = fs::read_dir(&out)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("build.ninja").is_file())
         .map(|e| e.path())
         .collect();
-    candidates.sort();
 
-    match candidates.len() {
-        0 => Err(Error::NoOutDir),
-        1 => Ok(candidates.remove(0)),
-        _ => {
-            // More than one configuration: host_debug_unopt is the default the
-            // README documents, so prefer it before giving up.
-            candidates
-                .iter()
-                .find(|p| p.file_name().is_some_and(|n| n == "host_debug_unopt"))
-                .cloned()
-                .ok_or(Error::AmbiguousOutDir)
-        }
-    }
+    candidates
+        .iter()
+        .find(|p| p.file_name().is_some_and(|n| n == "host_release"))
+        .or_else(|| {
+            candidates.iter().find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains("release"))
+            })
+        })
+        .cloned()
+        .ok_or(Error::NoReleaseOutDir)
 }
 
 fn write(path: &Path, contents: &str) -> Result<(), Error> {
@@ -340,13 +297,11 @@ enum Error {
     Io(io::Error),
     NotInCheckout,
     NoOutDir,
-    AmbiguousOutDir,
+    NoReleaseOutDir,
+    NotAProject,
     AlreadyExists(PathBuf),
     Spawn(String, io::Error),
-    BuildFailed(String),
-    RunFailed(String),
-    MissingExecutable(PathBuf),
-    NoSuchProject(String),
+    CargoFailed(String),
 }
 
 impl From<io::Error> for Error {
@@ -367,22 +322,23 @@ impl std::fmt::Display for Error {
             ),
             Error::NoOutDir => write!(
                 f,
-                "no build directory found. Run `vpython3 flutter/tools/gn \
-                 --unoptimized --no-rbe` from src/ first"
+                "RUSTFLUTTER_OUT names a directory that is not under out/"
             ),
-            Error::AmbiguousOutDir => write!(
+            Error::NoReleaseOutDir => write!(
                 f,
-                "several build directories under out/. Set RUSTFLUTTER_OUT to \
-                 pick one"
+                "no release engine build found under out/. A project links the \
+                 static CRT, so it needs one:\n  vpython3 flutter/tools/gn \
+                 --runtime-mode=release --no-rbe\n  ninja -C out/host_release \
+                 flutter/rust:rustflutter_engine"
+            ),
+            Error::NotAProject => write!(
+                f,
+                "no Cargo.toml here. Run this from inside a project, or create \
+                 one with `rustflutter create <name>`"
             ),
             Error::AlreadyExists(p) => write!(f, "{} already exists", p.display()),
             Error::Spawn(what, e) => write!(f, "could not run {what}: {e}"),
-            Error::BuildFailed(n) => write!(f, "build of `{n}` failed"),
-            Error::RunFailed(n) => write!(f, "`{n}` exited with a failure"),
-            Error::MissingExecutable(p) => {
-                write!(f, "built, but {} was not produced", p.display())
-            }
-            Error::NoSuchProject(n) => write!(f, "no project named `{n}`"),
+            Error::CargoFailed(c) => write!(f, "`cargo {c}` failed"),
         }
     }
 }

@@ -477,5 +477,55 @@ TEST(RustFFI, RejectsUndecodableImageData) {
   EXPECT_EQ(rf_image_decode(nullptr, 0), nullptr);
 }
 
+// Pixels decoded by something other than Skia -- a platform codec, a camera --
+// become an image and draw like any other. The album example reaches WIC this
+// way, which is how it opens HEIC.
+TEST(RustFFI, BuildsAnImageFromRawPixels) {
+  constexpr int32_t kWidth = 4;
+  constexpr int32_t kHeight = 3;
+
+  // Premultiplied RGBA, which is the one layout rf_image_from_pixels takes.
+  // Opaque, so premultiplied and straight are the same bytes and the expected
+  // colour is readable in the source.
+  std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * kHeight * 4);
+  for (size_t i = 0; i < pixels.size(); i += 4) {
+    pixels[i + 0] = 0x33;  // R
+    pixels[i + 1] = 0x66;  // G
+    pixels[i + 2] = 0xCC;  // B
+    pixels[i + 3] = 0xFF;  // A
+  }
+
+  RfImage* image = rf_image_from_pixels(pixels.data(), kWidth, kHeight);
+  ASSERT_NE(image, nullptr);
+  EXPECT_EQ(rf_image_width(image), kWidth);
+  EXPECT_EQ(rf_image_height(image), kHeight);
+
+  constexpr int32_t kCanvasSize = 8;
+  RfCanvas* canvas = rf_canvas_new(kCanvasSize, kCanvasSize);
+  rf_canvas_draw_color(canvas, 0xFF000000);
+  rf_canvas_draw_image(canvas, image, 0, 0, nullptr);
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> drawn =
+      Rasterize(display_list, kCanvasSize, kCanvasSize);
+  ASSERT_FALSE(drawn.empty());
+
+  // Inside the image, and outside it. The second half is what catches a width
+  // read as a stride: the picture would then be wider than it was handed.
+  EXPECT_EQ(PixelAt(drawn, kCanvasSize, 1, 1), 0xFF3366CCu);
+  EXPECT_EQ(PixelAt(drawn, kCanvasSize, 6, 6), 0xFF000000u);
+
+  rf_display_list_free(display_list);
+  rf_canvas_free(canvas);
+  rf_image_free(image);
+}
+
+TEST(RustFFI, RejectsPixelsThatCannotDescribeAnImage) {
+  const uint8_t pixel[] = {0xFF, 0xFF, 0xFF, 0xFF};
+  EXPECT_EQ(rf_image_from_pixels(nullptr, 1, 1), nullptr);
+  EXPECT_EQ(rf_image_from_pixels(pixel, 0, 1), nullptr);
+  EXPECT_EQ(rf_image_from_pixels(pixel, 1, 0), nullptr);
+  EXPECT_EQ(rf_image_from_pixels(pixel, -1, -1), nullptr);
+}
+
 }  // namespace testing
 }  // namespace flutter

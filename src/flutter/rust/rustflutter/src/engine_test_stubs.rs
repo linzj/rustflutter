@@ -348,6 +348,18 @@ pub unsafe extern "C" fn rf_image_decode(data: *const u8, length: usize) -> *mut
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_image_from_pixels(
+    pixels: *const u8,
+    width: c_int,
+    height: c_int,
+) -> *mut RfImage {
+    if pixels.is_null() || width <= 0 || height <= 0 {
+        return std::ptr::null_mut();
+    }
+    allocate::<RfImage>()
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_free(image: *mut RfImage) {
     unsafe { release(image) }
 }

@@ -256,6 +256,11 @@ pub(crate) mod sys {
         pub fn rf_layer_tree_pop(tree: *mut RfLayerTree);
 
         pub fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage;
+        pub fn rf_image_from_pixels(
+            pixels: *const u8,
+            width: c_int,
+            height: c_int,
+        ) -> *mut RfImage;
         pub fn rf_image_free(image: *mut RfImage);
         pub fn rf_image_width(image: *const RfImage) -> c_int;
         pub fn rf_image_height(image: *const RfImage) -> c_int;

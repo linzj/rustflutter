@@ -731,6 +731,29 @@ impl Image {
         if raw.is_null() { None } else { Some(Image { raw }) }
     }
 
+    /// Wraps pixels somebody else decoded: `width * height * 4` bytes, tightly
+    /// packed, RGBA8888 with premultiplied alpha.
+    ///
+    /// For the images Skia has no codec for and the platform does. Windows
+    /// reads HEIC through WIC, and an album of phone photographs is mostly
+    /// HEIC; the decode happens there and the pixels arrive here.
+    ///
+    /// Returns None if the dimensions are not positive, `pixels` is shorter
+    /// than they claim, or the engine could not allocate.
+    pub fn from_pixels(pixels: &[u8], width: i32, height: i32) -> Option<Image> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        // Checked rather than trusted: the length is what the engine reads
+        // against, and a short buffer is a read past the end of it.
+        let needed = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        if pixels.len() < needed {
+            return None;
+        }
+        let raw = unsafe { sys::rf_image_from_pixels(pixels.as_ptr(), width, height) };
+        if raw.is_null() { None } else { Some(Image { raw }) }
+    }
+
     pub fn width(&self) -> i32 {
         unsafe { sys::rf_image_width(self.raw) }
     }

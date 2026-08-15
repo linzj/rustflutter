@@ -37,6 +37,28 @@ if (enable_unittests) {
   }
 }
 
+# Everything an application has to link, in one archive.
+#
+# An application is a Rust program, and the natural way to build a Rust program
+# is Cargo -- but it links the C++ engine, and the engine is built by GN. This
+# is the seam between the two: `complete_static_lib` folds every object and
+# archive the FFI and the host transitively depend on into a single
+# `rustflutter_engine.lib`, which a `build.rs` can point `rustc` at without
+# knowing anything about GN, ninja, or the several hundred objects behind it.
+#
+# What is deliberately *not* in here is the framework crate. Cargo compiles
+# that from source as a path dependency, along with the application, so the
+# application and the framework are one Rust compilation and this archive is
+# only the C++ underneath them.
+static_library("rustflutter_engine") {
+  complete_static_lib = true
+
+  deps = [
+    "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/host",
+  ]
+}
+
 # The framework crate wrapped as a staticlib, so C++ targets can link it.
 static_library("rust_lib") {
   crate_name = "rustflutter_staticlib"
@@ -119,7 +141,6 @@ group("rust") {
     "//flutter/rust/examples/showcase",
     "//flutter/rust/ffi:engine_ffi",
     "//flutter/rust/host",
-    "//flutter/rust/projects",
     "//flutter/rust/rustflutter",
   ]
 }

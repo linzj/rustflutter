@@ -31,11 +31,11 @@ framework has the full RenderBox protocol, an element tree with state, hit
 testing and gestures, animation and a navigation stack, and a component library.
 
 ```
-gn gen                        →  1008 targets from 276 files
+gn gen                        →  1009 targets from 275 files
 ninja                         →  exit 0, no warnings
 rustflutter_unittests         →  123 passed
-rust_ffi_unittests            →   13 passed
 flutter_gallery_unittests     →   21 passed
+rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
 of which actual work          →  0.5 ms on the UI thread + 0.9 ms rasterising
 ```
@@ -85,17 +85,38 @@ cd src
 vpython3 flutter/tools/gn --unoptimized --no-rbe
 ninja -C out/host_debug_unopt
 
-# create an application and run it
-./out/host_debug_unopt/rustflutter create my_app --title "My App"
-vpython3 flutter/tools/gn --unoptimized --no-rbe   # let the new target into the build graph
-./out/host_debug_unopt/rustflutter run my_app
+# the archive an application links against, and an application
+vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
+ninja -C out/host_release flutter/rust:rustflutter_engine
+./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
-`run` builds with ninja and opens a window, with frames driven by vsync. Add
-`-- --png out.png` for a headless single-frame render (what CI uses; no shell).
-Delete an application with `rustflutter remove my_app` — removing the directory
-by hand leaves a dangling label in `projects/BUILD.gn` and every later `gn gen`
-fails on it.
+## Applications
+
+**An application is an ordinary Cargo project and lives wherever you want it.**
+It is not a GN target and not part of this repository:
+
+```sh
+cd ~/code/my_app
+cargo run                    # opens a window, frames driven by vsync
+cargo run -- --png out.png   # one frame, headless, no shell
+cargo test
+```
+
+That works because the engine build produces
+`flutter/rust:rustflutter_engine` — one archive holding the whole C++ side,
+which the generated `build.rs` links against. Cargo compiles the framework
+crate and the application together on top of it, so nothing about an
+application has to know that GN exists.
+
+It has to be a **release** engine build: everything links the static CRT
+(`/MT`), which is what rustc uses, and a debug engine build uses `/MTd`.
+
+Applications used to be GN targets under `flutter/rust/projects`, because the
+engine is built with GN and an application has to link it. That made every
+application engine code, which it is not — it put unrelated projects in the
+engine's build graph and its git history, and made every engine upgrade carry
+them.
 
 ## What an application looks like
 
@@ -141,9 +162,7 @@ impl WidgetApplication for App {
     }
 }
 
-// The real entry point is a `rustflutter_app_main` the C++ shim calls; see the
-// examples. It does exactly this:
-fn start() {
+fn main() {
     register_application(|| Box::new(WidgetHost::new(App)));
     run(&RunOptions::default()).unwrap();
 }
@@ -263,8 +282,7 @@ src/
         │   ├── components.rs  component library and theming
         │   └── app.rs         the contract with the shell
         ├── cli/           the `rustflutter` command line tool
-        ├── examples/      example applications
-        └── projects/      applications made by `rustflutter create`
+        └── examples/      example applications
 ```
 
 Of the 4,559 engine files here, 64 are modified and the rest are byte-for-byte

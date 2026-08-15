@@ -24,11 +24,11 @@
 动画与导航栈，以及一套组件库。
 
 ```
-gn gen                        →  1008 targets from 276 files
+gn gen                        →  1009 targets from 275 files
 ninja                         →  exit 0，零警告
 rustflutter_unittests         →  123 passed
-rust_ffi_unittests            →   13 passed
 flutter_gallery_unittests     →   21 passed
+rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
 其中真正干活                   →  UI 线程 0.5 ms + 光栅 0.9 ms
 ```
@@ -73,16 +73,34 @@ cd src
 vpython3 flutter/tools/gn --unoptimized --no-rbe
 ninja -C out/host_debug_unopt
 
-# 创建并运行一个应用
-./out/host_debug_unopt/rustflutter create my_app --title "My App"
-vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建图
-./out/host_debug_unopt/rustflutter run my_app
+# 应用要链接的那个归档，以及创建一个应用
+vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
+ninja -C out/host_release flutter/rust:rustflutter_engine
+./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
-`run` 会用 ninja 构建并打开窗口，帧由 vsync 驱动。
-加 `-- --png out.png` 走无头单帧渲染（CI 用，不起 shell）。
-删除应用用 `rustflutter remove my_app`——直接删目录会在 `projects/BUILD.gn` 里
-留下悬空标签，之后每次 `gn gen` 都会失败。
+## 应用
+
+**应用就是一个普通的 Cargo 工程，放在你想放的地方。**
+它不是 GN target，也不属于本仓库：
+
+```sh
+cd ~/code/my_app
+cargo run                    # 开窗口，帧由 vsync 驱动
+cargo run -- --png out.png   # 无头单帧，不起 shell
+cargo test
+```
+
+能这样是因为引擎构建会产出 `flutter/rust:rustflutter_engine`——
+一个装着整个 C++ 侧的归档，生成的 `build.rs` 链接它。
+Cargo 把框架 crate 和应用一起编译在它之上，所以应用完全不需要知道 GN 的存在。
+
+必须是 **release** 引擎构建：一切都链接静态 CRT（`/MT`），
+这也是 rustc 用的，而 debug 构建用的是 `/MTd`。
+
+应用以前是 `flutter/rust/projects` 下的 GN target——因为引擎是 GN 构建的，
+而应用必须链接引擎。那让每个应用都变成了引擎代码，而它不是：
+无关工程进了引擎的构建图和 git 历史，每次引擎升级都得驮着它们。
 
 ## 应用长什么样
 
@@ -128,9 +146,7 @@ impl WidgetApplication for App {
     }
 }
 
-// The real entry point is a `rustflutter_app_main` the C++ shim calls; see the
-// examples. It does exactly this:
-fn start() {
+fn main() {
     register_application(|| Box::new(WidgetHost::new(App)));
     run(&RunOptions::default()).unwrap();
 }
@@ -244,8 +260,7 @@ src/
         │   ├── components.rs  组件库与主题
         │   └── app.rs         与 shell 的契约
         ├── cli/           `rustflutter` 命令行工具
-        ├── examples/      示例应用
-        └── projects/      `rustflutter create` 生成的应用
+        └── examples/      示例应用
 ```
 
 这里的 4,559 个引擎文件中，64 个改过，其余与上游逐字节相同。

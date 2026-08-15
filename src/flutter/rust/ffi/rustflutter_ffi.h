@@ -369,6 +369,22 @@ void rf_layer_tree_pop(RfLayerTree* tree);
 // Decodes an encoded image (PNG, JPEG, WebP, GIF, BMP) into a CPU-backed
 // image. Returns NULL if the bytes could not be decoded.
 RfImage* rf_image_decode(const uint8_t* data, size_t length);
+
+// Wraps already-decoded pixels in an image, for callers that decode with
+// something other than Skia -- a platform codec, a camera, a generated bitmap.
+//
+// `pixels` is `width * height * 4` bytes, tightly packed, RGBA8888 with
+// premultiplied alpha. That one layout rather than a format enum because it is
+// what both backends take without a conversion: it is the SkImageInfo
+// rf_image_decode itself decodes into, and it is Impeller's
+// kR8G8B8A8UNormInt. Anything else would be swizzled here, on the thread that
+// can least afford it.
+//
+// The bytes are copied, so the caller may free them as soon as this returns.
+// Returns NULL if the size is not positive or the allocation failed.
+RfImage* rf_image_from_pixels(const uint8_t* pixels,
+                              int32_t width,
+                              int32_t height);
 void rf_image_free(RfImage* image);
 int32_t rf_image_width(const RfImage* image);
 int32_t rf_image_height(const RfImage* image);

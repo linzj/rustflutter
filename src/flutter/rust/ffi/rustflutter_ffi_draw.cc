@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -974,6 +975,47 @@ RfImage* rf_image_decode(const uint8_t* data, size_t length) {
   auto* out = new RfImage();
   out->image = flutter::DlImageSkia::Make(std::move(image));
   out->pixels = std::move(pixels);
+  return out;
+}
+
+RfImage* rf_image_from_pixels(const uint8_t* pixels,
+                              int32_t width,
+                              int32_t height) {
+  if (pixels == nullptr || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+  // The same info rf_image_decode decodes into, for the same reason: it is what
+  // the Impeller upload path expects, so choosing anything else here would only
+  // move the conversion somewhere less convenient.
+  const SkImageInfo info = SkImageInfo::Make(width, height, kRGBA_8888_SkColorType,
+                                             kPremul_SkAlphaType, nullptr);
+  auto bitmap = std::make_shared<SkBitmap>();
+  if (!bitmap->tryAllocPixels(info)) {
+    FML_LOG(ERROR) << "rf_image_from_pixels: could not allocate pixels.";
+    return nullptr;
+  }
+
+  // Row by row rather than one memcpy: the caller's buffer is tightly packed
+  // but Skia is free to give the bitmap a wider stride, and on the rows where
+  // it does, a single copy would shear the image.
+  const size_t row = static_cast<size_t>(width) * 4;
+  auto* destination = static_cast<uint8_t*>(bitmap->getPixels());
+  const size_t destination_stride = bitmap->rowBytes();
+  for (int32_t y = 0; y < height; ++y) {
+    std::memcpy(destination + static_cast<size_t>(y) * destination_stride,
+                pixels + static_cast<size_t>(y) * row, row);
+  }
+  bitmap->setImmutable();
+
+  sk_sp<SkImage> image = bitmap->asImage();
+  if (image == nullptr) {
+    FML_LOG(ERROR) << "rf_image_from_pixels: could not wrap the pixels.";
+    return nullptr;
+  }
+
+  auto* out = new RfImage();
+  out->image = flutter::DlImageSkia::Make(std::move(image));
+  out->pixels = std::move(bitmap);
   return out;
 }
 
