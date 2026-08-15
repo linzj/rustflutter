@@ -18,7 +18,7 @@ use rustflutter::components::{gap, stack_column, stack_row};
 use rustflutter::framework::{ElementTree, provide};
 use rustflutter::prelude::*;
 use rustflutter::render::{
-    Alignment, BoxConstraints, CrossAxisAlignment, MainAxisSize, Offset, PaintContext, RenderBox,
+    Alignment, BoxConstraints, CrossAxisAlignment, MainAxisSize, Offset, RenderBox,
     RenderFlex,
 };
 use rustflutter::widgets::{Align, Container, Empty, ListView};
@@ -352,15 +352,14 @@ fn render_png(path: &str, light: bool) -> c_int {
     root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));
 
     let background = if light { Theme::light().background } else { Theme::dark().background };
-    let mut canvas = rustflutter::engine::Canvas::new(WIDTH as f32, HEIGHT as f32);
-    canvas.draw_color(background);
-    {
-        let mut context = PaintContext::new(&mut canvas);
-        root.paint(&mut context, Offset::ZERO);
-    }
-    let display_list = canvas.build();
-    let mut layer_tree = rustflutter::engine::LayerTree::new(WIDTH, HEIGHT);
-    layer_tree.add_display_list(&display_list, 0.0, 0.0);
+    let mut layer_tree = rustflutter::app::compose_frame(
+        WIDTH,
+        HEIGHT,
+        1.0,
+        Size::new(WIDTH as f32, HEIGHT as f32),
+        background,
+        |context| root.paint(context, Offset::ZERO),
+    );
 
     match layer_tree.write_png(std::path::Path::new(path)) {
         Ok(()) => {

@@ -503,16 +503,15 @@ fn paint_layer(
             0,
             0,
         ));
-        context.canvas.draw_rect(bounds, &scrim);
+        context.canvas().draw_rect(bounds, &scrim);
         return;
     }
 
-    let paint = Paint::new(Color::WHITE).with_opacity(opacity);
-    context.canvas.saved(|canvas| {
-        canvas.save_layer(Some(bounds), Some(&paint));
-        let mut inner = rustflutter::render::PaintContext::new(canvas);
-        child.paint(&mut inner, placed);
-    });
+    // A real opacity layer rather than a save layer inside the picture: the
+    // compositor can distribute the alpha into the child's own draws when the
+    // child allows it, and only falls back to an offscreen pass when it cannot.
+    let alpha = (opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+    context.push_opacity(alpha, placed, child);
 }
 
 /// Dispatches a route to the screen that draws it.

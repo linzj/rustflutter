@@ -273,8 +273,9 @@ class MadeCurrent final : public GLContextResult {
 /// uniformly slow, and those want different answers.
 struct FrameSample {
   double interval_ms;  // present to present
-  double raster_ms;    // last swap returning to this swap being asked for
-  double swap_ms;      // inside eglSwapBuffers, which blocks on the vblank
+  double idle_ms;      // last swap returning to this frame's work starting
+  double raster_ms;    // the context going current to the swap being asked for
+  double swap_ms;      // inside eglSwapBuffers
 };
 
 bool FrameStatsEnabled() {
@@ -292,6 +293,17 @@ std::chrono::steady_clock::time_point& LastSwapEnd() {
   return value;
 }
 
+/// When the rasterizer took the context, which is where a frame's work starts.
+///
+/// Everything before it on this thread is waiting: the layer tree for the next
+/// frame has not arrived. Keeping the two apart is the whole point -- a raster
+/// thread that is idle three quarters of the time and one that is saturated
+/// both present every sixteen milliseconds, and only one of them has headroom.
+std::chrono::steady_clock::time_point& RasterStart() {
+  static auto value = std::chrono::steady_clock::now();
+  return value;
+}
+
 /// Splits a frame into the part that is work and the part that is waiting.
 ///
 /// The two want different answers. Time spent inside the swap is time spent
@@ -299,7 +311,7 @@ std::chrono::steady_clock::time_point& LastSwapEnd() {
 /// like; time spent before it is rasterising, which is what a frame that is
 /// behind looks like. A single frame-interval number cannot tell them apart --
 /// both make it sixteen milliseconds or more.
-void ReportFrameStats(double raster_ms, double swap_ms) {
+void ReportFrameStats(double idle_ms, double raster_ms, double swap_ms) {
   if (!FrameStatsEnabled()) {
     return;
   }
@@ -315,7 +327,7 @@ void ReportFrameStats(double raster_ms, double swap_ms) {
   if (samples.empty() && interval_ms > 1000.0) {
     return;
   }
-  samples.push_back({interval_ms, raster_ms, swap_ms});
+  samples.push_back({interval_ms, idle_ms, raster_ms, swap_ms});
   if (samples.size() < 60) {
     return;
   }
@@ -331,7 +343,8 @@ void ReportFrameStats(double raster_ms, double swap_ms) {
   };
 
   const double interval = median(&FrameSample::interval_ms);
-  FML_LOG(IMPORTANT) << "raster thread: rasterise " << median(&FrameSample::raster_ms)
+  FML_LOG(IMPORTANT) << "raster thread: idle " << median(&FrameSample::idle_ms)
+                     << " ms, rasterise " << median(&FrameSample::raster_ms)
                      << " ms, swap " << median(&FrameSample::swap_ms)
                      << " ms, frame " << interval << " ms (" << (1000.0 / interval)
                      << " fps), median of " << samples.size() << ".";
@@ -422,6 +435,9 @@ std::unique_ptr<GLContextResult> ImpellerGlDelegate::GLContextMakeCurrent() {
   if (!surface_) {
     return std::make_unique<MadeCurrent>(false);
   }
+  if (FrameStatsEnabled()) {
+    RasterStart() = std::chrono::steady_clock::now();
+  }
   return std::make_unique<MadeCurrent>(context_->MakeCurrent(*surface_));
 }
 
@@ -440,13 +456,17 @@ bool ImpellerGlDelegate::GLContextPresent(const GLPresentInfo& present_info) {
     return surface_->Present();
   }
   const auto asked = std::chrono::steady_clock::now();
+  const double idle_ms =
+      std::chrono::duration<double, std::milli>(RasterStart() - LastSwapEnd())
+          .count();
   const double raster_ms =
-      std::chrono::duration<double, std::milli>(asked - LastSwapEnd()).count();
+      std::chrono::duration<double, std::milli>(asked - RasterStart()).count();
   const bool presented = surface_->Present();
   const auto done = std::chrono::steady_clock::now();
   LastSwapEnd() = done;
   ReportFrameStats(
-      raster_ms, std::chrono::duration<double, std::milli>(done - asked).count());
+      idle_ms, raster_ms,
+      std::chrono::duration<double, std::milli>(done - asked).count());
   return presented;
 }
 

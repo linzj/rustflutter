@@ -636,6 +636,9 @@ swap        0.3 ms
 帧          16.6–16.8 ms（59.5–60.3 fps）
 ```
 
+（这是第十三节那批修改之前的数字。之后 layout 降到 0.06 ms，
+`rasterise` 这一栏的定义也改了——见第十三节。）
+
 自驱动动画页面和滚动 47 行列表两种情况下都是这个数。真正干活约 **2 ms**，
 其余是等垂直同步——也就是说这条流水线目前不是瓶颈，显示器才是。
 
@@ -674,12 +677,142 @@ swap        0.3 ms
 
 ---
 
-## 十三、下一步
+## 十三、与官方流水线的差距 —— 已消除的部分
+
+从 UI 到上屏逐段对照 `K:/flutter/engine/src/flutter`。
+
+### 引擎侧：逐字节相同（已验证）
+
+```
+diff -rq flow/          无差异
+diff -rq display_list/  无差异
+shell/common/rasterizer.cc   相同
+shell/common/pipeline.h      相同
+```
+
+`shell/common` 里有差异的只有 6 个文件，内容全是拆 Dart。`animator.cc` 唯一的
+实质改动是 `Dart_TimelineGetMicros()` 换成 `fml::TimePoint::Now()`（同一个时钟）
+加一处字段改名。线程模型也一样：ThreadHost 起 platform/ui/raster/io 四条线程，
+pipeline depth 2。
+
+### 框架侧与宿主侧：五处差距，已全部关掉
+
+| 差距 | 之前 | 现在 |
+|---|---|---|
+| DPI | `device_pixel_ratio` 硬编码 1.0，进程 DPI 不感知 | per-monitor v2 + 根 `TransformLayer` |
+| layer 树 | 每帧 1 个 `DisplayListLayer` | 真 layer：clip / opacity / transform 各自成层 |
+| R-tree | `prepare_rtree=false` | `true`，与上游 `PictureRecorder` 一致 |
+| 文字 | 每帧重新 shape | 两代缓存，效果等同上游的 `TextPainter` |
+| vsync | 硬编码 60 Hz | 读 DWM 合成时钟，每秒复核 |
+
+#### DPI —— 这一条是 bug，只是当时触发不了
+
+引擎期望 layer 树是**物理像素**的：`device_pixel_ratio` 在 `rasterizer.cc` 里
+只喂给 external view embedder，别处不消费；上游是靠 `RenderView` 根部那层
+dpr 缩放的 `TransformLayer` 达成的。而这里画布按**逻辑**尺寸建，原样贴在
+物理尺寸的树的 (0,0)。dpr=1 时两者重合，所以看不出来——一旦真报 dpr=2，
+UI 会缩到窗口左上角四分之一。之所以没炸，是因为进程 DPI 不感知，高 DPI 屏上
+Windows 直接位图拉伸整个窗口：模糊，但比例是对的。
+
+现在：`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`（运行时绑定，
+老系统上退回原行为而不是起不来）、`GetDpiForWindow`、`WM_DPICHANGED`，
+加上 `compose_frame` 里的根 `TransformLayer`。窗口尺寸参数的含义也随之变成
+逻辑像素，与上游 `Win32Window` 一致。
+
+`--dpr 2.0` 可以在 100% 的机器上截 200% 的图；`RustFFI.ScalesAFrameToPhysicalPixels`
+盯住引擎那一半。
+
+#### layer 树
+
+`PaintContext` 重写成上游 `PaintingContext` 的形状：既是画布，也是切 layer 的地方。
+开一层就把在录的 picture 收尾交给树、在新层里另起一张，关层反过来。于是一帧
+是"layer 树、叶子上挂 picture"，而不是一张把裁剪和变换记在里面的大图。
+
+`RenderClipRect` / `RenderClipPath` / `RenderOpacity` / `RenderTransform` /
+`RenderViewport` 全部改走这条路。picture 是懒起的，所以"层边界两侧都没画东西"
+不会留下空 display list。
+
+这件事没有像素测试能看见——裁剪记在 display list 里和裁剪自成一层，画出来一模一样，
+合成行为完全不同。`render.rs` 的 `compositing_tests` 用引擎桩上的调用计数器盯住
+场景的形状：桩只记录"调用发生过"，不假装知道它做了什么。
+
+**改完之后 home / shrine / settings 三张截图与改之前逐字节相同。**
+
+#### 文字
+
+`RenderParagraph::layout` 原本每次都 `Paragraph::new`——完整的字体匹配、断行、
+整形。上游 `RenderParagraph` 持有 `TextPainter`，只在文字/样式/约束变了才重排；
+这里 render tree 每帧重建，render object 没地方存东西，所以缓存放在树旁边。
+
+两代缓存：本帧查不到就查上一帧（命中则提升），帧末轮换。停止绘制的文字两帧后
+自然掉出去，一个每帧变的计数器不会把内存填满。
+
+同一个二进制、同一个页面，把缓存旁路掉对比：
+
+```
+layout  0.18 ms  →  0.06 ms
+UI 合计 0.47 ms  →  0.30 ms
+```
+
+#### vsync
+
+上游 Windows 读 `DwmGetCompositionTimingInfo` 拿刷新率，再把目标时间吸附到
+tick 网格上。这里原本吸附算法一样，但间隔硬编码 1/60。现在读 DWM，读不到退回
+显示模式，再退回 60，每秒复核一次。
+
+复核不是多余的：**远程桌面的合成率是会变的**。同一次会话里先测到 32 Hz，
+后来是 59.9974 Hz，等待器跟着走。按显示模式（WMI 报 59）定速是错的——
+真正到达屏幕的是合成率，不是适配器模式。
+
+顺带发现 `timeBeginPeriod(1)` 是必需的。默认定时器精度约 15.6 ms，
+用 `RUSTFLUTTER_FORCE_HZ` 驱动到本机没有的速率上实测：
+
+```
+速率     不设       设了
+59 Hz    63-66 fps  58.6-59.4 fps
+75 Hz    74.7 fps   74.7 fps
+```
+
+七十五能活下来是因为它的间隔接近五个 tick。误差也不是干净的翻倍或减半——
+五十九反而**偏快**，因为迟到的回调会落回它本来瞄准的那个网格点而不是下一个。
+
+（这个注释的第一版写的是另一套解释，是先看到 32 fps 再倒推出来的，而 32 fps
+的真实原因只是那一刻 RDP 真的在 32 Hz 合成。`RUSTFLUTTER_FORCE_HZ` 留在代码里，
+就是因为没有它无法把"速率"和"定时器精度"分开。）
+
+### 帧统计里一个标错的数
+
+`raster thread: rasterise` 之前测的是"上一次 swap 返回到这一次 swap 被请求"，
+中间大部分是在等下一棵 layer 树，不是在光栅化。现在拆成三段：
+
+```
+idle 15.8 ms   rasterise 0.8 ms   swap 0.14 ms   frame 16.9 ms
+```
+
+整条流水线每 16.9 ms 干约 1.2 ms 的活。
+
+### 还剩下的
+
+* **持久化 render object。** layer 树已经是真的，但 render object 每帧重建，
+  所以 raster cache 仍然命中不了（key 是 layer / display list 的 id，每帧都是新的），
+  repaint boundary 也无从谈起。这是最后一块，也是最大的一块。
+* **局部重绘。** `supports_partial_repaint` 默认 false，上游 Windows 也是——
+  这一条目前是持平而非差距。
+* **图片解码不在 IO 线程。** `Engine` 不再持有 `ImageDecoder`；解码在 UI 线程，
+  上传在 raster 线程。上游是并发 worker + IO 线程。
+* **microtask。** 上游在 `onBeginFrame` 和 `onDrawFrame` 之间抽干微任务队列，
+  这里没有异步运行时，所以没有对等的排序点。
+
+---
+
+## 十四、下一步
 
 按价值排序：
 
 1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
-   但 render tree 每帧仍整棵重建，布局和绘制照跑不误。这是最大的一笔性能欠账。
+   但 render tree 每帧仍整棵重建，布局和绘制照跑不误。layer 树已经是真的了
+   （第十三节），所以这一步做完 raster cache 和 repaint boundary 就都能用上——
+   现在它们用不上，正是因为每帧的 layer 和 display list 都是新对象。
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。

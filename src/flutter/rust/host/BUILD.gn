@@ -50,6 +50,8 @@ source_set("host") {
     include_dirs = [ "//flutter/third_party/angle/include" ]
 
     libs = [
+      # The composition clock, for the vsync waiter's frame interval.
+      "dwmapi.lib",
       "gdi32.lib",
       "user32.lib",
     ]

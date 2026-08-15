@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::rc::Rc;
 
-use crate::engine::{Canvas, Color, LayerTree, Paint, Rect, sys};
+use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, TextAlign, TextStyle, sys};
 
 // -- Enums --------------------------------------------------------------------
 
@@ -390,6 +390,111 @@ impl Drop for RenderPath {
 
 // -- Image --------------------------------------------------------------------
 
+// -- Shaped text --------------------------------------------------------------
+
+/// Everything a shaped paragraph depends on.
+///
+/// Floats are keyed by their bits rather than their value: `f32` is not `Eq`,
+/// and two sizes that differ only by a rounding step are two different
+/// paragraphs anyway.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ShapeKey {
+    text: String,
+    family: Option<String>,
+    size_bits: u32,
+    weight: i32,
+    color: u32,
+    align: u8,
+    max_width_bits: u32,
+}
+
+impl ShapeKey {
+    fn new(text: &str, style: &TextStyle, max_width: f32) -> ShapeKey {
+        ShapeKey {
+            text: text.to_string(),
+            family: style.font_family.clone(),
+            size_bits: style.font_size.to_bits(),
+            weight: style.font_weight,
+            color: style.color.0,
+            align: match style.align {
+                TextAlign::Left => 0,
+                TextAlign::Right => 1,
+                TextAlign::Center => 2,
+            },
+            max_width_bits: max_width.to_bits(),
+        }
+    }
+}
+
+/// Paragraphs shaped this frame and last.
+///
+/// Two generations rather than one map: a paragraph is looked up in `current`,
+/// then in `previous` -- where a hit is promoted -- and only shaped if neither
+/// has it. At the end of a frame `current` becomes `previous` and a fresh
+/// `current` starts. Anything that stopped being drawn therefore falls out
+/// after two frames, which is what keeps a label that counts upwards from
+/// filling memory with every number it has ever shown.
+#[derive(Default)]
+struct ShapeCache {
+    current: HashMap<ShapeKey, Rc<Paragraph>>,
+    previous: HashMap<ShapeKey, Rc<Paragraph>>,
+}
+
+thread_local! {
+    static SHAPED: RefCell<ShapeCache> = RefCell::new(ShapeCache::default());
+}
+
+/// Shapes `text`, or returns the paragraph shaped for the same request earlier.
+///
+/// Upstream a `RenderParagraph` owns a `TextPainter` and re-shapes only when
+/// the text, the style or the constraints change. Here the render tree is
+/// rebuilt every frame, so a render object has nowhere to keep anything and the
+/// cache has to sit beside the tree instead of inside it. The effect is the
+/// same, and the cost it removes is real: shaping is font matching, itemisation,
+/// line breaking and glyph positioning, and a screen of static text was paying
+/// for all four sixty times a second.
+///
+/// Thread-local, because a paragraph is a raw engine handle and only the UI
+/// thread lays out.
+pub fn shape(text: &str, style: &TextStyle, max_width: f32) -> Rc<Paragraph> {
+    let key = ShapeKey::new(text, style, max_width);
+    SHAPED.with(|cache| {
+        {
+            let cache = cache.borrow();
+            if let Some(hit) = cache.current.get(&key) {
+                return hit.clone();
+            }
+        }
+        // Taken out of the old generation rather than copied, so the entry
+        // cannot end up in both.
+        let carried = cache.borrow_mut().previous.remove(&key);
+        if let Some(hit) = carried {
+            cache.borrow_mut().current.insert(key, hit.clone());
+            return hit;
+        }
+        let shaped = Rc::new(Paragraph::new(text, style, max_width));
+        cache.borrow_mut().current.insert(key, shaped.clone());
+        shaped
+    })
+}
+
+/// Ages the shape cache by one frame. Called once per frame, after painting.
+pub fn end_text_frame() {
+    SHAPED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let live = std::mem::take(&mut cache.current);
+        cache.previous = live;
+    });
+}
+
+/// How many paragraphs the cache is holding, for tests and diagnostics.
+pub fn shaped_paragraph_count() -> usize {
+    SHAPED.with(|cache| {
+        let cache = cache.borrow();
+        cache.current.len() + cache.previous.len()
+    })
+}
+
 /// A decoded image.
 pub struct Image {
     raw: *mut sys::RfImage,
@@ -698,5 +803,66 @@ impl LayerTree {
     /// Closes the innermost open layer. Popping past the root is ignored.
     pub fn pop(&mut self) {
         unsafe { sys::rf_layer_tree_pop(self.raw) };
+    }
+}
+
+// -- Tests --------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Each test gets the cache to itself: they run on separate threads and the
+    // cache is thread-local, but a name shared between two of them would still
+    // be shaped twice and prove nothing. Distinct text per test avoids that
+    // without any coordination.
+
+    #[test]
+    fn the_same_request_is_shaped_once() {
+        let style = TextStyle::default();
+        let first = shape("shaped once", &style, 200.0);
+        let second = shape("shaped once", &style, 200.0);
+        assert!(Rc::ptr_eq(&first, &second), "the second ask re-shaped");
+    }
+
+    #[test]
+    fn a_different_width_is_a_different_paragraph() {
+        let style = TextStyle::default();
+        let narrow = shape("wraps differently", &style, 100.0);
+        let wide = shape("wraps differently", &style, 400.0);
+        // Line breaking depends on the width, so sharing one shaping between
+        // two widths would put the breaks in the wrong place.
+        assert!(!Rc::ptr_eq(&narrow, &wide));
+    }
+
+    #[test]
+    fn a_different_style_is_a_different_paragraph() {
+        let plain = TextStyle::default();
+        let bold = TextStyle { font_weight: 700, ..TextStyle::default() };
+        let a = shape("weight matters", &plain, 200.0);
+        let b = shape("weight matters", &bold, 200.0);
+        assert!(!Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn text_still_on_screen_survives_a_frame() {
+        let style = TextStyle::default();
+        let first = shape("still drawn", &style, 200.0);
+        end_text_frame();
+        let second = shape("still drawn", &style, 200.0);
+        assert!(Rc::ptr_eq(&first, &second), "a live paragraph was re-shaped");
+    }
+
+    #[test]
+    fn text_that_stopped_being_drawn_is_dropped() {
+        let style = TextStyle::default();
+        let before = shaped_paragraph_count();
+        let _ = shape("shown briefly", &style, 200.0);
+        assert_eq!(shaped_paragraph_count(), before + 1);
+        // Two frames: the first moves it to the previous generation, the second
+        // drops that generation entirely.
+        end_text_frame();
+        end_text_frame();
+        assert_eq!(shaped_paragraph_count(), before);
     }
 }

@@ -30,9 +30,9 @@
 
 use std::rc::Rc;
 
-use crate::engine::{Canvas, Color, Paint, Paragraph, Rect, Style, TextStyle};
+use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
-use crate::painting::{ClipOp, Gradient, Image, RenderPath};
+use crate::painting::{ClipBehavior, ClipOp, Gradient, Image, RenderPath};
 
 // -- Geometry -----------------------------------------------------------------
 
@@ -254,25 +254,182 @@ impl BoxConstraints {
 
 // -- Painting -----------------------------------------------------------------
 
+/// Composes two 2D affines: the result applies `right` and then `left`.
+///
+/// A matrix is `[a, b, c, d, e, f]`, read as the rows `(a c e)` and `(b d f)`,
+/// so a point goes to `(a·x + c·y + e, b·x + d·y + f)`. Same convention as
+/// `Canvas::transform` and `LayerTree::push_transform`.
+fn compose_affine(left: [f32; 6], right: [f32; 6]) -> [f32; 6] {
+    let [a1, b1, c1, d1, e1, f1] = left;
+    let [a2, b2, c2, d2, e2, f2] = right;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
 /// What a render object paints into.
 ///
-/// Upstream this also decides where to cut a new compositing layer. Here it is
-/// a canvas plus the estimated bounds of the frame, which
-/// [`RenderClipRect`] and friends need in order to clip sensibly.
+/// Two things at once, exactly as upstream's `PaintingContext` is: a canvas to
+/// draw on, and the place where a subtree gets a compositing layer of its own.
+///
+/// The canvas is owned rather than borrowed, and it is not the same canvas for
+/// the whole frame. Opening a layer ends the picture in progress, hands it to
+/// the tree, and starts a fresh one inside the new layer; closing it does the
+/// same in reverse. A frame is therefore a tree of layers with pictures at the
+/// leaves -- which is what the compositor is built to consume -- rather than
+/// one picture with the clips and the transforms recorded inside it, where
+/// `Preroll` has nothing to look at, the raster cache has nothing to key on,
+/// and every frame damages the whole screen.
+///
+/// Pictures are started lazily, so a layer boundary with nothing drawn on
+/// either side of it does not leave an empty display list behind.
 pub struct PaintContext<'a> {
-    pub canvas: &'a mut Canvas,
+    /// The picture being recorded, if anything has asked to draw yet.
+    canvas: Option<Canvas>,
+    /// Where finished pictures and opened layers go.
+    tree: &'a mut LayerTree,
+    /// Cull rectangle for every picture in this frame -- the viewport, in
+    /// logical pixels.
+    cull: Size,
 }
 
 impl<'a> PaintContext<'a> {
-    pub fn new(canvas: &'a mut Canvas) -> PaintContext<'a> {
-        PaintContext { canvas }
+    /// Starts painting a frame into `tree`. `cull` is the viewport in logical
+    /// pixels; anything recorded outside it is dropped at record time.
+    pub fn new(tree: &'a mut LayerTree, cull: Size) -> PaintContext<'a> {
+        PaintContext { canvas: None, tree, cull }
     }
 
-    /// Paints `child` at `offset`, which is where every parent should route a
-    /// child rather than calling `paint` directly -- it is the one place a
-    /// future repaint boundary can be inserted.
+    /// The picture being recorded, started if this is the first draw since the
+    /// last layer boundary.
+    pub fn canvas(&mut self) -> &mut Canvas {
+        let cull = self.cull;
+        self.canvas
+            .get_or_insert_with(|| Canvas::new(cull.width, cull.height))
+    }
+
+    /// Ends the picture in progress and adds it to the current layer. A picture
+    /// nothing drew into is not started, so there is nothing to add.
+    fn flush(&mut self) {
+        if let Some(canvas) = self.canvas.take() {
+            let list = canvas.build();
+            self.tree.add_display_list(&list, 0.0, 0.0);
+        }
+    }
+
+    /// Paints `child` at `offset`.
+    ///
+    /// Every parent should route a child through here rather than calling
+    /// `paint` directly: it is the one place a repaint boundary can be
+    /// introduced without touching each render object again.
     pub fn paint_child(&mut self, child: &dyn RenderBox, offset: Offset) {
         child.paint(self, offset);
+    }
+
+    /// Paints `body` inside a compositing layer that `open` pushes.
+    ///
+    /// The picture in progress is closed first, so the layer's content starts
+    /// clean, and closed again afterwards, so whatever the caller draws next
+    /// lands outside the layer rather than inside it.
+    fn in_layer(&mut self, open: impl FnOnce(&mut LayerTree), body: impl FnOnce(&mut Self)) {
+        self.flush();
+        open(self.tree);
+        body(self);
+        self.flush();
+        self.tree.pop();
+    }
+
+    /// Clips `child` to `rect`, optionally with rounded corners.
+    ///
+    /// `rect` is in the same coordinates the caller paints in, and `child` is
+    /// painted at `offset` unchanged -- matching upstream's `pushClipRect`,
+    /// which shifts the clip rather than the child.
+    pub fn push_clip_rect(
+        &mut self,
+        rect: Rect,
+        corner_radius: f32,
+        behavior: ClipBehavior,
+        child: &dyn RenderBox,
+        offset: Offset,
+    ) {
+        self.in_layer(
+            |tree| {
+                if corner_radius > 0.0 {
+                    tree.push_clip_rounded_rect(rect, corner_radius, corner_radius, behavior);
+                } else {
+                    tree.push_clip_rect(rect, behavior);
+                }
+            },
+            |context| child.paint(context, offset),
+        );
+    }
+
+    /// Clips `child` to `path`, which is in the child's own coordinates.
+    ///
+    /// Two layers, because a clip layer holds its path in the parent's
+    /// coordinates and a `RenderPath` cannot be shifted: the transform layer
+    /// moves the origin, the clip layer then reads the path where it was built.
+    pub fn push_clip_path(
+        &mut self,
+        path: &RenderPath,
+        behavior: ClipBehavior,
+        child: &dyn RenderBox,
+        offset: Offset,
+    ) {
+        self.in_layer(
+            |tree| tree.push_offset(offset.dx, offset.dy),
+            |context| {
+                context.in_layer(
+                    |tree| tree.push_clip_path(path, behavior),
+                    |context| child.paint(context, Offset::ZERO),
+                );
+            },
+        );
+    }
+
+    /// Composites `child` at `alpha`, translated by `offset`.
+    ///
+    /// The translation belongs to the layer rather than to a transform around
+    /// it because that is how `OpacityLayer` is built, and it is what lets the
+    /// compositor move a cached subtree without re-rasterizing it.
+    pub fn push_opacity(&mut self, alpha: u8, offset: Offset, child: &dyn RenderBox) {
+        self.in_layer(
+            |tree| tree.push_opacity(alpha, offset.dx, offset.dy),
+            |context| child.paint(context, Offset::ZERO),
+        );
+    }
+
+    /// Applies `matrix` about `pivot`, positioned at `offset`, to `child`.
+    pub fn push_transform(
+        &mut self,
+        matrix: [f32; 6],
+        pivot: Offset,
+        offset: Offset,
+        child: &dyn RenderBox,
+    ) {
+        // Move the origin to the pivot, transform, move back -- one composed
+        // affine rather than three canvas calls, because a layer takes one.
+        let to_pivot = [1.0, 0.0, 0.0, 1.0, offset.dx + pivot.dx, offset.dy + pivot.dy];
+        let from_pivot = [1.0, 0.0, 0.0, 1.0, -pivot.dx, -pivot.dy];
+        let composed = compose_affine(compose_affine(to_pivot, matrix), from_pivot);
+        let [a, b, c, d, e, f] = composed;
+        self.in_layer(
+            |tree| tree.push_transform(a, b, c, d, e, f),
+            |context| child.paint(context, Offset::ZERO),
+        );
+    }
+}
+
+impl Drop for PaintContext<'_> {
+    /// Hands over whatever was still being recorded. Dropping is how a frame
+    /// ends, so forgetting to close it is not a way to lose the last picture.
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -646,9 +803,9 @@ impl RenderBox for RenderDecoratedBox {
         let rect = self.paint_rect(offset);
         if let Some(paint) = self.build_paint(rect) {
             if self.corner_radius > 0.0 {
-                context.canvas.draw_rounded_rect(rect, self.corner_radius, &paint);
+                context.canvas().draw_rounded_rect(rect, self.corner_radius, &paint);
             } else {
-                context.canvas.draw_rect(rect, &paint);
+                context.canvas().draw_rect(rect, &paint);
             }
         }
         if let Some(child) = &self.child {
@@ -668,13 +825,13 @@ impl RenderBox for RenderDecoratedBox {
             let paint = Paint::new(self.border_color)
                 .with_style(Style::Stroke { width: self.border_width });
             if self.corner_radius > 0.0 {
-                context.canvas.draw_rounded_rect(
+                context.canvas().draw_rounded_rect(
                     inset,
                     (self.corner_radius - half).max(0.0),
                     &paint,
                 );
             } else {
-                context.canvas.draw_rect(inset, &paint);
+                context.canvas().draw_rect(inset, &paint);
             }
         }
     }
@@ -718,7 +875,9 @@ pub struct RenderParagraph {
     content: String,
     style: TextStyle,
     max_lines: Option<usize>,
-    paragraph: Option<Paragraph>,
+    /// Shared with the cache rather than owned, so a tree rebuilt around
+    /// unchanged text re-uses the shaping instead of repeating it.
+    paragraph: Option<Rc<Paragraph>>,
     size: Size,
 }
 
@@ -749,7 +908,7 @@ impl RenderParagraph {
 
     /// Shapes at `width` without keeping the result, for intrinsics.
     fn measure(&self, width: f32) -> Size {
-        let paragraph = Paragraph::new(&self.content, &self.style, width);
+        let paragraph = crate::painting::shape(&self.content, &self.style, width);
         Size::new(paragraph.width(), paragraph.height())
     }
 }
@@ -763,7 +922,7 @@ impl RenderBox for RenderParagraph {
         } else {
             f32::MAX / 4.0
         };
-        let paragraph = Paragraph::new(&self.content, &self.style, width);
+        let paragraph = crate::painting::shape(&self.content, &self.style, width);
         // Paragraph::new re-lays out at the ink width, so width() is the tight
         // box around the glyphs. That is what makes centring a text inside a
         // larger box actually look centred.
@@ -778,16 +937,16 @@ impl RenderBox for RenderParagraph {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(paragraph) = &self.paragraph {
-            context.canvas.draw_paragraph(paragraph, offset.dx, offset.dy);
+            context.canvas().draw_paragraph(paragraph, offset.dx, offset.dy);
         }
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
-        Paragraph::new(&self.content, &self.style, f32::MAX / 4.0).min_intrinsic_width()
+        crate::painting::shape(&self.content, &self.style, f32::MAX / 4.0).min_intrinsic_width()
     }
 
     fn max_intrinsic_width(&self, _height: f32) -> f32 {
-        Paragraph::new(&self.content, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+        crate::painting::shape(&self.content, &self.style, f32::MAX / 4.0).max_intrinsic_width()
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
@@ -889,7 +1048,7 @@ impl RenderBox for RenderImage {
         }
         let source = Rect::xywh(0.0, 0.0, natural.width, natural.height);
         context
-            .canvas
+            .canvas()
             .draw_image_rect(&self.image, source, self.destination(offset), None);
     }
 
@@ -1919,17 +2078,7 @@ impl RenderBox for RenderTransform {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let pivot = self.origin.inscribe(Size::ZERO, self.size);
-        let [a, b, c, d, e, f] = self.matrix;
-        let child = self.child.as_ref();
-        context.canvas.saved(|canvas| {
-            // Move the origin to the pivot, transform, move back, all in the
-            // parent's coordinates.
-            canvas.translate(offset.dx + pivot.dx, offset.dy + pivot.dy);
-            canvas.transform(a, b, c, d, e, f);
-            canvas.translate(-pivot.dx, -pivot.dy);
-            let mut inner = PaintContext::new(canvas);
-            child.paint(&mut inner, Offset::ZERO);
-        });
+        context.push_transform(self.matrix, pivot, offset, self.child.as_ref());
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -1992,14 +2141,9 @@ impl RenderBox for RenderOpacity {
             context.paint_child(self.child.as_ref(), offset);
             return;
         }
-        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-        let paint = Paint::new(Color::WHITE).with_opacity(self.opacity);
-        let child = self.child.as_ref();
-        context.canvas.saved(|canvas| {
-            canvas.save_layer(Some(bounds), Some(&paint));
-            let mut inner = PaintContext::new(canvas);
-            child.paint(&mut inner, offset);
-        });
+        // 0..255, the alpha an OpacityLayer carries.
+        let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+        context.push_opacity(alpha, offset, self.child.as_ref());
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2058,17 +2202,13 @@ impl RenderBox for RenderClipRect {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-        let radius = self.corner_radius;
-        let child = self.child.as_ref();
-        context.canvas.saved(|canvas| {
-            if radius > 0.0 {
-                canvas.clip_rounded_rect(bounds, radius, radius, ClipOp::Intersect, true);
-            } else {
-                canvas.clip_rect(bounds, ClipOp::Intersect, true);
-            }
-            let mut inner = PaintContext::new(canvas);
-            child.paint(&mut inner, offset);
-        });
+        context.push_clip_rect(
+            bounds,
+            self.corner_radius,
+            ClipBehavior::AntiAlias,
+            self.child.as_ref(),
+            offset,
+        );
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2121,14 +2261,12 @@ impl RenderBox for RenderClipPath {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        let path = &self.path;
-        let child = self.child.as_ref();
-        context.canvas.saved(|canvas| {
-            canvas.translate(offset.dx, offset.dy);
-            canvas.clip_path(path, ClipOp::Intersect, true);
-            let mut inner = PaintContext::new(canvas);
-            child.paint(&mut inner, Offset::ZERO);
-        });
+        context.push_clip_path(
+            &self.path,
+            ClipBehavior::AntiAlias,
+            self.child.as_ref(),
+            offset,
+        );
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2233,13 +2371,15 @@ impl RenderBox for RenderViewport {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-        let scrolled = offset.plus(self.scroll_offset());
-        let child = self.child.as_ref();
-        context.canvas.saved(|canvas| {
-            canvas.clip_rect(bounds, ClipOp::Intersect, false);
-            let mut inner = PaintContext::new(canvas);
-            child.paint(&mut inner, scrolled);
-        });
+        // A hard edge: the viewport's clip is axis aligned and pixel aligned,
+        // so anti-aliasing it would buy nothing and cost an offscreen pass.
+        context.push_clip_rect(
+            bounds,
+            0.0,
+            ClipBehavior::HardEdge,
+            self.child.as_ref(),
+            offset.plus(self.scroll_offset()),
+        );
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2657,5 +2797,186 @@ mod tests {
         assert!(viewport.hit_test(Offset::new(10.0, 10.0), &mut result));
         // A point 10 down the window is 60 down the content.
         assert_eq!(result.innermost().unwrap().local_position.dy, 60.0);
+    }
+}
+
+// -- Compositing tests --------------------------------------------------------
+//
+// These check the *shape of the scene*, which no pixel test can see: a clip
+// recorded into a display list and a clip that is its own layer produce the
+// same picture and completely different compositing behaviour. The counters
+// come from the engine stubs, which record that a call happened without
+// pretending to have an opinion about what it did.
+
+#[cfg(test)]
+mod compositing_tests {
+    use super::*;
+    use crate::engine::LayerTree;
+    use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+
+    /// A box that paints one rectangle, so a picture is definitely recorded.
+    struct Spot;
+
+    impl RenderBox for Spot {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            constraints.biggest()
+        }
+        fn size(&self) -> Size {
+            Size::new(10.0, 10.0)
+        }
+        fn paint(&self, context: &mut PaintContext, offset: Offset) {
+            let bounds = Rect::xywh(offset.dx, offset.dy, 10.0, 10.0);
+            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+        }
+    }
+
+    fn paint_into(root: &mut dyn RenderBox) -> crate::engine_test_stubs::LayerCalls {
+        reset_layer_calls();
+        let mut tree = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut tree, Size::new(100.0, 100.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        layer_calls()
+    }
+
+    #[test]
+    fn a_plain_subtree_is_one_picture_and_no_layers() {
+        let calls = paint_into(&mut Spot);
+        assert_eq!(calls.pushes(), 0, "nothing asked for a layer");
+        assert_eq!(calls.display_lists, 1);
+    }
+
+    #[test]
+    fn a_clip_becomes_a_layer_rather_than_an_operation() {
+        let mut clipped = RenderClipRect::new(Spot);
+        clipped.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut clipped);
+        assert_eq!(calls.clip_rects, 1, "the clip stayed inside the picture");
+        assert_eq!(calls.pops, 1, "the layer was left open");
+    }
+
+    #[test]
+    fn a_rounded_clip_uses_the_rounded_layer() {
+        let mut clipped = RenderClipRect::new(Spot).with_corner_radius(8.0);
+        clipped.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut clipped);
+        assert_eq!(calls.clip_rounded_rects, 1);
+        assert_eq!(calls.clip_rects, 0);
+    }
+
+    #[test]
+    fn opacity_becomes_a_layer() {
+        let mut faded = RenderOpacity::new(0.5, Spot);
+        faded.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut faded);
+        assert_eq!(calls.opacities, 1);
+        assert_eq!(calls.pops, 1);
+    }
+
+    #[test]
+    fn a_fully_opaque_subtree_costs_no_layer() {
+        // Upstream skips the layer at alpha 1 for the same reason: it would
+        // composite an offscreen buffer to change nothing.
+        let mut faded = RenderOpacity::new(1.0, Spot);
+        faded.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut faded);
+        assert_eq!(calls.pushes(), 0);
+    }
+
+    #[test]
+    fn an_invisible_subtree_is_not_painted_at_all() {
+        let mut faded = RenderOpacity::new(0.0, Spot);
+        faded.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut faded);
+        assert_eq!(calls.pushes(), 0);
+        assert_eq!(calls.display_lists, 0, "an invisible subtree still recorded");
+    }
+
+    #[test]
+    fn a_transform_becomes_a_layer() {
+        let mut turned = RenderTransform::rotate(30.0, Spot);
+        turned.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut turned);
+        assert_eq!(calls.transforms, 1);
+        assert_eq!(calls.pops, 1);
+    }
+
+    #[test]
+    fn a_scrolling_viewport_clips_with_a_layer() {
+        let mut viewport = RenderViewport::new(Axis::Vertical, Spot);
+        viewport.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut viewport);
+        assert_eq!(calls.clip_rects, 1);
+        assert_eq!(calls.pops, 1);
+    }
+
+    #[test]
+    fn every_layer_that_opens_is_closed() {
+        // Nested three deep, with a picture at each level, so an unbalanced pop
+        // anywhere shows up as a mismatch rather than cancelling out.
+        let mut nested = RenderClipRect::new(RenderOpacity::new(
+            0.5,
+            RenderTransform::scale(2.0, 2.0, Spot),
+        ));
+        nested.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut nested);
+        assert_eq!(calls.pushes(), 3);
+        assert_eq!(calls.pops, calls.pushes());
+    }
+
+    #[test]
+    fn a_layer_boundary_splits_the_picture_in_two() {
+        // A parent that draws, then a child in a layer, then draws again: the
+        // drawing before and after cannot share a display list with the layer's
+        // contents, because they are on the other side of it in paint order.
+        struct BeforeAndAfter {
+            inner: RenderClipRect,
+        }
+
+        impl RenderBox for BeforeAndAfter {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.inner.layout(constraints)
+            }
+            fn size(&self) -> Size {
+                self.inner.size()
+            }
+            fn paint(&self, context: &mut PaintContext, offset: Offset) {
+                let paint = Paint::new(Color::WHITE);
+                context.canvas().draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
+                context.paint_child(&self.inner, offset);
+                context.canvas().draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
+            }
+        }
+
+        let mut root = BeforeAndAfter { inner: RenderClipRect::new(Spot) };
+        root.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut root);
+        // Before, inside, after.
+        assert_eq!(calls.display_lists, 3);
+        assert_eq!(calls.clip_rects, 1);
+    }
+
+    #[test]
+    fn an_empty_layer_leaves_no_empty_picture() {
+        // Nothing draws, so no picture should be started -- an empty display
+        // list still costs a layer, a preroll and a dispatch.
+        struct Blank;
+
+        impl RenderBox for Blank {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.biggest()
+            }
+            fn size(&self) -> Size {
+                Size::new(10.0, 10.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        }
+
+        let mut clipped = RenderClipRect::new(Blank);
+        clipped.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut clipped);
+        assert_eq!(calls.clip_rects, 1);
+        assert_eq!(calls.display_lists, 0);
     }
 }

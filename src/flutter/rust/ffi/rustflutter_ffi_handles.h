@@ -30,8 +30,13 @@ struct RfPaint {
 };
 
 struct RfCanvas {
+  // With an R-tree, the same as upstream's PictureRecorder. It indexes each
+  // op's bounds, which is what lets a replay under a clip skip the ops that
+  // fall outside it instead of submitting them and having them rejected one at
+  // a time further down. Impeller's dispatcher asks for it by dispatching with
+  // a cull rect; without the index that call quietly degrades to "everything".
   explicit RfCanvas(const flutter::DlRect& cull)
-      : builder(cull, /*prepare_rtree=*/false) {}
+      : builder(cull, /*prepare_rtree=*/true) {}
   flutter::DisplayListBuilder builder;
 };
 

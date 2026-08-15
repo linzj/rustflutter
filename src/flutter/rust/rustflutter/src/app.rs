@@ -328,6 +328,50 @@ impl FrameTimings {
     }
 }
 
+/// Composes one frame's picture into the layer tree the shell rasterizes.
+///
+/// Layout and paint work in logical pixels; the layer tree is measured in
+/// physical ones, and on a display that is not at 100% those differ. Upstream
+/// `RenderView` bridges the gap with a transform layer at the root of every
+/// scene, and this is that layer.
+///
+/// A layer rather than a `Canvas::scale` recorded inside the picture, for the
+/// same reason upstream chose one: a scale the compositor can see is one it can
+/// take into account when it decides what resolution to rasterize a cached
+/// subtree at. A scale hidden inside a display list would have it cache at the
+/// wrong size and then stretch.
+///
+/// It lives here, rather than at each call site, so that the windowed path and
+/// the headless one cannot come to disagree about what a frame is -- which
+/// would make every screenshot a picture of something the user never sees.
+pub fn compose_frame(
+    physical_width: i32,
+    physical_height: i32,
+    device_pixel_ratio: f64,
+    logical: Size,
+    background: Color,
+    paint: impl FnOnce(&mut PaintContext),
+) -> LayerTree {
+    let mut tree = LayerTree::new(physical_width, physical_height);
+    let dpr = device_pixel_ratio as f32;
+    // Exactly one means the two coordinate systems coincide, and pushing an
+    // identity would cost a layer to say nothing.
+    let scaled = dpr > 0.0 && dpr != 1.0;
+    if scaled {
+        tree.push_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
+    }
+    {
+        let mut context = PaintContext::new(&mut tree, logical);
+        context.canvas().draw_color(background);
+        paint(&mut context);
+        // Dropping the context hands over the last picture.
+    }
+    if scaled {
+        tree.pop();
+    }
+    tree
+}
+
 /// Builds the application's root object. Registered before the shell starts.
 pub type ApplicationFactory = Box<dyn Fn() -> Box<dyn Application> + Send + Sync>;
 
@@ -406,17 +450,19 @@ impl AppInstance {
         root.layout(BoxConstraints::tight(context.size.width, context.size.height));
         let laid_out = FrameTimings::now();
 
-        let mut canvas = Canvas::new(context.size.width, context.size.height);
-        canvas.draw_color(background);
-        {
-            let mut paint_context = PaintContext::new(&mut canvas);
-            root.paint(&mut paint_context, Offset::ZERO);
-        }
-        let display_list = canvas.build();
+        let tree = compose_frame(
+            physical_width,
+            physical_height,
+            metrics.device_pixel_ratio,
+            context.size,
+            background,
+            |paint_context| root.paint(paint_context, Offset::ZERO),
+        );
+        // All the shaping this frame needed has happened by now -- layout asked
+        // for it and paint drew from what layout kept. Ageing the cache here
+        // retires anything that stopped being drawn a frame ago.
+        crate::painting::end_text_frame();
         let painted = FrameTimings::now();
-
-        let mut tree = LayerTree::new(physical_width, physical_height);
-        tree.add_display_list(&display_list, 0.0, 0.0);
         FrameTimings::record(started, built, laid_out, painted);
 
         if let Some(render) = self.host.render {
@@ -489,7 +535,9 @@ mod host_sys {
 /// How the window and the shell are configured.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
-    /// Client-area size in physical pixels.
+    /// Client-area size in logical pixels. The host scales it by the display's
+    /// DPI, so a window asked for at 1000x700 looks the same size on a 200%
+    /// display as on a 100% one.
     pub width: i32,
     pub height: i32,
     pub title: String,

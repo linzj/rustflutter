@@ -242,28 +242,91 @@ pub unsafe extern "C" fn rf_canvas_clip_rounded_rect(canvas: *mut RfCanvas, left
 pub unsafe extern "C" fn rf_canvas_clip_path(canvas: *mut RfCanvas, path: *const RfPath, clip_op: c_int, anti_alias: c_int) {
 }
 
+/// What the framework asked the compositor for.
+///
+/// The stubs are otherwise inert on purpose, but *whether a call happened* is
+/// not a metric that can be faked into agreeing with itself -- it is the thing
+/// under test. A framework that records a clip as a display list operation and
+/// one that records it as a layer are indistinguishable from the pixels; they
+/// are told apart here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerCalls {
+    pub transforms: u32,
+    pub offsets: u32,
+    pub clip_rects: u32,
+    pub clip_rounded_rects: u32,
+    pub clip_paths: u32,
+    pub opacities: u32,
+    pub pops: u32,
+    pub display_lists: u32,
+}
+
+impl LayerCalls {
+    /// Every layer opened, whatever kind.
+    pub fn pushes(&self) -> u32 {
+        self.transforms
+            + self.offsets
+            + self.clip_rects
+            + self.clip_rounded_rects
+            + self.clip_paths
+            + self.opacities
+    }
+}
+
+thread_local! {
+    static LAYER_CALLS: std::cell::Cell<LayerCalls> =
+        const { std::cell::Cell::new(LayerCalls {
+            transforms: 0, offsets: 0, clip_rects: 0, clip_rounded_rects: 0,
+            clip_paths: 0, opacities: 0, pops: 0, display_lists: 0,
+        }) };
+}
+
+fn note(update: impl FnOnce(&mut LayerCalls)) {
+    LAYER_CALLS.with(|calls| {
+        let mut current = calls.get();
+        update(&mut current);
+        calls.set(current);
+    });
+}
+
+/// The calls made since the last reset, for tests.
+pub fn layer_calls() -> LayerCalls {
+    LAYER_CALLS.with(|calls| calls.get())
+}
+
+/// Starts counting again. Thread-local, so tests do not need to coordinate.
+pub fn reset_layer_calls() {
+    LAYER_CALLS.with(|calls| calls.set(LayerCalls::default()));
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_transform(tree: *mut RfLayerTree, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+    note(|calls| calls.transforms += 1);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_offset(tree: *mut RfLayerTree, dx: f32, dy: f32) {
+    note(|calls| calls.offsets += 1);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, clip_behavior: c_int) {
+    note(|calls| calls.clip_rects += 1);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_rounded_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, radius_x: f32, radius_y: f32, clip_behavior: c_int) {
+    note(|calls| calls.clip_rounded_rects += 1);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_path(tree: *mut RfLayerTree, path: *const RfPath, clip_behavior: c_int) {
+    note(|calls| calls.clip_paths += 1);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_opacity(tree: *mut RfLayerTree, alpha: u8, offset_x: f32, offset_y: f32) {
+    note(|calls| calls.opacities += 1);
 }
 
 #[unsafe(no_mangle)]
@@ -276,6 +339,7 @@ pub unsafe extern "C" fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_pop(tree: *mut RfLayerTree) {
+    note(|calls| calls.pops += 1);
 }
 
 #[unsafe(no_mangle)]
@@ -394,6 +458,7 @@ pub unsafe extern "C" fn rf_layer_tree_free(tree: *mut RfLayerTree) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_add_display_list(tree: *mut RfLayerTree, display_list: *mut RfDisplayList, offset_x: f32, offset_y: f32) {
+    note(|calls| calls.display_lists += 1);
 }
 
 #[unsafe(no_mangle)]

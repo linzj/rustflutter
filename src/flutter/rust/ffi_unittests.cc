@@ -332,6 +332,49 @@ TEST(RustFFI, ComposesThroughTheLayerStack) {
   rf_canvas_free(background_canvas);
 }
 
+// The root transform every frame is composed under on a display that is not at
+// 100%: the framework paints in logical pixels, the tree is measured in
+// physical ones, and a transform layer at the root is what reconciles them.
+//
+// Guards the case that was silently wrong for as long as the device pixel ratio
+// was pinned to one -- a picture recorded at logical size and added to a
+// physical-sized tree unscaled, which puts the whole interface in the top-left
+// corner and leaves the rest blank.
+TEST(RustFFI, ScalesAFrameToPhysicalPixels) {
+  constexpr int32_t kLogical = 32;
+  constexpr float kRatio = 2.0f;
+  constexpr int32_t kPhysical = static_cast<int32_t>(kLogical * kRatio);
+  constexpr uint32_t kFill = 0xFF2196F3;
+
+  // A square filling the whole logical viewport.
+  RfCanvas* canvas = rf_canvas_new(kLogical, kLogical);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_color(paint, kFill);
+  rf_paint_set_anti_alias(paint, 0);
+  rf_canvas_draw_rect(canvas, 0, 0, kLogical, kLogical, paint);
+  RfDisplayList* frame = rf_canvas_build(canvas);
+
+  RfLayerTree* tree = rf_layer_tree_new(kPhysical, kPhysical);
+  rf_layer_tree_push_transform(tree, kRatio, 0, 0, kRatio, 0, 0);
+  rf_layer_tree_add_display_list(tree, frame, 0, 0);
+  rf_layer_tree_pop(tree);
+
+  std::vector<uint8_t> pixels(static_cast<size_t>(kPhysical) * kPhysical * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+
+  // Every corner of the physical surface, including the far one that only the
+  // scale can reach.
+  EXPECT_EQ(PixelAt(pixels, kPhysical, 1, 1), kFill);
+  EXPECT_EQ(PixelAt(pixels, kPhysical, kPhysical - 2, 1), kFill);
+  EXPECT_EQ(PixelAt(pixels, kPhysical, 1, kPhysical - 2), kFill);
+  EXPECT_EQ(PixelAt(pixels, kPhysical, kPhysical - 2, kPhysical - 2), kFill);
+
+  rf_layer_tree_free(tree);
+  rf_display_list_free(frame);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+}
+
 // Round-trips an image through the encoder and the decoder, then draws it.
 TEST(RustFFI, DecodesAndDrawsAnImage) {
   constexpr int32_t kSize = 32;

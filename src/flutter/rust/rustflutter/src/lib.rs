@@ -147,17 +147,14 @@ impl App {
 
         root.layout(Constraints::tight(width, height));
 
-        let mut canvas = Canvas::new(width, height);
-        canvas.draw_color(self.background);
-        {
-            let mut context = render::PaintContext::new(&mut canvas);
-            root.paint(&mut context, Offset::ZERO);
-        }
-        let display_list = canvas.build();
-
-        let mut tree = LayerTree::new(self.width, self.height);
-        tree.add_display_list(&display_list, 0.0, 0.0);
-        tree
+        crate::app::compose_frame(
+            self.width,
+            self.height,
+            1.0,
+            render::Size::new(width, height),
+            self.background,
+            |context| root.paint(context, Offset::ZERO),
+        )
     }
 
     /// Renders one frame to a PNG. Headless -- no window or GPU context.

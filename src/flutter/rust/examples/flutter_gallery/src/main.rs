@@ -20,6 +20,7 @@
 //!   --route <name>      which screen: home, demo, study, settings
 //!   --slug <slug>       which demo or study, for --route demo|study
 //!   --light             start in the light theme
+//!   --dpr <scale>       render as a display at that scale would, e.g. 2.0
 //! ```
 
 mod app;
@@ -35,7 +36,7 @@ use std::os::raw::{c_char, c_int};
 
 use rustflutter::framework::{AnyWidget, ElementTree, stateful};
 use rustflutter::prelude::*;
-use rustflutter::render::{BoxConstraints, Offset, PaintContext, RenderBox};
+use rustflutter::render::{BoxConstraints, Offset, RenderBox, Size};
 
 use app::Gallery;
 
@@ -73,8 +74,16 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
     let route = static_route(named(&args, "--route").as_deref().unwrap_or("home"));
     let slug = named(&args, "--slug");
 
+    // The scale a display would have imposed. Windowed runs read it from the
+    // window; a headless one has no window, so it is given -- which is also how
+    // a screenshot at 200% gets taken on a 100% machine.
+    let dpr = named(&args, "--dpr")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|dpr| *dpr > 0.0)
+        .unwrap_or(1.0);
+
     if let Some(path) = named(&args, "--png") {
-        return render_png(&path, route, slug.as_deref(), light);
+        return render_png(&path, route, slug.as_deref(), light, dpr);
     }
 
     register_application(move || {
@@ -116,7 +125,13 @@ fn static_route(name: &str) -> &'static str {
 /// knows where it should be, rather than by simulating a tap: the point is to
 /// show a screen, and finding a row to tap would make the check depend on the
 /// home page's layout as well as on the screen's.
-fn render_png(path: &str, route: &'static str, slug: Option<&str>, light: bool) -> c_int {
+fn render_png(
+    path: &str,
+    route: &'static str,
+    slug: Option<&str>,
+    light: bool,
+    dpr: f64,
+) -> c_int {
     rustflutter::engine::initialize();
     catalog::register_fonts();
 
@@ -134,15 +149,17 @@ fn render_png(path: &str, route: &'static str, slug: Option<&str>, light: bool) 
     root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));
 
     let background = if light { Theme::light().background } else { Theme::dark().background };
-    let mut canvas = rustflutter::engine::Canvas::new(WIDTH as f32, HEIGHT as f32);
-    canvas.draw_color(background);
-    {
-        let mut context = PaintContext::new(&mut canvas);
-        root.paint(&mut context, Offset::ZERO);
-    }
-    let display_list = canvas.build();
-    let mut layer_tree = rustflutter::engine::LayerTree::new(WIDTH, HEIGHT);
-    layer_tree.add_display_list(&display_list, 0.0, 0.0);
+    // Through the same composition the windowed path uses, so a screenshot is a
+    // picture of the frame the shell would have rasterized rather than of one
+    // assembled a second way.
+    let mut layer_tree = rustflutter::app::compose_frame(
+        (WIDTH as f64 * dpr).round() as i32,
+        (HEIGHT as f64 * dpr).round() as i32,
+        dpr,
+        Size::new(WIDTH as f32, HEIGHT as f32),
+        background,
+        |context| root.paint(context, Offset::ZERO),
+    );
 
     match layer_tree.write_png(std::path::Path::new(path)) {
         Ok(()) => {

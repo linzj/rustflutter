@@ -29,6 +29,7 @@
 #include "flutter/rust/host/rustflutter_host.h"
 
 #include <windows.h>
+#include <dwmapi.h>
 #include <windowsx.h>
 
 #include <cstdlib>
@@ -55,7 +56,8 @@
 #include "flutter/shell/common/run_configuration.h"
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/thread_host.h"
-#include "flutter/shell/common/vsync_waiter_fallback.h"
+#include "flutter/shell/common/display.h"
+#include "flutter/shell/common/vsync_waiter.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/host/rustflutter_gl_win.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
@@ -67,6 +69,85 @@ namespace flutter {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"RustflutterHostWindow";
+
+//------------------------------------------------------------------------------
+/// Per-monitor DPI, bound at run time.
+///
+/// A window that does not say otherwise is DPI-unaware: Windows lies to it
+/// about its own size and bitmap-scales whatever it draws, which on a 200%
+/// display means every glyph goes through a stretch. Saying otherwise means
+/// declaring per-monitor awareness *before* the first window exists, and then
+/// tracking the scale as the window moves between displays.
+///
+/// The three entry points arrived in Windows 10 1607 / 1703. They are looked up
+/// rather than linked so that an older machine keeps the previous behaviour --
+/// unaware, blurry, but running -- instead of failing to start.
+///
+/// Upstream this is `WindowsProcTable` plus `Win32Window`, doing the same three
+/// things for the same reasons.
+class DpiApi {
+ public:
+  static const DpiApi& Get() {
+    static const DpiApi instance;
+    return instance;
+  }
+
+  /// Declares the process per-monitor aware. Must run before any window is
+  /// created; Windows ignores it afterwards.
+  void MakeProcessPerMonitorAware() const {
+    // ((DPI_AWARENESS_CONTEXT)-4), spelled out because the constant only
+    // exists in headers new enough to declare the function too.
+    HANDLE kPerMonitorAwareV2 = reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4));
+    if (set_process_dpi_awareness_context_ != nullptr) {
+      set_process_dpi_awareness_context_(kPerMonitorAwareV2);
+    }
+  }
+
+  /// The window's scale factor: 1.0 at 96 DPI, 1.5 at 144, and so on. This is
+  /// the `devicePixelRatio` the framework lays out against.
+  double ScaleForWindow(HWND window) const {
+    if (get_dpi_for_window_ == nullptr) {
+      return 1.0;
+    }
+    const UINT dpi = get_dpi_for_window_(window);
+    return dpi > 0 ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
+  }
+
+  /// Grows a client rectangle by the window frame at a given DPI. The frame is
+  /// itself scaled, so doing this at 96 leaves the client area short by the
+  /// difference on any display that is not at 100%.
+  void AdjustForDpi(RECT* rect, DWORD style, UINT dpi) const {
+    if (adjust_window_rect_ex_for_dpi_ != nullptr) {
+      adjust_window_rect_ex_for_dpi_(rect, style, FALSE, 0, dpi);
+    } else {
+      AdjustWindowRect(rect, style, FALSE);
+    }
+  }
+
+ private:
+  DpiApi() {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32 == nullptr) {
+      return;
+    }
+    auto load = [user32](const char* name) {
+      return GetProcAddress(user32, name);
+    };
+    set_process_dpi_awareness_context_ =
+        reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
+            load("SetProcessDpiAwarenessContext"));
+    get_dpi_for_window_ =
+        reinterpret_cast<UINT(WINAPI*)(HWND)>(load("GetDpiForWindow"));
+    adjust_window_rect_ex_for_dpi_ =
+        reinterpret_cast<BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT)>(
+            load("AdjustWindowRectExForDpi"));
+  }
+
+  BOOL(WINAPI* set_process_dpi_awareness_context_)(HANDLE) = nullptr;
+  UINT(WINAPI* get_dpi_for_window_)(HWND) = nullptr;
+  BOOL(WINAPI* adjust_window_rect_ex_for_dpi_)(LPRECT, DWORD, BOOL, DWORD,
+                                               UINT) = nullptr;
+};
 
 // Posted by the raster thread once a frame has been copied into the shared
 // buffer. WM_APP is the first message id reserved for applications.
@@ -124,6 +205,192 @@ class FrameBuffer {
   std::vector<uint8_t> pixels_;
   int32_t width_ = 0;
   int32_t height_ = 0;
+};
+
+//------------------------------------------------------------------------------
+/// Asks Windows for a one millisecond timer, for as long as this object lives.
+///
+/// The default resolution is about fifteen point six milliseconds, which is
+/// most of a frame, so the vsync waiter cannot ask to be woken on a frame
+/// boundary and be woken on one. Measured, with RUSTFLUTTER_FORCE_HZ driving
+/// the waiter at a rate this machine does not have:
+///
+///     rate     without      with
+///     59 Hz    63-66 fps    58.6-59.4 fps
+///     75 Hz    74.7 fps     74.7 fps
+///
+/// Seventy-five survives because its interval is close to five ticks. The
+/// error is not a clean doubling or halving -- the frames come out *fast* at
+/// fifty-nine, because a callback that arrives late lands back on the grid
+/// point it was aiming at rather than the next one. Either way the app runs at
+/// a rate the display does not have.
+class HighResolutionTimer {
+ public:
+  HighResolutionTimer() {
+    winmm_ = LoadLibraryW(L"winmm.dll");
+    if (winmm_ == nullptr) {
+      return;
+    }
+    begin_period_ = reinterpret_cast<PeriodFn>(
+        GetProcAddress(winmm_, "timeBeginPeriod"));
+    end_period_ =
+        reinterpret_cast<PeriodFn>(GetProcAddress(winmm_, "timeEndPeriod"));
+    if (begin_period_ != nullptr && begin_period_(1) == 0) {
+      held_ = true;
+    }
+  }
+
+  ~HighResolutionTimer() {
+    if (held_ && end_period_ != nullptr) {
+      end_period_(1);
+    }
+    if (winmm_ != nullptr) {
+      FreeLibrary(winmm_);
+    }
+  }
+
+ private:
+  using PeriodFn = UINT(WINAPI*)(UINT);
+
+  HMODULE winmm_ = nullptr;
+  PeriodFn begin_period_ = nullptr;
+  PeriodFn end_period_ = nullptr;
+  bool held_ = false;
+
+  FML_DISALLOW_COPY_AND_ASSIGN(HighResolutionTimer);
+};
+
+//------------------------------------------------------------------------------
+/// What the display actually runs at, in hertz.
+///
+/// Three sources, in the order they can be trusted:
+///
+///   1. The composition clock. This is the number the desktop is really being
+///      refreshed at, and the one upstream's Windows embedder uses.
+///   2. The display mode. Composition can be off -- a Remote Desktop session
+///      arrives that way -- and then the first source reports nothing, but the
+///      mode is still there to read.
+///   3. Sixty, which is a guess, and is what this used to assume always.
+///
+/// Assuming sixty is not harmless on hardware that is not sixty: a hundred and
+/// twenty hertz display gets half the frames it could, and a fifty hertz one
+/// gets asked for frames it cannot show.
+double DisplayRefreshRate() {
+  DWM_TIMING_INFO timing = {};
+  timing.cbSize = sizeof(timing);
+  if (DwmGetCompositionTimingInfo(nullptr, &timing) == S_OK &&
+      timing.rateRefresh.uiDenominator > 0 &&
+      timing.rateRefresh.uiNumerator > 0) {
+    return static_cast<double>(timing.rateRefresh.uiNumerator) /
+           timing.rateRefresh.uiDenominator;
+  }
+
+  DEVMODEW mode = {};
+  mode.dmSize = sizeof(mode);
+  if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) &&
+      mode.dmDisplayFrequency > 1) {
+    // One means "hardware default" rather than one hertz.
+    return static_cast<double>(mode.dmDisplayFrequency);
+  }
+
+  return 60.0;
+}
+
+//------------------------------------------------------------------------------
+/// A vsync waiter paced by the display rather than by a fixed sixty hertz.
+///
+/// The algorithm is `VsyncWaiterFallback`'s, and deliberately so: a phase fixed
+/// at construction, each frame snapped forward onto that grid, and the callback
+/// posted for that time. What changes is only where the interval comes from.
+///
+/// It does not block on the display. An earlier attempt did -- `DwmFlush` --
+/// and it was worse: with composition off the call returns immediately, so the
+/// loop has to be paced by hand, and hand pacing on Windows means `sleep_until`
+/// against a fifteen millisecond timer. A snapped timer at the right interval
+/// is both simpler and more accurate, and the swap no longer waits either, so
+/// nothing in the frame is blocked on the display at all.
+class VsyncWaiterWin final : public VsyncWaiter {
+ public:
+  explicit VsyncWaiterWin(const TaskRunners& task_runners)
+      : VsyncWaiter(task_runners), phase_(fml::TimePoint::Now()) {}
+
+  ~VsyncWaiterWin() override = default;
+
+ private:
+  /// Rounds `value` up onto the grid that passes through `phase` every
+  /// `interval`. Same as the fallback waiter's, and as the Windows embedder's
+  /// `SnapToNextTick`.
+  static fml::TimePoint SnapToNextTick(fml::TimePoint value,
+                                       fml::TimePoint phase,
+                                       fml::TimeDelta interval) {
+    fml::TimeDelta offset = (phase - value) % interval;
+    if (offset != fml::TimeDelta::Zero()) {
+      offset = offset + interval;
+    }
+    return value + offset;
+  }
+
+  /// The frame interval, re-read about once a second.
+  ///
+  /// Not cached forever, because a display's rate changes -- a laptop switching
+  /// to battery, a monitor swapped, a session moving between local and remote.
+  /// Not read every frame either: it is two syscalls to answer a question whose
+  /// answer almost never changes.
+  fml::TimeDelta FrameInterval() {
+    const fml::TimePoint now = fml::TimePoint::Now();
+    if (interval_ != fml::TimeDelta::Zero() &&
+        now - interval_read_at_ <= fml::TimeDelta::FromSeconds(1)) {
+      return interval_;
+    }
+
+    // A rate this machine does not have, for testing the pacing itself. There
+    // is no other way to find out whether a hundred and twenty hertz display
+    // would be driven correctly from a machine that runs at sixty.
+    double hz = 0.0;
+    if (const char* forced = std::getenv("RUSTFLUTTER_FORCE_HZ")) {
+      hz = std::atof(forced);
+    }
+    if (hz <= 0.0) {
+      hz = DisplayRefreshRate();
+    }
+
+    static double reported = 0.0;
+    if (hz != reported) {
+      reported = hz;
+      // Worth a line: it is not always the number the display's *mode* says.
+      // A Remote Desktop session composites at around thirty-two hertz whatever
+      // the virtual adapter reports, and pacing to the mode instead would mean
+      // rendering twice as many frames as anyone sees.
+      FML_LOG(IMPORTANT) << "Pacing frames at " << hz << " Hz.";
+    }
+    interval_ = fml::TimeDelta::FromSecondsF(1.0 / hz);
+    interval_read_at_ = now;
+    return interval_;
+  }
+
+  // |VsyncWaiter|
+  void AwaitVSync() override {
+    const fml::TimeDelta interval = FrameInterval();
+    const fml::TimePoint frame_start_time =
+        SnapToNextTick(fml::TimePoint::Now(), phase_, interval);
+    const fml::TimePoint frame_target_time = frame_start_time + interval;
+
+    std::weak_ptr<VsyncWaiterWin> weak_this =
+        std::static_pointer_cast<VsyncWaiterWin>(shared_from_this());
+    task_runners_.GetUITaskRunner()->PostTaskForTime(
+        [frame_start_time, frame_target_time, weak_this]() {
+          if (auto waiter = weak_this.lock()) {
+            waiter->FireCallback(frame_start_time, frame_target_time, true);
+          }
+        },
+        frame_start_time);
+  }
+
+  const fml::TimePoint phase_;
+  fml::TimeDelta interval_ = fml::TimeDelta::Zero();
+  fml::TimePoint interval_read_at_;
+
+  FML_DISALLOW_COPY_AND_ASSIGN(VsyncWaiterWin);
 };
 
 //------------------------------------------------------------------------------
@@ -197,19 +464,7 @@ class HostPlatformView final : public PlatformView,
 
   // |PlatformView|
   std::unique_ptr<VsyncWaiter> CreateVSyncWaiter() override {
-    // A timer at sixty hertz. It does not know when the display actually
-    // refreshes, so it drifts against it -- which is harmless now that the swap
-    // no longer waits for the display as well. See the comment on
-    // eglSwapInterval in rustflutter_gl_win.cc: it was the two waits stacking,
-    // not the timer, that halved the frame rate.
-    //
-    // Reading the composition clock instead would be the better clock, and a
-    // DWM-backed waiter was written and then deleted: with composition off --
-    // which is how a Remote Desktop session arrives -- DwmFlush returns
-    // immediately and the loop has to be paced by hand anyway, and the pacing
-    // was worse than this. It is worth doing when there is a machine to test
-    // the composition path on.
-    return std::make_unique<VsyncWaiterFallback>(task_runners_);
+    return std::make_unique<VsyncWaiterWin>(task_runners_);
   }
 
   // |GPUSurfaceSoftwareDelegate|
@@ -430,6 +685,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         SendViewportMetrics(state, LOWORD(lparam), HIWORD(lparam));
       }
       return 0;
+    case WM_DPICHANGED: {
+      // The window was dragged onto a display with a different scale, or the
+      // display's scale changed under it. Windows hands over the rectangle the
+      // window should move to; taking it keeps the window the same *apparent*
+      // size, which is the whole point of the message.
+      if (state == nullptr) {
+        return 0;
+      }
+      state->device_pixel_ratio =
+          static_cast<double>(HIWORD(wparam)) / USER_DEFAULT_SCREEN_DPI;
+      const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+      if (suggested != nullptr) {
+        // This resizes, so WM_SIZE follows and re-sends the metrics -- with the
+        // new ratio, because it was stored first.
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      return 0;
+    }
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
     case WM_MOUSEMOVE:
@@ -575,9 +851,16 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // a choice.
   settings.warn_on_impeller_opt_out = false;
 
+  // Held for the life of the process: every frame boundary is a timer wait.
+  HighResolutionTimer fine_timer;
+
   WindowState state;
 
   // -- Window (this thread) ---------------------------------------------------
+
+  // Before anything creates a window: after that, Windows has already decided
+  // what this process is and will not be told otherwise.
+  DpiApi::Get().MakeProcessPerMonitorAware();
 
   HINSTANCE instance = GetModuleHandle(nullptr);
   WNDCLASSEX window_class = {};
@@ -593,6 +876,11 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
   // Size the window so the *client* area matches the requested size exactly,
   // otherwise the border and title bar eat into it.
+  //
+  // The requested size is in logical pixels, which is what a caller asking for
+  // "a thousand by seven hundred" means: a window that looks the same on every
+  // display rather than one that shrinks as the display gets denser. Upstream's
+  // Win32Window scales its requested size the same way.
   RECT rect{0, 0, options->width, options->height};
   AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -603,6 +891,22 @@ int32_t rf_host_run(const RfHostOptions* options) {
                                nullptr, nullptr, instance, &state);
   if (window == nullptr) {
     return -3;
+  }
+
+  // Only now is there a window to ask which display it landed on. Redo the
+  // sizing at that display's DPI; at 100% this is the same rectangle and the
+  // SetWindowPos is a no-op.
+  state.device_pixel_ratio = DpiApi::Get().ScaleForWindow(window);
+  if (state.device_pixel_ratio != 1.0) {
+    const UINT dpi =
+        static_cast<UINT>(state.device_pixel_ratio * USER_DEFAULT_SCREEN_DPI);
+    RECT scaled{0, 0,
+                static_cast<LONG>(options->width * state.device_pixel_ratio),
+                static_cast<LONG>(options->height * state.device_pixel_ratio)};
+    DpiApi::Get().AdjustForDpi(&scaled, WS_OVERLAPPEDWINDOW, dpi);
+    SetWindowPos(window, nullptr, 0, 0, scaled.right - scaled.left,
+                 scaled.bottom - scaled.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   }
 
   // -- Threads ----------------------------------------------------------------
@@ -663,6 +967,14 @@ int32_t rf_host_run(const RfHostOptions* options) {
         if (auto view = shell->GetPlatformView()) {
           view->NotifyCreated();
         }
+        // The engine asks the display manager for the refresh rate when it
+        // reports frame timings and when it decides how far ahead to schedule.
+        // Without this it has no displays at all and falls back to a guess.
+        std::vector<std::unique_ptr<Display>> displays;
+        displays.push_back(std::make_unique<Display>(
+            /*display_id=*/0, DisplayRefreshRate(), width, height,
+            state.device_pixel_ratio));
+        shell->OnDisplayUpdates(std::move(displays));
         SendViewportMetrics(&state, width, height);
       }));
 

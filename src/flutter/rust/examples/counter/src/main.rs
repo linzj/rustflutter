@@ -311,7 +311,7 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
 fn render_png(path: &str, taps: u32) -> c_int {
     use rustflutter::framework::ElementTree;
     use rustflutter::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
-    use rustflutter::render::{BoxConstraints, Offset, PaintContext, RenderBox};
+    use rustflutter::render::{BoxConstraints, Offset, RenderBox};
 
     // Text is shaped during the very first layout below, and skparagraph
     // cannot break a line without ICU data.
@@ -368,15 +368,14 @@ fn render_png(path: &str, taps: u32) -> c_int {
     root.layout(BoxConstraints::tight(size.width, size.height));
 
     // Paint through the same one-shot path the other examples use.
-    let mut canvas = rustflutter::engine::Canvas::new(size.width, size.height);
-    canvas.draw_color(BACKGROUND);
-    {
-        let mut context = PaintContext::new(&mut canvas);
-        root.paint(&mut context, Offset::ZERO);
-    }
-    let display_list = canvas.build();
-    let mut layer_tree = rustflutter::engine::LayerTree::new(WIDTH, HEIGHT);
-    layer_tree.add_display_list(&display_list, 0.0, 0.0);
+    let mut layer_tree = rustflutter::app::compose_frame(
+        WIDTH,
+        HEIGHT,
+        1.0,
+        size,
+        BACKGROUND,
+        |context| root.paint(context, Offset::ZERO),
+    );
 
     match layer_tree.write_png(std::path::Path::new(path)) {
         Ok(()) => {

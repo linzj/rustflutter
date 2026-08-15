@@ -1238,7 +1238,7 @@ impl crate::render::RenderBox for ArcSpinner {
             offset.dy + self.laid_out.height - inset,
         );
         let track_paint = Paint::new(self.track).with_style(Style::Stroke { width: stroke });
-        context.canvas.draw_oval(bounds, &track_paint);
+        context.canvas().draw_oval(bounds, &track_paint);
 
         let sweep = 360.0 * self.value;
         if sweep > 0.0 {
@@ -1248,7 +1248,7 @@ impl crate::render::RenderBox for ArcSpinner {
             // Twelve o'clock is -90 degrees, which is where a spinner should
             // start rather than at three o'clock.
             context
-                .canvas
+                .canvas()
                 .draw_arc(bounds, -90.0, sweep, false, &fill_paint);
         }
     }
