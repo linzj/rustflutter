@@ -21,16 +21,17 @@
 //     runner; everything the raster thread produces is posted back with
 //     PostMessage. Neither side touches the other's state directly.
 //
-// Rendering goes through GPUSurfaceSoftware. Impeller needs a GL or Vulkan
-// context on the window, which is the next step; the point of this file is that
-// the frame now travels Animator -> Engine -> RuntimeController -> Rust ->
-// LayerTree -> Pipeline -> Rasterizer -> Surface, driven by vsync.
+// Rendering goes through Impeller on ANGLE when the app asks for it, and
+// through GPUSurfaceSoftware otherwise. The software path needs nothing and
+// works everywhere; the Impeller path needs a D3D11 device and falls back to
+// software rather than failing to start if it cannot get one.
 
 #include "flutter/rust/host/rustflutter_host.h"
 
 #include <windows.h>
 #include <windowsx.h>
 
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,6 +46,7 @@
 #include "flutter/fml/paths.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/impeller/renderer/context.h"
 #include "flutter/lib/ui/window/pointer_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
@@ -54,6 +56,9 @@
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/common/vsync_waiter_fallback.h"
+#include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "flutter/rust/host/rustflutter_gl_win.h"
+#include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -133,17 +138,60 @@ class HostPlatformView final : public PlatformView,
   HostPlatformView(PlatformView::Delegate& delegate,
                    const TaskRunners& task_runners,
                    HWND window,
-                   FrameBuffer* frame_buffer)
+                   FrameBuffer* frame_buffer,
+                   bool prefer_impeller)
       : PlatformView(delegate, task_runners),
         window_(window),
-        frame_buffer_(frame_buffer) {}
+        frame_buffer_(frame_buffer),
+        prefer_impeller_(prefer_impeller) {}
 
   ~HostPlatformView() override = default;
 
   // |PlatformView|
+  //
+  // Called on the raster thread during startup, before anything asks for the
+  // Impeller context. That ordering is the reason this hook exists: the shell
+  // publishes GetImpellerContext() to the IO thread right after this returns.
+  void SetupImpellerContext() override {
+    if (prefer_impeller_ && !gl_context_) {
+      gl_context_ = ImpellerGlContext::Create();
+      if (!gl_context_) {
+        FML_LOG(IMPORTANT)
+            << "Falling back to software rendering; see the error above.";
+      }
+    }
+    // Paragraphs have to emit the right kind of text op, and this runs before
+    // the engine is launched, so the first frame already gets it right.
+    rf_set_impeller_text(gl_context_ != nullptr ? 1 : 0);
+  }
+
+  // |PlatformView|
+  //
+  // Also on the raster thread, after SetupImpellerContext.
   std::unique_ptr<Surface> CreateRenderingSurface() override {
+    if (gl_context_) {
+      if (auto surface = CreateImpellerSurface()) {
+        return surface;
+      }
+      FML_LOG(IMPORTANT)
+          << "Falling back to software rendering; see the error above.";
+    }
     return std::make_unique<GPUSurfaceSoftware>(this,
                                                 /*render_to_surface=*/true);
+  }
+
+  // |PlatformView|
+  std::shared_ptr<impeller::Context> GetImpellerContext() const override {
+    return gl_context_ ? gl_context_->GetImpellerContext() : nullptr;
+  }
+
+  /// Remakes the EGL window surface after a resize. An EGL surface does not
+  /// follow a window that changed size; presenting to a stale one stretches
+  /// the frame.
+  void OnWindowResized() {
+    if (gl_delegate_) {
+      gl_delegate_->Resize();
+    }
   }
 
   // |PlatformView|
@@ -199,8 +247,44 @@ class HostPlatformView final : public PlatformView,
   }
 
  private:
+  /// Builds the Impeller surface, or returns nullptr with a logged reason.
+  std::unique_ptr<Surface> CreateImpellerSurface() {
+    gl_delegate_ = std::make_unique<ImpellerGlDelegate>(gl_context_.get(),
+                                                        window_);
+    if (!gl_delegate_->IsValid()) {
+      gl_delegate_.reset();
+      return nullptr;
+    }
+
+    // GPUSurfaceGLImpeller's constructor builds an AiksContext, which compiles
+    // pipelines through Impeller's reactor -- and the reactor refuses to run on
+    // a thread with no current GL context. So the context goes current before
+    // the surface is built, and stays that way; the rasterizer makes it current
+    // again each frame regardless.
+    auto made_current = gl_delegate_->GLContextMakeCurrent();
+    if (!made_current || !made_current->GetResult()) {
+      FML_LOG(ERROR) << "Could not make the GL context current on the raster "
+                        "thread.";
+      gl_delegate_.reset();
+      return nullptr;
+    }
+
+    auto surface = std::make_unique<GPUSurfaceGLImpeller>(
+        gl_delegate_.get(), gl_context_->GetImpellerContext(),
+        /*render_to_surface=*/true);
+    if (!surface->IsValid()) {
+      FML_LOG(ERROR) << "The Impeller GL surface came up invalid.";
+      gl_delegate_.reset();
+      return nullptr;
+    }
+    return surface;
+  }
+
   HWND window_ = nullptr;
   FrameBuffer* frame_buffer_ = nullptr;
+  bool prefer_impeller_ = false;
+  std::unique_ptr<ImpellerGlContext> gl_context_;
+  std::unique_ptr<ImpellerGlDelegate> gl_delegate_;
   sk_sp<SkSurface> backing_store_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(HostPlatformView);
@@ -213,6 +297,7 @@ struct WindowState {
   Shell* shell = nullptr;
   HostPlatformView* platform_view = nullptr;
   fml::RefPtr<fml::TaskRunner> platform_task_runner;
+  fml::RefPtr<fml::TaskRunner> raster_task_runner;
   double device_pixel_ratio = 1.0;
   /// Whether the primary button is currently down, so a WM_MOUSEMOVE can be
   /// told apart from a drag.
@@ -303,6 +388,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       return 1;
     case WM_SIZE:
       if (state != nullptr) {
+        // The EGL surface has to be remade on the raster thread, where the GL
+        // context lives, before the next frame is presented to it.
+        if (state->platform_view != nullptr && state->raster_task_runner) {
+          state->raster_task_runner->PostTask([view = state->platform_view]() {
+            view->OnWindowResized();
+          });
+        }
         SendViewportMetrics(state, LOWORD(lparam), HIWORD(lparam));
       }
       return 0;
@@ -415,7 +507,18 @@ int32_t rf_host_run(const RfHostOptions* options) {
   }
 
   Settings settings;
-  settings.enable_impeller = options->enable_impeller != 0;
+  // The environment wins over the application's preference, so a rendering
+  // problem can be bisected without rebuilding: RUSTFLUTTER_SOFTWARE=1 forces
+  // the Skia software surface.
+  const char* force_software = std::getenv("RUSTFLUTTER_SOFTWARE");
+  const bool software_forced =
+      force_software != nullptr && force_software[0] != '\0' &&
+      force_software[0] != '0';
+  settings.enable_impeller = options->enable_impeller != 0 && !software_forced;
+  if (software_forced) {
+    FML_LOG(IMPORTANT) << "RUSTFLUTTER_SOFTWARE is set; using the software "
+                          "surface.";
+  }
   settings.enable_software_rendering = !settings.enable_impeller;
   settings.icu_initialization_required = true;
   settings.icu_data_path = options->icu_data_path != nullptr
@@ -474,9 +577,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
   PlatformData platform_data;
   std::unique_ptr<Shell> shell = Shell::Create(
       platform_data, task_runners, settings,
-      [window, &state](Shell& shell) {
+      [window, &state, impeller = settings.enable_impeller](Shell& shell) {
         auto view = std::make_unique<HostPlatformView>(
-            shell, shell.GetTaskRunners(), window, &state.frame_buffer);
+            shell, shell.GetTaskRunners(), window, &state.frame_buffer,
+            impeller);
         // The window proc needs to reach the view to send pointers. The shell
         // owns it and outlives the message loop, so a raw pointer is enough.
         state.platform_view = view.get();
@@ -490,14 +594,25 @@ int32_t rf_host_run(const RfHostOptions* options) {
   }
   state.shell = shell.get();
   state.platform_task_runner = task_runners.GetPlatformTaskRunner();
+  state.raster_task_runner = task_runners.GetRasterTaskRunner();
+
+  // The requested size is a request: Windows clamps a window that will not fit
+  // on the display, and creating one at 700 tall on a 500 tall screen quietly
+  // gives back 461. Telling the framework the number we asked for rather than
+  // the one we got makes it lay out for a viewport that does not exist, and the
+  // difference is only invisible while something downstream scales the result.
+  RECT client = {};
+  GetClientRect(window, &client);
+  const int32_t client_width = client.right - client.left;
+  const int32_t client_height = client.bottom - client.top;
 
   // Everything below belongs to the platform thread: RunEngine checks for it,
   // and NotifyCreated / SetViewportMetrics reach the platform view directly.
   // Ordering matters -- the surface has to exist before the first frame is
   // rasterized, and the framework needs a size before it can lay anything out.
   task_runners.GetPlatformTaskRunner()->PostTask(
-      fml::MakeCopyable([shell = shell.get(), &state, width = options->width,
-                         height = options->height]() mutable {
+      fml::MakeCopyable([shell = shell.get(), &state, width = client_width,
+                         height = client_height]() mutable {
         shell->RunEngine(RunConfiguration{});
         if (auto view = shell->GetPlatformView()) {
           view->NotifyCreated();

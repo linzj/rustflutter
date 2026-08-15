@@ -12,19 +12,23 @@
 
 ## 当前状态
 
-**M0–M7 完成。** 整个 shell 在无 Dart 的情况下构建通过；应用跑在引擎自己的 Shell 上，
-有真正的线程模型、vsync 驱动的帧调度和 `Rasterizer` 流水线；框架层有完整的
-RenderBox 协议、element 树与状态、命中测试与手势，以及一套组件库。
+**M0–M7 完成，含 Impeller。** 整个 shell 在无 Dart 的情况下构建通过；
+应用跑在引擎自己的 Shell 上，有真正的线程模型、vsync 驱动的帧调度、
+`Rasterizer` 流水线，以及 **Impeller GPU 渲染**（ANGLE 提供 GLES）；
+框架层有完整的 RenderBox 协议、element 树与状态、命中测试与手势，
+以及一套组件库。
 
 ```
-gn gen  →  1007 targets from 275 files
+gn gen  →  1008 targets from 276 files
 ninja   →  exit 0，零警告
 rustflutter_unittests   →  54 passed
 rust_ffi_unittests      →  11 passed
 帧率                    →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
 ```
 
-![Components](docs/showcase_dark.png)
+![Components](docs/showcase_impeller.png)
+
+*上图是从 GPU 帧缓冲回读的真实帧——Impeller 经 ANGLE 渲染。*
 
 ## 快速开始
 
@@ -203,11 +207,17 @@ src/
 
 ## 已知限制
 
-- **呈现是软件光栅**（`GPUSurfaceSoftware`）。Impeller 需要窗口上的 GL/Vulkan
-  上下文，是独立的一步；换的是 `Surface` 实现，其余不动。
 - **render tree 每帧整棵重建。** 元素复用保住了状态、跳过了 `build`，
   但布局和绘制照跑不误。这是最大的一笔性能欠账。
 - **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
   Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
 - **没有文本输入、平台通道、无障碍。**
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
+
+## 诊断开关
+
+| 环境变量 | 作用 |
+|---|---|
+| `RUSTFLUTTER_SOFTWARE=1` | 强制 Skia 软件 surface，绕过 Impeller |
+| `RUSTFLUTTER_CAPTURE_FRAME=<path>` | 在 swap 前回读 GPU 帧缓冲写 PNG，每帧覆盖。GPU 合成的窗口用 `PrintWindow` 抓不到，这是看 Impeller 究竟画了什么的办法 |
+| `RUSTFLUTTER_OUT=<dir>` | 让 CLI 使用指定的构建输出目录 |

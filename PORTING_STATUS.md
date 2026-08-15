@@ -358,18 +358,12 @@ raster 线程产出的帧用 `PostMessage` 投回窗口线程，两边不直接�
 
 ![Hello World on the Shell](docs/hello_world_shell.png)
 
-### M2 未做的：Impeller
+### M2.5 Impeller —— 已完成 ✅（见第十二节）
 
-呈现走的是 `GPUSurfaceSoftware`（Skia CPU 光栅）。Impeller 需要窗口上有
-GL 或 Vulkan 上下文——在 Windows 上就是 ANGLE，也就是上游
-`AngleSurfaceManager` 那一块。这是独立的一步，不影响 M2 已经解锁的其余部分：
-帧从 `Animator` 出发，经 `Pipeline` 到 `Rasterizer`，换 `Surface` 实现即可。
+### M2 已知限制（当时）
 
-### M2 已知限制
-
-- 呈现是软件光栅，见上。
-- 指针事件已接到 `rf_app_dispatch_pointer_packet`，但没有可命中测试的渲染树
-  可路由（M5），当前收下即丢。
+- 呈现是软件光栅（M2.5 已解决）。
+- 指针事件已接到 pointer 入口，但没有可命中测试的渲染树可路由（M3/M5 已解决）。
 - 平台通道、语义、deferred loading 在 `RuntimeController` 里都是接受即返回。
 - host 只有 Windows 实现；`rf_host_run` 之上的一切（Shell、ThreadHost、
   Animator、Rasterizer、软件 surface）都是可移植的，每个平台缺的只是
@@ -530,21 +524,71 @@ Label（3 级）         Badge    Gap        IdSource
 
 ---
 
-## 十一、下一步
+## 十一、Impeller —— 已完成 ✅
+
+呈现从 `GPUSurfaceSoftware` 换成了 `GPUSurfaceGLImpeller`，
+GL 上下文由 ANGLE 提供（它把 GLES 翻译到 D3D11）。
+
+`rust/host/rustflutter_gl_win.{h,cc}`：
+
+- `ImpellerGlContext` —— EGL display、on/offscreen config 与 context、
+  1×1 pixel buffer（创建 Impeller 上下文要编译 shader，编译要有 current context，
+  current 要有 surface）、`ProcTableGLES`、以及 `ReactorGLES::Worker`。
+  两个 context 而非一个，和所有嵌入层一样：onscreen 在 raster 线程出帧，
+  offscreen 在 IO 线程传纹理，二者共享对象。
+- `ImpellerGlDelegate` —— `GPUSurfaceGLDelegate`，持有窗口 surface，
+  因为窗口尺寸变化时要丢弃重建的正是它。
+
+上下文在 `PlatformView::SetupImpellerContext()` 里创建——这个钩子存在的理由正是
+时序：shell 在它返回后立刻把 `GetImpellerContext()` 发布给 IO 线程。
+
+### 三个必须解决的真实问题
+
+1. **Reactor 线程断言。** `GPUSurfaceGLImpeller` 的构造函数会建 `AiksContext`，
+   它经 Impeller 的 reactor 编译管线，而 reactor 拒绝在没有 current GL 上下文的
+   线程上运行。所以 context 要在构造 surface **之前**置为 current。
+2. **文本后端。** Impeller 与 Skia 消费的是不同的 display-list 文本 op——
+   `DlTextImpeller` 带一个整形好的 `TextFrame`，`DlTextSkia` 带一个 `SkTextBlob`——
+   两个 dispatcher 都读不懂对方的。段落构建器必须被告知要发哪一种，
+   而它自己看不到 surface。新增 `rf_set_impeller_text`，
+   由 host 在拿到 GL 上下文后（第一帧之前）设置一次。
+3. **窗口真实尺寸。** host 一直用**请求的**尺寸当 viewport metrics。
+   Windows 会把放不下的窗口夹小——请求 700 高、屏幕只有 500 时拿到的是 461。
+   软件路径用 `StretchDIBits` 缩放，把这个错误盖住了；Impeller 直接呈现到窗口
+   surface，于是超出的部分被裁掉，页面顶部整块消失。现在 `GetClientRect` 之后
+   再发 metrics。
+
+### 验证
+
+GPU 合成的窗口用 `PrintWindow` 抓不到——那读的是 GDI 层，这里是空的。
+所以加了 `RUSTFLUTTER_CAPTURE_FRAME=<path>`：在 swap 之前 `glReadPixels`
+回读并写 PNG，每帧覆盖，留下的是进程画的最后一帧。这是诊断手段，不是应用路径。
+
+```
+Impeller 渲染        docs/showcase_impeller.png（460×461，完整组件库）
+Impeller 下交互       点一次开关 → docs/showcase_impeller_light.png 换主题
+                     点三次 + → counter 显示 3，header 仍是 "built 1x"
+软件回退             RUSTFLUTTER_SOFTWARE=1 强制 Skia surface，仍然正常
+```
+
+`impeller/toolkit/egl` 在 Windows 上需要 ANGLE 的头文件和入口点——
+上游只从 `shell/platform/windows` 触达 ANGLE，所以这个依赖加在了 toolkit 的
+`BUILD.gn` 里（`is_win` 分支），而不是把 toolkit 复制一份。
+
+---
+
+## 十二、下一步
 
 按价值排序：
 
 1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
    但 render tree 每帧仍整棵重建，布局和绘制照跑不误。这是最大的一笔性能欠账。
-2. **Impeller。** 呈现走的是 `GPUSurfaceSoftware`。Impeller 需要窗口上的
-   GL 或 Vulkan 上下文——Windows 上就是 ANGLE，即上游 `AngleSurfaceManager`
-   那一块。换的是 `Surface` 实现，其余不动。
-3. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
+2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-5. **平台通道。** services 3 万行。好消息：`PlatformMessage` 是语言无关的
+4. **平台通道。** services 3 万行。好消息：`PlatformMessage` 是语言无关的
    二进制通道，现存插件的 Android/iOS 原生侧全部可复用。
-6. **文本编辑与输入法**、**无障碍**、**rustc 用 CIPD 固定**。
+5. **文本编辑与输入法**、**无障碍**、**rustc 用 CIPD 固定**。
 
 **不会有的东西：hot reload。** 它是 Dart VM 的能力，Rust 没有对等物。
 桌面上或许能做 dylib 热加载，但状态保持做不到，iOS 上禁止动态代码。

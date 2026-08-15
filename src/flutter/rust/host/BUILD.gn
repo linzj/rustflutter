@@ -10,7 +10,11 @@ source_set("host") {
   sources = [ "rustflutter_host.h" ]
 
   if (is_win) {
-    sources += [ "rustflutter_host_win.cc" ]
+    sources += [
+      "rustflutter_gl_win.cc",
+      "rustflutter_gl_win.h",
+      "rustflutter_host_win.cc",
+    ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]
   }
@@ -22,12 +26,29 @@ source_set("host") {
     "//flutter/fml",
     "//flutter/lib/ui:ui_types",
     "//flutter/runtime",
+    "//flutter/rust/ffi:engine_ffi",
     "//flutter/shell/common",
     "//flutter/shell/gpu:gpu_surface_software",
     "//flutter/skia",
   ]
 
   if (is_win) {
+    deps += [
+      "//flutter/impeller",
+      "//flutter/impeller/renderer/backend/gles",
+      "//flutter/impeller/toolkit/egl",
+      "//flutter/shell/gpu:gpu_surface_gl",
+
+      # libEGL_static MUST come before libGLESv2_static: reversed, the linker
+      # reports DllMain already defined in LIBCMTD.lib.
+      "//flutter/third_party/angle:libEGL_static",
+      "//flutter/third_party/angle:libGLESv2_static",
+    ]
+
+    configs += [ "//flutter/third_party/angle:gl_prototypes" ]
+
+    include_dirs = [ "//flutter/third_party/angle/include" ]
+
     libs = [
       "gdi32.lib",
       "user32.lib",

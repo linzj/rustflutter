@@ -29,4 +29,22 @@ impeller_component("egl") {
   if (is_android) {
     libs = [ "EGL" ]
   }
+
+  # rustflutter: on Windows the EGL headers and entry points come from ANGLE,
+  # which upstream only ever reaches through shell/platform/windows. The
+  # toolkit is otherwise platform-neutral, so the dependency is added here
+  # rather than duplicating the toolkit.
+  if (is_win) {
+    # public_configs apply to this target as well as to its dependents, which
+    # is what both of these need: the headers here, the entry points anywhere
+    # that calls EGL.
+    public_configs = [
+      "//flutter/third_party/angle:external_config",
+      "//flutter/third_party/angle:gl_prototypes",
+    ]
+    public_deps = [
+      "//flutter/third_party/angle:libEGL_static",
+      "//flutter/third_party/angle:libGLESv2_static",
+    ]
+  }
 }

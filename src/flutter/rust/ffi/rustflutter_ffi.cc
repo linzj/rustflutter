@@ -6,6 +6,7 @@
 
 #include "flutter/rust/ffi/rustflutter_ffi_handles.h"
 
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -55,6 +56,12 @@ flutter::DlColor ToDlColor(uint32_t argb) {
   return flutter::DlColor(argb);
 }
 
+// Set once on the raster thread during shell startup, read on the UI thread
+// for every paragraph. Atomic rather than plain because of that crossing, and
+// relaxed because the write happens-before the first read by way of the
+// shell's own startup barriers.
+std::atomic<bool> g_impeller_text{false};
+
 }  // namespace
 
 
@@ -85,6 +92,10 @@ int32_t rf_initialize(const char* icu_data_path) {
   fml::icu::InitializeICU(path);
   initialized = true;
   return 0;
+}
+
+void rf_set_impeller_text(int32_t enabled) {
+  g_impeller_text.store(enabled != 0, std::memory_order_relaxed);
 }
 
 // -- Paint --------------------------------------------------------------------
@@ -235,7 +246,8 @@ RfParagraph* rf_paragraph_new(const char* text,
   }
 
   auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
-      paragraph_style, GetFontCollection(), /*impeller_enabled=*/false);
+      paragraph_style, GetFontCollection(),
+      g_impeller_text.load(std::memory_order_relaxed));
 
   txt::TextStyle style;
   style.font_size = font_size;

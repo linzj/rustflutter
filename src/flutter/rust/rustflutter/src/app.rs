@@ -401,8 +401,9 @@ pub struct RunOptions {
     pub width: i32,
     pub height: i32,
     pub title: String,
-    /// Render with Impeller instead of the Skia software surface. Not wired to
-    /// a GL context yet, so leave it off.
+    /// Render with Impeller (OpenGL ES through ANGLE) instead of the Skia
+    /// software surface. Falls back to software, with a logged reason, if the
+    /// machine cannot give it a GL context.
     pub impeller: bool,
 }
 
@@ -412,7 +413,7 @@ impl Default for RunOptions {
             width: 800,
             height: 600,
             title: String::from("rustflutter"),
-            impeller: false,
+            impeller: true,
         }
     }
 }
