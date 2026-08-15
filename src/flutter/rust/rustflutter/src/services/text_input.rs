@@ -123,6 +123,27 @@ impl TextEditingValue {
         utf16_to_byte(&self.text, self.selection_extent)
     }
 
+    /// Whether anything is selected, as opposed to the caret merely sitting
+    /// somewhere. Upstream's `TextSelection.isCollapsed`, negated.
+    pub fn has_selection(&self) -> bool {
+        self.selection_base != self.selection_extent
+    }
+
+    /// The selected run as a byte range into `text`, for drawing it
+    /// highlighted.
+    ///
+    /// Ordered, which the wire values are not: dragging right to left sends a
+    /// base after the extent, and the direction is the platform's business
+    /// rather than the painter's.
+    pub fn selection_bytes(&self) -> Option<std::ops::Range<usize>> {
+        if !self.has_selection() {
+            return None;
+        }
+        let start = self.selection_base.min(self.selection_extent);
+        let end = self.selection_base.max(self.selection_extent);
+        Some(utf16_to_byte(&self.text, start)?..utf16_to_byte(&self.text, end)?)
+    }
+
     fn from_state(state: &Value) -> Option<TextEditingValue> {
         let number = |key: &str, fallback: i32| {
             state.get(key).and_then(Value::as_i64).map(|v| v as i32).unwrap_or(fallback)

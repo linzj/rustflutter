@@ -56,6 +56,14 @@ const CARET_WIDTH: f32 = 2.0;
 /// How far under the baseline the composing underline sits.
 const UNDERLINE_GAP: f32 = 1.0;
 
+/// What a selected run is painted behind with when nothing says otherwise.
+///
+/// Translucent, and that is the whole design: the highlight goes *under* the
+/// glyphs, so an opaque one would hide the text it is highlighting. Upstream's
+/// `TextField` derives it from the theme's primary colour at 40% for the same
+/// reason.
+const DEFAULT_SELECTION: Color = Color::argb(0x66, 0x44, 0x88, 0xCC);
+
 /// Told where the field landed: its offset, its size, and how far into it the
 /// caret sits. Shared because the render object is rebuilt every frame and the
 /// callback is not.
@@ -79,6 +87,10 @@ pub struct RenderEditable {
     style: TextStyle,
     placeholder_style: TextStyle,
     caret_color: Color,
+    /// What a selected run is painted behind with. Upstream's
+    /// `selectionColor`, and it has to be translucent for the same reason:
+    /// the highlight goes under the glyphs, and an opaque one would hide them.
+    selection_color: Color,
     show_caret: bool,
     /// Told where the field ended up, so the platform can put the IME there.
     /// Called from `paint`, which is the first moment the answer is known.
@@ -97,6 +109,7 @@ impl RenderEditable {
             style: TextStyle::default(),
             placeholder_style: TextStyle::default(),
             caret_color: Color::BLACK,
+            selection_color: DEFAULT_SELECTION,
             show_caret: false,
             report: None,
             reported: Cell::new(None),
@@ -121,6 +134,11 @@ impl RenderEditable {
         self
     }
 
+    pub fn with_selection_color(mut self, color: Color) -> Self {
+        self.selection_color = color;
+        self
+    }
+
     pub fn with_report(mut self, report: ReportPlacement) -> Self {
         self.report = Some(report);
         self
@@ -139,6 +157,25 @@ impl RenderEditable {
         // part of the ink, so the advance width is what is wanted rather than
         // the tight box `width()` reports.
         painting::shape(prefix, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+    }
+
+    /// Where a byte range of the text starts, and how wide it is.
+    ///
+    /// Measured by shaping the run before it and then the run itself, which is
+    /// what the engine's paragraph API here allows: it reports metrics for a
+    /// whole string rather than boxes for a character range, so a prefix is
+    /// the measurement. Upstream asks `getBoxesForSelection` instead and gets
+    /// a box per line; this is the single-line case of the same answer.
+    fn run_extent(&self, range: std::ops::Range<usize>) -> (f32, f32) {
+        let measure = |text: &str| {
+            if text.is_empty() {
+                0.0
+            } else {
+                painting::shape(text, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+            }
+        };
+        let start = measure(&self.value.text[..range.start]);
+        (start, measure(&self.value.text[range]))
     }
 }
 
@@ -159,6 +196,24 @@ impl RenderBox for RenderEditable {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let caret_x = self.caret_offset();
 
+        // The selection, before the text rather than after it. Upstream paints
+        // it in the same order and for the same reason: it is a filled
+        // rectangle, and drawn afterwards it would cover the glyphs it is
+        // meant to be highlighting.
+        if let Some(range) = self.value.selection_bytes() {
+            let (start, width) = self.run_extent(range);
+            let paint = crate::engine::Paint::new(self.selection_color);
+            context.canvas().draw_rect(
+                crate::engine::Rect::ltrb(
+                    offset.dx + start,
+                    offset.dy,
+                    offset.dx + start + width,
+                    offset.dy + self.size.height,
+                ),
+                &paint,
+            );
+        }
+
         if self.value.text.is_empty() && !self.placeholder.is_empty() {
             let hint =
                 painting::shape(&self.placeholder, &self.placeholder_style, self.size.width);
@@ -172,15 +227,7 @@ impl RenderBox for RenderEditable {
         // the text already and is not committed, and the underline is the only
         // thing telling the reader that.
         if let Some(range) = self.value.composing_bytes() {
-            let before = &self.value.text[..range.start];
-            let composing = &self.value.text[range.clone()];
-            let start = if before.is_empty() {
-                0.0
-            } else {
-                painting::shape(before, &self.style, f32::MAX / 4.0).max_intrinsic_width()
-            };
-            let width =
-                painting::shape(composing, &self.style, f32::MAX / 4.0).max_intrinsic_width();
+            let (start, width) = self.run_extent(range);
             let y = offset.dy + self.size.height - UNDERLINE_GAP;
             let paint = crate::engine::Paint::new(self.style.color);
             context.canvas().draw_rect(
@@ -189,7 +236,11 @@ impl RenderBox for RenderEditable {
             );
         }
 
-        if self.show_caret {
+        // No caret while a run is selected. Upstream paints one only for a
+        // collapsed selection, and it is the right rule: a caret drawn at the
+        // extent of a highlighted run reads as a second, contradictory
+        // insertion point.
+        if self.show_caret && !self.value.has_selection() {
             let paint = crate::engine::Paint::new(self.caret_color);
             context.canvas().draw_rect(
                 crate::engine::Rect::ltrb(
@@ -436,6 +487,9 @@ impl StatefulComponent for TextField {
         });
 
         let caret_color = theme.primary;
+        // The theme's own colour, made translucent, as upstream's `TextField`
+        // derives it. Opaque it would cover the glyphs it highlights.
+        let selection_color = theme.primary.with_alpha(0x66);
         let placeholder = self.placeholder.clone().unwrap_or_default();
         let id = self.id;
 
@@ -464,6 +518,7 @@ impl StatefulComponent for TextField {
                     .with_style(style.clone())
                     .with_placeholder(placeholder.clone(), placeholder_style.clone())
                     .with_caret(caret_color, editing)
+                    .with_selection_color(selection_color)
                     .with_report(report),
             )
             .with_handlers(handlers.clone())
@@ -508,6 +563,44 @@ mod tests {
         let split = RenderEditable::new(value("\u{1F600}", 1, (-1, -1)));
         assert_eq!(split.value.caret_bytes(), None);
         assert_eq!(split.caret_offset(), 0.0);
+    }
+
+    #[test]
+    fn a_selected_run_is_the_part_between_the_two_ends() {
+        let mut field = RenderEditable::new(value("ab\u{4e2d}cd", 0, (-1, -1)));
+        field.value.selection_base = 1;
+        field.value.selection_extent = 4;
+        // UTF-16 units 1..4 over "ab中cd" is "b中c" -- bytes 1..6, because the
+        // character in the middle is one unit and three bytes. Counting in the
+        // wrong one of those is the mistake this is here to catch.
+        assert_eq!(field.value.selection_bytes(), Some(1..6));
+        assert_eq!(&field.value.text[1..6], "b\u{4e2d}c");
+
+        // Dragged the other way. The direction is the platform's business and
+        // the painter wants an ordered range.
+        field.value.selection_base = 4;
+        field.value.selection_extent = 1;
+        assert_eq!(field.value.selection_bytes(), Some(1..6));
+    }
+
+    #[test]
+    fn a_caret_is_not_a_selection() {
+        // The ordinary case, and the one that decides whether the highlight is
+        // drawn at all: base equal to extent is a caret, not a zero-width
+        // selection.
+        let field = RenderEditable::new(value("abc", 2, (-1, -1)));
+        assert!(!field.value.has_selection());
+        assert_eq!(field.value.selection_bytes(), None);
+    }
+
+    #[test]
+    fn a_selection_inside_a_character_is_not_a_range() {
+        // Half of a surrogate pair. Slicing there would cut a character in two,
+        // and the platform can send it while a drag is in progress.
+        let mut field = RenderEditable::new(value("\u{1F600}ab", 0, (-1, -1)));
+        field.value.selection_base = 1;
+        field.value.selection_extent = 3;
+        assert_eq!(field.value.selection_bytes(), None);
     }
 
     #[test]

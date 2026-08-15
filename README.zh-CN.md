@@ -26,7 +26,7 @@
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0，零警告
-rustflutter_unittests         →  225 passed
+rustflutter_unittests         →  228 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
@@ -299,8 +299,8 @@ src/
   `KeyboardManager` 的大半。另外还没有焦点树，所以按键处理是应用级的，
   不是按控件的。
 - **没有无障碍。** 通道有了,但没有语义树可描述。
-- **文本输入只有单行字段。** `TextField` 能用,输入法也能用,但没有选区绘制、
-  没有超出字段宽度后的滚动、没有焦点遍历——点一下就是聚焦。组词那条路是照
+- **文本输入只有单行字段。** `TextField` 能用,输入法也能用,选中的一段也会
+  高亮,但没有超出字段宽度后的滚动、没有焦点遍历——点一下就是聚焦。组词那条路是照
   Windows 嵌入层逐条消息写的,**没有自动化验证**:要驱动它需要一个输入法
   context,构建这份代码的机器上没有。
 - **host 服务的是引擎自己定义的通道,不是一套插件生态。** 平台消息两个方向都

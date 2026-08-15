@@ -33,7 +33,7 @@ testing and gestures, animation and a navigation stack, and a component library.
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  225 passed
+rustflutter_unittests         →  228 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
@@ -328,9 +328,9 @@ changed, and what is worth doing next are in
   handling is application-wide rather than per-widget.
 - **No accessibility.** The channel is here; there is no semantics tree to
   describe over it.
-- **Text input is a single-line field.** `TextField` works, IME included, but
-  there is no selection painting, no scrolling past the edge of the field and
-  no focus traversal -- a field is focused by being tapped. The IME's
+- **Text input is a single-line field.** `TextField` works, IME included, and
+  a selected run is highlighted, but there is no scrolling past the edge of the
+  field and no focus traversal -- a field is focused by being tapped. The IME's
   composition path follows the Windows embedder message for message and is not
   covered by an automated check: driving one needs an input context, which the
   machine this was built on does not have.
