@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
-use crate::painting::{ClipBehavior, ClipOp, Gradient, Image, RenderPath};
+use crate::painting::{ClipBehavior, Gradient, Image, RenderPath};
 
 // -- Geometry -----------------------------------------------------------------
 

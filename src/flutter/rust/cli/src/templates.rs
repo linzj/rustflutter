@@ -55,6 +55,17 @@ pub fn cargo_config(linker: &str) -> String {
 # msvcrt and once by the engine's libcmt.
 rustflags = ["-C", "target-feature=+crt-static"]
 
+[env]
+# `cargo test` runs tests on a thread each, and a test that lays out a widget
+# tree lays out text, which goes through the engine's txt / skparagraph stack.
+# That stack is single-threaded by design -- upstream Flutter builds paragraphs
+# only on the UI thread, and its shared FontCollection caches font families
+# without a lock. Two tests shaping text at the same moment corrupt the heap and
+# the process dies at exit, having reported every test as passed.
+#
+# So the tests are serialised here rather than in whoever remembers to type it.
+RUST_TEST_THREADS = "1"
+
 [target.x86_64-pc-windows-msvc]
 # The engine's own linker, by absolute path. Under Git Bash a bare `link`
 # resolves to coreutils' `link` rather than MSVC's linker, which fails with a

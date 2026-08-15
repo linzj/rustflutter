@@ -170,6 +170,22 @@ pub struct TapEvent {
     pub pointer_id: i64,
 }
 
+/// A wheel or trackpad scroll.
+///
+/// Carries where as well as how far, because the two things a scroll can mean
+/// need different halves of it: a list moves by `delta` and does not care
+/// where the pointer was, while a zoom has to keep whatever is under the
+/// pointer under it and cannot be written without `local_position`.
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollEvent {
+    /// How far to scroll, in logical pixels. Positive `dy` means the content
+    /// should move up -- the direction the reader is going, not the direction
+    /// the finger went.
+    pub delta: Offset,
+    /// Where the pointer was, in the target's local coordinates.
+    pub local_position: Offset,
+}
+
 /// A drag in progress.
 #[derive(Clone, Copy, Debug)]
 pub struct DragEvent {
@@ -200,10 +216,8 @@ pub struct PointerHandlers {
     /// Fired when a press begins or ends over this region, so a button can
     /// show that it is being held.
     pub on_press_change: Option<Rc<dyn Fn(bool)>>,
-    /// Fired for a wheel or trackpad scroll over this region. The delta is in
-    /// logical pixels, positive meaning the content should move up -- the
-    /// direction the reader is going, not the direction the finger went.
-    pub on_scroll: Option<Rc<dyn Fn(Offset)>>,
+    /// Fired for a wheel or trackpad scroll over this region.
+    pub on_scroll: Option<Rc<dyn Fn(ScrollEvent)>>,
 }
 
 impl PointerHandlers {
@@ -221,7 +235,7 @@ impl PointerHandlers {
         self
     }
 
-    pub fn with_scroll(mut self, handler: impl Fn(Offset) + 'static) -> Self {
+    pub fn with_scroll(mut self, handler: impl Fn(ScrollEvent) + 'static) -> Self {
         self.on_scroll = Some(Rc::new(handler));
         self
     }
@@ -282,7 +296,6 @@ impl PointerHandlers {
 /// One end of a gesture: what was hit, and where it was hit.
 #[derive(Clone)]
 struct Target {
-    id: u64,
     handlers: Rc<PointerHandlers>,
     /// Where the press began, in this target's coordinates.
     local_origin: Offset,
@@ -377,7 +390,10 @@ impl GestureRouter {
         for entry in &result.path {
             let Some(handlers) = &entry.handlers else { continue };
             if let Some(scroll) = &handlers.on_scroll {
-                scroll(event.scroll_delta);
+                scroll(ScrollEvent {
+                    delta: event.scroll_delta,
+                    local_position: entry.local_position,
+                });
                 return true;
             }
         }
@@ -398,14 +414,12 @@ impl GestureRouter {
             let Some(handlers) = entry.handlers.clone() else { continue };
             if drag.is_none() && handlers.wants_drag() {
                 drag = Some(Target {
-                    id: entry.target,
                     handlers: handlers.clone(),
                     local_origin: entry.local_position,
                 });
             }
             if tap.is_none() {
                 tap = Some(Target {
-                    id: entry.target,
                     handlers,
                     local_origin: entry.local_position,
                 });
@@ -814,8 +828,8 @@ mod tests {
         let outer_sink = outer.clone();
 
         let root = nested(
-            PointerHandlers::new().with_scroll(move |d| *inner_sink.borrow_mut() += d.dy),
-            PointerHandlers::new().with_scroll(move |d| *outer_sink.borrow_mut() += d.dy),
+            PointerHandlers::new().with_scroll(move |s| *inner_sink.borrow_mut() += s.delta.dy),
+            PointerHandlers::new().with_scroll(move |s| *outer_sink.borrow_mut() += s.delta.dy),
         );
 
         let mut router = GestureRouter::new();
@@ -836,7 +850,7 @@ mod tests {
         let root = nested(
             // A tappable row, which is not a scrollable.
             PointerHandlers::new().with_tap(|_| {}),
-            PointerHandlers::new().with_scroll(move |d| *sink.borrow_mut() += d.dy),
+            PointerHandlers::new().with_scroll(move |s| *sink.borrow_mut() += s.delta.dy),
         );
 
         let mut router = GestureRouter::new();

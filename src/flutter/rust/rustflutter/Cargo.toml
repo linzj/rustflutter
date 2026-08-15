@@ -17,6 +17,13 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# `rustflutter_stubs` is set by the GN build, not by Cargo, so Cargo has no way
+# to know it is a real cfg and warns that it might be a typo. Declaring it here
+# keeps `cargo build` of an application quiet about a flag that application will
+# never set.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rustflutter_stubs)'] }
+
 # None, and not by accident. The framework talks to the engine through the C
 # ABI in `flutter/rust/ffi`, which is linked in rather than compiled here, so
 # there is nothing for Cargo to fetch. An application gets the C++ side by

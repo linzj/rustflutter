@@ -679,10 +679,10 @@ pub fn scroll_handlers(
             };
             drag_handle.set_state(move |state| pick(state).scroll_by(-along));
         })
-        .with_scroll(move |delta| {
+        .with_scroll(move |scroll| {
             let along = match axis {
-                Axis::Vertical => delta.dy,
-                Axis::Horizontal => delta.dx,
+                Axis::Vertical => scroll.delta.dy,
+                Axis::Horizontal => scroll.delta.dx,
             };
             handle.set_state(move |state| pick(state).scroll_by(along));
         })

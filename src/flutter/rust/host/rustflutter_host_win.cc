@@ -632,12 +632,34 @@ PointerData MakePointerData(WindowState* state,
   return data;
 }
 
+/// What Windows reports when the wheel setting has never been touched.
+constexpr UINT kLinesPerScrollWindowsDefault = 3;
+
 /// How far one notch of the wheel scrolls, in logical pixels.
 ///
-/// Flutter's own Windows embedder uses twenty and ignores the system's
-/// lines-per-notch setting; matching it means a wheel turn here moves a list by
-/// the same amount it would in a Flutter app on the same machine.
-constexpr double kScrollPixelsPerNotch = 20.0;
+/// The system's lines-per-notch setting, times Chromium's hundred-pixels-per-
+/// three-lines -- which is what Flutter's own Windows embedder computes in
+/// `FlutterWindow::UpdateScrollOffsetMultiplier`, so a wheel turn here moves a
+/// list by the same amount it would in a Flutter application on the same
+/// machine. At the default of three lines that is a hundred pixels.
+///
+/// Read per message rather than cached. It is a user32 call against a value the
+/// system already has in memory, wheel messages arrive at human speed, and
+/// caching it would mean handling WM_SETTINGCHANGE to keep the cache honest --
+/// a moving part, and a stale one whenever it was forgotten.
+double ScrollPixelsPerNotch() {
+  UINT lines = kLinesPerScrollWindowsDefault;
+  if (!SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) {
+    lines = kLinesPerScrollWindowsDefault;
+  }
+  // WHEEL_PAGESCROLL means "a screen at a time". Nothing here knows how tall
+  // the scrollable is, so it is taken as a large number of lines rather than
+  // as a page, which is what Chromium's fallback amounts to as well.
+  if (lines == WHEEL_PAGESCROLL) {
+    lines = 20;
+  }
+  return static_cast<double>(lines) * 100.0 / 3.0;
+}
 
 /// A wheel turn, as a hover carrying a scroll signal.
 ///
@@ -650,7 +672,7 @@ PointerData MakeScrollData(WindowState* state, double x, double y, double notche
   // Positive means the content moves up -- the direction the reader is going,
   // which is the opposite of the way the wheel turned.
   data.scroll_delta_x = 0.0;
-  data.scroll_delta_y = -notches * kScrollPixelsPerNotch;
+  data.scroll_delta_y = -notches * ScrollPixelsPerNotch();
   return data;
 }
 

@@ -23,7 +23,7 @@ use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::OnceLock;
 
-use crate::engine::{self, Canvas, Color, LayerTree};
+use crate::engine::{self, Color, LayerTree};
 use crate::framework::{AnyWidget, ElementTree};
 use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::render::{BoxConstraints, PaintContext, RenderBox};
