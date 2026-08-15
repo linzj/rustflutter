@@ -456,7 +456,33 @@ thread_local! {
 ///
 /// Thread-local, because a paragraph is a raw engine handle and only the UI
 /// thread lays out.
+///
+/// # The reader's text size
+///
+/// The platform's text scale is applied here, which makes this the one place
+/// in the framework that obeys it -- every size on screen is a font size that
+/// came through this function, and every measurement the framework makes comes
+/// back out of the paragraph rather than out of the style.
+///
+/// It belongs one layer up. Upstream it is `MediaQuery.textScaler`, read by
+/// each `Text` from the widget tree, so a subtree can be given a different one
+/// -- a dense table that opts out, a preview that shows what another size would
+/// look like. There is no `InheritedWidget` dependency tracking here yet, so
+/// there is nowhere for a subtree to say that; applying it to all text is the
+/// closest thing to right, and the alternative is ignoring an accessibility
+/// setting the reader has already asked every application for.
+///
+/// The cache needs no help with this: the scale changes the style it keys on,
+/// so text shaped at the old size is simply never asked for again.
 pub fn shape(text: &str, style: &TextStyle, max_width: f32) -> Rc<Paragraph> {
+    let scale = crate::platform::text_scale_factor() as f32;
+    let scaled;
+    let style = if scale == 1.0 {
+        style
+    } else {
+        scaled = TextStyle { font_size: style.font_size * scale, ..style.clone() };
+        &scaled
+    };
     let key = ShapeKey::new(text, style, max_width);
     SHAPED.with(|cache| {
         {
@@ -1099,6 +1125,33 @@ mod tests {
         end_text_frame();
         let second = shape("still drawn", &style, 200.0);
         assert!(Rc::ptr_eq(&first, &second), "a live paragraph was re-shaped");
+    }
+
+    #[test]
+    fn the_readers_text_size_reaches_the_shaper() {
+        // The setting has one consumer and this is it. Checked through the
+        // cache rather than through a metric, because the stubbed engine every
+        // unit test shapes against reports zero for every measurement -- what
+        // can be shown is that the scale is part of the request, which is what
+        // decides the size the engine is asked for.
+        let style = TextStyle::default();
+        let before = shaped_paragraph_count();
+        let unscaled = shape("the reader's size", &style, 200.0);
+        assert_eq!(shaped_paragraph_count(), before + 1);
+
+        crate::platform::set_user_settings(r#"{"textScaleFactor":1.5}"#);
+        let scaled = shape("the reader's size", &style, 200.0);
+        assert!(
+            !Rc::ptr_eq(&unscaled, &scaled),
+            "the same text at a different size must be shaped again"
+        );
+        assert_eq!(shaped_paragraph_count(), before + 2);
+
+        // And back, which the cache still has: the scale changes the style the
+        // entry is keyed on rather than invalidating anything.
+        crate::platform::set_user_settings(r#"{"textScaleFactor":1.0}"#);
+        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, 200.0)));
+        crate::platform::reset();
     }
 
     #[test]

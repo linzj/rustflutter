@@ -1273,7 +1273,7 @@ platform_channels: PASS        （exit 0）
 
 退出码那条是单独验过的：把它临时改成 `failures + 7`，进程退出码就是 7。
 
-单测 132 → 224（+92）。FFI 单测 15 个照旧。五个例子加相册**全部**做了关闭
+单测 132 → 225（+93）。FFI 单测 15 个照旧。五个例子加相册**全部**做了关闭
 回归（发 `WM_CLOSE`，等进程退出）——每一次关闭现在都要绕框架走一圈，一个
 从没听说过退出协议的应用也必须照关不误。
 
@@ -1346,8 +1346,12 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
   `Resumed` 正是这么收到的。结果一样，路子不同。
 - **`EventChannel` 只有单测。** 没有哪一侧实现了一条真的流可以对着跑，因为
   引擎自己定义的通道里一条流也没有。要对着跑就得自己发明一条，那不是移植。
-- **文字缩放没有接进排版。** `platform::text_scale_factor()` 是通的，但没有
-  哪个 widget 读它。上游是 `MediaQuery.textScaler` 一路传到 `Text`。
+- **文字缩放是全局的，不能按子树给。** 现在在 `painting::shape` 上应用——
+  框架里所有文字都从那一个口子过，所有测量也都从段落而不是从 style 出来，
+  所以覆盖是全的。但它本该在上一层：上游 `MediaQuery.textScaler` 是每个 `Text`
+  从 widget 树上读的，于是一张密集表格可以退出缩放、一个预览可以显示别的字号。
+  没有 `InheritedWidget` 依赖追踪就没地方说这句话，而无视读者已经向每个应用
+  提过的无障碍设置更糟。
 
 ---
 
@@ -1364,13 +1368,12 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-4. **把平台状态接进 widget。** 通道那一侧齐了（第十五节：传输、编解码器、
+4. **把平台状态接进 widget 树。** 通道那一侧齐了（第十五节：传输、编解码器、
    三层通道、`flutter/platform`、`flutter/textinput`、`flutter/mousecursor`、
    `flutter/settings`、`flutter/localization`，两个方向都通）。差的是**框架
-   里面**：`platform::text_scale_factor()` 没有哪个 widget 读，
-   `platform::brightness()` 要应用自己去挑 `Theme::dark()`。上游是
-   `MediaQuery` 加 `InheritedWidget` 依赖追踪把这些送到每个 `Text`——所以这条
-   其实要等第 2 条。
+   里面**：文字缩放现在是全局应用的，不能按子树给；`platform::brightness()`
+   要应用自己去挑 `Theme::dark()`。上游是 `MediaQuery` 加 `InheritedWidget`
+   依赖追踪——所以这条其实要等第 2 条。
 5. **焦点树。** 键盘现在只到应用级。上游那一摊在框架侧一万六千行，
    其中 `focus_traversal.dart` 单文件 2575 行——光是"Tab 该往哪儿走"。
 6. **键盘的 redispatch。** 让框架能真正吃掉一个键。需要把 `on_key` 的答案

@@ -33,7 +33,7 @@ testing and gestures, animation and a navigation stack, and a component library.
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  224 passed
+rustflutter_unittests         →  225 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
