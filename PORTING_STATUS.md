@@ -683,19 +683,24 @@ swap        0.3 ms
 
 ### 引擎侧：逐字节相同（已验证）
 
+逐文件比对（`diff --strip-trailing-cr`，避开行尾差异）：
+
 ```
-diff -rq flow/          无差异
-diff -rq display_list/  无差异
-shell/common/rasterizer.cc   相同
-shell/common/pipeline.h      相同
+flow/  display_list/  shell/gpu/  shell/common/
+  327 个文件，12 个不同，全部在 shell/common/
 ```
 
-`shell/common` 里有差异的只有 6 个文件，内容全是拆 Dart。`animator.cc` 唯一的
-实质改动是 `Dart_TimelineGetMicros()` 换成 `fml::TimePoint::Now()`（同一个时钟）
-加一处字段改名。线程模型也一样：ThreadHost 起 platform/ui/raster/io 四条线程，
+那 12 个的内容全是拆 Dart VM：`RequestDartDeferredLibrary` 等空实现、
+`kAllowedDartFlags`、`dart_tools_api.h`、`dart_frame_deadline_` 改名。
+`animator.cc` 的实质差异只有 3 处，其中 `Dart_TimelineGetMicros()` 换成
+`fml::TimePoint::Now()` 读的是同一个时钟。`rasterizer.cc`、`vsync_waiter.cc`、
+`layer_tree.cc` 逐字节相同。
+
+**也就是说 `Render()` 往下到屏幕，跑的字面上就是上游的代码。**差异只可能在
+它上面。线程模型也一样：ThreadHost 起 platform/ui/raster/io 四条线程，
 pipeline depth 2。
 
-### 框架侧与宿主侧：五处差距，已全部关掉
+### 框架侧与宿主侧：八处差距，已全部关掉
 
 | 差距 | 之前 | 现在 |
 |---|---|---|
@@ -705,6 +710,8 @@ pipeline depth 2。
 | 文字 | 每帧重新 shape | 两代缓存，效果等同上游的 `TextPainter` |
 | vsync | 硬编码 60 Hz | 读 DWM 合成时钟，每秒复核 |
 | 图片解码 | UI 线程内联 | worker 线程池，帧后到 |
+| 帧时间戳 | 可以倒流 | 在与上游同一个边界上 clamp |
+| 纹理上传 | raster 线程，首次绘制时 | IO 线程，绘制之前 |
 
 #### DPI —— 这一条是 bug，只是当时触发不了
 
@@ -797,6 +804,60 @@ tick 网格上。这里原本吸附算法一样，但间隔硬编码 1/60。现�
 路、理由也相同——没有谁记录了是谁在问。窄化版本需要 `Image::shared` 知道
 当前是哪个 element 在调用它，而那正是 `InheritedWidget` 依赖追踪要的机制。
 
+#### 帧时间戳 —— 是上一条 vsync 改动带出来的
+
+`VsyncWaiterWin` 每秒复核刷新率，这是对的（见上）。但由此产生一个后果：
+`frame_start_time` 因为 `now` 单调所以单调，而交给框架的是
+`frame_target_time = start + interval`——刷新率变高时栅格变细，新的目标时间
+可以落在旧的**之前**。
+
+上游在同一个边界上挡住（`PlatformConfiguration::BeginFrame`，注释写着
+"Do not allow time traveling frametimes"），这里没有。
+
+不是推演出来的。临时让 `FrameInterval()` 每秒在 32/60 Hz 之间跳，六秒内抓到两次：
+
+```
+frame delta -12500
+frame delta -10417
+```
+
+`AnimationSet::tick` 自己挡了（`frame_time_micros > previous` 才算 elapsed），
+所以 controller 安全；但直接从时钟推相位的地方——gallery 的 `cycle()` /
+`ping_pong()`——会倒退一帧。现在 clamp 放在 `RuntimeController::BeginFrame`，
+和上游同一个位置：有一个地方决定"现在"是几点，而不是每个消费者各挡各的。
+
+日志用 `FML_LOG(ERROR)` 而不是 WARNING。第一版写的是 WARNING，跑出来一条都没有
+——**release 构建把 WARNING 过滤掉了**，而数据（−12500）明明在。差一点把
+"没打日志"读成"没触发"。
+
+#### 纹理上传
+
+解码上一轮已经挪走了，上传没有：`GetImpellerTexture` 是在光栅化时按需上传的，
+所以每张图第一次出现的那一帧要付它的 memcpy。上游从不这样——`ImageDecoder`
+在 IO 线程的共享上下文上传，`image_decoder_impeller.cc` 里那句注释说明了为什么
+非得绕这一道：*"The I/O image uploads are not threadsafe on GLES."*
+
+需要的东西其实全在：offscreen GL 上下文与主上下文共享、reactor worker 按线程
+记 GL 归属，`rustflutter_gl_win.h` 的文件头注释甚至已经写着 offscreen 那个
+"在 IO 线程上传纹理"。缺的只是没有人在 IO 线程把它 make current。
+
+挂钩点是 `PlatformView::CreateResourceContext()`：shell 本来就在 IO 线程、
+Impeller 上下文就绪之后调它。上游从这里拿 `GrDirectContext`，Impeller 下没有
+——所以这里只要它的副作用。
+
+Shrine 实测：
+
+```
+之前  4 张在首屏那几帧里上传（0.6 ms 在 raster 线程），其余 34 张随滚动逐张进来
+现在  38 张，6.5-8.9 ms，0 张在 raster 线程
+```
+
+改成"上传所有录进去的"而不是"上传所有画出来的"，总量更大（R-tree 剔除掉的
+也上传了），但发生在本来空闲的线程上，而且这正是上游的行为——`ImageDecoder`
+解了什么就传什么。
+
+统计里同时报最坏帧了：中位数恰恰是"每张图一次性开销"最不该用的汇总方式。
+
 ### 一个原以为存在、其实不存在的差距
 
 "layer 树是平的 → raster cache 命不中"这句话，前半句是真的，后半句在
@@ -816,26 +877,53 @@ UI 线程上的那 0.15 ms（layout 0.06 + record 0.09），合成侧没有任�
 但不是"到屏幕"这条路上的差距。这一条写在这里，是因为之前的判断把它列成了
 最大的一笔欠账，而那个判断没有验证过 Impeller 下 raster cache 是否开着。
 
-### 帧统计里一个标错的数
+### warm-up 帧 —— 查过，不该照搬
+
+上游 `WidgetsBinding` 挂载根 widget 时 `..scheduleWarmUpFrame()`，绕开 vsync
+直接跑一帧。这里 `rf_app_launch` 只是 `schedule_frame()`，等下一次 vsync。
+
+本来准备实现，先读了 `Animator`：`producer_continuation_` 只在
+`Animator::BeginFrame` 里获取（`animator.cc:94-98`）。warm-up 帧不走那条路，
+所以 `EndFrame` 里 `producer_continuation_.Complete()` 拿到的是默认构造的
+continuation，`PipelineProduceResult{success = false}`——**它的 layer tree
+根本不会推给光栅器**，随后靠 `if (hadScheduledFrame) scheduleFrame()` 再来一帧
+真的。
+
+也就是说 warm-up 帧就是字面意思：提前跑一遍 build/layout/paint 把 JIT 和缓存
+热起来，树丢掉。这里没有 JIT、没有 Dart VM、shader 启动时已经编译好了。
+照搬只会多跑一帧再扔掉。
+
+### 帧统计里两个测错和没测的数
 
 `raster thread: rasterise` 之前测的是"上一次 swap 返回到这一次 swap 被请求"，
-中间大部分是在等下一棵 layer 树，不是在光栅化。现在拆成三段：
+中间大部分是在等下一棵 layer 树，不是在光栅化。拆成三段之后：
 
 ```
-idle 15.8 ms   rasterise 0.8 ms   swap 0.14 ms   frame 16.9 ms
+idle 15.7 ms   rasterise 0.9 ms（最坏 1.8）   swap 0.14 ms   frame 16.7 ms
 ```
 
-整条流水线每 16.9 ms 干约 1.2 ms 的活。
+UI 那一侧则整段漏掉了 `begin_frame`：`FrameTimings` 从 `application.build` 才
+开始计时，而 ticker 走的是 `begin_frame`——它在所有数字之外，包括那个叫
+"total" 的。补上：
+
+```
+ui thread: advance 0.04   build 0.29   layout 0.09   record 0.12   total 0.54 ms
+```
+
+补这个洞时顺带查掉一条本来准备当差距报的东西：`advance_frame` 是把**所有**元素
+扫一遍，而上游 `handleBeginFrame` 只遍历注册过的 transient callback（通常 0-3 个）。
+看着像 O(n) 白工。量了：gallery 首页 **83 个元素，0.008 ms/帧**。不是差距。
 
 ### 还剩下的
 
-* **持久化 render object。** 见上一节：流水线后果只剩 UI 线程 0.15 ms，
+* **持久化 render object。** 见上文：流水线后果只剩 UI 线程 0.15 ms，
   合成侧为零。它要解决的是框架架构问题（repaint boundary、重场景的布局成本），
   排期理由是那个，不是这一节的理由。
-* **纹理上传仍在 raster 线程**，而不是 IO 线程的共享上下文上。解码已经挪走了，
-  上传还没有——`GetImpellerTexture` 是在光栅化时按需上传的。
-* **microtask。** 上游在 `onBeginFrame` 和 `onDrawFrame` 之间抽干微任务队列，
-  这里没有异步运行时，所以没有对等的排序点。
+* **microtask。** 上游在 `onBeginFrame` 和 `onDrawFrame` 之间抽干微任务队列
+  （`platform_configuration.cc` 的 `FlushMicrotasksNow`）。这个位置是有意义的，
+  不只是顺带：dart:ui 自己的 `scheduleWarmUpFrame` 用两个 timer 而不是一个，
+  注释写的就是 *"to ensure that microtasks flush in between"*。这里没有异步
+  运行时，队列是空的；位置在 `RuntimeController::BeginFrame` 里注明了。
 * **局部重绘**与 **raster cache**：与上游持平（都关着），不是差距。
 
 ---
@@ -846,8 +934,10 @@ idle 15.8 ms   rasterise 0.8 ms   swap 0.14 ms   frame 16.9 ms
 
 1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
    但 render tree 每帧仍整棵重建，布局和绘制照跑不误。注意这不是性能理由：
-   实测整条 UI 线程 0.3–0.5 ms，其中重建 0.15 ms（第十三节）。理由是架构——
+   实测整条 UI 线程 0.5–0.6 ms，其中重建 0.15 ms（第十三节）。理由是架构——
    repaint boundary 需要有东西可以挂，惰性列表也需要 render object 活过一帧。
+   **从 UI 到上屏这条路上，已经没有已知的流水线差距了**，剩下的都是框架
+   架构工作。
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
