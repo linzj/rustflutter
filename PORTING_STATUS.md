@@ -1388,6 +1388,170 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
 
 ---
 
+## 十七、Android —— 已完成 ✅
+
+Windows 之外的第二个平台。跑起来的是全部九个示例、Flutter Gallery 和高密度
+相册,截图逐个看过;`platform_channels` 自检在设备上 **PASS**。
+
+### 为什么先要改 buildroot
+
+在 Windows 上交叉编译到 Android,上游从来没有走通过——它只在 Windows 上为
+Android 编一个 `gen_snapshot`,而那是个 **host** 程序。于是 buildroot 里有五处
+把"宿主"和"目标"当成同一件事:
+
+| 位置 | 原来 | 为什么不对 |
+|---|---|---|
+| `BUILDCONFIG.gn` | 宿主是 Windows 就令 `current_os = "win"`,不看目标 | 默认工具链于是变成 Windows 工具链,任何以 Android 为目标的东西都编不出来 |
+| `toolchain/win/BUILD.gn` | `assert(is_win)` | "在 Windows 上跑"说的是宿主;交叉编译时这个文件仍会被加载,因为 host 工具是用它编的 |
+| 同上 | `copy_dlls` 无条件执行 | 它按 `current_cpu` 找 MSVC 运行库,而那时的 `current_cpu` 是 *Android* 的 |
+| 同上 | `win_toolchains` 不设 `current_os` | 于是 host 工具被 clang-cl 拿着 Android 的 sysroot 和一堆 gcc 风格开关去编 |
+| `config/android/config.gni` | `android_host_os = "win"` | NDK 的目录叫 `windows-x86_64`,不叫 `win-x86_64` |
+
+第六处不是"当成同一件事",是**根本没有壳**:`gcc_toolchain.gni` 的几条命令是
+用 shell 写的——`rm -f x && ar ...`、`{ readelf | grep; nm | cut; } > toc`、
+`if ! cmp -s a b; then mv a b; fi`、`touch`、`ln -f`。Windows 上 ninja 是直接
+`CreateProcess`,**连 `cmd` 都没有**,所以 `&&` 也不成立。
+
+于是每个工具在 Windows 宿主上都变成恰好一个进程,多步的那几个交给
+`build/toolchain/gcc_toolchain_shim.py`:`ar` 自己先删,`solink` 自己链完再写
+TOC 再 strip。POSIX 宿主一行没动——那边本来就有它们假设的那个壳。
+
+### host:三处结构性差别
+
+`flutter/rust/host/rustflutter_host_android.cc`。和 Windows 那份比,三件事不同,
+其余都跟着这三件走:
+
+1. **平台线程就是 Android 主线程。** 上游 Android 也是这么干的,而这正好和
+   Windows host 相反——那边刻意把窗口线程和平台线程分开。这里能合是因为 fml
+   有一个基于 ALooper 的消息循环:在主线程上初始化它,等于把一个 timerfd 挂到
+   Android 本来就在轮询的 Looper 上,于是 post 到平台 runner 的任务就在 UI 线程
+   上跑,没有第二个循环也没有交错。带来的好处是这个文件里每一次 JNI 调用都天然
+   落在 Android 要求 UI 工作待的那个线程上。
+
+2. **host 不拥有循环。** Windows 上 `rf_host_run` 开窗口、泵消息直到关闭。这里
+   没有对应物:Activity 拥有进程、Looper 和 Surface,所以 `rf_host_run` 把 shell
+   架在已经存在的 Surface 上就返回。本该是消息循环的那部分,是 Activity 的生命
+   周期,从文件末尾那些 JNI 入口进来。
+
+3. **平台知道的,Java 先知道。** 深浅色、文字缩放、24 小时制、语言列表都从
+   `Configuration` 读,所以是 Java 拼好 JSON 递过来,而不是在这边现拼。通道和
+   载荷和 Windows 发的是同一份,因为读它的框架是同一个。
+
+渲染仍是 Impeller on GLES,走的是 **同一个** `rustflutter_gl.cc`——那个文件原来
+叫 `rustflutter_gl_win.cc`,而它里面一处平台也没提到,只提 EGL。于是它被改名而
+不是被复制:唯一改的是把 `HWND` 换成 `EGLNativeWindowType`,以及 swap interval
+在 Android 上留默认(上游 Android 也是)。
+
+### Java:一个类,九个应用
+
+`flutter/rust/host/android/io/flutter/rustflutter/RustflutterActivity.java`。上游
+这摊子分在 FlutterActivity、FlutterView、FlutterJNI、TextInputPlugin 和每条通道
+一个插件里;这里是一个类,因为这个 fork 只有一个窗口、一个引擎、没有插件注册表
+——把那些拿掉之后剩下的就是:一个 Surface、一条触摸流、一个 InputConnection,
+和平台通道要用的那几个 Android API。
+
+每个应用用的都是这一份、原样,差别只在 manifest 里写哪个 `.so`。这就是九个 APK
+能从一份 Java 出来的原因。
+
+### 打包:没有 Gradle
+
+`flutter/rust/host/tools/make_apk.py`,六步,每步一条命令:`aapt2 link` 管清单、
+`javac` 编那一个 Java 文件、`d8` 转 dex、zip 塞进 so 和 icudtl.dat、`zipalign`、
+`apksigner` 用一把调试钥匙签。`build_apks.py` 是对一个输出目录里所有 `.so` 循环
+一遍。
+
+Gradle 的存在是为了解决"一个 Java 工程和它的传递依赖";这里是一个 .java、一个
+.so、一个 asset。它会带来第二套构建系统、第二张依赖图和第二份工具链下载,而这
+三样都不描述引擎构建还不知道的任何事情。
+
+### 通道在 Android 上是什么
+
+| 通道 | 做法 |
+|---|---|
+| `flutter/settings` | `Configuration` 的 `uiMode`、`fontScale`、`DateFormat.is24HourFormat` |
+| `flutter/localization` | `Configuration.getLocales()`,还是那个四个一组的扁平数组 |
+| `flutter/platform` | 剪贴板是 `ClipboardManager`;`SystemNavigator.pop` 是 `finish()`;退出握手照抄 Windows,只是问的人从关闭按钮变成返回手势 |
+| `flutter/textinput` | `InputConnection`。编辑模型仍是引擎自己的 `TextInputModel`——**权威在 C++ 这一侧**,Java 那个 `Editable` 只是镜像。上游是反过来的,那需要整个 `InputConnectionAdaptor` |
+| `flutter/lifecycle` | `onResume`/`onPause`/`onStop`,和 Windows 一样的四态 |
+| `flutter/navigation` | 返回手势发 `popRoute`,**并且读回答**:空回答意味着那边没人在听,这时才 `finish()` |
+| `flutter/mousecursor` | 服务着,但触摸屏上没有指针可改。`cursor_demo` 在 Android 上把这句话写在屏幕上,而不是假装 |
+
+### 抓出来的四个真实缺陷
+
+都是这次移植抓出来的,四个都是真的:
+
+1. **`physical_delta` 一直是零。** 框架量拖动是把 `physical_delta` 累加起来的
+   (`GestureRouter::on_move`),不是拿位置相减。Windows host 填了这个字段,
+   Android host 没填,于是**每一次滑动都被仲裁成点击**——在 Gallery 里表现为
+   "想滚动,结果打开了一个 demo"。
+
+2. **纹理在 IO 线程上传。** 在一个线程上传纹理、在另一个线程画它,两个 GL
+   context 光是 share 还不够,写的那边得先 flush。桌面驱动对此宽容,ANGLE 干脆
+   全给挡了;这里的驱动不宽容,结果是相册的缩略图变成那块纹理内存上一次装的
+   东西——桌面启动器的碎片,倒着的。现在 Android 上传在光栅线程做,代价是图片
+   第一次画出来时的一次卡顿。
+
+3. **软件路径按 4 字节一像素算。** SurfaceView 默认格式是窗口管理器挑的,在这台
+   模拟器上是 RGB_565——两字节。按四字节复制整行直接越界,`platform_channels`
+   (它用软件面), 一启动就 SIGSEGV。
+
+4. **Choreographer 回调活得比 waiter 久。** `AChoreographer` 没有取消。Activity
+   在两个 vsync 之间 finish 掉,回调照样到,拿着一个 shell 已经析构掉的指针。
+   现在传的是堆上的 `weak_ptr`,和上游 `VsyncWaiterAndroid` 一个道理。
+
+### 相册:cargo 建的应用怎么上 Android
+
+高密度相册在另一个仓库里,用 cargo 建,这是它和九个示例最大的不同,也因此多踩
+三处:
+
+- **它得是 cdylib。** 于是 `src/main.rs` 拆成 `src/lib.rs` 加一个四行的
+  `src/main.rs`——桌面上是程序,Android 上是 Activity 加载的库。
+- **rustc 会把 JNI 符号藏掉。** cdylib 的 version script 只导出 crate 自己
+  `#[no_mangle]` 的东西,其余一律 local,包括 Android 要按名字找的那十四个。
+  第二份 version script 把它们点回来。
+- **解码器得换。** Windows 上是 WIC:系统组件,而且会直接读相机嵌在 JPEG 里的
+  缩略图。Android 上没有一个纯 Rust 进程够得着的对等物(它的是 `BitmapFactory`,
+  在 Java 那边),所以那边用 `image` crate 解完再缩,并且明说代价——整帧解码再
+  缩放,而 WIC 是直接解到要的尺寸。
+
+它还要一个**能读的目录**,而这件事 Rust 标准库问不出来:`Android/data/<包名>`
+下面由人手工建出来的目录,那个应用自己列不了。所以 host 在启动时把
+`getFilesDir()` 和 `getExternalFilesDir()` 放进环境变量——每个平台都有"这个程序
+把文件放哪儿"这个问题,只有 Android 上 std 答不上来。
+
+### 验证
+
+- **模拟器**(Android 14, x86_64, 1080×1920 @ 420dpi):九个示例逐个启动截图,
+  `platform_channels` **PASS**(两处 SKIP,见下),Gallery 列表能滑、能进 demo、
+  返回手势能回退,相册 240 张图能滚、缩略图正确,深色模式和字号在
+  `settings_demo` 里现改现变(`changes reported` 跟着加)。
+- **arm64**:九个示例加相册都编出了 APK,但**装不上这台真机**——MIUI 的
+  `INSTALL_FAILED_USER_RESTRICTED` 挡住了 `adb install`、`pm install` 和分会话
+  安装三条路,那是设备侧的开关,不是包的问题。arm64 的模拟器在 x86_64 宿主上
+  起不来(模拟器自己拒绝:"CPU Architecture 'arm64' is not supported by the QEMU2
+  emulator on x86_64 host"),所以验证在 x86_64 模拟器上做,arm64 只到"编得出、
+  签得上"为止。
+- **Windows 没有回归**:228 + 15 + 21 个测试照过,`platform_channels.exe` 仍
+  PASS,相册的 57 个测试照过。
+
+### 还知道没做的
+
+- **视图内边距没报。** 状态栏、刘海、手势条的高度上游是从 `WindowInsets` 读了
+  填进 `ViewportMetrics` 的;这里一律零。软键盘那一路是好的——窗口设了
+  `adjustResize`,键盘弹出会重排窗口,于是 `surfaceChanged` 会带着新尺寸进来。
+- **Surface 没了就把整个 shell 拆掉。** 上游是把 surface 摘下来、引擎留着,
+  好让切回来时不用重启。这个 fork 一个 Activity、没有引擎缓存,"Surface 没了"
+  和"应用没了"是同一件事。
+- **`platform_channels` 在 Android 上跳过手势那一半。** 打字、输入法和光标都
+  需要往自己窗口里注入输入,而那需要 `INJECT_EVENTS`——一个应用拿不到的系统
+  权限,拿得到的话它就能往任何别的应用里注。这不是缺口,是平台的决定;
+  `src/android.rs` 的文件头把这件事写清楚了。通道那一半照跑:剪贴板、生命周期、
+  没人服务的通道、错误信封、设置、语言、退出握手。
+- **arm64 只编不跑**,见上。
+
+
+---
+
 ## 十六、下一步
 
 按价值排序：
@@ -1399,8 +1563,9 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
    **从 UI 到上屏这条路上，已经没有已知的流水线差距了**，剩下的都是框架
    架构工作。
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
-4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
-   都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
+3. **多平台。** Windows 和 Android 都通了（第十七节）。剩下的每个平台缺的
+   仍只是一个窗口和一个消息循环——`rf_host_run` 之上的一切都是可移植的，
+   Android 那次移植没有改动 `flutter/rust/rustflutter` 里的任何一行。
 4. **把平台状态接进 widget 树。** 通道那一侧齐了（第十五节：传输、编解码器、
    三层通道、`flutter/platform`、`flutter/textinput`、`flutter/mousecursor`、
    `flutter/settings`、`flutter/localization`，两个方向都通）。差的是**框架

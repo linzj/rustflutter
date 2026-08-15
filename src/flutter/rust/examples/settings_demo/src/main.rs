@@ -5,23 +5,25 @@
 //! `flutter/settings` and `flutter/localization`, by hand.
 //!
 //! Everything on screen comes from the platform, and none of it can be changed
-//! from inside this window -- which is the point. Change it in Windows and
-//! watch this window change with it, without restarting.
+//! from inside this window -- which is the point. Change it in the system
+//! settings and watch this window change with it, without restarting.
 //!
-//! What to try:
+//! The four settings are the same four everywhere; only where the reader
+//! changes them differs, which is why the hints below are per platform.
 //!
-//! 1. **Settings → Personalisation → Colours → Choose your mode.** Switch
-//!    between Light and Dark. The whole window follows: it is picking
-//!    `Theme::light()` or `Theme::dark()` from `platform::brightness()`, which
-//!    is one line of application code.
-//! 2. **Settings → Accessibility → Text size.** Drag the slider and apply.
-//!    Every piece of text here grows, including the text saying what the scale
-//!    is. Nothing in this file multiplies anything.
-//! 3. **Settings → Time & language → Language & region.** The preferred
-//!    languages list is what the locale list is read from, most preferred
-//!    first.
-//! 4. **Settings → Time & language → Date & time → time format**, or the
-//!    regional short-time format. `alwaysUse24HourFormat` follows it.
+//! On Windows:
+//!
+//! 1. **Settings → Personalisation → Colours → Choose your mode.**
+//! 2. **Settings → Accessibility → Text size.**
+//! 3. **Settings → Time & language → Language & region.**
+//! 4. **Settings → Time & language → Date & time → time format.**
+//!
+//! On Android:
+//!
+//! 1. **Settings → Display → Dark theme.**
+//! 2. **Settings → Display → Font size**, or Accessibility → Font size.
+//! 3. **Settings → System → Languages.**
+//! 4. **Settings → System → Date & time → Use 24-hour format.**
 //!
 //! Neither channel is ever seen as a channel: `Engine` takes both on the way
 //! past and hands the contents to the framework, exactly as upstream does. So
@@ -36,6 +38,37 @@ use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex, RenderPa
 
 const WIDTH: i32 = 620;
 const HEIGHT: i32 = 660;
+
+/// What to call the thing the settings came from.
+#[cfg(target_os = "android")]
+const SYSTEM: &str = "Android";
+#[cfg(not(target_os = "android"))]
+const SYSTEM: &str = "Windows";
+
+/// Where the reader changes each of the four, which is the only part of this
+/// screen that is not the same on every platform.
+struct Hints {
+    brightness: &'static str,
+    text_size: &'static str,
+    hour_format: &'static str,
+    languages: &'static str,
+}
+
+#[cfg(target_os = "android")]
+const HINTS: Hints = Hints {
+    brightness: "Settings > Display > Dark theme",
+    text_size: "Settings > Display > Font size",
+    hour_format: "Settings > System > Date & time > Use 24-hour format",
+    languages: "Settings > System > Languages",
+};
+
+#[cfg(not(target_os = "android"))]
+const HINTS: Hints = Hints {
+    brightness: "Settings > Personalisation > Colours > Choose your mode",
+    text_size: "Settings > Accessibility > Text size",
+    hour_format: "Settings > Time & language > Date & time",
+    languages: "Settings > Time & language > Language & region",
+};
 
 thread_local! {
     /// Whether the change callbacks have been installed.
@@ -81,32 +114,28 @@ impl StatefulComponent for Page {
 
         let mut children = vec![
             component(Label::title("flutter/settings")),
-            component(Label::muted(
-                "all of this comes from Windows. change it there and watch.",
-            )),
+            component(Label::muted(format!(
+                "all of this comes from {SYSTEM}. change it there and watch."
+            ))),
             gap(1.0),
             component(Label::new(format!(
                 "platformBrightness    {:?}",
                 settings.platform_brightness
             ))),
-            component(Label::muted(
-                "   Settings > Personalisation > Colours > Choose your mode",
-            )),
+            component(Label::muted(format!("   {}", HINTS.brightness))),
             component(Label::new(format!(
                 "textScaleFactor       {:.2}",
                 settings.text_scale_factor
             ))),
-            component(Label::muted("   Settings > Accessibility > Text size")),
+            component(Label::muted(format!("   {}", HINTS.text_size))),
             component(Label::new(format!(
                 "alwaysUse24HourFormat {}",
                 settings.always_use_24_hour_format
             ))),
-            component(Label::muted("   Settings > Time & language > Date & time")),
+            component(Label::muted(format!("   {}", HINTS.hour_format))),
             gap(1.0),
             component(Label::title("flutter/localization")),
-            component(Label::muted(
-                "   Settings > Time & language > Language & region",
-            )),
+            component(Label::muted(format!("   {}", HINTS.languages))),
         ];
 
         if locales.is_empty() {

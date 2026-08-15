@@ -4,10 +4,13 @@
 
 //! `System.requestAppExit` and `System.exitApplication`, by hand.
 //!
-//! The close button is a question, not a command. This window refuses to
+//! Asking to leave is a question, not a command. This application refuses to
 //! answer yes until you let it, which is the point of the protocol: an
 //! application with unsaved work needs somewhere to stand between the reader
-//! clicking the X and the window going away.
+//! asking to go and the window going away.
+//!
+//! What does the asking differs by platform and nothing else does: on a desktop
+//! it is the close button, and on Android it is the back gesture.
 //!
 //! What to try, in this order:
 //!
@@ -63,7 +66,11 @@ struct State {
     pressed: Option<u64>,
 }
 
-struct Page;
+struct Page {
+    /// Whether two buttons fit side by side. A phone is narrower than the
+    /// window this was written for, and a row of two runs off the side.
+    wide: bool,
+}
 
 impl StatefulComponent for Page {
     type State = State;
@@ -83,7 +90,8 @@ impl StatefulComponent for Page {
         let children = vec![
             component(Label::title("System.requestAppExit")),
             component(Label::muted(
-                "the close button is a question. this window can say no.",
+                "the close button -- or the back gesture -- is a question. \
+                 this application can say no.",
             )),
             gap(1.0),
             component(Label::new(format!("the platform has asked {requests} time(s)"))),
@@ -110,7 +118,7 @@ impl StatefulComponent for Page {
                 12.0,
             ),
             gap(1.0),
-            stack_row(
+            self.buttons(
                 vec![
                     tap(
                         BUTTON_POP,
@@ -129,9 +137,8 @@ impl StatefulComponent for Page {
                         || system::exit_application(AppExitType::Cancelable, 0, |_| {}),
                     ),
                 ],
-                10.0,
             ),
-            stack_row(
+            self.buttons(
                 vec![
                     tap(
                         BUTTON_EXIT_0,
@@ -150,7 +157,6 @@ impl StatefulComponent for Page {
                         || system::exit_application(AppExitType::Required, 3, |_| {}),
                     ),
                 ],
-                10.0,
             ),
             component(Label::muted(
                 "a required exit is not a question: it closes even with the \
@@ -159,6 +165,27 @@ impl StatefulComponent for Page {
         ];
 
         provide(Theme::dark(), page(children))
+    }
+}
+
+impl Page {
+    /// Two buttons side by side where there is room, and stacked where there
+    /// is not.
+    fn buttons(&self, buttons: Vec<AnyWidget>) -> AnyWidget {
+        if self.wide {
+            stack_row(buttons, 10.0)
+        } else {
+            many(buttons, |rendered| {
+                let mut column = RenderFlex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_spacing(10.0);
+                for child in rendered {
+                    column = column.push(child);
+                }
+                Box::new(column)
+            })
+        }
     }
 }
 
@@ -232,8 +259,9 @@ impl WidgetApplication for ExitApp {
         Theme::dark().background
     }
 
-    fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        stateful(Page)
+    fn build(&mut self, context: &BuildContext) -> AnyWidget {
+        // Two 200-wide buttons, a gap and the page's margins.
+        stateful(Page { wide: context.size.width >= 470.0 })
     }
 }
 

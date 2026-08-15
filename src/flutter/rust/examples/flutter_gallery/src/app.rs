@@ -19,6 +19,7 @@ use rustflutter::prelude::*;
 use rustflutter::render::{
     CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, StackPosition,
 };
+use rustflutter::services::system;
 use rustflutter::widgets::{Container, Empty, ListView, Stack};
 
 use crate::catalog;
@@ -248,6 +249,36 @@ pub struct Gallery {
     pub slug: Option<String>,
 }
 
+/// Wires the system back gesture to the navigator, once.
+///
+/// `popRoute` is what every platform sends when the reader asks to go back --
+/// Android's back gesture, and a desktop window being asked to close. Upstream
+/// this is `WidgetsBinding.handlePopRoute`, and the rule it implements is the
+/// one below: pop if there is anything to pop, and otherwise tell the platform
+/// to leave. An application that only popped would trap the reader on the home
+/// screen with a back gesture that did nothing.
+fn install_back_handler(handle: StateHandle<GalleryState>) {
+    use std::cell::Cell;
+    thread_local! {
+        static INSTALLED: Cell<bool> = const { Cell::new(false) };
+    }
+    if INSTALLED.with(Cell::get) {
+        return;
+    }
+    INSTALLED.with(|installed| installed.set(true));
+
+    system::on_route_message(move |method, _arguments| {
+        if method != "popRoute" {
+            return;
+        }
+        handle.set_state(|state| {
+            if !state.navigator.pop() {
+                SystemNavigator::pop();
+            }
+        });
+    });
+}
+
 impl StatefulComponent for Gallery {
     type State = GalleryState;
 
@@ -309,6 +340,8 @@ impl StatefulComponent for Gallery {
         handle: StateHandle<GalleryState>,
         context: &mut BuildContext,
     ) -> AnyWidget {
+        install_back_handler(handle.clone());
+
         // Two animations, both of which run forever: a spinner spins and the
         // motion sample runs back and forth. Neither starts or stops, so both
         // are a function of the frame clock rather than of a controller --

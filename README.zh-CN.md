@@ -79,6 +79,36 @@ ninja -C out/host_release flutter/rust:rustflutter_engine
 ./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
+## Android
+
+同一个引擎、同一个框架 crate、同样那九个示例，打成 APK。不同的只有 host——
+见 `flutter/rust/host/rustflutter_host_android.cc` 和 PORTING_STATUS.md 第十七节。
+
+```sh
+cd src
+
+# 引擎钉住的 NDK 和 SDK，指向你本机的 Android SDK 即可。
+# `android_tools/sdk` 就是它，做个 junction 或 symlink 就行。
+vpython3 flutter/tools/gn --android --android-cpu arm64 --runtime-mode=release     --no-lto --no-prebuilt-dart-sdk --no-goma     --gn-args 'android_sdk_version="36.1" android_sdk_build_tools_version="36.0.0"'
+ninja -C out/android_release_arm64 flutter/rust/examples/counter
+
+# 输出目录里每个 .so 打一个 APK。
+export ANDROID_SDK_ROOT=C:/Users/you/AppData/Local/Android/Sdk
+export JAVA_HOME="C:/Program Files/Android/Android Studio/jbr"
+python flutter/rust/host/tools/build_apks.py --out out/android_release_arm64
+
+adb install -r out/android_release_arm64/apk/counter.apk
+```
+
+`--android-cpu x64` 出的是模拟器那一份。没有 Gradle：`make_apk.py` 依次跑
+aapt2、javac、d8、zip、zipalign、apksigner，每步一条命令——因为这里只有一个
+.java、一个 .so、一个 asset。
+
+用 Cargo 建的应用还要三样，相册示例里都能看到：`crate-type = ["lib", "cdylib"]`、
+一份把 JNI 入口点回来的第二个 version script（rustc 自己那份会把它们藏掉），
+以及指向 Android 输出目录的 `RUSTFLUTTER_ENGINE_OUT`。
+
+
 ## 应用
 
 **应用就是一个普通的 Cargo 工程，放在你想放的地方。**
@@ -227,9 +257,9 @@ virtual void Render(int64_t view_id,
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
 | `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
 | `platform_channels` | 引擎定义的每一条通道,两个方向:剪贴板、往 `TextField` 里真打字、鼠标光标、读者的设置,以及一次被应用拒绝的关闭。打在真 shell 上,自检,答错就非零退出 |
-| `cursor_demo` | **手动测**。点一个光标名字,把鼠标移到窗口上看指针形状 |
+| `cursor_demo` | **手动测**。点一个光标名字,把鼠标移到窗口上看指针形状。触摸屏上它会把"这里没有指针"写在屏幕上,而不是假装 |
 | `exit_demo` | **手动测**。关闭按钮是一个问句;一个开关决定怎么答 |
-| `settings_demo` | **手动测**。在 Windows 里改主题、字号或语言,看这个窗口跟着变 |
+| `settings_demo` | **手动测**。在系统设置里改主题、字号或语言,看这个窗口跟着变。每个平台上它指的是那个平台的设置路径 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -289,8 +319,11 @@ src/
 
 - **render tree 每帧整棵重建。** 元素复用保住了状态、跳过了 `build`，
   但布局和绘制照跑不误。这是最大的一笔性能欠账。
-- **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
-  Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
+- **host 有 Windows 和 Android 两个。** `rf_host_run` 之上的一切（Shell、
+  ThreadHost、Animator、Rasterizer、软件 surface）都是可移植的——移植到 Android
+  没有改动 `flutter/rust/rustflutter` 里的任何一行；其余每个平台缺的仍只是一个
+  窗口和一个消息循环。Android 上还没报视图内边距（状态栏和手势条），Surface
+  没了是把整个 shell 拆掉而不是摘下来。
 - **layer 树是平的。** 框架每帧只产出一个 layer、一个 DisplayList：裁剪、
   透明度、变换都记在 display list 里，而不是像上游那样造出 `ClipRectLayer`、
   `OpacityLayer`、`TransformLayer`。后果是没有 repaint boundary、raster cache

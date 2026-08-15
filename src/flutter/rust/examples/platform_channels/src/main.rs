@@ -27,7 +27,13 @@ use rustflutter::prelude::*;
 use rustflutter::services::system;
 use rustflutter::services::{MethodChannel, StandardMethodCodec};
 
-mod win32;
+// The half of this example that drives the host's own window. What it can do
+// is a property of the platform, not of the framework, so there is one module
+// per platform and main.rs asks `probe::DRIVES_INPUT` rather than asking which
+// platform it is on.
+#[cfg_attr(windows, path = "win32.rs")]
+#[cfg_attr(target_os = "android", path = "android.rs")]
+mod probe;
 
 /// What the process exits with. Set from the UI thread before the window
 /// closes; read on the way out of `main`.
@@ -51,6 +57,15 @@ const COMPOSED: &str = "zhong";
 /// A frame budget rather than a schedule: every answer here crosses to the
 /// platform thread and back, which is a handful of frames at most.
 const FRAME_BUDGET: u32 = 150;
+
+/// Which frame the questions are asked on.
+///
+/// The second one on a desktop, where a window that exists is a window that can
+/// answer. Later on Android, because the clipboard there is only readable and
+/// writable by the focused application -- a rule Android 10 introduced -- and
+/// an Activity that has drawn its first frame has not necessarily been given
+/// focus yet. Asking too early does not fail loudly; it reads back nothing.
+const ASK_AT: u32 = if probe::DRIVES_INPUT { 2 } else { 20 };
 
 #[derive(Default)]
 struct Results {
@@ -96,17 +111,25 @@ impl Results {
     }
 
     fn complete(&self) -> bool {
-        !self.lifecycle.is_empty()
+        // The channel half, which every platform runs.
+        let channels = !self.lifecycle.is_empty()
             && self.has_strings.is_some()
             && self.clipboard.is_some()
             && self.absent.is_some()
             && self.bad_format.is_some()
+            && self.survived_refusal.is_some();
+        if !probe::DRIVES_INPUT {
+            return channels;
+        }
+        // The gesture half, which only a platform that lets the probe drive
+        // its own window can reach. See android.rs for why that is not a
+        // shortcoming to be fixed.
+        channels
             && self.typed_arrived()
             && self.composition_settled()
             && self.cursor_ok.is_some()
             && self.cursor_unknown_method.is_some()
             && self.cursor_bad_arguments.is_some()
-            && self.survived_refusal.is_some()
     }
 }
 
@@ -156,7 +179,7 @@ enum Phase {
 struct Probe {
     phase: Phase,
     frames: u32,
-    window: win32::Hwnd,
+    window: probe::Hwnd,
 }
 
 impl WidgetApplication for Probe {
@@ -170,33 +193,41 @@ impl WidgetApplication for Probe {
     fn begin_frame(&mut self, context: &FrameContext) {
         self.frames += 1;
         match (self.phase, self.frames) {
-            (Phase::Asking, 2) => {
+            (Phase::Asking, frame) if frame == ASK_AT => {
                 self.ask();
-                self.window = win32::find_window();
-                if self.window.is_null() {
+                self.window = probe::find_window();
+                if probe::DRIVES_INPUT && self.window.is_null() {
                     println!("  FAIL the host window could not be found");
                 }
-                self.phase = Phase::Focusing;
+                // Where nothing can be clicked or typed, the four phases that
+                // need a synthetic gesture are stepped over. The exit
+                // handshake is not one of them: asking to leave is a channel
+                // call, and it runs on every platform.
+                self.phase = if probe::DRIVES_INPUT {
+                    Phase::Focusing
+                } else {
+                    Phase::Refusing
+                };
             }
             // A real click, which is how a field is focused. Nothing else in
             // this file knows that focusing opens a platform connection.
             (Phase::Focusing, 6) => {
-                win32::click_centre(self.window);
+                probe::click_centre(self.window);
                 self.phase = Phase::Typing;
             }
             (Phase::Typing, 12) => {
                 for character in TYPED.chars() {
-                    win32::type_char(self.window, character);
+                    probe::type_char(self.window, character);
                 }
                 self.phase = Phase::Composing;
             }
             (Phase::Composing, 24) => {
-                let started = win32::compose(self.window, COMPOSED);
+                let started = probe::compose(self.window, COMPOSED);
                 record(|results| results.composition_started = Some(started));
                 self.phase = Phase::Committing;
             }
             (Phase::Committing, 36) => {
-                win32::commit_composition(self.window);
+                probe::commit_composition(self.window);
                 self.phase = Phase::Pointing;
             }
             (Phase::Pointing, 42) => {
@@ -206,24 +237,44 @@ impl WidgetApplication for Probe {
             // The cursor is chosen on the platform thread and applied on the
             // window thread, so it is read a few frames after it was asked for
             // rather than in the same one.
-            (Phase::Refusing, 48) => {
+            (Phase::Refusing, 48) if probe::DRIVES_INPUT => {
                 self.read_cursor();
                 // A close the application refuses. Nothing here closes the
                 // window: `on_exit_requested` says no, and the check is that
                 // the window is still standing afterwards.
-                win32::close(self.window);
+                probe::close(self.window);
                 self.phase = Phase::Checking;
             }
-            (Phase::Checking, 56) => {
+            (Phase::Refusing, frame) if !probe::DRIVES_INPUT && frame == ASK_AT + 8 => {
+                // The same refusal, asked for from the inside. A cancelable
+                // `System.exitApplication` is answered "cancel" and *then* put
+                // to the framework as a `System.requestAppExit` -- so this
+                // reaches `on_exit_requested` exactly as a close button does,
+                // without needing one.
+                system::exit_application(system::AppExitType::Cancelable, 0, |_| {});
+                self.phase = Phase::Checking;
+            }
+            (Phase::Checking, 56) if probe::DRIVES_INPUT => {
                 record(|results| {
-                    results.survived_refusal = Some(win32::is_open(self.window));
+                    results.survived_refusal = Some(probe::is_open(self.window));
+                });
+            }
+            (Phase::Checking, frame) if !probe::DRIVES_INPUT && frame == ASK_AT + 20 => {
+                record(|results| {
+                    // Still running *is* the answer here: a refusal that had
+                    // not been honoured would have taken this process with it
+                    // eight frames ago.
+                    results.survived_refusal = Some(true);
                 });
             }
             _ => {}
         }
 
         let done = RESULTS.with(|results| results.borrow().complete());
-        if (done && self.frames > 56) || self.frames >= FRAME_BUDGET {
+        // The last step's frame number, which differs by platform because the
+        // steps do.
+        let last = if probe::DRIVES_INPUT { 56 } else { ASK_AT + 20 };
+        if (done && self.frames > last) || self.frames >= FRAME_BUDGET {
             finish();
         }
         context.scheduler.request_frame();
@@ -340,12 +391,12 @@ impl Probe {
 
     /// Reads back what the window does with the cursor it was given.
     fn read_cursor(&self) {
-        let claimed = win32::ask_to_set_cursor(self.window);
+        let claimed = probe::ask_to_set_cursor(self.window);
         // `None` where the shape cannot be compared: the cursor belongs to
         // whichever window the pointer is actually over, so this only answers
-        // when that is this window. See `win32::current_cursor`.
+        // when that is this window. See `probe::current_cursor`.
         let applied =
-            win32::current_cursor(self.window).map(|cursor| cursor == win32::text_cursor());
+            probe::current_cursor(self.window).map(|cursor| cursor == probe::text_cursor());
         record(|results| {
             results.cursor_claimed = Some(claimed);
             results.cursor_applied = Some(applied);
@@ -355,6 +406,16 @@ impl Probe {
 
 /// Compares what arrived against what was asked for, then closes the window.
 fn finish() {
+    // Once. Asking to exit does not stop the frames arriving -- on a desktop
+    // the window is destroyed a few messages later, and on Android the
+    // Activity finishes on its own schedule -- so without this the report is
+    // printed on every frame between the request and the process going away.
+    use std::sync::atomic::AtomicBool;
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
     let failures = RESULTS.with(|results| check(&results.borrow()));
     EXIT_CODE.store(failures, Ordering::SeqCst);
     println!(
@@ -412,75 +473,87 @@ fn check(results: &Results) -> i32 {
 
     // Typing, through a field the application declared and never wired to the
     // keyboard. If this works, text input works.
-    if !results.typed_arrived() {
-        fail(&format!(
-            "the field never held {TYPED:?}; it saw {:?}",
-            results.typed
-        ));
-    }
-    if results.typed.len() < TYPED.chars().count() {
-        fail(&format!(
-            "{} characters produced only {} changes, so the field would not have\n       \
-             redrawn as it was typed into",
-            TYPED.chars().count(),
-            results.typed.len()
-        ));
-    }
-
-    // The IME. Driven through the input context rather than by hand, which
-    // exercises the same WM_IME_* messages a reader typing pinyin would.
-    match results.composition_started {
-        Some(false) => {
-            println!(
-                "  SKIP composition: this machine has no input context to compose in"
-            );
+    //
+    // Everything from here to the settings needs a synthetic gesture, and a
+    // platform that will not let an application inject one into itself cannot
+    // have it. See android.rs for why that is the platform's decision rather
+    // than something missing here.
+    if !probe::DRIVES_INPUT {
+        println!(
+            "  SKIP typing, composition and the cursor: this platform does not let an \
+             application inject input into its own window"
+        );
+    } else {
+        if !results.typed_arrived() {
+            fail(&format!(
+                "the field never held {TYPED:?}; it saw {:?}",
+                results.typed
+            ));
         }
-        Some(true) => {
-            match results.composing_text.as_deref() {
-                Some(text) if text.ends_with(COMPOSED) => {}
-                Some(text) => fail(&format!("the composing text was {text:?}")),
-                None => fail("a composition started but never reached the field"),
-            }
-            match results.committed_text.as_deref() {
-                Some(text) if !text.ends_with(COMPOSED) => {}
-                Some(text) => fail(&format!("committing left the text at {text:?}")),
-                None => fail("the composition was never committed"),
-            }
+        if results.typed.len() < TYPED.chars().count() {
+            fail(&format!(
+                "{} characters produced only {} changes, so the field would not have\n       \
+                 redrawn as it was typed into",
+                TYPED.chars().count(),
+                results.typed.len()
+            ));
         }
-        None => fail("the composition was never attempted"),
-    }
 
-    // The mouse cursor, which is the only channel here that speaks the binary
-    // standard codec rather than JSON.
-    match results.cursor_ok {
-        Some(true) => {}
-        Some(false) => fail("activateSystemCursor did not come back a plain success"),
-        None => fail("activateSystemCursor never answered"),
-    }
-    match results.cursor_unknown_method {
-        Some(true) => {}
-        Some(false) => fail("a mousecursor method nobody serves did not answer Ok(None)"),
-        None => fail("a mousecursor method nobody serves never answered"),
-    }
-    match results.cursor_bad_arguments.as_deref() {
-        // Upstream's cursor_handler.cc code, which an application branches on.
-        Some("Argument error") => {}
-        Some(other) => fail(&format!("the missing-kind error code was {other:?}")),
-        None => fail("a call with no kind never answered"),
-    }
-    match results.cursor_claimed {
-        Some(true) => {}
-        // Without this the class cursor comes back on the next mouse move.
-        _ => fail("the window did not claim WM_SETCURSOR, so the choice would not stick"),
-    }
-    match results.cursor_applied {
-        Some(Some(true)) => {}
-        Some(Some(false)) => fail("the cursor was set to something other than the I-beam"),
-        Some(None) => println!(
-            "  SKIP cursor shape: the pointer is not over this window, so the cursor\n       \
-             belongs to whichever window it is over"
-        ),
-        None => fail("the cursor was never read back"),
+        // The IME. Driven through the input context rather than by hand, which
+        // exercises the same WM_IME_* messages a reader typing pinyin would.
+        match results.composition_started {
+            Some(false) => {
+                println!(
+                    "  SKIP composition: this machine has no input context to compose in"
+                );
+            }
+            Some(true) => {
+                match results.composing_text.as_deref() {
+                    Some(text) if text.ends_with(COMPOSED) => {}
+                    Some(text) => fail(&format!("the composing text was {text:?}")),
+                    None => fail("a composition started but never reached the field"),
+                }
+                match results.committed_text.as_deref() {
+                    Some(text) if !text.ends_with(COMPOSED) => {}
+                    Some(text) => fail(&format!("committing left the text at {text:?}")),
+                    None => fail("the composition was never committed"),
+                }
+            }
+            None => fail("the composition was never attempted"),
+        }
+
+        // The mouse cursor, which is the only channel here that speaks the binary
+        // standard codec rather than JSON.
+        match results.cursor_ok {
+            Some(true) => {}
+            Some(false) => fail("activateSystemCursor did not come back a plain success"),
+            None => fail("activateSystemCursor never answered"),
+        }
+        match results.cursor_unknown_method {
+            Some(true) => {}
+            Some(false) => fail("a mousecursor method nobody serves did not answer Ok(None)"),
+            None => fail("a mousecursor method nobody serves never answered"),
+        }
+        match results.cursor_bad_arguments.as_deref() {
+            // Upstream's cursor_handler.cc code, which an application branches on.
+            Some("Argument error") => {}
+            Some(other) => fail(&format!("the missing-kind error code was {other:?}")),
+            None => fail("a call with no kind never answered"),
+        }
+        match results.cursor_claimed {
+            Some(true) => {}
+            // Without this the class cursor comes back on the next mouse move.
+            _ => fail("the window did not claim WM_SETCURSOR, so the choice would not stick"),
+        }
+        match results.cursor_applied {
+            Some(Some(true)) => {}
+            Some(Some(false)) => fail("the cursor was set to something other than the I-beam"),
+            Some(None) => println!(
+                "  SKIP cursor shape: the pointer is not over this window, so the cursor\n       \
+                 belongs to whichever window it is over"
+            ),
+            None => fail("the cursor was never read back"),
+        }
     }
 
     // The user's settings, which arrive without ever being a channel message
@@ -492,16 +565,24 @@ fn check(results: &Results) -> i32 {
             settings.text_scale_factor
         ));
     }
-    let expected = if win32::prefers_dark_theme() {
-        platform::Brightness::Dark
-    } else {
-        platform::Brightness::Light
-    };
-    if settings.platform_brightness != expected {
-        fail(&format!(
-            "the platform says {:?} but the registry says {expected:?}",
-            settings.platform_brightness
-        ));
+    match probe::prefers_dark_theme() {
+        Some(dark) => {
+            let expected = if dark {
+                platform::Brightness::Dark
+            } else {
+                platform::Brightness::Light
+            };
+            if settings.platform_brightness != expected {
+                fail(&format!(
+                    "the platform says {:?} but the system says {expected:?}",
+                    settings.platform_brightness
+                ));
+            }
+        }
+        None => println!(
+            "  SKIP the brightness cross-check: this platform has only one place to
+                    read it from, and the host already read it there"
+        ),
     }
 
     // The languages. Checked for shape rather than content: what they are is
@@ -520,8 +601,8 @@ fn check(results: &Results) -> i32 {
         }
     }
 
-    // Closing, refused. The window being open after a WM_CLOSE is the whole
-    // point of the protocol: without it an application could not stop to save.
+    // Closing, refused. Still being here afterwards is the whole point of the
+    // protocol: without it an application could not stop to save.
     match results.exit_requested {
         Some(system::AppExitType::Cancelable) => {}
         Some(other) => fail(&format!("the close was reported as {other:?}, not cancelable")),
@@ -529,8 +610,8 @@ fn check(results: &Results) -> i32 {
     }
     match results.survived_refusal {
         Some(true) => {}
-        Some(false) => fail("refusing the close did not keep the window open"),
-        None => fail("nothing checked whether the window survived"),
+        Some(false) => fail("refusing the close did not keep the application up"),
+        None => fail("nothing checked whether the application survived"),
     }
 
     failures

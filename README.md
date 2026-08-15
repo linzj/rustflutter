@@ -91,6 +91,38 @@ ninja -C out/host_release flutter/rust:rustflutter_engine
 ./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
+## Android
+
+The same engine, the same framework crate and the same nine examples, packaged
+as APKs. What differs is the host -- see `flutter/rust/host/rustflutter_host_android.cc`
+and section 十七 of PORTING_STATUS.md.
+
+```sh
+cd src
+
+# The NDK and the SDK the engine pins, wherever your Android SDK lives.
+# `android_tools/sdk` is expected to be it; a junction or symlink is enough.
+vpython3 flutter/tools/gn --android --android-cpu arm64 --runtime-mode=release     --no-lto --no-prebuilt-dart-sdk --no-goma     --gn-args 'android_sdk_version="36.1" android_sdk_build_tools_version="36.0.0"'
+ninja -C out/android_release_arm64 flutter/rust/examples/counter
+
+# One APK per .so in the output directory.
+export ANDROID_SDK_ROOT=C:/Users/you/AppData/Local/Android/Sdk
+export JAVA_HOME="C:/Program Files/Android/Android Studio/jbr"
+python flutter/rust/host/tools/build_apks.py --out out/android_release_arm64
+
+adb install -r out/android_release_arm64/apk/counter.apk
+```
+
+`--android-cpu x64` gives the same thing for an emulator. There is no Gradle:
+`make_apk.py` runs aapt2, javac, d8, zip, zipalign and apksigner, one command
+each, because this has one .java file, one .so and one asset.
+
+A Cargo application needs three more things, which the album example shows:
+`crate-type = ["lib", "cdylib"]`, a second version script naming the JNI
+entry points back (rustc's own hides them), and `RUSTFLUTTER_ENGINE_OUT`
+pointing at an Android output directory.
+
+
 ## Applications
 
 **An application is an ordinary Cargo project and lives wherever you want it.**
@@ -248,9 +280,9 @@ change by a line.**
 | `showcase` | Components and theming: one toggle recolours the application |
 | `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
 | `platform_channels` | Every channel the engine defines, both ways: clipboard, a `TextField` typed into, the mouse cursor, the reader's settings, and a close the application refuses. Against a real shell; checks itself and exits non-zero on a wrong answer |
-| `cursor_demo` | **Test by hand.** Tap a cursor name and watch the pointer change over the window |
+| `cursor_demo` | **Test by hand.** Tap a cursor name and watch the pointer change over the window. On a touch screen it says so rather than pretending |
 | `exit_demo` | **Test by hand.** The close button is a question; a switch decides the answer |
-| `settings_demo` | **Test by hand.** Change the theme, text size or language in Windows and watch this window follow |
+| `settings_demo` | **Test by hand.** Change the theme, text size or language in the system settings and watch this window follow. Names the right settings on each platform |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -313,9 +345,12 @@ changed, and what is worth doing next are in
 - **The render tree is rebuilt whole every frame.** Element reuse preserves
   state and skips `build`, but layout and paint still run. This is the largest
   outstanding performance debt.
-- **The host is Windows-only.** Everything above `rf_host_run` — Shell,
-  ThreadHost, Animator, Rasterizer, the software surface — is portable; each
-  platform is missing only a window and a message loop.
+- **The host runs on Windows and Android.** Everything above `rf_host_run` —
+  Shell, ThreadHost, Animator, Rasterizer, the software surface — is portable,
+  and the Android port changed no line of `flutter/rust/rustflutter`; each
+  remaining platform is missing only a window and a message loop. On Android
+  the view insets are not reported (the status bar and the gesture bar), and
+  losing the Surface tears the whole shell down rather than detaching it.
 - **The layer tree is flat.** The framework emits one layer and one DisplayList
   per frame: clips, opacity and transforms are recorded into the display list
   rather than becoming `ClipRectLayer`, `OpacityLayer` and `TransformLayer` the

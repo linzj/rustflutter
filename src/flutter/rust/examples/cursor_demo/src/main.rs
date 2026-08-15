@@ -55,7 +55,18 @@ const KINDS: &[(SystemMouseCursor, &str)] = &[
 ];
 
 /// How many buttons fit across the window.
-const PER_ROW: usize = 3;
+///
+/// A phone is narrower than the window this was written for, and a row of
+/// three there runs off the side. The width is known at build time, so it is
+/// asked rather than assumed.
+fn columns_for(width: f32) -> usize {
+    const BUTTON: f32 = 200.0;
+    const GAP: f32 = 10.0;
+    const MARGIN: f32 = 48.0;
+    let usable = width - MARGIN;
+    let fits = ((usable + GAP) / (BUTTON + GAP)).floor() as usize;
+    fits.clamp(1, 3)
+}
 
 #[derive(Default)]
 struct State {
@@ -64,7 +75,13 @@ struct State {
     pressed: Option<u64>,
 }
 
-struct Page;
+struct Page {
+    /// How many buttons fit across, worked out from the view's width by the
+    /// application root, which is the only place the width is known.
+    columns: usize,
+    /// Whether this platform has a pointer to change the shape of at all.
+    has_pointer: bool,
+}
 
 impl StatefulComponent for Page {
     type State = State;
@@ -80,15 +97,23 @@ impl StatefulComponent for Page {
             component(Label::muted(format!(
                 "asked for: {}", KINDS[state.active].1
             ))),
-            component(Label::muted(
+            component(Label::muted(if self.has_pointer {
                 "move the pointer over this window. it should change at once, \
-                 and stay changed as you move.",
-            )),
+                 and stay changed as you move."
+            } else {
+                // Said rather than hidden: the channel is served here, the
+                // calls below really are sent and really are answered, and
+                // there is simply nothing on a touch screen for the answer to
+                // change. A demo that quietly did nothing would be worse.
+                "this is a touch screen, so there is no pointer to change \
+                 the shape of. the calls below are still sent and still \
+                 answered -- `asked for` above follows them."
+            })),
             component(Label::muted("any key puts the arrow back.")),
             gap(1.0),
         ];
 
-        for row in (0..KINDS.len()).collect::<Vec<_>>().chunks(PER_ROW) {
+        for row in (0..KINDS.len()).collect::<Vec<_>>().chunks(self.columns) {
             let buttons: Vec<AnyWidget> = row
                 .iter()
                 .map(|index| button(*index, state, handle.clone()))
@@ -169,8 +194,14 @@ impl WidgetApplication for CursorApp {
         false
     }
 
-    fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        stateful(Page)
+    fn build(&mut self, context: &BuildContext) -> AnyWidget {
+        stateful(Page {
+            columns: columns_for(context.size.width),
+            // A pointer is a desktop thing. There is no channel that reports
+            // this, and inventing one would be inventing protocol, so the
+            // target is what decides.
+            has_pointer: cfg!(not(target_os = "android")),
+        })
     }
 }
 

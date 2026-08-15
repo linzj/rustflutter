@@ -13,6 +13,10 @@
 use std::os::raw::{c_int, c_long, c_ulong, c_void};
 
 pub type Hwnd = *mut c_void;
+
+/// Whether this platform lets the probe drive its own window. See android.rs
+/// for the platform where it does not.
+pub const DRIVES_INPUT: bool = true;
 pub type Himc = *mut c_void;
 
 const WM_CLOSE: u32 = 0x0010;
@@ -258,7 +262,7 @@ pub fn is_open(window: Hwnd) -> bool {
 /// Read here as well as in the host so the two can be compared: a settings
 /// message that says "light" on a machine set to dark is a bug in the host's
 /// reader, and nothing inside the framework could tell.
-pub fn prefers_dark_theme() -> bool {
+pub fn prefers_dark_theme() -> Option<bool> {
     let subkey: Vec<u16> =
         "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
             .encode_utf16()
@@ -278,7 +282,7 @@ pub fn prefers_dark_theme() -> bool {
         )
     };
     // A machine too old to have the value has never heard of dark mode.
-    result == ERROR_SUCCESS && light == 0
+    Some(result == ERROR_SUCCESS && light == 0)
 }
 
 /// Commits whatever is being composed, as choosing a candidate would.
