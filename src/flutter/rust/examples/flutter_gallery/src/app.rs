@@ -19,6 +19,11 @@ use rustflutter::prelude::*;
 use rustflutter::render::{
     CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, StackPosition,
 };
+// The offset a page is scrolled to, the extent it is measured against, and the
+// fling that keeps it moving after the finger lifts -- all three in the
+// framework, because the album needs the same thing and neither of them should
+// be writing scroll physics.
+pub use rustflutter::scrolling::Scroll;
 use rustflutter::services::system;
 use rustflutter::widgets::{Container, Empty, ListView, Stack};
 
@@ -71,29 +76,6 @@ pub mod routes {
     pub const DEMO: &str = "demo";
     pub const STUDY: &str = "study";
     pub const SETTINGS: &str = "settings";
-}
-
-/// One scrollable's position, and how far it may go.
-///
-/// The offset is state; the extent is measured. A list only learns how long it
-/// is when it is laid out, which happens inside the tree a frame after whoever
-/// holds the offset needs the number -- so the list writes it into this cell on
-/// its way past. Upstream calls the same arrangement a `ScrollPosition`.
-#[derive(Clone, Debug, Default)]
-pub struct Scroll {
-    pub offset: f32,
-    pub extent: std::rc::Rc<std::cell::Cell<f32>>,
-}
-
-impl Scroll {
-    /// Moves by `delta` and stays inside the content.
-    ///
-    /// Clamping here rather than in the viewport is what stops an overscroll
-    /// from banking travel: without it, flinging past the end and dragging back
-    /// would do nothing until the imaginary distance had been paid off.
-    pub fn scroll_by(&mut self, delta: f32) {
-        self.offset = (self.offset + delta).clamp(0.0, self.extent.get().max(0.0));
-    }
 }
 
 /// Everything the gallery remembers.
@@ -304,10 +286,21 @@ impl StatefulComponent for Gallery {
         state.last_frame_micros = Some(frame_time_micros);
         let transitioning = state.navigator.tick(elapsed);
 
+        // Every scrollable, not only the one on screen: which of the three is
+        // visible depends on the route, the flung one may be underneath a page
+        // that is still sliding in, and a fling that is not advanced is a
+        // fling that never stops. They cost nothing when nothing is moving.
+        //
+        // Written out rather than folded with `||`, which would stop at the
+        // first one that says yes and leave the others frozen.
+        let mut flinging = state.page.advance(frame_time_micros);
+        flinging |= state.carousel.advance(frame_time_micros);
+        flinging |= state.screen.advance(frame_time_micros);
+
         // Only ask for another frame when something is actually moving. A
         // gallery that always asked would hold a core at sixty frames a second
         // to draw a page that has not changed since the last one.
-        transitioning || state.current_screen_animates()
+        transitioning || flinging || state.current_screen_animates()
     }
 
     fn initial_state(&self) -> GalleryState {
@@ -692,9 +685,10 @@ pub fn bare_page(
     component(Scaffold::new(stacked))
 }
 
-/// The handlers a scrollable needs: drag it, or turn the wheel over it.
+/// The handlers a scrollable needs: touch it, drag it, throw it, or turn the
+/// wheel over it.
 ///
-/// Both end up in the same place. The signs differ because they describe
+/// They all end up in the same place. The signs differ because they describe
 /// different things: a drag says where the content went, a wheel says where the
 /// reader wants to go.
 pub fn scroll_handlers(
@@ -703,14 +697,32 @@ pub fn scroll_handlers(
     axis: rustflutter::render::Axis,
 ) -> rustflutter::gestures::PointerHandlers {
     use rustflutter::render::Axis;
+    let down_handle = handle.clone();
     let drag_handle = handle.clone();
+    let end_handle = handle.clone();
     rustflutter::gestures::PointerHandlers::new()
+        // A finger on a moving list stops it, before it has travelled far
+        // enough to be a drag. Catching a fling is half of what makes a long
+        // list usable, and it has to happen on contact.
+        .with_pointer_down(move |_| {
+            down_handle.set_state(move |state| pick(state).stop());
+        })
         .with_drag_update(move |drag| {
             let along = match axis {
                 Axis::Vertical => drag.delta.dy,
                 Axis::Horizontal => drag.delta.dx,
             };
             drag_handle.set_state(move |state| pick(state).scroll_by(-along));
+        })
+        // And letting go throws it. The velocity is negated for the reason the
+        // drag delta is: it describes the finger, and the offset describes how
+        // far into the content the reader has gone.
+        .with_drag_end(move |end| {
+            let along = match axis {
+                Axis::Vertical => end.velocity.dy,
+                Axis::Horizontal => end.velocity.dx,
+            };
+            end_handle.set_state(move |state| pick(state).fling(-along));
         })
         .with_scroll(move |scroll| {
             let along = match axis {

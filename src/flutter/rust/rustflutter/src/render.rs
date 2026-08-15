@@ -82,6 +82,21 @@ impl Offset {
     pub fn minus(&self, other: Offset) -> Offset {
         Offset { dx: self.dx - other.dx, dy: self.dy - other.dy }
     }
+
+    pub fn scaled(&self, factor: f32) -> Offset {
+        Offset { dx: self.dx * factor, dy: self.dy * factor }
+    }
+
+    /// How long this offset is. Upstream's `Offset.distance`.
+    pub fn distance(&self) -> f32 {
+        self.distance_squared().sqrt()
+    }
+
+    /// The same without the square root, for comparing against a threshold --
+    /// which is all the gesture code ever does with it.
+    pub fn distance_squared(&self) -> f32 {
+        self.dx * self.dx + self.dy * self.dy
+    }
 }
 
 /// Per-side insets.
