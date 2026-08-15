@@ -13,15 +13,17 @@
 //! # These are names, not implementations
 //!
 //! A channel constant is a name and a codec. Declaring one says what the
-//! protocol *is*, not that anything answers it: `TEXT_INPUT` is spelled out
-//! here because that is its name wherever it is implemented, and this port has
-//! no IME to implement it with. A call on a channel nobody serves comes back as
-//! `Ok(None)` -- upstream's `MissingPluginException` -- which is a normal
-//! outcome rather than a fault. See [`MethodReply`](super::channel::MethodReply).
+//! protocol *is*, not that anything answers it: [`ACCESSIBILITY`] is spelled
+//! out here because that is its name wherever it is implemented, and this port
+//! has no semantics tree to implement it with. A call on a channel nobody
+//! serves comes back as `Ok(None)` -- upstream's `MissingPluginException` --
+//! which is a normal outcome rather than a fault. See
+//! [`MethodReply`](super::channel::MethodReply).
 //!
-//! What the Windows host in this repository actually answers is [`PLATFORM`],
-//! and only the clipboard, sound and exit methods of it; what it sends is
-//! [`LIFECYCLE`] and [`KEY_DATA`]. Everything else here -- [`MOUSE_CURSOR`]
+//! What the Windows host in this repository answers is [`PLATFORM`] -- the
+//! clipboard, sound and exit methods of it -- and [`TEXT_INPUT`], which is the
+//! IME. What it sends is [`LIFECYCLE`], [`KEY_DATA`] and the editing states
+//! that come back on [`TEXT_INPUT`]. Everything else here -- [`MOUSE_CURSOR`]
 //! included -- is the name waiting for an implementation on one side or the
 //! other.
 
@@ -70,7 +72,11 @@ pub const SYSTEM: BasicMessageChannel<JsonMessageCodec> =
 pub const MOUSE_CURSOR: MethodChannel<StandardMethodCodec> =
     MethodChannel::new("flutter/mousecursor", StandardMethodCodec::new());
 
-/// The IME. No implementation here -- see the module docs.
+/// The IME.
+///
+/// Served on both sides. The framework's end is
+/// [`text_input`](super::text_input), which `TextField` drives; the Windows
+/// host's end is IMM32. An application should not need this constant.
 pub const TEXT_INPUT: MethodChannel<JsonMethodCodec> =
     MethodChannel::new("flutter/textinput", JsonMethodCodec::new());
 

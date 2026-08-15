@@ -39,6 +39,7 @@ source_set("host") {
     # `flutter/platform` speaks JSON, and this is the JSON the engine already
     # vendors and parses its own channels with (shell/common/engine.cc).
     "//flutter/third_party/rapidjson",
+    "//flutter/shell/platform/common:common_cpp_input",
   ]
 
   if (is_win) {
@@ -62,6 +63,9 @@ source_set("host") {
       # The composition clock, for the vsync waiter's frame interval.
       "dwmapi.lib",
       "gdi32.lib",
+
+      # The IME. `flutter/textinput` is served through IMM32.
+      "imm32.lib",
       "user32.lib",
     ]
   }

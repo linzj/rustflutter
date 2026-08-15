@@ -125,7 +125,7 @@ fn main() {{
         "ole32", "oleaut32", "psapi", "shell32", "shlwapi", "Rpcrt4", "uuid",
         "version", "wininet", "winmm", "winspool", "gdi32", "user32",
         "FontSub", "Usp10", "OpenGL32", "dwmapi", "synchronization",
-        "setupapi", "dxgi", "dxguid", "windowscodecs",
+        "setupapi", "dxgi", "dxguid", "windowscodecs", "imm32",
     ] {{
         println!("cargo:rustc-link-lib=dylib={{lib}}");
     }}

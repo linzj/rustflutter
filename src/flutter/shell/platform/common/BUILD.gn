@@ -89,28 +89,14 @@ source_set("common_cpp_switches") {
   ]
 }
 
-source_set("common_cpp_accessibility") {
-  public = [
-    "accessibility_bridge.h",
-    "alert_platform_node_delegate.h",
-    "flutter_platform_node_delegate.h",
-  ]
-
-  sources = [
-    "accessibility_bridge.cc",
-    "alert_platform_node_delegate.cc",
-    "flutter_platform_node_delegate.cc",
-  ]
-
-  public_configs =
-      [ "//flutter/third_party/accessibility:accessibility_config" ]
-
-  public_deps = [
-    "//flutter/fml",
-    "//flutter/shell/platform/embedder:embedder_as_internal_library",
-    "//flutter/third_party/accessibility",
-  ]
-}
+# `common_cpp_accessibility` was here. It depended on
+# //flutter/third_party/accessibility, which this fork's import removed along
+# with the rest of the semantics stack -- and a label that cannot be resolved
+# stops GN from loading this whole file, which took the two targets below down
+# with it. They are wanted: `common_cpp_input` is the text input model the
+# Windows host edits, and client_wrapper holds the binary standard codec that
+# `flutter/mousecursor` speaks. Removing the dead target is what makes them
+# reachable.
 
 source_set("common_cpp") {
   public = [
@@ -210,17 +196,7 @@ if (enable_unittests) {
       "//flutter/testing",
     ]
 
-    # The accessibility bridge only supports MacOS for now.
-    if (is_mac || is_win) {
-      sources += [
-        "accessibility_bridge_unittests.cc",
-        "flutter_platform_node_delegate_unittests.cc",
-        "test_accessibility_bridge.cc",
-        "test_accessibility_bridge.h",
-      ]
-
-      deps += [ ":common_cpp_accessibility" ]
-    }
+    # The accessibility bridge's tests went with the target above.
 
     public_configs = [ "//flutter:config" ]
   }

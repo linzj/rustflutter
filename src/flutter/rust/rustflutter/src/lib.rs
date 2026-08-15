@@ -27,6 +27,7 @@ pub mod animation;
 pub mod app;
 pub mod components;
 pub mod controls;
+pub mod editable;
 pub mod engine;
 pub mod framework;
 pub mod gestures;
@@ -55,6 +56,7 @@ pub use components::{
     AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
+pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
@@ -96,6 +98,7 @@ pub mod prelude {
         ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
         theme_of,
     };
+    pub use crate::editable::{TextField, TextFieldState};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::services::system::{
         AppLifecycleState, Clipboard, HapticFeedback, SystemChrome, SystemMouseCursor,

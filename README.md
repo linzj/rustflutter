@@ -33,7 +33,7 @@ testing and gestures, animation and a navigation stack, and a component library.
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  192 passed
+rustflutter_unittests         →  207 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
@@ -247,7 +247,7 @@ change by a line.**
 | `counter` | Element tree, partial rebuild, tap handling |
 | `showcase` | Components and theming: one toggle recolours the application |
 | `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
-| `platform_channels` | Platform messages both ways, against a real shell. Checks itself and exits non-zero on a wrong answer |
+| `platform_channels` | Platform messages both ways and a `TextField` typed into, against a real shell. Checks itself and exits non-zero on a wrong answer |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -326,9 +326,14 @@ changed, and what is worth doing next are in
   re-posting it to the message queue after the framework has replied, which is
   the bulk of upstream's `KeyboardManager`. There is also no focus tree, so key
   handling is application-wide rather than per-widget.
-- **No text input or accessibility.** Platform channels carry them upstream and
-  the channels are here now, but nothing implements either end: there is no IME
-  and no semantics tree to describe.
+- **No accessibility.** The channel is here; there is no semantics tree to
+  describe over it.
+- **Text input is a single-line field.** `TextField` works, IME included, but
+  there is no selection painting, no scrolling past the edge of the field and
+  no focus traversal -- a field is focused by being tapped. The IME's
+  composition path follows the Windows embedder message for message and is not
+  covered by an automated check: driving one needs an input context, which the
+  machine this was built on does not have.
 - **The host serves two channels, not twenty.** Platform messages work in both
   directions, with codecs, replies and buffering; what is missing is embedder
   code to answer with. The Windows host sends `flutter/lifecycle` and answers

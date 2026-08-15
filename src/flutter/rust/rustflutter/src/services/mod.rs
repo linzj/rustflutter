@@ -77,8 +77,13 @@
 pub mod channel;
 pub mod codec;
 pub mod system;
+pub mod text_input;
 
 pub use channel::{BasicMessageChannel, EventChannel, EventSink, MethodChannel};
+pub use text_input::{
+    TextEditingValue, TextInputAction, TextInputClient, TextInputConfiguration,
+    TextInputConnection, TextInputType,
+};
 pub use codec::{
     BinaryCodec, CodecError, JsonMessageCodec, JsonMethodCodec, MessageCodec, MethodCall,
     MethodCodec, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, StringCodec,

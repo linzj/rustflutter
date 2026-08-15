@@ -1191,9 +1191,56 @@ platform_channels: PASS        （exit 0）
   SystemNavigator.pop 真关了窗口，进程自己退出
 ```
 
-单测 132 → 192（+60）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
+单测 132 → 207（+75）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
 打进去、逐帧读回 GPU framebuffer）照旧 PASS —— `flutter/keydata` 和新的
 通道走的是同一个 `DispatchPlatformMessage`。
+
+### 文本输入与输入法
+
+平台通道最大的一条用户是 `flutter/textinput`,而它值得单独说的不是协议,是
+**分层**。
+
+第一版写错了:把 `TextInputClient` 直接当成应用 API,应用要自己实现它、自己
+开关连接、自己上报光标矩形。那等于每个 app 各自适配一遍输入法。上游不是这样
+分的:
+
+| 层 | 谁实现 `TextInputClient` | 应用看得见吗 |
+|---|---|---|
+| `TextInput` / `TextInputConnection` | — | 几乎从不碰 |
+| **`EditableText`** | **它自己** | 不直接用 |
+| `TextField` | — | **应用只写这个** |
+
+改过来之后,应用侧的全部文本输入代码是:
+
+```rust
+stateful(TextField::new(1).with_placeholder("type here").with_on_changed(|text| {
+    // 一个 &str。没有连接、没有 client、没有编辑状态、没有输入法。
+}))
+```
+
+`editable.rs` 是中间那层,对应上游的 `EditableText`:它实现 `TextInputClient`,
+点击时开连接(没有焦点树,"最后被点的那个字段"就是焦点会给出的答案,而
+client id 保证同时只有一个),画文字、光标和**组词下划线**,并把光标矩形报给
+平台——否则候选词列表会出现在窗口角落而不是正在打的字下面。
+
+**编辑不归框架管。** 退格、方向键、选区、组词,都是平台对**平台那份文本**做的,
+到这边时已经是一个完整的 `TextEditingValue`。这是上游的安排,而且只能这样:
+输入法编辑的是框架还不知道的文本。
+
+host 侧照 `text_input_plugin.cc` + `flutter_window.cc` 写,编辑模型直接用引擎
+自己的 `flutter::TextInputModel`(不是抄一份)。三个 `return TRUE` 是有讲究的:
+不拦住 `DefWindowProc`,系统会在框架画的组词文字上面再画一层自己的,还会把
+已提交的字符串当成 `WM_CHAR` 再发一遍,模型就吃了两次。
+
+另外补了一处上游有、我一开始漏掉的兼容处理:组词期间**创建一个临时的系统
+caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
+`ImmSetCandidateWindow`,只看 `GetCaretPos()`。
+
+**验证到哪一步。** `examples/platform_channels` 现在点自己的窗口、往里打字,
+走完整条路:点击 → `TextInput.setClient` → `WM_CHAR` → host 的模型 →
+`TextInputClient.updateEditingState` → `on_changed("ab中")`,光标偏移按 UTF-16
+码元算,和平台一致。**组词那一段没测到**:本机 `ImmGetContext` 返回 null,
+例子据实报 SKIP 而不是假装通过。消息处理是照上游逐条写的,但没有自动化证据。
 
 ### 还知道没做的
 
@@ -1223,11 +1270,13 @@ platform_channels: PASS        （exit 0）
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-4. **嵌入层那一侧的通道。** 传输、编解码器、三层通道都有了（第十五节），
-   缺的是 host 里答话的人：`flutter/mousecursor` 要一个 C++ 的标准编解码器，
-   `flutter/textinput` 要输入法，`flutter/settings` 与 `flutter/localization`
-   被 `Engine` 就地答掉，它们说的话要经 `SetUserSettingsData` / `SetLocales`
-   再进框架，而这两个现在只记在 `platform_data_` 里没往下送。
+4. **嵌入层那一侧剩下的通道。** 传输、编解码器、三层通道、`flutter/platform`
+   与 `flutter/textinput` 都有了（第十五节）。还缺:`flutter/mousecursor`
+   （要一个 C++ 标准编解码器,`common_cpp_accessibility` 拆掉之后
+   `client_wrapper` 已经够得着了,是下一个该做的）;`flutter/settings` 与
+   `flutter/localization` 被 `Engine` 就地答掉,它们说的话要经
+   `SetUserSettingsData` / `SetLocales` 再进框架,而这两个现在只记在
+   `platform_data_` 里没往下送。
 5. **焦点树。** 键盘现在只到应用级。上游那一摊在框架侧一万六千行，
    其中 `focus_traversal.dart` 单文件 2575 行——光是"Tab 该往哪儿走"。
 6. **键盘的 redispatch。** 让框架能真正吃掉一个键。需要把 `on_key` 的答案

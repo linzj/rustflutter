@@ -30,6 +30,7 @@
 
 #include <windows.h>
 #include <dwmapi.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <cstdlib>
@@ -69,6 +70,9 @@
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
+#include "flutter/fml/string_conversion.h"
+#include "flutter/shell/platform/common/text_input_model.h"
+#include "flutter/shell/platform/common/text_range.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -589,6 +593,307 @@ std::string ErrorEnvelope(const char* code, const char* message) {
   return std::string(buffer.GetString(), buffer.GetSize());
 }
 
+//------------------------------------------------------------------------------
+// Text input.
+//
+// `flutter/textinput` is the channel a text field talks to the platform on, and
+// on Windows the platform's half of it is the IME. Upstream this is
+// `TextInputPlugin` plus `TextInputManager` plus `FlutterWindow`'s WM_IME_*
+// handling; the arrangement here is the same, minus the parts that need a
+// second view or a delta model.
+//
+// The editing model is the engine's own `flutter::TextInputModel` -- the same
+// class the Windows embedder edits, not a copy of it. Getting to it is the
+// reason `common_cpp_accessibility` had to go: it named a third-party target
+// this fork removed, and a label GN cannot resolve stops the whole BUILD file
+// from loading, which took the text input model down with it.
+//
+// # Which thread
+//
+// Upstream the plugin and the window are both on the platform thread. Here they
+// are not: channel calls arrive on the platform thread and window messages on
+// the window thread, and both touch the model. So it is behind a mutex, and the
+// IMM calls stay on the window thread where the composition context lives --
+// `ImmGetCompositionString` is only meaningful during the message that reports
+// it.
+
+constexpr char kTextInputChannel[] = "flutter/textinput";
+
+/// The composition window, and what the IME is currently saying.
+///
+/// Upstream's `TextInputManager`, cut down to what one window needs. Every
+/// method here must run on the window thread.
+class ImeContext {
+ public:
+  explicit ImeContext(HWND window) : window_(window) {}
+
+  /// Opens a composition and puts its window where the caret is.
+  ///
+  /// The position matters more than it looks: the candidate list is what the
+  /// reader is choosing characters from, and an IME that cannot be told where
+  /// the text is puts it in the corner of the window.
+  ///
+  /// The system caret is upstream's, and it is not decoration. Some IMEs
+  /// ignore `ImmSetCandidateWindow` entirely and ask `GetCaretPos()` instead,
+  /// so a one-pixel caret is created for the length of the composition and
+  /// moved along with the candidate window.
+  void CreateImeWindow() {
+    if (!active_) {
+      CreateCaret(window_, nullptr, 1, 1);
+    }
+    active_ = true;
+    MoveImeWindow();
+  }
+
+  void UpdateImeWindow() { MoveImeWindow(); }
+
+  void DestroyImeWindow() {
+    if (active_) {
+      DestroyCaret();
+    }
+    active_ = false;
+  }
+
+  /// Where the caret is, in physical pixels relative to the client area.
+  ///
+  /// Comes from the framework, which is the only side that knows: it is
+  /// `TextInput.setMarkedTextRect` put through the transform from
+  /// `TextInput.setEditableSizeAndTransform`.
+  void SetCaretRect(double x, double y, double width, double height) {
+    caret_ = {x, y, width, height};
+    MoveImeWindow();
+  }
+
+  /// The text the IME has committed, if this message carries any.
+  std::optional<std::u16string> ResultString() const {
+    return ReadString(GCS_RESULTSTR);
+  }
+
+  /// The text the IME is still composing.
+  std::optional<std::u16string> ComposingString() const {
+    return ReadString(GCS_COMPSTR);
+  }
+
+  /// Where the IME's own caret sits inside the composing text.
+  long ComposingCursorPosition() const {
+    HIMC context = ImmGetContext(window_);
+    if (context == nullptr) {
+      return -1;
+    }
+    LONG position =
+        ImmGetCompositionString(context, GCS_CURSORPOS, nullptr, 0);
+    ImmReleaseContext(window_, context);
+    return position;
+  }
+
+  /// Throws away whatever is being composed. Used when the framework detaches
+  /// a client mid-composition.
+  void AbortComposing() {
+    HIMC context = ImmGetContext(window_);
+    if (context == nullptr) {
+      return;
+    }
+    ImmNotifyIME(context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+    ImmReleaseContext(window_, context);
+    DestroyImeWindow();
+  }
+
+ private:
+  struct CaretRect {
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+  };
+
+  void MoveImeWindow() {
+    if (!active_ || GetFocus() != window_) {
+      return;
+    }
+    HIMC context = ImmGetContext(window_);
+    if (context == nullptr) {
+      return;
+    }
+    const LONG left = static_cast<LONG>(caret_.x);
+    const LONG top = static_cast<LONG>(caret_.y);
+    const LONG right = static_cast<LONG>(caret_.x + caret_.width);
+    const LONG bottom = static_cast<LONG>(caret_.y + caret_.height);
+    SetCaretPos(left, bottom);
+
+    COMPOSITIONFORM composition = {CFS_POINT, {left, top}, {}};
+    ImmSetCompositionWindow(context, &composition);
+
+    // CFS_EXCLUDE rather than CFS_CANDIDATEPOS: it names the rectangle the
+    // candidate list must *not* cover, so the list is placed clear of the line
+    // being typed instead of on top of it.
+    CANDIDATEFORM candidate = {0, CFS_EXCLUDE, {left, bottom},
+                               {left, top, right, bottom}};
+    ImmSetCandidateWindow(context, &candidate);
+
+    ImmReleaseContext(window_, context);
+  }
+
+  std::optional<std::u16string> ReadString(DWORD type) const {
+    HIMC context = ImmGetContext(window_);
+    if (context == nullptr) {
+      return std::nullopt;
+    }
+    std::optional<std::u16string> result;
+    // Length first, in bytes, then the characters. A zero-length composition
+    // is a real state -- the reader deleted back to nothing -- and is not the
+    // same as there being no composition.
+    LONG bytes = ImmGetCompositionString(context, type, nullptr, 0);
+    if (bytes >= 0) {
+      std::u16string text(static_cast<size_t>(bytes) / sizeof(wchar_t), u'\0');
+      if (bytes > 0) {
+        ImmGetCompositionString(context, type, text.data(), bytes);
+      }
+      result = std::move(text);
+    }
+    ImmReleaseContext(window_, context);
+    return result;
+  }
+
+  HWND window_ = nullptr;
+  /// Whether the temporary system caret exists. Upstream's `ime_active_`.
+  bool active_ = false;
+  CaretRect caret_;
+};
+
+/// The framework's text field, as the platform sees it.
+///
+/// Upstream's `TextInputPlugin`. It holds the editing model, answers
+/// `flutter/textinput`, and reports every change back as
+/// `TextInputClient.updateEditingState`.
+class TextInputHandler {
+ public:
+  /// How a state update leaves here. Set once, by the platform view.
+  using Sender = std::function<void(const std::string& method,
+                                    const std::string& arguments_json)>;
+
+  void SetSender(Sender sender) { sender_ = std::move(sender); }
+
+  /// True once the framework has attached a field. Everything typed while this
+  /// is false goes nowhere, which is correct: there is nothing to type into.
+  bool attached() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return model_ != nullptr;
+  }
+
+  /// Handles one call on `flutter/textinput`. Platform thread.
+  std::optional<std::string> HandleMethodCall(const std::string& method,
+                                              const rapidjson::Value* args);
+
+  // -- What the window thread reports -----------------------------------------
+
+  /// A character the reader typed directly, with no IME involved.
+  void OnText(const std::u16string& text) {
+    if (Edit([&text](TextInputModel& model) {
+          model.AddText(text);
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  /// An editing key: backspace, delete, the arrows, home and end.
+  ///
+  /// Returns true if the field used it, so the window proc can leave it alone
+  /// afterwards. Enter is handled separately because it is an *action* rather
+  /// than an edit.
+  bool OnEditingKey(WPARAM virtual_key, bool shift);
+
+  /// Enter, which submits rather than edits.
+  void OnAction();
+
+  /// Whether a `clearClient` arrived mid-composition. Window thread only.
+  bool TakeAbortComposing() { return abort_composing_.exchange(false); }
+
+  void OnComposeBegin() {
+    Edit([](TextInputModel& model) {
+      model.BeginComposing();
+      return true;
+    });
+  }
+
+  void OnComposeChange(const std::u16string& text, int cursor_position) {
+    if (Edit([&](TextInputModel& model) {
+          model.UpdateComposingText(text, TextRange(static_cast<size_t>(
+                                              cursor_position)));
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  void OnComposeCommit() {
+    if (Edit([](TextInputModel& model) {
+          model.CommitComposing();
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  void OnComposeEnd() {
+    if (Edit([](TextInputModel& model) {
+          model.EndComposing();
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  /// Where the caret is in the window, for the IME to place its candidates.
+  ///
+  /// The two halves arrive on separate calls and either can be last, so they
+  /// are kept apart and composed here -- which is upstream's `GetCursorRect`:
+  /// the marked rectangle's origin put through the editable's transform, with
+  /// the marked rectangle's own size. Read on the window thread, written on the
+  /// platform thread.
+  bool TakeCaretRect(double* x, double* y, double* width, double* height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!caret_valid_) {
+      return false;
+    }
+    *x = marked_x_ + transform_x_;
+    *y = marked_y_ + transform_y_;
+    *width = marked_width_;
+    *height = marked_height_;
+    return true;
+  }
+
+ private:
+  /// Runs `edit` against the model, if there is one. Returns what it returned,
+  /// or false when no client is attached.
+  bool Edit(const std::function<bool(TextInputModel&)>& edit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      return false;
+    }
+    return edit(*model_);
+  }
+
+  void SendStateUpdate();
+
+  mutable std::mutex mutex_;
+  std::unique_ptr<TextInputModel> model_;
+  /// Set when a client is cleared mid-composition; read and reset by the
+  /// window thread, which is the only one that may talk to the IME.
+  std::atomic<bool> abort_composing_{false};
+  int client_id_ = 0;
+  std::string input_action_;
+  std::string input_type_;
+  double marked_x_ = 0;
+  double marked_y_ = 0;
+  double marked_width_ = 0;
+  double marked_height_ = 0;
+  double transform_x_ = 0;
+  double transform_y_ = 0;
+  bool caret_valid_ = false;
+  Sender sender_;
+};
+
 /// Handles one call on `flutter/platform`.
 ///
 /// Returns the reply, or nothing for a method this host does not implement --
@@ -682,6 +987,18 @@ std::optional<std::string> HandlePlatformCall(HWND window,
     });
   }
 
+  if (method == "SystemChrome.setApplicationSwitcherDescription") {
+    // The label is what the task switcher shows, which on Windows is the
+    // window title. The colour has nowhere to go here.
+    if (args != nullptr && args->IsObject()) {
+      auto label = args->FindMember("label");
+      if (label != args->MemberEnd() && label->value.IsString()) {
+        SetWindowTextW(window, WidenText(label->value.GetString()).c_str());
+      }
+    }
+    return NullEnvelope();
+  }
+
   if (method == "System.initializationComplete") {
     // Deprecated upstream, and answered rather than refused for the reason the
     // comment there gives: an application that still sends it should not see an
@@ -690,6 +1007,286 @@ std::optional<std::string> HandlePlatformCall(HWND window,
   }
 
   return std::nullopt;
+}
+
+std::optional<std::string> TextInputHandler::HandleMethodCall(
+    const std::string& method,
+    const rapidjson::Value* args) {
+  if (method == "TextInput.show" || method == "TextInput.hide") {
+    // No-ops, as upstream: there is no on-screen keyboard to raise, and the
+    // IME is enabled by the window having focus.
+    return NullEnvelope();
+  }
+
+  if (method == "TextInput.setClient") {
+    // `[clientId, config]`. The config carries the action and the type; the
+    // delta model and the view id are not supported here.
+    if (args == nullptr || !args->IsArray() || args->Size() < 2) {
+      return ErrorEnvelope("TextInput.badArgument",
+                           "setClient needs a client id and a configuration");
+    }
+    const rapidjson::Value& client = (*args)[0];
+    const rapidjson::Value& config = (*args)[1];
+    if (!client.IsInt()) {
+      return ErrorEnvelope("TextInput.badArgument", "the client id is not a number");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    client_id_ = client.GetInt();
+    input_action_.clear();
+    input_type_.clear();
+    if (config.IsObject()) {
+      auto action = config.FindMember("inputAction");
+      if (action != config.MemberEnd() && action->value.IsString()) {
+        input_action_ = action->value.GetString();
+      }
+      auto type = config.FindMember("inputType");
+      if (type != config.MemberEnd() && type->value.IsObject()) {
+        auto name = type->value.FindMember("name");
+        if (name != type->value.MemberEnd() && name->value.IsString()) {
+          input_type_ = name->value.GetString();
+        }
+      }
+    }
+    model_ = std::make_unique<TextInputModel>();
+    return NullEnvelope();
+  }
+
+  if (method == "TextInput.clearClient") {
+    // A composition in flight is committed first, and the framework is told,
+    // before the client goes. Upstream does the same: half-typed text that the
+    // reader has already seen on screen must not vanish because focus moved.
+    bool was_composing = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (model_ != nullptr && model_->composing()) {
+        model_->CommitComposing();
+        model_->EndComposing();
+        was_composing = true;
+      }
+    }
+    if (was_composing) {
+      SendStateUpdate();
+    }
+    // The IME still thinks it is composing; the window thread ends that.
+    abort_composing_.store(true);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      model_.reset();
+      caret_valid_ = false;
+    }
+    return NullEnvelope();
+  }
+
+  if (method == "TextInput.setEditingState") {
+    if (args == nullptr || !args->IsObject()) {
+      return ErrorEnvelope("TextInput.badArgument", "setEditingState needs a state");
+    }
+    auto text = args->FindMember("text");
+    if (text == args->MemberEnd() || !text->value.IsString()) {
+      return ErrorEnvelope("TextInput.badArgument", "the state has no text");
+    }
+    auto number = [args](const char* key, int fallback) {
+      auto found = args->FindMember(key);
+      return found != args->MemberEnd() && found->value.IsInt()
+                 ? found->value.GetInt()
+                 : fallback;
+    };
+    const int base = number("selectionBase", -1);
+    const int extent = number("selectionExtent", -1);
+    const int composing_base = number("composingBase", -1);
+    const int composing_extent = number("composingExtent", -1);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      return ErrorEnvelope("TextInput.noClient",
+                           "the editing state was set with no client attached");
+    }
+    // The framework is the authority here: this is it telling the platform
+    // what the field now holds, which is how a programmatic edit -- a paste, a
+    // clear button -- reaches the IME.
+    model_->SetText(text->value.GetString(),
+                    TextRange(static_cast<size_t>(base < 0 ? 0 : base),
+                              static_cast<size_t>(extent < 0 ? 0 : extent)),
+                    composing_base < 0 || composing_extent < 0
+                        ? TextRange(0, 0)
+                        : TextRange(static_cast<size_t>(composing_base),
+                                    static_cast<size_t>(composing_extent)));
+    return NullEnvelope();
+  }
+
+  if (method == "TextInput.setMarkedTextRect") {
+    // Where the composing text sits, in the editable's own coordinates.
+    if (args == nullptr || !args->IsObject()) {
+      return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+    }
+    auto number = [args](const char* key, bool* found_it) {
+      auto found = args->FindMember(key);
+      *found_it = found != args->MemberEnd() && found->value.IsNumber();
+      return *found_it ? found->value.GetDouble() : 0.0;
+    };
+    bool ok[4] = {};
+    const double x = number("x", &ok[0]);
+    const double y = number("y", &ok[1]);
+    const double width = number("width", &ok[2]);
+    const double height = number("height", &ok[3]);
+    if (!ok[0] || !ok[1] || !ok[2] || !ok[3]) {
+      return ErrorEnvelope("TextInput.badArgument", "Composing rect values invalid.");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    marked_x_ = x;
+    marked_y_ = y;
+    marked_width_ = width;
+    marked_height_ = height;
+    caret_valid_ = true;
+    return NullEnvelope();
+  }
+
+  if (method == "TextInput.setEditableSizeAndTransform") {
+    // A 4x4 matrix, row-major, sixteen numbers -- not one member per cell.
+    // Only its translation is used, which is entries 12 and 13: an IME window
+    // cannot be rotated or scaled, so where the editable's origin lands is the
+    // whole of what the platform can act on.
+    if (args == nullptr || !args->IsObject()) {
+      return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+    }
+    auto transform = args->FindMember("transform");
+    if (transform == args->MemberEnd() || !transform->value.IsArray() ||
+        transform->value.Size() != 16) {
+      return ErrorEnvelope("TextInput.badArgument", "EditableText transform invalid.");
+    }
+    const rapidjson::Value& matrix = transform->value;
+    if (!matrix[12].IsNumber() || !matrix[13].IsNumber()) {
+      return ErrorEnvelope("TextInput.badArgument",
+                           "EditableText transform contains null value.");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    transform_x_ = matrix[12].GetDouble();
+    transform_y_ = matrix[13].GetDouble();
+    caret_valid_ = true;
+    return NullEnvelope();
+  }
+
+  return std::nullopt;
+}
+
+bool TextInputHandler::OnEditingKey(WPARAM virtual_key, bool shift) {
+  bool changed = false;
+  const bool handled = Edit([&](TextInputModel& model) {
+    switch (virtual_key) {
+      case VK_BACK:
+        changed = model.Backspace();
+        return true;
+      case VK_DELETE:
+        changed = model.Delete();
+        return true;
+      case VK_LEFT:
+        changed = model.MoveCursorBack();
+        return true;
+      case VK_RIGHT:
+        changed = model.MoveCursorForward();
+        return true;
+      case VK_HOME:
+        changed = shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
+        return true;
+      case VK_END:
+        changed = shift ? model.SelectToEnd() : model.MoveCursorToEnd();
+        return true;
+      default:
+        return false;
+    }
+  });
+  if (changed) {
+    SendStateUpdate();
+  }
+  return handled;
+}
+
+void TextInputHandler::OnAction() {
+  int client_id = 0;
+  std::string action;
+  bool newline = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      return;
+    }
+    client_id = client_id_;
+    action = input_action_.empty() ? "TextInputAction.done" : input_action_;
+    // A multiline field whose action is newline gets a newline *and* the
+    // action, which is upstream's `EnterPressed`. Anything else only gets the
+    // action -- Enter in a single-line field submits, it does not insert.
+    newline = input_type_ == "TextInputType.multiline" &&
+              action == "TextInputAction.newline";
+    if (newline) {
+      model_->AddText(std::u16string(u"\n"));
+    }
+  }
+  if (newline) {
+    SendStateUpdate();
+  }
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartArray();
+  writer.Int(client_id);
+  writer.String(action.c_str());
+  writer.EndArray();
+  if (sender_) {
+    sender_("TextInputClient.performAction",
+            std::string(buffer.GetString(), buffer.GetSize()));
+  }
+}
+
+void TextInputHandler::SendStateUpdate() {
+  int client_id = 0;
+  std::string text;
+  int selection_base = 0;
+  int selection_extent = 0;
+  int composing_base = -1;
+  int composing_extent = -1;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      return;
+    }
+    client_id = client_id_;
+    text = model_->GetText();
+    selection_base = static_cast<int>(model_->selection().base());
+    selection_extent = static_cast<int>(model_->selection().extent());
+    if (model_->composing()) {
+      composing_base = static_cast<int>(model_->composing_range().base());
+      composing_extent = static_cast<int>(model_->composing_range().extent());
+    }
+  }
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartArray();
+  writer.Int(client_id);
+  writer.StartObject();
+  // The keys, and their order, are upstream's. A field the framework does not
+  // find is a field it substitutes a default for, silently.
+  writer.Key("selectionAffinity");
+  writer.String("TextAffinity.downstream");
+  writer.Key("selectionBase");
+  writer.Int(selection_base);
+  writer.Key("selectionExtent");
+  writer.Int(selection_extent);
+  writer.Key("selectionIsDirectional");
+  writer.Bool(false);
+  writer.Key("composingBase");
+  writer.Int(composing_base);
+  writer.Key("composingExtent");
+  writer.Int(composing_extent);
+  writer.Key("text");
+  writer.String(text.c_str(), static_cast<rapidjson::SizeType>(text.size()));
+  writer.EndObject();
+  writer.EndArray();
+
+  if (sender_) {
+    sender_("TextInputClient.updateEditingState",
+            std::string(buffer.GetString(), buffer.GetSize()));
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -705,10 +1302,12 @@ class HostPlatformView final : public PlatformView,
                    const TaskRunners& task_runners,
                    HWND window,
                    FrameBuffer* frame_buffer,
+                   TextInputHandler* text_input,
                    bool prefer_impeller)
       : PlatformView(delegate, task_runners),
         window_(window),
         frame_buffer_(frame_buffer),
+        text_input_(text_input),
         prefer_impeller_(prefer_impeller) {}
 
   ~HostPlatformView() override = default;
@@ -842,7 +1441,9 @@ class HostPlatformView final : public PlatformView,
   // needs the binary codec -- falls through to an empty reply, which the
   // framework reads as "nobody implements this".
   void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
-    if (message->channel() != kPlatformChannel) {
+    const bool platform = message->channel() == kPlatformChannel;
+    const bool editing = message->channel() == kTextInputChannel;
+    if (!platform && !editing) {
       PlatformView::HandlePlatformMessage(std::move(message));
       return;
     }
@@ -856,10 +1457,13 @@ class HostPlatformView final : public PlatformView,
     if (!document.HasParseError() && document.IsObject()) {
       auto method = document.FindMember("method");
       if (method != document.MemberEnd() && method->value.IsString()) {
-        auto args = document.FindMember("args");
-        reply = HandlePlatformCall(
-            window_, method->value.GetString(),
-            args == document.MemberEnd() ? nullptr : &args->value);
+        auto found = document.FindMember("args");
+        const rapidjson::Value* args =
+            found == document.MemberEnd() ? nullptr : &found->value;
+        reply = platform
+                    ? HandlePlatformCall(window_, method->value.GetString(), args)
+                    : text_input_->HandleMethodCall(method->value.GetString(),
+                                                    args);
       }
     }
 
@@ -883,9 +1487,35 @@ class HostPlatformView final : public PlatformView,
   /// it on the way past and deliberately does not consume it, so the framework
   /// sees it too.
   void SendLifecycleState(const char* state) {
+    SendOnChannel(kLifecycleChannel, std::string(state));
+  }
+
+  //----------------------------------------------------------------------------
+  /// Sends a JSON method call, with no reply asked for.
+  ///
+  /// What `TextInputClient.updateEditingState` travels on. No reply because
+  /// there is nothing to do with one: the framework applying an editing state
+  /// is not something the platform can fail at or wait for.
+  void SendMethodCall(const char* channel,
+                      const std::string& method,
+                      const std::string& arguments_json) {
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("method");
+    writer.String(method.c_str());
+    writer.Key("args");
+    // Already JSON, so it goes in as it is rather than through the writer.
+    writer.RawValue(arguments_json.c_str(), arguments_json.size(),
+                    rapidjson::kArrayType);
+    writer.EndObject();
+    SendOnChannel(channel, std::string(buffer.GetString(), buffer.GetSize()));
+  }
+
+ private:
+  void SendOnChannel(const char* channel, const std::string& payload) {
     auto message = std::make_unique<PlatformMessage>(
-        kLifecycleChannel,
-        fml::MallocMapping::Copy(state, strlen(state)),
+        channel, fml::MallocMapping::Copy(payload.data(), payload.size()),
         /*response=*/nullptr);
     task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
         [weak = GetWeakPtr(), message = std::move(message)]() mutable {
@@ -894,6 +1524,8 @@ class HostPlatformView final : public PlatformView,
           }
         }));
   }
+
+ public:
 
   void SendKey(const KeyData& data, const std::string& character) {
     KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
@@ -960,6 +1592,7 @@ class HostPlatformView final : public PlatformView,
 
   HWND window_ = nullptr;
   FrameBuffer* frame_buffer_ = nullptr;
+  TextInputHandler* text_input_ = nullptr;
   bool prefer_impeller_ = false;
   std::unique_ptr<ImpellerGlContext> gl_context_;
   std::unique_ptr<ImpellerGlDelegate> gl_delegate_;
@@ -1009,7 +1642,42 @@ struct WindowState {
   /// is activated twice does not say so twice. The states are level-triggered:
   /// each one replaces the last, and repeating one carries no information.
   std::string lifecycle_state;
+  /// The text field the framework has attached, and the IME serving it.
+  TextInputHandler text_input;
+  std::optional<ImeContext> ime;
 };
+
+/// Puts the IME's window where the framework says the caret is.
+void UpdateImePosition(WindowState* state) {
+  if (!state->ime.has_value()) {
+    return;
+  }
+  double x = 0;
+  double y = 0;
+  double width = 0;
+  double height = 0;
+  if (state->text_input.TakeCaretRect(&x, &y, &width, &height)) {
+    state->ime->SetCaretRect(x, y, width, height);
+  } else {
+    state->ime->UpdateImeWindow();
+  }
+}
+
+/// The IME's caret inside the composing text.
+///
+/// Some IMEs change the composition without saying where their caret went. The
+/// framework still needs one, and the end of the text is where the reader is
+/// looking. Upstream's `GetCursorPositionForComposition`.
+int ComposingCursor(const ImeContext& ime, LPARAM lparam, size_t length) {
+  if (!(lparam & GCS_CURSORPOS)) {
+    return static_cast<int>(length);
+  }
+  const long position = ime.ComposingCursorPosition();
+  if (position < 0 || static_cast<size_t>(position) > length) {
+    return static_cast<int>(length);
+  }
+  return static_cast<int>(position);
+}
 
 /// Reports a lifecycle state, if it is a change.
 void SendLifecycle(WindowState* state, const char* next) {
@@ -1286,6 +1954,22 @@ void HandleKeyMessage(WindowState* state,
         code_point = unit;
       }
 
+      // Into the text field, if one is attached. This runs whether or not a
+      // key down preceded the character: Alt with the numeric keypad produces
+      // one on its own, and it is still text.
+      if (action == WM_CHAR && IsPrintable(code_point) &&
+          state->text_input.attached()) {
+        std::u16string text;
+        if (code_point > 0xFFFF) {
+          const char32_t offset = code_point - 0x10000;
+          text.push_back(static_cast<char16_t>(0xD800 + (offset >> 10)));
+          text.push_back(static_cast<char16_t>(0xDC00 + (offset & 0x3FF)));
+        } else {
+          text.push_back(static_cast<char16_t>(code_point));
+        }
+        state->text_input.OnText(text);
+      }
+
       if (!state->pending_key.has_value()) {
         // A character with no key down before it: Alt and the numeric keypad,
         // or an IME committing. There is nothing to report it as until there is
@@ -1554,9 +2238,89 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       // DefWindowProc, so Alt+F4, Alt+Space and the rest still work, and
       // TranslateMessage still produces the WM_CHAR this pairs keys with.
       if (state != nullptr) {
+        // The editing keys, into the attached field. They are also reported to
+        // the framework as keys: without redispatch there is no way to ask
+        // first and act on the answer, so both see them. Upstream orders the
+        // two by waiting for the framework's reply, which is the same
+        // machinery the keyboard section says is missing.
+        if (msg == WM_KEYDOWN && state->text_input.attached()) {
+          if (wparam == VK_RETURN) {
+            state->text_input.OnAction();
+          } else {
+            state->text_input.OnEditingKey(
+                wparam, (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+          }
+        }
         HandleKeyMessage(state, msg, wparam, lparam);
       }
       break;
+    // -- The IME ---------------------------------------------------------------
+    //
+    // Upstream's FlutterWindow does exactly this, and the three return values
+    // are the load-bearing part: DefWindowProc would otherwise draw the system
+    // composition window over the one the framework draws, and would re-emit
+    // the committed string as WM_CHAR after the model has already taken it.
+    case WM_IME_SETCONTEXT:
+      if (state != nullptr && state->ime.has_value() && wparam != 0) {
+        state->ime->CreateImeWindow();
+        UpdateImePosition(state);
+      }
+      // Clearing this bit is what hides the system's composition window. The
+      // framework draws the composing text itself, underlined, in the field.
+      return DefWindowProc(hwnd, msg, wparam,
+                           lparam & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW));
+
+    case WM_IME_STARTCOMPOSITION:
+      if (state != nullptr && state->ime.has_value()) {
+        state->ime->CreateImeWindow();
+        UpdateImePosition(state);
+        state->text_input.OnComposeBegin();
+      }
+      // Suppressed so the default composition style is not used.
+      return TRUE;
+
+    case WM_IME_COMPOSITION:
+      if (state != nullptr && state->ime.has_value()) {
+        UpdateImePosition(state);
+        if (state->text_input.TakeAbortComposing()) {
+          state->ime->AbortComposing();
+          return TRUE;
+        }
+        if (lparam == 0) {
+          state->text_input.OnComposeChange(std::u16string(), 0);
+          state->text_input.OnComposeCommit();
+        }
+        // The committed string first: Google Japanese Input and ATOK send both
+        // flags at once, committing what was composed and starting the next
+        // composition in the same message.
+        if (lparam & GCS_RESULTSTR) {
+          if (auto text = state->ime->ResultString()) {
+            state->text_input.OnComposeChange(
+                *text, ComposingCursor(*state->ime, lparam, text->length()));
+            state->text_input.OnComposeCommit();
+          }
+        }
+        if (lparam & GCS_COMPSTR) {
+          if (auto text = state->ime->ComposingString()) {
+            state->text_input.OnComposeChange(
+                *text, ComposingCursor(*state->ime, lparam, text->length()));
+          }
+        }
+        if (lparam & (GCS_RESULTSTR | GCS_COMPSTR)) {
+          // Suppressed, or DefWindowProc emits the committed string again as
+          // WM_CHAR and the model takes it twice.
+          return TRUE;
+        }
+      }
+      break;
+
+    case WM_IME_ENDCOMPOSITION:
+      if (state != nullptr && state->ime.has_value()) {
+        state->ime->DestroyImeWindow();
+        state->text_input.OnComposeEnd();
+      }
+      return TRUE;
+
     case WM_DESTROY:
       // The last thing the framework hears. It is sent rather than skipped
       // because an application may have something to write down before it
@@ -1666,6 +2430,9 @@ int32_t rf_host_run(const RfHostOptions* options) {
     return -3;
   }
 
+  // The IME needs the window handle, so it cannot exist before this point.
+  state.ime.emplace(window);
+
   // Only now is there a window to ask which display it landed on. Redo the
   // sizing at that display's DPI; at 100% this is the same rectangle and the
   // SetWindowPos is a no-op.
@@ -1703,10 +2470,18 @@ int32_t rf_host_run(const RfHostOptions* options) {
       [window, &state, impeller = settings.enable_impeller](Shell& shell) {
         auto view = std::make_unique<HostPlatformView>(
             shell, shell.GetTaskRunners(), window, &state.frame_buffer,
-            impeller);
+            &state.text_input, impeller);
         // The window proc needs to reach the view to send pointers. The shell
         // owns it and outlives the message loop, so a raw pointer is enough.
         state.platform_view = view.get();
+        // How an editing state gets back to the framework. The view outlives
+        // the handler's use of this: both die with the message loop, and the
+        // shell is torn down after it.
+        state.text_input.SetSender(
+            [sender = view.get()](const std::string& method,
+                                  const std::string& arguments) {
+              sender->SendMethodCall(kTextInputChannel, method, arguments);
+            });
         return view;
       },
       [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });

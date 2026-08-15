@@ -10,7 +10,10 @@ static_library("platform_channels_rs") {
   crate_name = "platform_channels"
   crate_root = "src/main.rs"
 
-  sources = [ "src/main.rs" ]
+  sources = [
+    "src/main.rs",
+    "src/win32.rs",
+  ]
 
   deps = [ "//flutter/rust/rustflutter" ]
 }

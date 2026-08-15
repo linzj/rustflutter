@@ -26,7 +26,7 @@
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0，零警告
-rustflutter_unittests         →  192 passed
+rustflutter_unittests         →  207 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
@@ -226,7 +226,7 @@ virtual void Render(int64_t view_id,
 | `counter` | element 树 + 局部重建 + 点击 |
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
 | `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
-| `platform_channels` | 平台消息双向,打在真 shell 上。自检,答错就非零退出 |
+| `platform_channels` | 平台消息双向 + 往 `TextField` 里真打字,打在真 shell 上。自检,答错就非零退出 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -298,8 +298,11 @@ src/
   处理的键，就得在框架回话之后把它重新 post 回消息队列——那是上游
   `KeyboardManager` 的大半。另外还没有焦点树，所以按键处理是应用级的，
   不是按控件的。
-- **没有文本输入、无障碍。** 上游这两样都走平台通道，通道现在有了，但两端都
-  没有实现：没有输入法，也没有语义树可描述。
+- **没有无障碍。** 通道有了,但没有语义树可描述。
+- **文本输入只有单行字段。** `TextField` 能用,输入法也能用,但没有选区绘制、
+  没有超出字段宽度后的滚动、没有焦点遍历——点一下就是聚焦。组词那条路是照
+  Windows 嵌入层逐条消息写的,**没有自动化验证**:要驱动它需要一个输入法
+  context,构建这份代码的机器上没有。
 - **host 只服务两条通道,不是二十条。** 平台消息两个方向都通了,带编解码器、
   回复和缓冲;缺的是嵌入层那一侧的实现。Windows host 发 `flutter/lifecycle`,
   答 `flutter/platform`(剪贴板、提示音、退出)。`flutter/mousecursor`、
