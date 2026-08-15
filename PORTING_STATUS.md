@@ -704,6 +704,7 @@ pipeline depth 2。
 | R-tree | `prepare_rtree=false` | `true`，与上游 `PictureRecorder` 一致 |
 | 文字 | 每帧重新 shape | 两代缓存，效果等同上游的 `TextPainter` |
 | vsync | 硬编码 60 Hz | 读 DWM 合成时钟，每秒复核 |
+| 图片解码 | UI 线程内联 | worker 线程池，帧后到 |
 
 #### DPI —— 这一条是 bug，只是当时触发不了
 
@@ -780,6 +781,41 @@ tick 网格上。这里原本吸附算法一样，但间隔硬编码 1/60。现�
 的真实原因只是那一刻 RDP 真的在 32 Hz 合成。`RUSTFLUTTER_FORCE_HZ` 留在代码里，
 就是因为没有它无法把"速率"和"定时器精度"分开。）
 
+#### 图片解码
+
+上游从不在 UI 线程解码：`ImageDecoder` 跑在并发 worker 上，因为一屏新图片
+在 UI 线程解出来就是一屏丢掉的帧。这里原本是内联的——Shrine 的 38 张商品图
+要 6 ms，三分之一帧，实测方式是 headless 渲染 home 与 Shrine 的差值。
+
+`Image::shared` 现在把字节交给一个小 worker 池，直接返回 `None`。调用方本来
+就得处理这种情况（Shrine 画的是占位方块），拿到 `None` 的那一帧会再要一帧，
+图片落地时就显示出来。
+
+**第一版是错的，而且截图掩盖了它**：headless 渲染会等图片，所以输出是对的；
+窗口里却永远停在占位方块。原因是解码落地时没有任何东西把树标脏，最初请求
+图片的那个组件再也没被构建过。现在按"到货"触发整树重建，和 resize 走同一条
+路、理由也相同——没有谁记录了是谁在问。窄化版本需要 `Image::shared` 知道
+当前是哪个 element 在调用它，而那正是 `InheritedWidget` 依赖追踪要的机制。
+
+### 一个原以为存在、其实不存在的差距
+
+"layer 树是平的 → raster cache 命不中"这句话，前半句是真的，后半句在
+Impeller 下不成立：
+
+```
+GPUSurfaceGLImpeller::EnableRasterCache() { return false; }
+```
+
+`rasterizer.cc` 据此把 `ignore_raster_cache` 设为 true。**上游在 Impeller 下
+同样不用 raster cache。** 局部重绘也一样——上游 Windows embedder 里搜不到
+任何 `supports_partial_repaint` / `existing_damage`，默认就是 false。
+
+所以"render object 不持久"这一条，在真实生产配置下的流水线后果，只剩
+UI 线程上的那 0.15 ms（layout 0.06 + record 0.09），合成侧没有任何影响。
+它仍然是框架架构上的真差距（repaint boundary 无处安放，重场景会更贵），
+但不是"到屏幕"这条路上的差距。这一条写在这里，是因为之前的判断把它列成了
+最大的一笔欠账，而那个判断没有验证过 Impeller 下 raster cache 是否开着。
+
 ### 帧统计里一个标错的数
 
 `raster thread: rasterise` 之前测的是"上一次 swap 返回到这一次 swap 被请求"，
@@ -793,15 +829,14 @@ idle 15.8 ms   rasterise 0.8 ms   swap 0.14 ms   frame 16.9 ms
 
 ### 还剩下的
 
-* **持久化 render object。** layer 树已经是真的，但 render object 每帧重建，
-  所以 raster cache 仍然命中不了（key 是 layer / display list 的 id，每帧都是新的），
-  repaint boundary 也无从谈起。这是最后一块，也是最大的一块。
-* **局部重绘。** `supports_partial_repaint` 默认 false，上游 Windows 也是——
-  这一条目前是持平而非差距。
-* **图片解码不在 IO 线程。** `Engine` 不再持有 `ImageDecoder`；解码在 UI 线程，
-  上传在 raster 线程。上游是并发 worker + IO 线程。
+* **持久化 render object。** 见上一节：流水线后果只剩 UI 线程 0.15 ms，
+  合成侧为零。它要解决的是框架架构问题（repaint boundary、重场景的布局成本），
+  排期理由是那个，不是这一节的理由。
+* **纹理上传仍在 raster 线程**，而不是 IO 线程的共享上下文上。解码已经挪走了，
+  上传还没有——`GetImpellerTexture` 是在光栅化时按需上传的。
 * **microtask。** 上游在 `onBeginFrame` 和 `onDrawFrame` 之间抽干微任务队列，
   这里没有异步运行时，所以没有对等的排序点。
+* **局部重绘**与 **raster cache**：与上游持平（都关着），不是差距。
 
 ---
 
@@ -810,9 +845,9 @@ idle 15.8 ms   rasterise 0.8 ms   swap 0.14 ms   frame 16.9 ms
 按价值排序：
 
 1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
-   但 render tree 每帧仍整棵重建，布局和绘制照跑不误。layer 树已经是真的了
-   （第十三节），所以这一步做完 raster cache 和 repaint boundary 就都能用上——
-   现在它们用不上，正是因为每帧的 layer 和 display list 都是新对象。
+   但 render tree 每帧仍整棵重建，布局和绘制照跑不误。注意这不是性能理由：
+   实测整条 UI 线程 0.3–0.5 ms，其中重建 0.15 ms（第十三节）。理由是架构——
+   repaint boundary 需要有东西可以挂，惰性列表也需要 render object 活过一帧。
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
