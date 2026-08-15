@@ -248,6 +248,9 @@ change by a line.**
 | `showcase` | Components and theming: one toggle recolours the application |
 | `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
 | `platform_channels` | Every channel the engine defines, both ways: clipboard, a `TextField` typed into, the mouse cursor, the reader's settings, and a close the application refuses. Against a real shell; checks itself and exits non-zero on a wrong answer |
+| `cursor_demo` | **Test by hand.** Tap a cursor name and watch the pointer change over the window |
+| `exit_demo` | **Test by hand.** The close button is a question; a switch decides the answer |
+| `settings_demo` | **Test by hand.** Change the theme, text size or language in Windows and watch this window follow |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">

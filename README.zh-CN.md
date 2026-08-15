@@ -227,6 +227,9 @@ virtual void Render(int64_t view_id,
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
 | `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
 | `platform_channels` | 引擎定义的每一条通道,两个方向:剪贴板、往 `TextField` 里真打字、鼠标光标、读者的设置,以及一次被应用拒绝的关闭。打在真 shell 上,自检,答错就非零退出 |
+| `cursor_demo` | **手动测**。点一个光标名字,把鼠标移到窗口上看指针形状 |
+| `exit_demo` | **手动测**。关闭按钮是一个问句;一个开关决定怎么答 |
+| `settings_demo` | **手动测**。在 Windows 里改主题、字号或语言,看这个窗口跟着变 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
