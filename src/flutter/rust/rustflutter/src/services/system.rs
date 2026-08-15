@@ -297,6 +297,196 @@ impl SystemNavigator {
     }
 }
 
+// -- Closing, and being asked whether it is all right to close ----------------
+
+/// Whether an exit may be refused.
+///
+/// Upstream's `ui.AppExitType`. The distinction is the whole reason the
+/// protocol exists: a reader clicking the close button can be asked to save
+/// first, and a machine shutting down cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppExitType {
+    /// The application is closing. The answer is not consulted.
+    Required,
+    /// The application has been *asked* to close and may say no.
+    Cancelable,
+}
+
+impl AppExitType {
+    fn as_message(self) -> &'static str {
+        match self {
+            AppExitType::Required => "required",
+            AppExitType::Cancelable => "cancelable",
+        }
+    }
+
+    fn from_message(name: &str) -> AppExitType {
+        // Anything that is not "cancelable" is required, which is how
+        // `StringToAppExitType` in the Windows embedder decides it. Erring
+        // this way means a request nobody understands still closes the window.
+        match name {
+            "cancelable" => AppExitType::Cancelable,
+            _ => AppExitType::Required,
+        }
+    }
+}
+
+/// What an application says when asked whether it may close.
+///
+/// Upstream's `ui.AppExitResponse`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppExitResponse {
+    Exit,
+    Cancel,
+}
+
+impl AppExitResponse {
+    fn as_message(self) -> &'static str {
+        match self {
+            AppExitResponse::Exit => "exit",
+            AppExitResponse::Cancel => "cancel",
+        }
+    }
+
+    fn from_message(name: &str) -> Option<AppExitResponse> {
+        match name {
+            "exit" => Some(AppExitResponse::Exit),
+            "cancel" => Some(AppExitResponse::Cancel),
+            _ => None,
+        }
+    }
+}
+
+/// Answers `System.requestAppExit` for an application that has not said
+/// otherwise.
+///
+/// Upstream's `ServicesBinding.handleRequestAppExit`, whose default is also
+/// `exit`: an application with nothing to save must not need to write code to
+/// make its close button work.
+fn default_exit_response(_kind: AppExitType) -> AppExitResponse {
+    AppExitResponse::Exit
+}
+
+thread_local! {
+    static EXIT_HANDLER: std::cell::RefCell<Option<Box<dyn FnMut(AppExitType) -> AppExitResponse>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs the `flutter/platform` handler that answers exit requests.
+///
+/// Called once when the messenger is attached, not when an application asks for
+/// it, and that ordering is load-bearing in two ways. Upstream's
+/// `ServicesBinding.initInstances` does the same:
+///
+/// * The close button has to work in an application that has never heard of
+///   this protocol. Without a handler the platform would ask and nothing would
+///   answer.
+/// * Registering the handler is what tells the embedder there is somebody to
+///   ask -- it is the channel update on `flutter/platform` that turns the
+///   embedder's `WM_CLOSE` handling on. An embedder that never sees it closes
+///   the window the ordinary way, which is the right fallback.
+pub(crate) fn install_exit_handler() {
+    PLATFORM.set_handler(|call, responder| {
+        if call.method != "System.requestAppExit" {
+            // The framework serves exactly one method on this channel. Anything
+            // else on it is the platform's to answer, not ours.
+            responder.not_implemented();
+            return;
+        }
+        let kind = call
+            .arguments
+            .get("type")
+            .and_then(Value::as_str)
+            .map(AppExitType::from_message)
+            .unwrap_or(AppExitType::Required);
+        // The handler is moved out before it runs: it may close over state the
+        // application also touches, and it is allowed to replace itself.
+        let handler = EXIT_HANDLER.with(|slot| slot.borrow_mut().take());
+        let response = match handler {
+            Some(mut handler) => {
+                let response = handler(kind);
+                EXIT_HANDLER.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    if slot.is_none() {
+                        *slot = Some(handler);
+                    }
+                });
+                response
+            }
+            None => default_exit_response(kind),
+        };
+        // A required exit is not a question. Answering `cancel` to one would
+        // be answering a question nobody asked, and upstream ignores it too.
+        let response = match kind {
+            AppExitType::Required => AppExitResponse::Exit,
+            AppExitType::Cancelable => response,
+        };
+        responder.success(Value::map([("response", Value::from(response.as_message()))]));
+    });
+}
+
+/// Removes the exit handler. Called when the messenger is detached, so that the
+/// embedder is told there is no longer anybody to ask.
+pub(crate) fn remove_exit_handler() {
+    EXIT_HANDLER.with(|slot| *slot.borrow_mut() = None);
+    PLATFORM.clear_handler();
+}
+
+/// Decides what happens when the platform asks whether the application may
+/// close.
+///
+/// Upstream's `AppLifecycleListener.onExitRequested`. One handler, because
+/// there is one answer; an application with several things to check does the
+/// checking inside it.
+///
+/// The handler runs on the UI thread and must answer synchronously, which is
+/// the one place this differs from upstream: `onExitRequested` returns a
+/// `Future`, so a Flutter application can put up a "save your work?" dialog and
+/// answer when the reader has clicked. Doing that here means answering
+/// [`AppExitResponse::Cancel`] now and calling [`exit_application`] later, which
+/// is the same exchange with the waiting moved into the application.
+pub fn on_exit_requested(handler: impl FnMut(AppExitType) -> AppExitResponse + 'static) {
+    EXIT_HANDLER.with(|slot| *slot.borrow_mut() = Some(Box::new(handler)));
+}
+
+/// Asks the platform to close the application.
+///
+/// Upstream's `ServicesBinding.exitApplication`. The two kinds differ in what
+/// the platform does, not in what this does:
+///
+/// * [`AppExitType::Required`] closes the window and answers `Exit`.
+/// * [`AppExitType::Cancelable`] answers `Cancel` straight away and *then*
+///   asks -- including asking this application, through the handler above.
+///   That is not a quirk of this port; it is what the reply means. The real
+///   answer arrives as the window closing or not closing.
+///
+/// `exit_code` is what the process exits with.
+pub fn exit_application(
+    kind: AppExitType,
+    exit_code: i32,
+    callback: impl FnOnce(Option<AppExitResponse>) + 'static,
+) {
+    PLATFORM.invoke_with_reply(
+        "System.exitApplication",
+        Value::map([
+            ("type", Value::from(kind.as_message())),
+            ("exitCode", Value::I64(exit_code as i64)),
+        ]),
+        move |reply| {
+            callback(match reply {
+                Ok(Some(value)) => value
+                    .get("response")
+                    .and_then(Value::as_str)
+                    .and_then(AppExitResponse::from_message),
+                // No handler, or an error. Either way the platform did not say
+                // it was closing, and reporting nothing is more honest than
+                // reporting a cancel the platform never sent.
+                _ => None,
+            });
+        },
+    );
+}
+
 /// What the platform shows about the application outside its own window.
 pub struct SystemChrome;
 
@@ -439,7 +629,7 @@ pub fn invoke_plugin_method(
 
 #[cfg(test)]
 mod tests {
-    use super::super::codec::{MethodCodec, MethodError};
+    use super::super::codec::{MethodCall, MethodCodec, MethodError};
     use super::super::tests_support::install;
     use super::*;
     use std::cell::RefCell;
@@ -687,5 +877,138 @@ mod tests {
         let envelope = StandardMethodCodec.encode_error_envelope(&error).unwrap();
         recorder.reply(response_id, Some(&envelope));
         assert_eq!(*answer.borrow(), Some(Err(error)));
+    }
+
+    // -- Closing --------------------------------------------------------------
+
+    /// Puts a method call on `flutter/platform` the way an embedder does, and
+    /// reads back the `response` the framework answered with.
+    ///
+    /// `None` means the framework answered empty, which on this channel means
+    /// the method was not the framework's to answer.
+    fn call_platform(
+        recorder: &super::super::tests_support::Recorder,
+        method: &str,
+        arguments: Value,
+    ) -> Option<String> {
+        let call = JsonMethodCodec
+            .encode_method_call(&MethodCall::new(method, arguments))
+            .unwrap();
+        let response_id = recorder.responses().len() as i64 + 1;
+        recorder.deliver("flutter/platform", &call, response_id);
+        let (_, reply) = recorder
+            .responses()
+            .into_iter()
+            .find(|(id, _)| *id == response_id)
+            .expect("the handler answered");
+        let value = JsonMethodCodec.decode_envelope(&reply?).ok()??;
+        value.get("response").and_then(Value::as_str).map(str::to_string)
+    }
+
+    fn ask_to_exit(
+        recorder: &super::super::tests_support::Recorder,
+        kind: &str,
+    ) -> Option<String> {
+        call_platform(
+            recorder,
+            "System.requestAppExit",
+            Value::map([("type", Value::from(kind))]),
+        )
+    }
+
+    #[test]
+    fn an_application_that_says_nothing_still_closes() {
+        // The default matters more than it looks: with no handler at all the
+        // embedder would ask and nothing would answer, and the close button
+        // would do nothing at all.
+        let recorder = install();
+        assert_eq!(ask_to_exit(&recorder, "cancelable").as_deref(), Some("exit"));
+    }
+
+    #[test]
+    fn an_application_can_refuse_a_cancelable_exit() {
+        let recorder = install();
+        on_exit_requested(|kind| {
+            assert_eq!(kind, AppExitType::Cancelable);
+            AppExitResponse::Cancel
+        });
+        assert_eq!(ask_to_exit(&recorder, "cancelable").as_deref(), Some("cancel"));
+    }
+
+    #[test]
+    fn a_required_exit_is_not_a_question() {
+        let recorder = install();
+        on_exit_requested(|_| AppExitResponse::Cancel);
+        // The handler still hears about it -- that is where an application
+        // writes down whatever it can before it goes -- but the answer is not
+        // consulted, because the machine is already shutting down.
+        assert_eq!(ask_to_exit(&recorder, "required").as_deref(), Some("exit"));
+    }
+
+    #[test]
+    fn a_request_with_no_type_is_treated_as_required() {
+        let recorder = install();
+        let seen = Rc::new(RefCell::new(None));
+        let recorded = seen.clone();
+        on_exit_requested(move |kind| {
+            *recorded.borrow_mut() = Some(kind);
+            AppExitResponse::Cancel
+        });
+        let response = call_platform(&recorder, "System.requestAppExit", Value::Null);
+        assert_eq!(*seen.borrow(), Some(AppExitType::Required));
+        assert_eq!(response.as_deref(), Some("exit"));
+    }
+
+    #[test]
+    fn the_framework_does_not_answer_the_platforms_own_methods() {
+        // `flutter/platform` runs in both directions, and the handler installed
+        // here must not swallow `Clipboard.getData` on the way to the embedder.
+        // An empty reply is what says "not ours".
+        let recorder = install();
+        assert_eq!(
+            call_platform(&recorder, "Clipboard.getData", Value::from("text/plain")),
+            None,
+            "not implemented is an empty reply"
+        );
+    }
+
+    #[test]
+    fn asking_to_exit_sends_what_the_embedder_reads() {
+        let recorder = install();
+        let answer = Rc::new(RefCell::new(None));
+        let recorded = answer.clone();
+        exit_application(AppExitType::Required, 3, move |response| {
+            *recorded.borrow_mut() = Some(response)
+        });
+
+        let (channel, bytes, response_id) = recorder.sent().remove(0);
+        assert_eq!(channel, "flutter/platform");
+        let call = JsonMethodCodec.decode_method_call(&bytes).unwrap();
+        assert_eq!(call.method, "System.exitApplication");
+        assert_eq!(call.arguments.get("type").and_then(Value::as_str), Some("required"));
+        // An int, not a double: the embedder reads it with `IsInt` and rejects
+        // the whole request if it is anything else.
+        assert_eq!(call.arguments.get("exitCode"), Some(&Value::I64(3)));
+
+        let envelope = JsonMethodCodec
+            .encode_success_envelope(&Value::map([("response", Value::from("exit"))]))
+            .unwrap();
+        recorder.reply(response_id, Some(&envelope));
+        assert_eq!(*answer.borrow(), Some(Some(AppExitResponse::Exit)));
+    }
+
+    #[test]
+    fn an_embedder_that_does_not_serve_the_exit_method_reports_nothing() {
+        let recorder = install();
+        let answer = Rc::new(RefCell::new(None));
+        let recorded = answer.clone();
+        exit_application(AppExitType::Cancelable, 0, move |response| {
+            *recorded.borrow_mut() = Some(response)
+        });
+        let (_, _, response_id) = recorder.sent().remove(0);
+        recorder.reply(response_id, None);
+        // Not a cancel. The platform never said it, and inventing one would
+        // tell the application its exit was refused when it was never heard.
+        assert_eq!(*answer.borrow(), Some(None));
     }
 }

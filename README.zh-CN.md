@@ -26,7 +26,7 @@
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0，零警告
-rustflutter_unittests         →  207 passed
+rustflutter_unittests         →  224 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
@@ -226,7 +226,7 @@ virtual void Render(int64_t view_id,
 | `counter` | element 树 + 局部重建 + 点击 |
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
 | `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
-| `platform_channels` | 平台消息双向 + 往 `TextField` 里真打字,打在真 shell 上。自检,答错就非零退出 |
+| `platform_channels` | 引擎定义的每一条通道,两个方向:剪贴板、往 `TextField` 里真打字、鼠标光标、读者的设置,以及一次被应用拒绝的关闭。打在真 shell 上,自检,答错就非零退出 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -303,14 +303,14 @@ src/
   没有超出字段宽度后的滚动、没有焦点遍历——点一下就是聚焦。组词那条路是照
   Windows 嵌入层逐条消息写的,**没有自动化验证**:要驱动它需要一个输入法
   context,构建这份代码的机器上没有。
-- **host 只服务两条通道,不是二十条。** 平台消息两个方向都通了,带编解码器、
-  回复和缓冲;缺的是嵌入层那一侧的实现。Windows host 发 `flutter/lifecycle`,
-  答 `flutter/platform`(剪贴板、提示音、退出)。`flutter/mousecursor`、
-  `flutter/textinput` 等到得了它，但回来是空的——框架读作"没人实现这条"，
-  和一个 Flutter 应用调用未安装插件时拿到的答案是同一个。光标卡在一件具体的
-  事上：它说二进制标准格式，而引擎自己那份 C++ 编解码器在
-  `shell/platform/common` 底下，这个 fork 编不了它——它依赖导入时删掉的一个
-  third_party 目录。
+- **host 服务的是引擎自己定义的通道,不是一套插件生态。** 平台消息两个方向都
+  通了,带编解码器、回复和缓冲。Windows host 把引擎自己定义的通道都服务了:
+  `flutter/lifecycle`、`flutter/platform`(剪贴板、提示音、可取消的退出握手)、
+  `flutter/textinput`、`flutter/mousecursor`、`flutter/settings`、
+  `flutter/localization`。缺的是**插件系统**:没有 registrar 供第三方挂一条
+  通道上去,所以应用自己的通道要把 native 那一半写进 host。没人服务的通道回来
+  是空的——框架读作"没人实现这条",和一个 Flutter 应用调用未安装插件时拿到的
+  答案是同一个。
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
 
 ## 诊断开关

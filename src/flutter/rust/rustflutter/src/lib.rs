@@ -34,6 +34,7 @@ pub mod gestures;
 pub mod keyboard;
 pub mod navigation;
 pub mod painting;
+pub mod platform;
 pub mod render;
 pub mod services;
 pub mod widgets;
@@ -101,10 +102,11 @@ pub mod prelude {
     pub use crate::editable::{TextField, TextFieldState};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::services::system::{
-        AppLifecycleState, Clipboard, HapticFeedback, SystemChrome, SystemMouseCursor,
-        SystemNavigator, SystemSound, SystemSoundType,
+        AppExitResponse, AppExitType, AppLifecycleState, Clipboard, HapticFeedback, SystemChrome,
+        SystemMouseCursor, SystemNavigator, SystemSound, SystemSoundType,
     };
     pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
+    pub use crate::platform::{Brightness, Locale, UserSettings};
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
         keyed_single, leaf, many, provide, single, stateful,

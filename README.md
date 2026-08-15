@@ -33,7 +33,7 @@ testing and gestures, animation and a navigation stack, and a component library.
 ```
 gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  207 passed
+rustflutter_unittests         →  224 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
@@ -247,7 +247,7 @@ change by a line.**
 | `counter` | Element tree, partial rebuild, tap handling |
 | `showcase` | Components and theming: one toggle recolours the application |
 | `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
-| `platform_channels` | Platform messages both ways and a `TextField` typed into, against a real shell. Checks itself and exits non-zero on a wrong answer |
+| `platform_channels` | Every channel the engine defines, both ways: clipboard, a `TextField` typed into, the mouse cursor, the reader's settings, and a close the application refuses. Against a real shell; checks itself and exits non-zero on a wrong answer |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -334,16 +334,17 @@ changed, and what is worth doing next are in
   composition path follows the Windows embedder message for message and is not
   covered by an automated check: driving one needs an input context, which the
   machine this was built on does not have.
-- **The host serves two channels, not twenty.** Platform messages work in both
-  directions, with codecs, replies and buffering; what is missing is embedder
-  code to answer with. The Windows host sends `flutter/lifecycle` and answers
-  `flutter/platform` (clipboard, sound, exit). `flutter/mousecursor`,
-  `flutter/textinput` and the rest reach it and come back unanswered, which the
-  framework reads as "nobody implements this" -- the same answer a Flutter app
-  gets for a plugin it did not install. The cursor is blocked on something
-  specific: it speaks the binary standard codec, and the engine's own C++ one
-  is behind `shell/platform/common`, which this fork cannot build because it
-  depends on a third-party directory the import removed.
+- **The host serves the engine's own channels, not a plugin ecosystem.**
+  Platform messages work in both directions, with codecs, replies and
+  buffering. The Windows host serves every channel the engine itself defines --
+  `flutter/lifecycle`, `flutter/platform` (clipboard, sound, the cancelable
+  exit handshake), `flutter/textinput`, `flutter/mousecursor`,
+  `flutter/settings` and `flutter/localization`. What is missing is a plugin
+  system: there is no registrar for a third party to add a channel to, so an
+  application's own channel needs its native half written into the host. A
+  channel nobody serves comes back empty, which the framework reads as "nobody
+  implements this" -- the same answer a Flutter app gets for a plugin it did
+  not install.
 - **There will be no hot reload.** That is a Dart VM capability with no Rust
   equivalent.
 

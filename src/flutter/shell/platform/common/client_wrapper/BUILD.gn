@@ -20,6 +20,39 @@ source_set("client_wrapper") {
       [ "//flutter/shell/platform/common:relative_flutter_library_headers" ]
 }
 
+# The standard codec, and nothing else.
+#
+# `client_wrapper` above is the whole plugin-facing library, and most of it --
+# `core_implementations.cc`, `plugin_registrar.cc` -- is written against the
+# `FlutterDesktop*` C API, which is the desktop embedder this fork does not
+# build. Linking it would leave those symbols undefined.
+#
+# `standard_codec.cc` needs none of that. Its headers pull in `EncodableValue`
+# and the byte streams and stop there, so a shell-internal caller that wants
+# the binary standard codec -- the codec `flutter/mousecursor` and every
+# plugin-defined channel speak -- can have it without the messenger.
+source_set("standard_codec") {
+  sources = [
+    "byte_buffer_streams.h",
+    "standard_codec.cc",
+  ]
+
+  public = [
+    "include/flutter/byte_streams.h",
+    "include/flutter/encodable_value.h",
+    "include/flutter/message_codec.h",
+    "include/flutter/method_call.h",
+    "include/flutter/method_codec.h",
+    "include/flutter/method_result.h",
+    "include/flutter/standard_codec_serializer.h",
+    "include/flutter/standard_message_codec.h",
+    "include/flutter/standard_method_codec.h",
+  ]
+
+  configs +=
+      [ "//flutter/shell/platform/common:desktop_library_implementation" ]
+}
+
 source_set("client_wrapper_library_stubs") {
   sources = [
     "testing/stub_flutter_api.cc",

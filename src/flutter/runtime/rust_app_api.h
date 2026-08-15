@@ -123,6 +123,30 @@ void rf_app_set_view_metrics(RfApp* app,
                              int64_t view_id,
                              const RfViewMetrics* metrics);
 
+// -- Platform state -----------------------------------------------------------
+//
+// What the platform says about itself. Not platform messages, even though it
+// arrives as one: `Engine` consumes `flutter/settings` and `flutter/localization`
+// on the way past and hands the contents here, exactly as upstream hands them
+// to `PlatformConfiguration` rather than letting them reach a channel.
+
+// The `flutter/settings` payload, verbatim: a JSON object with
+// `textScaleFactor`, `alwaysUse24HourFormat` and `platformBrightness`. Passed
+// as text rather than parsed here because the framework already has a JSON
+// reader and the shell does not.
+void rf_app_set_user_settings(RfApp* app, const char* json, size_t length);
+
+// The preferred locales, most preferred first, as a flat array of four strings
+// each: language code, country code, script code, variant code, in that order.
+// `count` is the number of locales, so the array holds `count * 4` pointers.
+// Any of the last three may be empty; the language code never is.
+//
+// Flat because that is the shape `flutter/localization` already carries and
+// upstream's `_updateLocales` already unpacks.
+void rf_app_set_locales(RfApp* app,
+                        const char* const* locales,
+                        size_t count);
+
 // -- Frames -------------------------------------------------------------------
 
 // Animation phase: advance tickers and transitions. Called from Animator.

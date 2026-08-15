@@ -33,7 +33,9 @@
 #include <imm.h>
 #include <windowsx.h>
 
+#include <atomic>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -73,6 +75,7 @@
 #include "flutter/fml/string_conversion.h"
 #include "flutter/shell/platform/common/text_input_model.h"
 #include "flutter/shell/platform/common/text_range.h"
+#include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -170,6 +173,15 @@ class DpiApi {
 // Posted by the raster thread once a frame has been copied into the shared
 // buffer. WM_APP is the first message id reserved for applications.
 constexpr UINT kMessageFramePresented = WM_APP + 1;
+
+// Posted by the platform thread when the framework has chosen a different
+// mouse cursor, so the window thread can apply it without waiting for the
+// pointer to move. See HandleMouseCursorCall.
+constexpr UINT kMessageCursorChanged = WM_APP + 2;
+
+// Posted by the platform thread when the framework has answered a
+// `System.requestAppExit` with "exit". See HandleExitResponse.
+constexpr UINT kMessageQuitApproved = WM_APP + 3;
 
 //------------------------------------------------------------------------------
 /// The pixels the window paints, and the lock that lets two threads share them.
@@ -894,6 +906,246 @@ class TextInputHandler {
   Sender sender_;
 };
 
+//------------------------------------------------------------------------------
+// The user's settings, and their languages.
+//
+// Two channels the framework never sees as channels: `Engine` takes both on the
+// way past and hands the contents to the framework directly, which is what
+// upstream does too. See rf_app_set_user_settings in rust_app_api.h.
+//
+// The readers are upstream's `settings_plugin.cc` and `system_utils.cc`, key
+// for key. What is *not* upstream is how a change is noticed: upstream asks the
+// registry to notify it (`RegNotifyChangeKeyValue` on two keys, each watched by
+// an `EventWatcher` thread). Here the window is already being told -- Windows
+// broadcasts `WM_SETTINGCHANGE` to every top-level window when the theme or the
+// regional settings change -- so the window proc re-reads and re-sends, and no
+// second thread is needed. The registry watcher exists upstream because a
+// headless engine may have no window; this host always has one.
+
+constexpr char kSettingsChannel[] = "flutter/settings";
+constexpr char kLocalizationChannel[] = "flutter/localization";
+
+/// Whether the reader has asked for dark mode.
+///
+/// Upstream's `GetThemeBrightness`. A machine too old to have the value is
+/// light, which is what a Windows without dark mode is.
+bool PrefersDarkTheme() {
+  DWORD use_light_theme = 0;
+  DWORD size = sizeof(use_light_theme);
+  LONG result = RegGetValueW(
+      HKEY_CURRENT_USER,
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &use_light_theme, &size);
+  return result == ERROR_SUCCESS && use_light_theme == 0;
+}
+
+/// The accessibility text scale, as a multiplier.
+///
+/// Upstream's `SettingsPlugin::GetTextScaleFactor`. The registry keeps it as a
+/// percentage; a machine without the value has never been asked to scale.
+double TextScaleFactor() {
+  DWORD percent = 0;
+  DWORD size = sizeof(percent);
+  LONG result =
+      RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility",
+                   L"TextScaleFactor", RRF_RT_REG_DWORD, nullptr, &percent,
+                   &size);
+  if (result != ERROR_SUCCESS || percent == 0) {
+    return 1.0;
+  }
+  return percent / 100.0;
+}
+
+/// Whether times should be written 13:00 rather than 1:00 PM.
+///
+/// Upstream's `GetUserTimeFormat` and `Prefer24HourTime`: the user's time
+/// format string, and whether it contains an `H`. Capital H is the 24-hour
+/// hour in every Windows format string; lowercase h is the 12-hour one.
+bool AlwaysUse24HourFormat() {
+  // Large enough for any reasonable format string, which is how upstream sizes
+  // it too rather than doing the call-allocate-call dance.
+  constexpr int kBufferSize = 100;
+  wchar_t buffer[kBufferSize] = {};
+  if (GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_STIMEFORMAT, buffer,
+                      kBufferSize) == 0) {
+    return false;
+  }
+  return std::wstring(buffer).find(L'H') != std::wstring::npos;
+}
+
+/// The `flutter/settings` payload.
+std::string SettingsPayload() {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("alwaysUse24HourFormat");
+  writer.Bool(AlwaysUse24HourFormat());
+  writer.Key("textScaleFactor");
+  writer.Double(TextScaleFactor());
+  writer.Key("platformBrightness");
+  writer.String(PrefersDarkTheme() ? "dark" : "light");
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+/// The reader's languages, most preferred first.
+///
+/// Upstream's `GetPreferredLanguages`: a double-null-terminated buffer of BCP 47
+/// names from `GetThreadPreferredUILanguages`. `MUI_UI_FALLBACK` is what makes
+/// the list non-empty on a machine whose preferred language has no installed
+/// language pack.
+std::vector<std::wstring> PreferredLanguages() {
+  ULONG count = 0;
+  ULONG size = 0;
+  const DWORD flags = MUI_LANGUAGE_NAME | MUI_UI_FALLBACK;
+  if (!GetThreadPreferredUILanguages(flags, &count, nullptr, &size)) {
+    return {};
+  }
+  std::wstring buffer(size, L'\0');
+  if (!GetThreadPreferredUILanguages(flags, &count, buffer.data(), &size)) {
+    return {};
+  }
+
+  std::vector<std::wstring> languages;
+  size_t start = 0;
+  while (start < buffer.size() && buffer[start] != L'\0') {
+    std::wstring language(buffer.c_str() + start);
+    if (language.empty()) {
+      break;
+    }
+    start += language.size() + 1;
+    languages.push_back(std::move(language));
+  }
+  return languages;
+}
+
+/// One BCP 47 name split into the four parts the channel carries.
+///
+/// Upstream's `ParseLanguageName`, including the two rules that are not
+/// obvious: a `-x-` suffix is private-use and is dropped, and a two-part name
+/// is `language-script` if the second part is four letters long and
+/// `language-region` otherwise -- because `zh-Hans` and `zh-CN` are the same
+/// shape and only the length tells them apart.
+struct LanguageInfo {
+  std::string language;
+  std::string region;
+  std::string script;
+};
+
+LanguageInfo ParseLanguageName(const std::wstring& name) {
+  std::vector<std::string> components;
+  const std::string utf8 = Narrow(name);
+  size_t start = 0;
+  while (start <= utf8.size()) {
+    size_t end = utf8.find('-', start);
+    std::string component = utf8.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    if (component == "x") {
+      break;
+    }
+    components.push_back(std::move(component));
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+
+  LanguageInfo info;
+  if (components.empty()) {
+    return info;
+  }
+  info.language = components[0];
+  if (components.size() >= 3) {
+    info.script = components[1];
+    info.region = components[2];
+  } else if (components.size() == 2) {
+    if (components[1].size() == 4) {
+      info.script = components[1];
+    } else {
+      info.region = components[1];
+    }
+  }
+  return info;
+}
+
+/// The `flutter/localization` payload.
+///
+/// The same JSON `FlutterEngineUpdateLocales` builds in embedder.cc: a
+/// `setLocale` call whose arguments are a flat array of four strings per
+/// locale, in language / country / script / variant order. Flat rather than
+/// nested because that is the shape `Engine::HandleLocalizationPlatformMessage`
+/// reads, and it is the shape because dart:ui reads it the same way.
+std::optional<std::string> LocalizationPayload() {
+  std::vector<std::wstring> languages = PreferredLanguages();
+  if (languages.empty()) {
+    return std::nullopt;
+  }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("method");
+  writer.String("setLocale");
+  writer.Key("args");
+  writer.StartArray();
+  for (const auto& language : languages) {
+    LanguageInfo info = ParseLanguageName(language);
+    if (info.language.empty()) {
+      continue;
+    }
+    writer.String(info.language.c_str());
+    writer.String(info.region.c_str());
+    writer.String(info.script.c_str());
+    // Windows has no variant code to report. The slot is still written,
+    // because the reader counts in fours.
+    writer.String("");
+  }
+  writer.EndArray();
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+//------------------------------------------------------------------------------
+// Application exit.
+//
+// The strings and the shape of the exchange are upstream's `platform_handler.cc`
+// and `windows_lifecycle_manager.cc`.
+//
+// Two methods and two directions. The framework can ask to exit
+// (`System.exitApplication`), and the platform can ask the framework whether it
+// *may* close (`System.requestAppExit`) -- which is the whole point of the
+// pair: a desktop window has a close button, and an application with unsaved
+// work needs a say in what it does.
+//
+// A close is only ever offered to the framework once the framework has said it
+// is listening on `flutter/platform`. Before that there is nobody to answer,
+// and a window whose close button silently did nothing would be worse than one
+// that closes. That signal is the channel update -- see
+// HostPlatformView::SendChannelUpdate.
+
+constexpr char kExitRequestError[] = "ExitApplication error";
+constexpr char kInvalidExitRequestMessage[] =
+    "Invalid application exit request";
+constexpr char kExitTypeRequired[] = "required";
+constexpr char kExitTypeCancelable[] = "cancelable";
+
+//------------------------------------------------------------------------------
+/// What `flutter/platform` needs from the shell to answer an exit request.
+///
+/// An interface rather than a direct call because the handler below is defined
+/// before the platform view that implements it, and because it is the whole of
+/// what that handler is allowed to reach.
+class ExitRequester {
+ public:
+  virtual ~ExitRequester() = default;
+
+  /// Asks the framework whether the application may close, and closes it if
+  /// the answer is yes. Upstream's `PlatformHandler::RequestAppExit`.
+  virtual void RequestAppExit(bool cancelable, UINT exit_code) = 0;
+
+  /// Closes without asking. Upstream's `PlatformHandler::QuitApplication`.
+  virtual void QuitApplication(UINT exit_code) = 0;
+};
+
 /// Handles one call on `flutter/platform`.
 ///
 /// Returns the reply, or nothing for a method this host does not implement --
@@ -901,9 +1153,54 @@ class TextInputHandler {
 /// is what tells the framework nobody served it. `SystemChannels.platform` is
 /// an `OptionalMethodChannel` precisely so that an unimplemented method is
 /// quiet rather than an exception.
-std::optional<std::string> HandlePlatformCall(HWND window,
+std::optional<std::string> HandlePlatformCall(ExitRequester* requester,
+                                              HWND window,
                                               const std::string& method,
                                               const rapidjson::Value* args) {
+  if (method == "System.exitApplication") {
+    // Upstream's `PlatformHandler::HandleMethodCall` and
+    // `SystemExitApplication`. Both arguments are required and both are
+    // checked, because a malformed request that closed the window anyway
+    // would be a worse failure than an error.
+    if (args == nullptr || !args->IsObject()) {
+      return ErrorEnvelope(kExitRequestError, kInvalidExitRequestMessage);
+    }
+    auto type = args->FindMember("type");
+    if (type == args->MemberEnd() || !type->value.IsString()) {
+      return ErrorEnvelope(kExitRequestError, kInvalidExitRequestMessage);
+    }
+    auto code = args->FindMember("exitCode");
+    if (code == args->MemberEnd() || !code->value.IsInt()) {
+      return ErrorEnvelope(kExitRequestError, kInvalidExitRequestMessage);
+    }
+    const auto exit_code = static_cast<UINT>(code->value.GetInt());
+    // Anything that is not "cancelable" is required, as upstream's
+    // `StringToAppExitType` decides it.
+    const bool cancelable =
+        std::string(type->value.GetString()) == kExitTypeCancelable;
+
+    if (!cancelable) {
+      requester->QuitApplication(exit_code);
+      return SuccessEnvelope([](auto& writer) {
+        writer.StartObject();
+        writer.Key("response");
+        writer.String("exit");
+        writer.EndObject();
+      });
+    }
+    // The surprising answer, and upstream's: a cancelable request is answered
+    // "cancel" straight away, because the actual question is only being asked
+    // now. If the framework says yes, the window closes; the reply to *this*
+    // call is not where that shows up.
+    requester->RequestAppExit(/*cancelable=*/true, exit_code);
+    return SuccessEnvelope([](auto& writer) {
+      writer.StartObject();
+      writer.Key("response");
+      writer.String("cancel");
+      writer.EndObject();
+    });
+  }
+
   if (method == "SystemNavigator.pop") {
     // Posted rather than sent: this runs on the platform thread and the window
     // belongs to another one, and closing a window from underneath the shell
@@ -1007,6 +1304,115 @@ std::optional<std::string> HandlePlatformCall(HWND window,
   }
 
   return std::nullopt;
+}
+
+//------------------------------------------------------------------------------
+// The mouse cursor.
+//
+// `flutter/mousecursor` is the first channel here that does not speak JSON. It
+// speaks the binary standard codec, which is why it waited: the codec is
+// `client_wrapper`'s, and reaching it meant first removing the dead
+// `common_cpp_accessibility` target that stopped the whole BUILD file from
+// loading. The handler below is upstream's `cursor_handler.cc`.
+
+constexpr char kMouseCursorChannel[] = "flutter/mousecursor";
+
+/// Upstream's `FlutterWindowsEngine::GetCursorByName`, name for name.
+///
+/// The framework picks the names, so this table is a protocol and not a
+/// preference: `SystemMouseCursors.click` sends `"click"` and expects a hand.
+/// An unknown name falls back to the arrow rather than failing, as upstream
+/// does -- a newer framework naming a cursor this table has never heard of
+/// should still leave the application usable.
+HCURSOR CursorByName(const std::string& name) {
+  static const auto* cursors = new std::map<std::string, const wchar_t*>{
+      {"allScroll", IDC_SIZEALL},
+      {"basic", IDC_ARROW},
+      {"click", IDC_HAND},
+      {"forbidden", IDC_NO},
+      {"help", IDC_HELP},
+      {"move", IDC_SIZEALL},
+      // Not a cursor: `SetCursor(nullptr)` hides it, which is what "none"
+      // means.
+      {"none", nullptr},
+      {"noDrop", IDC_NO},
+      {"precise", IDC_CROSS},
+      {"progress", IDC_APPSTARTING},
+      {"text", IDC_IBEAM},
+      {"resizeColumn", IDC_SIZEWE},
+      {"resizeDown", IDC_SIZENS},
+      {"resizeDownLeft", IDC_SIZENESW},
+      {"resizeDownRight", IDC_SIZENWSE},
+      {"resizeLeft", IDC_SIZEWE},
+      {"resizeLeftRight", IDC_SIZEWE},
+      {"resizeRight", IDC_SIZEWE},
+      {"resizeRow", IDC_SIZENS},
+      {"resizeUp", IDC_SIZENS},
+      {"resizeUpDown", IDC_SIZENS},
+      {"resizeUpLeft", IDC_SIZENWSE},
+      {"resizeUpRight", IDC_SIZENESW},
+      {"resizeUpLeftDownRight", IDC_SIZENWSE},
+      {"resizeUpRightDownLeft", IDC_SIZENESW},
+      {"wait", IDC_WAIT},
+  };
+  const wchar_t* idc_name = IDC_ARROW;
+  auto found = cursors->find(name);
+  if (found != cursors->end()) {
+    idc_name = found->second;
+  }
+  return LoadCursor(nullptr, idc_name);
+}
+
+/// Handles one call on `flutter/mousecursor`.
+///
+/// Returns the encoded reply, or nothing for a method this host does not
+/// serve, which the caller answers with an empty message.
+///
+/// Only `activateSystemCursor` is here. Upstream also has
+/// `createCustomCursor/windows` and friends, which turn a rawBGRA buffer into
+/// an `HCURSOR`; they are a separate feature with a separate framework API
+/// (`SystemMouseCursors` versus a custom cursor asset), and a framework that
+/// only ever sends system cursors never reaches them.
+///
+/// # Which thread
+///
+/// This runs on the platform thread and the window is on another one, so it
+/// does not call `SetCursor` itself. Upstream can, because upstream's platform
+/// thread *is* the window thread. Here the chosen cursor is stored where the
+/// window thread can read it and the window is nudged, which reproduces both
+/// halves of upstream's behaviour: the cursor changes at once even if the
+/// pointer is not moving, and it survives the next `WM_SETCURSOR`.
+std::optional<std::vector<uint8_t>> HandleMouseCursorCall(
+    HWND window,
+    std::atomic<HCURSOR>* cursor,
+    const MethodCall<EncodableValue>& call) {
+  const auto& codec = StandardMethodCodec::GetInstance();
+  if (call.method_name() != "activateSystemCursor") {
+    return std::nullopt;
+  }
+
+  const auto* arguments = std::get_if<EncodableMap>(call.arguments());
+  if (arguments == nullptr) {
+    return *codec.EncodeErrorEnvelope(
+        "Argument error",
+        "Missing argument while trying to activate system cursor");
+  }
+  auto kind = arguments->find(EncodableValue("kind"));
+  if (kind == arguments->end()) {
+    return *codec.EncodeErrorEnvelope(
+        "Argument error",
+        "Missing argument while trying to activate system cursor");
+  }
+  const auto* name = std::get_if<std::string>(&kind->second);
+  if (name == nullptr) {
+    return *codec.EncodeErrorEnvelope(
+        "Argument error",
+        "Missing argument while trying to activate system cursor");
+  }
+
+  cursor->store(CursorByName(*name), std::memory_order_relaxed);
+  PostMessage(window, kMessageCursorChanged, 0, 0);
+  return *codec.EncodeSuccessEnvelope();
 }
 
 std::optional<std::string> TextInputHandler::HandleMethodCall(
@@ -1290,24 +1696,109 @@ void TextInputHandler::SendStateUpdate() {
 }
 
 //------------------------------------------------------------------------------
+/// The state the window thread and the platform thread both touch.
+///
+/// Everything else the window keeps belongs to the window thread alone. These
+/// do not: the framework changes them from the platform thread and the window
+/// proc reads them, so they are atomics rather than plain fields. Upstream has
+/// no equivalent because upstream's window and platform thread are the same
+/// thread.
+struct SharedWindowState {
+  /// What `WM_SETCURSOR` applies. Null hides the cursor, which is what the
+  /// framework's `"none"` asks for.
+  std::atomic<HCURSOR> cursor{nullptr};
+
+  /// Whether the framework is listening on `flutter/platform`, and so whether
+  /// there is anybody to ask before closing the window.
+  std::atomic<bool> exit_processing{false};
+
+  /// Set once an exit has been approved, so that the `WM_CLOSE` which follows
+  /// is not offered to the framework a second time. Upstream keeps a multiset
+  /// of the close messages it re-dispatched; with a single window a flag says
+  /// the same thing.
+  std::atomic<bool> quit_approved{false};
+
+  /// What the process exits with, from `System.exitApplication`.
+  std::atomic<UINT> exit_code{0};
+};
+
+//------------------------------------------------------------------------------
+/// A reply to a message this host sent the framework.
+///
+/// The mirror image of `RustPlatformMessageResponse` in runtime_controller.cc:
+/// that one carries the framework's answer out to an embedder, this one carries
+/// the framework's answer back to the host. Completed on the UI thread, so the
+/// callback is posted to the platform thread rather than run where it lands.
+///
+/// Called exactly once, either way: the framework not handling the message
+/// completes it empty rather than dropping it, and a caller that must clean up
+/// after itself can therefore do so on the null.
+class HostPlatformMessageResponse : public PlatformMessageResponse {
+ public:
+  using Callback = std::function<void(const uint8_t*, size_t)>;
+
+  void Complete(std::unique_ptr<fml::Mapping> data) override {
+    if (data == nullptr) {
+      CompleteEmpty();
+      return;
+    }
+    Post(std::vector<uint8_t>(data->GetMapping(),
+                              data->GetMapping() + data->GetSize()));
+  }
+
+  void CompleteEmpty() override { Post({}); }
+
+ private:
+  HostPlatformMessageResponse(fml::RefPtr<fml::TaskRunner> task_runner,
+                              Callback callback)
+      : task_runner_(std::move(task_runner)),
+        callback_(std::move(callback)) {}
+
+  void Post(std::vector<uint8_t> reply) {
+    if (is_complete_) {
+      FML_LOG(ERROR) << "Platform message response completed more than once.";
+      return;
+    }
+    is_complete_ = true;
+    if (!task_runner_) {
+      return;
+    }
+    task_runner_->PostTask(fml::MakeCopyable(
+        [callback = callback_, reply = std::move(reply)]() mutable {
+          callback(reply.empty() ? nullptr : reply.data(), reply.size());
+        }));
+  }
+
+  fml::RefPtr<fml::TaskRunner> task_runner_;
+  Callback callback_;
+
+  FML_FRIEND_MAKE_REF_COUNTED(HostPlatformMessageResponse);
+  FML_FRIEND_REF_COUNTED_THREAD_SAFE(HostPlatformMessageResponse);
+  FML_DISALLOW_COPY_AND_ASSIGN(HostPlatformMessageResponse);
+};
+
+//------------------------------------------------------------------------------
 /// The shell's view of the window.
 ///
 /// Lives on the platform thread. AcquireBackingStore and PresentBackingStore
 /// are called on the raster thread; both are safe there because the surface is
 /// per-frame and the frame buffer is locked.
 class HostPlatformView final : public PlatformView,
-                               public GPUSurfaceSoftwareDelegate {
+                               public GPUSurfaceSoftwareDelegate,
+                               public ExitRequester {
  public:
   HostPlatformView(PlatformView::Delegate& delegate,
                    const TaskRunners& task_runners,
                    HWND window,
                    FrameBuffer* frame_buffer,
                    TextInputHandler* text_input,
+                   SharedWindowState* shared,
                    bool prefer_impeller)
       : PlatformView(delegate, task_runners),
         window_(window),
         frame_buffer_(frame_buffer),
         text_input_(text_input),
+        shared_(shared),
         prefer_impeller_(prefer_impeller) {}
 
   ~HostPlatformView() override = default;
@@ -1436,34 +1927,46 @@ class HostPlatformView final : public PlatformView,
   // |PlatformView|
   //
   // A message from the framework, on the platform thread. Upstream this is
-  // where an embedder's plugins are dispatched to; here it is the one channel
-  // this host serves. Everything else -- including `flutter/mousecursor`, which
-  // needs the binary codec -- falls through to an empty reply, which the
-  // framework reads as "nobody implements this".
+  // where an embedder's plugins are dispatched to; here it is the three
+  // channels this host serves. Anything else falls through to an empty reply,
+  // which the framework reads as "nobody implements this".
   void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
-    const bool platform = message->channel() == kPlatformChannel;
-    const bool editing = message->channel() == kTextInputChannel;
-    if (!platform && !editing) {
-      PlatformView::HandlePlatformMessage(std::move(message));
-      return;
-    }
-
     const auto& data = message->data();
-    rapidjson::Document document;
-    document.Parse(reinterpret_cast<const char*>(data.GetMapping()),
-                   data.GetSize());
+    std::optional<std::vector<uint8_t>> reply;
 
-    std::optional<std::string> reply;
-    if (!document.HasParseError() && document.IsObject()) {
-      auto method = document.FindMember("method");
-      if (method != document.MemberEnd() && method->value.IsString()) {
-        auto found = document.FindMember("args");
-        const rapidjson::Value* args =
-            found == document.MemberEnd() ? nullptr : &found->value;
-        reply = platform
-                    ? HandlePlatformCall(window_, method->value.GetString(), args)
-                    : text_input_->HandleMethodCall(method->value.GetString(),
-                                                    args);
+    if (message->channel() == kMouseCursorChannel) {
+      // The one channel here that is binary rather than JSON.
+      auto call = StandardMethodCodec::GetInstance().DecodeMethodCall(
+          data.GetMapping(), data.GetSize());
+      if (call) {
+        reply = HandleMouseCursorCall(window_, &shared_->cursor, *call);
+      }
+    } else {
+      const bool platform = message->channel() == kPlatformChannel;
+      const bool editing = message->channel() == kTextInputChannel;
+      if (!platform && !editing) {
+        PlatformView::HandlePlatformMessage(std::move(message));
+        return;
+      }
+
+      rapidjson::Document document;
+      document.Parse(reinterpret_cast<const char*>(data.GetMapping()),
+                     data.GetSize());
+      if (!document.HasParseError() && document.IsObject()) {
+        auto method = document.FindMember("method");
+        if (method != document.MemberEnd() && method->value.IsString()) {
+          auto found = document.FindMember("args");
+          const rapidjson::Value* args =
+              found == document.MemberEnd() ? nullptr : &found->value;
+          std::optional<std::string> json =
+              platform ? HandlePlatformCall(this, window_,
+                                            method->value.GetString(), args)
+                       : text_input_->HandleMethodCall(
+                             method->value.GetString(), args);
+          if (json.has_value()) {
+            reply.emplace(json->begin(), json->end());
+          }
+        }
       }
     }
 
@@ -1475,8 +1978,69 @@ class HostPlatformView final : public PlatformView,
       response->CompleteEmpty();
       return;
     }
-    response->Complete(std::make_unique<fml::DataMapping>(
-        std::vector<uint8_t>(reply->begin(), reply->end())));
+    response->Complete(
+        std::make_unique<fml::DataMapping>(std::move(*reply)));
+  }
+
+  // |PlatformView|
+  //
+  // The framework has started or stopped listening on a channel.
+  //
+  // Upstream's `FlutterWindowsEngine::OnChannelUpdate`, and it exists for one
+  // reason: a close button must not hang. Asking the framework whether it is
+  // all right to close is only meaningful once something over there is
+  // listening for the question, and until then the window closes the ordinary
+  // way. The framework sends this the moment `ServicesBinding` installs its
+  // `flutter/platform` handler.
+  void SendChannelUpdate(const std::string& name, bool listening) override {
+    if (name == kPlatformChannel) {
+      shared_->exit_processing.store(listening, std::memory_order_relaxed);
+    }
+  }
+
+  // |ExitRequester|
+  void RequestAppExit(bool cancelable, UINT exit_code) override {
+    // Upstream's `PlatformHandler::RequestAppExit`. The type is sent even
+    // though only "cancelable" is ever asked about, because the framework
+    // branches on it: a required exit is reported to
+    // `AppLifecycleListener.onExitRequested` as something it may not veto.
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("type");
+    writer.String(cancelable ? kExitTypeCancelable : kExitTypeRequired);
+    writer.EndObject();
+
+    SendMethodCallWithReply(
+        kPlatformChannel, "System.requestAppExit",
+        std::string(buffer.GetString(), buffer.GetSize()),
+        [this, exit_code](const uint8_t* reply, size_t length) {
+          HandleExitResponse(reply, length, exit_code);
+        });
+  }
+
+  // |ExitRequester|
+  void QuitApplication(UINT exit_code) override {
+    shared_->exit_code.store(exit_code, std::memory_order_relaxed);
+    // Upstream's `WindowsLifecycleManager::Quit` re-dispatches the WM_CLOSE it
+    // swallowed and lets it through the second time. Same thing, minus the
+    // bookkeeping a multi-window embedder needs: the flag the window proc
+    // checks is set before the message is posted.
+    shared_->quit_approved.store(true, std::memory_order_relaxed);
+    PostMessage(window_, kMessageQuitApproved, 0, 0);
+  }
+
+  //----------------------------------------------------------------------------
+  /// Tells the framework the reader's settings and languages.
+  ///
+  /// Sent once at startup and again whenever Windows says they changed. Both
+  /// are consumed by `Engine` rather than delivered to a channel handler; see
+  /// the readers above.
+  void SendPlatformSettings() {
+    SendOnChannel(kSettingsChannel, SettingsPayload());
+    if (auto locales = LocalizationPayload()) {
+      SendOnChannel(kLocalizationChannel, *locales);
+    }
   }
 
   //----------------------------------------------------------------------------
@@ -1513,6 +2077,79 @@ class HostPlatformView final : public PlatformView,
   }
 
  private:
+  //----------------------------------------------------------------------------
+  /// Sends a JSON method call and waits for its reply.
+  ///
+  /// The only caller is the exit request, and that is not a coincidence: a
+  /// platform message the *host* needs an answer to is rare, because almost
+  /// everything the platform has to say is a statement rather than a question.
+  ///
+  /// The callback runs on the platform thread, with null for "nobody handled
+  /// it" -- which for an exit request is the same as "no objection", because a
+  /// framework with no exit listener has nothing to save.
+  void SendMethodCallWithReply(const char* channel,
+                               const std::string& method,
+                               const std::string& arguments_json,
+                               HostPlatformMessageResponse::Callback callback) {
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("method");
+    writer.String(method.c_str());
+    writer.Key("args");
+    writer.RawValue(arguments_json.c_str(), arguments_json.size(),
+                    rapidjson::kObjectType);
+    writer.EndObject();
+    std::string payload(buffer.GetString(), buffer.GetSize());
+
+    auto response = fml::MakeRefCounted<HostPlatformMessageResponse>(
+        task_runners_.GetPlatformTaskRunner(), std::move(callback));
+    auto message = std::make_unique<PlatformMessage>(
+        channel, fml::MallocMapping::Copy(payload.data(), payload.size()),
+        std::move(response));
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+          if (weak) {
+            weak->DispatchPlatformMessage(std::move(message));
+          }
+        }));
+  }
+
+  //----------------------------------------------------------------------------
+  /// What the framework said when asked whether it may close.
+  ///
+  /// Upstream's `PlatformHandler::RequestAppExitSuccess`, and its one rule:
+  /// only `"exit"` closes the window. Anything else -- a cancel, a malformed
+  /// answer, no answer at all -- leaves the window open, which is the safe way
+  /// round for a question whose whole purpose is to protect unsaved work.
+  void HandleExitResponse(const uint8_t* reply, size_t length, UINT exit_code) {
+    if (reply == nullptr || length == 0) {
+      // Nobody handled it. Upstream never sees this case, because it only
+      // asks once the framework has said it is listening; here the listener
+      // could have gone away between the channel update and the question.
+      QuitApplication(exit_code);
+      return;
+    }
+    rapidjson::Document envelope;
+    envelope.Parse(reinterpret_cast<const char*>(reply), length);
+    // A success envelope, which is a one-element array holding the result.
+    if (envelope.HasParseError() || !envelope.IsArray() ||
+        envelope.Size() != 1 || !envelope[0].IsObject()) {
+      FML_LOG(ERROR) << "Application exit request response did not contain a "
+                        "valid response value.";
+      return;
+    }
+    auto response = envelope[0].FindMember("response");
+    if (response == envelope[0].MemberEnd() || !response->value.IsString()) {
+      FML_LOG(ERROR) << "Application exit request response did not contain a "
+                        "valid response value.";
+      return;
+    }
+    if (std::string(response->value.GetString()) == "exit") {
+      QuitApplication(exit_code);
+    }
+  }
+
   void SendOnChannel(const char* channel, const std::string& payload) {
     auto message = std::make_unique<PlatformMessage>(
         channel, fml::MallocMapping::Copy(payload.data(), payload.size()),
@@ -1593,6 +2230,7 @@ class HostPlatformView final : public PlatformView,
   HWND window_ = nullptr;
   FrameBuffer* frame_buffer_ = nullptr;
   TextInputHandler* text_input_ = nullptr;
+  SharedWindowState* shared_ = nullptr;
   bool prefer_impeller_ = false;
   std::unique_ptr<ImpellerGlContext> gl_context_;
   std::unique_ptr<ImpellerGlDelegate> gl_delegate_;
@@ -1645,6 +2283,8 @@ struct WindowState {
   /// The text field the framework has attached, and the IME serving it.
   TextInputHandler text_input;
   std::optional<ImeContext> ime;
+  /// The cursor and the exit handshake, which the platform thread also writes.
+  SharedWindowState shared;
 };
 
 /// Puts the IME's window where the framework says the caret is.
@@ -2079,6 +2719,68 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case kMessageFramePresented:
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
+
+    case WM_SETTINGCHANGE:
+    case WM_THEMECHANGED:
+      // The reader changed something in Settings. Windows does not say what,
+      // beyond a section name that is not documented per-setting, so both
+      // messages are re-read in full -- which is cheap, and is what makes a
+      // dark-mode toggle repaint the application while it is running.
+      //
+      // Upstream watches the two registry keys from a helper thread instead;
+      // see the note on the readers. The window is already being told, so this
+      // host listens where it is standing.
+      if (state != nullptr && state->platform_view != nullptr) {
+        state->platform_view->SendPlatformSettings();
+      }
+      break;
+
+    case kMessageCursorChanged:
+      // The framework chose a different cursor. Applied here as well as in
+      // WM_SETCURSOR because the pointer may not be moving: content can change
+      // under a stationary cursor, and upstream -- whose platform thread is
+      // this thread -- calls SetCursor straight from the channel handler.
+      if (state != nullptr) {
+        SetCursor(state->shared.cursor.load(std::memory_order_relaxed));
+      }
+      return 0;
+
+    case WM_SETCURSOR:
+      // Only inside the client area. Everywhere else -- the border, the title
+      // bar, the resize corners -- is the system's to draw, and returning TRUE
+      // there would leave a resize edge showing an I-beam.
+      if (LOWORD(lparam) == HTCLIENT) {
+        if (state != nullptr) {
+          SetCursor(state->shared.cursor.load(std::memory_order_relaxed));
+        }
+        // Upstream returns TRUE here for the same reason: DefWindowProc would
+        // otherwise put the window class's cursor back, undoing the choice on
+        // the next mouse move.
+        return TRUE;
+      }
+      break;
+
+    case kMessageQuitApproved:
+      // The framework said the application may close, or asked it to. The flag
+      // is already set, so this WM_CLOSE goes through rather than being asked
+      // about a second time.
+      DestroyWindow(hwnd);
+      return 0;
+
+    case WM_CLOSE:
+      // Upstream's `WindowsLifecycleManager::HandleCloseMessage`. The close is
+      // only offered to the framework when the framework is listening and has
+      // not already approved it; otherwise it falls through to DefWindowProc,
+      // which destroys the window.
+      if (state != nullptr && state->platform_view != nullptr &&
+          state->shared.exit_processing.load(std::memory_order_relaxed) &&
+          !state->shared.quit_approved.load(std::memory_order_relaxed)) {
+        state->platform_view->RequestAppExit(/*cancelable=*/true,
+                                             /*exit_code=*/0);
+        // Swallowed. If the framework agrees, kMessageQuitApproved arrives.
+        return 0;
+      }
+      break;
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hdc = BeginPaint(hwnd, &ps);
@@ -2326,7 +3028,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       // because an application may have something to write down before it
       // goes -- upstream's `detached` is where state restoration saves.
       SendLifecycle(state, "AppLifecycleState.detached");
-      PostQuitMessage(0);
+      // The code `System.exitApplication` asked for, which is zero for every
+      // other way of getting here.
+      PostQuitMessage(state == nullptr ? 0
+                                       : static_cast<int>(state->shared.exit_code
+                                                              .load()));
       return 0;
     default:
       break;
@@ -2433,6 +3139,11 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // The IME needs the window handle, so it cannot exist before this point.
   state.ime.emplace(window);
 
+  // What WM_SETCURSOR applies until the framework says otherwise. The window
+  // class carries the same cursor, but the class's copy stops being consulted
+  // the moment WM_SETCURSOR starts returning TRUE.
+  state.shared.cursor.store(LoadCursor(nullptr, IDC_ARROW));
+
   // Only now is there a window to ask which display it landed on. Redo the
   // sizing at that display's DPI; at 100% this is the same rectangle and the
   // SetWindowPos is a no-op.
@@ -2470,7 +3181,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
       [window, &state, impeller = settings.enable_impeller](Shell& shell) {
         auto view = std::make_unique<HostPlatformView>(
             shell, shell.GetTaskRunners(), window, &state.frame_buffer,
-            &state.text_input, impeller);
+            &state.text_input, &state.shared, impeller);
         // The window proc needs to reach the view to send pointers. The shell
         // owns it and outlives the message loop, so a raw pointer is enough.
         state.platform_view = view.get();
@@ -2524,6 +3235,11 @@ int32_t rf_host_run(const RfHostOptions* options) {
             state.device_pixel_ratio));
         shell->OnDisplayUpdates(std::move(displays));
         SendViewportMetrics(&state, width, height);
+        // Before the first frame, so that an application choosing between the
+        // light and the dark theme in its first `build` chooses correctly
+        // rather than showing one frame of the wrong one. Upstream sends both
+        // from the engine's `Run` for the same reason.
+        state.platform_view->SendPlatformSettings();
       }));
 
   ShowWindow(window, SW_SHOWNORMAL);
@@ -2566,5 +3282,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
       }));
   latch.Wait();
 
-  return 0;
+  // What PostQuitMessage was given, which is zero for every way of closing the
+  // window except a `System.exitApplication` that asked for something else.
+  return static_cast<int32_t>(message.wParam);
 }

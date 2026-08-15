@@ -1123,7 +1123,12 @@ handler 出现时排空），这里照做，理由一样：丢了它，应用就
 | 通道 | 方向 | 内容 |
 |---|---|---|
 | `flutter/lifecycle` | host → 框架 | 启动 resumed；`WM_ACTIVATE` in/active；最小化 hidden；`WM_DESTROY` detached |
-| `flutter/platform` | 框架 → host | `Clipboard.getData/setData/hasStrings`、`SystemNavigator.pop`、`SystemSound.play` |
+| `flutter/platform` | 框架 → host | `Clipboard.getData/setData/hasStrings`、`SystemNavigator.pop`、`SystemSound.play`、`System.exitApplication` |
+| `flutter/platform` | host → 框架 | `System.requestAppExit`（这条是**反过来**的，见下） |
+| `flutter/textinput` | 双向 | `setClient`/`show`/`setEditingState`… ↔ `updateEditingState`/`performAction` |
+| `flutter/mousecursor` | 框架 → host | `activateSystemCursor` |
+| `flutter/settings` | host → 框架 | 亮度、文字缩放、24 小时制 |
+| `flutter/localization` | host → 框架 | `setLocale` |
 
 **照上游的行为，包括反直觉的那几处。** 这一块第一版是凭印象写的，后来逐条
 对着 `platform_handler.cc` 校了一遍，改了五处：
@@ -1144,16 +1149,85 @@ handler 出现时排空），这里照做，理由一样：丢了它，应用就
 循环，还在注释里说"上游也这么干"，两件事都不对：上游没有，而且这段跑在
 platform 线程上，睡的是整条 shell 的任务队列。
 
-`flutter/mousecursor` 没做，理由具体：它说二进制标准格式，而引擎自己那个
-C++ 标准编解码器（`shell/platform/common/client_wrapper`）在这个 fork 里
-**够不着**——`shell/platform/common/BUILD.gn` 依赖 `third_party/accessibility`，
-导入时删掉了，GN 连那个 BUILD 文件都载不进来。剩下的选择是在 host 里手写
-第二份标准编解码器，而"同一个格式写两遍"正是这次移植一路在躲的东西。
+### `flutter/mousecursor`：第一条不说 JSON 的通道
 
-所以框架侧 `SystemMouseCursor::activate` 是通的，发出去没人答，回来是空的
-——和一个 Flutter 应用调用未安装插件拿到的答案是同一个。要做的话，先把
-`third_party/accessibility` 拿回来，或者给标准编解码器单开一个不经过
-`shell/platform/common` 的 GN 目标。
+它说**二进制标准格式**，这就是它一直排在最后的原因。引擎自己那份 C++ 标准
+编解码器在 `shell/platform/common/client_wrapper`，而这个 fork 里一度够不着：
+`shell/platform/common/BUILD.gn` 里有个 `common_cpp_accessibility` 目标指向
+导入时删掉的 `third_party/accessibility`，**GN 解析不了的 label 会让整个
+BUILD 文件载不进来**——一个死目标带走了同文件里所有活目标。拆掉它，文本输入
+模型和标准编解码器一起够着了（第 `flutter/textinput` 那节也是靠这个）。
+
+`client_wrapper` 整体还是不能直接链：`core_implementations.cc` 和
+`plugin_registrar.cc` 是照着 `FlutterDesktop*` 那套 C API 写的，这个 fork 不
+构建桌面嵌入层，链进去就是一堆未定义符号。所以新开了一个
+`client_wrapper:standard_codec` 目标，只有 `standard_codec.cc` —— 它的头文件
+只要 `EncodableValue` 和字节流，一个外部符号都不要。**没有手写第二份编解码
+器**，这是这次移植一路在躲的东西。
+
+处理照 `cursor_handler.cc`，名字表照 `FlutterWindowsEngine::GetCursorByName`
+（一个都没改，因为名字是协议不是偏好：`SystemMouseCursors.click` 发的就是
+`"click"`）。自定义光标那三个方法（`createCustomCursor/windows` 等）没做，
+它们是另一套 API，只发系统光标的框架永远走不到。
+
+**线程上和上游不一样，而且必须不一样。** 上游 platform 线程就是窗口线程，
+所以 `SetFlutterCursor` 直接 `SetCursor`。这里通道调用在 platform 线程、窗口
+在另一条，于是选中的光标存进一个 atomic，窗口线程从两处取用：`WM_SETCURSOR`
+（返回 `TRUE`，否则 `DefWindowProc` 会把窗口类的光标塞回来），以及一条 posted
+消息（指针不动时内容也可能变，上游那一句 `SetCursor` 对应的就是这个）。
+
+### 可取消的退出，和 channel update 终于有人消费了
+
+桌面窗口有个关闭按钮，而有未存盘内容的应用需要有话可说。上游这一对是
+`System.exitApplication`（框架 → 平台）和 `System.requestAppExit`
+（平台 → 框架），实现在 `platform_handler.cc` + `windows_lifecycle_manager.cc`。
+
+握手是这样，反直觉的地方在第 3 步：
+
+1. `WM_CLOSE` 来了，host **吞掉**它，发 `System.requestAppExit`
+   `{"type":"cancelable"}`。
+2. 框架答 `{"response":"exit"}` 才关；答 `cancel`、答得不对、或者根本没答成
+   合法信封，窗口就留着——一个用来保护未存盘内容的问题，出错时必须偏向不关。
+3. 框架自己调 `System.exitApplication` 且 type 是 `cancelable` 时，host **当场
+   答 `cancel`**，然后才去问。这不是移植的怪癖：真正的答案是窗口关不关，那条
+   回复只是说"这次调用没有直接关掉它"。`required` 则直接关，答 `exit`。
+
+**这是 `send_channel_update` 第一次有人消费。** 只有在框架说了它正在听
+`flutter/platform` 之后，host 才会把关闭请求交给框架——否则问了没人答，关闭
+按钮就成了死的。上游 `FlutterWindowsEngine::OnChannelUpdate` 里
+`BeginProcessingExit` 就是干这个。对应地，框架侧的 handler 是在 `attach` 里
+装的（上游是 `ServicesBinding.initInstances`），不是等应用来要：**从没听说过
+这套协议的应用，关闭按钮也必须能用**，所以默认答案是 `exit`。
+
+`exitCode` 也是真的：host 存下来交给 `PostQuitMessage`，`rf_host_run` 返回
+`msg.wParam`，`app::run` 把非零变成 `Err(code)`。做到一半就等于在撒谎。
+
+### 用户设置和语言：两条不经过通道的通道
+
+`flutter/settings` 和 `flutter/localization` 都是平台消息，但**框架永远不会
+把它们当消息看见**：`Engine::HandleSettingsPlatformMessage` 和
+`HandleLocalizationPlatformMessage` 在半路上就把它们吃掉了，内容交给
+`PlatformConfiguration`。上游如此，这里也如此——所以 Rust 侧它们落在
+`platform.rs` 而不是 `services/`，那是上游 `PlatformDispatcher` 的位置。
+
+之前的缺口正是最后这一段：`SetUserSettingsData` / `SetLocales` 只记在
+`platform_data_` 里，没往下送。现在经 `rf_app_set_user_settings` /
+`rf_app_set_locales` 进框架，`LaunchApplication` 里也会补发一遍（上游
+`FlushRuntimeStateToIsolate` 同理：嵌入层在有东西可配置之前就配置了）。
+
+读取照 `settings_plugin.cc` 和 `system_utils.cc`：注册表里的
+`AppsUseLightTheme` 和 `TextScaleFactor`，时间格式里有没有 `H`，
+`GetThreadPreferredUILanguages` + `ParseLanguageName`（两条规则不明显：`-x-`
+后缀是私用要丢掉；两段名字里第二段四个字母是 script、否则是 region——
+`zh-Hans` 和 `zh-CN` 形状一样，只有长度分得开）。
+
+**变化怎么知道，这里和上游不同。** 上游拿 `RegNotifyChangeKeyValue` 监视两个
+注册表键，每个配一条 `EventWatcher` 线程。这里窗口本来就会被通知——改主题时
+Windows 向每个顶层窗口广播 `WM_SETTINGCHANGE`——所以窗口过程重读重发，不用
+第二条线程。上游要注册表监视是因为无窗口的引擎也得工作；这个 host 总有窗口。
+
+一处解析上的选择：**缺的成员保持原值，不回默认值**。只报 `platformBrightness`
+的嵌入层（很合理的做法）不能把读者的文字缩放悄悄重置成 1。
 
 ### 三处只有跨 C ABI 才会暴露的问题
 
@@ -1188,12 +1262,25 @@ platform_channels: PASS        （exit 0）
   setData → hasStrings → getData 走真 Win32 剪贴板往返
   没人服务的通道回 Ok(None)，不是挂住
   错误信封的 code 是 "Clipboard error"，和上游一个字不差
-  SystemNavigator.pop 真关了窗口，进程自己退出
+  点窗口 → 打字 → on_changed("ab中")，光标按 UTF-16 码元算
+  mousecursor 三问：正常一次、没人服务的方法一次、少了 kind 一次
+    （后两条才是关键：它们说明 host 真的解了二进制标准格式）
+  WM_SETCURSOR 被窗口认领 —— 不认领的话下一次鼠标移动就被窗口类顶回去
+  设置里的亮度和探针自己读的注册表对得上；语言列表非空且形状合法
+  WM_CLOSE 被应用拒绝一次，窗口还在 —— 这就是整套协议的意义
+  System.exitApplication(required, code) 关掉窗口，code 成了进程退出码
 ```
 
-单测 132 → 207（+75）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
-打进去、逐帧读回 GPU framebuffer）照旧 PASS —— `flutter/keydata` 和新的
-通道走的是同一个 `DispatchPlatformMessage`。
+退出码那条是单独验过的：把它临时改成 `failures + 7`，进程退出码就是 7。
+
+单测 132 → 224（+92）。FFI 单测 15 个照旧。五个例子加相册**全部**做了关闭
+回归（发 `WM_CLOSE`，等进程退出）——每一次关闭现在都要绕框架走一圈，一个
+从没听说过退出协议的应用也必须照关不误。
+
+**组词那一段仍然没测到**：本机 `ImmGetContext` 返回 null。光标形状也只在指针
+真的停在窗口客户区上时才比对——光标是整个桌面共享的一份，指针在别的窗口上时
+`SetCursor` 会被系统顶回去，这是 Win32 的规则，不是这里的缺陷。两处都报
+SKIP 并说明理由，不假装通过。
 
 ### 文本输入与输入法
 
@@ -1244,16 +1331,23 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
 
 ### 还知道没做的
 
-- **`System.exitApplication` / `System.requestAppExit`。** 桌面上上游用这一对
-  做**可取消的退出**：嵌入层问框架"能关吗"，框架可以答 cancel。这里只做了
-  `SystemNavigator.pop`（直接关）和 `System.initializationComplete`（答一声）。
+- **退出请求必须同步答。** 上游 `AppLifecycleListener.onExitRequested` 返回
+  `Future`，所以 Flutter 应用可以弹一个"要保存吗"再答。这里 `on_exit_requested`
+  是同步的：要等读者，就现在答 `Cancel`、之后再调 `exit_application`。同一场
+  对话，等待挪进了应用里。
+- **自定义鼠标光标没做。** `createCustomCursor/windows` 那三个方法。系统光标
+  的名字表是全的；自定义光标是另一套 API（rawBGRA 位图转 `HCURSOR`）。
 - **messenger 是 thread_local，而且没有实例的概念。** 同一个线程上建第二个
   app 会共用同一张通道表；从非 UI 线程调 `Clipboard::get_data` 会静默拿到一个
   空 messenger，立刻以 `None` 回调。平台消息本来就是 UI 线程的事，但目前是
-  靠约定而不是靠类型挡住的。
-- **`send_channel_update` 一路传到 `PlatformView` 的默认空实现**，没人消费。
-  上游 Windows 用它决定要不要压住 `flutter/lifecycle`。
-- **`EventChannel` 只有单测。** 没有哪一侧实现了一条真的流可以对着跑。
+  靠约定而不是靠类型挡住的。`platform.rs` 同理。
+- **`flutter/lifecycle` 不看 channel update。** 上游 Windows 会等框架说它在听
+  才开始发；这里一律发，靠 messenger 的缓冲兜住早到的那几条——例子第一条
+  `Resumed` 正是这么收到的。结果一样，路子不同。
+- **`EventChannel` 只有单测。** 没有哪一侧实现了一条真的流可以对着跑，因为
+  引擎自己定义的通道里一条流也没有。要对着跑就得自己发明一条，那不是移植。
+- **文字缩放没有接进排版。** `platform::text_scale_factor()` 是通的，但没有
+  哪个 widget 读它。上游是 `MediaQuery.textScaler` 一路传到 `Text`。
 
 ---
 
@@ -1270,13 +1364,13 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
 2. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
 4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-4. **嵌入层那一侧剩下的通道。** 传输、编解码器、三层通道、`flutter/platform`
-   与 `flutter/textinput` 都有了（第十五节）。还缺:`flutter/mousecursor`
-   （要一个 C++ 标准编解码器,`common_cpp_accessibility` 拆掉之后
-   `client_wrapper` 已经够得着了,是下一个该做的）;`flutter/settings` 与
-   `flutter/localization` 被 `Engine` 就地答掉,它们说的话要经
-   `SetUserSettingsData` / `SetLocales` 再进框架,而这两个现在只记在
-   `platform_data_` 里没往下送。
+4. **把平台状态接进 widget。** 通道那一侧齐了（第十五节：传输、编解码器、
+   三层通道、`flutter/platform`、`flutter/textinput`、`flutter/mousecursor`、
+   `flutter/settings`、`flutter/localization`，两个方向都通）。差的是**框架
+   里面**：`platform::text_scale_factor()` 没有哪个 widget 读，
+   `platform::brightness()` 要应用自己去挑 `Theme::dark()`。上游是
+   `MediaQuery` 加 `InheritedWidget` 依赖追踪把这些送到每个 `Text`——所以这条
+   其实要等第 2 条。
 5. **焦点树。** 键盘现在只到应用级。上游那一摊在框架侧一万六千行，
    其中 `focus_traversal.dart` 单文件 2575 行——光是"Tab 该往哪儿走"。
 6. **键盘的 redispatch。** 让框架能真正吃掉一个键。需要把 `on_key` 的答案

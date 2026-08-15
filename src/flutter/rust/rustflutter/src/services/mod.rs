@@ -300,6 +300,12 @@ fn with_messenger<R>(body: impl FnOnce(&mut Messenger) -> R) -> R {
 /// the application.
 pub fn attach(sink: Rc<dyn PlatformSink>) {
     with_messenger(|messenger| messenger.sink = Some(sink));
+    // Before any application code runs, and upstream's `ServicesBinding`
+    // installs its handlers at the same moment for the same reason: the close
+    // button must work in an application that has never heard of the exit
+    // protocol, and registering the handler is what tells the embedder there
+    // is anybody to ask. See system::install_exit_handler.
+    system::install_exit_handler();
 }
 
 /// Drops the embedder and fails everything still waiting.
@@ -308,6 +314,9 @@ pub fn attach(sink: Rc<dyn PlatformSink>) {
 /// to deliver has to be told it is not coming, or it waits for the life of the
 /// process.
 pub fn detach() {
+    // Before the channels are cleared, because it drops what the application
+    // put there rather than only what `attach` did.
+    system::remove_exit_handler();
     let waiting = with_messenger(|messenger| {
         messenger.sink = None;
         messenger.channels.clear();
@@ -687,6 +696,20 @@ mod tests {
     use super::*;
     use std::cell::RefCell as StdRefCell;
 
+    /// The listening states reported for one channel, in order.
+    ///
+    /// Filtered rather than compared whole because `attach` registers the exit
+    /// handler on `flutter/platform`, so every recorder starts with one update
+    /// already in it.
+    fn updates_for(recorder: &tests_support::Recorder, channel: &str) -> Vec<bool> {
+        recorder
+            .updates()
+            .into_iter()
+            .filter(|(name, _)| name == channel)
+            .map(|(_, listening)| listening)
+            .collect()
+    }
+
     fn collector() -> (Rc<StdRefCell<Vec<Vec<u8>>>>, MessageHandler) {
         let seen = Rc::new(StdRefCell::new(Vec::new()));
         let recorded = seen.clone();
@@ -874,8 +897,8 @@ mod tests {
         handle_platform_message("test/once", b"go", 0);
         // Registering, then the handler removing itself. Not two of either.
         assert_eq!(
-            recorder.updates(),
-            vec![("test/once".to_string(), true), ("test/once".to_string(), false)]
+            updates_for(&recorder, "test/once"),
+            vec![true, false]
         );
     }
 
@@ -1031,9 +1054,27 @@ mod tests {
         set_handler("flutter/lifecycle", Box::new(|_message, _respond| {}));
         clear_handler("flutter/lifecycle");
         assert_eq!(
-            recorder.updates(),
-            vec![("flutter/lifecycle".to_string(), true), ("flutter/lifecycle".to_string(), false)],
+            updates_for(&recorder, "flutter/lifecycle"),
+            vec![true, false],
             "the update reports a change in state, not every registration"
+        );
+    }
+
+    #[test]
+    fn attaching_says_there_is_somebody_to_ask_before_closing() {
+        // Not an implementation detail of `attach`: on Windows this update is
+        // what turns the embedder's WM_CLOSE handling on, so an application
+        // that never mentions the exit protocol still gets asked -- and still
+        // closes, because the default answer is `exit`.
+        let recorder = install();
+        assert_eq!(updates_for(&recorder, "flutter/platform"), vec![true]);
+        assert!(has_handler("flutter/platform"));
+
+        detach();
+        assert_eq!(
+            updates_for(&recorder, "flutter/platform"),
+            vec![true, false],
+            "an embedder that is told nobody is listening closes the window itself"
         );
     }
 }

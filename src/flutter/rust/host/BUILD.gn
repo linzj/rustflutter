@@ -40,6 +40,10 @@ source_set("host") {
     # vendors and parses its own channels with (shell/common/engine.cc).
     "//flutter/third_party/rapidjson",
     "//flutter/shell/platform/common:common_cpp_input",
+
+    # `flutter/mousecursor` speaks the binary standard codec, and this is the
+    # engine's own implementation of it rather than a second one.
+    "//flutter/shell/platform/common/client_wrapper:standard_codec",
   ]
 
   if (is_win) {

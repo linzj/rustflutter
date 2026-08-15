@@ -136,6 +136,11 @@ bool RuntimeController::LaunchApplication() {
     RfViewMetrics rf_metrics = ToRfViewMetrics(metrics);
     rf_app_add_view(app_, view_id, &rf_metrics);
   }
+  if (!platform_data_.user_settings_data.empty()) {
+    rf_app_set_user_settings(app_, platform_data_.user_settings_data.data(),
+                             platform_data_.user_settings_data.size());
+  }
+  PushLocales();
 
   if (rf_app_launch(app_) != 0) {
     FML_LOG(ERROR) << "The Rust application entry point failed.";
@@ -242,12 +247,39 @@ bool RuntimeController::SetDisplays(const std::vector<DisplayData>& displays) {
 bool RuntimeController::SetLocales(
     const std::vector<std::string>& locale_data) {
   platform_data_.locale_data = locale_data;
-  return app_ != nullptr;
+  if (app_ == nullptr) {
+    return false;
+  }
+  PushLocales();
+  return true;
 }
 
 bool RuntimeController::SetUserSettingsData(const std::string& data) {
   platform_data_.user_settings_data = data;
-  return app_ != nullptr;
+  if (app_ == nullptr) {
+    return false;
+  }
+  rf_app_set_user_settings(app_, data.data(), data.size());
+  return true;
+}
+
+void RuntimeController::PushLocales() {
+  // Four strings per locale, which is the shape `flutter/localization` already
+  // carries; a trailing partial group would mean the message was malformed, and
+  // Engine::HandleLocalizationPlatformMessage rejects those before they get
+  // here.
+  constexpr size_t kStringsPerLocale = 4;
+  const auto& data = platform_data_.locale_data;
+  const size_t count = data.size() / kStringsPerLocale;
+  if (count == 0) {
+    return;
+  }
+  std::vector<const char*> pointers;
+  pointers.reserve(count * kStringsPerLocale);
+  for (size_t i = 0; i < count * kStringsPerLocale; ++i) {
+    pointers.push_back(data[i].c_str());
+  }
+  rf_app_set_locales(app_, pointers.data(), count);
 }
 
 bool RuntimeController::SetInitialLifecycleState(const std::string& data) {

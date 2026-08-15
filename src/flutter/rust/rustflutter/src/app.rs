@@ -27,6 +27,7 @@ use crate::engine::{self, Color, LayerTree};
 use crate::framework::{AnyWidget, ElementTree};
 use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::keyboard::{KeyEvent, Keyboard};
+use crate::platform;
 use crate::services;
 use crate::render::{BoxConstraints, PaintContext, RenderBox};
 use crate::widgets::{BoxedWidget, Offset, Size};
@@ -766,6 +767,11 @@ impl Default for RunOptions {
 /// Call [`register_application`] first. From here on the engine is in charge:
 /// frames come from vsync, and each one runs
 /// `Animator -> Engine -> RuntimeController -> Application::build`.
+///
+/// `Err(code)` is what the process should exit with, and it covers two things
+/// that are the same thing from the caller's side: the host could not start
+/// (negative), or the application asked to exit with a code of its own through
+/// [`services::system::exit_application`] (positive).
 #[cfg(not(test))]
 pub fn run(options: &RunOptions) -> Result<(), i32> {
     let title = std::ffi::CString::new(options.title.as_str()).map_err(|_| -1)?;
@@ -843,6 +849,9 @@ mod abi {
         // cannot be asked to run against a half-torn-down instance, and so that
         // anything still waiting on a reply is failed rather than left waiting.
         services::detach();
+        // Thread-local as well, and for the same reason: a second app on this
+        // thread must not start out believing the first one's platform state.
+        platform::reset();
         drop(instance);
     }
 
@@ -905,6 +914,70 @@ mod abi {
             *slot = unsafe { *metrics };
             instance.schedule_frame();
         }
+    }
+
+    /// The `flutter/settings` payload, which `Engine` took on the way past.
+    ///
+    /// Not a platform message by the time it reaches here, and upstream does
+    /// the same thing for the same reason: settings are state the framework
+    /// keeps, not a call it answers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_set_user_settings(
+        app: *mut RfApp,
+        json: *const c_char,
+        length: usize,
+    ) {
+        if instance(app).is_none() || json.is_null() {
+            return;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(json as *const u8, length) };
+        // A settings payload that is not UTF-8 is a broken embedder, and the
+        // right thing is to keep the settings we have rather than guess.
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        platform::set_user_settings(text);
+    }
+
+    /// The preferred locales, four strings each: language, country, script,
+    /// variant. See `rf_app_set_locales` in rust_app_api.h for the layout.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_set_locales(
+        app: *mut RfApp,
+        locales: *const *const c_char,
+        count: usize,
+    ) {
+        if instance(app).is_none() || locales.is_null() {
+            return;
+        }
+        let flat = unsafe { std::slice::from_raw_parts(locales, count * 4) };
+        let mut parsed = Vec::with_capacity(count);
+        for group in flat.chunks_exact(4) {
+            // An empty string is how the message says "this part is absent",
+            // which is not the same as a part whose value is empty.
+            let read = |pointer: *const c_char| -> Option<String> {
+                if pointer.is_null() {
+                    return None;
+                }
+                let text = unsafe { std::ffi::CStr::from_ptr(pointer) }
+                    .to_string_lossy()
+                    .into_owned();
+                if text.is_empty() { None } else { Some(text) }
+            };
+            // The language code is the one part that is required. A locale
+            // without one says nothing at all, so it is dropped rather than
+            // stored as a locale that no lookup could ever match.
+            let Some(language_code) = read(group[0]) else {
+                continue;
+            };
+            parsed.push(platform::Locale {
+                language_code,
+                country_code: read(group[1]),
+                script_code: read(group[2]),
+                variant_code: read(group[3]),
+            });
+        }
+        platform::set_locales(parsed);
     }
 
     #[unsafe(no_mangle)]

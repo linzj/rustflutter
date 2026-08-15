@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use rustflutter::platform;
 use rustflutter::prelude::*;
 use rustflutter::services::system;
 use rustflutter::services::{MethodChannel, StandardMethodCodec};
@@ -66,6 +67,18 @@ struct Results {
     /// The text while composing, and after the composition was committed.
     composing_text: Option<String>,
     committed_text: Option<String>,
+    /// What the mouse cursor channel answered: a success, an unserved method,
+    /// and a call with the `kind` left out.
+    cursor_ok: Option<bool>,
+    cursor_unknown_method: Option<bool>,
+    cursor_bad_arguments: Option<String>,
+    /// Whether the window claimed WM_SETCURSOR, and what the cursor became.
+    cursor_claimed: Option<bool>,
+    cursor_applied: Option<Option<bool>>,
+    /// The first exit request the framework was asked, and whether refusing it
+    /// left the window open.
+    exit_requested: Option<system::AppExitType>,
+    survived_refusal: Option<bool>,
 }
 
 impl Results {
@@ -90,6 +103,10 @@ impl Results {
             && self.bad_format.is_some()
             && self.typed_arrived()
             && self.composition_settled()
+            && self.cursor_ok.is_some()
+            && self.cursor_unknown_method.is_some()
+            && self.cursor_bad_arguments.is_some()
+            && self.survived_refusal.is_some()
     }
 }
 
@@ -131,6 +148,8 @@ enum Phase {
     Typing,
     Composing,
     Committing,
+    Pointing,
+    Refusing,
     Checking,
 }
 
@@ -178,13 +197,33 @@ impl WidgetApplication for Probe {
             }
             (Phase::Committing, 36) => {
                 win32::commit_composition(self.window);
+                self.phase = Phase::Pointing;
+            }
+            (Phase::Pointing, 42) => {
+                self.point();
+                self.phase = Phase::Refusing;
+            }
+            // The cursor is chosen on the platform thread and applied on the
+            // window thread, so it is read a few frames after it was asked for
+            // rather than in the same one.
+            (Phase::Refusing, 48) => {
+                self.read_cursor();
+                // A close the application refuses. Nothing here closes the
+                // window: `on_exit_requested` says no, and the check is that
+                // the window is still standing afterwards.
+                win32::close(self.window);
                 self.phase = Phase::Checking;
+            }
+            (Phase::Checking, 56) => {
+                record(|results| {
+                    results.survived_refusal = Some(win32::is_open(self.window));
+                });
             }
             _ => {}
         }
 
         let done = RESULTS.with(|results| results.borrow().complete());
-        if (done && self.frames > 36) || self.frames >= FRAME_BUDGET {
+        if (done && self.frames > 56) || self.frames >= FRAME_BUDGET {
             finish();
         }
         context.scheduler.request_frame();
@@ -244,6 +283,73 @@ impl Probe {
         // Silent on Windows, which is upstream's behaviour rather than a
         // failure: there is no system sound for a key click.
         SystemSound::play(SystemSoundType::Click);
+
+        // Refuses the first close. An application with unsaved work does this
+        // and then puts up a dialog; this one just refuses once, so that the
+        // window still being open afterwards proves the refusal was heard.
+        system::on_exit_requested(|kind| {
+            record(|results| results.exit_requested = Some(kind));
+            AppExitResponse::Cancel
+        });
+    }
+
+    /// The mouse cursor, which is the one channel here that is binary.
+    ///
+    /// Three calls: the one an application makes, one the host does not serve,
+    /// and one with the argument left out. The last two are the interesting
+    /// ones -- they are what say the host decoded the standard codec rather
+    /// than happening to answer.
+    fn point(&self) {
+        SystemMouseCursor::Text.activate(0);
+
+        system::MOUSE_CURSOR.invoke_with_reply(
+            "createCustomCursor/windows",
+            Value::map([("name", Value::from("unused"))]),
+            |reply| {
+                record(|results| results.cursor_unknown_method = Some(reply == Ok(None)));
+            },
+        );
+
+        system::MOUSE_CURSOR.invoke_with_reply(
+            "activateSystemCursor",
+            // No `kind`, which upstream's cursor_handler.cc reports as an
+            // argument error rather than falling back to the arrow.
+            Value::map([("device", Value::I64(0))]),
+            |reply| {
+                let code = match reply {
+                    Err(error) => error.code,
+                    other => format!("expected an error, got {other:?}"),
+                };
+                record(|results| results.cursor_bad_arguments = Some(code));
+            },
+        );
+
+        // Sent last so that its reply, which is the one that says the cursor
+        // was actually set, cannot be confused with the others.
+        system::MOUSE_CURSOR.invoke_with_reply(
+            "activateSystemCursor",
+            Value::map([
+                ("device", Value::I64(0)),
+                ("kind", Value::from(SystemMouseCursor::Text.kind())),
+            ]),
+            |reply| {
+                record(|results| results.cursor_ok = Some(reply == Ok(Some(Value::Null))));
+            },
+        );
+    }
+
+    /// Reads back what the window does with the cursor it was given.
+    fn read_cursor(&self) {
+        let claimed = win32::ask_to_set_cursor(self.window);
+        // `None` where the shape cannot be compared: the cursor belongs to
+        // whichever window the pointer is actually over, so this only answers
+        // when that is this window. See `win32::current_cursor`.
+        let applied =
+            win32::current_cursor(self.window).map(|cursor| cursor == win32::text_cursor());
+        record(|results| {
+            results.cursor_claimed = Some(claimed);
+            results.cursor_applied = Some(applied);
+        });
     }
 }
 
@@ -255,9 +361,12 @@ fn finish() {
         "{}",
         if failures == 0 { "platform_channels: PASS" } else { "platform_channels: FAILED" }
     );
-    // Outbound with no reply, and the host acts on it: the window closes and
-    // the process ends, which is the last thing this checks.
-    SystemNavigator::pop();
+    // The last thing this checks. A required exit is not a question, so the
+    // host closes the window without asking -- which is why this gets past the
+    // handler installed above that refuses everything. The exit code travels
+    // with it and comes back as the process's, through PostQuitMessage and
+    // rf_host_run rather than through EXIT_CODE.
+    system::exit_application(system::AppExitType::Required, failures, |_| {});
 }
 
 fn check(results: &Results) -> i32 {
@@ -339,6 +448,89 @@ fn check(results: &Results) -> i32 {
             }
         }
         None => fail("the composition was never attempted"),
+    }
+
+    // The mouse cursor, which is the only channel here that speaks the binary
+    // standard codec rather than JSON.
+    match results.cursor_ok {
+        Some(true) => {}
+        Some(false) => fail("activateSystemCursor did not come back a plain success"),
+        None => fail("activateSystemCursor never answered"),
+    }
+    match results.cursor_unknown_method {
+        Some(true) => {}
+        Some(false) => fail("a mousecursor method nobody serves did not answer Ok(None)"),
+        None => fail("a mousecursor method nobody serves never answered"),
+    }
+    match results.cursor_bad_arguments.as_deref() {
+        // Upstream's cursor_handler.cc code, which an application branches on.
+        Some("Argument error") => {}
+        Some(other) => fail(&format!("the missing-kind error code was {other:?}")),
+        None => fail("a call with no kind never answered"),
+    }
+    match results.cursor_claimed {
+        Some(true) => {}
+        // Without this the class cursor comes back on the next mouse move.
+        _ => fail("the window did not claim WM_SETCURSOR, so the choice would not stick"),
+    }
+    match results.cursor_applied {
+        Some(Some(true)) => {}
+        Some(Some(false)) => fail("the cursor was set to something other than the I-beam"),
+        Some(None) => println!(
+            "  SKIP cursor shape: the pointer is not over this window, so the cursor\n       \
+             belongs to whichever window it is over"
+        ),
+        None => fail("the cursor was never read back"),
+    }
+
+    // The user's settings, which arrive without ever being a channel message
+    // the framework sees: `Engine` takes them and hands them over directly.
+    let settings = platform::user_settings();
+    if settings.text_scale_factor <= 0.0 {
+        fail(&format!(
+            "the text scale factor is {}, which would lay every glyph out at no width",
+            settings.text_scale_factor
+        ));
+    }
+    let expected = if win32::prefers_dark_theme() {
+        platform::Brightness::Dark
+    } else {
+        platform::Brightness::Light
+    };
+    if settings.platform_brightness != expected {
+        fail(&format!(
+            "the platform says {:?} but the registry says {expected:?}",
+            settings.platform_brightness
+        ));
+    }
+
+    // The languages. Checked for shape rather than content: what they are is
+    // the machine's business, but a language code is never empty and a tag
+    // never starts with a hyphen.
+    let locales = platform::locales();
+    if locales.is_empty() {
+        fail("no locales arrived");
+    }
+    for locale in &locales {
+        if locale.language_code.is_empty() {
+            fail("a locale arrived with no language code");
+        }
+        if locale.to_language_tag().starts_with('-') {
+            fail(&format!("the tag {:?} is missing its language", locale.to_language_tag()));
+        }
+    }
+
+    // Closing, refused. The window being open after a WM_CLOSE is the whole
+    // point of the protocol: without it an application could not stop to save.
+    match results.exit_requested {
+        Some(system::AppExitType::Cancelable) => {}
+        Some(other) => fail(&format!("the close was reported as {other:?}, not cancelable")),
+        None => fail("the close button never reached the framework"),
+    }
+    match results.survived_refusal {
+        Some(true) => {}
+        Some(false) => fail("refusing the close did not keep the window open"),
+        None => fail("nothing checked whether the window survived"),
     }
 
     failures

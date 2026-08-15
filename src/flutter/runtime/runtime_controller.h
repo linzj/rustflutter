@@ -128,6 +128,11 @@ class RuntimeController {
                                fml::MallocMapping args);
 
  private:
+  //----------------------------------------------------------------------------
+  /// Hands `platform_data_.locale_data` to the app, regrouped into the array of
+  /// four-string locales the C ABI takes. Only called with an app running.
+  void PushLocales();
+
   // RfAppHost trampolines. `user_data` is the RuntimeController.
   static void OnRender(void* user_data,
                        int64_t view_id,
