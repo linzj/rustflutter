@@ -114,6 +114,15 @@ pub trait PlatformSink {
     /// listening, because a lifecycle message nobody hears is a lifecycle
     /// message lost.
     fn channel_update(&self, channel: &str, listening: bool);
+
+    /// Asks for a frame, because a handler has just run.
+    ///
+    /// A message arrives between frames and almost always changes something --
+    /// a lifecycle handler that dims the window, a reply that fills in a list.
+    /// Nothing else would ask: `set_state` marks the tree dirty but does not
+    /// schedule, and the buffered messages drained by [`set_handler`] do not
+    /// come in through the shell at all.
+    fn request_frame(&self);
 }
 
 /// How many messages a channel holds for a handler that has not appeared yet.
@@ -130,10 +139,20 @@ struct Channel {
     /// Messages and their response ids, oldest first.
     pending: VecDeque<(Vec<u8>, i64)>,
     capacity: usize,
-    /// True while [`deliver`] has the handler out on loan. A second message
+    /// True while [`deliver`] has the handler out on loan, so it is not in
+    /// `handler` even though the channel is listening. A second message
     /// arriving in that window -- a handler that sends on its own channel --
-    /// must queue rather than be told there is no handler.
-    running: bool,
+    /// must queue rather than be told there is nobody there.
+    loaned: bool,
+    /// Bumped by every [`set_handler`] and [`clear_handler`].
+    ///
+    /// This is what makes a handler able to unregister itself. `clear_handler`
+    /// cannot take a handler that is out on loan -- it is not in the map to
+    /// take -- so `deliver` compares the generation instead, and puts the
+    /// handler back only if nothing replaced or removed it while it ran.
+    /// Without this the handler would be restored on the way out and a
+    /// one-shot listener could never stop.
+    generation: u64,
 }
 
 impl Channel {
@@ -142,12 +161,13 @@ impl Channel {
             handler: None,
             pending: VecDeque::new(),
             capacity: DEFAULT_BUFFER,
-            running: false,
+            loaned: false,
+            generation: 0,
         }
     }
 
     fn is_listening(&self) -> bool {
-        self.handler.is_some() || self.running
+        self.handler.is_some() || self.loaned
     }
 }
 
@@ -193,7 +213,45 @@ impl Messenger {
         let Some(sink) = self.sink.clone() else {
             return Box::new(|_reply| {});
         };
-        Box::new(move |reply| sink.respond(response_id, reply))
+        let guard = ResponseGuard {
+            sink,
+            response_id,
+            answered: std::cell::Cell::new(false),
+        };
+        Box::new(move |reply| guard.answer(reply))
+    }
+}
+
+/// Makes sure a message is answered exactly once, even if nobody answers it.
+///
+/// The contract is that every response id comes back, because the far end is
+/// waiting on it -- on Windows an uncompleted response handle is a
+/// platform-thread task that never runs. A handler is free to forget, though:
+/// it can return without calling its responder, or drop it inside a closure
+/// that is itself dropped. This turns forgetting into an empty reply instead of
+/// a caller that waits for the life of the process.
+struct ResponseGuard {
+    sink: Rc<dyn PlatformSink>,
+    response_id: i64,
+    answered: std::cell::Cell<bool>,
+}
+
+impl ResponseGuard {
+    fn answer(&self, reply: ReplyData<'_>) {
+        if self.answered.replace(true) {
+            // Answered twice. The first one has gone already, and a second
+            // would reach a handle the shell has released.
+            return;
+        }
+        self.sink.respond(self.response_id, reply);
+    }
+}
+
+impl Drop for ResponseGuard {
+    fn drop(&mut self) {
+        if !self.answered.get() {
+            self.sink.respond(self.response_id, None);
+        }
     }
 }
 
@@ -286,6 +344,9 @@ pub fn complete_reply(response_id: i64, reply: ReplyData<'_>) -> bool {
     match callback {
         Some(callback) => {
             callback(reply);
+            // Same reason as after a handler: the answer has almost certainly
+            // changed what should be on screen, and nothing else will ask.
+            request_frame();
             true
         }
         None => false,
@@ -303,6 +364,7 @@ pub fn set_handler(channel: &str, handler: MessageHandler) {
         let entry = messenger.channel(channel);
         let was_listening = entry.is_listening();
         entry.handler = Some(handler);
+        entry.generation += 1;
         let pending: Vec<(Vec<u8>, i64)> = entry.pending.drain(..).collect();
         (!was_listening, pending)
     });
@@ -316,10 +378,24 @@ pub fn set_handler(channel: &str, handler: MessageHandler) {
 }
 
 /// Removes a channel's handler. Messages arriving afterwards are buffered again.
+///
+/// Works from inside the handler itself, which is how a one-shot listener stops
+/// listening. See the note on `Channel::generation` for why that needs saying.
 pub fn clear_handler(channel: &str) {
-    let announce = with_messenger(|messenger| match messenger.channels.get_mut(channel) {
-        Some(entry) => entry.handler.take().is_some(),
-        None => false,
+    let announce = with_messenger(|messenger| {
+        let Some(entry) = messenger.channels.get_mut(channel) else {
+            return false;
+        };
+        if !entry.is_listening() {
+            return false;
+        }
+        entry.handler = None;
+        // The loan is ended here rather than in `deliver`: the channel has
+        // stopped listening as of now, so a message arriving before the handler
+        // returns must be buffered rather than queued behind it.
+        entry.loaned = false;
+        entry.generation += 1;
+        true
     });
     if announce {
         channel_update(channel, false);
@@ -368,7 +444,7 @@ pub fn handle_platform_message(channel: &str, message: &[u8], response_id: i64) 
     // is a function that can be entered twice; this is what that costs.
     let route = with_messenger(|messenger| match messenger.channels.get(channel) {
         Some(entry) if entry.handler.is_some() => Route::Deliver,
-        Some(entry) if entry.running => Route::Defer,
+        Some(entry) if entry.loaned => Route::Defer,
         _ => Route::Buffer,
     });
 
@@ -430,20 +506,25 @@ enum Route {
 /// that unregisters itself is how a one-shot listener stops listening.
 fn deliver(channel: &str, message: &[u8], response_id: i64) {
     let taken = with_messenger(|messenger| {
-        let handler = messenger.channels.get_mut(channel).and_then(|entry| {
+        let borrowed = messenger.channels.get_mut(channel).and_then(|entry| {
             let handler = entry.handler.take()?;
-            entry.running = true;
-            Some(handler)
+            entry.loaned = true;
+            Some((handler, entry.generation))
         })?;
-        Some((handler, messenger.responder(response_id)))
+        Some((borrowed, messenger.responder(response_id)))
     });
 
-    let Some((mut handler, responder)) = taken else {
+    let Some(((mut handler, generation), responder)) = taken else {
         discard_all(&[response_id]);
         return;
     };
 
     handler(message, responder);
+
+    // The handler has almost certainly changed something, and nothing else will
+    // ask for the frame that shows it -- including on this path, where the
+    // message may have come out of the buffer rather than off the wire.
+    request_frame();
 
     // Anything that arrived while the handler was out on loan queued up behind
     // it; it is delivered as soon as the handler is back, in arrival order.
@@ -451,18 +532,32 @@ fn deliver(channel: &str, message: &[u8], response_id: i64) {
         let Some(entry) = messenger.channels.get_mut(channel) else {
             return Vec::new();
         };
-        entry.running = false;
-        if entry.handler.is_none() {
+        // The loan is over whatever else happened.
+        entry.loaned = false;
+        if entry.generation == generation {
             entry.handler = Some(handler);
+        }
+        // Otherwise it was replaced or removed while it ran, and putting it
+        // back would undo the call that did so. `handler` is dropped here.
+        if entry.handler.is_some() {
             entry.pending.drain(..).collect()
         } else {
-            // The handler replaced itself while running. Whatever queued is for
-            // the new one, and set_handler already drained what it found.
+            // Nothing is listening any more. What queued behind the loan stays
+            // buffered for whoever listens next, rather than being answered
+            // with nothing.
             Vec::new()
         }
     });
     for (message, response_id) in queued {
         deliver(channel, &message, response_id);
+    }
+}
+
+/// Asks the shell for a frame. Silent when there is no shell.
+fn request_frame() {
+    let sink = with_messenger(|messenger| messenger.sink.clone());
+    if let Some(sink) = sink {
+        sink.request_frame();
     }
 }
 
@@ -497,6 +592,7 @@ pub(crate) mod tests_support {
         pub sent: Vec<(String, Vec<u8>, i64)>,
         pub responses: Vec<(i64, Option<Vec<u8>>)>,
         pub updates: Vec<(String, bool)>,
+        pub frames: usize,
     }
 
     /// Stands in for the shell: records what the framework sent, and lets a
@@ -516,9 +612,17 @@ pub(crate) mod tests_support {
         fn channel_update(&self, channel: &str, listening: bool) {
             self.0.borrow_mut().updates.push((channel.to_string(), listening));
         }
+
+        fn request_frame(&self) {
+            self.0.borrow_mut().frames += 1;
+        }
     }
 
     impl Recorder {
+        pub fn frames(&self) -> usize {
+            self.0.borrow().frames
+        }
+
         pub fn sent(&self) -> Vec<(String, Vec<u8>, i64)> {
             self.0.borrow().sent.clone()
         }
@@ -715,6 +819,159 @@ mod tests {
         );
         handle_platform_message("test/loop", b"first", 0);
         assert_eq!(seen.borrow().as_slice(), &[b"first".to_vec(), b"second".to_vec()]);
+    }
+
+    #[test]
+    fn a_handler_can_unregister_itself() {
+        // A one-shot listener, and the case a naive loan gets wrong: the
+        // handler is not in the map while it runs, so `clear_handler` has
+        // nothing to take, and putting it back afterwards would undo the call.
+        let _recorder = install();
+        let seen = Rc::new(StdRefCell::new(0));
+        let counted = seen.clone();
+        set_handler(
+            "test/once",
+            Box::new(move |_message, _respond| {
+                *counted.borrow_mut() += 1;
+                clear_handler("test/once");
+            }),
+        );
+
+        handle_platform_message("test/once", b"first", 0);
+        assert!(!has_handler("test/once"), "it unregistered itself");
+        handle_platform_message("test/once", b"second", 0);
+        assert_eq!(*seen.borrow(), 1, "the second message must not reach it");
+    }
+
+    #[test]
+    fn unregistering_from_inside_tells_the_embedder_once() {
+        let recorder = install();
+        set_handler(
+            "test/once",
+            Box::new(|_message, _respond| clear_handler("test/once")),
+        );
+        handle_platform_message("test/once", b"go", 0);
+        // Registering, then the handler removing itself. Not two of either.
+        assert_eq!(
+            recorder.updates(),
+            vec![("test/once".to_string(), true), ("test/once".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn a_handler_that_replaces_itself_keeps_the_replacement() {
+        let _recorder = install();
+        let seen = Rc::new(StdRefCell::new(Vec::new()));
+        let first = seen.clone();
+        let second = seen.clone();
+        set_handler(
+            "test/swap",
+            Box::new(move |_message, _respond| {
+                first.borrow_mut().push("first");
+                let inner = second.clone();
+                set_handler(
+                    "test/swap",
+                    Box::new(move |_message, _respond| inner.borrow_mut().push("second")),
+                );
+            }),
+        );
+
+        handle_platform_message("test/swap", b"a", 0);
+        handle_platform_message("test/swap", b"b", 0);
+        assert_eq!(seen.borrow().as_slice(), &["first", "second"]);
+    }
+
+    #[test]
+    fn a_message_deferred_behind_a_handler_that_then_leaves_is_kept_not_lost() {
+        // The handler queues a message behind itself and then unregisters. The
+        // queued one has nobody to go to, so it waits rather than being
+        // answered with nothing.
+        let _recorder = install();
+        let seen = Rc::new(StdRefCell::new(Vec::new()));
+        let recorded = seen.clone();
+        set_handler(
+            "test/leave",
+            Box::new(move |message, _respond| {
+                recorded.borrow_mut().push(message.to_vec());
+                if message == b"first" {
+                    handle_platform_message("test/leave", b"queued", 0);
+                    clear_handler("test/leave");
+                }
+            }),
+        );
+        handle_platform_message("test/leave", b"first", 0);
+        assert_eq!(seen.borrow().as_slice(), &[b"first".to_vec()]);
+
+        let later = seen.clone();
+        set_handler(
+            "test/leave",
+            Box::new(move |message, _respond| later.borrow_mut().push(message.to_vec())),
+        );
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[b"first".to_vec(), b"queued".to_vec()],
+            "the queued message waited for the next listener"
+        );
+    }
+
+    #[test]
+    fn running_a_handler_asks_for_a_frame_even_out_of_the_buffer() {
+        // The message that arrives before anybody is listening is delivered by
+        // `set_handler`, which the shell never sees -- so if the frame were
+        // asked for at the ABI instead of here, whatever that handler changed
+        // would sit unpainted until something else caused a frame.
+        let recorder = install();
+        handle_platform_message("test/early", b"x", 0);
+        assert_eq!(recorder.frames(), 0, "buffering alone changes nothing");
+
+        set_handler("test/early", Box::new(|_message, _respond| {}));
+        assert_eq!(recorder.frames(), 1, "draining the buffer ran a handler");
+
+        handle_platform_message("test/early", b"y", 0);
+        assert_eq!(recorder.frames(), 2);
+    }
+
+    #[test]
+    fn a_reply_asks_for_a_frame_and_an_unclaimed_one_does_not() {
+        let recorder = install();
+        send_with_reply("test/ask", b"?", Box::new(|_reply| {}));
+        let (_, _, response_id) = recorder.sent().remove(0);
+        assert_eq!(recorder.frames(), 0);
+
+        complete_reply(response_id, Some(b"!"));
+        assert_eq!(recorder.frames(), 1);
+
+        // Answered twice, or answered after the caller gave up. Nobody is
+        // waiting, so there is nothing to repaint.
+        complete_reply(response_id, Some(b"!"));
+        assert_eq!(recorder.frames(), 1);
+    }
+
+    #[test]
+    fn a_handler_that_forgets_to_answer_still_answers() {
+        // The invariant the shell depends on: every response id comes back.
+        // A handler that simply returns would otherwise leave a platform-thread
+        // task that never runs.
+        let recorder = install();
+        set_handler("test/forgetful", Box::new(|_message, _respond| {}));
+        handle_platform_message("test/forgetful", b"?", 6);
+        assert_eq!(recorder.responses(), vec![(6, None)]);
+    }
+
+    #[test]
+    fn answering_twice_only_answers_once() {
+        let recorder = install();
+        set_handler(
+            "test/eager",
+            Box::new(|_message, respond| {
+                respond(Some(b"first"));
+                // The responder is consumed by the call above, so a handler
+                // cannot literally do this -- but a guard that answered on drop
+                // without remembering would, which is what this pins.
+            }),
+        );
+        handle_platform_message("test/eager", b"?", 7);
+        assert_eq!(recorder.responses(), vec![(7, Some(b"first".to_vec()))]);
     }
 
     #[test]

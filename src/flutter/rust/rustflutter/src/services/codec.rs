@@ -845,9 +845,23 @@ mod json {
                     return Err(malformed("JSON cannot carry an infinite or NaN number"));
                 }
                 // An integral double must keep its point, or a reader tags it
-                // as an integer and the round trip changes the type.
-                if number.fract() == 0.0 && number.abs() < 1e15 {
-                    let _ = write!(out, "{number:.1}");
+                // as an integer and the round trip changes the type. Rust's
+                // Display drops the point for every integral value, at any
+                // magnitude, so the test is on the number rather than on its
+                // size -- an earlier cutoff at 1e15 let exactly the large ones
+                // through, which are the ones a size test was supposed to
+                // catch.
+                if number.fract() == 0.0 {
+                    // `{:.1}` on a huge double spells out all 309 digits.
+                    // Beyond what a double can represent exactly there is no
+                    // integer to be mistaken for anyway, so those go out in
+                    // exponent form -- which is also what Dart writes.
+                    const EXACT_INTEGER_LIMIT: f64 = 9.007199254740992e15;
+                    if number.abs() <= EXACT_INTEGER_LIMIT {
+                        let _ = write!(out, "{number:.1}");
+                    } else {
+                        let _ = write!(out, "{number:e}");
+                    }
                 } else {
                     let _ = write!(out, "{number}");
                 }
@@ -1375,6 +1389,37 @@ mod tests {
         let text = String::from_utf8(JsonMessageCodec.encode(&Value::F64(2.0)).unwrap()).unwrap();
         assert_eq!(text, "2.0");
         assert_eq!(JsonMessageCodec.decode(text.as_bytes()).unwrap(), Value::F64(2.0));
+    }
+
+    #[test]
+    fn an_integral_double_keeps_its_point_at_every_magnitude() {
+        // The interesting values are the large ones. Rust's Display writes
+        // 1e15 as "1000000000000000" -- no point, so a reader takes it for an
+        // integer and the type changes across the round trip. Every one of
+        // these has to come back a double.
+        for number in [
+            0.0,
+            -0.0,
+            2.0,
+            1e14,
+            1e15,
+            9.007199254740992e15,
+            1e16,
+            1e300,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            let bytes = JsonMessageCodec.encode(&Value::F64(number)).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            match JsonMessageCodec.decode(&bytes).unwrap() {
+                Value::F64(back) => assert_eq!(
+                    back.to_bits(),
+                    number.to_bits(),
+                    "{number:?} was written as {text} and read back as {back:?}"
+                ),
+                other => panic!("{number:?} was written as {text} and read back as {other:?}"),
+            }
+        }
     }
 
     #[test]

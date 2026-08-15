@@ -423,6 +423,14 @@ class VsyncWaiterWin final : public VsyncWaiter {
 constexpr char kPlatformChannel[] = "flutter/platform";
 constexpr char kLifecycleChannel[] = "flutter/lifecycle";
 
+// The strings an application branches on. Copied from platform_handler.cc
+// rather than invented: a Flutter app catching PlatformException checks
+// `code`, and a code of our own devising would match nothing anyone has
+// written.
+constexpr char kClipboardError[] = "Clipboard error";
+constexpr char kUnknownClipboardFormatMessage[] = "Unknown clipboard format";
+constexpr char kTextPlainFormat[] = "text/plain";
+
 /// UTF-16 to UTF-8, for text coming out of the clipboard.
 std::string Narrow(const std::wstring& wide) {
   if (wide.empty()) {
@@ -455,21 +463,21 @@ std::wstring WidenText(const std::string& utf8) {
   return out;
 }
 
-/// Opens the clipboard, retrying briefly.
+/// Opens the clipboard for as long as the scope lasts.
 ///
-/// The clipboard is a single global lock and another process may hold it for a
-/// few milliseconds after a copy. Upstream's `ScopedClipboard` retries for the
-/// same reason; failing on the first attempt would make paste flaky rather than
-/// broken, which is worse.
+/// One attempt, and no sleeping, which is what upstream's `ScopedClipboard`
+/// does: `Open` calls `OpenClipboard` once and returns `GetLastError()` if it
+/// fails. The clipboard is a global lock another process can be holding, so
+/// failure is a real outcome rather than a bug -- but this runs on the platform
+/// thread, and a retry loop would stall every shell task behind it for as long
+/// as the other process kept the lock.
 class ScopedClipboard {
  public:
   explicit ScopedClipboard(HWND owner) {
-    for (int attempt = 0; attempt < 10; ++attempt) {
-      if (OpenClipboard(owner)) {
-        opened_ = true;
-        return;
-      }
-      Sleep(10);
+    if (OpenClipboard(owner)) {
+      opened_ = true;
+    } else {
+      error_ = GetLastError();
     }
   }
 
@@ -481,30 +489,50 @@ class ScopedClipboard {
 
   bool opened() const { return opened_; }
 
+  /// Why it could not be opened, for the error the caller reports.
+  DWORD error() const { return error_; }
+
   ScopedClipboard(const ScopedClipboard&) = delete;
   ScopedClipboard& operator=(const ScopedClipboard&) = delete;
 
  private:
   bool opened_ = false;
+  DWORD error_ = 0;
 };
 
-/// The clipboard's text, or nothing if it holds none.
-std::optional<std::string> ClipboardText(HWND window) {
+/// What a clipboard read came back with.
+///
+/// Three outcomes, not two, and upstream reports all three differently: the
+/// clipboard could not be opened (an error), it holds no text (a successful
+/// null), or here is the text. Folding the first into the second would tell an
+/// application that the clipboard is empty when it is in fact busy.
+struct ClipboardRead {
+  enum class Status { kText, kEmpty, kFailed } status;
+  std::string text;
+};
+
+ClipboardRead ReadClipboardText(HWND window) {
   ScopedClipboard clipboard(window);
   if (!clipboard.opened()) {
-    return std::nullopt;
+    return {ClipboardRead::Status::kFailed, {}};
+  }
+  // Either plain-text format counts, as upstream's HasString does: a CF_TEXT-
+  // only clipboard still has a string in it, and GetClipboardData converts.
+  if (!IsClipboardFormatAvailable(CF_UNICODETEXT) &&
+      !IsClipboardFormatAvailable(CF_TEXT)) {
+    return {ClipboardRead::Status::kEmpty, {}};
   }
   HANDLE data = GetClipboardData(CF_UNICODETEXT);
   if (data == nullptr) {
-    return std::nullopt;
+    return {ClipboardRead::Status::kFailed, {}};
   }
   auto* text = static_cast<wchar_t*>(GlobalLock(data));
   if (text == nullptr) {
-    return std::nullopt;
+    return {ClipboardRead::Status::kFailed, {}};
   }
   std::string utf8 = Narrow(std::wstring(text));
   GlobalUnlock(data);
-  return utf8;
+  return {ClipboardRead::Status::kText, std::move(utf8)};
 }
 
 bool SetClipboardText(HWND window, const std::string& utf8) {
@@ -580,47 +608,57 @@ std::optional<std::string> HandlePlatformCall(HWND window,
   }
 
   if (method == "SystemSound.play") {
-    const bool alert = args != nullptr && args->IsString() &&
-                       std::string(args->GetString()) == "SystemSoundType.alert";
-    MessageBeep(alert ? MB_ICONASTERISK : MB_OK);
-    return NullEnvelope();
+    // Upstream's table, and the surprising entry is deliberate: on Windows a
+    // click has no system sound, so `SystemSoundPlay` succeeds without making
+    // one. Beeping on every keystroke instead would be an application-audible
+    // difference from Flutter, not a detail.
+    const std::string sound =
+        args != nullptr && args->IsString() ? args->GetString() : std::string();
+    if (sound == "SystemSoundType.alert") {
+      MessageBeep(MB_OK);
+      return NullEnvelope();
+    }
+    if (sound == "SystemSoundType.click" || sound == "SystemSoundType.tick") {
+      return NullEnvelope();
+    }
+    // A sound nobody defined. Empty, which reads as not implemented.
+    return std::nullopt;
   }
 
   if (method == "Clipboard.getData") {
-    // The argument is the format, and "text/plain" is the only one the channel
-    // has ever defined. Anything else is a caller error rather than a platform
-    // limitation, so it is an error envelope rather than an empty reply.
+    // "text/plain" is the only format the channel has ever defined.
     if (args == nullptr || !args->IsString() ||
-        std::string(args->GetString()) != "text/plain") {
-      return ErrorEnvelope("Clipboard.unknownFormat",
-                           "Only text/plain is supported.");
+        std::string(args->GetString()) != kTextPlainFormat) {
+      return ErrorEnvelope(kClipboardError, kUnknownClipboardFormatMessage);
     }
-    auto text = ClipboardText(window);
-    if (!text.has_value()) {
-      // Empty clipboard, or one holding something that is not text. Upstream
-      // answers null here; the caller reads that as "nothing to paste".
-      return NullEnvelope();
+    ClipboardRead read = ReadClipboardText(window);
+    switch (read.status) {
+      case ClipboardRead::Status::kFailed:
+        return ErrorEnvelope(kClipboardError, "Unable to open clipboard");
+      case ClipboardRead::Status::kEmpty:
+        // Nothing to paste. Distinct from the clipboard being unavailable.
+        return NullEnvelope();
+      case ClipboardRead::Status::kText:
+        return SuccessEnvelope([&read](auto& writer) {
+          writer.StartObject();
+          writer.Key("text");
+          writer.String(read.text.c_str(),
+                        static_cast<rapidjson::SizeType>(read.text.size()));
+          writer.EndObject();
+        });
     }
-    return SuccessEnvelope([&text](auto& writer) {
-      writer.StartObject();
-      writer.Key("text");
-      writer.String(text->c_str(),
-                    static_cast<rapidjson::SizeType>(text->size()));
-      writer.EndObject();
-    });
   }
 
   if (method == "Clipboard.setData") {
     if (args == nullptr || !args->IsObject()) {
-      return ErrorEnvelope("Clipboard.setDataFailed", "No data to set.");
+      return ErrorEnvelope(kClipboardError, kUnknownClipboardFormatMessage);
     }
     auto text = args->FindMember("text");
     if (text == args->MemberEnd() || !text->value.IsString()) {
-      return ErrorEnvelope("Clipboard.setDataFailed", "No text to set.");
+      return ErrorEnvelope(kClipboardError, kUnknownClipboardFormatMessage);
     }
     if (!SetClipboardText(window, text->value.GetString())) {
-      return ErrorEnvelope("Clipboard.setDataFailed",
-                           "The clipboard could not be written.");
+      return ErrorEnvelope(kClipboardError, "Unable to set clipboard data");
     }
     return NullEnvelope();
   }
@@ -629,14 +667,26 @@ std::optional<std::string> HandlePlatformCall(HWND window,
     // Deliberately not a read. On some platforms reading the clipboard is
     // visible to the user, and a paste button only needs to know whether to be
     // enabled -- which is the whole reason this method exists apart from
-    // getData.
-    const bool has_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0;
+    // getData. The format is still checked, as upstream checks it.
+    if (args == nullptr || !args->IsString() ||
+        std::string(args->GetString()) != kTextPlainFormat) {
+      return ErrorEnvelope(kClipboardError, kUnknownClipboardFormatMessage);
+    }
+    const bool has_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0 ||
+                          IsClipboardFormatAvailable(CF_TEXT) != 0;
     return SuccessEnvelope([has_text](auto& writer) {
       writer.StartObject();
       writer.Key("value");
       writer.Bool(has_text);
       writer.EndObject();
     });
+  }
+
+  if (method == "System.initializationComplete") {
+    // Deprecated upstream, and answered rather than refused for the reason the
+    // comment there gives: an application that still sends it should not see an
+    // error for it.
+    return NullEnvelope();
   }
 
   return std::nullopt;
@@ -1699,16 +1749,21 @@ int32_t rf_host_run(const RfHostOptions* options) {
             state.device_pixel_ratio));
         shell->OnDisplayUpdates(std::move(displays));
         SendViewportMetrics(&state, width, height);
-        // The window is about to be shown. Saying so here rather than waiting
-        // for the WM_ACTIVATE that follows means the framework's first frame
-        // already knows the application is running -- and the messenger holds
-        // the message until something registers a handler, which application
-        // code has not had a chance to do yet.
-        SendLifecycle(&state, "AppLifecycleState.resumed");
       }));
 
   ShowWindow(window, SW_SHOWNORMAL);
   UpdateWindow(window);
+
+  // Every lifecycle report is made from this thread, including this first one.
+  // The window proc makes the other four, and `lifecycle_state` is a plain
+  // string with no lock on it -- reporting the initial state from the task
+  // posted above instead would have the platform thread writing it while the
+  // window thread reads it.
+  //
+  // Ordering still holds: the report is posted to the platform task runner,
+  // which runs it after the RunEngine task queued before it. ShowWindow has
+  // usually produced a WM_ACTIVATE by now, in which case this is a no-op.
+  SendLifecycle(&state, "AppLifecycleState.resumed");
 
   // -- Message loop -----------------------------------------------------------
 

@@ -94,9 +94,26 @@ struct RfAppHost {
 /// knowledge that a C ABI is down here.
 struct HostSink {
     host: RfAppHost,
+    /// Whether the shell behind `host.user_data` is still there.
+    ///
+    /// A [`services::Responder`] holds a share of this sink and may outlive the
+    /// application -- a handler is allowed to answer from a callback, and
+    /// nothing stops that callback running after the shell has gone. The
+    /// pointer inside `host` would be dangling by then, so the sink is switched
+    /// off before the shell is torn down and every call becomes a no-op.
+    alive: std::cell::Cell<bool>,
 }
 
 impl HostSink {
+    fn new(host: RfAppHost) -> HostSink {
+        HostSink { host, alive: std::cell::Cell::new(true) }
+    }
+
+    /// Cuts the sink off from the shell. Called before the shell is destroyed.
+    fn disconnect(&self) {
+        self.alive.set(false);
+    }
+
     /// A channel name as a NUL-terminated C string.
     ///
     /// Allocated per call rather than cached: a channel name crosses once per
@@ -111,6 +128,9 @@ impl HostSink {
 
 impl services::PlatformSink for HostSink {
     fn send(&self, channel: &str, message: &[u8], response_id: i64) {
+        if !self.alive.get() {
+            return;
+        }
         let Some(send) = self.host.send_platform_message else {
             return;
         };
@@ -129,6 +149,9 @@ impl services::PlatformSink for HostSink {
     }
 
     fn respond(&self, response_id: i64, reply: services::ReplyData<'_>) {
+        if !self.alive.get() {
+            return;
+        }
         let Some(respond) = self.host.respond_to_platform_message else {
             return;
         };
@@ -143,6 +166,9 @@ impl services::PlatformSink for HostSink {
     }
 
     fn channel_update(&self, channel: &str, listening: bool) {
+        if !self.alive.get() {
+            return;
+        }
         let Some(update) = self.host.send_channel_update else {
             return;
         };
@@ -150,6 +176,15 @@ impl services::PlatformSink for HostSink {
             return;
         };
         unsafe { update(self.host.user_data, name.as_ptr(), listening) };
+    }
+
+    fn request_frame(&self) {
+        if !self.alive.get() {
+            return;
+        }
+        if let Some(schedule) = self.host.schedule_frame {
+            unsafe { schedule(self.host.user_data) };
+        }
     }
 }
 
@@ -542,6 +577,9 @@ struct AppInstance {
     /// of a frame separately, and a report that started at `build` would leave
     /// the tickers out of the total it calls "ui thread".
     advance_ms: f64,
+    /// The messenger's way out to the shell, kept so that teardown can switch
+    /// it off. See [`HostSink::alive`].
+    sink: std::rc::Rc<HostSink>,
 }
 
 impl AppInstance {
@@ -765,7 +803,9 @@ mod abi {
         engine::initialize();
 
         let host = unsafe { *(host as *const RfAppHost) };
+        let sink = std::rc::Rc::new(HostSink::new(host));
         let instance = Box::new(AppInstance {
+            sink: sink.clone(),
             host,
             application: None,
             views: HashMap::new(),
@@ -783,7 +823,7 @@ mod abi {
         // Windows embedder sends the lifecycle state as soon as the window is
         // up. Buffering catches those, but only once there is somewhere to
         // buffer them.
-        services::attach(std::rc::Rc::new(HostSink { host }));
+        services::attach(sink);
 
         Box::into_raw(instance) as *mut RfApp
     }
@@ -793,11 +833,17 @@ mod abi {
         if app.is_null() {
             return;
         }
-        // Before the application, so that a handler dropped here cannot be
-        // asked to run against a half-torn-down instance, and so that anything
-        // still waiting on a reply is failed rather than left waiting.
+        let instance = unsafe { Box::from_raw(app as *mut AppInstance) };
+        // The sink is switched off rather than merely dropped: a responder the
+        // application kept holds its own share of it, and calling that after
+        // the shell is gone would reach through a dangling pointer. After this
+        // it reaches nothing.
+        instance.sink.disconnect();
+        // Before the application is dropped, so that a handler dropped here
+        // cannot be asked to run against a half-torn-down instance, and so that
+        // anything still waiting on a reply is failed rather than left waiting.
         services::detach();
-        drop(unsafe { Box::from_raw(app as *mut AppInstance) });
+        drop(instance);
     }
 
     #[unsafe(no_mangle)]
@@ -1038,13 +1084,11 @@ mod abi {
             unsafe { std::slice::from_raw_parts(message, length) }
         };
 
-        // A handler almost certainly changed something -- a lifecycle handler
-        // that dims the window, a plugin reply that fills in a list -- and a
-        // frame is the only way that becomes visible. A message that was merely
-        // buffered changed nothing yet, so it does not wake the app.
-        if services::handle_platform_message(name, bytes, response_id) {
-            instance.schedule_frame();
-        }
+        // The frame this probably needs is asked for by the messenger, which
+        // is the only place that knows whether a handler actually ran -- a
+        // message may be buffered here and delivered minutes later.
+        let _ = instance;
+        services::handle_platform_message(name, bytes, response_id);
     }
 
     /// Hands the framework the reply to a message it sent.
@@ -1063,8 +1107,7 @@ mod abi {
         } else {
             Some(unsafe { std::slice::from_raw_parts(reply, length) })
         };
-        if services::complete_reply(response_id, bytes) {
-            instance.schedule_frame();
-        }
+        let _ = instance;
+        services::complete_reply(response_id, bytes);
     }
 }

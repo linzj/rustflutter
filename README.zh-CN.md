@@ -24,9 +24,9 @@
 动画与导航栈，以及一套组件库。
 
 ```
-gn gen                        →  1009 targets from 275 files
+gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0，零警告
-rustflutter_unittests         →  132 passed
+rustflutter_unittests         →  189 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
@@ -226,6 +226,7 @@ virtual void Render(int64_t view_id,
 | `counter` | element 树 + 局部重建 + 点击 |
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
 | `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
+| `platform_channels` | 平台消息双向,打在真 shell 上。自检,答错就非零退出 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">

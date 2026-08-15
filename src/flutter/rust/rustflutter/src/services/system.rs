@@ -19,10 +19,11 @@
 //! `Ok(None)` -- upstream's `MissingPluginException` -- which is a normal
 //! outcome rather than a fault. See [`MethodReply`](super::channel::MethodReply).
 //!
-//! What the Windows host in this repository actually answers is
-//! [`PLATFORM`] (clipboard, sound, exit) and [`MOUSE_CURSOR`]; what it sends is
-//! [`LIFECYCLE`] and [`KEY_DATA`]. Everything else here is the name waiting for
-//! an implementation on one side or the other.
+//! What the Windows host in this repository actually answers is [`PLATFORM`],
+//! and only the clipboard, sound and exit methods of it; what it sends is
+//! [`LIFECYCLE`] and [`KEY_DATA`]. Everything else here -- [`MOUSE_CURSOR`]
+//! included -- is the name waiting for an implementation on one side or the
+//! other.
 
 use super::channel::{BasicMessageChannel, MethodChannel, MethodReply};
 use super::codec::{
@@ -201,7 +202,11 @@ impl Clipboard {
     /// privileged act on some platforms -- iOS shows the user a banner -- and a
     /// paste button only needs to know whether to be enabled.
     pub fn has_strings(callback: impl FnOnce(bool) + 'static) {
-        PLATFORM.invoke_with_reply("Clipboard.hasStrings", Value::Null, move |reply| {
+        // The format goes with this call too, exactly as with `get_data`.
+        // Upstream's `Clipboard.hasStrings` passes `kTextPlain`, and the
+        // embedders check it -- sending nothing gets an "Unknown clipboard
+        // format" error back, which reads here as "no text on the clipboard".
+        PLATFORM.invoke_with_reply("Clipboard.hasStrings", Value::from(TEXT_PLAIN), move |reply| {
             callback(match reply {
                 Ok(Some(value)) => value.get("value").and_then(Value::as_bool).unwrap_or(false),
                 _ => false,
@@ -213,10 +218,15 @@ impl Clipboard {
 // -- Sound and haptics --------------------------------------------------------
 
 /// A sound the platform owns.
+///
+/// Upstream's three. Whether any of them makes a noise is the platform's
+/// business and varies: Windows has no sound for a key click or a scroll tick,
+/// so it accepts both and stays silent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemSoundType {
     Click,
     Alert,
+    Tick,
 }
 
 impl SystemSoundType {
@@ -224,6 +234,7 @@ impl SystemSoundType {
         match self {
             SystemSoundType::Click => "SystemSoundType.click",
             SystemSoundType::Alert => "SystemSoundType.alert",
+            SystemSoundType::Tick => "SystemSoundType.tick",
         }
     }
 }
@@ -389,14 +400,18 @@ pub fn on_memory_pressure(mut handler: impl FnMut() + 'static) {
 
 /// Watches for routes the platform pushes at the application.
 ///
-/// `pushRoute` is a deep link arriving, and `popRoute` is the Android back
-/// button or a desktop window being asked to close. Returning true means the
-/// application handled it; on `popRoute` returning false is what lets the
-/// platform close the window instead.
-pub fn on_route_message(mut handler: impl FnMut(&str, &Value) -> bool + 'static) {
+/// `pushRoute` is a deep link arriving; `popRoute` is the Android back button
+/// or a desktop window being asked to close.
+///
+/// The answer is an empty success, which is what upstream's
+/// `WidgetsBinding._handleNavigationInvocation` produces: `handlePushRoute` and
+/// `handlePopRoute` both return `Future<void>`, so nothing on this channel
+/// reports back whether the route was taken. An earlier version of this
+/// answered with a bool, which would have been a protocol of our own invention.
+pub fn on_route_message(mut handler: impl FnMut(&str, &Value) + 'static) {
     NAVIGATION.set_handler(move |call, respond| {
-        let handled = handler(&call.method, &call.arguments);
-        respond.success(Value::Bool(handled));
+        handler(&call.method, &call.arguments);
+        respond.success(Value::Null);
     });
 }
 
@@ -459,6 +474,27 @@ mod tests {
         let (_, _, response_id) = recorder.sent().remove(0);
         recorder.reply(response_id, None);
         assert!(*answered.borrow());
+    }
+
+    #[test]
+    fn every_clipboard_call_carries_the_format_the_embedders_check() {
+        // Leaving it off `hasStrings` gets an "Unknown clipboard format" error
+        // from a conforming embedder, which a caller reading a bool sees as
+        // "no text" -- a wrong answer rather than a visible failure.
+        let recorder = install();
+        Clipboard::get_data(|_text| {});
+        Clipboard::has_strings(|_has| {});
+
+        for (_, bytes, _) in recorder.sent() {
+            let call = JsonMethodCodec.decode_method_call(&bytes).unwrap();
+            assert_eq!(
+                call.arguments,
+                Value::from("text/plain"),
+                "{} sent {:?}",
+                call.method,
+                call.arguments
+            );
+        }
     }
 
     #[test]
@@ -608,23 +644,24 @@ mod tests {
     }
 
     #[test]
-    fn a_pushed_route_is_answered_with_whether_it_was_taken() {
-        // popRoute in particular: answering false is what lets the platform go
-        // ahead and close the window.
+    fn a_pushed_route_reaches_the_application_and_is_answered_emptily() {
         let recorder = install();
-        on_route_message(|method, _arguments| method == "pushRoute");
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let recorded = seen.clone();
+        on_route_message(move |method, _arguments| {
+            recorded.borrow_mut().push(method.to_string())
+        });
 
         let call = JsonMethodCodec
             .encode_method_call(&super::super::MethodCall::new("popRoute", Value::Null))
             .unwrap();
         recorder.deliver("flutter/navigation", &call, 2);
 
+        assert_eq!(seen.borrow().as_slice(), &["popRoute".to_string()]);
         let (response_id, reply) = recorder.responses().remove(0);
         assert_eq!(response_id, 2);
-        assert_eq!(
-            JsonMethodCodec.decode_envelope(&reply.unwrap()),
-            Ok(Some(Value::Bool(false)))
-        );
+        // A success envelope carrying null -- not a bool. See on_route_message.
+        assert_eq!(JsonMethodCodec.decode_envelope(&reply.unwrap()), Ok(Some(Value::Null)));
     }
 
     #[test]

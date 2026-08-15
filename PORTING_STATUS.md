@@ -1125,9 +1125,24 @@ handler 出现时排空），这里照做，理由一样：丢了它，应用就
 | `flutter/lifecycle` | host → 框架 | 启动 resumed；`WM_ACTIVATE` in/active；最小化 hidden；`WM_DESTROY` detached |
 | `flutter/platform` | 框架 → host | `Clipboard.getData/setData/hasStrings`、`SystemNavigator.pop`、`SystemSound.play` |
 
-剪贴板用 `ScopedClipboard` 重试着开——剪贴板是一把全局锁，别的进程复制完
-可能还按着几毫秒。上游 `ScopedClipboard` 同样重试，同样的理由：第一次就
-失败会让"粘贴"变成偶尔不灵，那比彻底不能用还糟。
+**照上游的行为，包括反直觉的那几处。** 这一块第一版是凭印象写的，后来逐条
+对着 `platform_handler.cc` 校了一遍，改了五处：
+
+| 处 | 第一版 | 上游 |
+|---|---|---|
+| `SystemSound.play` 的 click | 响 | **不响**（"按键没有系统音"），tick 同样 |
+| alert 的音 | `MB_ICONASTERISK` | `MB_OK` |
+| 剪贴板打不开 | 返回 null | 返回 Error（和"是空的"必须分得开）|
+| 错误码 | 自己编的 `Clipboard.unknownFormat` | `Clipboard error` + `Unknown clipboard format` |
+| `hasStrings` | 忽略 format 参数，只看 `CF_UNICODETEXT` | 校验 format，`CF_TEXT` 也算 |
+
+错误码这条最要紧：应用是按 `PlatformException.code` 分支的，自己编一个就
+谁也匹配不上。
+
+`ScopedClipboard` 也只开一次、不重试、不 `Sleep`——上游 `Open` 就是调一次
+`OpenClipboard`，失败返回 `GetLastError()`。第一版写了个最多睡 100ms 的重试
+循环，还在注释里说"上游也这么干"，两件事都不对：上游没有，而且这段跑在
+platform 线程上，睡的是整条 shell 的任务队列。
 
 `flutter/mousecursor` 没做，理由具体：它说二进制标准格式，而引擎自己那个
 C++ 标准编解码器（`shell/platform/common/client_wrapper`）在这个 fork 里
@@ -1140,24 +1155,58 @@ C++ 标准编解码器（`shell/platform/common/client_wrapper`）在这个 fork
 `third_party/accessibility` 拿回来，或者给标准编解码器单开一个不经过
 `shell/platform/common` 的 GN 目标。
 
+### 三处只有跨 C ABI 才会暴露的问题
+
+单测把一个 recorder 塞在 shell 的位置上，压根到不了引擎。所以
+`examples/platform_channels` 是**常驻的**：它自检、自己关窗口、有问题就
+非零退出。第一次跑就抓到一条单测抓不到的：`Clipboard::has_strings` 没带
+`text/plain` 参数（上游 Dart 是带的），被 host 新加的 format 校验判成错误，
+而调用方读的是 bool，看到的是"剪贴板里没有文字"——一个错误答案，不是一次
+可见的失败。
+
+另外两条是自己复查出来的，都在"框架侧"：
+
+**handler 注销不了自己。** handler 跑的时候被从 map 里借出去了，
+`clear_handler` 没东西可 take，跑完又被装了回去 —— 而注释里明写着支持这个
+用法。现在用一个 generation 计数器：`deliver` 借出时记下代次，回来只在代次
+没变时才放回去。一次性监听、`EventChannel::cancel` 在事件回调里调用，都靠它。
+
+**没人答的消息现在自己会答。** 每个 response id 必须恰好回一次，但 handler
+是可以忘的——直接 return，或者把 responder 丢进一个后来被 drop 的闭包。
+现在 responder 带一个 `Drop` 守卫：没答过就答一个空的。少答一次在 Windows
+上是一个永远不跑的 platform 线程任务。
+
+顺带修的：帧请求从 ABI 挪到了 messenger。原来只有从 shell 进来的消息会请求
+帧，而缓冲里排空的那些是 `set_handler` 送的、shell 根本不知道——handler 改
+了状态却没人画。
+
 ### 验证
 
-一个临时探针 app（跑完即删）打在真 shell 上：
-
 ```
-PROBE lifecycle Resumed        ← handler 注册之前就发来的，被缓冲住了
-PROBE hasStrings true
-PROBE getData Some("rustflutter probe")     ← setData 出去、getData 回来
-PROBE absent Ok(None)          ← 没人服务的通道，是空回复不是挂住
-PROBE badFormat Err(MethodError { code: "Clipboard.unknownFormat", ... })
-PROBE closing
-PROBE lifecycle Inactive
-PROBE lifecycle Detached       ← SystemNavigator.pop 真把窗口关了，进程自己退出 0
+platform_channels: PASS        （exit 0）
+  lifecycle 第一条是 Resumed —— handler 注册之前发来的，缓冲住了
+  setData → hasStrings → getData 走真 Win32 剪贴板往返
+  没人服务的通道回 Ok(None)，不是挂住
+  错误信封的 code 是 "Clipboard error"，和上游一个字不差
+  SystemNavigator.pop 真关了窗口，进程自己退出
 ```
 
-单测 132 → 179（+47）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
+单测 132 → 189（+57）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
 打进去、逐帧读回 GPU framebuffer）照旧 PASS —— `flutter/keydata` 和新的
 通道走的是同一个 `DispatchPlatformMessage`。
+
+### 还知道没做的
+
+- **`System.exitApplication` / `System.requestAppExit`。** 桌面上上游用这一对
+  做**可取消的退出**：嵌入层问框架"能关吗"，框架可以答 cancel。这里只做了
+  `SystemNavigator.pop`（直接关）和 `System.initializationComplete`（答一声）。
+- **messenger 是 thread_local，而且没有实例的概念。** 同一个线程上建第二个
+  app 会共用同一张通道表；从非 UI 线程调 `Clipboard::get_data` 会静默拿到一个
+  空 messenger，立刻以 `None` 回调。平台消息本来就是 UI 线程的事，但目前是
+  靠约定而不是靠类型挡住的。
+- **`send_channel_update` 一路传到 `PlatformView` 的默认空实现**，没人消费。
+  上游 Windows 用它决定要不要压住 `flutter/lifecycle`。
+- **`EventChannel` 只有单测。** 没有哪一侧实现了一条真的流可以对着跑。
 
 ---
 

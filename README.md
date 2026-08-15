@@ -31,9 +31,9 @@ framework has the full RenderBox protocol, an element tree with state, hit
 testing and gestures, animation and a navigation stack, and a component library.
 
 ```
-gn gen                        →  1009 targets from 275 files
+gn gen                        →  1011 targets from 276 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  132 passed
+rustflutter_unittests         →  189 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
@@ -247,6 +247,7 @@ change by a line.**
 | `counter` | Element tree, partial rebuild, tap handling |
 | `showcase` | Components and theming: one toggle recolours the application |
 | `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
+| `platform_channels` | Platform messages both ways, against a real shell. Checks itself and exits non-zero on a wrong answer |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
