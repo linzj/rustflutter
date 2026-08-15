@@ -59,6 +59,7 @@
 #include "flutter/shell/common/display.h"
 #include "flutter/shell/common/vsync_waiter.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl_win.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
@@ -451,6 +452,34 @@ class HostPlatformView final : public PlatformView,
   // |PlatformView|
   std::shared_ptr<impeller::Context> GetImpellerContext() const override {
     return gl_context_ ? gl_context_->GetImpellerContext() : nullptr;
+  }
+
+  // |PlatformView|
+  //
+  // Called on the IO thread, once, after the Impeller context is ready -- which
+  // is exactly what an upload needs and the reason the shell calls this here.
+  //
+  // Upstream returns a Skia GrDirectContext from this hook; under Impeller
+  // there is none, and the return value is only passed to
+  // ShellIOManager::NotifyResourceContextAvailable, which tolerates null. What
+  // is wanted is the side effect: the offscreen GL context becomes current on
+  // this thread and stays current, so texture uploads posted here have a
+  // context to run in and the reactor knows this thread may issue GL commands.
+  sk_sp<GrDirectContext> CreateResourceContext() const override {
+    if (!gl_context_) {
+      return nullptr;
+    }
+    if (!gl_context_->MakeResourceCurrent()) {
+      // Not fatal. Nothing is registered as an upload target, so uploads keep
+      // happening on the raster thread on first draw, as they did before.
+      FML_LOG(IMPORTANT) << "Could not make the offscreen GL context current "
+                            "on the IO thread; textures will upload while "
+                            "rasterising instead.";
+      return nullptr;
+    }
+    RfSetImageUploadTarget(task_runners_.GetIOTaskRunner(),
+                           gl_context_->GetImpellerContext());
+    return nullptr;
   }
 
   /// Remakes the EGL window surface after a resize. An EGL surface does not

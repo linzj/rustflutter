@@ -5,6 +5,7 @@
 #ifndef FLUTTER_RUNTIME_RUNTIME_CONTROLLER_H_
 #define FLUTTER_RUNTIME_RUNTIME_CONTROLLER_H_
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -134,6 +135,11 @@ class RuntimeController {
 
   std::unordered_set<int64_t> rendered_views_during_frame_;
   bool frame_in_progress_ = false;
+
+  // The last values handed to the framework, so a frame cannot report a time
+  // earlier than the one before it. See BeginFrame.
+  int64_t last_frame_micros_ = std::numeric_limits<int64_t>::min();
+  uint64_t last_frame_number_ = 0;
 
   FML_DISALLOW_COPY_AND_ASSIGN(RuntimeController);
 };

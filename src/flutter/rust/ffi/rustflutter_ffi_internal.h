@@ -17,7 +17,9 @@
 
 #include "flutter/display_list/image/dl_image.h"
 #include "flutter/flow/layers/layer_tree.h"
+#include "flutter/fml/task_runner.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "impeller/renderer/context.h"
 
 namespace flutter {
 
@@ -35,6 +37,21 @@ std::unique_ptr<LayerTree> RfLayerTreeTake(RfLayerTree* handle);
 /// to choose between representations that are not interchangeable. See the
 /// comment on that function.
 bool RfImpellerBackend();
+
+//------------------------------------------------------------------------------
+/// Tells the image code where to upload pixels to the GPU.
+///
+/// Call once, from the IO thread, with that thread's task runner and the
+/// Impeller context the rasterizer will draw with -- both are available in
+/// PlatformView::CreateResourceContext, which the shell calls there for exactly
+/// this kind of setup. From then on an image's texture is built ahead of the
+/// frame that draws it, and the raster thread only picks it up.
+///
+/// Without this the upload happens on the raster thread on first draw, which is
+/// correct but costs that frame the memcpy. Headless renders and unit tests
+/// never call it and take that path.
+void RfSetImageUploadTarget(fml::RefPtr<fml::TaskRunner> runner,
+                            std::shared_ptr<impeller::Context> context);
 
 //------------------------------------------------------------------------------
 /// The representation of `image` that the active backend can draw.

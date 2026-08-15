@@ -251,6 +251,14 @@ bool ImpellerGlContext::ClearCurrent() const {
   return onscreen_context_ && onscreen_context_->ClearCurrent();
 }
 
+bool ImpellerGlContext::MakeResourceCurrent() const {
+  // The 1x1 pixel buffer built during Create(). A GL context needs some surface
+  // to be current against; nothing is ever drawn to this one, and uploads do
+  // not care what it is.
+  return offscreen_context_ && offscreen_surface_ &&
+         offscreen_context_->MakeCurrent(*offscreen_surface_);
+}
+
 // -- Delegate -----------------------------------------------------------------
 
 namespace {

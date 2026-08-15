@@ -53,6 +53,15 @@ class ImpellerGlContext {
   bool MakeCurrent(const impeller::egl::Surface& surface) const;
   bool ClearCurrent() const;
 
+  /// Makes the offscreen context current on the calling thread, and leaves it
+  /// current.
+  ///
+  /// Called once on the IO thread, so uploads posted there have somewhere to
+  /// run. It also tells the reactor that this thread may issue GL commands --
+  /// the lifecycle listener installed in Create() does that -- without which
+  /// queued work would sit until the raster thread happened to flush it.
+  bool MakeResourceCurrent() const;
+
  private:
   ImpellerGlContext() = default;
 

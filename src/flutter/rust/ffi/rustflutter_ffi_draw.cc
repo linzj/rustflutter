@@ -139,48 +139,90 @@ void EnsureCodecsRegistered() {
   });
 }
 
-// A decoded image that becomes a GPU texture the first time Impeller asks.
-//
-// It has to be deferred. Decoding happens while a widget tree is being built,
-// on the UI thread, where there is no GPU context to upload to; Impeller asks
-// for the texture while rasterising, on the raster thread, where there is. This
-// class is the gap between the two, and `GetImpellerTexture` is the hook the
-// dispatcher already calls at exactly the right moment.
-/// Totals what uploading costs the raster thread, when anyone is asking.
+/// Totals what uploading costs, and which thread paid, when anyone is asking.
 ///
-/// Upstream this work is not on this thread at all: `ImageDecoder` uploads on
-/// the IO thread's shared context, so the rasterizer never waits for it. Here
-/// it happens on first draw, which means the frame an image first appears in
-/// pays for it. Reported under RUSTFLUTTER_FRAME_STATS, next to the raster
-/// thread's own numbers, so the two can be read together.
+/// Reported under RUSTFLUTTER_FRAME_STATS, next to the raster thread's own
+/// numbers, so the two can be read together. `ahead` says the upload happened
+/// on the IO thread before anything drew the image, which is the case that
+/// costs the rasterizer nothing.
 void ReportUpload(std::chrono::steady_clock::time_point started,
-                  size_t bytes) {
+                  size_t bytes,
+                  bool ahead) {
   static const bool enabled = std::getenv("RUSTFLUTTER_FRAME_STATS") != nullptr;
   if (!enabled) {
     return;
   }
+  static std::mutex mutex;
   static int count = 0;
+  static int on_raster = 0;
   static double total_ms = 0.0;
-  static size_t total_bytes = 0;
   const double ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - started)
                         .count();
+  std::lock_guard<std::mutex> lock(mutex);
   count++;
   total_ms += ms;
-  total_bytes += bytes;
+  if (!ahead) {
+    on_raster++;
+  }
   FML_LOG(IMPORTANT) << "texture upload: " << ms << " ms for " << (bytes / 1024)
-                     << " KiB (" << count << " images, " << total_ms
-                     << " ms, " << (total_bytes / 1024) << " KiB total).";
+                     << " KiB " << (ahead ? "ahead on io" : "ON RASTER")
+                     << " (" << count << " images, " << total_ms << " ms, "
+                     << on_raster << " on the raster thread).";
 }
 
+/// Where an image's pixels are uploaded, if the host has told us.
+///
+/// Upstream never uploads on the raster thread: `ImageDecoder` hands the work
+/// to the IO thread's shared context so the rasterizer is never waiting on a
+/// memcpy. Impeller's GLES backend is specifically why that indirection exists
+/// -- `image_decoder_impeller.cc` posts to the IO runner with the comment "The
+/// I/O image uploads are not threadsafe on GLES".
+///
+/// Set once during shell startup, from the IO thread, and read from the UI
+/// thread afterwards. Nothing sets it in a headless render or a unit test, and
+/// the upload then happens where it used to.
+struct UploadTarget {
+  fml::RefPtr<fml::TaskRunner> runner;
+  std::shared_ptr<impeller::Context> context;
+};
+
+std::mutex& UploadTargetMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+UploadTarget& MutableUploadTarget() {
+  static UploadTarget target;
+  return target;
+}
+
+UploadTarget GetUploadTarget() {
+  std::lock_guard<std::mutex> lock(UploadTargetMutex());
+  return MutableUploadTarget();
+}
+
+// A decoded image that becomes a GPU texture, on the IO thread if the host gave
+// us one and on the raster thread otherwise.
+//
+// It has to be deferred either way. Decoding happens while a widget tree is
+// being built, on the UI thread, where there is no GPU context to upload to.
+// `GetImpellerTexture` is the hook the dispatcher calls while rasterising; by
+// then the IO thread has usually already done the work and this only hands over
+// what it produced.
 class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
  public:
   explicit RfDeferredImpellerImage(std::shared_ptr<SkBitmap> pixels)
       : pixels_(std::move(pixels)) {}
 
-  // |DlImageImpeller|
-  std::shared_ptr<impeller::Texture> GetImpellerTexture(
-      const std::shared_ptr<impeller::Context>& context) const override {
+  /// Uploads now, on the calling thread. Safe to call from the IO thread ahead
+  /// of any drawing, and from the raster thread if that never happened.
+  ///
+  /// Returns the texture, building it at most once however many threads ask.
+  std::shared_ptr<impeller::Texture> Upload(
+      const std::shared_ptr<impeller::Context>& context,
+      bool ahead) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (texture_ != nullptr) {
       return texture_;
     }
@@ -218,9 +260,15 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
       FML_LOG(ERROR) << "rf_image: could not upload pixels to the texture.";
       return nullptr;
     }
-    ReportUpload(started, descriptor.GetByteSizeOfBaseMipLevel());
+    ReportUpload(started, descriptor.GetByteSizeOfBaseMipLevel(), ahead);
     texture_ = std::move(texture);
     return texture_;
+  }
+
+  // |DlImageImpeller|
+  std::shared_ptr<impeller::Texture> GetImpellerTexture(
+      const std::shared_ptr<impeller::Context>& context) const override {
+    return Upload(context, /*ahead=*/false);
   }
 
   // |DlImage|
@@ -252,6 +300,9 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
 
  private:
   std::shared_ptr<SkBitmap> pixels_;
+  // Written by whichever thread uploads first and read by the raster thread, so
+  // the two cannot race over who allocates the texture.
+  mutable std::mutex mutex_;
   mutable std::shared_ptr<impeller::Texture> texture_;
 
   RfDeferredImpellerImage(const RfDeferredImpellerImage&) = delete;
@@ -263,14 +314,26 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
 // Built on first use rather than at decode time, because whether Impeller came
 // up is decided by the host after an image may already have been decoded, and
 // because most images are never drawn under both.
+//
+// First use is a recording on the UI thread, which is a frame or more before
+// anything rasterises it. That gap is the whole opportunity: the upload is
+// posted to the IO thread here, and by the time the raster thread asks for the
+// texture it is normally already there.
 const sk_sp<flutter::DlImage>& ImageFor(const RfImage* image) {
   if (!flutter::RfImpellerBackend()) {
     return image->image;
   }
   auto* mutable_image = const_cast<RfImage*>(image);
   if (mutable_image->impeller_image == nullptr && image->pixels != nullptr) {
-    mutable_image->impeller_image =
-        sk_make_sp<RfDeferredImpellerImage>(image->pixels);
+    auto deferred = sk_make_sp<RfDeferredImpellerImage>(image->pixels);
+    mutable_image->impeller_image = deferred;
+
+    UploadTarget target = GetUploadTarget();
+    if (target.runner && target.context != nullptr) {
+      target.runner->PostTask([deferred, context = target.context]() {
+        deferred->Upload(context, /*ahead=*/true);
+      });
+    }
   }
   return mutable_image->impeller_image;
 }
@@ -635,6 +698,12 @@ namespace flutter {
 const sk_sp<flutter::DlImage>& RfImageDrawable(const RfImage* image) {
   static const sk_sp<flutter::DlImage> kNone;
   return image == nullptr ? kNone : ImageFor(image);
+}
+
+void RfSetImageUploadTarget(fml::RefPtr<fml::TaskRunner> runner,
+                            std::shared_ptr<impeller::Context> context) {
+  std::lock_guard<std::mutex> lock(UploadTargetMutex());
+  MutableUploadTarget() = UploadTarget{std::move(runner), std::move(context)};
 }
 
 }  // namespace flutter

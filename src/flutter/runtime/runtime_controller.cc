@@ -192,12 +192,49 @@ bool RuntimeController::BeginFrame(fml::TimePoint frame_time,
   rendered_views_during_frame_.clear();
   frame_in_progress_ = true;
 
+  if (frame_number < last_frame_number_) {
+    FML_LOG(ERROR) << "Frame number is out of order: " << frame_number << " < "
+                   << last_frame_number_;
+  }
+  last_frame_number_ = frame_number;
+
+  // A frame is targeted at a vsync deadline, and that deadline is derived from
+  // the display's refresh interval -- which VsyncWaiterWin re-reads about once
+  // a second, because the rate genuinely changes. When it changes upwards the
+  // grid gets finer, and the next target can land *before* the previous one:
+  // at 32 Hz a frame is aimed at 156.25 ms, and the 60 Hz frame that follows it
+  // is aimed at 150.0 ms.
+  //
+  // The framework reads this as a clock. AnimationSet::tick already refuses to
+  // run backwards, but anything that derives a phase from the raw time -- the
+  // gallery's cycle() and ping_pong() do -- would step back for one frame.
+  // Upstream clamps at this same boundary, in PlatformConfiguration::BeginFrame,
+  // and for the same reason. Clamping here rather than in each consumer means
+  // there is one place that decides what "now" is.
+  int64_t frame_micros = frame_time.ToEpochDelta().ToMicroseconds();
+  if (frame_micros < last_frame_micros_) {
+    // Not FML_LOG(WARNING): that level is filtered out of a release build, and
+    // this is a condition worth seeing in one -- it means the display changed
+    // rate under a running application.
+    FML_LOG(ERROR) << "Reported frame time is older than the last one; "
+                      "clamping. "
+                   << frame_micros << " < " << last_frame_micros_
+                   << " ~= " << (last_frame_micros_ - frame_micros);
+    frame_micros = last_frame_micros_;
+  }
+  last_frame_micros_ = frame_micros;
+
   // Upstream this is two separate hops into Dart: onBeginFrame runs tickers and
   // transitions, then onDrawFrame builds, lays out and paints. Keeping them
   // apart matters -- an animation that starts during onBeginFrame must be
   // visible to the build that follows it in the same frame.
-  rf_app_begin_frame(app_, frame_time.ToEpochDelta().ToMicroseconds(),
-                     frame_number);
+  //
+  // Upstream drains the microtask queue between the two (FlushMicrotasksNow),
+  // and that position is load-bearing: dart:ui's own scheduleWarmUpFrame uses
+  // two timers rather than one "to ensure that microtasks flush in between".
+  // There is no async runtime here yet, so nothing is queued and nothing is
+  // drained -- but this is where it would go.
+  rf_app_begin_frame(app_, frame_micros, frame_number);
   rf_app_draw_frame(app_);
 
   frame_in_progress_ = false;
