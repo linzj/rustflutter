@@ -1,0 +1,28 @@
+# Copy this file to the root of a rustflutter checkout as `.gclient`, then run
+# `gclient sync` there to populate third_party and the toolchains.
+#
+# It is deliberately not committed under its real name. gclient searches upward
+# for `.gclient`, so one sitting at the root of a working tree would make any
+# `gclient sync` run underneath it start replacing that tree's directory
+# junctions with real checkouts -- 13 GB of them, on a machine that set the
+# junctions up precisely to avoid that.
+#
+# `managed: False` with no url means gclient never touches the rustflutter
+# checkout itself: clone the repository first, drop this file in beside DEPS,
+# and sync. Point `url` at the repository and set `managed` to True instead if
+# you would rather gclient keep the source updated too.
+#
+# What this does and does not fetch: DEPS covers third_party and the build
+# toolchains -- clang, gn, ninja, skia, icu, angle, harfbuzz. The engine's C++
+# and the whole Rust framework are committed to the repository, so they arrive
+# with the clone rather than the sync. `rustc` is in neither; it resolves off
+# PATH (see src/build/toolchain/rust.gni) and has to be installed separately.
+solutions = [
+  {
+    "name": ".",
+    "url": None,
+    "deps_file": "DEPS",
+    "managed": False,
+    "custom_deps": {},
+  },
+]

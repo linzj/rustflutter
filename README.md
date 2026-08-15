@@ -41,6 +41,28 @@ rust_ffi_unittests           →  11 passed
 
 *Flutter Gallery：首页、Rally、组件页、设置。26 个屏幕，全部由 Rust 排版。*
 
+## 换一台机器：拉依赖
+
+本机的 `third_party` 是指向另一个 flutter checkout 的目录 junction，克隆到别处
+之后那些路径是空的，要用 `gclient sync` 拉真依赖（需要 `depot_tools` 在 PATH 上）：
+
+```sh
+cp tools/gclient.template .gclient
+gclient sync                  # 约 13 GB
+python tools/check_deps.py    # 核对拉到的 revision 和 DEPS 是否一致
+```
+
+`gclient sync` 只管 `third_party` 和构建工具链——clang、gn、ninja、skia、icu、
+angle 都在 `DEPS` 里。引擎的 C++ 和整个 Rust 框架直接在仓库里（4,724 个跟踪文件），
+随克隆一起到，不走 DEPS。
+
+两件 `DEPS` 不负责的事：
+
+- **`rustc` 要自己装**，它从 PATH 解析（见 `src/build/toolchain/rust.gni`），
+  需要 edition 2024，本机验证于 1.93.0。
+- **Windows 上要本机的 Visual Studio**，并设 `DEPOT_TOOLS_WIN_TOOLCHAIN=0`，
+  否则 `win_toolchain` hook 会去取 Google 内部的工具链包。
+
 ## 快速开始
 
 ```sh
