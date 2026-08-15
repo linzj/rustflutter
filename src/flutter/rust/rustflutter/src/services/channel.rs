@@ -546,4 +546,85 @@ mod tests {
         recorder.deliver("test/events", &[], 0);
         assert!(*ended.borrow());
     }
+
+    #[test]
+    fn an_error_envelope_on_a_stream_reaches_the_error_callback() {
+        // A stream can end two ways and a listener usually cares which: an
+        // error is the platform saying something went wrong, not that there is
+        // no more to come.
+        let recorder = install();
+        let channel = EventChannel::new("test/stream", StandardMethodCodec::new());
+
+        let errors = Rc::new(RefCell::new(Vec::new()));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorded_errors = errors.clone();
+        let recorded_events = events.clone();
+        channel.listen(
+            Value::Null,
+            EventSink::new(move |event| recorded_events.borrow_mut().push(event))
+                .on_error(move |error| recorded_errors.borrow_mut().push(error)),
+        );
+
+        let failure = MethodError::new("sensor-gone", Some("unplugged".to_string()));
+        let envelope = StandardMethodCodec.encode_error_envelope(&failure).unwrap();
+        recorder.deliver("test/stream", &envelope, 0);
+
+        assert_eq!(errors.borrow().as_slice(), &[failure]);
+        assert!(events.borrow().is_empty(), "an error is not an event");
+    }
+
+    #[test]
+    fn cancelling_tells_the_platform_and_stops_listening() {
+        let recorder = install();
+        let channel = EventChannel::new("test/stream", StandardMethodCodec::new());
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        channel.listen(
+            Value::Null,
+            EventSink::new(move |event| recorded.borrow_mut().push(event)),
+        );
+        channel.cancel(Value::Null);
+
+        let methods: Vec<String> = recorder
+            .sent()
+            .iter()
+            .map(|(_, bytes, _)| {
+                StandardMethodCodec.decode_method_call(bytes).unwrap().method
+            })
+            .collect();
+        assert_eq!(methods, vec!["listen", "cancel"]);
+
+        // Anything still in flight when cancel was sent must not be delivered:
+        // the sink it would go to is what the caller has just given up.
+        let event = StandardMethodCodec.encode_success_envelope(&Value::I32(9)).unwrap();
+        recorder.deliver("test/stream", &event, 0);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_stream_can_be_cancelled_from_inside_its_own_event() {
+        // The shape a "first value only" listener takes, and the one that needs
+        // the handler to be able to unregister itself from within.
+        let recorder = install();
+        let channel = EventChannel::new("test/first", StandardMethodCodec::new());
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        let once = channel.clone();
+        channel.listen(
+            Value::Null,
+            EventSink::new(move |event| {
+                recorded.borrow_mut().push(event);
+                once.cancel(Value::Null);
+            }),
+        );
+
+        let event = StandardMethodCodec.encode_success_envelope(&Value::I32(1)).unwrap();
+        recorder.deliver("test/first", &event, 0);
+        let second = StandardMethodCodec.encode_success_envelope(&Value::I32(2)).unwrap();
+        recorder.deliver("test/first", &second, 0);
+
+        assert_eq!(events.borrow().as_slice(), &[Value::I32(1)]);
+    }
 }

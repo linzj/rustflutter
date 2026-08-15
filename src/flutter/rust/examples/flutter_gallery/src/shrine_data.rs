@@ -20,6 +20,10 @@ pub struct Product {
     pub category: Category,
     /// Upstream's `assetAspectRatio`: the photograph's width over its
     /// height. A tile that ignored it would letterbox or crop.
+    ///
+    /// Carried but not yet read -- the grid sizes its tiles uniformly. It is
+    /// part of the data as upstream publishes it, and the tests check it.
+    #[allow(dead_code)]
     pub ratio: f32,
     pub photo: &'static [u8],
 }

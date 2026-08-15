@@ -17,6 +17,11 @@ use rustflutter::engine::Color;
 
 /// Which section of the gallery an entry belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// `Study` is never constructed: the studies are their own list, and the
+// category exists so that the enum matches upstream's, which
+// `the_catalogue_matches_upstream` checks. Deleting it to quiet the warning
+// would make this catalogue disagree with the one it is a port of.
+#[allow(dead_code)]
 pub enum Category {
     /// The full-screen sample apps, shown as the home page carousel.
     Study,
@@ -152,6 +157,9 @@ pub mod icon {
 const BLUE: Color = Color::rgb(0x54, 0xC5, 0xF8);
 const GREEN: Color = Color::rgb(0x7B, 0xD3, 0x89);
 const AMBER: Color = Color::rgb(0xF2, 0xB1, 0x4F);
+// Upstream's fifth accent. Nothing here uses it yet; kept so the palette is
+// the whole palette rather than the part that happens to be referenced.
+#[allow(dead_code)]
 const TEAL: Color = Color::rgb(0x4F, 0xC8, 0xB0);
 
 /// The studies, in the order the carousel shows them.

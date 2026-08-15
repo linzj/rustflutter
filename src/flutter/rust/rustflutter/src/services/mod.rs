@@ -57,6 +57,22 @@
 //! a reply. That is not tidiness: a handler answering one call by making
 //! another is ordinary, and a messenger borrowed across it would panic on the
 //! way back in.
+//!
+//! Two consequences of that are worth writing down rather than defending. A
+//! message arriving while a handler runs queues behind it without a limit --
+//! the buffer's capacity is for messages nobody is listening to, and this one
+//! has a listener -- so a handler that feeds its own channel in a loop grows
+//! the queue until it stops. And the queue is drained by re-entering `deliver`,
+//! so a long one nests rather than iterating. Neither is reachable from the
+//! shell, which delivers one message at a time from one thread; both are
+//! reachable from a framework caller that means to.
+//!
+//! The messenger is also per-thread and there is only ever one of it, which
+//! makes two things silently wrong rather than loud: a second application on
+//! the same thread shares its channel table, and a call made from a worker
+//! thread finds a messenger with no shell behind it and is answered
+//! immediately with "nobody handled it". Platform messages are a UI-thread
+//! affair upstream too, but there it is enforced and here it is a convention.
 
 pub mod channel;
 pub mod codec;

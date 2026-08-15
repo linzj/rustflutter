@@ -1191,7 +1191,7 @@ platform_channels: PASS        （exit 0）
   SystemNavigator.pop 真关了窗口，进程自己退出
 ```
 
-单测 132 → 189（+57）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
+单测 132 → 192（+60）。FFI 单测 15 个照旧。相册的按键回归（真 `PostMessage`
 打进去、逐帧读回 GPU framebuffer）照旧 PASS —— `flutter/keydata` 和新的
 通道走的是同一个 `DispatchPlatformMessage`。
 

@@ -261,6 +261,10 @@ pub struct LayerCalls {
     pub display_lists: u32,
 }
 
+// The three below are what a *dependent* crate's tests read -- this module is
+// compiled into them with `--cfg rustflutter_stubs`, where nothing in this
+// crate calls them. They are the stub's public surface, not dead code.
+#[allow(dead_code)]
 impl LayerCalls {
     /// Every layer opened, whatever kind.
     pub fn pushes(&self) -> u32 {
@@ -290,11 +294,13 @@ fn note(update: impl FnOnce(&mut LayerCalls)) {
 }
 
 /// The calls made since the last reset, for tests.
+#[allow(dead_code)]
 pub fn layer_calls() -> LayerCalls {
     LAYER_CALLS.with(|calls| calls.get())
 }
 
 /// Starts counting again. Thread-local, so tests do not need to coordinate.
+#[allow(dead_code)]
 pub fn reset_layer_calls() {
     LAYER_CALLS.with(|calls| calls.set(LayerCalls::default()));
 }
