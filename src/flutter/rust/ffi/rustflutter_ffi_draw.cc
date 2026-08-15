@@ -15,6 +15,8 @@
 #include "flutter/rust/ffi/rustflutter_ffi_handles.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -144,6 +146,33 @@ void EnsureCodecsRegistered() {
 // for the texture while rasterising, on the raster thread, where there is. This
 // class is the gap between the two, and `GetImpellerTexture` is the hook the
 // dispatcher already calls at exactly the right moment.
+/// Totals what uploading costs the raster thread, when anyone is asking.
+///
+/// Upstream this work is not on this thread at all: `ImageDecoder` uploads on
+/// the IO thread's shared context, so the rasterizer never waits for it. Here
+/// it happens on first draw, which means the frame an image first appears in
+/// pays for it. Reported under RUSTFLUTTER_FRAME_STATS, next to the raster
+/// thread's own numbers, so the two can be read together.
+void ReportUpload(std::chrono::steady_clock::time_point started,
+                  size_t bytes) {
+  static const bool enabled = std::getenv("RUSTFLUTTER_FRAME_STATS") != nullptr;
+  if (!enabled) {
+    return;
+  }
+  static int count = 0;
+  static double total_ms = 0.0;
+  static size_t total_bytes = 0;
+  const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - started)
+                        .count();
+  count++;
+  total_ms += ms;
+  total_bytes += bytes;
+  FML_LOG(IMPORTANT) << "texture upload: " << ms << " ms for " << (bytes / 1024)
+                     << " KiB (" << count << " images, " << total_ms
+                     << " ms, " << (total_bytes / 1024) << " KiB total).";
+}
+
 class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
  public:
   explicit RfDeferredImpellerImage(std::shared_ptr<SkBitmap> pixels)
@@ -158,6 +187,7 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
     if (context == nullptr || pixels_ == nullptr) {
       return nullptr;
     }
+    const auto started = std::chrono::steady_clock::now();
     const SkImageInfo& info = pixels_->info();
 
     impeller::TextureDescriptor descriptor;
@@ -188,6 +218,7 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
       FML_LOG(ERROR) << "rf_image: could not upload pixels to the texture.";
       return nullptr;
     }
+    ReportUpload(started, descriptor.GetByteSizeOfBaseMipLevel());
     texture_ = std::move(texture);
     return texture_;
   }

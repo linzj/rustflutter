@@ -35,6 +35,7 @@ upstream_icons.json
 # Build artefacts and diagnostic output.
 dist/
 fps_*.log
+audit_*.log
 steady_*.log
 alive.log
 rel_err.log

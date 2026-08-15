@@ -342,10 +342,24 @@ void ReportFrameStats(double idle_ms, double raster_ms, double swap_ms) {
     return values[values.size() / 2];
   };
 
+  // The worst frame in the window, alongside the typical one. A median hides
+  // exactly the events worth knowing about here: an image's pixels being
+  // uploaded to a texture the first time it is drawn happens on this thread,
+  // once per image, and shows up as one slow frame rather than as a shifted
+  // median.
+  auto worst = [&samples](double FrameSample::*field) {
+    double top = 0.0;
+    for (const FrameSample& sample : samples) {
+      top = std::max(top, sample.*field);
+    }
+    return top;
+  };
+
   const double interval = median(&FrameSample::interval_ms);
   FML_LOG(IMPORTANT) << "raster thread: idle " << median(&FrameSample::idle_ms)
                      << " ms, rasterise " << median(&FrameSample::raster_ms)
-                     << " ms, swap " << median(&FrameSample::swap_ms)
+                     << " ms (worst " << worst(&FrameSample::raster_ms)
+                     << " ms), swap " << median(&FrameSample::swap_ms)
                      << " ms, frame " << interval << " ms (" << (1000.0 / interval)
                      << " fps), median of " << samples.size() << ".";
   samples.clear();

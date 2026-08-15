@@ -294,6 +294,7 @@ impl FrameTimings {
     }
 
     fn record(
+        advance_ms: f64,
         started: std::time::Instant,
         built: std::time::Instant,
         laid_out: std::time::Instant,
@@ -303,7 +304,7 @@ impl FrameTimings {
             return;
         }
         thread_local! {
-            static SAMPLES: std::cell::RefCell<Vec<(f64, f64, f64)>> =
+            static SAMPLES: std::cell::RefCell<Vec<(f64, f64, f64, f64)>> =
                 const { std::cell::RefCell::new(Vec::new()) };
         }
         let ms = |a: std::time::Instant, b: std::time::Instant| {
@@ -311,21 +312,29 @@ impl FrameTimings {
         };
         SAMPLES.with(|samples| {
             let mut samples = samples.borrow_mut();
-            samples.push((ms(started, built), ms(built, laid_out), ms(laid_out, painted)));
+            samples.push((
+                advance_ms,
+                ms(started, built),
+                ms(built, laid_out),
+                ms(laid_out, painted),
+            ));
             if samples.len() < 60 {
                 return;
             }
-            let median = |pick: fn(&(f64, f64, f64)) -> f64| {
+            let median = |pick: fn(&(f64, f64, f64, f64)) -> f64| {
                 let mut values: Vec<f64> = samples.iter().map(pick).collect();
                 values.sort_by(|a, b| a.partial_cmp(b).expect("no NaN durations"));
                 values[values.len() / 2]
             };
-            let build = median(|s| s.0);
-            let layout = median(|s| s.1);
-            let paint = median(|s| s.2);
+            let advance = median(|s| s.0);
+            let build = median(|s| s.1);
+            let layout = median(|s| s.2);
+            let paint = median(|s| s.3);
             eprintln!(
-                "ui thread: build {build:.2} ms, layout {layout:.2} ms,                  record {paint:.2} ms, total {:.2} ms (median of {})",
-                build + layout + paint,
+                "ui thread: advance {advance:.2} ms, build {build:.2} ms, \
+                 layout {layout:.2} ms, record {paint:.2} ms, total {:.2} ms \
+                 (median of {})",
+                advance + build + layout + paint,
                 samples.len()
             );
             samples.clear();
@@ -415,6 +424,11 @@ struct AppInstance {
     /// rebuilt each frame, so the last one has to be held on to deliberately.
     painted: HashMap<i64, BoxedWidget>,
     router: GestureRouter,
+    /// How long this frame's `begin_frame` took, in milliseconds. It is
+    /// measured there and reported here because the shell calls the two halves
+    /// of a frame separately, and a report that started at `build` would leave
+    /// the tickers out of the total it calls "ui thread".
+    advance_ms: f64,
 }
 
 impl AppInstance {
@@ -428,6 +442,7 @@ impl AppInstance {
         let Some(metrics) = self.views.get(&view_id).copied() else {
             return;
         };
+        let advance_ms = self.advance_ms;
         let Some(application) = self.application.as_mut() else {
             return;
         };
@@ -477,7 +492,7 @@ impl AppInstance {
         // retires anything that stopped being drawn a frame ago.
         crate::painting::end_text_frame();
         let painted = FrameTimings::now();
-        FrameTimings::record(started, built, laid_out, painted);
+        FrameTimings::record(advance_ms, started, built, laid_out, painted);
 
         if let Some(render) = self.host.render {
             // Ownership crosses here: the shell converts the handle into a
@@ -623,6 +638,7 @@ mod abi {
             frame_time_micros: 0,
             painted: HashMap::new(),
             router: GestureRouter::new(),
+            advance_ms: 0.0,
         });
         Box::into_raw(instance) as *mut RfApp
     }
@@ -708,6 +724,7 @@ mod abi {
         // Copy the host out first: `application` borrows `instance` mutably,
         // and the scheduler needs the host at the same time.
         let scheduler = FrameScheduler { host: instance.host };
+        let started = FrameTimings::now();
         if let Some(application) = instance.application.as_mut() {
             application.begin_frame(&FrameContext {
                 frame_number,
@@ -715,6 +732,8 @@ mod abi {
                 scheduler,
             });
         }
+        instance.advance_ms =
+            FrameTimings::now().duration_since(started).as_secs_f64() * 1000.0;
     }
 
     #[unsafe(no_mangle)]
