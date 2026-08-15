@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! Inert stand-ins for the engine C ABI, compiled only under `cfg(test)`.
+//! Inert stand-ins for the engine C ABI, compiled under `cfg(test)` and under
+//! `--cfg rustflutter_stubs`.
 //!
 //! The crate's `#[test]` binary is built by rustc directly and does not link
 //! the C++ engine, but `RenderBox` is a trait object, so every implementor's
@@ -17,6 +18,17 @@
 //! `rust/ffi_unittests.cc`, which links the real thing and reads pixels back.
 
 #![allow(unused_variables)]
+
+// The window host, stubbed for the same reason as the rest. Under plain
+// `cfg(test)` the crate compiles no call to this, but a dependent crate built
+// with `--cfg rustflutter_stubs` still has `run` in it, and a `main` that calls
+// it. Returning non-zero rather than zero means a test that reaches this by
+// accident fails rather than passing against a window that never opened.
+#[cfg(rustflutter_stubs)]
+#[unsafe(no_mangle)]
+pub extern "C" fn rf_host_run(_options: *const std::ffi::c_void) -> std::os::raw::c_int {
+    -1
+}
 
 use std::os::raw::{c_char, c_int};
 

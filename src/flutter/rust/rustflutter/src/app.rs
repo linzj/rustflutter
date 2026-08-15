@@ -216,10 +216,22 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
     }
 
     fn begin_frame(&mut self, context: &FrameContext) {
+        // Advancing happens here rather than in build, and the difference is
+        // measurable: Animator posts its vsync wait after an idle, so a request
+        // made during the build reaches it a frame or more late. Asking at the
+        // start of the frame gives it the whole frame to schedule the next one.
+        let animating = self.tree.advance_frame(context.frame_time_micros);
+        if animating {
+            context.scheduler.request_frame();
+        }
         self.app.begin_frame(context);
     }
 
     fn build(&mut self, context: &BuildContext) -> BoxedWidget {
+        // The clock was already moved forward in begin_frame; this only makes
+        // sure every build in the frame reads the same value.
+        self.tree.set_frame_time(context.frame_time_micros);
+
         let resized = self.last_size != Some(context.size);
         if self.tree.is_empty() || resized {
             let root = self.app.build(context);

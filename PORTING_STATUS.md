@@ -519,6 +519,7 @@ Label（3 级）         Badge    Gap        IdSource
 | `gallery` | 渲染层：flex、stack、viewport 滚动、渐变、裁剪、命中测试 |
 | `counter` | element 树 + 局部重建 + 点击。header 显示自己被构建的次数；点按钮后它仍是 1 |
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
+| `flutter_gallery` | 上游 Gallery：26 个屏幕、导航栈、滑入过渡。见第十二节 |
 
 每个都有 `--png` 无头路径供 CI 使用。
 
@@ -577,7 +578,86 @@ Impeller 下交互       点一次开关 → docs/showcase_impeller_light.png �
 
 ---
 
-## 十二、下一步
+## 十二、Flutter Gallery 移植 —— 已完成 ✅
+
+上游是 `dev/integration_tests/new_gallery`。移植的是它的结构，不是它的代码：
+Dart 那边一行也没有被翻译，每个屏幕都是照着它长什么样、由什么组成重写的。
+
+### 移到了什么
+
+```
+首页          三个分类（Studies / Components / Reference），可折叠
+              19 个组件 demo，标题与副标题沿用上游原文
+demo 页       23 个，各自一段说明 + 一个可交互的样例
+studies       Rally（财务面板）、Shrine（商品网格）、Crane（行程列表）
+设置页        主题开关、目录统计、以及一张"还没有"的清单
+```
+
+共 26 个屏幕，全部可无头渲染成 PNG（`--png <path> --route <name> --slug <slug>`），
+也全部可在窗口里点进去。
+
+### 为此补进框架的东西
+
+| 模块 | 内容 |
+|---|---|
+| `animation.rs` | `Curve`（6 种）、`FloatTween`/`ColorTween`/`OffsetTween`、`Controller` |
+| `navigation.rs` | `Navigator` 栈、`Transition`、`Presentation`，push/pop/replace |
+| `framework.rs` | `StatefulComponent::advance`——每帧一次，在 build 之前推进时间 |
+| `controls.rs` | Checkbox、Radio、Chip、TabBar、BottomNavigation、Dialog、DataTable 等 |
+
+`advance` 是这次唯一的协议扩展。`build` 拿到的 state 是共享引用——刻意的，
+免得一次 build 画到一半改掉自己正在画的东西——所以推进时钟需要另一个入口。
+它返回 bool：还要不要下一帧。帧是按需的，不再要求的动画就自然停了。
+
+### 过程中改掉的 bug
+
+| 现象 | 原因 |
+|---|---|
+| 44px 头像变成 64px 椭圆 | `RenderFlex` 把交叉轴最小值传给了所有子节点，不只是 `Stretch` |
+| demo 页整片空白 | `Stretch` 遇到无界交叉轴 → 无穷大尺寸。加 `cross_max.is_finite()` |
+| 48px 开关被拉满宽 | 内容列不该用 `Stretch`；改 `Start`，页面级列保留 `Stretch` |
+| 点了没反应 | 两个同 State 类型的根各自持有一份状态，导航的那个不是绘制的那个 |
+| 时钟走了画面不动 | `advance` 返回 true 却没把元素标脏 |
+| 过渡一进来就走了三分之一 | 帧是按需的，上一帧可能是几秒前。见下 |
+
+最后一条值得展开：帧按需绘制意味着两帧之间的间隔不是帧率，而是"用户盯着
+这一页看了多久"。不设上限地按真实间隔推进，一次久等之后的过渡会从中间开始。
+现在钳到 50 ms（`MAX_FRAME_MICROS`）——代价是真卡的时候动画比真实时间慢，
+这是所有动画循环都做的同一笔交易。
+
+### 帧时间实测
+
+```
+静止页面              16.6 ms/帧（60 fps）
+过渡中（Impeller）    33–83 ms/帧
+过渡中（软件 surface）16–33 ms/帧
+新屏幕第一帧          两条路径都约 133 ms
+```
+
+过渡慢在未优化的 Impeller/ANGLE 一侧，不在 Rust 这边：同一棵树、同一次布局，
+换成软件 surface 就快一倍以上。首帧的 133 ms 是元素挂载加文字整形，两条路径
+一样。本仓库至今没做过 optimized 构建，以上数字只对 `--unoptimized` 有效。
+
+（顺带：最早测出的 116 ms 里有一部分是测量本身——`RUSTFLUTTER_CAPTURE_FRAME`
+每帧回读一次全屏帧缓冲再编码 PNG。诊断开关不能在被诊断的路径上白嫖。）
+
+### 没移过来的，以及为什么
+
+设置页里就列着这张清单，因为缺的东西在界面上看不出来，只能写出来：
+
+```
+文字缩放      需要把 scale 穿到 TextStyle
+本地化        需要一套消息目录；现在字符串都是内联的
+文字方向      flex 和 paragraph 都需要 RTL
+平台切换      目前只有一个 embedder
+慢动作        需要 ticker 上的一个全局倍率
+```
+
+另外没做的：上游的代码查看器、依赖资源的轮播图，以及需要文本输入的 demo。
+
+---
+
+## 十三、下一步
 
 按价值排序：
 

@@ -8,6 +8,12 @@ GN has no rust_test tool, and its rust_bin tool cannot pass --test, so the
 crate's unit tests are built with a direct rustc invocation instead. The linker
 is passed explicitly: rustc would otherwise pick whatever `link.exe` is first on
 PATH, which under Git Bash is coreutils' `link`, not MSVC's linker.
+
+A crate that depends on the framework needs it rebuilt rather than reused: the
+rlib GN produces declares the engine's C ABI without defining it, and a test
+binary is linked without the engine behind it. Passing --dep builds that
+dependency here with `--cfg rustflutter_stubs`, which swaps in the inert
+stand-ins from `engine_test_stubs.rs` and leaves nothing undefined.
 """
 
 import argparse
@@ -25,7 +31,37 @@ def main():
   parser.add_argument('--edition', default='2024')
   parser.add_argument('--linker', default=None, help='explicit linker path')
   parser.add_argument('--stamp', required=True, help='written on success')
+  parser.add_argument(
+      '--dep',
+      action='append',
+      default=[],
+      metavar='NAME=CRATE_ROOT',
+      help='a dependency to build as a stubbed rlib and link against')
   args = parser.parse_args()
+
+  out_dir = os.path.dirname(os.path.abspath(args.output))
+  externs = []
+  for dep in args.dep:
+    name, _, root = dep.partition('=')
+    if not root:
+      parser.error('--dep wants NAME=CRATE_ROOT, got %r' % dep)
+    rlib = os.path.join(out_dir, 'lib%s_stubbed.rlib' % name)
+    command = [
+        args.rustc,
+        '--edition=%s' % args.edition,
+        '--crate-type=rlib',
+        '--crate-name',
+        name,
+        '--cfg',
+        'rustflutter_stubs',
+        root,
+        '-o',
+        rlib,
+    ]
+    build = subprocess.run(command, check=False)
+    if build.returncode != 0:
+      return build.returncode
+    externs += ['--extern', '%s=%s' % (name, rlib)]
 
   command = [
       args.rustc,
@@ -36,7 +72,7 @@ def main():
       args.crate_root,
       '-o',
       args.output,
-  ]
+  ] + externs
   if args.linker:
     command += ['-C', 'linker=%s' % args.linker]
 

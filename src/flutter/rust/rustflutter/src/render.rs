@@ -1313,12 +1313,16 @@ impl RenderFlex {
         // minimum down would make every child as tall as the row, which is
         // wrong for a 44px avatar in a 64px row -- and is exactly what upstream
         // avoids by starting the inner constraints at zero.
+        //
+        // Stretch also needs a cross axis to stretch to. A row inside a scroll
+        // viewport has an unbounded height, and "stretch to unbounded" is an
+        // infinitely tall child and then an infinitely tall row: the layout
+        // does not fail, it silently produces nothing anyone can see. Upstream
+        // asserts here; degrading to "do not force" keeps the frame.
         let _ = cross_min;
-        let cross_min = if self.cross_axis_alignment == CrossAxisAlignment::Stretch {
-            cross_max
-        } else {
-            0.0
-        };
+        let stretches =
+            self.cross_axis_alignment == CrossAxisAlignment::Stretch && cross_max.is_finite();
+        let cross_min = if stretches { cross_max } else { 0.0 };
 
         let (main_min, main_max) = match main {
             Some((extent, true)) => (extent, extent),
@@ -2386,6 +2390,30 @@ mod tests {
         // difference so both baselines land on the same line.
         assert_eq!(offsets[0].dy, 0.0);
         assert_eq!(offsets[1].dy, 20.0);
+    }
+
+    #[test]
+    fn stretch_on_an_unbounded_cross_axis_does_not_become_infinite() {
+        // A row inside a scroll viewport: the height is unbounded, so there is
+        // nothing to stretch to. The row must take its children's height, not
+        // infinity.
+        let mut row = RenderFlex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push(FixedBox::new(20.0, 30.0))
+            .push(FixedBox::new(20.0, 50.0));
+        let size = row.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert!(size.height.is_finite(), "{size:?}");
+        assert_eq!(size.height, 50.0);
+    }
+
+    #[test]
+    fn stretch_on_a_bounded_cross_axis_still_stretches() {
+        let mut row = RenderFlex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push(FixedBox::new(20.0, 30.0));
+        row.layout(BoxConstraints::new(0.0, 200.0, 0.0, 80.0));
+        // The child was forced to the full height rather than its own 30.
+        assert_eq!(row.size().height, 80.0);
     }
 
     #[test]

@@ -12,23 +12,33 @@
 
 ## 当前状态
 
-**M0–M7 完成，含 Impeller。** 整个 shell 在无 Dart 的情况下构建通过；
-应用跑在引擎自己的 Shell 上，有真正的线程模型、vsync 驱动的帧调度、
+**M0–M7 完成，含 Impeller，Flutter Gallery 已移植。** 整个 shell 在无 Dart 的情况下
+构建通过；应用跑在引擎自己的 Shell 上，有真正的线程模型、vsync 驱动的帧调度、
 `Rasterizer` 流水线，以及 **Impeller GPU 渲染**（ANGLE 提供 GLES）；
-框架层有完整的 RenderBox 协议、element 树与状态、命中测试与手势，
-以及一套组件库。
+框架层有完整的 RenderBox 协议、element 树与状态、命中测试与手势、
+动画与导航栈，以及一套组件库。
 
 ```
 gn gen  →  1008 targets from 276 files
 ninja   →  exit 0，零警告
-rustflutter_unittests   →  54 passed
-rust_ffi_unittests      →  11 passed
-帧率                    →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
+rustflutter_unittests        →  94 passed
+flutter_gallery_unittests    →  10 passed
+rust_ffi_unittests           →  11 passed
+帧率（静止页面）              →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
 ```
 
 ![Components](docs/showcase_impeller.png)
 
 *上图是从 GPU 帧缓冲回读的真实帧——Impeller 经 ANGLE 渲染。*
+
+<p align="center">
+  <img src="docs/gallery/home.png" width="24%">
+  <img src="docs/gallery/study_rally.png" width="24%">
+  <img src="docs/gallery/demo_cards.png" width="24%">
+  <img src="docs/gallery/settings.png" width="24%">
+</p>
+
+*Flutter Gallery：首页、Rally、组件页、设置。26 个屏幕，全部由 Rust 排版。*
 
 ## 快速开始
 
@@ -164,6 +174,7 @@ virtual void Render(int64_t view_id,
 | `gallery` | 渲染层：flex、stack、viewport 滚动、渐变、裁剪 |
 | `counter` | element 树 + 局部重建 + 点击 |
 | `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
+| `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -211,6 +222,11 @@ src/
   但布局和绘制照跑不误。这是最大的一笔性能欠账。
 - **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
   Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
+- **过渡动画在 debug 构建下不满帧。** 静止页面是稳定的 60 fps，但一次
+  跨屏过渡（两个屏幕同时建树、布局、绘制）每帧要 33–83 ms。同样的过渡走
+  软件 surface 是 16–33 ms，所以代价在未优化的 Impeller/ANGLE 一侧，
+  不在 Rust 这边；本仓库至今没有做过 optimized 构建，这个数字只对 debug 有效。
+  新屏幕的第一帧两条路径都是约 133 ms——那是元素挂载加文字整形。
 - **没有文本输入、平台通道、无障碍。**
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
 

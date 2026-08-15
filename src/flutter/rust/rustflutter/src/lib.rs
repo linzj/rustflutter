@@ -17,12 +17,16 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(test)]
+// Compiled for this crate's own `#[test]` binary, and for anything built with
+// `--cfg rustflutter_stubs` -- which is how a crate that depends on this one
+// gets its tests linked without the whole C++ engine behind them.
+#[cfg(any(test, rustflutter_stubs))]
 mod engine_test_stubs;
 
 pub mod animation;
 pub mod app;
 pub mod components;
+pub mod controls;
 pub mod engine;
 pub mod framework;
 pub mod gestures;
@@ -37,6 +41,10 @@ pub use app::{
 };
 pub use animation::{
     Animations, ColorTween, Controller, Curve, Direction, FloatTween, OffsetTween, Repeat, Tween,
+};
+pub use controls::{
+    Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
+    Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
 };
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
@@ -70,6 +78,11 @@ pub mod prelude {
         WidgetHost, register_application,
     };
     pub use crate::animation::{Animations, ColorTween, Controller, Curve, FloatTween, Tween};
+    pub use crate::controls::{
+        Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
+        Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
+        Tooltip,
+    };
     pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
     pub use crate::components::{
         AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,

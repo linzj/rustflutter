@@ -26,3 +26,6 @@ compile_commands.json
 *.swp
 .DS_Store
 src/out/
+
+# Diagnostic output from the capture/drive scripts.
+gal_err.log

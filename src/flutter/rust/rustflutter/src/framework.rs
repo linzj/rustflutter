@@ -93,6 +93,32 @@ pub trait StatefulComponent: 'static {
         None
     }
 
+    /// Advances time-dependent state, once per frame, before anything is
+    /// built.
+    ///
+    /// This is where a transition moves and a ticker ticks. It exists because
+    /// `build` gets the state by shared reference -- deliberately, so that a
+    /// build cannot change what it is drawing halfway through -- and something
+    /// has to be allowed to move the clock forward.
+    ///
+    /// Return true to ask for another frame. Frames are on demand, so an
+    /// animation that stops asking stops running.
+    fn advance(&self, _state: &mut Self::State, _frame_time_micros: i64) -> bool {
+        false
+    }
+
+    /// The state this widget starts with, used once when its element is
+    /// mounted. Defaults to `State::default()`.
+    ///
+    /// Override it when the starting state depends on the widget rather than
+    /// on nothing -- a screen that should open on a particular tab, a form
+    /// pre-filled from what it was given. The alternative is a `set_state` from
+    /// inside the first build, which works and takes an extra frame to become
+    /// visible.
+    fn initial_state(&self) -> Self::State {
+        Self::State::default()
+    }
+
     fn build(
         &self,
         state: &Self::State,
@@ -151,6 +177,9 @@ impl AnyWidget {
 
 trait ComponentObject {
     fn create_state(&self) -> Option<Box<dyn Any>>;
+    /// Runs the widget's per-frame advance. Returns whether another frame is
+    /// wanted.
+    fn advance(&self, state: Option<&mut dyn Any>, frame_time_micros: i64) -> bool;
     fn build(
         &self,
         state: Option<&mut dyn Any>,
@@ -171,6 +200,11 @@ impl<C: Component> ComponentObject for StatelessObject<C> {
         None
     }
 
+    fn advance(&self, _state: Option<&mut dyn Any>, _frame_time_micros: i64) -> bool {
+        // Nothing to advance: a stateless widget has no clock to move.
+        false
+    }
+
     fn build(
         &self,
         _state: Option<&mut dyn Any>,
@@ -185,7 +219,14 @@ struct StatefulObject<C: StatefulComponent>(C);
 
 impl<C: StatefulComponent> ComponentObject for StatefulObject<C> {
     fn create_state(&self) -> Option<Box<dyn Any>> {
-        Some(Box::new(C::State::default()))
+        Some(Box::new(self.0.initial_state()))
+    }
+
+    fn advance(&self, state: Option<&mut dyn Any>, frame_time_micros: i64) -> bool {
+        match state.and_then(|s| s.downcast_mut::<C::State>()) {
+            Some(state) => self.0.advance(state, frame_time_micros),
+            None => false,
+        }
     }
 
     fn build(
@@ -618,6 +659,7 @@ pub struct BuildContext {
     shared: Rc<Shared>,
     element: ElementId,
     depth: usize,
+    frame_time_micros: i64,
 }
 
 impl BuildContext {
@@ -633,6 +675,16 @@ impl BuildContext {
     /// How deep in the element tree this build is. Useful for diagnostics.
     pub fn depth(&self) -> usize {
         self.depth
+    }
+
+    /// The time this frame is targeted at, in microseconds since the epoch.
+    ///
+    /// An animation that is a pure function of time -- a spinner, a pulse,
+    /// anything that never stops -- can be computed from this during the build
+    /// and needs no controller and no state at all. One that starts, stops or
+    /// reverses does need a controller; see [`crate::animation`].
+    pub fn frame_time_micros(&self) -> i64 {
+        self.frame_time_micros
     }
 
     /// Asks for another frame without changing any state -- what an animation
@@ -683,6 +735,8 @@ pub struct ElementTree {
     free: Vec<usize>,
     root: Option<ElementId>,
     shared: Rc<Shared>,
+    /// What every build this frame is told the time is.
+    frame_time_micros: i64,
     /// Elements rebuilt during the last pass. Diagnostic, and what the tests
     /// assert on to show that a rebuild was partial.
     last_rebuilt: Vec<ElementId>,
@@ -695,6 +749,7 @@ impl ElementTree {
             free: Vec::new(),
             root: None,
             shared: Shared::new(),
+            frame_time_micros: 0,
             last_rebuilt: Vec::new(),
         }
     }
@@ -707,6 +762,61 @@ impl ElementTree {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Sets the clock every build this frame reads. Called by the host once
+    /// per frame, before any rebuilding.
+    pub fn set_frame_time(&mut self, frame_time_micros: i64) {
+        self.frame_time_micros = frame_time_micros;
+    }
+
+    /// Runs every mounted widget's [`StatefulComponent::advance`], shallowest
+    /// first, and returns whether any of them wants another frame.
+    ///
+    /// Called once per frame before building. Advancing before building rather
+    /// than during it is what lets `build` take the state by shared reference:
+    /// by the time anything is drawn, the clock has already moved.
+    pub fn advance_frame(&mut self, frame_time_micros: i64) -> bool {
+        self.frame_time_micros = frame_time_micros;
+
+        // Collect first: advancing may set_state, which touches the same maps
+        // this walk would otherwise be holding.
+        let ids: Vec<ElementId> = (0..self.nodes.len())
+            .filter(|index| self.nodes[*index].is_some())
+            .map(ElementId)
+            .collect();
+
+        let mut wants_frame = false;
+        for id in ids {
+            let Some(node) = self.nodes[id.0].as_ref() else { continue };
+            let WidgetKind::Component(_) = &node.widget.inner else { continue };
+
+            // Check the state out for the duration, exactly as a build does, so
+            // a set_state from inside advance queues instead of aliasing.
+            let mut state = self.shared.states.borrow_mut().remove(&id);
+            if state.is_none() {
+                continue;
+            }
+            let advanced = {
+                let node = self.nodes[id.0].as_ref().expect("checked above");
+                let WidgetKind::Component(component) = &node.widget.inner else {
+                    unreachable!("filtered above");
+                };
+                component.advance(state.as_deref_mut(), frame_time_micros)
+            };
+            if let Some(state) = state {
+                self.shared.states.borrow_mut().insert(id, state);
+            }
+            if advanced {
+                // Advancing changed something time-dependent, so what was built
+                // from it is stale. Without this the clock moves and the screen
+                // does not, which looks exactly like an animation that never
+                // started.
+                self.shared.mark_dirty(id);
+            }
+            wants_frame |= advanced;
+        }
+        wants_frame
     }
 
     /// Whether anything has asked for a frame since this was last cleared.
@@ -865,7 +975,12 @@ impl ElementTree {
     /// a `set_state` from inside it queues instead of aliasing.
     fn build_component(&mut self, id: ElementId, depth: usize) -> AnyWidget {
         let mut state = self.shared.states.borrow_mut().remove(&id);
-        let mut context = BuildContext { shared: Rc::clone(&self.shared), element: id, depth };
+        let mut context = BuildContext {
+            shared: Rc::clone(&self.shared),
+            element: id,
+            depth,
+            frame_time_micros: self.frame_time_micros,
+        };
 
         let built = {
             let node = self.nodes[id.0].as_ref().expect("element vanished mid-build");
@@ -1383,6 +1498,58 @@ mod tests {
         assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), Some(1));
         tree.rebuild_dirty();
         assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), Some(2));
+    }
+
+    #[test]
+    fn advancing_marks_the_element_dirty_so_the_next_build_sees_it() {
+        reset_builds();
+
+        #[derive(Default)]
+        struct Clock {
+            ticks: u32,
+        }
+
+        struct Ticking;
+
+        impl StatefulComponent for Ticking {
+            type State = Clock;
+
+            fn advance(&self, state: &mut Clock, _now: i64) -> bool {
+                state.ticks += 1;
+                // Stops after three, so the test does not describe a loop that
+                // never ends.
+                state.ticks < 3
+            }
+
+            fn build(
+                &self,
+                _state: &Clock,
+                _handle: StateHandle<Clock>,
+                _context: &mut BuildContext,
+            ) -> AnyWidget {
+                record("ticking");
+                leaf(|| Empty)
+            }
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Ticking));
+        assert_eq!(builds_of("ticking"), 1);
+
+        // Each advance that reports a change dirties its element, so the
+        // rebuild that follows actually rebuilds it.
+        assert!(tree.advance_frame(16_000));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("ticking"), 2);
+
+        assert!(tree.advance_frame(32_000));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("ticking"), 3);
+
+        // The third advance reports no further change, and nothing rebuilds.
+        assert!(!tree.advance_frame(48_000));
+        assert_eq!(tree.rebuild_dirty(), 0);
+        assert_eq!(builds_of("ticking"), 3);
     }
 
     #[test]

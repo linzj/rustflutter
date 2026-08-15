@@ -1,0 +1,102 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/rust.gni")
+import("//flutter/testing/testing.gni")
+
+# The app itself: Rust, compiled to a staticlib so it can be linked with the
+# C++ engine.
+static_library("flutter_gallery_rs") {
+  crate_name = "flutter_gallery"
+  crate_root = "src/main.rs"
+
+  sources = [
+    "src/app.rs",
+    "src/catalog.rs",
+    "src/demos.rs",
+    "src/home.rs",
+    "src/main.rs",
+    "src/settings.rs",
+    "src/studies.rs",
+  ]
+
+  deps = [ "//flutter/rust/rustflutter" ]
+}
+
+executable("flutter_gallery") {
+  sources = [ "main.cc" ]
+
+  deps = [
+    ":flutter_gallery_rs",
+    "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/host",
+  ]
+
+  if (is_win) {
+    # Pulled in by the Rust standard library.
+    libs = [
+      "advapi32.lib",
+      "bcrypt.lib",
+      "ntdll.lib",
+      "userenv.lib",
+      "ws2_32.lib",
+    ]
+  }
+}
+
+# The gallery's own #[test] functions: the catalogue, the argument parsing and
+# the frame-gap clamp. Built against a stubbed framework rlib -- see
+# run_rust_tests.py.
+if (enable_unittests) {
+  action("flutter_gallery_unittests") {
+    testonly = true
+
+    script = "//flutter/rust/run_rust_tests.py"
+
+    sources = [
+      "src/app.rs",
+      "src/catalog.rs",
+      "src/demos.rs",
+      "src/home.rs",
+      "src/main.rs",
+      "src/settings.rs",
+      "src/studies.rs",
+      "//flutter/rust/rustflutter/src/lib.rs",
+    ]
+
+    if (is_win) {
+      _binary = "$root_out_dir/flutter_gallery_unittests.exe"
+    } else {
+      _binary = "$root_out_dir/flutter_gallery_unittests"
+    }
+    _stamp = "$target_gen_dir/flutter_gallery_unittests.stamp"
+    outputs = [ _stamp ]
+
+    args = [
+      "--crate-root",
+      rebase_path("src/main.rs", root_build_dir),
+      "--crate-name",
+      "flutter_gallery_unittests",
+      "--output",
+      rebase_path(_binary, root_build_dir),
+      "--rustc",
+      rustc_path,
+      "--edition",
+      rust_edition,
+      "--stamp",
+      rebase_path(_stamp, root_build_dir),
+      "--dep",
+      "rustflutter=" +
+          rebase_path("//flutter/rust/rustflutter/src/lib.rs", root_build_dir),
+    ]
+
+    if (is_win) {
+      args += [
+        "--linker",
+        rebase_path("//flutter/buildtools/windows-x64/clang/bin/lld-link.exe",
+                    root_build_dir),
+      ]
+    }
+  }
+}

@@ -990,6 +990,54 @@ mod tests {
         assert!(size.width >= 0.0);
     }
 
+    /// A tile's trailing sits against the right edge, whatever its title is.
+    ///
+    /// Measured by hit test rather than by reading geometry: a render tree
+    /// reports where it was touched, not where it put things, and where it was
+    /// touched is the thing that has to be right anyway.
+    #[test]
+    fn a_list_tile_pushes_its_trailing_to_the_right_edge() {
+        const TRAILING: u64 = 77;
+        const WIDTH: f32 = 400.0;
+        const TRAILING_WIDTH: f32 = 40.0;
+
+        fn hits(title: &str, x: f32) -> bool {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                Theme::dark(),
+                component(ListTile::new(title.to_string()).with_trailing(crate::framework::leaf(
+                    || {
+                        // A fixed box rather than a Label: the engine stubs
+                        // these tests link report zero-sized text, so a
+                        // paragraph would measure nothing.
+                        crate::widgets::Pointer::new(
+                            TRAILING,
+                            Container::new().with_size(TRAILING_WIDTH, 12.0),
+                        )
+                    },
+                ))),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            let size = root.layout(BoxConstraints::tight(WIDTH, 60.0));
+            let mut result = crate::render::HitTestResult::new();
+            root.hit_test(crate::render::Offset::new(x, size.height / 2.0), &mut result);
+            result.path.iter().any(|entry| entry.target == TRAILING)
+        }
+
+        // The tile pads itself, so the trailing's right edge is inset by that
+        // much rather than flush with the tile's own edge.
+        let inset = Theme::dark().spacing * 1.5;
+        let inside = WIDTH - inset - TRAILING_WIDTH / 2.0;
+
+        for title in ["Rent", "RedPay Credit", "A considerably longer bill name"] {
+            assert!(hits(title, inside), "trailing should be at the right for {title:?}");
+            assert!(
+                !hits(title, WIDTH / 2.0),
+                "trailing should not stretch back to the middle for {title:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_provided_theme_reaches_a_descendant() {
         struct Probe;
