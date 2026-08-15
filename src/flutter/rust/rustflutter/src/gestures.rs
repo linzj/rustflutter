@@ -216,6 +216,52 @@ pub struct DragEndEvent {
     pub pointer_id: i64,
 }
 
+/// Two fingers moving with respect to each other: a pinch, a spread, a twist,
+/// or the pair of them sliding together.
+///
+/// Upstream's `ScaleUpdateDetails`, minus the axis-separated scales. The focal
+/// point is the point the gesture is happening *around* -- the midpoint of the
+/// fingers -- and it is what a zoom has to keep still: scaling about the
+/// centre of the screen while the reader pinches a corner moves the thing they
+/// were looking at out from under them.
+#[derive(Clone, Copy, Debug)]
+pub struct ScaleEvent {
+    /// The midpoint of the pointers, in view coordinates.
+    pub focal_point: Offset,
+    /// The same point in the target's local coordinates.
+    pub local_focal_point: Offset,
+    /// How far the focal point moved since the last event. A two-finger drag
+    /// is a scale gesture whose scale stays at 1.
+    pub focal_delta: Offset,
+    /// The distance between the pointers, over what it was when the gesture
+    /// started. 1.0 at the start, greater when spreading.
+    pub scale: f32,
+    /// How far the line between the pointers has turned since the start, in
+    /// radians, anticlockwise.
+    pub rotation: f32,
+    /// How many pointers are taking part.
+    pub pointer_count: usize,
+}
+
+// -- Timings ------------------------------------------------------------------
+//
+// Upstream's `gestures/constants.dart`. They are durations there and
+// microseconds here because that is the clock the shell hands over.
+
+/// How long a press has to be held before it is a long press.
+pub const LONG_PRESS_TIMEOUT_MICROS: i64 = 500_000;
+
+/// The longest gap between the start of two taps that still makes a double
+/// tap.
+pub const DOUBLE_TAP_TIMEOUT_MICROS: i64 = 300_000;
+
+/// The shortest gap that does. Two "taps" closer together than this are one
+/// bounce of a finger, not two taps.
+pub const DOUBLE_TAP_MIN_TIME_MICROS: i64 = 40_000;
+
+/// How far apart two taps may land and still be a double tap.
+pub const DOUBLE_TAP_SLOP: f32 = 100.0;
+
 // -- Velocity -----------------------------------------------------------------
 
 /// Slower than this, in logical pixels per second, and a release is not a
@@ -480,7 +526,18 @@ pub struct PointerHandlers {
     pub on_pointer_move: Option<Rc<dyn Fn(&PointerEvent)>>,
     pub on_pointer_up: Option<Rc<dyn Fn(&PointerEvent)>>,
     /// Fired when the press ends without having travelled past [`TOUCH_SLOP`].
+    ///
+    /// Held back when this region also wants double taps: the first tap of a
+    /// double tap is indistinguishable from a single one until the window has
+    /// passed. See [`GestureRouter::tick`].
     pub on_tap: Option<Rc<dyn Fn(TapEvent)>>,
+    /// Fired when a press is held still for [`LONG_PRESS_TIMEOUT_MICROS`],
+    /// before the finger lifts. A press that becomes a long press is no longer
+    /// a tap.
+    pub on_long_press: Option<Rc<dyn Fn(TapEvent)>>,
+    /// Fired on the second of two taps in the same place, close enough
+    /// together in time.
+    pub on_double_tap: Option<Rc<dyn Fn(TapEvent)>>,
     /// Fired once, when a press first travels past [`TOUCH_SLOP`].
     pub on_drag_start: Option<Rc<dyn Fn(DragEvent)>>,
     pub on_drag_update: Option<Rc<dyn Fn(DragEvent)>>,
@@ -492,6 +549,13 @@ pub struct PointerHandlers {
     pub on_press_change: Option<Rc<dyn Fn(bool)>>,
     /// Fired for a wheel or trackpad scroll over this region.
     pub on_scroll: Option<Rc<dyn Fn(ScrollEvent)>>,
+    /// Fired when a second finger lands on this region.
+    pub on_scale_start: Option<Rc<dyn Fn(ScaleEvent)>>,
+    /// Fired as the fingers move. Scale and rotation are measured from where
+    /// they were when the gesture started.
+    pub on_scale_update: Option<Rc<dyn Fn(ScaleEvent)>>,
+    /// Fired when the gesture stops being a two-finger one.
+    pub on_scale_end: Option<Rc<dyn Fn(ScaleEvent)>>,
 }
 
 impl PointerHandlers {
@@ -501,6 +565,31 @@ impl PointerHandlers {
 
     pub fn with_tap(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
         self.on_tap = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_long_press(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
+        self.on_long_press = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_double_tap(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
+        self.on_double_tap = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_scale_start(mut self, handler: impl Fn(ScaleEvent) + 'static) -> Self {
+        self.on_scale_start = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_scale_update(mut self, handler: impl Fn(ScaleEvent) + 'static) -> Self {
+        self.on_scale_update = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_scale_end(mut self, handler: impl Fn(ScaleEvent) + 'static) -> Self {
+        self.on_scale_end = Some(Rc::new(handler));
         self
     }
 
@@ -551,11 +640,23 @@ impl PointerHandlers {
             && self.on_pointer_move.is_none()
             && self.on_pointer_up.is_none()
             && self.on_tap.is_none()
+            && self.on_long_press.is_none()
+            && self.on_double_tap.is_none()
             && self.on_drag_start.is_none()
             && self.on_drag_update.is_none()
             && self.on_drag_end.is_none()
             && self.on_press_change.is_none()
             && self.on_scroll.is_none()
+            && !self.wants_scale()
+    }
+
+    /// Whether this region wants two-finger gestures. What tells an image that
+    /// can be pinched apart from the list it is sitting in, the same way
+    /// [`PointerHandlers::wants_drag`] does for scrolling.
+    pub fn wants_scale(&self) -> bool {
+        self.on_scale_start.is_some()
+            || self.on_scale_update.is_some()
+            || self.on_scale_end.is_some()
     }
 
     /// Whether this region wants drags. What tells a scrollable ancestor apart
@@ -571,8 +672,26 @@ impl PointerHandlers {
 #[derive(Clone)]
 struct Target {
     handlers: Rc<PointerHandlers>,
+    /// Which region this is, from the hit test. Zero means the region has no
+    /// identity, and two of those are never the same one.
+    ///
+    /// Identity matters between *frames*: whether the finger that just landed
+    /// is on the same thing the last tap was, and whether the second finger is
+    /// on the same thing as the first. The handlers cannot answer that -- they
+    /// are rebuilt every frame, so the same region is a different `Rc` each
+    /// time. Upstream never asks the question, because there a recogniser is
+    /// an object that outlives the frame; here the widget-assigned id is what
+    /// outlives it.
+    id: u64,
     /// Where the press began, in this target's coordinates.
     local_origin: Offset,
+}
+
+impl Target {
+    /// Whether two targets are the same region, across frames.
+    fn is_same_region(&self, other: &Target) -> bool {
+        (self.id != 0 && self.id == other.id) || Rc::ptr_eq(&self.handlers, &other.handlers)
+    }
 }
 
 /// What a single pressed pointer is doing.
@@ -586,6 +705,10 @@ struct Target {
 struct ActivePointer {
     tap: Option<Target>,
     drag: Option<Target>,
+    /// The innermost region under the press that wants two fingers, if any.
+    /// Recorded on the way down like the other two, because by the time a
+    /// second finger lands the tree may have been rebuilt.
+    scale: Option<Target>,
     /// Where the press began, in view coordinates.
     origin: Offset,
     /// Movement since the press began.
@@ -603,6 +726,76 @@ struct ActivePointer {
     /// was going. Fed by every move, whether or not anything is being dragged:
     /// what the press turns out to be is not known until it is over.
     velocity: VelocityTracker,
+    /// When the finger landed, and where it is now. The first is the long
+    /// press deadline's starting point; the second is what a second finger
+    /// needs in order to work out a focal point.
+    down_micros: i64,
+    position: Offset,
+    /// Set once this press has been announced as a long press, which is also
+    /// what stops it from becoming a tap.
+    long_pressed: bool,
+    /// Set when this press landed close enough, and soon enough, after a tap
+    /// on the same region: if it ends as a tap it is a double tap.
+    second_tap: bool,
+    /// Set while this pointer is part of a two-finger gesture. Its drag has
+    /// been ended by then and must not be resumed.
+    scaling: bool,
+}
+
+/// A tap that has happened but has not been announced yet, because the region
+/// it landed on also wants double taps and this might be the first of two.
+///
+/// Upstream a `DoubleTapGestureRecognizer` *holds* the arena open for
+/// `kDoubleTapTimeout` instead of rejecting, which is why a `GestureDetector`
+/// with both callbacks reports a single tap late. This is that hold.
+struct PendingTap {
+    target: Target,
+    event: TapEvent,
+    /// Where the finger landed, in view coordinates, and when the press
+    /// started and ended. A second tap has to land near `origin`, start no
+    /// later than [`DOUBLE_TAP_TIMEOUT_MICROS`] after `down_micros`, and no
+    /// sooner than [`DOUBLE_TAP_MIN_TIME_MICROS`] after `up_micros` -- the
+    /// last of which is what keeps one finger bouncing from counting twice.
+    origin: Offset,
+    down_micros: i64,
+    up_micros: i64,
+}
+
+/// Halfway between two points, which is where a two-finger gesture happens.
+fn midpoint(a: Offset, b: Offset) -> Offset {
+    Offset { dx: (a.dx + b.dx) / 2.0, dy: (a.dy + b.dy) / 2.0 }
+}
+
+/// Brings an angle back into -pi..pi.
+///
+/// Two angles measured with `atan2` can differ by nearly a full turn when the
+/// fingers cross the half-turn line, and reporting a rotation of six radians
+/// for a wrist that moved a degree would spin whatever is listening.
+fn normalise_angle(radians: f32) -> f32 {
+    let turn = std::f32::consts::PI * 2.0;
+    let mut angle = radians % turn;
+    if angle > std::f32::consts::PI {
+        angle -= turn;
+    } else if angle < -std::f32::consts::PI {
+        angle += turn;
+    }
+    angle
+}
+
+/// A two-finger gesture in progress.
+struct ActiveScale {
+    handlers: Rc<PointerHandlers>,
+    /// The pointers taking part, in the order they landed.
+    pointers: (i64, i64),
+    /// Where the focal point was in the target's coordinates when it started,
+    /// and where it was last time, so an update can report how far it moved.
+    local_origin: Offset,
+    initial_focal: Offset,
+    last_focal: Offset,
+    /// The distance and angle between the fingers at the start. Everything is
+    /// reported relative to these, which is what makes `scale` start at one.
+    initial_distance: f32,
+    initial_angle: f32,
 }
 
 /// Routes pointer events to the render tree and recognises gestures.
@@ -611,11 +804,112 @@ struct ActivePointer {
 /// given the tree that was painted last.
 pub struct GestureRouter {
     active: Vec<(i64, ActivePointer)>,
+    /// A tap that has happened and is waiting to see whether a second one
+    /// follows it.
+    pending_tap: Option<PendingTap>,
+    /// The two-finger gesture in progress, if there is one.
+    scale: Option<ActiveScale>,
 }
 
 impl GestureRouter {
     pub fn new() -> GestureRouter {
-        GestureRouter { active: Vec::new() }
+        GestureRouter { active: Vec::new(), pending_tap: None, scale: None }
+    }
+
+    /// Moves the clock forward, and returns whether anything is still waiting
+    /// on it.
+    ///
+    /// Two gestures are decided by time passing rather than by an event
+    /// arriving: a long press fires while the finger is still down and doing
+    /// nothing, and a single tap on a region that also wants double taps
+    /// cannot be announced until the window for a second tap has closed.
+    /// Neither can be driven by pointer events, because the defining feature
+    /// of both is that no pointer event happens.
+    ///
+    /// Upstream both are `Timer`s. Frames here are on demand, so the host
+    /// calls this once a frame and asks for another frame while this returns
+    /// true -- see `WidgetHost::begin_frame`.
+    pub fn tick(&mut self, now_micros: i64) -> bool {
+        self.fire_due_long_presses(now_micros);
+        self.flush_expired_tap(now_micros);
+        self.awaits_deadline(now_micros)
+    }
+
+    /// Whether some gesture is still waiting for the clock.
+    pub fn awaits_deadline(&self, now_micros: i64) -> bool {
+        let waiting_to_be_a_long_press = self.active.iter().any(|(_, pointer)| {
+            !pointer.long_pressed
+                && !pointer.past_slop
+                && !pointer.scaling
+                && pointer
+                    .tap
+                    .as_ref()
+                    .is_some_and(|target| target.handlers.on_long_press.is_some())
+        });
+        let waiting_to_be_a_double_tap = self
+            .pending_tap
+            .as_ref()
+            .is_some_and(|tap| now_micros - tap.down_micros < DOUBLE_TAP_TIMEOUT_MICROS);
+        waiting_to_be_a_long_press || waiting_to_be_a_double_tap
+    }
+
+    /// Announces every press that has been held long enough.
+    fn fire_due_long_presses(&mut self, now_micros: i64) {
+        let due: Vec<i64> = self
+            .active
+            .iter()
+            .filter(|(_, pointer)| {
+                !pointer.long_pressed
+                    && !pointer.past_slop
+                    && !pointer.scaling
+                    && now_micros - pointer.down_micros >= LONG_PRESS_TIMEOUT_MICROS
+                    && pointer
+                        .tap
+                        .as_ref()
+                        .is_some_and(|target| target.handlers.on_long_press.is_some())
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in due {
+            let Some(pointer) = self.find(id) else { continue };
+            pointer.long_pressed = true;
+            let was_pressed = pointer.pressed;
+            pointer.pressed = false;
+            let Some(target) = pointer.tap.clone() else { continue };
+            let local = target.local_origin;
+            // The press has been claimed, so whatever was showing it as held
+            // stops. Upstream this is the tap recogniser losing the arena.
+            if was_pressed {
+                if let Some(press_change) = &target.handlers.on_press_change {
+                    press_change(false);
+                }
+            }
+            if let Some(long_press) = &target.handlers.on_long_press {
+                long_press(TapEvent { local_position: local, pointer_id: id });
+            }
+        }
+    }
+
+    /// Announces a held-back tap once no second tap can still arrive.
+    fn flush_expired_tap(&mut self, now_micros: i64) {
+        let expired = self
+            .pending_tap
+            .as_ref()
+            .is_some_and(|tap| now_micros - tap.down_micros >= DOUBLE_TAP_TIMEOUT_MICROS);
+        if !expired {
+            return;
+        }
+        self.announce_pending_tap();
+    }
+
+    /// Gives up on a second tap arriving and reports the first as a single
+    /// one.
+    fn announce_pending_tap(&mut self) {
+        let Some(tap) = self.pending_tap.take() else { return };
+        if let Some(handler) = &tap.target.handlers.on_tap {
+            handler(tap.event);
+        }
     }
 
     /// How many pointers are currently pressed. Used by tests.
@@ -688,27 +982,43 @@ impl GestureRouter {
         // what lets a list of buttons scroll.
         let mut tap: Option<Target> = None;
         let mut drag: Option<Target> = None;
+        let mut scale: Option<Target> = None;
         for entry in &result.path {
             let Some(handlers) = entry.handlers.clone() else { continue };
             if drag.is_none() && handlers.wants_drag() {
                 drag = Some(Target {
                     handlers: handlers.clone(),
+                    id: entry.target,
+                    local_origin: entry.local_position,
+                });
+            }
+            if scale.is_none() && handlers.wants_scale() {
+                scale = Some(Target {
+                    handlers: handlers.clone(),
+                    id: entry.target,
                     local_origin: entry.local_position,
                 });
             }
             if tap.is_none() {
                 tap = Some(Target {
                     handlers,
+                    id: entry.target,
                     local_origin: entry.local_position,
                 });
             }
-            if tap.is_some() && drag.is_some() {
+            if tap.is_some() && drag.is_some() && scale.is_some() {
                 break;
             }
         }
-        if tap.is_none() && drag.is_none() {
+        if tap.is_none() && drag.is_none() && scale.is_none() {
             return false;
         }
+
+        // Is this the second half of a double tap? Decided here rather than on
+        // the way up, because it is the *start* of the second tap that the
+        // window is measured to, and because a press that lands somewhere else
+        // settles the first tap immediately instead of leaving it hanging.
+        let second_tap = self.pair_with_pending_tap(&tap, event);
 
         let mut pressed = false;
         if let Some(target) = &tap {
@@ -751,14 +1061,141 @@ impl GestureRouter {
             ActivePointer {
                 tap,
                 drag,
+                scale,
                 origin: event.position,
                 total: Offset::ZERO,
                 past_slop: false,
                 pressed,
                 velocity,
+                down_micros: event.time_stamp_micros,
+                position: event.position,
+                long_pressed: false,
+                second_tap,
+                scaling: false,
             },
         ));
+        self.begin_scale_if_two_fingers(event);
         true
+    }
+
+    /// Whether this press is the second tap of a double tap, settling the
+    /// first one either way.
+    fn pair_with_pending_tap(&mut self, tap: &Option<Target>, event: &PointerEvent) -> bool {
+        let Some(pending) = &self.pending_tap else { return false };
+        let matches = tap.as_ref().is_some_and(|target| {
+            target.is_same_region(&pending.target)
+                && event.position.minus(pending.origin).distance() <= DOUBLE_TAP_SLOP
+                && event.time_stamp_micros - pending.down_micros <= DOUBLE_TAP_TIMEOUT_MICROS
+                && event.time_stamp_micros - pending.up_micros >= DOUBLE_TAP_MIN_TIME_MICROS
+        });
+        if matches {
+            // Held rather than announced: the first tap of a double tap is not
+            // also a single tap.
+            self.pending_tap = None;
+            true
+        } else {
+            self.announce_pending_tap();
+            false
+        }
+    }
+
+    /// Starts a two-finger gesture if this press is the second finger on a
+    /// region that wants one.
+    fn begin_scale_if_two_fingers(&mut self, event: &PointerEvent) {
+        if self.scale.is_some() {
+            // Already two fingers in. A third is ignored, which is what
+            // upstream's two-pointer arithmetic amounts to as well.
+            return;
+        }
+        let Some(target) = self
+            .find(event.pointer_id)
+            .and_then(|pointer| pointer.scale.clone())
+        else {
+            return;
+        };
+        // The other finger has to be on the same region -- two fingers on two
+        // different images are two drags, not a pinch.
+        let Some((other_id, other_position)) = self
+            .active
+            .iter()
+            .find(|(id, pointer)| {
+                *id != event.pointer_id
+                    && pointer.scale.as_ref().is_some_and(|t| t.is_same_region(&target))
+            })
+            .map(|(id, pointer)| (*id, pointer.position))
+        else {
+            return;
+        };
+
+        let focal = midpoint(other_position, event.position);
+        let separation = event.position.minus(other_position);
+        let scale = ActiveScale {
+            handlers: Rc::clone(&target.handlers),
+            pointers: (other_id, event.pointer_id),
+            // The focal point starts between the fingers, which is not where
+            // either press landed, so the local origin is the first finger's
+            // plus however far the focal point is from it.
+            local_origin: target.local_origin.plus(focal.minus(event.position)),
+            initial_focal: focal,
+            last_focal: focal,
+            initial_distance: separation.distance().max(f32::EPSILON),
+            initial_angle: separation.dy.atan2(separation.dx),
+        };
+        let details = ScaleEvent {
+            focal_point: focal,
+            local_focal_point: scale.local_origin,
+            focal_delta: Offset::ZERO,
+            scale: 1.0,
+            rotation: 0.0,
+            pointer_count: 2,
+        };
+        if let Some(start) = &target.handlers.on_scale_start {
+            start(details);
+        }
+        self.scale = Some(scale);
+
+        // Whatever the fingers were doing on their own, they are not doing it
+        // any more. Upstream the scale recogniser winning the arena is what
+        // rejects the drag; the drag hears about that as a cancel, which is a
+        // drag end with no velocity -- flinging a list because a pinch started
+        // on it is not what anyone asked for.
+        for id in [other_id, event.pointer_id] {
+            self.end_drag_for_scale(id);
+        }
+    }
+
+    /// Takes a pointer out of whatever drag it was in, because a two-finger
+    /// gesture has claimed it.
+    fn end_drag_for_scale(&mut self, pointer_id: i64) {
+        let Some(pointer) = self.find(pointer_id) else { return };
+        pointer.scaling = true;
+        pointer.long_pressed = true; // No long press out of a pinch either.
+        let past_slop = pointer.past_slop;
+        let total = pointer.total;
+        let was_pressed = pointer.pressed;
+        pointer.pressed = false;
+        let drag = pointer.drag.take();
+        let tap = pointer.tap.clone();
+
+        if was_pressed {
+            if let Some(target) = &tap {
+                if let Some(press_change) = &target.handlers.on_press_change {
+                    press_change(false);
+                }
+            }
+        }
+        if past_slop {
+            if let Some(target) = &drag {
+                if let Some(end) = &target.handlers.on_drag_end {
+                    end(DragEndEvent {
+                        velocity: Offset::ZERO,
+                        total,
+                        local_position: target.local_origin,
+                        pointer_id,
+                    });
+                }
+            }
+        }
     }
 
     fn on_move(&mut self, event: &PointerEvent) -> bool {
@@ -766,7 +1203,13 @@ impl GestureRouter {
             return false;
         };
         active.total = active.total.plus(event.delta);
+        active.position = event.position;
         active.velocity.add_position(event.time_stamp_micros, event.position);
+        if active.scaling {
+            // A finger in a pinch is not dragging, tapping or long-pressing;
+            // the only thing left to report is the pinch itself.
+            return self.update_scale(event);
+        }
         let travelled =
             (active.total.dx * active.total.dx + active.total.dy * active.total.dy).sqrt();
         let travel = event.position.minus(active.origin);
@@ -825,10 +1268,93 @@ impl GestureRouter {
         true
     }
 
+    /// Reports where the two fingers are now, relative to where they started.
+    fn update_scale(&mut self, _event: &PointerEvent) -> bool {
+        let Some(scale) = &self.scale else { return true };
+        let Some(first) = self.position_of(scale.pointers.0) else { return true };
+        let Some(second) = self.position_of(scale.pointers.1) else { return true };
+
+        let focal = midpoint(first, second);
+        let separation = second.minus(first);
+        let distance = separation.distance();
+        let angle = separation.dy.atan2(separation.dx);
+
+        let Some(scale) = &mut self.scale else { return true };
+        let details = ScaleEvent {
+            focal_point: focal,
+            // The focal point is reported in the target's coordinates by
+            // moving the origin by however far the focal point has moved: the
+            // target has not moved under the fingers, so the two deltas are
+            // the same.
+            local_focal_point: scale.local_origin.plus(focal.minus(scale.initial_focal)),
+            focal_delta: focal.minus(scale.last_focal),
+            scale: distance / scale.initial_distance,
+            rotation: normalise_angle(angle - scale.initial_angle),
+            pointer_count: 2,
+        };
+        scale.last_focal = focal;
+        let handlers = Rc::clone(&scale.handlers);
+        if let Some(update) = &handlers.on_scale_update {
+            update(details);
+        }
+        true
+    }
+
+    fn position_of(&self, pointer_id: i64) -> Option<Offset> {
+        self.active
+            .iter()
+            .find(|(id, _)| *id == pointer_id)
+            .map(|(_, pointer)| pointer.position)
+    }
+
+    /// Ends the two-finger gesture if `pointer_id` was one of its fingers.
+    ///
+    /// One finger leaving ends the gesture rather than demoting it to a drag.
+    /// Upstream a `ScaleGestureRecognizer` does keep going with one pointer,
+    /// but it owns the pan as well; here the drag recogniser is a separate
+    /// thing that was told to stop, and handing the gesture back to it
+    /// mid-flight would move the content by however far the fingers happened
+    /// to be apart.
+    fn end_scale_if_involved(&mut self, pointer_id: i64) {
+        let involved = self
+            .scale
+            .as_ref()
+            .is_some_and(|scale| scale.pointers.0 == pointer_id || scale.pointers.1 == pointer_id);
+        if !involved {
+            return;
+        }
+        let Some(scale) = self.scale.take() else { return };
+        let details = ScaleEvent {
+            focal_point: scale.last_focal,
+            local_focal_point: scale
+                .local_origin
+                .plus(scale.last_focal.minus(scale.initial_focal)),
+            focal_delta: Offset::ZERO,
+            scale: 1.0,
+            rotation: 0.0,
+            pointer_count: 1,
+        };
+        if let Some(end) = &scale.handlers.on_scale_end {
+            end(details);
+        }
+        // The finger that is still down stays claimed: it may not resume the
+        // drag it was doing before the pinch.
+        for id in [scale.pointers.0, scale.pointers.1] {
+            if let Some(pointer) = self.find(id) {
+                pointer.scaling = true;
+            }
+        }
+    }
+
     fn on_up(&mut self, event: &PointerEvent) -> bool {
+        self.end_scale_if_involved(event.pointer_id);
         let Some(active) = self.take(event.pointer_id) else {
             return false;
         };
+        if active.scaling {
+            // Everything this finger had to say was said by the pinch.
+            return true;
+        }
         let travel = event.position.minus(active.origin);
 
         if let Some(target) = &active.tap {
@@ -843,10 +1369,27 @@ impl GestureRouter {
                 local_event.local_position = local;
                 up(&local_event);
             }
-            // A press that travelled is not a tap, however short the travel.
-            if !active.past_slop {
-                if let Some(tap) = &target.handlers.on_tap {
-                    tap(TapEvent { local_position: local, pointer_id: event.pointer_id });
+            // A press that travelled is not a tap, however short the travel,
+            // and neither is one that was already announced as a long press.
+            if !active.past_slop && !active.long_pressed {
+                let tap_event = TapEvent { local_position: local, pointer_id: event.pointer_id };
+                if active.second_tap {
+                    if let Some(double) = &target.handlers.on_double_tap {
+                        double(tap_event);
+                    }
+                } else if target.handlers.on_double_tap.is_some() {
+                    // This region wants double taps, so a single one cannot be
+                    // reported until it is clear that no second tap is coming.
+                    // `tick` announces it when the window closes.
+                    self.pending_tap = Some(PendingTap {
+                        target: target.clone(),
+                        event: tap_event,
+                        origin: active.origin,
+                        down_micros: active.down_micros,
+                        up_micros: event.time_stamp_micros,
+                    });
+                } else if let Some(tap) = &target.handlers.on_tap {
+                    tap(tap_event);
                 }
             }
         }
@@ -867,9 +1410,13 @@ impl GestureRouter {
     }
 
     fn on_cancel(&mut self, event: &PointerEvent) -> bool {
+        self.end_scale_if_involved(event.pointer_id);
         let Some(active) = self.take(event.pointer_id) else {
             return false;
         };
+        if active.scaling {
+            return true;
+        }
         // A cancelled press is not a tap. Only the pressed state is unwound.
         if active.pressed {
             if let Some(target) = &active.tap {
@@ -1337,5 +1884,372 @@ mod tests {
         let root = tree(PointerHandlers::new().with_tap(|_| panic!("should not fire")));
         let mut router = GestureRouter::new();
         assert!(!router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0)));
+    }
+
+    // -- Long press -----------------------------------------------------------
+
+    /// One event of a press held in place, at a stated moment.
+    fn held(change: PointerChange, micros: i64) -> PointerEvent {
+        PointerEvent { time_stamp_micros: micros, ..event(change, 20.0, 20.0, 0.0, 0.0) }
+    }
+
+    #[test]
+    fn a_press_held_still_becomes_a_long_press() {
+        let presses = Rc::new(RefCell::new(0));
+        let sink = presses.clone();
+        let root = tree(PointerHandlers::new().with_long_press(move |_| *sink.borrow_mut() += 1));
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        assert!(router.awaits_deadline(0), "the clock is what decides this one");
+
+        // A frame before the deadline, and one after it.
+        assert!(router.tick(400_000));
+        assert_eq!(*presses.borrow(), 0);
+        router.tick(LONG_PRESS_TIMEOUT_MICROS);
+        assert_eq!(*presses.borrow(), 1);
+    }
+
+    #[test]
+    fn a_long_press_fires_once_and_is_not_also_a_tap() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let long = log.clone();
+        let tap = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_long_press(move |_| long.borrow_mut().push("long"))
+                .with_tap(move |_| tap.borrow_mut().push("tap")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        router.tick(600_000);
+        router.tick(900_000);
+        router.dispatch(&root, &held(PointerChange::Up, 1_000_000));
+        assert_eq!(*log.borrow(), vec!["long"]);
+    }
+
+    #[test]
+    fn a_press_that_travels_is_not_a_long_press() {
+        let presses = Rc::new(RefCell::new(0));
+        let sink = presses.clone();
+        // The long press is on the inner region, which is what a press is
+        // reported to; the drag is on the outer one, the way a row inside a
+        // list is arranged.
+        let root = nested(
+            PointerHandlers::new().with_long_press(move |_| *sink.borrow_mut() += 1),
+            PointerHandlers::new().with_drag_update(|_| {}),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &at(PointerChange::Down, 70.0, 0.0, 0));
+        router.dispatch(&root, &at(PointerChange::Move, 40.0, -30.0, 100_000));
+        assert!(!router.awaits_deadline(100_000), "a scroll is not a long press");
+        router.tick(700_000);
+        assert_eq!(*presses.borrow(), 0);
+    }
+
+    #[test]
+    fn a_press_that_lifts_early_is_not_a_long_press() {
+        let presses = Rc::new(RefCell::new(0));
+        let sink = presses.clone();
+        let root = tree(PointerHandlers::new().with_long_press(move |_| *sink.borrow_mut() += 1));
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        router.dispatch(&root, &held(PointerChange::Up, 200_000));
+        router.tick(900_000);
+        assert_eq!(*presses.borrow(), 0);
+    }
+
+    // -- Double tap -----------------------------------------------------------
+
+    /// Taps at `micros`, holding the finger down for 30ms.
+    fn tap_at(router: &mut GestureRouter, root: &dyn RenderBox, micros: i64) {
+        router.dispatch(root, &held(PointerChange::Down, micros));
+        router.dispatch(root, &held(PointerChange::Up, micros + 30_000));
+    }
+
+    #[test]
+    fn two_taps_close_together_are_a_double_tap() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let double = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(move |_| double.borrow_mut().push("double")),
+        );
+
+        let mut router = GestureRouter::new();
+        tap_at(&mut router, &root, 0);
+        // Nothing yet: this could still be the first half of a double tap, and
+        // reporting it now would mean reporting both.
+        assert!(log.borrow().is_empty());
+        tap_at(&mut router, &root, 150_000);
+        assert_eq!(*log.borrow(), vec!["double"]);
+    }
+
+    #[test]
+    fn a_lone_tap_arrives_late_rather_than_never() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(|_| panic!("only one tap happened")),
+        );
+
+        let mut router = GestureRouter::new();
+        tap_at(&mut router, &root, 0);
+        assert!(log.borrow().is_empty());
+        router.tick(200_000);
+        assert!(log.borrow().is_empty(), "the window has not closed yet");
+        router.tick(DOUBLE_TAP_TIMEOUT_MICROS);
+        assert_eq!(*log.borrow(), vec!["tap"]);
+    }
+
+    #[test]
+    fn a_tap_on_a_region_that_wants_no_double_tap_is_not_delayed() {
+        let taps = Rc::new(RefCell::new(0));
+        let sink = taps.clone();
+        let root = tree(PointerHandlers::new().with_tap(move |_| *sink.borrow_mut() += 1));
+
+        let mut router = GestureRouter::new();
+        tap_at(&mut router, &root, 0);
+        assert_eq!(*taps.borrow(), 1, "nothing was waiting on a second tap");
+    }
+
+    #[test]
+    fn two_taps_far_apart_in_time_are_two_taps() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(|_| panic!("half a second apart is not a double tap")),
+        );
+
+        let mut router = GestureRouter::new();
+        tap_at(&mut router, &root, 0);
+        router.tick(DOUBLE_TAP_TIMEOUT_MICROS);
+        tap_at(&mut router, &root, 500_000);
+        router.tick(500_000 + DOUBLE_TAP_TIMEOUT_MICROS);
+        assert_eq!(*log.borrow(), vec!["tap", "tap"]);
+    }
+
+    #[test]
+    fn two_taps_in_different_places_are_two_taps() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        // The 80x80 region: two taps have to land more than a hundred logical
+        // pixels apart to be different taps, which does not fit in the 40x40
+        // one. That slop is deliberately generous upstream -- a finger aiming
+        // at the same spot twice in a hurry misses it by a lot.
+        let root = nested(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(|_| panic!("the second tap landed elsewhere")),
+            PointerHandlers::new(),
+        );
+
+        let mut router = GestureRouter::new();
+        let corner = |change, x: f32, y: f32, micros| PointerEvent {
+            time_stamp_micros: micros,
+            ..event(change, x, y, 0.0, 0.0)
+        };
+        router.dispatch(&root, &corner(PointerChange::Down, 3.0, 3.0, 0));
+        router.dispatch(&root, &corner(PointerChange::Up, 3.0, 3.0, 30_000));
+        // Still inside the window, diagonally across the region: about 106
+        // pixels away.
+        router.dispatch(&root, &corner(PointerChange::Down, 78.0, 78.0, 100_000));
+        router.dispatch(&root, &corner(PointerChange::Up, 78.0, 78.0, 130_000));
+        assert_eq!(*log.borrow(), vec!["tap"], "the first tap was settled by the second press");
+    }
+
+    #[test]
+    fn two_taps_survive_the_tree_being_rebuilt_between_them() {
+        // The bug this test is written for: the two taps of a double tap are
+        // separated by frames, and every frame builds a fresh set of handlers.
+        // Anything that identified a region by the identity of its handlers
+        // saw two different regions and reported two single taps.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let make = |log: Rc<RefCell<Vec<&'static str>>>| {
+            let single = log.clone();
+            let double = log;
+            tree(
+                PointerHandlers::new()
+                    .with_tap(move |_| single.borrow_mut().push("tap"))
+                    .with_double_tap(move |_| double.borrow_mut().push("double")),
+            )
+        };
+
+        let mut router = GestureRouter::new();
+        let first = make(log.clone());
+        tap_at(&mut router, &first, 0);
+        drop(first);
+
+        let second = make(log.clone());
+        tap_at(&mut router, &second, 150_000);
+        assert_eq!(*log.borrow(), vec!["double"]);
+    }
+
+    #[test]
+    fn a_second_tap_too_soon_is_one_bounce_of_a_finger() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(|_| panic!("20ms apart is a bounce, not two taps")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        router.dispatch(&root, &held(PointerChange::Up, 10_000));
+        router.dispatch(&root, &held(PointerChange::Down, 30_000));
+        router.dispatch(&root, &held(PointerChange::Up, 40_000));
+        router.tick(DOUBLE_TAP_TIMEOUT_MICROS * 2);
+        assert_eq!(*log.borrow(), vec!["tap", "tap"]);
+    }
+
+    // -- Scale ----------------------------------------------------------------
+
+    /// One finger's event, at a position and a moment.
+    fn finger(
+        pointer_id: i64,
+        change: PointerChange,
+        x: f32,
+        y: f32,
+        micros: i64,
+    ) -> PointerEvent {
+        PointerEvent {
+            pointer_id,
+            time_stamp_micros: micros,
+            ..event(change, x, y, 0.0, 0.0)
+        }
+    }
+
+    /// The 80x80 region with scale handlers that report into `sink`.
+    fn pinchable(sink: Rc<RefCell<Vec<ScaleEvent>>>) -> RenderStack {
+        let start = sink.clone();
+        let update = sink.clone();
+        let end = sink;
+        nested(
+            PointerHandlers::new(),
+            PointerHandlers::new()
+                .with_scale_start(move |s| start.borrow_mut().push(s))
+                .with_scale_update(move |s| update.borrow_mut().push(s))
+                .with_scale_end(move |s| end.borrow_mut().push(s)),
+        )
+    }
+
+    #[test]
+    fn two_fingers_spreading_report_a_scale_above_one() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let root = pinchable(events.clone());
+        let mut router = GestureRouter::new();
+
+        router.dispatch(&root, &finger(1, PointerChange::Down, 30.0, 40.0, 0));
+        router.dispatch(&root, &finger(2, PointerChange::Down, 50.0, 40.0, 10_000));
+        // 20 apart to start with, 40 apart after both fingers move outwards.
+        router.dispatch(&root, &finger(1, PointerChange::Move, 20.0, 40.0, 20_000));
+        router.dispatch(&root, &finger(2, PointerChange::Move, 60.0, 40.0, 30_000));
+
+        let events = events.borrow();
+        assert_eq!(events.first().map(|s| s.scale), Some(1.0), "a pinch starts at one");
+        let last = events.last().expect("an update");
+        assert!((last.scale - 2.0).abs() < 0.01, "fingers twice as far apart: {}", last.scale);
+        // The focal point has not moved: the fingers moved apart symmetrically.
+        assert!((last.focal_point.dx - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn two_fingers_moving_together_are_a_scale_of_one_that_travels() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let root = pinchable(events.clone());
+        let mut router = GestureRouter::new();
+
+        router.dispatch(&root, &finger(1, PointerChange::Down, 30.0, 40.0, 0));
+        router.dispatch(&root, &finger(2, PointerChange::Down, 50.0, 40.0, 10_000));
+        router.dispatch(&root, &finger(1, PointerChange::Move, 30.0, 50.0, 20_000));
+        router.dispatch(&root, &finger(2, PointerChange::Move, 50.0, 50.0, 30_000));
+
+        let events = events.borrow();
+        let last = events.last().expect("an update");
+        assert!((last.scale - 1.0).abs() < 0.01, "no pinch, only a move");
+        assert!((last.focal_point.dy - 50.0).abs() < 0.01, "the focal point followed them");
+    }
+
+    #[test]
+    fn turning_two_fingers_reports_a_rotation() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let root = pinchable(events.clone());
+        let mut router = GestureRouter::new();
+
+        // Horizontal to start with, vertical after: a quarter turn.
+        router.dispatch(&root, &finger(1, PointerChange::Down, 30.0, 40.0, 0));
+        router.dispatch(&root, &finger(2, PointerChange::Down, 50.0, 40.0, 10_000));
+        router.dispatch(&root, &finger(1, PointerChange::Move, 40.0, 30.0, 20_000));
+        router.dispatch(&root, &finger(2, PointerChange::Move, 40.0, 50.0, 30_000));
+
+        let events = events.borrow();
+        let last = events.last().expect("an update");
+        assert!(
+            (last.rotation.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.01,
+            "a quarter turn, not {}",
+            last.rotation
+        );
+    }
+
+    #[test]
+    fn a_pinch_ends_when_a_finger_leaves() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let root = pinchable(events.clone());
+        let mut router = GestureRouter::new();
+
+        router.dispatch(&root, &finger(1, PointerChange::Down, 30.0, 40.0, 0));
+        router.dispatch(&root, &finger(2, PointerChange::Down, 50.0, 40.0, 10_000));
+        router.dispatch(&root, &finger(2, PointerChange::Up, 50.0, 40.0, 20_000));
+        assert_eq!(events.borrow().last().map(|s| s.pointer_count), Some(1));
+
+        // The finger still down does not start a fresh pinch or a drag with
+        // what is left.
+        let before = events.borrow().len();
+        router.dispatch(&root, &finger(1, PointerChange::Move, 10.0, 40.0, 30_000));
+        assert_eq!(events.borrow().len(), before);
+    }
+
+    #[test]
+    fn a_pinch_cancels_the_drag_it_started_as() {
+        let ended = Rc::new(RefCell::new(Vec::new()));
+        let sink = ended.clone();
+        let root = nested(
+            PointerHandlers::new(),
+            PointerHandlers::new()
+                .with_drag_update(|_| {})
+                .with_drag_end(move |end| sink.borrow_mut().push(end.velocity))
+                .with_scale_update(|_| {}),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &finger(1, PointerChange::Down, 30.0, 70.0, 0));
+        // Past the slop, so a drag is under way. The delta is what the router
+        // measures travel with -- see `on_move` -- so a move event without one
+        // is a pointer that went nowhere.
+        router.dispatch(
+            &root,
+            &PointerEvent {
+                delta: Offset::new(0.0, -50.0),
+                ..finger(1, PointerChange::Move, 30.0, 20.0, 16_000)
+            },
+        );
+        router.dispatch(&root, &finger(2, PointerChange::Down, 50.0, 20.0, 32_000));
+
+        assert_eq!(
+            *ended.borrow(),
+            vec![Offset::ZERO],
+            "the drag ended, and a cancelled drag does not fling"
+        );
     }
 }

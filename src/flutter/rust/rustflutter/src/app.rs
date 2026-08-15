@@ -733,10 +733,16 @@ impl AppInstance {
         // different fields, so this is a split borrow rather than an alias.
         let router = &mut self.router;
         let handled = router.dispatch(root.as_ref(), event);
+        // A press that could still become a long press, or a tap that could
+        // still become a double one, is waiting for the clock rather than for
+        // the finger. Nothing else would ask for the frame that moves it, and
+        // a gesture that only fires when something else happens to redraw is
+        // not a gesture.
+        let waiting = router.awaits_deadline(event.time_stamp_micros);
 
         // A handler almost certainly called set_state, and a frame is the only
         // way that becomes visible.
-        if handled {
+        if handled || waiting {
             self.schedule_frame();
         }
     }
@@ -1056,6 +1062,15 @@ mod abi {
         // and the scheduler needs the host at the same time.
         let scheduler = FrameScheduler { host: instance.host };
         let started = FrameTimings::now();
+        // Gestures that are decided by time rather than by movement -- a long
+        // press, and a single tap waiting to find out whether it is the first
+        // half of a double one -- are settled here. Upstream they are `Timer`s
+        // on the platform thread; frames are on demand here, so a gesture with
+        // a deadline keeps asking for the next frame until its deadline is
+        // reached. A press that is not waiting for anything asks for nothing.
+        if instance.router.tick(frame_time_micros) {
+            scheduler.request_frame();
+        }
         if let Some(application) = instance.application.as_mut() {
             application.begin_frame(&FrameContext {
                 frame_number,
