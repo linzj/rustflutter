@@ -29,6 +29,7 @@
 #include "flutter/rust/host/rustflutter_host.h"
 
 #include <windows.h>
+#include <windowsx.h>
 
 #include <memory>
 #include <mutex>
@@ -44,6 +45,8 @@
 #include "flutter/fml/paths.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/lib/ui/window/pointer_data.h"
+#include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
@@ -165,6 +168,21 @@ class HostPlatformView final : public PlatformView,
     return backing_store_;
   }
 
+  /// Sends one pointer event to the engine. Called from the window thread,
+  /// which is why it hops to the platform task runner: PlatformView is not
+  /// thread safe, and the pointer dispatcher expects to run there.
+  void SendPointer(const PointerData& data) {
+    auto packet = std::make_unique<PointerDataPacket>(1);
+    packet->SetPointerData(0, data);
+    task_runners_.GetPlatformTaskRunner()->PostTask(
+        fml::MakeCopyable([weak = GetWeakPtr(), packet = std::move(packet)]() mutable {
+          if (weak) {
+            static_cast<HostPlatformView*>(weak.get())
+                ->DispatchPointerDataPacket(std::move(packet));
+          }
+        }));
+  }
+
   // |GPUSurfaceSoftwareDelegate|
   bool PresentBackingStore(sk_sp<SkSurface> backing_store) override {
     if (backing_store == nullptr) {
@@ -193,9 +211,47 @@ class HostPlatformView final : public PlatformView,
 struct WindowState {
   FrameBuffer frame_buffer;
   Shell* shell = nullptr;
+  HostPlatformView* platform_view = nullptr;
   fml::RefPtr<fml::TaskRunner> platform_task_runner;
   double device_pixel_ratio = 1.0;
+  /// Whether the primary button is currently down, so a WM_MOUSEMOVE can be
+  /// told apart from a drag.
+  bool pressed = false;
+  /// Where the pointer was last seen, for the delta that Move carries.
+  double last_x = 0.0;
+  double last_y = 0.0;
 };
+
+//------------------------------------------------------------------------------
+/// Builds a PointerData for one Win32 mouse message.
+///
+/// Windows reports a single system mouse, so device and pointer identity are
+/// both constant. Coordinates arrive in client pixels, which are already the
+/// physical pixels the engine wants.
+PointerData MakePointerData(WindowState* state,
+                            PointerData::Change change,
+                            double x,
+                            double y) {
+  PointerData data;
+  data.Clear();
+  data.time_stamp = fml::TimePoint::Now().ToEpochDelta().ToMicroseconds();
+  data.change = change;
+  data.kind = PointerData::DeviceKind::kMouse;
+  data.signal_kind = PointerData::SignalKind::kNone;
+  data.device = 0;
+  data.pointer_identifier = 0;
+  data.physical_x = x;
+  data.physical_y = y;
+  data.physical_delta_x = x - state->last_x;
+  data.physical_delta_y = y - state->last_y;
+  data.buttons = state->pressed ? kPointerButtonMousePrimary : 0;
+  data.pressure = state->pressed ? 1.0 : 0.0;
+  data.pressure_max = 1.0;
+  data.view_id = kFlutterImplicitViewId;
+  state->last_x = x;
+  state->last_y = y;
+  return data;
+}
 
 void SendViewportMetrics(WindowState* state, int32_t width, int32_t height) {
   if (state->shell == nullptr || width <= 0 || height <= 0) {
@@ -248,6 +304,69 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_SIZE:
       if (state != nullptr) {
         SendViewportMetrics(state, LOWORD(lparam), HIWORD(lparam));
+      }
+      return 0;
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_MOUSEMOVE:
+    case WM_MOUSELEAVE: {
+      if (state == nullptr || state->platform_view == nullptr) {
+        return 0;
+      }
+      const double x = static_cast<double>(GET_X_LPARAM(lparam));
+      const double y = static_cast<double>(GET_Y_LPARAM(lparam));
+
+      switch (msg) {
+        case WM_LBUTTONDOWN: {
+          // Capture so a drag that leaves the window still reports its up,
+          // which is what keeps a button from getting stuck pressed.
+          SetCapture(hwnd);
+          state->pressed = true;
+          state->last_x = x;
+          state->last_y = y;
+          state->platform_view->SendPointer(
+              MakePointerData(state, PointerData::Change::kDown, x, y));
+          break;
+        }
+        case WM_LBUTTONUP: {
+          state->platform_view->SendPointer(
+              MakePointerData(state, PointerData::Change::kUp, x, y));
+          state->pressed = false;
+          ReleaseCapture();
+          break;
+        }
+        case WM_MOUSEMOVE: {
+          // A move with no button down is a hover, which no recogniser wants
+          // yet; sending it anyway would be a packet per mouse pixel.
+          if (state->pressed) {
+            state->platform_view->SendPointer(
+                MakePointerData(state, PointerData::Change::kMove, x, y));
+          } else {
+            state->last_x = x;
+            state->last_y = y;
+          }
+          break;
+        }
+        case WM_MOUSELEAVE: {
+          if (state->pressed) {
+            state->platform_view->SendPointer(
+                MakePointerData(state, PointerData::Change::kCancel, x, y));
+            state->pressed = false;
+          }
+          break;
+        }
+        default:
+          break;
+      }
+      return 0;
+    }
+    case WM_CAPTURECHANGED:
+      // Something else took the mouse. A press that ends this way is cancelled
+      // rather than completed.
+      if (state != nullptr && state->pressed && state->platform_view != nullptr) {
+        state->platform_view->SendPointer(MakePointerData(
+            state, PointerData::Change::kCancel, state->last_x, state->last_y));
+        state->pressed = false;
       }
       return 0;
     case WM_KEYDOWN:
@@ -355,9 +474,13 @@ int32_t rf_host_run(const RfHostOptions* options) {
   PlatformData platform_data;
   std::unique_ptr<Shell> shell = Shell::Create(
       platform_data, task_runners, settings,
-      [window, frame_buffer = &state.frame_buffer](Shell& shell) {
-        return std::make_unique<HostPlatformView>(
-            shell, shell.GetTaskRunners(), window, frame_buffer);
+      [window, &state](Shell& shell) {
+        auto view = std::make_unique<HostPlatformView>(
+            shell, shell.GetTaskRunners(), window, &state.frame_buffer);
+        // The window proc needs to reach the view to send pointers. The shell
+        // owns it and outlives the message loop, so a raw pointer is enough.
+        state.platform_view = view.get();
+        return view;
       },
       [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
 
@@ -399,6 +522,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // surface down first stops the rasterizer before the window it draws into
   // goes away.
   state.shell = nullptr;
+  state.platform_view = nullptr;
   fml::AutoResetWaitableEvent latch;
   task_runners.GetPlatformTaskRunner()->PostTask(
       fml::MakeCopyable([shell = std::move(shell), &latch]() mutable {

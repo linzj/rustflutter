@@ -106,11 +106,38 @@ void rf_app_draw_frame(RfApp* app);
 
 // -- Input --------------------------------------------------------------------
 
-// `data` is a flutter::PointerDataPacket byte buffer: a tightly packed array of
-// PointerData structs, which is exactly what the platform view produces.
-void rf_app_dispatch_pointer_packet(RfApp* app,
-                                    const uint8_t* data,
-                                    size_t length);
+// One pointer event, in physical pixels.
+//
+// Upstream flutter::PointerData carries thirty-odd fields, most of them for
+// stylus tilt, trackpad pan and pressure ranges. This is the subset a framework
+// needs before it has a use for the rest; the shell drops the others rather
+// than making Rust parse a struct layout it would have to keep in sync.
+typedef struct RfPointerEvent {
+  int64_t view_id;
+  int64_t device;
+  int64_t pointer_id;
+  // 0 cancel, 1 add, 2 remove, 3 hover, 4 down, 5 move, 6 up,
+  // 7 pan-zoom start, 8 pan-zoom update, 9 pan-zoom end.
+  int32_t change;
+  // 0 touch, 1 mouse, 2 stylus, 3 inverted stylus, 4 trackpad.
+  int32_t kind;
+  // 0 none, 1 scroll, 2 scroll inertia cancel, 3 scale.
+  int32_t signal_kind;
+  int32_t buttons;
+  int64_t time_stamp_micros;
+  double physical_x;
+  double physical_y;
+  double delta_x;
+  double delta_y;
+  double scroll_delta_x;
+  double scroll_delta_y;
+  double pressure;
+} RfPointerEvent;
+
+// Delivers a batch of events, in the order the platform produced them.
+void rf_app_dispatch_pointers(RfApp* app,
+                              const RfPointerEvent* events,
+                              size_t count);
 
 #if defined(__cplusplus)
 }  // extern "C"

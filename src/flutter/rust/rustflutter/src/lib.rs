@@ -22,13 +22,19 @@ mod engine_test_stubs;
 
 pub mod app;
 pub mod engine;
+pub mod framework;
+pub mod gestures;
 pub mod painting;
 pub mod render;
 pub mod widgets;
 
 pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
-    ViewMetrics, register_application,
+    ViewMetrics, WidgetApplication, WidgetHost, register_application,
+};
+pub use framework::{
+    AnyWidget, Component, ElementTree, Key, RenderWidget, StateHandle, StatefulComponent,
+    component, leaf, keyed_leaf, keyed_many, keyed_single, many, single, stateful,
 };
 #[cfg(not(test))]
 pub use app::run;
@@ -47,7 +53,12 @@ pub use widgets::{
 /// Everything a typical app needs in one import.
 pub mod prelude {
     pub use crate::app::{
-        Application, BuildContext, FrameContext, FrameScheduler, RunOptions, register_application,
+        Application, BuildContext, FrameContext, FrameScheduler, RunOptions, WidgetApplication,
+        WidgetHost, register_application,
+    };
+    pub use crate::framework::{
+        AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
+        keyed_single, leaf, many, single, stateful,
     };
     #[cfg(not(test))]
     pub use crate::app::run;

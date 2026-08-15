@@ -24,6 +24,8 @@ use std::os::raw::c_int;
 use std::sync::OnceLock;
 
 use crate::engine::{self, Canvas, Color, LayerTree};
+use crate::framework::{AnyWidget, ElementTree};
+use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::render::{BoxConstraints, PaintContext, RenderBox};
 use crate::widgets::{BoxedWidget, Offset, Size};
 
@@ -156,6 +158,90 @@ pub trait Application {
     fn begin_frame(&mut self, _context: &FrameContext) {}
 }
 
+// -- Widget-based applications ------------------------------------------------
+
+/// An application described in widgets rather than render objects.
+///
+/// The difference that matters is what happens between frames: a widget
+/// application gets an [`ElementTree`], so state survives and a `set_state`
+/// rebuilds only its own subtree. An [`Application`] rebuilds its render
+/// objects from scratch every frame and has nowhere to keep anything.
+pub trait WidgetApplication {
+    /// Builds the root widget. Called once when the tree is first mounted, and
+    /// again whenever the view's size changes -- see [`WidgetHost`] for why.
+    fn build(&mut self, context: &BuildContext) -> AnyWidget;
+
+    fn background(&self) -> Color {
+        Color::WHITE
+    }
+
+    fn begin_frame(&mut self, _context: &FrameContext) {}
+}
+
+/// Runs a [`WidgetApplication`] as an [`Application`].
+///
+/// Frames come in two shapes. The first frame, and any frame after the view
+/// resizes, rebuilds the root widget and reconciles the whole tree. Every other
+/// frame only rebuilds the elements that `set_state` marked dirty.
+///
+/// The resize case exists because the root `build` is handed the view size, so
+/// a description that depends on it has to be asked again. Upstream this is
+/// what `MediaQuery` and its `InheritedWidget` dependency tracking do for a
+/// living; until that arrives, a resize is a full rebuild.
+///
+/// One thing this does *not* yet skip is layout. Element reuse preserves state
+/// and avoids re-running `build`; the render tree is still assembled fresh each
+/// frame, so layout and paint run in full. Making render objects persistent
+/// across frames is the next thing worth doing here.
+pub struct WidgetHost<W: WidgetApplication> {
+    app: W,
+    tree: ElementTree,
+    last_size: Option<Size>,
+}
+
+impl<W: WidgetApplication> WidgetHost<W> {
+    pub fn new(app: W) -> WidgetHost<W> {
+        WidgetHost { app, tree: ElementTree::new(), last_size: None }
+    }
+
+    /// The element tree, for tests and diagnostics.
+    pub fn tree(&self) -> &ElementTree {
+        &self.tree
+    }
+}
+
+impl<W: WidgetApplication> Application for WidgetHost<W> {
+    fn background(&self) -> Color {
+        self.app.background()
+    }
+
+    fn begin_frame(&mut self, context: &FrameContext) {
+        self.app.begin_frame(context);
+    }
+
+    fn build(&mut self, context: &BuildContext) -> BoxedWidget {
+        let resized = self.last_size != Some(context.size);
+        if self.tree.is_empty() || resized {
+            let root = self.app.build(context);
+            self.tree.rebuild(root);
+            self.last_size = Some(context.size);
+        } else {
+            self.tree.rebuild_dirty();
+        }
+
+        // A set_state that arrived during this build, or one that was queued
+        // rather than applied, needs another frame to become visible.
+        if self.tree.needs_frame() {
+            self.tree.clear_needs_frame();
+            context.scheduler.request_frame();
+        }
+
+        self.tree
+            .build_render_tree()
+            .unwrap_or_else(|| Box::new(crate::widgets::Empty))
+    }
+}
+
 /// Builds the application's root object. Registered before the shell starts.
 pub type ApplicationFactory = Box<dyn Fn() -> Box<dyn Application> + Send + Sync>;
 
@@ -188,6 +274,12 @@ struct AppInstance {
     view_order: Vec<i64>,
     frame_number: u64,
     frame_time_micros: i64,
+    /// The render tree from each view's last painted frame, kept so a pointer
+    /// that arrives between frames has something to hit-test against. Upstream
+    /// the render tree is persistent and this is simply "the tree"; here it is
+    /// rebuilt each frame, so the last one has to be held on to deliberately.
+    painted: HashMap<i64, BoxedWidget>,
+    router: GestureRouter,
 }
 
 impl AppInstance {
@@ -240,6 +332,30 @@ impl AppInstance {
             // flow::LayerTree and frees it.
             let raw = tree.into_raw();
             unsafe { render(self.host.user_data, view_id, raw, metrics.device_pixel_ratio) };
+        }
+
+        // Keep the laid-out tree for hit testing until the next frame replaces
+        // it. `root` has been through layout and paint, so its geometry is the
+        // geometry the user is looking at.
+        self.painted.insert(view_id, root);
+    }
+
+    /// Routes one event to the tree that was painted for its view.
+    fn dispatch_pointer(&mut self, event: &PointerEvent) {
+        let Some(root) = self.painted.get(&event.view_id) else {
+            // Nothing has been painted for this view yet, so there is nothing
+            // under the pointer.
+            return;
+        };
+        // The router needs the tree immutably and itself mutably; they are
+        // different fields, so this is a split borrow rather than an alias.
+        let router = &mut self.router;
+        let handled = router.dispatch(root.as_ref(), event);
+
+        // A handler almost certainly called set_state, and a frame is the only
+        // way that becomes visible.
+        if handled {
+            self.schedule_frame();
         }
     }
 }
@@ -350,6 +466,8 @@ mod abi {
             view_order: Vec::new(),
             frame_number: 0,
             frame_time_micros: 0,
+            painted: HashMap::new(),
+            router: GestureRouter::new(),
         });
         Box::into_raw(instance) as *mut RfApp
     }
@@ -404,6 +522,7 @@ mod abi {
         let Some(instance) = instance(app) else { return };
         instance.views.remove(&view_id);
         instance.view_order.retain(|id| *id != view_id);
+        instance.painted.remove(&view_id);
     }
 
     #[unsafe(no_mangle)]
@@ -452,14 +571,71 @@ mod abi {
         }
     }
 
+    /// Mirrors `RfPointerEvent` in runtime/rust_app_api.h. The shell narrows
+    /// flutter::PointerData to this before crossing, so the layout lives in one
+    /// language rather than in two that have to agree.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct RfPointerEvent {
+        pub view_id: i64,
+        pub device: i64,
+        pub pointer_id: i64,
+        pub change: i32,
+        pub kind: i32,
+        pub signal_kind: i32,
+        pub buttons: i32,
+        pub time_stamp_micros: i64,
+        pub physical_x: f64,
+        pub physical_y: f64,
+        pub delta_x: f64,
+        pub delta_y: f64,
+        pub scroll_delta_x: f64,
+        pub scroll_delta_y: f64,
+        pub pressure: f64,
+    }
+
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn rf_app_dispatch_pointer_packet(
+    pub unsafe extern "C" fn rf_app_dispatch_pointers(
         app: *mut RfApp,
-        _data: *const u8,
-        _length: usize,
+        events: *const RfPointerEvent,
+        count: usize,
     ) {
-        // Pointer routing needs a hit-testable render tree, which arrives with M5.
-        // Accepting and dropping the packet keeps the shell's contract intact.
-        let _ = instance(app);
+        let Some(instance) = instance(app) else { return };
+        if events.is_null() || count == 0 {
+            return;
+        }
+        let events = unsafe { std::slice::from_raw_parts(events, count) };
+        for raw in events {
+            // Everything above this line is in physical pixels; everything
+            // below is in logical ones, because that is what layout used.
+            let dpr = instance
+                .views
+                .get(&raw.view_id)
+                .map(|m| m.device_pixel_ratio)
+                .filter(|dpr| *dpr > 0.0)
+                .unwrap_or(1.0);
+            let scale = 1.0 / dpr;
+            let event = PointerEvent {
+                view_id: raw.view_id,
+                device: raw.device,
+                pointer_id: raw.pointer_id,
+                change: PointerChange::from_code(raw.change),
+                kind: PointerKind::from_code(raw.kind),
+                buttons: raw.buttons,
+                time_stamp_micros: raw.time_stamp_micros,
+                position: Offset::new(
+                    (raw.physical_x * scale) as f32,
+                    (raw.physical_y * scale) as f32,
+                ),
+                delta: Offset::new((raw.delta_x * scale) as f32, (raw.delta_y * scale) as f32),
+                scroll_delta: Offset::new(
+                    (raw.scroll_delta_x * scale) as f32,
+                    (raw.scroll_delta_y * scale) as f32,
+                ),
+                pressure: raw.pressure,
+                local_position: Offset::ZERO,
+            };
+            instance.dispatch_pointer(&event);
+        }
     }
 }

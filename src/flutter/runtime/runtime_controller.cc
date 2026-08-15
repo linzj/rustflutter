@@ -233,15 +233,48 @@ bool RuntimeController::DispatchPointerDataPacket(
     return false;
   }
   TRACE_EVENT0("flutter", "RuntimeController::DispatchPointerDataPacket");
-  const std::vector<uint8_t>& data = packet.data();
-  rf_app_dispatch_pointer_packet(app_, data.data(), data.size());
+
+  // Narrow flutter::PointerData to the fields the framework uses. Doing it
+  // here rather than in Rust keeps the struct layout in one language: a
+  // mirrored #[repr(C)] would silently drift the first time upstream adds a
+  // field in the middle.
+  const size_t count = packet.GetLength();
+  std::vector<RfPointerEvent> events;
+  events.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const PointerData data = packet.GetPointerData(i);
+    RfPointerEvent event = {};
+    event.view_id = data.view_id;
+    event.device = data.device;
+    event.pointer_id = data.pointer_identifier;
+    event.change = static_cast<int32_t>(data.change);
+    event.kind = static_cast<int32_t>(data.kind);
+    event.signal_kind = static_cast<int32_t>(data.signal_kind);
+    event.buttons = static_cast<int32_t>(data.buttons);
+    event.time_stamp_micros = data.time_stamp;
+    event.physical_x = data.physical_x;
+    event.physical_y = data.physical_y;
+    event.delta_x = data.physical_delta_x;
+    event.delta_y = data.physical_delta_y;
+    event.scroll_delta_x = data.scroll_delta_x;
+    event.scroll_delta_y = data.scroll_delta_y;
+    event.pressure = data.pressure;
+    events.push_back(event);
+  }
+
+  if (!events.empty()) {
+    rf_app_dispatch_pointers(app_, events.data(), events.size());
+  }
   return true;
 }
 
 HitTestResponse RuntimeController::HitTest(int64_t view_id,
                                            const PointData offset) {
-  // Hit testing needs the render tree, which arrives with M5. Reporting no
-  // platform view is the correct conservative answer until then.
+  // This answers one question only -- whether a platform view is under the
+  // pointer, so the embedder knows whether to hand the gesture to a native
+  // view. There are no platform views yet, so the answer is always no. The
+  // framework's own hit testing happens on the Rust side, against the render
+  // tree, and does not come through here.
   return HitTestResponse{.has_platform_view = false};
 }
 

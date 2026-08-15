@@ -28,7 +28,10 @@
 //! knows its own geometry. [`RenderBox::hit_test`] walks the tree back to front
 //! and records the entries a gesture recogniser will later arbitrate over.
 
+use std::rc::Rc;
+
 use crate::engine::{Canvas, Color, Paint, Paragraph, Rect, Style, TextStyle};
+use crate::gestures::PointerHandlers;
 use crate::painting::{ClipOp, Gradient, Image, RenderPath};
 
 // -- Geometry -----------------------------------------------------------------
@@ -276,20 +279,26 @@ impl<'a> PaintContext<'a> {
 // -- Hit testing --------------------------------------------------------------
 
 /// One render object that a pointer landed on, innermost first.
-#[derive(Clone, Copy, Debug)]
+///
+/// Not `Debug`: the handlers are closures, which have nothing useful to print.
+#[derive(Clone, Default)]
 pub struct HitTestEntry {
     /// Identifies the render object that was hit. Assigned by whoever built the
     /// tree; zero means "no identity", which a gesture layer should ignore.
     pub target: u64,
     /// The pointer position in that object's local coordinates.
     pub local_position: Offset,
+    /// What the object wants to hear about. Carried in the entry rather than
+    /// looked up afterwards, because by then the tree may already have been
+    /// replaced by the next frame's.
+    pub handlers: Option<Rc<PointerHandlers>>,
 }
 
 /// The path a pointer takes through the tree, innermost entry first.
 ///
 /// Upstream this is `HitTestResult`, and the ordering is what makes gesture
 /// arena resolution work: the deepest target gets first refusal.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct HitTestResult {
     pub path: Vec<HitTestEntry>,
 }
@@ -304,10 +313,19 @@ impl HitTestResult {
     /// innermost target behind every anonymous box that happened to contain
     /// the pointer.
     pub fn add(&mut self, target: u64, local_position: Offset) {
+        self.add_with_handlers(target, local_position, None);
+    }
+
+    pub fn add_with_handlers(
+        &mut self,
+        target: u64,
+        local_position: Offset,
+        handlers: Option<Rc<PointerHandlers>>,
+    ) {
         if target == 0 {
             return;
         }
-        self.path.push(HitTestEntry { target, local_position });
+        self.path.push(HitTestEntry { target, local_position, handlers });
     }
 
     pub fn is_empty(&self) -> bool {
@@ -316,7 +334,7 @@ impl HitTestResult {
 
     /// The innermost target, which is the one a tap should go to first.
     pub fn innermost(&self) -> Option<HitTestEntry> {
-        self.path.first().copied()
+        self.path.first().cloned()
     }
 }
 
@@ -2154,13 +2172,26 @@ impl RenderBox for RenderViewport {
 /// traced back to whatever the caller cares about.
 pub struct RenderPointerRegion {
     id: u64,
+    handlers: Rc<PointerHandlers>,
     child: BoxedRender,
     size: Size,
 }
 
 impl RenderPointerRegion {
     pub fn new(id: u64, child: impl RenderBox + 'static) -> RenderPointerRegion {
-        RenderPointerRegion { id, child: Box::new(child), size: Size::ZERO }
+        RenderPointerRegion {
+            id,
+            handlers: Rc::new(PointerHandlers::default()),
+            child: Box::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    /// What this region wants to hear about. A region with no handlers still
+    /// takes part in hit testing, so it can shield whatever is behind it.
+    pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
+        self.handlers = Rc::new(handlers);
+        self
     }
 }
 
@@ -2183,7 +2214,7 @@ impl RenderBox for RenderPointerRegion {
             return false;
         }
         self.child.hit_test(position, result);
-        result.add(self.id, position);
+        result.add_with_handlers(self.id, position, Some(Rc::clone(&self.handlers)));
         true
     }
 
