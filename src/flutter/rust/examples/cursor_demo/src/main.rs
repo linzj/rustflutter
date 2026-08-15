@@ -195,13 +195,13 @@ impl WidgetApplication for CursorApp {
     }
 
     fn build(&mut self, context: &BuildContext) -> AnyWidget {
-        stateful(Page {
+        component(SafeArea::new(stateful(Page {
             columns: columns_for(context.size.width),
             // A pointer is a desktop thing. There is no channel that reports
             // this, and inventing one would be inventing protocol, so the
             // target is what decides.
             has_pointer: cfg!(not(target_os = "android")),
-        })
+        })))
     }
 }
 

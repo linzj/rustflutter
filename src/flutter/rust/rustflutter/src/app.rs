@@ -29,7 +29,7 @@ use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::keyboard::{KeyEvent, Keyboard};
 use crate::platform;
 use crate::services;
-use crate::render::{BoxConstraints, PaintContext, RenderBox};
+use crate::render::{BoxConstraints, EdgeInsets, PaintContext, RenderBox};
 use crate::widgets::{BoxedWidget, Offset, Size};
 
 // -- The platform's view of a view --------------------------------------------
@@ -65,6 +65,64 @@ impl ViewMetrics {
     /// Physical pixel size, which is the layer tree's size.
     pub fn physical_size(&self) -> (i32, i32) {
         (self.width.round() as i32, self.height.round() as i32)
+    }
+
+    /// What the system draws over, in logical pixels: the status bar, a notch,
+    /// the gesture bar. Unaffected by the keyboard.
+    ///
+    /// Upstream's `FlutterView.viewPadding`. The name of the field it comes
+    /// from is `padding`, not `viewPadding`, because that is the slot the
+    /// embedders fill: `FlutterRenderer` on Android sends `viewPaddingTop` into
+    /// `physicalPaddingTop`, and `dart:ui` derives the other one.
+    pub fn view_padding(&self) -> EdgeInsets {
+        self.logical_insets(
+            self.padding_left,
+            self.padding_top,
+            self.padding_right,
+            self.padding_bottom,
+        )
+    }
+
+    /// What is covering the view and pushing content out of the way, in
+    /// logical pixels -- the software keyboard, and essentially only it.
+    pub fn view_insets(&self) -> EdgeInsets {
+        self.logical_insets(
+            self.view_inset_left,
+            self.view_inset_top,
+            self.view_inset_right,
+            self.view_inset_bottom,
+        )
+    }
+
+    /// What the system still covers once the keyboard has taken its share:
+    /// `max(0, view_padding - view_insets)` per side.
+    ///
+    /// This is `FlutterView.padding`, and upstream computes it in `window.dart`
+    /// for the same reason it is computed here rather than in the widget layer
+    /// -- it is a property of the view, not a decision a widget makes.
+    pub fn padding(&self) -> EdgeInsets {
+        let view_padding = self.view_padding();
+        let insets = self.view_insets();
+        EdgeInsets {
+            left: (view_padding.left - insets.left).max(0.0),
+            top: (view_padding.top - insets.top).max(0.0),
+            right: (view_padding.right - insets.right).max(0.0),
+            bottom: (view_padding.bottom - insets.bottom).max(0.0),
+        }
+    }
+
+    fn logical_insets(&self, left: f64, top: f64, right: f64, bottom: f64) -> EdgeInsets {
+        let dpr = if self.device_pixel_ratio > 0.0 {
+            self.device_pixel_ratio
+        } else {
+            1.0
+        };
+        EdgeInsets {
+            left: (left / dpr) as f32,
+            top: (top / dpr) as f32,
+            right: (right / dpr) as f32,
+            bottom: (bottom / dpr) as f32,
+        }
     }
 }
 
@@ -384,7 +442,12 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         let images_arrived = crate::painting::take_images_arrived();
         let resized = self.last_size != Some(context.size);
         let mounted = if self.tree.is_empty() || resized || images_arrived {
-            let root = self.app.build(context);
+            // Published above the application's own root, which is where
+            // upstream puts it too: `WidgetsApp` wraps what you gave it in a
+            // `MediaQuery.fromView`. Everything below can then ask how big the
+            // view is and what is covering it without being handed either.
+            let data = crate::media_query::MediaQueryData::from_view(&context.metrics);
+            let root = crate::media_query::MediaQuery::new(data, self.app.build(context));
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
             true

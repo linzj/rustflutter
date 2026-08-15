@@ -21,9 +21,11 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.DisplayCutout;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -136,6 +138,22 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     // The soft keyboard resizes the window rather than covering it, so a field
     // near the bottom of the screen stays visible while it is being typed into.
     getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+
+    // The view is laid out behind the status and navigation bars, and the
+    // framework pads its content back out of the way -- that is what
+    // MediaQuery.padding and SafeArea are for. Upstream does exactly this in
+    // FlutterActivity.configureStatusBarForFullscreenFlutterExperience: draw
+    // the system bar backgrounds, tint the status bar, and lay out fullscreen.
+    // Without it every inset this Activity reports would be zero and the
+    // framework would have nothing to avoid.
+    getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+    if (Build.VERSION.SDK_INT < 35) {
+      getWindow().setStatusBarColor(0x40000000);
+    }
+    getWindow()
+        .getDecorView()
+        .setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
   }
 
   @Override
@@ -498,6 +516,93 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       super(context);
     }
 
+    /**
+     * Tells the framework what the system is covering.
+     *
+     * <p>Ported from {@code FlutterView.onApplyWindowInsets}, including the
+     * split it makes at API 30. Two kinds of inset go native, and the framework
+     * keeps them apart for a reason: <em>view padding</em> is what the system
+     * draws over -- the status bar, a notch, the gesture bar -- and does not
+     * move when the keyboard opens; <em>view insets</em> is what is pushing
+     * content out of the way, which is the keyboard and essentially nothing
+     * else.
+     *
+     * <p>Everything here is in physical pixels, which is what {@code
+     * ViewportMetrics} carries; the framework divides by the device pixel
+     * ratio.
+     */
+    @Override
+    public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+      WindowInsets applied = super.onApplyWindowInsets(insets);
+
+      int paddingTop;
+      int paddingRight;
+      int paddingBottom;
+      int paddingLeft;
+      int insetTop = 0;
+      int insetRight = 0;
+      int insetBottom = 0;
+      int insetLeft = 0;
+
+      if (Build.VERSION.SDK_INT >= 30) {
+        android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+        paddingTop = bars.top;
+        paddingRight = bars.right;
+        paddingBottom = bars.bottom;
+        paddingLeft = bars.left;
+
+        android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+        insetTop = ime.top;
+        insetRight = ime.right;
+        insetBottom = ime.bottom; // Typically the only non-zero one.
+        insetLeft = ime.left;
+
+        // A cutout is not a system bar, so it has to be merged in separately:
+        // take whichever reaches further into the view, side by side.
+        DisplayCutout cutout = insets.getDisplayCutout();
+        if (cutout != null) {
+          android.graphics.Insets waterfall = cutout.getWaterfallInsets();
+          paddingTop = Math.max(Math.max(paddingTop, waterfall.top), cutout.getSafeInsetTop());
+          paddingRight =
+              Math.max(Math.max(paddingRight, waterfall.right), cutout.getSafeInsetRight());
+          paddingBottom =
+              Math.max(Math.max(paddingBottom, waterfall.bottom), cutout.getSafeInsetBottom());
+          paddingLeft = Math.max(Math.max(paddingLeft, waterfall.left), cutout.getSafeInsetLeft());
+        }
+      } else {
+        // Before API 30 there is no way to ask for the keyboard's inset
+        // specifically, so upstream guesses: a bottom inset worth more than
+        // 18% of the screen is a keyboard rather than a navigation bar. The
+        // heuristic and the number are `FlutterView.guessBottomKeyboardInset`.
+        int keyboard = 0;
+        int screenHeight = getRootView().getHeight();
+        if (insets.getSystemWindowInsetBottom() >= screenHeight * 0.18) {
+          keyboard = insets.getSystemWindowInsetBottom();
+        }
+        int visibility = getWindowSystemUiVisibility();
+        boolean statusBarVisible = (View.SYSTEM_UI_FLAG_FULLSCREEN & visibility) == 0;
+        boolean navigationBarVisible = (View.SYSTEM_UI_FLAG_HIDE_NAVIGATION & visibility) == 0;
+
+        paddingTop = statusBarVisible ? insets.getSystemWindowInsetTop() : 0;
+        paddingRight = insets.getSystemWindowInsetRight();
+        paddingBottom =
+            navigationBarVisible && keyboard == 0 ? insets.getSystemWindowInsetBottom() : 0;
+        paddingLeft = insets.getSystemWindowInsetLeft();
+        insetBottom = keyboard;
+      }
+
+      nativeInsets(
+          paddingTop,
+          paddingRight,
+          paddingBottom,
+          paddingLeft,
+          insetTop,
+          insetRight,
+          insetBottom,
+          insetLeft);
+      return applied;
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
       final long micros = event.getEventTime() * 1000L;
@@ -688,6 +793,16 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       String externalFilesPath);
 
   private static native void nativeSurfaceChanged(int width, int height, float devicePixelRatio);
+
+  private static native void nativeInsets(
+      int paddingTop,
+      int paddingRight,
+      int paddingBottom,
+      int paddingLeft,
+      int insetTop,
+      int insetRight,
+      int insetBottom,
+      int insetLeft);
 
   private static native void nativeStop();
 

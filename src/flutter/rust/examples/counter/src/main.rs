@@ -273,7 +273,7 @@ impl WidgetApplication for CounterApp {
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        component(CounterPage)
+        component(SafeArea::new(component(CounterPage)))
     }
 }
 

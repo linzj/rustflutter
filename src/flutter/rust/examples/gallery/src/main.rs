@@ -114,13 +114,18 @@ impl Application for Gallery {
     }
 
     fn build(&mut self, context: &BuildContext) -> BoxedWidget {
-        let scrollable_height = context.size.height - header_height();
-        Box::new(
+        // No element tree here, so no `SafeArea` either -- this application is
+        // render objects all the way down. The padding is the same padding;
+        // only the way to reach it differs.
+        let padding = context.metrics.padding();
+        let scrollable_height = context.size.height - header_height() - padding.vertical();
+        Box::new(rustflutter::render::RenderPadding::new(
+            padding,
             Column::expanded()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .push(header())
                 .push_flex(Expanded::new(self.body(scrollable_height))),
-        )
+        ))
     }
 }
 

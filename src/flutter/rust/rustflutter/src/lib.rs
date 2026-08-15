@@ -32,6 +32,7 @@ pub mod engine;
 pub mod framework;
 pub mod gestures;
 pub mod keyboard;
+pub mod media_query;
 pub mod navigation;
 pub mod painting;
 pub mod physics;
@@ -61,6 +62,7 @@ pub use components::{
 };
 pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
+pub use media_query::{MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
@@ -104,6 +106,9 @@ pub mod prelude {
     };
     pub use crate::editable::{TextField, TextFieldState};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
+    pub use crate::media_query::{
+        MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area,
+    };
     pub use crate::services::system::{
         AppExitResponse, AppExitType, AppLifecycleState, Clipboard, HapticFeedback, SystemChrome,
         SystemMouseCursor, SystemNavigator, SystemSound, SystemSoundType,

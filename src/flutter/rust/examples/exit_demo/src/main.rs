@@ -261,7 +261,7 @@ impl WidgetApplication for ExitApp {
 
     fn build(&mut self, context: &BuildContext) -> AnyWidget {
         // Two 200-wide buttons, a gap and the page's margins.
-        stateful(Page { wide: context.size.width >= 470.0 })
+        component(SafeArea::new(stateful(Page { wide: context.size.width >= 470.0 })))
     }
 }
 

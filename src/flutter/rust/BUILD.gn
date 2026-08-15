@@ -105,6 +105,7 @@ if (enable_unittests) {
       "rustflutter/src/keyboard/keys.rs",
       "rustflutter/src/keyboard/mod.rs",
       "rustflutter/src/lib.rs",
+      "rustflutter/src/media_query.rs",
       "rustflutter/src/navigation.rs",
       "rustflutter/src/painting.rs",
       "rustflutter/src/physics.rs",

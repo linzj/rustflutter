@@ -175,7 +175,7 @@ impl WidgetApplication for TextApp {
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        stateful(Page)
+        component(SafeArea::new(stateful(Page)))
     }
 }
 

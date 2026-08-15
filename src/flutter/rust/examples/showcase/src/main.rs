@@ -310,7 +310,7 @@ impl WidgetApplication for ShowcaseApp {
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        stateful(Showcase { start_light: self.light })
+        component(SafeArea::new(stateful(Showcase { start_light: self.light })))
     }
 }
 

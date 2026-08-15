@@ -34,7 +34,7 @@ mod theme;
 
 use std::os::raw::{c_char, c_int};
 
-use rustflutter::framework::{AnyWidget, ElementTree, stateful};
+use rustflutter::framework::{AnyWidget, ElementTree, component, stateful};
 use rustflutter::prelude::*;
 use rustflutter::render::{BoxConstraints, Offset, RenderBox, Size};
 
@@ -56,11 +56,15 @@ impl WidgetApplication for GalleryApp {
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        stateful(Gallery {
+        // Every screen here draws its own header rather than using a Scaffold,
+        // so the status bar is this application's problem: without this the
+        // title sits underneath it. Upstream's gallery reaches the same place
+        // through `Scaffold`, which pads its app bar by the same amount.
+        component(SafeArea::new(stateful(Gallery {
             light: self.light,
             route: self.route,
             slug: self.slug.clone(),
-        })
+        })))
     }
 }
 

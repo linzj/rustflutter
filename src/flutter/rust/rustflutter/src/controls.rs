@@ -440,6 +440,13 @@ impl Component for BottomNavigation {
         let outline = theme.outline;
         let primary = theme.primary;
         let muted = theme.text_muted;
+        // The bar grows by whatever the gesture bar covers and pads its
+        // contents up by the same amount, so the destinations stay reachable
+        // and the surface still reaches the bottom edge of the screen.
+        // Upstream's `BottomNavigationBar` calls this `additionalBottomPadding`
+        // and takes it from `viewPadding` rather than `padding`: the gesture
+        // bar is there whether or not a keyboard is over it.
+        let bottom = crate::media_query::media_query_of(context).view_padding.bottom;
 
         leaf(move || {
             let mut row = RenderFlex::row()
@@ -483,9 +490,10 @@ impl Component for BottomNavigation {
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new()
-                .with_height(64.0)
+                .with_height(64.0 + bottom)
                 .with_color(surface)
                 .with_border(1.0, outline)
+                .with_padding(EdgeInsets::only(0.0, 0.0, 0.0, bottom))
                 .with_child(row)
         })
     }

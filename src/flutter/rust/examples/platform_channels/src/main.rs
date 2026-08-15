@@ -287,11 +287,11 @@ impl WidgetApplication for Probe {
         // It is the root, so it is given the window's constraints and fills
         // them -- which is what lets the probe click the middle and know it
         // landed on the field.
-        stateful(
+        component(SafeArea::new(stateful(
             TextField::new(1)
                 .with_placeholder("type here")
                 .with_on_changed(on_text_changed),
-        )
+        )))
     }
 }
 

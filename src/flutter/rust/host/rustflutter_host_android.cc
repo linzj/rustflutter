@@ -1353,6 +1353,20 @@ struct HostState {
   int32_t width = 0;
   int32_t height = 0;
   double device_pixel_ratio = 1.0;
+
+  /// What the system is covering, in physical pixels, as the Activity last
+  /// reported it. Two kinds, kept apart the way `ViewportMetrics` keeps them:
+  /// `padding` is what is drawn over (status bar, cutout, gesture bar) and
+  /// `view_inset` is what displaces content (the keyboard).
+  double padding_top = 0.0;
+  double padding_right = 0.0;
+  double padding_bottom = 0.0;
+  double padding_left = 0.0;
+  double view_inset_top = 0.0;
+  double view_inset_right = 0.0;
+  double view_inset_bottom = 0.0;
+  double view_inset_left = 0.0;
+
   std::string lifecycle_state;
 
   /// What Java last told us, kept so that the first frame has it. The
@@ -1375,6 +1389,17 @@ void SendViewportMetrics() {
   metrics.physical_height = state.height;
   metrics.physical_max_width_constraint = state.width;
   metrics.physical_max_height_constraint = state.height;
+  // The padding slot carries *view* padding, which is the same thing upstream
+  // puts there: FlutterRenderer sends viewPaddingTop as physicalPaddingTop and
+  // the framework subtracts the insets itself.
+  metrics.physical_padding_top = state.padding_top;
+  metrics.physical_padding_right = state.padding_right;
+  metrics.physical_padding_bottom = state.padding_bottom;
+  metrics.physical_padding_left = state.padding_left;
+  metrics.physical_view_inset_top = state.view_inset_top;
+  metrics.physical_view_inset_right = state.view_inset_right;
+  metrics.physical_view_inset_bottom = state.view_inset_bottom;
+  metrics.physical_view_inset_left = state.view_inset_left;
 
   state.task_runners->GetPlatformTaskRunner()->PostTask(
       [view = state.shell->GetPlatformView(), metrics]() {
@@ -1603,6 +1628,33 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceChanged(
   state.width = width;
   state.height = height;
   state.device_pixel_ratio = device_pixel_ratio > 0 ? device_pixel_ratio : 1.0;
+  flutter::SendViewportMetrics();
+}
+
+/// What the system bars, a cutout and the keyboard are covering.
+///
+/// Arrives whenever Android applies window insets, which is at least once
+/// before the first frame and again every time the keyboard opens or closes.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeInsets(JNIEnv* env,
+                                                             jclass clazz,
+                                                             jint padding_top,
+                                                             jint padding_right,
+                                                             jint padding_bottom,
+                                                             jint padding_left,
+                                                             jint inset_top,
+                                                             jint inset_right,
+                                                             jint inset_bottom,
+                                                             jint inset_left) {
+  auto& state = flutter::HostState::Get();
+  state.padding_top = padding_top;
+  state.padding_right = padding_right;
+  state.padding_bottom = padding_bottom;
+  state.padding_left = padding_left;
+  state.view_inset_top = inset_top;
+  state.view_inset_right = inset_right;
+  state.view_inset_bottom = inset_bottom;
+  state.view_inset_left = inset_left;
   flutter::SendViewportMetrics();
 }
 

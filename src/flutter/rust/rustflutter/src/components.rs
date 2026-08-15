@@ -671,6 +671,13 @@ impl Component for AppBar {
         let title = self.title.clone();
         let subtitle = self.subtitle.clone();
         let trailing = self.trailing.borrow_mut().take();
+        // The bar's own background is what should extend under the status bar,
+        // not the page behind it, so this is padding *inside* the surface
+        // rather than a `SafeArea` wrapped around it. Upstream reaches the same
+        // shape from the other side: `AppBar.build` ends with
+        // `SafeArea(bottom: false, child: appBar)` where `appBar` is already
+        // the coloured `Material`.
+        let system = crate::media_query::media_query_of(context).padding;
         let surface = theme.surface;
         let outline = theme.outline;
         let title_style = theme.title();
@@ -719,7 +726,12 @@ impl Component for AppBar {
                 Container::new()
                     .with_color(surface)
                     .with_border(1.0, outline)
-                    .with_padding(EdgeInsets::symmetric(spacing * 2.5, spacing * 1.75))
+                    .with_padding(EdgeInsets::only(
+                        spacing * 2.5 + system.left,
+                        spacing * 1.75 + system.top,
+                        spacing * 2.5 + system.right,
+                        spacing * 1.75,
+                    ))
                     .with_child(row),
             )
         })
@@ -754,6 +766,16 @@ impl Component for Scaffold {
         let body = self.body.borrow_mut().take().unwrap_or_else(|| leaf(|| Empty));
 
         let has_app_bar = app_bar.is_some();
+        // A bar has already moved the page down past the status bar, so the
+        // body must not do it again -- and must still be told what the bar did
+        // not deal with, which is the bottom. Upstream's `Scaffold` removes the
+        // same padding from the body's `MediaQuery` for the same reason.
+        let body = if has_app_bar {
+            let data = crate::media_query::media_query_of(context);
+            crate::media_query::MediaQuery::new(data.remove_padding(true, true, true, false), body)
+        } else {
+            body
+        };
         let mut children = Vec::new();
         if let Some(app_bar) = app_bar {
             children.push(app_bar);
