@@ -197,9 +197,18 @@ class HostPlatformView final : public PlatformView,
 
   // |PlatformView|
   std::unique_ptr<VsyncWaiter> CreateVSyncWaiter() override {
-    // A timer at the display's refresh rate. The real thing reads the DWM
-    // composition clock; this is enough to prove the frame loop is driven by
-    // the engine rather than by an application call.
+    // A timer at sixty hertz. It does not know when the display actually
+    // refreshes, so it drifts against it -- which is harmless now that the swap
+    // no longer waits for the display as well. See the comment on
+    // eglSwapInterval in rustflutter_gl_win.cc: it was the two waits stacking,
+    // not the timer, that halved the frame rate.
+    //
+    // Reading the composition clock instead would be the better clock, and a
+    // DWM-backed waiter was written and then deleted: with composition off --
+    // which is how a Remote Desktop session arrives -- DwmFlush returns
+    // immediately and the loop has to be paced by hand anyway, and the pacing
+    // was worse than this. It is worth doing when there is a machine to test
+    // the composition path on.
     return std::make_unique<VsyncWaiterFallback>(task_runners_);
   }
 

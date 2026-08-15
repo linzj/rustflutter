@@ -233,12 +233,24 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         self.tree.set_frame_time(context.frame_time_micros);
 
         let resized = self.last_size != Some(context.size);
-        if self.tree.is_empty() || resized {
+        let mounted = if self.tree.is_empty() || resized {
             let root = self.app.build(context);
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
+            true
         } else {
-            self.tree.rebuild_dirty();
+            self.tree.rebuild_dirty() > 0
+        };
+
+        // Anything built this frame has never been asked whether it wants to
+        // move, because advancing happens before building. One more frame gives
+        // it the chance; if it says no, that is where the loop stops. Without
+        // this a screen whose animation starts on mount -- a spinner, a page
+        // that fades itself in -- draws its first frame and freezes, because
+        // the only thing that would have asked for a second one is the advance
+        // it was never part of.
+        if mounted {
+            context.scheduler.request_frame();
         }
 
         // A set_state that arrived during this build, or one that was queued
@@ -251,6 +263,68 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         self.tree
             .build_render_tree()
             .unwrap_or_else(|| Box::new(crate::widgets::Empty))
+    }
+}
+
+/// Where a frame's time goes on the UI thread, when anyone is asking.
+///
+/// Set RUSTFLUTTER_FRAME_STATS to any value. The report is a median over sixty
+/// frames rather than a mean, because a first paint or a newly shaped run of
+/// text is a one-off and averaging hides which of the three phases is actually
+/// the expensive one.
+///
+/// It measures the UI thread only. Rasterising happens on another thread and is
+/// reported by the host, next to the frame interval.
+struct FrameTimings;
+
+impl FrameTimings {
+    #[inline]
+    fn now() -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("RUSTFLUTTER_FRAME_STATS").is_some())
+    }
+
+    fn record(
+        started: std::time::Instant,
+        built: std::time::Instant,
+        laid_out: std::time::Instant,
+        painted: std::time::Instant,
+    ) {
+        if !Self::enabled() {
+            return;
+        }
+        thread_local! {
+            static SAMPLES: std::cell::RefCell<Vec<(f64, f64, f64)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let ms = |a: std::time::Instant, b: std::time::Instant| {
+            b.duration_since(a).as_secs_f64() * 1000.0
+        };
+        SAMPLES.with(|samples| {
+            let mut samples = samples.borrow_mut();
+            samples.push((ms(started, built), ms(built, laid_out), ms(laid_out, painted)));
+            if samples.len() < 60 {
+                return;
+            }
+            let median = |pick: fn(&(f64, f64, f64)) -> f64| {
+                let mut values: Vec<f64> = samples.iter().map(pick).collect();
+                values.sort_by(|a, b| a.partial_cmp(b).expect("no NaN durations"));
+                values[values.len() / 2]
+            };
+            let build = median(|s| s.0);
+            let layout = median(|s| s.1);
+            let paint = median(|s| s.2);
+            eprintln!(
+                "ui thread: build {build:.2} ms, layout {layout:.2} ms,                  record {paint:.2} ms, total {:.2} ms (median of {})",
+                build + layout + paint,
+                samples.len()
+            );
+            samples.clear();
+        });
     }
 }
 
@@ -322,11 +396,15 @@ impl AppInstance {
             scheduler: FrameScheduler { host: self.host },
         };
         let background = application.background();
+
+        let started = FrameTimings::now();
         let mut root = application.build(&context);
+        let built = FrameTimings::now();
 
         // Constraints down, sizes up -- the RenderBox protocol. The root is
         // forced to the view size, which is what RenderView does upstream.
         root.layout(BoxConstraints::tight(context.size.width, context.size.height));
+        let laid_out = FrameTimings::now();
 
         let mut canvas = Canvas::new(context.size.width, context.size.height);
         canvas.draw_color(background);
@@ -335,9 +413,11 @@ impl AppInstance {
             root.paint(&mut paint_context, Offset::ZERO);
         }
         let display_list = canvas.build();
+        let painted = FrameTimings::now();
 
         let mut tree = LayerTree::new(physical_width, physical_height);
         tree.add_display_list(&display_list, 0.0, 0.0);
+        FrameTimings::record(started, built, laid_out, painted);
 
         if let Some(render) = self.host.render {
             // Ownership crosses here: the shell converts the handle into a

@@ -24,7 +24,8 @@ ninja   →  exit 0，零警告
 rustflutter_unittests        →  96 passed
 flutter_gallery_unittests    →  10 passed
 rust_ffi_unittests           →  11 passed
-帧率（静止页面）              →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
+帧率（optimized 构建）        →  16.6–16.8 ms/帧（59.5–60.3 fps）
+其中真正干活                  →  UI 线程 0.6 ms + 光栅 1.0 ms
 ```
 
 ![Components](docs/showcase_impeller.png)
@@ -182,6 +183,19 @@ virtual void Render(int64_t view_id,
   <img src="docs/showcase_light.png" width="30%">
 </p>
 
+## Release 构建与分发
+
+```
+vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
+ninja -C out/host_release flutter/rust/examples/flutter_gallery
+python3 tools/package_gallery.py --zip
+```
+
+产出 `dist/rustflutter-gallery/`：一个 20 MB 的 exe 加 `icudtl.dat`。
+没有别的——字体、图标、study 插画、38 张商品照片全部 `include_bytes!` 进了
+二进制，没有 asset bundle、没有 `flutter_assets` 目录、没有 CRT 运行库依赖
+（导入表里全是系统 DLL，ANGLE 是静态链的）。
+
 ## 目录结构
 
 ```
@@ -222,11 +236,11 @@ src/
   但布局和绘制照跑不误。这是最大的一笔性能欠账。
 - **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
   Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-- **过渡动画在 debug 构建下不满帧。** 静止页面是稳定的 60 fps，但一次
-  跨屏过渡（两个屏幕同时建树、布局、绘制）每帧要 33–83 ms。同样的过渡走
-  软件 surface 是 16–33 ms，所以代价在未优化的 Impeller/ANGLE 一侧，
-  不在 Rust 这边；本仓库至今没有做过 optimized 构建，这个数字只对 debug 有效。
-  新屏幕的第一帧两条路径都是约 133 ms——那是元素挂载加文字整形。
+- **layer 树是平的。** 框架每帧只产出一个 layer、一个 DisplayList：裁剪、
+  透明度、变换都记在 display list 里，而不是像上游那样造出 `ClipRectLayer`、
+  `OpacityLayer`、`TransformLayer`。后果是没有 repaint boundary、raster cache
+  无从命中、damage 就是全屏。目前不构成瓶颈（光栅只要 1 ms），但场景变重时会。
+  layer 的 FFI 都已经在，只是框架层还没用。
 - **没有文本输入、平台通道、无障碍。**
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
 
@@ -236,4 +250,5 @@ src/
 |---|---|
 | `RUSTFLUTTER_SOFTWARE=1` | 强制 Skia 软件 surface，绕过 Impeller |
 | `RUSTFLUTTER_CAPTURE_FRAME=<path>` | 在 swap 前回读 GPU 帧缓冲写 PNG，每帧覆盖。GPU 合成的窗口用 `PrintWindow` 抓不到，这是看 Impeller 究竟画了什么的办法 |
+| `RUSTFLUTTER_FRAME_STATS=1` | 每 60 帧报一次 UI 线程分段（build / layout / 录制）与光栅侧（光栅 / swap / 帧间隔）的中位数。找出双重等待靠的就是它 |
 | `RUSTFLUTTER_OUT=<dir>` | 让 CLI 使用指定的构建输出目录 |

@@ -4,6 +4,8 @@
 
 #include "flutter/rust/host/rustflutter_gl_win.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <string>
@@ -225,7 +227,24 @@ std::unique_ptr<impeller::egl::Surface> ImpellerGlContext::CreateWindowSurface(
 
 bool ImpellerGlContext::MakeCurrent(
     const impeller::egl::Surface& surface) const {
-  return onscreen_context_ && onscreen_context_->MakeCurrent(surface);
+  if (!onscreen_context_ || !onscreen_context_->MakeCurrent(surface)) {
+    return false;
+  }
+  // Do not block in the swap. Something has to wait for the display, but only
+  // one thing should: the vsync waiter already does, and a swap that waited as
+  // well would stack a second wait onto every frame -- which is a scene that
+  // takes two milliseconds to draw arriving every thirty. Windows composites
+  // through the DWM, so nothing tears for the want of it.
+  //
+  // Set on every make-current rather than once, because the interval belongs to
+  // the surface and a resize replaces it.
+  static bool warned = false;
+  if (eglSwapInterval(display_->GetHandle(), 0) != EGL_TRUE && !warned) {
+    warned = true;
+    FML_LOG(ERROR) << "Could not turn the swap interval off; frames will wait "
+                      "for the display twice.";
+  }
+  return true;
 }
 
 bool ImpellerGlContext::ClearCurrent() const {
@@ -244,6 +263,80 @@ class MadeCurrent final : public GLContextResult {
   explicit MadeCurrent(bool success) : GLContextResult(success) {}
   ~MadeCurrent() override = default;
 };
+
+//------------------------------------------------------------------------------
+/// Reports how far apart the presented frames are, every sixty of them.
+///
+/// Set RUSTFLUTTER_FRAME_STATS to any value. It reports the median rather than
+/// the mean because one long frame -- the first paint of a screen, a shader
+/// being compiled -- would otherwise be indistinguishable from a build that is
+/// uniformly slow, and those want different answers.
+struct FrameSample {
+  double interval_ms;  // present to present
+  double raster_ms;    // last swap returning to this swap being asked for
+  double swap_ms;      // inside eglSwapBuffers, which blocks on the vblank
+};
+
+bool FrameStatsEnabled() {
+  static const bool enabled = std::getenv("RUSTFLUTTER_FRAME_STATS") != nullptr;
+  return enabled;
+}
+
+std::vector<FrameSample>& FrameSamples() {
+  static std::vector<FrameSample> samples;
+  return samples;
+}
+
+std::chrono::steady_clock::time_point& LastSwapEnd() {
+  static auto value = std::chrono::steady_clock::now();
+  return value;
+}
+
+/// Splits a frame into the part that is work and the part that is waiting.
+///
+/// The two want different answers. Time spent inside the swap is time spent
+/// blocked on the vblank, which is what a frame that is comfortably ahead looks
+/// like; time spent before it is rasterising, which is what a frame that is
+/// behind looks like. A single frame-interval number cannot tell them apart --
+/// both make it sixteen milliseconds or more.
+void ReportFrameStats(double raster_ms, double swap_ms) {
+  if (!FrameStatsEnabled()) {
+    return;
+  }
+  std::vector<FrameSample>& samples = FrameSamples();
+  const auto now = std::chrono::steady_clock::now();
+  static auto previous_present = now;
+  const double interval_ms =
+      std::chrono::duration<double, std::milli>(now - previous_present).count();
+  previous_present = now;
+
+  // The first interval is measured from process start rather than from a
+  // frame, so it says nothing about the frame rate.
+  if (samples.empty() && interval_ms > 1000.0) {
+    return;
+  }
+  samples.push_back({interval_ms, raster_ms, swap_ms});
+  if (samples.size() < 60) {
+    return;
+  }
+
+  auto median = [&samples](double FrameSample::*field) {
+    std::vector<double> values;
+    values.reserve(samples.size());
+    for (const FrameSample& sample : samples) {
+      values.push_back(sample.*field);
+    }
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+  };
+
+  const double interval = median(&FrameSample::interval_ms);
+  FML_LOG(IMPORTANT) << "raster thread: rasterise " << median(&FrameSample::raster_ms)
+                     << " ms, swap " << median(&FrameSample::swap_ms)
+                     << " ms, frame " << interval << " ms (" << (1000.0 / interval)
+                     << " fps), median of " << samples.size() << ".";
+  samples.clear();
+}
 
 //------------------------------------------------------------------------------
 /// Writes the frame that is about to be presented to a PNG, once.
@@ -342,7 +435,19 @@ bool ImpellerGlDelegate::GLContextPresent(const GLPresentInfo& present_info) {
   }
   // Before the swap: after it, the back buffer's contents are undefined.
   MaybeCaptureFrame();
-  return surface_->Present();
+
+  if (!FrameStatsEnabled()) {
+    return surface_->Present();
+  }
+  const auto asked = std::chrono::steady_clock::now();
+  const double raster_ms =
+      std::chrono::duration<double, std::milli>(asked - LastSwapEnd()).count();
+  const bool presented = surface_->Present();
+  const auto done = std::chrono::steady_clock::now();
+  LastSwapEnd() = done;
+  ReportFrameStats(
+      raster_ms, std::chrono::duration<double, std::milli>(done - asked).count());
+  return presented;
 }
 
 GLFBOInfo ImpellerGlDelegate::GLContextFBO(GLFrameInfo frame_info) const {

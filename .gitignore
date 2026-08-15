@@ -31,3 +31,10 @@ src/out/
 gal_err.log
 upstream_catalog.json
 upstream_icons.json
+
+# Build artefacts and diagnostic output.
+dist/
+fps_*.log
+steady_*.log
+alive.log
+rel_err.log

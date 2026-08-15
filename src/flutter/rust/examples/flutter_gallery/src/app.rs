@@ -213,9 +213,17 @@ impl GalleryState {
         if route.name != routes::DEMO {
             return false;
         }
-        matches!(route.arg("slug"), Some("progress") | Some("motion"))
+        route.arg("slug").is_some_and(|slug| ANIMATED_DEMOS.contains(&slug))
     }
 }
+
+/// The demos that never stop moving, by upstream's slugs.
+///
+/// Named here rather than matched inline so that a renamed slug is a failing
+/// test rather than a screen that quietly stops animating -- which is what
+/// happened when these were brought into line with upstream and this list was
+/// not.
+pub const ANIMATED_DEMOS: &[&str] = &["progress-indicator", "motion"];
 
 /// The longest a single frame is allowed to advance an animation by, roughly
 /// three frames at sixty a second. See the clamp in [`Gallery::advance`].
@@ -762,6 +770,26 @@ mod tests {
 
     fn gallery() -> Gallery {
         Gallery { light: false, route: routes::HOME, slug: None }
+    }
+
+    #[test]
+    fn every_animated_demo_is_in_the_catalogue() {
+        // The list is matched against route arguments, so an entry that no
+        // longer names a demo is a screen that silently stops moving.
+        for slug in ANIMATED_DEMOS {
+            assert!(catalog::find(slug).is_some(), "{slug} is not a demo");
+        }
+    }
+
+    #[test]
+    fn an_animated_demo_keeps_asking_for_frames() {
+        let mut state = GalleryState::default();
+        assert!(!state.current_screen_animates(), "home is still");
+        state.open(ANIMATED_DEMOS[0]);
+        assert!(state.current_screen_animates(), "the spinner has to keep spinning");
+        state.back();
+        state.navigator.tick(Duration::from_secs(5));
+        assert!(!state.current_screen_animates(), "and stop when it is left");
     }
 
     #[test]
