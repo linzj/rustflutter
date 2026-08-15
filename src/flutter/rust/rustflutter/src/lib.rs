@@ -20,11 +20,13 @@
 #[cfg(test)]
 mod engine_test_stubs;
 
+pub mod animation;
 pub mod app;
 pub mod components;
 pub mod engine;
 pub mod framework;
 pub mod gestures;
+pub mod navigation;
 pub mod painting;
 pub mod render;
 pub mod widgets;
@@ -32,6 +34,12 @@ pub mod widgets;
 pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
+};
+pub use animation::{
+    Animations, ColorTween, Controller, Curve, Direction, FloatTween, OffsetTween, Repeat, Tween,
+};
+pub use navigation::{
+    Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
 pub use components::{
     AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
@@ -61,6 +69,8 @@ pub mod prelude {
         Application, BuildContext, FrameContext, FrameScheduler, RunOptions, WidgetApplication,
         WidgetHost, register_application,
     };
+    pub use crate::animation::{Animations, ColorTween, Controller, Curve, FloatTween, Tween};
+    pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
     pub use crate::components::{
         AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
         ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
