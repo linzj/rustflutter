@@ -139,6 +139,44 @@ void rf_app_dispatch_pointers(RfApp* app,
                               const RfPointerEvent* events,
                               size_t count);
 
+// One key event. Mirrors flutter::KeyData, which is what the shell narrows to
+// this, plus the character that KeyData deliberately leaves out because it is
+// variable-length.
+//
+// Unlike pointers, keys do not arrive here as a call of their own. The embedder
+// sends a KeyDataPacket as a platform message on `flutter/keydata` -- the same
+// channel, the same bytes, on every Flutter platform -- and RuntimeController
+// unpacks it. This struct is that unpacking, not a second transport.
+//
+// A key is identified twice because the two identities answer different
+// questions. `physical` is where the finger went -- a USB HID usage code, the
+// same on every layout -- and is what "is this key still down" is asked about,
+// since the layout can change between the press and the release. `logical` is
+// what the key meant under the layout in force, and is what a shortcut is
+// written against.
+typedef struct RfKeyEvent {
+  int64_t time_stamp_micros;
+  // 0 down, 1 up, 2 repeat. Matches flutter::KeyEventType.
+  int32_t change;
+  uint64_t physical;
+  uint64_t logical;
+  // True when the embedder made this event up rather than observing it, to
+  // reconcile its record of what is held with what the platform reports. A
+  // modifier released while another window had focus comes back this way.
+  bool synthesized;
+  // The text the key produced, UTF-8 and NUL-terminated, or NULL for a key that
+  // produced none. Borrowed for the duration of the call.
+  const char* character;
+} RfKeyEvent;
+
+// Delivers one key event. Returns true if the framework used it.
+//
+// The answer becomes the platform message's reply -- one byte, exactly as
+// dart:ui's _keyDataListener writes it. No host here reads it: suppressing an
+// unhandled key from the platform means re-posting it to the message queue
+// afterwards, which is the bulk of upstream's KeyboardManager and is not built.
+bool rf_app_dispatch_key(RfApp* app, const RfKeyEvent* event);
+
 #if defined(__cplusplus)
 }  // extern "C"
 #endif

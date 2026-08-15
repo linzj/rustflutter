@@ -14,6 +14,10 @@ source_set("host") {
       "rustflutter_gl_win.cc",
       "rustflutter_gl_win.h",
       "rustflutter_host_win.cc",
+
+      # Generated. See tools/gen_key_map.py.
+      "rustflutter_key_map_win.cc",
+      "rustflutter_key_map_win.h",
     ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]

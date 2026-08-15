@@ -944,7 +944,106 @@ ui thread: advance 0.04   build 0.29   layout 0.09   record 0.12   total 0.54 ms
 
 ---
 
-## 十四、下一步
+## 十四、键盘 —— 部分完成
+
+### 上游是怎么送的
+
+不是新开一条路，而是**一条平台消息**。`FlutterEngineSendKeyEvent`
+（`embedder.cc`）把 `FlutterKeyEvent` 打成 `KeyDataPacket`，然后
+`InternalSendPlatformMessage(engine, "flutter/keydata", ...)`。
+
+代价是零：`PlatformView` / `Shell` / `Engine` / `RuntimeController`
+里**没有任何键盘形状的方法**。`platform_view.h` 里唯一沾边的是
+`using KeyDataResponse = std::function<void(bool)>;`——一个 typedef，
+全引擎再无第二处引用。
+
+而且不只 Windows。`"flutter/keydata"` 这个字符串在上游出现四次:
+`embedder.cc`、`platform_dispatcher.dart`、`KeyData.java`、`FlutterEngine.mm`。
+
+「用没用」的回答也是白送的,它就是平台消息的 reply,一个字节:
+
+```dart
+final bool handled = onKeyData(keyData);
+final response = Uint8List(1);
+response[0] = handled ? 1 : 0;
+callback(response.buffer.asByteData());
+```
+
+### 这里照做了
+
+```
+WndProc → KeyDataPacket → PlatformView::DispatchPlatformMessage
+        → Shell → Engine → RuntimeController::DispatchKeyDataPacket
+        → rf_app_dispatch_key → Application::on_key
+```
+
+`PlatformMessage` 那条链**本来就是通的、就是上游的**——生命周期、本地化、
+设置消息都走它。原来 `RuntimeController::DispatchPlatformMessage` 把消息
+全丢（"Platform channels are M4 work"），现在它认 `flutter/keydata` 这一个
+channel，其余照丢。所以引擎侧的改动只落在 `runtime_controller.{h,cc}` 和
+`rust_app_api.h`——两个本来就是这个 fork 重写的文件。
+
+**先做错了一版**：给 `PlatformView` / `Shell` / `Engine` 各加了一对
+键盘方法，133 行，还带两个 gmock 测试文件。查了上游之后整个撤掉。
+教训是"指针怎么走键盘就怎么走"这个类比是错的,上游自己不这么分。
+
+| 部件 | 位置 | 来源 |
+|---|---|---|
+| 键表 157 + 121 + 18 条 | `rust/host/rustflutter_key_map_win.cc` | 由 `tools/gen_key_map.py` 从上游 `flutter_key_map.g.cc` 转换 |
+| 名字 157 + 155 个 | `rustflutter/src/keyboard/keys.rs` | 同一张表的另一个视图，不可能对不上 |
+| 消息配对、代理对、死键 | `rust/host/rustflutter_host_win.cc` | 照抄 `KeyboardManager` 的算法 |
+| 按下集合 | `keyboard::Keyboard` | 对应 `HardwareKeyboard` |
+
+一个键有两个身份，缺一不可：`physical` 是 USB HID usage code，按下集合按它
+记，因为按下和抬起之间布局可能变；`logical` 是当前布局下的含义，快捷键按它写。
+
+### 三个 Windows 的坑，都照抄了
+
+**一、按下时不知道自己会不会变成字符。** `A` 出 WM_KEYDOWN + WM_CHAR，
+`F1` 只出 WM_KEYDOWN，而 Ctrl+1 `MapVirtualKey` 说有字符却不发 WM_CHAR。
+所以要 `PeekMessage` 前瞻——`TranslateMessage` 在 `DispatchMessage` 之前跑，
+所以 WndProc 拿到 WM_KEYDOWN 时 WM_CHAR 已经在队列里了。
+
+**二、代理对。** 基本平面外的码点分两条 WM_CHAR 到。
+
+**三、修饰键会卡住。** 按住 Ctrl 时 Alt+Tab 走了，抬起的消息发给了别的窗口；
+按 AltGr 时 Win32 会先发一个**假的**左 Ctrl 按下且没有配对的抬起。上游的
+办法是在鼠标移动时对账（`SyncModifiersIfNeeded`），补发合成事件。照抄了，
+连挂在 `WM_MOUSEMOVE` 上都一样——它足够频繁,而没有变化时不花钱。
+
+### 没做的,以及为什么
+
+**redispatch。** 上游把每个键先吃掉，等框架回话，没人要的再合成一份 post
+回消息队列，并在回来的路上认出它。这是 `KeyboardManager` 413 行里的大半。
+这里不吃——每条消息都照样落到 `DefWindowProc`——所以 Alt+F4、Alt+Space
+照常工作,代价是框架**挡不住**任何一个键。`on_key` 的返回值会变成平台消息的
+reply,但没人读。
+
+**焦点树。** 指针事件自带地址（坐标 + 命中测试），按键没有。上游由
+`FocusManager.handleKeyMessage` 回答，第一行就是 `primaryFocus == null` 就丢。
+框架侧那一摊：`focus_manager.dart` 2422 行、`focus_traversal.dart` 2575 行、
+`shortcuts.dart` 1565、`actions.dart` 1904、`keyboard_key.g.dart` 5604。
+
+现在有的是上游在焦点遍历**之前**跑的那一层（`FocusManager` 的
+`_earlyKeyEventHandlers`，它不看焦点）——`Application::on_key`。这不是绕开
+焦点的临时方案，是上游自己就承认存在的一层，焦点长出来之后它仍然在原位。
+
+**文本输入 / IME。** 字符送到了 `KeyEvent::character`，但没有输入法组词、
+没有候选框、也没有可编辑文本可放。
+
+### 顺带改掉的
+
+host 的 `WM_KEYDOWN → VK_ESCAPE → WM_CLOSE`。它是调试快捷键，在应用自己
+对这个键有用处的那天就不再无害了（相册的大图查看器：想关图，结果关了程序）。
+现在 Escape 是一个普通按键。
+
+### 验证
+
+真的往窗口 `PostMessage(WM_KEYDOWN)`，逐帧读回 GPU framebuffer：
+→ 键把查看器从 `photo_003` 走到 `photo_004`、`photo_005`，← 走回
+`photo_004`（均值逐像素相同），Esc 回到网格（画面 distinct 颜色数 108 → 490）。
+
+## 十五、下一步
 
 按价值排序：
 
@@ -959,7 +1058,11 @@ ui thread: advance 0.04   build 0.29   layout 0.09   record 0.12   total 0.54 ms
    都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
 4. **平台通道。** services 3 万行。好消息：`PlatformMessage` 是语言无关的
    二进制通道，现存插件的 Android/iOS 原生侧全部可复用。
-5. **文本编辑与输入法**、**无障碍**、**rustc 用 CIPD 固定**。
+5. **焦点树。** 键盘现在只到应用级。上游那一摊在框架侧一万六千行，
+   其中 `focus_traversal.dart` 单文件 2575 行——光是"Tab 该往哪儿走"。
+6. **键盘的 redispatch。** 让框架能真正吃掉一个键。需要把 `on_key` 的答案
+   接回窗口线程，再把没人要的消息 post 回队列并在回来时认出来。
+7. **文本编辑与输入法**、**无障碍**、**rustc 用 CIPD 固定**。
 
 **不会有的东西：hot reload。** 它是 Dart VM 的能力，Rust 没有对等物。
 桌面上或许能做 dylib 热加载，但状态保持做不到，iOS 上禁止动态代码。

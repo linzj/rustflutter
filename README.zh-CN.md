@@ -26,7 +26,7 @@
 ```
 gn gen                        →  1009 targets from 275 files
 ninja                         →  exit 0，零警告
-rustflutter_unittests         →  123 passed
+rustflutter_unittests         →  132 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 帧率（optimized 构建）         →  16.6–16.8 ms/帧（59.5–60.3 fps）
@@ -179,6 +179,19 @@ Win32 → PlatformView → Engine → RuntimeController
     → set_state → 标脏 → 请求一帧
 ```
 
+按键走同一条路，但从另一扇门进：它是 `flutter/keydata` 上的一条**平台消息**。
+这是每个 Flutter embedder 的做法，所以 `PlatformView`、`Shell`、`Engine`
+里没有任何一个键盘形状的方法：
+
+```
+Win32 → KeyDataPacket → PlatformView::DispatchPlatformMessage → Engine
+    → RuntimeController → Application::on_key
+```
+
+还没有焦点树，所以按键没有可投递的对象。现在有的是上游在焦点遍历**之前**
+跑的那一层——`FocusManager` 的 early key handler——也就是应用级快捷键，
+诚实地说也只有这个。
+
 帧是按需的，不是自由运行的：没有请求时引擎在最后一帧之后进入空闲，
 所以一个静态界面留在屏幕上不花任何代价。
 
@@ -257,6 +270,7 @@ src/
         │   ├── widgets.rs     具名门面
         │   ├── framework.rs   Widget / Element / 状态 / Provider
         │   ├── gestures.rs    指针事件与手势识别
+        │   ├── keyboard/      按键事件、键表、按下集合
         │   ├── components.rs  组件库与主题
         │   └── app.rs         与 shell 的契约
         ├── cli/           `rustflutter` 命令行工具
@@ -278,7 +292,12 @@ src/
   `OpacityLayer`、`TransformLayer`。后果是没有 repaint boundary、raster cache
   无从命中、damage 就是全屏。目前不构成瓶颈（光栅只要 1 ms），但场景变重时会。
   layer 的 FFI 都已经在，只是框架层还没用。
-- **没有文本输入、平台通道、无障碍。**
+- **键盘只能上报，不能吃掉。** 按键送得到框架，`Application::on_key` 也会
+  回答用没用，但没人拿这个答案做事：系统同样收到每一个键。要挡住一个没人
+  处理的键，就得在框架回话之后把它重新 post 回消息队列——那是上游
+  `KeyboardManager` 的大半。另外还没有焦点树，所以按键处理是应用级的，
+  不是按控件的。
+- **没有文本输入、平台通道、无障碍。** `flutter/keydata` 是解的；其余通道全丢。
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
 
 ## 诊断开关

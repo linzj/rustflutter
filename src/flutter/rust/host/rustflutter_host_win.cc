@@ -34,6 +34,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -48,6 +49,9 @@
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/task_runner.h"
 #include "flutter/impeller/renderer/context.h"
+#include "flutter/lib/ui/window/key_data.h"
+#include "flutter/lib/ui/window/key_data_packet.h"
+#include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/pointer_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
@@ -61,6 +65,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl_win.h"
+#include "flutter/rust/host/rustflutter_key_map_win.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
@@ -70,6 +75,11 @@ namespace flutter {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"RustflutterHostWindow";
+
+/// Where key events go. Matched by RuntimeController, which is the only reader.
+/// Upstream this same string is in embedder.cc, platform_dispatcher.dart,
+/// KeyData.java and FlutterEngine.mm -- an embedder is expected to spell it out.
+constexpr char kKeyDataChannel[] = "flutter/keydata";
 
 //------------------------------------------------------------------------------
 /// Per-monitor DPI, bound at run time.
@@ -525,6 +535,31 @@ class HostPlatformView final : public PlatformView,
         }));
   }
 
+  /// Sends one key event to the framework.
+  ///
+  /// Keys are a platform message rather than a call of their own, which is what
+  /// every Flutter embedder does: the packet on `flutter/keydata` is the same
+  /// bytes on Windows, Android, iOS and Linux, and no key-shaped method exists
+  /// on PlatformView to add one to. RuntimeController unpacks it.
+  ///
+  /// No response handle is asked for. The reply says whether the framework used
+  /// the key, and the only thing to do with that answer is to re-post the
+  /// unhandled ones so the system still sees them -- which this host does not
+  /// do, because it never withheld them in the first place.
+  void SendKey(const KeyData& data, const std::string& character) {
+    KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
+    auto message = std::make_unique<PlatformMessage>(
+        kKeyDataChannel,
+        fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
+        /*response=*/nullptr);
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+          if (weak) {
+            weak->DispatchPlatformMessage(std::move(message));
+          }
+        }));
+  }
+
   // |GPUSurfaceSoftwareDelegate|
   bool PresentBackingStore(sk_sp<SkSurface> backing_store) override {
     if (backing_store == nullptr) {
@@ -585,6 +620,20 @@ class HostPlatformView final : public PlatformView,
 };
 
 //------------------------------------------------------------------------------
+/// A key message held until the rest of its session arrives.
+///
+/// Upstream calls one to three messages that belong together a *session*: a key
+/// down, then the character messages it turns out to produce. See
+/// HandleKeyMessage.
+struct PendingKey {
+  UINT action = 0;
+  uint16_t virtual_key = 0;
+  uint8_t scan_code = 0;
+  bool extended = false;
+  bool was_down = false;
+};
+
+//------------------------------------------------------------------------------
 /// What the window proc needs to reach. Owned by rf_host_run's stack frame.
 struct WindowState {
   FrameBuffer frame_buffer;
@@ -599,6 +648,14 @@ struct WindowState {
   /// Where the pointer was last seen, for the delta that Move carries.
   double last_x = 0.0;
   double last_y = 0.0;
+  /// A key down waiting to learn whether it produces a character.
+  std::optional<PendingKey> pending_key;
+  /// The first half of a character that takes two WM_CHAR messages.
+  wchar_t pending_high_surrogate = 0;
+  /// What the framework has last been told about Shift and Control, so
+  /// SyncModifiers knows what it has to correct.
+  bool shift_reported = false;
+  bool control_reported = false;
 };
 
 //------------------------------------------------------------------------------
@@ -674,6 +731,270 @@ PointerData MakeScrollData(WindowState* state, double x, double y, double notche
   data.scroll_delta_x = 0.0;
   data.scroll_delta_y = -notches * ScrollPixelsPerNotch();
   return data;
+}
+
+// -- Keyboard -----------------------------------------------------------------
+//
+// The half of key handling that is Windows' rather than Flutter's. Upstream
+// this is `KeyboardManager`, and most of that class is the part deliberately
+// left out here: because upstream withholds every key until the framework has
+// answered, it then has to re-post the unhandled ones and recognise them coming
+// back. This host never withholds -- every key message also reaches
+// `DefWindowProc` -- so there is nothing to re-post and no queue to keep.
+//
+// What is kept is the part that is about Windows telling the truth awkwardly:
+// pairing a key down with the character it turns out to produce, surrogate
+// pairs, dead keys, and the modifier bookkeeping below.
+
+/// The mask Win32 sets on a mapped character to mean "this is a dead key".
+constexpr uint32_t kDeadKeyCharMask = 0x80000000;
+
+/// Scan codes for the modifiers SyncModifiers reconciles. Left-hand codes: when
+/// the two sides disagree with what Windows reports it is the left one that is
+/// invented, because Windows only reports the pair.
+constexpr uint8_t kScanCodeShiftLeft = 0x2a;
+constexpr uint8_t kScanCodeControlLeft = 0x1d;
+
+/// Whether a code point is something a person would see. Control characters
+/// arrive as WM_CHAR too -- Ctrl+A is 0x01 -- and are not text.
+bool IsPrintable(char32_t code_point) {
+  return code_point >= ' ' && code_point != 0x7F;
+}
+
+std::string Utf8FromCodePoint(char32_t code_point) {
+  std::string out;
+  if (code_point < 0x80) {
+    out += static_cast<char>(code_point);
+  } else if (code_point < 0x800) {
+    out += static_cast<char>(0xC0 | (code_point >> 6));
+    out += static_cast<char>(0x80 | (code_point & 0x3F));
+  } else if (code_point < 0x10000) {
+    out += static_cast<char>(0xE0 | (code_point >> 12));
+    out += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (code_point & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (code_point >> 18));
+    out += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (code_point & 0x3F));
+  }
+  return out;
+}
+
+char32_t CodePointFromSurrogatePair(wchar_t high, wchar_t low) {
+  return 0x10000 + ((static_cast<char32_t>(high) & 0x03FF) << 10) + (low & 0x3FF);
+}
+
+/// Which Shift, which Control, which Alt.
+///
+/// `VK_SHIFT` does not say. For Shift the scan code is asked, because the two
+/// sides sit at different positions; for Control and Alt the extended flag is
+/// what separates right from left. Straight from upstream's `ResolveKeyCode`.
+uint16_t ResolveVirtualKey(uint16_t virtual_key, bool extended, uint8_t scan_code) {
+  switch (virtual_key) {
+    case VK_SHIFT:
+    case VK_LSHIFT:
+      return static_cast<uint16_t>(MapVirtualKey(scan_code, MAPVK_VSC_TO_VK_EX));
+    case VK_MENU:
+    case VK_LMENU:
+      return extended ? VK_RMENU : VK_LMENU;
+    case VK_CONTROL:
+    case VK_LCONTROL:
+      return extended ? VK_RCONTROL : VK_LCONTROL;
+    default:
+      return virtual_key;
+  }
+}
+
+/// Builds and sends one key event.
+void SendKeyEvent(WindowState* state,
+                  KeyEventType type,
+                  uint16_t virtual_key,
+                  uint8_t scan_code,
+                  bool extended,
+                  const std::string& character,
+                  bool synthesized) {
+  if (state->platform_view == nullptr) {
+    return;
+  }
+  KeyData data;
+  data.Clear();
+  data.timestamp = static_cast<uint64_t>(
+      fml::TimePoint::Now().ToEpochDelta().ToMicroseconds());
+  data.type = type;
+  data.physical = PhysicalKeyForScanCode(scan_code, extended);
+  data.logical = LogicalKeyForVirtualKey(virtual_key, scan_code, extended);
+  data.synthesized = synthesized ? 1 : 0;
+  data.device_type = KeyEventDeviceType::kKeyboard;
+  state->platform_view->SendKey(data, character);
+
+  // Whatever was just reported is now what the framework believes, which is
+  // what SyncModifiers compares against.
+  if (virtual_key == VK_LSHIFT || virtual_key == VK_RSHIFT) {
+    state->shift_reported = (type != KeyEventType::kUp);
+  } else if (virtual_key == VK_LCONTROL || virtual_key == VK_RCONTROL) {
+    state->control_reported = (type != KeyEventType::kUp);
+  }
+}
+
+/// Turns one completed session into a key event.
+void SendKeyFromSession(WindowState* state,
+                        const PendingKey& key,
+                        const std::string& character) {
+  const bool is_down = key.action == WM_KEYDOWN || key.action == WM_SYSKEYDOWN;
+  const KeyEventType type =
+      !is_down ? KeyEventType::kUp
+               : (key.was_down ? KeyEventType::kRepeat : KeyEventType::kDown);
+  SendKeyEvent(state, type, key.virtual_key, key.scan_code, key.extended,
+               character, /*synthesized=*/false);
+}
+
+/// Reconciles what the framework was told about Shift and Control against what
+/// Windows says is held, making up the difference.
+///
+/// Two things make this necessary and neither is avoidable. A modifier released
+/// while another window had the focus sends its up message there, so this one
+/// never sees it. And pressing AltGr on a layout that has one makes Win32 emit
+/// a *fake* left-Control down with no matching up, which would otherwise leave
+/// Control held for good.
+///
+/// Called on mouse moves, which is where upstream calls it from
+/// (`FlutterWindowsView::OnPointerMove` -> `SyncModifiersIfNeeded`) and for the
+/// same reason: it is the cheapest event that happens often enough to correct a
+/// stale state before anybody notices, and costs nothing when nothing changed.
+void SyncModifiers(WindowState* state) {
+  // The high bit of GetKeyState is "currently down".
+  const bool shift_held = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  const bool control_held = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+
+  if (shift_held != state->shift_reported) {
+    SendKeyEvent(state,
+                 shift_held ? KeyEventType::kDown : KeyEventType::kUp,
+                 VK_LSHIFT, kScanCodeShiftLeft, /*extended=*/false,
+                 /*character=*/"", /*synthesized=*/true);
+  }
+  if (control_held != state->control_reported) {
+    SendKeyEvent(state,
+                 control_held ? KeyEventType::kDown : KeyEventType::kUp,
+                 VK_LCONTROL, kScanCodeControlLeft, /*extended=*/false,
+                 /*character=*/"", /*synthesized=*/true);
+  }
+}
+
+/// Handles one of the eight key and character messages.
+///
+/// The caller falls through to `DefWindowProc` afterwards, always. That is the
+/// whole difference from upstream: a key is reported, never taken.
+///
+/// The awkward part is that a key down does not know whether it will produce a
+/// character. `A` yields WM_KEYDOWN then WM_CHAR; `F1` yields WM_KEYDOWN alone;
+/// and Ctrl+1 yields WM_KEYDOWN alone even though `MapVirtualKey` says it maps
+/// to a character. So the queue is peeked: if a character message is really
+/// coming, this session waits for it, and the character message finishes it.
+void HandleKeyMessage(WindowState* state,
+                      UINT action,
+                      WPARAM wparam,
+                      LPARAM lparam) {
+  switch (action) {
+    case WM_CHAR:
+    case WM_SYSCHAR:
+    case WM_DEADCHAR:
+    case WM_SYSDEADCHAR: {
+      const auto unit = static_cast<wchar_t>(wparam);
+
+      // A code point outside the basic plane arrives as two messages. The high
+      // half is kept and the low half completes it.
+      char32_t code_point;
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        state->pending_high_surrogate = unit;
+        return;
+      }
+      if (unit >= 0xDC00 && unit <= 0xDFFF) {
+        if (state->pending_high_surrogate == 0) {
+          return;  // A low surrogate with no high one before it. Malformed.
+        }
+        code_point =
+            CodePointFromSurrogatePair(state->pending_high_surrogate, unit);
+        state->pending_high_surrogate = 0;
+      } else {
+        state->pending_high_surrogate = 0;
+        code_point = unit;
+      }
+
+      if (!state->pending_key.has_value()) {
+        // A character with no key down before it: Alt and the numeric keypad,
+        // or an IME committing. There is nothing to report it as until there is
+        // text input to report it to.
+        return;
+      }
+      const PendingKey key = *state->pending_key;
+      state->pending_key.reset();
+
+      // Only WM_CHAR is text. WM_SYS*CHAR is a system-menu accelerator, and
+      // WM_DEADCHAR is half of a character that a later WM_CHAR will complete.
+      std::string character;
+      if (action == WM_CHAR && IsPrintable(code_point)) {
+        character = Utf8FromCodePoint(code_point);
+      }
+      SendKeyFromSession(state, key, character);
+      return;
+    }
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYUP: {
+      // VK_PACKET is an injected Unicode character wearing a key's clothes. It
+      // has no scan code and no key to speak of; its WM_CHAR carries the point.
+      if (wparam == VK_PACKET) {
+        return;
+      }
+
+      const auto scan_code = static_cast<uint8_t>((lparam >> 16) & 0xff);
+      const bool extended = ((lparam >> 24) & 0x01) != 0;
+      const bool was_down = (lparam & 0x40000000) != 0;
+      const PendingKey key = {
+          .action = action,
+          .virtual_key = ResolveVirtualKey(static_cast<uint16_t>(wparam),
+                                           extended, scan_code),
+          .scan_code = scan_code,
+          .extended = extended,
+          .was_down = was_down,
+      };
+
+      // A session left open by a key down whose character never came -- the
+      // window lost the focus in between, say. Report it now rather than
+      // attaching its character to this key.
+      if (state->pending_key.has_value()) {
+        const PendingKey stale = *state->pending_key;
+        state->pending_key.reset();
+        SendKeyFromSession(state, stale, "");
+      }
+
+      const bool is_down = action == WM_KEYDOWN || action == WM_SYSKEYDOWN;
+      if (is_down) {
+        const uint32_t mapped = MapVirtualKey(key.virtual_key, MAPVK_VK_TO_CHAR);
+        // The dead-key bit means the mapping is real but deferred; either way a
+        // character message follows, so peek for one rather than trusting the
+        // mapping. Ctrl+digit maps to a character and produces no WM_CHAR.
+        if ((mapped & ~kDeadKeyCharMask) != 0) {
+          MSG next = {};
+          if (PeekMessage(&next, nullptr, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) &&
+              (next.message == WM_CHAR || next.message == WM_SYSCHAR ||
+               next.message == WM_DEADCHAR || next.message == WM_SYSDEADCHAR)) {
+            state->pending_key = key;
+            return;
+          }
+        }
+      }
+
+      SendKeyFromSession(state, key, "");
+      return;
+    }
+
+    default:
+      return;
+  }
 }
 
 void SendViewportMetrics(WindowState* state, int32_t width, int32_t height) {
@@ -787,6 +1108,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           break;
         }
         case WM_MOUSEMOVE: {
+          // Where a stale modifier gets corrected. Upstream syncs from the same
+          // message, for the same reason: it is frequent enough to fix the
+          // state before anybody notices and free when nothing has changed.
+          SyncModifiers(state);
           // A move with no button down is a hover, which no recogniser wants
           // yet; sending it anyway would be a packet per mouse pixel.
           if (state->pressed) {
@@ -835,10 +1160,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
     case WM_KEYDOWN:
-      if (wparam == VK_ESCAPE) {
-        PostMessage(hwnd, WM_CLOSE, 0, 0);
+    case WM_SYSKEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+    case WM_CHAR:
+    case WM_SYSCHAR:
+    case WM_DEADCHAR:
+    case WM_SYSDEADCHAR:
+      // Reported, never taken. Escape used to close the window from here, which
+      // was a debugging shortcut that stopped being harmless the moment an
+      // application had its own use for the key; an app that wants that
+      // behaviour can ask for it in `on_key`. Every message falls through to
+      // DefWindowProc, so Alt+F4, Alt+Space and the rest still work, and
+      // TranslateMessage still produces the WM_CHAR this pairs keys with.
+      if (state != nullptr) {
+        HandleKeyMessage(state, msg, wparam, lparam);
       }
-      return 0;
+      break;
     case WM_DESTROY:
       PostQuitMessage(0);
       return 0;

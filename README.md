@@ -33,7 +33,7 @@ testing and gestures, animation and a navigation stack, and a component library.
 ```
 gn gen                        →  1009 targets from 275 files
 ninja                         →  exit 0, no warnings
-rustflutter_unittests         →  123 passed
+rustflutter_unittests         →  132 passed
 flutter_gallery_unittests     →   21 passed
 rust_ffi_unittests            →   15 passed
 frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
@@ -197,6 +197,19 @@ Win32 → PlatformView → Engine → RuntimeController
     → set_state → mark dirty → request a frame
 ```
 
+A key takes the same road by a different door. It is a *platform message* on
+`flutter/keydata` — which is what every Flutter embedder does, so no method on
+`PlatformView`, `Shell` or `Engine` is key-shaped:
+
+```
+Win32 → KeyDataPacket → PlatformView::DispatchPlatformMessage → Engine
+    → RuntimeController → Application::on_key
+```
+
+There is no focus tree yet, so a key has nobody to be addressed to. What exists
+is the layer upstream runs *before* the focus walk — `FocusManager`'s early key
+handlers — which is application-wide shortcuts and honestly only that.
+
 Frames are on demand rather than free-running: with nothing requested the engine
 goes idle after the last one, so a static screen costs nothing to keep up.
 
@@ -279,6 +292,7 @@ src/
         │   ├── widgets.rs     named facades
         │   ├── framework.rs   widget / element / state / provider
         │   ├── gestures.rs    pointer events and gesture recognition
+        │   ├── keyboard/      key events, key tables, the pressed set
         │   ├── components.rs  component library and theming
         │   └── app.rs         the contract with the shell
         ├── cli/           the `rustflutter` command line tool
@@ -305,7 +319,14 @@ changed, and what is worth doing next are in
   nothing to hit, and damage is the whole screen. Not a bottleneck yet
   (rasterising takes 1 ms) but it will be as scenes get heavier. The layer FFI
   is already in place; the framework just does not use it.
-- **No text input, platform channels or accessibility.**
+- **The keyboard reports but cannot consume.** Keys reach the framework, and
+  `Application::on_key` returns whether it used one, but nothing acts on that
+  answer: the platform sees every key too. Suppressing an unhandled key means
+  re-posting it to the message queue after the framework has replied, which is
+  the bulk of upstream's `KeyboardManager`. There is also no focus tree, so key
+  handling is application-wide rather than per-widget.
+- **No text input, platform channels or accessibility.** `flutter/keydata` is
+  decoded; every other channel is dropped.
 - **There will be no hot reload.** That is a Dart VM capability with no Rust
   equivalent.
 

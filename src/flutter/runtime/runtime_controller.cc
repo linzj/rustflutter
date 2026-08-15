@@ -4,13 +4,24 @@
 
 #include "flutter/runtime/runtime_controller.h"
 
+#include <cstring>
 #include <utility>
+#include <vector>
 
 #include "flutter/fml/logging.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 
 namespace flutter {
+namespace {
+
+/// The channel every Flutter embedder sends key events on. Defined in
+/// embedder.cc as kFlutterKeyDataChannel, in platform_dispatcher.dart as
+/// _kFlutterKeyDataChannel, and in KeyData.java as KeyData.CHANNEL. Four
+/// copies of one string upstream; this is the fifth, and it has to match.
+constexpr char kKeyDataChannel[] = "flutter/keydata";
+
+}  // namespace
 
 RuntimeController::RuntimeController(RuntimeDelegate& client,
                                      const TaskRunners& task_runners,
@@ -260,7 +271,72 @@ bool RuntimeController::DispatchPlatformMessage(
   if (app_ == nullptr) {
     return false;
   }
+  if (message->channel() == kKeyDataChannel) {
+    DispatchKeyDataPacket(*message);
+    return true;
+  }
   // Platform channels are M4 work; the message is dropped rather than leaked.
+  // The keyboard is decoded here rather than waiting for them because upstream
+  // does not treat it as a channel either: `flutter/keydata` is the one channel
+  // dart:ui listens to directly, in PlatformDispatcher rather than in a
+  // MethodChannel, precisely so that input does not wait on the plugin system.
+  return true;
+}
+
+bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
+  TRACE_EVENT0("flutter", "RuntimeController::DispatchKeyDataPacket");
+
+  // | char size | KeyData | char bytes |, as built by KeyDataPacket and
+  // unpacked by _unpackKeyData in platform_dispatcher.dart. The two ends are
+  // the same file upstream; here one end is this and the other is the host's
+  // KeyDataPacket, which is the same class, so the layout cannot drift.
+  constexpr size_t kHeader = sizeof(uint64_t) + sizeof(KeyData);
+
+  const uint8_t* bytes = message.data().GetMapping();
+  const size_t size = message.data().GetSize();
+  if (bytes == nullptr || size < kHeader) {
+    FML_LOG(ERROR) << "Malformed key packet: " << size << " bytes.";
+    return false;
+  }
+
+  uint64_t character_size = 0;
+  memcpy(&character_size, bytes, sizeof(character_size));
+  if (character_size > size - kHeader) {
+    FML_LOG(ERROR) << "Key packet claims " << character_size
+                   << " character bytes but holds " << (size - kHeader) << ".";
+    return false;
+  }
+
+  KeyData data = {};
+  memcpy(&data, bytes + sizeof(uint64_t), sizeof(KeyData));
+
+  // Copied rather than pointed at, because the framework is handed a
+  // NUL-terminated C string and the packet's bytes are not terminated.
+  const std::string character(
+      reinterpret_cast<const char*>(bytes + kHeader),
+      static_cast<size_t>(character_size));
+
+  // Narrowed the same way, and for the same reason, as PointerData above.
+  // `device_type` is dropped: every key this shell sees comes from a keyboard.
+  RfKeyEvent event = {};
+  event.time_stamp_micros = static_cast<int64_t>(data.timestamp);
+  event.change = static_cast<int32_t>(data.type);
+  event.physical = data.physical;
+  event.logical = data.logical;
+  event.synthesized = data.synthesized != 0;
+  event.character = character.empty() ? nullptr : character.c_str();
+
+  const bool handled = rf_app_dispatch_key(app_, &event);
+
+  // One byte, 1 for handled -- the same reply _keyDataListener writes. Nothing
+  // in this repository reads it yet; suppressing an unhandled key from the
+  // platform means re-posting it to the message queue afterwards, which no host
+  // here does. It is completed regardless, because an embedder that asked for a
+  // response and never gets one leaks the handle.
+  if (const auto& response = message.response()) {
+    std::vector<uint8_t> reply{static_cast<uint8_t>(handled ? 1 : 0)};
+    response->Complete(std::make_unique<fml::DataMapping>(std::move(reply)));
+  }
   return true;
 }
 

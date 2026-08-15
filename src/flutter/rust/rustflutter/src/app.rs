@@ -26,6 +26,7 @@ use std::sync::OnceLock;
 use crate::engine::{self, Color, LayerTree};
 use crate::framework::{AnyWidget, ElementTree};
 use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
+use crate::keyboard::{KeyEvent, Keyboard};
 use crate::render::{BoxConstraints, PaintContext, RenderBox};
 use crate::widgets::{BoxedWidget, Offset, Size};
 
@@ -156,6 +157,25 @@ pub trait Application {
     /// `onBeginFrame` running ahead of `onDrawFrame` -- an animation that
     /// starts here is visible to the build that follows it in the same frame.
     fn begin_frame(&mut self, _context: &FrameContext) {}
+
+    /// Handles a key, before anything else sees it. Return true if it was used.
+    ///
+    /// This is the application-wide layer, and deliberately only that: it runs
+    /// for every key no matter what is on screen, which makes it right for
+    /// shortcuts and wrong for anything a particular widget should own. Widgets
+    /// need focus to be addressed, and there is no focus tree yet -- see the
+    /// [`keyboard`](crate::keyboard) module for what that costs and why it is
+    /// separate work.
+    ///
+    /// Upstream's counterpart is `FocusManager`'s early key event handlers,
+    /// which likewise run ahead of the focus walk and likewise see everything.
+    ///
+    /// Returning true schedules a frame, on the assumption that a handled key
+    /// changed something. It does not stop the platform from also acting on the
+    /// key; nothing here can suppress Alt+F4.
+    fn on_key(&mut self, _event: &KeyEvent, _keyboard: &Keyboard) -> bool {
+        false
+    }
 }
 
 // -- Widget-based applications ------------------------------------------------
@@ -176,6 +196,13 @@ pub trait WidgetApplication {
     }
 
     fn begin_frame(&mut self, _context: &FrameContext) {}
+
+    /// See [`Application::on_key`]. A widget application will usually want to
+    /// mark something dirty here rather than change state directly, because the
+    /// key arrives between frames and the tree is not being built.
+    fn on_key(&mut self, _event: &KeyEvent, _keyboard: &Keyboard) -> bool {
+        false
+    }
 }
 
 /// Runs a [`WidgetApplication`] as an [`Application`].
@@ -225,6 +252,10 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
             context.scheduler.request_frame();
         }
         self.app.begin_frame(context);
+    }
+
+    fn on_key(&mut self, event: &KeyEvent, keyboard: &Keyboard) -> bool {
+        self.app.on_key(event, keyboard)
     }
 
     fn build(&mut self, context: &BuildContext) -> BoxedWidget {
@@ -424,6 +455,10 @@ struct AppInstance {
     /// rebuilt each frame, so the last one has to be held on to deliberately.
     painted: HashMap<i64, BoxedWidget>,
     router: GestureRouter,
+    /// Which keys are held. Lives here rather than in the application because
+    /// it has to survive an application that does nothing with keys at all --
+    /// it is the shell's record of the platform's state, not the app's.
+    keyboard: Keyboard,
     /// How long this frame's `begin_frame` took, in milliseconds. It is
     /// measured there and reported here because the shell calls the two halves
     /// of a frame separately, and a report that started at `build` would leave
@@ -524,6 +559,29 @@ impl AppInstance {
         if handled {
             self.schedule_frame();
         }
+    }
+
+    /// Routes one key to the application.
+    ///
+    /// Unlike a pointer this does not consult the painted tree, because there
+    /// is nothing to consult it *with*: a key has no position, and without a
+    /// focus tree there is nobody it is addressed to. So it goes straight to
+    /// the application-wide handler. See the [`keyboard`](crate::keyboard)
+    /// module.
+    fn dispatch_key(&mut self, event: &mut KeyEvent) -> bool {
+        // The pressed set is updated first, and whether the app handles the key
+        // or not. It is the platform's state; an app that ignores Shift still
+        // has to see it held when the next key it does care about arrives.
+        self.keyboard.record(event);
+
+        let Some(application) = self.application.as_mut() else {
+            return false;
+        };
+        let handled = application.on_key(event, &self.keyboard);
+        if handled {
+            self.schedule_frame();
+        }
+        handled
     }
 }
 
@@ -638,6 +696,7 @@ mod abi {
             frame_time_micros: 0,
             painted: HashMap::new(),
             router: GestureRouter::new(),
+            keyboard: Keyboard::new(),
             advance_ms: 0.0,
         });
         Box::into_raw(instance) as *mut RfApp
@@ -812,5 +871,51 @@ mod abi {
             };
             instance.dispatch_pointer(&event);
         }
+    }
+
+    /// Mirrors `RfKeyEvent` in runtime/rust_app_api.h.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct RfKeyEvent {
+        pub time_stamp_micros: i64,
+        pub change: i32,
+        pub physical: u64,
+        pub logical: u64,
+        pub synthesized: bool,
+        pub character: *const std::os::raw::c_char,
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_dispatch_key(
+        app: *mut RfApp,
+        raw: *const RfKeyEvent,
+    ) -> bool {
+        let Some(instance) = instance(app) else { return false };
+        if raw.is_null() {
+            return false;
+        }
+        let raw = unsafe { &*raw };
+
+        // The character is the shell's, borrowed for the length of this call.
+        // It is copied rather than borrowed on because a handler may keep it,
+        // and a lossy conversion is right here: the shell produced it from
+        // UTF-16, so invalid UTF-8 means a bug rather than a user's input.
+        let character = if raw.character.is_null() {
+            None
+        } else {
+            let text = unsafe { std::ffi::CStr::from_ptr(raw.character) };
+            let text = text.to_string_lossy();
+            if text.is_empty() { None } else { Some(text.into_owned()) }
+        };
+
+        let mut event = KeyEvent {
+            change: crate::keyboard::KeyChange::from_code(raw.change),
+            physical: crate::keyboard::PhysicalKey(raw.physical),
+            logical: crate::keyboard::LogicalKey(raw.logical),
+            character,
+            synthesized: raw.synthesized,
+            time_stamp_micros: raw.time_stamp_micros,
+        };
+        instance.dispatch_key(&mut event)
     }
 }

@@ -16,6 +16,7 @@
 #include "flutter/fml/mapping.h"
 #include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/hit_test_response.h"
+#include "flutter/lib/ui/window/key_data.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/point_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
@@ -127,6 +128,19 @@ class RuntimeController {
   void CheckIfAllViewsRendered();
 
   static RfViewMetrics ToRfViewMetrics(const ViewportMetrics& metrics);
+
+  //----------------------------------------------------------------------------
+  /// Unpacks a `flutter/keydata` message and hands the key to the framework.
+  ///
+  /// Keyboard input is a platform message rather than a call of its own, which
+  /// is upstream's design and not a shortcut taken here: every embedder --
+  /// Windows, Android, iOS, Linux -- sends keys as a KeyDataPacket on that one
+  /// channel, and neither PlatformView nor Engine has a key-shaped method for
+  /// it. The reply carries whether the framework used the key.
+  ///
+  /// Returns false if the packet is malformed, which is the only way this can
+  /// fail: an empty reply then tells the embedder nothing consumed it.
+  bool DispatchKeyDataPacket(const PlatformMessage& message);
 
   RuntimeDelegate& client_;
   TaskRunners task_runners_;

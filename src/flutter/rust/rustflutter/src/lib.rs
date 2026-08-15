@@ -30,6 +30,7 @@ pub mod controls;
 pub mod engine;
 pub mod framework;
 pub mod gestures;
+pub mod keyboard;
 pub mod navigation;
 pub mod painting;
 pub mod render;
@@ -53,6 +54,7 @@ pub use components::{
     AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
+pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use framework::{
     AnyWidget, Component, ElementTree, Key, RenderWidget, StateHandle, StatefulComponent,
     component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide, single, stateful,
@@ -89,6 +91,7 @@ pub mod prelude {
         ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
         theme_of,
     };
+    pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
         keyed_single, leaf, many, provide, single, stateful,
