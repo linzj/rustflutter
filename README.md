@@ -282,6 +282,7 @@ change by a line.**
 | `platform_channels` | Every channel the engine defines, both ways: clipboard, a `TextField` typed into, the mouse cursor, the reader's settings, and a close the application refuses. Against a real shell; checks itself and exits non-zero on a wrong answer |
 | `cursor_demo` | **Test by hand.** Tap a cursor name and watch the pointer change over the window. On a touch screen it says so rather than pretending |
 | `exit_demo` | **Test by hand.** The close button is a question; a switch decides the answer |
+| `text_demo` | **Test by hand.** Tap a field and type. The soft keyboard, the composing run, backspace, done, and switching fields -- the one channel a process cannot drive at itself |
 | `settings_demo` | **Test by hand.** Change the theme, text size or language in the system settings and watch this window follow. Names the right settings on each platform |
 
 <p align="center">

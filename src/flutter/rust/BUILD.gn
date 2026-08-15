@@ -164,6 +164,7 @@ group("rust") {
     "//flutter/rust/examples/platform_channels",
     "//flutter/rust/examples/settings_demo",
     "//flutter/rust/examples/showcase",
+    "//flutter/rust/examples/text_demo",
     "//flutter/rust/ffi:engine_ffi",
     "//flutter/rust/host",
     "//flutter/rust/rustflutter",

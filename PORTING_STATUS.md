@@ -1357,10 +1357,14 @@ caret**(`CreateCaret`/`SetCaretPos`)。有些输入法根本不理
 |---|---|
 | `cursor_demo` | 点一个光标名字。形状要**立刻**变(那是 posted 消息那一半)、**移动时不变回去**(那是 `WM_SETCURSOR` 返回 TRUE 那一半)、`none` 是真的没有指针。任意键恢复箭头——点完 `none` 就没得瞄了 |
 | `exit_demo` | 开关关着点 X:窗口留着，计数加一，类型是 `cancelable`。`SystemNavigator.pop()` 一样被拒(它 post 的就是同一条 `WM_CLOSE`)。开关打开再点 X:关掉。`exit(required, 3)` 开关关着也照关，进程退出码是 3 |
-| `settings_demo` | 在 Windows 里改深浅色、文字大小、语言、时间格式，窗口跟着变，不用重启。文字缩放这一条尤其值得看:**这个文件里没有任何一处乘过字号** |
+| `settings_demo` | 在系统设置里改深浅色、文字大小、语言、时间格式，窗口跟着变，不用重启。文字缩放这一条尤其值得看:**这个文件里没有任何一处乘过字号** |
+| `text_demo` | 点一个输入框，软键盘弹出来（桌面上是光标开始闪）。打字、退格、按完成、换一个输入框接着打。字数那两行是最值得盯的:文字过界是 UTF-16、存下来是 UTF-8，换算错了只有那里看得出来 |
 
 自动化只覆盖到"窗口起得来、关得掉"这一层:前两个用 `WM_CLOSE` 验能关，
-`exit_demo` 反过来验**不能**关——它关掉了才是 bug。
+`exit_demo` 反过来验**不能**关——它关掉了才是 bug。`text_demo` 一条自动化也
+没有，而且不会有:键盘是平台上唯一一样进程没法对自己驱动的东西，Windows 上
+`platform_channels` 靠往自己窗口 post `WM_CHAR` 绕过去，Android 上连这条路
+也没有（见第十七节）。
 
 ### 还知道没做的
 
@@ -1471,7 +1475,7 @@ Gradle 的存在是为了解决"一个 Java 工程和它的传递依赖";这里�
 | `flutter/settings` | `Configuration` 的 `uiMode`、`fontScale`、`DateFormat.is24HourFormat` |
 | `flutter/localization` | `Configuration.getLocales()`,还是那个四个一组的扁平数组 |
 | `flutter/platform` | 剪贴板是 `ClipboardManager`;`SystemNavigator.pop` 是 `finish()`;退出握手照抄 Windows,只是问的人从关闭按钮变成返回手势 |
-| `flutter/textinput` | `InputConnection`。编辑模型仍是引擎自己的 `TextInputModel`——**权威在 C++ 这一侧**,Java 那个 `Editable` 只是镜像。上游是反过来的,那需要整个 `InputConnectionAdaptor` |
+| `flutter/textinput` | `InputConnection`。编辑模型仍是引擎自己的 `TextInputModel`——**权威在 C++ 这一侧**,Java 那个 `Editable` 只是镜像。上游是反过来的,那需要整个 `InputConnectionAdaptor`。用 `text_demo` 手动验过:软键盘弹得出来、组词的下划线到得了框架、退格和完成都对、切换输入框会 clearClient 再 setClient |
 | `flutter/lifecycle` | `onResume`/`onPause`/`onStop`,和 Windows 一样的四态 |
 | `flutter/navigation` | 返回手势发 `popRoute`,**并且读回答**:空回答意味着那边没人在听,这时才 `finish()` |
 | `flutter/mousecursor` | 服务着,但触摸屏上没有指针可改。`cursor_demo` 在 Android 上把这句话写在屏幕上,而不是假装 |
