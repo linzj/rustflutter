@@ -17,11 +17,13 @@ from collections import Counter
 UPSTREAM_PREFIX = 'engine/src/'
 LOCAL_PREFIX = 'src/'
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 ap = argparse.ArgumentParser(description=__doc__)
-ap.add_argument('--upstream', default='K:/flutter/DEPS',
-                help='the flutter/flutter DEPS to filter')
-ap.add_argument('--out', default='K:/rustflutter/DEPS',
-                help='where to write the filtered DEPS')
+ap.add_argument('--upstream', required=True,
+                help='the flutter/flutter DEPS to filter (path to its checkout)')
+ap.add_argument('--out', default=os.path.join(os.path.dirname(_HERE), 'DEPS'),
+                help='where to write the filtered DEPS (default: ../DEPS)')
 args = ap.parse_args()
 UPSTREAM, OUT = args.upstream, args.out
 

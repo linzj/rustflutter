@@ -1,0 +1,64 @@
+rustflutter -- third-party notices
+==================================
+
+This project is not affiliated with, endorsed by, or sponsored by Google or the
+Flutter team. "Flutter" is a trademark of Google LLC; it appears here to say
+what this software is derived from, which is descriptive use and not a claim of
+endorsement.
+
+The bulk of this repository is the Flutter engine, redistributed with the Dart
+runtime removed. It is BSD-3-Clause, and LICENSE at the root of this repository
+is that license, unchanged from upstream. Two sets of files carry other terms
+and are listed below.
+
+
+Flutter engine
+--------------
+Everything under `src/` except `src/flutter/rust/` comes from
+https://github.com/flutter/flutter, at commit cf97bfbcb9f. Of 4,559 files, 64
+are modified and the rest are byte-for-byte upstream. Copyright 2014 The Flutter
+Authors, BSD-3-Clause; see LICENSE.
+
+That subset includes upstream's own vendored test fonts under
+`src/flutter/txt/third_party/fonts/` (Roboto, Noto, Ahem, Homemade Apple) and
+various test fixtures. They are redistributed exactly as upstream ships them,
+and upstream records their individual licenses in
+`engine/src/flutter/ci/licenses_golden/` in the flutter/flutter repository.
+
+`src/flutter/rust/` is this project's own work. Its files carry the same Flutter
+copyright header as the tree they were written into, and the same BSD-3-Clause
+terms.
+
+
+Gallery assets
+--------------
+`src/flutter/rust/examples/flutter_gallery/assets/` holds artwork copied from
+upstream so the port shows the same pictures rather than stand-ins. None of it
+was authored here.
+
+  studies/*_card*.png                 flutter_gallery_assets 1.0.2
+  icons/{material,cupertino,reference}.png
+                                      flutter_gallery_assets 1.0.2
+  fonts/GalleryIcons.ttf              flutter_gallery_assets 1.0.2
+      Copyright 2014 The Flutter Authors. BSD-3-Clause, see LICENSE.
+
+  fonts/MaterialIcons-Regular.otf     Flutter SDK,
+                                      bin/cache/artifacts/material_fonts/
+      Apache License 2.0, see LICENSES/Apache-2.0.txt.
+
+  shrine/*.jpg  (38 product photographs)
+                                      shrine_images 2.0.2, from pub.dev
+      Copyright the Material Components for Flutter Codelabs authors.
+      Apache License 2.0, see LICENSES/Apache-2.0.txt.
+
+The assets are compiled into the binary with `include_bytes!` rather than loaded
+from disk, so a distributed executable carries them and this notice applies to
+it as well.
+
+
+Dependencies fetched at sync time
+---------------------------------
+`DEPS` names third-party libraries -- Skia, ICU, harfbuzz, ANGLE, libpng,
+freetype and others -- that `gclient sync` downloads into `src/flutter/
+third_party/`. None of them are in this repository, and each carries its own
+license in its own checkout.

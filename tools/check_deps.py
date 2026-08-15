@@ -64,7 +64,8 @@ def rev_parse(path, rev):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--deps', default='K:/rustflutter/DEPS',
+    here = os.path.dirname(os.path.abspath(__file__))
+    ap.add_argument('--deps', default=os.path.join(os.path.dirname(here), 'DEPS'),
                     help='the DEPS to check; its directory is the checkout root')
     args = ap.parse_args()
 

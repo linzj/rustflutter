@@ -9,9 +9,12 @@ same pictures rather than stand-ins.
 | `icons/{material,cupertino,reference}.png` | `flutter_gallery_assets` 1.0.2, `lib/assets/icons/` |
 | `fonts/GalleryIcons.ttf` | `flutter_gallery_assets` 1.0.2, `lib/fonts/` |
 | `fonts/MaterialIcons-Regular.otf` | the Flutter SDK, `bin/cache/artifacts/material_fonts/` |
+| `shrine/*.jpg` (38 photographs) | `shrine_images` 2.0.2, from pub.dev |
 
 `flutter_gallery_assets` is BSD-licensed, the same terms as Flutter itself.
-Material Icons is Apache 2.0.
+Material Icons and `shrine_images` are both Apache 2.0 -- a different license
+from the rest of this repository, which is why the root `NOTICE` names them
+and `LICENSES/Apache-2.0.txt` carries the text.
 
 They are baked into the binary with `include_bytes!` rather than loaded from
 disk, because there is no asset bundle here -- no `AssetManager`, no

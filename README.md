@@ -1,36 +1,49 @@
 # rustflutter
 
-用 Rust 重写 Flutter 框架层，保留 Flutter engine 的排版、渲染、合成与线程模型。
+**English** · [简体中文](README.zh-CN.md)
 
-- **保留**：Impeller（GPU 渲染）、display_list（绘制录制）、flow（Layer 树与合成）、
-  txt + skparagraph（文字整形排版）、fml（线程模型 / TaskRunner / MessageLoop）、
-  shell（Engine / Animator / Rasterizer / Pipeline）。
-- **删除**：Dart VM、DartIsolate、tonic、`dart:ui` 的 Dart 侧、整个 `packages/flutter`。
-- **重写**：框架层（gestures / animation / painting / rendering / widgets / 组件库）改用 Rust。
+The Flutter framework rewritten in Rust, on top of the unmodified Flutter
+engine — its text layout, rendering, compositing and threading model kept as-is.
 
-上游来源：`K:\flutter`（flutter/flutter monorepo，commit `cf97bfbcb9f`）。
+- **Kept.** Impeller (GPU rendering), display_list (draw recording), flow (layer
+  tree and compositing), txt + skparagraph (text shaping and layout), fml
+  (threading, task runners, message loops), shell (Engine, Animator, Rasterizer,
+  Pipeline).
+- **Removed.** The Dart VM, DartIsolate, tonic, the Dart half of `dart:ui`, and
+  all of `packages/flutter`.
+- **Rewritten in Rust.** The framework layer: gestures, animation, painting,
+  rendering, widgets, and a component library.
 
-## 当前状态
+Forked from [flutter/flutter](https://github.com/flutter/flutter) at commit
+`cf97bfbcb9f`.
 
-**M0–M7 完成，含 Impeller，Flutter Gallery 已移植。** 整个 shell 在无 Dart 的情况下
-构建通过；应用跑在引擎自己的 Shell 上，有真正的线程模型、vsync 驱动的帧调度、
-`Rasterizer` 流水线，以及 **Impeller GPU 渲染**（ANGLE 提供 GLES）；
-框架层有完整的 RenderBox 协议、element 树与状态、命中测试与手势、
-动画与导航栈，以及一套组件库。
+> This project is not affiliated with, endorsed by, or sponsored by Google or
+> the Flutter team. "Flutter" is a trademark of Google LLC and appears here to
+> describe what this software is built from.
+
+## Status
+
+**M0–M7 complete, Impeller included, Flutter Gallery ported.** The whole shell
+builds with no Dart anywhere. Applications run on the engine's own `Shell`, with
+its real threading model, vsync-driven frame scheduling and `Rasterizer`
+pipeline, drawing through **Impeller on the GPU** (GLES via ANGLE). The
+framework has the full RenderBox protocol, an element tree with state, hit
+testing and gestures, animation and a navigation stack, and a component library.
 
 ```
-gn gen  →  1008 targets from 276 files
-ninja   →  exit 0，零警告
-rustflutter_unittests        →  96 passed
-flutter_gallery_unittests    →  10 passed
-rust_ffi_unittests           →  11 passed
-帧率（optimized 构建）        →  16.6–16.8 ms/帧（59.5–60.3 fps）
-其中真正干活                  →  UI 线程 0.6 ms + 光栅 1.0 ms
+gn gen                        →  1008 targets from 276 files
+ninja                         →  exit 0, no warnings
+rustflutter_unittests         →  123 passed
+rust_ffi_unittests            →   13 passed
+flutter_gallery_unittests     →   21 passed
+frame time (optimized build)  →  16.6–16.8 ms/frame (59.5–60.3 fps)
+of which actual work          →  0.5 ms on the UI thread + 0.9 ms rasterising
 ```
 
 ![Components](docs/showcase_impeller.png)
 
-*上图是从 GPU 帧缓冲回读的真实帧——Impeller 经 ANGLE 渲染。*
+*A real frame, read back from the GPU framebuffer — rendered by Impeller
+through ANGLE.*
 
 <p align="center">
   <img src="docs/gallery/home.png" width="24%">
@@ -39,53 +52,52 @@ rust_ffi_unittests           →  11 passed
   <img src="docs/gallery/settings.png" width="24%">
 </p>
 
-*Flutter Gallery：首页、Rally、组件页、设置。26 个屏幕，全部由 Rust 排版。*
+*Flutter Gallery: home, Rally, components, settings. 26 screens, all laid out
+by Rust.*
 
-## 换一台机器：拉依赖
+## Getting the dependencies
 
-本机的 `third_party` 是指向另一个 flutter checkout 的目录 junction，克隆到别处
-之后那些路径是空的，要用 `gclient sync` 拉真依赖（需要 `depot_tools` 在 PATH 上）：
+The engine's C++ and the whole Rust framework are committed here and arrive with
+the clone. `third_party` and the build toolchains are not — `DEPS` names them
+and `gclient sync` fetches them. You need `depot_tools` on PATH:
 
 ```sh
 cp tools/gclient.template .gclient
-gclient sync                  # 约 13 GB
-python tools/check_deps.py    # 核对拉到的 revision 和 DEPS 是否一致
+gclient sync                  # about 13 GB
+python tools/check_deps.py    # confirm what landed matches DEPS
 ```
 
-`gclient sync` 只管 `third_party` 和构建工具链——clang、gn、ninja、skia、icu、
-angle 都在 `DEPS` 里。引擎的 C++ 和整个 Rust 框架直接在仓库里（4,724 个跟踪文件），
-随克隆一起到，不走 DEPS。
+That covers clang, gn, ninja, skia, icu, angle and the rest. Two things it does
+not cover:
 
-两件 `DEPS` 不负责的事：
+- **`rustc`, which you install yourself.** It resolves off PATH (see
+  `src/build/toolchain/rust.gni`) and needs edition 2024; verified on 1.93.0.
+- **A local Visual Studio on Windows**, with `DEPOT_TOOLS_WIN_TOOLCHAIN=0` set.
+  Without it the `win_toolchain` hook goes looking for Google's internal
+  toolchain package.
 
-- **`rustc` 要自己装**，它从 PATH 解析（见 `src/build/toolchain/rust.gni`），
-  需要 edition 2024，本机验证于 1.93.0。
-- **Windows 上要本机的 Visual Studio**，并设 `DEPOT_TOOLS_WIN_TOOLCHAIN=0`，
-  否则 `win_toolchain` hook 会去取 Google 内部的工具链包。
-
-## 快速开始
+## Quick start
 
 ```sh
 cd src
 
-# 一次性：生成构建文件
+# once: generate the build files
 vpython3 flutter/tools/gn --unoptimized --no-rbe
 ninja -C out/host_debug_unopt
 
-# 创建并运行一个应用
+# create an application and run it
 ./out/host_debug_unopt/rustflutter create my_app --title "My App"
-vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建图
+vpython3 flutter/tools/gn --unoptimized --no-rbe   # let the new target into the build graph
 ./out/host_debug_unopt/rustflutter run my_app
 ```
 
-`run` 会用 ninja 构建并打开窗口，帧由 vsync 驱动。
-加 `-- --png out.png` 走无头单帧渲染（CI 用，不起 shell）。
-删除应用用 `rustflutter remove my_app`——直接删目录会在 `projects/BUILD.gn` 里
-留下悬空标签，之后每次 `gn gen` 都会失败。
+`run` builds with ninja and opens a window, with frames driven by vsync. Add
+`-- --png out.png` for a headless single-frame render (what CI uses; no shell).
+Delete an application with `rustflutter remove my_app` — removing the directory
+by hand leaves a dangling label in `projects/BUILD.gn` and every later `gn gen`
+fails on it.
 
-需要 PATH 上有 `rustc`（本机验证于 1.93.0，edition 2024）。
-
-## 应用长什么样
+## What an application looks like
 
 ```rust
 use rustflutter::prelude::*;
@@ -137,48 +149,52 @@ fn start() {
 }
 ```
 
-## 三层，和上游一样
+## Three layers, the same as upstream
 
 ```
-Widget        廉价、不可变，每帧丢弃重建
-Element       持久：持有状态，决定复用什么
-RenderObject  做布局、绘制与命中测试
+Widget        cheap, immutable, thrown away and rebuilt every frame
+Element       persistent: holds state, decides what to reuse
+RenderObject  does layout, painting and hit testing
 ```
 
-布局遵循与 Flutter `RenderBox` 相同的协议：**约束下行、尺寸上行、父级定位子级**。
-`Text` 的整形排版走引擎自己的 `txt` / skparagraph，绘制进真实的 `DisplayList`。
+Layout follows the same protocol as Flutter's `RenderBox`: **constraints go
+down, sizes come up, the parent positions its children.** `Text` shapes and
+lays out through the engine's own `txt` / skparagraph, and paints into a real
+`DisplayList`.
 
-每一帧的路径是引擎原本的那条：
+Every frame takes the engine's original path:
 
 ```
 VsyncWaiter → Animator → Engine → RuntimeController
-    → Application::build → 布局 → 绘制 → LayerTree
-    → Pipeline → Rasterizer → Surface → 屏幕
+    → Application::build → layout → paint → LayerTree
+    → Pipeline → Rasterizer → Surface → screen
 ```
 
-一次点击的路径是它的镜像：
+A tap takes its mirror image:
 
 ```
 Win32 → PlatformView → Engine → RuntimeController
-    → 命中测试（对着上一帧的 render tree）→ 手势识别
-    → set_state → 标脏 → 请求一帧
+    → hit test (against the previous frame's render tree) → gesture recognition
+    → set_state → mark dirty → request a frame
 ```
 
-帧是按需的，不是自由运行的：没有请求时引擎在最后一帧之后进入空闲，
-所以一个静态界面留在屏幕上不花任何代价。
+Frames are on demand rather than free-running: with nothing requested the engine
+goes idle after the last one, so a static screen costs nothing to keep up.
 
-## 关键设计前提
+## The premise this rests on
 
-整个方案成立的依据是一个实测结论：**引擎的渲染栈已经与 Dart 完全解耦**。
-`flow`、`display_list`、`txt` 对 Dart 的引用数为 0，`impeller` 仅一个单测引用。
-Dart 与引擎之间的全部契约收敛在两处：
+The whole approach depends on one measured fact: **the engine's rendering stack
+is already fully decoupled from Dart.** `flow`, `display_list` and `txt`
+reference Dart zero times; `impeller` does so in one unit test. Every contract
+between Dart and the engine collapses into two places:
 
-| 方向 | 位置 | 规模 |
+| Direction | Where | Size |
 |---|---|---|
-| Dart → C++ | `lib/ui/dart_ui.cc` 绑定表 | 231 个绑定 |
-| C++ → Dart | `lib/ui/window/platform_configuration.h` 的 `DartPersistentValue` | 20 个回调 |
+| Dart → C++ | the binding table in `lib/ui/dart_ui.cc` | 231 bindings |
+| C++ → Dart | `DartPersistentValue` in `lib/ui/window/platform_configuration.h` | 20 callbacks |
 
-而真正的交接点只有一行（`runtime/runtime_delegate.h`，本仓库重建后原样保留）：
+And the actual handover is a single line (`runtime/runtime_delegate.h`, kept
+verbatim after this repository rebuilt it):
 
 ```cpp
 virtual void Render(int64_t view_id,
@@ -186,18 +202,19 @@ virtual void Render(int64_t view_id,
                     float device_pixel_ratio) = 0;
 ```
 
-框架层唯一的产出就是一棵 `LayerTree`。**Rust 只要能构造 `LayerTree`，
-下游 rasterizer → display_list → Impeller 一行都不用改**。
+The only thing the framework layer produces is a `LayerTree`. **If Rust can
+build one, nothing downstream — rasterizer, display_list, Impeller — has to
+change by a line.**
 
-## 示例
+## Examples
 
-| 示例 | 证明了什么 |
+| Example | What it demonstrates |
 |---|---|
-| `hello_world` | 流水线端到端：Rust → DisplayList → LayerTree → 光栅化 |
-| `gallery` | 渲染层：flex、stack、viewport 滚动、渐变、裁剪 |
-| `counter` | element 树 + 局部重建 + 点击 |
-| `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
-| `flutter_gallery` | 上游 Gallery 的移植：26 个屏幕、导航栈、滑入过渡 |
+| `hello_world` | The pipeline end to end: Rust → DisplayList → LayerTree → raster |
+| `gallery` | The render layer: flex, stack, viewport scrolling, gradients, clips |
+| `counter` | Element tree, partial rebuild, tap handling |
+| `showcase` | Components and theming: one toggle recolours the application |
+| `flutter_gallery` | The upstream Gallery ported: 26 screens, navigation stack, slide transitions |
 
 <p align="center">
   <img src="docs/gallery_top.png" width="30%">
@@ -205,7 +222,7 @@ virtual void Render(int64_t view_id,
   <img src="docs/showcase_light.png" width="30%">
 </p>
 
-## Release 构建与分发
+## Release builds
 
 ```
 vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
@@ -213,64 +230,81 @@ ninja -C out/host_release flutter/rust/examples/flutter_gallery
 python3 tools/package_gallery.py --zip
 ```
 
-产出 `dist/rustflutter-gallery/`：一个 20 MB 的 exe 加 `icudtl.dat`。
-没有别的——字体、图标、study 插画、38 张商品照片全部 `include_bytes!` 进了
-二进制，没有 asset bundle、没有 `flutter_assets` 目录、没有 CRT 运行库依赖
-（导入表里全是系统 DLL，ANGLE 是静态链的）。
+Produces `dist/rustflutter-gallery/`: a 20 MB executable plus `icudtl.dat`, and
+nothing else. The fonts, icons, study artwork and 38 product photographs are all
+`include_bytes!`-ed into the binary — no asset bundle, no `flutter_assets`
+directory, and no CRT runtime dependency (the import table is system DLLs only;
+ANGLE is linked statically).
 
-## 目录结构
+## Layout
 
 ```
 src/
-├── .gn, BUILD.gn, build/, build_overrides/   GN 构建系统（+ Rust 工具链）
+├── .gn, BUILD.gn, build/, build_overrides/   GN build system (+ Rust toolchain)
 └── flutter/
-    ├── impeller/          GPU 渲染          ── 原样保留
-    ├── display_list/      绘制录制/回放      ── 原样保留
-    ├── flow/              Layer 树与合成     ── 原样保留
-    ├── txt/               文字排版           ── 原样保留
-    ├── fml/               线程模型           ── 原样保留（去 Dart Timeline）
-    ├── shell/             壳层与平台嵌入      ── 已去 Dart 化
-    ├── runtime/           RuntimeController   ── 重建：驱动 Rust 而非 isolate
-    ├── lib/ui/            引擎对象包装层      ── :ui_types 可用，其余见 M4 的取舍
-    └── rust/                                 ← Rust 侧
-        ├── ffi/           C ABI + C++ 实现（78 个函数）
-        ├── host/          窗口 + 线程模型 + Shell 启动
-        ├── rustflutter/   框架 crate
-        │   ├── engine.rs      引擎绑定
-        │   ├── painting.rs    路径、渐变、图片、画布状态
-        │   ├── render.rs      RenderBox 协议与渲染对象
-        │   ├── widgets.rs     具名门面
-        │   ├── framework.rs   Widget / Element / 状态 / Provider
-        │   ├── gestures.rs    指针事件与手势识别
-        │   ├── components.rs  组件库与主题
-        │   └── app.rs         与 shell 的契约
-        ├── cli/           `rustflutter` 命令行工具
-        ├── examples/      示例应用
-        └── projects/      `rustflutter create` 生成的应用
+    ├── impeller/          GPU rendering        ── untouched
+    ├── display_list/      draw record/replay   ── untouched
+    ├── flow/              layer tree           ── untouched
+    ├── txt/               text layout          ── untouched
+    ├── fml/               threading            ── untouched but for Dart Timeline
+    ├── shell/             shell and embedding  ── de-Dart-ified
+    ├── runtime/           RuntimeController    ── rebuilt: drives Rust, not an isolate
+    ├── lib/ui/            engine object wrappers ── :ui_types usable, see M4 for the rest
+    └── rust/                                   ← the Rust side
+        ├── ffi/           C ABI + C++ implementation (78 functions)
+        ├── host/          window, threading, shell startup
+        ├── rustflutter/   the framework crate
+        │   ├── engine.rs      engine bindings
+        │   ├── painting.rs    paths, gradients, images, canvas state
+        │   ├── render.rs      the RenderBox protocol and render objects
+        │   ├── widgets.rs     named facades
+        │   ├── framework.rs   widget / element / state / provider
+        │   ├── gestures.rs    pointer events and gesture recognition
+        │   ├── components.rs  component library and theming
+        │   └── app.rs         the contract with the shell
+        ├── cli/           the `rustflutter` command line tool
+        ├── examples/      example applications
+        └── projects/      applications made by `rustflutter create`
 ```
 
-逐目录分级、各里程碑的完整改动记录、以及下一步的优先级，
-见 **[PORTING_STATUS.md](PORTING_STATUS.md)**。
+Of the 4,559 engine files here, 64 are modified and the rest are byte-for-byte
+upstream. A per-directory breakdown, the full record of what each milestone
+changed, and what is worth doing next are in
+**[PORTING_STATUS.md](PORTING_STATUS.md)** (Chinese).
 
-## 已知限制
+## Known limitations
 
-- **render tree 每帧整棵重建。** 元素复用保住了状态、跳过了 `build`，
-  但布局和绘制照跑不误。这是最大的一笔性能欠账。
-- **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
-  Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
-- **layer 树是平的。** 框架每帧只产出一个 layer、一个 DisplayList：裁剪、
-  透明度、变换都记在 display list 里，而不是像上游那样造出 `ClipRectLayer`、
-  `OpacityLayer`、`TransformLayer`。后果是没有 repaint boundary、raster cache
-  无从命中、damage 就是全屏。目前不构成瓶颈（光栅只要 1 ms），但场景变重时会。
-  layer 的 FFI 都已经在，只是框架层还没用。
-- **没有文本输入、平台通道、无障碍。**
-- **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
+- **The render tree is rebuilt whole every frame.** Element reuse preserves
+  state and skips `build`, but layout and paint still run. This is the largest
+  outstanding performance debt.
+- **The host is Windows-only.** Everything above `rf_host_run` — Shell,
+  ThreadHost, Animator, Rasterizer, the software surface — is portable; each
+  platform is missing only a window and a message loop.
+- **The layer tree is flat.** The framework emits one layer and one DisplayList
+  per frame: clips, opacity and transforms are recorded into the display list
+  rather than becoming `ClipRectLayer`, `OpacityLayer` and `TransformLayer` the
+  way upstream does. So there are no repaint boundaries, the raster cache has
+  nothing to hit, and damage is the whole screen. Not a bottleneck yet
+  (rasterising takes 1 ms) but it will be as scenes get heavier. The layer FFI
+  is already in place; the framework just does not use it.
+- **No text input, platform channels or accessibility.**
+- **There will be no hot reload.** That is a Dart VM capability with no Rust
+  equivalent.
 
-## 诊断开关
+## Diagnostics
 
-| 环境变量 | 作用 |
+| Environment variable | Effect |
 |---|---|
-| `RUSTFLUTTER_SOFTWARE=1` | 强制 Skia 软件 surface，绕过 Impeller |
-| `RUSTFLUTTER_CAPTURE_FRAME=<path>` | 在 swap 前回读 GPU 帧缓冲写 PNG，每帧覆盖。GPU 合成的窗口用 `PrintWindow` 抓不到，这是看 Impeller 究竟画了什么的办法 |
-| `RUSTFLUTTER_FRAME_STATS=1` | 每 60 帧报一次 UI 线程分段（build / layout / 录制）与光栅侧（光栅 / swap / 帧间隔）的中位数。找出双重等待靠的就是它 |
-| `RUSTFLUTTER_OUT=<dir>` | 让 CLI 使用指定的构建输出目录 |
+| `RUSTFLUTTER_SOFTWARE=1` | Force the Skia software surface, bypassing Impeller |
+| `RUSTFLUTTER_CAPTURE_FRAME=<path>` | Read the GPU framebuffer back to a PNG before the swap, overwritten each frame. `PrintWindow` cannot capture a GPU-composited window, so this is how to see what Impeller actually drew |
+| `RUSTFLUTTER_FRAME_STATS=1` | Every 60 frames, report medians for the UI thread (build / layout / record) and the raster side (raster / swap / frame interval). This is what found the double wait |
+| `RUSTFLUTTER_OUT=<dir>` | Point the CLI at a specific build output directory |
+
+## License
+
+BSD-3-Clause, the same terms as Flutter, whose engine makes up most of this
+repository — see [LICENSE](LICENSE).
+
+Some Gallery artwork is Apache 2.0 rather than BSD, and it is compiled into the
+binaries, so a distributed executable carries it too. [NOTICE](NOTICE) says what
+came from where.
