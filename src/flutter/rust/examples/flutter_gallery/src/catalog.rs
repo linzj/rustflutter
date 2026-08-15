@@ -4,48 +4,53 @@
 
 //! What the gallery contains.
 //!
-//! Ported from `new_gallery/lib/data/demos.dart`, which is one long table of
-//! metadata that the home page, the category lists and the demo pages all read
-//! from. Keeping it a table here too is what stops the three of them drifting:
-//! a demo that is added to the list is a demo the router can reach.
+//! Generated from upstream `new_gallery/lib/data/demos.dart` and its English
+//! localisation by `tools/gen_catalog.py`. The titles, subtitles and
+//! descriptions are upstream's own words rather than retyped ones, because
+//! forty-seven retyped entries drift from the thing they are a port of.
 //!
-//! Titles and subtitles are upstream's, in English. The localisation machinery
-//! behind them is not ported -- there is no message catalogue and no locale
-//! plumbing yet -- so the strings sit here rather than in a generated file.
+//! Do not edit by hand. The localisation machinery itself is not ported --
+//! there is no message catalogue and no locale plumbing -- so the English
+//! strings are baked in here.
 
 use rustflutter::engine::Color;
 
-/// Which section of the gallery a demo belongs to.
+/// Which section of the gallery an entry belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
-    /// The full-screen sample apps. Upstream these are Reply, Shrine, Rally,
-    /// Crane, Fortnightly and Starter.
+    /// The full-screen sample apps, shown as the home page carousel.
     Study,
-    /// The component demos. Upstream's Material section.
-    Components,
-    /// Layout and painting demos, which upstream files under Reference.
+    Material,
+    Cupertino,
+    /// Upstream calls this `other` and labels it "STYLES & OTHER".
     Reference,
 }
 
 impl Category {
-    pub fn title(self) -> &'static str {
+    /// The header upstream puts above the category, uppercased the way
+    /// `GalleryDemoCategory.toString` does it. Studies have none: they are
+    /// the carousel, not a list with a heading.
+    pub fn title(self) -> Option<&'static str> {
         match self {
-            Category::Study => "Studies",
-            Category::Components => "Components",
-            Category::Reference => "Reference",
+            Category::Study => None,
+            Category::Material => Some("MATERIAL"),
+            Category::Cupertino => Some("CUPERTINO"),
+            Category::Reference => Some("STYLES & OTHER"),
         }
     }
 
-    pub fn subtitle(self) -> &'static str {
+    /// The icon asset beside that header.
+    pub fn icon(self) -> Option<&'static [u8]> {
         match self {
-            Category::Study => "Complete apps built from the component library",
-            Category::Components => "Building blocks, one demo each",
-            Category::Reference => "Layout, painting and motion",
+            Category::Study => None,
+            Category::Material => Some(include_bytes!("../assets/icons/material.png")),
+            Category::Cupertino => Some(include_bytes!("../assets/icons/cupertino.png")),
+            Category::Reference => Some(include_bytes!("../assets/icons/reference.png")),
         }
     }
 }
 
-/// One entry in the gallery.
+/// One demo: a component, or one of the reference screens.
 #[derive(Clone, Copy, Debug)]
 pub struct Demo {
     /// Route argument. Stable, because it is what a route is pushed with.
@@ -55,301 +60,633 @@ pub struct Demo {
     /// The longer text shown on the demo's own page.
     pub description: &'static str,
     pub category: Category,
-    /// A one- or two-letter mark, standing in for upstream's icon. There is no
-    /// icon font here, and a missing glyph draws nothing at all.
-    pub mark: &'static str,
+    /// The glyph upstream shows, as a private-use codepoint. Drawn as text
+    /// in `icon_family` -- which is all an icon is.
+    pub icon: &'static str,
+    pub icon_family: &'static str,
     pub accent: Color,
+}
+
+/// One study: a whole sample app, with the card the home page shows for it.
+#[derive(Clone, Copy, Debug)]
+pub struct Study {
+    pub slug: &'static str,
+    pub title: &'static str,
+    pub subtitle: &'static str,
+    /// Upstream's own card artwork, light and dark.
+    pub card: &'static [u8],
+    pub card_dark: &'static [u8],
+    /// The colour behind the artwork while it loads, and the colour the
+    /// title is written in. Both upstream's.
+    pub fill: Color,
+    pub fill_dark: Color,
+    pub text: Color,
+}
+
+/// The two icon fonts, and the families they are registered under.
+///
+/// Both have to be registered before the first frame. An unregistered
+/// family falls back to a system face, which has nothing at a private-use
+/// codepoint and draws a blank rather than complaining.
+pub const GALLERY_ICON_FONT: &[u8] =
+    include_bytes!("../assets/fonts/GalleryIcons.ttf");
+pub const MATERIAL_ICON_FONT: &[u8] =
+    include_bytes!("../assets/fonts/MaterialIcons-Regular.otf");
+pub const GALLERY_ICONS: &str = "GalleryIcons";
+pub const MATERIAL_ICONS: &str = "MaterialIcons";
+
+/// Registers both icon fonts. Call once, before the first frame.
+pub fn register_fonts() {
+    rustflutter::engine::register_font(GALLERY_ICON_FONT, GALLERY_ICONS);
+    rustflutter::engine::register_font(MATERIAL_ICON_FONT, MATERIAL_ICONS);
+}
+
+/// The chrome icons: back arrows, the settings gear, chevrons. Upstream
+/// takes these from Material rather than from its own font, so they all
+/// live in [`MATERIAL_ICONS`].
+#[allow(dead_code)] // The complete set upstream uses; not every screen
+                      // that will want one exists yet.
+pub mod icon {
+    pub const ARROW_BACK: &str = "\u{e092}";
+    pub const SETTINGS: &str = "\u{e57f}";
+    pub const CLOSE: &str = "\u{e16a}";
+    pub const CHEVRON_RIGHT: &str = "\u{e15f}";
+    pub const ARROW_DOWN: &str = "\u{e353}";
+    pub const ARROW_UP: &str = "\u{e356}";
+    pub const PLAY: &str = "\u{e4cd}";
+    pub const SEARCH: &str = "\u{e567}";
+    pub const MENU: &str = "\u{e3dc}";
+    pub const MORE: &str = "\u{e404}";
+    pub const CHECK: &str = "\u{e156}";
+    pub const ADD: &str = "\u{e047}";
+    pub const REMOVE: &str = "\u{e516}";
+    pub const FAVORITE: &str = "\u{e25b}";
+    pub const STAR: &str = "\u{e5f9}";
+    pub const INFO: &str = "\u{e33c}";
 }
 
 const BLUE: Color = Color::rgb(0x54, 0xC5, 0xF8);
 const GREEN: Color = Color::rgb(0x7B, 0xD3, 0x89);
 const AMBER: Color = Color::rgb(0xF2, 0xB1, 0x4F);
-const PINK: Color = Color::rgb(0xE0, 0x7A, 0x9B);
-const PURPLE: Color = Color::rgb(0x9B, 0x8C, 0xF0);
 const TEAL: Color = Color::rgb(0x4F, 0xC8, 0xB0);
-const CORAL: Color = Color::rgb(0xF0, 0x8A, 0x6E);
 
-/// Every demo, in the order the gallery lists them.
-pub const DEMOS: &[Demo] = &[
-    // -- Studies --------------------------------------------------------------
-    Demo {
+/// The studies, in the order the carousel shows them.
+pub const STUDIES: &[Study] = &[
+    Study {
+        slug: "reply",
+        title: "Reply",
+        subtitle: "An efficient, focused email app",
+        card: include_bytes!("../assets/studies/reply_card.png"),
+        card_dark: include_bytes!("../assets/studies/reply_card_dark.png"),
+        fill: Color(0xFF344955),
+        fill_dark: Color(0xFF1D2327),
+        text: Color(0xFFFFFFFF),
+    },
+    Study {
+        slug: "shrine",
+        title: "Shrine",
+        subtitle: "A fashionable retail app",
+        card: include_bytes!("../assets/studies/shrine_card.png"),
+        card_dark: include_bytes!("../assets/studies/shrine_card_dark.png"),
+        fill: Color(0xFFFEDBD0),
+        fill_dark: Color(0xFF543B3C),
+        text: Color(0xFF442B2D),
+    },
+    Study {
         slug: "rally",
         title: "Rally",
         subtitle: "A personal finance app",
-        description: "A dashboard of accounts, bills and budgets. Every figure \
-                      is a real layout: the bars are sized from their values, \
-                      and the rows are a flex with an expanded label.",
-        category: Category::Study,
-        mark: "R",
-        accent: TEAL,
+        card: include_bytes!("../assets/studies/rally_card.png"),
+        card_dark: include_bytes!("../assets/studies/rally_card_dark.png"),
+        fill: Color(0xFFD1F2E6),
+        fill_dark: Color(0xFF253538),
+        text: Color(0xFF005D57),
     },
-    Demo {
-        slug: "shrine",
-        title: "Shrine",
-        subtitle: "A shopping app",
-        description: "A product grid with a filter row and a cart count. The \
-                      grid is a fixed-column layout with a tile aspect ratio, \
-                      and tapping a chip filters it.",
-        category: Category::Study,
-        mark: "S",
-        accent: PINK,
-    },
-    Demo {
+    Study {
         slug: "crane",
         title: "Crane",
-        subtitle: "A travel app",
-        description: "Tabs over a list of destinations. Switching tabs replaces \
-                      the list without rebuilding the page around it.",
-        category: Category::Study,
-        mark: "C",
-        accent: PURPLE,
+        subtitle: "A personalized travel app",
+        card: include_bytes!("../assets/studies/crane_card.png"),
+        card_dark: include_bytes!("../assets/studies/crane_card_dark.png"),
+        fill: Color(0xFFFBF6F8),
+        fill_dark: Color(0xFF591946),
+        text: Color(0xFF720D5D),
     },
-    // -- Components -----------------------------------------------------------
+    Study {
+        slug: "fortnightly",
+        title: "Fortnightly",
+        subtitle: "A content-focused news app",
+        card: include_bytes!("../assets/studies/fortnightly_card.png"),
+        card_dark: include_bytes!("../assets/studies/fortnightly_card_dark.png"),
+        fill: Color(0xFFFFFFFF),
+        fill_dark: Color(0xFF1F1F1F),
+        text: Color(0xFF000000),
+    },
+    Study {
+        slug: "starterApp",
+        title: "Starter app",
+        subtitle: "A responsive starter layout",
+        card: include_bytes!("../assets/studies/starter_card.png"),
+        card_dark: include_bytes!("../assets/studies/starter_card_dark.png"),
+        fill: Color(0xFFFAF6FE),
+        fill_dark: Color(0xFF3F3D45),
+        text: Color(0xFF000000),
+    },
+];
+
+/// Every demo, in the order the gallery lists them.
+pub const DEMOS: &[Demo] = &[
+    // -- Material ---
     Demo {
         slug: "app-bar",
         title: "App bar",
-        subtitle: "Displays information and actions at the top of a screen",
-        description: "The app bar sits at the top and holds the screen's title \
-                      and its actions. Here it carries a trailing control.",
-        category: Category::Components,
-        mark: "A",
+        subtitle: "Displays information and actions relating to the current \
+                      screen",
+        description: "The App bar provides content and actions related to the \
+                      current screen. It's used for branding, screen titles, \
+                      navigation, and actions",
+        category: Category::Material,
+        icon: "\u{e6de}",
+        icon_family: MATERIAL_ICONS,
         accent: BLUE,
     },
     Demo {
         slug: "banner",
         title: "Banner",
         subtitle: "Displaying a banner within a list",
-        description: "A banner displays an important message and the actions \
-                      that answer it. It stays until it is dismissed.",
-        category: Category::Components,
-        mark: "B",
-        accent: AMBER,
+        description: "A banner displays an important, succinct message, and provides \
+                      actions for users to address (or dismiss the banner). A user \
+                      action is required for it to be dismissed.",
+        category: Category::Material,
+        icon: "\u{e927}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "bottom-app-bar",
+        title: "Bottom app bar",
+        subtitle: "Displays navigation and actions at the bottom",
+        description: "Bottom app bars provide access to a bottom navigation drawer \
+                      and up to four actions, including the floating action button.",
+        category: Category::Material,
+        icon: "\u{e925}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "bottom-navigation",
         title: "Bottom navigation",
         subtitle: "Bottom navigation with cross-fading views",
-        description: "A bar of destinations along the bottom edge. The view \
-                      above it cross-fades when the destination changes.",
-        category: Category::Components,
-        mark: "BN",
-        accent: GREEN,
+        description: "Bottom navigation bars display three to five destinations at \
+                      the bottom of a screen. Each destination is represented by an \
+                      icon and an optional text label. When a bottom navigation icon \
+                      is tapped, the user is taken to the top-level navigation \
+                      destination associated with that icon.",
+        category: Category::Material,
+        icon: "\u{e91b}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "bottom-sheet",
         title: "Bottom sheet",
         subtitle: "Persistent and modal bottom sheets",
-        description: "A sheet anchored to the bottom edge. A modal one draws \
-                      over a scrim that swallows taps meant for the page.",
-        category: Category::Components,
-        mark: "BS",
-        accent: PURPLE,
-    },
-    Demo {
-        slug: "buttons",
-        title: "Buttons",
-        subtitle: "Text, elevated, outlined, and more",
-        description: "Four styles, one pressed state. The state lives in the \
-                      page rather than the button, because a button is rebuilt \
-                      every frame and cannot remember anything.",
-        category: Category::Components,
-        mark: "Bt",
+        description: "A persistent bottom sheet shows information that supplements \
+                      the primary content of the app. A persistent bottom sheet \
+                      remains visible even when the user interacts with other parts \
+                      of the app.",
+        category: Category::Material,
+        icon: "\u{e91a}",
+        icon_family: GALLERY_ICONS,
         accent: BLUE,
     },
     Demo {
-        slug: "cards",
-        title: "Cards",
-        subtitle: "Baseline cards with rounded corners",
-        description: "A card is a surface with a border and padding, used to \
-                      group things that belong together.",
-        category: Category::Components,
-        mark: "Cd",
-        accent: TEAL,
+        slug: "button",
+        title: "Buttons",
+        subtitle: "Text, elevated, outlined, and more",
+        description: "A text button displays an ink splash on press but does not \
+                      lift. Use text buttons on toolbars, in dialogs and inline with \
+                      padding",
+        category: Category::Material,
+        icon: "\u{e923}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
-        slug: "chips",
+        slug: "card",
+        title: "Cards",
+        subtitle: "Baseline cards with rounded corners",
+        description: "A card is a sheet of Material used to represent some related \
+                      information, for example an album, a geographical location, a \
+                      meal, contact details, etc.",
+        category: Category::Material,
+        icon: "\u{e918}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "chip",
         title: "Chips",
         subtitle: "Compact elements that represent an input, attribute, or action",
-        description: "Chips are compact and tappable. A filter chip records a \
-                      choice; an action chip performs one.",
-        category: Category::Components,
-        mark: "Ch",
-        accent: CORAL,
+        description: "Action chips are a set of options which trigger an action \
+                      related to primary content. Action chips should appear \
+                      dynamically and contextually in a UI.",
+        category: Category::Material,
+        icon: "\u{e916}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "data-table",
-        title: "Data tables",
+        title: "Data Tables",
         subtitle: "Rows and columns of information",
-        description: "A table of text with a header row. Columns share the \
-                      width evenly through the row's flex.",
-        category: Category::Components,
-        mark: "DT",
+        description: "Data tables display information in a grid-like format of rows \
+                      and columns. They organize information in a way that's easy to \
+                      scan, so that users can look for patterns and insights.",
+        category: Category::Material,
+        icon: "\u{e913}",
+        icon_family: GALLERY_ICONS,
         accent: BLUE,
     },
     Demo {
-        slug: "dialogs",
+        slug: "dialog",
         title: "Dialogs",
         subtitle: "Simple, alert, and fullscreen",
-        description: "A dialog interrupts to ask something. The scrim under it \
-                      is what makes it modal -- without one the taps go to the \
-                      page behind.",
-        category: Category::Components,
-        mark: "D",
-        accent: PINK,
+        description: "An alert dialog informs the user about situations that require \
+                      acknowledgement. An alert dialog has an optional title and an \
+                      optional list of actions.",
+        category: Category::Material,
+        icon: "\u{e912}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
-        slug: "dividers",
-        title: "Dividers",
-        subtitle: "A divider is a thin line that groups content in lists and layouts",
-        description: "A one-pixel rule. Worth a demo because a rule that is not \
-                      exactly one physical pixel looks wrong on every screen.",
-        category: Category::Components,
-        mark: "Dv",
-        accent: GREEN,
+        slug: "divider",
+        title: "Divider",
+        subtitle: "A divider is a thin line that groups content in lists and \
+                      layouts.",
+        description: "Dividers can be used in lists, drawers, and elsewhere to \
+                      separate content.",
+        category: Category::Material,
+        icon: "\u{e19f}",
+        icon_family: MATERIAL_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "grid-lists",
-        title: "Grid lists",
+        title: "Grid Lists",
         subtitle: "Row and column layout",
-        description: "Tiles in fixed columns, each sized by an aspect ratio. \
-                      The last row is padded so its tiles keep their width.",
-        category: Category::Components,
-        mark: "G",
-        accent: AMBER,
+        description: "Grid Lists are best suited for presenting homogeneous data, \
+                      typically images. Each item in a grid list is called a tile.",
+        category: Category::Material,
+        icon: "\u{e90e}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "lists",
         title: "Lists",
         subtitle: "Scrolling list layouts",
-        description: "A scrollable column of tiles. The viewport lays its child \
-                      out unbounded and shows a window onto it.",
-        category: Category::Components,
-        mark: "L",
-        accent: PURPLE,
+        description: "A single fixed-height row that typically contains some text as \
+                      well as a leading or trailing icon.",
+        category: Category::Material,
+        icon: "\u{e90d}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
-        slug: "navigation-rail",
-        title: "Navigation rail",
-        subtitle: "Displaying a navigation rail within an app",
-        description: "A column of destinations along the leading edge, for \
-                      windows too wide for a bottom bar.",
-        category: Category::Components,
-        mark: "NR",
-        accent: TEAL,
+        slug: "menu",
+        title: "Menu",
+        subtitle: "Menu buttons and simple menus",
+        description: "A menu displays a list of choices on a temporary surface. They \
+                      appear when users interact with a button, action, or other \
+                      control.",
+        category: Category::Material,
+        icon: "\u{e90b}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
-        slug: "progress",
+        slug: "nav_drawer",
+        title: "Navigation Drawer",
+        subtitle: "Displaying a drawer within appbar",
+        description: "A Material Design panel that slides in horizontally from the \
+                      edge of the screen to show navigation links in an application.",
+        category: Category::Material,
+        icon: "\u{e90c}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "nav_rail",
+        title: "Navigation Rail",
+        subtitle: "Displaying a Navigation Rail within an app",
+        description: "A material widget that is meant to be displayed at the left or \
+                      right of an app to navigate between a small number of views, \
+                      typically between three and five.",
+        category: Category::Material,
+        icon: "\u{e69f}",
+        icon_family: MATERIAL_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "pickers",
+        title: "Pickers",
+        subtitle: "Date and time selection",
+        description: "Shows a dialog containing a Material Design date picker.",
+        category: Category::Material,
+        icon: "\u{e910}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "progress-indicator",
         title: "Progress indicators",
         subtitle: "Linear, circular, indeterminate",
-        description: "Determinate indicators show how much is done; \
-                      indeterminate ones only show that something is. The \
-                      spinning one is a looping animation controller.",
-        category: Category::Components,
-        mark: "P",
+        description: "A Material Design circular progress indicator, which spins to \
+                      indicate that the application is busy.",
+        category: Category::Material,
+        icon: "\u{e908}",
+        icon_family: GALLERY_ICONS,
         accent: BLUE,
     },
     Demo {
         slug: "selection-controls",
         title: "Selection controls",
         subtitle: "Checkboxes, radio buttons, and switches",
-        description: "Three shapes for three meanings: a checkbox for several \
-                      independent choices, a radio for one of a set, a switch \
-                      for something that takes effect immediately.",
-        category: Category::Components,
-        mark: "SC",
-        accent: GREEN,
+        description: "Checkboxes allow the user to select multiple options from a \
+                      set. A normal checkbox's value is true or false and a tristate \
+                      checkbox's value can also be null.",
+        category: Category::Material,
+        icon: "\u{e917}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "sliders",
         title: "Sliders",
         subtitle: "Widgets for selecting a value by swiping",
-        description: "A slider's hit area is deliberately taller than its \
-                      track: the thing you can hit should be bigger than the \
-                      thing you can see.",
-        category: Category::Components,
-        mark: "Sl",
-        accent: CORAL,
+        description: "Sliders reflect a range of values along a bar, from which \
+                      users may select a single value. They are ideal for adjusting \
+                      settings such as volume, brightness, or applying image \
+                      filters.",
+        category: Category::Material,
+        icon: "\u{e904}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "snackbars",
         title: "Snackbars",
         subtitle: "Snackbars show messages at the bottom of the screen",
-        description: "A brief message with at most one action. It inverts the \
-                      surface so it reads as separate from the page.",
-        category: Category::Components,
-        mark: "Sn",
-        accent: PINK,
+        description: "Snackbars inform users of a process that an app has performed \
+                      or will perform. They appear temporarily, towards the bottom \
+                      of the screen. They shouldn't interrupt the user experience, \
+                      and they don't require user input to disappear.",
+        category: Category::Material,
+        icon: "\u{e91e}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
         slug: "tabs",
         title: "Tabs",
         subtitle: "Tabs with independently scrollable views",
-        description: "Tabs switch between views at the same level. The \
-                      indicator is a child of the tab, so it moves with the \
-                      tab's own layout rather than being placed twice.",
-        category: Category::Components,
-        mark: "T",
-        accent: PURPLE,
+        description: "Tabs organize content across different screens, data sets, and \
+                      other interactions.",
+        category: Category::Material,
+        icon: "\u{e902}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
     },
     Demo {
-        slug: "tooltips",
+        slug: "text-field",
+        title: "Text fields",
+        subtitle: "Single line of editable text and numbers",
+        description: "Text fields allow users to enter text into a UI. They \
+                      typically appear in forms and dialogs.",
+        category: Category::Material,
+        icon: "\u{e901}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    Demo {
+        slug: "tooltip",
         title: "Tooltips",
         subtitle: "Short message displayed on long press or hover",
-        description: "There is no hover yet, so this one appears while a region \
-                      is pressed. The shape is the same either way.",
-        category: Category::Components,
-        mark: "Tt",
+        description: "Tooltips provide text labels that help explain the function of \
+                      a button or other user interface action. Tooltips display \
+                      informative text when users hover over, focus on, or long \
+                      press an element.",
+        category: Category::Material,
+        icon: "\u{e900}",
+        icon_family: GALLERY_ICONS,
+        accent: BLUE,
+    },
+    // -- Cupertino ---
+    Demo {
+        slug: "cupertino-activity-indicator",
+        title: "Activity indicator",
+        subtitle: "iOS-style activity indicators",
+        description: "An iOS-style activity indicator that spins clockwise.",
+        category: Category::Cupertino,
+        icon: "\u{e920}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-alerts",
+        title: "Alerts",
+        subtitle: "iOS-style alert dialogs",
+        description: "An alert dialog informs the user about situations that require \
+                      acknowledgement. An alert dialog has an optional title, \
+                      optional content, and an optional list of actions. The title \
+                      is displayed above the content and the actions are displayed \
+                      below the content.",
+        category: Category::Cupertino,
+        icon: "\u{e912}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-buttons",
+        title: "Buttons",
+        subtitle: "iOS-style buttons",
+        description: "An iOS-style button. It takes in text and/or an icon that \
+                      fades out and in on touch. May optionally have a background.",
+        category: Category::Cupertino,
+        icon: "\u{e923}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-context-menu",
+        title: "Context Menu",
+        subtitle: "iOS-style context menu",
+        description: "An iOS-style full screen contextual menu that appears when an \
+                      element is long-pressed.",
+        category: Category::Cupertino,
+        icon: "\u{e90b}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-navigation-bar",
+        title: "Navigation bar",
+        subtitle: "iOS-style navigation bar",
+        description: "An iOS-styled navigation bar. The navigation bar is a toolbar \
+                      that minimally consists of a page title, in the middle of the \
+                      toolbar.",
+        category: Category::Cupertino,
+        icon: "\u{e926}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-picker",
+        title: "Pickers",
+        subtitle: "iOS-style pickers",
+        description: "An iOS-style picker widget that can be used to select strings, \
+                      dates, times, or both date and time.",
+        category: Category::Cupertino,
+        icon: "\u{e90d}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-scrollbar",
+        title: "Scrollbar",
+        subtitle: "iOS-style scrollbar",
+        description: "A scrollbar that wraps the given child",
+        category: Category::Cupertino,
+        icon: "\u{e90d}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-segmented-control",
+        title: "Segmented control",
+        subtitle: "iOS-style segmented control",
+        description: "Used to select between a number of mutually exclusive options. \
+                      When one option in the segmented control is selected, the \
+                      other options in the segmented control cease to be selected.",
+        category: Category::Cupertino,
+        icon: "\u{e902}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-slider",
+        title: "Slider",
+        subtitle: "iOS-style slider",
+        description: "A slider can be used to select from either a continuous or a \
+                      discrete set of values.",
+        category: Category::Cupertino,
+        icon: "\u{e904}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-switch",
+        title: "Switch",
+        subtitle: "iOS-style switch",
+        description: "A switch is used to toggle the on/off state of a single \
+                      setting.",
+        category: Category::Cupertino,
+        icon: "\u{e922}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-tab-bar",
+        title: "Tab bar",
+        subtitle: "iOS-style bottom tab bar",
+        description: "An iOS-style bottom navigation tab bar. Displays multiple tabs \
+                      with one tab being active, the first tab by default.",
+        category: Category::Cupertino,
+        icon: "\u{e91b}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-text-field",
+        title: "Text fields",
+        subtitle: "iOS-style text fields",
+        description: "A text field lets the user enter text, either with a hardware \
+                      keyboard or with an onscreen keyboard.",
+        category: Category::Cupertino,
+        icon: "\u{e901}",
+        icon_family: GALLERY_ICONS,
+        accent: GREEN,
+    },
+    Demo {
+        slug: "cupertino-search-text-field",
+        title: "Search text field",
+        subtitle: "iOS-style search text field",
+        description: "A search text field that lets the user search by entering \
+                      text, and that can offer and filter suggestions.",
+        category: Category::Cupertino,
+        icon: "\u{e567}",
+        icon_family: MATERIAL_ICONS,
+        accent: GREEN,
+    },
+    // -- Reference ---
+    Demo {
+        slug: "motion",
+        title: "Motion",
+        subtitle: "All of the predefined transition patterns",
+        description: "The container transform pattern is designed for transitions \
+                      between UI elements that include a container. This pattern \
+                      creates a visible connection between two UI elements",
+        category: Category::Reference,
+        icon: "\u{e91c}",
+        icon_family: GALLERY_ICONS,
         accent: AMBER,
     },
-    // -- Reference ------------------------------------------------------------
     Demo {
         slug: "colors",
         title: "Colors",
         subtitle: "All of the predefined colors",
-        description: "The theme's palette, and what each colour is for. \
-                      Switching the theme in settings changes every swatch.",
+        description: "Color and color swatch constants which represent Material \
+                      Design's color palette.",
         category: Category::Reference,
-        mark: "Co",
-        accent: PINK,
+        icon: "\u{e915}",
+        icon_family: GALLERY_ICONS,
+        accent: AMBER,
     },
     Demo {
         slug: "typography",
         title: "Typography",
         subtitle: "All of the predefined text styles",
-        description: "Text is shaped by the engine's own txt and skparagraph \
-                      stack -- the same one Flutter uses -- and drawn into a \
-                      real display list.",
+        description: "Definitions for the various typographical styles found in \
+                      Material Design.",
         category: Category::Reference,
-        mark: "Ty",
-        accent: BLUE,
+        icon: "\u{e914}",
+        icon_family: GALLERY_ICONS,
+        accent: AMBER,
     },
     Demo {
-        slug: "motion",
-        title: "Motion",
-        subtitle: "Curves, and what each of them is for",
-        description: "Every curve maps 0 to 0 and 1 to 1, so an animation \
-                      always starts where it started and ends where it ends, \
-                      however strangely it gets there.",
+        slug: "2d-transformations",
+        title: "2D transformations",
+        subtitle: "Pan and zoom",
+        description: "Tap to edit tiles, and use gestures to move around the scene. \
+                      Drag to pan and pinch with two fingers to zoom. Press the \
+                      reset button to return to the starting orientation.",
         category: Category::Reference,
-        mark: "M",
-        accent: TEAL,
-    },
-    Demo {
-        slug: "layout",
-        title: "Layout",
-        subtitle: "Constraints go down, sizes come up",
-        description: "The protocol the whole render layer turns on. A parent \
-                      hands each child constraints; the child picks a size \
-                      inside them; the parent decides where it sits.",
-        category: Category::Reference,
-        mark: "Ly",
-        accent: GREEN,
+        icon: "\u{e90e}",
+        icon_family: GALLERY_ICONS,
+        accent: AMBER,
     },
 ];
 
 /// Looks a demo up by its route argument.
 pub fn find(slug: &str) -> Option<&'static Demo> {
     DEMOS.iter().find(|demo| demo.slug == slug)
+}
+
+/// Looks a study up by its route argument.
+pub fn find_study(slug: &str) -> Option<&'static Study> {
+    STUDIES.iter().find(|study| study.slug == slug)
 }
 
 /// Every demo in a category, in order.
@@ -362,9 +699,10 @@ pub fn count(category: Category) -> usize {
     in_category(category).count()
 }
 
-/// The categories, in the order the home page lists them.
+/// The categories the home page lists, in order. Studies are not among
+/// them: they are the carousel above the list.
 pub const CATEGORIES: &[Category] =
-    &[Category::Study, Category::Components, Category::Reference];
+    &[Category::Material, Category::Cupertino, Category::Reference];
 
 #[cfg(test)]
 mod tests {
@@ -372,12 +710,12 @@ mod tests {
 
     #[test]
     fn every_slug_is_unique() {
-        // Slugs are what routes carry, so a duplicate would silently route two
-        // entries to one demo.
+        // Slugs are what routes carry, so a duplicate would silently route
+        // two entries to one demo.
         let mut seen: Vec<&str> = Vec::new();
-        for demo in DEMOS {
-            assert!(!seen.contains(&demo.slug), "duplicate slug {}", demo.slug);
-            seen.push(demo.slug);
+        for slug in DEMOS.iter().map(|d| d.slug).chain(STUDIES.iter().map(|s| s.slug)) {
+            assert!(!seen.contains(&slug), "duplicate slug {slug}");
+            seen.push(slug);
         }
     }
 
@@ -393,12 +731,36 @@ mod tests {
         for demo in DEMOS {
             assert!(find(demo.slug).is_some(), "{} is not findable", demo.slug);
         }
+        for study in STUDIES {
+            assert!(find_study(study.slug).is_some(), "{} is not findable", study.slug);
+        }
         assert!(find("not-a-demo").is_none());
     }
 
     #[test]
-    fn the_counts_add_up() {
+    fn the_catalogue_matches_upstream() {
+        // The counts upstream has, so a botched regeneration is caught here
+        // rather than by someone noticing a missing row.
+        assert_eq!(STUDIES.len(), 6);
+        assert_eq!(count(Category::Material), 24);
+        assert_eq!(count(Category::Cupertino), 13);
+        assert_eq!(count(Category::Reference), 4);
         let total: usize = CATEGORIES.iter().map(|c| count(*c)).sum();
         assert_eq!(total, DEMOS.len());
+    }
+
+    #[test]
+    fn every_demo_has_a_real_icon_codepoint() {
+        for demo in DEMOS {
+            let mut chars = demo.icon.chars();
+            let glyph = chars.next().expect("an icon is one character");
+            assert!(chars.next().is_none(), "{} has more than one", demo.slug);
+            // The private use area, which is where an icon font puts them.
+            assert!(
+                (0xE000..=0xF8FF).contains(&(glyph as u32)),
+                "{} is not a private-use codepoint",
+                demo.slug
+            );
+        }
     }
 }

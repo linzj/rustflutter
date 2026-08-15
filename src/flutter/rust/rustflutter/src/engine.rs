@@ -296,6 +296,8 @@ pub(crate) mod sys {
         pub fn rf_canvas_build(canvas: *mut RfCanvas) -> *mut RfDisplayList;
         pub fn rf_display_list_free(display_list: *mut RfDisplayList);
 
+        pub fn rf_register_font(data: *const u8, length: usize, family: *const c_char) -> c_int;
+
         pub fn rf_paragraph_new(
             text: *const c_char,
             text_len: usize,
@@ -347,6 +349,24 @@ pub fn initialize() {
     unsafe { sys::rf_initialize(std::ptr::null()) };
 }
 
+/// Makes a font in memory available to every paragraph, under `family`.
+///
+/// This is what an icon font needs. An icon is a glyph at a private-use
+/// codepoint; without a family to find it in, the shaper falls back to a system
+/// face that has nothing there and draws a blank rather than an error.
+///
+/// The data is copied, so the caller's buffer can go away afterwards. Returns
+/// false if Skia cannot read it as a font.
+pub fn register_font(data: &[u8], family: &str) -> bool {
+    let Ok(family) = std::ffi::CString::new(family) else { return false };
+    if data.is_empty() {
+        return false;
+    }
+    // SAFETY: the pointer and length describe `data`, which outlives the call,
+    // and `family` is NUL-terminated for as long as the call runs.
+    unsafe { sys::rf_register_font(data.as_ptr(), data.len(), family.as_ptr()) == 0 }
+}
+
 /// 0xAARRGGBB, the same encoding as `dart:ui`'s `Color`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(pub u32);
@@ -383,6 +403,16 @@ impl Color {
     /// The same colour at a different alpha.
     pub const fn with_alpha(self, alpha: u8) -> Color {
         Color::argb(alpha, self.red(), self.green(), self.blue())
+    }
+
+    /// The same colour, `amount` of the way towards black. `amount` is 0 to 1.
+    ///
+    /// Alpha is left alone: darkening is about the colour, and a press state
+    /// that also went transparent would show whatever is behind it.
+    pub fn darkened(self, amount: f32) -> Color {
+        let keep = 1.0 - amount.clamp(0.0, 1.0);
+        let scale = |c: u8| (c as f32 * keep).round().clamp(0.0, 255.0) as u8;
+        Color::argb(self.alpha(), scale(self.red()), scale(self.green()), scale(self.blue()))
     }
 }
 

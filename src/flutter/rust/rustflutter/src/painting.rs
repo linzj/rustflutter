@@ -8,7 +8,10 @@
 //! `Image`, and the transform/clip/save methods on `Canvas`. The engine objects
 //! underneath are the same ones; only the way the arguments arrive changes.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::os::raw::c_int;
+use std::rc::Rc;
 
 use crate::engine::{Canvas, Color, LayerTree, Paint, Rect, sys};
 
@@ -410,6 +413,35 @@ impl Image {
 
     pub fn size(&self) -> (i32, i32) {
         (self.width(), self.height())
+    }
+
+    /// Decodes `data` the first time `key` is asked for, and returns the same
+    /// handle every time after.
+    ///
+    /// A widget tree is rebuilt every frame, so an image built inside a `build`
+    /// would be decoded sixty times a second to draw the same picture. This is
+    /// the cache that stops it. Entries are never evicted: the images an app
+    /// bakes in are a fixed set, and evicting one would mean decoding it again
+    /// the next frame -- which is the thing being avoided.
+    ///
+    /// Thread-local, because a decoded image is a raw engine handle and the UI
+    /// thread is the only one that builds.
+    pub fn shared(key: &str, data: &[u8]) -> Option<Rc<Image>> {
+        thread_local! {
+            static CACHE: RefCell<HashMap<String, Option<Rc<Image>>>> =
+                RefCell::new(HashMap::new());
+        }
+        CACHE.with(|cache| {
+            // The miss is cached too. A PNG that failed to decode will fail
+            // again, and retrying it every frame is the same waste in a
+            // different shape.
+            if let Some(hit) = cache.borrow().get(key) {
+                return hit.clone();
+            }
+            let decoded = Image::decode(data).map(Rc::new);
+            cache.borrow_mut().insert(key.to_string(), decoded.clone());
+            decoded
+        })
     }
 }
 

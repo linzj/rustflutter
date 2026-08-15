@@ -410,3 +410,12 @@ pub unsafe extern "C" fn rf_layer_tree_rasterize_bgra(tree: *mut RfLayerTree, ou
 pub unsafe extern "C" fn rf_window_show(width: c_int, height: c_int, bgra: *const u8, bgra_len: usize, title: *const c_char) -> c_int {
     0
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rf_register_font(
+    data: *const u8,
+    length: usize,
+    family: *const std::os::raw::c_char,
+) -> std::os::raw::c_int {
+    -1
+}

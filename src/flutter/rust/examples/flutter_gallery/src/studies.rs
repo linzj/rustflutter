@@ -19,7 +19,7 @@ use rustflutter::render::{
 use rustflutter::widgets::{Align, Container, Empty};
 
 use crate::app::{self, GalleryState, ids};
-use crate::catalog::Demo;
+use crate::catalog;
 
 /// What the studies remember.
 #[derive(Clone, Debug, Default)]
@@ -33,11 +33,11 @@ pub struct StudyState {
 }
 
 pub fn page(
-    demo: &'static Demo,
+    study: &'static catalog::Study,
     state: &GalleryState,
     handle: StateHandle<GalleryState>,
 ) -> AnyWidget {
-    let body: AnyWidget = match demo.slug {
+    let body: AnyWidget = match study.slug {
         "rally" => rally(),
         "shrine" => shrine(state, handle.clone()),
         "crane" => crane(state, handle.clone()),
@@ -47,7 +47,7 @@ pub fn page(
         }
     };
 
-    app::scaffold(demo.title, Some(demo.subtitle), state, handle, body)
+    app::scaffold(study.title, Some(study.subtitle), state, handle, body)
 }
 
 // -- Rally --------------------------------------------------------------------

@@ -4,112 +4,266 @@
 
 //! The home page.
 //!
-//! Ported from `new_gallery/lib/pages/home.dart`, minus the carousel's parallax
-//! and the deferred loading. What remains is its shape: a header, a row of
-//! study cards, and category sections that open to reveal their demos.
+//! Ported from `new_gallery/lib/pages/home.dart`, mobile layout. Upstream's
+//! order, and the reason the page reads the way it does:
 //!
-//! Upstream the categories are an animated expansion with a rotating chevron.
-//! Here they are a tap that changes a list -- the animation would need the
-//! expanding list to be laid out at two sizes at once, which is a render object
-//! rather than a composition and is worth doing when something else needs it
-//! too.
+//! ```text
+//!   Header "Gallery"        headlineMedium, in primaryContainer
+//!   the carousel            six study cards, scrolled sideways
+//!   Header "Categories"     the same header again
+//!   Material                a category that opens to twenty-four demos
+//!   Cupertino               thirteen
+//!   STYLES & OTHER          four
+//! ```
+//!
+//! The cards are upstream's own artwork, and the demo icons are upstream's own
+//! icon font -- see `catalog.rs`. What is not ported: the staggered entrance
+//! animation each category plays on first paint, the carousel's parallax, and
+//! the splash page in front of it all.
+//!
+//! Upstream animates a category open, which needs the expanding list laid out
+//! at two heights at once. Here the chevron turns and the list appears. The
+//! animation is a render object rather than a composition, and is worth doing
+//! when something else needs it too.
 
-use rustflutter::components::theme_of;
 use rustflutter::framework::{AnyWidget, StateHandle, component, leaf, many};
 use rustflutter::gestures::PointerHandlers;
+use rustflutter::painting::Image;
 use rustflutter::prelude::*;
 use rustflutter::render::{
-    Alignment, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex,
+    Alignment, BoxFit, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, Size,
+    StackPosition,
 };
-use rustflutter::widgets::{Align, Container, Empty, Pointer};
+use rustflutter::widgets::{
+    Align, ClipRRect, Container, Empty, ImageView, ListView, Pointer, Stack,
+};
 
 use crate::app::{self, GalleryState, ids};
 use crate::catalog::{self, Category};
+use crate::theme::{Scheme, text};
+
+/// Upstream's `_horizontalPadding`.
+const HORIZONTAL_PADDING: f32 = 32.0;
+/// Upstream's `_carouselItemWidth` and `_carouselHeightMin`.
+const CARD_WIDTH: f32 = 296.0;
+const CARD_HEIGHT: f32 = 240.0;
+/// Upstream's `_carouselItemMobileMargin`.
+const CARD_MARGIN: f32 = 4.0;
+/// Upstream's card corner.
+const CARD_RADIUS: f32 = 10.0;
 
 pub fn page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
-    let mut sections: Vec<AnyWidget> = vec![component(Header)];
+    let scheme = state.scheme();
+
+    let mut rows: Vec<AnyWidget> = vec![
+        component(Header { text: "Gallery", scheme }),
+        component(Carousel { scheme, pressed: state.pressed, handle: handle.clone() }),
+        component(Header { text: "Categories", scheme }),
+    ];
 
     for (index, category) in catalog::CATEGORIES.iter().enumerate() {
-        sections.push(component(CategorySection {
+        rows.push(component(CategoryListItem {
             category: *category,
             index,
+            scheme,
             expanded: state.is_expanded(*category),
             pressed: state.pressed,
             handle: handle.clone(),
         }));
     }
 
-    app::scaffold(
-        "rustflutter Gallery",
-        Some("A port of Flutter Gallery"),
-        state,
-        handle,
-        app::scrolling_body(sections, 16.0, 16.0),
-    )
+    // The list runs edge to edge; the padding is per-row, because the carousel
+    // has to be able to scroll out past it.
+    let body = many(rows, move |rendered| {
+        let mut list = ListView::new().with_offset(0.0);
+        list = list.push(Container::new().with_size(1.0, 8.0));
+        for child in rendered {
+            list = list.push(child);
+        }
+        Box::new(list.push(Container::new().with_size(1.0, 32.0)))
+    });
+
+    app::bare_page(state, handle, body)
 }
 
-/// The block of text at the top, upstream's `_GalleryHeader`.
-struct Header;
+/// Upstream's `Header`: one line, in `primaryContainer`, with fixed padding.
+struct Header {
+    text: &'static str,
+    scheme: Scheme,
+}
 
 impl Component for Header {
-    fn build(&self, context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
-        let title = theme.title();
-        let muted = theme.muted();
-        let primary = theme.primary;
-        let spacing = theme.spacing;
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
+        let label = self.text;
+        let color = self.scheme.primary_container;
+        let (size, weight) = text::HEADLINE_MEDIUM;
 
         leaf(move || {
             Container::new()
-                .with_padding(EdgeInsets::only(0.0, spacing, 0.0, spacing))
-                .with_child(
-                    Column::new()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                        .with_spacing(6.0)
-                        .push(
-                            Text::new("Design beautiful apps")
-                                .with_style(TextStyle { font_size: 26.0, ..title.clone() }),
-                        )
-                        .push(
-                            Text::new(
-                                "Every screen below is laid out by the Rust framework and \
-                                 drawn by the Flutter engine.",
-                            )
-                            .with_style(muted.clone()),
-                        )
-                        .push(
-                            Container::new()
-                                .with_size(48.0, 3.0)
-                                .with_color(primary)
-                                .with_corner_radius(2.0),
-                        ),
-                )
+                .with_padding(EdgeInsets::only(HORIZONTAL_PADDING, 15.0, HORIZONTAL_PADDING, 11.0))
+                .with_child(Align::new(
+                    Alignment::CENTER_LEFT,
+                    Text::new(label).with_size(size).with_weight(weight).with_color(color),
+                ))
         })
     }
 }
 
-/// A category header that opens to reveal its demos.
-struct CategorySection {
+/// The six study cards, scrolled sideways. Upstream's `_MobileCarousel`.
+struct Carousel {
+    scheme: Scheme,
+    pressed: Option<u64>,
+    handle: StateHandle<GalleryState>,
+}
+
+impl Component for Carousel {
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
+        let mut cards: Vec<AnyWidget> = Vec::new();
+        for (index, study) in catalog::STUDIES.iter().enumerate() {
+            cards.push(component(CarouselCard {
+                study,
+                id: ids::STUDY_CARD + index as u64,
+                scheme: self.scheme,
+                pressed: self.pressed,
+                handle: self.handle.clone(),
+            }));
+        }
+
+        many(cards, move |rendered| {
+            // Upstream's carousel is a PageView whose viewportFraction is one
+            // card plus its margins, which centres whichever card is current.
+            // Centring the ends is the part of that which shows when nothing
+            // has been swiped yet.
+            let mut list = ListView::horizontal().with_centred_item(CARD_WIDTH);
+            for card in rendered {
+                list = list.push(card);
+            }
+            Box::new(
+                Container::new()
+                    .with_padding(EdgeInsets::symmetric(0.0, 16.0))
+                    .with_height(CARD_HEIGHT + 32.0)
+                    .with_child(list),
+            )
+        })
+    }
+}
+
+/// One study card: upstream's artwork, with the title over the bottom of it.
+struct CarouselCard {
+    study: &'static catalog::Study,
+    id: u64,
+    scheme: Scheme,
+    pressed: Option<u64>,
+    handle: StateHandle<GalleryState>,
+}
+
+impl Component for CarouselCard {
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
+        let study = self.study;
+        let scheme = self.scheme;
+        let id = self.id;
+        let held = self.pressed == Some(id);
+        let handle = self.handle.clone();
+        let slug = study.slug;
+
+        let handlers = PointerHandlers::new()
+            .with_tap({
+                let handle = handle.clone();
+                move |_| {
+                    handle.set_state(move |state| state.open_study(slug));
+                }
+            })
+            .with_press_change(move |down| {
+                handle.set_state(move |state| {
+                    state.pressed = if down { Some(id) } else { None };
+                });
+            });
+
+        // Upstream picks the dark artwork and writes the title in white at 87%
+        // when the theme is dark; in light it uses the study's own brand colour.
+        let (bytes, fill, ink) = if scheme.is_dark {
+            (study.card_dark, study.fill_dark, Color::WHITE.with_alpha(0xDE))
+        } else {
+            (study.card, study.fill, study.text)
+        };
+        let artwork = Image::shared(&format!("{slug}:{}", scheme.is_dark), bytes);
+
+        let (title_size, title_weight) = text::BODY_SMALL;
+        let (sub_size, sub_weight) = text::LABEL_SMALL;
+
+        leaf(move || {
+            let mut layers = Stack::new();
+            if let Some(artwork) = artwork.clone() {
+                layers = layers.push_positioned(
+                    ImageView::with_fit(artwork, BoxFit::Cover),
+                    StackPosition::fill(),
+                );
+            }
+            layers = layers.push_positioned(
+                Container::new().with_padding(EdgeInsets::only(16.0, 0.0, 16.0, 16.0)).with_child(
+                    RenderFlex::column()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_main_axis_alignment(rustflutter::render::MainAxisAlignment::End)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                        .push(
+                            Text::new(study.title)
+                                .with_size(title_size)
+                                .with_weight(title_weight)
+                                .with_color(ink),
+                        )
+                        .push(
+                            Text::new(study.subtitle)
+                                .with_size(sub_size)
+                                .with_weight(sub_weight)
+                                .with_color(ink),
+                        ),
+                ),
+                StackPosition::fill(),
+            );
+
+            Pointer::new(
+                id,
+                Container::new()
+                    .with_margin(EdgeInsets::symmetric(CARD_MARGIN, 0.0))
+                    .with_size(CARD_WIDTH - CARD_MARGIN * 2.0, CARD_HEIGHT)
+                    .with_color(if held { fill.darkened(0.12) } else { fill })
+                    .with_corner_radius(CARD_RADIUS)
+                    // Upstream's `clipBehavior: Clip.antiAlias`. Without it the
+                    // artwork keeps its own aspect under BoxFit::Cover and
+                    // spills out over the cards on either side -- and the
+                    // rounded corners are painted under a square image.
+                    .with_child(ClipRRect::new(CARD_RADIUS, layers)),
+            )
+            .with_handlers(handlers.clone())
+        })
+    }
+}
+
+/// A category that opens to reveal its demos. Upstream's `CategoryListItem`.
+struct CategoryListItem {
     category: Category,
     index: usize,
+    scheme: Scheme,
     expanded: bool,
     pressed: Option<u64>,
     handle: StateHandle<GalleryState>,
 }
 
-impl Component for CategorySection {
-    fn build(&self, context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
+impl Component for CategoryListItem {
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
         let category = self.category;
+        let scheme = self.scheme;
         let expanded = self.expanded;
         let header_id = ids::CATEGORY + self.index as u64;
         let handle = self.handle.clone();
-        let pressed = self.pressed == Some(header_id);
+        let held = self.pressed == Some(header_id);
 
-        let header_handle = handle.clone();
         let header_handlers = PointerHandlers::new()
-            .with_tap(move |_| {
-                header_handle.set_state(move |state| state.toggle_category(category));
+            .with_tap({
+                let handle = handle.clone();
+                move |_| {
+                    handle.set_state(move |state| state.toggle_category(category));
+                }
             })
             .with_press_change({
                 let handle = handle.clone();
@@ -120,58 +274,63 @@ impl Component for CategorySection {
                 }
             });
 
-        let title = theme.title();
-        let muted = theme.muted();
-        let surface = theme.surface;
-        let outline = theme.outline;
-        let radius = theme.radius;
-        let spacing = theme.spacing;
-        let accent = theme.primary;
-        let count = catalog::count(category);
+        let title = category.title().unwrap_or("");
+        let icon = category
+            .icon()
+            .and_then(|bytes| Image::shared(category.title().unwrap_or("?"), bytes));
+        let (title_size, title_weight) = text::HEADLINE_SMALL;
+        // Upstream's collapsed header is inset and rounded; the open one runs
+        // edge to edge and squares off, so that the demos below read as part of
+        // it rather than as a separate list.
+        let margin = if expanded { 0.0 } else { HORIZONTAL_PADDING };
+        let radius = if expanded { 0.0 } else { 10.0 };
+        let chevron = if expanded { catalog::icon::ARROW_UP } else { catalog::icon::ARROW_DOWN };
 
         let header = leaf(move || {
-            let chevron = Container::new()
-                .with_size(26.0, 26.0)
-                .with_color(accent.with_alpha(0x28))
-                .with_corner_radius(13.0)
-                .with_child(Align::new(
-                    Alignment::CENTER,
-                    // A triangle glyph rather than a rotating chevron: rotating
-                    // one would need the transform to animate, and the section
-                    // does not animate yet.
-                    Text::new(if expanded { "\u{25BE}" } else { "\u{25B8}" })
-                        .with_size(13.0)
-                        .with_weight(700)
-                        .with_color(accent),
-                ));
-
-            let text = Column::new()
-                .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                .with_spacing(3.0)
-                .push(Text::new(category.title()).with_style(title.clone()))
-                .push(Text::new(category.subtitle()).with_style(muted.clone()));
+            let mut row = RenderFlex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center);
+            if let Some(icon) = icon.clone() {
+                row = row.push(
+                    Container::new()
+                        .with_padding(EdgeInsets::all(8.0))
+                        .with_child(Container::new().with_size(64.0, 64.0).with_child(
+                            ImageView::with_fit(icon, BoxFit::Contain),
+                        )),
+                );
+            }
+            row = row.push_flex(FlexChild::expanded(
+                Container::new().with_padding(EdgeInsets::only(8.0, 0.0, 0.0, 0.0)).with_child(
+                    Align::new(
+                        Alignment::CENTER_LEFT,
+                        Text::new(title)
+                            .with_size(title_size)
+                            .with_weight(title_weight)
+                            .with_color(scheme.on_surface),
+                    ),
+                ),
+                1,
+            ));
+            row = row.push(
+                Container::new().with_padding(EdgeInsets::only(8.0, 0.0, 32.0, 0.0)).with_child(
+                    Text::new(chevron)
+                        .with_font_family(catalog::MATERIAL_ICONS)
+                        .with_size(24.0)
+                        .with_color(scheme.on_surface),
+                ),
+            );
 
             Pointer::new(
                 header_id,
                 Container::new()
-                    .with_color(if pressed { accent.with_alpha(0x18) } else { surface })
+                    .with_margin(EdgeInsets::symmetric(margin, 0.0))
+                    .with_color(if held {
+                        scheme.on_surface.with_alpha(0x1F)
+                    } else {
+                        scheme.on_background
+                    })
                     .with_corner_radius(radius)
-                    .with_border(1.0, outline)
-                    .with_padding(EdgeInsets::all(spacing * 1.75))
-                    .with_child(
-                        RenderFlex::row()
-                            .with_main_axis_size(MainAxisSize::Max)
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_spacing(spacing * 1.5)
-                            .push(chevron)
-                            .push_flex(FlexChild::expanded(text, 1))
-                            .push(
-                                Text::new(format!("{count}"))
-                                    .with_size(13.0)
-                                    .with_weight(700)
-                                    .with_color(accent),
-                            ),
-                    ),
+                    .with_child(row),
             )
             .with_handlers(header_handlers.clone())
         });
@@ -181,21 +340,22 @@ impl Component for CategorySection {
         }
 
         let mut children = vec![header];
-        for (index, demo) in catalog::in_category(category).enumerate() {
-            children.push(component(DemoRow {
+        for demo in catalog::in_category(category) {
+            children.push(component(CategoryDemoItem {
                 demo,
                 id: ids::DEMO + slug_index(demo.slug) as u64,
+                scheme,
                 pressed: self.pressed,
                 handle: handle.clone(),
-                first: index == 0,
             }));
         }
+        // Upstream's extra space below an open list.
+        children.push(leaf(|| Container::new().with_size(1.0, 12.0)));
 
         many(children, move |rendered| {
             let mut column = RenderFlex::column()
                 .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_spacing(8.0);
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for child in rendered {
                 column = column.push(child);
             }
@@ -210,22 +370,21 @@ fn slug_index(slug: &str) -> usize {
     catalog::DEMOS.iter().position(|d| d.slug == slug).unwrap_or(0)
 }
 
-/// One tappable row, upstream's `CategoryListItem` child.
-struct DemoRow {
+/// One tappable demo row. Upstream's `CategoryDemoItem`.
+struct CategoryDemoItem {
     demo: &'static catalog::Demo,
     id: u64,
+    scheme: Scheme,
     pressed: Option<u64>,
     handle: StateHandle<GalleryState>,
-    first: bool,
 }
 
-impl Component for DemoRow {
-    fn build(&self, context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
+impl Component for CategoryDemoItem {
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
         let demo = self.demo;
+        let scheme = self.scheme;
         let id = self.id;
         let held = self.pressed == Some(id);
-        let indent = if self.first { 0.0 } else { 0.0 };
         let handle = self.handle.clone();
         let slug = demo.slug;
 
@@ -242,60 +401,47 @@ impl Component for DemoRow {
                 });
             });
 
-        let body = theme.body();
-        let muted = theme.muted();
-        let surface = theme.surface;
-        let outline = theme.outline;
-        let radius = theme.radius;
-        let spacing = theme.spacing;
-        let accent = demo.accent;
+        let (title_size, title_weight) = text::TITLE_MEDIUM;
+        let (sub_size, sub_weight) = text::LABEL_SMALL;
 
         leaf(move || {
-            let mark = Container::new()
-                .with_size(36.0, 36.0)
-                .with_color(accent.with_alpha(0x2A))
-                .with_corner_radius(10.0)
-                .with_child(Align::new(
-                    Alignment::CENTER,
-                    Text::new(demo.mark)
-                        .with_size(12.0)
-                        .with_weight(700)
-                        .with_color(accent),
-                ));
-
-            let text = Column::new()
+            let text_column = RenderFlex::column()
+                .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                .with_spacing(3.0)
                 .push(
                     Text::new(demo.title)
-                        .with_style(TextStyle { font_weight: 700, ..body.clone() }),
+                        .with_size(title_size)
+                        .with_weight(title_weight)
+                        .with_color(scheme.on_surface),
                 )
                 .push(
                     Text::new(demo.subtitle)
-                        .with_style(TextStyle { font_size: 12.0, ..muted.clone() }),
-                );
+                        .with_size(sub_size)
+                        .with_weight(sub_weight)
+                        .with_color(scheme.muted()),
+                )
+                .push(Container::new().with_size(1.0, 20.0))
+                // Upstream's one-pixel rule, in the background colour so it
+                // reads as a gap in the surface rather than as a drawn line.
+                .push(Container::new().with_height(1.0).with_color(scheme.background));
 
             Pointer::new(
                 id,
                 Container::new()
-                    .with_margin(EdgeInsets::only(indent, 0.0, 0.0, 0.0))
-                    .with_color(if held { accent.with_alpha(0x1A) } else { surface })
-                    .with_corner_radius(radius)
-                    .with_border(1.0, if held { accent } else { outline })
-                    .with_padding(EdgeInsets::symmetric(spacing * 1.5, spacing * 1.25))
+                    .with_color(if held { scheme.on_surface.with_alpha(0x14) } else { scheme.surface })
+                    .with_padding(EdgeInsets::only(32.0, 20.0, 8.0, 0.0))
                     .with_child(
                         RenderFlex::row()
                             .with_main_axis_size(MainAxisSize::Max)
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_spacing(spacing * 1.5)
-                            .push(mark)
-                            .push_flex(FlexChild::expanded(text, 1))
+                            .with_cross_axis_alignment(CrossAxisAlignment::Start)
                             .push(
-                                Text::new("\u{203A}")
-                                    .with_size(20.0)
-                                    .with_weight(700)
-                                    .with_color(accent),
-                            ),
+                                Text::new(demo.icon)
+                                    .with_font_family(demo.icon_family)
+                                    .with_size(24.0)
+                                    .with_color(scheme.primary),
+                            )
+                            .push(Container::new().with_size(40.0, 1.0))
+                            .push_flex(FlexChild::expanded(text_column, 1)),
                     ),
             )
             .with_handlers(handlers.clone())
@@ -305,6 +451,6 @@ impl Component for DemoRow {
 
 /// Kept so the module compiles standalone in tests that only need the frame.
 #[allow(dead_code)]
-fn unused() -> AnyWidget {
-    leaf(|| Empty)
+fn unused() -> (AnyWidget, Size) {
+    (leaf(|| Empty), Size::ZERO)
 }

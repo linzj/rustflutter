@@ -60,6 +60,17 @@ impl RenderParagraph {
         self
     }
 
+    /// Shapes this text with a named font family instead of the system default.
+    ///
+    /// The family has to have been registered first, with
+    /// [`crate::engine::register_font`]. This is how an icon is drawn: an icon
+    /// is a glyph at a private-use codepoint, so an icon is a one-character
+    /// string in the family that has that codepoint.
+    pub fn with_font_family(mut self, family: impl Into<String>) -> Self {
+        self.style_mut().font_family = Some(family.into());
+        self
+    }
+
     pub fn centered(self) -> Self {
         self.with_align(TextAlign::Center)
     }
@@ -455,6 +466,7 @@ pub struct ListView {
     axis: Axis,
     offset: f32,
     spacing: f32,
+    centred_item: Option<f32>,
     children: Vec<BoxedWidget>,
     composed: Option<RenderViewport>,
 }
@@ -465,6 +477,7 @@ impl ListView {
             axis: Axis::Vertical,
             offset: 0.0,
             spacing: 0.0,
+            centred_item: None,
             children: Vec::new(),
             composed: None,
         }
@@ -486,6 +499,17 @@ impl ListView {
         self
     }
 
+    /// Pads both ends so that an item this big can sit in the middle.
+    ///
+    /// What a carousel wants: the first card centred rather than jammed against
+    /// the leading edge, and the last one able to reach the middle too. The
+    /// padding cannot be a constant, because it depends on how wide the list
+    /// turns out to be -- which is why this is a request rather than a number.
+    pub fn with_centred_item(mut self, extent: f32) -> Self {
+        self.centred_item = Some(extent);
+        self
+    }
+
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
         self.children.push(Box::new(child));
         self
@@ -494,6 +518,14 @@ impl ListView {
     /// How far this list can still scroll. Zero until it has been laid out.
     pub fn max_scroll_extent(&self) -> f32 {
         self.composed.as_ref().map_or(0.0, |v| v.max_scroll_extent())
+    }
+}
+
+/// A fixed gap along one axis, zero across it.
+fn spacer(axis: Axis, extent: f32) -> RenderConstrainedBox {
+    match axis {
+        Axis::Horizontal => RenderConstrainedBox::tight(extent, 0.0),
+        Axis::Vertical => RenderConstrainedBox::tight(0.0, extent),
     }
 }
 
@@ -510,8 +542,25 @@ impl RenderBox for ListView {
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(self.spacing);
+            // Computed here rather than at construction because it depends on
+            // the size being handed down, which the caller does not know.
+            let inset = self.centred_item.and_then(|extent| {
+                let available = match self.axis {
+                    Axis::Horizontal => constraints.max_width,
+                    Axis::Vertical => constraints.max_height,
+                };
+                // Unbounded means there is no middle to sit in.
+                (available.is_finite() && available > extent)
+                    .then(|| (available - extent) / 2.0)
+            });
+            if let Some(inset) = inset {
+                flex = flex.push(spacer(self.axis, inset));
+            }
             for child in self.children.drain(..) {
                 flex = flex.push(child);
+            }
+            if let Some(inset) = inset {
+                flex = flex.push(spacer(self.axis, inset));
             }
             self.composed =
                 Some(RenderViewport::new(self.axis, flex).with_offset(self.offset));
@@ -586,15 +635,19 @@ impl ClipPath {
 }
 
 /// Draws a decoded image.
+///
+/// The image is shared rather than handed over: a render tree is rebuilt every
+/// frame, so an image that were owned here would have to be decoded again for
+/// every one of them. Decode once, keep the handle, clone the handle.
 pub struct ImageView;
 
 impl ImageView {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(image: Image) -> RenderImage {
+    pub fn new(image: std::rc::Rc<Image>) -> RenderImage {
         RenderImage::new(image)
     }
 
-    pub fn with_fit(image: Image, fit: BoxFit) -> RenderImage {
+    pub fn with_fit(image: std::rc::Rc<Image>, fit: BoxFit) -> RenderImage {
         RenderImage::new(image).with_fit(fit)
     }
 }
@@ -694,6 +747,19 @@ mod tests {
         let mut gap = SizedBox::height(12.0);
         let size = gap.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(size, Size::new(0.0, 12.0));
+    }
+
+    #[test]
+    fn a_horizontal_list_keeps_a_leading_spacer_at_its_width() {
+        // A fixed-width child at the head of a sideways list is how a carousel
+        // gets its first card off the left edge.
+        let mut list = ListView::horizontal()
+            .push(Container::new().with_size(28.0, 1.0))
+            .push(Container::new().with_size(100.0, 40.0))
+            .push(Container::new().with_size(100.0, 40.0));
+        let size = list.layout(BoxConstraints::tight(200.0, 60.0));
+        assert_eq!(size.width, 200.0);
+        assert_eq!(list.max_scroll_extent(), 28.0 + 200.0 - 200.0);
     }
 
     #[test]

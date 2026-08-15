@@ -820,13 +820,16 @@ pub enum BoxFit {
 }
 
 pub struct RenderImage {
-    image: Image,
+    image: Rc<Image>,
     fit: BoxFit,
     size: Size,
 }
 
 impl RenderImage {
-    pub fn new(image: Image) -> RenderImage {
+    /// Shared rather than owned, because a render tree is rebuilt every frame
+    /// and decoding a PNG sixty times a second to draw the same picture is not
+    /// a thing anyone wants. The caller decodes once and keeps the handle.
+    pub fn new(image: Rc<Image>) -> RenderImage {
         RenderImage { image, fit: BoxFit::default(), size: Size::ZERO }
     }
 
@@ -1659,6 +1662,21 @@ impl StackPosition {
             || self.bottom.is_some()
             || self.width.is_some()
             || self.height.is_some()
+    }
+
+    /// Pinned to all four edges, so the child is exactly as big as the stack.
+    ///
+    /// The common case for a background or an overlay, and worth a name because
+    /// spelling it out four times invites getting one of them wrong.
+    pub fn fill() -> StackPosition {
+        StackPosition {
+            left: Some(0.0),
+            top: Some(0.0),
+            right: Some(0.0),
+            bottom: Some(0.0),
+            width: None,
+            height: None,
+        }
     }
 }
 

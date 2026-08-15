@@ -267,6 +267,16 @@ void rf_display_list_free(RfDisplayList* display_list);
 
 // -- Text -------------------------------------------------------------------
 
+// Registers a font from memory under `family`, so that a paragraph asking for
+// that family gets it instead of a system font. `data` is copied.
+//
+// This is what makes an icon font usable: an icon is a glyph at a private-use
+// codepoint, and without a family to find it in, the shaper falls back to a
+// system face that has nothing at that codepoint and draws a blank.
+//
+// Returns 0 on success, -1 if the data is not a font Skia can read.
+int32_t rf_register_font(const uint8_t* data, size_t length, const char* family);
+
 // text must be UTF-8. font_family may be NULL for the platform default.
 RfParagraph* rf_paragraph_new(const char* text,
                               size_t text_len,

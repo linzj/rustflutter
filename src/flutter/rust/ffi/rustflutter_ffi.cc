@@ -28,6 +28,7 @@
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/core/SkStream.h"
+#include "txt/asset_font_manager.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/encode/SkPngEncoder.h"
 #include "txt/font_collection.h"
@@ -220,6 +221,33 @@ void rf_display_list_free(RfDisplayList* display_list) {
 }
 
 // -- Text ---------------------------------------------------------------------
+
+int32_t rf_register_font(const uint8_t* data, size_t length, const char* family) {
+  if (data == nullptr || length == 0 || family == nullptr) {
+    return -1;
+  }
+  // One manager for the process, installed on first use. DynamicFontManager
+  // exists for exactly this: the provider behind it stays mutable, so later
+  // registrations do not need the manager swapped out from under a paragraph
+  // that is mid-layout.
+  static sk_sp<txt::DynamicFontManager>* manager = [] {
+    auto* held = new sk_sp<txt::DynamicFontManager>(sk_make_sp<txt::DynamicFontManager>());
+    GetFontCollection()->SetDynamicFontManager(*held);
+    return held;
+  }();
+
+  // Copied: the caller owns `data` and may free it as soon as this returns,
+  // whereas the typeface outlives the call.
+  auto stream = std::make_unique<SkMemoryStream>(data, length, /*copyData=*/true);
+  sk_sp<SkTypeface> typeface =
+      txt::GetDefaultFontManager()->makeFromStream(std::move(stream));
+  if (typeface == nullptr) {
+    return -1;
+  }
+  (*manager)->font_provider().RegisterTypeface(std::move(typeface), std::string(family));
+  GetFontCollection()->ClearFontFamilyCache();
+  return 0;
+}
 
 RfParagraph* rf_paragraph_new(const char* text,
                               size_t text_len,

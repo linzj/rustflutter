@@ -29,3 +29,5 @@ src/out/
 
 # Diagnostic output from the capture/drive scripts.
 gal_err.log
+upstream_catalog.json
+upstream_icons.json

@@ -28,6 +28,7 @@ mod demos;
 mod home;
 mod settings;
 mod studies;
+mod theme;
 
 use std::os::raw::{c_char, c_int};
 
@@ -64,6 +65,9 @@ impl WidgetApplication for GalleryApp {
 #[unsafe(no_mangle)]
 pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) -> c_int {
     let args = collect_args(argc, argv);
+    // Before anything is built: an unregistered family draws a blank where an
+    // icon should be, and every screen has icons on it.
+    catalog::register_fonts();
     let light = args.iter().any(|a| a == "--light");
     let route = static_route(named(&args, "--route").as_deref().unwrap_or("home"));
     let slug = named(&args, "--slug");
@@ -113,6 +117,7 @@ fn static_route(name: &str) -> &'static str {
 /// home page's layout as well as on the screen's.
 fn render_png(path: &str, route: &'static str, slug: Option<&str>, light: bool) -> c_int {
     rustflutter::engine::initialize();
+    catalog::register_fonts();
 
     let mut tree = ElementTree::new();
     // A fixed clock, so the animated demos render the same frame every time.

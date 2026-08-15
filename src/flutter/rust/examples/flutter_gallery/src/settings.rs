@@ -59,12 +59,12 @@ impl Component for Inventory {
             .iter()
             .map(|category| {
                 (
-                    category.title().to_string(),
+                    category.title().unwrap_or("Studies").to_string(),
                     format!("{}", catalog::count(*category)),
                 )
             })
             .collect();
-        let total = catalog::DEMOS.len();
+        let total = catalog::DEMOS.len() + catalog::STUDIES.len();
         let title = theme.title();
         let body = theme.body();
         let muted = theme.muted();

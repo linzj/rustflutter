@@ -19,6 +19,27 @@ static_library("flutter_gallery_rs") {
     "src/main.rs",
     "src/settings.rs",
     "src/studies.rs",
+    "src/theme.rs",
+  ]
+
+  inputs = [
+    "assets/fonts/GalleryIcons.ttf",
+    "assets/fonts/MaterialIcons-Regular.otf",
+    "assets/icons/cupertino.png",
+    "assets/icons/material.png",
+    "assets/icons/reference.png",
+    "assets/studies/crane_card.png",
+    "assets/studies/crane_card_dark.png",
+    "assets/studies/fortnightly_card.png",
+    "assets/studies/fortnightly_card_dark.png",
+    "assets/studies/rally_card.png",
+    "assets/studies/rally_card_dark.png",
+    "assets/studies/reply_card.png",
+    "assets/studies/reply_card_dark.png",
+    "assets/studies/shrine_card.png",
+    "assets/studies/shrine_card_dark.png",
+    "assets/studies/starter_card.png",
+    "assets/studies/starter_card_dark.png",
   ]
 
   deps = [ "//flutter/rust/rustflutter" ]
@@ -62,6 +83,7 @@ if (enable_unittests) {
       "src/main.rs",
       "src/settings.rs",
       "src/studies.rs",
+      "src/theme.rs",
       "//flutter/rust/rustflutter/src/lib.rs",
     ]
 

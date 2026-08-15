@@ -26,6 +26,7 @@ use crate::demos;
 use crate::home;
 use crate::settings;
 use crate::studies;
+use crate::theme::Scheme;
 
 /// Hit-test identities.
 ///
@@ -43,6 +44,8 @@ pub mod ids {
     pub const SCRIM: u64 = 4;
     /// Home page category headers, one per category.
     pub const CATEGORY: u64 = 100;
+    /// The study cards in the home page carousel, one per study.
+    pub const STUDY_CARD: u64 = 200;
     /// Home page demo rows, one per demo, offset by index.
     pub const DEMO: u64 = 1_000;
     /// Everything a demo page puts on screen.
@@ -87,9 +90,9 @@ impl Default for GalleryState {
             navigator: Navigator::new(Route::new(routes::HOME))
                 .with_duration(Duration::from_millis(280)),
             light: false,
-            // Components is open to begin with, so the first screen shows
+            // Material is open to begin with, so the first screen shows
             // something to tap rather than three closed headers.
-            expanded: vec![catalog::Category::Components],
+            expanded: vec![catalog::Category::Material],
             demo: demos::DemoState::default(),
             study: studies::StudyState::default(),
             pressed: None,
@@ -99,8 +102,15 @@ impl Default for GalleryState {
 }
 
 impl GalleryState {
+    /// Upstream's full `ColorScheme`. The home page needs roles the component
+    /// library has no name for, so the scheme is what gets passed around and
+    /// the framework's `Theme` is derived from it.
+    pub fn scheme(&self) -> Scheme {
+        if self.light { Scheme::light() } else { Scheme::dark() }
+    }
+
     pub fn theme(&self) -> Theme {
-        if self.light { Theme::light() } else { Theme::dark() }
+        self.scheme().theme()
     }
 
     pub fn is_expanded(&self, category: catalog::Category) -> bool {
@@ -116,15 +126,27 @@ impl GalleryState {
         }
     }
 
-    /// Opens a demo, or a study if that is what the slug names.
+    /// Opens a demo page.
     pub fn open(&mut self, slug: &'static str) {
-        let Some(demo) = catalog::find(slug) else { return };
-        let route = match demo.category {
-            catalog::Category::Study => routes::STUDY,
-            _ => routes::DEMO,
-        };
-        // Reset whatever the last visit to this demo left behind, so a demo
-        // always opens in the state its description describes.
+        if catalog::find(slug).is_none() {
+            return;
+        }
+        self.push_screen(routes::DEMO, slug);
+    }
+
+    /// Opens a study. Separate from [`open`] because studies are a separate
+    /// table upstream too -- they have artwork and a whole app behind them
+    /// rather than an icon and one screen.
+    pub fn open_study(&mut self, slug: &'static str) {
+        if catalog::find_study(slug).is_none() {
+            return;
+        }
+        self.push_screen(routes::STUDY, slug);
+    }
+
+    fn push_screen(&mut self, route: &'static str, slug: &'static str) {
+        // Reset whatever the last visit left behind, so a screen always opens
+        // in the state its description describes.
         self.demo = demos::DemoState::default();
         self.study = studies::StudyState::default();
         self.navigator.push(
@@ -216,9 +238,14 @@ impl StatefulComponent for Gallery {
         state.light = self.light;
         match self.route {
             routes::SETTINGS => state.open_settings(),
-            routes::DEMO | routes::STUDY => {
+            routes::DEMO => {
                 if let Some(demo) = self.slug.as_deref().and_then(catalog::find) {
                     state.open(demo.slug);
+                }
+            }
+            routes::STUDY => {
+                if let Some(study) = self.slug.as_deref().and_then(catalog::find_study) {
+                    state.open_study(study.slug);
                 }
             }
             _ => {}
@@ -454,8 +481,8 @@ fn screen(
             Some(demo) => demos::page(demo, state, handle),
             None => missing(route),
         },
-        routes::STUDY => match route.arg("slug").and_then(catalog::find) {
-            Some(demo) => studies::page(demo, state, handle),
+        routes::STUDY => match route.arg("slug").and_then(catalog::find_study) {
+            Some(study) => studies::page(study, state, handle),
             None => missing(route),
         },
         _ => home::page(state, handle),
@@ -523,6 +550,68 @@ pub fn scaffold(
     };
 
     component(Scaffold::new(body).with_app_bar(component(bar.with_trailing(trailing))))
+}
+
+/// A page with no bar: just the background, the body, and the settings control
+/// floating over the top right.
+///
+/// This is the home page's frame. Upstream's home has no app bar either -- the
+/// header is part of the scrolling list, so that it scrolls away, and settings
+/// is a button over the whole thing rather than a bar item.
+pub fn bare_page(
+    state: &GalleryState,
+    handle: StateHandle<GalleryState>,
+    body: AnyWidget,
+) -> AnyWidget {
+    let scheme = state.scheme();
+    let held = state.pressed == Some(ids::SETTINGS);
+    let settings_handlers = rustflutter::gestures::PointerHandlers::new()
+        .with_tap({
+            let handle = handle.clone();
+            move |_| {
+                handle.set_state(|state| state.open_settings());
+            }
+        })
+        .with_press_change(move |down| {
+            handle.set_state(move |state| {
+                state.pressed = if down { Some(ids::SETTINGS) } else { None };
+            });
+        });
+
+    let button = leaf(move || {
+        rustflutter::widgets::Pointer::new(
+            ids::SETTINGS,
+            Container::new()
+                .with_size(44.0, 44.0)
+                .with_corner_radius(22.0)
+                .with_color(if held {
+                    scheme.on_surface.with_alpha(0x24)
+                } else {
+                    scheme.on_background
+                })
+                .with_child(rustflutter::widgets::Align::new(
+                    rustflutter::render::Alignment::CENTER,
+                    Text::new(catalog::icon::SETTINGS)
+                        .with_font_family(catalog::MATERIAL_ICONS)
+                        .with_size(22.0)
+                        .with_color(scheme.on_surface),
+                )),
+        )
+        .with_handlers(settings_handlers.clone())
+    });
+
+    let stacked = many(vec![body, button], move |mut rendered| {
+        let button = rendered.pop().expect("two children");
+        let body = rendered.pop().expect("two children");
+        Box::new(
+            rustflutter::render::RenderStack::new().push(body).push_positioned(
+                button,
+                StackPosition { top: Some(16.0), right: Some(16.0), ..StackPosition::default() },
+            ),
+        )
+    });
+
+    component(Scaffold::new(stacked))
 }
 
 /// A page body that scrolls, with the gallery's standard padding.
