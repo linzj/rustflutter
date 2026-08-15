@@ -21,6 +21,7 @@
 mod engine_test_stubs;
 
 pub mod app;
+pub mod components;
 pub mod engine;
 pub mod framework;
 pub mod gestures;
@@ -32,9 +33,13 @@ pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
+pub use components::{
+    AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+    LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
+};
 pub use framework::{
     AnyWidget, Component, ElementTree, Key, RenderWidget, StateHandle, StatefulComponent,
-    component, leaf, keyed_leaf, keyed_many, keyed_single, many, single, stateful,
+    component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide, single, stateful,
 };
 #[cfg(not(test))]
 pub use app::run;
@@ -56,9 +61,14 @@ pub mod prelude {
         Application, BuildContext, FrameContext, FrameScheduler, RunOptions, WidgetApplication,
         WidgetHost, register_application,
     };
+    pub use crate::components::{
+        AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+        ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
+        theme_of,
+    };
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
-        keyed_single, leaf, many, single, stateful,
+        keyed_single, leaf, many, provide, single, stateful,
     };
     #[cfg(not(test))]
     pub use crate::app::run;

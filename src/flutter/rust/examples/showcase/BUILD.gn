@@ -1,0 +1,35 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The app itself: Rust, compiled to a staticlib so it can be linked with the
+# C++ engine.
+static_library("showcase_rs") {
+  crate_name = "showcase"
+  crate_root = "src/main.rs"
+
+  sources = [ "src/main.rs" ]
+
+  deps = [ "//flutter/rust/rustflutter" ]
+}
+
+executable("showcase") {
+  sources = [ "main.cc" ]
+
+  deps = [
+    ":showcase_rs",
+    "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/host",
+  ]
+
+  if (is_win) {
+    # Pulled in by the Rust standard library.
+    libs = [
+      "advapi32.lib",
+      "bcrypt.lib",
+      "ntdll.lib",
+      "userenv.lib",
+      "ws2_32.lib",
+    ]
+  }
+}

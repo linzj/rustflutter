@@ -57,6 +57,9 @@ pub enum PointerChange {
 }
 
 impl PointerChange {
+    // Called only from the C ABI in app.rs, which is compiled out under
+    // cfg(test) -- see engine_test_stubs.rs for why.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn from_code(code: i32) -> PointerChange {
         match code {
             0 => PointerChange::Cancel,
@@ -85,6 +88,7 @@ pub enum PointerKind {
 }
 
 impl PointerKind {
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn from_code(code: i32) -> PointerKind {
         match code {
             0 => PointerKind::Touch,

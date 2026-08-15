@@ -377,12 +377,175 @@ GL 或 Vulkan 上下文——在 Windows 上就是 ANGLE，也就是上游
 
 ---
 
-## 六、下一步
+## 六、M4 —— 已完成 ✅
 
-M3 输入与帧调度（20 个入向回调 + gestures 1.4 万行）→
-M4 补齐 dart:ui 等价层（`lib/ui` 剩余 73 个文件机械式去包装 + 接入 flow
-其余 Layer 类型）→ M5 rendering 层 5.2 万行 → M6 widgets 层 15.9 万行 →
-M7 组件库（material 17.6 万 + cupertino 4.8 万，建议重新设计而非移植）。
+补齐 dart:ui 等价层。引擎 C ABI 从 29 个函数长到 78 个：
 
-横向：Impeller 的 GL/Vulkan surface、mac/linux/android 的 Rust toolchain 与
-host、rustc 用 CIPD 固定、无障碍、文本编辑与输入法。
+| 类别 | 内容 |
+|---|---|
+| paint | 不透明度、混合模式、线帽/线接、遮罩模糊，线性/径向/扫描渐变 |
+| path | 命令式构建器（move/line/quadratic/cubic/close）+ 矩形/椭圆/圆/圆角矩形 |
+| canvas | line、oval、path、arc、image、image_rect；save/saveLayer/restore + save count；translate/scale/rotate/skew/2D 仿射；裁剪矩形、圆角矩形、路径 |
+| layers | transform、offset、clip rect/rrect/path、opacity、背景模糊、子树模糊，以 push/pop 栈的形式覆盖 flow 的各 Layer 类型 |
+| images | 解码 PNG/JPEG/WebP/GIF/BMP 并绘制 |
+
+**这里做了一个明确的取舍**：没有去 Dart 化 `lib/ui/painting` 里那 73 个
+`RefCountedDartWrappable` 类。它们存在的意义就是被 Dart 调用，每个的实际载荷
+不过是 display_list 之上的几行。直接从 C ABI 触达 display_list 得到同样的能力，
+而不必背上一个没有调用者的绑定层。
+
+`RfLayerTree` 从单一 root 改为持有一个打开中的容器层栈，push/pop 因此与
+`SceneBuilder.push*` 语义一致。
+
+Skia 编解码器注册移进了 `rf_image_decode`：本构建定义了
+`SK_DISABLE_LEGACY_INIT_DECODERS`，而解码必须在没有 shell 的情况下也能工作。
+
+---
+
+## 七、M5 —— 已完成 ✅
+
+渲染层。`render.rs` 完整实现 RenderBox 协议——**约束下行、尺寸上行、父级定位子级**
+——外加 intrinsics、基线和命中测试：
+
+```
+RenderDecoratedBox     纯色/渐变填充、圆角、描边
+RenderParagraph        文本，含真实基线与固有宽度
+RenderImage            Contain / Cover / Fill / None
+RenderConstrainedBox   SizedBox 与 Container 的 width/height
+RenderPadding
+RenderAlign            Center 与 Align，支持收缩因子
+RenderFlex             Row / Column：flex 因子、紧/松适配、
+                       6 种主轴对齐、5 种交叉轴对齐（含 Baseline）
+RenderStack            边缘锚定与双边拉伸
+RenderTransform        绕支点的 2D 仿射，不影响布局
+RenderOpacity          经 save layer，避免子树内部互相透视
+RenderClipRect/Path
+RenderViewport         滚动：子节点无界布局，按偏移显示并裁剪
+RenderPointerRegion    命中测试身份
+```
+
+`widgets.rs` 成为它们的具名门面：`Center` 是 `RenderAlign`，`Row` 和 `Column`
+都是 `RenderFlex`，`ListView` 是 `RenderFlex` 之上的 `RenderViewport`。
+`Container` 采用组合而非自实现：按需叠加 margin / 尺寸 / 装饰 / padding / 对齐。
+
+### gallery 示例抓出的两个真实缺陷
+
+1. **`RenderFlex` 把自己的交叉轴最小约束传给了子节点**，于是 64px 行里的
+   44px 头像被拉成 64px——一个椭圆。只有 `Stretch` 该强制交叉轴最小值。
+2. **`HitTestResult` 给每个包含指针的盒子都记了一条**，包括匿名的，
+   把真正的最内层目标埋在了后面。身份为 0 的条目现在在唯一入口处被丢弃。
+
+---
+
+## 八、M6 + M3 —— 已完成 ✅
+
+### widgets 层（M6）
+
+`framework.rs` 补上了 widget 与 render object 之间缺失的一层：
+
+```
+Widget        廉价、不可变，每帧丢弃重建
+Element       持久：持有状态，决定复用什么
+RenderObject  做布局、绘制与命中测试
+```
+
+**为什么用 arena**：上游 `Element` 持有可变的父指针、子列表和 render object 引用，
+全是循环的。这个形状过不了 Rust 的借用检查——满地 `Rc<RefCell<Element>>`
+能编译，然后在第一次构建触及自己祖先时 panic。所以元素住在一个 slab 里，
+以 `ElementId` 为键，每条链接都是索引：循环不可表达，过期句柄是一次返回
+`None` 的查找而不是悬垂指针。
+
+**复用规则只有一条**：新 widget 与已有 element 的具体类型相同且 `Key` 相同，
+就原地更新（状态保留），否则卸载重建（状态丢弃）。有 key 的子节点按 key 匹配
+（无论移动到哪），其余按位置匹配——这正是重排后的列表还能保住状态的原因。
+
+`set_state` 在状态空闲时立即应用、在构建期间被借出时排队，所以处理器能读回
+刚写的值，而构建期内的 `set_state` 也不会造成重入借用。两种情况都会标脏并请求一帧。
+
+三个组合子 `leaf` / `single` / `many` 覆盖了 render widget，不必把整个组件目录
+重写成 widget 类型。
+
+### 输入（M3）
+
+`gestures.rs` 识别点击与拖拽。**处理器挂在 render object 上而不是 widget 上**
+——指针到达时，声明它的那个 widget 早已不存在；而且是 `Rc<dyn Fn>` 而非 `FnMut`，
+因为命中测试是在共享引用下遍历树的。处理器改动的是构建时捕获的 `StateHandle`。
+这就是整个闭环。
+
+真正起作用的仲裁只有一个距离判断：按压移动超过 `kTouchSlop` 就不再是点击候选，
+转为拖拽。只有两个识别器时，完整的 gesture arena 是比决策本身更多的机械。
+
+shell 在跨 ABI 前把 `flutter::PointerData` 收窄到 15 个字段，
+让结构体布局只活在一种语言里。Windows host 处理
+`WM_LBUTTONDOWN/UP/MOUSEMOVE` 并做鼠标捕获，`WM_CAPTURECHANGED` 时取消按压，
+按钮因此不会卡在按下态。
+
+### 测试抓出的缺陷
+
+`ElementTree::rebuild` 在末尾清空脏集合，把它刚刚那次重建过程中产生的
+`set_state` 一并丢掉了。改为在开始时清空——全量重建涵盖此前所有待处理项，
+但重建期间提出的请求是给下一帧的。
+
+---
+
+## 九、M7 —— 已完成 ✅（按重新设计而非移植）
+
+上游这一层是 material（176,201 行）+ cupertino（48,253 行），
+合计占框架总量 36%。两者都没有移植，原因不是工作量：它们是两种具体设计语言的
+实现，直译成 Rust 会得到一个既不是 Flutter 的 Material、也不是 Rust API 的东西。
+`components.rs` 提供的是应用真正会用到的那一组，为这个框架设计：
+
+```
+Theme（dark/light）  AppBar   Scaffold   Card     ListTile   Divider
+Button（4 种样式）    Switch   Slider     ProgressBar
+Label（3 级）         Badge    Gap        IdSource
+```
+
+主题通过 `Provider` 传递——`framework.rs` 新增的 InheritedWidget 等价物。
+`provide(Theme::light(), child)` 向子树发布一个值，
+`context.inherited::<T>()` 沿元素的父链向上查找最近的一个。
+与上游的差别在于值变化时：上游记录依赖并只重建读取它的 widget，
+这里 Provider 重建则其子树跟着重建——正确，但比上游做得多。追踪读者是下一步。
+
+**刻意缺席的是文本输入。** 一个可用的输入框需要平台输入法——组合区间、候选窗、
+系统能定位的光标——那是平台通道的活，不是 widget 的活。一个只处理 ASCII 按键的
+`TextField` 会看起来完成而实际上对世界上一半的语言不可用，所以没有。
+
+`Slider` 上还修了一个真实缺陷：被拉伸的父级会让命中区域比轨道宽，
+而取值来自 `local_position.dx / width`，于是滑块还没到头值就到 100% 了。
+用 `Align` 松开约束把区域钉回轨道宽度。
+
+---
+
+## 十、示例
+
+| 示例 | 证明了什么 |
+|---|---|
+| `hello_world` | 流水线端到端：Rust → DisplayList → LayerTree → 光栅化 |
+| `gallery` | 渲染层：flex、stack、viewport 滚动、渐变、裁剪、命中测试 |
+| `counter` | element 树 + 局部重建 + 点击。header 显示自己被构建的次数；点按钮后它仍是 1 |
+| `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
+
+每个都有 `--png` 无头路径供 CI 使用。
+
+---
+
+## 十一、下一步
+
+按价值排序：
+
+1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
+   但 render tree 每帧仍整棵重建，布局和绘制照跑不误。这是最大的一笔性能欠账。
+2. **Impeller。** 呈现走的是 `GPUSurfaceSoftware`。Impeller 需要窗口上的
+   GL 或 Vulkan 上下文——Windows 上就是 ANGLE，即上游 `AngleSurfaceManager`
+   那一块。换的是 `Surface` 实现，其余不动。
+3. **InheritedWidget 的依赖追踪。** 让 `Provider` 只重建真正读了它的 widget。
+4. **多平台。** Rust toolchain 与 host 只有 Windows；`rf_host_run` 之上的一切
+   都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
+5. **平台通道。** services 3 万行。好消息：`PlatformMessage` 是语言无关的
+   二进制通道，现存插件的 Android/iOS 原生侧全部可复用。
+6. **文本编辑与输入法**、**无障碍**、**rustc 用 CIPD 固定**。
+
+**不会有的东西：hot reload。** 它是 Dart VM 的能力，Rust 没有对等物。
+桌面上或许能做 dylib 热加载，但状态保持做不到，iOS 上禁止动态代码。
+这是这条路线的固定成本，不是待办事项。

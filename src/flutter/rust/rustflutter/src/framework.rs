@@ -124,6 +124,9 @@ pub struct AnyWidget {
     inner: WidgetKind,
     type_id: TypeId,
     key: Key,
+    /// Set only by [`provide`]. The element registers it so descendants can
+    /// find it with [`BuildContext::inherited`].
+    provided: Option<(TypeId, Rc<dyn Any>)>,
 }
 
 enum WidgetKind {
@@ -223,6 +226,7 @@ pub fn component<C: Component>(widget: C) -> AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
         inner: WidgetKind::Component(Box::new(StatelessObject(widget))),
+        provided: None,
     }
 }
 
@@ -232,6 +236,7 @@ pub fn stateful<C: StatefulComponent>(widget: C) -> AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
         inner: WidgetKind::Component(Box::new(StatefulObject(widget))),
+        provided: None,
     }
 }
 
@@ -241,6 +246,7 @@ pub fn render_widget<W: RenderWidget>(widget: W) -> AnyWidget {
         type_id: TypeId::of::<W>(),
         key: widget.key(),
         inner: WidgetKind::Render(Box::new(RenderObjectWidget(widget))),
+        provided: None,
     }
 }
 
@@ -384,6 +390,57 @@ where
     render_widget(ManyWidget { key: Some(key), children: RefCell::new(children), assemble })
 }
 
+// -- Provider -----------------------------------------------------------------
+
+/// Publishes a value to everything below it.
+///
+/// ```ignore
+/// provide(Theme::dark(), component(Page))
+/// ```
+///
+/// A descendant reads it with [`BuildContext::inherited`]. The value is shared
+/// rather than cloned, so publishing something large costs a pointer.
+pub struct Provider<T: 'static> {
+    value: Rc<T>,
+    child: RefCell<Option<AnyWidget>>,
+}
+
+impl<T: 'static> RenderWidget for Provider<T> {
+    fn children(&self) -> Vec<AnyWidget> {
+        self.child.borrow_mut().take().into_iter().collect()
+    }
+
+    fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
+        // A provider is not a box: it adds nothing to layout and simply passes
+        // its child through.
+        match children.pop() {
+            Some(child) => child,
+            None => Box::new(crate::widgets::Empty),
+        }
+    }
+}
+
+/// The value a [`Provider`] publishes, kept out of the widget so the element
+/// can register it without knowing `T`.
+trait ProvidedValue {
+    fn provided(&self) -> (TypeId, Rc<dyn Any>);
+}
+
+impl<T: 'static> ProvidedValue for Provider<T> {
+    fn provided(&self) -> (TypeId, Rc<dyn Any>) {
+        (TypeId::of::<T>(), Rc::clone(&self.value) as Rc<dyn Any>)
+    }
+}
+
+/// Publishes `value` to `child` and everything below it.
+pub fn provide<T: 'static>(value: T, child: AnyWidget) -> AnyWidget {
+    let widget = Provider { value: Rc::new(value), child: RefCell::new(Some(child)) };
+    let provided = widget.provided();
+    let mut any = render_widget(widget);
+    any.provided = Some(provided);
+    any
+}
+
 // -- State --------------------------------------------------------------------
 
 type Mutation = Box<dyn FnOnce(&mut dyn Any)>;
@@ -398,6 +455,12 @@ struct Shared {
     /// Bumped when an element id is recycled, so a handle to the old occupant
     /// stops resolving.
     generations: RefCell<HashMap<ElementId, u64>>,
+    /// Parent of each mounted element, so a build can walk up. Kept here rather
+    /// than read off the nodes because a BuildContext must not borrow the arena
+    /// it is being built inside.
+    parents: RefCell<HashMap<ElementId, Option<ElementId>>>,
+    /// Values a [`Provider`] has published, by the type it publishes.
+    provided: RefCell<HashMap<ElementId, (TypeId, Rc<dyn Any>)>>,
 }
 
 impl Shared {
@@ -408,6 +471,8 @@ impl Shared {
             pending: RefCell::new(Vec::new()),
             needs_frame: Cell::new(false),
             generations: RefCell::new(HashMap::new()),
+            parents: RefCell::new(HashMap::new()),
+            provided: RefCell::new(HashMap::new()),
         })
     }
 
@@ -418,6 +483,22 @@ impl Shared {
     fn bump_generation(&self, id: ElementId) {
         let mut generations = self.generations.borrow_mut();
         *generations.entry(id).or_insert(0) += 1;
+    }
+
+    /// The nearest value of type `T` published at or above `start`.
+    fn lookup(&self, start: ElementId, wanted: TypeId) -> Option<Rc<dyn Any>> {
+        let parents = self.parents.borrow();
+        let provided = self.provided.borrow();
+        let mut current = Some(start);
+        while let Some(id) = current {
+            if let Some((type_id, value)) = provided.get(&id) {
+                if *type_id == wanted {
+                    return Some(Rc::clone(value));
+                }
+            }
+            current = parents.get(&id).copied().flatten();
+        }
+        None
     }
 
     fn mark_dirty(&self, id: ElementId) {
@@ -465,6 +546,18 @@ impl<S: 'static> StateHandle<S> {
 
     pub fn element(&self) -> ElementId {
         self.id
+    }
+
+    /// A handle attached to nothing, for tests and for a component that is
+    /// being constructed outside a build. Every `set_state` on it returns
+    /// false.
+    pub fn detached() -> StateHandle<S> {
+        StateHandle {
+            id: ElementId(usize::MAX),
+            generation: 0,
+            shared: Weak::new(),
+            marker: PhantomData,
+        }
     }
 
     /// Whether this handle still points at the element it was made for. A
@@ -546,6 +639,28 @@ impl BuildContext {
     /// that reads the clock rather than storing a value needs.
     pub fn request_frame(&self) {
         self.shared.needs_frame.set(true);
+    }
+
+    /// The nearest value of type `T` published by a [`Provider`] above this
+    /// element, or `None` if there is none.
+    ///
+    /// Upstream this is `dependOnInheritedWidgetOfExactType`, and the important
+    /// difference is what happens when the value changes. Upstream records the
+    /// dependency and rebuilds exactly the widgets that read it. Here a
+    /// `Provider` that rebuilds rebuilds its child, and the subtree below
+    /// follows -- correct, and more work than upstream would do. Tracking the
+    /// readers is the obvious next step and does not change this signature.
+    pub fn inherited<T: 'static>(&self) -> Option<Rc<T>> {
+        self.shared
+            .lookup(self.element, TypeId::of::<T>())
+            .and_then(|value| value.downcast::<T>().ok())
+    }
+
+    /// [`BuildContext::inherited`], or the type's default if nothing published
+    /// one. What a theme lookup wants: a page that forgot to install a theme
+    /// should look plain, not fail to build.
+    pub fn inherited_or_default<T: Default + 'static>(&self) -> Rc<T> {
+        self.inherited::<T>().unwrap_or_else(|| Rc::new(T::default()))
     }
 }
 
@@ -639,6 +754,8 @@ impl ElementTree {
             }
         }
         self.shared.states.borrow_mut().remove(&id);
+        self.shared.parents.borrow_mut().remove(&id);
+        self.shared.provided.borrow_mut().remove(&id);
         self.shared.dirty.borrow_mut().retain(|d| *d != id);
         self.shared.pending.borrow_mut().retain(|(d, _)| *d != id);
         self.free.push(id.0);
@@ -775,6 +892,7 @@ impl ElementTree {
             WidgetKind::Render(render) => render.children(),
         };
 
+        let provided = widget.provided.clone();
         let id = self.allocate(ElementNode {
             widget,
             children: Vec::new(),
@@ -783,6 +901,15 @@ impl ElementTree {
         });
         if let Some(state) = state {
             self.shared.states.borrow_mut().insert(id, state);
+        }
+        self.shared.parents.borrow_mut().insert(id, parent);
+        match provided {
+            Some(provided) => {
+                self.shared.provided.borrow_mut().insert(id, provided);
+            }
+            None => {
+                self.shared.provided.borrow_mut().remove(&id);
+            }
         }
 
         let children = if is_component {
@@ -825,10 +952,20 @@ impl ElementTree {
             WidgetKind::Render(render) => render.children(),
         };
 
+        let provided = widget.provided.clone();
         if let Some(node) = self.nodes[id.0].as_mut() {
             node.widget = widget;
             node.depth = depth;
             node.parent = parent;
+        }
+        self.shared.parents.borrow_mut().insert(id, parent);
+        match provided {
+            Some(provided) => {
+                self.shared.provided.borrow_mut().insert(id, provided);
+            }
+            None => {
+                self.shared.provided.borrow_mut().remove(&id);
+            }
         }
 
         if is_component {
@@ -961,8 +1098,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// Counts how many times each label was built, so a test can tell a
-    /// partial rebuild from a total one.
+    // Counts how many times each label was built, so a test can tell a partial
+    // rebuild from a total one.
     thread_local! {
         static BUILDS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     }

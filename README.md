@@ -4,28 +4,27 @@
 
 - **保留**：Impeller（GPU 渲染）、display_list（绘制录制）、flow（Layer 树与合成）、
   txt + skparagraph（文字整形排版）、fml（线程模型 / TaskRunner / MessageLoop）、
-  各平台嵌入层（Android / iOS / macOS / Linux / Windows / embedder C API）。
+  shell（Engine / Animator / Rasterizer / Pipeline）。
 - **删除**：Dart VM、DartIsolate、tonic、`dart:ui` 的 Dart 侧、整个 `packages/flutter`。
-- **重写**：框架层（foundation / gestures / scheduler / animation / painting /
-  rendering / widgets / semantics / services）改用 Rust。
+- **重写**：框架层（gestures / animation / painting / rendering / widgets / 组件库）改用 Rust。
 
 上游来源：`K:\flutter`（flutter/flutter monorepo，commit `cf97bfbcb9f`）。
 
 ## 当前状态
 
-**M0 + M1 + M2 完成**：整个 shell 在无 Dart 的情况下构建通过，
-应用跑在引擎自己的 Shell 上——真正的线程模型、vsync 驱动的帧调度、
-`Rasterizer` 流水线。`create` / `run` 项目流程可用。
+**M0–M7 完成。** 整个 shell 在无 Dart 的情况下构建通过；应用跑在引擎自己的 Shell 上，
+有真正的线程模型、vsync 驱动的帧调度和 `Rasterizer` 流水线；框架层有完整的
+RenderBox 协议、element 树与状态、命中测试与手势，以及一套组件库。
 
 ```
-gn gen  →  1001 targets from 272 files
-ninja   →  exit 0
-rustflutter_unittests   →  7 passed
-rust_ffi_unittests      →  5 passed
+gn gen  →  1007 targets from 275 files
+ninja   →  exit 0，零警告
+rustflutter_unittests   →  54 passed
+rust_ffi_unittests      →  11 passed
 帧率                    →  175 帧 / 2.917 秒 = 60.0 fps（帧间隔 16,666 µs）
 ```
 
-![Hello World](docs/hello_world_shell.png)
+![Components](docs/showcase_dark.png)
 
 ## 快速开始
 
@@ -54,29 +53,59 @@ vpython3 flutter/tools/gn --unoptimized --no-rbe   # 让新 target 进入构建�
 ```rust
 use rustflutter::prelude::*;
 
-struct AppRoot;
+#[derive(Default)]
+struct State {
+    count: i32,
+    pressed: Option<u64>,
+}
 
-impl Application for AppRoot {
-    fn build(&mut self, _context: &BuildContext) -> BoxedWidget {
-        Box::new(Center::new(
-            Container::new()
-                .with_color(Color::rgb(0x1B, 0x2A, 0x3A))
-                .with_corner_radius(16.0)
-                .with_padding(EdgeInsets::symmetric(48.0, 36.0))
-                .with_child(
-                    Text::new("Hello, World!")
-                        .with_size(52.0)
-                        .with_weight(700)
-                        .with_color(Color::WHITE),
+struct Counter;
+
+impl StatefulComponent for Counter {
+    type State = State;
+
+    fn build(
+        &self,
+        state: &State,
+        handle: StateHandle<State>,
+        _cx: &mut rustflutter::framework::BuildContext,
+    ) -> AnyWidget {
+        let count = state.count;
+        stack_column(
+            vec![
+                component(Label::title(format!("{count}"))),
+                component(
+                    Button::new(1, "Increment")
+                        .wired(handle, |s| &mut s.pressed, |s| s.count += 1),
                 ),
-        ))
+            ],
+            12.0,
+        )
     }
 }
 
-fn main() {
-    register_application(|| Box::new(AppRoot));
+struct App;
+
+impl WidgetApplication for App {
+    fn build(&mut self, _cx: &BuildContext) -> AnyWidget {
+        provide(Theme::dark(), stateful(Counter))
+    }
+}
+
+// The real entry point is a `rustflutter_app_main` the C++ shim calls; see the
+// examples. It does exactly this:
+fn start() {
+    register_application(|| Box::new(WidgetHost::new(App)));
     run(&RunOptions::default()).unwrap();
 }
+```
+
+## 三层，和上游一样
+
+```
+Widget        廉价、不可变，每帧丢弃重建
+Element       持久：持有状态，决定复用什么
+RenderObject  做布局、绘制与命中测试
 ```
 
 布局遵循与 Flutter `RenderBox` 相同的协议：**约束下行、尺寸上行、父级定位子级**。
@@ -90,10 +119,16 @@ VsyncWaiter → Animator → Engine → RuntimeController
     → Pipeline → Rasterizer → Surface → 屏幕
 ```
 
+一次点击的路径是它的镜像：
+
+```
+Win32 → PlatformView → Engine → RuntimeController
+    → 命中测试（对着上一帧的 render tree）→ 手势识别
+    → set_state → 标脏 → 请求一帧
+```
+
 帧是按需的，不是自由运行的：没有请求时引擎在最后一帧之后进入空闲，
-所以一个静态界面留在屏幕上不花任何代价。动画通过
-`FrameScheduler::request_frame` 继续（等价于 dart:ui 的
-`PlatformDispatcher.scheduleFrame`）。
+所以一个静态界面留在屏幕上不花任何代价。
 
 ## 关键设计前提
 
@@ -106,7 +141,7 @@ Dart 与引擎之间的全部契约收敛在两处：
 | Dart → C++ | `lib/ui/dart_ui.cc` 绑定表 | 231 个绑定 |
 | C++ → Dart | `lib/ui/window/platform_configuration.h` 的 `DartPersistentValue` | 20 个回调 |
 
-而真正的交接点只有一行（上游 `runtime/runtime_delegate.h`，已随 `runtime/` 删除）：
+而真正的交接点只有一行（`runtime/runtime_delegate.h`，本仓库重建后原样保留）：
 
 ```cpp
 virtual void Render(int64_t view_id,
@@ -115,7 +150,22 @@ virtual void Render(int64_t view_id,
 ```
 
 框架层唯一的产出就是一棵 `LayerTree`。**Rust 只要能构造 `LayerTree`，
-下游 rasterizer → display_list → Impeller 一行都不用改**——这正是本仓库现在在做的事。
+下游 rasterizer → display_list → Impeller 一行都不用改**。
+
+## 示例
+
+| 示例 | 证明了什么 |
+|---|---|
+| `hello_world` | 流水线端到端：Rust → DisplayList → LayerTree → 光栅化 |
+| `gallery` | 渲染层：flex、stack、viewport 滚动、渐变、裁剪 |
+| `counter` | element 树 + 局部重建 + 点击 |
+| `showcase` | 组件库与主题：一次点击开关，整个应用换配色 |
+
+<p align="center">
+  <img src="docs/gallery_top.png" width="30%">
+  <img src="docs/counter_clicked.png" width="30%">
+  <img src="docs/showcase_light.png" width="30%">
+</p>
 
 ## 目录结构
 
@@ -130,15 +180,34 @@ src/
     ├── fml/               线程模型           ── 原样保留（去 Dart Timeline）
     ├── shell/             壳层与平台嵌入      ── 已去 Dart 化
     ├── runtime/           RuntimeController   ── 重建：驱动 Rust 而非 isolate
-    ├── lib/ui/            引擎对象包装层      ── :ui_types 可用，其余待去 Dart 化（73 文件）
+    ├── lib/ui/            引擎对象包装层      ── :ui_types 可用，其余见 M4 的取舍
     └── rust/                                 ← Rust 侧
-        ├── ffi/           C ABI + C++ 实现（引擎边界）
+        ├── ffi/           C ABI + C++ 实现（78 个函数）
         ├── host/          窗口 + 线程模型 + Shell 启动
-        ├── rustflutter/   框架 crate（engine 绑定 + app + widgets）
+        ├── rustflutter/   框架 crate
+        │   ├── engine.rs      引擎绑定
+        │   ├── painting.rs    路径、渐变、图片、画布状态
+        │   ├── render.rs      RenderBox 协议与渲染对象
+        │   ├── widgets.rs     具名门面
+        │   ├── framework.rs   Widget / Element / 状态 / Provider
+        │   ├── gestures.rs    指针事件与手势识别
+        │   ├── components.rs  组件库与主题
+        │   └── app.rs         与 shell 的契约
         ├── cli/           `rustflutter` 命令行工具
         ├── examples/      示例应用
         └── projects/      `rustflutter create` 生成的应用
 ```
 
-逐目录分级、待改文件清单、以及各里程碑的完整改动记录，
+逐目录分级、各里程碑的完整改动记录、以及下一步的优先级，
 见 **[PORTING_STATUS.md](PORTING_STATUS.md)**。
+
+## 已知限制
+
+- **呈现是软件光栅**（`GPUSurfaceSoftware`）。Impeller 需要窗口上的 GL/Vulkan
+  上下文，是独立的一步；换的是 `Surface` 实现，其余不动。
+- **render tree 每帧整棵重建。** 元素复用保住了状态、跳过了 `build`，
+  但布局和绘制照跑不误。这是最大的一笔性能欠账。
+- **host 只有 Windows。** `rf_host_run` 之上的一切（Shell、ThreadHost、Animator、
+  Rasterizer、软件 surface）都是可移植的，每个平台缺的只是一个窗口和一个消息循环。
+- **没有文本输入、平台通道、无障碍。**
+- **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
