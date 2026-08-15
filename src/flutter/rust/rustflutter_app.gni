@@ -1,0 +1,93 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# One rustflutter application, on whichever platform is being built.
+#
+# An application is a Rust program that links the C++ engine, so it is always
+# two targets: the Rust crate as a staticlib, and something that links it
+# against //flutter/rust/host. What that something *is* differs by platform,
+# and that is the whole reason this template exists:
+#
+#   * On a desktop the application owns the process. It is an executable, and a
+#     three-line C++ `main` hands argc/argv to `rustflutter_app_main`.
+#
+#   * On Android the Activity owns the process. The application is a shared
+#     library that the Java side loads; the entry point is the JNI bridge in
+#     rustflutter_host_android.cc, which calls `rustflutter_app_main` when the
+#     Surface is ready. There is no `main`, so main.cc is left out.
+#
+# Parameters:
+#
+#   crate_name (optional)
+#       Defaults to the target name. The Rust crate name, which is what
+#       `--crate-name` gets and so what the crate calls itself.
+#
+#   sources (required)
+#       The crate's .rs files. `src/main.rs` is the crate root.
+#
+#   inputs (optional)
+#       Files the crate embeds with include_bytes!, so that changing one
+#       rebuilds it.
+if (is_android) {
+  import("//build/config/android/config.gni")
+}
+
+template("rustflutter_app") {
+  assert(defined(invoker.sources), "rustflutter_app() needs sources")
+
+  _crate = target_name + "_rs"
+
+  static_library(_crate) {
+    if (defined(invoker.crate_name)) {
+      crate_name = invoker.crate_name
+    } else {
+      crate_name = invoker.target_name
+    }
+    crate_root = "src/main.rs"
+    sources = invoker.sources
+    if (defined(invoker.inputs)) {
+      inputs = invoker.inputs
+    }
+    deps = [ "//flutter/rust/rustflutter" ]
+  }
+
+  if (is_android) {
+    shared_library(target_name) {
+      deps = [
+        ":$_crate",
+        "//flutter/rust/ffi:engine_ffi",
+        "//flutter/rust/host",
+      ]
+
+      # Rust's standard library unwinds -- for panics, and for the backtrace it
+      # prints with one. The engine builds -fno-exceptions and links -nostdlib,
+      # so nothing else in this library pulls the unwinder in, and without it
+      # the link fails on a dozen `_Unwind_*` symbols. The NDK ships it beside
+      # the compiler runtime; see android_ndk_runtime_lib_dir.
+      lib_dirs = [ android_ndk_runtime_lib_dir ]
+      libs = [ "unwind" ]
+    }
+  } else {
+    executable(target_name) {
+      sources = [ "main.cc" ]
+
+      deps = [
+        ":$_crate",
+        "//flutter/rust/ffi:engine_ffi",
+        "//flutter/rust/host",
+      ]
+
+      if (is_win) {
+        # Pulled in by the Rust standard library.
+        libs = [
+          "advapi32.lib",
+          "bcrypt.lib",
+          "ntdll.lib",
+          "userenv.lib",
+          "ws2_32.lib",
+        ]
+      }
+    }
+  }
+}

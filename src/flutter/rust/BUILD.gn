@@ -57,6 +57,21 @@ static_library("rustflutter_engine") {
     "//flutter/rust/ffi:engine_ffi",
     "//flutter/rust/host",
   ]
+
+  if (is_android) {
+    # Named here because nothing else names it. The buildroot adds libc++ as a
+    # default dependency of every executable, loadable_module and
+    # shared_library -- see BUILDCONFIG.gn -- and this is a static_library, so
+    # it is the one target type that misses out. The application linking this
+    # archive is the shared library, and by then it is too late for GN to add
+    # anything.
+    #
+    # Only on Android, because only there is anything missing. On Windows the
+    # MSVC runtime supplies what a program actually reaches for -- thread-safe
+    # statics are `_Init_thread_header`, not `__cxa_guard_acquire` -- and the
+    # libc++ sources are not built at all in that configuration.
+    deps += [ "//flutter/third_party/libcxx" ]
+  }
 }
 
 # The framework crate wrapped as a staticlib, so C++ targets can link it.
@@ -139,14 +154,11 @@ group("rust") {
   testonly = true
 
   deps = [
-    ":rust_ffi_unittests",
-    ":rustflutter_unittests",
     "//flutter/rust/cli:rustflutter_cli",
     "//flutter/rust/examples/counter",
     "//flutter/rust/examples/cursor_demo",
     "//flutter/rust/examples/exit_demo",
     "//flutter/rust/examples/flutter_gallery",
-    "//flutter/rust/examples/flutter_gallery:flutter_gallery_unittests",
     "//flutter/rust/examples/gallery",
     "//flutter/rust/examples/hello_world",
     "//flutter/rust/examples/platform_channels",
@@ -156,4 +168,16 @@ group("rust") {
     "//flutter/rust/host",
     "//flutter/rust/rustflutter",
   ]
+
+  # The tests run on the machine that builds them, so they exist only for a
+  # host build. `enable_unittests` is already false for Android and iOS -- the
+  # gn wrapper refuses to turn it on there -- so this is the same condition the
+  # test targets themselves are declared under.
+  if (enable_unittests) {
+    deps += [
+      ":rust_ffi_unittests",
+      ":rustflutter_unittests",
+      "//flutter/rust/examples/flutter_gallery:flutter_gallery_unittests",
+    ]
+  }
 }

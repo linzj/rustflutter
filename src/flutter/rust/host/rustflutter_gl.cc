@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/rust/host/rustflutter_gl_win.h"
+#include "flutter/rust/host/rustflutter_gl.h"
 
 #include <algorithm>
 #include <chrono>
@@ -210,19 +210,25 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
     return nullptr;
   }
 
+  // Which EGL answered is worth saying: on Windows it is ANGLE on top of D3D11,
+  // and on Android it is the device's own driver, so the same message from the
+  // same code means two different stacks underneath.
+#if defined(__ANDROID__)
+  FML_LOG(IMPORTANT) << "Rendering with Impeller (OpenGL ES).";
+#else
   FML_LOG(IMPORTANT) << "Rendering with Impeller (OpenGL ES via ANGLE).";
+#endif
   return self;
 }
 
 ImpellerGlContext::~ImpellerGlContext() = default;
 
 std::unique_ptr<impeller::egl::Surface> ImpellerGlContext::CreateWindowSurface(
-    HWND window) {
-  if (window == nullptr || !onscreen_config_) {
+    EGLNativeWindowType window) {
+  if (window == 0 || !onscreen_config_) {
     return nullptr;
   }
-  return display_->CreateWindowSurface(
-      *onscreen_config_, reinterpret_cast<EGLNativeWindowType>(window));
+  return display_->CreateWindowSurface(*onscreen_config_, window);
 }
 
 bool ImpellerGlContext::MakeCurrent(
@@ -230,6 +236,7 @@ bool ImpellerGlContext::MakeCurrent(
   if (!onscreen_context_ || !onscreen_context_->MakeCurrent(surface)) {
     return false;
   }
+#if !defined(__ANDROID__)
   // Do not block in the swap. Something has to wait for the display, but only
   // one thing should: the vsync waiter already does, and a swap that waited as
   // well would stack a second wait onto every frame -- which is a scene that
@@ -238,12 +245,17 @@ bool ImpellerGlContext::MakeCurrent(
   //
   // Set on every make-current rather than once, because the interval belongs to
   // the surface and a resize replaces it.
+  //
+  // Android is left at the default, as upstream's Android surface is: there the
+  // swap is how the raster thread learns that the compositor has taken the
+  // previous buffer, and racing ahead of it only fills the queue.
   static bool warned = false;
   if (eglSwapInterval(display_->GetHandle(), 0) != EGL_TRUE && !warned) {
     warned = true;
     FML_LOG(ERROR) << "Could not turn the swap interval off; frames will wait "
                       "for the display twice.";
   }
+#endif
   return true;
 }
 
@@ -434,7 +446,8 @@ void MaybeCaptureFrame() {
 
 }  // namespace
 
-ImpellerGlDelegate::ImpellerGlDelegate(ImpellerGlContext* context, HWND window)
+ImpellerGlDelegate::ImpellerGlDelegate(ImpellerGlContext* context,
+                                       EGLNativeWindowType window)
     : context_(context), window_(window) {
   surface_ = context_->CreateWindowSurface(window_);
   if (!surface_) {

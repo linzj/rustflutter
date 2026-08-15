@@ -2,34 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# The app itself: Rust, compiled to a staticlib so it can be linked with the
-# C++ engine.
-static_library("cursor_demo_rs") {
-  crate_name = "cursor_demo"
-  crate_root = "src/main.rs"
+import("//flutter/rust/rustflutter_app.gni")
 
+rustflutter_app("cursor_demo") {
   sources = [ "src/main.rs" ]
-
-  deps = [ "//flutter/rust/rustflutter" ]
-}
-
-executable("cursor_demo") {
-  sources = [ "main.cc" ]
-
-  deps = [
-    ":cursor_demo_rs",
-    "//flutter/rust/ffi:engine_ffi",
-    "//flutter/rust/host",
-  ]
-
-  if (is_win) {
-    # Pulled in by the Rust standard library.
-    libs = [
-      "advapi32.lib",
-      "bcrypt.lib",
-      "ntdll.lib",
-      "userenv.lib",
-      "ws2_32.lib",
-    ]
-  }
 }

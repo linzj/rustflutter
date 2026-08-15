@@ -10,16 +10,25 @@
 source_set("host") {
   sources = [ "rustflutter_host.h" ]
 
+  # Impeller on EGL, which is the same file on every platform that has EGL --
+  # only where the EGL comes from differs, and this does not name it.
+  if (is_win || is_android) {
+    sources += [
+      "rustflutter_gl.cc",
+      "rustflutter_gl.h",
+    ]
+  }
+
   if (is_win) {
     sources += [
-      "rustflutter_gl_win.cc",
-      "rustflutter_gl_win.h",
       "rustflutter_host_win.cc",
 
       # Generated. See tools/gen_key_map.py.
       "rustflutter_key_map_win.cc",
       "rustflutter_key_map_win.h",
     ]
+  } else if (is_android) {
+    sources += [ "rustflutter_host_android.cc" ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]
   }
@@ -71,6 +80,26 @@ source_set("host") {
       # The IME. `flutter/textinput` is served through IMM32.
       "imm32.lib",
       "user32.lib",
+    ]
+  }
+
+  if (is_android) {
+    deps += [
+      "//flutter/impeller",
+      "//flutter/impeller/renderer/backend/gles",
+      "//flutter/impeller/toolkit/egl",
+      "//flutter/shell/gpu:gpu_surface_gl",
+    ]
+
+    libs = [
+      # ANativeWindow, AChoreographer and the Looper the platform thread runs
+      # on. All three are in libandroid.
+      "android",
+      "EGL",
+      "GLESv2",
+
+      # FML_LOG goes to logcat, which is where a device's output is read from.
+      "log",
     ]
   }
 }

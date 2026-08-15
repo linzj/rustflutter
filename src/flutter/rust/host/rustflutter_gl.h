@@ -2,21 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef FLUTTER_RUST_HOST_RUSTFLUTTER_GL_WIN_H_
-#define FLUTTER_RUST_HOST_RUSTFLUTTER_GL_WIN_H_
+#ifndef FLUTTER_RUST_HOST_RUSTFLUTTER_GL_H_
+#define FLUTTER_RUST_HOST_RUSTFLUTTER_GL_H_
 
-// Impeller on the window, through ANGLE.
+// Impeller on the window, through EGL.
 //
 // The software surface is portable and needs nothing; this is the production
-// path. What it takes is an EGL display, two contexts and a window surface --
-// and on Windows the EGL comes from ANGLE, which translates GLES onto D3D11.
+// path. What it takes is an EGL display, two contexts and a window surface.
+// Where the EGL comes from is the only per-platform part: on Windows it is
+// ANGLE, translating GLES onto D3D11, and on Android it is the system's own.
+// Neither is named below, which is why this file is not per-platform.
 //
 // Two contexts rather than one, matching every other embedder: the onscreen one
 // draws frames on the raster thread, the offscreen one uploads textures on the
 // IO thread. They share objects, so an image decoded on IO is drawable on
 // raster without a copy.
-
-#include <windows.h>
 
 #include <memory>
 
@@ -48,7 +48,8 @@ class ImpellerGlContext {
   }
 
   /// Creates the surface that frames are presented to.
-  std::unique_ptr<impeller::egl::Surface> CreateWindowSurface(HWND window);
+  std::unique_ptr<impeller::egl::Surface> CreateWindowSurface(
+      EGLNativeWindowType window);
 
   bool MakeCurrent(const impeller::egl::Surface& surface) const;
   bool ClearCurrent() const;
@@ -87,7 +88,7 @@ class ImpellerGlContext {
 /// away and remade when the window resizes.
 class ImpellerGlDelegate final : public GPUSurfaceGLDelegate {
  public:
-  ImpellerGlDelegate(ImpellerGlContext* context, HWND window);
+  ImpellerGlDelegate(ImpellerGlContext* context, EGLNativeWindowType window);
 
   // The base destructor is non-virtual, so this is not an override.
   ~ImpellerGlDelegate();
@@ -115,7 +116,7 @@ class ImpellerGlDelegate final : public GPUSurfaceGLDelegate {
 
  private:
   ImpellerGlContext* context_ = nullptr;
-  HWND window_ = nullptr;
+  EGLNativeWindowType window_ = {};
   std::unique_ptr<impeller::egl::Surface> surface_;
 
   ImpellerGlDelegate(const ImpellerGlDelegate&) = delete;
@@ -124,4 +125,4 @@ class ImpellerGlDelegate final : public GPUSurfaceGLDelegate {
 
 }  // namespace flutter
 
-#endif  // FLUTTER_RUST_HOST_RUSTFLUTTER_GL_WIN_H_
+#endif  // FLUTTER_RUST_HOST_RUSTFLUTTER_GL_H_

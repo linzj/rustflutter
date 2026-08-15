@@ -2,39 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# The worked example for platform channels, and the only check that crosses the
-# C ABI: the framework's unit tests stand a recorder in for the shell, so
-# nothing else exercises the engine side. It closes itself and exits non-zero if
-# an answer is missing or wrong.
-static_library("platform_channels_rs") {
-  crate_name = "platform_channels"
-  crate_root = "src/main.rs"
+import("//flutter/rust/rustflutter_app.gni")
 
+rustflutter_app("platform_channels") {
   sources = [
     "src/main.rs",
     "src/win32.rs",
   ]
-
-  deps = [ "//flutter/rust/rustflutter" ]
-}
-
-executable("platform_channels") {
-  sources = [ "main.cc" ]
-
-  deps = [
-    ":platform_channels_rs",
-    "//flutter/rust/ffi:engine_ffi",
-    "//flutter/rust/host",
-  ]
-
-  if (is_win) {
-    # Pulled in by the Rust standard library.
-    libs = [
-      "advapi32.lib",
-      "bcrypt.lib",
-      "ntdll.lib",
-      "userenv.lib",
-      "ws2_32.lib",
-    ]
-  }
 }

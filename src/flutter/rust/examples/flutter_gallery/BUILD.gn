@@ -3,14 +3,10 @@
 # found in the LICENSE file.
 
 import("//build/toolchain/rust.gni")
+import("//flutter/rust/rustflutter_app.gni")
 import("//flutter/testing/testing.gni")
 
-# The app itself: Rust, compiled to a staticlib so it can be linked with the
-# C++ engine.
-static_library("flutter_gallery_rs") {
-  crate_name = "flutter_gallery"
-  crate_root = "src/main.rs"
-
+rustflutter_app("flutter_gallery") {
   sources = [
     "src/app.rs",
     "src/catalog.rs",
@@ -48,29 +44,6 @@ static_library("flutter_gallery_rs") {
     "assets/studies/starter_card.png",
     "assets/studies/starter_card_dark.png",
   ]
-
-  deps = [ "//flutter/rust/rustflutter" ]
-}
-
-executable("flutter_gallery") {
-  sources = [ "main.cc" ]
-
-  deps = [
-    ":flutter_gallery_rs",
-    "//flutter/rust/ffi:engine_ffi",
-    "//flutter/rust/host",
-  ]
-
-  if (is_win) {
-    # Pulled in by the Rust standard library.
-    libs = [
-      "advapi32.lib",
-      "bcrypt.lib",
-      "ntdll.lib",
-      "userenv.lib",
-      "ws2_32.lib",
-    ]
-  }
 }
 
 # The gallery's own #[test] functions: the catalogue, the argument parsing and

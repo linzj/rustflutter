@@ -67,7 +67,7 @@
 #include "flutter/shell/common/vsync_waiter.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
-#include "flutter/rust/host/rustflutter_gl_win.h"
+#include "flutter/rust/host/rustflutter_gl.h"
 #include "flutter/rust/host/rustflutter_key_map_win.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
@@ -2196,8 +2196,8 @@ class HostPlatformView final : public PlatformView,
  private:
   /// Builds the Impeller surface, or returns nullptr with a logged reason.
   std::unique_ptr<Surface> CreateImpellerSurface() {
-    gl_delegate_ = std::make_unique<ImpellerGlDelegate>(gl_context_.get(),
-                                                        window_);
+    gl_delegate_ = std::make_unique<ImpellerGlDelegate>(
+        gl_context_.get(), reinterpret_cast<EGLNativeWindowType>(window_));
     if (!gl_delegate_->IsValid()) {
       gl_delegate_.reset();
       return nullptr;
