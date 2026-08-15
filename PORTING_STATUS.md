@@ -114,20 +114,36 @@
 
 ### 1. 依赖裁剪
 
-`DEPS` 由上游过滤生成（生成脚本见提交说明），保留条目的 revision 与上游一致，便于后续 roll：
+`DEPS` 由 `tools/gen_deps.py` 从上游过滤生成，保留条目的 revision 与上游一致，便于后续 roll：
 
 | | 上游 | rustflutter |
 |---|---:|---:|
 | vars | 105 | 48 |
-| deps | 118 | 67 |
+| deps | 118 | 66 |
 | hooks | 14 | 6 |
 
-丢弃的 51 个 deps：Dart SDK 30、Dart pub 包 10、web 工具链 5、Dart SDK 的 C 依赖 3
-（cpu_features / re2 / sqlite）、Fuchsia 3。保留 boringssl——它不是 Dart 依赖，
+丢弃的 52 个 deps：Dart SDK 30、Dart pub 包 10、web 工具链 5、Dart SDK 的 C 依赖 4
+（cpu_features / re2 / sqlite / ai）、Fuchsia 3。保留 boringssl——它不是 Dart 依赖，
 `common/graphics/persistent_cache` 用它算 shader 缓存键。
 
+路径按本树布局重写：上游 checkout 根下是 `engine/src/flutter`，这里是 `src/flutter`，
+少一层 `engine/`。deps 的 key 和 hooks 的 action 都要改，否则这份文件描述的是一棵
+不存在的树，CI 或空目录里的 `gclient sync` 会把依赖拉到错的地方。
+
 **本地不执行 `gclient sync`**：13 GB 依赖用目录 junction 指向已有的
-`K:\flutter\engine\src`，零下载、零额外磁盘。`DEPS` 描述的是 CI 应拉取的依赖集。
+`K:\flutter\engine\src`，零下载、零额外磁盘。
+
+代价是 `DEPS` 只是描述，不产生任何东西——**构建实际链接的是 junction 指向的那个
+revision，不是这里写的那个**，而两者会无声地分开。`gclient sync` 了上游却没重新生成
+`DEPS`，就是升级流程必经的那一步。`tools/check_deps.py` 就是用来抓这个的：逐条把
+`DEPS` 的 revision 和 junction 目标的 `HEAD` 对上，对不上就非零退出。
+
+实测 45 条 git 依赖：43 条一致，2 条声明了但没建 junction（`ocmock` 只被 darwin 的
+BUILD.gn 引用，`gtest-parallel` 只被 `testing/run_tests.py` 用，Windows 上都不构建，
+所以只报告不失败）。21 条 CIPD 包没有 git revision 可比，跳过。
+
+比较要把 revision 剥到 commit（`^{commit}`）：`DEPS` 里 harfbuzz 钉的是附注标签
+13.2.1 的**标签对象**，不是它指向的提交，直接比字符串会报一个并不存在的漂移。
 
 ### 2. GN 去 Dart 化
 
