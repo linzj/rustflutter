@@ -303,7 +303,10 @@ src/
   回复和缓冲;缺的是嵌入层那一侧的实现。Windows host 发 `flutter/lifecycle`,
   答 `flutter/platform`(剪贴板、提示音、退出)。`flutter/mousecursor`、
   `flutter/textinput` 等到得了它，但回来是空的——框架读作"没人实现这条"，
-  和一个 Flutter 应用调用未安装插件时拿到的答案是同一个。
+  和一个 Flutter 应用调用未安装插件时拿到的答案是同一个。光标卡在一件具体的
+  事上：它说二进制标准格式，而引擎自己那份 C++ 编解码器在
+  `shell/platform/common` 底下，这个 fork 编不了它——它依赖导入时删掉的一个
+  third_party 目录。
 - **不会有 hot reload。** Dart VM 的能力，Rust 没有对等物。
 
 ## 诊断开关

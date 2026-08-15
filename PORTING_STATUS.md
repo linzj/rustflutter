@@ -1129,9 +1129,16 @@ handler 出现时排空），这里照做，理由一样：丢了它，应用就
 可能还按着几毫秒。上游 `ScopedClipboard` 同样重试，同样的理由：第一次就
 失败会让"粘贴"变成偶尔不灵，那比彻底不能用还糟。
 
-`flutter/mousecursor` 没做：它说二进制标准格式，host 这边得有一个 C++ 的
-标准编解码器。框架侧 `SystemMouseCursor::activate` 是通的，发出去没人答，
-回来是空的——和一个 Flutter 应用调用未安装插件拿到的答案是同一个。
+`flutter/mousecursor` 没做，理由具体：它说二进制标准格式，而引擎自己那个
+C++ 标准编解码器（`shell/platform/common/client_wrapper`）在这个 fork 里
+**够不着**——`shell/platform/common/BUILD.gn` 依赖 `third_party/accessibility`，
+导入时删掉了，GN 连那个 BUILD 文件都载不进来。剩下的选择是在 host 里手写
+第二份标准编解码器，而"同一个格式写两遍"正是这次移植一路在躲的东西。
+
+所以框架侧 `SystemMouseCursor::activate` 是通的，发出去没人答，回来是空的
+——和一个 Flutter 应用调用未安装插件拿到的答案是同一个。要做的话，先把
+`third_party/accessibility` 拿回来，或者给标准编解码器单开一个不经过
+`shell/platform/common` 的 GN 目标。
 
 ### 验证
 

@@ -334,7 +334,10 @@ changed, and what is worth doing next are in
   `flutter/platform` (clipboard, sound, exit). `flutter/mousecursor`,
   `flutter/textinput` and the rest reach it and come back unanswered, which the
   framework reads as "nobody implements this" -- the same answer a Flutter app
-  gets for a plugin it did not install.
+  gets for a plugin it did not install. The cursor is blocked on something
+  specific: it speaks the binary standard codec, and the engine's own C++ one
+  is behind `shell/platform/common`, which this fork cannot build because it
+  depends on a third-party directory the import removed.
 - **There will be no hot reload.** That is a Dart VM capability with no Rust
   equivalent.
 
