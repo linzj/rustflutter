@@ -385,6 +385,8 @@ impl Component for Card {
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(radius)
+                    // Material 3's elevated card sits one step off the page.
+                    .with_elevation(1)
                     .with_border(1.0, outline)
                     .with_padding(padding)
                     .with_child(inner),

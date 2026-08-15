@@ -724,6 +724,9 @@ pub struct RenderDecoratedBox {
     corner_radius: f32,
     border_width: f32,
     border_color: Color,
+    /// Painted under the box, in order. Empty for anything sitting flat on the
+    /// surface, which is most things.
+    shadows: Vec<crate::painting::BoxShadow>,
     child: Option<BoxedRender>,
     size: Size,
 }
@@ -735,6 +738,7 @@ impl RenderDecoratedBox {
             corner_radius: 0.0,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
+            shadows: Vec::new(),
             child: None,
             size: Size::ZERO,
         }
@@ -753,6 +757,17 @@ impl RenderDecoratedBox {
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
+    }
+
+    /// Casts these shadows under the box.
+    pub fn with_shadows(mut self, shadows: Vec<crate::painting::BoxShadow>) -> Self {
+        self.shadows = shadows;
+        self
+    }
+
+    /// Casts the shadows Material gives something at this elevation.
+    pub fn with_elevation(self, elevation: u32) -> Self {
+        self.with_shadows(crate::painting::elevation_shadows(elevation).to_vec())
     }
 
     pub fn with_border(mut self, width: f32, color: Color) -> Self {
@@ -816,6 +831,31 @@ impl RenderBox for RenderDecoratedBox {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let rect = self.paint_rect(offset);
+        // Under everything, in the order they were given: the shape moved by
+        // the shadow's offset and grown by its spread, filled with a blurred
+        // paint. That is what `BoxDecoration._paintShadows` does, and the
+        // reason the spread inflates the rect rather than widening the blur is
+        // that a spread is a bigger object, not a softer edge.
+        for shadow in &self.shadows {
+            let spread = shadow.spread_radius;
+            let shadow_rect = Rect::ltrb(
+                rect.left + shadow.offset.dx - spread,
+                rect.top + shadow.offset.dy - spread,
+                rect.right + shadow.offset.dx + spread,
+                rect.bottom + shadow.offset.dy + spread,
+            );
+            if shadow_rect.right <= shadow_rect.left || shadow_rect.bottom <= shadow_rect.top {
+                // Spread far enough inwards to leave nothing to draw.
+                continue;
+            }
+            let paint = shadow.to_paint();
+            if self.corner_radius > 0.0 {
+                let radius = (self.corner_radius + spread).max(0.0);
+                context.canvas().draw_rounded_rect(shadow_rect, radius, &paint);
+            } else {
+                context.canvas().draw_rect(shadow_rect, &paint);
+            }
+        }
         if let Some(paint) = self.build_paint(rect) {
             if self.corner_radius > 0.0 {
                 context.canvas().draw_rounded_rect(rect, self.corner_radius, &paint);

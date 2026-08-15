@@ -748,6 +748,9 @@ impl Component for Dialog {
                     .with_width(width)
                     .with_color(surface)
                     .with_corner_radius(radius)
+                    // Material 3's dialog elevation. It is over a scrim, and
+                    // the shadow is what separates it from what it dims.
+                    .with_elevation(6)
                     .with_border(1.0, outline)
                     .with_padding(EdgeInsets::all(spacing * 2.5))
                     .with_child(column),
@@ -807,6 +810,7 @@ impl Component for BottomSheet {
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(theme_sheet_radius())
+                    .with_elevation(1)
                     .with_border(1.0, outline)
                     .with_padding(EdgeInsets::only(
                         spacing * 2.0,
@@ -897,6 +901,9 @@ impl Component for Snackbar {
                     .with_height(52.0)
                     .with_color(background)
                     .with_corner_radius(10.0)
+                    // A snack bar floats over whatever it interrupts; six is
+                    // the elevation upstream gives it.
+                    .with_elevation(6)
                     .with_padding(EdgeInsets::symmetric(spacing * 2.0, 0.0))
                     .with_child(row),
             )

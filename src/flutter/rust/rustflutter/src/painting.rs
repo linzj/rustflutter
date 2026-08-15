@@ -296,6 +296,141 @@ impl Paint {
     }
 }
 
+// -- Shadows ------------------------------------------------------------------
+
+/// A shadow cast by a box.
+///
+/// Upstream's `BoxShadow`, which is `dart:ui`'s `Shadow` plus a spread. The
+/// three numbers do different jobs and it is worth keeping them apart: the
+/// `offset` moves the shadow, the `spread_radius` grows the *shape* before it
+/// is blurred -- a bigger object casting the same shadow -- and the
+/// `blur_radius` softens the edge without moving it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxShadow {
+    pub color: crate::engine::Color,
+    pub offset: crate::render::Offset,
+    pub blur_radius: f32,
+    pub spread_radius: f32,
+}
+
+impl BoxShadow {
+    pub const fn new(
+        color: crate::engine::Color,
+        dx: f32,
+        dy: f32,
+        blur_radius: f32,
+        spread_radius: f32,
+    ) -> BoxShadow {
+        BoxShadow {
+            color,
+            offset: crate::render::Offset { dx, dy },
+            blur_radius,
+            spread_radius,
+        }
+    }
+
+    /// The blur radius as the sigma a mask filter wants.
+    ///
+    /// `Shadow.convertRadiusToSigma` upstream, and the same constant: a radius
+    /// is the visible extent of the blur, a sigma is the standard deviation of
+    /// the gaussian that produces it, and one is not the other.
+    pub fn blur_sigma(&self) -> f32 {
+        if self.blur_radius > 0.0 {
+            self.blur_radius * 0.577_35 + 0.5
+        } else {
+            0.0
+        }
+    }
+
+    /// The paint this shadow is drawn with. The offset and the spread are not
+    /// in it -- the caller moves and inflates the shape instead.
+    pub fn to_paint(&self) -> Paint {
+        Paint::new(self.color).with_blur(self.blur_sigma())
+    }
+}
+
+/// Material's elevation table: how high something is, as shadows.
+///
+/// A port of `kElevationToShadow` from `material/shadows.dart`, including the
+/// three-shadow structure. The three are not arbitrary -- they are the key
+/// light's umbra, its penumbra and the ambient light, and dropping any of them
+/// gives a shadow that looks wrong in a way that is hard to name.
+///
+/// Upstream defines only the elevations some widget actually uses; this returns
+/// the nearest defined one at or below `elevation`, so an in-between number
+/// still casts something.
+pub fn elevation_shadows(elevation: u32) -> &'static [BoxShadow] {
+    use crate::engine::Color;
+    const UMBRA: Color = Color(0x33000000);
+    const PENUMBRA: Color = Color(0x24000000);
+    const AMBIENT: Color = Color(0x1f000000);
+
+    const E1: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 2.0, 1.0, -1.0),
+        BoxShadow::new(PENUMBRA, 0.0, 1.0, 1.0, 0.0),
+        BoxShadow::new(AMBIENT, 0.0, 1.0, 3.0, 0.0),
+    ];
+    const E2: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 3.0, 1.0, -2.0),
+        BoxShadow::new(PENUMBRA, 0.0, 2.0, 2.0, 0.0),
+        BoxShadow::new(AMBIENT, 0.0, 1.0, 5.0, 0.0),
+    ];
+    const E3: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 3.0, 3.0, -2.0),
+        BoxShadow::new(PENUMBRA, 0.0, 3.0, 4.0, 0.0),
+        BoxShadow::new(AMBIENT, 0.0, 1.0, 8.0, 0.0),
+    ];
+    const E4: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 2.0, 4.0, -1.0),
+        BoxShadow::new(PENUMBRA, 0.0, 4.0, 5.0, 0.0),
+        BoxShadow::new(AMBIENT, 0.0, 1.0, 10.0, 0.0),
+    ];
+    const E6: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 3.0, 5.0, -1.0),
+        BoxShadow::new(PENUMBRA, 0.0, 6.0, 10.0, 0.0),
+        BoxShadow::new(AMBIENT, 0.0, 1.0, 18.0, 0.0),
+    ];
+    const E8: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 5.0, 5.0, -3.0),
+        BoxShadow::new(PENUMBRA, 0.0, 8.0, 10.0, 1.0),
+        BoxShadow::new(AMBIENT, 0.0, 3.0, 14.0, 2.0),
+    ];
+    const E9: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 5.0, 6.0, -3.0),
+        BoxShadow::new(PENUMBRA, 0.0, 9.0, 12.0, 1.0),
+        BoxShadow::new(AMBIENT, 0.0, 3.0, 16.0, 2.0),
+    ];
+    const E12: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 7.0, 8.0, -4.0),
+        BoxShadow::new(PENUMBRA, 0.0, 12.0, 17.0, 2.0),
+        BoxShadow::new(AMBIENT, 0.0, 5.0, 22.0, 4.0),
+    ];
+    const E16: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 8.0, 10.0, -5.0),
+        BoxShadow::new(PENUMBRA, 0.0, 16.0, 24.0, 2.0),
+        BoxShadow::new(AMBIENT, 0.0, 6.0, 30.0, 5.0),
+    ];
+    const E24: [BoxShadow; 3] = [
+        BoxShadow::new(UMBRA, 0.0, 11.0, 15.0, -7.0),
+        BoxShadow::new(PENUMBRA, 0.0, 24.0, 38.0, 3.0),
+        BoxShadow::new(AMBIENT, 0.0, 9.0, 46.0, 8.0),
+    ];
+
+    match elevation {
+        0 => &[],
+        1 => &E1,
+        2 => &E2,
+        3 => &E3,
+        4 | 5 => &E4,
+        6 | 7 => &E6,
+        8 => &E8,
+        9..=11 => &E9,
+        12..=15 => &E12,
+        16..=23 => &E16,
+        _ => &E24,
+    }
+}
+
 // -- Path ---------------------------------------------------------------------
 
 /// An arbitrary outline, built imperatively.
@@ -1090,6 +1225,56 @@ mod tests {
     // cache is thread-local, but a name shared between two of them would still
     // be shaped twice and prove nothing. Distinct text per test avoids that
     // without any coordination.
+
+    #[test]
+    fn a_blur_radius_is_not_a_sigma() {
+        // The conversion upstream applies before handing a radius to a mask
+        // filter. Getting this wrong is a shadow that is too tight or too
+        // vague, which looks like a theme problem rather than an arithmetic
+        // one.
+        let shadow = BoxShadow::new(crate::engine::Color(0x33000000), 0.0, 2.0, 4.0, 0.0);
+        assert!((shadow.blur_sigma() - (4.0 * 0.577_35 + 0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn no_blur_is_no_sigma() {
+        let hard = BoxShadow::new(crate::engine::Color(0xff000000), 0.0, 1.0, 0.0, 0.0);
+        assert_eq!(hard.blur_sigma(), 0.0);
+    }
+
+    #[test]
+    fn flat_things_cast_nothing() {
+        assert!(elevation_shadows(0).is_empty());
+    }
+
+    #[test]
+    fn every_elevation_casts_the_three_material_shadows() {
+        for elevation in [1, 2, 3, 4, 6, 8, 9, 12, 16, 24] {
+            assert_eq!(
+                elevation_shadows(elevation).len(),
+                3,
+                "elevation {elevation} should have an umbra, a penumbra and an ambient shadow"
+            );
+        }
+    }
+
+    #[test]
+    fn an_elevation_between_two_defined_ones_takes_the_lower() {
+        // Upstream's table is sparse and its keys are the ones some widget
+        // uses; anything in between should still cast a shadow rather than
+        // none.
+        assert_eq!(elevation_shadows(5), elevation_shadows(4));
+        assert_eq!(elevation_shadows(20), elevation_shadows(16));
+        assert_eq!(elevation_shadows(100), elevation_shadows(24));
+    }
+
+    #[test]
+    fn higher_is_softer_and_further() {
+        let low = elevation_shadows(1)[2];
+        let high = elevation_shadows(24)[2];
+        assert!(high.blur_radius > low.blur_radius);
+        assert!(high.offset.dy > low.offset.dy);
+    }
 
     #[test]
     fn the_same_request_is_shaped_once() {

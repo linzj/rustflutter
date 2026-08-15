@@ -89,6 +89,7 @@ pub struct Container {
     corner_radius: f32,
     border_width: f32,
     border_color: Color,
+    shadows: Vec<crate::painting::BoxShadow>,
     padding: EdgeInsets,
     margin: EdgeInsets,
     width: Option<f32>,
@@ -105,6 +106,7 @@ impl Container {
             corner_radius: 0.0,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
+            shadows: Vec::new(),
             padding: EdgeInsets::ZERO,
             margin: EdgeInsets::ZERO,
             width: None,
@@ -139,6 +141,18 @@ impl Container {
         self.border_width = width;
         self.border_color = color;
         self
+    }
+
+    /// Casts these shadows under the container's decoration.
+    pub fn with_shadows(mut self, shadows: Vec<crate::painting::BoxShadow>) -> Self {
+        self.shadows = shadows;
+        self
+    }
+
+    /// How high off the surface this sits, as Material's shadows for that
+    /// height. Zero is flat.
+    pub fn with_elevation(self, elevation: u32) -> Self {
+        self.with_shadows(crate::painting::elevation_shadows(elevation).to_vec())
     }
 
     pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
@@ -195,10 +209,12 @@ impl Container {
             current = Some(Box::new(RenderPadding::new(self.padding, inner)));
         }
 
-        let has_decoration = self.fill.is_some() || self.border_width > 0.0;
+        let has_decoration =
+            self.fill.is_some() || self.border_width > 0.0 || !self.shadows.is_empty();
         if has_decoration {
             let mut decorated = RenderDecoratedBox::new()
                 .with_corner_radius(self.corner_radius)
+                .with_shadows(std::mem::take(&mut self.shadows))
                 .with_border(self.border_width, self.border_color);
             if let Some(fill) = self.fill.clone() {
                 decorated = decorated.with_fill(fill);
