@@ -71,24 +71,32 @@ template("android_toolchain") {
 
     assert(invoker.is_clang)
     host_dir = ""
+
+    # `.exe` is spelled out rather than left to cmd.exe's PATHEXT search,
+    # because these are full paths and a missing extension there is a silent
+    # "the system cannot find the file" at build time rather than at gen time.
+    host_exe_suffix = ""
     if (host_os == "linux") {
       host_dir = "linux-${host_cpu}"
     } else if (host_os == "mac") {
       host_dir = "mac-${host_cpu}"
+    } else if (host_os == "win") {
+      host_dir = "windows-${host_cpu}"
+      host_exe_suffix = ".exe"
     } else {
       assert(false, "Unknown host")
     }
 
     prefix = rebase_path("$buildtools_path/$host_dir/clang/bin", root_build_dir)
 
-    cc = "${compiler_prefix}${prefix}/clang"
-    cxx = "${compiler_prefix}${prefix}/clang++"
-    asm = "${assembler_prefix}${prefix}/clang"
-    ar = prefix + "/llvm-ar"
-    ld = "${link_prefix}${prefix}/clang++"
-    readelf = prefix + "/llvm-readelf"
-    nm = prefix + "/llvm-nm"
-    android_strip = prefix + "/llvm-strip"
+    cc = "${compiler_prefix}${prefix}/clang$host_exe_suffix"
+    cxx = "${compiler_prefix}${prefix}/clang++$host_exe_suffix"
+    asm = "${assembler_prefix}${prefix}/clang$host_exe_suffix"
+    ar = prefix + "/llvm-ar$host_exe_suffix"
+    ld = "${link_prefix}${prefix}/clang++$host_exe_suffix"
+    readelf = prefix + "/llvm-readelf$host_exe_suffix"
+    nm = prefix + "/llvm-nm$host_exe_suffix"
+    android_strip = prefix + "/llvm-strip$host_exe_suffix"
 
     toolchain_os = "android"
     toolchain_cpu = invoker.toolchain_cpu
@@ -98,11 +106,21 @@ template("android_toolchain") {
     soname = "{{target_output_name}}{{output_extension}}"
 
     stripped_soname = "lib.stripped/${soname}"
-    temp_stripped_soname = "${stripped_soname}.tmp"
 
-    strip_command = "$android_strip --strip-unneeded -o $temp_stripped_soname {{root_out_dir}}/$soname"
-    replace_command = "if ! cmp -s $temp_stripped_soname $stripped_soname; then mv $temp_stripped_soname $stripped_soname; fi"
-    postsolink = "$strip_command && $replace_command"
+    # A Windows host has no shell to run `postsolink` and `postlink` in -- see
+    # gcc_toolchain_shim.py -- so the strip is handed to the shim as parameters
+    # of the link step rather than as a second command after it. The shim
+    # creates the directory it writes into, which the sh version quietly relies
+    # on the surrounding build having made.
+    if (host_os == "win") {
+      shim_strip = android_strip
+      shim_stripped_soname = stripped_soname
+    } else {
+      temp_stripped_soname = "${stripped_soname}.tmp"
+      strip_command = "$android_strip --strip-unneeded -o $temp_stripped_soname {{root_out_dir}}/$soname"
+      replace_command = "if ! cmp -s $temp_stripped_soname $stripped_soname; then mv $temp_stripped_soname $stripped_soname; fi"
+      postsolink = "$strip_command && $replace_command"
+    }
     solink_outputs = [ stripped_soname ]
     default_output_extension = android_product_extension
 
@@ -110,7 +128,11 @@ template("android_toolchain") {
     # the following definition.
     exe = "{{root_out_dir}}/{{target_output_name}}{{output_extension}}"
     stripped_exe = "exe.stripped/$exe"
-    postlink = "$android_strip --strip-unneeded -o $stripped_exe $exe"
+    if (host_os == "win") {
+      shim_stripped_exe = stripped_exe
+    } else {
+      postlink = "$android_strip --strip-unneeded -o $stripped_exe $exe"
+    }
     link_outputs = [ stripped_exe ]
   }
 }

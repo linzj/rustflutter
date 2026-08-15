@@ -39,7 +39,9 @@ if (is_android) {
   } else if (host_os == "mac") {
     android_host_os = "darwin"
   } else if (host_os == "win") {
-    android_host_os = "win"
+    # The NDK spells this out in full: its prebuilt directory is
+    # `windows-x86_64`, not `win-x86_64`, unlike GN's `host_os`.
+    android_host_os = "windows"
   } else {
     assert(false, "Need Android toolchain support for your build OS.")
   }
@@ -112,6 +114,31 @@ if (is_android) {
   }
 
   android_lib = "$_android_lib_prefix/$_android_lib_dir/$android_api_level"
+
+  # rustflutter: where the NDK keeps its compiler runtime and libunwind.
+  #
+  # Nothing in the engine needs either -- it builds -fno-exceptions and links
+  # -nostdlib -- but Rust's standard library uses the Itanium unwinder for
+  # panics and for backtraces, so an application that links Rust needs this
+  # directory on the library path. See //flutter/rust/rustflutter_app.gni.
+  #
+  # It is versioned by the NDK's own clang rather than by the NDK, which is why
+  # there is a second number to pin, and it names the architecture differently
+  # again from both `current_cpu` and the ABI.
+  android_ndk_clang_version = "19"
+  if (current_cpu == "x86") {
+    _android_runtime_arch = "i386"
+  } else if (current_cpu == "arm") {
+    _android_runtime_arch = "arm"
+  } else if (current_cpu == "x64") {
+    _android_runtime_arch = "x86_64"
+  } else if (current_cpu == "arm64") {
+    _android_runtime_arch = "aarch64"
+  } else {
+    _android_runtime_arch = current_cpu
+  }
+  android_ndk_runtime_lib_dir =
+      "$llvm_android_toolchain_root/lib/clang/$android_ndk_clang_version/lib/linux/$_android_runtime_arch"
 
   android_log_tag = "\"flutter\""
 }

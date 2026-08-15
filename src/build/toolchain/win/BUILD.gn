@@ -23,8 +23,11 @@ declare_args() {
 
 import("//build/config/win/visual_studio_version.gni")
 
-# Should only be running on Windows.
-assert(is_win)
+# Should only be running on Windows -- but "running on" is about the host, not
+# the target. When the target is Android and the host is Windows this file is
+# still loaded, in the default toolchain's context, because the host tools that
+# compiled_action() runs are built with the toolchain defined here.
+assert(is_win || host_os == "win")
 
 # Setup the Visual Studio state.
 #
@@ -45,7 +48,11 @@ if (use_rbe) {
   asm_prefix = ""
 }
 
-if (current_toolchain == default_toolchain) {
+# The `is_win` half goes with the assert above: this runs in the default
+# toolchain's context, so for an Android build `current_cpu` is the *Android*
+# cpu, and copy_dlls would go looking for an MSVC redistributable for it. There
+# is no such thing, and nothing in an Android output directory would load it.
+if (current_toolchain == default_toolchain && is_win) {
   if (is_debug) {
     configuration = "Debug"
   } else {
@@ -329,6 +336,13 @@ template("win_toolchains") {
       }
       current_cpu = toolchain_arch
       is_clang = true
+
+      # rustflutter: without this, `current_os` falls through to `target_os`,
+      # and a host tool built while cross-compiling to Android is compiled by
+      # clang-cl with the Android configs -- an NDK sysroot, `--target=...
+      # -android`, and a pile of gcc-style flags clang-cl does not take. A
+      # toolchain that runs clang-cl produces Windows binaries by definition.
+      current_os = "win"
     }
   }
 }

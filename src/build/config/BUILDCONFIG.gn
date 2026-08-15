@@ -54,11 +54,14 @@ if (current_cpu == "") {
   current_cpu = target_cpu
 }
 if (current_os == "") {
-  if (host_os == "win") {
-    current_os = "win"
-  } else {
-    current_os = target_os
-  }
+  # rustflutter: this used to read `current_os = "win"` whenever the host was
+  # Windows, whatever the target. That is upstream's shortcut for the one thing
+  # it cross-compiles from Windows -- gen_snapshot, which is a *host* binary --
+  # and it makes the default toolchain a Windows toolchain even for an Android
+  # build, so nothing targeting Android can be built from a Windows host at all.
+  # There is no gen_snapshot here (no Dart VM), and the Android port has to
+  # build from this host, so the ordinary Chromium rule applies.
+  current_os = target_os
 }
 
 # =============================================================================

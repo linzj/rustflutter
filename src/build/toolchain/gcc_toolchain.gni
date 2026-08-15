@@ -5,6 +5,7 @@
 import("//build/toolchain/clang.gni")
 import("//build/toolchain/clang_static_analyzer.gni")
 import("//build/toolchain/rbe.gni")
+import("//build/toolchain/rust.gni")
 
 # Path to the Clang static analysis wrapper script.
 analyzer_wrapper =
@@ -116,6 +117,19 @@ template("gcc_toolchain") {
     lib_switch = "-l"
     lib_dir_switch = "-L"
 
+    # Ninja on Windows runs each command with CreateProcess and no shell at all
+    # -- not even `cmd`, so neither sh's programs (`rm`, `touch`, `cmp`) nor its
+    # operators (`&&`, `|`, `>`) exist. Every tool below is therefore exactly one
+    # process on a Windows host, and the steps that are several on a POSIX one go
+    # through a shim that performs them in order.
+    #
+    # This is what lets a Windows host drive a GCC-style toolchain at all, which
+    # is what cross-compiling to Android needs.
+    needs_shim = host_os == "win"
+    shim = "\"$python_path\" " +
+           rebase_path("//build/toolchain/gcc_toolchain_shim.py",
+                       root_build_dir)
+
     coverage_flags = ""
     if (enable_coverage) {
       coverage_flags = "-fprofile-instr-generate -fcoverage-mapping"
@@ -149,10 +163,64 @@ template("gcc_toolchain") {
           [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
     }
 
+    # rustflutter: the same three Rust crate types the Windows toolchain
+    # declares, for the same reason -- GN has native Rust support, so
+    # `rust_library` and rust-sourced `static_library` targets work once these
+    # exist. What is different here is `--target`: a GCC-style toolchain in this
+    # tree is always a cross-compilation, so rustc has to be told what it is
+    # aiming at rather than defaulting to the host. Neither crate type links, so
+    # rustc needs no linker and none is passed.
+    if (invoker.toolchain_os == "android") {
+      # Both spellings, because the toolchains below are not consistent about
+      # it: `clang_arm64` calls its cpu "aarch64" while `clang_arm64_apilevel26`
+      # calls the same cpu "arm64", and `clang_x64` calls its cpu "x86_64".
+      if (invoker.toolchain_cpu == "arm64" ||
+          invoker.toolchain_cpu == "aarch64") {
+        rust_abi_target = "aarch64-linux-android"
+      } else if (invoker.toolchain_cpu == "arm") {
+        rust_abi_target = "armv7-linux-androideabi"
+      } else if (invoker.toolchain_cpu == "x64" ||
+                 invoker.toolchain_cpu == "x86_64") {
+        rust_abi_target = "x86_64-linux-android"
+      } else if (invoker.toolchain_cpu == "x86") {
+        rust_abi_target = "i686-linux-android"
+      } else {
+        rust_abi_target = ""
+      }
+    } else {
+      rust_abi_target = ""
+    }
+
+    if (rust_abi_target != "") {
+      rust_common = "--target=$rust_abi_target " +
+                    "--edition=$rust_edition --emit=dep-info={{output}}.d,link " +
+                    "-o {{output}} {{rustflags}} {{externs}} {{rustdeps}}"
+
+      tool("rust_rlib") {
+        depfile = "{{output}}.d"
+        command = "$rustc_path --crate-name {{crate_name}} {{source}} --crate-type rlib $rust_common"
+        description = "RUST {{output}}"
+        outputs = [ "{{output_dir}}/lib{{target_output_name}}.rlib" ]
+        default_output_dir = "{{target_out_dir}}"
+      }
+
+      tool("rust_staticlib") {
+        depfile = "{{output}}.d"
+        command = "$rustc_path --crate-name {{crate_name}} {{source}} --crate-type staticlib $rust_common"
+        description = "RUST(STATICLIB) {{output}}"
+        outputs = [ "{{output_dir}}/lib{{target_output_name}}.a" ]
+        default_output_dir = "{{target_out_dir}}"
+      }
+    }
+
     tool("alink") {
       pool = "//build/toolchain:toolchain_pool($current_toolchain)"
       rspfile = "{{output}}.rsp"
-      command = "rm -f {{output}} && $ar rcs {{output}} @$rspfile"
+      if (needs_shim) {
+        command = "$shim ar --ar $ar --output {{output}} --rsp $rspfile"
+      } else {
+        command = "rm -f {{output}} && $ar rcs {{output}} @$rspfile"
+      }
       description = "AR {{output}}"
       rspfile_content = "{{inputs}}"
       outputs =
@@ -172,30 +240,48 @@ template("gcc_toolchain") {
       # to a temporary file, (3) if the temporary file has differences from the
       # existing .TOC file, overwrite it, otherwise, don't change it.
       tocfile = sofile + ".TOC"
-      temporary_tocname = sofile + ".tmp"
-      link_command = "$ld -shared {{ldflags}} $coverage_flags -o $sofile -Wl,--build-id=sha1 -Wl,-soname=$soname @$rspfile"
-      toc_command = "{ $readelf -d $sofile | grep SONAME ; $nm -gD -f posix $sofile | cut -f1-2 -d' '; } > $temporary_tocname"
-      replace_command = "if ! cmp -s $temporary_tocname $tocfile; then mv $temporary_tocname $tocfile; fi"
-
-      command = "$link_command && $toc_command && $replace_command"
-      if (stripped_symbols) {
-        if (defined(invoker.strip) || defined(invoker.llvm_objcopy)) {
-          unstripped_outfile = "{{root_out_dir}}/lib.unstripped/$sofile"
-          pre_strip_command = "mkdir -p {{root_out_dir}}/lib.unstripped && cp $sofile {{root_out_dir}}/lib.unstripped/"
+      if (needs_shim) {
+        # One process for the link, the TOC and the strip, because there is no
+        # shell to chain them with. The shim writes the TOC only when it
+        # differs, which is what the two commands in the other branch do
+        # together, and it strips into a directory it creates, which is what
+        # `postsolink` does there.
+        shim_extra = ""
+        if (defined(invoker.shim_strip)) {
+          shim_extra = " --strip ${invoker.shim_strip}" +
+                       " --stripped ${invoker.shim_stripped_soname}"
         }
-        if (defined(invoker.strip)) {
-          strip = invoker.strip
-          strip_command =
-              "${strip} --strip-unneeded -o  $sofile $unstripped_outfile"
-          command += " && " + pre_strip_command + " && " + strip_command
-        } else if (defined(invoker.llvm_objcopy)) {
-          strip = invoker.llvm_objcopy
-          strip_command = "${strip} --strip-all $unstripped_outfile $sofile"
-          command += " && " + pre_strip_command + " && " + strip_command
-        }
+        command = "$shim solink --ld $ld --sofile $sofile --toc $tocfile " +
+                  "--readelf $readelf --nm $nm$shim_extra -- " +
+                  "-shared {{ldflags}} $coverage_flags -o $sofile " +
+                  "-Wl,--build-id=sha1 -Wl,-soname=$soname @$rspfile"
+      } else {
+        link_command = "$ld -shared {{ldflags}} $coverage_flags -o $sofile -Wl,--build-id=sha1 -Wl,-soname=$soname @$rspfile"
+        temporary_tocname = sofile + ".tmp"
+        toc_command = "{ $readelf -d $sofile | grep SONAME ; $nm -gD -f posix $sofile | cut -f1-2 -d' '; } > $temporary_tocname"
+        replace_command = "if ! cmp -s $temporary_tocname $tocfile; then mv $temporary_tocname $tocfile; fi"
+        command = "$link_command && $toc_command && $replace_command"
       }
-      if (defined(invoker.postsolink)) {
-        command += " && " + invoker.postsolink
+      if (!needs_shim) {
+        if (stripped_symbols) {
+          if (defined(invoker.strip) || defined(invoker.llvm_objcopy)) {
+            unstripped_outfile = "{{root_out_dir}}/lib.unstripped/$sofile"
+            pre_strip_command = "mkdir -p {{root_out_dir}}/lib.unstripped && cp $sofile {{root_out_dir}}/lib.unstripped/"
+          }
+          if (defined(invoker.strip)) {
+            strip = invoker.strip
+            strip_command =
+                "${strip} --strip-unneeded -o  $sofile $unstripped_outfile"
+            command += " && " + pre_strip_command + " && " + strip_command
+          } else if (defined(invoker.llvm_objcopy)) {
+            strip = invoker.llvm_objcopy
+            strip_command = "${strip} --strip-all $unstripped_outfile $sofile"
+            command += " && " + pre_strip_command + " && " + strip_command
+          }
+        }
+        if (defined(invoker.postsolink)) {
+          command += " && " + invoker.postsolink
+        }
       }
       rspfile_content = "-Wl,--whole-archive {{inputs}} {{solibs}} -Wl,--no-whole-archive $solink_libs_section_prefix {{libs}} $solink_libs_section_postfix"
 
@@ -244,19 +330,36 @@ template("gcc_toolchain") {
       if (invoker.toolchain_cpu == "wasm") {
         build_id = ""
       }
-      command = "$ld {{ldflags}} $coverage_flags -o $unstripped_outfile $build_id -Wl,--start-group @$rspfile {{solibs}} -Wl,--end-group $libs_section_prefix {{libs}} $libs_section_postfix"
-      if (defined(invoker.strip)) {
-        strip = invoker.strip
-        strip_command =
-            "${strip} --strip-unneeded -o $outfile $unstripped_outfile"
-        command += " && " + strip_command
-      } else if (defined(invoker.llvm_objcopy)) {
-        strip = invoker.llvm_objcopy
-        strip_command = "${strip} --strip-all $unstripped_outfile $outfile"
-        command += " && " + strip_command
-      }
-      if (defined(invoker.postlink)) {
-        command += " && " + invoker.postlink
+      link_arguments =
+          "{{ldflags}} $coverage_flags -o $unstripped_outfile $build_id " +
+          "-Wl,--start-group @$rspfile {{solibs}} -Wl,--end-group " +
+          "$libs_section_prefix {{libs}} $libs_section_postfix"
+      if (needs_shim) {
+        # As with solink: one process, because there is no shell to chain with.
+        shim_extra = ""
+        if (defined(invoker.strip)) {
+          shim_extra = " --strip ${invoker.strip} --source $unstripped_outfile" +
+                       " --stripped $outfile"
+        } else if (defined(invoker.shim_strip)) {
+          shim_extra = " --strip ${invoker.shim_strip} --source $outfile" +
+                       " --stripped ${invoker.shim_stripped_exe}"
+        }
+        command = "$shim link --ld $ld$shim_extra -- $link_arguments"
+      } else {
+        command = "$ld $link_arguments"
+        if (defined(invoker.strip)) {
+          strip = invoker.strip
+          strip_command =
+              "${strip} --strip-unneeded -o $outfile $unstripped_outfile"
+          command += " && " + strip_command
+        } else if (defined(invoker.llvm_objcopy)) {
+          strip = invoker.llvm_objcopy
+          strip_command = "${strip} --strip-all $unstripped_outfile $outfile"
+          command += " && " + strip_command
+        }
+        if (defined(invoker.postlink)) {
+          command += " && " + invoker.postlink
+        }
       }
       description = "LINK $outfile"
       rspfile_content = "{{inputs}}"
@@ -270,12 +373,20 @@ template("gcc_toolchain") {
     }
 
     tool("stamp") {
-      command = "touch {{output}}"
+      if (needs_shim) {
+        command = "$shim touch {{output}}"
+      } else {
+        command = "touch {{output}}"
+      }
       description = "STAMP {{output}}"
     }
 
     tool("copy") {
-      command = "ln -f {{source}} {{output}} 2>/dev/null || (rm -rf {{output}} && cp -af {{source}} {{output}})"
+      if (needs_shim) {
+        command = "$shim copy {{source}} {{output}}"
+      } else {
+        command = "ln -f {{source}} {{output}} 2>/dev/null || (rm -rf {{output}} && cp -af {{source}} {{output}})"
+      }
       description = "COPY {{source}} {{output}}"
     }
 

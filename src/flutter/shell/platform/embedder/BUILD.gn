@@ -180,11 +180,12 @@ template("embedder_source_set") {
       ]
     }
 
-    # Depend on 'icudtl.dat.S' to avoid dynamic lookups of engine library symbols.
-    if (is_android) {
-      deps += [ "//flutter/shell/platform/android:icudtl_asm" ]
-      sources += [ "$root_build_dir/gen/flutter/shell/platform/android/flutter/third_party/icu/flutter/icudtl.dat.S" ]
-    }
+    # rustflutter: upstream depends on 'icudtl.dat.S' here, so that Android
+    # embedders find the ICU data without a dynamic symbol lookup. The rule that
+    # produces it lives in //flutter/shell/platform/android, which is upstream's
+    # Java/JNI embedder -- the thing this fork replaces, and which does not build
+    # here because it imports the Dart SDK's gen_snapshot rules. The Android host
+    # in //flutter/rust/host loads icudtl.dat from the package instead.
 
     public_configs += [
       ":embedder_gpu_configuration_config",
@@ -612,7 +613,12 @@ if (host_os == "linux" || host_os == "win" || is_android) {
         destination = "flutter_embedder.h"
       },
     ]
-    if (host_os == "linux" || is_android) {
+    # rustflutter: these two used to ask `host_os`, which is right only when the
+    # host and the target are the same machine. Cross-compiling to Android from
+    # Windows made both true at once, so the bundle asked for a .dll that an
+    # Android build never produces. What goes in the zip is decided by what is
+    # being built, not by what is building it.
+    if (is_linux || is_android) {
       files += [
         {
           source = "$root_out_dir/libflutter_engine.so"
@@ -620,7 +626,7 @@ if (host_os == "linux" || host_os == "win" || is_android) {
         },
       ]
     }
-    if (host_os == "win") {
+    if (is_win) {
       files += [
         {
           source = "$root_out_dir/flutter_engine.dll"
