@@ -16,10 +16,13 @@ use rustflutter::prelude::*;
 use rustflutter::render::{
     Alignment, CrossAxisAlignment, FlexChild, MainAxisAlignment, MainAxisSize, RenderFlex,
 };
-use rustflutter::widgets::{Align, Container, Empty};
+use rustflutter::painting::Image;
+use rustflutter::render::BoxFit;
+use rustflutter::widgets::{Align, BoxedWidget, ClipRRect, Container, Empty, ImageView};
 
 use crate::app::{self, GalleryState, ids};
 use crate::catalog;
+use crate::shrine_data;
 
 /// What the studies remember.
 #[derive(Clone, Debug, Default)]
@@ -38,7 +41,7 @@ pub fn page(
     handle: StateHandle<GalleryState>,
 ) -> AnyWidget {
     let body: AnyWidget = match study.slug {
-        "rally" => rally(),
+        "rally" => rally(state, handle.clone()),
         "shrine" => shrine(state, handle.clone()),
         "crane" => crane(state, handle.clone()),
         other => {
@@ -56,7 +59,7 @@ pub fn page(
 ///
 /// Every number on screen drives a layout rather than a label -- the bars are
 /// sized from their values, so a wrong figure would be visibly wrong.
-fn rally() -> AnyWidget {
+fn rally(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
     // Name, the masked number upstream shows beneath it, and the balance.
     let accounts = [
         ("Checking", "••• 1234", 2215.13_f32),
@@ -112,7 +115,7 @@ fn rally() -> AnyWidget {
         ),
     )));
 
-    app::scrolling_body(children, 18.0, 16.0)
+    app::scrolling_body(children, 18.0, 16.0, state, handle)
 }
 
 struct RallyTotal {
@@ -226,25 +229,16 @@ impl Component for RallyRow {
 
 /// A shop: a filter row, a product grid and a cart count.
 fn shrine(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
-    let filters = ["All", "Accessories", "Clothing", "Home"];
-    let products: &[(&str, &str, f32, usize)] = &[
-        ("Vagabond sack", "Accessories", 120.0, 1),
-        ("Stella sunglasses", "Accessories", 58.0, 1),
-        ("Whitney belt", "Accessories", 35.0, 1),
-        ("Garden strand", "Clothing", 98.0, 2),
-        ("Strut earrings", "Accessories", 34.0, 1),
-        ("Varsity socks", "Clothing", 12.0, 2),
-        ("Weave keyring", "Home", 16.0, 3),
-        ("Gatsby hat", "Clothing", 40.0, 2),
-        ("Shrug bag", "Home", 198.0, 3),
-    ];
-
-    let filter = state.study.filter;
+    let scroll_handle = handle.clone();
+    let filter = state.study.filter.min(shrine_data::CATEGORIES.len() - 1);
+    let selected = shrine_data::CATEGORIES[filter];
     let cart = state.study.cart;
 
     let mut chips: Vec<AnyWidget> = Vec::new();
-    for (index, label) in filters.iter().enumerate() {
-        let chip = Chip::new(ids::STUDY_LOCAL + index as u64, *label).selected(filter == index);
+    for (index, category) in shrine_data::CATEGORIES.iter().enumerate() {
+        let label = category.map_or("ALL", |c| c.title());
+        let chip =
+            Chip::new(ids::STUDY_LOCAL + index as u64, label).selected(filter == index);
         // A fn pointer cannot capture the index, so each arm names its own.
         chips.push(component(match index {
             0 => chip.wired(handle.clone(), |s| s.study.filter = 0),
@@ -254,23 +248,20 @@ fn shrine(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget 
         }));
     }
 
-    let mut grid = GridList::new(3).with_spacing(10.0).with_aspect_ratio(0.78);
-    let mut shown = 0;
-    for (name, category, price, group) in products {
-        if filter != 0 && *group != filter {
-            continue;
-        }
-        shown += 1;
-        grid = grid.push(component(ProductTile {
-            name: name.to_string(),
-            category: category.to_string(),
-            price: *price,
-        }));
+    let shown: Vec<&'static shrine_data::Product> =
+        shrine_data::in_category(selected).collect();
+
+    // Two columns rather than upstream's staggered pair of columns: the tiles
+    // here are a fixed aspect, and a stagger needs each tile's own height fed
+    // back into the column it lands in.
+    let mut grid = GridList::new(2).with_spacing(16.0).with_aspect_ratio(0.72);
+    for product in &shown {
+        grid = grid.push(component(ProductTile { product }));
     }
 
     let add_handle = handle;
     let body = vec![
-        component(ShrineHeader { cart, shown }),
+        component(ShrineHeader { cart, shown: shown.len() }),
         many(chips, |rendered| {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Min)
@@ -288,7 +279,7 @@ fn shrine(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget 
         ),
     ];
 
-    app::scrolling_body(body, 14.0, 16.0)
+    app::scrolling_body(body, 14.0, 16.0, state, scroll_handle)
 }
 
 struct ShrineHeader {
@@ -336,53 +327,58 @@ impl Component for ShrineHeader {
 }
 
 struct ProductTile {
-    name: String,
-    category: String,
-    price: f32,
+    product: &'static shrine_data::Product,
 }
 
 impl Component for ProductTile {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
-        let name = self.name.clone();
-        let category = self.category.clone();
-        let price = self.price;
+        let product = self.product;
         let surface = theme.surface_variant;
-        let outline = theme.outline;
         let radius = theme.radius;
         let text = theme.text;
         let muted = theme.text_muted;
         let accent = theme.primary;
+        // Keyed by id, so the thirty-eight photographs are decoded once for the
+        // life of the process rather than once per frame.
+        let photo = Image::shared(&format!("shrine:{}", product.id), product.photo);
 
         leaf(move || {
-            Container::new()
-                .with_color(surface)
-                .with_corner_radius(radius)
-                .with_border(1.0, outline)
-                .with_padding(EdgeInsets::all(10.0))
-                .with_child(
-                    Column::expanded()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                        .with_spacing(4.0)
-                        // The swatch takes whatever height is left after the
-                        // three text lines, which is what makes the tiles line
-                        // up whatever their names do.
+            let picture: BoxedWidget = match photo.clone() {
+                // Contain rather than Cover: upstream shows the whole product,
+                // which is why it carries an aspect ratio per photograph at all.
+                Some(photo) => Box::new(ImageView::with_fit(photo, BoxFit::Contain)),
+                None => Box::new(Container::new().with_color(surface)),
+            };
+
+            Column::expanded()
+                .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                .with_spacing(6.0)
+                // The photograph takes whatever height is left after the two
+                // text lines, which is what makes the tiles line up whatever
+                // their names do.
+                .push_flex(FlexChild::expanded(
+                    Container::new()
+                        .with_color(surface)
+                        .with_corner_radius(radius)
+                        .with_padding(EdgeInsets::all(8.0))
+                        .with_child(ClipRRect::new(radius, picture)),
+                    1,
+                ))
+                .push(Text::new(product.name).with_size(12.0).with_weight(700).with_color(text))
+                .push(
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .push_flex(FlexChild::expanded(
-                            Container::new()
-                                .with_color(accent.with_alpha(0x22))
-                                .with_corner_radius(8.0),
+                            Text::new(product.category.title())
+                                .with_size(10.0)
+                                .with_color(muted),
                             1,
                         ))
                         .push(
-                            Text::new(name.clone())
-                                .with_size(11.5)
-                                .with_weight(700)
-                                .with_color(text),
-                        )
-                        .push(Text::new(category.clone()).with_size(10.0).with_color(muted))
-                        .push(
-                            Text::new(format!("${price:.0}"))
-                                .with_size(11.0)
+                            Text::new(format!("${}", product.price))
+                                .with_size(12.0)
                                 .with_weight(700)
                                 .with_color(accent),
                         ),
@@ -395,6 +391,7 @@ impl Component for ProductTile {
 
 /// A travel app: tabs over a list of destinations.
 fn crane(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
+    let scroll_handle = handle.clone();
     let tab = state.study.tab;
     let flights: &[(&str, &str, &str)] = &[
         ("Aspen", "United States", "$580"),
@@ -458,7 +455,7 @@ fn crane(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
         }),
     ];
 
-    app::scrolling_body(body, 12.0, 16.0)
+    app::scrolling_body(body, 12.0, 16.0, state, scroll_handle)
 }
 
 // -- Helpers ------------------------------------------------------------------

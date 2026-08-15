@@ -641,6 +641,7 @@ mod abi {
                     (raw.physical_y * scale) as f32,
                 ),
                 delta: Offset::new((raw.delta_x * scale) as f32, (raw.delta_y * scale) as f32),
+                signal_kind: crate::gestures::SignalKind::from_raw(raw.signal_kind),
                 scroll_delta: Offset::new(
                     (raw.scroll_delta_x * scale) as f32,
                     (raw.scroll_delta_y * scale) as f32,

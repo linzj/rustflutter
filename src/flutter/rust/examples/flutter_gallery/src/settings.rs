@@ -43,6 +43,8 @@ pub fn page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidge
         ],
         14.0,
         16.0,
+        state,
+        handle.clone(),
     );
 
     app::scaffold("Settings", None, state, handle, body)

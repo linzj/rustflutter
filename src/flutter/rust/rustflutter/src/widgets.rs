@@ -467,6 +467,7 @@ pub struct ListView {
     offset: f32,
     spacing: f32,
     centred_item: Option<f32>,
+    extent_sink: Option<std::rc::Rc<std::cell::Cell<f32>>>,
     children: Vec<BoxedWidget>,
     composed: Option<RenderViewport>,
 }
@@ -478,6 +479,7 @@ impl ListView {
             offset: 0.0,
             spacing: 0.0,
             centred_item: None,
+            extent_sink: None,
             children: Vec::new(),
             composed: None,
         }
@@ -496,6 +498,18 @@ impl ListView {
     /// the content has been measured.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Reports how far this list can scroll, once it has been laid out.
+    ///
+    /// A scroll offset has to be clamped to something, and that something is
+    /// not known until the content has been measured -- which happens inside
+    /// the tree, a frame after whoever holds the offset needs it. The cell is
+    /// the way back out. Upstream solves the same problem with a
+    /// `ScrollPosition` that the viewport attaches itself to at layout.
+    pub fn with_extent_sink(mut self, sink: std::rc::Rc<std::cell::Cell<f32>>) -> Self {
+        self.extent_sink = Some(sink);
         self
     }
 
@@ -565,7 +579,12 @@ impl RenderBox for ListView {
             self.composed =
                 Some(RenderViewport::new(self.axis, flex).with_offset(self.offset));
         }
-        self.composed.as_mut().unwrap().layout(constraints)
+        let viewport = self.composed.as_mut().expect("built just above");
+        let size = viewport.layout(constraints);
+        if let Some(sink) = &self.extent_sink {
+            sink.set(viewport.max_scroll_extent());
+        }
+        size
     }
 
     fn size(&self) -> Size {

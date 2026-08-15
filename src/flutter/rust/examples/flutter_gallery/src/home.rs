@@ -31,7 +31,7 @@ use rustflutter::gestures::PointerHandlers;
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;
 use rustflutter::render::{
-    Alignment, BoxFit, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, Size,
+    Alignment, Axis, BoxFit, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, Size,
     StackPosition,
 };
 use rustflutter::widgets::{
@@ -64,7 +64,12 @@ pub fn page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidge
 
     let mut rows: Vec<AnyWidget> = vec![
         component(Header { text: "Gallery", scheme }),
-        component(Carousel { scheme, pressed: state.pressed, handle: handle.clone() }),
+        component(Carousel {
+            scheme,
+            pressed: state.pressed,
+            scroll: state.carousel.clone(),
+            handle: handle.clone(),
+        }),
         component(Header { text: "Categories", scheme }),
     ];
 
@@ -81,13 +86,22 @@ pub fn page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidge
 
     // The list runs edge to edge; the padding is per-row, because the carousel
     // has to be able to scroll out past it.
+    let offset = state.page.offset;
+    let extent = state.page.extent.clone();
+    let handlers = app::scroll_handlers(handle.clone(), |s| &mut s.page, Axis::Vertical);
+
     let body = many(rows, move |rendered| {
-        let mut list = ListView::new().with_offset(0.0);
-        list = list.push(Container::new().with_size(1.0, 8.0));
+        let mut list = ListView::new()
+            .with_offset(offset)
+            .with_extent_sink(extent.clone())
+            .push(Container::new().with_size(1.0, 8.0));
         for child in rendered {
             list = list.push(child);
         }
-        Box::new(list.push(Container::new().with_size(1.0, 32.0)))
+        list = list.push(Container::new().with_size(1.0, 32.0));
+        // Outside the rows, so a press that lands on a row and then travels
+        // scrolls the page rather than opening the demo.
+        Box::new(Pointer::new(ids::PAGE_SCROLL, list).with_handlers(handlers.clone()))
     });
 
     app::bare_page(state, handle, body)
@@ -120,6 +134,7 @@ impl Component for Header {
 struct Carousel {
     scheme: Scheme,
     pressed: Option<u64>,
+    scroll: app::Scroll,
     handle: StateHandle<GalleryState>,
 }
 
@@ -136,16 +151,28 @@ impl Component for Carousel {
             }));
         }
 
+        let offset = self.scroll.offset;
+        let extent = self.scroll.extent.clone();
+        let handlers =
+            app::scroll_handlers(self.handle.clone(), |s| &mut s.carousel, Axis::Horizontal);
+
         many(cards, move |rendered| {
             // Upstream's carousel is a PageView whose viewportFraction is one
             // card plus its margins, which centres whichever card is current.
             // Centring the ends is the part of that which shows when nothing
             // has been swiped yet.
-            let mut list = ListView::horizontal().with_centred_item(CARD_WIDTH);
+            let mut list = ListView::horizontal()
+                .with_centred_item(CARD_WIDTH)
+                .with_offset(offset)
+                .with_extent_sink(extent.clone());
             for card in rendered {
                 list = list.push(card);
             }
-            Box::new(Container::new().with_height(CAROUSEL_HEIGHT).with_child(list))
+            Box::new(
+                Container::new().with_height(CAROUSEL_HEIGHT).with_child(
+                    Pointer::new(ids::CAROUSEL_SCROLL, list).with_handlers(handlers.clone()),
+                ),
+            )
         })
     }
 }

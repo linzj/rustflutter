@@ -40,6 +40,34 @@ use crate::render::{HitTestResult, Offset, RenderBox};
 pub const TOUCH_SLOP: f32 = 18.0;
 
 /// What happened to a pointer. Mirrors `flutter::PointerData::Change`.
+/// What a pointer event carries besides a position.
+///
+/// The shell sends a scroll as a hover with a signal rather than as its own
+/// change, so the signal has to be looked at first or a wheel turn reads as a
+/// mouse being moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SignalKind {
+    #[default]
+    None,
+    Scroll,
+    ScrollInertiaCancel,
+    Scale,
+    /// A signal code the shell sent that this build does not know.
+    Unknown,
+}
+
+impl SignalKind {
+    pub fn from_raw(raw: i32) -> SignalKind {
+        match raw {
+            0 => SignalKind::None,
+            1 => SignalKind::Scroll,
+            2 => SignalKind::ScrollInertiaCancel,
+            3 => SignalKind::Scale,
+            _ => SignalKind::Unknown,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerChange {
     Cancel,
@@ -109,6 +137,7 @@ pub struct PointerEvent {
     pub pointer_id: i64,
     pub change: PointerChange,
     pub kind: PointerKind,
+    pub signal_kind: SignalKind,
     /// Bitmask; bit 0 is the primary button.
     pub buttons: i32,
     pub time_stamp_micros: i64,
@@ -171,6 +200,10 @@ pub struct PointerHandlers {
     /// Fired when a press begins or ends over this region, so a button can
     /// show that it is being held.
     pub on_press_change: Option<Rc<dyn Fn(bool)>>,
+    /// Fired for a wheel or trackpad scroll over this region. The delta is in
+    /// logical pixels, positive meaning the content should move up -- the
+    /// direction the reader is going, not the direction the finger went.
+    pub on_scroll: Option<Rc<dyn Fn(Offset)>>,
 }
 
 impl PointerHandlers {
@@ -185,6 +218,11 @@ impl PointerHandlers {
 
     pub fn with_press_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
         self.on_press_change = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_scroll(mut self, handler: impl Fn(Offset) + 'static) -> Self {
+        self.on_scroll = Some(Rc::new(handler));
         self
     }
 
@@ -229,22 +267,50 @@ impl PointerHandlers {
             && self.on_drag_update.is_none()
             && self.on_drag_end.is_none()
             && self.on_press_change.is_none()
+            && self.on_scroll.is_none()
+    }
+
+    /// Whether this region wants drags. What tells a scrollable ancestor apart
+    /// from a button on the way out of a hit test.
+    pub fn wants_drag(&self) -> bool {
+        self.on_drag_start.is_some()
+            || self.on_drag_update.is_some()
+            || self.on_drag_end.is_some()
     }
 }
 
-/// What a single pressed pointer is doing.
-struct ActivePointer {
-    target: u64,
+/// One end of a gesture: what was hit, and where it was hit.
+#[derive(Clone)]
+struct Target {
+    id: u64,
     handlers: Rc<PointerHandlers>,
+    /// Where the press began, in this target's coordinates.
+    local_origin: Offset,
+}
+
+/// What a single pressed pointer is doing.
+///
+/// Two targets, not one. A press inside a scrolling list of buttons is both a
+/// press on a button and the beginning of a possible scroll, and those are
+/// different objects: the innermost thing that can be tapped gets the tap, and
+/// the innermost thing that can be dragged gets the drag. Recording only the
+/// innermost hit -- which is what this did at first -- means a list whose rows
+/// are tappable cannot be scrolled at all, because every press lands on a row.
+struct ActivePointer {
+    tap: Option<Target>,
+    drag: Option<Target>,
     /// Where the press began, in view coordinates.
     origin: Offset,
-    /// Where the press began, in the target's coordinates.
-    local_origin: Offset,
     /// Movement since the press began.
     total: Offset,
-    /// Set once the press travels past the slop and becomes a drag.
-    dragging: bool,
-    /// Whether the target has been told it is pressed.
+    /// Set once the press travels past the slop.
+    ///
+    /// Separate from whether anything is being dragged: travelling past the
+    /// slop always means the press is no longer a tap, even when nothing
+    /// underneath wants a drag. Sliding a finger off a button cancels it
+    /// whether or not the button happens to be inside a list.
+    past_slop: bool,
+    /// Whether the tap target has been told it is pressed.
     pressed: bool,
 }
 
@@ -283,6 +349,12 @@ impl GestureRouter {
     /// Returns whether anything handled it, which is what a caller would use to
     /// decide whether to let the platform have the event instead.
     pub fn dispatch(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
+        // A scroll arrives as a hover carrying a signal rather than as its own
+        // change, which is the shell's encoding, so it has to be checked before
+        // the change is.
+        if event.signal_kind == SignalKind::Scroll {
+            return self.on_scroll(root, event);
+        }
         match event.change {
             PointerChange::Down => self.on_down(root, event),
             PointerChange::Move => self.on_move(event),
@@ -294,24 +366,69 @@ impl GestureRouter {
         }
     }
 
+    /// Gives a scroll to the innermost region under the pointer that wants one.
+    ///
+    /// Innermost-first, so a scrollable inside a scrollable takes the wheel;
+    /// falling outward is what lets the page scroll when the wheel is over a
+    /// row that does not scroll itself.
+    fn on_scroll(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
+        let mut result = HitTestResult::new();
+        root.hit_test(event.position, &mut result);
+        for entry in &result.path {
+            let Some(handlers) = &entry.handlers else { continue };
+            if let Some(scroll) = &handlers.on_scroll {
+                scroll(event.scroll_delta);
+                return true;
+            }
+        }
+        false
+    }
+
     fn on_down(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
         let mut result = HitTestResult::new();
         root.hit_test(event.position, &mut result);
-        let Some(entry) = result.innermost() else {
-            return false;
-        };
-        let Some(handlers) = entry.handlers.clone() else {
-            return false;
-        };
 
-        let mut local_event = *event;
-        local_event.local_position = entry.local_position;
-        if let Some(down) = &handlers.on_pointer_down {
-            down(&local_event);
+        // Innermost first. The first region that listens at all takes the tap;
+        // the first that wants drags takes the drag. They are usually different
+        // objects -- a row inside a list -- and looking for them separately is
+        // what lets a list of buttons scroll.
+        let mut tap: Option<Target> = None;
+        let mut drag: Option<Target> = None;
+        for entry in &result.path {
+            let Some(handlers) = entry.handlers.clone() else { continue };
+            if drag.is_none() && handlers.wants_drag() {
+                drag = Some(Target {
+                    id: entry.target,
+                    handlers: handlers.clone(),
+                    local_origin: entry.local_position,
+                });
+            }
+            if tap.is_none() {
+                tap = Some(Target {
+                    id: entry.target,
+                    handlers,
+                    local_origin: entry.local_position,
+                });
+            }
+            if tap.is_some() && drag.is_some() {
+                break;
+            }
         }
-        let pressed = handlers.on_press_change.clone();
-        if let Some(press_change) = &pressed {
-            press_change(true);
+        if tap.is_none() && drag.is_none() {
+            return false;
+        }
+
+        let mut pressed = false;
+        if let Some(target) = &tap {
+            let mut local_event = *event;
+            local_event.local_position = target.local_origin;
+            if let Some(down) = &target.handlers.on_pointer_down {
+                down(&local_event);
+            }
+            if let Some(press_change) = &target.handlers.on_press_change {
+                press_change(true);
+                pressed = true;
+            }
         }
 
         // A second down from the same pointer without an up should not leave
@@ -320,13 +437,12 @@ impl GestureRouter {
         self.active.push((
             event.pointer_id,
             ActivePointer {
-                target: entry.target,
-                handlers,
+                tap,
+                drag,
                 origin: event.position,
-                local_origin: entry.local_position,
                 total: Offset::ZERO,
-                dragging: false,
-                pressed: pressed.is_some(),
+                past_slop: false,
+                pressed,
             },
         ));
         true
@@ -337,50 +453,59 @@ impl GestureRouter {
             return false;
         };
         active.total = active.total.plus(event.delta);
-        let travelled = (active.total.dx * active.total.dx + active.total.dy * active.total.dy).sqrt();
+        let travelled =
+            (active.total.dx * active.total.dx + active.total.dy * active.total.dy).sqrt();
+        let travel = event.position.minus(active.origin);
+        let total = active.total;
 
-        let local = active
-            .local_origin
-            .plus(event.position.minus(active.origin));
-        let drag = DragEvent {
-            delta: event.delta,
-            total: active.total,
-            local_position: local,
-            pointer_id: event.pointer_id,
-        };
-        let handlers = Rc::clone(&active.handlers);
-        let starting = !active.dragging && travelled > TOUCH_SLOP;
+        let starting = !active.past_slop && travelled > TOUCH_SLOP;
         if starting {
-            active.dragging = true;
+            active.past_slop = true;
         }
-        let dragging = active.dragging;
+        let past_slop = active.past_slop;
         let was_pressed = active.pressed;
+        let tap = active.tap.clone();
+        let drag_target = active.drag.clone();
 
         // Past the slop the press is no longer a tap candidate, so the pressed
         // state comes back off -- the same thing a button does when a finger
-        // slides off it.
+        // slides off it. This is also what stops a scroll from selecting the row
+        // it started on.
         if starting && was_pressed {
-            if let Some(press_change) = &handlers.on_press_change {
-                press_change(false);
+            if let Some(target) = &tap {
+                if let Some(press_change) = &target.handlers.on_press_change {
+                    press_change(false);
+                }
             }
             if let Some(active) = self.find(event.pointer_id) {
                 active.pressed = false;
             }
         }
 
-        let mut local_event = *event;
-        local_event.local_position = local;
-        if let Some(moved) = &handlers.on_pointer_move {
-            moved(&local_event);
-        }
-        if starting {
-            if let Some(start) = &handlers.on_drag_start {
-                start(drag);
+        if let Some(target) = &tap {
+            if let Some(moved) = &target.handlers.on_pointer_move {
+                let mut local_event = *event;
+                local_event.local_position = target.local_origin.plus(travel);
+                moved(&local_event);
             }
         }
-        if dragging {
-            if let Some(update) = &handlers.on_drag_update {
-                update(drag);
+
+        if let Some(target) = &drag_target {
+            let drag = DragEvent {
+                delta: event.delta,
+                total,
+                local_position: target.local_origin.plus(travel),
+                pointer_id: event.pointer_id,
+            };
+            if starting {
+                if let Some(start) = &target.handlers.on_drag_start {
+                    start(drag);
+                }
+            }
+            if past_slop {
+                if let Some(update) = &target.handlers.on_drag_update {
+                    update(drag);
+                }
             }
         }
         true
@@ -390,36 +515,40 @@ impl GestureRouter {
         let Some(active) = self.take(event.pointer_id) else {
             return false;
         };
-        let handlers = active.handlers;
-        let local = active
-            .local_origin
-            .plus(event.position.minus(active.origin));
+        let travel = event.position.minus(active.origin);
 
-        if active.pressed {
-            if let Some(press_change) = &handlers.on_press_change {
-                press_change(false);
+        if let Some(target) = &active.tap {
+            let local = target.local_origin.plus(travel);
+            if active.pressed {
+                if let Some(press_change) = &target.handlers.on_press_change {
+                    press_change(false);
+                }
+            }
+            if let Some(up) = &target.handlers.on_pointer_up {
+                let mut local_event = *event;
+                local_event.local_position = local;
+                up(&local_event);
+            }
+            // A press that travelled is not a tap, however short the travel.
+            if !active.past_slop {
+                if let Some(tap) = &target.handlers.on_tap {
+                    tap(TapEvent { local_position: local, pointer_id: event.pointer_id });
+                }
             }
         }
 
-        let mut local_event = *event;
-        local_event.local_position = local;
-        if let Some(up) = &handlers.on_pointer_up {
-            up(&local_event);
-        }
-
-        if active.dragging {
-            if let Some(end) = &handlers.on_drag_end {
-                end(DragEvent {
-                    delta: event.delta,
-                    total: active.total,
-                    local_position: local,
-                    pointer_id: event.pointer_id,
-                });
+        if active.past_slop {
+            if let Some(target) = &active.drag {
+                if let Some(end) = &target.handlers.on_drag_end {
+                    end(DragEvent {
+                        delta: event.delta,
+                        total: active.total,
+                        local_position: target.local_origin.plus(travel),
+                        pointer_id: event.pointer_id,
+                    });
+                }
             }
-        } else if let Some(tap) = &handlers.on_tap {
-            tap(TapEvent { local_position: local, pointer_id: event.pointer_id });
         }
-        let _ = active.target;
         true
     }
 
@@ -429,18 +558,22 @@ impl GestureRouter {
         };
         // A cancelled press is not a tap. Only the pressed state is unwound.
         if active.pressed {
-            if let Some(press_change) = &active.handlers.on_press_change {
-                press_change(false);
+            if let Some(target) = &active.tap {
+                if let Some(press_change) = &target.handlers.on_press_change {
+                    press_change(false);
+                }
             }
         }
-        if active.dragging {
-            if let Some(end) = &active.handlers.on_drag_end {
-                end(DragEvent {
-                    delta: Offset::ZERO,
-                    total: active.total,
-                    local_position: active.local_origin,
-                    pointer_id: event.pointer_id,
-                });
+        if active.past_slop {
+            if let Some(target) = &active.drag {
+                if let Some(end) = &target.handlers.on_drag_end {
+                    end(DragEvent {
+                        delta: Offset::ZERO,
+                        total: active.total,
+                        local_position: target.local_origin,
+                        pointer_id: event.pointer_id,
+                    });
+                }
             }
         }
         true
@@ -482,6 +615,7 @@ mod tests {
             pointer_id: 1,
             change,
             kind: PointerKind::Touch,
+            signal_kind: SignalKind::None,
             buttons: 1,
             time_stamp_micros: 0,
             position: Offset::new(x, y),
@@ -612,6 +746,106 @@ mod tests {
 
         assert_eq!(*states.borrow(), vec![true, false]);
         assert_eq!(*taps.borrow(), 0);
+    }
+
+    /// A row inside a scrolling list: the row takes the tap, the list takes the
+    /// drag. Recording only the innermost hit means the list can never be
+    /// scrolled, because every press lands on a row.
+    fn nested(inner: PointerHandlers, outer: PointerHandlers) -> RenderStack {
+        let mut stack = RenderStack::new().push(
+            RenderPointerRegion::new(1, RenderPointerRegion::new(2, Sized(Size::square(80.0)))
+                .with_handlers(inner))
+                .with_handlers(outer),
+        );
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+        stack
+    }
+
+    #[test]
+    fn a_drag_reaches_the_scrollable_above_the_row_it_started_on() {
+        let taps = Rc::new(RefCell::new(0));
+        let dragged = Rc::new(RefCell::new(0.0_f32));
+        let tap_sink = taps.clone();
+        let drag_sink = dragged.clone();
+
+        let root = nested(
+            PointerHandlers::new().with_tap(move |_| *tap_sink.borrow_mut() += 1),
+            PointerHandlers::new()
+                .with_drag_update(move |drag| *drag_sink.borrow_mut() += drag.delta.dy),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Move, 40.0, 70.0, 0.0, 30.0));
+        router.dispatch(&root, &event(PointerChange::Up, 40.0, 70.0, 0.0, 0.0));
+
+        assert_eq!(*dragged.borrow(), 30.0, "the list should have been scrolled");
+        assert_eq!(*taps.borrow(), 0, "a scroll is not a tap on the row it began on");
+    }
+
+    #[test]
+    fn a_press_that_does_not_travel_still_taps_the_row() {
+        let taps = Rc::new(RefCell::new(0));
+        let dragged = Rc::new(RefCell::new(0.0_f32));
+        let tap_sink = taps.clone();
+        let drag_sink = dragged.clone();
+
+        let root = nested(
+            PointerHandlers::new().with_tap(move |_| *tap_sink.borrow_mut() += 1),
+            PointerHandlers::new()
+                .with_drag_update(move |drag| *drag_sink.borrow_mut() += drag.delta.dy),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0));
+        // Inside the slop, so it is a tap and not a scroll.
+        router.dispatch(&root, &event(PointerChange::Move, 40.0, 44.0, 0.0, 4.0));
+        router.dispatch(&root, &event(PointerChange::Up, 40.0, 44.0, 0.0, 0.0));
+
+        assert_eq!(*taps.borrow(), 1);
+        assert_eq!(*dragged.borrow(), 0.0);
+    }
+
+    #[test]
+    fn a_scroll_finds_the_innermost_region_that_wants_one() {
+        let inner = Rc::new(RefCell::new(0.0_f32));
+        let outer = Rc::new(RefCell::new(0.0_f32));
+        let inner_sink = inner.clone();
+        let outer_sink = outer.clone();
+
+        let root = nested(
+            PointerHandlers::new().with_scroll(move |d| *inner_sink.borrow_mut() += d.dy),
+            PointerHandlers::new().with_scroll(move |d| *outer_sink.borrow_mut() += d.dy),
+        );
+
+        let mut router = GestureRouter::new();
+        let mut wheel = event(PointerChange::Hover, 40.0, 40.0, 0.0, 0.0);
+        wheel.signal_kind = SignalKind::Scroll;
+        wheel.scroll_delta = Offset::new(0.0, 53.0);
+        assert!(router.dispatch(&root, &wheel));
+
+        assert_eq!(*inner.borrow(), 53.0);
+        assert_eq!(*outer.borrow(), 0.0, "the inner one took it");
+    }
+
+    #[test]
+    fn a_scroll_falls_outward_when_the_row_under_it_does_not_scroll() {
+        let outer = Rc::new(RefCell::new(0.0_f32));
+        let sink = outer.clone();
+
+        let root = nested(
+            // A tappable row, which is not a scrollable.
+            PointerHandlers::new().with_tap(|_| {}),
+            PointerHandlers::new().with_scroll(move |d| *sink.borrow_mut() += d.dy),
+        );
+
+        let mut router = GestureRouter::new();
+        let mut wheel = event(PointerChange::Hover, 40.0, 40.0, 0.0, 0.0);
+        wheel.signal_kind = SignalKind::Scroll;
+        wheel.scroll_delta = Offset::new(0.0, -20.0);
+        assert!(router.dispatch(&root, &wheel));
+
+        assert_eq!(*outer.borrow(), -20.0);
     }
 
     #[test]

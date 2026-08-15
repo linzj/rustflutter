@@ -46,6 +46,11 @@ pub mod ids {
     pub const CATEGORY: u64 = 100;
     /// The study cards in the home page carousel, one per study.
     pub const STUDY_CARD: u64 = 200;
+    /// The scrollables. A scroll region is a hit-test target like any other:
+    /// it has to have an identity so a drag that starts on a row can find it.
+    pub const PAGE_SCROLL: u64 = 300;
+    pub const CAROUSEL_SCROLL: u64 = 301;
+    pub const SCREEN_SCROLL: u64 = 302;
     /// Home page demo rows, one per demo, offset by index.
     pub const DEMO: u64 = 1_000;
     /// Everything a demo page puts on screen.
@@ -67,6 +72,29 @@ pub mod routes {
     pub const SETTINGS: &str = "settings";
 }
 
+/// One scrollable's position, and how far it may go.
+///
+/// The offset is state; the extent is measured. A list only learns how long it
+/// is when it is laid out, which happens inside the tree a frame after whoever
+/// holds the offset needs the number -- so the list writes it into this cell on
+/// its way past. Upstream calls the same arrangement a `ScrollPosition`.
+#[derive(Clone, Debug, Default)]
+pub struct Scroll {
+    pub offset: f32,
+    pub extent: std::rc::Rc<std::cell::Cell<f32>>,
+}
+
+impl Scroll {
+    /// Moves by `delta` and stays inside the content.
+    ///
+    /// Clamping here rather than in the viewport is what stops an overscroll
+    /// from banking travel: without it, flinging past the end and dragging back
+    /// would do nothing until the imaginary distance had been paid off.
+    pub fn scroll_by(&mut self, delta: f32) {
+        self.offset = (self.offset + delta).clamp(0.0, self.extent.get().max(0.0));
+    }
+}
+
 /// Everything the gallery remembers.
 pub struct GalleryState {
     pub navigator: Navigator,
@@ -82,6 +110,11 @@ pub struct GalleryState {
     /// When the last frame was, so a transition advances by how long it has
     /// actually been rather than by an assumed frame interval.
     pub last_frame_micros: Option<i64>,
+    /// The home page's vertical scroll, and the carousel's horizontal one.
+    pub page: Scroll,
+    pub carousel: Scroll,
+    /// Whatever screen is on top of the navigator.
+    pub screen: Scroll,
 }
 
 impl Default for GalleryState {
@@ -97,6 +130,9 @@ impl Default for GalleryState {
             study: studies::StudyState::default(),
             pressed: None,
             last_frame_micros: None,
+            page: Scroll::default(),
+            carousel: Scroll::default(),
+            screen: Scroll::default(),
         }
     }
 }
@@ -145,6 +181,8 @@ impl GalleryState {
     }
 
     fn push_screen(&mut self, route: &'static str, slug: &'static str) {
+        // A screen opens at its top, not wherever the last one was left.
+        self.screen = Scroll::default();
         // Reset whatever the last visit left behind, so a screen always opens
         // in the state its description describes.
         self.demo = demos::DemoState::default();
@@ -614,8 +652,47 @@ pub fn bare_page(
     component(Scaffold::new(stacked))
 }
 
+/// The handlers a scrollable needs: drag it, or turn the wheel over it.
+///
+/// Both end up in the same place. The signs differ because they describe
+/// different things: a drag says where the content went, a wheel says where the
+/// reader wants to go.
+pub fn scroll_handlers(
+    handle: StateHandle<GalleryState>,
+    pick: fn(&mut GalleryState) -> &mut Scroll,
+    axis: rustflutter::render::Axis,
+) -> rustflutter::gestures::PointerHandlers {
+    use rustflutter::render::Axis;
+    let drag_handle = handle.clone();
+    rustflutter::gestures::PointerHandlers::new()
+        .with_drag_update(move |drag| {
+            let along = match axis {
+                Axis::Vertical => drag.delta.dy,
+                Axis::Horizontal => drag.delta.dx,
+            };
+            drag_handle.set_state(move |state| pick(state).scroll_by(-along));
+        })
+        .with_scroll(move |delta| {
+            let along = match axis {
+                Axis::Vertical => delta.dy,
+                Axis::Horizontal => delta.dx,
+            };
+            handle.set_state(move |state| pick(state).scroll_by(along));
+        })
+}
+
 /// A page body that scrolls, with the gallery's standard padding.
-pub fn scrolling_body(children: Vec<AnyWidget>, spacing: f32, padding: f32) -> AnyWidget {
+pub fn scrolling_body(
+    children: Vec<AnyWidget>,
+    spacing: f32,
+    padding: f32,
+    state: &GalleryState,
+    handle: StateHandle<GalleryState>,
+) -> AnyWidget {
+    let offset = state.screen.offset;
+    let extent = state.screen.extent.clone();
+    let handlers = scroll_handlers(handle, |s| &mut s.screen, rustflutter::render::Axis::Vertical);
+
     many(children, move |rendered| {
         // Stretch, so every card on a page is the same width. Safe here
         // because a card has no width of its own; the columns inside a card use
@@ -627,12 +704,16 @@ pub fn scrolling_body(children: Vec<AnyWidget>, spacing: f32, padding: f32) -> A
         for child in rendered {
             column = column.push(child);
         }
-        let mut list = ListView::new();
-        list = list.push(column);
+        let list = ListView::new()
+            .with_offset(offset)
+            .with_extent_sink(extent.clone())
+            .push(column);
         Box::new(
-            Container::new()
-                .with_padding(EdgeInsets::all(padding))
-                .with_child(list),
+            rustflutter::widgets::Pointer::new(
+                ids::SCREEN_SCROLL,
+                Container::new().with_padding(EdgeInsets::all(padding)).with_child(list),
+            )
+            .with_handlers(handlers.clone()),
         )
     })
 }
@@ -681,6 +762,42 @@ mod tests {
 
     fn gallery() -> Gallery {
         Gallery { light: false, route: routes::HOME, slug: None }
+    }
+
+    #[test]
+    fn a_scroll_stays_inside_the_content() {
+        let mut scroll = Scroll::default();
+        scroll.extent.set(500.0);
+
+        scroll.scroll_by(200.0);
+        assert_eq!(scroll.offset, 200.0);
+        // Past the end stops at the end rather than banking the travel: without
+        // that, dragging back would do nothing until the imaginary distance had
+        // been paid off.
+        scroll.scroll_by(1000.0);
+        assert_eq!(scroll.offset, 500.0);
+        scroll.scroll_by(-10.0);
+        assert_eq!(scroll.offset, 490.0);
+        scroll.scroll_by(-10_000.0);
+        assert_eq!(scroll.offset, 0.0);
+    }
+
+    #[test]
+    fn a_list_that_fits_does_not_scroll() {
+        // The extent starts at zero and stays there until something measures
+        // it, so a scroll before the first layout must not move anything.
+        let mut scroll = Scroll::default();
+        scroll.scroll_by(120.0);
+        assert_eq!(scroll.offset, 0.0);
+    }
+
+    #[test]
+    fn opening_a_screen_puts_it_at_the_top() {
+        let mut state = GalleryState::default();
+        state.screen.extent.set(900.0);
+        state.screen.scroll_by(400.0);
+        state.open(catalog::DEMOS[0].slug);
+        assert_eq!(state.screen.offset, 0.0, "a screen opens at its top");
     }
 
     /// A transition entered after the app has been sitting idle should start at

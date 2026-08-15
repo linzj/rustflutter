@@ -87,6 +87,8 @@ pub fn page(
         ],
         16.0,
         16.0,
+        state,
+        handle.clone(),
     );
 
     let page = app::scaffold(demo.title, Some(demo.subtitle), state, handle.clone(), body);

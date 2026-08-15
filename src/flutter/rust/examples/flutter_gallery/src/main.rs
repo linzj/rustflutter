@@ -27,6 +27,7 @@ mod catalog;
 mod demos;
 mod home;
 mod settings;
+mod shrine_data;
 mod studies;
 mod theme;
 

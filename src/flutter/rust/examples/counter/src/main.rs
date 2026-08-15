@@ -345,6 +345,7 @@ fn render_png(path: &str, taps: u32) -> c_int {
                         pointer_id: 1,
                         change,
                         kind: PointerKind::Mouse,
+                        signal_kind: rustflutter::gestures::SignalKind::None,
                         buttons: 1,
                         time_stamp_micros: 0,
                         position: target,

@@ -18,6 +18,7 @@ static_library("flutter_gallery_rs") {
     "src/home.rs",
     "src/main.rs",
     "src/settings.rs",
+    "src/shrine_data.rs",
     "src/studies.rs",
     "src/theme.rs",
   ]
@@ -88,6 +89,7 @@ if (enable_unittests) {
       "src/home.rs",
       "src/main.rs",
       "src/settings.rs",
+      "src/shrine_data.rs",
       "src/studies.rs",
       "src/theme.rs",
       "//flutter/rust/rustflutter/src/lib.rs",

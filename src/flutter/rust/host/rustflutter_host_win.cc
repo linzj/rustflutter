@@ -339,6 +339,28 @@ PointerData MakePointerData(WindowState* state,
   return data;
 }
 
+/// How far one notch of the wheel scrolls, in logical pixels.
+///
+/// Flutter's own Windows embedder uses twenty and ignores the system's
+/// lines-per-notch setting; matching it means a wheel turn here moves a list by
+/// the same amount it would in a Flutter app on the same machine.
+constexpr double kScrollPixelsPerNotch = 20.0;
+
+/// A wheel turn, as a hover carrying a scroll signal.
+///
+/// It is not its own change: the pointer did not go anywhere, and a recogniser
+/// that read the change would see a mouse being moved. The signal is what says
+/// otherwise.
+PointerData MakeScrollData(WindowState* state, double x, double y, double notches) {
+  PointerData data = MakePointerData(state, PointerData::Change::kHover, x, y);
+  data.signal_kind = PointerData::SignalKind::kScroll;
+  // Positive means the content moves up -- the direction the reader is going,
+  // which is the opposite of the way the wheel turned.
+  data.scroll_delta_x = 0.0;
+  data.scroll_delta_y = -notches * kScrollPixelsPerNotch;
+  return data;
+}
+
 void SendViewportMetrics(WindowState* state, int32_t width, int32_t height) {
   if (state->shell == nullptr || width <= 0 || height <= 0) {
     return;
@@ -451,6 +473,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         default:
           break;
       }
+      return 0;
+    }
+    case WM_MOUSEWHEEL: {
+      if (state == nullptr || state->platform_view == nullptr) {
+        return 0;
+      }
+      // Unlike the button messages, the wheel reports screen coordinates.
+      POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ScreenToClient(hwnd, &point);
+      const double notches =
+          static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
+      state->platform_view->SendPointer(MakeScrollData(
+          state, static_cast<double>(point.x), static_cast<double>(point.y),
+          notches));
       return 0;
     }
     case WM_CAPTURECHANGED:
