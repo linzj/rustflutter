@@ -95,10 +95,34 @@ pub const MATERIAL_ICON_FONT: &[u8] =
 pub const GALLERY_ICONS: &str = "GalleryIcons";
 pub const MATERIAL_ICONS: &str = "MaterialIcons";
 
-/// Registers both icon fonts. Call once, before the first frame.
+/// The two text faces upstream sets the gallery in.
+///
+/// Upstream fetches these at runtime through `google_fonts`; they ship
+/// with `flutter_gallery_assets` too, which is where these came from.
+/// Four weights of one and two of the other, because that is what the
+/// text theme asks for -- a weight that is not registered is synthesised
+/// by smearing the nearest one, which looks like a different font.
+pub const TEXT_FONTS: &[(&str, &[u8])] = &[
+    (MONTSERRAT, include_bytes!("../assets/fonts/Montserrat-Regular.ttf")),
+    (MONTSERRAT, include_bytes!("../assets/fonts/Montserrat-Medium.ttf")),
+    (MONTSERRAT, include_bytes!("../assets/fonts/Montserrat-SemiBold.ttf")),
+    (MONTSERRAT, include_bytes!("../assets/fonts/Montserrat-Bold.ttf")),
+    (OSWALD, include_bytes!("../assets/fonts/Oswald-Medium.ttf")),
+    (OSWALD, include_bytes!("../assets/fonts/Oswald-SemiBold.ttf")),
+];
+pub const MONTSERRAT: &str = "Montserrat";
+pub const OSWALD: &str = "Oswald";
+
+/// Registers every font the gallery draws with. Call once, before the
+/// first frame: an unregistered family falls back to a system face, which
+/// has nothing at a private-use codepoint and draws a blank rather than
+/// complaining.
 pub fn register_fonts() {
     rustflutter::engine::register_font(GALLERY_ICON_FONT, GALLERY_ICONS);
     rustflutter::engine::register_font(MATERIAL_ICON_FONT, MATERIAL_ICONS);
+    for (family, bytes) in TEXT_FONTS {
+        rustflutter::engine::register_font(bytes, family);
+    }
 }
 
 /// The chrome icons: back arrows, the settings gear, chevrons. Upstream

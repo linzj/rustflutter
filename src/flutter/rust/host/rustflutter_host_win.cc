@@ -160,9 +160,10 @@ class HostPlatformView final : public PlatformView,
             << "Falling back to software rendering; see the error above.";
       }
     }
-    // Paragraphs have to emit the right kind of text op, and this runs before
-    // the engine is launched, so the first frame already gets it right.
-    rf_set_impeller_text(gl_context_ != nullptr ? 1 : 0);
+    // Text ops and images both have to be recorded for the backend that will
+    // draw them, and this runs before the engine is launched, so the first
+    // frame already gets it right.
+    rf_set_impeller_backend(gl_context_ != nullptr ? 1 : 0);
   }
 
   // |PlatformView|

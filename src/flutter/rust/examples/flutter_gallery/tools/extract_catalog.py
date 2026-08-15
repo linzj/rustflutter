@@ -77,9 +77,17 @@ def main():
   headers = {name: strings[name] for name in strings
              if name.startswith('homeCategory') or name.startswith('homeHeader')}
 
+  # The icon font's codepoint table, which gen_catalog.py needs alongside this.
+  icons_source = open(ROOT + '/data/icons.dart', encoding='utf-8').read()
+  icons = dict(re.findall(
+      r'static const IconData (\w+) = IconData\((0x[0-9a-fA-F]+)', icons_source))
+
   json.dump({'headers': headers, 'studies': studies, 'demos': demos},
             open('K:/rustflutter/upstream_catalog.json', 'w', encoding='utf-8'),
             indent=1, ensure_ascii=False)
+  json.dump(icons, open('K:/rustflutter/upstream_icons.json', 'w', encoding='utf-8'),
+            indent=1)
+  print('icons:', len(icons))
 
   print('localized strings:', len(strings))
   print('studies:', len(studies), [s['slug'] for s in studies])

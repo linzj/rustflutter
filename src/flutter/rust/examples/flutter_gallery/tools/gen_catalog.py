@@ -171,10 +171,35 @@ def main():
   add('pub const GALLERY_ICONS: &str = "GalleryIcons";')
   add('pub const MATERIAL_ICONS: &str = "MaterialIcons";')
   add('')
-  add('/// Registers both icon fonts. Call once, before the first frame.')
+  add('/// The two text faces upstream sets the gallery in.')
+  add('///')
+  add('/// Upstream fetches these at runtime through `google_fonts`; they ship')
+  add('/// with `flutter_gallery_assets` too, which is where these came from.')
+  add('/// Four weights of one and two of the other, because that is what the')
+  add('/// text theme asks for -- a weight that is not registered is synthesised')
+  add('/// by smearing the nearest one, which looks like a different font.')
+  add('pub const TEXT_FONTS: &[(&str, &[u8])] = &[')
+  for family, face in [('MONTSERRAT', 'Montserrat-Regular'),
+                       ('MONTSERRAT', 'Montserrat-Medium'),
+                       ('MONTSERRAT', 'Montserrat-SemiBold'),
+                       ('MONTSERRAT', 'Montserrat-Bold'),
+                       ('OSWALD', 'Oswald-Medium'),
+                       ('OSWALD', 'Oswald-SemiBold')]:
+    add('    (%s, include_bytes!("../assets/fonts/%s.ttf")),' % (family, face))
+  add('];')
+  add('pub const MONTSERRAT: &str = "Montserrat";')
+  add('pub const OSWALD: &str = "Oswald";')
+  add('')
+  add('/// Registers every font the gallery draws with. Call once, before the')
+  add('/// first frame: an unregistered family falls back to a system face, which')
+  add('/// has nothing at a private-use codepoint and draws a blank rather than')
+  add('/// complaining.')
   add('pub fn register_fonts() {')
   add('    rustflutter::engine::register_font(GALLERY_ICON_FONT, GALLERY_ICONS);')
   add('    rustflutter::engine::register_font(MATERIAL_ICON_FONT, MATERIAL_ICONS);')
+  add('    for (family, bytes) in TEXT_FONTS {')
+  add('        rustflutter::engine::register_font(bytes, family);')
+  add('    }')
   add('}')
   add('')
   add('/// The chrome icons: back arrows, the settings gear, chevrons. Upstream')

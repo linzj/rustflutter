@@ -62,6 +62,12 @@ pub struct Theme {
     pub spacing: f32,
     pub body_size: f32,
     pub title_size: f32,
+    /// The face everything is set in, or None for the system default.
+    ///
+    /// It lives on the theme rather than on each call site because a font is a
+    /// property of the design, and a component that had to be told its family
+    /// would be a component someone could forget to tell.
+    pub font_family: Option<&'static str>,
 }
 
 impl Theme {
@@ -80,6 +86,7 @@ impl Theme {
             spacing: 8.0,
             body_size: 14.0,
             title_size: 20.0,
+            font_family: None,
         }
     }
 
@@ -98,15 +105,26 @@ impl Theme {
             spacing: 8.0,
             body_size: 14.0,
             title_size: 20.0,
+            font_family: None,
         }
     }
 
     pub fn body(&self) -> TextStyle {
-        TextStyle { font_size: self.body_size, color: self.text, ..TextStyle::default() }
+        TextStyle {
+            font_size: self.body_size,
+            color: self.text,
+            font_family: self.font_family.map(str::to_string),
+            ..TextStyle::default()
+        }
     }
 
     pub fn muted(&self) -> TextStyle {
-        TextStyle { font_size: self.body_size, color: self.text_muted, ..TextStyle::default() }
+        TextStyle {
+            font_size: self.body_size,
+            color: self.text_muted,
+            font_family: self.font_family.map(str::to_string),
+            ..TextStyle::default()
+        }
     }
 
     pub fn title(&self) -> TextStyle {
@@ -114,6 +132,7 @@ impl Theme {
             font_size: self.title_size,
             color: self.text,
             font_weight: 700,
+            font_family: self.font_family.map(str::to_string),
             ..TextStyle::default()
         }
     }

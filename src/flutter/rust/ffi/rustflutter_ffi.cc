@@ -95,9 +95,17 @@ int32_t rf_initialize(const char* icu_data_path) {
   return 0;
 }
 
-void rf_set_impeller_text(int32_t enabled) {
+void rf_set_impeller_backend(int32_t enabled) {
   g_impeller_text.store(enabled != 0, std::memory_order_relaxed);
 }
+
+namespace flutter {
+
+bool RfImpellerBackend() {
+  return g_impeller_text.load(std::memory_order_relaxed);
+}
+
+}  // namespace flutter
 
 // -- Paint --------------------------------------------------------------------
 

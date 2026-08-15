@@ -10,10 +10,12 @@
 //! reads -- so this module holds the full scheme and hands the framework the
 //! part it understands.
 //!
-//! The type faces are not ported. Upstream draws in Montserrat and Oswald,
-//! fetched at runtime by `google_fonts`; there is no font fetching here and
-//! neither face ships with the engine, so the text is shaped in the system
-//! font. That is the one deliberate visual difference on every screen.
+//! The type faces are upstream's too. It draws in Montserrat and Oswald,
+//! fetched at runtime through `google_fonts`; both ship inside
+//! `flutter_gallery_assets` as well, and that is where the copies in
+//! `assets/fonts` came from. Nothing is fetched at runtime here -- there is no
+//! network and no asset bundle -- so they are baked in and registered before
+//! the first frame.
 
 use rustflutter::components::Theme;
 use rustflutter::engine::Color;
@@ -103,32 +105,60 @@ impl Scheme {
             // Upstream's bodyLarge and titleLarge.
             body_size: 14.0,
             title_size: 16.0,
+            font_family: Some(crate::catalog::MONTSERRAT),
         }
     }
 }
 
-/// Upstream's text sizes and weights, by the names Material gives them.
+/// Upstream's text roles, by the names Material gives them.
 ///
-/// Only the ones the gallery actually uses. The faces differ -- see the module
-/// comment -- but the sizes and weights are upstream's.
+/// Face, size and weight all come from `gallery_theme_data.dart`. The weight
+/// matters as much as the size: each weight is a separate file, and asking for
+/// one that was never registered gets the nearest weight smeared into shape,
+/// which reads as a different typeface rather than as a bolder one.
 #[allow(dead_code)] // Upstream's complete set of roles.
 pub mod text {
-    /// Montserrat 20 bold. The "Gallery" and "Categories" headers.
-    pub const HEADLINE_MEDIUM: (f32, i32) = (20.0, 700);
-    /// Oswald 16 medium. A category's own header.
-    pub const HEADLINE_SMALL: (f32, i32) = (16.0, 500);
-    /// Oswald 16 semibold. A carousel card's title.
-    pub const BODY_SMALL: (f32, i32) = (16.0, 600);
-    /// Montserrat 16 medium. A demo row's title.
-    pub const TITLE_MEDIUM: (f32, i32) = (16.0, 500);
-    /// Montserrat 16 bold.
-    pub const TITLE_LARGE: (f32, i32) = (16.0, 700);
-    /// Montserrat 12 medium. Subtitles, and a carousel card's second line.
-    pub const LABEL_SMALL: (f32, i32) = (12.0, 500);
-    /// Montserrat 14 regular.
-    pub const BODY_LARGE: (f32, i32) = (14.0, 400);
-    /// Montserrat 16 regular.
-    pub const BODY_MEDIUM: (f32, i32) = (16.0, 400);
+    use crate::catalog::{MONTSERRAT, OSWALD};
+    use rustflutter::engine::{Color, TextStyle};
+
+    /// One of upstream's text roles.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Role {
+        pub family: &'static str,
+        pub size: f32,
+        pub weight: i32,
+    }
+
+    impl Role {
+        pub fn styled(self, color: Color) -> TextStyle {
+            TextStyle {
+                font_family: Some(self.family.to_string()),
+                font_size: self.size,
+                font_weight: self.weight,
+                color,
+                ..TextStyle::default()
+            }
+        }
+    }
+
+    const fn role(family: &'static str, size: f32, weight: i32) -> Role {
+        Role { family, size, weight }
+    }
+
+    /// The "Gallery" and "Categories" headers.
+    pub const HEADLINE_MEDIUM: Role = role(MONTSERRAT, 20.0, 700);
+    /// A category's own header.
+    pub const HEADLINE_SMALL: Role = role(OSWALD, 16.0, 500);
+    /// A carousel card's title.
+    pub const BODY_SMALL: Role = role(OSWALD, 16.0, 600);
+    /// A demo row's title.
+    pub const TITLE_MEDIUM: Role = role(MONTSERRAT, 16.0, 500);
+    pub const TITLE_LARGE: Role = role(MONTSERRAT, 16.0, 700);
+    /// Subtitles, and a carousel card's second line.
+    pub const LABEL_SMALL: Role = role(MONTSERRAT, 12.0, 500);
+    pub const BODY_LARGE: Role = role(MONTSERRAT, 14.0, 400);
+    pub const BODY_MEDIUM: Role = role(MONTSERRAT, 16.0, 400);
+    pub const LABEL_LARGE: Role = role(MONTSERRAT, 14.0, 600);
 }
 
 #[cfg(test)]

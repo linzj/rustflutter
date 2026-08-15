@@ -41,15 +41,22 @@ typedef struct RfImage RfImage;
 // Idempotent; safe to call from every app entry point. Returns 0 on success.
 int32_t rf_initialize(const char* icu_data_path);
 
-// Selects the text backend for paragraphs built from here on.
+// Tells the recording side which backend will rasterise what it records.
 //
-// Impeller and Skia consume different display-list text ops -- DlTextImpeller
-// carries a shaped TextFrame, DlTextSkia carries an SkTextBlob -- and neither
-// dispatcher can read the other's. The paragraph builder has to be told which
-// to emit, and it cannot work it out for itself because it never sees the
-// surface. The host calls this once, on the raster thread, as soon as it knows
-// whether Impeller came up; the headless path leaves it off.
-void rf_set_impeller_text(int32_t enabled);
+// A display list is not backend-neutral in two places, and both of them
+// segfault rather than degrade if they get it wrong:
+//
+//   text    Impeller and Skia consume different ops -- DlTextImpeller carries a
+//           shaped TextFrame, DlTextSkia carries an SkTextBlob -- and neither
+//           dispatcher can read the other's.
+//   images  Impeller's dispatcher calls DlImage::asImpellerImage() and
+//           dereferences it without checking. A Skia-backed DlImage returns
+//           null there.
+//
+// The recorder cannot work this out for itself: it never sees the surface. The
+// host calls this once, on the raster thread, as soon as it knows whether
+// Impeller came up; the headless path leaves it off.
+void rf_set_impeller_backend(int32_t enabled);
 
 // -- Paint ------------------------------------------------------------------
 

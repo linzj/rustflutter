@@ -44,11 +44,18 @@ use crate::theme::{Scheme, text};
 
 /// Upstream's `_horizontalPadding`.
 const HORIZONTAL_PADDING: f32 = 32.0;
-/// Upstream's `_carouselItemWidth` and `_carouselHeightMin`.
+/// Upstream's `_carouselItemWidth`, and the band it sits in.
+///
+/// The band is `_carouselHeight(.4, context)`, which at a text scale of one is
+/// `_carouselHeightMin` -- 240. The card asks for 240 as well, but it also
+/// carries a vertical margin of 16, and the page view it lives in clips rather
+/// than grows: what is left for the card body is 240 less the margins.
 const CARD_WIDTH: f32 = 296.0;
-const CARD_HEIGHT: f32 = 240.0;
-/// Upstream's `_carouselItemMobileMargin`.
+const CAROUSEL_HEIGHT: f32 = 240.0;
+/// Upstream's `_carouselItemMobileMargin`, and its vertical counterpart.
 const CARD_MARGIN: f32 = 4.0;
+const CARD_MARGIN_VERTICAL: f32 = 16.0;
+const CARD_HEIGHT: f32 = CAROUSEL_HEIGHT - CARD_MARGIN_VERTICAL * 2.0;
 /// Upstream's card corner.
 const CARD_RADIUS: f32 = 10.0;
 
@@ -96,14 +103,14 @@ impl Component for Header {
     fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
         let label = self.text;
         let color = self.scheme.primary_container;
-        let (size, weight) = text::HEADLINE_MEDIUM;
+        let style = text::HEADLINE_MEDIUM.styled(color);
 
         leaf(move || {
             Container::new()
                 .with_padding(EdgeInsets::only(HORIZONTAL_PADDING, 15.0, HORIZONTAL_PADDING, 11.0))
                 .with_child(Align::new(
                     Alignment::CENTER_LEFT,
-                    Text::new(label).with_size(size).with_weight(weight).with_color(color),
+                    Text::new(label).with_style(style.clone()),
                 ))
         })
     }
@@ -138,12 +145,7 @@ impl Component for Carousel {
             for card in rendered {
                 list = list.push(card);
             }
-            Box::new(
-                Container::new()
-                    .with_padding(EdgeInsets::symmetric(0.0, 16.0))
-                    .with_height(CARD_HEIGHT + 32.0)
-                    .with_child(list),
-            )
+            Box::new(Container::new().with_height(CAROUSEL_HEIGHT).with_child(list))
         })
     }
 }
@@ -188,8 +190,8 @@ impl Component for CarouselCard {
         };
         let artwork = Image::shared(&format!("{slug}:{}", scheme.is_dark), bytes);
 
-        let (title_size, title_weight) = text::BODY_SMALL;
-        let (sub_size, sub_weight) = text::LABEL_SMALL;
+        let title_style = text::BODY_SMALL.styled(ink);
+        let sub_style = text::LABEL_SMALL.styled(ink);
 
         leaf(move || {
             let mut layers = Stack::new();
@@ -205,18 +207,8 @@ impl Component for CarouselCard {
                         .with_main_axis_size(MainAxisSize::Max)
                         .with_main_axis_alignment(rustflutter::render::MainAxisAlignment::End)
                         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                        .push(
-                            Text::new(study.title)
-                                .with_size(title_size)
-                                .with_weight(title_weight)
-                                .with_color(ink),
-                        )
-                        .push(
-                            Text::new(study.subtitle)
-                                .with_size(sub_size)
-                                .with_weight(sub_weight)
-                                .with_color(ink),
-                        ),
+                        .push(Text::new(study.title).with_style(title_style.clone()))
+                        .push(Text::new(study.subtitle).with_style(sub_style.clone())),
                 ),
                 StackPosition::fill(),
             );
@@ -224,7 +216,7 @@ impl Component for CarouselCard {
             Pointer::new(
                 id,
                 Container::new()
-                    .with_margin(EdgeInsets::symmetric(CARD_MARGIN, 0.0))
+                    .with_margin(EdgeInsets::symmetric(CARD_MARGIN, CARD_MARGIN_VERTICAL))
                     .with_size(CARD_WIDTH - CARD_MARGIN * 2.0, CARD_HEIGHT)
                     .with_color(if held { fill.darkened(0.12) } else { fill })
                     .with_corner_radius(CARD_RADIUS)
@@ -278,13 +270,33 @@ impl Component for CategoryListItem {
         let icon = category
             .icon()
             .and_then(|bytes| Image::shared(category.title().unwrap_or("?"), bytes));
-        let (title_size, title_weight) = text::HEADLINE_SMALL;
-        // Upstream's collapsed header is inset and rounded; the open one runs
-        // edge to edge and squares off, so that the demos below read as part of
-        // it rather than as a separate list.
-        let margin = if expanded { 0.0 } else { HORIZONTAL_PADDING };
+        let title_style = text::HEADLINE_SMALL.styled(scheme.on_surface);
+
+        // Upstream animates between these two over 200ms. The ends are its
+        // numbers; only the travel between them is missing.
+        //
+        //            collapsed                 expanded
+        //   height   80                        96
+        //   margin   LTRB(32, 8, 32, 8)        zero
+        //   image    all(8)                    start 16, else 8
+        //   radius   10                        0
+        //   chevron  hidden                    shown
+        //
+        // The collapsed header is inset and rounded so it reads as a card; the
+        // open one runs edge to edge and squares off, so the demos below read
+        // as part of it rather than as a list beside it.
+        let header_height = if expanded { 96.0 } else { 80.0 };
+        let margin = if expanded {
+            EdgeInsets::ZERO
+        } else {
+            EdgeInsets::symmetric(HORIZONTAL_PADDING, 8.0)
+        };
+        let image_padding = if expanded {
+            EdgeInsets::only(16.0, 8.0, 8.0, 8.0)
+        } else {
+            EdgeInsets::all(8.0)
+        };
         let radius = if expanded { 0.0 } else { 10.0 };
-        let chevron = if expanded { catalog::icon::ARROW_UP } else { catalog::icon::ARROW_DOWN };
 
         let header = leaf(move || {
             let mut row = RenderFlex::row()
@@ -292,38 +304,43 @@ impl Component for CategoryListItem {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center);
             if let Some(icon) = icon.clone() {
                 row = row.push(
-                    Container::new()
-                        .with_padding(EdgeInsets::all(8.0))
-                        .with_child(Container::new().with_size(64.0, 64.0).with_child(
-                            ImageView::with_fit(icon, BoxFit::Contain),
-                        )),
+                    Container::new().with_padding(image_padding).with_child(
+                        Container::new()
+                            .with_size(64.0, 64.0)
+                            .with_child(ImageView::with_fit(icon, BoxFit::Contain)),
+                    ),
                 );
             }
             row = row.push_flex(FlexChild::expanded(
                 Container::new().with_padding(EdgeInsets::only(8.0, 0.0, 0.0, 0.0)).with_child(
                     Align::new(
                         Alignment::CENTER_LEFT,
-                        Text::new(title)
-                            .with_size(title_size)
-                            .with_weight(title_weight)
-                            .with_color(scheme.on_surface),
+                        Text::new(title).with_style(title_style.clone()),
                     ),
                 ),
                 1,
             ));
-            row = row.push(
-                Container::new().with_padding(EdgeInsets::only(8.0, 0.0, 32.0, 0.0)).with_child(
-                    Text::new(chevron)
-                        .with_font_family(catalog::MATERIAL_ICONS)
-                        .with_size(24.0)
-                        .with_color(scheme.on_surface),
-                ),
-            );
+            // Only when open. Upstream fades it in with the expansion, so a
+            // closed header carries no arrow at all -- the inset card shape is
+            // what says it can be tapped.
+            if expanded {
+                row = row.push(
+                    Container::new()
+                        .with_padding(EdgeInsets::only(8.0, 0.0, 32.0, 0.0))
+                        .with_child(
+                            Text::new(catalog::icon::ARROW_UP)
+                                .with_font_family(catalog::MATERIAL_ICONS)
+                                .with_size(24.0)
+                                .with_color(scheme.on_surface),
+                        ),
+                );
+            }
 
             Pointer::new(
                 header_id,
                 Container::new()
-                    .with_margin(EdgeInsets::symmetric(margin, 0.0))
+                    .with_margin(margin)
+                    .with_height(header_height)
                     .with_color(if held {
                         scheme.on_surface.with_alpha(0x1F)
                     } else {
@@ -401,25 +418,15 @@ impl Component for CategoryDemoItem {
                 });
             });
 
-        let (title_size, title_weight) = text::TITLE_MEDIUM;
-        let (sub_size, sub_weight) = text::LABEL_SMALL;
+        let title_style = text::TITLE_MEDIUM.styled(scheme.on_surface);
+        let sub_style = text::LABEL_SMALL.styled(scheme.muted());
 
         leaf(move || {
             let text_column = RenderFlex::column()
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                .push(
-                    Text::new(demo.title)
-                        .with_size(title_size)
-                        .with_weight(title_weight)
-                        .with_color(scheme.on_surface),
-                )
-                .push(
-                    Text::new(demo.subtitle)
-                        .with_size(sub_size)
-                        .with_weight(sub_weight)
-                        .with_color(scheme.muted()),
-                )
+                .push(Text::new(demo.title).with_style(title_style.clone()))
+                .push(Text::new(demo.subtitle).with_style(sub_style.clone()))
                 .push(Container::new().with_size(1.0, 20.0))
                 // Upstream's one-pixel rule, in the background colour so it
                 // reads as a gap in the surface rather than as a drawn line.

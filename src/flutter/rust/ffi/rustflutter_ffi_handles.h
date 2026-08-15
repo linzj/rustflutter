@@ -22,6 +22,7 @@
 #include "flutter/display_list/geometry/dl_path_builder.h"
 #include "flutter/display_list/image/dl_image.h"
 #include "flutter/flow/layers/container_layer.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "txt/paragraph.h"
 
 struct RfPaint {
@@ -64,7 +65,17 @@ struct RfPath {
 };
 
 struct RfImage {
+  /// The Skia-backed view, and the pixels behind it.
+  ///
+  /// Both are kept because the two backends want different things and which
+  /// one will draw is not known when the image is decoded: Skia takes the
+  /// DlImage directly, Impeller needs those pixels uploaded to a texture. The
+  /// pixels are shared rather than copied a second time.
   sk_sp<flutter::DlImage> image;
+  std::shared_ptr<SkBitmap> pixels;
+  /// Built on first use under Impeller, and uploaded later still -- on the
+  /// raster thread, where there is a GPU context to upload to.
+  sk_sp<flutter::DlImage> impeller_image;
 };
 
 //------------------------------------------------------------------------------

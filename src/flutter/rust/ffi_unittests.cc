@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/testing/testing.h"
 
 // Declared by //flutter/rust:rust_lib (flutter/rust/rustflutter/src/lib.rs).
@@ -374,6 +375,50 @@ TEST(RustFFI, DecodesAndDrawsAnImage) {
 
   rf_display_list_free(display_list);
   rf_canvas_free(canvas);
+  rf_image_free(image);
+  rf_layer_tree_free(source_tree);
+  rf_display_list_free(source);
+  rf_canvas_free(source_canvas);
+  std::filesystem::remove(png_path);
+}
+
+// A display list is not backend-neutral, and getting it wrong is a segfault
+// rather than a wrong pixel: Impeller's dispatcher calls asImpellerImage() and
+// dereferences the result without checking, and a Skia-backed DlImage returns
+// null there. This pins the invariant -- whichever backend is going to draw,
+// the recorded image is one it can read.
+TEST(RustFFI, RecordsAnImageTheActiveBackendCanRead) {
+  // A one-pixel PNG, so the test does not depend on the encoder.
+  constexpr int32_t kSize = 4;
+  RfCanvas* source_canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_color(source_canvas, 0xFF112233);
+  RfDisplayList* source = rf_canvas_build(source_canvas);
+  RfLayerTree* source_tree = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_add_display_list(source_tree, source, 0, 0);
+  const std::string png_path =
+      (std::filesystem::temp_directory_path() / "rf_backend_test.png").string();
+  ASSERT_EQ(rf_layer_tree_write_png(source_tree, png_path.c_str()), 0);
+  std::ifstream file(png_path, std::ios::binary);
+  std::vector<uint8_t> encoded((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+  file.close();
+
+  RfImage* image = rf_image_decode(encoded.data(), encoded.size());
+  ASSERT_NE(image, nullptr);
+
+  rf_set_impeller_backend(1);
+  const sk_sp<DlImage>& for_impeller = RfImageDrawable(image);
+  ASSERT_NE(for_impeller, nullptr);
+  EXPECT_EQ(for_impeller->GetImageType(), DlImage::Type::kImpeller);
+  EXPECT_NE(for_impeller->asImpellerImage(), nullptr)
+      << "Impeller would dereference this null and crash.";
+
+  // Left as the rest of the process expects to find it.
+  rf_set_impeller_backend(0);
+  const sk_sp<DlImage>& for_skia = RfImageDrawable(image);
+  ASSERT_NE(for_skia, nullptr);
+  EXPECT_EQ(for_skia->GetImageType(), DlImage::Type::kSkia);
+
   rf_image_free(image);
   rf_layer_tree_free(source_tree);
   rf_display_list_free(source);

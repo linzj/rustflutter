@@ -1,0 +1,21 @@
+[IMPORTANT:flutter/rust/host/rustflutter_gl_win.cc(211)] Rendering with Impeller (OpenGL ES via ANGLE).
+WARN: Shader.cpp:768 (gl::Shader::resolveCompile): Compiler log: WARNING: 0:34: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:36: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+
+WARN: Shader.cpp:768 (gl::Shader::resolveCompile): Compiler log: WARNING: 0:34: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:36: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+
+WARN: Shader.cpp:768 (gl::Shader::resolveCompile): Compiler log: WARNING: 0:34: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:36: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+
+WARN: Shader.cpp:768 (gl::Shader::resolveCompile): Compiler log: WARNING: 0:34: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:36: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+WARNING: 0:40: '[]' : Performance: dynamic indexing of vectors and matrices is emulated and can be slow.
+

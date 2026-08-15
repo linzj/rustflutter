@@ -25,6 +25,12 @@ static_library("flutter_gallery_rs") {
   inputs = [
     "assets/fonts/GalleryIcons.ttf",
     "assets/fonts/MaterialIcons-Regular.otf",
+    "assets/fonts/Montserrat-Bold.ttf",
+    "assets/fonts/Montserrat-Medium.ttf",
+    "assets/fonts/Montserrat-Regular.ttf",
+    "assets/fonts/Montserrat-SemiBold.ttf",
+    "assets/fonts/Oswald-Medium.ttf",
+    "assets/fonts/Oswald-SemiBold.ttf",
     "assets/icons/cupertino.png",
     "assets/icons/material.png",
     "assets/icons/reference.png",

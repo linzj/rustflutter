@@ -33,6 +33,13 @@
 #include "flutter/flow/layers/opacity_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/mapping.h"
+#include "flutter/rust/ffi/rustflutter_ffi_internal.h"
+#include "impeller/core/allocator.h"
+#include "impeller/core/formats.h"
+#include "impeller/core/texture_descriptor.h"
+#include "impeller/display_list/dl_image_impeller.h"
+#include "impeller/renderer/context.h"
 #include "third_party/skia/include/codec/SkBmpDecoder.h"
 #include "third_party/skia/include/codec/SkCodec.h"
 #include "third_party/skia/include/codec/SkGifDecoder.h"
@@ -128,6 +135,113 @@ void EnsureCodecsRegistered() {
     SkCodecs::Register(SkWbmpDecoder::Decoder());
     SkCodecs::Register(SkIcoDecoder::Decoder());
   });
+}
+
+// A decoded image that becomes a GPU texture the first time Impeller asks.
+//
+// It has to be deferred. Decoding happens while a widget tree is being built,
+// on the UI thread, where there is no GPU context to upload to; Impeller asks
+// for the texture while rasterising, on the raster thread, where there is. This
+// class is the gap between the two, and `GetImpellerTexture` is the hook the
+// dispatcher already calls at exactly the right moment.
+class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
+ public:
+  explicit RfDeferredImpellerImage(std::shared_ptr<SkBitmap> pixels)
+      : pixels_(std::move(pixels)) {}
+
+  // |DlImageImpeller|
+  std::shared_ptr<impeller::Texture> GetImpellerTexture(
+      const std::shared_ptr<impeller::Context>& context) const override {
+    if (texture_ != nullptr) {
+      return texture_;
+    }
+    if (context == nullptr || pixels_ == nullptr) {
+      return nullptr;
+    }
+    const SkImageInfo& info = pixels_->info();
+
+    impeller::TextureDescriptor descriptor;
+    // Host-visible rather than device-private: the private path needs a
+    // command buffer and a blit pass, which is worth it for a photo being
+    // decoded off-thread and not for the handful of small images baked into an
+    // application.
+    descriptor.storage_mode = impeller::StorageMode::kHostVisible;
+    descriptor.format = impeller::PixelFormat::kR8G8B8A8UNormInt;
+    descriptor.size = {info.width(), info.height()};
+    descriptor.mip_count = 1;
+
+    std::shared_ptr<impeller::Texture> texture =
+        context->GetResourceAllocator()->CreateTexture(descriptor);
+    if (texture == nullptr) {
+      FML_LOG(ERROR) << "rf_image: could not create an Impeller texture.";
+      return nullptr;
+    }
+
+    // The mapping keeps the bitmap alive for as long as the upload needs it.
+    std::shared_ptr<SkBitmap> pixels = pixels_;
+    auto mapping = std::make_shared<fml::NonOwnedMapping>(
+        reinterpret_cast<const uint8_t*>(pixels->getAddr(0, 0)),
+        descriptor.GetByteSizeOfBaseMipLevel(),
+        [pixels](auto, auto) mutable { pixels.reset(); });
+
+    if (!texture->SetContents(mapping)) {
+      FML_LOG(ERROR) << "rf_image: could not upload pixels to the texture.";
+      return nullptr;
+    }
+    texture_ = std::move(texture);
+    return texture_;
+  }
+
+  // |DlImage|
+  flutter::DlISize GetSize() const override {
+    return pixels_ == nullptr
+               ? flutter::DlISize()
+               : flutter::DlISize(pixels_->width(), pixels_->height());
+  }
+
+  // |DlImage|
+  bool isOpaque() const override {
+    return pixels_ != nullptr && pixels_->isOpaque();
+  }
+
+  // |DlImage|
+  // False: the pixels are readable from any thread, but the texture this
+  // becomes is not, and callers use this to decide whether they may keep it.
+  bool isUIThreadSafe() const override { return false; }
+
+  // |DlImage|
+  flutter::DlColorSpace GetColorSpace() const override {
+    return flutter::DlColorSpace::kSRGB;
+  }
+
+  // |DlImage|
+  size_t GetApproximateByteSize() const override {
+    return sizeof(*this) + (pixels_ == nullptr ? 0 : pixels_->computeByteSize());
+  }
+
+ private:
+  std::shared_ptr<SkBitmap> pixels_;
+  mutable std::shared_ptr<impeller::Texture> texture_;
+
+  RfDeferredImpellerImage(const RfDeferredImpellerImage&) = delete;
+  RfDeferredImpellerImage& operator=(const RfDeferredImpellerImage&) = delete;
+};
+
+// The representation the active backend can actually draw.
+//
+// Built on first use rather than at decode time, because whether Impeller came
+// up is decided by the host after an image may already have been decoded, and
+// because most images are never drawn under both.
+const sk_sp<flutter::DlImage>& ImageFor(const RfImage* image) {
+  if (!flutter::RfImpellerBackend()) {
+    return image->image;
+  }
+  auto* mutable_image = const_cast<RfImage*>(image);
+  if (mutable_image->impeller_image == nullptr && image->pixels != nullptr) {
+    mutable_image->impeller_image =
+        sk_make_sp<RfDeferredImpellerImage>(image->pixels);
+  }
+  return mutable_image->impeller_image;
 }
 
 void SetColorSource(RfPaint* paint,
@@ -471,15 +585,28 @@ void rf_canvas_draw_image_rect(RfCanvas* canvas,
                                float dst_right,
                                float dst_bottom,
                                const RfPaint* paint) {
-  if (canvas == nullptr || image == nullptr || image->image == nullptr) {
+  if (canvas == nullptr || image == nullptr) {
+    return;
+  }
+  const sk_sp<flutter::DlImage>& drawable = ImageFor(image);
+  if (drawable == nullptr) {
     return;
   }
   canvas->builder.DrawImageRect(
-      image->image, Rect(src_left, src_top, src_right, src_bottom),
+      drawable, Rect(src_left, src_top, src_right, src_bottom),
       Rect(dst_left, dst_top, dst_right, dst_bottom),
       flutter::DlImageSampling::kLinear,
       paint != nullptr ? &paint->paint : nullptr);
 }
+
+namespace flutter {
+
+const sk_sp<flutter::DlImage>& RfImageDrawable(const RfImage* image) {
+  static const sk_sp<flutter::DlImage> kNone;
+  return image == nullptr ? kNone : ImageFor(image);
+}
+
+}  // namespace flutter
 
 // -- Canvas state -------------------------------------------------------------
 
@@ -716,14 +843,37 @@ RfImage* rf_image_decode(const uint8_t* data, size_t length) {
     FML_LOG(ERROR) << "rf_image_decode: unrecognised image format.";
     return nullptr;
   }
-  auto [image, result] = codec->getImage();
-  if (image == nullptr) {
+  // Decoded straight into a bitmap of a known layout rather than into whatever
+  // the file happens to use: Impeller is handed a pixel format, so guessing it
+  // from the codec would mean a table of formats that mostly cannot be
+  // uploaded anyway.
+  auto pixels = std::make_shared<SkBitmap>();
+  const SkImageInfo info = codec->getInfo()
+                               .makeColorType(kRGBA_8888_SkColorType)
+                               .makeAlphaType(kPremul_SkAlphaType)
+                               .makeColorSpace(nullptr);
+  if (!pixels->tryAllocPixels(info)) {
+    FML_LOG(ERROR) << "rf_image_decode: could not allocate pixels.";
+    return nullptr;
+  }
+  const SkCodec::Result result =
+      codec->getPixels(info, pixels->getPixels(), pixels->rowBytes());
+  if (result != SkCodec::kSuccess && result != SkCodec::kIncompleteInput) {
     FML_LOG(ERROR) << "rf_image_decode: decode failed with " << (int)result
                    << ".";
     return nullptr;
   }
+  pixels->setImmutable();
+
+  sk_sp<SkImage> image = pixels->asImage();
+  if (image == nullptr) {
+    FML_LOG(ERROR) << "rf_image_decode: could not wrap the pixels.";
+    return nullptr;
+  }
+
   auto* out = new RfImage();
   out->image = flutter::DlImageSkia::Make(std::move(image));
+  out->pixels = std::move(pixels);
   return out;
 }
 
