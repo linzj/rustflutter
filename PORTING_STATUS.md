@@ -1949,9 +1949,126 @@ Java 那头是挂在唯一那个真 View 上的 `AccessibilityNodeProvider`,它�
 Windows 还没有桥。Narrator 需要一个 UI Automation provider,那是上游的
 `AccessibilityBridgeWindows`,是另一件独立的活。框架那一半两边是同一份。
 
+### 17. Windows 的无障碍桥
+
+框架那一半两边同一份,只是问的人不同:Android 通过
+`AccessibilityNodeProvider` 问,Windows 通过 UI Automation 问,而两套词汇几乎
+逐字对得上 —— 因为它们描述的本来就是同一件事。
+
+**为什么是手写 COM。** 上游的 `AccessibilityBridgeWindows` 和
+`FlutterPlatformNodeDelegateWindows` 都很薄,真正的 provider 是
+`third_party/accessibility` 里那份从 Chromium 搬来的 `AXPlatformNodeWin`,三万
+行。这里没有那个库,也不会有。而这棵树本来就是扁的 —— 一个 id、一个矩形、
+一个标签、几个 flag、一串孩子 —— 直接实现 `IRawElementProviderSimple`、
+`IRawElementProviderFragment`、`IRawElementProviderFragmentRoot` 加上 Invoke、
+Toggle、Value,比绕开它们的机械装置还少。
+
+其余全是上游的,而且在用到的地方都点了名:**语义是被 `WM_GETOBJECT` 打开的,
+不是 Windows 说的** —— Windows 从来不说,有个系统参数而 Narrator 不设它,所以
+问题本身就是答案(上游 `FlutterWindow::OnGetObject` 说得更长);矩形按两个角
+换算,不按原点加宽高,因为动的是偏移;开关是一个**按钮**加 Toggle 模式而不是
+复选框;输入框是被*激活*而不是被调用,所以不给 Invoke。窗口是树上面的一个
+节点,那是上游的 `AXFragmentRootWin`,也是 Android 那边的宿主 `View`。
+
+**线程。** 上游的窗口线程和平台线程是同一个,所以上游不需要锁。这里是两个:
+树从平台线程来,问题从窗口线程来。所以快照在互斥量下取,每个答案从里面读 ——
+和 Java 那边 `synchronized` 是同一个安排,同一个理由。
+
+写读它的客户端时掉出来两件事:
+
+**框架的树没有根。** 顶层节点因此没有地方带**阅读顺序** ——
+`SemanticsNodeUpdates` 是个 map,这个分支和上游都是,所以顺序只能活在父节点的
+孩子列表里。上游从来碰不到这个,因为 `RenderView` 永远给它一个。现在这里也
+给:`collect` 在绘制前打开 0 号节点、绘制后关上。Android 那边的顺序同时从
+"碰巧对"变成了"保证对"。
+
+**输入框只收 `Tap` 不收 `Focus`**,所以读屏软件的 `SetFocus` 什么也没做。上游
+的 `EditableText` 两个都收,对应两种进入方式:摸屏的读者点它,用键盘的读者
+移过去。
+
+**验的是真的 UI Automation 客户端**(在本仓库之外单独构建):showcase 读出来是
+一个 pane 套一个 group,里面是标题、正文、按钮(禁用的那个什么也不提供)、
+会报状态的开关;`Invoke` 让计数动了,`Toggle` 把开关翻了,`FromPoint` 对一个
+屏幕坐标找到了手指会找到的那个元素。text_demo 里 `SetFocus` 把光标放进了字段,
+打进去的字从 Value 模式读了回来。
+
+MSAA 没有实现:那需要第二棵更老的树和它自己的词汇,而 Narrator、NVDA、JAWS
+都说 UI Automation。这里对 `OBJID_CLIENT` 返回零,问 MSAA 的客户端会改问 UIA。
+
+### 18. 布局不做第二遍(持久化之上第一件)
+
+上游的 `RenderObject.layout` 开头就返回:对象不脏、约束又是上次答过的那个,
+就没有事做,底下也没有要下去的。这个判断现在长在句柄上。
+
+**只能长在句柄上。** 这里没有基类 —— `RenderBox` 是 trait,每个实现只有自己的
+字段 —— 但每个渲染对象都是通过 `RenderRef` 拿到的,每个父亲存孩子存的也是它,
+所以句柄是唯一一个能对**任何**渲染对象提问的地方。它就是上游的
+`RenderObject`,减去渲染对象本身。
+
+`markNeedsLayout` 需要父亲,而父亲是能问出来的:孩子的 layout 永远是在父亲的
+layout 里面被调的,所以父亲就是这一个开始时正在布局的那个。上游是在
+`adoptChild` 里被告知的;这里没有收养这一步,而布局这趟遍历本来就有答案。
+链接写在提前返回**之前**,因为一个换了父亲又不需要重新布局的孩子,毕竟还是
+换了父亲。
+
+**故意没有的是 relayout boundary。** 上游把标记停在"自己的尺寸不会因此改变"的
+最近祖先上,然后直接对那棵子树布局 —— 它能这么做是因为 `PipelineOwner` 存着
+脏边界并逐个访问。这里没有 pipeline owner,一帧要么从根下来要么不发生。所以
+标记一路走到根,省下来的不是"从低处开始",而是那趟下降根本没进去的兄弟。
+
+### 19. 高度不一样的惰性列表(持久化之上第二件)
+
+上游为此有两个 sliver,而它们的区别就是全部。`SliverFixedExtentList` 靠算术就
+知道哪几行在屏幕上;`SliverList` 只能记住量到的、估掉剩下的。这个分支原来只有
+第一个。
+
+它比定高那个多需要一样东西:**放测量结果的地方**。上游放在孩子身上
+(`SliverMultiBoxAdaptorParentData.layoutOffset`),它放得起,因为孩子是它在
+自己的 `performLayout` 里造的 —— 布局一个、知道它多高、知道下一个从哪开始。
+这里没有谁能这么做:孩子是 element,而 element 比测量早一步被建出来,所以窗口
+只能从已知的东西里选。`ExtentBook` 就是那些已知的东西,放在列表旁边、活得比
+帧长,每一行在被布局时把自己的高度写进去。
+
+没人量过的行值多少?**量过的那些的平均数** —— 那就是上游的
+`_extrapolateMaxScrollOffset`,只是摊在"曾经量过的一切"而不是"此刻还活着的
+那些"上,信息更多,收敛到同一个数。当没有东西需要估的时候,答案就不再是估的,
+和上游最后一个孩子被具体化时一样。
+
+**修正晚一帧,不在布局中途。** 上游用 `scrollOffsetCorrection` 重跑一次布局,
+这里做不到,因为窗口在测量之前就选好了。这就是这个框架对"能滚多远"本来就有的
+那个一帧延迟 —— `Scroll::extent` 由布局填、由下一次 build 读,它自己的注释里
+就是这么说的。
+
+顺带抓到一件事:**两个列表在有间距时都多留了两个间隙**。第一个被建出来的行
+上面那个间隙是列(column)放的,而占位块又数了它一遍 —— 一百行的列表因此声称
+自己比里面装的东西高十六个像素。看不见,直到滚动条被问底在哪。现在占位块比它
+替代的那些行少一个间隙,而一端没有东西要替代时干脆不放。
+
+### 20. 不必重画的子树(持久化之上第三件)
+
+上游的 `RepaintBoundary` 把子树画进自己的一层,并把那层留在渲染对象上;下一帧
+如果它下面什么都没变,交给引擎的就是那一层而不是同一份画的第二次录制 —— 后面
+的光栅缓存也就还能留着像素。
+
+原来没有地方**留**一层,所以引擎加了四个调用:开一个能留的层、关上并取走句柄、
+把留下的那层挂在一个新的变换下面、释放句柄。层是**共享**的不是拷贝的 —— 这正是
+重点,也正是上游 `RenderObject.layer` 的意思:下一帧的树指向的,就是上一帧的树
+也指向的那一层。它装的是画,不是位置,所以只是移动过的边界只值一个矩阵。
+
+"这层还算不算数"没有需要新机器。上游用 `markNeedsPaint` 往上走到最近的边界;
+这里是对象同一性,和跳过布局用的是同一个答案:活过这一帧的渲染对象,就是元素树
+没有重建的那个,而没被重建的子树画的就是它画过的那份。被重新布局过的边界会把
+层扔掉,因为改了尺寸的子树画的不是同一份。
+
+两个惰性列表现在都给每一行套了一个边界,那是上游
+`SliverChildBuilderDelegate` 的默认(`addRepaintBoundaries`)。它在**列表之外**
+的变化上兑现:一个跳动的表头不会碰到任何一行的层。列表自身的变化仍然会把它们
+重做,因为这里的 `update` 是替换渲染对象,而上游是 `updateRenderObject` ——
+代码里写了,下面"这一节没做的"里也写了。
+
 ### 验证
 
-**Windows**:框架 369 个测试、FFI 15 个、flutter_gallery 21 个、相册 60 个
+**Windows**:框架 387 个测试、FFI 17 个、flutter_gallery 21 个、相册 60 个
 (cargo 独立构建)全过;`platform_channels --probe` **PASS**(两处既有 SKIP);
 hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无头
 渲染正常;cursor_demo、exit_demo、settings_demo、text_demo 起得来且不 panic;
@@ -1959,7 +2076,14 @@ hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无�
 相册 `cargo build --release` 独立构建并跑得住;showcase 的"Text scale"卡片里
 1.6x 那行明显比退出缩放那行大(而且行高跟着长,说明缩放确实到了排版而不是
 只到了 style);用真键盘驱动真窗口:Tab 在两个字段之间移动焦点、退格与左右键
-编辑、打字落在光标处、Alt+F4 照常关窗。
+编辑、打字落在光标处、Alt+F4 照常关窗;
+用一个单独构建的 UI Automation 客户端读真窗口:showcase 是 pane 套 group,
+标题、正文、按钮(禁用的那个什么也不提供)、带状态的开关和每个元素的屏幕矩形
+都对,`Invoke` 让计数动了、`Toggle` 把开关翻了、`FromPoint` 找到了手指会找到
+的那个元素,text_demo 的 `SetFocus` 把光标放进了字段而打进去的字从 Value 模式
+读了回来;FFI 那两个新测试用真引擎真光栅器验了留存的层 —— 一帧里录、下一帧里
+换个位置挂上去,像素落在第二棵树放的地方而不是第一棵树录它的地方;
+五个示例的无头渲染在这三件事之后仍然**逐像素相同**。
 
 **Android**(模拟器,Android 14,x86_64):11 个 APK 全部安装启动;八个示例的
 截图与持久化改动前**逐像素相同**(状态栏以下);showcase 的
@@ -1974,12 +2098,21 @@ hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无�
 `/dev/input` 拒绝写),所以捏合走的是端到端测试:命中测试 → 路由判定 → viewer。
 
 顺带抓到一件事:相册在 Windows 上链接失败,因为只重建了 `engine_ffi` 而没有
-重建 `rustflutter_engine.lib`。这正是"能独立用 cargo 构建"要盯住的那条边。
+重建 `rustflutter_engine.lib`。这正是"能独立用 cargo 构建"要盯住的那条边 ——
+无障碍桥又撞了它一次:引擎的存档多了一个 UI Automation provider,而相册那份
+"引擎自己要什么"的链接清单还没有 `uiautomationcore`。框架构建通过,相册不通过,
+每次都是这样发现的。
 
 ### 这一节没做的
 
-- **Windows 的无障碍桥**。框架那一半两边是同一份,Android 那一半通了;
-  Narrator 要的是一个 UI Automation provider(上游的 `AccessibilityBridgeWindows`),
-  那是另一件独立的活。
-- **持久化之上还没建的东西**:repaint boundary、跳过没变过的布局、变高度的
-  惰性列表。render object 现在活得够久了,这三件事各自还是一件事。
+- **`updateRenderObject`**。上游的元素拿到新 widget 时是去**改**已有的渲染
+  对象;这里是造一个新的。看得见的地方只有同一性,而同一性正是跳过布局和留住
+  层所依据的东西 —— 所以现在的结果是:**没被碰到的子树**省下了布局和绘制,
+  而被碰到的子树里,哪怕只是滚了一行,每一行也都重做。上游两种都省。这是持久化
+  之上最后一件、也是最大的一件。
+- **relayout boundary 与 pipeline owner**。见第十八条:标记一路走到根,因为
+  没有谁存着脏边界、也没有谁能从半路开始一帧。
+- **MSAA**(`IAccessible`)。第二棵更老的树和它自己的词汇。三个主流读屏软件都说
+  UI Automation,所以这里对 `OBJID_CLIENT` 返回零,让客户端改问 UIA。
+- **`kSetText`**。读屏软件可以往输入框里放字,而这个框架的动作集里没有这一条,
+  所以 `IValueProvider::SetValue` 老实地拒绝。
