@@ -24,6 +24,7 @@
 #include "flutter/flow/layers/container_layer.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "txt/paragraph.h"
+#include "txt/paragraph_builder.h"
 
 struct RfPaint {
   flutter::DlPaint paint;
@@ -47,6 +48,18 @@ struct RfDisplayList {
 struct RfParagraph {
   std::unique_ptr<txt::Paragraph> paragraph;
   bool laid_out = false;
+};
+
+//------------------------------------------------------------------------------
+/// A paragraph being assembled out of differently styled runs.
+///
+/// The same shape as `txt::ParagraphBuilder`, which is also the shape dart:ui
+/// exposes: push a style, add text, pop, repeat, build. One paragraph with two
+/// styles in it is not the same as two paragraphs -- line breaking, bidi
+/// reordering and baseline alignment all work across the whole thing -- which
+/// is why this exists rather than a row of separate texts.
+struct RfParagraphBuilder {
+  std::unique_ptr<txt::ParagraphBuilder> builder;
 };
 
 //------------------------------------------------------------------------------

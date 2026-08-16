@@ -28,6 +28,7 @@ typedef struct RfPaint RfPaint;
 typedef struct RfCanvas RfCanvas;
 typedef struct RfDisplayList RfDisplayList;
 typedef struct RfParagraph RfParagraph;
+typedef struct RfParagraphBuilder RfParagraphBuilder;
 typedef struct RfLayerTree RfLayerTree;
 typedef struct RfPath RfPath;
 typedef struct RfImage RfImage;
@@ -305,6 +306,26 @@ float rf_paragraph_baseline(RfParagraph* paragraph);
 // Valid without a prior layout.
 float rf_paragraph_min_intrinsic_width(RfParagraph* paragraph);
 float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph);
+
+// A paragraph with more than one style in it, assembled run by run. The same
+// push/add/pop/build sequence as txt::ParagraphBuilder and as dart:ui's
+// ParagraphBuilder, and for the same reason: line breaking, bidi and baselines
+// have to see the whole paragraph, so a sentence with a bold word in it is one
+// paragraph and not three.
+RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
+                                             size_t max_lines);  // 0 = no limit
+void rf_paragraph_builder_free(RfParagraphBuilder* builder);
+void rf_paragraph_builder_push_style(RfParagraphBuilder* builder,
+                                     const char* font_family,
+                                     float font_size,
+                                     int32_t font_weight,
+                                     uint32_t argb);
+void rf_paragraph_builder_add_text(RfParagraphBuilder* builder,
+                                   const char* text,
+                                   size_t text_len);
+void rf_paragraph_builder_pop(RfParagraphBuilder* builder);
+// Consumes the builder and returns the paragraph, or NULL if the builder was.
+RfParagraph* rf_paragraph_builder_build(RfParagraphBuilder* builder);
 
 // -- Layer tree -------------------------------------------------------------
 

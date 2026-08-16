@@ -213,6 +213,30 @@ impl Component for Body {
             spacing,
         )));
 
+        // One paragraph with three styles in it, which is what a rich text is
+        // for: the line has to break as a sentence, not as three texts.
+        let body = theme.body();
+        let accent = theme.primary;
+        let mixed = component(Card::new(stack_column(
+            vec![
+                component(Label::title("Rich text")),
+                gap(0.5),
+                leaf(move || {
+                    Text::rich_spans(vec![
+                        TextSpan::new("Hold ", body.clone()),
+                        TextSpan::bold("Shift", &body),
+                        TextSpan::new(" to select a range, or ", body.clone()),
+                        TextSpan::new(
+                            "Esc",
+                            TextStyle { color: accent, font_weight: 700, ..body.clone() },
+                        ),
+                        TextSpan::new(" to give up. One paragraph, three styles.", body.clone()),
+                    ])
+                }),
+            ],
+            spacing,
+        )));
+
         let badges = component(Card::new(stack_column(
             vec![
                 component(Label::title("Badges")),
@@ -252,7 +276,7 @@ impl Component for Body {
         )));
 
         // A ListView so the page scrolls if the window is short.
-        let cards = vec![buttons, controls, badges, tile];
+        let cards = vec![buttons, controls, mixed, badges, tile];
         many(cards, move |rendered| {
             let mut column = RenderFlex::column()
                 .with_main_axis_size(MainAxisSize::Min)

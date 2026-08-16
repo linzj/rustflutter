@@ -534,28 +534,64 @@ impl Drop for RenderPath {
 /// paragraphs anyway.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ShapeKey {
+    /// One entry per styled run. A single-style paragraph has one; a sentence
+    /// with a bold word in it has three, and the whole list is the key,
+    /// because changing any run reshapes the paragraph.
+    runs: Vec<RunKey>,
+    align: u8,
+    max_lines: usize,
+    max_width_bits: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RunKey {
     text: String,
     family: Option<String>,
     size_bits: u32,
     weight: i32,
     color: u32,
-    align: u8,
-    max_width_bits: u32,
 }
 
-impl ShapeKey {
-    fn new(text: &str, style: &TextStyle, max_width: f32) -> ShapeKey {
-        ShapeKey {
+impl RunKey {
+    fn new(text: &str, style: &TextStyle) -> RunKey {
+        RunKey {
             text: text.to_string(),
             family: style.font_family.clone(),
             size_bits: style.font_size.to_bits(),
             weight: style.font_weight,
             color: style.color.0,
-            align: match style.align {
-                TextAlign::Left => 0,
-                TextAlign::Right => 1,
-                TextAlign::Center => 2,
-            },
+        }
+    }
+}
+
+fn align_code(align: TextAlign) -> u8 {
+    match align {
+        TextAlign::Left => 0,
+        TextAlign::Right => 1,
+        TextAlign::Center => 2,
+    }
+}
+
+impl ShapeKey {
+    fn new(text: &str, style: &TextStyle, max_width: f32) -> ShapeKey {
+        ShapeKey {
+            runs: vec![RunKey::new(text, style)],
+            align: align_code(style.align),
+            max_lines: 0,
+            max_width_bits: max_width.to_bits(),
+        }
+    }
+
+    fn rich(
+        runs: &[(String, TextStyle)],
+        align: TextAlign,
+        max_lines: Option<usize>,
+        max_width: f32,
+    ) -> ShapeKey {
+        ShapeKey {
+            runs: runs.iter().map(|(text, style)| RunKey::new(text, style)).collect(),
+            align: align_code(align),
+            max_lines: max_lines.unwrap_or(0),
             max_width_bits: max_width.to_bits(),
         }
     }
@@ -637,6 +673,52 @@ pub fn shape(text: &str, style: &TextStyle, max_width: f32) -> Rc<Paragraph> {
             return hit;
         }
         let shaped = Rc::new(Paragraph::new(text, style, max_width));
+        cache.borrow_mut().current.insert(key, shaped.clone());
+        shaped
+    })
+}
+
+/// Shapes a paragraph made of differently styled runs, through the same
+/// cache.
+///
+/// The runs are one paragraph rather than several: line breaking, bidi
+/// reordering and baselines all work across the whole of it. Upstream reaches
+/// this through `TextPainter` walking a tree of `TextSpan`s and pushing each
+/// one's style; the tree is flattened before it gets here, because a nested
+/// span's style is resolved against its parent's at that point anyway.
+pub fn shape_rich(
+    runs: &[(String, TextStyle)],
+    align: TextAlign,
+    max_lines: Option<usize>,
+    max_width: f32,
+) -> Rc<Paragraph> {
+    let scale = crate::platform::text_scale_factor() as f32;
+    let scaled: Vec<(String, TextStyle)> = if scale == 1.0 {
+        runs.to_vec()
+    } else {
+        runs.iter()
+            .map(|(text, style)| {
+                (
+                    text.clone(),
+                    TextStyle { font_size: style.font_size * scale, ..style.clone() },
+                )
+            })
+            .collect()
+    };
+    let key = ShapeKey::rich(&scaled, align, max_lines, max_width);
+    SHAPED.with(|cache| {
+        {
+            let cache = cache.borrow();
+            if let Some(hit) = cache.current.get(&key) {
+                return hit.clone();
+            }
+        }
+        let carried = cache.borrow_mut().previous.remove(&key);
+        if let Some(hit) = carried {
+            cache.borrow_mut().current.insert(key, hit.clone());
+            return hit;
+        }
+        let shaped = Rc::new(Paragraph::rich(&scaled, align, max_lines, max_width));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })

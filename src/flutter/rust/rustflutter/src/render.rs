@@ -929,6 +929,14 @@ impl RenderBox for RenderDecoratedBox {
 pub struct RenderParagraph {
     content: String,
     style: TextStyle,
+    /// The styled runs, when there is more than one. Empty for the ordinary
+    /// case of a single style, which keeps `content` and `style` as the whole
+    /// description and costs nothing.
+    ///
+    /// Upstream the two cases are the same thing -- a `Text` builds a
+    /// `TextSpan` either way -- but a paragraph of one run is most paragraphs,
+    /// and it is worth not allocating for it.
+    runs: Vec<(String, TextStyle)>,
     max_lines: Option<usize>,
     /// Shared with the cache rather than owned, so a tree rebuilt around
     /// unchanged text re-uses the shaping instead of repeating it.
@@ -941,9 +949,44 @@ impl RenderParagraph {
         RenderParagraph {
             content: content.into(),
             style: TextStyle::default(),
+            runs: Vec::new(),
             max_lines: None,
             paragraph: None,
             size: Size::ZERO,
+        }
+    }
+
+    /// A paragraph of differently styled runs.
+    ///
+    /// One paragraph, not a row of texts: the line breaking has to see the
+    /// whole sentence, or a bold word near the right margin wraps as though it
+    /// were the start of a new paragraph. Upstream this is `Text.rich` over a
+    /// tree of `TextSpan`s; the tree is flat here because a nested span's
+    /// style is resolved against its parent's before shaping anyway.
+    pub fn rich(runs: Vec<(String, TextStyle)>) -> RenderParagraph {
+        let content = runs.iter().map(|(text, _)| text.as_str()).collect::<String>();
+        let style = runs.first().map(|(_, style)| style.clone()).unwrap_or_default();
+        RenderParagraph {
+            content,
+            style,
+            runs,
+            max_lines: None,
+            paragraph: None,
+            size: Size::ZERO,
+        }
+    }
+
+    /// Whether this paragraph has more than one style in it.
+    fn is_rich(&self) -> bool {
+        self.runs.len() > 1
+    }
+
+    /// Shapes this paragraph at `width`, however many runs it has.
+    fn shape_at(&self, width: f32) -> Rc<Paragraph> {
+        if self.is_rich() {
+            crate::painting::shape_rich(&self.runs, self.style.align, self.max_lines, width)
+        } else {
+            crate::painting::shape(&self.content, &self.style, width)
         }
     }
 
@@ -963,7 +1006,7 @@ impl RenderParagraph {
 
     /// Shapes at `width` without keeping the result, for intrinsics.
     fn measure(&self, width: f32) -> Size {
-        let paragraph = crate::painting::shape(&self.content, &self.style, width);
+        let paragraph = self.shape_at(width);
         Size::new(paragraph.width(), paragraph.height())
     }
 }
@@ -977,7 +1020,7 @@ impl RenderBox for RenderParagraph {
         } else {
             f32::MAX / 4.0
         };
-        let paragraph = crate::painting::shape(&self.content, &self.style, width);
+        let paragraph = self.shape_at(width);
         // Paragraph::new re-lays out at the ink width, so width() is the tight
         // box around the glyphs. That is what makes centring a text inside a
         // larger box actually look centred.
@@ -997,11 +1040,11 @@ impl RenderBox for RenderParagraph {
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
-        crate::painting::shape(&self.content, &self.style, f32::MAX / 4.0).min_intrinsic_width()
+        self.shape_at(f32::MAX / 4.0).min_intrinsic_width()
     }
 
     fn max_intrinsic_width(&self, _height: f32) -> f32 {
-        crate::painting::shape(&self.content, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+        self.shape_at(f32::MAX / 4.0).max_intrinsic_width()
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
@@ -3319,6 +3362,31 @@ mod tests {
         // A point 10 down the window is 60 down the content.
         assert_eq!(result.innermost().unwrap().local_position.dy, 60.0);
     }
+    #[test]
+    fn a_rich_paragraph_is_one_paragraph() {
+        // The reason this exists at all: a sentence with a bold word in it has
+        // to break lines as one paragraph. What the stubbed engine can show is
+        // the shape of the request -- one paragraph object for three runs --
+        // and that the runs are what the cache keys on.
+        let style = TextStyle::default();
+        let bold = TextStyle { font_weight: 700, ..style.clone() };
+        let mut text = RenderParagraph::rich(vec![
+            (String::from("Hold "), style.clone()),
+            (String::from("Shift"), bold),
+            (String::from(" to select"), style.clone()),
+        ]);
+        text.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert_eq!(text.content, "Hold Shift to select", "the runs make one string");
+    }
+
+    #[test]
+    fn a_paragraph_with_one_style_is_not_rich() {
+        let plain = RenderParagraph::new("just text");
+        assert!(!plain.is_rich(), "the single-style case should stay the cheap one");
+        let one_run = RenderParagraph::rich(vec![(String::from("x"), TextStyle::default())]);
+        assert!(!one_run.is_rich());
+    }
+
     #[test]
     fn a_wrap_starts_a_new_line_when_one_fills_up() {
         let mut wrap = RenderWrap::horizontal().with_spacing(10.0).with_run_spacing(4.0);

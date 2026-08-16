@@ -15,7 +15,7 @@
 //! the work. That third layer arrives with M6; until then a widget *is* its
 //! render object, so a tree is built fresh each frame.
 
-use crate::engine::{Color, TextAlign};
+use crate::engine::{Color, TextAlign, TextStyle};
 pub use crate::render::{
     Alignment, Axis, BoxConstraints, BoxFit, BoxedRender, Constraints, CrossAxisAlignment,
     EdgeInsets, Fill, FlexChild, HitTestEntry, HitTestResult, MainAxisAlignment, MainAxisSize,
@@ -38,7 +38,44 @@ pub type BoxedWidget = BoxedRender;
 /// A run of text, shaped by the engine's `txt` / skparagraph stack.
 pub type Text = RenderParagraph;
 
+/// One run of a rich paragraph: some text and the style it is set in.
+///
+/// Upstream's `TextSpan`, flattened. There a span may contain children and a
+/// child inherits what its parent did not override; here the inheriting is
+/// done by the caller, because by the time a run reaches the shaper the answer
+/// is a single resolved style either way.
+pub struct TextSpan {
+    pub text: String,
+    pub style: TextStyle,
+}
+
+impl TextSpan {
+    pub fn new(text: impl Into<String>, style: TextStyle) -> TextSpan {
+        TextSpan { text: text.into(), style }
+    }
+
+    /// The same text in a bolder weight, which is what a run inside a sentence
+    /// usually differs by.
+    pub fn bold(text: impl Into<String>, style: &TextStyle) -> TextSpan {
+        TextSpan::new(text, TextStyle { font_weight: 700, ..style.clone() })
+    }
+}
+
 impl RenderParagraph {
+    /// A paragraph of differently styled runs, as one paragraph.
+    ///
+    /// ```ignore
+    /// Text::rich(vec![
+    ///     TextSpan::new("Hold ", body.clone()),
+    ///     TextSpan::bold("Shift", &body),
+    ///     TextSpan::new(" to select a range.", body),
+    /// ])
+    /// ```
+    #[allow(clippy::should_implement_trait)]
+    pub fn rich_spans(spans: Vec<TextSpan>) -> RenderParagraph {
+        RenderParagraph::rich(spans.into_iter().map(|s| (s.text, s.style)).collect())
+    }
+
     pub fn with_size(mut self, font_size: f32) -> Self {
         self.style_mut().font_size = font_size;
         self

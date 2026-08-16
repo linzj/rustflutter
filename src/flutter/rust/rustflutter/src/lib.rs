@@ -87,7 +87,8 @@ pub use painting::{
 };
 pub use scrolling::Scroll;
 pub use widgets::{
-    BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
+    BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
+    Widget,
 };
 
 /// Everything a typical app needs in one import.
@@ -134,7 +135,8 @@ pub mod prelude {
         StrokeJoin, TileMode,
     };
     pub use crate::widgets::{
-        BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, Widget,
+        BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text,
+        TextSpan, Widget,
     };
     pub use crate::App;
 }

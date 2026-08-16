@@ -25,6 +25,7 @@ pub(crate) mod sys {
     pub enum RfCanvas {}
     pub enum RfDisplayList {}
     pub enum RfParagraph {}
+    pub enum RfParagraphBuilder {}
     pub enum RfLayerTree {}
     pub enum RfPath {}
     pub enum RfImage {}
@@ -313,6 +314,28 @@ pub(crate) mod sys {
             text_align: c_int,
         ) -> *mut RfParagraph;
         pub fn rf_paragraph_free(paragraph: *mut RfParagraph);
+        pub fn rf_paragraph_builder_new(
+            text_align: c_int,
+            max_lines: usize,
+        ) -> *mut RfParagraphBuilder;
+        // Declared for completeness: `build` consumes the builder, so nothing
+        // here frees one, and a builder is never dropped half-built.
+        #[allow(dead_code)]
+        pub fn rf_paragraph_builder_free(builder: *mut RfParagraphBuilder);
+        pub fn rf_paragraph_builder_push_style(
+            builder: *mut RfParagraphBuilder,
+            font_family: *const c_char,
+            font_size: f32,
+            font_weight: c_int,
+            argb: u32,
+        );
+        pub fn rf_paragraph_builder_add_text(
+            builder: *mut RfParagraphBuilder,
+            text: *const c_char,
+            text_len: usize,
+        );
+        pub fn rf_paragraph_builder_pop(builder: *mut RfParagraphBuilder);
+        pub fn rf_paragraph_builder_build(builder: *mut RfParagraphBuilder) -> *mut RfParagraph;
         pub fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32);
         pub fn rf_paragraph_width(paragraph: *mut RfParagraph) -> f32;
         pub fn rf_paragraph_height(paragraph: *mut RfParagraph) -> f32;
@@ -567,6 +590,69 @@ impl Paragraph {
             unsafe { sys::rf_paragraph_layout(raw, ink_width.ceil()) };
         }
 
+        Paragraph { raw }
+    }
+
+    /// A paragraph with more than one style in it.
+    ///
+    /// One paragraph, not several: line breaking, bidi reordering and baseline
+    /// alignment all work across the whole of it, so a sentence with a bold
+    /// word in the middle has to be built this way rather than as three texts
+    /// in a row. Upstream this is `ParagraphBuilder` in `dart:ui`, driven by
+    /// `TextPainter` from a tree of `TextSpan`s.
+    ///
+    /// `align` and `max_lines` belong to the paragraph; everything else comes
+    /// from each run's own style.
+    pub fn rich(
+        runs: &[(String, TextStyle)],
+        align: TextAlign,
+        max_lines: Option<usize>,
+        max_width: f32,
+    ) -> Paragraph {
+        let align_code = match align {
+            TextAlign::Left => 0,
+            TextAlign::Right => 1,
+            TextAlign::Center => 2,
+        };
+        let builder =
+            unsafe { sys::rf_paragraph_builder_new(align_code, max_lines.unwrap_or(0)) };
+        assert!(!builder.is_null(), "engine failed to make a paragraph builder");
+
+        for (text, style) in runs {
+            let family = style
+                .font_family
+                .as_deref()
+                .map(|f| CString::new(f).expect("font family must not contain NUL"));
+            let family_ptr = family.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+            unsafe {
+                sys::rf_paragraph_builder_push_style(
+                    builder,
+                    family_ptr,
+                    style.font_size,
+                    style.font_weight,
+                    style.color.0,
+                );
+                sys::rf_paragraph_builder_add_text(
+                    builder,
+                    text.as_ptr() as *const c_char,
+                    text.len(),
+                );
+                sys::rf_paragraph_builder_pop(builder);
+            }
+        }
+
+        // Consumes the builder, whatever happens next.
+        let raw = unsafe { sys::rf_paragraph_builder_build(builder) };
+        assert!(!raw.is_null(), "engine failed to build a paragraph");
+
+        // Two passes, for the reason `new` gives: the second shrinks the
+        // paragraph box to the ink so that alignment is measured against the
+        // box the caller was handed.
+        unsafe { sys::rf_paragraph_layout(raw, max_width) };
+        let ink_width = unsafe { sys::rf_paragraph_longest_line(raw) };
+        if ink_width > 0.0 && ink_width < max_width {
+            unsafe { sys::rf_paragraph_layout(raw, ink_width.ceil()) };
+        }
         Paragraph { raw }
     }
 

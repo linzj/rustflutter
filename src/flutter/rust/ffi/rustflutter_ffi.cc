@@ -310,6 +310,99 @@ void rf_paragraph_free(RfParagraph* paragraph) {
   delete paragraph;
 }
 
+namespace {
+
+// The one place a text style is assembled, so the single-run and multi-run
+// paths cannot drift apart.
+txt::TextStyle MakeTextStyle(const char* font_family,
+                             float font_size,
+                             int32_t font_weight,
+                             uint32_t argb) {
+  txt::TextStyle style;
+  style.font_size = font_size;
+  style.color = argb;
+  // txt::FontWeight is a plain int holding the CSS weight (400 == normal),
+  // so the value passes straight through after clamping.
+  style.font_weight =
+      font_weight < 100 ? 100 : (font_weight > 900 ? 900 : font_weight);
+  if (font_family != nullptr && *font_family != 0) {
+    style.font_families = std::vector<std::string>{std::string(font_family)};
+  } else {
+    style.font_families = txt::GetDefaultFontFamilies();
+  }
+  return style;
+}
+
+}  // namespace
+
+RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
+                                             size_t max_lines) {
+  txt::ParagraphStyle paragraph_style;
+  switch (text_align) {
+    case 1:
+      paragraph_style.text_align = txt::TextAlign::right;
+      break;
+    case 2:
+      paragraph_style.text_align = txt::TextAlign::center;
+      break;
+    default:
+      paragraph_style.text_align = txt::TextAlign::left;
+      break;
+  }
+  if (max_lines > 0) {
+    paragraph_style.max_lines = max_lines;
+  }
+
+  auto* out = new RfParagraphBuilder();
+  out->builder = txt::ParagraphBuilder::CreateSkiaBuilder(
+      paragraph_style, GetFontCollection(),
+      g_impeller_text.load(std::memory_order_relaxed));
+  return out;
+}
+
+void rf_paragraph_builder_free(RfParagraphBuilder* builder) {
+  delete builder;
+}
+
+void rf_paragraph_builder_push_style(RfParagraphBuilder* builder,
+                                     const char* font_family,
+                                     float font_size,
+                                     int32_t font_weight,
+                                     uint32_t argb) {
+  if (builder == nullptr || builder->builder == nullptr) {
+    return;
+  }
+  builder->builder->PushStyle(
+      MakeTextStyle(font_family, font_size, font_weight, argb));
+}
+
+void rf_paragraph_builder_add_text(RfParagraphBuilder* builder,
+                                   const char* text,
+                                   size_t text_len) {
+  if (builder == nullptr || builder->builder == nullptr || text == nullptr) {
+    return;
+  }
+  builder->builder->AddText(reinterpret_cast<const uint8_t*>(text), text_len);
+}
+
+void rf_paragraph_builder_pop(RfParagraphBuilder* builder) {
+  if (builder == nullptr || builder->builder == nullptr) {
+    return;
+  }
+  builder->builder->Pop();
+}
+
+RfParagraph* rf_paragraph_builder_build(RfParagraphBuilder* builder) {
+  if (builder == nullptr || builder->builder == nullptr) {
+    delete builder;
+    return nullptr;
+  }
+  auto* out = new RfParagraph();
+  out->paragraph = builder->builder->Build();
+  delete builder;
+  return out;
+}
+
 void rf_paragraph_layout(RfParagraph* paragraph, float max_width) {
   if (paragraph == nullptr || paragraph->paragraph == nullptr) {
     return;

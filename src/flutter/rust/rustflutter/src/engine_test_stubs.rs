@@ -431,6 +431,50 @@ pub unsafe extern "C" fn rf_paragraph_free(paragraph: *mut RfParagraph) {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_new(
+    text_align: c_int,
+    max_lines: usize,
+) -> *mut RfParagraphBuilder {
+    allocate::<RfParagraphBuilder>()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_free(builder: *mut RfParagraphBuilder) {
+    unsafe { release(builder) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_push_style(
+    builder: *mut RfParagraphBuilder,
+    font_family: *const c_char,
+    font_size: f32,
+    font_weight: c_int,
+    argb: u32,
+) {
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_add_text(
+    builder: *mut RfParagraphBuilder,
+    text: *const c_char,
+    text_len: usize,
+) {
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_pop(builder: *mut RfParagraphBuilder) {
+}
+
+/// Consumes the builder and hands back a paragraph, as the engine does.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_builder_build(
+    builder: *mut RfParagraphBuilder,
+) -> *mut RfParagraph {
+    unsafe { release(builder) };
+    allocate::<RfParagraph>()
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32) {
 }
 
