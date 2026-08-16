@@ -257,17 +257,16 @@ int32_t rf_register_font(const uint8_t* data, size_t length, const char* family)
   return 0;
 }
 
-RfParagraph* rf_paragraph_new(const char* text,
-                              size_t text_len,
-                              const char* font_family,
-                              float font_size,
-                              int32_t font_weight,
-                              uint32_t argb,
-                              int32_t text_align) {
-  if (text == nullptr) {
-    return nullptr;
-  }
+namespace {
 
+// The one place a paragraph style is assembled, so the single-run and
+// multi-run paths cannot drift apart.
+//
+// The ellipsis is the '…' that Flutter's RenderParagraph hands its TextPainter
+// for TextOverflow.ellipsis, spelled here as the flag the header describes.
+txt::ParagraphStyle MakeParagraphStyle(int32_t text_align,
+                                       size_t max_lines,
+                                       bool ellipsis) {
   txt::ParagraphStyle paragraph_style;
   switch (text_align) {
     case 1:
@@ -280,6 +279,32 @@ RfParagraph* rf_paragraph_new(const char* text,
       paragraph_style.text_align = txt::TextAlign::left;
       break;
   }
+  if (max_lines > 0) {
+    paragraph_style.max_lines = max_lines;
+  }
+  if (ellipsis) {
+    paragraph_style.ellipsis = u"…";
+  }
+  return paragraph_style;
+}
+
+}  // namespace
+
+RfParagraph* rf_paragraph_new(const char* text,
+                              size_t text_len,
+                              const char* font_family,
+                              float font_size,
+                              int32_t font_weight,
+                              uint32_t argb,
+                              int32_t text_align,
+                              size_t max_lines,
+                              bool ellipsis) {
+  if (text == nullptr) {
+    return nullptr;
+  }
+
+  txt::ParagraphStyle paragraph_style =
+      MakeParagraphStyle(text_align, max_lines, ellipsis);
 
   auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
       paragraph_style, GetFontCollection(),
@@ -336,22 +361,10 @@ txt::TextStyle MakeTextStyle(const char* font_family,
 }  // namespace
 
 RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
-                                             size_t max_lines) {
-  txt::ParagraphStyle paragraph_style;
-  switch (text_align) {
-    case 1:
-      paragraph_style.text_align = txt::TextAlign::right;
-      break;
-    case 2:
-      paragraph_style.text_align = txt::TextAlign::center;
-      break;
-    default:
-      paragraph_style.text_align = txt::TextAlign::left;
-      break;
-  }
-  if (max_lines > 0) {
-    paragraph_style.max_lines = max_lines;
-  }
+                                             size_t max_lines,
+                                             bool ellipsis) {
+  txt::ParagraphStyle paragraph_style =
+      MakeParagraphStyle(text_align, max_lines, ellipsis);
 
   auto* out = new RfParagraphBuilder();
   out->builder = txt::ParagraphBuilder::CreateSkiaBuilder(

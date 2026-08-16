@@ -540,6 +540,10 @@ struct ShapeKey {
     runs: Vec<RunKey>,
     align: u8,
     max_lines: usize,
+    /// Part of the key because it goes into the paragraph style: the same text
+    /// in the same width is a different paragraph with an ellipsis than
+    /// without one.
+    ellipsis: bool,
     max_width_bits: u32,
 }
 
@@ -573,11 +577,18 @@ fn align_code(align: TextAlign) -> u8 {
 }
 
 impl ShapeKey {
-    fn new(text: &str, style: &TextStyle, max_width: f32) -> ShapeKey {
+    fn new(
+        text: &str,
+        style: &TextStyle,
+        max_lines: Option<usize>,
+        ellipsis: bool,
+        max_width: f32,
+    ) -> ShapeKey {
         ShapeKey {
             runs: vec![RunKey::new(text, style)],
             align: align_code(style.align),
-            max_lines: 0,
+            max_lines: max_lines.unwrap_or(0),
+            ellipsis,
             max_width_bits: max_width.to_bits(),
         }
     }
@@ -586,12 +597,14 @@ impl ShapeKey {
         runs: &[(String, TextStyle)],
         align: TextAlign,
         max_lines: Option<usize>,
+        ellipsis: bool,
         max_width: f32,
     ) -> ShapeKey {
         ShapeKey {
             runs: runs.iter().map(|(text, style)| RunKey::new(text, style)).collect(),
             align: align_code(align),
             max_lines: max_lines.unwrap_or(0),
+            ellipsis,
             max_width_bits: max_width.to_bits(),
         }
     }
@@ -644,7 +657,14 @@ thread_local! {
 ///
 /// The cache needs no help with this: the scale changes the style it keys on,
 /// so text shaped at the old size is simply never asked for again.
-pub fn shape(text: &str, style: &TextStyle, max_width: f32, scale: f32) -> Rc<Paragraph> {
+pub fn shape(
+    text: &str,
+    style: &TextStyle,
+    max_lines: Option<usize>,
+    ellipsis: bool,
+    max_width: f32,
+    scale: f32,
+) -> Rc<Paragraph> {
     let scaled;
     let style = if scale == 1.0 {
         style
@@ -652,7 +672,7 @@ pub fn shape(text: &str, style: &TextStyle, max_width: f32, scale: f32) -> Rc<Pa
         scaled = TextStyle { font_size: style.font_size * scale, ..style.clone() };
         &scaled
     };
-    let key = ShapeKey::new(text, style, max_width);
+    let key = ShapeKey::new(text, style, max_lines, ellipsis, max_width);
     SHAPED.with(|cache| {
         {
             let cache = cache.borrow();
@@ -667,7 +687,7 @@ pub fn shape(text: &str, style: &TextStyle, max_width: f32, scale: f32) -> Rc<Pa
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped = Rc::new(Paragraph::new(text, style, max_width));
+        let shaped = Rc::new(Paragraph::new(text, style, max_lines, ellipsis, max_width));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -685,6 +705,7 @@ pub fn shape_rich(
     runs: &[(String, TextStyle)],
     align: TextAlign,
     max_lines: Option<usize>,
+    ellipsis: bool,
     max_width: f32,
     scale: f32,
 ) -> Rc<Paragraph> {
@@ -700,7 +721,7 @@ pub fn shape_rich(
             })
             .collect()
     };
-    let key = ShapeKey::rich(&scaled, align, max_lines, max_width);
+    let key = ShapeKey::rich(&scaled, align, max_lines, ellipsis, max_width);
     SHAPED.with(|cache| {
         {
             let cache = cache.borrow();
@@ -713,7 +734,7 @@ pub fn shape_rich(
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped = Rc::new(Paragraph::rich(&scaled, align, max_lines, max_width));
+        let shaped = Rc::new(Paragraph::rich(&scaled, align, max_lines, ellipsis, max_width));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -1359,16 +1380,16 @@ mod tests {
     #[test]
     fn the_same_request_is_shaped_once() {
         let style = TextStyle::default();
-        let first = shape("shaped once", &style, 200.0, 1.0);
-        let second = shape("shaped once", &style, 200.0, 1.0);
+        let first = shape("shaped once", &style, None, false, 200.0, 1.0);
+        let second = shape("shaped once", &style, None, false, 200.0, 1.0);
         assert!(Rc::ptr_eq(&first, &second), "the second ask re-shaped");
     }
 
     #[test]
     fn a_different_width_is_a_different_paragraph() {
         let style = TextStyle::default();
-        let narrow = shape("wraps differently", &style, 100.0, 1.0);
-        let wide = shape("wraps differently", &style, 400.0, 1.0);
+        let narrow = shape("wraps differently", &style, None, false, 100.0, 1.0);
+        let wide = shape("wraps differently", &style, None, false, 400.0, 1.0);
         // Line breaking depends on the width, so sharing one shaping between
         // two widths would put the breaks in the wrong place.
         assert!(!Rc::ptr_eq(&narrow, &wide));
@@ -1378,17 +1399,17 @@ mod tests {
     fn a_different_style_is_a_different_paragraph() {
         let plain = TextStyle::default();
         let bold = TextStyle { font_weight: 700, ..TextStyle::default() };
-        let a = shape("weight matters", &plain, 200.0, 1.0);
-        let b = shape("weight matters", &bold, 200.0, 1.0);
+        let a = shape("weight matters", &plain, None, false, 200.0, 1.0);
+        let b = shape("weight matters", &bold, None, false, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&a, &b));
     }
 
     #[test]
     fn text_still_on_screen_survives_a_frame() {
         let style = TextStyle::default();
-        let first = shape("still drawn", &style, 200.0, 1.0);
+        let first = shape("still drawn", &style, None, false, 200.0, 1.0);
         end_text_frame();
-        let second = shape("still drawn", &style, 200.0, 1.0);
+        let second = shape("still drawn", &style, None, false, 200.0, 1.0);
         assert!(Rc::ptr_eq(&first, &second), "a live paragraph was re-shaped");
     }
 
@@ -1400,10 +1421,10 @@ mod tests {
         // request, which is what decides the size the engine is asked for.
         let style = TextStyle::default();
         let before = shaped_paragraph_count();
-        let unscaled = shape("the reader's size", &style, 200.0, 1.0);
+        let unscaled = shape("the reader's size", &style, None, false, 200.0, 1.0);
         assert_eq!(shaped_paragraph_count(), before + 1);
 
-        let scaled = shape("the reader's size", &style, 200.0, 1.5);
+        let scaled = shape("the reader's size", &style, None, false, 200.0, 1.5);
         assert!(
             !Rc::ptr_eq(&unscaled, &scaled),
             "the same text at a different size must be shaped again"
@@ -1412,7 +1433,7 @@ mod tests {
 
         // And back, which the cache still has: the scale changes the style the
         // entry is keyed on rather than invalidating anything.
-        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, 200.0, 1.0)));
+        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, None, false, 200.0, 1.0)));
     }
 
     #[test]
@@ -1421,18 +1442,18 @@ mod tests {
         // opted out and the page around it are on screen together, and the
         // cache has to hold both rather than one evicting the other.
         let style = TextStyle::default();
-        let big = shape("side by side", &style, 200.0, 2.0);
-        let small = shape("side by side", &style, 200.0, 1.0);
+        let big = shape("side by side", &style, None, false, 200.0, 2.0);
+        let small = shape("side by side", &style, None, false, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&big, &small));
-        assert!(Rc::ptr_eq(&big, &shape("side by side", &style, 200.0, 2.0)));
-        assert!(Rc::ptr_eq(&small, &shape("side by side", &style, 200.0, 1.0)));
+        assert!(Rc::ptr_eq(&big, &shape("side by side", &style, None, false, 200.0, 2.0)));
+        assert!(Rc::ptr_eq(&small, &shape("side by side", &style, None, false, 200.0, 1.0)));
     }
 
     #[test]
     fn text_that_stopped_being_drawn_is_dropped() {
         let style = TextStyle::default();
         let before = shaped_paragraph_count();
-        let _ = shape("shown briefly", &style, 200.0, 1.0);
+        let _ = shape("shown briefly", &style, None, false, 200.0, 1.0);
         assert_eq!(shaped_paragraph_count(), before + 1);
         // Two frames: the first moves it to the previous generation, the second
         // drops that generation entirely.

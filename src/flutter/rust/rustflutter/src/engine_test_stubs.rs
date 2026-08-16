@@ -452,7 +452,7 @@ pub unsafe extern "C" fn rf_display_list_free(display_list: *mut RfDisplayList) 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paragraph_new(text: *const c_char, text_len: usize, font_family: *const c_char, font_size: f32, font_weight: c_int, argb: u32, text_align: c_int) -> *mut RfParagraph {
+pub unsafe extern "C" fn rf_paragraph_new(text: *const c_char, text_len: usize, font_family: *const c_char, font_size: f32, font_weight: c_int, argb: u32, text_align: c_int, max_lines: usize, ellipsis: bool) -> *mut RfParagraph {
     allocate::<RfParagraph>()
 }
 
@@ -465,6 +465,7 @@ pub unsafe extern "C" fn rf_paragraph_free(paragraph: *mut RfParagraph) {
 pub unsafe extern "C" fn rf_paragraph_builder_new(
     text_align: c_int,
     max_lines: usize,
+    ellipsis: bool,
 ) -> *mut RfParagraphBuilder {
     allocate::<RfParagraphBuilder>()
 }

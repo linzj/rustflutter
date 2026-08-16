@@ -106,7 +106,8 @@ TEST(RustFFI, ShapesTextAndReportsItsMetrics) {
   const char kText[] = "Hello, World!";
   RfParagraph* paragraph =
       rf_paragraph_new(kText, std::strlen(kText), nullptr, 24.0f, 400,
-                       0xFF000000, /*text_align=*/0);
+                       0xFF000000, /*text_align=*/0, /*max_lines=*/0,
+                       /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
 
   rf_paragraph_layout(paragraph, 400.0f);
@@ -130,7 +131,8 @@ TEST(RustFFI, PaintsTextIntoTheSurface) {
   const char kText[] = "Hello";
   RfParagraph* paragraph =
       rf_paragraph_new(kText, std::strlen(kText), nullptr, 32.0f, 700,
-                       0xFFFFFFFF, /*text_align=*/0);
+                       0xFFFFFFFF, /*text_align=*/0, /*max_lines=*/0,
+                       /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
   rf_paragraph_layout(paragraph, static_cast<float>(kWidth));
 

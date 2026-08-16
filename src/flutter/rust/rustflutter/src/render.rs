@@ -46,7 +46,7 @@ use std::rc::{Rc, Weak};
 
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
-use crate::painting::{ClipBehavior, Gradient, Image, RenderPath};
+use crate::painting::{ClipBehavior, ClipOp, Gradient, Image, RenderPath};
 
 // -- Geometry -----------------------------------------------------------------
 
@@ -1871,6 +1871,25 @@ impl RenderBox for RenderDecoratedBox {
 
 // -- Leaf: text ---------------------------------------------------------------
 
+/// What becomes of text too big for the box it was given.
+///
+/// Upstream's `TextOverflow` (`painting/text_painter.dart`), less one:
+/// `fade` is missing because it is not a text feature at all but a paint one --
+/// upstream draws the text into a `saveLayer` and then multiplies a
+/// transparent-to-opaque gradient over it with `BlendMode.modulate`, and this
+/// paint layer has no blend modes. Nothing in this framework asks for it. The
+/// other three are here in full.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextOverflow {
+    /// Cut off what does not fit. Upstream's default, and this one's.
+    #[default]
+    Clip,
+    /// Cut off what does not fit and end the last line with '…'.
+    Ellipsis,
+    /// Let the glyphs spill outside the box.
+    Visible,
+}
+
 /// A run of text, shaped by the engine's `txt` / skparagraph stack.
 pub struct RenderParagraph {
     content: String,
@@ -1884,6 +1903,16 @@ pub struct RenderParagraph {
     /// and it is worth not allocating for it.
     runs: Vec<(String, TextStyle)>,
     max_lines: Option<usize>,
+    /// Whether the text may break across lines. Upstream `RenderParagraph`'s
+    /// `softWrap`, and it does not reach the engine: it only decides whether
+    /// the width the caller gave is a width the shaping has to respect. See
+    /// [`RenderParagraph::adjust_max_width`].
+    soft_wrap: bool,
+    /// What becomes of text that does not fit. Upstream's `overflow`.
+    overflow: TextOverflow,
+    /// Whether the last layout produced text bigger than the box it got.
+    /// Upstream keeps the same answer as `_needsClipping`.
+    has_visual_overflow: bool,
     /// The reader's text size, as it was where this paragraph was built.
     ///
     /// Taken at construction rather than read at layout, because by layout the
@@ -1910,6 +1939,9 @@ impl RenderParagraph {
             style: TextStyle::default(),
             runs: Vec::new(),
             max_lines: None,
+            soft_wrap: true,
+            overflow: TextOverflow::Clip,
+            has_visual_overflow: false,
             text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
             semantics_id: std::cell::Cell::new(0),
@@ -1932,6 +1964,9 @@ impl RenderParagraph {
             style,
             runs,
             max_lines: None,
+            soft_wrap: true,
+            overflow: TextOverflow::Clip,
+            has_visual_overflow: false,
             text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
             semantics_id: std::cell::Cell::new(0),
@@ -1946,16 +1981,29 @@ impl RenderParagraph {
 
     /// Shapes this paragraph at `width`, however many runs it has.
     fn shape_at(&self, width: f32) -> Rc<Paragraph> {
+        // Upstream `RenderParagraph.overflow`'s setter is what puts the '…'
+        // into the paragraph style -- `_textPainter.ellipsis = value ==
+        // TextOverflow.ellipsis ? _kEllipsis : null` -- so the flag is derived
+        // here rather than stored.
+        let ellipsis = self.overflow == TextOverflow::Ellipsis;
         if self.is_rich() {
             crate::painting::shape_rich(
                 &self.runs,
                 self.style.align,
                 self.max_lines,
+                ellipsis,
                 width,
                 self.text_scale,
             )
         } else {
-            crate::painting::shape(&self.content, &self.style, width, self.text_scale)
+            crate::painting::shape(
+                &self.content,
+                &self.style,
+                self.max_lines,
+                ellipsis,
+                width,
+                self.text_scale,
+            )
         }
     }
 
@@ -1984,6 +2032,35 @@ impl RenderParagraph {
         self
     }
 
+    /// Whether this paragraph may break across lines.
+    pub fn with_soft_wrap(mut self, soft_wrap: bool) -> Self {
+        self.soft_wrap = soft_wrap;
+        self
+    }
+
+    /// What to do with text that does not fit.
+    pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
+        self.overflow = overflow;
+        self
+    }
+
+    /// The width the shaping is actually held to.
+    ///
+    /// Upstream's `RenderParagraph._adjustMaxWidth`, one line and the same one:
+    /// `softWrap || overflow == TextOverflow.ellipsis ? maxWidth : infinity`.
+    /// Text that neither wraps nor ellipsizes is shaped as though it had all
+    /// the room in the world and then overflows its box, which is what makes
+    /// `TextOverflow::Visible` and `TextOverflow::Clip` differ from wrapping.
+    /// An ellipsis needs the real width or it would have nothing to cut
+    /// against, which is why it is on this side of the `||`.
+    fn adjust_max_width(&self, max_width: f32) -> f32 {
+        if self.soft_wrap || self.overflow == TextOverflow::Ellipsis {
+            max_width
+        } else {
+            f32::INFINITY
+        }
+    }
+
     pub fn style_mut(&mut self) -> &mut TextStyle {
         &mut self.style
     }
@@ -2002,6 +2079,8 @@ impl RenderBox for RenderParagraph {
             || self.style != fresh.style
             || self.runs != fresh.runs
             || self.max_lines != fresh.max_lines
+            || self.soft_wrap != fresh.soft_wrap
+            || self.overflow != fresh.overflow
             || self.text_scale != fresh.text_scale;
         if !changed {
             // Everything the shaping depends on is the same, so the shaping is
@@ -2014,6 +2093,8 @@ impl RenderBox for RenderParagraph {
         self.style = fresh.style.clone();
         self.runs = std::mem::take(&mut fresh.runs);
         self.max_lines = fresh.max_lines;
+        self.soft_wrap = fresh.soft_wrap;
+        self.overflow = fresh.overflow;
         self.text_scale = fresh.text_scale;
         // What was shaped was shaped for text this no longer holds.
         self.paragraph = None;
@@ -2023,15 +2104,25 @@ impl RenderBox for RenderParagraph {
         // An unbounded width means "as wide as you like", which for text means
         // one line; Paragraph cannot shape against infinity.
         let width = if constraints.has_bounded_width() {
-            constraints.max_width
+            self.adjust_max_width(constraints.max_width)
         } else {
-            f32::MAX / 4.0
+            f32::INFINITY
         };
+        // An unbounded width means "as wide as you like", which for text means
+        // one line; Paragraph cannot shape against infinity.
+        let width = if width.is_finite() { width } else { f32::MAX / 4.0 };
         let paragraph = self.shape_at(width);
         // Paragraph::new re-lays out at the ink width, so width() is the tight
         // box around the glyphs. That is what makes centring a text inside a
         // larger box actually look centred.
-        self.size = constraints.constrain(Size::new(paragraph.width(), paragraph.height()));
+        let text_size = Size::new(paragraph.width(), paragraph.height());
+        self.size = constraints.constrain(text_size);
+        // Upstream's `performLayout`: `didOverflowWidth = size.width <
+        // textSize.width`, same for height, and the two together are
+        // `hasVisualOverflow` -- which every overflow except `visible` answers
+        // by clipping.
+        self.has_visual_overflow =
+            self.size.width < text_size.width || self.size.height < text_size.height;
         self.paragraph = Some(paragraph);
         self.size
     }
@@ -2041,9 +2132,21 @@ impl RenderBox for RenderParagraph {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        if let Some(paragraph) = &self.paragraph {
+        let Some(paragraph) = &self.paragraph else {
+            return;
+        };
+        // Upstream's `_needsClipping`, decided in `performLayout`: every
+        // overflow but `visible` clips, and only when something overflowed.
+        // `visible` is the one that lets glyphs spill outside the box.
+        if !self.has_visual_overflow || self.overflow == TextOverflow::Visible {
             context.canvas().draw_paragraph(paragraph, offset.dx, offset.dy);
+            return;
         }
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        context.canvas().saved(|canvas| {
+            canvas.clip_rect(bounds, ClipOp::Intersect, true);
+            canvas.draw_paragraph(paragraph, offset.dx, offset.dy);
+        });
     }
 
     /// Text is something a finger lands on. Upstream `RenderParagraph` says the

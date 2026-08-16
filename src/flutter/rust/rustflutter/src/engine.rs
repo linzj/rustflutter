@@ -322,11 +322,14 @@ pub(crate) mod sys {
             font_weight: c_int,
             argb: u32,
             text_align: c_int,
+            max_lines: usize,
+            ellipsis: bool,
         ) -> *mut RfParagraph;
         pub fn rf_paragraph_free(paragraph: *mut RfParagraph);
         pub fn rf_paragraph_builder_new(
             text_align: c_int,
             max_lines: usize,
+            ellipsis: bool,
         ) -> *mut RfParagraphBuilder;
         // Declared for completeness: `build` consumes the builder, so nothing
         // here frees one, and a builder is never dropped half-built.
@@ -559,7 +562,16 @@ pub struct Paragraph {
 
 impl Paragraph {
     /// Builds and lays out `text` within `max_width` logical pixels.
-    pub fn new(text: &str, style: &TextStyle, max_width: f32) -> Paragraph {
+    ///
+    /// `max_lines` and `ellipsis` are the paragraph's, not the run's, and are
+    /// what upstream's `TextPainter` puts in its `ui.ParagraphStyle`.
+    pub fn new(
+        text: &str,
+        style: &TextStyle,
+        max_lines: Option<usize>,
+        ellipsis: bool,
+        max_width: f32,
+    ) -> Paragraph {
         let family = style
             .font_family
             .as_deref()
@@ -583,6 +595,8 @@ impl Paragraph {
                 style.font_weight,
                 style.color.0,
                 align,
+                max_lines.unwrap_or(0),
+                ellipsis,
             )
         };
         assert!(!raw.is_null(), "engine failed to build a paragraph");
@@ -617,6 +631,7 @@ impl Paragraph {
         runs: &[(String, TextStyle)],
         align: TextAlign,
         max_lines: Option<usize>,
+        ellipsis: bool,
         max_width: f32,
     ) -> Paragraph {
         let align_code = match align {
@@ -625,7 +640,7 @@ impl Paragraph {
             TextAlign::Center => 2,
         };
         let builder =
-            unsafe { sys::rf_paragraph_builder_new(align_code, max_lines.unwrap_or(0)) };
+            unsafe { sys::rf_paragraph_builder_new(align_code, max_lines.unwrap_or(0), ellipsis) };
         assert!(!builder.is_null(), "engine failed to make a paragraph builder");
 
         for (text, style) in runs {

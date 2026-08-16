@@ -287,13 +287,21 @@ void rf_display_list_free(RfDisplayList* display_list);
 int32_t rf_register_font(const uint8_t* data, size_t length, const char* family);
 
 // text must be UTF-8. font_family may be NULL for the platform default.
+//
+// ellipsis asks for txt::ParagraphStyle::ellipsis, which is what makes a
+// paragraph that ran out of lines end in U+2026 rather than simply stop. It is
+// a flag and not a string because the framework above only ever wants the one
+// character: Flutter's RenderParagraph sets `_textPainter.ellipsis` to
+// `_kEllipsis` ('…') or to null, and to nothing else.
 RfParagraph* rf_paragraph_new(const char* text,
                               size_t text_len,
                               const char* font_family,
                               float font_size,
                               int32_t font_weight,  // 100..900, 400 = normal
                               uint32_t argb,
-                              int32_t text_align);  // 0 left .. 2 center
+                              int32_t text_align,  // 0 left .. 2 center
+                              size_t max_lines,    // 0 = no limit
+                              bool ellipsis);
 void rf_paragraph_free(RfParagraph* paragraph);
 void rf_paragraph_layout(RfParagraph* paragraph, float max_width);
 float rf_paragraph_width(RfParagraph* paragraph);
@@ -314,7 +322,8 @@ float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph);
 // have to see the whole paragraph, so a sentence with a bold word in it is one
 // paragraph and not three.
 RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
-                                             size_t max_lines);  // 0 = no limit
+                                             size_t max_lines,  // 0 = no limit
+                                             bool ellipsis);
 void rf_paragraph_builder_free(RfParagraphBuilder* builder);
 void rf_paragraph_builder_push_style(RfParagraphBuilder* builder,
                                      const char* font_family,
