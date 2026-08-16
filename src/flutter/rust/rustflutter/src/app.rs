@@ -794,9 +794,11 @@ impl AppInstance {
         // A walk of its own over the laid-out tree, the way upstream's
         // `flushSemantics` is its own walk. It runs after the paint only
         // because that is the tidier place to read it; it needs the layout, not
-        // the drawing. Nothing happens at all unless a screen reader is
-        // listening, so the ordinary case is one boolean.
-        if let Some(nodes) = crate::semantics::collect(context.size, &root) {
+        // the drawing. Most frames it does nothing: nobody is reading, or
+        // nothing marked itself, or the walk came out the same as the tree the
+        // platform is already holding. See the three gates in
+        // [`crate::semantics`].
+        if let Some(nodes) = crate::semantics::flush(context.size, &root) {
             self.send_semantics(view_id, &nodes);
         }
         // All the shaping this frame needed has happened by now -- layout asked
@@ -1395,7 +1397,14 @@ mod abi {
         let Some(action) = crate::semantics::SemanticsAction::from_bits(action) else {
             return false;
         };
-        let handled = crate::semantics::perform_action(node_id, action);
+        // Asked of the tree that was painted, which is the one the reader is
+        // looking at. The node id says which control but not which view, so
+        // every painted tree is offered it -- ids are unique across all of
+        // them, so at most one answers.
+        let handled = instance
+            .painted
+            .values()
+            .any(|root| crate::semantics::perform_action(root, node_id, action));
         if handled {
             // Whatever the handler did, the reader is owed the frame that
             // shows it -- and the fresh semantics tree that goes with it.

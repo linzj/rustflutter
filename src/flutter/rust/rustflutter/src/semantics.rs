@@ -27,7 +27,7 @@
 //! render tree can work one out -- each parent knows where it put each child,
 //! and nothing knows where it is itself. Upstream walks the render tree for
 //! exactly this, through `visitChildrenForSemantics` and `applyPaintTransform`;
-//! [`collect`] does the same walk through
+//! [`flush`] does the same walk through
 //! [`crate::render::RenderBox::visit_children_for_semantics`], which carries
 //! the offset because there is no `parentData` here to read it off the child.
 //!
@@ -42,8 +42,41 @@
 //! reported its position *within the boundary* as though it were the position
 //! on the glass -- and [`crate::scrolling::LazyList`] puts a boundary around
 //! every row. Both stop being possible once the walk is its own.
+//!
+//! # The three gates
+//!
+//! A walk of its own is a walk somebody has to pay for, and the first version
+//! of it paid on every frame a reader was listening. Upstream does not, and it
+//! avoids the work at three separate places. All three are here:
+//!
+//! 1. **Nothing is marked when nobody is reading.** Upstream's
+//!    `markNeedsSemanticsUpdate` returns at once while `_semanticsOwner` is
+//!    null, and `flushSemantics` returns at once for the same reason. Here
+//!    [`enabled`] is that gate.
+//! 2. **A frame that changed nothing is not walked.** Upstream keeps
+//!    `PipelineOwner._nodesNeedingSemanticsUpdate` and visits what is in it;
+//!    [`mark_needs_update`] fills the same role, and [`flush`] returns without
+//!    walking when it is empty. What marks is listed on [`mark_needs_update`],
+//!    and each entry is a line upstream also has.
+//! 3. **A walk that came out the same sends nothing.** Upstream's
+//!    `SemanticsOwner.sendSemanticsUpdate` opens with
+//!    `if (_dirtyNodes.isEmpty) return;` and puts only the dirty nodes on the
+//!    wire. The tree the platform is holding is kept here (see [`tree`]) and
+//!    compared, which answers the same question for a tree small enough that
+//!    comparing it is cheaper than keeping a change log -- the same trade the
+//!    Windows bridge already makes on the other side of the boundary.
+//!
+//! The one upstream gate that is *not* here is the fourth: upstream re-walks
+//! only the subtree under the dirtied semantics boundary, because its dirty
+//! list holds render objects and its node rectangles are relative to the parent
+//! node, so a scrolled viewport moves one transform instead of every rectangle
+//! under it. Here the rectangles are absolute -- both bridges below want "where
+//! on the glass" -- so a subtree cannot be reused where it moved, and the walk
+//! descends from the root. That is the same trade [`crate::render::RenderRef`]
+//! makes for layout, for the same missing piece: there is no pipeline owner
+//! holding a list of boundaries to resume a descent from.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::framework::{AnyWidget, BuildContext, Component, component, single};
@@ -130,7 +163,7 @@ pub struct SemanticsFlags {
 ///
 /// Upstream's `SemanticsProperties`, narrowed to what the bridges below
 /// actually deliver.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct SemanticsProperties {
     /// What it is called. The first thing read out.
     pub label: String,
@@ -150,6 +183,36 @@ pub struct SemanticsProperties {
     pub scroll_position: f32,
     pub scroll_extent_max: f32,
     pub scroll_extent_min: f32,
+}
+
+/// Two of these are the same when a reader would be told the same thing.
+///
+/// Written out rather than derived because of the three scroll fields: they
+/// hold `NaN` for "this does not scroll", which is what upstream's
+/// `double? scrollPosition` becomes the moment it crosses to an embedder, and
+/// two boxes that both do not scroll are saying the same thing. Derived
+/// equality would call them different, and it is asked twice on every frame --
+/// once by [`RenderSemantics::update_from`] to decide whether a label changed,
+/// and once by [`flush`] to decide whether the platform needs telling. A
+/// comparison that always answered "different" would defeat both gates while
+/// looking like it worked.
+impl PartialEq for SemanticsProperties {
+    fn eq(&self, other: &SemanticsProperties) -> bool {
+        /// Equal, or both of them "no answer".
+        fn same(a: f32, b: f32) -> bool {
+            a == b || (a.is_nan() && b.is_nan())
+        }
+        self.label == other.label
+            && self.value == other.value
+            && self.hint == other.hint
+            && self.increased_value == other.increased_value
+            && self.decreased_value == other.decreased_value
+            && self.flags == other.flags
+            && self.actions == other.actions
+            && same(self.scroll_position, other.scroll_position)
+            && same(self.scroll_extent_max, other.scroll_extent_max)
+            && same(self.scroll_extent_min, other.scroll_extent_min)
+    }
 }
 
 impl SemanticsProperties {
@@ -257,10 +320,15 @@ struct Collector {
     /// Indices into `nodes` for the annotations currently open, outermost
     /// last. This is what turns the paint recursion into a tree.
     open: Vec<usize>,
-    /// Handlers for the actions the last collected tree offered, by node id.
-    /// Kept between frames, because an action arrives from the platform
-    /// whenever the reader gets round to it.
-    handlers: Vec<(i32, ActionHandler)>,
+    /// The tree the platform is holding -- what the last [`flush`] handed
+    /// over, or nothing if it has never been handed one.
+    ///
+    /// Upstream keeps the same thing, as the live `SemanticsNode` tree under
+    /// `SemanticsOwner`, and for the same two reasons: a walk that comes out
+    /// the same as this sends nothing, and a frame that is never walked leaves
+    /// this standing as the answer -- which is right, because nothing that
+    /// would have changed it happened.
+    sent: Vec<SemanticsNode>,
     /// How many labelled annotations are open above the paint in progress.
     ///
     /// Text inside one of those is *what the annotation says*, and reading it
@@ -277,11 +345,54 @@ pub type ActionHandler = Rc<dyn Fn(SemanticsAction)>;
 
 thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
+
+    /// Whether anything has happened that the semantics tree would notice.
+    ///
+    /// This is upstream's `PipelineOwner._nodesNeedingSemanticsUpdate`, which
+    /// is a set of the render objects to revisit. It is one boolean here for
+    /// the reason [`crate::render::RenderRef::mark_needs_layout`] walks all
+    /// the way to the root instead of stopping at a boundary: a set is only
+    /// worth keeping if a descent can be *started* from what is in it, and
+    /// there is no pipeline owner here to start one. So the answer this holds
+    /// is "walk" or "do not walk", and the saving is the frames where it says
+    /// not to -- which, for a screen that is being read rather than animated,
+    /// is nearly all of them.
+    ///
+    /// Starts true: a tree nobody has walked yet has told nobody anything.
+    static NEEDS_UPDATE: Cell<bool> = const { Cell::new(true) };
 }
 
 /// Whether the platform has said a screen reader is listening.
 pub fn enabled() -> bool {
     COLLECTOR.with(|collector| collector.borrow().enabled)
+}
+
+/// Says the semantics tree is no longer what the platform is holding.
+///
+/// Upstream's `RenderObject.markNeedsSemanticsUpdate`, and like it this is
+/// called from exactly the places that can change what a reader would hear:
+///
+/// * [`crate::render::RenderRef::layout`], on the path that actually lays out
+///   -- upstream calls it on the line after `performLayout` for the same
+///   reason, that a box which was just measured may have moved, resized, or
+///   stopped existing, and a rectangle is made of all three.
+/// * [`RenderSemantics::update_from`], when the annotation itself changed --
+///   upstream's `RenderSemanticsAnnotations.set properties`.
+/// * `RenderOpacity::update_from`, when the opacity crossed zero in either
+///   direction -- upstream's `set opacity` marks on exactly that condition,
+///   because a subtree that stopped being drawn stopped being describable
+///   while a fade between two visible values changes nothing anybody hears.
+/// * [`set_enabled`], when a reader arrives -- upstream's
+///   `scheduleInitialSemantics`.
+///
+/// Cheap enough to call unconditionally: it is one thread-local boolean, where
+/// upstream has to reach the owner to find out whether to bother.
+///
+/// Public for the reason upstream's is: a `RenderBox` written outside this
+/// crate whose [`crate::render::RenderBox::describe_semantics`] answer changed
+/// has the same thing to say, and no other way to say it.
+pub fn mark_needs_update() {
+    NEEDS_UPDATE.with(|needs| needs.set(true));
 }
 
 /// Turns semantics on or off. Called by the shell when an assistive technology
@@ -292,9 +403,22 @@ pub fn set_enabled(on: bool) {
         collector.enabled = on;
         if !on {
             collector.nodes.clear();
-            collector.handlers.clear();
+            collector.sent.clear();
         }
     });
+    // A reader that has just arrived has been told nothing, so everything is
+    // news; a reader that has just left leaves an empty tree behind, so the
+    // next one to arrive is not compared against a stale one.
+    mark_needs_update();
+}
+
+/// The tree the platform is holding.
+///
+/// Upstream's `SemanticsOwner.rootSemanticsNode` and what hangs from it. This
+/// is the answer between frames as well as during them: a frame that found
+/// nothing marked did not walk, and what it did not walk is still true.
+pub fn tree() -> Vec<SemanticsNode> {
+    COLLECTOR.with(|collector| collector.borrow().sent.clone())
 }
 
 /// The view's own node, which everything painted into it hangs from.
@@ -308,32 +432,35 @@ pub fn set_enabled(on: bool) {
 /// Without a parent above them, the top-level nodes have nowhere to carry it.
 pub const ROOT_ID: i32 = 0;
 
-/// Walks a laid-out render tree and returns what it says about itself.
+/// Brings the semantics tree up to date, and returns it if the platform needs
+/// telling.
 ///
-/// Returns `None` when nothing is listening, which is the ordinary case and
-/// costs one boolean -- the walk does not happen at all.
-///
-/// This is upstream's `PipelineOwner.flushSemantics`, minus the part that makes
-/// it cheap: upstream keeps a persistent semantics tree and revisits only the
-/// render objects that marked themselves dirty, where this rebuilds the whole
-/// tree every frame a reader is listening. That is affordable for the same
-/// reason the whole-tree layout descent is (see
-/// [`crate::render::RenderRef::mark_needs_layout`]) -- there is no pipeline
-/// owner here holding a list of dirty nodes to resume from -- and it is
-/// strictly cheaper than what it replaces, which forced a full repaint of the
-/// screen as well.
+/// This is upstream's `PipelineOwner.flushSemantics` followed by
+/// `SemanticsOwner.sendSemanticsUpdate`, and it declines to do the work at all
+/// of the same three places they do -- see "The three gates" in the module
+/// documentation. `None` means there is nothing to send, and it is the answer
+/// on nearly every frame: nobody is reading, or nothing marked itself, or the
+/// walk found the tree the platform already has. Only the last of those costs
+/// a walk.
 ///
 /// `size` is the view, and becomes [`ROOT_ID`]'s rectangle. The tree must be
 /// laid out already: every offset this reads was written during layout.
-pub fn collect(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
+pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
+    // Gate one: nobody is reading. Upstream's `if (_semanticsOwner == null)`.
     if !enabled() {
+        return None;
+    }
+    // Gate two: nothing that a reader would notice has happened since the last
+    // walk. Upstream takes the render objects out of
+    // `_nodesNeedingSemanticsUpdate` here and revisits those; this has one
+    // boolean rather than a list, so it either walks or it does not.
+    if !NEEDS_UPDATE.with(|needs| needs.replace(false)) {
         return None;
     }
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
         collector.nodes.clear();
         collector.open.clear();
-        collector.handlers.clear();
         collector.labelled_depth = 0;
     });
     // Opened before the walk and closed after it, so that everything the walk
@@ -351,7 +478,16 @@ pub fn collect(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
         let mut collector = collector.borrow_mut();
         collector.open.clear();
         collector.labelled_depth = 0;
-        Some(collector.nodes.clone())
+        // Gate three: the walk happened and came out the same. Upstream's
+        // `if (_dirtyNodes.isEmpty) return;`. A frame that relaid out anything
+        // at all arrives here -- a growing ripple, a settling scroll that has
+        // stopped moving, a rebuild that changed only a colour -- and most of
+        // them have nothing to say that was not said last time.
+        if collector.nodes == collector.sent {
+            return None;
+        }
+        collector.sent = std::mem::take(&mut collector.nodes);
+        Some(collector.sent.clone())
     })
 }
 
@@ -368,7 +504,7 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
         Some(annotation) if annotation.yields_to_a_label && inside_labelled() => None,
         Some(annotation) => {
             let size = render.size();
-            let opened = open(
+            open(
                 annotation.id,
                 annotation.properties,
                 (
@@ -377,13 +513,7 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
                     offset.dx + size.width,
                     offset.dy + size.height,
                 ),
-            );
-            if opened.is_some() {
-                if let Some(handler) = annotation.on_action {
-                    remember_handler(annotation.id, handler);
-                }
-            }
-            opened
+            )
         }
         None => None,
     };
@@ -400,22 +530,44 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
 /// Returns whether anything took it. Upstream this is
 /// `SemanticsOwner.performAction`, and the same rule applies: an action for a
 /// node that has since gone is not an error, it is a race with the reader.
-pub fn perform_action(node_id: i32, action: SemanticsAction) -> bool {
-    let handler = COLLECTOR.with(|collector| {
-        collector
-            .borrow()
-            .handlers
-            .iter()
-            .find(|(id, _)| *id == node_id)
-            .map(|(_, handler)| Rc::clone(handler))
-    });
-    match handler {
+///
+/// The handler is fetched from the render tree rather than from a list kept by
+/// the last walk, and that is not a detail. A rebuild that changes only a
+/// closure changes nothing measured and nothing drawn, so nothing marks itself
+/// and no walk happens -- which is the whole point of
+/// [`mark_needs_update`] -- and a remembered handler would then be last
+/// build's. The live object always has this build's, because
+/// [`RenderSemantics::update_from`] took it. Upstream never has to choose:
+/// its `SemanticsNode` holds the render object, so reaching one reaches the
+/// other.
+pub fn perform_action(root: &dyn RenderBox, node_id: i32, action: SemanticsAction) -> bool {
+    match find_handler(root, node_id) {
         Some(handler) => {
             handler(action);
             true
         }
         None => false,
     }
+}
+
+/// The handler the node with this id offered, if it is still on screen.
+///
+/// Walks the same children [`flush`] walks, so a node a reader cannot have
+/// been told about -- one under a fully transparent subtree, say -- cannot be
+/// activated either.
+fn find_handler(render: &dyn RenderBox, node_id: i32) -> Option<ActionHandler> {
+    // Found, handler or not: ids are unique, so nothing below this can be the
+    // node that was asked for.
+    if let Some(annotation) = render.describe_semantics().filter(|it| it.id == node_id) {
+        return annotation.on_action;
+    }
+    let mut found = None;
+    render.visit_children_for_semantics(&mut |child, _| {
+        if found.is_none() {
+            found = find_handler(child, node_id);
+        }
+    });
+    found
 }
 
 /// Whether the walk is inside something that already has a label.
@@ -487,12 +639,6 @@ fn close(index: usize) {
     });
 }
 
-fn remember_handler(id: i32, handler: ActionHandler) {
-    COLLECTOR.with(|collector| {
-        collector.borrow_mut().handlers.push((id, handler));
-    });
-}
-
 // -- The render object --------------------------------------------------------
 
 /// Annotates its child, and reports where the child ended up.
@@ -535,20 +681,26 @@ impl RenderBox for RenderSemantics {
     ) -> Option<crate::render::UpdateEffect> {
         use crate::render::UpdateEffect;
         let fresh = fresh.as_any_mut().downcast_mut::<RenderSemantics>()?;
-        // The id, the properties and the handler are read by `collect` and
-        // nowhere else, and `collect` walks the live objects from the root
-        // every frame a reader is listening -- so a changed label is read out
-        // next frame without anything having to be marked. Nothing about
-        // layout or drawing changed, which is what the answer says.
+        // Nothing here is measured and nothing is drawn, so the effect this
+        // reports is about the child alone -- which is why a changed label has
+        // to say so itself. Upstream's `RenderSemanticsAnnotations.set
+        // properties` ends in `markNeedsSemanticsUpdate()` for the same
+        // reason, and this is the only kind of change in the whole framework
+        // that neither layout nor paint would have noticed on its behalf.
         //
-        // This used to be true for a worse reason: the walk was the paint walk,
-        // and the paint walk reached here only because repaint boundaries were
-        // made to stop keeping their layers whenever a reader was listening.
-        // The test `a_new_label_under_a_boundary_is_still_read_out` was written
-        // to hold that arrangement in place and now holds this one, unchanged.
+        // The handler is deliberately not part of that comparison. Two
+        // closures cannot be told apart -- every build makes a fresh `Rc` --
+        // so comparing them would mark every frame, and not comparing them
+        // would be wrong if anything remembered the old one. Nothing does:
+        // `perform_action` reads the handler off this object at the moment the
+        // reader asks, and `self.on_action` below is always this build's.
+        let changed = self.id != fresh.id || self.properties != fresh.properties;
         self.id = fresh.id;
         self.properties = fresh.properties.clone();
         self.on_action = fresh.on_action.take();
+        if changed {
+            mark_needs_update();
+        }
         let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
         self.child = fresh.child.clone();
         Some(effect)
@@ -834,6 +986,16 @@ mod tests {
     /// The paint is here because a real frame paints -- and because a walk that
     /// still worked when the drawing had been skipped is the whole point.
     fn describe_tree(widget: AnyWidget, size: Size) -> Vec<SemanticsNode> {
+        describe_tree_keeping_root(widget, size).0
+    }
+
+    /// The same, handing back the render tree as well, for the tests that ask
+    /// it something after the frame -- an action arrives long after the frame
+    /// that drew the thing it names.
+    fn describe_tree_keeping_root(
+        widget: AnyWidget,
+        size: Size,
+    ) -> (Vec<SemanticsNode>, crate::render::BoxedRender) {
         let mut tree = ElementTree::new();
         tree.rebuild(widget);
         let mut root = tree.build_render_tree().expect("a tree was mounted");
@@ -846,7 +1008,15 @@ mod tests {
             let mut context = PaintContext::new(&mut layers, size);
             root.paint(&mut context, Offset::ZERO);
         }
-        collect(size, &root).expect("semantics are on")
+        flush(size, &root);
+        (tree_or_fail(), root)
+    }
+
+    /// What the platform is holding, which had better be something.
+    fn tree_or_fail() -> Vec<SemanticsNode> {
+        let nodes = tree();
+        assert!(!nodes.is_empty(), "semantics are on but nothing was collected");
+        nodes
     }
 
     #[test]
@@ -855,7 +1025,7 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(leaf(|| crate::widgets::Text::new("unread")));
         let root = tree.build_render_tree().expect("mounted");
-        let collected = collect(Size::new(200.0, 100.0), &root);
+        let collected = flush(Size::new(200.0, 100.0), &root);
         assert!(collected.is_none(), "a tree nobody reads should not be built");
     }
 
@@ -972,7 +1142,8 @@ mod tests {
                 let mut context = PaintContext::new(&mut layers, size);
                 root.paint(&mut context, Offset::ZERO);
             }
-            (layer_calls(), collect(size, root).expect("semantics are on"))
+            flush(size, root);
+            (layer_calls(), tree_or_fail())
         };
 
         let (first, said) = frame(&mut root);
@@ -1026,7 +1197,7 @@ mod tests {
         set_enabled(true);
         let taps = Rc::new(Cell::new(0));
         let counted = Rc::clone(&taps);
-        let _ = describe_tree(
+        let (_, root) = describe_tree_keeping_root(
             semantics_with_action(
                 4,
                 SemanticsProperties::button("Increment"),
@@ -1040,9 +1211,9 @@ mod tests {
             Size::new(200.0, 100.0),
         );
 
-        assert!(perform_action(4, SemanticsAction::Tap));
+        assert!(perform_action(&root, 4, SemanticsAction::Tap));
         assert_eq!(taps.get(), 1);
-        assert!(!perform_action(99, SemanticsAction::Tap), "no such node");
+        assert!(!perform_action(&root, 99, SemanticsAction::Tap), "no such node");
         set_enabled(false);
     }
 
@@ -1136,14 +1307,14 @@ mod tests {
         set_enabled(true);
         let saves = Rc::new(Cell::new(0));
         let counted = Rc::clone(&saves);
-        let _ = describe_tree(
+        let (_, root) = describe_tree_keeping_root(
             component(Button::new(9, "Save").with_handlers(
                 PointerHandlers::new().with_tap(move |_| counted.set(counted.get() + 1)),
             )),
             Size::new(300.0, 100.0),
         );
 
-        assert!(perform_action(node_id_for(9), SemanticsAction::Tap));
+        assert!(perform_action(&root, node_id_for(9), SemanticsAction::Tap));
         assert_eq!(saves.get(), 1, "the same closure a finger would have called");
         set_enabled(false);
     }
@@ -1191,13 +1362,18 @@ mod tests {
         let mut root = tree.build_render_tree().expect("mounted");
         root.layout(BoxConstraints::loose(200.0, 100.0));
 
+        // Forced, because the point under test is what the walk finds, and a
+        // rebuild that changed nothing is exactly the frame the walk is now
+        // allowed to skip.
         let describe_once = |root: &mut crate::render::BoxedRender| {
             let mut layers = crate::engine::LayerTree::new(200, 100);
             {
                 let mut context = PaintContext::new(&mut layers, Size::new(200.0, 100.0));
                 root.paint(&mut context, Offset::ZERO);
             }
-            collect(Size::new(200.0, 100.0), root).expect("on")
+            mark_needs_update();
+            flush(Size::new(200.0, 100.0), root);
+            tree_or_fail()
         };
 
         let first = describe_once(&mut root);
@@ -1271,18 +1447,17 @@ mod tests {
 
     #[test]
     fn a_new_label_under_a_boundary_is_still_read_out() {
-        // This framework gathers semantics during the paint walk, and a repaint
-        // boundary that hands back the layer it kept does not walk. So a
-        // subtree that has not been drawn again would say nothing about itself
-        // -- a reader would lose every row of a list after the first frame.
-        // Upstream never meets this, because there the semantics tree is built
-        // by its own walk over the render objects and a kept layer is invisible
-        // to it. Here the boundary declines to hand its layer back while a
-        // reader is being answered, and this is what holds that in place.
+        // Written when semantics rode on the paint walk, where a repaint
+        // boundary handing back a kept layer meant a subtree that said nothing
+        // about itself -- a reader would lose every row of a list after the
+        // first frame. The walk is its own now, so that is no longer how this
+        // passes; it passes because `RenderSemantics::update_from` marks when
+        // its label changed, and because the two frames in the middle -- which
+        // change nothing -- are allowed to skip the walk entirely and leave
+        // last frame's answer standing, which is still the right answer.
         //
-        // It is also what lets `RenderSemantics::update_from` mark nothing: a
-        // changed label is read out of the live object on the next frame,
-        // because the walk that reads it is a real walk.
+        // Three things at once, then: a label that changed is read, a label
+        // that did not is not re-derived, and neither depends on the drawing.
         use crate::framework::{StateHandle, StatefulComponent, BuildContext, stateful};
         use crate::widgets::repaint_boundary;
         use std::cell::RefCell;
@@ -1330,7 +1505,8 @@ mod tests {
                 let mut context = PaintContext::new(&mut layers, size);
                 root.paint(&mut context, Offset::ZERO);
             }
-            collect(size, &root).expect("semantics are on")
+            flush(size, &root);
+            tree_or_fail()
         };
 
         let said = |nodes: &[SemanticsNode]| {
@@ -1348,6 +1524,258 @@ mod tests {
         sink.borrow().as_ref().expect("built").set_state(|state| state.second = true);
         tree.rebuild_dirty();
         assert_eq!(said(&frame(&mut tree)), "after", "a reader was told last frame's label");
+        set_enabled(false);
+    }
+
+    /// A box that counts how often it has been asked what it says, and can be
+    /// made to answer differently every time it is asked.
+    ///
+    /// Counting the question rather than the answer is the only way to tell
+    /// the second gate from the third: both end in `flush` returning `None`,
+    /// and they differ in whether the walk happened at all.
+    struct Counted {
+        asked: Rc<Cell<u32>>,
+        /// Whether the answer changes with the count. A box that says
+        /// something new every time makes a walk visible in what is sent; one
+        /// that says the same thing makes the *absence* of a send visible even
+        /// though the walk ran.
+        chatty: bool,
+        size: Size,
+    }
+
+    impl RenderBox for Counted {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = Size::new(constraints.max_width, constraints.max_height);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn describe_semantics(&self) -> Option<SemanticsAnnotation> {
+            self.asked.set(self.asked.get() + 1);
+            let label = if self.chatty {
+                format!("asked {} times", self.asked.get())
+            } else {
+                "the same as ever".to_string()
+            };
+            Some(SemanticsAnnotation::new(21, SemanticsProperties::label(label), None))
+        }
+    }
+
+    fn counting(asked: &Rc<Cell<u32>>, chatty: bool) -> AnyWidget {
+        let asked = Rc::clone(asked);
+        leaf(move || Counted { asked: Rc::clone(&asked), chatty, size: Size::ZERO })
+    }
+
+    #[test]
+    fn a_frame_that_changed_nothing_is_not_walked() {
+        // The second gate, and the reason this work was done. Upstream's
+        // `flushSemantics` visits what is in
+        // `PipelineOwner._nodesNeedingSemanticsUpdate` and nothing else; on a
+        // frame where nothing put anything there, no render object is asked
+        // what it says. The box below would answer differently every time it
+        // were asked, so if the walk ran the tree would change and something
+        // would be sent -- which makes "the walk did not run" a thing a test
+        // can see rather than a thing a comment claims.
+        set_enabled(true);
+        let asked = Rc::new(Cell::new(0));
+        let size = Size::new(200.0, 100.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(counting(&asked, true));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(size.width, size.height));
+
+        assert!(flush(size, &root).is_some(), "the first frame has everything to say");
+        assert_eq!(asked.get(), 1);
+
+        // Frames two and three change nothing: no rebuild, no layout, nothing
+        // marked. Upstream would visit an empty dirty set; this returns before
+        // the walk.
+        assert!(flush(size, &root).is_none(), "a quiet frame sent something");
+        assert!(flush(size, &root).is_none());
+        assert_eq!(asked.get(), 1, "a quiet frame asked the tree what it says");
+
+        // And it is not stuck: whatever marks, walks.
+        mark_needs_update();
+        assert!(flush(size, &root).is_some(), "a marked frame said nothing");
+        assert_eq!(asked.get(), 2);
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_walk_that_came_out_the_same_sends_nothing() {
+        // The third gate. Upstream's `sendSemanticsUpdate` opens with
+        // `if (_dirtyNodes.isEmpty) return;` and puts only changed nodes on
+        // the wire; here the walk ran -- `asked` proves it -- and produced the
+        // tree the platform is already holding, so nothing crosses.
+        //
+        // This is the ordinary case for anything that animates without
+        // speaking: a ripple, a colour tween, a scroll that has come to rest.
+        set_enabled(true);
+        let asked = Rc::new(Cell::new(0));
+        let size = Size::new(200.0, 100.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(counting(&asked, false));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(size.width, size.height));
+
+        assert!(flush(size, &root).is_some(), "the first frame has everything to say");
+        assert_eq!(asked.get(), 1);
+
+        mark_needs_update();
+        assert!(flush(size, &root).is_none(), "the same tree was sent twice");
+        assert_eq!(asked.get(), 2, "the walk was supposed to run");
+        // What the platform holds is unchanged, not cleared.
+        assert!(tree_or_fail().iter().any(|node| node.id == 21));
+        set_enabled(false);
+    }
+
+    #[test]
+    fn laying_out_is_what_marks_the_ordinary_frame() {
+        // Upstream calls `markNeedsSemanticsUpdate` from inside
+        // `RenderObject.layout`, on the line after `performLayout`, and that
+        // single call is what covers nearly everything: a scroll, a rebuild
+        // that changed a size, a row that appeared. Here it is
+        // `RenderRef::layout`, past the early return -- so a re-layout at the
+        // same constraints on a clean tree marks nothing, and a real one does.
+        set_enabled(true);
+        let asked = Rc::new(Cell::new(0));
+        let size = Size::new(200.0, 100.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(counting(&asked, true));
+        let mut root = tree.build_render_tree().expect("mounted");
+
+        root.layout(BoxConstraints::loose(size.width, size.height));
+        assert!(flush(size, &root).is_some());
+
+        // Same constraints, clean tree: the early return, and nothing marked.
+        root.layout(BoxConstraints::loose(size.width, size.height));
+        assert!(flush(size, &root).is_none(), "an unchanged layout marked semantics");
+
+        // A different size is a real layout, and everything that moved has
+        // something new to say about where it is.
+        root.layout(BoxConstraints::loose(180.0, 90.0));
+        assert!(flush(Size::new(180.0, 90.0), &root).is_some(), "a re-layout said nothing");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn an_action_reaches_the_handler_no_frame_carried() {
+        // The cost of skipping walks, paid where it cannot be felt. A rebuild
+        // that replaces only a closure changes nothing measured and nothing
+        // drawn, so nothing marks itself and no walk happens -- and a handler
+        // remembered by the last walk would be the wrong one by exactly one
+        // build. `perform_action` asks the live object instead.
+        use crate::framework::{BuildContext, StateHandle, StatefulComponent, stateful};
+
+        #[derive(Default)]
+        struct Round {
+            second: bool,
+        }
+
+        struct Chooser {
+            sink: Rc<RefCell<Option<StateHandle<Round>>>>,
+            called: Rc<Cell<&'static str>>,
+        }
+
+        impl StatefulComponent for Chooser {
+            type State = Round;
+
+            fn build(
+                &self,
+                state: &Round,
+                handle: StateHandle<Round>,
+                _context: &mut BuildContext,
+            ) -> AnyWidget {
+                *self.sink.borrow_mut() = Some(handle);
+                let which = if state.second { "second" } else { "first" };
+                let called = Rc::clone(&self.called);
+                semantics_with_action(
+                    12,
+                    // Deliberately the same label both times: if the
+                    // annotation itself changed, `update_from` would mark and
+                    // a walk would happen, and the point is the frame where
+                    // one does not.
+                    SemanticsProperties::button("Act"),
+                    leaf(|| SizedBox::new(50.0, 20.0)),
+                    move |_| called.set(which),
+                )
+            }
+        }
+
+        set_enabled(true);
+        let size = Size::new(200.0, 100.0);
+        let sink: Rc<RefCell<Option<StateHandle<Round>>>> = Rc::new(RefCell::new(None));
+        let called = Rc::new(Cell::new("nobody"));
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Chooser { sink: sink.clone(), called: Rc::clone(&called) }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(size.width, size.height));
+        assert!(flush(size, &root).is_some());
+        assert!(perform_action(&root, 12, SemanticsAction::Tap));
+        assert_eq!(called.get(), "first");
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.second = true);
+        tree.rebuild_dirty();
+        let root = tree.build_render_tree().expect("still mounted");
+        // No layout and no walk: nothing about this frame is worth either.
+        assert!(flush(size, &root).is_none(), "a new closure should not be news");
+        assert!(perform_action(&root, 12, SemanticsAction::Tap));
+        assert_eq!(called.get(), "second", "the reader called last build's closure");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_reader_arriving_is_told_everything() {
+        // Upstream's `scheduleInitialSemantics`: the tree a reader has never
+        // been shown is entirely news, however quiet the frame is otherwise.
+        set_enabled(true);
+        let asked = Rc::new(Cell::new(0));
+        let size = Size::new(200.0, 100.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(counting(&asked, false));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(size.width, size.height));
+        assert!(flush(size, &root).is_some());
+        assert!(flush(size, &root).is_none(), "quiet");
+
+        // The reader leaves and another arrives. Nothing on screen moved.
+        set_enabled(false);
+        assert!(super::tree().is_empty(), "a tree nobody holds should not be kept");
+        set_enabled(true);
+        let sent = flush(size, &root).expect("the new reader was told nothing");
+        assert!(sent.iter().any(|node| node.id == 21));
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_fade_to_nothing_marks_but_a_fade_between_two_visible_values_does_not() {
+        // Upstream's `RenderOpacity.set opacity` marks semantics on
+        // `wasVisible != isVisible` and on nothing else. It is the one place
+        // in this framework where a repaint alone changes what a reader would
+        // hear, because a fully transparent subtree is one
+        // `visit_children_for_semantics` refuses to enter.
+        use crate::render::{RenderOpacity, UpdateEffect};
+
+        set_enabled(true);
+        let mut faded = RenderOpacity::new(1.0, SizedBox::new(10.0, 10.0));
+        let step = |faded: &mut RenderOpacity, to: f32| {
+            let mut fresh = RenderOpacity::new(to, SizedBox::new(10.0, 10.0));
+            NEEDS_UPDATE.with(|needs| needs.set(false));
+            let effect = faded.update_from(&mut fresh);
+            (effect, NEEDS_UPDATE.with(|needs| needs.get()))
+        };
+
+        let (effect, marked) = step(&mut faded, 0.5);
+        assert_eq!(effect, Some(UpdateEffect::Relayout), "the child is a new object");
+        assert!(!marked, "half way is still visible, and says the same thing");
+
+        let (_, marked) = step(&mut faded, 0.0);
+        assert!(marked, "a subtree that stopped being drawn stopped being described");
+
+        let (_, marked) = step(&mut faded, 0.25);
+        assert!(marked, "and it is describable again");
         set_enabled(false);
     }
 }

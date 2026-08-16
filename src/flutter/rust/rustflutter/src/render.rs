@@ -1132,6 +1132,14 @@ impl RenderBox for RenderRef {
         self.state.needs_layout.set(false);
         self.state.constraints.set(Some(constraints));
         self.state.size.set(size);
+        // Upstream does this on the line after `performLayout`, inside
+        // `RenderObject.layout`, and it belongs there rather than in
+        // `markNeedsLayout`: what a reader is told about a box is where it is
+        // and how big it is, and both are answers this line has just finished
+        // producing. It is also the reason the early return above is not just
+        // a layout saving -- a subtree that did not lay out did not move, so
+        // it has nothing new to say either.
+        crate::semantics::mark_needs_update();
         size
     }
     fn size(&self) -> Size {
@@ -3814,7 +3822,16 @@ impl RenderBox for RenderOpacity {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderOpacity>()?;
         let mut effect = UpdateEffect::repaint_if(self.opacity != fresh.opacity);
+        let was_visible = self.opacity > 0.0;
         self.opacity = fresh.opacity;
+        // Upstream's `set opacity` marks semantics on exactly this condition
+        // -- `if (wasVisible != (_alpha != 0))` -- and on no other. A subtree
+        // that stopped being drawn stopped being describable, which is what
+        // `visit_children_for_semantics` below says; a fade between two
+        // visible values repaints and changes nothing anybody hears.
+        if was_visible != (self.opacity > 0.0) {
+            crate::semantics::mark_needs_update();
+        }
         effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
         self.child = fresh.child.clone();
         Some(effect)
