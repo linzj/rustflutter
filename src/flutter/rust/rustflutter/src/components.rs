@@ -37,9 +37,13 @@ use crate::engine::{Color, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, component, leaf, many};
 use crate::gestures::PointerHandlers;
 use crate::render::{
-    Alignment, CrossAxisAlignment, EdgeInsets, MainAxisAlignment, MainAxisSize, RenderFlex,
+    Alignment, BoxConstraints, CrossAxisAlignment, EdgeInsets, MainAxisAlignment, MainAxisSize,
+    RenderClipRect, RenderConstrainedBox, RenderFlex, RenderPadding, TextOverflow,
 };
-use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, SizedBox, Text};
+use crate::widgets::{
+    Align, Center, Column, Container, Empty, K_MIDDLE_SPACING, Pointer, RenderNavigationToolbar,
+    Row, SizedBox, Text,
+};
 
 // -- Theme --------------------------------------------------------------------
 
@@ -738,6 +742,29 @@ impl Component for Slider {
 
 // -- Structure ----------------------------------------------------------------
 
+/// How tall a title bar is. Upstream's `kToolbarHeight`
+/// (`material/constants.dart`).
+pub const K_TOOLBAR_HEIGHT: f32 = 56.0;
+
+/// How tall a title bar carrying a subtitle is.
+///
+/// Upstream's `AppBar` has no subtitle, so it has no value for this and no
+/// need of one. `toolbarHeight` is an `AppBar` parameter upstream
+/// (`toolbarHeight ?? appBarTheme.toolbarHeight ?? kToolbarHeight`); this is
+/// this bar's choice of it for the two-line case, which is [`K_TOOLBAR_HEIGHT`]
+/// plus room for a `body_size` line and the 2px between them.
+pub const TOOLBAR_HEIGHT_WITH_SUBTITLE: f32 = 76.0;
+
+/// The gap between a list tile's text and whatever sits at its edges.
+/// Upstream's `ListTile.horizontalTitleGap`, which defaults to 16
+/// (`list_tile.dart`, where the theme falls back to `?? 16`).
+const HORIZONTAL_TITLE_GAP: f32 = 16.0;
+
+/// The most a title's text is allowed to grow with the reader's text size.
+/// Upstream's `_kMaxTitleTextScaleFactor` (`material/app_bar.dart`), which
+/// exists because the bar's height does not grow with it.
+const MAX_TITLE_TEXT_SCALE_FACTOR: f32 = 1.34;
+
 /// A title bar.
 pub struct AppBar {
     title: String,
@@ -778,57 +805,121 @@ impl Component for AppBar {
         let outline = theme.outline;
         let title_style = theme.title();
         let muted = theme.muted();
-        let spacing = theme.spacing;
+
+        let has_subtitle = subtitle.is_some();
+        let toolbar_height =
+            if has_subtitle { TOOLBAR_HEIGHT_WITH_SUBTITLE } else { K_TOOLBAR_HEIGHT };
 
         let mut children = vec![leaf(move || {
+            // One line each, cut with an ellipsis. Upstream wraps the title in
+            // `DefaultTextStyle(softWrap: false, overflow: TextOverflow.ellipsis)`
+            // for exactly this: a bar is a fixed height, so a title that wrapped
+            // would only be clipped, and a clipped word reads worse than an
+            // elided one.
+            let one_line = |text: &str, style: &TextStyle| {
+                Text::new(text.to_string())
+                    .with_style(style.clone())
+                    .with_soft_wrap(false)
+                    .with_overflow(TextOverflow::Ellipsis)
+                    .with_max_lines(1)
+                    // Upstream clamps the title's text scale to
+                    // `_kMaxTitleTextScaleFactor` -- "to keep the visual
+                    // hierarchy the same even with larger font sizes" -- which
+                    // is also what keeps a reader's larger text inside a bar
+                    // whose height does not grow with it.
+                    .with_text_scale(
+                        crate::media_query::current_text_scale()
+                            .min(MAX_TITLE_TEXT_SCALE_FACTOR),
+                    )
+            };
             let mut stack = Column::new()
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(2.0)
-                .push(Text::new(title.clone()).with_style(title_style.clone()));
+                .push(one_line(&title, &title_style));
             if let Some(subtitle) = &subtitle {
-                stack = stack.push(Text::new(subtitle.clone()).with_style(muted.clone()));
+                stack = stack.push(one_line(subtitle, &muted));
             }
             stack
         })];
         if let Some(trailing) = trailing {
-            children.push(leaf(|| Empty));
             children.push(trailing);
         }
         let has_trailing = children.len() > 1;
 
         many(children, move |mut rendered| {
-            let mut row = RenderFlex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center);
-            if has_trailing {
-                let trailing = rendered.pop();
-                let spacer = rendered.pop();
-                let leading = rendered.pop();
-                if let Some(leading) = leading {
-                    row = row.push(leading);
-                }
-                if let Some(spacer) = spacer {
-                    row = row.push_flex(crate::render::FlexChild::expanded(spacer, 1));
-                }
-                if let Some(trailing) = trailing {
-                    row = row.push(trailing);
-                }
-            } else {
-                for child in rendered {
-                    row = row.push(child);
-                }
+            let trailing = if has_trailing { rendered.pop() } else { None };
+            let middle = rendered.pop();
+
+            // Upstream `AppBar.build` assembles exactly this: a
+            // `NavigationToolbar` of leading / middle / trailing, wrapped in a
+            // `ClipRect` around a `CustomSingleChildLayout` that pins the
+            // toolbar to `toolbarHeight`. There is no leading here -- this bar
+            // puts its one action on the trailing side.
+            let mut toolbar = RenderNavigationToolbar::new()
+                // `_getEffectiveCenterTitle` answers false on Android, Linux,
+                // Windows and Fuchsia, and only iOS and macOS centre.
+                .with_center_middle(false)
+                .with_middle_spacing(K_MIDDLE_SPACING);
+            if let Some(middle) = middle {
+                toolbar = toolbar.with_middle(middle);
             }
+            if let Some(trailing) = trailing {
+                // Upstream: `actions = Padding(padding: actionsPadding, child:
+                // Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment:
+                // center, children: actions))`.
+                //
+                // The min-size row is not decoration. `_ToolbarLayout` hands
+                // the trailing `BoxConstraints.loose(size)` -- a *bounded*
+                // width -- and anything that fills what it is offered would
+                // take the whole bar and leave the title nothing. An `Align`
+                // does exactly that (upstream's `RenderPositionedBox` shrink
+                // wraps only against an unbounded constraint), and this
+                // framework's `Button` centres its label with one. A row that
+                // asks for `MainAxisSize.min` is what makes the actions report
+                // the width they actually want.
+                //
+                // The padding is upstream's `actionsPadding`. Upstream's own
+                // actions need less of it than this one does -- an
+                // `IconButton` is 48 wide around a 24pt icon and carries its
+                // own margin, where a `Button` here is a pill with a border
+                // that would otherwise sit flush against the edge of the bar.
+                toolbar = toolbar.with_trailing(RenderPadding::new(
+                    EdgeInsets::only(0.0, 0.0, K_MIDDLE_SPACING, 0.0),
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .push(trailing),
+                ));
+            }
+
+            // `_ToolbarContainerLayout`: the toolbar is tightened to
+            // `toolbarHeight` and the bar is exactly that tall, so a title too
+            // big for it is clipped rather than allowed to grow the bar.
+            //
+            // Upstream's delegate also bottom-justifies the toolbar inside a
+            // container that has been given *less* than `toolbarHeight`, which
+            // is how a `SliverAppBar` scrolls its toolbar away. There is no
+            // sliver protocol here, so that case cannot arise and the
+            // justification would be dead code; a tight height says the rest.
+            let bar = RenderClipRect::new(
+                RenderConstrainedBox::new(BoxConstraints::new(
+                    0.0,
+                    f32::INFINITY,
+                    toolbar_height,
+                    toolbar_height,
+                ))
+                .with_child(toolbar),
+            );
+
             Box::new(
                 Container::new()
                     .with_color(surface)
                     .with_border(1.0, outline)
-                    .with_padding(EdgeInsets::only(
-                        spacing * 2.5 + system.left,
-                        spacing * 1.75 + system.top,
-                        spacing * 2.5 + system.right,
-                        spacing * 1.75,
-                    ))
-                    .with_child(row),
+                    // Only the safe area, now: the horizontal inset that used
+                    // to be here is the toolbar's `middleSpacing` and the
+                    // trailing's own padding, which is where upstream keeps it.
+                    .with_padding(EdgeInsets::only(system.left, system.top, system.right, 0.0))
+                    .with_child(bar),
             )
         })
     }
@@ -984,23 +1075,36 @@ impl Component for ListTile {
             row.push(column)
         })];
         if let Some(trailing) = trailing {
-            children.push(leaf(|| Empty));
             children.push(trailing);
         }
 
         many(children, move |mut rendered| {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center);
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(if has_trailing { HORIZONTAL_TITLE_GAP } else { 0.0 });
             if has_trailing {
+                // The trailing is inflexible, so pass one gives it its width
+                // and the title takes what is left rather than shouldering the
+                // trailing off the end. Upstream's `ListTile` reaches the same
+                // place through `_RenderListTile._computeSizes`, which sizes
+                // the leading and the trailing first, positions the trailing at
+                // `tileWidth - trailingSize.width`, and gives the text
+                // `looseConstraints.tighten(width: tileWidth - titleStart -
+                // adjustedTrailingWidth)` -- *tightened*, which is why the
+                // title here is `expanded` and not `flexible`.
+                //
+                // One line of upstream's is not expressed: its reserve is
+                // `math.max(trailingSize.width + gap, 32.0)`, where a flex
+                // reserves exactly `trailing + spacing`. The two differ only
+                // for a trailing narrower than the gap itself, and every
+                // trailing here -- a switch, a price, a button -- is wider
+                // than 16.
+
                 let trailing = rendered.pop();
-                let spacer = rendered.pop();
-                let leading = rendered.pop();
-                if let Some(leading) = leading {
-                    row = row.push(leading);
-                }
-                if let Some(spacer) = spacer {
-                    row = row.push_flex(crate::render::FlexChild::expanded(spacer, 1));
+                let title = rendered.pop();
+                if let Some(title) = title {
+                    row = row.push_flex(crate::render::FlexChild::expanded(title, 1));
                 }
                 if let Some(trailing) = trailing {
                     row = row.push(trailing);

@@ -16,7 +16,30 @@
 
 ## 一、要做的
 
-**空的。** 上一轮列的九条已经全部做完,见第四节的记录。
+### 1. 语义节点没有被祖先的裁剪切掉
+
+滚出视口的子节点照样进语义树,矩形还是它在内容里的绝对位置——没有谁拿视口的裁剪
+去截它。查 flutter_gallery 首页可见:窗口客户区 690 宽,轮播里的 `Rally` 报在
+x=1318,列表底部的 `Tooltips` 报在 y=3651。Windows 的 UIA 桥原样报出去,成了窗口
+外的坐标;Android 那边平台自己把它夹成 `[0,0][0,0]`,于是变成一个能聚焦的零尺寸
+节点。两边都不对,只是烂法不同。
+
+上游锚点:`rendering/object.dart` 的 `_SemanticsGeometry.computeChildGeometry`。
+它沿着到父节点的那条链累积两个矩形——`describeApproximatePaintClip` 与
+`describeSemanticsClip`(视口给的那个按 cacheExtent 放大),然后
+
+- `rect = semanticsClipRect?.intersect(semanticBounds) ?? semanticBounds`,
+  即矩形先被语义裁剪切一刀;
+- 再与 `paintClipRect` 相交,交出来空、原来的又非空,就是 `hidden`——留在树里但
+  打上隐藏标记,读屏跳过;否则 `rect` 换成相交后的那个。
+
+这里缺的是整条链:`RenderBox` 没有 `describe_*_clip` 的对等物,
+`semantics.rs` 的走树也没有把裁剪矩形带下去(它只带偏移)。
+
+**做到什么算做完:** 语义走树带一个裁剪矩形往下,`RenderViewport` 与
+`RenderClipRect` 各自贡献自己的那一份;节点矩形按它相交;整块落在视口外的节点不
+再出现在树里。验收就用上面那两个数——首页 dump 里不该再有超出客户区的矩形,
+Android 那边不该再有 `[0,0][0,0]` 的节点。
 
 ---
 
@@ -29,6 +52,14 @@
 - **`RenderOpacity` 全透明时不参与命中。** 上游**不**画这条线——它让看不见的子树
   照样可命中,要挡就在上面压一个 `IgnorePointer`。这里比上游严,不是译错;放开
   会把点击交给正在淡出的东西。代码里已自陈。
+- **`TextOverflow::Fade`。** `TextOverflow` 的另外三个(`Clip` / `Ellipsis` /
+  `Visible`)都在。`fade` 根本不是文字功能而是绘制功能:上游把文字画进一个
+  `saveLayer`,再拿一条透明到不透明的渐变用 `BlendMode.modulate` 乘上去。这个绘制
+  层没有混合模式,而框架里没有一处要它。
+- **`ListTile` 尾部预留宽度的那个 32 下限。** 上游是
+  `math.max(trailingSize.width + gap, 32.0)`,flex 只能预留
+  `trailing + spacing`。只有尾部比 gap(16)还窄时两者才不同,而这里的尾部——开关、
+  金额、按钮——没有一个窄于 16。
 - **`StackFit`**:是补功能,不是对齐,与这个范围无关。
 
 下面这些**得先有 pipeline owner 或者等价物**才谈得上,和"标记一路走到根"是同一笔
@@ -70,6 +101,28 @@
   (`widgets.rs` 的 `shape()`)与 `container.dart` 的 `build` **一模一样**,
   包括 padding 在装饰**里面**,以及只有真有装饰时才加 `Decoration` 那一层——
   `RenderDecoratedBox::hit_test_self` 靠的就是后面这条。
+- **标题栏先量两头,再给中间。** `RenderNavigationToolbar`(`widgets.rs`)是
+  `navigation_toolbar.dart` 的 `_ToolbarLayout.performLayout` 逐行照抄:leading 用
+  `minHeight: size.height` 量、钉在 x=0;trailing 用 `loose(size)` 量、钉在
+  `size.width - trailingSize.width`;**然后**才把
+  `size.width - leadingWidth - trailingWidth - middleSpacing * 2` 交给 middle。
+  顺序是全部——反过来用一个 flex 排 [标题][弹性空隙][尾部],标题一旦比条宽,空隙
+  归零,尾部就被顶到条外面,画都画不出来。这是回归线,四个测试钉着
+  (`widgets.rs` 的 `a_title_too_long_for_the_bar_does_not_push_the_action_off_it`
+  等)。`ListTile` 是同一条账,走的是 flex(标题 `expanded`、尾部不可 flex),对应
+  `_RenderListTile._computeSizes` 的
+  `tighten(width: tileWidth - titleStart - adjustedTrailingWidth)`。
+- **动作要用 `MainAxisSize::Min` 的行包一层。** 上游
+  `actions = Padding(child: Row(mainAxisSize: min, ...))`,这一层不是装饰:
+  `_ToolbarLayout` 给 trailing 的是 `loose(size)`,**宽度有界**,而 `Align` 在有界
+  约束下会撑满(上游 `RenderPositionedBox` 只在无界时收缩),这个框架的 `Button`
+  正是用 `Align` 居中标签的。少了这层,尾部会吃掉整条,标题分到 0。
+- **条是定高的。** `K_TOOLBAR_HEIGHT` = 上游 `kToolbarHeight` = 56,带副标题时用
+  `TOOLBAR_HEIGHT_WITH_SUBTITLE`(上游 `AppBar` 没有副标题,`toolbarHeight` 是它
+  的参数,这是本项目对它的取值)。外面套 `RenderClipRect`,里面的标题
+  `soft_wrap = false` + `TextOverflow::Ellipsis` + `max_lines = 1`,文字缩放按上游
+  `_kMaxTitleTextScaleFactor` = 1.34 夹住——**高度不跟着读者的字号长,所以字号得夹**。
+  这三样是一套,拆掉任意一样另外两样就说不通了。
 - **`PaintContext` ≙ `PaintingContext`** 的双重身份(画布 + 切层),懒起 picture。
 - **语义的三道闸门**:没人听、没人标、走完发现没变,任意一道都让这一帧一个字都
   不发。见 `semantics.rs` 的模块文档。

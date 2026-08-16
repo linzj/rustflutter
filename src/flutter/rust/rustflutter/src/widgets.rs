@@ -551,6 +551,218 @@ impl RenderBox for Empty {
     }
 }
 
+// -- Navigation toolbar -------------------------------------------------------
+
+/// The default spacing around the middle widget. Upstream's
+/// `NavigationToolbar.kMiddleSpacing`.
+pub const K_MIDDLE_SPACING: f32 = 16.0;
+
+/// Lays out the three parts of a title bar: something at each edge and
+/// something filling what is left.
+///
+/// This is upstream's `NavigationToolbar`
+/// (`widgets/navigation_toolbar.dart`), whose whole substance is the
+/// `_ToolbarLayout` delegate; [`RenderNavigationToolbar::layout`] below is that
+/// delegate's `performLayout` line for line.
+///
+/// It is a render object rather than a `Row` because the order matters and a
+/// flex cannot express it: **the edges are measured first and keep their
+/// widths**, and only then is the middle told how much is left. A row of
+/// [leading, middle, trailing] would let a long middle push the trailing off
+/// the end of the bar -- which is exactly the bug this replaced. Nothing about
+/// a title bar is negotiable except the title.
+pub struct RenderNavigationToolbar {
+    leading: Option<BoxedRender>,
+    middle: Option<BoxedRender>,
+    trailing: Option<BoxedRender>,
+    center_middle: bool,
+    middle_spacing: f32,
+    /// Where the last layout put leading, middle and trailing.
+    offsets: [Offset; 3],
+    size: Size,
+}
+
+impl RenderNavigationToolbar {
+    pub fn new() -> RenderNavigationToolbar {
+        RenderNavigationToolbar {
+            leading: None,
+            middle: None,
+            trailing: None,
+            center_middle: false,
+            middle_spacing: K_MIDDLE_SPACING,
+            offsets: [Offset::ZERO; 3],
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_leading(mut self, leading: impl RenderBox + 'static) -> Self {
+        self.leading = Some(RenderRef::new(leading));
+        self
+    }
+
+    pub fn with_middle(mut self, middle: impl RenderBox + 'static) -> Self {
+        self.middle = Some(RenderRef::new(middle));
+        self
+    }
+
+    pub fn with_trailing(mut self, trailing: impl RenderBox + 'static) -> Self {
+        self.trailing = Some(RenderRef::new(trailing));
+        self
+    }
+
+    /// Whether the middle is centred in the whole bar rather than started next
+    /// to the leading. Upstream `AppBar` decides this per platform in
+    /// `_getEffectiveCenterTitle`: true on iOS and macOS, false everywhere
+    /// else.
+    pub fn with_center_middle(mut self, center_middle: bool) -> Self {
+        self.center_middle = center_middle;
+        self
+    }
+
+    pub fn with_middle_spacing(mut self, spacing: f32) -> Self {
+        self.middle_spacing = spacing;
+        self
+    }
+
+    fn parts(&self) -> [&Option<BoxedRender>; 3] {
+        [&self.leading, &self.middle, &self.trailing]
+    }
+}
+
+impl Default for RenderNavigationToolbar {
+    fn default() -> Self {
+        RenderNavigationToolbar::new()
+    }
+}
+
+impl RenderBox for RenderNavigationToolbar {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderNavigationToolbar>()?;
+        let same_part = |a: &Option<BoxedRender>, b: &Option<BoxedRender>| match (a, b) {
+            (Some(a), Some(b)) => a.is(b),
+            (None, None) => true,
+            _ => false,
+        };
+        let kept = same_part(&self.leading, &fresh.leading)
+            && same_part(&self.middle, &fresh.middle)
+            && same_part(&self.trailing, &fresh.trailing);
+        let effect = UpdateEffect::relayout_if(
+            !kept
+                || self.center_middle != fresh.center_middle
+                || self.middle_spacing != fresh.middle_spacing,
+        );
+        self.leading = fresh.leading.take();
+        self.middle = fresh.middle.take();
+        self.trailing = fresh.trailing.take();
+        self.center_middle = fresh.center_middle;
+        self.middle_spacing = fresh.middle_spacing;
+        Some(effect)
+    }
+
+    /// Upstream `_ToolbarLayout.performLayout`, in its order, which is the
+    /// whole point of it.
+    ///
+    /// The one thing left out is `textDirection`: every branch upstream writes
+    /// as `switch (textDirection)` is taken at its `TextDirection.ltr` arm,
+    /// because there is no `Directionality` in this framework to ask.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // `MultiChildLayoutDelegate.getSize` is `constraints.biggest`, and the
+        // delegate lays out against that.
+        let size = constraints.biggest();
+        self.size = size;
+        self.offsets = [Offset::ZERO; 3];
+
+        let mut leading_width = 0.0f32;
+        let mut trailing_width = 0.0f32;
+
+        // "The height should be exactly the height of the bar."
+        let leading_size = self
+            .leading
+            .as_mut()
+            .map(|leading| {
+                leading.layout(BoxConstraints::new(0.0, size.width, size.height, size.height))
+            });
+        if let Some(leading_size) = leading_size {
+            leading_width = leading_size.width;
+            self.offsets[0] = Offset::new(0.0, 0.0);
+        }
+
+        // `BoxConstraints.loose(size)`.
+        let trailing_size = self
+            .trailing
+            .as_mut()
+            .map(|trailing| trailing.layout(BoxConstraints::loose(size.width, size.height)));
+        if let Some(trailing_size) = trailing_size {
+            trailing_width = trailing_size.width;
+            self.offsets[2] = Offset::new(
+                size.width - trailing_size.width,
+                (size.height - trailing_size.height) / 2.0,
+            );
+        }
+
+        let middle_spacing = self.middle_spacing;
+        let max_width = (size.width - leading_width - trailing_width - middle_spacing * 2.0).max(0.0);
+        // `BoxConstraints.loose(size).copyWith(maxWidth: maxWidth)`.
+        let middle_size = self
+            .middle
+            .as_mut()
+            .map(|middle| middle.layout(BoxConstraints::loose(max_width, size.height)));
+
+        if let Some(middle_size) = middle_size {
+            let middle_start_margin = leading_width + self.middle_spacing;
+            let mut middle_start = middle_start_margin;
+            let middle_y = (size.height - middle_size.height) / 2.0;
+            // If the centred middle will not fit between the leading and
+            // trailing widgets, align its edge with the adjacent boundary.
+            if self.center_middle {
+                middle_start = (size.width - middle_size.width) / 2.0;
+                if middle_start + middle_size.width > size.width - trailing_width {
+                    middle_start =
+                        size.width - trailing_width - middle_size.width - self.middle_spacing;
+                } else if middle_start < middle_start_margin {
+                    middle_start = middle_start_margin;
+                }
+            }
+            self.offsets[1] = Offset::new(middle_start, middle_y);
+        }
+
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        for (part, placement) in self.parts().iter().zip(self.offsets.iter()) {
+            if let Some(part) = part {
+                context.paint_child(part, offset.plus(*placement));
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (part, placement) in self.parts().iter().zip(self.offsets.iter()) {
+            if let Some(part) = part {
+                visit(part, *placement);
+            }
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        // Back to front, as everywhere else: the last painted is the first
+        // asked.
+        for (part, placement) in self.parts().iter().zip(self.offsets.iter()).rev() {
+            if let Some(part) = part {
+                if part.hit_test(position.minus(*placement), result) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 // -- Positioning --------------------------------------------------------------
 
 /// Fills its constraints and centres its child.
@@ -1091,6 +1303,75 @@ mod tests {
             self.1
         }
         fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    /// The bar is 300 wide and 56 tall, with a 60-wide trailing and a middle
+    /// that would rather be 400 wide than fit.
+    fn overfull_toolbar() -> RenderNavigationToolbar {
+        RenderNavigationToolbar::new()
+            .with_middle(FixedBox::new(400.0, 24.0))
+            .with_trailing(FixedBox::new(60.0, 40.0))
+    }
+
+    #[test]
+    fn a_title_too_long_for_the_bar_does_not_push_the_action_off_it() {
+        let mut toolbar = overfull_toolbar();
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        // Upstream pins the trailing at `size.width - trailingSize.width`, and
+        // it is measured before the middle is told anything, so no title can
+        // move it.
+        assert_eq!(toolbar.offsets[2].dx, 240.0, "the action left the bar");
+        assert_eq!(toolbar.offsets[2].dx + 60.0, 300.0, "the action is not flush right");
+    }
+
+    #[test]
+    fn the_title_gets_what_is_left_after_the_action_and_the_spacing() {
+        let mut toolbar = overfull_toolbar();
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        // `size.width - leadingWidth - trailingWidth - middleSpacing * 2`
+        // = 300 - 0 - 60 - 32.
+        assert_eq!(toolbar.middle.as_ref().unwrap().size().width, 208.0);
+        // `middleStart = leadingWidth + middleSpacing`.
+        assert_eq!(toolbar.offsets[1].dx, K_MIDDLE_SPACING);
+    }
+
+    #[test]
+    fn the_edges_are_vertically_centred_and_the_leading_fills_the_height() {
+        let mut toolbar = RenderNavigationToolbar::new()
+            .with_leading(FixedBox::new(40.0, 10.0))
+            .with_middle(FixedBox::new(50.0, 24.0))
+            .with_trailing(FixedBox::new(60.0, 40.0));
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        // The leading is given `minHeight: size.height` -- "the height should
+        // be exactly the height of the bar" -- so it does not get centred.
+        assert_eq!(toolbar.leading.as_ref().unwrap().size().height, 56.0);
+        assert_eq!(toolbar.offsets[0], Offset::new(0.0, 0.0));
+        // `(size.height - trailingSize.height) / 2`.
+        assert_eq!(toolbar.offsets[2].dy, 8.0);
+        // A leading pushes the title along: `leadingWidth + middleSpacing`.
+        assert_eq!(toolbar.offsets[1].dx, 40.0 + K_MIDDLE_SPACING);
+    }
+
+    #[test]
+    fn a_centred_title_backs_off_when_it_would_reach_the_action() {
+        // Room to centre: the middle is narrow, so `(300 - 50) / 2` stands.
+        let mut roomy = RenderNavigationToolbar::new()
+            .with_center_middle(true)
+            .with_middle(FixedBox::new(50.0, 24.0))
+            .with_trailing(FixedBox::new(60.0, 40.0));
+        roomy.layout(BoxConstraints::tight(300.0, 56.0));
+        assert_eq!(roomy.offsets[1].dx, 125.0);
+
+        // No room: centring would run under the trailing, so upstream aligns
+        // the middle's right edge with the trailing's left, less the spacing.
+        let mut tight = RenderNavigationToolbar::new()
+            .with_center_middle(true)
+            .with_middle(FixedBox::new(200.0, 24.0))
+            .with_trailing(FixedBox::new(60.0, 40.0));
+        tight.layout(BoxConstraints::tight(300.0, 56.0));
+        // The middle was clamped to 300 - 60 - 32 = 208, so it took 200; then
+        // `size.width - trailingWidth - middleSize.width - middleSpacing`.
+        assert_eq!(tight.offsets[1].dx, 300.0 - 60.0 - 200.0 - K_MIDDLE_SPACING);
     }
 
     #[test]
