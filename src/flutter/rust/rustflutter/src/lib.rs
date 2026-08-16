@@ -33,6 +33,7 @@ pub mod focus;
 pub mod framework;
 pub mod gestures;
 pub mod implicit;
+pub mod ink;
 pub mod keyboard;
 pub mod media_query;
 pub mod navigation;
@@ -65,6 +66,7 @@ pub use components::{
 pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use focus::{Focus, KeyResult, focusable};
 pub use implicit::{Animated, Lerp, animated};
+pub use ink::{Ink, ink};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use media_query::{MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area};
 pub use services::{
@@ -112,6 +114,7 @@ pub mod prelude {
     pub use crate::editable::{TextField, TextFieldState};
     pub use crate::focus::{Focus, KeyResult, focusable};
     pub use crate::implicit::{Animated, animated};
+    pub use crate::ink::{Ink, ink};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::media_query::{
         MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area,

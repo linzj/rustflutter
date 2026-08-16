@@ -532,6 +532,12 @@ pub struct PointerHandlers {
     pub on_pointer_down: Option<Rc<dyn Fn(&PointerEvent)>>,
     pub on_pointer_move: Option<Rc<dyn Fn(&PointerEvent)>>,
     pub on_pointer_up: Option<Rc<dyn Fn(&PointerEvent)>>,
+    /// Fired when the platform takes the pointer away -- a call arriving, a
+    /// system gesture starting, the window losing the touch. Upstream's
+    /// `Listener.onPointerCancel`, and the reason it is separate from an up:
+    /// nothing was completed, so anything that was showing progress has to
+    /// unwind rather than finish.
+    pub on_pointer_cancel: Option<Rc<dyn Fn(&PointerEvent)>>,
     /// Fired when the press ends without having travelled past [`TOUCH_SLOP`].
     ///
     /// Held back when this region also wants double taps: the first tap of a
@@ -660,12 +666,18 @@ impl PointerHandlers {
         self
     }
 
+    pub fn with_pointer_cancel(mut self, handler: impl Fn(&PointerEvent) + 'static) -> Self {
+        self.on_pointer_cancel = Some(Rc::new(handler));
+        self
+    }
+
     /// Whether anything is listening. A region with nothing attached still
     /// participates in hit testing, so it can shield what is behind it.
     pub fn is_empty(&self) -> bool {
         self.on_pointer_down.is_none()
             && self.on_pointer_move.is_none()
             && self.on_pointer_up.is_none()
+            && self.on_pointer_cancel.is_none()
             && self.on_tap.is_none()
             && self.on_long_press.is_none()
             && self.on_double_tap.is_none()
@@ -734,6 +746,10 @@ impl Target {
 struct ActivePointer {
     tap: Option<Target>,
     drag: Option<Target>,
+    /// Everything on the hit-test path that asked for raw pointer events, in
+    /// the order it was hit. Recorded on the way down, because the tree may be
+    /// rebuilt before the finger lifts.
+    listeners: Vec<Target>,
     /// The innermost region under the press that wants two fingers, if any.
     /// Recorded on the way down like the other two, because by the time a
     /// second finger lands the tree may have been rebuilt.
@@ -1129,34 +1145,46 @@ impl GestureRouter {
         // settles the first tap immediately instead of leaving it hanging.
         let second_tap = self.pair_with_pending_tap(&tap, event);
 
-        let mut pressed = false;
-        if let Some(target) = &tap {
-            let mut local_event = *event;
-            local_event.local_position = target.local_origin;
+        // Every region on the path hears the raw pointer events -- not just
+        // the one that will end up owning the gesture. That is upstream's
+        // rule: a `PointerDownEvent` goes to every recogniser on the hit-test
+        // path, because the arena has not decided anything yet. It is what
+        // lets a finger landing on a flinging list stop it on contact rather
+        // than a slop's worth of travel later, and what lets a splash start
+        // under a button whose tap belongs to something else.
+        let listeners: Vec<Target> = result
+            .path
+            .iter()
+            .filter_map(|entry| {
+                let handlers = entry.handlers.clone()?;
+                let listens = handlers.on_pointer_down.is_some()
+                    || handlers.on_pointer_move.is_some()
+                    || handlers.on_pointer_up.is_some()
+                    || handlers.on_pointer_cancel.is_some();
+                listens.then_some(Target {
+                    handlers,
+                    id: entry.target,
+                    local_origin: entry.local_position,
+                })
+            })
+            .collect();
+
+        for target in &listeners {
             if let Some(down) = &target.handlers.on_pointer_down {
+                let mut local_event = *event;
+                local_event.local_position = target.local_origin;
                 down(&local_event);
-            }
-            if let Some(press_change) = &target.handlers.on_press_change {
-                press_change(true);
-                pressed = true;
             }
         }
 
-        // The scrollable under the row hears about the press too. It has to:
-        // a finger landing on a list that is still flinging stops it, and that
-        // has to happen on contact rather than a slop's worth of travel later,
-        // or a list cannot be caught. Upstream a `PointerDownEvent` goes to
-        // every recogniser on the hit-test path -- the arena has not decided
-        // anything yet -- and this is the two-target version of the same rule.
-        if let Some(target) = &drag {
-            let already_told =
-                tap.as_ref().is_some_and(|t| Rc::ptr_eq(&t.handlers, &target.handlers));
-            if !already_told {
-                if let Some(down) = &target.handlers.on_pointer_down {
-                    let mut local_event = *event;
-                    local_event.local_position = target.local_origin;
-                    down(&local_event);
-                }
+        // Being *pressed* is a different question from hearing the event: it
+        // is an affordance -- this is the thing you are about to activate --
+        // and only one thing can be that.
+        let mut pressed = false;
+        if let Some(target) = &tap {
+            if let Some(press_change) = &target.handlers.on_press_change {
+                press_change(true);
+                pressed = true;
             }
         }
 
@@ -1171,6 +1199,7 @@ impl GestureRouter {
                 tap,
                 drag,
                 scale,
+                listeners,
                 origin: event.position,
                 total: Offset::ZERO,
                 past_slop: false,
@@ -1332,6 +1361,7 @@ impl GestureRouter {
         let was_pressed = active.pressed;
         let tap = active.tap.clone();
         let drag_target = active.drag.clone();
+        let listeners = active.listeners.clone();
 
         // Past the slop the press is no longer a tap candidate, so the pressed
         // state comes back off -- the same thing a button does when a finger
@@ -1348,7 +1378,7 @@ impl GestureRouter {
             }
         }
 
-        if let Some(target) = &tap {
+        for target in &listeners {
             if let Some(moved) = &target.handlers.on_pointer_move {
                 let mut local_event = *event;
                 local_event.local_position = target.local_origin.plus(travel);
@@ -1466,17 +1496,20 @@ impl GestureRouter {
         }
         let travel = event.position.minus(active.origin);
 
+        for target in &active.listeners {
+            if let Some(up) = &target.handlers.on_pointer_up {
+                let mut local_event = *event;
+                local_event.local_position = target.local_origin.plus(travel);
+                up(&local_event);
+            }
+        }
+
         if let Some(target) = &active.tap {
             let local = target.local_origin.plus(travel);
             if active.pressed {
                 if let Some(press_change) = &target.handlers.on_press_change {
                     press_change(false);
                 }
-            }
-            if let Some(up) = &target.handlers.on_pointer_up {
-                let mut local_event = *event;
-                local_event.local_position = local;
-                up(&local_event);
             }
             // A press that travelled is not a tap, however short the travel,
             // and neither is one that was already announced as a long press.
@@ -1526,6 +1559,14 @@ impl GestureRouter {
         if active.scaling {
             return true;
         }
+        for target in &active.listeners {
+            if let Some(cancel) = &target.handlers.on_pointer_cancel {
+                let mut local_event = *event;
+                local_event.local_position = target.local_origin;
+                cancel(&local_event);
+            }
+        }
+
         // A cancelled press is not a tap. Only the pressed state is unwound.
         if active.pressed {
             if let Some(target) = &active.tap {

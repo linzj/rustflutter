@@ -1450,8 +1450,13 @@ mod image_tests {
 
     #[test]
     fn the_first_ask_does_not_block_and_returns_nothing() {
+        // The part that cannot race: a decode is never synchronous, so the
+        // first ask is always empty. Whether the worker has *finished* by the
+        // next line is a race with a real thread -- it used to be asserted
+        // here and failed on a loaded machine.
         assert!(Image::shared("async:first", PNG).is_none());
-        assert!(images_pending(), "nothing was queued");
+        assert!(wait_for_images(), "nothing was queued");
+        assert!(Image::shared("async:first", PNG).is_some(), "and then it arrives");
     }
 
     #[test]
@@ -1465,8 +1470,11 @@ mod image_tests {
     #[test]
     fn the_same_key_is_decoded_once() {
         assert!(Image::shared("async:once", PNG).is_none());
-        // Asking again while it is in flight must not queue it a second time.
-        assert!(Image::shared("async:once", PNG).is_none());
+        // Asking again must not queue a second decode. Whether this second ask
+        // finds it still in flight or already landed is up to the worker, so
+        // what is asserted is the part that does not race: everyone ends up
+        // holding the same picture, which two decodes could not produce.
+        let _ = Image::shared("async:once", PNG);
         wait_for_images();
         let first = Image::shared("async:once", PNG).expect("decoded");
         let second = Image::shared("async:once", PNG).expect("decoded");

@@ -307,8 +307,20 @@ impl Component for Button {
         let radius = theme.radius;
         let spacing = theme.spacing;
         let body_size = theme.body_size;
+        // The splash is the button's own colour: a filled button splashes in
+        // what it is written on, an outlined one in what it is outlined with.
+        let splash_color = match style {
+            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x30),
+            _ => theme.primary.with_alpha(0x24),
+        };
 
-        leaf(move || {
+        // A closure, because the ink below rebuilds its child on every splash
+        // frame: a stateful component is built from the same widget instance
+        // each time, so a child handed over once is gone the second time.
+        let face = move || {
+            let label = label.clone();
+            let handlers = handlers.clone();
+            leaf(move || {
             let mut container = Container::new()
                 .with_height(44.0)
                 .with_corner_radius(radius)
@@ -330,9 +342,29 @@ impl Component for Button {
                 container = container.with_width(width);
             }
             Pointer::new(id, container).with_handlers(handlers.clone())
-        })
+            })
+        };
+
+        if !enabled {
+            return face();
+        }
+        // The splash goes inside the button's own region, and hears the
+        // pointer because raw pointer events reach every listener on the path
+        // -- the tap still belongs to the button. Clipped to the button's
+        // corners, which is what `containedInkWell` means upstream.
+        crate::framework::stateful(
+            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
+                .with_color(splash_color),
+        )
     }
 }
+
+/// How far a button's splash id is from the button's own.
+///
+/// Ids are the caller's, and a component that invents one has to be sure it
+/// does not collide with a caller's. A large fixed offset is the same trick
+/// the examples use for their own id blocks.
+const INK_ID_OFFSET: u64 = 1 << 40;
 
 /// Slightly brighter than the resting outline, so a pressed outlined button
 /// reads as pressed without changing size.

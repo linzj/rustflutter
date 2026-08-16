@@ -1973,6 +1973,12 @@ impl RenderStack {
         self
     }
 
+    /// Adds an already-boxed child, for a caller that has one.
+    pub fn push_boxed(mut self, child: BoxedRender) -> Self {
+        self.children.push(StackChild { render: child, position: StackPosition::default() });
+        self
+    }
+
     pub fn push_positioned(
         mut self,
         child: impl RenderBox + 'static,
@@ -2126,6 +2132,69 @@ impl RenderBox for RenderStack {
 }
 
 // -- Single child: effects ----------------------------------------------------
+
+/// Passes its child through and writes down how big it turned out.
+///
+/// Layout answers a question the build could not: how much room this widget
+/// actually got. Anything that needs the answer *next* frame -- a splash that
+/// has to reach the corners, a scroll offset that has to be clamped to an
+/// extent -- reads it from the cell this fills in. `ListView`'s extent sink is
+/// the same arrangement, and upstream reaches the same answer by keeping the
+/// render object across frames and asking it.
+pub struct RenderSizeReporter {
+    sink: Rc<std::cell::Cell<Size>>,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderSizeReporter {
+    pub fn new(
+        sink: Rc<std::cell::Cell<Size>>,
+        child: impl RenderBox + 'static,
+    ) -> RenderSizeReporter {
+        RenderSizeReporter { sink, child: Box::new(child), size: Size::ZERO }
+    }
+}
+
+impl RenderBox for RenderSizeReporter {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout(constraints);
+        self.sink.set(self.size);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(self.child.as_ref(), offset);
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
 
 // -- Wrap ---------------------------------------------------------------------
 
