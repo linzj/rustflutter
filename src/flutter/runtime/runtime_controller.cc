@@ -375,9 +375,6 @@ bool RuntimeController::NotifyIdle(fml::TimeDelta deadline) {
 
 bool RuntimeController::DispatchPlatformMessage(
     std::unique_ptr<PlatformMessage> message) {
-  if (app_ == nullptr) {
-    return false;
-  }
   if (message->channel() == kKeyDataChannel) {
     // Not handed to the messenger, and upstream does not hand it over either:
     // `flutter/keydata` is the one channel dart:ui reads directly, in
@@ -387,6 +384,10 @@ bool RuntimeController::DispatchPlatformMessage(
     // could do with it anyway.
     DispatchKeyDataPacket(*message);
     return true;
+  }
+
+  if (app_ == nullptr) {
+    return false;
   }
 
   // A response handle is a ref-counted C++ object and cannot cross a C ABI, so
@@ -496,10 +497,22 @@ bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
   // KeyDataPacket, which is the same class, so the layout cannot drift.
   constexpr size_t kHeader = sizeof(uint64_t) + sizeof(KeyData);
 
+  // Whatever happens below, the embedder is told something. It is waiting on
+  // this answer before it decides whether to give the key back to the system,
+  // so a dropped reply is not a lost log line -- it is a key that never
+  // reaches anything.
+  const auto answer = [&message](bool handled) {
+    if (const auto& response = message.response()) {
+      std::vector<uint8_t> reply{static_cast<uint8_t>(handled ? 1 : 0)};
+      response->Complete(std::make_unique<fml::DataMapping>(std::move(reply)));
+    }
+  };
+
   const uint8_t* bytes = message.data().GetMapping();
   const size_t size = message.data().GetSize();
   if (bytes == nullptr || size < kHeader) {
     FML_LOG(ERROR) << "Malformed key packet: " << size << " bytes.";
+    answer(false);
     return false;
   }
 
@@ -508,6 +521,7 @@ bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
   if (character_size > size - kHeader) {
     FML_LOG(ERROR) << "Key packet claims " << character_size
                    << " character bytes but holds " << (size - kHeader) << ".";
+    answer(false);
     return false;
   }
 
@@ -530,17 +544,15 @@ bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
   event.synthesized = data.synthesized != 0;
   event.character = character.empty() ? nullptr : character.c_str();
 
+  // An application that has not started yet cannot have an opinion, and
+  // `rf_app_dispatch_key` says so for a null app; the answer still has to go
+  // back, because the embedder is holding the key until it arrives.
   const bool handled = rf_app_dispatch_key(app_, &event);
 
-  // One byte, 1 for handled -- the same reply _keyDataListener writes. Nothing
-  // in this repository reads it yet; suppressing an unhandled key from the
-  // platform means re-posting it to the message queue afterwards, which no host
-  // here does. It is completed regardless, because an embedder that asked for a
-  // response and never gets one leaks the handle.
-  if (const auto& response = message.response()) {
-    std::vector<uint8_t> reply{static_cast<uint8_t>(handled ? 1 : 0)};
-    response->Complete(std::make_unique<fml::DataMapping>(std::move(reply)));
-  }
+  // One byte, 1 for handled -- the same reply `_keyDataListener` writes. The
+  // Windows host reads it: a key the framework declines is put back into the
+  // system's queue, which is what lets the framework genuinely consume one.
+  answer(handled);
   return true;
 }
 
