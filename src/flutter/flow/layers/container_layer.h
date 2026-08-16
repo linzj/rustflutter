@@ -20,6 +20,15 @@ class ContainerLayer : public Layer {
 
   virtual void Add(std::shared_ptr<Layer> layer);
 
+  /// Drops every child, keeping the layer object itself.
+  ///
+  /// The engine-side counterpart of dart:ui's `ContainerLayer.removeAllChildren`
+  /// -- what `PaintingContext.pushLayer` calls on a layer it is about to record
+  /// into again, and `_repaintCompositedChild` on a repaint boundary whose
+  /// subtree changed. Keeping the object is the point: trees that already hold
+  /// it composite whatever the children are now.
+  void RemoveAllChildren();
+
   void Preroll(PrerollContext* context) override;
   void Paint(PaintContext& context) const override;
 

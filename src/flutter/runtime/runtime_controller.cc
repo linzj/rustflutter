@@ -550,9 +550,12 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
     out.scrollPosition = in.scroll_position;
     out.scrollExtentMin = in.scroll_extent_min;
     out.scrollExtentMax = in.scroll_extent_max;
-    // Left to right by default: this framework has no bidi paragraph
-    // direction to report yet, and "unknown" makes some readers guess.
-    out.textDirection = 2;
+    // The framework's reading direction for everything this node says, in
+    // the embedder's encoding (0=unknown, 1=rtl, 2=ltr). The framework gives
+    // every node it labels the direction that label was built in, and a node
+    // with nothing to read crosses as unknown -- the same null that upstream
+    // sends through SemanticsUpdateBuilder.updateNode.
+    out.textDirection = in.text_direction;
 
     if (in.children != nullptr) {
       out.childrenInTraversalOrder.assign(in.children,

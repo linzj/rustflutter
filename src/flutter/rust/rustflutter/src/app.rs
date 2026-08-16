@@ -167,6 +167,11 @@ pub struct RfSemanticsNode {
     pub scroll_extent_max: f64,
     pub children: *const i32,
     pub child_count: usize,
+    /// The reading direction of the label and its kin: 0 = unknown, 1 = rtl,
+    /// 2 = ltr -- the embedder's `FlutterTextDirection`, which is what the
+    /// engine's `SemanticsNode::textDirection` holds. A node with nothing to
+    /// read crosses as 0.
+    pub text_direction: i32,
 }
 
 /// Bit positions of `RfSemanticsNode::flags`, matching `rust_app_api.h`.
@@ -213,6 +218,21 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.is_selected, IS_SELECTED);
     set(&mut bits, flags.is_focused, IS_FOCUSED);
     bits
+}
+
+/// Packs the framework's reading direction into the ABI's.
+///
+/// `None` is upstream's null `textDirection` -- nothing to read, so nothing
+/// to say which way it runs -- and crosses as 0, the embedder's
+/// `kFlutterTextDirectionUnknown`, exactly as a null does one layer up in
+/// `SemanticsUpdateBuilder.updateNode`.
+pub fn pack_text_direction(direction: Option<crate::direction::TextDirection>) -> i32 {
+    use crate::direction::TextDirection;
+    match direction {
+        Some(TextDirection::Rtl) => 1,
+        Some(TextDirection::Ltr) => 2,
+        None => 0,
+    }
 }
 
 /// The shell, as the messenger sees it.
@@ -779,7 +799,23 @@ impl AppInstance {
 
         // Constraints down, sizes up -- the RenderBox protocol. The root is
         // forced to the view size, which is what RenderView does upstream.
-        root.layout(BoxConstraints::tight(context.size.width, context.size.height));
+        //
+        // Upstream's frame opens with `flushLayout`: the relayout boundaries
+        // `mark_needs_layout` stopped at, each laid out from itself against
+        // the constraints its parent last handed it, so that a change under a
+        // boundary costs that subtree and not the whole screen. Two things
+        // keep the walk from the root as well: nothing dirty (the list is
+        // empty, and the walk is the cheap early-return descent it has always
+        // been), and the view having changed size -- the constraints come
+        // from outside the tree, so no boundary's remembered ones can carry
+        // them, and the descent is where every object is re-asked.
+        let view_constraints =
+            BoxConstraints::tight(context.size.width, context.size.height);
+        if root.was_last_laid_out_against_other(view_constraints)
+            || !crate::render::flush_layout()
+        {
+            root.layout(view_constraints);
+        }
         let laid_out = FrameTimings::now();
 
         let tree = compose_frame(
@@ -788,7 +824,15 @@ impl AppInstance {
             metrics.device_pixel_ratio,
             context.size,
             background,
-            |paint_context| root.paint(paint_context, Offset::ZERO),
+            |paint_context| {
+                // The dirty boundaries first, into the layers they kept --
+                // upstream's `flushPaint`, before the frame walk it feeds. A
+                // boundary that is dirty under a clean one is re-recorded here
+                // or not at all: the walk never enters a subtree a clean
+                // boundary hands back as a kept layer.
+                crate::render::flush_paint(paint_context);
+                root.paint(paint_context, Offset::ZERO)
+            },
         );
 
         // A walk of its own over the laid-out tree, the way upstream's
@@ -871,6 +915,7 @@ impl AppInstance {
                     scroll_extent_max: node.properties.scroll_extent_max as f64,
                     children: children[index].as_ptr(),
                     child_count: children[index].len(),
+                    text_direction: pack_text_direction(node.properties.text_direction),
                 }
             })
             .collect();
@@ -1467,5 +1512,21 @@ mod abi {
         };
         let _ = instance;
         services::complete_reply(response_id, bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack_text_direction;
+    use crate::direction::TextDirection;
+
+    #[test]
+    fn reading_directions_cross_in_the_embedders_encoding() {
+        // The embedder's `FlutterTextDirection` (embedder.h) and the engine's
+        // `SemanticsNode::textDirection` (semantics_node.h) agree on
+        // 0 = unknown, 1 = rtl, 2 = ltr, and the ABI has to speak both.
+        assert_eq!(pack_text_direction(Some(TextDirection::Rtl)), 1);
+        assert_eq!(pack_text_direction(Some(TextDirection::Ltr)), 2);
+        assert_eq!(pack_text_direction(None), 0, "nothing to read is unknown, not guessed");
     }
 }

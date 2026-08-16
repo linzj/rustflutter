@@ -570,7 +570,11 @@ fn missing(route: &Route) -> AnyWidget {
     component(Scaffold::new(
         leaf(move || {
             Center::new(
+                // Min, so the `Center` has a content-sized column to centre;
+                // the upstream default (max) would fill the screen and leave
+                // the message at the top.
                 Column::new()
+                    .with_main_axis_size(MainAxisSize::Min)
                     .with_spacing(8.0)
                     .push(Text::new("No such screen").with_size(20.0).with_weight(700))
                     .push(Text::new(format!("route {name}, slug {slug}")).with_size(13.0)),

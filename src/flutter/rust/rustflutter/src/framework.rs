@@ -53,7 +53,9 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::render::BoxedRender;
 
@@ -65,6 +67,39 @@ use crate::render::BoxedRender;
 /// with a different item, and any state they held goes with the position
 /// rather than the item.
 pub type Key = Option<u64>;
+
+/// Where [`GlobalKey::new`] gets the next id.
+static NEXT_GLOBAL_KEY: AtomicU64 = AtomicU64::new(0);
+
+/// A key that is unique across the whole tree, not just across one child list.
+///
+/// A [`Key`] tells reconciliation "these two widgets are the same thing" *when
+/// they meet in the same list*. A global key says it from anywhere: an element
+/// dropped by one parent this frame can be picked up by another, with its
+/// state and its render objects intact, because the key is how the new parent
+/// finds it -- position is not.
+///
+/// That is upstream's `GlobalKey`, and the whole of what it is for here: a
+/// move between parents is otherwise indistinguishable from a drop followed
+/// by a mount, and a drop followed by a mount is exactly what loses state.
+///
+/// The registry that makes the key global is per tree (see
+/// [`ElementTree::current_element`]), so the same `GlobalKey` in two trees is
+/// two unrelated keys -- the same restraint the rest of this file works
+/// under, one tree per owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalKey(u64);
+
+impl GlobalKey {
+    /// A key that has never been handed out before.
+    ///
+    /// Make one once -- in the state that owns the subtree being moved, not in
+    /// the build that mentions it -- the way upstream's documentation asks for
+    /// the same thing.
+    pub fn new() -> GlobalKey {
+        GlobalKey(NEXT_GLOBAL_KEY.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// Index into the element arena. Cheap to copy; may be stale, in which case
 /// every lookup returns `None`.
@@ -113,6 +148,20 @@ pub trait StatefulComponent: 'static {
     fn advance(&self, _state: &mut Self::State, _frame_time_micros: i64) -> bool {
         false
     }
+
+    /// Called when the element is rebuilt with a new widget of the same type
+    /// and key, with the widget it replaces, before `build` runs.
+    ///
+    /// Upstream's `State.didUpdateWidget`, with the receiver flipped: there it
+    /// is a method on the state that reads the new widget off itself, and here
+    /// the state is plain data so the new widget is the receiver and the old
+    /// one the argument. This is where an implicit animation notices its
+    /// target moved; see [`crate::implicit::Animated`].
+    ///
+    /// `build` follows immediately and draws whatever this wrote, which is why
+    /// there is nothing to return: unlike `advance` there is no frame to ask
+    /// for, because one is already on its way.
+    fn did_update_widget(&self, _old: &Self, _state: &mut Self::State) {}
 
     /// The state this widget starts with, used once when its element is
     /// mounted. Defaults to `State::default()`.
@@ -163,9 +212,17 @@ pub struct AnyWidget {
     inner: WidgetKind,
     type_id: TypeId,
     key: Key,
+    /// Set only by [`with_global_key`]. Rides the widget the same way
+    /// [`AnyWidget::provided`] does, so an element can be found by it from
+    /// anywhere in the tree; see [`GlobalKey`].
+    global_key: Option<GlobalKey>,
     /// Set only by [`provide`]. The element registers it so descendants can
     /// find it with [`BuildContext::inherited`].
     provided: Option<Provided>,
+    /// Set only by [`notification_listener`]. The element registers it so
+    /// descendants' notifications reach the callback; see
+    /// [`Shared::dispatch_notification`].
+    listener: Option<ListenerRegistration>,
 }
 
 enum WidgetKind {
@@ -193,6 +250,11 @@ trait ComponentObject {
     /// Runs the widget's per-frame advance. Returns whether another frame is
     /// wanted.
     fn advance(&self, state: Option<&mut dyn Any>, frame_time_micros: i64) -> bool;
+    /// This widget as its own concrete type, so the widget an element replaced
+    /// can be handed back to it typed, in `did_update_widget`.
+    fn as_any(&self) -> &dyn Any;
+    /// Runs the widget's `did_update_widget`, with the widget it replaces.
+    fn did_update_widget(&self, old: &dyn Any, state: Option<&mut dyn Any>);
     fn build(
         &self,
         state: Option<&mut dyn Any>,
@@ -230,6 +292,14 @@ impl<C: Component> ComponentObject for StatelessObject<C> {
         false
     }
 
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn did_update_widget(&self, _old: &dyn Any, _state: Option<&mut dyn Any>) {
+        // A stateless widget has no state to tell that it changed.
+    }
+
     fn build(
         &self,
         _state: Option<&mut dyn Any>,
@@ -252,6 +322,20 @@ impl<C: StatefulComponent> ComponentObject for StatefulObject<C> {
             Some(state) => self.0.advance(state, frame_time_micros),
             None => false,
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn did_update_widget(&self, old: &dyn Any, state: Option<&mut dyn Any>) {
+        let (Some(old), Some(state)) = (
+            old.downcast_ref::<C>(),
+            state.and_then(|s| s.downcast_mut::<C::State>()),
+        ) else {
+            return;
+        };
+        self.0.did_update_widget(old, state);
     }
 
     fn build(
@@ -296,7 +380,9 @@ pub fn component<C: Component>(widget: C) -> AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
         inner: WidgetKind::Component(Box::new(StatelessObject(widget))),
+        global_key: None,
         provided: None,
+        listener: None,
     }
 }
 
@@ -306,7 +392,9 @@ pub fn stateful<C: StatefulComponent>(widget: C) -> AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
         inner: WidgetKind::Component(Box::new(StatefulObject(widget))),
+        global_key: None,
         provided: None,
+        listener: None,
     }
 }
 
@@ -316,8 +404,21 @@ pub fn render_widget<W: RenderWidget>(widget: W) -> AnyWidget {
         type_id: TypeId::of::<W>(),
         key: widget.key(),
         inner: WidgetKind::Render(Box::new(RenderObjectWidget(widget))),
+        global_key: None,
         provided: None,
+        listener: None,
     }
+}
+
+/// Gives an already-built widget a [`GlobalKey`].
+///
+/// The key is not a [`Key`]: it does not take part in
+/// [`AnyWidget::can_update`], because its whole job is to match elements that
+/// *cannot* be matched by position -- one parent dropped it, another wants it.
+/// See [`GlobalKey`].
+pub fn with_global_key(key: GlobalKey, mut widget: AnyWidget) -> AnyWidget {
+    widget.global_key = Some(key);
+    widget
 }
 
 // -- The three combinators ----------------------------------------------------
@@ -472,6 +573,52 @@ where
     render_widget(ManyWidget { key: Some(key), children: RefCell::new(children), assemble })
 }
 
+// -- The build error placeholder ----------------------------------------------
+
+/// The leaf a component whose `build` panicked leaves behind: upstream's
+/// `ErrorWidget`, which paints a gray box where the subtree would have been.
+///
+/// The exception itself is reported to the log when it is caught; the
+/// placeholder is only a marker, so it paints a flat gray box and contributes
+/// no semantics -- it is decoration standing in for content, not content.
+pub struct ErrorPlaceholder;
+
+impl RenderWidget for ErrorPlaceholder {
+    fn children(&self) -> Vec<AnyWidget> {
+        Vec::new()
+    }
+
+    fn create_render(&self, _children: Vec<BoxedRender>) -> BoxedRender {
+        crate::render::RenderRef::new(crate::render::RenderDecoratedBox::new().with_color(
+            // Upstream's ErrorWidget background is `Color(0xF0900000)`, and
+            // a release build shows plain gray; gray is what a marker box
+            // reads as either way.
+            crate::engine::Color::argb(0xF0, 0x90, 0x90, 0x90),
+        ))
+    }
+}
+
+/// The subtree-sized gray box a panicked build is replaced by.
+///
+/// The element that panicked keeps its state and its place in the tree; only
+/// what it built is swapped out. The next time something marks that element
+/// dirty its build runs again, for real.
+pub fn error_placeholder() -> AnyWidget {
+    render_widget(ErrorPlaceholder)
+}
+
+/// The message a panic carried, whether it was raised with a formatted
+/// string, a plain string, or anything else.
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 // -- Provider -----------------------------------------------------------------
 
 /// Publishes a value to everything below it.
@@ -511,11 +658,33 @@ impl<T: 'static> RenderWidget for Provider<T> {
 /// the same reason: by the time the element tree holds the value it has
 /// forgotten the type, and a value that cannot be compared cannot say whether
 /// anything changed, which makes every rebuild look like a change.
+///
+/// `aspect_stale` is the finer question, upstream's
+/// `InheritedModel.updateShouldNotifyDependent`: whether one named part of the
+/// value changed, so that a reader which said it reads only that part can be
+/// left alone. `None` is the plain `InheritedWidget` answer -- there are no
+/// parts, every change is every reader's news -- and is what [`provide`] fills
+/// in; [`provide_model`] fills in the other.
 #[derive(Clone)]
 struct Provided {
     type_id: TypeId,
     value: Rc<dyn Any>,
     same: fn(&dyn Any, &dyn Any) -> bool,
+    aspect_stale: Option<fn(&dyn Any, &dyn Any, &str) -> bool>,
+}
+
+/// A published value whose readers can depend on one *part* of it.
+///
+/// Upstream's `InheritedModel`: a reader that qualifies its dependence with an
+/// aspect -- see [`BuildContext::inherited_aspect`] -- is rebuilt when the
+/// value changes *and* the aspect it named is among the parts that changed.
+/// [`DependentNotify::is_aspect_stale`] is the port of
+/// `updateShouldNotifyDependent`, minus the set: the aspects are asked about
+/// one at a time, and which aspects a reader cares about is the dependency
+/// record's business, not the value's.
+pub trait DependentNotify: PartialEq {
+    /// Whether `aspect` of the value differs between `old` and `new`.
+    fn is_aspect_stale(old: &Self, new: &Self, aspect: &str) -> bool;
 }
 
 /// The value a [`Provider`] publishes, kept out of the widget so the element
@@ -542,6 +711,20 @@ impl Provided {
                 // the type id is checked before this is called.
                 _ => false,
             },
+            aspect_stale: None,
+        }
+    }
+
+    /// [`Provided::of`], for a value that can also say which part of it
+    /// changed. Upstream's `InheritedModel.updateShouldNotifyDependent`.
+    fn of_model<T: DependentNotify + 'static>(value: Rc<T>) -> Provided {
+        Provided {
+            aspect_stale: Some(|a, b, aspect| match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
+                (Some(old), Some(new)) => T::is_aspect_stale(old, new, aspect),
+                // Not reachable: the type id is checked before this is called.
+                _ => true,
+            }),
+            ..Provided::of(value)
         }
     }
 }
@@ -560,9 +743,176 @@ pub fn provide<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget 
     any
 }
 
+/// [`provide`], for a value whose readers can depend on part of it.
+///
+/// The value's type implements [`DependentNotify`], which is upstream's
+/// arrangement of an `InheritedModel` where an `InheritedWidget` would do: a
+/// reader that names an aspect -- see [`BuildContext::inherited_aspect`] -- is
+/// rebuilt only when that part changed, and every other reader, one that read
+/// the value whole, is rebuilt for any change exactly as [`provide`] would
+/// have it.
+pub fn provide_model<T: DependentNotify + 'static>(value: T, child: AnyWidget) -> AnyWidget {
+    let widget = Provider { value: Rc::new(value), child: RefCell::new(Some(child)) };
+    let provided = Provided::of_model(Rc::clone(&widget.value));
+    let mut any = render_widget(widget);
+    any.provided = Some(provided);
+    any
+}
+
+// -- Notifications ------------------------------------------------------------
+
+/// A value that can bubble up the element tree.
+///
+/// Upstream's `Notification`. A widget below dispatches one and every
+/// [`notification_listener`] above it -- up to the root -- is offered it,
+/// nearest first. What the listener does with it is the listener's business;
+/// what the *notification* carries is a snapshot, taken where it was
+/// dispatched, of whatever the kind of event it is needs to say.
+///
+/// Notifications are read, never written: nothing in the tree is asked to
+/// change because one went by, and a listener that wants a rebuild says so the
+/// way anything else does, with [`StateHandle::set_state`]. That is why
+/// upstream scroll notifications are described as "primarily useful for paint
+/// effects" -- they arrive between frames, which is too late for layout and
+/// fine for paint.
+pub trait Notification: 'static {
+    /// This notification as its own concrete type.
+    ///
+    /// Upstream asks `notification is T` to decide whether a listener is
+    /// interested; the same question here is a downcast, and this is the
+    /// reference to downcast. See [`notification_listener`].
+    fn as_any(&self) -> &dyn Any;
+}
+
+/// A listener as the element tree holds it: one callback, already wrapped so
+/// it answers the only question the walk has.
+///
+/// What it answers is upstream's `NotificationListener.onNotification` return
+/// value: `true` means this notification stops here, `false` means it keeps
+/// bubbling. The type check is inside rather than beside it because upstream
+/// puts it there too -- `_NotificationElement.onNotification` calls back only
+/// when `notification is T`, and returns false otherwise.
+#[derive(Clone)]
+struct ListenerRegistration {
+    call: Rc<dyn Fn(&dyn Notification) -> bool>,
+}
+
+/// A widget that keeps its child and listens for notifications from below it.
+///
+/// Upstream's `NotificationListener<T>`: a proxy widget, adding nothing to
+/// layout or painting, holding one callback. The type parameter there picks
+/// which notifications arrive; here the callback is generic over [`Notification`]
+/// and downcasts itself, which keeps the wiring to one function and the choice
+/// of what to catch inside the closure where the reaction is.
+///
+/// ```ignore
+/// notification_listener(
+///     |notification: &ScrollNotification| { /* ... */ false },
+///     list,
+/// )
+/// ```
+///
+/// # Why one enum beats five subtypes
+///
+/// Upstream's scroll notifications are a class hierarchy, and
+/// `NotificationListener<ScrollNotification>` catches all of them because `is`
+/// is a subtype test. Rust has no runtime subtyping, so an exact-type match on
+/// five sibling structs would catch one each and a listener for "scrolling,
+/// whatever kind" -- the common case, and what the scrollbar is -- could not be
+/// written. [`crate::scrolling::ScrollNotification`] is therefore one type with
+/// a variant per kind: one name to listen for, the variant where upstream would
+/// have put the runtimeType, and `match` where upstream puts a switch.
+pub fn notification_listener<N: Notification>(
+    on_notification: impl Fn(&N) -> bool + 'static,
+    child: AnyWidget,
+) -> AnyWidget {
+    let call: Rc<dyn Fn(&dyn Notification) -> bool> = Rc::new(move |notification| {
+        match notification.as_any().downcast_ref::<N>() {
+            Some(notification) => on_notification(notification),
+            // Not the type this listener is for. Say so, and the walk goes on
+            // to the ancestors -- upstream's `notification is T` failing.
+            None => false,
+        }
+    });
+    let mut any = render_widget(ListenerWidget { child: RefCell::new(Some(child)) });
+    any.listener = Some(ListenerRegistration { call });
+    any
+}
+
+/// The proxy widget behind [`notification_listener`].
+///
+/// The registration the element needs is not on this struct: it rides the
+/// [`AnyWidget`] beside it (see [`AnyWidget::listener`]), the same way a
+/// [`Provider`]'s value does, so the element can take it without knowing `N`.
+struct ListenerWidget {
+    child: RefCell<Option<AnyWidget>>,
+}
+
+impl RenderWidget for ListenerWidget {
+    fn children(&self) -> Vec<AnyWidget> {
+        self.child.borrow_mut().take().into_iter().collect()
+    }
+
+    fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
+        // A listener is not a box: it adds nothing to layout, exactly as
+        // upstream's NotificationListener is a ProxyWidget whose render object
+        // is its child's.
+        match children.pop() {
+            Some(child) => child,
+            None => crate::render::RenderRef::new(crate::widgets::Empty),
+        }
+    }
+}
+
+/// Where to start a notification bubbling, from somewhere other than a build.
+///
+/// Upstream's dispatching widget keeps its `BuildContext` -- the `Scrollable`
+/// calls it the `notificationContext` and dispatches through it long after the
+/// build that made it -- and this is that, made once during a build and held
+/// with the state that will want it. A sink whose element has since gone away
+/// dispatches nothing, which is also upstream's behaviour for a defunct
+/// context.
+#[derive(Clone)]
+pub struct NotificationSink {
+    shared: Weak<Shared>,
+    element: ElementRef,
+}
+
+impl NotificationSink {
+    /// Starts `notification` bubbling from the element this sink was made for.
+    ///
+    /// Upstream's `Notification.dispatch(target)`. The notification is offered
+    /// to the listener at that element (if it is one) and then to each
+    /// listener above it, until one returns `true` or the root runs out.
+    pub fn dispatch(&self, notification: &dyn Notification) {
+        let Some(shared) = self.shared.upgrade() else { return };
+        if shared.generation(self.element.id) != self.element.generation {
+            return;
+        }
+        shared.dispatch_notification(self.element.id, notification);
+    }
+}
+
 // -- State --------------------------------------------------------------------
 
 type Mutation = Box<dyn FnOnce(&mut dyn Any)>;
+
+/// One reader of one provider, and which parts of the value it reads.
+///
+/// The reader's half of upstream's `InheritedElement._dependents`, with the
+/// aspect set `InheritedModelElementMixin.updateDependencies` collects for each
+/// dependent kept beside it. An empty `aspects` is upstream's empty set: the
+/// reader did not qualify its dependence, and is rebuilt for every change.
+struct Dependent {
+    reader: ElementId,
+    aspects: Vec<&'static str>,
+}
+
+impl Clone for Dependent {
+    fn clone(&self) -> Dependent {
+        Dependent { reader: self.reader, aspects: self.aspects.clone() }
+    }
+}
 
 /// What a [`StateHandle`] needs to reach from outside the tree.
 struct Shared {
@@ -580,12 +930,20 @@ struct Shared {
     parents: RefCell<HashMap<ElementId, Option<ElementId>>>,
     /// Values a [`Provider`] has published, by the type it publishes.
     provided: RefCell<HashMap<ElementId, Provided>>,
+    /// The notification listeners mounted at each element, by the element the
+    /// listening widget became. Upstream keeps these as a linked list threaded
+    /// through the elements themselves (`_notificationTree`), built at mount
+    /// from the parent's; here the parent map this struct already keeps *is*
+    /// that list, walked on demand, and this table says which elements are on
+    /// it.
+    listeners: RefCell<HashMap<ElementId, ListenerRegistration>>,
     /// Who reads each provider, and what each reader reads. Two maps of the
     /// same relation: the first is what a change has to rebuild, the second is
     /// what an unmounted element has to be removed from. Upstream keeps the
     /// same pair, as `InheritedElement._dependents` and
-    /// `Element._dependencies`.
-    dependents: RefCell<HashMap<ElementId, Vec<ElementId>>>,
+    /// `Element._dependencies`; the first also remembers *which parts* of the
+    /// value each reader asked about, upstream's aspect set.
+    dependents: RefCell<HashMap<ElementId, Vec<Dependent>>>,
     dependencies: RefCell<HashMap<ElementId, Vec<ElementId>>>,
 }
 
@@ -599,6 +957,7 @@ impl Shared {
             generations: RefCell::new(HashMap::new()),
             parents: RefCell::new(HashMap::new()),
             provided: RefCell::new(HashMap::new()),
+            listeners: RefCell::new(HashMap::new()),
             dependents: RefCell::new(HashMap::new()),
             dependencies: RefCell::new(HashMap::new()),
         })
@@ -630,17 +989,70 @@ impl Shared {
         None
     }
 
+    /// Offers `notification` to the listener at `from` and then to each
+    /// listener above it, nearest first, until one says it handled the
+    /// notification or the root runs out.
+    ///
+    /// Upstream's `_NotificationNode.dispatchNotification`, which walks the
+    /// chain of `NotifiableElementMixin`s built at mount. The walk starts at
+    /// `from` itself rather than its parent because upstream's chain includes
+    /// the dispatching element when that element is itself a listener.
+    ///
+    /// The registration is cloned out before the callback runs: a callback
+    /// that calls `set_state` marks elements dirty, and nothing here may still
+    /// be holding the table that would have to be borrowed for that.
+    fn dispatch_notification(&self, from: ElementId, notification: &dyn Notification) {
+        let mut current = Some(from);
+        while let Some(id) = current {
+            let listener = self.listeners.borrow().get(&id).cloned();
+            if let Some(listener) = listener {
+                if (listener.call)(notification) {
+                    return;
+                }
+            }
+            current = self.parents.borrow().get(&id).copied().flatten();
+        }
+    }
+
     /// Records that `reader` read what `provider` publishes.
     ///
     /// Upstream's `InheritedElement.updateDependencies`, called from
     /// `dependOnInheritedWidgetOfExactType` for the same reason: reading a
     /// value is what makes a widget care about it changing, and nothing else
-    /// can tell.
+    /// can tell. A read without an aspect is a dependence on the whole value.
     fn depend(&self, provider: ElementId, reader: ElementId) {
         let mut dependents = self.dependents.borrow_mut();
         let readers = dependents.entry(provider).or_default();
-        if !readers.contains(&reader) {
-            readers.push(reader);
+        match readers.iter_mut().find(|dependent| dependent.reader == reader) {
+            // Whatever aspects this reader asked about before, it reads
+            // everything now. Upstream replaces the dependent's aspect set
+            // with an empty one here, which means the same thing.
+            Some(dependent) => dependent.aspects.clear(),
+            None => readers.push(Dependent { reader, aspects: Vec::new() }),
+        }
+        let mut dependencies = self.dependencies.borrow_mut();
+        let providers = dependencies.entry(reader).or_default();
+        if !providers.contains(&provider) {
+            providers.push(provider);
+        }
+    }
+
+    /// [`Shared::depend`], qualified by one aspect of the value.
+    ///
+    /// Upstream's `InheritedModelElementMixin.updateDependencies`: the aspect
+    /// joins the set the reader is accumulating over this build -- it is
+    /// rebuilt when *any* aspect it reads changes -- unless it read the value
+    /// whole, in which case one part of it is not news it can afford to miss.
+    fn depend_on_aspect(&self, provider: ElementId, reader: ElementId, aspect: &'static str) {
+        let mut dependents = self.dependents.borrow_mut();
+        let readers = dependents.entry(provider).or_default();
+        match readers.iter_mut().find(|dependent| dependent.reader == reader) {
+            Some(dependent) => {
+                if !dependent.aspects.is_empty() && !dependent.aspects.contains(&aspect) {
+                    dependent.aspects.push(aspect);
+                }
+            }
+            None => readers.push(Dependent { reader, aspects: vec![aspect] }),
         }
         let mut dependencies = self.dependencies.borrow_mut();
         let providers = dependencies.entry(reader).or_default();
@@ -660,24 +1072,42 @@ impl Shared {
             let mut dependents = self.dependents.borrow_mut();
             for provider in providers {
                 if let Some(readers) = dependents.get_mut(&provider) {
-                    readers.retain(|id| *id != reader);
+                    readers.retain(|dependent| dependent.reader != reader);
                 }
             }
         }
     }
 
-    /// Marks everything that reads `provider` for rebuilding.
-    fn notify_dependents(&self, provider: ElementId) -> usize {
+    /// Marks everything that reads `provider` for rebuilding, asking each
+    /// reader whether what *it* reads changed.
+    ///
+    /// Upstream's `InheritedElement.notifyClients` walking into
+    /// `InheritedModelElementMixin.notifyDependent`: a reader that did not
+    /// qualify its dependence, or a value that cannot compare per aspect, is
+    /// marked unconditionally; a reader that named aspects is marked only if
+    /// one of them is among the parts that changed.
+    fn notify_dependents(&self, provider: ElementId, old: &Provided, new: &Provided) -> usize {
         let readers = self
             .dependents
             .borrow()
             .get(&provider)
             .cloned()
             .unwrap_or_default();
-        for reader in &readers {
-            self.mark_dirty(*reader);
+        let mut notified = 0;
+        for dependent in &readers {
+            let stale = dependent.aspects.is_empty()
+                || match old.aspect_stale {
+                    None => true,
+                    Some(is_aspect_stale) => dependent.aspects.iter().any(|aspect| {
+                        is_aspect_stale(old.value.as_ref(), new.value.as_ref(), aspect)
+                    }),
+                };
+            if stale {
+                self.mark_dirty(dependent.reader);
+                notified += 1;
+            }
         }
-        readers.len()
+        notified
     }
 
     fn mark_dirty(&self, id: ElementId) {
@@ -860,6 +1290,51 @@ impl BuildContext {
     pub fn inherited_or_default<T: Default + 'static>(&self) -> Rc<T> {
         self.inherited::<T>().unwrap_or_else(|| Rc::new(T::default()))
     }
+
+    /// [`BuildContext::inherited`], qualified by one aspect of the value.
+    ///
+    /// Upstream's `dependOnInheritedWidgetOfExactType` with an `aspect`, or
+    /// `InheritedModel.inheritFrom`: the reader is rebuilt when the value
+    /// changes *and* the aspect it named is one of the parts that changed, so
+    /// a widget that reads only the padding is not rebuilt because the view
+    /// got taller. A value published with [`provide`] rather than
+    /// [`provide_model`] cannot answer the aspect question, and this is then
+    /// the same as [`BuildContext::inherited`]; so is a build that also reads
+    /// the value unqualified.
+    pub fn inherited_aspect<T: 'static>(&self, aspect: &'static str) -> Option<Rc<T>> {
+        let (provider, value) = self.shared.lookup(self.element, TypeId::of::<T>())?;
+        self.shared.depend_on_aspect(provider, self.element, aspect);
+        value.downcast::<T>().ok()
+    }
+
+    /// [`BuildContext::inherited_aspect`], or the type's default if nothing
+    /// published one.
+    pub fn inherited_aspect_or_default<T: Default + 'static>(&self, aspect: &'static str) -> Rc<T> {
+        self.inherited_aspect::<T>(aspect).unwrap_or_else(|| Rc::new(T::default()))
+    }
+
+    /// Starts `notification` bubbling up from this element.
+    ///
+    /// Upstream's `BuildContext.dispatchNotification`. The notification is
+    /// offered to every [`notification_listener`] above this element, nearest
+    /// first, until one returns `true` from its callback.
+    pub fn dispatch_notification(&self, notification: &dyn Notification) {
+        self.shared.dispatch_notification(self.element, notification);
+    }
+
+    /// A way to dispatch notifications from this element after the build.
+    ///
+    /// Some dispatchers are not widgets that build -- the scroll position
+    /// logic here, upstream's `Scrollable` -- but state that outlives the
+    /// build. Those hold one of these instead, which is upstream's arrangement
+    /// exactly: the `Scrollable` keeps its context as the `notificationContext`
+    /// and dispatches through it from wherever the scrolling ends up happening.
+    pub fn notification_sink(&self) -> NotificationSink {
+        NotificationSink {
+            shared: Rc::downgrade(&self.shared),
+            element: self.element_ref(),
+        }
+    }
 }
 
 // -- Elements -----------------------------------------------------------------
@@ -887,6 +1362,12 @@ struct ElementNode {
     /// given a new widget. A widget that was not replaced describes the same
     /// render object it described last frame.
     render_dirty: bool,
+    /// Whether this element was dropped by its parent this frame but is being
+    /// kept for a [`GlobalKey`] to claim, upstream's *inactive* lifecycle
+    /// state. State, render object and children survive; the tree walks skip
+    /// it; and if nothing claims the key before the frame ends,
+    /// [`ElementTree::rebuild`] releases it for real.
+    inactive: bool,
 }
 
 /// A reference to a particular element, one that stops being true when that
@@ -915,6 +1396,22 @@ pub struct ElementTree {
     /// Elements rebuilt during the last pass. Diagnostic, and what the tests
     /// assert on to show that a rebuild was partial.
     last_rebuilt: Vec<ElementId>,
+    /// Which element each [`GlobalKey`] currently names, mounted or parked.
+    ///
+    /// Upstream's `BuildOwner._globalKeyRegistry`: written when a widget with
+    /// a global key mounts, cleared when its element is released, and read by
+    /// [`ElementTree::mount`] to claim an element another parent dropped this
+    /// frame. It lives on the tree rather than on [`Shared`] because nothing
+    /// outside the reconciliation reaches for it -- the read access is
+    /// [`ElementTree::current_element`].
+    global_keys: HashMap<GlobalKey, ElementId>,
+    /// Roots of subtrees dropped this frame that a [`GlobalKey`] could still
+    /// claim, released at the end of the rebuild if none does.
+    ///
+    /// Upstream's `BuildOwner._inactiveElements`, a list of roots: the
+    /// descendants are inactive along with their root but are not listed
+    /// separately, and `_unmountAll` walks each root down.
+    inactive: Vec<ElementId>,
 }
 
 impl ElementTree {
@@ -926,13 +1423,18 @@ impl ElementTree {
             shared: Shared::new(),
             frame_time_micros: 0,
             last_rebuilt: Vec::new(),
+            global_keys: HashMap::new(),
+            inactive: Vec::new(),
         }
     }
 
     /// How many elements are mounted. A rebuild that reuses everything leaves
     /// this unchanged.
+    ///
+    /// An element parked for a [`GlobalKey`] to claim does not count: it is
+    /// not in the tree, it is waiting to be.
     pub fn len(&self) -> usize {
-        self.nodes.iter().filter(|n| n.is_some()).count()
+        self.nodes.iter().filter(|n| n.as_ref().is_some_and(|n| !n.inactive)).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -955,9 +1457,11 @@ impl ElementTree {
         self.frame_time_micros = frame_time_micros;
 
         // Collect first: advancing may set_state, which touches the same maps
-        // this walk would otherwise be holding.
+        // this walk would otherwise be holding. An element parked for a
+        // GlobalKey to claim does not advance: upstream's clock stops for the
+        // inactive, and restarts if the element is reactivated.
         let ids: Vec<ElementId> = (0..self.nodes.len())
-            .filter(|index| self.nodes[*index].is_some())
+            .filter(|index| self.nodes[*index].as_ref().is_some_and(|n| !n.inactive))
             .map(ElementId)
             .collect();
 
@@ -1020,8 +1524,11 @@ impl ElementTree {
     }
 
     /// Whether an element is still in the tree.
+    ///
+    /// An element parked for a [`GlobalKey`] to claim is not: it left its
+    /// parent and nothing reaches it until a claim puts it back.
     pub fn is_mounted(&self, id: ElementId) -> bool {
-        self.nodes.get(id.0).is_some_and(|slot| slot.is_some())
+        self.nodes.get(id.0).is_some_and(|slot| slot.as_ref().is_some_and(|n| !n.inactive))
     }
 
     /// Whether the element a [`ElementRef`] names is still that element.
@@ -1031,6 +1538,36 @@ impl ElementTree {
 
     /// Reads an element's state, for tests and diagnostics.
     pub fn state<S: 'static, R>(&self, id: ElementId, read: impl FnOnce(&S) -> R) -> Option<R> {
+        let states = self.shared.states.borrow();
+        states.get(&id)?.downcast_ref::<S>().map(read)
+    }
+
+    /// The element this [`GlobalKey`] currently names, mounted or parked.
+    ///
+    /// Upstream's `GlobalKey.currentElement`, reached the only way this
+    /// engine can reach it: upstream's registry hangs off the one global
+    /// `BuildOwner`, and this port has one [`ElementTree`] per owner instead,
+    /// so the question is asked of the tree that mounted the key. A key
+    /// claimed but not yet released still names its element -- an element
+    /// parked for a claim is gone only once the frame ends without one.
+    pub fn current_element(&self, key: &GlobalKey) -> Option<ElementId> {
+        let id = self.global_keys.get(key).copied()?;
+        self.nodes.get(id.0).is_some_and(|slot| slot.is_some()).then_some(id)
+    }
+
+    /// Reads the state of the element this [`GlobalKey`] names.
+    ///
+    /// Upstream's `GlobalKey.currentState`: `None` when no element holds the
+    /// key, or when it does and its state is not an `S` -- the same two ways
+    /// upstream returns null. Read-only, like [`ElementTree::state`]: writing
+    /// is what a [`StateHandle`] is for, and the handle the widget's own build
+    /// was given is the one to keep.
+    pub fn current_state<S: 'static, R>(
+        &self,
+        key: &GlobalKey,
+        read: impl FnOnce(&S) -> R,
+    ) -> Option<R> {
+        let id = self.current_element(key)?;
         let states = self.shared.states.borrow();
         states.get(&id)?.downcast_ref::<S>().map(read)
     }
@@ -1053,6 +1590,14 @@ impl ElementTree {
     }
 
     fn release(&mut self, id: ElementId) {
+        // Upstream's `Element.unmount` -> `BuildOwner._unregisterGlobalKey`:
+        // the key stops naming this element, unless it already names a newer
+        // one -- which is the same identity check upstream makes.
+        if let Some(global_key) = self.nodes[id.0].as_ref().and_then(|n| n.widget.global_key) {
+            if self.global_keys.get(&global_key) == Some(&id) {
+                self.global_keys.remove(&global_key);
+            }
+        }
         if let Some(node) = self.nodes[id.0].take() {
             for child in node.children {
                 self.release(child);
@@ -1061,11 +1606,199 @@ impl ElementTree {
         self.shared.states.borrow_mut().remove(&id);
         self.shared.parents.borrow_mut().remove(&id);
         self.shared.provided.borrow_mut().remove(&id);
+        self.shared.listeners.borrow_mut().remove(&id);
         self.shared.clear_dependencies(id);
         self.shared.dependents.borrow_mut().remove(&id);
         self.shared.dirty.borrow_mut().retain(|d| *d != id);
         self.shared.pending.borrow_mut().retain(|(d, _)| *d != id);
         self.free.push(id.0);
+    }
+
+    /// Drops a child the way the reconciliation drops children: for keeps,
+    /// unless a [`GlobalKey`] could still claim it.
+    ///
+    /// Upstream's `Element.deactivateChild`, which never releases anything
+    /// outright -- the child goes to the owner's inactive list and stays
+    /// there until the frame ends. Releasing immediately is this tree's
+    /// equivalent for the child nobody can name; parking is the same half
+    /// frame of grace upstream gives every dropped child, and only a global
+    /// key can use it.
+    fn deactivate_child(&mut self, id: ElementId) {
+        if self.has_global_key_in_subtree(id) {
+            self.deactivate_subtree(id);
+        } else {
+            self.release(id);
+        }
+    }
+
+    /// Whether any element at or below `id` carries a [`GlobalKey`]. Only
+    /// then is a dropped subtree claimable, so only then is parking it worth
+    /// the frame's end.
+    fn has_global_key_in_subtree(&self, id: ElementId) -> bool {
+        match self.nodes[id.0].as_ref() {
+            Some(node) => {
+                node.widget.global_key.is_some()
+                    || node.children.iter().any(|child| self.has_global_key_in_subtree(*child))
+            }
+            None => false,
+        }
+    }
+
+    /// Parks a dropped subtree: off the tree, out of the walks, state and
+    /// render objects and inner structure untouched.
+    ///
+    /// This is upstream's deactivate, from `deactivateChild`'s
+    /// `_inactiveElements.add` down through `_deactivateRecursively`: the
+    /// root loses its parent, every element in the subtree stops being a
+    /// reader or a host of published values and notifications and is taken
+    /// out of the build queue, and everything that makes the subtree *this*
+    /// subtree -- the state, the render objects with what they measured, the
+    /// children -- is kept for a claim to put back. `unmount`, the real
+    /// release, happens at [`ElementTree::finalize_inactive`] if no claim
+    /// comes.
+    fn deactivate_subtree(&mut self, id: ElementId) {
+        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        if node.inactive {
+            // Already parked under an earlier drop this frame; upstream's
+            // inactive list holds each element once for the same reason.
+            return;
+        }
+        node.inactive = true;
+        // Only the root loses its parent. The descendants keep theirs -- the
+        // claim of a deeper keyed element detaches it from *its* parent
+        // inside this subtree, which only works if that link is still there.
+        node.parent = None;
+        let children = node.children.clone();
+        self.inactive.push(id);
+        self.detach_from_shared_maps(id);
+        for child in children {
+            self.deactivate_descendant(child);
+        }
+    }
+
+    fn deactivate_descendant(&mut self, id: ElementId) {
+        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        if node.inactive {
+            return;
+        }
+        node.inactive = true;
+        let children = node.children.clone();
+        self.detach_from_shared_maps(id);
+        for child in children {
+            self.deactivate_descendant(child);
+        }
+    }
+
+    /// The half of deactivation that takes an element out of every walk:
+    /// no longer a reader, no longer a host, no longer scheduled.
+    fn detach_from_shared_maps(&self, id: ElementId) {
+        self.shared.parents.borrow_mut().remove(&id);
+        self.shared.provided.borrow_mut().remove(&id);
+        self.shared.listeners.borrow_mut().remove(&id);
+        self.shared.clear_dependencies(id);
+        self.shared.dependents.borrow_mut().remove(&id);
+        self.shared.dirty.borrow_mut().retain(|d| *d != id);
+        self.shared.pending.borrow_mut().retain(|(d, _)| *d != id);
+    }
+
+    /// Releases whatever the frame parked and no [`GlobalKey`] claimed.
+    ///
+    /// Upstream's `BuildOwner.finalizeTree` -> `_InactiveElements._unmountAll`:
+    /// the last thing a frame does is unmount the inactive, which is why an
+    /// element can only spend half a frame off the tree. Called at the end of
+    /// every rebuild, so a claim has to happen inside the same rebuild that
+    /// dropped the element -- exactly upstream's "same animation frame".
+    fn finalize_inactive(&mut self) {
+        let parked = std::mem::take(&mut self.inactive);
+        for id in parked {
+            if self.nodes[id.0].as_ref().is_some_and(|n| n.inactive) {
+                self.release(id);
+            }
+        }
+    }
+
+    /// Claims the element `key` names, for a widget about to mount.
+    ///
+    /// Upstream's `Element._retakeInactiveElement`: the registry is asked
+    /// first, before a new element is ever made. Three answers come back.
+    ///
+    /// * The named element is parked, and the widget could update it -- the
+    ///   claim. The element is reactivated in place; see [`Self::attach`].
+    /// * The named element is still attached, to a *different* parent, and
+    ///   the widget could update it -- taken anyway, with the old parent
+    ///   left to notice the child is gone. Upstream's comment on this branch
+    ///   is that the element's inactivity is "forward-looking": the old
+    ///   parent has not reconciled yet, but this frame it will, and when it
+    ///   does the child will not be in its list.
+    /// * Anything else -- the key is already spoken for by a live element
+    ///   that cannot be updated into this widget. That is two widgets using
+    ///   one key, and it is an error, exactly as upstream's asserts are.
+    ///
+    /// `None` means no claim: mount a fresh element. The one parked-but-
+    /// unsuitable case -- a different widget type under the same key -- is
+    /// upstream's silent answer too: the new element takes the registry and
+    /// the old one is released with the rest of the inactive.
+    fn claim_global_key(
+        &mut self,
+        key: GlobalKey,
+        widget: &AnyWidget,
+        parent: Option<ElementId>,
+    ) -> Option<ElementId> {
+        let &existing = self.global_keys.get(&key)?;
+        let (live, can_update, old_parent) = match self.nodes[existing.0].as_ref() {
+            Some(node) => (!node.inactive, node.widget.can_update(widget), node.parent),
+            None => return None,
+        };
+        if live && (old_parent == parent || !can_update) {
+            panic!(
+                "Multiple widgets used the same GlobalKey ({key:?}). \
+                 A GlobalKey can only be specified on one widget at a time \
+                 in the widget tree."
+            );
+        }
+        if !can_update {
+            return None;
+        }
+        // Detach from the parent it has now, live or parked: a live parent's
+        // child list loses it here -- upstream's `forgetChild` -- so the
+        // parent's own reconciliation later this frame does not find it and
+        // drop it a second time. A parked one keeps its inner links, so a
+        // deeper claim stays possible; this element just leaves them.
+        if let Some(old) = old_parent {
+            if let Some(node) = self.nodes[old.0].as_mut() {
+                node.children.retain(|child| *child != existing);
+            }
+        }
+        self.inactive.retain(|id| *id != existing);
+        self.attach(existing, parent);
+        Some(existing)
+    }
+
+    /// Reactivates a claimed subtree under a new parent.
+    ///
+    /// Upstream's `Element._activateWithParent` with `_activateRecursively`
+    /// and `_updateDepth`: parent links are rewritten top down, depths
+    /// follow, and every element in the subtree is active again. What it does
+    /// *not* do is build -- that is the caller handing the element the new
+    /// widget, the same `update` an in-place match gets, with the same
+    /// state kept and the same `did_update_widget` told.
+    fn attach(&mut self, id: ElementId, parent: Option<ElementId>) {
+        let depth = parent
+            .and_then(|parent| self.nodes[parent.0].as_ref().map(|node| node.depth))
+            .map_or(0, |depth| depth + 1);
+        self.attach_at_depth(id, parent, depth);
+    }
+
+    fn attach_at_depth(&mut self, id: ElementId, parent: Option<ElementId>, depth: usize) {
+        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        node.inactive = false;
+        node.parent = parent;
+        node.depth = depth;
+        let children = node.children.clone();
+        self.shared.parents.borrow_mut().insert(id, parent);
+        for child in children {
+            self.attach_at_depth(child, Some(id), depth + 1);
+        }
     }
 
     /// Reconciles `widget` against the mounted tree, mounting it if nothing is
@@ -1087,6 +1820,9 @@ impl ElementTree {
                 self.root = Some(root);
             }
         }
+        // The frame's last act, upstream's finalizeTree: whatever was parked
+        // for a GlobalKey that never claimed it is released for real.
+        self.finalize_inactive();
     }
 
     /// Rebuilds only the elements marked dirty by [`StateHandle::set_state`].
@@ -1109,7 +1845,12 @@ impl ElementTree {
         let mut rebuilt = 0;
         let mut done: Vec<ElementId> = Vec::new();
         for id in dirty {
-            if self.nodes[id.0].is_none() {
+            let Some(node) = self.nodes[id.0].as_ref() else {
+                continue;
+            };
+            if node.inactive {
+                // Parked for a GlobalKey that has not claimed it; it has
+                // nothing to contribute until one does.
                 continue;
             }
             if done.iter().any(|ancestor| self.is_ancestor(*ancestor, id)) {
@@ -1119,6 +1860,9 @@ impl ElementTree {
             done.push(id);
             rebuilt += 1;
         }
+        // A partial rebuild is still a frame: upstream's finalizeTree runs
+        // after every build pass, not only after the full ones.
+        self.finalize_inactive();
         rebuilt
     }
 
@@ -1128,6 +1872,9 @@ impl ElementTree {
     /// that a full rebuild cannot express: the view's metrics change many
     /// times a second while a keyboard opens, and the answer to that should be
     /// rebuilding the two widgets that asked about the padding, not the page.
+    /// A reader that qualified its dependence with
+    /// [`BuildContext::inherited_aspect`] counts as reading only the part it
+    /// named, and is rebuilt only when that part is among what changed.
     ///
     /// Upstream reaches the same place along a different road -- the widget
     /// above is rebuilt with a new value and its child is the *same widget
@@ -1154,16 +1901,31 @@ impl ElementTree {
             .min_by_key(|id| self.nodes[id.0].as_ref().map_or(usize::MAX, |n| n.depth));
         let Some(target) = target else { return false };
 
-        let replacement = Provided::of(Rc::new(value));
-        {
+        // The old value is needed after the swap: whether a reader is told is
+        // decided by comparing the old value and the new, so both have to
+        // exist while the question is being asked. The comparison itself --
+        // whole, and per aspect -- is carried over from the entry being
+        // replaced rather than rebuilt from `T`, because it belongs to the
+        // provider widget, not to each value it is given; upstream's is on the
+        // widget too (`updateShouldNotify`, `updateShouldNotifyDependent`).
+        let value = Rc::new(value);
+        let (old, new) = {
             let mut provided = self.shared.provided.borrow_mut();
             let Some(current) = provided.get(&target) else { return false };
+            let replacement = Provided {
+                type_id: current.type_id,
+                value: Rc::clone(&value) as Rc<dyn Any>,
+                same: current.same,
+                aspect_stale: current.aspect_stale,
+            };
             if (current.same)(current.value.as_ref(), replacement.value.as_ref()) {
                 return false;
             }
-            provided.insert(target, replacement);
-        }
-        self.shared.notify_dependents(target);
+            let old = current.clone();
+            provided.insert(target, replacement.clone());
+            (old, replacement)
+        };
+        self.shared.notify_dependents(target, &old, &new);
         true
     }
 
@@ -1225,6 +1987,15 @@ impl ElementTree {
 
     /// Runs a component's `build`, checking its state out for the duration so
     /// a `set_state` from inside it queues instead of aliasing.
+    ///
+    /// A build that panics does not take the frame with it. Upstream catches
+    /// the exception in `ComponentElement.performRebuild`, builds an
+    /// `ErrorWidget` in its place, and lets the frame finish -- and that is
+    /// what happens here: the panic is caught around the build call, what it
+    /// built is replaced by [`error_placeholder`], and the element is left
+    /// clean, so it is not retried until something marks it dirty again. The
+    /// element's state survives the panic, so the retry builds against what
+    /// the failed build had.
     fn build_component(&mut self, id: ElementId, depth: usize) -> AnyWidget {
         // Whatever it read last time is forgotten now; this build registers
         // what it reads this time.
@@ -1242,7 +2013,30 @@ impl ElementTree {
             let WidgetKind::Component(component) = &node.widget.inner else {
                 unreachable!("build_component on a render element");
             };
-            component.build(state.as_deref_mut(), id, &mut context)
+            // The closure reaches the checked-out state and the build context
+            // through trait objects, so it is not UnwindSafe by inspection --
+            // but everything it can touch belongs to this frame. The state is
+            // put back into the map below whether the build returned or
+            // panicked; the context is dropped here; and any RefCell the
+            // build held was released by unwinding before `catch_unwind`
+            // returned, so the shared maps are consistent at the catch. The
+            // panic hook is untouched: it reports the panic while it unwinds,
+            // and this only decides what the frame shows for it.
+            match catch_unwind(AssertUnwindSafe(|| {
+                component.build(state.as_deref_mut(), id, &mut context)
+            })) {
+                Ok(built) => built,
+                Err(panic) => {
+                    // Upstream reports through FlutterError.dumpErrorToConsole;
+                    // the framework has no error sink yet, so the payload goes
+                    // to the log the way app.rs reports its own diagnostics.
+                    eprintln!(
+                        "rustflutter: build of element {id:?} panicked: {}",
+                        panic_message(panic.as_ref())
+                    );
+                    error_placeholder()
+                }
+            }
         };
 
         if let Some(state) = state {
@@ -1252,6 +2046,17 @@ impl ElementTree {
     }
 
     fn mount(&mut self, widget: AnyWidget, parent: Option<ElementId>, depth: usize) -> ElementId {
+        // Upstream's `Element.inflateWidget`: before a new element is ever
+        // made, a global key is asked whether an old one should be had
+        // instead -- dropped by another parent this frame, or still attached
+        // to one that has not reconciled yet. A claim returns the element
+        // reactivated and handed the new widget, state and all; the `update`
+        // an in-place match gets.
+        if let Some(global_key) = widget.global_key {
+            if let Some(existing) = self.claim_global_key(global_key, &widget, parent) {
+                return self.update(existing, widget, parent, depth);
+            }
+        }
         let is_component = matches!(widget.inner, WidgetKind::Component(_));
         let state = match &widget.inner {
             WidgetKind::Component(component) => component.create_state(),
@@ -1263,6 +2068,8 @@ impl ElementTree {
         };
 
         let provided = widget.provided.clone();
+        let listener = widget.listener.clone();
+        let global_key = widget.global_key;
         let id = self.allocate(ElementNode {
             widget,
             children: Vec::new(),
@@ -1270,17 +2077,30 @@ impl ElementTree {
             depth,
             render: None,
             render_dirty: true,
+            inactive: false,
         });
         if let Some(state) = state {
             self.shared.states.borrow_mut().insert(id, state);
         }
         self.shared.parents.borrow_mut().insert(id, parent);
+        // Upstream's `Element.mount` -> `BuildOwner._registerGlobalKey`.
+        if let Some(global_key) = global_key {
+            self.global_keys.insert(global_key, id);
+        }
         match provided {
             Some(provided) => {
                 self.shared.provided.borrow_mut().insert(id, provided);
             }
             None => {
                 self.shared.provided.borrow_mut().remove(&id);
+            }
+        }
+        match listener {
+            Some(listener) => {
+                self.shared.listeners.borrow_mut().insert(id, listener);
+            }
+            None => {
+                self.shared.listeners.borrow_mut().remove(&id);
             }
         }
 
@@ -1310,11 +2130,18 @@ impl ElementTree {
         parent: Option<ElementId>,
         depth: usize,
     ) -> ElementId {
+        // A child a GlobalKey claim took from this parent mid-walk is not
+        // this parent's to update or to drop -- upstream's `forgottenChildren`:
+        // the walk acts as if the child had never been in the list, and the
+        // new widget mounts without touching the moved element.
+        if !self.nodes[id.0].as_ref().is_some_and(|node| node.parent == parent) {
+            return self.mount(widget, parent, depth);
+        }
         let matches = self.nodes[id.0]
             .as_ref()
             .is_some_and(|node| node.widget.can_update(&widget));
         if !matches {
-            self.release(id);
+            self.deactivate_child(id);
             return self.mount(widget, parent, depth);
         }
 
@@ -1325,8 +2152,12 @@ impl ElementTree {
         };
 
         let provided = widget.provided.clone();
-        if let Some(node) = self.nodes[id.0].as_mut() {
-            node.widget = widget;
+        let listener = widget.listener.clone();
+        // The widget being replaced is kept on its way out, so it can be
+        // handed to `did_update_widget` below; upstream passes it to the state
+        // the same way, in `StatefulElement.update`.
+        let old_widget = self.nodes[id.0].as_mut().map(|node| {
+            let old = std::mem::replace(&mut node.widget, widget);
             node.depth = depth;
             node.parent = parent;
             // A new widget describes the render object differently, so the
@@ -1335,7 +2166,8 @@ impl ElementTree {
             // walk instead, because the children's objects are arguments to
             // this one's and they are not built until then.
             node.render_dirty = true;
-        }
+            old
+        });
         self.shared.parents.borrow_mut().insert(id, parent);
         match provided {
             Some(provided) => {
@@ -1345,8 +2177,19 @@ impl ElementTree {
                 self.shared.provided.borrow_mut().remove(&id);
             }
         }
+        match listener {
+            Some(listener) => {
+                self.shared.listeners.borrow_mut().insert(id, listener);
+            }
+            None => {
+                self.shared.listeners.borrow_mut().remove(&id);
+            }
+        }
 
         if is_component {
+            if let Some(old) = old_widget.as_ref() {
+                self.did_update_widget(id, old);
+            }
             let built = self.build_component(id, depth);
             self.last_rebuilt.push(id);
             let old_child = self.nodes[id.0].as_ref().and_then(|n| n.children.first().copied());
@@ -1370,11 +2213,44 @@ impl ElementTree {
         id
     }
 
+    /// Runs a stateful element's [`StatefulComponent::did_update_widget`],
+    /// with the widget it just replaced.
+    ///
+    /// Upstream's `StatefulElement.update`, between taking the new widget and
+    /// rebuilding: the state is told what changed before it is built again, so
+    /// the build draws what the hook decided. The state is checked out exactly
+    /// as a build checks it out, so a `set_state` from inside the hook queues
+    /// instead of aliasing.
+    fn did_update_widget(&mut self, id: ElementId, old: &AnyWidget) {
+        // Nothing stateful is mounted here: a stateless element has no state
+        // to tell, and upstream would have no `State` to call either.
+        let Some(mut state) = self.shared.states.borrow_mut().remove(&id) else {
+            return;
+        };
+        if let Some(node) = self.nodes[id.0].as_ref() {
+            if let (WidgetKind::Component(new), WidgetKind::Component(previous)) =
+                (&node.widget.inner, &old.inner)
+            {
+                new.did_update_widget(previous.as_any(), Some(state.as_mut()));
+            }
+        }
+        self.shared.states.borrow_mut().insert(id, state);
+    }
+
     /// Reconciles a child list.
     ///
-    /// Keyed children are matched by key wherever they moved to; the rest are
-    /// matched by position. That is the rule that makes a reordered list keep
-    /// its state, and it is why a list of anything stateful should be keyed.
+    /// Upstream's `updateChildren`, step for step: sync the head while the
+    /// children still match in place, scan the tail the same way from the end,
+    /// and only the middle in between is unsynchronized -- keyed old children
+    /// wait in a map for their key to come by, unkeyed ones are let go, and
+    /// anything new in the middle mounts fresh.
+    ///
+    /// The two ends are why a list that grew or shrank at an end, or took an
+    /// insertion in the middle, keeps the state of everything it did not
+    /// actually replace: matching from the head alone would shift every child
+    /// after an insertion by one position, and a shifted child is a child that
+    /// lost its state. Only a middle child that *moved* needs a key to
+    /// survive, which is the same trade upstream makes.
     fn update_children(
         &mut self,
         old: Vec<ElementId>,
@@ -1382,58 +2258,121 @@ impl ElementTree {
         parent: ElementId,
         depth: usize,
     ) -> Vec<ElementId> {
-        // Index the old keyed children so a moved one can be found again.
-        let mut keyed: HashMap<(TypeId, u64), ElementId> = HashMap::new();
-        for id in &old {
-            if let Some(node) = self.nodes[id.0].as_ref() {
-                if let Some(key) = node.widget.key {
-                    keyed.insert((node.widget.type_id, key), *id);
+        let mut new_widgets: Vec<Option<AnyWidget>> = new.into_iter().map(Some).collect();
+        let mut new_children: Vec<Option<ElementId>> = vec![None; new_widgets.len()];
+
+        let mut new_top: usize = 0;
+        let mut old_top: usize = 0;
+        // Bottoms sit one below the top when a list is empty, so they roam
+        // below zero and are compared as signed.
+        let mut new_bottom: isize = new_widgets.len() as isize - 1;
+        let mut old_bottom: isize = old.len() as isize - 1;
+
+        // Update the top of the list: everything still matching in place is
+        // updated in place, up to the first mismatch.
+        while old_top as isize <= old_bottom && new_top as isize <= new_bottom {
+            let old_child = old[old_top];
+            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            let matched = self.nodes[old_child.0]
+                .as_ref()
+                .is_some_and(|node| node.widget.can_update(&widget));
+            if !matched {
+                new_widgets[new_top] = Some(widget);
+                break;
+            }
+            new_children[new_top] = Some(self.update(old_child, widget, Some(parent), depth));
+            new_top += 1;
+            old_top += 1;
+        }
+
+        // Scan the bottom of the list. Nothing is updated yet -- the middle
+        // has to be settled first -- but the tail that still matches is
+        // remembered by narrowing both ends.
+        while old_top as isize <= old_bottom && new_top as isize <= new_bottom {
+            let old_child = old[old_bottom as usize];
+            let matched = match new_widgets[new_bottom as usize].as_ref() {
+                Some(widget) => self.nodes[old_child.0]
+                    .as_ref()
+                    .is_some_and(|node| node.widget.can_update(widget)),
+                None => false,
+            };
+            if !matched {
+                break;
+            }
+            old_bottom -= 1;
+            new_bottom -= 1;
+        }
+
+        // Scan the old children in the middle: keyed ones wait in a map for
+        // their key, unkeyed ones are dropped -- upstream deactivates them
+        // here, because a child that neither stayed in place nor carried a key
+        // cannot be told apart from a new one. A child a GlobalKey claim has
+        // since taken is nobody's to drop (upstream's forgottenChildren).
+        let have_old_middle = old_top as isize <= old_bottom;
+        let mut old_keyed: HashMap<(TypeId, u64), ElementId> = HashMap::new();
+        if have_old_middle {
+            while old_top as isize <= old_bottom {
+                let old_child = old[old_top];
+                let still_here = self.nodes[old_child.0]
+                    .as_ref()
+                    .is_some_and(|node| node.parent == Some(parent));
+                if still_here {
+                    if let Some(node) = self.nodes[old_child.0].as_ref() {
+                        match node.widget.key {
+                            Some(key) => {
+                                old_keyed.insert((node.widget.type_id, key), old_child);
+                            }
+                            None => self.deactivate_child(old_child),
+                        }
+                    }
                 }
+                old_top += 1;
             }
         }
 
-        let mut taken: Vec<bool> = vec![false; old.len()];
-        let mut result = Vec::with_capacity(new.len());
-
-        for (position, widget) in new.into_iter().enumerate() {
-            let reuse = match widget.key {
-                Some(key) => keyed.remove(&(widget.type_id, key)).inspect(|id| {
-                    if let Some(index) = old.iter().position(|o| o == id) {
-                        taken[index] = true;
-                    }
-                }),
-                None => old.get(position).copied().and_then(|candidate| {
-                    // Skip a positional candidate that a keyed child claimed.
-                    if taken[position] {
-                        return None;
-                    }
-                    let usable = self.nodes[candidate.0]
-                        .as_ref()
-                        .is_some_and(|n| n.widget.key.is_none() && n.widget.can_update(&widget));
-                    if usable {
-                        taken[position] = true;
-                        Some(candidate)
-                    } else {
-                        None
-                    }
-                }),
-            };
-
+        // Update the middle of the list. A keyed child claims the old element
+        // its key is waiting on; the map is keyed by type as well as key, so a
+        // claim always updates in place, which is upstream's canUpdate check
+        // after the lookup, with the losers left for the cleanup below. An
+        // unkeyed child here is new, and mounts.
+        while new_top as isize <= new_bottom {
+            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            let reuse = widget
+                .key
+                .and_then(|key| old_keyed.remove(&(widget.type_id, key)));
             let id = match reuse {
                 Some(existing) => self.update(existing, widget, Some(parent), depth),
                 None => self.mount(widget, Some(parent), depth),
             };
-            result.push(id);
+            new_children[new_top] = Some(id);
+            new_top += 1;
         }
 
-        // Whatever was not claimed is gone.
-        for (index, id) in old.iter().enumerate() {
-            if !taken[index] && !result.contains(id) && self.nodes[id.0].is_some() {
-                self.release(*id);
+        // The whole list has been walked; the bottom that matched in the scan
+        // is still there, one past the middle on both sides.
+        old_bottom = old.len() as isize - 1;
+        new_bottom = new_widgets.len() as isize - 1;
+
+        // Update the bottom of the list.
+        while old_top as isize <= old_bottom && new_top as isize <= new_bottom {
+            let old_child = old[old_top];
+            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            new_children[new_top] = Some(self.update(old_child, widget, Some(parent), depth));
+            new_top += 1;
+            old_top += 1;
+        }
+
+        // Whatever keyed middle child never came by is gone.
+        for (_, id) in old_keyed {
+            if self.nodes[id.0].as_ref().is_some_and(|node| node.parent == Some(parent)) {
+                self.deactivate_child(id);
             }
         }
 
-        result
+        new_children
+            .into_iter()
+            .map(|child| child.expect("every slot was filled by one of the walks"))
+            .collect()
     }
 
     /// Walks the element tree and produces the render tree for this frame.
@@ -1469,29 +2408,42 @@ impl ElementTree {
     /// Builds `id`'s render object, and its subtree's underneath it.
     ///
     /// A `MediaQuery` on the way down changes the text scale for everything
-    /// below it, so the walk carries it. Upstream a `Text` reads
-    /// `MediaQuery.textScalerOf(context)` in its own `build`; a render object
-    /// here is made inside a closure that has no context, so the scale is
-    /// pushed for the duration of the subtree instead and taken by whatever is
-    /// constructed inside it. Same value, same place in the frame -- the
-    /// paragraph ends up holding it either way, which is what matters, since
-    /// shaping happens at layout when the walk is long over.
+    /// below it, and a `directionality` the direction, so the walk carries
+    /// both. Upstream a `Text` reads `MediaQuery.textScalerOf(context)` and
+    /// `Directionality.of(context)` in its own `build`; a render object here
+    /// is made inside a closure that has no context, so the two are pushed
+    /// for the duration of the subtree instead and taken by whatever is
+    /// constructed inside it. Same values, same place in the frame -- the
+    /// paragraph ends up holding them either way, which is what matters,
+    /// since shaping happens at layout when the walk is long over.
     /// Returns this element's render object, and whether it is a new one.
     fn build_render(&mut self, id: ElementId) -> (BoxedRender, bool) {
-        let scale = {
+        let (scale, direction) = {
             let provided = self.shared.provided.borrow();
-            provided.get(&id).and_then(|entry| {
+            let entry = provided.get(&id);
+            (
+                entry.and_then(|entry| {
+                    entry
+                        .value
+                        .downcast_ref::<crate::media_query::MediaQueryData>()
+                        .map(|data| data.text_scale_factor)
+                }),
                 entry
-                    .value
-                    .downcast_ref::<crate::media_query::MediaQueryData>()
-                    .map(|data| data.text_scale_factor)
-            })
+                    .and_then(|entry| entry.value.downcast_ref::<crate::direction::TextDirection>())
+                    .copied(),
+            )
         };
-        match scale {
-            Some(scale) => {
+        match (scale, direction) {
+            (Some(scale), Some(direction)) => crate::media_query::with_text_scale(scale, || {
+                crate::direction::with_direction(direction, || self.build_render_node(id))
+            }),
+            (Some(scale), None) => {
                 crate::media_query::with_text_scale(scale, || self.build_render_node(id))
             }
-            None => self.build_render_node(id),
+            (None, Some(direction)) => {
+                crate::direction::with_direction(direction, || self.build_render_node(id))
+            }
+            (None, None) => self.build_render_node(id),
         }
     }
 
@@ -1799,6 +2751,135 @@ mod tests {
     }
 
     #[test]
+    fn inserting_into_the_middle_of_an_unkeyed_list_keeps_the_state_after_it() {
+        // The case the two-ended sync exists for. Nothing is keyed, so nothing
+        // that *moves* survives -- but nothing here moves: a different-type
+        // child is inserted at the front of the second half, and every child
+        // after the insertion is the same widget in the same order. Matching
+        // from the head alone shifts each of those by one position, and a
+        // shifted child is a child whose state was dropped; the tail scan
+        // matches them where they are.
+        reset_builds();
+        let sinks: Vec<Rc<RefCell<Option<StateHandle<Counter>>>>> =
+            (0..3).map(|_| Rc::new(RefCell::new(None))).collect();
+        let counter = |label: &'static str, sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
+            stateful(CounterWidget { label, key: None, sink: sink.clone() })
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            counter("first", &sinks[0]),
+            counter("second", &sinks[1]),
+            counter("third", &sinks[2]),
+        ]));
+        let handles: Vec<StateHandle<Counter>> =
+            sinks.iter().map(|s| s.borrow().clone().unwrap()).collect();
+        handles[0].set_state(|s| s.count = 11);
+        handles[1].set_state(|s| s.count = 22);
+        handles[2].set_state(|s| s.count = 33);
+
+        tree.rebuild(column(vec![
+            counter("first", &sinks[0]),
+            component(Static("inserted")),
+            counter("second", &sinks[1]),
+            counter("third", &sinks[2]),
+        ]));
+
+        assert_eq!(tree.state::<Counter, _>(handles[0].element(), |s| s.count), Some(11));
+        assert_eq!(
+            tree.state::<Counter, _>(handles[1].element(), |s| s.count),
+            Some(22),
+            "the child after the insertion kept neither its element nor its state"
+        );
+        assert_eq!(tree.state::<Counter, _>(handles[2].element(), |s| s.count), Some(33));
+    }
+
+    #[test]
+    fn a_keyed_reorder_around_an_insertion_keeps_state() {
+        // Keys still win wherever the children land: both keyed children move
+        // past an insertion in the middle, and each keeps its own state.
+        reset_builds();
+        let first = Rc::new(RefCell::new(None));
+        let second = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        let one = |sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
+            stateful(CounterWidget { label: "one", key: Some(1), sink: sink.clone() })
+        };
+        let two = |sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
+            stateful(CounterWidget { label: "two", key: Some(2), sink: sink.clone() })
+        };
+        tree.rebuild(column(vec![one(&first), two(&second)]));
+        let handle_one = first.borrow().clone().unwrap();
+        let handle_two = second.borrow().clone().unwrap();
+        handle_one.set_state(|s| s.count = 11);
+        handle_two.set_state(|s| s.count = 22);
+
+        tree.rebuild(column(vec![two(&second), component(Static("inserted")), one(&first)]));
+
+        // Both kept their own counts through the reorder and the insertion.
+        assert_eq!(tree.state::<Counter, _>(handle_one.element(), |s| s.count), Some(11));
+        assert_eq!(tree.state::<Counter, _>(handle_two.element(), |s| s.count), Some(22));
+    }
+
+    #[test]
+    fn did_update_widget_sees_the_old_widget_before_the_build() {
+        // A stateful element rebuilt with the same type is told what it
+        // replaced, and told it before it builds: whatever the hook wrote is
+        // what this very build draws. Mounting runs no hook -- upstream's
+        // initState is a different method -- and neither does a type change,
+        // which replaces the element outright.
+        reset_builds();
+        thread_local! {
+            static UPDATES_SEEN: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+        }
+
+        struct Reconfigured(i32);
+
+        #[derive(Default)]
+        struct ReconfiguredState {
+            updates: usize,
+            replaced: Vec<i32>,
+        }
+
+        impl StatefulComponent for Reconfigured {
+            type State = ReconfiguredState;
+
+            fn did_update_widget(&self, old: &Self, state: &mut Self::State) {
+                state.updates += 1;
+                state.replaced.push(old.0);
+            }
+
+            fn build(
+                &self,
+                state: &Self::State,
+                _handle: StateHandle<Self::State>,
+                _context: &mut BuildContext,
+            ) -> AnyWidget {
+                record("reconfigured");
+                UPDATES_SEEN.with(|u| u.borrow_mut().push(state.updates));
+                let value = self.0;
+                leaf(move || Sized(value as f32))
+            }
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Reconfigured(1)));
+        tree.rebuild(stateful(Reconfigured(2)));
+        tree.rebuild(stateful(Reconfigured(3)));
+
+        let root = tree.root().expect("mounted");
+        let (replaced, updates) = tree
+            .state::<ReconfiguredState, _>(root, |s| (s.replaced.clone(), s.updates))
+            .expect("the state survived the updates");
+        // Each rebuild reports the widget it replaced; the mount reports none.
+        assert_eq!(replaced, vec![1, 2]);
+        assert_eq!(updates, 2);
+        // Each build saw what the hook had already written, in the same pass:
+        // zero on mount, then one more with every update.
+        let seen = UPDATES_SEEN.with(|u| u.borrow().clone());
+        assert_eq!(seen, vec![0, 1, 2]);
+    }
+
+    #[test]
     fn removing_a_child_frees_its_element_and_state() {
         reset_builds();
         let sink = Rc::new(RefCell::new(None));
@@ -2082,6 +3163,385 @@ mod tests {
 
         tree.publish(Published(3));
         assert_eq!(tree.rebuild_dirty(), 0, "and should not be rebuilt for it");
+    }
+
+    // -- Inherited values, by aspect -------------------------------------------
+
+    /// A published value with two distinguishable parts, standing in for a
+    /// `MediaQueryData` whose size moved while its padding did not.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct AB {
+        a: i32,
+        b: i32,
+    }
+
+    impl DependentNotify for AB {
+        fn is_aspect_stale(old: &Self, new: &Self, aspect: &str) -> bool {
+            match aspect {
+                "a" => old.a != new.a,
+                "b" => old.b != new.b,
+                // Not every part of a value has a name. A reader asking after
+                // an unnamed one hears about every change rather than
+                // silently none.
+                _ => true,
+            }
+        }
+    }
+
+    /// Reads `aspect` of the published value, and says when it built.
+    struct AspectReader {
+        label: &'static str,
+        aspect: &'static str,
+    }
+
+    impl Component for AspectReader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let value = context.inherited_aspect::<AB>(self.aspect).map_or(0, |v| v.a);
+            record(self.label);
+            leaf(move || Sized(value as f32))
+        }
+    }
+
+    fn model_tree(readers: Vec<AnyWidget>) -> ElementTree {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide_model(AB { a: 1, b: 1 }, column(readers)));
+        tree
+    }
+
+    #[test]
+    fn an_aspect_reader_is_rebuilt_only_when_its_aspect_changed() {
+        reset_builds();
+        let mut tree = model_tree(vec![
+            component(AspectReader { label: "reads-a", aspect: "a" }),
+            component(AspectReader { label: "reads-b", aspect: "b" }),
+        ]);
+        assert_eq!(builds_of("reads-a"), 1);
+        assert_eq!(builds_of("reads-b"), 1);
+
+        // `a` moved and `b` did not: one reader, not both. The size changing
+        // is not the padding reader's news.
+        assert!(tree.publish(AB { a: 2, b: 1 }));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("reads-a"), 2);
+        assert_eq!(builds_of("reads-b"), 1);
+
+        // And the other way around.
+        assert!(tree.publish(AB { a: 2, b: 2 }));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("reads-a"), 2, "still only told once");
+        assert_eq!(builds_of("reads-b"), 2);
+    }
+
+    #[test]
+    fn a_reader_of_several_aspects_is_rebuilt_when_either_changes() {
+        struct ReadsBoth;
+
+        impl Component for ReadsBoth {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let a = context.inherited_aspect::<AB>("a").map_or(0, |v| v.a);
+                let _ = context.inherited_aspect::<AB>("b");
+                record("both");
+                leaf(move || Sized(a as f32))
+            }
+        }
+
+        reset_builds();
+        let mut tree = model_tree(vec![component(ReadsBoth)]);
+        assert_eq!(builds_of("both"), 1);
+
+        tree.publish(AB { a: 2, b: 1 });
+        tree.rebuild_dirty();
+        assert_eq!(builds_of("both"), 2, "the a it reads moved");
+
+        tree.publish(AB { a: 2, b: 3 });
+        tree.rebuild_dirty();
+        assert_eq!(builds_of("both"), 3, "and so did the b");
+    }
+
+    #[test]
+    fn a_whole_reader_of_a_model_value_hears_about_every_change() {
+        // A reader that did not qualify -- a SafeArea reading the whole
+        // MediaQuery -- is rebuilt for a change in any part, model or no.
+        struct ReadsWhole;
+
+        impl Component for ReadsWhole {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let value = context.inherited::<AB>().map_or(0, |v| v.a);
+                record("whole");
+                leaf(move || Sized(value as f32))
+            }
+        }
+
+        reset_builds();
+        let mut tree = model_tree(vec![
+            component(ReadsWhole),
+            component(AspectReader { label: "reads-a", aspect: "a" }),
+        ]);
+
+        // `b` moved: the aspect reader of `a` is spared, the whole reader is
+        // not.
+        assert!(tree.publish(AB { a: 1, b: 2 }));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("whole"), 2);
+        assert_eq!(builds_of("reads-a"), 1);
+    }
+
+    #[test]
+    fn a_build_that_read_whole_is_not_narrowed_by_a_later_aspect_read() {
+        // Upstream keeps an empty aspect set empty: a reader that read the
+        // value whole cannot go back and pretend it only wanted a part of it.
+        struct WholeThenPart;
+
+        impl Component for WholeThenPart {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let value = context.inherited::<AB>().map_or(0, |v| v.a);
+                let _ = context.inherited_aspect::<AB>("a");
+                record("whole-then-part");
+                leaf(move || Sized(value as f32))
+            }
+        }
+
+        reset_builds();
+        let mut tree = model_tree(vec![component(WholeThenPart)]);
+        tree.publish(AB { a: 1, b: 9 });
+        tree.rebuild_dirty();
+        assert_eq!(builds_of("whole-then-part"), 2, "the b change was its news");
+    }
+
+    #[test]
+    fn an_aspect_the_value_cannot_speak_for_counts_as_changed() {
+        // Same shape as the readers above, but the aspect names no part of the
+        // value: every change is its news, never none.
+        reset_builds();
+        let mut tree =
+            model_tree(vec![component(AspectReader { label: "reads-c", aspect: "c" })]);
+        tree.publish(AB { a: 1, b: 9 });
+        tree.rebuild_dirty();
+        assert_eq!(builds_of("reads-c"), 2);
+    }
+
+    #[test]
+    fn a_value_without_aspect_comparison_notifies_whole() {
+        // `Published` does not implement DependentNotify. A reader that
+        // qualified its dependence anyway gets today's behavior: the value
+        // cannot say which part changed, so every change is its news.
+        struct Qualified;
+
+        impl Component for Qualified {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let value = context.inherited_aspect::<Published>("anything").map_or(0, |v| v.0);
+                record("qualified");
+                leaf(move || Sized(value as f32))
+            }
+        }
+
+        reset_builds();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Published(1), component(Qualified)));
+        assert!(tree.publish(Published(2)));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("qualified"), 2);
+    }
+
+    #[test]
+    fn publishing_an_identical_model_value_is_not_a_change() {
+        // The whole-value comparison still gates everything, aspect or no:
+        // republishing what is already published rebuilds nobody.
+        reset_builds();
+        let mut tree = model_tree(vec![component(AspectReader { label: "reads-a", aspect: "a" })]);
+        assert!(!tree.publish(AB { a: 1, b: 1 }), "the same value is not news");
+        assert_eq!(tree.rebuild_dirty(), 0);
+        assert_eq!(builds_of("reads-a"), 1);
+    }
+
+    #[test]
+    fn a_change_nobody_subscribed_to_rebuilds_nothing() {
+        // The provider is there and the value changes, but no reader ever
+        // registered: nobody is notified, nobody rebuilds.
+        reset_builds();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide_model(AB { a: 1, b: 1 }, component(Bystander)));
+        let provider = tree.root.expect("a mounted root");
+        assert_eq!(tree.dependent_count(provider), 0, "nobody reads it");
+
+        assert!(tree.publish(AB { a: 5, b: 5 }), "the value did change");
+        assert_eq!(tree.rebuild_dirty(), 0, "but there was nobody to tell");
+        assert_eq!(builds_of("bystander"), 1);
+    }
+
+    // -- Notifications --------------------------------------------------------
+
+    /// A notification that only says its name, so a test can tell which
+    /// listener saw it.
+    struct Ping(&'static str);
+
+    impl Notification for Ping {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// A different type entirely, to show a listener is chosen by type.
+    struct Other(u32);
+
+    impl Notification for Other {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// Dispatches one notification during its build.
+    struct Dispatcher(&'static str);
+
+    impl Component for Dispatcher {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            context.dispatch_notification(&Ping(self.0));
+            leaf(|| Empty)
+        }
+    }
+
+    /// Records every notification it is offered, under a label.
+    fn recorder(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        label: &'static str,
+        handled: bool,
+    ) -> Box<dyn for<'a> Fn(&'a Ping) -> bool> {
+        let log = log.clone();
+        Box::new(move |_notification| {
+            log.borrow_mut().push(label);
+            handled
+        })
+    }
+
+    #[test]
+    fn notifications_bubble_from_the_child_up_through_every_listener() {
+        // Nearest listener first: upstream's notification tree is a chain from
+        // the dispatching element to the root, walked in that order.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut tree = ElementTree::new();
+        tree.rebuild(notification_listener(
+            recorder(&log, "outer", false),
+            notification_listener(recorder(&log, "inner", false), component(Dispatcher("ping"))),
+        ));
+        assert_eq!(*log.borrow(), vec!["inner", "outer"], "nearest first");
+    }
+
+    #[test]
+    fn a_listener_that_handles_a_notification_stops_it_bubbling() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut tree = ElementTree::new();
+        tree.rebuild(notification_listener(
+            recorder(&log, "outer", false),
+            notification_listener(recorder(&log, "inner", true), component(Dispatcher("ping"))),
+        ));
+        assert_eq!(*log.borrow(), vec!["inner"], "the outer listener never heard it");
+    }
+
+    #[test]
+    fn listeners_only_hear_the_type_they_listen_for() {
+        // A listener for Ping is not offered Other, and vice versa: upstream's
+        // `notification is T` failing costs nothing and bothers nobody.
+        let pings = Rc::new(RefCell::new(Vec::new()));
+        let others = Rc::new(RefCell::new(Vec::new()));
+
+        struct DispatchOther;
+
+        impl Component for DispatchOther {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                context.dispatch_notification(&Other(1));
+                leaf(|| Empty)
+            }
+        }
+
+        let ping_log = pings.clone();
+        let other_log = others.clone();
+        let mut tree = ElementTree::new();
+        tree.rebuild(notification_listener(
+            move |_notification: &Other| {
+                other_log.borrow_mut().push("other");
+                false
+            },
+            notification_listener(
+                move |_notification: &Ping| {
+                    ping_log.borrow_mut().push("ping");
+                    false
+                },
+                component(DispatchOther),
+            ),
+        ));
+        assert_eq!(*others.borrow(), vec!["other"]);
+        assert!(pings.borrow().is_empty(), "the Ping listener was offered an Other");
+    }
+
+    #[test]
+    fn an_unmounted_listener_hears_nothing() {
+        // Releasing an element takes its registration with it, the way
+        // upstream's notification chain drops a deactivated element's node.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut tree = ElementTree::new();
+        tree.rebuild(notification_listener(
+            recorder(&log, "outer", false),
+            notification_listener(recorder(&log, "inner", false), component(Dispatcher("first"))),
+        ));
+        assert_eq!(*log.borrow(), vec!["inner", "outer"]);
+
+        // The inner listener is gone; the dispatcher is still there.
+        log.borrow_mut().clear();
+        tree.rebuild(notification_listener(
+            recorder(&log, "outer", false),
+            component(Dispatcher("second")),
+        ));
+        assert_eq!(*log.borrow(), vec!["outer"], "the released listener heard a dispatch");
+    }
+
+    #[test]
+    fn a_sink_dispatches_from_outside_any_build() {
+        // The shape the scrolling code needs: a widget that keeps the sink its
+        // build was given and dispatches through it later, from inside a
+        // set_state -- upstream's Scrollable holding its notificationContext.
+        #[derive(Default)]
+        struct HolderState;
+
+        struct Holder {
+            handles: Rc<RefCell<Option<StateHandle<HolderState>>>>,
+            sinks: Rc<RefCell<Option<NotificationSink>>>,
+        }
+
+        impl StatefulComponent for Holder {
+            type State = HolderState;
+
+            fn build(
+                &self,
+                _state: &HolderState,
+                handle: StateHandle<HolderState>,
+                context: &mut BuildContext,
+            ) -> AnyWidget {
+                *self.handles.borrow_mut() = Some(handle);
+                *self.sinks.borrow_mut() = Some(context.notification_sink());
+                leaf(|| Empty)
+            }
+        }
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let handles = Rc::new(RefCell::new(None));
+        let sinks = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(notification_listener(
+            recorder(&log, "heard", false),
+            stateful(Holder { handles: handles.clone(), sinks: sinks.clone() }),
+        ));
+
+        // Not from a build -- from nowhere in particular, as a pointer event
+        // arrives between frames.
+        sinks.borrow().as_ref().expect("built").dispatch(&Ping("late"));
+        assert_eq!(*log.borrow(), vec!["heard"]);
+
+        // And once the tree is gone the sink is quietly inert, the way a
+        // defunct context is upstream.
+        let sink = sinks.borrow().clone().expect("built");
+        drop(tree);
+        sink.dispatch(&Ping("too late"));
+        assert_eq!(*log.borrow(), vec!["heard"]);
     }
 
     // -- Persistent render objects -----------------------------------------
@@ -2536,5 +3996,350 @@ mod tests {
         let second = frame(&mut tree);
         assert_eq!(second.retained, 1, "the drawing it already had was thrown away");
         assert_eq!(second.retainable, 0, "and recorded a second time");
+    }
+
+    // -- Build error isolation (upstream ComponentElement.performRebuild's
+    // try/catch around build -> ErrorWidget) --
+
+    use std::cell::Cell;
+
+    /// A component that panics on build while `fail` is set, so a test can
+    /// flip it off and have the same element retry.
+    struct Flaky {
+        label: &'static str,
+        fail: Rc<Cell<bool>>,
+        sink: Rc<RefCell<Option<StateHandle<Counter>>>>,
+    }
+
+    impl StatefulComponent for Flaky {
+        type State = Counter;
+
+        fn build(
+            &self,
+            state: &Counter,
+            handle: StateHandle<Counter>,
+            _context: &mut BuildContext,
+        ) -> AnyWidget {
+            record(self.label);
+            *self.sink.borrow_mut() = Some(handle);
+            if self.fail.get() {
+                panic!("{} exploded", self.label);
+            }
+            let count = state.count;
+            leaf(move || Sized(count as f32 + 1.0))
+        }
+    }
+
+    fn flaky(fail: &Rc<Cell<bool>>, sink: &Rc<RefCell<Option<StateHandle<Counter>>>>) -> AnyWidget {
+        stateful(Flaky {
+            label: "flaky",
+            fail: fail.clone(),
+            sink: sink.clone(),
+        })
+    }
+
+    /// Whether the element is the gray box a panicked build leaves behind.
+    fn is_error_placeholder(tree: &ElementTree, id: ElementId) -> bool {
+        tree.nodes[id.0].as_ref().is_some_and(|node| {
+            node.widget.type_id == TypeId::of::<ErrorPlaceholder>()
+        })
+    }
+
+    /// The one child of a component element, which is where the placeholder
+    /// or the real subtree ends up.
+    fn only_child(tree: &ElementTree, id: ElementId) -> ElementId {
+        let children = tree.children_of(id);
+        assert_eq!(children.len(), 1, "a component has exactly one child");
+        children[0]
+    }
+
+    #[test]
+    fn a_panicking_build_is_replaced_and_the_frame_finishes() {
+        reset_builds();
+        let fail = Rc::new(Cell::new(true));
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Static("sibling")),
+            flaky(&fail, &sink),
+        ]));
+
+        // The flaky component threw; its sibling did not, and neither failure
+        // stopped the other from building.
+        assert_eq!(builds_of("flaky"), 1);
+        assert_eq!(builds_of("sibling"), 1);
+
+        let root = tree.root().expect("mounted");
+        let [sibling, flaky_element] = [tree.children_of(root)[0], tree.children_of(root)[1]];
+        // The subtree that threw is the placeholder; the sibling is not.
+        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert!(!is_error_placeholder(&tree, only_child(&tree, sibling)));
+
+        // The frame completes: a render tree still comes out, and the
+        // element's state survived the panic.
+        assert!(tree.build_render_tree().is_some());
+        assert_eq!(tree.state::<Counter, _>(flaky_element, |s| s.count), Some(0));
+    }
+
+    #[test]
+    fn a_retried_build_recovers_the_subtree() {
+        reset_builds();
+        let fail = Rc::new(Cell::new(true));
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![flaky(&fail, &sink)]));
+        let handle = sink.borrow().clone().expect("built");
+        let flaky_element = handle.element();
+        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+
+        // The next rebuild of the same element runs build again; this time it
+        // returns, and the real subtree takes the placeholder's place.
+        fail.set(false);
+        handle.set_state(|s| s.count += 1);
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("flaky"), 2);
+        assert!(!is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        // The state carried over: the build drew the count the set_state wrote.
+        assert_eq!(tree.state::<Counter, _>(flaky_element, |s| s.count), Some(1));
+        assert!(tree.build_render_tree().is_some());
+    }
+
+    #[test]
+    fn a_component_that_always_panics_stays_bounded() {
+        reset_builds();
+        let fail = Rc::new(Cell::new(true));
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![flaky(&fail, &sink)]));
+        let handle = sink.borrow().clone().expect("built");
+        let flaky_element = handle.element();
+        assert_eq!(builds_of("flaky"), 1);
+
+        // The panic marks nothing: with no set_state driving it, the dirty
+        // list is empty and the frame loop settles immediately.
+        assert_eq!(tree.rebuild_dirty(), 0);
+
+        // Driven externally, every frame is one build attempt and one
+        // placeholder -- no growth, no runaway.
+        for frame in 0..100 {
+            handle.set_state(|s| s.count += 1);
+            assert_eq!(tree.rebuild_dirty(), 1, "frame {frame}");
+            assert_eq!(builds_of("flaky"), 2 + frame, "frame {frame}");
+        }
+        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert_eq!(
+            tree.state::<Counter, _>(flaky_element, |s| s.count),
+            Some(100),
+            "every set_state landed, none looped"
+        );
+        assert!(tree.build_render_tree().is_some());
+    }
+
+    // -- Global keys ---------------------------------------------------------
+    //
+    // Everything above moves state by matching a child where it is; a global
+    // key moves it by name, which is the only way state crosses from one
+    // parent to another. Upstream's deactivate -> retake -> activate, with
+    // the frame's end as the deadline for a claim.
+
+    thread_local! {
+        static INITIAL_STATES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        static STATE_DROPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A stateful widget whose initial state announces itself, so a test can
+    /// tell a remount (initial state again) from a retake (state kept).
+    struct Mover {
+        label: &'static str,
+        sink: Rc<RefCell<Option<StateHandle<MoverState>>>>,
+    }
+
+    #[derive(Default)]
+    struct MoverState {
+        count: i32,
+    }
+
+    impl StatefulComponent for Mover {
+        type State = MoverState;
+
+        fn initial_state(&self) -> MoverState {
+            INITIAL_STATES.with(|states| states.borrow_mut().push(self.label));
+            MoverState::default()
+        }
+
+        fn build(
+            &self,
+            _state: &MoverState,
+            handle: StateHandle<MoverState>,
+            _context: &mut BuildContext,
+        ) -> AnyWidget {
+            record(self.label);
+            *self.sink.borrow_mut() = Some(handle);
+            leaf(|| Sized(1.0))
+        }
+    }
+
+    /// A stateful widget whose state says when it was dropped, so a test can
+    /// tell "parked, then released at frame end" from "leaked".
+    struct DropCounted;
+
+    #[derive(Default)]
+    struct DropCountedState;
+
+    impl Drop for DropCountedState {
+        fn drop(&mut self) {
+            STATE_DROPS.with(|drops| drops.set(drops.get() + 1));
+        }
+    }
+
+    impl StatefulComponent for DropCounted {
+        type State = DropCountedState;
+
+        fn build(
+            &self,
+            _state: &DropCountedState,
+            _handle: StateHandle<DropCountedState>,
+            _context: &mut BuildContext,
+        ) -> AnyWidget {
+            record("drop-counted");
+            leaf(|| Sized(1.0))
+        }
+    }
+
+    /// A one-child wrapper whose widget type is stable across frames, so the
+    /// reconciliation updates it in place and the only thing that moves in
+    /// the tests below is the child.
+    fn holder(child: AnyWidget) -> AnyWidget {
+        single(child, |child| {
+            let mut flex = RenderFlex::column();
+            flex = flex.push(child);
+            flex
+        })
+    }
+
+    fn initial_states_of(label: &str) -> usize {
+        INITIAL_STATES.with(|states| states.borrow().iter().filter(|l| **l == label).count())
+    }
+
+    #[test]
+    fn a_global_key_moves_state_between_parents() {
+        // The reparent the element tree could not do before: one rebuild
+        // where the first holder drops the keyed child and the second takes
+        // it. Upstream's deactivate -> retake -> activate, state and all.
+        reset_builds();
+        let key = GlobalKey::new();
+        let sink = Rc::new(RefCell::new(None));
+        let mover =
+            || with_global_key(key, stateful(Mover { label: "mover", sink: sink.clone() }));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
+        let handle = sink.borrow().clone().unwrap();
+        handle.set_state(|state| state.count = 41);
+        let element = tree.current_element(&key).expect("mounted under the key");
+        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(41));
+
+        // Same rebuild: the first holder loses it, the second gains it.
+        tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
+
+        assert_eq!(
+            tree.current_element(&key),
+            Some(element),
+            "the element moved; it did not remount"
+        );
+        assert_eq!(
+            tree.current_state::<MoverState, _>(&key, |s| s.count),
+            Some(41),
+            "the state crossed the move"
+        );
+        assert_eq!(
+            initial_states_of("mover"),
+            1,
+            "initial state ran once, not again for the retake"
+        );
+        // The handle the first build was given still writes.
+        assert!(handle.set_state(|state| state.count += 1));
+        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(42));
+        assert!(tree.build_render_tree().is_some());
+    }
+
+    #[test]
+    fn a_global_key_can_move_before_its_old_parent_reconciles() {
+        // The other order: the new parent is earlier in the walk, so it
+        // claims the element while the element is still attached -- upstream's
+        // "forward-looking inactivity", where the old parent has not dropped
+        // the child yet but will this frame.
+        reset_builds();
+        let key = GlobalKey::new();
+        let sink = Rc::new(RefCell::new(None));
+        let mover =
+            || with_global_key(key, stateful(Mover { label: "mover", sink: sink.clone() }));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
+        let handle = sink.borrow().clone().unwrap();
+        handle.set_state(|state| state.count = 41);
+
+        tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
+
+        assert_eq!(tree.current_element(&key), Some(handle.element()));
+        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(41));
+        assert_eq!(initial_states_of("mover"), 1);
+    }
+
+    #[test]
+    fn an_unclaimed_parked_element_is_released_at_the_end_of_the_rebuild() {
+        // Dropped, with nothing claiming the key in the same rebuild: the
+        // state survives the drop only until the frame ends, which is
+        // upstream's finalizeTree unmounting the inactive.
+        reset_builds();
+        STATE_DROPS.with(|drops| drops.set(0));
+        let key = GlobalKey::new();
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![with_global_key(key, stateful(DropCounted))]));
+        assert_eq!(STATE_DROPS.with(|drops| drops.get()), 0, "mounted, not dropped");
+        let element = tree.current_element(&key).expect("mounted under the key");
+
+        tree.rebuild(column(vec![component(Static("after"))]));
+
+        assert_eq!(
+            STATE_DROPS.with(|drops| drops.get()),
+            1,
+            "released exactly once, at frame end"
+        );
+        assert_eq!(tree.current_element(&key), None, "the key names nothing now");
+        assert!(!tree.is_mounted(element), "the parked element was released, not left parked");
+    }
+
+    #[test]
+    #[should_panic(expected = "Multiple widgets used the same GlobalKey")]
+    fn the_same_global_key_cannot_be_mounted_twice() {
+        let key = GlobalKey::new();
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            with_global_key(key, stateful(DropCounted)),
+            with_global_key(key, stateful(DropCounted)),
+        ]));
+    }
+
+    #[test]
+    fn without_a_global_key_a_move_still_loses_state() {
+        // The behavior the key exists to change, pinned: without one, a move
+        // is a drop and a mount, the state goes with the drop, and the mount
+        // starts over.
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mover = || stateful(Mover { label: "plain", sink: sink.clone() });
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
+        sink.borrow().clone().unwrap().set_state(|state| state.count = 41);
+
+        tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
+
+        assert_eq!(
+            initial_states_of("plain"),
+            2,
+            "the move remounted, as it does without a key"
+        );
+        let handle = sink.borrow().clone().unwrap();
+        assert_eq!(tree.state::<MoverState, _>(handle.element(), |s| s.count), Some(0));
     }
 }

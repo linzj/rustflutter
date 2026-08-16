@@ -359,18 +359,50 @@ impl Simulation for SpringSimulation {
 
 // -- Friction -----------------------------------------------------------------
 
+/// Numerically determines the input which produces `target` from `f`, given
+/// `f`'s first derivative.
+///
+/// Upstream's `_newtonsMethod` (`friction_simulation.dart`), used to find when
+/// a friction particle is meant to have stopped.
+fn newtons_method(
+    initial_guess: f32,
+    target: f32,
+    f: impl Fn(f32) -> f32,
+    df: impl Fn(f32) -> f32,
+    iterations: usize,
+) -> f32 {
+    let mut guess = initial_guess;
+    for _ in 0..iterations {
+        guess -= (f(guess) - target) / df(guess);
+    }
+    guess
+}
+
 /// Something sliding to a stop, with velocity decaying exponentially.
 ///
 /// Upstream's `FrictionSimulation`, which is what `BouncingScrollPhysics`
 /// flings with -- iOS-style, where the deceleration is proportional to the
 /// speed rather than shaped by a spline. `drag` is the fraction of the speed
 /// that survives each second: 0.135 is upstream's iOS scrolling value.
+///
+/// Pure exponential decay never actually stops, so upstream decides when it
+/// counts as stopped: a final time found by Newton's method, past which `x`
+/// has already arrived at [`Self::final_x`] and `dx` is zero. Without that
+/// freeze the simulation decays for ever, which upstream's own comment on
+/// `_finalTime` calls out as wrong even for a drag with no constant
+/// deceleration.
 #[derive(Clone, Copy, Debug)]
 pub struct FrictionSimulation {
     drag: f32,
     drag_log: f32,
     position: f32,
     velocity: f32,
+    /// The time at which the simulation stops. Upstream's `_finalTime`, found
+    /// in the constructor with ten Newton iterations on `dx`. Each step of the
+    /// iteration moves the guess by `-dx/dx' = -1/ln(drag)`, so with zero
+    /// constant deceleration the answer is always `10 / |ln(drag)|` seconds
+    /// -- about 4.99s for the iOS drag of 0.135.
+    final_time: f32,
     tolerance: Tolerance,
 }
 
@@ -385,7 +417,21 @@ impl FrictionSimulation {
         velocity: f32,
         tolerance: Tolerance,
     ) -> FrictionSimulation {
-        FrictionSimulation { drag, drag_log: drag.ln(), position, velocity, tolerance }
+        let drag_log = drag.ln();
+        // Upstream's `_finalTime`: Newton's method on `dx`, whose derivative
+        // is `v * drag^t * ln(drag)` -- upstream subtracts a constant
+        // deceleration here too, but this port does not have one (the
+        // parameter upstream added it for is desktop scrolling, and this
+        // simulation's only caller is iOS-style bouncing, which is not ported
+        // yet). Ten iterations from zero.
+        let final_time = newtons_method(
+            0.0,
+            0.0,
+            |time| velocity * drag.powf(time),
+            |time| velocity * drag.powf(time) * drag_log,
+            10,
+        );
+        FrictionSimulation { drag, drag_log, position, velocity, final_time, tolerance }
     }
 
     /// Where it comes to rest.
@@ -396,11 +442,17 @@ impl FrictionSimulation {
 
 impl Simulation for FrictionSimulation {
     fn x(&self, time: f32) -> f32 {
+        if time > self.final_time {
+            return self.final_x();
+        }
         self.position + self.velocity * self.drag.powf(time) / self.drag_log
             - self.velocity / self.drag_log
     }
 
     fn dx(&self, time: f32) -> f32 {
+        if time > self.final_time {
+            return 0.0;
+        }
         self.velocity * self.drag.powf(time)
     }
 
@@ -592,24 +644,51 @@ mod tests {
         let simulation = FrictionSimulation::new(0.135, 0.0, 600.0);
         assert!((simulation.dx(0.0) - 600.0).abs() < 1e-3);
         assert!(simulation.dx(1.0) < simulation.dx(0.5));
-        // Exponential decay has no end, so "done" is where the tolerance puts
-        // it: 600 px/s at this drag takes about six and a half seconds to fall
-        // under a thousandth of a pixel per second. It has travelled all but a
-        // hundredth of a pixel long before that.
-        assert!(!simulation.is_done(5.0));
-        assert!(simulation.is_done(8.0));
+        // Upstream does not let the exponential decay run for ever: ten Newton
+        // iterations put a final time at 10/|ln(drag)| -- about 4.99s here --
+        // past which dx() is zero and x() has arrived. A frame before it the
+        // particle is still moving; at five seconds it is done, stopped
+        // exactly where it was always going to be.
+        assert!(!simulation.is_done(4.9));
+        assert!(simulation.is_done(5.0));
+        assert_eq!(simulation.dx(5.0), 0.0);
         let settled = simulation.x(5.0);
         assert!(
-            (settled - simulation.final_x()).abs() < 1.0,
-            "{settled} should be about {}",
+            (settled - simulation.final_x()).abs() < 1e-3,
+            "{settled} should have arrived at {}",
             simulation.final_x()
         );
+        // And it stays there, rather than decaying on towards the asymptote.
+        assert_eq!(simulation.x(60.0), settled);
+    }
+
+    #[test]
+    fn frictions_final_time_is_where_newton_leaves_it() {
+        // Each Newton step moves the guess by 1/|ln(drag)| and there are ten
+        // of them from zero, so with no constant deceleration the final time
+        // is 10/|ln(drag)| -- same number of iterations as upstream, so same
+        // answer, rounding aside.
+        for drag in [0.135, 0.05, 0.995] {
+            let simulation = FrictionSimulation::new(drag, 0.0, 600.0);
+            let expected = 10.0 / drag.ln().abs();
+            // A relative tolerance: f32 has barely four decimal places to
+            // give at the two-thousandth second the gentle drag stops at.
+            assert!(
+                (simulation.final_time - expected).abs() < expected * 1e-5,
+                "drag {drag}: {} should be {expected}",
+                simulation.final_time
+            );
+        }
+        // Which for the iOS drag is about five seconds, not the six and a
+        // half that waiting for the decay to reach the tolerance used to take.
+        assert!((FrictionSimulation::new(0.135, 0.0, 600.0).final_time - 4.99).abs() < 0.01);
     }
 
     #[test]
     fn friction_the_other_way_travels_the_other_way() {
         let simulation = FrictionSimulation::new(0.135, 100.0, -600.0);
         assert!(simulation.final_x() < 100.0);
+        assert!(simulation.is_done(5.0), "it stops at the same time in either direction");
     }
 
     // -- Gravity --------------------------------------------------------------

@@ -182,7 +182,11 @@ fn header() -> impl Widget + 'static {
             Row::expanded()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .push(
+                    // Min, so the row's cross-axis centring keeps the title
+                    // block mid-header; the max default would stretch it to
+                    // the header's height and start it at the top.
                     Column::new()
+                        .with_main_axis_size(MainAxisSize::Min)
                         .with_cross_axis_alignment(CrossAxisAlignment::Start)
                         .with_spacing(4.0)
                         .push(

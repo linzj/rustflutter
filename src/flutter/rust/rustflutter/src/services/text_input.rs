@@ -197,14 +197,27 @@ fn utf16_to_byte(text: &str, offset: i32) -> Option<usize> {
 
 /// What kind of text a field wants, which decides the keyboard on a phone and
 /// the Enter behaviour everywhere.
+///
+/// Upstream's `TextInputType`, in the order its `values` list them. The wire
+/// name of `streetAddress` is `TextInputType.address` -- upstream's `_names`
+/// table -- and everything else is the variant's own name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextInputType {
     #[default]
     Text,
     Multiline,
     Number,
+    Phone,
+    Datetime,
     Email,
     Url,
+    VisiblePassword,
+    Name,
+    StreetAddress,
+    /// Prevent the OS from showing the on-screen virtual keyboard.
+    None,
+    WebSearch,
+    Twitter,
 }
 
 impl TextInputType {
@@ -213,44 +226,84 @@ impl TextInputType {
             TextInputType::Text => "TextInputType.text",
             TextInputType::Multiline => "TextInputType.multiline",
             TextInputType::Number => "TextInputType.number",
+            TextInputType::Phone => "TextInputType.phone",
+            TextInputType::Datetime => "TextInputType.datetime",
             TextInputType::Email => "TextInputType.emailAddress",
             TextInputType::Url => "TextInputType.url",
+            TextInputType::VisiblePassword => "TextInputType.visiblePassword",
+            TextInputType::Name => "TextInputType.name",
+            TextInputType::StreetAddress => "TextInputType.address",
+            TextInputType::None => "TextInputType.none",
+            TextInputType::WebSearch => "TextInputType.webSearch",
+            TextInputType::Twitter => "TextInputType.twitter",
         }
     }
 }
 
 /// What the Enter key does.
+///
+/// Upstream's `TextInputAction`, in the order the enum declares its members.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextInputAction {
+    /// There is no relevant input action for the current input source.
+    None,
+    /// Let the OS decide which action is most appropriate.
+    Unspecified,
     #[default]
     Done,
-    Newline,
     Go,
     Search,
     Send,
     Next,
+    Previous,
+    ContinueAction,
+    Join,
+    Route,
+    EmergencyCall,
+    Newline,
 }
 
 impl TextInputAction {
     fn as_name(self) -> &'static str {
         match self {
+            TextInputAction::None => "TextInputAction.none",
+            TextInputAction::Unspecified => "TextInputAction.unspecified",
             TextInputAction::Done => "TextInputAction.done",
-            TextInputAction::Newline => "TextInputAction.newline",
             TextInputAction::Go => "TextInputAction.go",
             TextInputAction::Search => "TextInputAction.search",
             TextInputAction::Send => "TextInputAction.send",
             TextInputAction::Next => "TextInputAction.next",
+            TextInputAction::Previous => "TextInputAction.previous",
+            TextInputAction::ContinueAction => "TextInputAction.continueAction",
+            TextInputAction::Join => "TextInputAction.join",
+            TextInputAction::Route => "TextInputAction.route",
+            TextInputAction::EmergencyCall => "TextInputAction.emergencyCall",
+            TextInputAction::Newline => "TextInputAction.newline",
         }
     }
 
-    fn from_name(name: &str) -> TextInputAction {
+    /// The action a platform message named, or `None` when the name is not one
+    /// upstream defines.
+    ///
+    /// Upstream's `_TextInputActionEnumMapper` maps the names it knows and
+    /// throws on the rest; a wrong name here is dropped rather than reported
+    /// to a field as an action the reader never pressed.
+    fn from_name(name: &str) -> Option<TextInputAction> {
         match name {
-            "TextInputAction.newline" => TextInputAction::Newline,
-            "TextInputAction.go" => TextInputAction::Go,
-            "TextInputAction.search" => TextInputAction::Search,
-            "TextInputAction.send" => TextInputAction::Send,
-            "TextInputAction.next" => TextInputAction::Next,
-            _ => TextInputAction::Done,
+            "TextInputAction.none" => Some(TextInputAction::None),
+            "TextInputAction.unspecified" => Some(TextInputAction::Unspecified),
+            "TextInputAction.done" => Some(TextInputAction::Done),
+            "TextInputAction.go" => Some(TextInputAction::Go),
+            "TextInputAction.search" => Some(TextInputAction::Search),
+            "TextInputAction.send" => Some(TextInputAction::Send),
+            "TextInputAction.next" => Some(TextInputAction::Next),
+            "TextInputAction.previous" => Some(TextInputAction::Previous),
+            "TextInputAction.continueAction" => Some(TextInputAction::ContinueAction),
+            "TextInputAction.join" => Some(TextInputAction::Join),
+            "TextInputAction.route" => Some(TextInputAction::Route),
+            "TextInputAction.emergencyCall" => Some(TextInputAction::EmergencyCall),
+            "TextInputAction.newline" => Some(TextInputAction::Newline),
+            _ => None,
         }
     }
 }
@@ -483,11 +536,15 @@ fn dispatch(call: &MethodCall) {
             with_client(|client| client.update_editing_value(value.clone()));
         }
         "TextInputClient.performAction" => {
-            let action = arguments
+            // An action the framework has no variant for is not a "done" the
+            // reader never pressed, so it is dropped here rather than mapped.
+            let Some(action) = arguments
                 .get(1)
                 .and_then(Value::as_str)
-                .map(TextInputAction::from_name)
-                .unwrap_or(TextInputAction::Done);
+                .and_then(TextInputAction::from_name)
+            else {
+                return;
+            };
             with_client(|client| client.perform_action(action));
         }
         _ => {}
@@ -709,6 +766,82 @@ mod tests {
         recorder.deliver("flutter/textinput", &call, 0);
 
         assert_eq!(recorded.borrow().actions, vec![TextInputAction::Done]);
+    }
+
+    #[test]
+    fn every_upstream_action_name_round_trips_and_unknown_ones_do_not() {
+        // The names upstream's `_TextInputActionEnumMapper` knows, exactly.
+        // A name it does not know is `None` rather than a quiet `done`: a
+        // coercion there would report to a field that the reader pressed
+        // Enter when the platform sent something the framework has no word
+        // for.
+        let pairs = [
+            ("TextInputAction.none", TextInputAction::None),
+            ("TextInputAction.unspecified", TextInputAction::Unspecified),
+            ("TextInputAction.done", TextInputAction::Done),
+            ("TextInputAction.go", TextInputAction::Go),
+            ("TextInputAction.search", TextInputAction::Search),
+            ("TextInputAction.send", TextInputAction::Send),
+            ("TextInputAction.next", TextInputAction::Next),
+            ("TextInputAction.previous", TextInputAction::Previous),
+            ("TextInputAction.continueAction", TextInputAction::ContinueAction),
+            ("TextInputAction.join", TextInputAction::Join),
+            ("TextInputAction.route", TextInputAction::Route),
+            ("TextInputAction.emergencyCall", TextInputAction::EmergencyCall),
+            ("TextInputAction.newline", TextInputAction::Newline),
+        ];
+        for (name, action) in pairs {
+            assert_eq!(action.as_name(), name);
+            assert_eq!(TextInputAction::from_name(name), Some(action));
+        }
+        assert_eq!(TextInputAction::from_name("TextInputAction.date"), None);
+        assert_eq!(TextInputAction::from_name("TextInputAction.call"), None);
+        assert_eq!(TextInputAction::from_name(""), None);
+        assert_eq!(TextInputAction::from_name("done"), None);
+    }
+
+    #[test]
+    fn an_unknown_action_name_is_dropped_rather_than_become_done() {
+        // What the field is spared: a "done" it was never sent.
+        let recorder = install();
+        reset();
+        let (recorded, connection) = attach_field();
+
+        let call = JsonMethodCodec
+            .encode_method_call(&MethodCall::new(
+                "TextInputClient.performAction",
+                Value::List(vec![
+                    Value::I64(connection.id as i64),
+                    Value::from("TextInputAction.date"),
+                ]),
+            ))
+            .unwrap();
+        recorder.deliver("flutter/textinput", &call, 0);
+
+        assert!(recorded.borrow().actions.is_empty());
+    }
+
+    #[test]
+    fn every_upstream_input_type_name_is_the_one_the_platform_expects() {
+        let pairs = [
+            (TextInputType::Text, "TextInputType.text"),
+            (TextInputType::Multiline, "TextInputType.multiline"),
+            (TextInputType::Number, "TextInputType.number"),
+            (TextInputType::Phone, "TextInputType.phone"),
+            (TextInputType::Datetime, "TextInputType.datetime"),
+            (TextInputType::Email, "TextInputType.emailAddress"),
+            (TextInputType::Url, "TextInputType.url"),
+            (TextInputType::VisiblePassword, "TextInputType.visiblePassword"),
+            (TextInputType::Name, "TextInputType.name"),
+            // Upstream's `_names` table says "address", not "streetAddress".
+            (TextInputType::StreetAddress, "TextInputType.address"),
+            (TextInputType::None, "TextInputType.none"),
+            (TextInputType::WebSearch, "TextInputType.webSearch"),
+            (TextInputType::Twitter, "TextInputType.twitter"),
+        ];
+        for (input_type, name) in pairs {
+            assert_eq!(input_type.as_name(), name);
+        }
     }
 
     #[test]

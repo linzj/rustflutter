@@ -99,11 +99,25 @@ pub struct AnimatedState<T> {
     started_micros: Option<i64>,
     /// The frame clock, so `build` can evaluate without being handed the time.
     now_micros: i64,
+    /// Set by `did_update_widget` when the target moved, and consumed by the
+    /// next `advance`.
+    ///
+    /// Upstream restarts the flight inside `didUpdateWidget` itself, off its
+    /// own controller; the clock here is the advance pass, so the restart is
+    /// *decided* when the widget is updated and *carried out* on the next
+    /// tick, from wherever the value currently is.
+    restart_pending: bool,
 }
 
 impl<T> Default for AnimatedState<T> {
     fn default() -> AnimatedState<T> {
-        AnimatedState { from: None, to: None, started_micros: None, now_micros: 0 }
+        AnimatedState {
+            from: None,
+            to: None,
+            started_micros: None,
+            now_micros: 0,
+            restart_pending: false,
+        }
     }
 }
 
@@ -171,6 +185,16 @@ where
         self.key
     }
 
+    fn did_update_widget(&self, _old: &Self, state: &mut Self::State) {
+        // Upstream's `ImplicitlyAnimatedWidgetState.didUpdateWidget`: the
+        // tweens are rebuilt only when the configuration actually moved
+        // (`_constructTweens`), and the flight restarts from the value on
+        // screen. Curve and duration changes need no flag of their own here
+        // because both are read live when the value is evaluated, which is the
+        // same effect upstream gets from re-arming its controller.
+        state.restart_pending = state.to.is_some_and(|to| to != self.target);
+    }
+
     fn advance(&self, state: &mut Self::State, frame_time_micros: i64) -> bool {
         // First frame: no flight, sitting on the target. An implicit animation
         // does not animate its way in from nowhere.
@@ -178,12 +202,15 @@ where
             state.from = Some(self.target);
             state.to = Some(self.target);
             state.now_micros = frame_time_micros;
+            state.restart_pending = false;
             return false;
         }
 
-        if state.to != Some(self.target) {
-            // The target moved. Start from wherever this is *now*, not from
-            // where the last flight was heading -- see the module comment.
+        if state.restart_pending {
+            // The target moved while the widget was updated. Start from
+            // wherever this is *now*, not from where the last flight was
+            // heading -- see the module comment.
+            state.restart_pending = false;
             let current = state.value(self.duration, self.curve).unwrap_or(self.target);
             state.from = Some(current);
             state.to = Some(self.target);
@@ -321,7 +348,13 @@ mod tests {
     fn an_instant_animation_is_allowed() {
         // A zero duration would be a division; it has to land immediately
         // instead of producing an infinity.
-        let state = AnimatedState { from: Some(0.0f32), to: Some(10.0f32), started_micros: Some(0), now_micros: 5 };
+        let state = AnimatedState {
+            from: Some(0.0f32),
+            to: Some(10.0f32),
+            started_micros: Some(0),
+            now_micros: 5,
+            restart_pending: false,
+        };
         assert_eq!(state.value(Duration::ZERO, Curve::Linear), Some(10.0));
     }
 }

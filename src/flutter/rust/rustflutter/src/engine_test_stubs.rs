@@ -65,6 +65,17 @@ pub unsafe extern "C" fn rf_paint_free(paint: *mut RfPaint) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_set_color(paint: *mut RfPaint, argb: u32) {
+    LAST_PAINT_COLOR.with(|c| c.set(argb));
+}
+
+thread_local! {
+    static LAST_PAINT_COLOR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The ARGB most recently handed to `rf_paint_set_color`, for tests that need
+/// to know what colour something was painted.
+pub fn last_paint_color() -> u32 {
+    LAST_PAINT_COLOR.with(|c| c.get())
 }
 
 #[unsafe(no_mangle)]
@@ -263,6 +274,9 @@ pub struct LayerCalls {
     pub retainable: u32,
     /// Layers handed back from an earlier frame instead of being recorded.
     pub retained: u32,
+    /// Layers recorded into again in place, by a boundary that kept one and
+    /// had something under it change.
+    pub rerecorded: u32,
 }
 
 // The three below are what a *dependent* crate's tests read -- this module is
@@ -286,7 +300,7 @@ thread_local! {
         const { std::cell::Cell::new(LayerCalls {
             transforms: 0, offsets: 0, clip_rects: 0, clip_rounded_rects: 0,
             clip_paths: 0, opacities: 0, pops: 0, display_lists: 0,
-            retainable: 0, retained: 0,
+            retainable: 0, retained: 0, rerecorded: 0,
         }) };
 }
 
@@ -295,6 +309,66 @@ fn note(update: impl FnOnce(&mut LayerCalls)) {
         let mut current = calls.get();
         update(&mut current);
         calls.set(current);
+    });
+}
+
+//------------------------------------------------------------------------------
+// Where each retained layer's pictures went, so a test can tell "the same
+// layer object, with a new picture in it" from "a new layer object".
+//
+// The stubs stay inert about what a picture looks like on purpose; what they
+// can answer honestly is which layer object a recording landed in, because
+// that is bookkeeping about the calls and not an opinion about the drawing.
+// The bookkeeping is a stack of the layers the calls opened, `None` for the
+// containers a clip or a transform opens and a handle address for a retained
+// one, because the stub has no tree of its own and this is the whole of the
+// tree it needs.
+thread_local! {
+    static OPEN_LAYERS: std::cell::RefCell<Vec<Option<usize>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Pictures added inside each retained layer, by handle address. Reset by
+    /// a re-record into that layer, which drops the old children first.
+    static RETAINED_PICTURES: std::cell::RefCell<std::collections::HashMap<usize, u32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// How many pictures the retained layer with this handle address holds now.
+///
+/// `id` is what `crate::engine::RetainedLayer::id` reports. A layer that was
+/// re-recorded in place starts from zero again, so a count that comes back the
+/// same after a re-record is a *new* picture, not the old one surviving.
+#[allow(dead_code)]
+pub fn retained_picture_count(id: usize) -> u32 {
+    RETAINED_PICTURES.with(|pictures| pictures.borrow().get(&id).copied().unwrap_or(0))
+}
+
+fn open_container() {
+    OPEN_LAYERS.with(|open| open.borrow_mut().push(None));
+}
+
+fn open_retained(id: usize) {
+    RETAINED_PICTURES.with(|pictures| {
+        pictures.borrow_mut().insert(id, 0);
+    });
+    OPEN_LAYERS.with(|open| open.borrow_mut().push(Some(id)));
+}
+
+fn close_top() {
+    OPEN_LAYERS.with(|open| {
+        open.borrow_mut().pop();
+    });
+}
+
+/// The retained layer a picture lands in: the innermost open one, past any
+/// clips and transforms the recording opened inside it.
+fn record_picture() {
+    OPEN_LAYERS.with(|open| {
+        let inside = open.borrow().iter().rev().find_map(|layer| *layer);
+        if let Some(layer) = inside {
+            RETAINED_PICTURES.with(|pictures| {
+                *pictures.borrow_mut().entry(layer).or_insert(0) += 1;
+            });
+        }
     });
 }
 
@@ -313,55 +387,74 @@ pub fn reset_layer_calls() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_transform(tree: *mut RfLayerTree, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
     note(|calls| calls.transforms += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_offset(tree: *mut RfLayerTree, dx: f32, dy: f32) {
     note(|calls| calls.offsets += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, clip_behavior: c_int) {
     note(|calls| calls.clip_rects += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_rounded_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, radius_x: f32, radius_y: f32, clip_behavior: c_int) {
     note(|calls| calls.clip_rounded_rects += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_clip_path(tree: *mut RfLayerTree, path: *const RfPath, clip_behavior: c_int) {
     note(|calls| calls.clip_paths += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_opacity(tree: *mut RfLayerTree, alpha: u8, offset_x: f32, offset_y: f32) {
     note(|calls| calls.opacities += 1);
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_backdrop_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32) {
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32) {
+    open_container();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_pop(tree: *mut RfLayerTree) {
     note(|calls| calls.pops += 1);
+    close_top();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_retainable(tree: *mut RfLayerTree) {
     note(|calls| calls.retainable += 1);
+    open_retained(allocate::<RfLayer>() as usize);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_pop_retained(tree: *mut RfLayerTree) -> *mut RfLayer {
     note(|calls| calls.pops += 1);
-    allocate::<RfLayer>()
+    // The layer a matching push opened, which is the one on top: returning
+    // the same address is what keeps a later re-record pointing at the layer
+    // that was kept rather than a fresh handle.
+    OPEN_LAYERS.with(|open| {
+        let mut stack = open.borrow_mut();
+        match stack.pop() {
+            Some(Some(layer)) => layer as *mut RfLayer,
+            _ => std::ptr::null_mut(),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -375,7 +468,21 @@ pub unsafe extern "C" fn rf_layer_tree_add_retained(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_layer_tree_push_retained(tree: *mut RfLayerTree, layer: *mut RfLayer) {
+    note(|calls| calls.rerecorded += 1);
+    // The children the layer held are dropped first -- the real engine's
+    // `RemoveAllChildren` -- so the recording that follows starts from zero
+    // and a test can see the picture it lands is a new one.
+    open_retained(layer as usize);
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_free(layer: *mut RfLayer) {
+    if !layer.is_null() {
+        RETAINED_PICTURES.with(|pictures| {
+            pictures.borrow_mut().remove(&(layer as usize));
+        });
+    }
     unsafe { release(layer) };
 }
 
@@ -451,8 +558,62 @@ pub unsafe extern "C" fn rf_display_list_free(display_list: *mut RfDisplayList) 
     unsafe { release(display_list) }
 }
 
+// -- The paragraph style the framework asked for --------------------------------
+//
+// Same reasoning as LayerCalls: the stub cannot draw, so "the paragraph was
+// right-aligned in an rtl base direction" is asserted as the pair of codes the
+// FFI was handed -- which is not the stub's opinion about the drawing, it is
+// bookkeeping about the call. dart:ui carries the same pair in ParagraphStyle,
+// and the real engine resolves start/end against the direction; see
+// txt::ParagraphStyle::effective_align.
+
+thread_local! {
+    static PARAGRAPH_STYLES: std::cell::RefCell<Vec<(c_int, c_int)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_paragraph_style(text_align: c_int, text_direction: c_int) {
+    PARAGRAPH_STYLES.with(|styles| styles.borrow_mut().push((text_align, text_direction)));
+}
+
+/// The (align, direction) code pairs the paragraph styles carried, oldest
+/// first, since the last reset. For tests.
+#[allow(dead_code)]
+pub fn paragraph_style_requests() -> Vec<(i32, i32)> {
+    PARAGRAPH_STYLES.with(|styles| styles.borrow().clone())
+}
+
+/// Starts collecting again. Thread-local, so tests do not need to coordinate.
+#[allow(dead_code)]
+pub fn reset_paragraph_styles() {
+    PARAGRAPH_STYLES.with(|styles| styles.borrow_mut().clear());
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paragraph_new(text: *const c_char, text_len: usize, font_family: *const c_char, font_size: f32, font_weight: c_int, argb: u32, text_align: c_int, max_lines: usize, ellipsis: bool) -> *mut RfParagraph {
+pub unsafe extern "C" fn rf_paragraph_new(
+    text: *const c_char,
+    text_len: usize,
+    font_family: *const c_char,
+    font_fallbacks: *const *const c_char,
+    font_fallback_count: usize,
+    font_size: f32,
+    font_weight: c_int,
+    italic: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
+    height: f32,
+    has_height: bool,
+    decoration: c_int,
+    feature_tags: *const *const c_char,
+    feature_values: *const u32,
+    feature_count: usize,
+    argb: u32,
+    text_align: c_int,
+    text_direction: c_int,
+    max_lines: usize,
+    ellipsis: bool,
+) -> *mut RfParagraph {
+    note_paragraph_style(text_align, text_direction);
     allocate::<RfParagraph>()
 }
 
@@ -464,9 +625,11 @@ pub unsafe extern "C" fn rf_paragraph_free(paragraph: *mut RfParagraph) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_builder_new(
     text_align: c_int,
+    text_direction: c_int,
     max_lines: usize,
     ellipsis: bool,
 ) -> *mut RfParagraphBuilder {
+    note_paragraph_style(text_align, text_direction);
     allocate::<RfParagraphBuilder>()
 }
 
@@ -479,8 +642,19 @@ pub unsafe extern "C" fn rf_paragraph_builder_free(builder: *mut RfParagraphBuil
 pub unsafe extern "C" fn rf_paragraph_builder_push_style(
     builder: *mut RfParagraphBuilder,
     font_family: *const c_char,
+    font_fallbacks: *const *const c_char,
+    font_fallback_count: usize,
     font_size: f32,
     font_weight: c_int,
+    italic: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
+    height: f32,
+    has_height: bool,
+    decoration: c_int,
+    feature_tags: *const *const c_char,
+    feature_values: *const u32,
+    feature_count: usize,
     argb: u32,
 ) {
 }
@@ -553,6 +727,7 @@ pub unsafe extern "C" fn rf_layer_tree_free(tree: *mut RfLayerTree) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_add_display_list(tree: *mut RfLayerTree, display_list: *mut RfDisplayList, offset_x: f32, offset_y: f32) {
     note(|calls| calls.display_lists += 1);
+    record_picture();
 }
 
 #[unsafe(no_mangle)]

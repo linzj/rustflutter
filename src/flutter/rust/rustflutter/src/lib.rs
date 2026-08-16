@@ -27,6 +27,7 @@ pub mod animation;
 pub mod app;
 pub mod components;
 pub mod controls;
+pub mod direction;
 pub mod editable;
 pub mod engine;
 pub mod focus;
@@ -58,6 +59,7 @@ pub use controls::{
     Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
     Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
 };
+pub use direction::{TextDirection, current_direction, direction_of, directionality};
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
@@ -78,8 +80,9 @@ pub use services::{
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
 };
 pub use framework::{
-    AnyWidget, Component, ElementTree, Key, RenderWidget, StateHandle, StatefulComponent,
-    component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide, single, stateful,
+    AnyWidget, Component, ElementTree, GlobalKey, Key, RenderWidget, StateHandle,
+    StatefulComponent, component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide,
+    single, stateful, with_global_key,
 };
 #[cfg(not(test))]
 pub use app::run;
@@ -96,8 +99,9 @@ pub use scrolling::{
     ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window,
 };
 pub use widgets::{
-    BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
-    boxed, repaint_boundary,
+    BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox, IndexedStack,
+    Offset, Size, Text, TextSpan, Baseline, FractionallySizedBox, LimitedBox, OverflowBox,
+    SizedOverflowBox, boxed, repaint_boundary,
     Widget,
 };
 
@@ -113,6 +117,7 @@ pub mod prelude {
         Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
         Tooltip,
     };
+    pub use crate::direction::{TextDirection, current_direction, directionality};
     pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
     pub use crate::components::{
         AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
@@ -134,10 +139,10 @@ pub mod prelude {
     pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
     pub use crate::platform::{Brightness, Locale, UserSettings};
     pub use crate::scrollbar::{Scrollbar, scrollbar};
-    pub use crate::scrolling::{ExtentBook, LazyList, Scroll, VariableExtentList};
+    pub use crate::scrolling::{ExtentBook, LazyList, Scroll, SliverListView, VariableExtentList};
     pub use crate::framework::{
-        AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
-        keyed_single, leaf, many, provide, single, stateful,
+        AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, component, keyed_leaf,
+        keyed_many, keyed_single, leaf, many, provide, single, stateful, with_global_key,
     };
     #[cfg(not(test))]
     pub use crate::app::run;
@@ -148,7 +153,8 @@ pub mod prelude {
     };
     pub use crate::widgets::{
         BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text,
-        boxed,
+        boxed, Baseline, FittedBox, FractionallySizedBox, IndexedStack, LimitedBox, OverflowBox,
+        SizedOverflowBox,
         TextSpan, Widget,
     };
     pub use crate::App;

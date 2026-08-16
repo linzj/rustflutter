@@ -178,6 +178,15 @@ group("rust") {
     "//flutter/rust/rustflutter",
   ]
 
+  # The fold into `rustflutter_engine.lib` is a separate step from compiling
+  # the objects it folds, and nothing else in this group links it: the apps
+  # built here link the component archives directly, and only an *external*
+  # Cargo build points rustc at the monolith. Without this line a default
+  # `ninja -C out` compiled every object fresh and still left the archive a
+  # stale one -- an application's `rerun-if-changed` on the archive then
+  # noticed nothing, because the archive's own mtime never moved.
+  deps += [ ":rustflutter_engine" ]
+
   # The tests run on the machine that builds them, so they exist only for a
   # host build. `enable_unittests` is already false for Android and iOS -- the
   # gn wrapper refuses to turn it on there -- so this is the same condition the

@@ -44,10 +44,25 @@
 use std::rc::Rc;
 
 use crate::app::ViewMetrics;
-use crate::framework::{AnyWidget, BuildContext, Component, component, provide};
+use crate::framework::{
+    AnyWidget, BuildContext, Component, DependentNotify, component, provide_model,
+};
 use crate::platform::Brightness;
 use crate::render::{EdgeInsets, Size};
 use crate::widgets::Empty;
+
+/// The parts of [`MediaQueryData`] a reader can depend on separately.
+///
+/// Upstream's `_MediaQueryAspect`, an enum the same size: a reader that
+/// subscribes to the padding alone is not rebuilt because the view got taller,
+/// and one that subscribes to the size is not rebuilt because the keyboard
+/// opened.
+mod aspect {
+    pub(super) const SIZE: &str = "size";
+    pub(super) const PADDING: &str = "padding";
+    pub(super) const VIEW_INSETS: &str = "view_insets";
+    pub(super) const TEXT_SCALE: &str = "text_scale";
+}
 
 /// What the view is like, as the widgets below it see it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,6 +177,23 @@ impl MediaQueryData {
     }
 }
 
+impl DependentNotify for MediaQueryData {
+    /// Which parts of the data differ, asked for one aspect at a time.
+    ///
+    /// Upstream's `MediaQuery.updateShouldNotifyDependent`. An aspect this
+    /// data cannot speak for counts as changed: better that a reader hears
+    /// too much than that it silently never hears.
+    fn is_aspect_stale(old: &MediaQueryData, new: &MediaQueryData, aspect: &str) -> bool {
+        match aspect {
+            aspect::SIZE => old.size != new.size,
+            aspect::PADDING => old.padding != new.padding,
+            aspect::VIEW_INSETS => old.view_insets != new.view_insets,
+            aspect::TEXT_SCALE => old.text_scale_factor != new.text_scale_factor,
+            _ => true,
+        }
+    }
+}
+
 /// Publishes [`MediaQueryData`] to a subtree.
 ///
 /// The root of a widget application is wrapped in one automatically -- see
@@ -172,7 +204,10 @@ pub struct MediaQuery;
 impl MediaQuery {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(data: MediaQueryData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        // A model rather than a plain provide, upstream's `MediaQuery extends
+        // InheritedModel<_MediaQueryAspect>`: readers can name the part they
+        // read, and are rebuilt only when that part changes.
+        provide_model(data, child)
     }
 
     /// A subtree that does not scale its text.
@@ -266,6 +301,34 @@ pub(crate) fn with_text_scale<R>(scale: f32, body: impl FnOnce() -> R) -> R {
 /// its own.
 pub fn media_query_of(context: &BuildContext) -> Rc<MediaQueryData> {
     context.inherited_or_default::<MediaQueryData>()
+}
+
+/// The nearest [`MediaQuery`]'s size, and a dependence on nothing else about
+/// it.
+///
+/// Upstream's `MediaQuery.sizeOf`: a reader that asks for the size is not
+/// rebuilt when the keyboard opens -- that is `view_insets`, and somebody
+/// else's news.
+pub fn size_of(context: &BuildContext) -> Size {
+    context.inherited_aspect_or_default::<MediaQueryData>(aspect::SIZE).size
+}
+
+/// The nearest [`MediaQuery`]'s padding, and a dependence on nothing else
+/// about it. Upstream's `MediaQuery.paddingOf`.
+pub fn padding_of(context: &BuildContext) -> EdgeInsets {
+    context.inherited_aspect_or_default::<MediaQueryData>(aspect::PADDING).padding
+}
+
+/// The nearest [`MediaQuery`]'s view insets -- the keyboard -- and a
+/// dependence on nothing else about it. Upstream's `MediaQuery.viewInsetsOf`.
+pub fn view_insets_of(context: &BuildContext) -> EdgeInsets {
+    context.inherited_aspect_or_default::<MediaQueryData>(aspect::VIEW_INSETS).view_insets
+}
+
+/// The nearest [`MediaQuery`]'s text scale, and a dependence on nothing else
+/// about it. Upstream's `MediaQuery.textScalerOf`.
+pub fn text_scale_of(context: &BuildContext) -> f32 {
+    context.inherited_aspect_or_default::<MediaQueryData>(aspect::TEXT_SCALE).text_scale_factor
 }
 
 /// Insets its child by whatever the system is covering.
@@ -549,5 +612,112 @@ mod tests {
         assert_eq!(current_text_scale(), 1.3);
         assert_eq!(crate::render::RenderParagraph::new("x").text_scale(), 1.3);
         crate::platform::reset();
+    }
+
+    // -- Aspect subscriptions -----------------------------------------------
+
+    /// Counts its builds and reads one part of the enclosing MediaQuery, the
+    /// way a real consumer would.
+    struct Probe {
+        read: fn(&BuildContext) -> f32,
+        builds: Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Component for Probe {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            self.builds.set(self.builds.get() + 1);
+            let value = (self.read)(context);
+            leaf(move || SizedBox::new(value, 1.0))
+        }
+    }
+
+    fn probe(read: fn(&BuildContext) -> f32) -> (AnyWidget, Rc<std::cell::Cell<u32>>) {
+        let builds = Rc::new(std::cell::Cell::new(0));
+        (component(Probe { read, builds: Rc::clone(&builds) }), builds)
+    }
+
+    fn probe_column(probes: Vec<AnyWidget>) -> AnyWidget {
+        many(probes, |children| {
+            let mut flex = crate::render::RenderFlex::column();
+            for child in children {
+                flex = flex.push(child);
+            }
+            Box::new(flex)
+        })
+    }
+
+    #[test]
+    fn a_size_reader_ignores_a_padding_change_and_vice_versa() {
+        let (size_widget, size_builds) = probe(|context| size_of(context).width);
+        let (padding_widget, padding_builds) = probe(|context| padding_of(context).top);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(
+            MediaQueryData::default(),
+            probe_column(vec![size_widget, padding_widget]),
+        ));
+        assert_eq!(size_builds.get(), 1);
+        assert_eq!(padding_builds.get(), 1);
+
+        // The view gets taller; the padding did not move.
+        let mut taller = MediaQueryData::default();
+        taller.size = Size::new(400.0, 900.0);
+        assert!(tree.publish(taller));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(size_builds.get(), 2, "the size reader was rebuilt");
+        assert_eq!(padding_builds.get(), 1, "the padding reader was not");
+
+        // The status bar grows; the view does not change size.
+        let mut barred = taller;
+        barred.padding = EdgeInsets { top: 42.0, ..EdgeInsets::ZERO };
+        assert!(tree.publish(barred));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(size_builds.get(), 2, "and this time the size reader was not");
+        assert_eq!(padding_builds.get(), 2, "but the padding reader was");
+    }
+
+    #[test]
+    fn the_keyboard_and_the_text_scale_are_separate_aspects() {
+        // view_insets is the keyboard arriving; the text scale is a setting
+        // changing. A reader of one should not hear about the other.
+        let (insets_widget, insets_builds) = probe(|context| view_insets_of(context).bottom);
+        let (scale_widget, scale_builds) = probe(text_scale_of);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(
+            MediaQueryData::default(),
+            probe_column(vec![insets_widget, scale_widget]),
+        ));
+
+        let mut keyboard_up = MediaQueryData::default();
+        keyboard_up.view_insets = EdgeInsets { bottom: 300.0, ..EdgeInsets::ZERO };
+        assert!(tree.publish(keyboard_up));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(insets_builds.get(), 2, "the keyboard reader was rebuilt");
+        assert_eq!(scale_builds.get(), 1, "the text scale reader was not");
+
+        let louder = keyboard_up.with_text_scale(2.0);
+        assert!(tree.publish(louder));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(insets_builds.get(), 2, "and this time the keyboard reader was not");
+        assert_eq!(scale_builds.get(), 2, "but the text scale reader was");
+    }
+
+    #[test]
+    fn a_reader_of_the_whole_data_hears_about_every_part() {
+        // `media_query_of` -- what SafeArea reads -- did not qualify, so
+        // nothing about aspect subscriptions may make it miss a change.
+        let (whole_widget, builds) = probe(|context| media_query_of(context).size.width);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(MediaQueryData::default(), whole_widget));
+
+        let mut taller = MediaQueryData::default();
+        taller.size = Size::new(400.0, 900.0);
+        assert!(tree.publish(taller));
+        tree.rebuild_dirty();
+        assert_eq!(builds.get(), 2, "a size change is its news");
+
+        let louder = taller.with_text_scale(1.5);
+        assert!(tree.publish(louder));
+        tree.rebuild_dirty();
+        assert_eq!(builds.get(), 3, "and so is a text scale change");
     }
 }

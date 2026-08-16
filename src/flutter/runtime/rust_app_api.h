@@ -96,6 +96,10 @@ typedef struct RfSemanticsNode {
   double scroll_extent_max;
   const int32_t* children;
   size_t child_count;
+  // The reading direction of the label and its kin, in the embedder's
+  // FlutterTextDirection encoding: 0 = unknown, 1 = rtl, 2 = ltr. A node
+  // with nothing to read aloud crosses as 0.
+  int32_t text_direction;
 } RfSemanticsNode;
 
 // Mirrors flutter::ViewportMetrics. Physical pixels throughout, matching the

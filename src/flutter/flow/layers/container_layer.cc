@@ -107,6 +107,10 @@ void ContainerLayer::Add(std::shared_ptr<Layer> layer) {
   layers_.emplace_back(std::move(layer));
 }
 
+void ContainerLayer::RemoveAllChildren() {
+  layers_.clear();
+}
+
 void ContainerLayer::Preroll(PrerollContext* context) {
   DlRect child_paint_bounds;
   PrerollChildren(context, &child_paint_bounds);

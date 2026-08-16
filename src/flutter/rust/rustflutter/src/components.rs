@@ -25,11 +25,10 @@
 //!
 //! # What is deliberately absent
 //!
-//! Text input. A usable field needs the platform's input method -- composition
-//! regions, candidate windows, a cursor the OS can position -- and that is a
-//! platform-channel job, not a widget one. A `TextField` that only handled
-//! ASCII keystrokes would look finished and be unusable in half the world's
-//! languages, so there is not one.
+//! Text input lives one layer down, in [`crate::editable`]: a usable field
+//! needs the platform's input method -- composition regions, candidate
+//! windows, a cursor the OS can position -- and that belongs to the field
+//! itself, not to a palette of shared widgets.
 
 use std::rc::Rc;
 
@@ -37,8 +36,10 @@ use crate::engine::{Color, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, component, leaf, many};
 use crate::gestures::PointerHandlers;
 use crate::render::{
-    Alignment, BoxConstraints, CrossAxisAlignment, EdgeInsets, MainAxisAlignment, MainAxisSize,
-    RenderClipRect, RenderConstrainedBox, RenderFlex, RenderPadding, TextOverflow,
+    Alignment, BoxConstraints, BoxedRender, CrossAxisAlignment, EdgeInsets, EdgeInsetsDirectional,
+    HitTestResult, MainAxisAlignment, MainAxisSize, Offset, PaintContext, RenderBox,
+    RenderClipRect, RenderConstrainedBox, RenderFlex, RenderPadding, RenderRef, RenderStack, Size,
+    StackPosition, TextOverflow, UpdateEffect,
 };
 use crate::widgets::{
     Align, Center, Column, Container, Empty, K_MIDDLE_SPACING, Pointer, RenderNavigationToolbar,
@@ -198,6 +199,150 @@ pub enum ButtonStyle {
     Danger,
 }
 
+/// A button's height, and the least width one may be. Upstream's
+/// `minimumSize` for `FilledButton`: `Size(64, 40)`.
+const BUTTON_HEIGHT: f32 = 40.0;
+const BUTTON_MIN_WIDTH: f32 = 64.0;
+
+/// The horizontal padding a button's label gets, following the reader's text
+/// size. Upstream `ButtonStyleButton.scaledPadding`: sixteen points at the
+/// ordinary size, lerping down to eight by twice the size and to four by
+/// three times it, where it stays -- the label keeps its room without the
+/// button growing without bound.
+fn button_padding(text_scale: f32) -> f32 {
+    let lerp = |from: f32, to: f32, t: f32| from + (to - from) * t;
+    if text_scale < 1.0 {
+        16.0
+    } else if text_scale < 2.0 {
+        lerp(16.0, 8.0, text_scale - 1.0)
+    } else if text_scale < 3.0 {
+        lerp(8.0, 4.0, text_scale - 2.0)
+    } else {
+        4.0
+    }
+}
+
+/// A button's least size around its label, upstream's `_InputPadding`
+/// (`button_style_button.dart`).
+///
+/// The one idea of it is that the label chain is measured with no ceiling on
+/// it -- upstream calls `child.layout(const BoxConstraints())` -- so nothing
+/// the space around the button offers reaches the label, and the label and
+/// the padding around it alone decide how wide the button is. The least size
+/// rides along as minimums on those constraints, which is where upstream
+/// puts them too, one layer in: a label shorter than the minimum is centred
+/// across it, not parked at the leading edge of a wider box.
+///
+/// A constrained box cannot stand in for this. One holding a least width
+/// passes the width on offer down with it, the label centres into the offer,
+/// and every button in a loose row comes out as wide as the row.
+struct ButtonBounds {
+    min_width: f32,
+    min_height: f32,
+    child: Option<BoxedRender>,
+    size: Size,
+}
+
+impl ButtonBounds {
+    fn new(min_width: f32, min_height: f32) -> ButtonBounds {
+        ButtonBounds { min_width, min_height, child: None, size: Size::ZERO }
+    }
+
+    fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
+        self.child = Some(RenderRef::new(child));
+        self
+    }
+}
+
+impl RenderBox for ButtonBounds {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<ButtonBounds>()?;
+        let same_child = |a: &Option<BoxedRender>, b: &Option<BoxedRender>| match (a, b) {
+            (Some(a), Some(b)) => a.is(b),
+            (None, None) => true,
+            _ => false,
+        };
+        let effect = UpdateEffect::relayout_if(
+            self.min_width != fresh.min_width
+                || self.min_height != fresh.min_height
+                || !same_child(&self.child, &fresh.child),
+        );
+        self.min_width = fresh.min_width;
+        self.min_height = fresh.min_height;
+        self.child = fresh.child.take();
+        Some(effect)
+    }
+
+    /// `_InputPadding.performLayout`: the child's answer at nothing but the
+    /// minimums, put through the constraints the button itself was given.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let inner = BoxConstraints::new(self.min_width, f32::INFINITY, self.min_height, f32::INFINITY);
+        self.size = match &mut self.child {
+            Some(child) => constraints.constrain(child.layout_child(inner, true)),
+            None => constraints.constrain(Size::new(self.min_width, self.min_height)),
+        };
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let inner = BoxConstraints::new(self.min_width, f32::INFINITY, self.min_height, f32::INFINITY);
+        match &self.child {
+            Some(child) => constraints.constrain(child.dry_layout(inner)),
+            None => constraints.constrain(Size::new(self.min_width, self.min_height)),
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            context.paint_child(child, offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    // `_InputPadding`'s intrinsics, each the child's answer held to the same
+    // minimum the layout holds it to.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.min_intrinsic_width(height))
+            .max(self.min_width)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.max_intrinsic_width(height))
+            .max(self.min_width)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.min_intrinsic_height(width))
+            .max(self.min_height)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.max_intrinsic_height(width))
+            .max(self.min_height)
+    }
+}
+
 /// A tappable button with a pressed state.
 ///
 /// The pressed state is the caller's, not the button's: a button is rebuilt
@@ -241,6 +386,9 @@ impl Button {
         self
     }
 
+    /// The least width this button may be, in place of the usual
+    /// [`BUTTON_MIN_WIDTH`]. A longer label still widens the button; a short
+    /// one stops at this.
     pub fn with_min_width(mut self, width: f32) -> Self {
         self.min_width = Some(width);
         self
@@ -291,25 +439,38 @@ impl Component for Button {
         let id = self.id;
         let min_width = self.min_width;
 
-        let (mut fill, mut label_color, border) = match style {
+        let (mut fill, mut label_color, mut border) = match style {
             ButtonStyle::Filled => (Some(theme.primary), theme.on_primary, None),
             ButtonStyle::Danger => (Some(theme.danger), theme.on_primary, None),
             ButtonStyle::Outlined => (None, theme.primary, Some(theme.outline)),
             ButtonStyle::Text => (None, theme.primary, None),
         };
         if !enabled {
-            // Disabled is one rule -- everything loses most of its alpha --
-            // rather than a separate palette per style.
-            fill = fill.map(|color| color.with_alpha(0x40));
-            label_color = label_color.with_alpha(0x60);
+            // A disabled button is one rule rather than a palette per style,
+            // and it is upstream M3's: the surface overlaid with 12% of the
+            // on-surface colour where there was a fill or an outline, and the
+            // label at 38% of it. Washing each colour out on its own reads as
+            // a translucent button, which is not what a disabled one is.
+            if fill.is_some() || border.is_some() {
+                let wash = theme.text.with_alpha(0x1F);
+                if fill.is_some() {
+                    fill = Some(wash);
+                }
+                border = border.map(|_| wash);
+            }
+            label_color = theme.text.with_alpha(0x61);
         }
-        let pressed_fill = match (pressed, fill) {
-            (true, Some(color)) => Some(color.with_alpha(0xCC)),
-            (true, None) => Some(theme.primary.with_alpha(0x22)),
-            (false, fill) => fill,
-        };
-        let radius = theme.radius;
-        let spacing = theme.spacing;
+        // Pressed keeps the fill opaque and layers translucence over it, the
+        // way the splash does: upstream's state layer, over the button rather
+        // than thinning the button. An unfilled button tints in its own
+        // colour, which is all a press has to say there.
+        let press_overlay = pressed.then(|| match style {
+            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x1A),
+            _ => theme.primary.with_alpha(0x1A),
+        });
+        // As round as the button is tall: upstream's `StadiumBorder`.
+        let radius = BUTTON_HEIGHT / 2.0;
+        let padding = button_padding(crate::media_query::current_text_scale());
         let body_size = theme.body_size;
         // The splash is the button's own colour: a filled button splashes in
         // what it is written on, an outlined one in what it is outlined with.
@@ -326,26 +487,45 @@ impl Component for Button {
             let handlers = handlers.clone();
             leaf(move || {
             let mut container = Container::new()
-                .with_height(44.0)
+                .with_height(BUTTON_HEIGHT)
                 .with_corner_radius(radius)
-                .with_padding(EdgeInsets::symmetric(spacing * 2.0, 0.0))
+                .with_padding(EdgeInsets::symmetric(padding, 0.0))
                 .with_child(Align::new(
                     Alignment::CENTER,
+                    // Upstream's label style for buttons is `labelLarge`:
+                    // medium weight, not bold.
                     Text::new(label.clone())
                         .with_size(body_size)
-                        .with_weight(700)
+                        .with_weight(500)
                         .with_color(label_color),
                 ));
-            if let Some(color) = pressed_fill {
+            if let Some(color) = fill {
                 container = container.with_color(color);
             }
             if let Some(color) = border {
                 container = container.with_border(1.5, if pressed { theme_border(color) } else { color });
             }
-            if let Some(width) = min_width {
-                container = container.with_width(width);
-            }
-            Pointer::new(id, container).with_handlers(handlers.clone())
+            // A press tints the whole button over its opaque fill, the way
+            // the splash does, rather than thinning the fill.
+            let body = if let Some(overlay) = press_overlay {
+                RenderStack::new()
+                    .push(container)
+                    .push_positioned(
+                        Container::new().with_color(overlay).with_corner_radius(radius),
+                        StackPosition::fill(),
+                    )
+            } else {
+                RenderStack::new().push(container)
+            };
+            // The least size a button may be, upstream's `minimumSize`, held
+            // by the bounds box above: a longer label still widens it, a
+            // short one stops here.
+            Pointer::new(
+                id,
+                ButtonBounds::new(min_width.unwrap_or(BUTTON_MIN_WIDTH), BUTTON_HEIGHT)
+                    .with_child(body),
+            )
+            .with_handlers(handlers.clone())
             })
         };
 
@@ -832,7 +1012,11 @@ impl Component for AppBar {
                             .min(MAX_TITLE_TEXT_SCALE_FACTOR),
                     )
             };
+            // `MainAxisSize.min` because `_ToolbarLayout` centres a
+            // content-sized middle (`_getMiddleOffset`); a max-sized column
+            // would fill the bar's height and pin the title to its top.
             let mut stack = Column::new()
+                .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(2.0)
                 .push(one_line(&title, &title_style));
@@ -883,8 +1067,17 @@ impl Component for AppBar {
                 // `IconButton` is 48 wide around a 24pt icon and carries its
                 // own margin, where a `Button` here is a pill with a border
                 // that would otherwise sit flush against the edge of the bar.
+                //
+                // It is also directional, upstream's `actionsPadding` being an
+                // `EdgeInsetsDirectional`: the actions sit at the *trailing*
+                // end of the bar, which is the right in an LTR subtree and the
+                // left in an RTL one, so the inset resolves against the
+                // ambient direction the moment this is built -- the same
+                // `Directionality.of` consumption every directional widget in
+                // `basic.dart` makes.
                 toolbar = toolbar.with_trailing(RenderPadding::new(
-                    EdgeInsets::only(0.0, 0.0, K_MIDDLE_SPACING, 0.0),
+                    EdgeInsetsDirectional::only(K_MIDDLE_SPACING, 0.0, 0.0, 0.0)
+                        .resolve(crate::direction::current_direction()),
                     RenderFlex::row()
                         .with_main_axis_size(MainAxisSize::Min)
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1053,7 +1246,11 @@ impl Component for ListTile {
 
         let has_trailing = trailing.is_some();
         let mut children = vec![leaf(move || {
+            // `MainAxisSize.min`: upstream `_RenderListTile` centres the
+            // title block vertically rather than stretching it to the tile,
+            // and the row below centres this column the same way.
             let mut column = Column::new()
+                .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(3.0)
                 .push(
@@ -1127,14 +1324,21 @@ impl Component for ListTile {
     }
 }
 
-/// A hairline rule.
+/// A hairline rule. Upstream reserves sixteen logical pixels and centers a
+/// zero-thickness (device-pixel) line in it; one logical pixel is this
+/// renderer's hairline at unit scale.
 pub struct Divider;
 
 impl Component for Divider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let color = theme.outline;
-        leaf(move || Container::new().with_height(1.0).with_color(color))
+        leaf(move || {
+            Container::new().with_height(16.0).with_child(Align::new(
+                Alignment::CENTER,
+                Container::new().with_height(1.0).with_color(color),
+            ))
+        })
     }
 }
 
@@ -1356,6 +1560,42 @@ mod tests {
             |_| {},
         );
         assert!(button.handlers.is_empty());
+    }
+
+    #[test]
+    fn a_button_is_forty_tall_and_no_narrower_than_sixty_four() {
+        // Upstream `FilledButton`'s defaults: a `minimumSize` of
+        // `Size(64, 40)` with a `StadiumBorder`, as round as it is tall. A
+        // longer label widens the button past the minimum; a short one stops
+        // at it. The stubbed engine measures the label as nothing, so this is
+        // exactly the minimum-size case.
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Button::new(1, "go")));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size.width, 64.0, "a short label stops at the minimum");
+        assert_eq!(size.height, 40.0);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Button::new(1, "go").with_min_width(120.0)));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size.width, 120.0, "a raised minimum raises the button");
+        assert_eq!(size.height, 40.0);
+    }
+
+    #[test]
+    fn button_padding_follows_the_readers_text_size() {
+        // Upstream `ButtonStyleButton.scaledPadding`: sixteen points of
+        // horizontal padding at the ordinary text size, eight at twice it and
+        // four at three times, lerped in between and held at four after.
+        assert_eq!(button_padding(0.5), 16.0);
+        assert_eq!(button_padding(1.0), 16.0);
+        assert_eq!(button_padding(1.5), 12.0);
+        assert_eq!(button_padding(2.0), 8.0);
+        assert_eq!(button_padding(2.5), 6.0);
+        assert_eq!(button_padding(3.0), 4.0);
+        assert_eq!(button_padding(4.0), 4.0);
     }
 
     #[test]

@@ -20,17 +20,19 @@
 
 use crate::engine::{Color, TextAlign, TextStyle};
 pub use crate::render::{
-    Alignment, Axis, BoxConstraints, BoxFit, BoxedRender, Constraints, CrossAxisAlignment,
-    EdgeInsets, Fill, FlexChild, HitTestEntry, HitTestResult, MainAxisAlignment, MainAxisSize,
-    Offset, PaintContext, RenderBox as Widget, Size, StackPosition,
+    Alignment, AlignmentDirectional, Axis, AxisDirection, BoxConstraints, BoxFit, BoxedRender,
+    Constraints, CrossAxisAlignment, EdgeInsets, EdgeInsetsDirectional, Fill, FlexChild,
+    HitTestEntry, HitTestResult, MainAxisAlignment, MainAxisSize, Offset, PaintContext,
+    RenderBox as Widget, Size, StackFit, StackPosition, VerticalDirection,
 };
 use crate::painting::{Gradient, Image, RenderPath};
 use crate::render::{
-    RenderAlign, RenderAspectRatio, RenderBox, RenderClipPath, RenderClipRect,
-    RenderConstrainedBox, RenderDecoratedBox, RenderFlex, RenderFullWidth, RenderImage,
-    RenderIntrinsicHeight, RenderIntrinsicWidth, RenderOpacity, RenderPadding, RenderParagraph,
-    RenderPointerRegion, RenderRef, RenderStack, RenderTransform, RenderViewport, RenderWrap,
-    UpdateEffect,
+    RenderAlign, RenderAspectRatio, RenderBaseline, RenderBox, RenderClipPath, RenderClipRect,
+    RenderConstrainedBox, RenderDecoratedBox, RenderFittedBox, RenderFlex, RenderFractionallySizedBox,
+    RenderFullWidth, RenderImage, RenderIndexedStack, RenderIntrinsicHeight, RenderIntrinsicWidth,
+    RenderLimitedBox, RenderOpacity, RenderOverflowBox, RenderPadding, RenderParagraph,
+    RenderPointerRegion, RenderRef, RenderSizedOverflowBox, RenderStack, RenderTransform,
+    RenderViewport, RenderWrap, UpdateEffect,
 };
 
 /// A widget with its concrete type erased, which is what a `build` method
@@ -284,7 +286,12 @@ impl Container {
         if self.alignment.is_some() {
             shape.push(Layer::Align);
         }
-        if self.padding != EdgeInsets::ZERO {
+        // Upstream pads whenever `_paddingIncludingDecoration` is non-null,
+        // which is whenever there is padding of the container's own or a
+        // decoration carrying a border: a border insets the content, and the
+        // container says so with a padding wrapper rather than by making the
+        // decoration one.
+        if self.padding != EdgeInsets::ZERO || self.border_width > 0.0 {
             shape.push(Layer::Padding);
         }
         if self.fill.is_some() || self.border_width > 0.0 || !self.shadows.is_empty() {
@@ -299,19 +306,28 @@ impl Container {
         shape
     }
 
+    /// The container's own padding folded together with its decoration's
+    /// border, upstream's `_paddingIncludingDecoration` over
+    /// `BoxDecoration.padding`, which answers `border?.dimensions` -- the
+    /// border's widths as insets, so that what the border frames is the
+    /// content and not the middle of the stroke.
+    fn padding_including_decoration(&self) -> EdgeInsets {
+        self.padding.add(EdgeInsets::all(self.border_width))
+    }
+
     /// Builds one wrapper around `inner`, as this container is configured now.
     fn build_layer(&self, kind: Layer, inner: Option<BoxedWidget>) -> BoxedWidget {
         match kind {
             // Aligning and padding need something to align and pad, even when
-            // that is nothing at all.
+            // that is nothing but the space itself.
             Layer::Align => {
-                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Expand::new()));
                 let alignment = self.alignment.expect("the shape said there was one");
                 RenderRef::new(RenderAlign::new(alignment, inner))
             }
             Layer::Padding => {
-                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
-                RenderRef::new(RenderPadding::new(self.padding, inner))
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Expand::new()));
+                RenderRef::new(RenderPadding::new(self.padding_including_decoration(), inner))
             }
             Layer::Decoration => {
                 let mut decorated = RenderDecoratedBox::new()
@@ -342,7 +358,7 @@ impl Container {
             // Margin is padding on the outside of the decoration rather than
             // the inside, which is the only thing that makes it a second one.
             Layer::Margin => {
-                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Expand::new()));
                 RenderRef::new(RenderPadding::new(self.margin, inner))
             }
         }
@@ -378,7 +394,7 @@ impl Container {
             current = Some(handle);
         }
         self.layers = layers;
-        Some(current.unwrap_or_else(|| RenderRef::new(Empty)))
+        Some(current.unwrap_or_else(|| RenderRef::new(Expand::new())))
     }
 }
 
@@ -455,8 +471,9 @@ impl RenderBox for Container {
         self.take_configuration(fresh);
         self.child = child;
         if self.layers.is_empty() {
-            // Wrapping nothing, this container *is* its child -- or an `Empty`
-            // when it has none, and an `Empty` has nothing to be told.
+            // Wrapping nothing, this container *is* its child -- or an
+            // `Expand` when it has none, and an `Expand` has nothing to be
+            // told.
             if self.child.is_some() {
                 self.composed = self.child.clone();
             }
@@ -524,8 +541,59 @@ impl RenderBox for Container {
     }
 }
 
-/// Takes no space and paints nothing. What a `Container` with no child
-/// collapses to, and a useful placeholder in a conditional tree.
+/// What a childless container holds: everything it is offered, and nothing
+/// when nothing is bounded.
+///
+/// Upstream `Container.build` puts exactly this in for a childless container
+/// whose constraints are not tight: a `LimitedBox(maxWidth: 0, maxHeight: 0)`
+/// around a `ConstrainedBox(constraints: BoxConstraints.expand())`. The
+/// `expand` wins wherever an axis is bounded, so the box is the biggest size
+/// the constraints allow; the `LimitedBox` clamps unbounded axes to zero,
+/// because a box may not be infinitely large. [`BoxConstraints::biggest`]
+/// answers both halves in one call, safely: this port's `biggest`
+/// deliberately collapses an unbounded axis to its minimum (a documented
+/// safety of this crate), and the minimum a container is ever handed is zero
+/// -- the same clamp the `LimitedBox` was there to make.
+struct Expand {
+    size: Size,
+}
+
+impl Expand {
+    fn new() -> Expand {
+        Expand { size: Size::ZERO }
+    }
+}
+
+impl Default for Expand {
+    fn default() -> Self {
+        Expand::new()
+    }
+}
+
+impl RenderBox for Expand {
+    fn update_from(
+        &mut self,
+        fresh: &mut dyn RenderBox,
+    ) -> Option<crate::render::UpdateEffect> {
+        fresh.as_any_mut().downcast_mut::<Expand>()?;
+        Some(crate::render::UpdateEffect::Nothing)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.biggest();
+        self.size
+    }
+    fn size(&self) -> Size {
+        self.size
+    }
+    fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
+        false
+    }
+}
+
+/// Takes no space and paints nothing. A useful placeholder in a conditional
+/// tree.
 pub struct Empty;
 
 impl RenderBox for Empty {
@@ -575,8 +643,18 @@ pub struct RenderNavigationToolbar {
     leading: Option<BoxedRender>,
     middle: Option<BoxedRender>,
     trailing: Option<BoxedRender>,
+    /// Whether the middle widget is centred on the bar or only spaced off the
+    /// leading widget. Upstream's default is `NavigationToolbar`'s
+    /// `this.centerMiddle = true` (`widgets/navigation_toolbar.dart`): the
+    /// title sits in the middle of the bar, not hugging the leading edge.
     center_middle: bool,
     middle_spacing: f32,
+    /// Which way the bar reads. Upstream's `NavigationToolbar` builds its
+    /// delegate with `Directionality.of(context)` (`widgets/basic.dart`, the
+    /// consumption every text-direction-sensitive widget makes); here the
+    /// ambient direction at construction stands in for that, the same moment
+    /// relative to the build that upstream resolves it in.
+    text_direction: crate::direction::TextDirection,
     /// Where the last layout put leading, middle and trailing.
     offsets: [Offset; 3],
     size: Size,
@@ -588,8 +666,10 @@ impl RenderNavigationToolbar {
             leading: None,
             middle: None,
             trailing: None,
-            center_middle: false,
+            // `this.centerMiddle = true` up top in the constructor.
+            center_middle: true,
             middle_spacing: K_MIDDLE_SPACING,
+            text_direction: crate::direction::current_direction(),
             offsets: [Offset::ZERO; 3],
             size: Size::ZERO,
         }
@@ -649,28 +729,32 @@ impl RenderBox for RenderNavigationToolbar {
         let effect = UpdateEffect::relayout_if(
             !kept
                 || self.center_middle != fresh.center_middle
-                || self.middle_spacing != fresh.middle_spacing,
+                || self.middle_spacing != fresh.middle_spacing
+                // Upstream's `shouldRelayout`, which compares the direction
+                // along with everything else.
+                || self.text_direction != fresh.text_direction,
         );
         self.leading = fresh.leading.take();
         self.middle = fresh.middle.take();
         self.trailing = fresh.trailing.take();
         self.center_middle = fresh.center_middle;
         self.middle_spacing = fresh.middle_spacing;
+        self.text_direction = fresh.text_direction;
         Some(effect)
     }
 
     /// Upstream `_ToolbarLayout.performLayout`, in its order, which is the
-    /// whole point of it.
-    ///
-    /// The one thing left out is `textDirection`: every branch upstream writes
-    /// as `switch (textDirection)` is taken at its `TextDirection.ltr` arm,
-    /// because there is no `Directionality` in this framework to ask.
+    /// whole point of it. The `switch (textDirection)` each placement ends in
+    /// is written out here too: in rtl the leading widget goes to the right
+    /// edge, the trailing to the left, and the middle is mirrored against the
+    /// bar rather than placed from its left.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         // `MultiChildLayoutDelegate.getSize` is `constraints.biggest`, and the
         // delegate lays out against that.
         let size = constraints.biggest();
         self.size = size;
         self.offsets = [Offset::ZERO; 3];
+        let rtl = self.text_direction == crate::direction::TextDirection::Rtl;
 
         let mut leading_width = 0.0f32;
         let mut trailing_width = 0.0f32;
@@ -684,7 +768,8 @@ impl RenderBox for RenderNavigationToolbar {
             });
         if let Some(leading_size) = leading_size {
             leading_width = leading_size.width;
-            self.offsets[0] = Offset::new(0.0, 0.0);
+            let leading_x = if rtl { size.width - leading_width } else { 0.0 };
+            self.offsets[0] = Offset::new(leading_x, 0.0);
         }
 
         // `BoxConstraints.loose(size)`.
@@ -694,8 +779,9 @@ impl RenderBox for RenderNavigationToolbar {
             .map(|trailing| trailing.layout(BoxConstraints::loose(size.width, size.height)));
         if let Some(trailing_size) = trailing_size {
             trailing_width = trailing_size.width;
+            let trailing_x = if rtl { 0.0 } else { size.width - trailing_size.width };
             self.offsets[2] = Offset::new(
-                size.width - trailing_size.width,
+                trailing_x,
                 (size.height - trailing_size.height) / 2.0,
             );
         }
@@ -723,7 +809,9 @@ impl RenderBox for RenderNavigationToolbar {
                     middle_start = middle_start_margin;
                 }
             }
-            self.offsets[1] = Offset::new(middle_start, middle_y);
+            let middle_x =
+                if rtl { size.width - middle_size.width - middle_start } else { middle_start };
+            self.offsets[1] = Offset::new(middle_x, middle_y);
         }
 
         self.size
@@ -783,6 +871,19 @@ impl Align {
     pub fn new(alignment: Alignment, child: impl RenderBox + 'static) -> RenderAlign {
         RenderAlign::new(alignment, child)
     }
+
+    /// Places the child at an alignment that names its edges by reading
+    /// order, resolved against the ambient direction.
+    ///
+    /// Upstream's `Align(alignment: AlignmentDirectional....)`. The direction
+    /// is captured here rather than read later, so the alignment settles the
+    /// moment the widget is built -- see [`crate::direction`].
+    pub fn directional(
+        alignment: AlignmentDirectional,
+        child: impl RenderBox + 'static,
+    ) -> RenderAlign {
+        RenderAlign::directional(alignment, child)
+    }
 }
 
 /// Insets its child.
@@ -796,6 +897,17 @@ impl Padding {
 
     pub fn all(value: f32, child: impl RenderBox + 'static) -> RenderPadding {
         RenderPadding::new(EdgeInsets::all(value), child)
+    }
+
+    /// Insets by edges named in reading order, resolved against the ambient
+    /// direction when this is built.
+    ///
+    /// Upstream's `Padding(padding: EdgeInsetsDirectional....)`: `start` is
+    /// the left in an LTR subtree and the right in an RTL one, which is a
+    /// different `EdgeInsets` and so a different render object -- resolved
+    /// here rather than at layout, the same moment upstream's `build` runs.
+    pub fn directional(insets: EdgeInsetsDirectional, child: impl RenderBox + 'static) -> RenderPadding {
+        RenderPadding::new(insets.resolve(crate::direction::current_direction()), child)
     }
 }
 
@@ -819,12 +931,18 @@ impl SizedBox {
     }
 
     /// A gap of `height` in a column, or `width` in a row.
+    ///
+    /// Upstream is `SizedBox(height: h)`, whose `_additionalConstraints` is
+    /// `BoxConstraints.tightFor(height: h)`: the height axis tight, the width
+    /// axis untouched -- a minimum of zero and no maximum, so a child keeps
+    /// whatever width it was offered rather than being clamped to none.
     pub fn height(height: f32) -> RenderConstrainedBox {
-        RenderConstrainedBox::new(BoxConstraints::new(0.0, 0.0, height, height))
+        RenderConstrainedBox::new(BoxConstraints::new(0.0, f32::INFINITY, height, height))
     }
 
+    /// The same, the other axis: `SizedBox(width: w)` / `tightFor(width: w)`.
     pub fn width(width: f32) -> RenderConstrainedBox {
-        RenderConstrainedBox::new(BoxConstraints::new(width, width, 0.0, 0.0))
+        RenderConstrainedBox::new(BoxConstraints::new(width, width, 0.0, f32::INFINITY))
     }
 }
 
@@ -836,12 +954,13 @@ pub struct Column;
 impl Column {
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> RenderFlex {
-        // Shrink-wrapping is the useful default for a column that is being
-        // centred or padded; a column that should fill says so with
-        // `with_main_axis_size(MainAxisSize::Max)`.
-        RenderFlex::column()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        // Upstream `Flex` (hence `Column`) defaults to `MainAxisSize.max`,
+        // stretching to the incoming height when it is bounded and
+        // degrading to the content height when it is not (upstream
+        // `RenderFlex` degrades the same way for an unbounded max). A column
+        // that should shrink-wrap says so with
+        // `with_main_axis_size(MainAxisSize::Min)`.
+        RenderFlex::column().with_cross_axis_alignment(CrossAxisAlignment::Center)
     }
 
     /// Fills the height it is offered.
@@ -856,9 +975,8 @@ pub struct Row;
 impl Row {
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> RenderFlex {
-        RenderFlex::row()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        // Upstream `Row` defaults to `MainAxisSize.max`; see `Column::new`.
+        RenderFlex::row().with_cross_axis_alignment(CrossAxisAlignment::Center)
     }
 
     pub fn expanded() -> RenderFlex {
@@ -899,6 +1017,90 @@ impl AspectRatio {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(ratio: f32, child: impl RenderBox + 'static) -> RenderAspectRatio {
         RenderAspectRatio::new(ratio, child)
+    }
+}
+
+/// Limits its child only where the constraints are unbounded.
+///
+/// Upstream's `LimitedBox` (`widgets/basic.dart`): `.with_max_width` /
+/// `.with_max_height` say what the child should be sized to in an unbounded
+/// direction, and change nothing in a bounded one.
+pub struct LimitedBox;
+
+impl LimitedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderLimitedBox {
+        RenderLimitedBox::new(child)
+    }
+}
+
+/// Scales and positions its child within itself according to a `BoxFit`.
+///
+/// Upstream's `FittedBox` (`widgets/basic.dart`): the child is laid out at
+/// its natural size, then scaled into the box; `.with_fit` picks the
+/// discipline, `.with_alignment` where the result sits.
+pub struct FittedBox;
+
+impl FittedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderFittedBox {
+        RenderFittedBox::new(child)
+    }
+}
+
+/// Positions its child so the child's baseline is a fixed distance from the
+/// top.
+///
+/// Upstream's `Baseline` (`widgets/basic.dart`). The `baselineType` upstream
+/// carries has no counterpart here because there is only one baseline to ask
+/// a child for.
+pub struct Baseline;
+
+impl Baseline {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(baseline: f32, child: impl RenderBox + 'static) -> RenderBaseline {
+        RenderBaseline::new(baseline, child)
+    }
+}
+
+/// Sizes its child to a fraction of the space it is given.
+///
+/// Upstream's `FractionallySizedBox` (`widgets/basic.dart`):
+/// `.with_width_factor(0.5)` is "half of whatever this turns out to be".
+pub struct FractionallySizedBox;
+
+impl FractionallySizedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderFractionallySizedBox {
+        RenderFractionallySizedBox::new(child)
+    }
+}
+
+/// Imposes different constraints on its child than it gets, letting the
+/// child overflow.
+///
+/// Upstream's `OverflowBox` (`widgets/basic.dart`): each `.with_*_width` /
+/// `.with_*_height` overrides that one constraint, and the box itself stays
+/// the size of its constraints.
+pub struct OverflowBox;
+
+impl OverflowBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderOverflowBox {
+        RenderOverflowBox::new(child)
+    }
+}
+
+/// A box of a given size that passes its original constraints through to its
+/// child, which may then overflow.
+///
+/// Upstream's `SizedOverflowBox` (`widgets/basic.dart`).
+pub struct SizedOverflowBox;
+
+impl SizedOverflowBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(size: Size, child: impl RenderBox + 'static) -> RenderSizedOverflowBox {
+        RenderSizedOverflowBox::new(size, child)
     }
 }
 
@@ -976,6 +1178,58 @@ impl Positioned {
     }
 }
 
+/// Anchors a stacked child to edges named in reading order.
+///
+/// Upstream's `PositionedDirectional` (`basic.dart`): `start` is whichever of
+/// left and right the ambient direction reads from, so an RTL subtree anchors
+/// `start` to the right edge. Which is which is settled here -- the same
+/// moment upstream's `build` turns the widget into a `Positioned` with left
+/// and right already chosen -- because by layout the walk that knew the
+/// direction is over.
+pub struct PositionedDirectional;
+
+impl PositionedDirectional {
+    /// All four edges, any of which may be left off.
+    ///
+    /// Upstream's build is two lines -- `left = rtl ? end : start;
+    /// right = rtl ? start : end` -- and they are the two lines here.
+    pub fn new(
+        start: Option<f32>,
+        top: Option<f32>,
+        end: Option<f32>,
+        bottom: Option<f32>,
+    ) -> StackPosition {
+        let (left, right) = if crate::direction::current_direction()
+            == crate::direction::TextDirection::Rtl
+        {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        StackPosition { left, top, right, bottom, ..Default::default() }
+    }
+
+    /// `start` and `top`, the common two.
+    pub fn at(start: f32, top: f32) -> StackPosition {
+        Self::new(Some(start), Some(top), None, None)
+    }
+}
+
+/// A stack that shows a single child from a list.
+///
+/// Upstream's `IndexedStack` (`widgets/indexed_stack.dart`): every child is
+/// laid out -- so each keeps its state -- the stack is as big as the largest
+/// child, and only the child at `index` is painted, hit-tested or described.
+/// `with_index(None)` is upstream's `index: null`: nothing is shown.
+pub struct IndexedStack;
+
+impl IndexedStack {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> RenderIndexedStack {
+        RenderIndexedStack::new()
+    }
+}
+
 // -- Scrolling ----------------------------------------------------------------
 
 /// A scrollable column.
@@ -985,6 +1239,15 @@ impl Positioned {
 /// away and belongs with the widgets layer.
 pub struct ListView {
     axis: Axis,
+    /// Which way the list scrolls, upstream's `AxisDirection`. Down for a
+    /// column; a row is right in an LTR subtree and left in an RTL one
+    /// (`getAxisDirectionFromAxisReverseAndDirectionality`, the same line
+    /// `ScrollView` builds its viewport with).
+    ///
+    /// Captured at construction, because the viewport this feeds is composed
+    /// at layout -- outside the walk, when the ambient direction is no longer
+    /// the one this list was built under.
+    axis_direction: AxisDirection,
     offset: f32,
     spacing: f32,
     centred_item: Option<f32>,
@@ -1003,6 +1266,7 @@ impl ListView {
     pub fn new() -> ListView {
         ListView {
             axis: Axis::Vertical,
+            axis_direction: AxisDirection::Down,
             offset: 0.0,
             spacing: 0.0,
             centred_item: None,
@@ -1015,7 +1279,16 @@ impl ListView {
     }
 
     pub fn horizontal() -> ListView {
-        ListView { axis: Axis::Horizontal, ..ListView::new() }
+        // An RTL row starts at the right edge, so that is the way it scrolls
+        // too: `textDirectionToAxisDirection` over the direction in force
+        // where the list was built.
+        let axis_direction =
+            if crate::direction::current_direction() == crate::direction::TextDirection::Rtl {
+                AxisDirection::Left
+            } else {
+                AxisDirection::Right
+            };
+        ListView { axis: Axis::Horizontal, axis_direction, ..ListView::new() }
     }
 
     pub fn with_spacing(mut self, spacing: f32) -> Self {
@@ -1084,7 +1357,23 @@ impl ListView {
         let mut flex = RenderFlex::new(self.axis)
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_spacing(self.spacing);
+            .with_spacing(self.spacing)
+            // The column is laid out outside the walk too, so its direction
+            // comes from this list rather than from whatever is ambient at
+            // layout. A leftward (RTL) row lays its first child at the right
+            // edge -- the order upstream's slivers lay theirs in -- and an
+            // upward one lays it at the bottom.
+            .with_text_direction(
+                if self.axis_direction == AxisDirection::Left {
+                    crate::direction::TextDirection::Rtl
+                } else {
+                    crate::direction::TextDirection::Ltr
+                },
+            )
+            .with_vertical_direction(match self.axis_direction {
+                AxisDirection::Up => VerticalDirection::Up,
+                _ => VerticalDirection::Down,
+            });
         if let Some(inset) = self.inset {
             flex = flex.push(spacer(self.axis, inset));
         }
@@ -1121,6 +1410,7 @@ impl RenderBox for ListView {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<ListView>()?;
         self.axis = fresh.axis;
+        self.axis_direction = fresh.axis_direction;
         self.offset = fresh.offset;
         self.spacing = fresh.spacing;
         self.centred_item = fresh.centred_item;
@@ -1140,7 +1430,9 @@ impl RenderBox for ListView {
         // The viewport takes the axis and the scroll offset. It is not behind a
         // handle of its own -- this list is its handle -- so its answer is this
         // one's answer.
-        let mut staged = RenderViewport::new(self.axis, flex).with_offset(self.offset);
+        let mut staged = RenderViewport::new(self.axis, flex)
+            .with_offset(self.offset)
+            .with_axis_direction(self.axis_direction);
         self.composed.as_mut().expect("built with the column")
             .update_from(&mut staged)
     }
@@ -1153,7 +1445,11 @@ impl RenderBox for ListView {
             self.inset = inset;
             let flex = RenderRef::new(self.build_flex());
             self.flex = Some(flex.clone());
-            self.composed = Some(RenderViewport::new(self.axis, flex).with_offset(self.offset));
+            self.composed = Some(
+                RenderViewport::new(self.axis, flex)
+                    .with_offset(self.offset)
+                    .with_axis_direction(self.axis_direction),
+            );
         } else if self.inset != inset {
             // The space to centre an item in changed, so the padding at both
             // ends did. This is the only place the new constraints are known,
@@ -1337,7 +1633,9 @@ mod tests {
 
     #[test]
     fn the_edges_are_vertically_centred_and_the_leading_fills_the_height() {
+        // `centerMiddle: false`: the spaced-off-the-leading placement.
         let mut toolbar = RenderNavigationToolbar::new()
+            .with_center_middle(false)
             .with_leading(FixedBox::new(40.0, 10.0))
             .with_middle(FixedBox::new(50.0, 24.0))
             .with_trailing(FixedBox::new(60.0, 40.0));
@@ -1375,6 +1673,52 @@ mod tests {
     }
 
     #[test]
+    fn a_toolbar_centres_its_middle_by_default() {
+        // The constructor default is upstream's `this.centerMiddle = true`
+        // (`widgets/navigation_toolbar.dart`), so a toolbar built with nothing
+        // but a middle puts it in the centre of the bar: `(300 - 50) / 2`.
+        let mut toolbar = RenderNavigationToolbar::new()
+            .with_middle(FixedBox::new(50.0, 24.0))
+            .with_trailing(FixedBox::new(60.0, 40.0));
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        assert_eq!(toolbar.offsets[1].dx, 125.0);
+    }
+
+    #[test]
+    fn the_leading_moves_to_the_far_edge_in_rtl() {
+        // `_ToolbarLayout`'s `switch (textDirection)`: the leading widget is
+        // placed at `size.width - leadingWidth` in rtl, at 0 in ltr. The
+        // direction is read when the toolbar is built, the moment upstream's
+        // `NavigationToolbar` hands it to the delegate.
+        let rtl = crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
+            RenderNavigationToolbar::new().with_leading(FixedBox::new(40.0, 10.0))
+        });
+        let mut toolbar = rtl;
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        assert_eq!(toolbar.offsets[0], Offset::new(260.0, 0.0));
+    }
+
+    #[test]
+    fn the_trailing_and_middle_mirror_in_rtl() {
+        // The trailing goes to the near (left) edge, and the middle is placed
+        // `size.width - middleSize.width - middleStart` -- mirrored against
+        // the bar rather than measured from its left. `centerMiddle: false`
+        // so `middleStart` is the plain leading-plus-spacing margin.
+        let rtl = crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
+            RenderNavigationToolbar::new()
+                .with_center_middle(false)
+                .with_middle(FixedBox::new(50.0, 24.0))
+                .with_trailing(FixedBox::new(60.0, 40.0))
+        });
+        let mut toolbar = rtl;
+        toolbar.layout(BoxConstraints::tight(300.0, 56.0));
+        assert_eq!(toolbar.offsets[2].dx, 0.0);
+        // `middleStart = leadingWidth + middleSpacing` = 16, mirrored:
+        // 300 - 50 - 16.
+        assert_eq!(toolbar.offsets[1].dx, 300.0 - 50.0 - K_MIDDLE_SPACING);
+    }
+
+    #[test]
     fn container_padding_grows_the_box() {
         let mut container = Container::new()
             .with_padding(EdgeInsets::all(8.0))
@@ -1400,6 +1744,43 @@ mod tests {
     }
 
     #[test]
+    fn a_childless_container_expands_to_fill_bounded_constraints() {
+        // Upstream's childless `Container.build` is a `LimitedBox(0, 0)`
+        // around a `ConstrainedBox(BoxConstraints.expand())`: everything on
+        // offer when the constraints bound an axis, and nothing on one they
+        // leave unbounded -- the `LimitedBox`'s clamp, which this port's
+        // `BoxConstraints::biggest` already makes.
+        let mut container = Container::new().with_color(Color::WHITE);
+        let size = container.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(200.0, 200.0));
+
+        let unbounded = BoxConstraints::new(0.0, f32::INFINITY, 0.0, f32::INFINITY);
+        let size = container.layout(unbounded);
+        assert_eq!(size, Size::ZERO);
+    }
+
+    #[test]
+    fn a_border_insets_the_child_it_surrounds() {
+        // `Container._paddingIncludingDecoration` folds the border's
+        // dimensions into the padding, so the child is laid out inside the
+        // border rather than underneath it: 20 + 4 on each side.
+        let mut container = Container::new()
+            .with_border(4.0, Color::BLACK)
+            .with_child(FixedBox::new(20.0, 10.0));
+        let size = container.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(28.0, 18.0));
+
+        // The border and an explicit padding add, rather than one hiding the
+        // other: 20 + (8 + 4) on each side.
+        let mut container = Container::new()
+            .with_padding(EdgeInsets::all(8.0))
+            .with_border(4.0, Color::BLACK)
+            .with_child(FixedBox::new(20.0, 10.0));
+        let size = container.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(44.0, 34.0));
+    }
+
+    #[test]
     fn center_reports_full_size_and_centres_child() {
         let mut center = Center::new(FixedBox::new(40.0, 20.0));
         let size = center.layout(BoxConstraints::tight(100.0, 100.0));
@@ -1414,9 +1795,38 @@ mod tests {
             .push(FixedBox::new(30.0, 20.0))
             .push(FixedBox::new(50.0, 20.0));
         let size = column.layout(BoxConstraints::loose(200.0, 200.0));
-        assert_eq!(size, Size::new(50.0, 50.0));
+        // The upstream default is `MainAxisSize.max`, so a bounded height is
+        // taken even though the children only need 50 of it.
+        assert_eq!(size, Size::new(50.0, 200.0));
         assert_eq!(column.child_offsets()[0], Offset::new(10.0, 0.0));
         assert_eq!(column.child_offsets()[1], Offset::new(0.0, 30.0));
+    }
+
+    #[test]
+    fn column_and_row_default_to_main_axis_size_max() {
+        // Upstream `Flex` -- hence `Column` and `Row` -- defaults to
+        // `MainAxisSize.max`: fill what the parent offers on the main axis.
+        let mut column = Column::new().push(FixedBox::new(30.0, 20.0));
+        let size = column.layout(BoxConstraints::loose(100.0, 80.0));
+        assert_eq!(size, Size::new(30.0, 80.0));
+
+        let mut row = Row::new().push(FixedBox::new(30.0, 20.0));
+        let size = row.layout(BoxConstraints::loose(100.0, 80.0));
+        assert_eq!(size, Size::new(100.0, 20.0));
+    }
+
+    #[test]
+    fn a_max_column_degrades_to_its_content_in_an_unbounded_parent() {
+        // Upstream `RenderFlex` picks `maxMainSize` only when it is finite;
+        // against an unbounded main axis max degrades to the content extent
+        // (its `_computeSizes` idealMainSize switch), which is why a column in
+        // a vertical scroll view shrink-wraps without asking to.
+        let mut column = Column::new()
+            .with_spacing(10.0)
+            .push(FixedBox::new(30.0, 20.0))
+            .push(FixedBox::new(50.0, 20.0));
+        let size = column.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert_eq!(size, Size::new(50.0, 50.0));
     }
 
     #[test]
@@ -1424,6 +1834,20 @@ mod tests {
         let mut gap = SizedBox::height(12.0);
         let size = gap.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(size, Size::new(0.0, 12.0));
+    }
+
+    #[test]
+    fn a_gap_leaves_the_cross_axis_to_its_child() {
+        // `tightFor(height: h)` tightens only the height axis: the width axis
+        // keeps the min of zero and max of infinity it was offered, so a child
+        // is not clamped to a zero-width strip.
+        let mut gap = SizedBox::height(12.0).with_child(FixedBox::new(30.0, 20.0));
+        let size = gap.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(30.0, 12.0));
+
+        let mut gap = SizedBox::width(20.0).with_child(FixedBox::new(30.0, 20.0));
+        let size = gap.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(20.0, 20.0));
     }
 
     #[test]
@@ -1664,5 +2088,82 @@ mod tests {
             140.0,
             "the column was kept and the second row was not"
         );
+    }
+
+    #[test]
+    fn positioned_directional_in_rtl_anchors_start_to_the_right_edge() {
+        use crate::direction::{TextDirection, with_direction};
+        // `PositionedDirectional`'s build is two lines -- `left = rtl ? end :
+        // start; right = rtl ? start : end` -- settled where the ambient
+        // direction is still in force, because by layout the walk is over.
+        let position = with_direction(TextDirection::Rtl, || PositionedDirectional::at(5.0, 5.0));
+        assert_eq!(position.right, Some(5.0), "start is the right edge in rtl");
+        assert_eq!(position.left, None);
+        // And the stack honours it like any absolute anchor: 100 - 5 - 10.
+        let mut stack = RenderStack::new()
+            .push(FixedBox::new(100.0, 100.0))
+            .push_positioned(FixedBox::new(10.0, 10.0), position);
+        stack.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(stack.child_offsets()[1], Offset::new(85.0, 5.0));
+    }
+
+    #[test]
+    fn a_horizontal_list_in_rtl_starts_at_the_right_edge() {
+        use crate::direction::{TextDirection, with_direction};
+        // `textDirectionToAxisDirection` says an rtl row scrolls leftwards,
+        // and the rows inside it read right to left -- so the first row built
+        // is the first thing seen, at the window's right edge.
+        let mut list = with_direction(TextDirection::Rtl, || {
+            ListView::horizontal()
+                .push(FixedBox::new(60.0, 40.0))
+                .push(FixedBox::new(60.0, 40.0))
+                .push(FixedBox::new(60.0, 40.0))
+        });
+        let size = list.layout(BoxConstraints::tight(100.0, 40.0));
+        assert_eq!(size, Size::new(100.0, 40.0));
+        assert_eq!(list.max_scroll_extent(), 80.0);
+        // The scroll offset puts the content's end against the window's right
+        // edge...
+        let mut scrolled = None;
+        list.composed
+            .as_ref()
+            .expect("laid out")
+            .visit_children(&mut |_, offset| scrolled = Some(offset));
+        assert_eq!(scrolled, Some(Offset::new(-80.0, 0.0)));
+        // ...and the rows inside it were laid out right to left: the first
+        // ends at the content's right edge (180), the last starts at its left.
+        let mut offsets = Vec::new();
+        list.flex
+            .as_ref()
+            .expect("built with the viewport")
+            .visit_children(&mut |_, offset| offsets.push(offset));
+        assert_eq!(offsets[0].dx, 120.0);
+        assert_eq!(offsets[1].dx, 60.0);
+        assert_eq!(offsets[2].dx, 0.0);
+    }
+
+    #[test]
+    fn a_wrap_places_its_lines_by_its_run_alignment() {
+        // `Wrap::new()` hands back the render object, and the facade fronts
+        // its builder chain: `runAlignment` reaches it without `new` changing
+        // -- three chips of 40 in a 100-wide window, two lines of two.
+        let mut wrap = Wrap::new()
+            .with_run_alignment(MainAxisAlignment::Center)
+            .push(FixedBox::new(40.0, 20.0))
+            .push(FixedBox::new(40.0, 20.0))
+            .push(FixedBox::new(40.0, 20.0));
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        // 40 of lines in a 100-tall wrap, so 60 free: half of it above.
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0].dy, 30.0);
+        assert_eq!(offsets[2].dy, 50.0);
+
+        // And a wrap that says nothing keeps stacking them from the top.
+        let mut wrap = Wrap::new();
+        for _ in 0..3 {
+            wrap = wrap.push(FixedBox::new(40.0, 20.0));
+        }
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(wrap.child_offsets()[0].dy, 0.0);
     }
 }

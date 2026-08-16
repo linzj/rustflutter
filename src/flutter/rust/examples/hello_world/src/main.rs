@@ -33,7 +33,11 @@ impl Application for HelloWorld {
                 .with_corner_radius(16.0)
                 .with_padding(EdgeInsets::symmetric(48.0, 36.0))
                 .with_child(
+                    // Min, so the card shrink-wraps the message and the
+                    // `Center` centres the card; the max default would fill
+                    // the window with the card and start the text at the top.
                     Column::new()
+                        .with_main_axis_size(rustflutter::render::MainAxisSize::Min)
                         .with_spacing(12.0)
                         .push(
                             Text::new("Hello, World!")

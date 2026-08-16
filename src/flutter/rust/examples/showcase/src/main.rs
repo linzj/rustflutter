@@ -19,7 +19,7 @@ use rustflutter::framework::{ElementTree, provide};
 use rustflutter::prelude::*;
 use rustflutter::render::{
     Alignment, BoxConstraints, CrossAxisAlignment, MainAxisSize, Offset, RenderBox,
-    RenderFlex,
+    RenderConstrainedBox, RenderDecoratedBox, RenderFlex,
 };
 use rustflutter::widgets::{Align, Container, Empty, ListView};
 
@@ -273,6 +273,65 @@ impl Component for Body {
             spacing,
         )));
 
+        // The sizing widgets, each showing the one effect it owns: a clamp on
+        // an unbounded axis, a scale-to-fit, a shared baseline line, a
+        // fraction of the child, a child let out of its frame, and a
+        // paint-only-this-child index.
+        let primary = theme.primary;
+        let danger = theme.danger;
+        let demuted = theme.text_muted;
+        let sizing = component(Card::new(stack_column(
+            vec![
+                component(Label::title("Sizing")),
+                component(Label::muted("LimitedBox clamps an unbounded row at 90")),
+                leaf(move || {
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .push(LimitedBox::new(swatch(240.0, 10.0, primary)).with_max_width(90.0))
+                }),
+                component(Label::muted("FittedBox contain fits a swatch into 56x56")),
+                leaf(move || {
+                    RenderConstrainedBox::tight(56.0, 56.0)
+                        .with_child(FittedBox::new(swatch(96.0, 36.0, danger)))
+                }),
+                component(Label::muted("Baseline puts every bottom edge on one line")),
+                leaf(move || {
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_spacing(6.0)
+                        .push(Baseline::new(28.0, swatch(8.0, 28.0, primary)))
+                        .push(Baseline::new(28.0, swatch(48.0, 12.0, danger)))
+                        .push(Baseline::new(28.0, swatch(24.0, 20.0, demuted)))
+                }),
+                component(Label::muted("FractionallySizedBox is half its child's size")),
+                leaf(move || {
+                    FractionallySizedBox::new(swatch(60.0, 24.0, primary))
+                        .with_width_factor(0.5)
+                        .with_height_factor(1.0)
+                }),
+                component(Label::muted("OverflowBox lets a 200px bar out of a 96px frame")),
+                leaf(move || {
+                    RenderConstrainedBox::tight(96.0, 36.0).with_child(
+                        OverflowBox::new(swatch(200.0, 12.0, danger))
+                            .with_alignment(Alignment::CENTER),
+                    )
+                }),
+                component(Label::muted("SizedOverflowBox is 64 wide, its child is not")),
+                leaf(move || {
+                    SizedOverflowBox::new(Size::new(64.0, 32.0), swatch(140.0, 10.0, primary))
+                        .with_alignment(Alignment::CENTER)
+                }),
+                component(Label::muted("IndexedStack paints child 1 of 2")),
+                leaf(move || {
+                    IndexedStack::new()
+                        .with_index(Some(1))
+                        .push(swatch(28.0, 28.0, demuted))
+                        .push(swatch(28.0, 28.0, primary))
+                }),
+            ],
+            spacing,
+        )));
+
         let tile = component(Card::new(stack_column(
             vec![
                 component(Label::title("Tappable tile")),
@@ -296,7 +355,7 @@ impl Component for Body {
         )));
 
         // A ListView so the page scrolls if the window is short.
-        let cards = vec![buttons, mixed, scaled, controls, badges, tile];
+        let cards = vec![buttons, mixed, scaled, sizing, controls, badges, tile];
         many(cards, move |rendered| {
             let mut column = RenderFlex::column()
                 .with_main_axis_size(MainAxisSize::Min)
@@ -342,6 +401,102 @@ impl Component for ProgressRow {
     }
 }
 
+/// A coloured box of an exact size -- the visual child for the sizing demos.
+fn swatch(width: f32, height: f32, color: Color) -> RenderConstrainedBox {
+    RenderConstrainedBox::tight(width, height)
+        .with_child(RenderDecoratedBox::new().with_color(color))
+}
+
+// -- The sliver list page ------------------------------------------------------
+
+/// The palette a row's band takes its colour from: five hues that cycle every
+/// hundred rows, so a screenshot says where in the thousand it was taken.
+const SLIVER_BANDS: [Color; 5] = [
+    Color::rgb(63, 81, 181),
+    Color::rgb(0, 121, 107),
+    Color::rgb(183, 28, 28),
+    Color::rgb(230, 126, 0),
+    Color::rgb(69, 90, 100),
+];
+
+/// One row of the sliver list page: a colour band that says which hundred the
+/// row is in, and its index set as text.
+fn sliver_row(index: usize, body: TextStyle) -> impl RenderBox {
+    RenderFlex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(10.0)
+        .push(
+            RenderConstrainedBox::tight(6.0, 24.0).with_child(
+                RenderDecoratedBox::new().with_color(SLIVER_BANDS[(index / 100) % 5]),
+            ),
+        )
+        .push(Text::rich_spans(vec![
+            TextSpan::new(format!("Item {index:04}"), body.clone()),
+            TextSpan::new(
+                "  the window is a screenful, not a thousand",
+                TextStyle { color: Color::rgb(120, 120, 120), ..body },
+            ),
+        ]))
+}
+
+/// A thousand rows through the sliver protocol, rendered headlessly:
+/// `--sliver --png out.png [--scroll 3000]`. The page exists to be looked at
+/// as much as measured -- `cargo test` pins the laziness, and the screenshot
+/// pins that what is lazily laid out is what lands on the glass, at the top of
+/// the list, several screens in, and at the very end.
+struct SliverPage {
+    scroll: f32,
+    body: TextStyle,
+}
+
+impl Component for SliverPage {
+    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
+        let body = self.body.clone();
+        component(
+            rustflutter::scrolling::SliverListView::new(1000, move |index| {
+                rustflutter::render::RenderRef::new(sliver_row(index, body.clone()))
+            })
+            .with_item_extent(40.0)
+            // Padding so the page exercises the SliverPadding in front of the
+            // SliverList, exactly as upstream's `ListView(padding:)` builds.
+            .with_padding(rustflutter::render::EdgeInsets::only(16.0, 24.0, 16.0, 24.0))
+            .with_offset(self.scroll),
+        )
+    }
+}
+
+fn render_png_sliver(path: &str, scroll: f32) -> c_int {
+    rustflutter::engine::initialize();
+
+    let theme = Theme::light();
+    let mut tree = ElementTree::new();
+    tree.rebuild(component(SliverPage { scroll, body: theme.body() }));
+    tree.rebuild_dirty();
+
+    let mut root = tree.build_render_tree().expect("the tree has a root");
+    root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));
+
+    let mut layer_tree = rustflutter::app::compose_frame(
+        WIDTH,
+        HEIGHT,
+        1.0,
+        Size::new(WIDTH as f32, HEIGHT as f32),
+        theme.background,
+        |context| root.paint(context, Offset::ZERO),
+    );
+
+    match layer_tree.write_png(std::path::Path::new(path)) {
+        Ok(()) => {
+            println!("showcase: wrote {path} (sliver list, scrolled to {scroll})");
+            0
+        }
+        Err(err) => {
+            eprintln!("showcase: render failed: {err}");
+            1
+        }
+    }
+}
+
 // -- Entry point --------------------------------------------------------------
 
 struct ShowcaseApp {
@@ -362,9 +517,17 @@ impl WidgetApplication for ShowcaseApp {
 pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) -> c_int {
     let args = collect_args(argc, argv);
     let light = args.iter().any(|a| a == "--light");
+    let sliver = args.iter().any(|a| a == "--sliver");
+    let scroll = named_string(&args, "--scroll")
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0);
 
     if let Some(path) = named_string(&args, "--png") {
-        return render_png(&path, light);
+        return if sliver {
+            render_png_sliver(&path, scroll)
+        } else {
+            render_png(&path, light)
+        };
     }
 
     register_application(move || Box::new(WidgetHost::new(ShowcaseApp { light })));

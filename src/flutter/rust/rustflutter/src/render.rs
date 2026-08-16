@@ -30,11 +30,14 @@
 //! a frame does not lay out what it laid out before ([`RenderRef::layout`]),
 //! a rebuild does not replace what it can tell instead
 //! ([`RenderRef::reconfigure`]), and a subtree that drew the same thing hands
-//! back the drawing ([`RenderRepaintBoundary`]). What is missing is the
-//! *relayout boundary*: upstream can begin a frame part-way down the tree
-//! because `PipelineOwner` keeps the dirty ones and visits each, and there is
-//! no pipeline owner here, so [`RenderRef::mark_needs_layout`] walks to the
-//! root and the saving is in the siblings the descent never enters.
+//! back the drawing ([`RenderRepaintBoundary`]). The fourth is the *relayout
+//! boundary*: [`RenderRef::layout`] records which objects a relayout may start
+//! from -- upstream's `_isRelayoutBoundary`, computed on the same line of the
+//! same method -- [`RenderRef::mark_needs_layout`] stops at the nearest one,
+//! and [`flush_layout`] lays out what collected there, which is the part of
+//! upstream's `PipelineOwner` this tree needed. The frame's own walk from the
+//! root (`RenderRef::layout` from [`crate::app`], when nothing is dirty)
+//! remains the fallback, as upstream's `scheduleInitialLayout` makes it there.
 //!
 //! Hit testing is here rather than with input, because only a render object
 //! knows its own geometry. [`RenderBox::hit_test`] walks the tree back to front
@@ -44,6 +47,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use crate::direction::TextDirection;
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
 use crate::painting::{ClipBehavior, ClipOp, Gradient, Image, RenderPath};
@@ -143,6 +147,55 @@ impl EdgeInsets {
 
     pub fn vertical(&self) -> f32 {
         self.top + self.bottom
+    }
+
+    /// Two insets folded into one, side by side. Upstream's `EdgeInsets.add`,
+    /// which is what a container does to fold its decoration's border into
+    /// its own padding.
+    pub const fn add(self, other: EdgeInsets) -> EdgeInsets {
+        EdgeInsets {
+            left: self.left + other.left,
+            top: self.top + other.top,
+            right: self.right + other.right,
+            bottom: self.bottom + other.bottom,
+        }
+    }
+}
+
+/// Per-side insets measured from the start edge rather than the left one.
+///
+/// Upstream's `EdgeInsetsDirectional`. `start` is the left in
+/// [`TextDirection::Ltr`] and the right in [`TextDirection::Rtl`], so what the
+/// numbers mean has to be settled against a direction before anything can be
+/// laid out -- see [`EdgeInsetsDirectional::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct EdgeInsetsDirectional {
+    pub start: f32,
+    pub top: f32,
+    pub end: f32,
+    pub bottom: f32,
+}
+
+impl EdgeInsetsDirectional {
+    pub const ZERO: EdgeInsetsDirectional =
+        EdgeInsetsDirectional { start: 0.0, top: 0.0, end: 0.0, bottom: 0.0 };
+
+    pub const fn all(value: f32) -> EdgeInsetsDirectional {
+        EdgeInsetsDirectional { start: value, top: value, end: value, bottom: value }
+    }
+
+    pub const fn only(start: f32, top: f32, end: f32, bottom: f32) -> EdgeInsetsDirectional {
+        EdgeInsetsDirectional { start, top, end, bottom }
+    }
+
+    /// The absolute insets these are, once `direction` says which side start
+    /// is. Upstream's `EdgeInsetsDirectional.resolve`: in `rtl` the end inset
+    /// becomes the left one and the start inset the right one.
+    pub fn resolve(self, direction: TextDirection) -> EdgeInsets {
+        match direction {
+            TextDirection::Ltr => EdgeInsets::only(self.start, self.top, self.end, self.bottom),
+            TextDirection::Rtl => EdgeInsets::only(self.end, self.top, self.start, self.bottom),
+        }
     }
 }
 
@@ -341,6 +394,235 @@ impl BoxConstraints {
     }
 }
 
+// -- Slivers -------------------------------------------------------------------
+
+/// The direction in which a sliver's contents are ordered, relative to the
+/// scroll offset axis.
+///
+/// Upstream's `GrowthDirection` (`rendering/sliver.dart`). A viewport laid out
+/// from its center sliver grows `Forward` below the zero scroll offset and
+/// `Reverse` above it; a viewport with `anchor` zero -- the only one this port
+/// has, see [`RenderSliverViewport`] -- grows everything forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GrowthDirection {
+    /// Contents ordered in the same direction as the [`AxisDirection`].
+    #[default]
+    Forward,
+    /// Contents ordered in the opposite direction of the [`AxisDirection`].
+    Reverse,
+}
+
+/// Flips an [`AxisDirection`] end for end. Upstream's `flipAxisDirection`.
+pub fn flip_axis_direction(direction: AxisDirection) -> AxisDirection {
+    match direction {
+        AxisDirection::Up => AxisDirection::Down,
+        AxisDirection::Down => AxisDirection::Up,
+        AxisDirection::Left => AxisDirection::Right,
+        AxisDirection::Right => AxisDirection::Left,
+    }
+}
+
+/// The [`AxisDirection`] in which a sliver with this `growth_direction`
+/// actually grows. Upstream's `applyGrowthDirectionToAxisDirection`.
+pub fn apply_growth_direction_to_axis_direction(
+    axis_direction: AxisDirection,
+    growth_direction: GrowthDirection,
+) -> AxisDirection {
+    match growth_direction {
+        GrowthDirection::Forward => axis_direction,
+        GrowthDirection::Reverse => flip_axis_direction(axis_direction),
+    }
+}
+
+/// Flips a [`ScrollDirection`](crate::scrolling::ScrollDirection) when the
+/// growth direction is reversed. Upstream's
+/// `applyGrowthDirectionToScrollDirection`.
+pub fn apply_growth_direction_to_scroll_direction(
+    scroll_direction: crate::scrolling::ScrollDirection,
+    growth_direction: GrowthDirection,
+) -> crate::scrolling::ScrollDirection {
+    use crate::scrolling::ScrollDirection;
+    match growth_direction {
+        GrowthDirection::Forward => scroll_direction,
+        GrowthDirection::Reverse => match scroll_direction {
+            ScrollDirection::Idle => ScrollDirection::Idle,
+            ScrollDirection::Forward => ScrollDirection::Reverse,
+            ScrollDirection::Reverse => ScrollDirection::Forward,
+        },
+    }
+}
+
+/// Layout constraints for a sliver, the counterpart of [`BoxConstraints`] in
+/// the sliver protocol.
+///
+/// Upstream's `SliverConstraints`. Where a box is asked "how big may you be",
+/// a sliver is asked "here is where the viewport has scrolled to; how much of
+/// you is there to show". The numbers are in the sliver's *own* coordinate
+/// system -- [`scroll_offset`](SliverConstraints::scroll_offset) zero is the
+/// sliver's leading edge, not the top of the content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverConstraints {
+    /// The direction in which the scroll offset and the paint extent increase.
+    pub axis_direction: AxisDirection,
+    /// The direction in which this sliver's contents are ordered.
+    pub growth_direction: GrowthDirection,
+    /// Which way the reader is attempting to scroll. Upstream's
+    /// `userScrollDirection`; read by slivers that react to it (a floating app
+    /// bar, say), and `Idle` for every sliver that does not.
+    pub user_scroll_direction: crate::scrolling::ScrollDirection,
+    /// The scroll offset at which this sliver's leading edge sits, in this
+    /// sliver's own coordinate system.
+    pub scroll_offset: f32,
+    /// How much scroll distance the slivers before this one consumed.
+    pub preceding_scroll_extent: f32,
+    /// How much unpainted space earlier slivers left overlapping into the
+    /// viewport, in the axis direction. Zero unless a sliver before this one
+    /// painted more than it laid out (a pinned header, say).
+    pub overlap: f32,
+    /// How many pixels of content the sliver should consider providing. The
+    /// sliver answers with [`SliverGeometry::paint_extent`], which must not
+    /// exceed this.
+    pub remaining_paint_extent: f32,
+    /// The number of pixels in the cross axis. For a vertical list, the width.
+    pub cross_axis_extent: f32,
+    /// The direction children should be placed in across the cross axis:
+    /// left-to-right or right-to-left, per the ambient [`TextDirection`].
+    pub cross_axis_direction: AxisDirection,
+    /// How many pixels the viewport can display along the main axis.
+    pub viewport_main_axis_extent: f32,
+    /// Where the cache area starts, relative to the scroll offset. Always
+    /// negative or zero: a sliver may be asked to lay out content *before* its
+    /// visible leading edge, but never before its own zero.
+    pub cache_origin: f32,
+    /// How much content the sliver should provide starting from the cache
+    /// origin -- the paint extent plus the band on either side the viewport
+    /// keeps warm.
+    pub remaining_cache_extent: f32,
+}
+
+impl SliverConstraints {
+    /// The axis along which the scroll offset and paint extent are measured.
+    /// Upstream's `SliverConstraints.axis`.
+    pub fn axis(&self) -> Axis {
+        axis_direction_to_axis(self.axis_direction)
+    }
+
+    /// The [`BoxConstraints`] a sliver with box children should hand them:
+    /// tight in the cross axis (the sliver's own cross extent, or `cross` when
+    /// the caller wants another), loose in the main one. Upstream's
+    /// `asBoxConstraints`, with its two named defaults made explicit.
+    pub fn as_box_constraints(
+        &self,
+        min_extent: f32,
+        max_extent: f32,
+        cross_axis_extent: Option<f32>,
+    ) -> BoxConstraints {
+        let cross = cross_axis_extent.unwrap_or(self.cross_axis_extent);
+        match self.axis() {
+            Axis::Horizontal => {
+                BoxConstraints::new(min_extent, max_extent, cross, cross)
+            }
+            // Vertical: the width is the cross axis.
+            Axis::Vertical => BoxConstraints::new(cross, cross, min_extent, max_extent),
+        }
+    }
+}
+
+/// What a sliver answered about itself, the counterpart of [`Size`] in the
+/// sliver protocol. Upstream's `SliverGeometry`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverGeometry {
+    /// The total scrollable extent this sliver has content for, whether or not
+    /// any of it is visible. The viewport adds this up to know how far the
+    /// content can scroll.
+    pub scroll_extent: f32,
+    /// Where the sliver starts painting, relative to its layout position.
+    /// Zero for everything in this port; kept because the viewport accounts
+    /// for it when positioning children and computing the next sliver's
+    /// overlap.
+    pub paint_origin: f32,
+    /// How much of the sliver is visible in the viewport right now. Between
+    /// zero and [`SliverConstraints::remaining_paint_extent`], and typically
+    /// grows and shrinks from zero as the sliver scrolls in and out.
+    pub paint_extent: f32,
+    /// How far the next sliver's layout position is from this one's. Between
+    /// zero and the paint extent; they differ only for slivers that paint over
+    /// their successors (pinned headers again).
+    pub layout_extent: f32,
+    /// The paint extent this sliver would report with an infinite
+    /// `remaining_paint_extent`. Used by shrink-wrapping viewports.
+    pub max_paint_extent: f32,
+    /// The most this sliver could shrink the scrollable area if pinned at the
+    /// edge. Zero for anything that never pins.
+    pub max_scroll_obstruction_extent: f32,
+    /// How far from its leading painted edge the sliver accepts hits.
+    pub hit_test_extent: f32,
+    /// Whether the sliver should be painted at all. The default is
+    /// `paint_extent > 0.0`, and only a sliver that paints while scrolled
+    /// fully away says otherwise.
+    pub visible: bool,
+    /// Whether the sliver paints outside the area the viewport gave it, which
+    /// is what tells the viewport to clip.
+    pub has_visual_overflow: bool,
+    /// A correction the viewport must apply to its scroll offset before
+    /// laying everything out again, mid-layout. `None` means no correction;
+    /// the lazy lists are the ones that produce one.
+    pub scroll_offset_correction: Option<f32>,
+    /// How many pixels of the remaining cache extent this sliver consumed.
+    /// At least the layout extent, more when the sliver reaches into the cache
+    /// band.
+    pub cache_extent: f32,
+    /// The cross axis extent this sliver actually took, when it is not the
+    /// whole [`SliverConstraints::cross_axis_extent`]. `None` means it took
+    /// all of it, which is what nearly every sliver does.
+    pub cross_axis_extent: Option<f32>,
+}
+
+impl SliverGeometry {
+    /// A sliver that occupies no space at all. Upstream's `SliverGeometry.zero`.
+    pub const ZERO: SliverGeometry = SliverGeometry {
+        scroll_extent: 0.0,
+        paint_origin: 0.0,
+        paint_extent: 0.0,
+        layout_extent: 0.0,
+        max_paint_extent: 0.0,
+        max_scroll_obstruction_extent: 0.0,
+        hit_test_extent: 0.0,
+        visible: false,
+        has_visual_overflow: false,
+        scroll_offset_correction: None,
+        cache_extent: 0.0,
+        cross_axis_extent: None,
+    };
+
+    /// The constructor with upstream's defaulting, which is the part worth
+    /// keeping exactly: `layout_extent` defaults to `paint_extent`,
+    /// `hit_test_extent` to `paint_extent`, `cache_extent` to the layout
+    /// extent, and `visible` to `paint_extent > 0.0`.
+    pub fn new(
+        scroll_extent: f32,
+        paint_extent: f32,
+        max_paint_extent: f32,
+        cache_extent: f32,
+        has_visual_overflow: bool,
+    ) -> SliverGeometry {
+        SliverGeometry {
+            scroll_extent,
+            paint_origin: 0.0,
+            paint_extent,
+            layout_extent: paint_extent,
+            max_paint_extent,
+            max_scroll_obstruction_extent: 0.0,
+            hit_test_extent: paint_extent,
+            visible: paint_extent > 0.0,
+            has_visual_overflow,
+            scroll_offset_correction: None,
+            cache_extent,
+            cross_axis_extent: None,
+        }
+    }
+}
+
 // -- Painting -----------------------------------------------------------------
 
 /// Composes two 2D affines: the result applies `right` and then `left`.
@@ -457,6 +739,32 @@ impl<'a> PaintContext<'a> {
         let kept = self.tree.pop_retained();
         self.tree.pop();
         kept
+    }
+
+    /// Records `child` into `layer`, a layer an earlier frame kept.
+    ///
+    /// Upstream's `PaintingContext._repaintCompositedChild`: the boundary's
+    /// layer object is reused rather than replaced -- its children are dropped
+    /// and the subtree is recorded again into it. Nothing above the boundary
+    /// has to record, because every tree that holds the layer (an enclosing
+    /// boundary's kept layer, in particular) composites the object as it is by
+    /// raster time, new children included.
+    ///
+    /// The recording happens at the origin for the same reason
+    /// [`record_retained`](PaintContext::record_retained) does, and the layer
+    /// is not added to this tree here -- where it goes is still the parent's
+    /// business, settled when the parent hands it back with
+    /// [`add_retained`](PaintContext::add_retained).
+    pub fn rerecord_retained(
+        &mut self,
+        layer: &crate::engine::RetainedLayer,
+        child: &dyn RenderBox,
+    ) {
+        self.flush();
+        self.tree.push_retained(layer);
+        child.paint(self, Offset::ZERO);
+        self.flush();
+        self.tree.pop();
     }
 
     /// Adds a layer kept from an earlier frame, at `offset`.
@@ -797,6 +1105,31 @@ pub trait RenderBox: AsAny {
         None
     }
 
+    // -- Dry layout -----------------------------------------------------------
+    //
+    // What `layout` would answer, without answering it. A parent asks this of
+    // a child it is not ready to commit to -- upstream's `getDryLayout`, and
+    // the intrinsics of a flex or a wrap are the same question wearing another
+    // hat.
+
+    /// The size this box would choose for `constraints`, without choosing it.
+    ///
+    /// Upstream's `computeDryLayout`. The answer must be the size `layout`
+    /// returns for the same constraints -- upstream asserts exactly that in
+    /// debug builds -- and getting there must change nothing: no `size` is
+    /// written, nothing is marked, no child is laid out. A child's size, when
+    /// the answer needs one, comes from the child's own dry layout -- its
+    /// [`RenderRef::dry_layout`], never its `layout`, which is the one
+    /// difference between this and a layout that throws its results away.
+    ///
+    /// The default is upstream's: an object that cannot say throws (in an
+    /// assert) and answers zero. There is no assert machinery here to refuse
+    /// with, so zero is the answer -- and every box in this file that lays
+    /// itself out overrides this to agree with its `layout`.
+    fn compute_dry_layout(&self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
     // -- Walking the tree without painting it ---------------------------------
 
     /// Visits the children in paint order, each with where it is painted
@@ -842,6 +1175,33 @@ pub trait RenderBox: AsAny {
         None
     }
 
+    /// A rect in this object's own coordinates that approximates the clip that
+    /// would be applied to the given child during the paint phase, if any.
+    ///
+    /// Upstream's `RenderObject.describeApproximatePaintClip`, and `None` is
+    /// its `null`: most boxes paint their children whole. The ones that paint
+    /// through a clip -- [`RenderClipRect`], [`RenderClipPath`],
+    /// [`RenderViewport`] -- answer with that clip, so the semantics walk can
+    /// leave out what the glass never showed. The rect is in *this* object's
+    /// coordinates; the caller knows where this object is.
+    fn describe_approximate_paint_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        None
+    }
+
+    /// A rect in this object's own coordinates that says which semantics nodes
+    /// from the given child belong in the tree: nodes outside it are dropped,
+    /// nodes inside it but outside
+    /// [`RenderBox::describe_approximate_paint_clip`] are upstream's `hidden`.
+    ///
+    /// Upstream's `RenderObject.describeSemanticsClip`, and again `None` is its
+    /// `null`. Only a viewport has something different to say -- its clip is
+    /// its bounds grown by the cache extent, the band of rows a reader can
+    /// reach by scrolling -- which is why this is not the same answer as the
+    /// paint clip (upstream requires exactly that difference).
+    fn describe_semantics_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        None
+    }
+
     // -- Taking a new configuration -------------------------------------------
 
     /// Takes over `fresh`'s configuration -- `fresh` being a newly built object
@@ -876,6 +1236,56 @@ pub trait RenderBox: AsAny {
     /// boundary. Only [`RenderRepaintBoundary`] keeps anything, so only it
     /// overrides.
     fn discard_retained(&self) {}
+
+    /// Whether this object paints into a layer of its own that is kept between
+    /// frames. Upstream's `isRepaintBoundary`; only [`RenderRepaintBoundary`]
+    /// answers true, and the walk in [`RenderRef::mark_needs_paint`] stops
+    /// there.
+    fn is_repaint_boundary(&self) -> bool {
+        false
+    }
+
+    // -- The sliver protocol ---------------------------------------------------
+    //
+    // Upstream these three live on `RenderSliver`, a sibling of `RenderBox`
+    // under `RenderObject` -- a render object speaks the box protocol or the
+    // sliver one, never both. Here there is one storage type: a parent keeps
+    // every child as a `Box<dyn RenderBox>` behind a [`RenderRef`], so the
+    // sliver protocol rides on the box trait rather than beside it, and the
+    // defaults below -- zero geometry, no hits -- are what a box that is not
+    // a sliver answers. A sliver is also still painted and hit-tested through
+    // the box methods, which is what lets a [`RenderSliverViewport`] hand its
+    // slivers to [`PaintContext::paint_child`] unchanged.
+
+    /// Lays this sliver out against `constraints` and answers its geometry,
+    /// upstream's `RenderSliver.performLayout` plus the `geometry` setter.
+    ///
+    /// The constraints are kept by the object itself -- upstream stores them
+    /// on `RenderObject` -- because slivers read them back when positioning
+    /// children ([`RenderSliverToBoxAdapter`] does, for the scroll offset the
+    /// paint offset and the hit test are computed from).
+    fn sliver_layout(&mut self, _constraints: SliverConstraints) -> SliverGeometry {
+        SliverGeometry::ZERO
+    }
+
+    /// The geometry the last [`RenderBox::sliver_layout`] answered, upstream's
+    /// `RenderSliver.geometry`.
+    fn sliver_geometry(&self) -> SliverGeometry {
+        SliverGeometry::ZERO
+    }
+
+    /// Whether this sliver or one of its children is under the given sliver
+    /// coordinates, upstream's `RenderSliver.hitTest`: `main_axis_position` is
+    /// the distance into the sliver's painted area in its own axis direction,
+    /// `cross_axis_position` the distance across it.
+    fn sliver_hit_test(
+        &self,
+        _main_axis_position: f32,
+        _cross_axis_position: f32,
+        _result: &mut HitTestResult,
+    ) -> bool {
+        false
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -888,12 +1298,10 @@ pub trait RenderBox: AsAny {
 /// what lets the raster cache keep the pixels.
 ///
 /// **When the layer is still good.** Upstream tracks it with `markNeedsPaint`,
-/// which walks up to the enclosing boundary. Here it is object identity, the
-/// same answer the layout skip uses: a render object that survived the frame is
-/// one the element tree did not rebuild, and the drawing of a subtree that was
-/// not rebuilt is the drawing it was. A boundary that is laid out again throws
-/// its layer away, because a subtree that changed size did not draw the same
-/// thing.
+/// which walks up to the enclosing boundary and stops; that is what
+/// [`RenderRef::mark_needs_paint`] does, and the boundary it stops at is the
+/// one whose layer goes. A boundary that is laid out again throws its layer
+/// away too, because a subtree that changed size did not draw the same thing.
 ///
 /// So this is worth putting somewhere a sibling changes often and this does
 /// not -- which is why upstream puts one around every item of a lazy list, and
@@ -913,6 +1321,21 @@ impl RenderRepaintBoundary {
             layer: RefCell::new(None),
         }
     }
+
+    /// Records the subtree again, into the layer it kept.
+    ///
+    /// Upstream's `PaintingContext.repaintCompositedChild`: the layer object is
+    /// reused rather than replaced -- its children are dropped and the new
+    /// picture lands in it -- so every tree that holds it, this frame's
+    /// included via the enclosing boundary's kept layer, composites the new
+    /// content. Does nothing when there is no layer to reuse (a boundary that
+    /// never painted, or one whose layout invalidated what it drew), in which
+    /// case the frame walk records it from scratch as it reaches it.
+    fn repaint_into_layer(&self, context: &mut PaintContext) {
+        let layer = self.layer.borrow();
+        let Some(kept) = layer.as_ref() else { return };
+        context.rerecord_retained(kept, &self.child);
+    }
 }
 
 impl RenderBox for RenderRepaintBoundary {
@@ -921,12 +1344,19 @@ impl RenderBox for RenderRepaintBoundary {
         // handle would have returned it otherwise -- so whatever was drawn was
         // drawn for a different question.
         *self.layer.borrow_mut() = None;
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// A boundary is its child as far as measuring is concerned -- upstream's
+    /// `RenderProxyBox.computeDryLayout` -- and the layer it kept is none of
+    /// the dry question's business: measuring changes no drawing.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -986,6 +1416,10 @@ impl RenderBox for RenderRepaintBoundary {
     fn discard_retained(&self) {
         *self.layer.borrow_mut() = None;
     }
+
+    fn is_repaint_boundary(&self) -> bool {
+        true
+    }
 }
 
 /// A render object, held by more than one thing at once.
@@ -1023,20 +1457,64 @@ struct RenderState {
     /// true when it is made and whenever [`RenderRef::mark_needs_layout`] says
     /// so.
     needs_layout: Cell<bool>,
+    /// Whether a relayout of this subtree may start at this object.
+    ///
+    /// Upstream's `_isRelayoutBoundary`, and like it this is not a property of
+    /// the object but an answer about the *parent*: true when nothing this
+    /// object can do to its size would change what the parent does -- the
+    /// parent does not read the size, or handed down constraints so tight
+    /// there is nothing to read -- or when there is no parent. It is computed
+    /// in [`RenderRef::layout_child`], on the line upstream computes it, and
+    /// starts false: an object that has never been laid out has never been
+    /// told either way, and a mark on it has to be heard above (upstream keeps
+    /// the same distinction by starting the field at `null`).
+    ///
+    /// Read by [`RenderRef::mark_needs_layout`], which stops here when it is
+    /// set, and by nothing else: the paint walk has boundaries of its own.
+    relayout_boundary: Cell<bool>,
+    /// How far this object sits from the root, the root being 0.
+    ///
+    /// Upstream's `depth`, kept there by `redepthChild` on adoption; there is
+    /// no adoption step here, so it is noticed during layout instead, at the
+    /// same moment the parent is. [`flush_layout`] sorts by it -- shallow
+    /// first, so a boundary that an outer one's layout reaches is laid out by
+    /// that and skipped when its own turn comes.
+    depth: Cell<u32>,
     /// Whether what this drew last time is still what it would draw.
     ///
     /// Only a repaint boundary keeps a drawing, so only a boundary reads this;
     /// it is on the handle because the walk that sets it is the walk up the
     /// parents, and the parents are here. Upstream's `_needsPaint`.
     needs_paint: Cell<bool>,
+    /// Whether the object is a [`RenderRepaintBoundary`], asked once when the
+    /// handle is made, because the paint-dirty walk needs the answer from a
+    /// state alone -- the walk it belongs to is over states and has no way
+    /// back to the object. The object behind a handle never changes its
+    /// concrete type, so once is enough.
+    is_repaint_boundary: bool,
     /// What it was last laid out against, and what came out.
     constraints: Cell<Option<BoxConstraints>>,
+    /// What a sliver was last laid out against, on the sliver side of the
+    /// protocol. Kept beside the box constraints for the same reason -- the
+    /// early return in [`RenderRef::sliver_layout`] is the sliver protocol's
+    /// half of the one in [`RenderRef::layout_child`] -- and never both set on
+    /// the same object: a render object speaks one protocol or the other.
+    sliver_constraints: Cell<Option<SliverConstraints>>,
     size: Cell<Size>,
     /// Who laid it out last. Upstream is told this in `adoptChild`; there is no
     /// adoption step here, so it is noticed during layout instead -- a child's
     /// `layout` is always called from inside its parent's, so the parent is
     /// whatever was already laying out when this one started.
     parent: RefCell<Weak<RenderState>>,
+    /// The object this state belongs to, weakly, so the paint-dirty list can
+    /// reach it without the handle's other half keeping anything alive.
+    ///
+    /// `mark_needs_paint` records *states* -- the walk it belongs to is over
+    /// states and has no way back to a handle -- but repaint is something only
+    /// the object can do, because only it holds the layer. Upstream keeps the
+    /// render object itself in its `_nodesNeedingPaint` list and has no need
+    /// of a back pointer; the split between handle and state here does.
+    render: RefCell<Weak<RefCell<Box<dyn RenderBox>>>>,
     /// What the intrinsic questions asked of this object were answered with,
     /// and at what extent. Upstream's `_LayoutCacheStorage`.
     ///
@@ -1045,6 +1523,14 @@ struct RenderState {
     /// asking each child once a frame is the busy case. Hashing that would
     /// cost more than walking it.
     intrinsics: RefCell<Vec<(IntrinsicQuery, u32, f32)>>,
+    /// The dry layouts remembered for this object, and at what constraints.
+    ///
+    /// Upstream keeps these in the same `_LayoutCacheStorage` as the
+    /// intrinsics, keyed `_CachedLayoutCalculation.dryLayout`, and they live
+    /// and die with them: `markNeedsLayout` clears the store, so a remembered
+    /// dry size never outlives the layout it was derived from. A list for the
+    /// same reason the intrinsics are one.
+    dry_layouts: RefCell<Vec<(BoxConstraints, Size)>>,
     /// The last answer to `distance_to_baseline`, `None` if nothing asked.
     /// Upstream keys its baseline cache by constraints; there is no dry
     /// baseline here, so there is one answer to keep.
@@ -1068,14 +1554,18 @@ impl RenderState {
     /// object's intrinsics and has to be told too.
     fn clear_layout_cache(&self) -> bool {
         let had_intrinsics = !self.intrinsics.borrow().is_empty();
+        let had_dry_layouts = !self.dry_layouts.borrow().is_empty();
         let had_baseline = self.baseline.get().is_some();
         if had_intrinsics {
             self.intrinsics.borrow_mut().clear();
         }
+        if had_dry_layouts {
+            self.dry_layouts.borrow_mut().clear();
+        }
         if had_baseline {
             self.baseline.set(None);
         }
-        had_intrinsics || had_baseline
+        had_intrinsics || had_dry_layouts || had_baseline
     }
 }
 
@@ -1083,6 +1573,139 @@ thread_local! {
     /// The render objects whose layout is running, innermost last.
     static LAYING_OUT: RefCell<Vec<Rc<RenderState>>> =
         const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
+    /// Repaint boundaries whose subtree has to be recorded again, in the order
+    /// they were marked.
+    ///
+    /// Upstream's `PipelineOwner._nodesNeedingPaint`. The list exists because
+    /// `markNeedsPaint` stops at the nearest boundary -- the layer that has to
+    /// be re-recorded is that boundary's, and nothing above it is told -- so a
+    /// boundary can be dirty while every enclosing one is clean, and the frame
+    /// walk (which never enters a subtree a clean boundary hands back as a kept
+    /// layer) would never reach it. `flush_paint` is what does.
+    static DIRTY_BOUNDARIES: RefCell<Vec<Rc<RenderState>>> =
+        const { RefCell::new(Vec::new()) };
+
+    /// Relayout boundaries whose subtree has to be measured again, in the order
+    /// they were marked.
+    ///
+    /// Upstream's `PipelineOwner._nodesNeedingLayout`. The list exists for the
+    /// same reason the paint one does: `markNeedsLayout` stops at the nearest
+    /// boundary -- a relayout there changes nothing above it, so nothing above
+    /// is told -- and a frame that always descended from the root would reach
+    /// the boundary through parents that were never told and lay it out there,
+    /// siblings and all. [`flush_layout`] starts at the boundary instead.
+    ///
+    /// Nothing here asks for a frame on its own. Upstream's entry into the
+    /// list calls `requestVisualUpdate` because marking can happen anywhere;
+    /// here everything that marks -- a rebuild's `update_from`, a comparison
+    /// setter -- runs inside a frame the scheduler already granted, so the
+    /// existing channels (the element tree's `needs_frame`, an animation's
+    /// `advance`) are what decide there is a frame to flush into.
+    static DIRTY_RELAYOUTS: RefCell<Vec<Rc<RenderState>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Repaints the boundaries `mark_needs_paint` collected, into their own layers.
+///
+/// Upstream's `PipelineOwner.flushPaint`: each dirty boundary is re-recorded
+/// *before* the frame walk, into the layer object it kept, so that a boundary
+/// which is dirty under a clean one -- the walk stops at the nearest boundary,
+/// so an enclosing boundary that was never told never descends into it -- still
+/// repaints this frame. The walk then composites the enclosing boundary's kept
+/// layer, which holds this very object, and the new picture is what rasterizes.
+///
+/// A boundary with no layer to reuse is skipped rather than recorded: the walk
+/// reaches it through its parent -- no ancestor that kept a layer can be
+/// holding a subtree it is not part of, because a boundary that keeps one had
+/// nothing under it change -- and records it from scratch there.
+///
+/// Boundaries marked deepest-first is upstream's order (its list is sorted by
+/// depth); here a single walk marks inner boundaries before outer ones, so
+/// insertion order is already that. Whatever order the marks arrived in, the
+/// result converges: an outer boundary re-recorded here walks its subtree, and
+/// an inner one still marked is recorded anew where the outer meets it.
+pub(crate) fn flush_paint(context: &mut PaintContext) {
+    let dirty = DIRTY_BOUNDARIES.with(|list| std::mem::take(&mut *list.borrow_mut()));
+    for state in dirty {
+        // Cleared as it is acted on, the same deal as the walk's own clearing:
+        // a boundary that was marked and then recorded by some other route --
+        // a relayout that threw the layer away, or an outer boundary's
+        // re-recording that consumed it -- is not repainted a second time.
+        if !state.needs_paint.replace(false) {
+            continue;
+        }
+        let Some(handle) = state.render.borrow().upgrade() else { continue };
+        let render = handle.borrow();
+        // Downcast through the object rather than the box it is in, which is
+        // the one `update_from` reaches the same type by.
+        let object: &dyn RenderBox = &**render;
+        let Some(boundary) = object.as_any().downcast_ref::<RenderRepaintBoundary>() else {
+            continue;
+        };
+        boundary.repaint_into_layer(context);
+    }
+}
+
+/// Lays out the boundaries `mark_needs_layout` collected, each from itself.
+///
+/// Upstream's `PipelineOwner.flushLayout` driving `RenderObject
+/// ._layoutWithoutResize`: the dirty boundaries are sorted shallowest first,
+/// and each still-dirty one runs its layout against the constraints its parent
+/// last handed it -- which are the constraints it *would* be handed again,
+/// that being what a relayout boundary means -- without the parent, its
+/// siblings, or anything else above being laid out at all.
+///
+/// `_layoutWithoutResize` is only legal for a boundary upstream because it
+/// skips `performResize`; there is no split between resize and layout here, so
+/// the same statement reads "runs the object's own layout at the remembered
+/// constraints". The remembered constraints are the whole legality of it, and
+/// a frame whose view changed size does not go through here at all -- it takes
+/// the walk from the root, where the new constraints land.
+///
+/// The tail of `_layoutWithoutResize` is here too: a subtree that was just
+/// re-measured may have moved inside a repaint boundary that was never laid
+/// out -- nothing above a relayout boundary was -- so the paint walk up from
+/// here is what says that boundary's kept layer is stale. Without it the
+/// boundary composites last frame's picture of this subtree for another frame.
+///
+/// Returns whether anything was laid out, which is what tells the frame there
+/// is no need to fall back to the walk from the root.
+pub(crate) fn flush_layout() -> bool {
+    let mut did_layout = false;
+    loop {
+        let mut batch = DIRTY_RELAYOUTS.with(|dirty| std::mem::take(&mut *dirty.borrow_mut()));
+        if batch.is_empty() {
+            break;
+        }
+        batch.sort_by_key(|state| state.depth.get());
+        for state in batch {
+            // Cleared as it is acted on, the same deal as the paint side's: a
+            // boundary that was marked and then laid out by some other route
+            // -- a shallower boundary's descent, a walk from the root -- is
+            // not measured twice. A boundary whose object is gone, or whose
+            // answer was never taken (it cannot be a boundary before its
+            // first layout), has nothing to say either.
+            if !state.needs_layout.get() {
+                continue;
+            }
+            let handle = state.render.borrow().upgrade();
+            let Some(handle) = handle else { continue };
+            let Some(constraints) = state.constraints.get() else { continue };
+            let size = {
+                let _frame = LayoutFrame::push(&state);
+                handle.borrow_mut().layout(constraints)
+            };
+            state.needs_layout.set(false);
+            state.size.set(size);
+            crate::semantics::mark_needs_update();
+            RenderRef { render: handle, state: Rc::clone(&state) }.mark_needs_paint();
+            did_layout = true;
+        }
+    }
+    did_layout
 }
 
 /// Keeps the stack right even if a layout panics.
@@ -1116,18 +1739,24 @@ impl RenderRef {
         if let Some(handle) = (&mut render as &mut dyn Any).downcast_mut::<RenderRef>() {
             return handle.clone();
         }
-        RenderRef {
-            render: Rc::new(RefCell::new(Box::new(render) as Box<dyn RenderBox>)),
-            state: Rc::new(RenderState {
-                needs_layout: Cell::new(true),
-                needs_paint: Cell::new(false),
-                constraints: Cell::new(None),
-                size: Cell::new(Size::ZERO),
-                parent: RefCell::new(Weak::new()),
-                intrinsics: RefCell::new(Vec::new()),
-                baseline: Cell::new(None),
-            }),
-        }
+        let boundary = render.is_repaint_boundary();
+        let render = Rc::new(RefCell::new(Box::new(render) as Box<dyn RenderBox>));
+        let state = Rc::new(RenderState {
+            needs_layout: Cell::new(true),
+            relayout_boundary: Cell::new(false),
+            depth: Cell::new(0),
+            needs_paint: Cell::new(false),
+            is_repaint_boundary: boundary,
+            constraints: Cell::new(None),
+            sliver_constraints: Cell::new(None),
+            size: Cell::new(Size::ZERO),
+            parent: RefCell::new(Weak::new()),
+            render: RefCell::new(Rc::downgrade(&render)),
+            intrinsics: RefCell::new(Vec::new()),
+            dry_layouts: RefCell::new(Vec::new()),
+            baseline: Cell::new(None),
+        });
+        RenderRef { render, state }
     }
 
     /// Whether two handles are the same render object.
@@ -1145,30 +1774,49 @@ impl RenderRef {
     /// already marked has already marked its ancestors, so there is nothing
     /// above it left to tell.
     ///
-    /// The marking has to reach the root, because the root is the only place a
-    /// layout is ever started from. Upstream stops at the nearest *relayout
-    /// boundary* -- an ancestor whose own size this cannot change -- and lays
-    /// that subtree out directly, which it can do because `PipelineOwner` keeps
-    /// the list of dirty boundaries and visits each. There is no pipeline owner
-    /// here; a frame descends from the root or it does not happen. So the
-    /// saving is not in starting lower down, it is in the siblings the descent
-    /// never enters.
+    /// The marking stops at the nearest *relayout boundary* -- an ancestor
+    /// whose own layout this subtree cannot change, which [`RenderRef::layout_child`]
+    /// records when it is laid out -- and the boundary goes on the list
+    /// [`flush_layout`] starts from, rather than the walk reaching the root and
+    /// the frame descending from there. That is the whole saving: not entering
+    /// the siblings between here and the boundary. An object that has never
+    /// been laid out is never a boundary (upstream's `null`), so a mark on it
+    /// is still heard above -- as it must be, for the fresh subtree a rebuild
+    /// just mounted under a surviving ancestor that was marked with it.
+    ///
+    /// The one thing that keeps the walk going past a boundary is a layout
+    /// cache that had something in it: an ancestor that remembered an answer
+    /// derived from this object -- an intrinsic, a dry size, a baseline -- is
+    /// holding a stale number whatever the boundary says, which is upstream's
+    /// `RenderBox.markNeedsLayout` calling `markParentNeedsLayout` when
+    /// `_layoutCacheStorage.clear` reported something to clear.
     pub fn mark_needs_layout(&self) {
         let mut state = Rc::clone(&self.state);
         loop {
-            // Cleared before the early return, and a cache that had something
-            // in it keeps the walk going even past an ancestor that was already
-            // dirty: an ancestor that remembered an answer derived from this
-            // object is holding a stale number whatever its own flag says.
-            // Upstream is the same shape -- `RenderBox.markNeedsLayout` clears
-            // its storage and calls `markParentNeedsLayout` when there was
-            // something to clear, rather than stopping.
+            // Cleared first on every node the walk reaches, exactly as
+            // upstream's `RenderBox.markNeedsLayout` clears before deciding
+            // anything. A cache that had something in it and a parent to tell
+            // is the one branch that skips every other rule -- not this node's
+            // boundary, not its own dirty flag, nothing spares the parent,
+            // because an ancestor that remembered an answer derived from this
+            // object is holding a stale number whatever either says. With no
+            // parent to tell (the root), the walk has run out of tree and
+            // falls back on the ordinary rules below, which enqueue it.
             let had_cache = state.clear_layout_cache();
-            if state.needs_layout.get() && !had_cache {
+            let parent = state.parent.borrow().upgrade();
+            if had_cache && parent.is_some() {
+                state.needs_layout.set(true);
+                state = parent.unwrap();
+                continue;
+            }
+            if state.needs_layout.get() {
                 return;
             }
             state.needs_layout.set(true);
-            let parent = state.parent.borrow().upgrade();
+            if state.relayout_boundary.get() {
+                DIRTY_RELAYOUTS.with(|dirty| dirty.borrow_mut().push(Rc::clone(&state)));
+                return;
+            }
             match parent {
                 Some(parent) => state = parent,
                 None => return,
@@ -1184,13 +1832,16 @@ impl RenderRef {
     /// changed colour is the same size, and re-measuring the screen to repaint
     /// a swatch is work for nothing.
     ///
-    /// Upstream stops at the nearest enclosing repaint boundary, since that is
-    /// the layer that has to be recorded again and no layer above it contains
-    /// anything but a reference to it. This walks to the root instead and drops
-    /// every kept layer on the way, for the same reason
-    /// [`RenderRef::mark_needs_layout`] does: there is nothing here holding a
-    /// list of boundaries to visit, so the walk cannot stop somewhere it would
-    /// then have to be resumed from.
+    /// Like upstream, the walk stops at the nearest enclosing repaint boundary
+    /// (or this object, if it is one): that is the layer that has to be
+    /// recorded again, and no layer above it contains anything but a reference
+    /// to it, so everything above keeps what it kept. The boundary is marked,
+    /// and marked boundaries go on the dirty list for [`flush_paint`], which
+    /// records the new picture into the boundary's own kept layer object --
+    /// upstream's `repaintCompositedChild` -- so enclosing boundaries, told or
+    /// not, composite the new content by holding the same object. Nothing
+    /// above the boundary is marked, which is what keeps an enclosing
+    /// boundary's layer out of it.
     pub fn mark_needs_paint(&self) {
         let mut state = Rc::clone(&self.state);
         loop {
@@ -1198,6 +1849,10 @@ impl RenderRef {
                 return;
             }
             state.needs_paint.set(true);
+            if state.is_repaint_boundary {
+                DIRTY_BOUNDARIES.with(|dirty| dirty.borrow_mut().push(Rc::clone(&state)));
+                return;
+            }
             let parent = state.parent.borrow().upgrade();
             match parent {
                 Some(parent) => state = parent,
@@ -1252,6 +1907,155 @@ impl RenderRef {
         true
     }
 
+    /// Lays this object out, saying whether the caller will read what comes
+    /// back. Upstream's `RenderObject.layout(constraints, parentUsesSize:)`.
+    ///
+    /// `parent_uses_size` is not about this object; it is a fact about the
+    /// caller. Passed `true` -- by every container here, as by every container
+    /// upstream, because each sizes or places itself from what its children
+    /// answered -- the child is marked dirty through to the root when it is
+    /// marked, since a size the parent reads is a size the parent's layout
+    /// depends on. Passed `false`, this object becomes its own *relayout
+    /// boundary*: it may be re-measured from here without telling anybody
+    /// above, because nobody above was listening. The other two ways to become
+    /// one are constraints tight enough that the answer could not change
+    /// anyway, and having no parent at all.
+    ///
+    /// The one-argument [`RenderBox::layout`] reaches this with `true`, which
+    /// is the value upstream's box containers pass wherever they call `layout`
+    /// on a child; the call sites that leave it at the default `false` there
+    /// are either laid out against tight constraints (where the flag cannot
+    /// change the answer) or objects this tree does not have.
+    pub fn layout_child(&mut self, constraints: BoxConstraints, parent_uses_size: bool) -> Size {
+        // Noted before the early return, not after: a child that moved to a
+        // new parent and did not need laying out has still moved, and a later
+        // `mark_needs_layout` would otherwise walk up a chain it left. The
+        // depth rides along, for the shallow-first order `flush_layout` sorts
+        // by; it is the parent's depth plus one, and zero when there is no
+        // parent -- which is also, one line down, what makes the root a
+        // boundary.
+        let (parent, depth) = LAYING_OUT.with(|stack| match stack.borrow().last() {
+            Some(parent) => (Rc::downgrade(parent), parent.depth.get() + 1),
+            None => (Weak::new(), 0),
+        });
+        *self.state.parent.borrow_mut() = parent;
+        self.state.depth.set(depth);
+        // Upstream's `_isRelayoutBoundary = !parentUsesSize || sizedByParent ||
+        // constraints.isTight || parent == null`, set before the early return
+        // so that a parent that stopped reading the size is believed even about
+        // a child that was not laid out again. There is no `sizedByParent`
+        // here -- no object splits its sizing from its layout into the resize
+        // and layout halves upstream's method would treat differently -- so
+        // the clause has nothing to answer.
+        self.state
+            .relayout_boundary
+            .set(!parent_uses_size || constraints.is_tight() || depth == 0);
+
+        if !self.state.needs_layout.get() && self.state.constraints.get() == Some(constraints) {
+            return self.state.size.get();
+        }
+
+        let size = {
+            let _frame = LayoutFrame::push(&self.state);
+            self.render.borrow_mut().layout(constraints)
+        };
+        self.state.needs_layout.set(false);
+        self.state.constraints.set(Some(constraints));
+        self.state.size.set(size);
+        // Upstream does this on the line after `performLayout`, inside
+        // `RenderObject.layout`, and it belongs there rather than in
+        // `markNeedsLayout`: what a reader is told about a box is where it is
+        // and how big it is, and both are answers this line has just finished
+        // producing. It is also the reason the early return above is not just
+        // a layout saving -- a subtree that did not lay out did not move, so
+        // it has nothing new to say either.
+        crate::semantics::mark_needs_update();
+        size
+    }
+
+    /// Whether the constraints a layout from the root would hand this object
+    /// are the ones it was last laid out at.
+    ///
+    /// The frame's resize test. The view's constraints are the one set in the
+    /// tree that comes from outside rather than from a parent, so a change
+    /// there cannot ride in on a dirty boundary -- [`flush_layout`] lays a
+    /// boundary out against what it was *last* given -- and the frame takes
+    /// the walk from the root instead, which is where the new constraints
+    /// land. Nothing below the root needs the test: a parent whose own
+    /// constraints changed was marked dirty with the change, and the descent
+    /// from its boundary re-asks it.
+    pub fn was_last_laid_out_against_other(&self, constraints: BoxConstraints) -> bool {
+        self.state.constraints.get() != Some(constraints)
+    }
+
+    /// The size this object would choose for `constraints`, without choosing
+    /// it. Upstream's `getDryLayout`, and the two things that make it cheap to
+    /// call twice are the same two upstream has: the answer is remembered next
+    /// to the intrinsics (same `_LayoutCacheStorage`, cleared by
+    /// [`RenderRef::mark_needs_layout`]), and computing it touches nothing --
+    /// no `size` is written, nothing is marked, no child is laid out, and the
+    /// relayout chain is not walked, because nothing about the real layout
+    /// changed. The constraints are compared whole, as `layout` compares them.
+    pub fn dry_layout(&self, constraints: BoxConstraints) -> Size {
+        if let Some(&(_, size)) = self
+            .state
+            .dry_layouts
+            .borrow()
+            .iter()
+            .find(|(asked, _)| *asked == constraints)
+        {
+            return size;
+        }
+        // Computed with nothing borrowed but the object itself, as `memoize`
+        // does: answering may descend into children, and a child that shares
+        // this handle would find the list already borrowed.
+        let size = self.render.borrow().compute_dry_layout(constraints);
+        self.state.dry_layouts.borrow_mut().push((constraints, size));
+        size
+    }
+
+    /// Lays this sliver out, the sliver protocol's half of
+    /// [`RenderRef::layout_child`].
+    ///
+    /// Upstream this is `RenderObject.layout` called on a `RenderSliver` --
+    /// the same method, caching against the same `_constraints` field, only
+    /// the constraints being sliver ones. The parent- and depth-bookkeeping is
+    /// here for the same reason it is there: a sliver child that marks itself
+    /// needs the walk up to start from whoever laid it out. What is *not*
+    /// here is a size -- a sliver's answer is its
+    /// [`geometry`](RenderBox::sliver_geometry), and the object keeps that
+    /// itself -- and the relayout-boundary clause, because the only parent a
+    /// sliver has is a viewport, which always reads the answer.
+    pub fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        let (parent, depth) = LAYING_OUT.with(|stack| match stack.borrow().last() {
+            Some(parent) => (Rc::downgrade(parent), parent.depth.get() + 1),
+            None => (Weak::new(), 0),
+        });
+        *self.state.parent.borrow_mut() = parent;
+        self.state.depth.set(depth);
+
+        if !self.state.needs_layout.get()
+            && self.state.sliver_constraints.get() == Some(constraints)
+        {
+            return self.render.borrow().sliver_geometry();
+        }
+
+        let geometry = {
+            let _frame = LayoutFrame::push(&self.state);
+            self.render.borrow_mut().sliver_layout(constraints)
+        };
+        self.state.needs_layout.set(false);
+        self.state.sliver_constraints.set(Some(constraints));
+        crate::semantics::mark_needs_update();
+        geometry
+    }
+
+    /// The geometry the last [`RenderRef::sliver_layout`] answered, or zero
+    /// for an object that was never laid out as a sliver.
+    pub fn sliver_geometry(&self) -> SliverGeometry {
+        self.render.borrow().sliver_geometry()
+    }
+
     /// Answers an intrinsic question out of what the last one was told, if the
     /// same question was asked at the same extent since the last
     /// [`RenderRef::mark_needs_layout`].
@@ -1304,38 +2108,11 @@ impl RenderBox for RenderRef {
     /// The saving is from above rather than from below: a subtree the element
     /// tree did not rebuild is the same objects it was, so the first of them to
     /// be asked ends the descent for all of them. See
-    /// [`RenderRef::mark_needs_layout`] for what that costs -- upstream can
-    /// start a layout part-way down and this cannot.
+    /// [`RenderRef::mark_needs_layout`] for what that costs and where it stops,
+    /// and [`RenderRef::layout_child`] for the entry a parent that will not
+    /// read the size reaches this by.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        // Noted before the early return, not after: a child that moved to a
-        // new parent and did not need laying out has still moved, and a later
-        // `mark_needs_layout` would otherwise walk up a chain it left.
-        *self.state.parent.borrow_mut() =
-            LAYING_OUT.with(|stack| match stack.borrow().last() {
-                Some(parent) => Rc::downgrade(parent),
-                None => Weak::new(),
-            });
-
-        if !self.state.needs_layout.get() && self.state.constraints.get() == Some(constraints) {
-            return self.state.size.get();
-        }
-
-        let size = {
-            let _frame = LayoutFrame::push(&self.state);
-            self.render.borrow_mut().layout(constraints)
-        };
-        self.state.needs_layout.set(false);
-        self.state.constraints.set(Some(constraints));
-        self.state.size.set(size);
-        // Upstream does this on the line after `performLayout`, inside
-        // `RenderObject.layout`, and it belongs there rather than in
-        // `markNeedsLayout`: what a reader is told about a box is where it is
-        // and how big it is, and both are answers this line has just finished
-        // producing. It is also the reason the early return above is not just
-        // a layout saving -- a subtree that did not lay out did not move, so
-        // it has nothing new to say either.
-        crate::semantics::mark_needs_update();
-        size
+        self.layout_child(constraints, true)
     }
     fn size(&self) -> Size {
         self.render.borrow().size()
@@ -1359,6 +2136,12 @@ impl RenderBox for RenderRef {
     fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
         self.render.borrow().describe_semantics()
     }
+    fn describe_approximate_paint_clip(&self, child: &dyn RenderBox) -> Option<Rect> {
+        self.render.borrow().describe_approximate_paint_clip(child)
+    }
+    fn describe_semantics_clip(&self, child: &dyn RenderBox) -> Option<Rect> {
+        self.render.borrow().describe_semantics_clip(child)
+    }
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.render.borrow().hit_test(position, result)
     }
@@ -1370,6 +2153,25 @@ impl RenderBox for RenderRef {
     }
     fn hit_test_id(&self) -> u64 {
         self.render.borrow().hit_test_id()
+    }
+    /// The handle delegates the sliver protocol as it does the box one, so a
+    /// parent holding a child behind `&dyn RenderBox` reaches the same answers
+    /// one holding the [`RenderRef`] directly does.
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        RenderRef::sliver_layout(self, constraints)
+    }
+    fn sliver_geometry(&self) -> SliverGeometry {
+        RenderRef::sliver_geometry(self)
+    }
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        self.render
+            .borrow()
+            .sliver_hit_test(main_axis_position, cross_axis_position, result)
     }
     fn min_intrinsic_width(&self, height: f32) -> f32 {
         self.memoize(IntrinsicQuery::MinWidth, height, |render| {
@@ -1390,6 +2192,13 @@ impl RenderBox for RenderRef {
         self.memoize(IntrinsicQuery::MaxHeight, width, |render| {
             render.max_intrinsic_height(width)
         })
+    }
+    /// The handle is the caching point, so this is the cached entry rather
+    /// than a bare call into the object -- a parent that measures a child
+    /// through the trait gets the same remembered answer one that calls
+    /// [`RenderRef::dry_layout`] does.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.dry_layout(constraints)
     }
     /// Upstream caches this alongside the intrinsics and for the same reason:
     /// a baseline is as expensive as the text under it, and a `RenderFlex`
@@ -1471,6 +2280,9 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         (**self).max_intrinsic_height(width)
     }
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        (**self).compute_dry_layout(constraints)
+    }
     fn distance_to_baseline(&self) -> Option<f32> {
         (**self).distance_to_baseline()
     }
@@ -1483,6 +2295,26 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
         (**self).describe_semantics()
+    }
+    fn describe_approximate_paint_clip(&self, child: &dyn RenderBox) -> Option<Rect> {
+        (**self).describe_approximate_paint_clip(child)
+    }
+    fn describe_semantics_clip(&self, child: &dyn RenderBox) -> Option<Rect> {
+        (**self).describe_semantics_clip(child)
+    }
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        (**self).sliver_layout(constraints)
+    }
+    fn sliver_geometry(&self) -> SliverGeometry {
+        (**self).sliver_geometry()
+    }
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        (**self).sliver_hit_test(main_axis_position, cross_axis_position, result)
     }
     /// Forwards to the object, and only unwraps `self`.
     ///
@@ -1528,13 +2360,62 @@ impl Alignment {
     }
 
     /// Where a `child` sits inside a box of `size`.
+    ///
+    /// Not clamped, like upstream's `inscribe` and `alongOffset`: a child
+    /// bigger than the box spills over, and the alignment says which sides.
     pub fn inscribe(&self, child: Size, size: Size) -> Offset {
-        let free_width = (size.width - child.width).max(0.0);
-        let free_height = (size.height - child.height).max(0.0);
+        let width_delta = size.width - child.width;
+        let height_delta = size.height - child.height;
         Offset::new(
-            free_width * (self.x + 1.0) / 2.0,
-            free_height * (self.y + 1.0) / 2.0,
+            width_delta * (self.x + 1.0) / 2.0,
+            height_delta * (self.y + 1.0) / 2.0,
         )
+    }
+
+    /// Resolving an absolute alignment against a direction is a no-op --
+    /// upstream's `Alignment.resolve`, which returns `this`. It exists so that
+    /// a caller holding either kind can ask the same question; the directional
+    /// half is [`AlignmentDirectional::resolve`].
+    pub fn resolve(self, _direction: TextDirection) -> Alignment {
+        self
+    }
+}
+
+/// A point in a box measured from the start edge rather than the left one.
+///
+/// Upstream's `AlignmentDirectional`: `start` is -1 at the start edge (left in
+/// [`TextDirection::Ltr`], right in [`TextDirection::Rtl`]) and 1 at the other
+/// one, `y` as in [`Alignment`]. Nothing can be laid out from these until they
+/// are resolved -- see [`AlignmentDirectional::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AlignmentDirectional {
+    pub start: f32,
+    pub y: f32,
+}
+
+impl AlignmentDirectional {
+    pub const TOP_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: -1.0 };
+    pub const TOP_CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: -1.0 };
+    pub const TOP_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: -1.0 };
+    pub const CENTER_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: 0.0 };
+    pub const CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: 0.0 };
+    pub const CENTER_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: 0.0 };
+    pub const BOTTOM_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: 1.0 };
+    pub const BOTTOM_CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: 1.0 };
+    pub const BOTTOM_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: 1.0 };
+
+    pub const fn new(start: f32, y: f32) -> AlignmentDirectional {
+        AlignmentDirectional { start, y }
+    }
+
+    /// The absolute alignment this is, once `direction` says which side start
+    /// is. Upstream's `AlignmentDirectional.resolve`: in `rtl` the start
+    /// coordinate is negated, so `topStart` becomes `Alignment.topRight`.
+    pub fn resolve(self, direction: TextDirection) -> Alignment {
+        match direction {
+            TextDirection::Ltr => Alignment::new(self.start, self.y),
+            TextDirection::Rtl => Alignment::new(-self.start, self.y),
+        }
     }
 }
 
@@ -1549,6 +2430,43 @@ pub enum Axis {
     Horizontal,
     #[default]
     Vertical,
+}
+
+/// Which end of the vertical axis a layout starts from.
+///
+/// Upstream's `VerticalDirection`, and the same default: a column grows
+/// downwards unless it is told otherwise. This is what flips a vertical
+/// layout, where [`TextDirection`] is what flips a horizontal one -- the two
+/// are independent, and a row reads the vertical direction only across its
+/// cross axis (upstream's `_flipCrossAxis`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VerticalDirection {
+    #[default]
+    Down,
+    Up,
+}
+
+/// An axis plus which way along it the layout runs.
+///
+/// Upstream's `AxisDirection`. A scroll viewport needs one rather than an
+/// [`Axis`] because "how far the content is scrolled" has to name an edge the
+/// offset starts from: `down` and `right` start at the top/left with the offset
+/// growing into the content, `up` and `left` start at the bottom/right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AxisDirection {
+    Up,
+    Right,
+    #[default]
+    Down,
+    Left,
+}
+
+/// Which axis an [`AxisDirection`] runs along. Upstream's `axisDirectionToAxis`.
+pub fn axis_direction_to_axis(direction: AxisDirection) -> Axis {
+    match direction {
+        AxisDirection::Up | AxisDirection::Down => Axis::Vertical,
+        AxisDirection::Left | AxisDirection::Right => Axis::Horizontal,
+    }
 }
 
 /// How the free space along the main axis is distributed.
@@ -1751,7 +2669,7 @@ impl RenderBox for RenderDecoratedBox {
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = match &mut self.child {
-            Some(child) => child.layout(constraints),
+            Some(child) => child.layout_child(constraints, true),
             // With no child there is nothing to measure, so the box takes as
             // much as it is allowed -- the same choice upstream makes.
             None => constraints.biggest(),
@@ -1761,6 +2679,16 @@ impl RenderBox for RenderDecoratedBox {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's answer, or -- with no child -- as much as it is allowed,
+    /// the same choice `layout` makes. Upstream's `RenderProxyBox` dry path,
+    /// with this object's own no-child rule.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        match &self.child {
+            Some(child) => child.dry_layout(constraints),
+            None => constraints.biggest(),
+        }
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -1873,17 +2801,20 @@ impl RenderBox for RenderDecoratedBox {
 
 /// What becomes of text too big for the box it was given.
 ///
-/// Upstream's `TextOverflow` (`painting/text_painter.dart`), less one:
-/// `fade` is missing because it is not a text feature at all but a paint one --
-/// upstream draws the text into a `saveLayer` and then multiplies a
-/// transparent-to-opaque gradient over it with `BlendMode.modulate`, and this
-/// paint layer has no blend modes. Nothing in this framework asks for it. The
-/// other three are here in full.
+/// Upstream's `TextOverflow` (`painting/text_painter.dart`), all four. `fade`
+/// is the one that is not a text feature at all but a paint one: the text is
+/// drawn into a `saveLayer` and a transparent-to-opaque gradient is multiplied
+/// over it with `BlendMode.modulate`, which is why it lives in
+/// [`RenderParagraph::layout`] and [`RenderParagraph::paint`] rather than in
+/// the shaper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextOverflow {
     /// Cut off what does not fit. Upstream's default, and this one's.
     #[default]
     Clip,
+    /// Cut off what does not fit, the last little of it fading out under a
+    /// gradient instead of ending at a hard edge.
+    Fade,
     /// Cut off what does not fit and end the last line with '…'.
     Ellipsis,
     /// Let the glyphs spill outside the box.
@@ -1913,6 +2844,15 @@ pub struct RenderParagraph {
     /// Whether the last layout produced text bigger than the box it got.
     /// Upstream keeps the same answer as `_needsClipping`.
     has_visual_overflow: bool,
+    /// Where the fade gradient runs, when the last layout overflowed and the
+    /// overflow is [`TextOverflow::Fade`].
+    ///
+    /// Upstream's `_overflowShader`, held as the gradient's two end points
+    /// rather than as a shader: a `Gradient` here is colours, and the paint
+    /// that turns them into a shader is made once, at draw time. Like
+    /// upstream's, it is a paint-time input derived at layout, because which
+    /// way the fade runs depends on which axis overflowed.
+    fade: Option<((f32, f32), (f32, f32))>,
     /// The reader's text size, as it was where this paragraph was built.
     ///
     /// Taken at construction rather than read at layout, because by layout the
@@ -1920,6 +2860,16 @@ pub struct RenderParagraph {
     /// `RenderParagraph` keeps the same value in the same way, as a
     /// `textScaler` field set by `Text.build`.
     text_scale: f32,
+    /// The reading direction, as it was where this paragraph was built.
+    ///
+    /// Like `text_scale`, taken at construction rather than read at layout:
+    /// the `Directionality` this sits under is walked over by then. Upstream
+    /// hands the same answer to the shaper as the paragraph style's
+    /// `textDirection`, which is what decides the base direction of the
+    /// bidi it runs over the text; here the shaper reads the ambient
+    /// direction (see [`crate::direction`]), so this field is replayed
+    /// around the shaping call instead.
+    text_direction: TextDirection,
     /// Shared with the cache rather than owned, so a tree rebuilt around
     /// unchanged text re-uses the shaping instead of repeating it.
     paragraph: Option<Rc<Paragraph>>,
@@ -1942,7 +2892,9 @@ impl RenderParagraph {
             soft_wrap: true,
             overflow: TextOverflow::Clip,
             has_visual_overflow: false,
+            fade: None,
             text_scale: crate::media_query::current_text_scale(),
+            text_direction: crate::direction::current_direction(),
             paragraph: None,
             semantics_id: std::cell::Cell::new(0),
             size: Size::ZERO,
@@ -1967,7 +2919,9 @@ impl RenderParagraph {
             soft_wrap: true,
             overflow: TextOverflow::Clip,
             has_visual_overflow: false,
+            fade: None,
             text_scale: crate::media_query::current_text_scale(),
+            text_direction: crate::direction::current_direction(),
             paragraph: None,
             semantics_id: std::cell::Cell::new(0),
             size: Size::ZERO,
@@ -1986,25 +2940,31 @@ impl RenderParagraph {
         // TextOverflow.ellipsis ? _kEllipsis : null` -- so the flag is derived
         // here rather than stored.
         let ellipsis = self.overflow == TextOverflow::Ellipsis;
-        if self.is_rich() {
-            crate::painting::shape_rich(
-                &self.runs,
-                self.style.align,
-                self.max_lines,
-                ellipsis,
-                width,
-                self.text_scale,
-            )
-        } else {
-            crate::painting::shape(
-                &self.content,
-                &self.style,
-                self.max_lines,
-                ellipsis,
-                width,
-                self.text_scale,
-            )
-        }
+        // The direction this was built under is what the paragraph style's
+        // `textDirection` is upstream; the shaper here reads the ambient one,
+        // so it is replayed around the call. `with_direction` restores the
+        // previous one on the way out, even through a panic.
+        crate::direction::with_direction(self.text_direction, || {
+            if self.is_rich() {
+                crate::painting::shape_rich(
+                    &self.runs,
+                    self.style.align,
+                    self.max_lines,
+                    ellipsis,
+                    width,
+                    self.text_scale,
+                )
+            } else {
+                crate::painting::shape(
+                    &self.content,
+                    &self.style,
+                    self.max_lines,
+                    ellipsis,
+                    width,
+                    self.text_scale,
+                )
+            }
+        })
     }
 
     /// Shapes at a scale of the caller's choosing rather than the one that was
@@ -2020,6 +2980,21 @@ impl RenderParagraph {
     /// The scale this paragraph will be shaped at.
     pub fn text_scale(&self) -> f32 {
         self.text_scale
+    }
+
+    /// Shapes in the direction of the caller's choosing rather than the one
+    /// that was in force where this was built.
+    ///
+    /// Upstream's `Text.textDirection` argument, which overrides the
+    /// `Directionality` for that one paragraph.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.text_direction = direction;
+        self
+    }
+
+    /// The direction this paragraph will be shaped in.
+    pub fn text_direction(&self) -> TextDirection {
+        self.text_direction
     }
 
     pub fn with_style(mut self, style: TextStyle) -> Self {
@@ -2070,6 +3045,49 @@ impl RenderParagraph {
         let paragraph = self.shape_at(width);
         Size::new(paragraph.width(), paragraph.height())
     }
+
+    /// The end points of the fade gradient, upstream's `TextOverflow.fade`
+    /// branch of `performLayout`, line for line.
+    ///
+    /// The fade is sized by an ellipsis shaped at this paragraph's own style
+    /// and scale -- upstream's `fadeSizePainter` over `'\u2026'` -- because an
+    /// ellipsis is what the fade stands in for. Over the width it runs from
+    /// an ellipsis' width inside the edge the text overflows to that edge
+    /// itself: the trailing edge in `ltr`, the leading one in `rtl`, which is
+    /// the `switch (textDirection)` the width arm ends in. Over the height it
+    /// starts half an ellipsis above the bottom, the same both ways.
+    fn fade_shader(&self, did_overflow_width: bool) -> ((f32, f32), (f32, f32)) {
+        let ellipsis = crate::painting::shape(
+            "\u{2026}",
+            &self.style,
+            None,
+            false,
+            f32::MAX / 4.0,
+            self.text_scale,
+        );
+        if did_overflow_width {
+            // Upstream's `(fadeStart, fadeEnd)`: rtl answers
+            // `(fadeSizePainter.width, 0.0)` and ltr
+            // `(size.width - fadeSizePainter.width, size.width)`.
+            let (start, end) = if self.text_direction == TextDirection::Rtl {
+                (ellipsis.width(), 0.0)
+            } else {
+                (self.size.width - ellipsis.width(), self.size.width)
+            };
+            ((start, 0.0), (end, 0.0))
+        } else {
+            let end = self.size.height;
+            ((0.0, end - ellipsis.height() / 2.0), (0.0, end))
+        }
+    }
+
+    /// The fade's colours, upstream's two verbatim: opaque white to
+    /// transparent white. White because the fade multiplies the text rather
+    /// than drawing over it, and any other hue would tint the glyphs as it
+    /// thinned them.
+    fn fade_ramp() -> Gradient {
+        Gradient::new(&[Color::WHITE, Color(0x00FF_FFFF)])
+    }
 }
 
 impl RenderBox for RenderParagraph {
@@ -2081,7 +3099,8 @@ impl RenderBox for RenderParagraph {
             || self.max_lines != fresh.max_lines
             || self.soft_wrap != fresh.soft_wrap
             || self.overflow != fresh.overflow
-            || self.text_scale != fresh.text_scale;
+            || self.text_scale != fresh.text_scale
+            || self.text_direction != fresh.text_direction;
         if !changed {
             // Everything the shaping depends on is the same, so the shaping is
             // the same -- and shaping is nearly all of what a paragraph costs.
@@ -2096,6 +3115,7 @@ impl RenderBox for RenderParagraph {
         self.soft_wrap = fresh.soft_wrap;
         self.overflow = fresh.overflow;
         self.text_scale = fresh.text_scale;
+        self.text_direction = fresh.text_direction;
         // What was shaped was shaped for text this no longer holds.
         self.paragraph = None;
         Some(UpdateEffect::Relayout)
@@ -2120,15 +3140,35 @@ impl RenderBox for RenderParagraph {
         // Upstream's `performLayout`: `didOverflowWidth = size.width <
         // textSize.width`, same for height, and the two together are
         // `hasVisualOverflow` -- which every overflow except `visible` answers
-        // by clipping.
+        // by clipping. The width one is kept apart because the fade needs to
+        // know *which* way the text ran out of room.
+        let did_overflow_width = self.size.width < text_size.width;
         self.has_visual_overflow =
-            self.size.width < text_size.width || self.size.height < text_size.height;
+            did_overflow_width || self.size.height < text_size.height;
+        self.fade = (self.has_visual_overflow && self.overflow == TextOverflow::Fade)
+            .then(|| self.fade_shader(did_overflow_width));
         self.paragraph = Some(paragraph);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderParagraph.computeDryLayout`: the same shaping
+    /// `layout` does -- a separate painter there, `shape_at` here, so the kept
+    /// paragraph and the overflow bookkeeping are not touched -- constrained,
+    /// and nothing else.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let width = if constraints.has_bounded_width() {
+            self.adjust_max_width(constraints.max_width)
+        } else {
+            f32::INFINITY
+        };
+        let width = if width.is_finite() { width } else { f32::MAX / 4.0 };
+        let paragraph = self.shape_at(width);
+        let text_size = Size::new(paragraph.width(), paragraph.height());
+        constraints.constrain(text_size)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2143,9 +3183,32 @@ impl RenderBox for RenderParagraph {
             return;
         }
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let fade = self.overflow == TextOverflow::Fade && self.fade.is_some();
         context.canvas().saved(|canvas| {
+            if fade {
+                // An offscreen group, so the multiply below blends against the
+                // text only and not whatever was painted behind it. Upstream's
+                // own comment says the same: "This layer limits what the
+                // shader below blends with to be just the text (as opposed to
+                // the text and its background)."
+                canvas.save_layer(Some(bounds), None);
+            }
             canvas.clip_rect(bounds, ClipOp::Intersect, true);
             canvas.draw_paragraph(paragraph, offset.dx, offset.dy);
+            if let Some((start, end)) = self.fade.filter(|_| fade) {
+                // The gradient is in the box's own coordinates, which is why
+                // the origin moves first -- upstream's `translate` before its
+                // `drawRect(Offset.zero & size)`.
+                canvas.translate(offset.dx, offset.dy);
+                let paint = Paint::new(Color::WHITE)
+                    .with_blend_mode(crate::painting::BlendMode::Modulate)
+                    .with_linear_gradient(start, end, &Self::fade_ramp());
+                canvas.draw_rect(
+                    Rect::xywh(0.0, 0.0, self.size.width, self.size.height),
+                    &paint,
+                );
+                canvas.restore();
+            }
         });
     }
 
@@ -2169,10 +3232,14 @@ impl RenderBox for RenderParagraph {
         if self.semantics_id.get() == 0 {
             self.semantics_id.set(crate::semantics::take_text_id());
         }
+        // The direction the paragraph was built in, not the one ambient
+        // wherever the semantics walk runs -- the field is upstream's
+        // paragraph-style `textDirection`, and a reader is told the same.
         Some(crate::semantics::SemanticsAnnotation::text(
             self.semantics_id.get(),
             &self.content,
-        ))
+        )
+        .with_text_direction(self.text_direction))
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
@@ -2210,12 +3277,142 @@ pub enum BoxFit {
     Fill,
     /// Natural size, no scaling.
     None,
+    /// As large as possible while being exactly the box's width. May overflow
+    /// vertically.
+    FitWidth,
+    /// As large as possible while being exactly the box's height. May overflow
+    /// horizontally.
+    FitHeight,
+    /// The natural size, or the `Contain` size when that does not fit --
+    /// whichever is smaller. Never scales up.
+    ScaleDown,
+}
+
+/// The pair of sizes [`apply_box_fit`] answers with.
+///
+/// Upstream's `FittedSizes` (`painting/box_fit.dart`): `source` is the part of
+/// the input that is shown, `destination` the part of the output it is shown
+/// into. The two are the same rectangle at two scales, which is why dividing
+/// one by the other is the scale to paint at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FittedSizes {
+    pub source: Size,
+    pub destination: Size,
+}
+
+/// The sizing semantics of a [`BoxFit`], as the two rectangles it maps between.
+///
+/// Upstream's `applyBoxFit` (`painting/box_fit.dart`), branch for branch. For
+/// every fit other than `Fill` the two sizes keep the input's aspect ratio, so
+/// the map between them is a uniform scale; `Fill` is the one that stretches.
+pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
+    if input.height <= 0.0
+        || input.width <= 0.0
+        || output.height <= 0.0
+        || output.width <= 0.0
+    {
+        return FittedSizes { source: Size::ZERO, destination: Size::ZERO };
+    }
+
+    let source;
+    let mut destination;
+    match fit {
+        BoxFit::Fill => {
+            source = input;
+            destination = output;
+        }
+        BoxFit::Contain => {
+            source = input;
+            if output.width / output.height > source.width / source.height {
+                destination = Size::new(
+                    source.width * output.height / source.height,
+                    output.height,
+                );
+            } else {
+                destination = Size::new(
+                    output.width,
+                    source.height * output.width / source.width,
+                );
+            }
+        }
+        BoxFit::Cover => {
+            if output.width / output.height > input.width / input.height {
+                source = Size::new(input.width, input.width * output.height / output.width);
+            } else {
+                source = Size::new(
+                    input.height * output.width / output.height,
+                    input.height,
+                );
+            }
+            destination = output;
+        }
+        BoxFit::FitWidth => {
+            if output.width / output.height > input.width / input.height {
+                // Like "cover".
+                source = Size::new(input.width, input.width * output.height / output.width);
+                destination = output;
+            } else {
+                // Like "contain".
+                source = input;
+                destination = Size::new(
+                    output.width,
+                    source.height * output.width / source.width,
+                );
+            }
+        }
+        BoxFit::FitHeight => {
+            if output.width / output.height > input.width / input.height {
+                // Like "contain".
+                source = input;
+                destination = Size::new(
+                    source.width * output.height / source.height,
+                    output.height,
+                );
+            } else {
+                // Like "cover".
+                source = Size::new(
+                    input.height * output.width / output.height,
+                    input.height,
+                );
+                destination = output;
+            }
+        }
+        BoxFit::None => {
+            source = Size::new(
+                input.width.min(output.width),
+                input.height.min(output.height),
+            );
+            destination = source;
+        }
+        BoxFit::ScaleDown => {
+            source = input;
+            destination = input;
+            let aspect_ratio = input.width / input.height;
+            let mut fitted = destination;
+            if fitted.height > output.height {
+                fitted = Size::new(output.height * aspect_ratio, output.height);
+            }
+            if fitted.width > output.width {
+                fitted = Size::new(output.width, output.width / aspect_ratio);
+            }
+            destination = fitted;
+        }
+    }
+    FittedSizes { source, destination }
+}
+
+/// Upstream `_paintImage` (image.dart): a paint is passed to `drawImageRect`
+/// only when the image has an opacity, and it is black with the opacity as
+/// alpha, which the engine multiplies into the picture.
+fn image_paint(opacity: Option<f32>) -> Option<Paint> {
+    opacity.map(|o| Paint::new(Color::argb((o * 255.0).round() as u8, 0, 0, 0)))
 }
 
 pub struct RenderImage {
     image: Rc<Image>,
     fit: BoxFit,
     alignment: Alignment,
+    opacity: Option<f32>,
     size: Size,
 }
 
@@ -2223,11 +3420,22 @@ impl RenderImage {
     /// Shared rather than owned, because a render tree is rebuilt every frame
     /// and decoding a PNG sixty times a second to draw the same picture is not
     /// a thing anyone wants. The caller decodes once and keeps the handle.
+    ///
+    /// `fit` is [`BoxFit::ScaleDown`] rather than the enum's own default:
+    /// upstream `Image.fit` is null unless said otherwise, and a null fit is
+    /// `BoxFit.scaleDown` by the time it reaches the canvas -- `paintImage`'s
+    /// `fit ??= centerSlice == null ? BoxFit.scaleDown : BoxFit.fill`
+    /// (`painting/decoration_image.dart`). Scale-down paints the picture at
+    /// its natural size wherever the box leaves it room and only ever shrinks
+    /// it where it does not, which is the reading an unset fit wants:
+    /// contain, the opt-in via `with_fit`, would grow the same picture to
+    /// fill the same box.
     pub fn new(image: Rc<Image>) -> RenderImage {
         RenderImage {
             image,
-            fit: BoxFit::default(),
+            fit: BoxFit::ScaleDown,
             alignment: Alignment::CENTER,
+            opacity: None,
             size: Size::ZERO,
         }
     }
@@ -2244,9 +3452,42 @@ impl RenderImage {
         self
     }
 
+    /// Upstream `RenderImage.opacity` (image.dart): drawn as the alpha of the
+    /// paint colour, so `Some(0.5)` fades the picture to half. Upstream
+    /// asserts the 0..1 range.
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = Some(opacity.clamp(0.0, 1.0));
+        self
+    }
+
     fn natural(&self) -> Size {
         let (w, h) = self.image.size();
         Size::new(w as f32, h as f32)
+    }
+
+    /// The uniform scale a picture of `natural` is painted at inside `size`
+    /// under `fit` -- `applyBoxFit` collapsed to the one number an image
+    /// needs, since its source rect is always the whole picture.
+    fn paint_scale(fit: BoxFit, natural: Size, size: Size) -> f32 {
+        match fit {
+            BoxFit::Fill => {
+                // Not a uniform scale at all; `destination` treats it apart.
+                1.0
+            }
+            BoxFit::None => 1.0,
+            BoxFit::Contain => {
+                (size.width / natural.width).min(size.height / natural.height)
+            }
+            BoxFit::Cover => (size.width / natural.width).max(size.height / natural.height),
+            // The uniform scales `applyBoxFit` works out for these: `FitWidth`
+            // pins the width, `FitHeight` the height, and `ScaleDown` is the
+            // `Contain` scale with one as a ceiling -- it never scales up.
+            BoxFit::FitWidth => size.width / natural.width,
+            BoxFit::FitHeight => size.height / natural.height,
+            BoxFit::ScaleDown => {
+                (size.width / natural.width).min(size.height / natural.height).min(1.0)
+            }
+        }
     }
 
     /// The rect the image is drawn into, inside a box of `self.size`.
@@ -2255,18 +3496,10 @@ impl RenderImage {
         if natural.width <= 0.0 || natural.height <= 0.0 {
             return Rect::xywh(offset.dx, offset.dy, 0.0, 0.0);
         }
-        let scale = match self.fit {
-            BoxFit::Fill => {
-                return Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-            }
-            BoxFit::None => 1.0,
-            BoxFit::Contain => {
-                (self.size.width / natural.width).min(self.size.height / natural.height)
-            }
-            BoxFit::Cover => {
-                (self.size.width / natural.width).max(self.size.height / natural.height)
-            }
-        };
+        if self.fit == BoxFit::Fill {
+            return Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        }
+        let scale = Self::paint_scale(self.fit, natural, self.size);
         let width = natural.width * scale;
         let height = natural.height * scale;
         // Upstream's `paintImage`: half the slack, moved by the alignment
@@ -2319,15 +3552,24 @@ impl RenderBox for RenderImage {
         self.size
     }
 
+    /// Upstream's `RenderImage.computeDryLayout`, which is `_sizeForConstraints`
+    /// -- the whole answer is `layout`'s, minus the write.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain_size_preserving_aspect_ratio(self.natural())
+    }
+
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let natural = self.natural();
         if natural.width <= 0.0 || natural.height <= 0.0 {
             return;
         }
         let source = Rect::xywh(0.0, 0.0, natural.width, natural.height);
-        context
-            .canvas()
-            .draw_image_rect(&self.image, source, self.destination(offset), None);
+        context.canvas().draw_image_rect(
+            &self.image,
+            source,
+            self.destination(offset),
+            image_paint(self.opacity).as_ref(),
+        );
     }
 
     /// Upstream `RenderImage.hitTestSelf` is `true` (`image.dart`), for the box
@@ -2408,7 +3650,7 @@ impl RenderBox for RenderFullWidth {
             constraints
         };
         self.size = match &mut self.child {
-            Some(child) => child.layout(inner),
+            Some(child) => child.layout_child(inner, true),
             None => inner.constrain(inner.smallest()),
         };
         self.size
@@ -2416,6 +3658,24 @@ impl RenderBox for RenderFullWidth {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// `layout`'s inner constraints and the child's dry answer at them -- or,
+    /// with no child, the same fallback `layout` takes.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let inner = if constraints.has_bounded_width() {
+            BoxConstraints {
+                min_width: constraints.max_width,
+                max_width: constraints.max_width,
+                ..constraints
+            }
+        } else {
+            constraints
+        };
+        match &self.child {
+            Some(child) => child.dry_layout(inner),
+            None => inner.constrain(inner.smallest()),
+        }
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2491,7 +3751,7 @@ impl RenderBox for RenderConstrainedBox {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let inner = self.extra.enforce(constraints);
         self.size = match &mut self.child {
-            Some(child) => child.layout(inner),
+            Some(child) => child.layout_child(inner, true),
             None => inner.constrain(inner.smallest()),
         };
         self.size
@@ -2499,6 +3759,17 @@ impl RenderBox for RenderConstrainedBox {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderConstrainedBox.computeDryLayout` verbatim: the child's
+    /// dry answer at the enforced constraints, or zero put through them when
+    /// there is no child.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let inner = self.extra.enforce(constraints);
+        match &self.child {
+            Some(child) => child.dry_layout(inner),
+            None => inner.constrain(Size::ZERO),
+        }
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2588,7 +3859,7 @@ impl RenderBox for RenderPadding {
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let inner = constraints.deflate(self.insets);
-        let child_size = self.child.layout(inner);
+        let child_size = self.child.layout_child(inner, true);
         self.size = constraints.constrain(Size::new(
             child_size.width + self.insets.horizontal(),
             child_size.height + self.insets.vertical(),
@@ -2598,6 +3869,17 @@ impl RenderBox for RenderPadding {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderPadding.computeDryLayout`: the child's dry answer at
+    /// the deflated constraints, padding put back and constrained.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let inner = constraints.deflate(self.insets);
+        let child_size = self.child.dry_layout(inner);
+        constraints.constrain(Size::new(
+            child_size.width + self.insets.horizontal(),
+            child_size.height + self.insets.vertical(),
+        ))
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2650,6 +3932,16 @@ impl RenderBox for RenderPadding {
 /// axis makes it exactly its child's size on that axis.
 pub struct RenderAlign {
     alignment: Alignment,
+    /// The start-based alignment this was given, when it was one: upstream's
+    /// `AlignmentGeometry`, which is either an `Alignment` or an
+    /// `AlignmentDirectional`, held here as the directional half over the
+    /// resolved one.
+    directional: Option<AlignmentDirectional>,
+    /// What `directional` resolves against. Taken at construction rather than
+    /// read at layout, because by layout the walk that knew which
+    /// `directionality` this sits under is over -- the same arrangement as the
+    /// text scale.
+    text_direction: TextDirection,
     width_factor: Option<f32>,
     height_factor: Option<f32>,
     child: BoxedRender,
@@ -2661,12 +3953,34 @@ impl RenderAlign {
     pub fn new(alignment: Alignment, child: impl RenderBox + 'static) -> RenderAlign {
         RenderAlign {
             alignment,
+            directional: None,
+            text_direction: crate::direction::current_direction(),
             width_factor: None,
             height_factor: None,
             child: RenderRef::new(child),
             child_offset: Offset::ZERO,
             size: Size::ZERO,
         }
+    }
+
+    /// Upstream's `Align` given an `AlignmentDirectional`: which side `start`
+    /// means is decided by the ambient direction, taken here at construction.
+    pub fn directional(
+        alignment: AlignmentDirectional,
+        child: impl RenderBox + 'static,
+    ) -> RenderAlign {
+        RenderAlign {
+            directional: Some(alignment),
+            ..RenderAlign::new(Alignment::CENTER, child)
+        }
+    }
+
+    /// Which direction a [`directional`](RenderAlign::directional) alignment
+    /// resolves against. Upstream's `Align.textDirection`, which overrides the
+    /// ambient `Directionality`.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.text_direction = direction;
+        self
     }
 
     pub fn with_factors(mut self, width: Option<f32>, height: Option<f32>) -> Self {
@@ -2678,6 +3992,12 @@ impl RenderAlign {
     pub fn child_offset(&self) -> Offset {
         self.child_offset
     }
+
+    /// The alignment this places its child by: the directional one resolved,
+    /// or the absolute one as it stands. Upstream's `_resolvedAlignment`.
+    fn resolved_alignment(&self) -> Alignment {
+        self.directional.map_or(self.alignment, |d| d.resolve(self.text_direction))
+    }
 }
 
 impl RenderBox for RenderAlign {
@@ -2688,18 +4008,22 @@ impl RenderBox for RenderAlign {
         // does is move something. Upstream resolves it in `performLayout` too.
         let effect = UpdateEffect::relayout_if(
             self.alignment != fresh.alignment
+                || self.directional != fresh.directional
+                || self.text_direction != fresh.text_direction
                 || self.width_factor != fresh.width_factor
                 || self.height_factor != fresh.height_factor
                 || !self.child.is(&fresh.child),
         );
         self.alignment = fresh.alignment;
+        self.directional = fresh.directional;
+        self.text_direction = fresh.text_direction;
         self.width_factor = fresh.width_factor;
         self.height_factor = fresh.height_factor;
         self.child = fresh.child.clone();
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let child_size = self.child.layout(constraints.loosen());
+        let child_size = self.child.layout_child(constraints.loosen(), true);
 
         // Shrink-wrap where a factor was given or the axis is unbounded;
         // otherwise take everything, which is what makes Center fill.
@@ -2714,12 +4038,30 @@ impl RenderBox for RenderAlign {
             None => child_size.height,
         };
         self.size = constraints.constrain(Size::new(width, height));
-        self.child_offset = self.alignment.inscribe(child_size, self.size);
+        self.child_offset = self.resolved_alignment().inscribe(child_size, self.size);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderPositionedBox.computeDryLayout`: the child's dry
+    /// answer, the same shrink-wrap-or-fill choice `layout` makes. The offset
+    /// is not worked out -- placing the child is what a real layout is for.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.dry_layout(constraints.loosen());
+        let width = match self.width_factor {
+            Some(factor) => child_size.width * factor,
+            None if constraints.has_bounded_width() => constraints.max_width,
+            None => child_size.width,
+        };
+        let height = match self.height_factor {
+            Some(factor) => child_size.height * factor,
+            None if constraints.has_bounded_height() => constraints.max_height,
+            None => child_size.height,
+        };
+        constraints.constrain(Size::new(width, height))
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2737,20 +4079,23 @@ impl RenderBox for RenderAlign {
         self.child.hit_test(position.minus(self.child_offset), result)
     }
 
+    // Upstream's `RenderPositionedBox` intrinsics multiply the child's answer
+    // by the factor, if there is one -- so an `IntrinsicWidth` above a
+    // `SizedBox(widthFactor: 2)` reserves twice what the child wants.
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.min_intrinsic_width(height)
+        self.child.min_intrinsic_width(height) * self.width_factor.unwrap_or(1.0)
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.max_intrinsic_width(height)
+        self.child.max_intrinsic_width(height) * self.width_factor.unwrap_or(1.0)
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.min_intrinsic_height(width)
+        self.child.min_intrinsic_height(width) * self.height_factor.unwrap_or(1.0)
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.max_intrinsic_height(width)
+        self.child.max_intrinsic_height(width) * self.height_factor.unwrap_or(1.0)
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
@@ -2777,10 +4122,17 @@ impl FlexChild {
     }
 
     pub fn expanded(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
+        // Upstream's flex factor is positive or the child is not flexed at
+        // all, and a caller writing zero here meant the other thing. The
+        // clamp keeps a release build from dividing free space by zero; the
+        // assert is what tells the caller what they did.
+        debug_assert!(flex > 0, "the flex factor must be positive");
         FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: true }
     }
 
     pub fn flexible(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
+        // The same assert, the same clamp -- see `expanded`.
+        debug_assert!(flex > 0, "the flex factor must be positive");
         FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: false }
     }
 }
@@ -2801,6 +4153,14 @@ pub struct RenderFlex {
     cross_axis_alignment: CrossAxisAlignment,
     main_axis_size: MainAxisSize,
     spacing: f32,
+    /// Which way the main axis runs when it is horizontal: upstream's
+    /// `textDirection`, taken from the ambient `Directionality` at
+    /// construction the way the text scale is.
+    text_direction: TextDirection,
+    /// Which way the main axis runs when it is vertical: upstream's
+    /// `verticalDirection`, always explicit there because it does not depend
+    /// on an inherited widget.
+    vertical_direction: VerticalDirection,
     children: Vec<FlexChild>,
     offsets: Vec<Offset>,
     size: Size,
@@ -2814,6 +4174,8 @@ impl RenderFlex {
             cross_axis_alignment: CrossAxisAlignment::default(),
             main_axis_size: MainAxisSize::default(),
             spacing: 0.0,
+            text_direction: crate::direction::current_direction(),
+            vertical_direction: VerticalDirection::default(),
             children: Vec::new(),
             offsets: Vec::new(),
             size: Size::ZERO,
@@ -2850,6 +4212,21 @@ impl RenderFlex {
         self
     }
 
+    /// Which end of a horizontal flex is its start. Upstream's `Flex
+    /// .textDirection`; the ambient direction is already in the field, and
+    /// this is the explicit override of it.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.text_direction = direction;
+        self
+    }
+
+    /// Which end of a vertical flex is its start. Upstream's
+    /// `Flex.verticalDirection`.
+    pub fn with_vertical_direction(mut self, direction: VerticalDirection) -> Self {
+        self.vertical_direction = direction;
+        self
+    }
+
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
         self.children.push(FlexChild::new(child));
         self
@@ -2872,6 +4249,27 @@ impl RenderFlex {
     /// idea, and a column asking for it is not aligning anything.
     fn is_baseline_aligned(&self) -> bool {
         self.cross_axis_alignment == CrossAxisAlignment::Baseline && self.is_horizontal()
+    }
+
+    /// Whether the main axis runs from the far end: right-to-left for a
+    /// horizontal flex in [`TextDirection::Rtl`], bottom-to-top for a vertical
+    /// one in [`VerticalDirection::Up`]. Upstream's `_flipMainAxis`, minus the
+    /// "is there a child" half, which only saves a switch on an empty flex.
+    fn flip_main_axis(&self) -> bool {
+        match self.direction {
+            Axis::Horizontal => self.text_direction == TextDirection::Rtl,
+            Axis::Vertical => self.vertical_direction == VerticalDirection::Up,
+        }
+    }
+
+    /// The same question across the cross axis, upstream's `_flipCrossAxis`:
+    /// the two directions swap roles, because the cross axis of a row is
+    /// vertical and the cross axis of a column horizontal.
+    fn flip_cross_axis(&self) -> bool {
+        match self.direction {
+            Axis::Vertical => self.text_direction == TextDirection::Rtl,
+            Axis::Horizontal => self.vertical_direction == VerticalDirection::Up,
+        }
     }
 
     fn main_of(&self, size: Size) -> f32 {
@@ -2923,17 +4321,53 @@ impl RenderFlex {
         max_flex_fraction_so_far * total_flex + inflexible_space
     }
 
-    /// The intrinsic extent across the main axis: the largest any child wants.
+    /// The intrinsic extent across the main axis: upstream's `_getIntrinsicSize`
+    /// in its `INTRINSIC CROSS SIZE` half.
     ///
-    /// Upstream runs a dry layout here so that flexible children are measured
-    /// at the width they will actually get. There is no dry layout here, so
-    /// each child is asked at the extent the flex was asked at -- which is what
-    /// upstream did too before `computeDryLayout` existed.
+    /// Upstream runs a dry layout here -- `_computeSizes` with each child
+    /// measured at the main extent the flex would actually give it: the free
+    /// space a flexible child is allotted, or an inflexible child's own max
+    /// intrinsic -- and takes the cross extent that comes out. Measuring every
+    /// child at the extent the flex was asked at (what this did before dry
+    /// layout existed, and what upstream did too) instead asks a flexible child
+    /// for its cross size at a width it will never be given.
     fn intrinsic_cross(&self, extent: f32, child_size: impl Fn(&dyn RenderBox, f32) -> f32) -> f32 {
-        self.children
-            .iter()
-            .map(|child| child_size(&child.render, extent))
-            .fold(0.0, f32::max)
+        // Only the main axis is bounded, at the extent asked; the cross axis
+        // the answer lives on is left open.
+        let constraints = if self.is_horizontal() {
+            BoxConstraints::new(0.0, extent, 0.0, f32::INFINITY)
+        } else {
+            BoxConstraints::new(0.0, f32::INFINITY, 0.0, extent)
+        };
+        let (_, size) = self.dry_sizes(
+            constraints,
+            // Upstream's `layoutChild` closure: the main extent the child's
+            // constraints leave it is the one it is measured at, and an
+            // unbounded one means the child sizes its main axis itself, by its
+            // max intrinsic.
+            &mut |child: &RenderRef, child_constraints: BoxConstraints| {
+                let max_main = if self.is_horizontal() {
+                    child_constraints.max_width
+                } else {
+                    child_constraints.max_height
+                };
+                let main = if max_main.is_finite() {
+                    max_main
+                } else if self.is_horizontal() {
+                    child.max_intrinsic_width(f32::INFINITY)
+                } else {
+                    child.max_intrinsic_height(f32::INFINITY)
+                };
+                let cross = child_size(child, main);
+                if self.is_horizontal() {
+                    Size::new(main, cross)
+                } else {
+                    Size::new(cross, main)
+                }
+            },
+            &mut |child, _| child.distance_to_baseline(),
+        );
+        self.cross_of(size)
     }
 
     /// Constraints for one child, given the cross-axis limits and, for a
@@ -2972,6 +4406,108 @@ impl RenderFlex {
             BoxConstraints::new(cross_min, cross_max, main_min, main_max)
         }
     }
+
+    /// Upstream's `_computeSizes`, with the children measured however
+    /// `layout_child` measures them: the same two passes and the same
+    /// self-sizing as `layout`, stopping short of placing anything.
+    ///
+    /// `compute_dry_layout` passes each child's dry layout; the cross-axis
+    /// intrinsics pass the measuring closure of `_getIntrinsicSize`. The
+    /// wet `layout` runs the same arithmetic inline -- it needs `&mut` the
+    /// children to lay them out, which a dry pass must not take -- so the two
+    /// are kept in step by the tests that ask both the same question.
+    ///
+    /// Returns each child's size and the flex's own constrained size.
+    fn dry_sizes(
+        &self,
+        constraints: BoxConstraints,
+        layout_child: &mut dyn FnMut(&RenderRef, BoxConstraints) -> Size,
+        get_baseline: &mut dyn FnMut(&RenderRef, BoxConstraints) -> Option<f32>,
+    ) -> (Vec<Size>, Size) {
+        let count = self.children.len();
+        let total_spacing = if count > 1 { self.spacing * (count - 1) as f32 } else { 0.0 };
+
+        let mut sizes: Vec<Size> = vec![Size::ZERO; count];
+        let mut allocated = 0.0f32;
+        let mut cross = 0.0f32;
+        let mut total_flex = 0u32;
+        let mut ascent_descent: Option<(f32, f32)> = None;
+        let baseline_aligned = self.is_baseline_aligned();
+
+        // The same eight lines run per child as `layout` runs -- measured, not
+        // laid out, which is the only difference.
+        macro_rules! measure {
+            ($index:expr, $child_constraints:expr) => {{
+                let size = layout_child(&self.children[$index].render, $child_constraints);
+                sizes[$index] = size;
+                allocated += self.main_of(size);
+                cross = cross.max(self.cross_of(size));
+                if baseline_aligned {
+                    if let Some(baseline) =
+                        get_baseline(&self.children[$index].render, $child_constraints)
+                    {
+                        let descent = self.cross_of(size) - baseline;
+                        ascent_descent = Some(match ascent_descent {
+                            Some((ascent, descent_so_far)) => {
+                                (ascent.max(baseline), descent_so_far.max(descent))
+                            }
+                            None => (baseline, descent),
+                        });
+                    }
+                }
+            }};
+        }
+
+        // Pass one: the children that size themselves.
+        for index in 0..count {
+            if self.children[index].flex > 0 {
+                total_flex += self.children[index].flex;
+                continue;
+            }
+            measure!(index, self.child_constraints(constraints, None));
+        }
+
+        // Pass two: divide the remainder among the flexible ones.
+        let main_limit = if self.is_horizontal() {
+            constraints.max_width
+        } else {
+            constraints.max_height
+        };
+        let free = if main_limit.is_finite() {
+            (main_limit - allocated - total_spacing).max(0.0)
+        } else {
+            f32::INFINITY
+        };
+        if total_flex > 0 {
+            let per_flex = if free.is_finite() { free / total_flex as f32 } else { f32::INFINITY };
+            for index in 0..count {
+                let flex = self.children[index].flex;
+                if flex == 0 {
+                    continue;
+                }
+                let extent = if per_flex.is_finite() {
+                    Some((per_flex * flex as f32, self.children[index].tight))
+                } else {
+                    None
+                };
+                measure!(index, self.child_constraints(constraints, extent));
+            }
+        }
+
+        if let Some((ascent, descent)) = ascent_descent {
+            cross = cross.max(ascent + descent);
+        }
+
+        // Size the flex.
+        let content_main = allocated + total_spacing;
+        let main_extent = match self.main_axis_size {
+            MainAxisSize::Min => content_main,
+            MainAxisSize::Max if main_limit.is_finite() => main_limit,
+            MainAxisSize::Max => content_main,
+        };
+        let size = constraints.constrain(self.compose(main_extent, cross));
+        (sizes, size)
+    }
 }
 
 impl RenderBox for RenderFlex {
@@ -2989,6 +4525,8 @@ impl RenderBox for RenderFlex {
                 || self.cross_axis_alignment != fresh.cross_axis_alignment
                 || self.main_axis_size != fresh.main_axis_size
                 || self.spacing != fresh.spacing
+                || self.text_direction != fresh.text_direction
+                || self.vertical_direction != fresh.vertical_direction
                 || !kept_children,
         );
         self.direction = fresh.direction;
@@ -2996,6 +4534,8 @@ impl RenderBox for RenderFlex {
         self.cross_axis_alignment = fresh.cross_axis_alignment;
         self.main_axis_size = fresh.main_axis_size;
         self.spacing = fresh.spacing;
+        self.text_direction = fresh.text_direction;
+        self.vertical_direction = fresh.vertical_direction;
         self.children = std::mem::take(&mut fresh.children);
         // `offsets` is where the last layout put them, and the next layout
         // rebuilds it -- which the effect above has just asked for if anything
@@ -3018,7 +4558,7 @@ impl RenderBox for RenderFlex {
                 continue;
             }
             let child_constraints = self.child_constraints(constraints, None);
-            let size = self.children[index].render.layout(child_constraints);
+            let size = self.children[index].render.layout_child(child_constraints, true);
             sizes[index] = size;
             allocated += self.main_of(size);
             cross = cross.max(self.cross_of(size));
@@ -3053,7 +4593,7 @@ impl RenderBox for RenderFlex {
                     None
                 };
                 let child_constraints = self.child_constraints(constraints, extent);
-                let size = self.children[index].render.layout(child_constraints);
+                let size = self.children[index].render.layout_child(child_constraints, true);
                 sizes[index] = size;
                 allocated += self.main_of(size);
                 cross = cross.max(self.cross_of(size));
@@ -3103,11 +4643,15 @@ impl RenderBox for RenderFlex {
         let actual_main = self.main_of(self.size);
         let actual_cross = self.cross_of(self.size);
 
-        // Distribute whatever main-axis slack the alignment asks for.
+        // Distribute whatever main-axis slack the alignment asks for. Upstream
+        // hands the slack to `MainAxisAlignment._distributeSpace` with a
+        // `flipped` flag: start and end swap when the axis is flipped, because
+        // which end is the start is the whole question.
         let slack = (actual_main - content_main).max(0.0);
+        let flip_main = self.flip_main_axis();
         let (leading, between) = match self.main_axis_alignment {
-            MainAxisAlignment::Start => (0.0, 0.0),
-            MainAxisAlignment::End => (slack, 0.0),
+            MainAxisAlignment::Start => (if flip_main { slack } else { 0.0 }, 0.0),
+            MainAxisAlignment::End => (if flip_main { 0.0 } else { slack }, 0.0),
             MainAxisAlignment::Center => (slack / 2.0, 0.0),
             MainAxisAlignment::SpaceBetween if count > 1 => (0.0, slack / (count - 1) as f32),
             MainAxisAlignment::SpaceBetween => (0.0, 0.0),
@@ -3136,19 +4680,47 @@ impl RenderBox for RenderFlex {
             None => 0.0,
         };
 
+        // Position the children in visual order, from whichever end the flip
+        // says is first -- upstream starts at `leadingSpace` from the child
+        // nearest the top-left and walks `childBefore` when flipped, so the
+        // leading gap ends up against the start edge whichever side that is.
+        let flip_cross = self.flip_cross_axis();
+        // `offsets` is indexed by child, not by placement: paint and hit test
+        // walk it beside `children`, and the two orders differ exactly when
+        // the axis is flipped -- the first child is laid out from the far end,
+        // and its offset has to stay its own.
         self.offsets.clear();
-        self.offsets.reserve(count);
+        self.offsets.resize(count, Offset::ZERO);
         let mut main_position = leading;
-        for index in 0..count {
-            if index > 0 {
+        for step in 0..count {
+            if step > 0 {
                 main_position += self.spacing + between;
             }
+            let index = if flip_main { count - 1 - step } else { step };
             let size = sizes[index];
             let child_cross = self.cross_of(size);
+            let cross_free = (actual_cross - child_cross).max(0.0);
+            // Upstream's `CrossAxisAlignment._getChildCrossAxisOffset`: start
+            // and end swap under a flipped cross axis; stretch and baseline
+            // are placed at zero (a stretched child has no free space, and a
+            // baseline child is placed by its baseline below).
             let cross_position = match self.cross_axis_alignment {
-                CrossAxisAlignment::Start | CrossAxisAlignment::Stretch => 0.0,
-                CrossAxisAlignment::End => (actual_cross - child_cross).max(0.0),
-                CrossAxisAlignment::Center => ((actual_cross - child_cross) / 2.0).max(0.0),
+                CrossAxisAlignment::Stretch => 0.0,
+                CrossAxisAlignment::Start => {
+                    if flip_cross {
+                        cross_free
+                    } else {
+                        0.0
+                    }
+                }
+                CrossAxisAlignment::End => {
+                    if flip_cross {
+                        0.0
+                    } else {
+                        cross_free
+                    }
+                }
+                CrossAxisAlignment::Center => cross_free / 2.0,
                 CrossAxisAlignment::Baseline => match self.children[index]
                     .render
                     .distance_to_baseline()
@@ -3157,7 +4729,7 @@ impl RenderBox for RenderFlex {
                     None => 0.0,
                 },
             };
-            self.offsets.push(self.offset_of(main_position, cross_position));
+            self.offsets[index] = self.offset_of(main_position, cross_position);
             main_position += self.main_of(size);
         }
 
@@ -3166,6 +4738,25 @@ impl RenderBox for RenderFlex {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderFlex.computeDryLayout`: `_computeSizes` with each
+    /// child measured by its own dry layout, which is `dry_sizes` here. The
+    /// children are left where they were -- unplaced, or placed as an earlier
+    /// layout placed them.
+    ///
+    /// The baseline comes from `distance_to_baseline` rather than a dry
+    /// baseline: upstream has a `computeDryBaseline` protocol for exactly this
+    /// and the port does not yet, so the cached wet answer is the stand-in --
+    /// exact for a child whose baseline does not depend on its constraints,
+    /// and the only thing to ask of one that has not been laid out at all.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.dry_sizes(
+            constraints,
+            &mut |child, child_constraints| child.dry_layout(child_constraints),
+            &mut |child, _| child.distance_to_baseline(),
+        )
+        .1
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -3252,6 +4843,37 @@ impl RenderBox for RenderFlex {
 
 // -- Multi child: stack -------------------------------------------------------
 
+/// How a stack sizes the children it does not position.
+///
+/// Upstream's `StackFit` (`rendering/stack.dart`). The whole of it is the one
+/// `switch` of `performLayout` that turns a fit into the constraints the
+/// non-positioned children are laid out under; positioned children are
+/// pinned by their edges and never ask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StackFit {
+    /// `constraints.loosen()`: a child may be any size up to the stack's.
+    /// Upstream `Stack`'s default.
+    #[default]
+    Loose,
+    /// `BoxConstraints.tight(constraints.biggest())`: every non-positioned
+    /// child is exactly the size of the stack.
+    Expand,
+    /// The constraints the stack itself was given, minima included.
+    Passthrough,
+}
+
+impl StackFit {
+    /// Upstream `performLayout`'s `nonPositionedConstraints` switch, which is
+    /// the whole of what a [`StackFit`] is.
+    fn non_positioned_constraints(self, constraints: BoxConstraints) -> BoxConstraints {
+        match self {
+            StackFit::Loose => constraints.loosen(),
+            StackFit::Expand => BoxConstraints::tight_for(constraints.biggest()),
+            StackFit::Passthrough => constraints,
+        }
+    }
+}
+
 /// How a stacked child is positioned. `None` on a side means "not anchored
 /// there"; anchoring both sides of an axis stretches the child across it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -3265,6 +4887,21 @@ pub struct StackPosition {
 }
 
 impl StackPosition {
+    /// Upstream `Positioned`'s constructor asserts, on both axes: at most two
+    /// of `left`, `right` and `width` (and of `top`, `bottom` and `height`)
+    /// may be set. An axis pinned at both ends has already decided its
+    /// extent, so a width would be a third answer to the same question.
+    fn debug_assert_valid(&self) {
+        debug_assert!(
+            self.left.is_none() || self.right.is_none() || self.width.is_none(),
+            "at most two of left, right and width may be set"
+        );
+        debug_assert!(
+            self.top.is_none() || self.bottom.is_none() || self.height.is_none(),
+            "at most two of top, bottom and height may be set"
+        );
+    }
+
     pub fn is_positioned(&self) -> bool {
         self.left.is_some()
             || self.top.is_some()
@@ -3298,6 +4935,30 @@ pub struct StackChild {
 /// Overlays children, sizing itself to the largest unpositioned one.
 pub struct RenderStack {
     alignment: Alignment,
+    /// Whether `alignment` is still the default `AlignmentDirectional::topStart`
+    /// resolved against `text_direction`. Upstream stores the unresolved
+    /// `AlignmentGeometry` and resolves at layout, so a change of direction is
+    /// simply a change of input; here the resolved value is the only alignment
+    /// there is, so the fact that it was directional is one bit more of state.
+    default_alignment: bool,
+    /// What a directional alignment resolves against, taken from the ambient
+    /// direction at construction -- upstream's `textDirection ?? Directionality
+    /// .maybeOf(context)` chain, with the construction standing in for the
+    /// `createRenderObject` that runs it.
+    text_direction: TextDirection,
+    /// How the non-positioned children are sized. Upstream's `fit`, which
+    /// `Stack` defaults to `StackFit.loose`.
+    fit: StackFit,
+    /// Whether paint is clipped to the stack's bounds. Upstream's
+    /// `clipBehavior`, which `Stack` defaults to `Clip.hardEdge`: a child
+    /// pinned past the edge is cut off rather than drawn over whatever the
+    /// stack's neighbours are painting.
+    clip_behavior: ClipBehavior,
+    /// Whether the last layout put a positioned child outside the stack.
+    /// Upstream's `_hasVisualOverflow`, and like upstream's it decides
+    /// painting only -- the hit test still asks a child the clip has hidden,
+    /// inside the stack's own bounds.
+    has_visual_overflow: bool,
     children: Vec<StackChild>,
     offsets: Vec<Offset>,
     size: Size,
@@ -3305,8 +4966,16 @@ pub struct RenderStack {
 
 impl RenderStack {
     pub fn new() -> RenderStack {
+        let direction = crate::direction::current_direction();
         RenderStack {
-            alignment: Alignment::TOP_LEFT,
+            // Upstream's default alignment is `AlignmentDirectional.topStart`,
+            // which is the top left in ltr and the top right in rtl.
+            alignment: AlignmentDirectional::TOP_START.resolve(direction),
+            default_alignment: true,
+            text_direction: direction,
+            fit: StackFit::default(),
+            clip_behavior: ClipBehavior::HardEdge,
+            has_visual_overflow: false,
             children: Vec::new(),
             offsets: Vec::new(),
             size: Size::ZERO,
@@ -3315,6 +4984,37 @@ impl RenderStack {
 
     pub fn with_alignment(mut self, alignment: Alignment) -> Self {
         self.alignment = alignment;
+        self.default_alignment = false;
+        self
+    }
+
+    /// Which direction the default alignment resolves against. Upstream's
+    /// `Stack.textDirection`, overriding the ambient `Directionality`; it only
+    /// moves anything while the alignment is still the directional default,
+    /// exactly as an explicit `textDirection` upstream cannot move an absolute
+    /// `Alignment`.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        if self.default_alignment {
+            self.alignment = AlignmentDirectional::TOP_START.resolve(direction);
+        }
+        self.text_direction = direction;
+        self
+    }
+
+    /// How the non-positioned children are sized, upstream's `Stack.fit`.
+    /// [`StackFit::Loose`] unless said otherwise; upstream's `IndexedStack`
+    /// and this one agree on that default.
+    pub fn with_fit(mut self, fit: StackFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    /// Whether overflowing children are clipped at paint, upstream's
+    /// `Stack.clipBehavior`. The default clips; [`ClipBehavior::None`] is the
+    /// opt-out, which upstream offers for the child that is allowed to draw
+    /// over its neighbours.
+    pub fn with_clip_behavior(mut self, clip_behavior: ClipBehavior) -> Self {
+        self.clip_behavior = clip_behavior;
         self
     }
 
@@ -3337,6 +5037,9 @@ impl RenderStack {
         child: impl RenderBox + 'static,
         position: StackPosition,
     ) -> Self {
+        // The one place every position reaches the render tree, so the one
+        // place upstream `Positioned`'s constructor asserts belong.
+        position.debug_assert_valid();
         self.children.push(StackChild { render: RenderRef::new(child), position });
         self
     }
@@ -3352,6 +5055,141 @@ impl Default for RenderStack {
     }
 }
 
+/// The shared body of [`RenderStack::layout`] and
+/// [`RenderIndexedStack::layout`]: upstream's `RenderStack.performLayout`,
+/// which an indexed stack inherits unchanged -- every child is laid out, the
+/// unpositioned ones decide the size, the positioned ones are laid out against
+/// it and everything is placed. What an indexed stack does with the result is
+/// its own business; the layout is the whole of it.
+///
+/// Answers with the placements and whether any positioned child landed
+/// outside the stack -- upstream's `_hasVisualOverflow`, which `performLayout`
+/// accumulates out of `layoutPositionedChild`'s return value.
+fn layout_stack_children(
+    children: &mut [StackChild],
+    alignment: Alignment,
+    fit: StackFit,
+    constraints: BoxConstraints,
+) -> (Size, Vec<Offset>, bool) {
+    let mut widest = constraints.min_width;
+    let mut tallest = constraints.min_height;
+    let mut sizes: Vec<Size> = vec![Size::ZERO; children.len()];
+
+    // Upstream's `nonPositionedConstraints`, the one switch a `StackFit` is.
+    let non_positioned_constraints = fit.non_positioned_constraints(constraints);
+
+    // Unpositioned children decide the stack's size.
+    let mut has_unpositioned = false;
+    for (index, child) in children.iter_mut().enumerate() {
+        if child.position.is_positioned() {
+            continue;
+        }
+        has_unpositioned = true;
+        let size = child.render.layout_child(non_positioned_constraints, true);
+        sizes[index] = size;
+        widest = widest.max(size.width);
+        tallest = tallest.max(size.height);
+    }
+
+    let size = if has_unpositioned {
+        constraints.constrain(Size::new(widest, tallest))
+    } else {
+        constraints.biggest()
+    };
+
+    // Positioned children are laid out against the resolved size.
+    for (index, child) in children.iter_mut().enumerate() {
+        if !child.position.is_positioned() {
+            continue;
+        }
+        let p = child.position;
+        let width = match (p.left, p.right, p.width) {
+            (Some(left), Some(right), _) => Some((size.width - left - right).max(0.0)),
+            (_, _, Some(width)) => Some(width),
+            _ => None,
+        };
+        let height = match (p.top, p.bottom, p.height) {
+            (Some(top), Some(bottom), _) => Some((size.height - top - bottom).max(0.0)),
+            (_, _, Some(height)) => Some(height),
+            _ => None,
+        };
+        // Upstream's `positionedChildConstraints`, which ends in a
+        // `BoxConstraints.tightFor`: an axis the child was pinned on is
+        // tight, and an axis it was not is left **unbounded**, not capped
+        // at the stack. A child anchored by its left edge alone is being
+        // told where it starts and nothing about how far it may run, and
+        // capping it there silently wraps text that upstream would let
+        // overflow -- which is a different picture, not a safer one.
+        let child_constraints = BoxConstraints::new(
+            width.unwrap_or(0.0),
+            width.unwrap_or(f32::INFINITY),
+            height.unwrap_or(0.0),
+            height.unwrap_or(f32::INFINITY),
+        );
+        sizes[index] = child.render.layout_child(child_constraints, true);
+    }
+
+    // Position everything.
+    let mut has_visual_overflow = false;
+    let mut offsets = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+        let child_size = sizes[index];
+        let offset = if child.position.is_positioned() {
+            let p = child.position;
+            let x = match (p.left, p.right) {
+                (Some(left), _) => left,
+                (None, Some(right)) => size.width - right - child_size.width,
+                (None, None) => alignment.inscribe(child_size, size).dx,
+            };
+            let y = match (p.top, p.bottom) {
+                (Some(top), _) => top,
+                (None, Some(bottom)) => size.height - bottom - child_size.height,
+                (None, None) => alignment.inscribe(child_size, size).dy,
+            };
+            // Upstream's `layoutPositionedChild` answers overflow with these
+            // four comparisons, and `performLayout` ors them together. Only a
+            // positioned child can land outside: an unpositioned one was laid
+            // out under the very constraints that made this size.
+            has_visual_overflow = has_visual_overflow
+                || x < 0.0
+                || x + child_size.width > size.width
+                || y < 0.0
+                || y + child_size.height > size.height;
+            Offset::new(x, y)
+        } else {
+            alignment.inscribe(child_size, size)
+        };
+        offsets.push(offset);
+    }
+
+    (size, offsets, has_visual_overflow)
+}
+
+/// The clip half of upstream `RenderStack.paint`, shared by
+/// [`RenderIndexedStack`] the way the inheritance shares it there: the
+/// children are painted inside the stack's bounds when anything overflowed and
+/// `clip_behavior` allows a clip, and painted straight when nothing did -- a
+/// clip layer around a stack whose children fit would cost a layer to show
+/// nothing. Hit testing is not here: upstream's clip is paint-only.
+fn paint_children_clipped(
+    context: &mut PaintContext,
+    offset: Offset,
+    size: Size,
+    clip_behavior: ClipBehavior,
+    has_visual_overflow: bool,
+    paint_children: impl FnOnce(&mut PaintContext, Offset),
+) {
+    if clip_behavior == ClipBehavior::None || !has_visual_overflow {
+        paint_children(context, offset);
+        return;
+    }
+    let bounds = Rect::xywh(offset.dx, offset.dy, size.width, size.height);
+    context.in_layer(
+        |tree| tree.push_clip_rect(bounds, clip_behavior),
+        |context| paint_children(context, offset),
+    );
+}
+
 impl RenderBox for RenderStack {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderStack>()?;
@@ -3361,91 +5199,33 @@ impl RenderBox for RenderStack {
                 .iter()
                 .zip(&fresh.children)
                 .all(|(a, b)| a.render.is(&b.render) && a.position == b.position);
-        let effect = UpdateEffect::relayout_if(self.alignment != fresh.alignment || !kept_children);
+        // Upstream's setters: `fit` marks a layout dirty and `clipBehavior`
+        // only a paint.
+        let effect = UpdateEffect::relayout_if(
+            self.alignment != fresh.alignment
+                || self.text_direction != fresh.text_direction
+                || self.fit != fresh.fit
+                || !kept_children,
+        )
+        .and(UpdateEffect::repaint_if(self.clip_behavior != fresh.clip_behavior));
         self.alignment = fresh.alignment;
+        self.default_alignment = fresh.default_alignment;
+        self.text_direction = fresh.text_direction;
+        self.fit = fresh.fit;
+        self.clip_behavior = fresh.clip_behavior;
         self.children = std::mem::take(&mut fresh.children);
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let mut widest = constraints.min_width;
-        let mut tallest = constraints.min_height;
-        let mut sizes: Vec<Size> = vec![Size::ZERO; self.children.len()];
-
-        // Unpositioned children decide the stack's size.
-        let mut has_unpositioned = false;
-        for (index, child) in self.children.iter_mut().enumerate() {
-            if child.position.is_positioned() {
-                continue;
-            }
-            has_unpositioned = true;
-            let size = child.render.layout(constraints.loosen());
-            sizes[index] = size;
-            widest = widest.max(size.width);
-            tallest = tallest.max(size.height);
-        }
-
-        self.size = if has_unpositioned {
-            constraints.constrain(Size::new(widest, tallest))
-        } else {
-            constraints.biggest()
-        };
-
-        // Positioned children are laid out against the resolved size.
-        for (index, child) in self.children.iter_mut().enumerate() {
-            if !child.position.is_positioned() {
-                continue;
-            }
-            let p = child.position;
-            let width = match (p.left, p.right, p.width) {
-                (Some(left), Some(right), _) => Some((self.size.width - left - right).max(0.0)),
-                (_, _, Some(width)) => Some(width),
-                _ => None,
-            };
-            let height = match (p.top, p.bottom, p.height) {
-                (Some(top), Some(bottom), _) => Some((self.size.height - top - bottom).max(0.0)),
-                (_, _, Some(height)) => Some(height),
-                _ => None,
-            };
-            // Upstream's `positionedChildConstraints`, which ends in a
-            // `BoxConstraints.tightFor`: an axis the child was pinned on is
-            // tight, and an axis it was not is left **unbounded**, not capped
-            // at the stack. A child anchored by its left edge alone is being
-            // told where it starts and nothing about how far it may run, and
-            // capping it there silently wraps text that upstream would let
-            // overflow -- which is a different picture, not a safer one.
-            let child_constraints = BoxConstraints::new(
-                width.unwrap_or(0.0),
-                width.unwrap_or(f32::INFINITY),
-                height.unwrap_or(0.0),
-                height.unwrap_or(f32::INFINITY),
-            );
-            sizes[index] = child.render.layout(child_constraints);
-        }
-
-        // Position everything.
-        self.offsets.clear();
-        self.offsets.reserve(self.children.len());
-        for (index, child) in self.children.iter().enumerate() {
-            let size = sizes[index];
-            let offset = if child.position.is_positioned() {
-                let p = child.position;
-                let x = match (p.left, p.right) {
-                    (Some(left), _) => left,
-                    (None, Some(right)) => self.size.width - right - size.width,
-                    (None, None) => self.alignment.inscribe(size, self.size).dx,
-                };
-                let y = match (p.top, p.bottom) {
-                    (Some(top), _) => top,
-                    (None, Some(bottom)) => self.size.height - bottom - size.height,
-                    (None, None) => self.alignment.inscribe(size, self.size).dy,
-                };
-                Offset::new(x, y)
-            } else {
-                self.alignment.inscribe(size, self.size)
-            };
-            self.offsets.push(offset);
-        }
-
+        let (size, offsets, has_visual_overflow) = layout_stack_children(
+            &mut self.children,
+            self.alignment,
+            self.fit,
+            constraints,
+        );
+        self.offsets = offsets;
+        self.has_visual_overflow = has_visual_overflow;
+        self.size = size;
         self.size
     }
 
@@ -3453,10 +5233,47 @@ impl RenderBox for RenderStack {
         self.size
     }
 
-    fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
-            context.paint_child(&child.render, offset.plus(*placement));
+    /// Upstream's `RenderStack.computeDryLayout`, which is `_computeSize` with
+    /// dry children: the unpositioned children's dry answers at the fit's
+    /// constraints decide the size, and positioned children are not asked --
+    /// they are laid out against the size once there is one, which is the part
+    /// of a layout that measuring does not do.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let non_positioned_constraints = self.fit.non_positioned_constraints(constraints);
+        let mut widest = constraints.min_width;
+        let mut tallest = constraints.min_height;
+        let mut has_unpositioned = false;
+        for child in &self.children {
+            if child.position.is_positioned() {
+                continue;
+            }
+            has_unpositioned = true;
+            let size = child.render.dry_layout(non_positioned_constraints);
+            widest = widest.max(size.width);
+            tallest = tallest.max(size.height);
         }
+        if has_unpositioned {
+            constraints.constrain(Size::new(widest, tallest))
+        } else {
+            constraints.biggest()
+        }
+    }
+
+    /// Upstream's `RenderStack.paint`: clip first when anything overflowed,
+    /// then `paintStack`, which for a plain stack is every child.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        paint_children_clipped(
+            context,
+            offset,
+            self.size,
+            self.clip_behavior,
+            self.has_visual_overflow,
+            |context, offset| {
+                for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
+                    context.paint_child(&child.render, offset.plus(*placement));
+                }
+            },
+        );
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -3505,6 +5322,1114 @@ impl RenderBox for RenderStack {
             .map(|c| c.render.max_intrinsic_height(width))
             .fold(0.0, f32::max)
     }
+
+    /// Upstream's `computeDistanceToActualBaseline`, which for a stack is
+    /// `defaultComputeDistanceToHighestActualBaseline`: every child counts,
+    /// positioned ones included, each measured from the stack's own top.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.children
+            .iter()
+            .zip(self.offsets.iter())
+            .filter_map(|(child, offset)| child.render.distance_to_baseline().map(|b| b + offset.dy))
+            .fold(None, |best: Option<f32>, candidate| {
+                Some(match best {
+                    Some(best) => best.min(candidate),
+                    None => candidate,
+                })
+            })
+    }
+}
+
+/// A stack that lays out every child and shows only one of them.
+///
+/// Upstream's `RenderIndexedStack` (`rendering/stack.dart`), which extends
+/// `RenderStack` and overrides nothing about layout: the size is the biggest
+/// of the children either way, and every child keeps its layout (and whatever
+/// state a layout keeps alive) whether or not it is the one on top. What the
+/// index changes is the four walks -- paint, hit test, baseline and the
+/// semantics visit -- each of which sees the displayed child alone.
+///
+/// The inheritance cannot, so the shared half of `performLayout` lives in
+/// [`layout_stack_children`] and this object calls it exactly as its parent
+/// does.
+pub struct RenderIndexedStack {
+    /// Which child is on top. `None` is upstream's `index == null`: nothing
+    /// is displayed.
+    index: Option<usize>,
+    alignment: Alignment,
+    /// Whether `alignment` is still the directional default -- see the same
+    /// field on [`RenderStack`].
+    default_alignment: bool,
+    text_direction: TextDirection,
+    /// Inherited from [`RenderStack`], whose `fit` an indexed stack keeps:
+    /// same field, same default, same switch.
+    fit: StackFit,
+    /// Inherited too -- upstream's `IndexedStack` widget passes its own
+    /// `clipBehavior`, defaulting like `Stack`'s to a hard edge.
+    clip_behavior: ClipBehavior,
+    has_visual_overflow: bool,
+    children: Vec<StackChild>,
+    offsets: Vec<Offset>,
+    size: Size,
+}
+
+impl RenderIndexedStack {
+    pub fn new() -> RenderIndexedStack {
+        let direction = crate::direction::current_direction();
+        RenderIndexedStack {
+            // Upstream's `IndexedStack.index` defaults to 0: the first child
+            // is shown until something says otherwise.
+            index: Some(0),
+            alignment: AlignmentDirectional::TOP_START.resolve(direction),
+            default_alignment: true,
+            text_direction: direction,
+            fit: StackFit::default(),
+            clip_behavior: ClipBehavior::HardEdge,
+            has_visual_overflow: false,
+            children: Vec::new(),
+            offsets: Vec::new(),
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self.default_alignment = false;
+        self
+    }
+
+    /// Upstream's `IndexedStack.textDirection`, overriding the ambient
+    /// `Directionality` for the default alignment.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        if self.default_alignment {
+            self.alignment = AlignmentDirectional::TOP_START.resolve(direction);
+        }
+        self.text_direction = direction;
+        self
+    }
+
+    /// How the non-positioned children are sized. Inherited from
+    /// [`RenderStack`], as upstream's `IndexedStack` inherits the field it
+    /// never overrides.
+    pub fn with_fit(mut self, fit: StackFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    /// Whether overflowing children are clipped at paint. Inherited from
+    /// [`RenderStack`] with the same default.
+    pub fn with_clip_behavior(mut self, clip_behavior: ClipBehavior) -> Self {
+        self.clip_behavior = clip_behavior;
+        self
+    }
+
+    /// Which child to show; `None` shows nothing, upstream's `index == null`.
+    pub fn with_index(mut self, index: Option<usize>) -> Self {
+        self.index = index;
+        self
+    }
+
+    pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
+        self.children.push(StackChild {
+            render: RenderRef::new(child),
+            position: StackPosition::default(),
+        });
+        self
+    }
+
+    pub fn push_boxed(mut self, child: BoxedRender) -> Self {
+        self.children.push(StackChild { render: child, position: StackPosition::default() });
+        self
+    }
+
+    pub fn child_offsets(&self) -> &[Offset] {
+        &self.offsets
+    }
+}
+
+impl Default for RenderIndexedStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RenderBox for RenderIndexedStack {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderIndexedStack>()?;
+        let kept_children = self.children.len() == fresh.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&fresh.children)
+                .all(|(a, b)| a.render.is(&b.render) && a.position == b.position);
+        // Upstream's setters: `index` marks a layout dirty (its own setter
+        // does, even though layout answers the same for every index), and
+        // `clipBehavior` only a paint.
+        let effect = UpdateEffect::relayout_if(
+            self.alignment != fresh.alignment
+                || self.text_direction != fresh.text_direction
+                || self.fit != fresh.fit
+                || self.index != fresh.index
+                || !kept_children,
+        )
+        .and(UpdateEffect::repaint_if(self.clip_behavior != fresh.clip_behavior));
+        self.alignment = fresh.alignment;
+        self.default_alignment = fresh.default_alignment;
+        self.text_direction = fresh.text_direction;
+        self.fit = fresh.fit;
+        self.clip_behavior = fresh.clip_behavior;
+        self.index = fresh.index;
+        self.children = std::mem::take(&mut fresh.children);
+        Some(effect)
+    }
+
+    /// Inherited, upstream and here: every child is laid out, and the size is
+    /// the biggest of them.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let (size, offsets, has_visual_overflow) =
+            layout_stack_children(&mut self.children, self.alignment, self.fit, constraints);
+        self.offsets = offsets;
+        self.has_visual_overflow = has_visual_overflow;
+        self.size = size;
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    /// The inherited dry answer, which for a stack measures only its
+    /// unpositioned children -- the same children that decide the size.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let non_positioned_constraints = self.fit.non_positioned_constraints(constraints);
+        let mut widest = constraints.min_width;
+        let mut tallest = constraints.min_height;
+        let mut has_unpositioned = false;
+        for child in &self.children {
+            if child.position.is_positioned() {
+                continue;
+            }
+            has_unpositioned = true;
+            let size = child.render.dry_layout(non_positioned_constraints);
+            widest = widest.max(size.width);
+            tallest = tallest.max(size.height);
+        }
+        if has_unpositioned {
+            constraints.constrain(Size::new(widest, tallest))
+        } else {
+            constraints.biggest()
+        }
+    }
+
+    /// Upstream's `paint`, inherited, clips before `paintStack` paints the
+    /// displayed child alone.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        paint_children_clipped(
+            context,
+            offset,
+            self.size,
+            self.clip_behavior,
+            self.has_visual_overflow,
+            |context, offset| {
+                if let Some(index) = self.index {
+                    if let Some(child) = self.children.get(index) {
+                        if let Some(placement) = self.offsets.get(index) {
+                            context.paint_child(&child.render, offset.plus(*placement));
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    /// Upstream's `visitChildrenForSemantics`: the reader is told about what
+    /// is on stage, not about the children waiting under it.
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(index) = self.index {
+            if let Some(child) = self.children.get(index) {
+                visit(&child.render, self.offsets.get(index).copied().unwrap_or(Offset::ZERO));
+            }
+        }
+    }
+
+    /// Upstream's `hitTestChildren`: the displayed child, and nothing else --
+    /// a press that lands over a hidden sibling goes through the stack.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if let Some(index) = self.index {
+            if let Some(child) = self.children.get(index) {
+                let placement = self.offsets.get(index).copied().unwrap_or(Offset::ZERO);
+                return child.render.hit_test(position.minus(placement), result);
+            }
+        }
+        false
+    }
+
+    /// The inherited intrinsics: the unpositioned children's, exactly as a
+    /// plain stack answers.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.children
+            .iter()
+            .filter(|c| !c.position.is_positioned())
+            .map(|c| c.render.min_intrinsic_width(height))
+            .fold(0.0, f32::max)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.children
+            .iter()
+            .filter(|c| !c.position.is_positioned())
+            .map(|c| c.render.max_intrinsic_width(height))
+            .fold(0.0, f32::max)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.children
+            .iter()
+            .filter(|c| !c.position.is_positioned())
+            .map(|c| c.render.min_intrinsic_height(width))
+            .fold(0.0, f32::max)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.children
+            .iter()
+            .filter(|c| !c.position.is_positioned())
+            .map(|c| c.render.max_intrinsic_height(width))
+            .fold(0.0, f32::max)
+    }
+
+    /// Upstream's `computeDistanceToActualBaseline`: the displayed child's
+    /// baseline, measured from the stack's own top.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        let index = self.index?;
+        let child = self.children.get(index)?;
+        child
+            .render
+            .distance_to_baseline()
+            .map(|b| b + self.offsets.get(index).copied().unwrap_or(Offset::ZERO).dy)
+    }
+}
+
+// -- Single child: sizing -----------------------------------------------------
+
+/// Limits its child only where the incoming constraints are unbounded.
+///
+/// Upstream's `RenderLimitedBox` (`rendering/proxy_box.dart`). The point of
+/// it: something that normally matches its parent -- a bar, a card -- is fine
+/// until it reaches a list, where the cross axis is bounded and the scroll
+/// axis is not, and it would run forever. A `LimitedBox` gives it a natural
+/// size there and changes nothing anywhere else.
+pub struct RenderLimitedBox {
+    child: BoxedRender,
+    max_width: f32,
+    max_height: f32,
+    size: Size,
+}
+
+impl RenderLimitedBox {
+    pub fn new(child: impl RenderBox + 'static) -> RenderLimitedBox {
+        RenderLimitedBox {
+            child: RenderRef::new(child),
+            max_width: f32::INFINITY,
+            max_height: f32::INFINITY,
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn boxed(child: BoxedRender) -> RenderLimitedBox {
+        RenderLimitedBox { child, max_width: f32::INFINITY, max_height: f32::INFINITY, size: Size::ZERO }
+    }
+
+    /// The width to use when the incoming width is unbounded. Upstream's
+    /// `maxWidth`, defaulting to infinity -- no limit.
+    pub fn with_max_width(mut self, max_width: f32) -> Self {
+        self.max_width = max_width;
+        self
+    }
+
+    /// The height to use when the incoming height is unbounded.
+    pub fn with_max_height(mut self, max_height: f32) -> Self {
+        self.max_height = max_height;
+        self
+    }
+
+    /// Upstream's `_limitConstraints`: a bounded axis is passed through
+    /// untouched, an unbounded one gets the limit clamped into whatever
+    /// minimum there was. The test is `hasBoundedWidth`, not `maxWidth` -- a
+    /// parent that said "at most infinity" is the parent that gets overridden.
+    fn limit_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            constraints.min_width,
+            if constraints.has_bounded_width() {
+                constraints.max_width
+            } else {
+                constraints.constrain_width(self.max_width)
+            },
+            constraints.min_height,
+            if constraints.has_bounded_height() {
+                constraints.max_height
+            } else {
+                constraints.constrain_height(self.max_height)
+            },
+        )
+    }
+}
+
+impl RenderBox for RenderLimitedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderLimitedBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || self.max_width != fresh.max_width
+                || self.max_height != fresh.max_height,
+        );
+        self.child = fresh.child.clone();
+        self.max_width = fresh.max_width;
+        self.max_height = fresh.max_height;
+        Some(effect)
+    }
+
+    /// Upstream's `_computeSize`: the child at the limited constraints, then
+    /// the answer constrained by the *incoming* ones -- a limit is a floor
+    /// under what the child may ask for, not a ceiling over the box.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.constrain(
+            self.child.layout_child(self.limit_constraints(constraints), true),
+        );
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.child.dry_layout(self.limit_constraints(constraints)))
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
+/// Scales and positions its child within itself according to a [`BoxFit`].
+///
+/// Upstream's `RenderFittedBox` (`rendering/proxy_box.dart`). The child is
+/// laid out with no constraints at all, so it takes its natural size; the box
+/// itself is then the natural size inscribed into the incoming constraints by
+/// the fit, and the child is painted through the transform between the two.
+pub struct RenderFittedBox {
+    child: BoxedRender,
+    fit: BoxFit,
+    alignment: Alignment,
+    size: Size,
+}
+
+impl RenderFittedBox {
+    pub fn new(child: impl RenderBox + 'static) -> RenderFittedBox {
+        RenderFittedBox {
+            child: RenderRef::new(child),
+            fit: BoxFit::Contain,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn boxed(child: BoxedRender) -> RenderFittedBox {
+        RenderFittedBox { child, fit: BoxFit::Contain, alignment: Alignment::CENTER, size: Size::ZERO }
+    }
+
+    pub fn with_fit(mut self, fit: BoxFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    /// Where the child is painted: the translation its origin moves by and
+    /// the scale it is drawn at -- the two halves of upstream's `_transform`,
+    /// which is a translate-scale-translate and so never anything more.
+    ///
+    /// `None` when nothing should be drawn, upstream's empty-size guards.
+    fn paint_placement(&self) -> Option<(Offset, Size)> {
+        if self.size.width <= 0.0 || self.size.height <= 0.0 {
+            return None;
+        }
+        let child_size = self.child.size();
+        if child_size.width <= 0.0 || child_size.height <= 0.0 {
+            return None;
+        }
+        let sizes = apply_box_fit(self.fit, child_size, self.size);
+        if sizes.source.width <= 0.0 || sizes.source.height <= 0.0 {
+            return None;
+        }
+        let scale = Size::new(
+            sizes.destination.width / sizes.source.width,
+            sizes.destination.height / sizes.source.height,
+        );
+        let source = self.alignment.inscribe(sizes.source, child_size);
+        let destination = self.alignment.inscribe(sizes.destination, self.size);
+        Some((
+            Offset::new(
+                destination.dx - source.dx * scale.width,
+                destination.dy - source.dy * scale.height,
+            ),
+            scale,
+        ))
+    }
+}
+
+impl RenderBox for RenderFittedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderFittedBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || self.fit != fresh.fit
+                || self.alignment != fresh.alignment,
+        );
+        self.child = fresh.child.clone();
+        self.fit = fresh.fit;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    /// Upstream's `performLayout`: the child at `const BoxConstraints()` --
+    /// its natural size -- then the box by the fit. `ScaleDown` is the one
+    /// that differs in layout, because it never grows the child; the rest
+    /// only change the transform, and their sizes are the natural size
+    /// inscribed by the constraints.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.layout_child(BoxConstraints::unbounded(), true);
+        self.size = match self.fit {
+            BoxFit::ScaleDown => constraints
+                .constrain(constraints.loosen().constrain_size_preserving_aspect_ratio(child_size)),
+            _ => constraints.constrain_size_preserving_aspect_ratio(child_size),
+        };
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    /// Upstream's `computeDryLayout`, on the child's dry answer at the
+    /// unconstrained constraints.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.dry_layout(BoxConstraints::unbounded());
+        match self.fit {
+            BoxFit::ScaleDown => constraints
+                .constrain(constraints.loosen().constrain_size_preserving_aspect_ratio(child_size)),
+            _ => constraints.constrain_size_preserving_aspect_ratio(child_size),
+        }
+    }
+
+    /// Upstream's `paint`: the child through the fitted transform. The
+    /// translation and the scale are applied about the incoming `offset`, one
+    /// layer, because a transform is a layer and not a canvas op here.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some((translation, scale)) = self.paint_placement() {
+            context.push_transform(
+                [scale.width, 0.0, 0.0, scale.height, translation.dx, translation.dy],
+                Offset::ZERO,
+                offset,
+                &self.child,
+            );
+        }
+    }
+
+    /// The child's origin, transformed -- the translation half of the
+    /// placement, which is all an offset can carry.
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some((translation, _)) = self.paint_placement() {
+            visit(&self.child, translation);
+        }
+    }
+
+    /// Upstream's `hitTestChildren`, through `addWithPaintTransform`: the
+    /// position in the child's own coordinates, which is the parent's
+    /// position run through the inverse of the paint transform -- a
+    /// translate-scale-translate back the other way.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if let Some((translation, scale)) = self.paint_placement() {
+            if scale.width > 0.0 && scale.height > 0.0 {
+                let local = Offset::new(
+                    (position.dx - translation.dx) / scale.width,
+                    (position.dy - translation.dy) / scale.height,
+                );
+                return self.child.hit_test(local, result);
+            }
+        }
+        false
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
+/// Positions its child so the child's baseline sits `baseline` from the top.
+///
+/// Upstream's `RenderBaseline` (`rendering/shifted_box.dart`): the child is
+/// laid out loose, its baseline (or its height, when it has none) is found,
+/// and the child is moved by `baseline - child_baseline`. The box's own
+/// height is then whatever that amounts to -- `top + child_height`, which
+/// grows the box past the child whenever the child's baseline is above the
+/// parameter.
+pub struct RenderBaseline {
+    child: BoxedRender,
+    baseline: f32,
+    size: Size,
+    child_offset: Offset,
+}
+
+impl RenderBaseline {
+    /// Upstream's `RenderBaseline(baseline:, baselineType:)`. The baseline
+    /// type is not a parameter here because there is only one baseline to
+    /// ask a child for -- [`RenderBox::distance_to_baseline`] -- so the
+    /// `baselineType` upstream carries until it can hand it to the child is
+    /// carried nowhere.
+    pub fn new(baseline: f32, child: impl RenderBox + 'static) -> RenderBaseline {
+        RenderBaseline {
+            child: RenderRef::new(child),
+            baseline,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn boxed(baseline: f32, child: BoxedRender) -> RenderBaseline {
+        RenderBaseline { child, baseline, size: Size::ZERO, child_offset: Offset::ZERO }
+    }
+
+    pub fn child_offset(&self) -> Offset {
+        self.child_offset
+    }
+}
+
+impl RenderBox for RenderBaseline {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderBaseline>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child) || self.baseline != fresh.baseline,
+        );
+        self.child = fresh.child.clone();
+        self.baseline = fresh.baseline;
+        Some(effect)
+    }
+
+    /// Upstream's `_computeSizes`: the child loose, `top = baseline -
+    /// childBaseline`, the size `constrain(childWidth, top + childHeight)`.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.layout_child(constraints.loosen(), true);
+        let child_baseline = self.child.distance_to_baseline().unwrap_or(child_size.height);
+        let top = self.baseline - child_baseline;
+        self.size = constraints.constrain(Size::new(child_size.width, top + child_size.height));
+        self.child_offset = Offset::new(0.0, top);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let child_constraints = constraints.loosen();
+        let child_size = self.child.dry_layout(child_constraints);
+        let child_baseline = self.child.distance_to_baseline().unwrap_or(child_size.height);
+        constraints.constrain(Size::new(
+            child_size.width,
+            self.baseline - child_baseline + child_size.height,
+        ))
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset.plus(self.child_offset));
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.child_offset);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.child_offset), result)
+    }
+
+    /// The inherited default: the child's baseline, from wherever the child
+    /// was put -- which is `child_baseline + top = baseline`, the number the
+    /// widget was given.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.child_offset.dy)
+    }
+}
+
+/// Sizes its child to a fraction of itself.
+///
+/// Upstream's `RenderFractionallySizedOverflowBox`
+/// (`rendering/shifted_box.dart`), behind the `FractionallySizedBox` widget.
+/// The child is laid out against the *loosened* incoming constraints -- not
+/// scaled ones -- and the box is the child's size times the factor, so the
+/// fraction is of what the box turned out to be, which on an unbounded axis
+/// is the child itself.
+pub struct RenderFractionallySizedBox {
+    child: BoxedRender,
+    width_factor: Option<f32>,
+    height_factor: Option<f32>,
+    alignment: Alignment,
+    size: Size,
+    child_offset: Offset,
+}
+
+impl RenderFractionallySizedBox {
+    pub fn new(child: impl RenderBox + 'static) -> RenderFractionallySizedBox {
+        RenderFractionallySizedBox {
+            child: RenderRef::new(child),
+            width_factor: None,
+            height_factor: None,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn boxed(child: BoxedRender) -> RenderFractionallySizedBox {
+        RenderFractionallySizedBox {
+            child,
+            width_factor: None,
+            height_factor: None,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    /// The fraction of the incoming width the child is said to take. `None`
+    /// takes everything the constraints allow, upstream's "expand".
+    pub fn with_width_factor(mut self, factor: f32) -> Self {
+        self.width_factor = Some(factor);
+        self
+    }
+
+    /// The fraction of the incoming height, as `with_width_factor`.
+    pub fn with_height_factor(mut self, factor: f32) -> Self {
+        self.height_factor = Some(factor);
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    pub fn child_offset(&self) -> Offset {
+        self.child_offset
+    }
+
+    /// Upstream's `performLayout`, the size half: an axis shrinks to
+    /// `child * factor` where a factor was given **or** the axis is
+    /// unbounded, and takes everything otherwise -- `INFINITY` run through
+    /// `constrain`, which turns it into the incoming maximum.
+    fn sized(
+        &self,
+        child_size: Size,
+        constraints: BoxConstraints,
+    ) -> Size {
+        let shrink_wrap_width =
+            self.width_factor.is_some() || !constraints.has_bounded_width();
+        let shrink_wrap_height =
+            self.height_factor.is_some() || !constraints.has_bounded_height();
+        constraints.constrain(Size::new(
+            if shrink_wrap_width {
+                child_size.width * self.width_factor.unwrap_or(1.0)
+            } else {
+                f32::INFINITY
+            },
+            if shrink_wrap_height {
+                child_size.height * self.height_factor.unwrap_or(1.0)
+            } else {
+                f32::INFINITY
+            },
+        ))
+    }
+}
+
+impl RenderBox for RenderFractionallySizedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderFractionallySizedBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || self.width_factor != fresh.width_factor
+                || self.height_factor != fresh.height_factor
+                || self.alignment != fresh.alignment,
+        );
+        self.child = fresh.child.clone();
+        self.width_factor = fresh.width_factor;
+        self.height_factor = fresh.height_factor;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.layout_child(constraints.loosen(), true);
+        self.size = self.sized(child_size, constraints);
+        self.child_offset = self.alignment.inscribe(child_size, self.size);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    /// The dry answer, on the child's dry answer -- upstream's
+    /// `computeDryLayout`, same two halves.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.sized(self.child.dry_layout(constraints.loosen()), constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset.plus(self.child_offset));
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.child_offset);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.child_offset), result)
+    }
+
+    /// Upstream's intrinsics: the child's answer times the factor, exactly as
+    /// `RenderPositionedBox` with factors answers.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height) * self.width_factor.unwrap_or(1.0)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height) * self.width_factor.unwrap_or(1.0)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width) * self.height_factor.unwrap_or(1.0)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width) * self.height_factor.unwrap_or(1.0)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+    }
+}
+
+/// Imposes different constraints on its child than it got, letting the child
+/// overflow.
+///
+/// Upstream's `RenderConstrainedOverflowBox` (`rendering/shifted_box.dart`),
+/// behind the `OverflowBox` widget. The child is laid out against the
+/// incoming constraints with whichever of the four limits were given written
+/// over them; the box itself ignores the child entirely and takes
+/// `constraints.biggest()`.
+pub struct RenderOverflowBox {
+    child: BoxedRender,
+    min_width: Option<f32>,
+    max_width: Option<f32>,
+    min_height: Option<f32>,
+    max_height: Option<f32>,
+    alignment: Alignment,
+    size: Size,
+    child_offset: Offset,
+}
+
+impl RenderOverflowBox {
+    pub fn new(child: impl RenderBox + 'static) -> RenderOverflowBox {
+        RenderOverflowBox {
+            child: RenderRef::new(child),
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn boxed(child: BoxedRender) -> RenderOverflowBox {
+        RenderOverflowBox {
+            child,
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn with_min_width(mut self, min_width: f32) -> Self {
+        self.min_width = Some(min_width);
+        self
+    }
+
+    pub fn with_max_width(mut self, max_width: f32) -> Self {
+        self.max_width = Some(max_width);
+        self
+    }
+
+    pub fn with_min_height(mut self, min_height: f32) -> Self {
+        self.min_height = Some(min_height);
+        self
+    }
+
+    pub fn with_max_height(mut self, max_height: f32) -> Self {
+        self.max_height = Some(max_height);
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    /// Upstream's `_getInnerConstraints`: each limit that was given replaces
+    /// the constraint it names, and each one that was not leaves it be.
+    fn inner_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            self.min_width.unwrap_or(constraints.min_width),
+            self.max_width.unwrap_or(constraints.max_width),
+            self.min_height.unwrap_or(constraints.min_height),
+            self.max_height.unwrap_or(constraints.max_height),
+        )
+    }
+
+    pub fn child_offset(&self) -> Offset {
+        self.child_offset
+    }
+}
+
+impl RenderBox for RenderOverflowBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderOverflowBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || self.min_width != fresh.min_width
+                || self.max_width != fresh.max_width
+                || self.min_height != fresh.min_height
+                || self.max_height != fresh.max_height
+                || self.alignment != fresh.alignment,
+        );
+        self.child = fresh.child.clone();
+        self.min_width = fresh.min_width;
+        self.max_width = fresh.max_width;
+        self.min_height = fresh.min_height;
+        self.max_height = fresh.max_height;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    /// Upstream's `performLayout` at `fit: max`: the child against the inner
+    /// constraints, the box `constraints.biggest()` -- the child's size
+    /// counts for nothing, which is what "let it overflow" means.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.layout_child(self.inner_constraints(constraints), true);
+        self.size = constraints.biggest();
+        self.child_offset = self.alignment.inscribe(child_size, self.size);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    /// `sizedByParent` upstream: the dry answer is the constraints', with no
+    /// reference to the child at all.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset.plus(self.child_offset));
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.child_offset);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.child_offset), result)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+    }
+}
+
+/// A box of a given size that passes its original constraints through to its
+/// child, which may then overflow.
+///
+/// Upstream's `RenderSizedOverflowBox`
+/// (`rendering/shifted_box.dart`), behind the `SizedOverflowBox` widget. The
+/// requested size is the box's, constrained; the child gets the constraints
+/// the box got, unmodified.
+pub struct RenderSizedOverflowBox {
+    child: BoxedRender,
+    requested_size: Size,
+    alignment: Alignment,
+    size: Size,
+    child_offset: Offset,
+}
+
+impl RenderSizedOverflowBox {
+    pub fn new(
+        requested_size: Size,
+        child: impl RenderBox + 'static,
+    ) -> RenderSizedOverflowBox {
+        RenderSizedOverflowBox {
+            child: RenderRef::new(child),
+            requested_size,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn boxed(requested_size: Size, child: BoxedRender) -> RenderSizedOverflowBox {
+        RenderSizedOverflowBox {
+            child,
+            requested_size,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
+    }
+
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    pub fn child_offset(&self) -> Offset {
+        self.child_offset
+    }
+}
+
+impl RenderBox for RenderSizedOverflowBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSizedOverflowBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || self.requested_size != fresh.requested_size
+                || self.alignment != fresh.alignment,
+        );
+        self.child = fresh.child.clone();
+        self.requested_size = fresh.requested_size;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    /// Upstream's `performLayout`: the box is the requested size constrained,
+    /// the child the incoming constraints unmodified, the child then aligned
+    /// -- which can leave it anywhere, including hanging off the box.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let child_size = self.child.layout_child(constraints, true);
+        self.size = constraints.constrain(self.requested_size);
+        self.child_offset = self.alignment.inscribe(child_size, self.size);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.requested_size)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset.plus(self.child_offset));
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.child_offset);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.child_offset), result)
+    }
+
+    /// Upstream's intrinsics: the requested size, on every axis, regardless
+    /// of the child.
+    fn min_intrinsic_width(&self, _height: f32) -> f32 {
+        self.requested_size.width
+    }
+
+    fn max_intrinsic_width(&self, _height: f32) -> f32 {
+        self.requested_size.width
+    }
+
+    fn min_intrinsic_height(&self, _width: f32) -> f32 {
+        self.requested_size.height
+    }
+
+    fn max_intrinsic_height(&self, _width: f32) -> f32 {
+        self.requested_size.height
+    }
+
+    /// Upstream's `computeDistanceToActualBaseline`: the child's baseline
+    /// from wherever the alignment put it, falling back to the default walk
+    /// (which is the same walk, at the same offset) when the child has none.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+    }
 }
 
 // -- Single child: effects ----------------------------------------------------
@@ -3538,12 +6463,17 @@ impl RenderBox for RenderIgnorePointer {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's proxy dry answer: the child's.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -3617,13 +6547,19 @@ impl RenderBox for RenderSizeReporter {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.sink.set(self.size);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's dry answer, and the sink is left alone: it is told what a
+    /// layout concluded, and a measurement is not a conclusion.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -3672,7 +6608,17 @@ pub struct RenderWrap {
     spacing: f32,
     run_spacing: f32,
     alignment: MainAxisAlignment,
+    /// How the lines themselves sit in the cross axis when the wrap is
+    /// thicker than they fill. Upstream's `runAlignment`, stacking the lines
+    /// from the start edge by default.
+    run_alignment: MainAxisAlignment,
     cross_alignment: CrossAxisAlignment,
+    /// Which way a horizontal wrap runs: upstream's `textDirection`, from the
+    /// ambient `Directionality` at construction.
+    text_direction: TextDirection,
+    /// Which way the lines stack when the wrap is horizontal: upstream's
+    /// `verticalDirection`.
+    vertical_direction: VerticalDirection,
     children: Vec<BoxedRender>,
     /// Where each child ended up, filled in by layout.
     offsets: Vec<Offset>,
@@ -3686,7 +6632,10 @@ impl RenderWrap {
             spacing: 0.0,
             run_spacing: 0.0,
             alignment: MainAxisAlignment::Start,
+            run_alignment: MainAxisAlignment::Start,
             cross_alignment: CrossAxisAlignment::Start,
+            text_direction: crate::direction::current_direction(),
+            vertical_direction: VerticalDirection::Down,
             children: Vec::new(),
             offsets: Vec::new(),
             size: Size::ZERO,
@@ -3713,9 +6662,32 @@ impl RenderWrap {
         self
     }
 
+    /// How the lines themselves sit when the wrap is thicker than they fill.
+    /// Upstream's `Wrap.runAlignment`, which like `alignment` starts at the
+    /// start edge.
+    pub fn with_run_alignment(mut self, alignment: MainAxisAlignment) -> Self {
+        self.run_alignment = alignment;
+        self
+    }
+
     /// How a child sits inside its line, when the line is taller than it is.
     pub fn with_cross_alignment(mut self, alignment: CrossAxisAlignment) -> Self {
         self.cross_alignment = alignment;
+        self
+    }
+
+    /// Which end of a horizontal line is its start. Upstream's
+    /// `Wrap.textDirection`, with the ambient direction already captured as
+    /// the default.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.text_direction = direction;
+        self
+    }
+
+    /// Which end the lines stack from when the wrap is horizontal. Upstream's
+    /// `Wrap.verticalDirection`.
+    pub fn with_vertical_direction(mut self, direction: VerticalDirection) -> Self {
+        self.vertical_direction = direction;
         self
     }
 
@@ -3729,6 +6701,10 @@ impl RenderWrap {
         self
     }
 
+    pub fn child_offsets(&self) -> &[Offset] {
+        &self.offsets
+    }
+
     fn main(&self, size: Size) -> f32 {
         match self.direction {
             Axis::Horizontal => size.width,
@@ -3740,6 +6716,27 @@ impl RenderWrap {
         match self.direction {
             Axis::Horizontal => size.height,
             Axis::Vertical => size.width,
+        }
+    }
+
+    /// Whether a line runs from its far end: right-to-left in
+    /// [`TextDirection::Rtl`], and -- for a vertical wrap, whose lines are
+    /// columns -- bottom-to-top in [`VerticalDirection::Up`]. Upstream's
+    /// `_areAxesFlipped`, first half: the flips are named by main and cross
+    /// axis there, not by the screen axes the two directions name.
+    fn flip_main_axis(&self) -> bool {
+        match self.direction {
+            Axis::Horizontal => self.text_direction == TextDirection::Rtl,
+            Axis::Vertical => self.vertical_direction == VerticalDirection::Up,
+        }
+    }
+
+    /// Whether the lines stack from the far end: the second half of upstream's
+    /// `_areAxesFlipped`.
+    fn flip_cross_axis(&self) -> bool {
+        match self.direction {
+            Axis::Vertical => self.text_direction == TextDirection::Rtl,
+            Axis::Horizontal => self.vertical_direction == VerticalDirection::Up,
         }
     }
 }
@@ -3782,35 +6779,44 @@ impl RenderWrap {
         runs
     }
 
-    /// How big this wrap comes out inside `limit` along its main axis, worked
-    /// out from the children's intrinsics rather than by laying them out.
+    /// How big this wrap comes out inside `constraints`, worked out by the
+    /// same run packing `layout` does -- with the children measured however
+    /// `layout_child` measures them.
     ///
-    /// Upstream asks `getDryLayout` at exactly these four places. There is no
-    /// dry layout here, so this breaks the same lines with each child's max
-    /// intrinsic main extent standing in for the size a dry layout would have
-    /// handed it -- the same number, for any child whose two axes are
-    /// independent, which is most of them.
-    fn packed(&self, limit: f32) -> Size {
-        let extents = self.children.iter().map(|child| {
-            let child_main = match self.direction {
-                Axis::Horizontal => child.max_intrinsic_width(f32::INFINITY),
-                Axis::Vertical => child.max_intrinsic_height(f32::INFINITY),
-            }
-            .min(limit);
-            let child_cross = match self.direction {
-                Axis::Horizontal => child.max_intrinsic_height(child_main),
-                Axis::Vertical => child.max_intrinsic_width(child_main),
-            };
-            (child_main, child_cross)
-        });
-        let runs = self.break_into_runs(extents, limit);
+    /// Upstream's `_computeDryLayout`, and the four cross-axis intrinsics are
+    /// this same walk: they ask `getDryLayout` at the extent they were asked
+    /// at, so a child's place in a line -- and the height of the line -- comes
+    /// from the size a dry layout hands it, not from an intrinsic standing in
+    /// for one.
+    fn dry_packed(
+        &self,
+        constraints: BoxConstraints,
+        layout_child: impl Fn(&RenderRef, BoxConstraints) -> Size,
+    ) -> Size {
+        // Each child is measured against the line's length and nothing else:
+        // it may be as thick as it likes, because the line grows to fit it.
+        let limit = match self.direction {
+            Axis::Horizontal => constraints.max_width,
+            Axis::Vertical => constraints.max_height,
+        };
+        let child_constraints = match self.direction {
+            Axis::Horizontal => BoxConstraints::new(0.0, limit, 0.0, f32::INFINITY),
+            Axis::Vertical => BoxConstraints::new(0.0, f32::INFINITY, 0.0, limit),
+        };
+        let runs = self.break_into_runs(
+            self.children.iter().map(|child| {
+                let size = layout_child(child, child_constraints);
+                (self.main(size), self.cross(size))
+            }),
+            limit,
+        );
         let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
         let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
             + self.run_spacing * (runs.len() as f32 - 1.0).max(0.0);
-        match self.direction {
+        constraints.constrain(match self.direction {
             Axis::Horizontal => Size::new(longest, total_cross),
             Axis::Vertical => Size::new(total_cross, longest),
-        }
+        })
     }
 }
 
@@ -3822,14 +6828,20 @@ impl RenderBox for RenderWrap {
                 || self.spacing != fresh.spacing
                 || self.run_spacing != fresh.run_spacing
                 || self.alignment != fresh.alignment
+                || self.run_alignment != fresh.run_alignment
                 || self.cross_alignment != fresh.cross_alignment
+                || self.text_direction != fresh.text_direction
+                || self.vertical_direction != fresh.vertical_direction
                 || !same_children(&self.children, &fresh.children),
         );
         self.direction = fresh.direction;
         self.spacing = fresh.spacing;
         self.run_spacing = fresh.run_spacing;
         self.alignment = fresh.alignment;
+        self.run_alignment = fresh.run_alignment;
         self.cross_alignment = fresh.cross_alignment;
+        self.text_direction = fresh.text_direction;
+        self.vertical_direction = fresh.vertical_direction;
         self.children = std::mem::take(&mut fresh.children);
         Some(effect)
     }
@@ -3854,7 +6866,7 @@ impl RenderBox for RenderWrap {
 
         let mut sizes: Vec<Size> = Vec::with_capacity(self.children.len());
         for child in self.children.iter_mut() {
-            sizes.push(child.layout(child_constraints));
+            sizes.push(child.layout_child(child_constraints, true));
         }
         let runs = self.break_into_runs(
             sizes.iter().map(|size| (self.main(*size), self.cross(*size))),
@@ -3870,15 +6882,50 @@ impl RenderBox for RenderWrap {
         });
 
         // Position: along each line by the main-axis alignment, across it by
-        // the cross-axis one.
+        // the cross-axis one. Upstream's `_positionChildren`, whose two flips
+        // mirror each line along the main axis and reverse the order of the
+        // lines themselves.
         let available_main = self.main(self.size);
-        let mut cross_offset = 0.0;
-        for run in &runs {
+        let flip_main = self.flip_main_axis();
+        let flip_cross = self.flip_cross_axis();
+        // Upstream hands the cross-axis slack to
+        // `runAlignment._distributeSpace` with the cross flip: start and end
+        // trade places under it, and the lines themselves are walked from
+        // whichever end the flip says is first. The arithmetic is the one
+        // `RenderFlex` splits its main-axis slack by, with `runSpacing`
+        // riding between the lines as `spacing` does between children. A
+        // lone line has nothing to go between, so `spaceBetween` takes
+        // start's share.
+        let cross_free = (self.cross(self.size) - total_cross).max(0.0);
+        let (run_leading, run_gap) = match self.run_alignment {
+            MainAxisAlignment::Start => (if flip_cross { cross_free } else { 0.0 }, 0.0),
+            MainAxisAlignment::End => (if flip_cross { 0.0 } else { cross_free }, 0.0),
+            MainAxisAlignment::Center => (cross_free / 2.0, 0.0),
+            MainAxisAlignment::SpaceBetween if runs.len() > 1 => {
+                (0.0, cross_free / (runs.len() - 1) as f32)
+            }
+            MainAxisAlignment::SpaceBetween => (if flip_cross { cross_free } else { 0.0 }, 0.0),
+            MainAxisAlignment::SpaceAround => {
+                let each = cross_free / runs.len() as f32;
+                (each / 2.0, each)
+            }
+            MainAxisAlignment::SpaceEvenly => {
+                let each = cross_free / (runs.len() as f32 + 1.0);
+                (each, each)
+            }
+        };
+        let mut cross_offset = run_leading;
+        let runs: Vec<&Run> = if flip_cross {
+            runs.iter().rev().collect()
+        } else {
+            runs.iter().collect()
+        };
+        for run in runs {
             let free = (available_main - run.main).max(0.0);
             let (mut main_offset, gap) = match self.alignment {
-                MainAxisAlignment::Start => (0.0, 0.0),
+                MainAxisAlignment::Start => (if flip_main { free } else { 0.0 }, 0.0),
                 MainAxisAlignment::Center => (free / 2.0, 0.0),
-                MainAxisAlignment::End => (free, 0.0),
+                MainAxisAlignment::End => (if flip_main { 0.0 } else { free }, 0.0),
                 MainAxisAlignment::SpaceBetween if run.count > 1 => {
                     (0.0, free / (run.count as f32 - 1.0))
                 }
@@ -3892,20 +6939,35 @@ impl RenderBox for RenderWrap {
                     (each, each)
                 }
             };
-            for index in run.first..run.first + run.count {
+            // Upstream walks the line from its `leadingChild` -- the child
+            // nearest the visual start, which is the last of the run when the
+            // main axis is flipped -- so a flipped line lays its children out
+            // in reverse.
+            let in_run: Vec<usize> = if flip_main {
+                (run.first..run.first + run.count).rev().collect()
+            } else {
+                (run.first..run.first + run.count).collect()
+            };
+            for index in in_run {
                 let size = sizes[index];
                 let child_cross = self.cross(size);
+                // Upstream flips `crossAxisAlignment` itself when the cross
+                // axis is (`_flipped`), which is start and end trading places.
                 let within = match self.cross_alignment {
                     // Baseline alignment needs every child in the line
                     // measured against one another's text, which a wrap does
                     // not do -- upstream's `Wrap` has no baseline option
-                    // either. It sits at the start, like everything else that
-                    // is not centred or ended.
+                    // either, and stretch no counterpart, so both sit where
+                    // start does.
                     CrossAxisAlignment::Start
                     | CrossAxisAlignment::Stretch
-                    | CrossAxisAlignment::Baseline => 0.0,
+                    | CrossAxisAlignment::Baseline => {
+                        if flip_cross { run.cross - child_cross } else { 0.0 }
+                    }
                     CrossAxisAlignment::Center => (run.cross - child_cross) / 2.0,
-                    CrossAxisAlignment::End => run.cross - child_cross,
+                    CrossAxisAlignment::End => {
+                        if flip_cross { 0.0 } else { run.cross - child_cross }
+                    }
                 };
                 self.offsets[index] = match self.direction {
                     Axis::Horizontal => Offset::new(main_offset, cross_offset + within),
@@ -3913,7 +6975,7 @@ impl RenderBox for RenderWrap {
                 };
                 main_offset += self.main(size) + self.spacing + gap;
             }
-            cross_offset += run.cross + self.run_spacing;
+            cross_offset += run.cross + self.run_spacing + run_gap;
         }
 
         self.size
@@ -3921,6 +6983,15 @@ impl RenderBox for RenderWrap {
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderWrap.computeDryLayout`, which is `_computeDryLayout`
+    /// with `ChildLayoutHelper.dryLayoutChild`: the run packing with every
+    /// child dry-measured, and nothing placed.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.dry_packed(constraints, |child, child_constraints| {
+            child.dry_layout(child_constraints)
+        })
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -3946,10 +7017,12 @@ impl RenderBox for RenderWrap {
 
     // The four follow upstream's switch (`wrap.dart`): along the main axis the
     // answer comes from the children directly, and across it the wrap has to
-    // know where the lines fell, which is what `packed` works out. Note the
-    // children are asked at infinity, not at the extent this was asked at --
-    // upstream does the same, because a child's contribution to the line it is
-    // on does not depend on how thick the whole wrap is allowed to be.
+    // know where the lines fell -- which is the dry layout's to say, upstream's
+    // `getDryLayout(BoxConstraints(maxWidth: width))` and its three mirrors.
+    // Note the main-axis children are asked at infinity, not at the extent
+    // this was asked at -- upstream does the same, because a child's
+    // contribution to the line it is on does not depend on how thick the whole
+    // wrap is allowed to be.
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
         match self.direction {
@@ -3960,25 +7033,33 @@ impl RenderBox for RenderWrap {
                 .iter()
                 .map(|c| c.min_intrinsic_width(f32::INFINITY))
                 .fold(0.0, f32::max),
-            Axis::Vertical => self.packed(height).width,
+            Axis::Vertical => self
+                .compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
+                .width,
         }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
         match self.direction {
-            // Everything on one line, which is the width at which nothing wraps.
-            Axis::Horizontal => {
-                let sum: f32 =
-                    self.children.iter().map(|c| c.max_intrinsic_width(f32::INFINITY)).sum();
-                sum + self.spacing * (self.children.len() as f32 - 1.0).max(0.0)
-            }
-            Axis::Vertical => self.packed(height).width,
+            // Everything on one line, which is the width at which nothing
+            // wraps. Upstream's is a plain sum of the children's widths --
+            // the spacing is not part of the answer.
+            Axis::Horizontal => self
+                .children
+                .iter()
+                .map(|c| c.max_intrinsic_width(f32::INFINITY))
+                .sum(),
+            Axis::Vertical => self
+                .compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
+                .width,
         }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
         match self.direction {
-            Axis::Horizontal => self.packed(width).height,
+            Axis::Horizontal => self
+                .compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
+                .height,
             Axis::Vertical => self
                 .children
                 .iter()
@@ -3989,13 +7070,33 @@ impl RenderBox for RenderWrap {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         match self.direction {
-            Axis::Horizontal => self.packed(width).height,
-            Axis::Vertical => {
-                let sum: f32 =
-                    self.children.iter().map(|c| c.max_intrinsic_height(f32::INFINITY)).sum();
-                sum + self.spacing * (self.children.len() as f32 - 1.0).max(0.0)
-            }
+            Axis::Horizontal => self
+                .compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
+                .height,
+            // One child per line, the same plain sum as the width above.
+            Axis::Vertical => self
+                .children
+                .iter()
+                .map(|c| c.max_intrinsic_height(f32::INFINITY))
+                .sum(),
         }
+    }
+
+    /// Upstream's `computeDistanceToActualBaseline`, which for a wrap is
+    /// `defaultComputeDistanceToHighestActualBaseline`: the highest baseline
+    /// any child drew, measured from the wrap's own top, so the child's own
+    /// offset counts.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.children
+            .iter()
+            .zip(&self.offsets)
+            .filter_map(|(child, offset)| child.distance_to_baseline().map(|b| b + offset.dy))
+            .fold(None, |best: Option<f32>, candidate| {
+                Some(match best {
+                    Some(best) => best.min(candidate),
+                    None => candidate,
+                })
+            })
     }
 }
 
@@ -4063,12 +7164,20 @@ impl RenderBox for RenderAspectRatio {
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.applied(constraints);
-        self.child.layout(BoxConstraints::tight(self.size.width, self.size.height));
+        self.child
+            .layout_child(BoxConstraints::tight(self.size.width, self.size.height), true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderAspectRatio.computeDryLayout`, which is
+    /// `_applyAspectRatio` -- the same walk `layout` makes, without laying the
+    /// child out at the answer.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.applied(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4135,12 +7244,27 @@ impl RenderBox for RenderIntrinsicWidth {
             constraints.min_height,
             constraints.max_height,
         );
-        self.size = self.child.layout(tightened);
+        self.size = self.child.layout_child(tightened, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's `RenderIntrinsicWidth.computeDryLayout` (`_computeSize` with
+    /// a dry child): the same tightened constraints `layout` builds, measured
+    /// rather than laid out at.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let wanted = self.child.max_intrinsic_width(constraints.max_height);
+        let width = wanted.clamp(constraints.min_width, constraints.max_width);
+        let tightened = BoxConstraints::new(
+            width,
+            width,
+            constraints.min_height,
+            constraints.max_height,
+        );
+        self.child.dry_layout(tightened)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4197,12 +7321,22 @@ impl RenderBox for RenderIntrinsicHeight {
         let height = wanted.clamp(constraints.min_height, constraints.max_height);
         let tightened =
             BoxConstraints::new(constraints.min_width, constraints.max_width, height, height);
-        self.size = self.child.layout(tightened);
+        self.size = self.child.layout_child(tightened, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The height of the pair above: upstream's
+    /// `RenderIntrinsicHeight.computeDryLayout`.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let wanted = self.child.max_intrinsic_height(constraints.max_width);
+        let height = wanted.clamp(constraints.min_height, constraints.max_height);
+        let tightened =
+            BoxConstraints::new(constraints.min_width, constraints.max_width, height, height);
+        self.child.dry_layout(tightened)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4286,12 +7420,18 @@ impl RenderBox for RenderTransform {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's dry answer, untransformed -- the same "as if untransformed"
+    /// rule `layout` applies, and upstream's proxy dry path.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4370,12 +7510,19 @@ impl RenderBox for RenderOpacity {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's dry answer, at any opacity: upstream's proxy dry path, and
+    /// the same rule as `layout`, which measures a fully transparent child
+    /// too rather than collapsing it.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4459,12 +7606,19 @@ impl RenderBox for RenderClipRect {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's dry answer: a clip decides what is seen, never how big
+    /// anything is -- upstream's `_RenderCustomClip` inherits the proxy dry
+    /// path, and so does this.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4480,6 +7634,15 @@ impl RenderBox for RenderClipRect {
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         visit(&self.child, Offset::ZERO);
+    }
+
+    /// The clip it paints through: its own bounds, which is upstream's
+    /// `_RenderCustomClip.describeApproximatePaintClip` answering
+    /// `Offset.zero & size` for a rect clipper. "Approximate" is upstream's
+    /// word -- the rounded corner is ignored, exactly as it is there, because
+    /// the semantics walk wants a rectangle and a corner is not one.
+    fn describe_approximate_paint_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        Some(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -4524,12 +7687,18 @@ impl RenderBox for RenderClipPath {
     // exists to save. A rebuilt clip path makes a new render object, as
     // everything did before any of this.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// The child's dry answer; the path clips, it does not measure. See
+    /// [`RenderClipRect`].
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4543,6 +7712,14 @@ impl RenderBox for RenderClipPath {
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         visit(&self.child, Offset::ZERO);
+    }
+
+    /// Its bounds, as with [`RenderClipRect`]: upstream's path clipper
+    /// inherits `getApproximateClipRect` from `CustomClipper`, and that default
+    /// is `Offset.zero & size`. The path's own bounds would be tighter, and
+    /// upstream leaves that refinement to clippers that know better.
+    fn describe_approximate_paint_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        Some(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -4559,8 +7736,19 @@ impl RenderBox for RenderClipPath {
 /// rest. That is the whole of scrolling -- the physics and the gesture that
 /// drive `offset` belong to M3.
 pub struct RenderViewport {
-    axis: Axis,
+    /// Which way the scroll axis runs, upstream's `axisDirection`. The offset
+    /// starts from the end it names: `down` and `right` from the top and left,
+    /// `up` and `left` from the bottom and right. Everything the direction
+    /// decides -- the paint translate, the hit test compensation, the clip --
+    /// reads it through [`RenderViewport::scroll_offset`], which is upstream's
+    /// `_paintOffsetForPosition` and the one place the four cases are written.
+    axis_direction: AxisDirection,
     offset: f32,
+    /// How hard the compositor works on the window's edge. Upstream's
+    /// `clipBehavior`, defaulting to `Clip.hardEdge` -- and `Clip.none` is
+    /// what turns the clip off rather than only blunting it, see
+    /// [`RenderViewport::should_clip_at_paint_offset`].
+    clip_behavior: ClipBehavior,
     child: BoxedRender,
     child_size: Size,
     size: Size,
@@ -4568,19 +7756,56 @@ pub struct RenderViewport {
 
 impl RenderViewport {
     pub fn new(axis: Axis, child: impl RenderBox + 'static) -> RenderViewport {
+        // A vertical scroller runs downwards. A horizontal one runs towards
+        // the end the ambient direction names -- upstream's
+        // `getAxisDirectionFromAxisReverseAndDirectionality` with `reverse`
+        // unset, which is `textDirectionToAxisDirection`: right in ltr, left
+        // in rtl. The direction is read here rather than at layout because it
+        // is the walk that knows which `directionality` this sits under.
+        let axis_direction = match axis {
+            Axis::Vertical => AxisDirection::Down,
+            Axis::Horizontal => {
+                if crate::direction::current_direction() == TextDirection::Rtl {
+                    AxisDirection::Left
+                } else {
+                    AxisDirection::Right
+                }
+            }
+        };
         RenderViewport {
-            axis,
+            axis_direction,
             offset: 0.0,
+            clip_behavior: ClipBehavior::HardEdge,
             child: RenderRef::new(child),
             child_size: Size::ZERO,
             size: Size::ZERO,
         }
     }
 
+    /// The scroll axis, and which way it runs. Upstream's `ScrollView.reverse`
+    /// resolves to this through `getDirection`, so a caller that wants its
+    /// list to start at the other end says so here.
+    pub fn with_axis_direction(mut self, direction: AxisDirection) -> Self {
+        self.axis_direction = direction;
+        self
+    }
+
+    /// Which axis the scroll axis is. Upstream's `axisDirectionToAxis`.
+    fn axis(&self) -> Axis {
+        axis_direction_to_axis(self.axis_direction)
+    }
+
     /// How far the content is scrolled, in logical pixels. Clamped to the
     /// scrollable extent on the next layout.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// What the window's edge is like. `ClipBehavior::None` lets the content
+    /// paint outside the window entirely, as upstream's `Clip.none` does.
+    pub fn with_clip_behavior(mut self, behavior: ClipBehavior) -> Self {
+        self.clip_behavior = behavior;
         self
     }
 
@@ -4593,24 +7818,55 @@ impl RenderViewport {
     }
 
     /// How far the content can scroll before it runs out. Zero when the
-    /// content fits.
+    /// content fits. The same whichever way the axis runs, because the offset
+    /// counts into the content rather than along the screen -- upstream's
+    /// `_maxScrollExtent` does not look at `axisDirection` either.
     pub fn max_scroll_extent(&self) -> f32 {
-        let content = match self.axis {
+        let content = match self.axis() {
             Axis::Vertical => self.child_size.height,
             Axis::Horizontal => self.child_size.width,
         };
-        let window = match self.axis {
+        let window = match self.axis() {
             Axis::Vertical => self.size.height,
             Axis::Horizontal => self.size.width,
         };
         (content - window).max(0.0)
     }
 
+    /// Where the content sits in the window, upstream's
+    /// `_RenderSingleChildViewport._paintOffsetForPosition` word for word. The
+    /// reversed directions measure from the far end: an `up` viewport at
+    /// offset zero shows the *end* of the content against the bottom of the
+    /// window, and scrolling moves it downwards from there. Paint, the
+    /// children walk and the hit test all read this, which is what keeps the
+    /// three saying the same thing about a reversed viewport.
     fn scroll_offset(&self) -> Offset {
-        match self.axis {
-            Axis::Vertical => Offset::new(0.0, -self.offset),
-            Axis::Horizontal => Offset::new(-self.offset, 0.0),
+        match self.axis_direction {
+            AxisDirection::Down => Offset::new(0.0, -self.offset),
+            AxisDirection::Right => Offset::new(-self.offset, 0.0),
+            AxisDirection::Up => {
+                Offset::new(0.0, self.offset - self.child_size.height + self.size.height)
+            }
+            AxisDirection::Left => {
+                Offset::new(self.offset - self.child_size.width + self.size.width, 0.0)
+            }
         }
+    }
+
+    /// Whether anything is outside the window, upstream's
+    /// `_shouldClipAtPaintOffset` word for word: the paint offset has left the
+    /// positive quadrant (scrolled into the content) or the child runs past
+    /// the far edge. `Clip.none` answers no whatever the geometry, because it
+    /// is the one behaviour that asks for the content to be let out.
+    fn should_clip_at_paint_offset(&self) -> bool {
+        if self.clip_behavior == ClipBehavior::None {
+            return false;
+        }
+        let paint = self.scroll_offset();
+        paint.dx < 0.0
+            || paint.dy < 0.0
+            || paint.dx + self.child_size.width > self.size.width
+            || paint.dy + self.child_size.height > self.size.height
     }
 }
 
@@ -4620,19 +7876,23 @@ impl RenderBox for RenderViewport {
         // The offset is read by `layout`, which also re-clamps it against
         // content that may have shrunk -- so a scroll is a relayout. It is
         // upstream too: `RenderViewport` listens to its `ViewportOffset` and
-        // answers with `markNeedsLayout`.
-        let effect = UpdateEffect::relayout_if(
-            self.axis != fresh.axis
+        // answers with `markNeedsLayout`. The clip behaviour only changes how
+        // the same geometry is drawn, which is upstream's `markNeedsPaint` on
+        // its setter.
+        let mut effect = UpdateEffect::repaint_if(self.clip_behavior != fresh.clip_behavior);
+        effect = effect.and(UpdateEffect::relayout_if(
+            self.axis_direction != fresh.axis_direction
                 || self.offset != fresh.offset
                 || !self.child.is(&fresh.child),
-        );
-        self.axis = fresh.axis;
+        ));
+        self.axis_direction = fresh.axis_direction;
         self.offset = fresh.offset;
+        self.clip_behavior = fresh.clip_behavior;
         self.child = fresh.child.clone();
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let child_constraints = match self.axis {
+        let child_constraints = match self.axis() {
             Axis::Vertical => BoxConstraints::new(
                 constraints.min_width,
                 constraints.max_width,
@@ -4646,8 +7906,15 @@ impl RenderBox for RenderViewport {
                 constraints.max_height,
             ),
         };
-        self.child_size = self.child.layout(child_constraints);
-        self.size = constraints.biggest();
+        self.child_size = self.child.layout_child(child_constraints, true);
+        // Upstream `_RenderSingleChildViewport.performLayout`:
+        // `size = constraints.constrain(child.size)` -- the window is as big
+        // as it was allowed to be and the content asked for, no bigger. That
+        // shrink-wraps in a loose parent, and on an unbounded scroll axis the
+        // window is the content's own extent, which `biggest` could not say:
+        // it cannot name an infinite size, and used to collapse such a list
+        // to its minimum instead.
+        self.size = constraints.constrain(self.child_size);
         // Content may have shrunk since the offset was set, so re-clamp.
         self.offset = self.offset.clamp(0.0, self.max_scroll_extent());
         self.size
@@ -4657,14 +7924,44 @@ impl RenderBox for RenderViewport {
         self.size
     }
 
+    /// Upstream's `_RenderSingleChildViewport.computeDryLayout`: the child's
+    /// dry answer at the same scroll-axis-unbounded constraints `layout` uses,
+    /// constrained to the window. The scroll extent and the offset's clamp are
+    /// not touched -- those are conclusions a layout draws, not measurements.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let child_constraints = match self.axis() {
+            Axis::Vertical => BoxConstraints::new(
+                constraints.min_width,
+                constraints.max_width,
+                0.0,
+                f32::INFINITY,
+            ),
+            Axis::Horizontal => BoxConstraints::new(
+                0.0,
+                f32::INFINITY,
+                constraints.min_height,
+                constraints.max_height,
+            ),
+        };
+        constraints.constrain(self.child.dry_layout(child_constraints))
+    }
+
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        // Upstream's `paint`: the clip layer exists only while there is
+        // something outside it. A child that fits at this offset is painted
+        // whole, which is one layer and its offscreen buffer saved.
+        if !self.should_clip_at_paint_offset() {
+            context.paint_child(&self.child, offset.plus(self.scroll_offset()));
+            return;
+        }
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-        // A hard edge: the viewport's clip is axis aligned and pixel aligned,
-        // so anti-aliasing it would buy nothing and cost an offscreen pass.
+        // Hard edge by default: the viewport's clip is axis aligned and pixel
+        // aligned, so anti-aliasing it would buy nothing and cost an offscreen
+        // pass -- but the caller's own `clipBehavior` wins, as upstream's does.
         context.push_clip_rect(
             bounds,
             0.0,
-            ClipBehavior::HardEdge,
+            self.clip_behavior,
             &self.child,
             offset.plus(self.scroll_offset()),
         );
@@ -4672,45 +7969,1906 @@ impl RenderBox for RenderViewport {
 
     /// The scrolled column, moved by however far it is scrolled.
     ///
-    /// Everything outside the viewport is reported too, with a rectangle that
-    /// falls outside it. Upstream trims those against the clip in
-    /// `_SemanticsGeometry` and marks what is left over as hidden; the same
-    /// rows were reported before this walk existed, because the clip is a layer
-    /// and painting into it still painted them.
+    /// Everything outside the window is visited too -- the cache extent keeps
+    /// rows built just past it -- and it is the clips below that keep the walk
+    /// from reporting those rows as though they were on the glass, the way
+    /// upstream's `_SemanticsGeometry` trims them after the fact.
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         visit(&self.child, self.scroll_offset());
+    }
+
+    /// The window itself, upstream's `_RenderSingleChildViewport
+    /// .describeApproximatePaintClip`: its own bounds, and only when there is
+    /// something to clip -- `if (child != null && _shouldClipAtPaintOffset(
+    /// _paintOffset)) return Offset.zero & size; return null;` -- because a
+    /// child that fits at this offset is painted whole and reported whole.
+    fn describe_approximate_paint_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        self.should_clip_at_paint_offset()
+            .then(|| Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
+    }
+
+    /// The window grown by the cache extent, upstream's
+    /// `RenderViewportBase.describeSemanticsClip`: the rows a reader reaches by
+    /// scrolling belong in the tree even though they are not on the glass. The
+    /// extent is [`crate::scrolling::DEFAULT_CACHE_EXTENT`] -- the same band
+    /// `LazyList` keeps built -- so what this admits is exactly what exists.
+    fn describe_semantics_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        let cache = crate::scrolling::DEFAULT_CACHE_EXTENT;
+        Some(match self.axis() {
+            Axis::Vertical => {
+                Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache)
+            }
+            Axis::Horizontal => {
+                Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height)
+            }
+        })
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position.minus(self.scroll_offset()), result)
     }
 
+    // All four delegate to the child without looking at the axis, which is
+    // upstream's `_RenderSingleChildViewport` verbatim: the scroll axis does
+    // not zero an intrinsic size, because as far as measuring is concerned a
+    // viewport still *is* its content. (The sliver `RenderViewport` differs,
+    // and deliberately -- it never sizes itself from its slivers.)
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        match self.axis {
-            Axis::Vertical => self.child.min_intrinsic_width(height),
-            Axis::Horizontal => 0.0,
-        }
+        self.child.min_intrinsic_width(height)
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        match self.axis {
-            Axis::Vertical => self.child.max_intrinsic_width(height),
-            Axis::Horizontal => 0.0,
-        }
+        self.child.max_intrinsic_width(height)
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        match self.axis {
-            Axis::Horizontal => self.child.min_intrinsic_height(width),
-            Axis::Vertical => 0.0,
-        }
+        self.child.min_intrinsic_height(width)
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        match self.axis {
-            Axis::Horizontal => self.child.max_intrinsic_height(width),
-            Axis::Vertical => 0.0,
+        self.child.max_intrinsic_height(width)
+    }
+}
+
+// -- Slivers ------------------------------------------------------------------
+
+/// Whether an [`AxisDirection`] runs against the coordinate system it is drawn
+/// in: `up` and `left` are reversed, `down` and `right` are not. Upstream's
+/// `axisDirectionIsReversed`.
+pub fn axis_direction_is_reversed(direction: AxisDirection) -> bool {
+    matches!(direction, AxisDirection::Up | AxisDirection::Left)
+}
+
+/// Where a parent that positions slivers by absolute coordinates keeps where
+/// each one is painted.
+///
+/// Upstream's `SliverPhysicalParentData`: there it hangs off the child as
+/// `parentData`, written by the viewport during layout and read back by
+/// `applyPaintTransform`; here, as with the box parents, the parent keeps the
+/// offset in a field of its own -- the viewport one per child, the adapter
+/// one for its box child -- because there is no `parentData` slot to put it
+/// in and the parent is the only one who can answer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SliverPhysicalParentData {
+    /// The position of the child relative to the parent: the distance from the
+    /// top left visible corner of the parent to the top left visible corner of
+    /// the sliver. Upstream's `paintOffset`.
+    pub paint_offset: Offset,
+}
+
+/// Where a parent that positions slivers by layout offsets keeps where each
+/// one sits in the scroll. Upstream's `SliverLogicalParentData`, used by the
+/// slivers that will arrive with the list (`SliverList` positions its children
+/// this way); kept beside its physical twin because the two are the pair
+/// upstream chooses between per parent.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SliverLogicalParentData {
+    /// The position of the child relative to the zero scroll offset of the
+    /// parent sliver, or `None` until layout has set it.
+    pub layout_offset: Option<f32>,
+}
+
+/// The part of the extent `from..to` that is visible, given that only
+/// `scrollOffset..scrollOffset + remainingPaintExtent` is. Upstream's
+/// `RenderSliver.calculatePaintOffset`, the shared math behind every sliver
+/// that has a linear mapping between the scroll offset and the paint offset.
+pub fn calculate_paint_offset(
+    constraints: &SliverConstraints,
+    from: f32,
+    to: f32,
+) -> f32 {
+    let a = constraints.scroll_offset;
+    let b = constraints.scroll_offset + constraints.remaining_paint_extent;
+    (to.clamp(a, b) - from.clamp(a, b)).clamp(0.0, constraints.remaining_paint_extent)
+}
+
+/// The same question for the cache band: how much of `from..to` falls inside
+/// `scrollOffset + cacheOrigin .. scrollOffset + remainingCacheExtent`.
+/// Upstream's `RenderSliver.calculateCacheOffset`.
+pub fn calculate_cache_offset(constraints: &SliverConstraints, from: f32, to: f32) -> f32 {
+    let a = constraints.scroll_offset + constraints.cache_origin;
+    let b = constraints.scroll_offset + constraints.remaining_cache_extent;
+    (to.clamp(a, b) - from.clamp(a, b)).clamp(0.0, constraints.remaining_cache_extent)
+}
+
+/// The paint offset of a sliver whose geometry puts it `layout_offset` along
+/// the main axis of a viewport of `size`: the down/right directions measure
+/// from the leading edge, the up/left ones from the far edge, so the sliver's
+/// trailing edge lands `layout_offset + paint_extent` from it. Upstream's
+/// `RenderViewportBase.computeAbsolutePaintOffset`.
+fn absolute_paint_offset(
+    size: Size,
+    axis_direction: AxisDirection,
+    geometry: &SliverGeometry,
+    layout_offset: f32,
+) -> Offset {
+    match axis_direction {
+        AxisDirection::Up => Offset::new(0.0, size.height - layout_offset - geometry.paint_extent),
+        AxisDirection::Left => Offset::new(size.width - layout_offset - geometry.paint_extent, 0.0),
+        AxisDirection::Right => Offset::new(layout_offset, 0.0),
+        AxisDirection::Down => Offset::new(0.0, layout_offset),
+    }
+}
+
+/// The cross axis direction a viewport with this main one should hand its
+/// slivers: along the ambient text direction for a vertical viewport, downwards
+/// for a horizontal one. Upstream's `Viewport.getDefaultCrossAxisDirection` and
+/// `textDirectionToAxisDirection`, which the widget layer calls so the render
+/// layer does not have to know a `Directionality` was above it.
+fn default_cross_axis_direction(axis_direction: AxisDirection) -> AxisDirection {
+    match axis_direction {
+        AxisDirection::Up | AxisDirection::Down => {
+            if crate::direction::current_direction() == TextDirection::Rtl {
+                AxisDirection::Left
+            } else {
+                AxisDirection::Right
+            }
         }
+        AxisDirection::Left | AxisDirection::Right => AxisDirection::Down,
+    }
+}
+
+/// Whether a sliver's box child, sitting `child_main_axis_position` into the
+/// sliver's painted area, is under the given sliver coordinates.
+///
+/// Upstream's `RenderSliverHelpers.hitTestBoxChild`, shared by every sliver
+/// that has box children -- the adapter, the list. The sliver coordinates are
+/// turned into the child's Cartesian ones, which for the reversed axis
+/// directions means measuring the child from its far edge -- the same flip
+/// [`RenderSliverToBoxAdapter::set_child_parent_data`] makes to paint it.
+pub(crate) fn sliver_hit_test_box_child(
+    constraints: &SliverConstraints,
+    geometry: &SliverGeometry,
+    child: &RenderRef,
+    child_main_axis_position: f32,
+    main_axis_position: f32,
+    cross_axis_position: f32,
+    result: &mut HitTestResult,
+) -> bool {
+    let right_way_up = match constraints.growth_direction {
+        GrowthDirection::Forward => !axis_direction_is_reversed(constraints.axis_direction),
+        GrowthDirection::Reverse => axis_direction_is_reversed(constraints.axis_direction),
+    };
+    let mut delta = child_main_axis_position;
+    let mut absolute_position = main_axis_position - delta;
+    let absolute_cross_axis_position = cross_axis_position;
+    let child_size = child.size();
+    let position = match constraints.axis() {
+        Axis::Horizontal => {
+            if !right_way_up {
+                absolute_position = child_size.width - absolute_position;
+                delta = geometry.paint_extent - child_size.width - delta;
+            }
+            Offset::new(absolute_position, absolute_cross_axis_position)
+        }
+        Axis::Vertical => {
+            if !right_way_up {
+                absolute_position = child_size.height - absolute_position;
+                delta = geometry.paint_extent - child_size.height - delta;
+            }
+            Offset::new(absolute_cross_axis_position, absolute_position)
+        }
+    };
+    // Upstream wraps this in `result.addWithOutOfBandPosition` so the paint
+    // offset (delta, crossAxisDelta) rides with the entry for event
+    // transforms; here the local position is recorded per entry instead, so
+    // only the hit decision is left to ask for.
+    let _ = delta;
+    child.hit_test(position, result)
+}
+
+/// A sliver that contains a single box.
+///
+/// The bridge between the two protocols, in the direction box-into-sliver:
+/// the child is laid out with the cross axis tight and the main axis
+/// unbounded -- so it sizes itself to its content -- and the sliver says its
+/// scroll extent is the child's main-axis size, clipped to what the viewport
+/// will actually show. Upstream's `RenderSliverToBoxAdapter` in
+/// `rendering/sliver.dart`, over `RenderSliverSingleBoxAdapter`.
+///
+/// The other direction -- slivers inside a box -- is
+/// [`RenderSliverViewport`].
+pub struct RenderSliverToBoxAdapter {
+    child: Option<BoxedRender>,
+    /// Where the child sits in the sliver, upstream's
+    /// `SliverPhysicalParentData.paintOffset` written by
+    /// `RenderSliverSingleBoxAdapter.setChildParentData` each layout.
+    parent_data: SliverPhysicalParentData,
+    /// The constraints answered last, upstream's `RenderSliver.constraints`.
+    /// `Default` is the not-yet-laid-out state.
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl Default for SliverConstraints {
+    fn default() -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Idle,
+            scroll_offset: 0.0,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: 0.0,
+            cross_axis_extent: 0.0,
+            cross_axis_direction: AxisDirection::Right,
+            viewport_main_axis_extent: 0.0,
+            remaining_cache_extent: 0.0,
+            cache_origin: 0.0,
+        }
+    }
+}
+
+impl RenderSliverToBoxAdapter {
+    pub fn new(child: impl RenderBox + 'static) -> RenderSliverToBoxAdapter {
+        RenderSliverToBoxAdapter {
+            child: Some(RenderRef::new(child)),
+            parent_data: SliverPhysicalParentData::default(),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    /// An adapter with nothing in it, whose geometry is zero -- upstream's
+    /// `child == null` branch, which the widget layer reaches with
+    /// `SliverToBoxAdapter(child: null)`.
+    pub fn empty() -> RenderSliverToBoxAdapter {
+        RenderSliverToBoxAdapter {
+            child: None,
+            parent_data: SliverPhysicalParentData::default(),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    /// Where the child's leading edge sits in the sliver, upstream's
+    /// `RenderSliverSingleBoxAdapter.childMainAxisPosition`: the child is laid
+    /// out from the sliver's zero scroll offset, so a sliver that has been
+    /// scrolled into starts its child a negative distance back.
+    fn child_main_axis_position(&self) -> f32 {
+        -self.constraints.scroll_offset
+    }
+
+    /// Puts the child where the geometry says it belongs, upstream's
+    /// `RenderSliverSingleBoxAdapter.setChildParentData`: the child is painted
+    /// from the sliver's leading edge minus however far that edge has been
+    /// scrolled past, which for the reversed axis directions is measured from
+    /// the far end of the child.
+    fn set_child_parent_data(&mut self) {
+        let constraints = self.constraints;
+        let geometry = self.geometry;
+        self.parent_data.paint_offset =
+            match apply_growth_direction_to_axis_direction(
+                constraints.axis_direction,
+                constraints.growth_direction,
+            ) {
+                AxisDirection::Up => Offset::new(
+                    0.0,
+                    geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
+                ),
+                AxisDirection::Left => Offset::new(
+                    geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
+                    0.0,
+                ),
+                AxisDirection::Right => Offset::new(-constraints.scroll_offset, 0.0),
+                AxisDirection::Down => Offset::new(0.0, -constraints.scroll_offset),
+            };
+    }
+
+    /// Whether the box child is under the given sliver coordinates: the shared
+    /// [`sliver_hit_test_box_child`] over this adapter's
+    /// `childMainAxisPosition`.
+    fn hit_test_box_child(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        let Some(child) = &self.child else { return false };
+        sliver_hit_test_box_child(
+            &self.constraints,
+            &self.geometry,
+            child,
+            self.child_main_axis_position(),
+            main_axis_position,
+            cross_axis_position,
+            result,
+        )
+    }
+}
+
+impl RenderBox for RenderSliverToBoxAdapter {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverToBoxAdapter>()?;
+        let same_child = match (&self.child, &fresh.child) {
+            (Some(a), Some(b)) => a.is(b),
+            (None, None) => true,
+            _ => false,
+        };
+        self.child = fresh.child.clone();
+        // Everything else about the adapter is a conclusion of the next
+        // layout, which a new child always needs.
+        Some(UpdateEffect::relayout_if(!same_child))
+    }
+
+    /// A sliver is never laid out through the box protocol -- upstream a
+    /// `RenderSliver` is not a `RenderBox` at all -- so this exists only
+    /// because storage is one type, and zero is the nothing-it-has-to-say.
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    /// Upstream's `RenderSliverToBoxAdapter.performLayout`, line for line: the
+    /// child is sized by its own preference in the main axis and to the
+    /// viewport in the cross one, and the geometry reports how much of it
+    /// falls inside the paint extent and the cache band.
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let Some(child) = &mut self.child else {
+            self.geometry = SliverGeometry::ZERO;
+            return self.geometry;
+        };
+        let size = child
+            .layout_child(constraints.as_box_constraints(0.0, f32::INFINITY, None), true);
+        let child_extent = match constraints.axis() {
+            Axis::Horizontal => size.width,
+            Axis::Vertical => size.height,
+        };
+        let painted_child_size = calculate_paint_offset(&constraints, 0.0, child_extent);
+        let cache_extent = calculate_cache_offset(&constraints, 0.0, child_extent);
+        self.geometry = SliverGeometry::new(
+            child_extent,
+            painted_child_size,
+            child_extent,
+            cache_extent,
+            child_extent > constraints.remaining_paint_extent
+                || constraints.scroll_offset > 0.0,
+        );
+        self.set_child_parent_data();
+        self.geometry
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    /// Upstream's `RenderSliverSingleBoxAdapter.paint`: the child, at its
+    /// paint offset, only while there is something of this sliver to show.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            if self.geometry.visible {
+                context.paint_child(child, offset.plus(self.parent_data.paint_offset));
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            if self.geometry.visible {
+                visit(child, self.parent_data.paint_offset);
+            }
+        }
+    }
+
+    /// Upstream's `RenderSliver.hitTest` with this adapter's
+    /// `hitTestChildren`: inside the hit-test extent and the cross extent, hit
+    /// whenever the box child is. The entry's local position is the sliver
+    /// coordinates as an offset, which is what a sliver's event handlers
+    /// would read through `SliverHitTestEntry`.
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if main_axis_position >= 0.0
+            && main_axis_position < self.geometry.hit_test_extent
+            && cross_axis_position >= 0.0
+            && cross_axis_position < self.constraints.cross_axis_extent
+            && self.hit_test_box_child(main_axis_position, cross_axis_position, result)
+        {
+            let position = match self.constraints.axis() {
+                Axis::Horizontal => Offset::new(main_axis_position, cross_axis_position),
+                Axis::Vertical => Offset::new(cross_axis_position, main_axis_position),
+            };
+            result.add(self.hit_test_id(), position);
+            return true;
+        }
+        false
+    }
+}
+
+/// How many layout passes a viewport gives each child before concluding the
+/// slivers and the offset will not agree. Upstream's
+/// `RenderViewport._maxLayoutCyclesPerChild`.
+const MAX_LAYOUT_CYCLES_PER_CHILD: usize = 10;
+
+/// One sliver of a [`RenderSliverViewport`], with where the viewport painted
+/// it last. Upstream this pair is the child and its
+/// `SliverPhysicalContainerParentData`.
+struct SliverChild {
+    render: RenderRef,
+    parent_data: SliverPhysicalParentData,
+}
+
+/// A window onto a sequence of slivers.
+///
+/// Upstream's `RenderViewport` (`rendering/viewport.dart`), reduced to the
+/// shape this port needs first: a single forward-growing list of slivers,
+/// anchored at zero -- no `center` sliver and nothing growing in reverse, so
+/// every scroll offset is positive. What is transcribed exactly is the part
+/// that makes it a viewport at all:
+///
+/// * the two-phase layout -- lay the slivers out at the offset as asked, total
+///   up their scroll extents, and if the offset does not fit inside those
+///   extents, correct it and lay them all out again (upstream's
+///   `performLayout` loop around `applyContentDimensions`, which is the
+///   `ViewportOffset` protocol; here the offset is a plain number driven from
+///   outside, exactly as [`RenderViewport`] takes it, and the clamp is the
+///   correction);
+/// * `layoutChildSequence`, the walk that hands each sliver its slice of the
+///   scroll offset, the paint extent and the cache band, and lays out every
+///   sliver every pass, including the ones scrolled out of view;
+/// * paint by each child's `paintOffset`, in reverse list order so the first
+///   sliver is on top, clipped to the viewport when any sliver overflowed.
+///
+/// The existing [`RenderViewport`] -- upstream's `_RenderSingleChildViewport`
+/// -- is untouched; the lists move onto this one when the slivers they need
+/// exist.
+pub struct RenderSliverViewport {
+    axis_direction: AxisDirection,
+    cross_axis_direction: AxisDirection,
+    /// How far into the content the view is, driven from outside and clamped
+    /// here during layout, upstream's `ViewportOffset.pixels` as this port
+    /// takes it (see [`RenderViewport::offset`]).
+    offset: f32,
+    /// Which way the reader is moving, upstream's
+    /// `ViewportOffset.userScrollDirection`, passed through to every sliver.
+    user_scroll_direction: crate::scrolling::ScrollDirection,
+    /// The band before the leading and after the trailing edge kept warm.
+    /// Upstream's `RenderViewportBase.cacheExtent`, defaulting to
+    /// `RenderAbstractViewport.defaultCacheExtent`.
+    cache_extent: f32,
+    clip_behavior: ClipBehavior,
+    children: Vec<SliverChild>,
+    size: Size,
+    /// The total of every sliver's scroll extent, upstream's
+    /// `_maxScrollExtent` as accumulated by `updateOutOfBandData`.
+    content_scroll_extent: f32,
+    has_visual_overflow: bool,
+}
+
+impl RenderSliverViewport {
+    pub fn new(axis_direction: AxisDirection) -> RenderSliverViewport {
+        RenderSliverViewport {
+            cross_axis_direction: default_cross_axis_direction(axis_direction),
+            axis_direction,
+            offset: 0.0,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Idle,
+            cache_extent: crate::scrolling::DEFAULT_CACHE_EXTENT,
+            clip_behavior: ClipBehavior::HardEdge,
+            children: Vec::new(),
+            size: Size::ZERO,
+            content_scroll_extent: 0.0,
+            has_visual_overflow: false,
+        }
+    }
+
+    /// Adds a sliver to the end of the forward-growing sequence.
+    pub fn with_sliver(mut self, child: impl RenderBox + 'static) -> Self {
+        self.children.push(SliverChild {
+            render: RenderRef::new(child),
+            parent_data: SliverPhysicalParentData::default(),
+        });
+        self
+    }
+
+    /// How far the content is scrolled. Clamped to the scrollable extent on
+    /// the next layout.
+    pub fn with_offset(mut self, offset: f32) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub fn with_user_scroll_direction(
+        mut self,
+        direction: crate::scrolling::ScrollDirection,
+    ) -> Self {
+        self.user_scroll_direction = direction;
+        self
+    }
+
+    pub fn with_cache_extent(mut self, cache_extent: f32) -> Self {
+        self.cache_extent = cache_extent;
+        self
+    }
+
+    pub fn with_clip_behavior(mut self, behavior: ClipBehavior) -> Self {
+        self.clip_behavior = behavior;
+        self
+    }
+
+    pub fn offset(&self) -> f32 {
+        self.offset
+    }
+
+    /// How far the content can scroll before it runs out. Zero when the
+    /// content fits -- the same account [`RenderViewport::max_scroll_extent`]
+    /// gives, and the number a scroll extent sink wants.
+    pub fn max_scroll_extent(&self) -> f32 {
+        (self.content_scroll_extent - self.main_axis_extent()).max(0.0)
+    }
+
+    fn axis(&self) -> Axis {
+        axis_direction_to_axis(self.axis_direction)
+    }
+
+    fn main_axis_extent(&self) -> f32 {
+        match self.axis() {
+            Axis::Vertical => self.size.height,
+            Axis::Horizontal => self.size.width,
+        }
+    }
+
+    fn cross_axis_extent(&self) -> f32 {
+        match self.axis() {
+            Axis::Vertical => self.size.width,
+            Axis::Horizontal => self.size.height,
+        }
+    }
+
+    /// One pass over the slivers, upstream's
+    /// `RenderViewportBase.layoutChildSequence` specialized to a plain
+    /// forward list (the `advance` callback is the loop). Returns the first
+    /// scroll offset correction a sliver asked for, if any did, and leaves
+    /// the caller to re-run everything with the offset applied.
+    fn layout_child_sequence(
+        &mut self,
+        scroll_offset: f32,
+        overlap: f32,
+        layout_offset: f32,
+        remaining_paint_extent: f32,
+        remaining_cache_extent: f32,
+        cache_origin: f32,
+    ) -> Option<f32> {
+        let initial_layout_offset = layout_offset;
+        let user_scroll_direction = apply_growth_direction_to_scroll_direction(
+            self.user_scroll_direction,
+            GrowthDirection::Forward,
+        );
+        let cross_axis_extent = self.cross_axis_extent();
+        let main_axis_extent = self.main_axis_extent();
+        // Read once, for the paint offsets below: the loop holds `&mut` into
+        // the children, and a method on `self` would borrow them too.
+        let viewport_size = self.size;
+        let axis_direction = self.axis_direction;
+        let cross_axis_direction = self.cross_axis_direction;
+        let mut scroll_offset = scroll_offset;
+        let mut layout_offset = layout_offset;
+        let mut remaining_cache_extent = remaining_cache_extent;
+        let mut cache_origin = cache_origin;
+        let mut max_paint_offset = layout_offset + overlap;
+        let mut preceding_scroll_extent = 0.0;
+
+        for child in &mut self.children {
+            // If the scroll offset is too small, ask from zero: it makes no
+            // sense to want content from before a sliver's own beginning.
+            let sliver_scroll_offset = if scroll_offset <= 0.0 { 0.0 } else { scroll_offset };
+            let corrected_cache_origin = cache_origin.max(-sliver_scroll_offset);
+            let cache_extent_correction = cache_origin - corrected_cache_origin;
+
+            let geometry = child.render.sliver_layout(SliverConstraints {
+                axis_direction: self.axis_direction,
+                growth_direction: GrowthDirection::Forward,
+                user_scroll_direction,
+                scroll_offset: sliver_scroll_offset,
+                preceding_scroll_extent,
+                overlap: max_paint_offset - layout_offset,
+                remaining_paint_extent: (remaining_paint_extent - layout_offset
+                    + initial_layout_offset)
+                    .max(0.0),
+                cross_axis_extent,
+                cross_axis_direction,
+                viewport_main_axis_extent: main_axis_extent,
+                remaining_cache_extent: (remaining_cache_extent + cache_extent_correction)
+                    .max(0.0),
+                cache_origin: corrected_cache_origin,
+            });
+            // A correction means this pass is void; the caller applies it and
+            // starts over.
+            if let Some(correction) = geometry.scroll_offset_correction {
+                return Some(correction);
+            }
+            // The child's paint origin in the viewport's coordinates, which is
+            // the layout offset stored in its parent data -- except past the
+            // trailing edge, where the layout extent has run out and the still
+            // growing scroll offset stands in, so invisible slivers stay in
+            // order.
+            let effective_layout_offset = layout_offset + geometry.paint_origin;
+            let stored_layout_offset = if geometry.visible || scroll_offset > 0.0 {
+                effective_layout_offset
+            } else {
+                -scroll_offset + initial_layout_offset
+            };
+            child.parent_data.paint_offset = absolute_paint_offset(
+                viewport_size,
+                axis_direction,
+                &geometry,
+                stored_layout_offset,
+            );
+
+            max_paint_offset =
+                (effective_layout_offset + geometry.paint_extent).max(max_paint_offset);
+            scroll_offset -= geometry.scroll_extent;
+            preceding_scroll_extent += geometry.scroll_extent;
+            layout_offset += geometry.layout_extent;
+            if geometry.cache_extent != 0.0 {
+                remaining_cache_extent -= geometry.cache_extent - cache_extent_correction;
+                cache_origin = (corrected_cache_origin + geometry.cache_extent).min(0.0);
+            }
+
+            // Upstream's `updateOutOfBandData` for the forward direction: the
+            // total the offset is clamped against, and whether anything asked
+            // to be clipped.
+            self.content_scroll_extent += geometry.scroll_extent;
+            self.has_visual_overflow |= geometry.has_visual_overflow;
+        }
+        None
+    }
+
+    /// One attempt at laying the whole viewport out at `corrected_offset`,
+    /// upstream's `RenderViewport._attemptLayout` with the anchor at zero and
+    /// nothing before the center: everything grows forward from the leading
+    /// edge, the cache band is the window grown by the cache extent on either
+    /// side, and the first sliver starts `offset` into its own content.
+    fn attempt_layout(&mut self, corrected_offset: f32) -> Option<f32> {
+        self.content_scroll_extent = 0.0;
+        self.has_visual_overflow = false;
+
+        let main_axis_extent = self.main_axis_extent();
+        // centerOffset, the distance from the leading edge to the zero scroll
+        // offset, is `-correctedOffset` with the anchor at zero -- negative
+        // while the content is scrolled into, which is what makes the forward
+        // paint extent the whole window and pushes the cache origin back.
+        let center_offset = -corrected_offset;
+        let forward_direction_remaining_paint_extent =
+            (main_axis_extent - center_offset).clamp(0.0, main_axis_extent);
+        let full_cache_extent = main_axis_extent + 2.0 * self.cache_extent;
+        let center_cache_offset = center_offset + self.cache_extent;
+        let forward_direction_remaining_cache_extent =
+            (full_cache_extent - center_cache_offset).clamp(0.0, full_cache_extent);
+
+        self.layout_child_sequence(
+            // scrollOffset: max(0.0, -centerOffset)
+            (-center_offset).max(0.0),
+            // overlap: min(0.0, -centerOffset) -- nothing grows in reverse, so
+            // nothing before the first sliver can have painted over it.
+            (-center_offset).min(0.0),
+            // layoutOffset: reverseDirectionRemainingPaintExtent, which is zero
+            // while the offset is positive.
+            center_offset.clamp(0.0, main_axis_extent),
+            forward_direction_remaining_paint_extent,
+            forward_direction_remaining_cache_extent,
+            center_offset.clamp(-self.cache_extent, 0.0),
+        )
+    }
+
+    /// The viewport scroll offset that puts `scroll_offset_within_child` of
+    /// child `index` at the leading edge. Upstream's
+    /// `RenderViewportBase.scrollOffsetOf` for the forward direction: every
+    /// sliver before this one, then into this one.
+    pub fn scroll_offset_of(&self, index: usize, scroll_offset_within_child: f32) -> f32 {
+        self.children
+            .iter()
+            .take(index)
+            .map(|child| child.render.sliver_geometry().scroll_extent)
+            .sum::<f32>()
+            + scroll_offset_within_child
+    }
+
+    /// How much the slivers before child `index` could shrink the scrollable
+    /// area by, were they pinned at the edge. Upstream's
+    /// `RenderViewportBase.maxScrollObstructionExtentBefore`; zero until
+    /// there is a sliver that pins.
+    pub fn max_scroll_obstruction_extent_before(&self, index: usize) -> f32 {
+        self.children
+            .iter()
+            .take(index)
+            .map(|child| child.render.sliver_geometry().max_scroll_obstruction_extent)
+            .sum()
+    }
+
+    /// The distance from the leading edge of the viewport to the leading edge
+    /// of child `index`, in the child's own axis direction. Upstream's
+    /// `RenderViewport.computeChildMainAxisPosition`, with the growth
+    /// direction every child here has: for the reversed directions the
+    /// child's coordinate system starts at its far end.
+    fn compute_child_main_axis_position(&self, index: usize, parent_main_axis_position: f32) -> f32 {
+        let child = &self.children[index];
+        let paint_offset = child.parent_data.paint_offset;
+        let paint_extent = child.render.sliver_geometry().paint_extent;
+        match self.axis_direction {
+            AxisDirection::Down => parent_main_axis_position - paint_offset.dy,
+            AxisDirection::Right => parent_main_axis_position - paint_offset.dx,
+            AxisDirection::Up => paint_extent - (parent_main_axis_position - paint_offset.dy),
+            AxisDirection::Left => paint_extent - (parent_main_axis_position - paint_offset.dx),
+        }
+    }
+
+    /// Upstream's `RenderViewportBase.paint`: the visible slivers, each at its
+    /// paint offset, inside one clip over the viewport when anything
+    /// overflowed. `Clip.none` is the one behaviour that lets the content out.
+    fn paint_contents(&self, context: &mut PaintContext, offset: Offset) {
+        // childrenInPaintOrder, the default `firstIsTop`: the last sliver
+        // paints first, so where slivers overlap the first one is on top.
+        for child in self.children.iter().rev() {
+            if child.render.sliver_geometry().visible {
+                context.paint_child(&child.render, offset.plus(child.parent_data.paint_offset));
+            }
+        }
+    }
+}
+
+impl RenderBox for RenderSliverViewport {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverViewport>()?;
+        let same_children = self.children.len() == fresh.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&fresh.children)
+                .all(|(mine, theirs)| mine.render.is(&theirs.render));
+        let changed = self.axis_direction != fresh.axis_direction
+            || self.cross_axis_direction != fresh.cross_axis_direction
+            || self.offset != fresh.offset
+            || self.user_scroll_direction != fresh.user_scroll_direction
+            || self.cache_extent != fresh.cache_extent
+            || self.clip_behavior != fresh.clip_behavior
+            || !same_children;
+        self.axis_direction = fresh.axis_direction;
+        self.cross_axis_direction = fresh.cross_axis_direction;
+        self.offset = fresh.offset;
+        self.user_scroll_direction = fresh.user_scroll_direction;
+        self.cache_extent = fresh.cache_extent;
+        self.clip_behavior = fresh.clip_behavior;
+        self.children = std::mem::take(&mut fresh.children);
+        // The offset and the directions are read by `layout`, which also
+        // re-clamps against content that may have shrunk, so every one of them
+        // is a relayout; the clip behaviour only changes how the same geometry
+        // is drawn.
+        Some(UpdateEffect::relayout_if(changed))
+    }
+
+    /// Upstream's `RenderViewport.performLayout`: the window is as big as it
+    /// was allowed to be (`sizedByParent` with `constraints.biggest()`), and
+    /// then the slivers are laid out at the offset as asked -- corrected and
+    /// laid out again whenever the offset turns out not to fit the content,
+    /// which is the two-phase `applyContentDimensions` protocol. Here the
+    /// correction is the clamp, because the offset is a number this object
+    /// owns rather than a `ViewportOffset` object to negotiate with.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.biggest();
+        if self.children.is_empty() {
+            self.content_scroll_extent = 0.0;
+            self.has_visual_overflow = false;
+            // applyContentDimensions(0, 0): there is nothing to scroll to.
+            self.offset = self.offset.clamp(0.0, 0.0);
+            return self.size;
+        }
+        let max_layout_cycles = MAX_LAYOUT_CYCLES_PER_CHILD * self.children.len();
+        let mut count = 0;
+        loop {
+            let correction = self.attempt_layout(self.offset);
+            if let Some(correction) = correction {
+                // correctBy: apply what a sliver asked for and try again.
+                self.offset += correction;
+            } else {
+                // applyContentDimensions(min(0, _minScrollExtent),
+                // max(0, _maxScrollExtent - mainAxisExtent)): anchor zero and
+                // nothing in reverse makes the minimum zero, and staying put
+                // is what ends the loop.
+                let clamped =
+                    self.offset.clamp(0.0, (self.content_scroll_extent - self.main_axis_extent()).max(0.0));
+                if clamped == self.offset {
+                    break;
+                }
+                self.offset = clamped;
+            }
+            count += 1;
+            if count >= max_layout_cycles {
+                break;
+            }
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    /// Upstream's `RenderViewport.computeDryLayout`: a viewport is sized by
+    /// its parent, never by its slivers.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if self.children.is_empty() {
+            return;
+        }
+        if self.has_visual_overflow && self.clip_behavior != ClipBehavior::None {
+            let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+            // The clip `push_clip_rect` would make, around every sliver at
+            // once -- it clips a child, and a viewport has many.
+            context.in_layer(
+                |tree| tree.push_clip_rect(bounds, self.clip_behavior),
+                |context| self.paint_contents(context, offset),
+            );
+        } else {
+            self.paint_contents(context, offset);
+        }
+    }
+
+    /// The slivers a reader can reach -- visible, or close enough that the
+    /// cache band keeps them warm -- each at its paint offset. Upstream's
+    /// `RenderViewportBase.visitChildrenForSemantics`; the paint walk reads
+    /// the same offsets, so one walk answers both.
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for child in &self.children {
+            let geometry = child.render.sliver_geometry();
+            if geometry.visible || geometry.cache_extent > 0.0 {
+                visit(&child.render, child.parent_data.paint_offset);
+            }
+        }
+    }
+
+    /// The viewport's own bounds. Upstream's
+    /// `RenderViewportBase.describeApproximatePaintClip`, whose other branch
+    /// -- growing the clip past the leading edge by the overlap a pinned
+    /// header left -- cannot arise here: nothing grows in reverse and nothing
+    /// paints more than it lays out, so a child's overlap is always zero.
+    fn describe_approximate_paint_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        Some(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
+    }
+
+    /// The window grown by the cache extent, upstream's
+    /// `RenderViewportBase.describeSemanticsClip`: the rows a reader reaches
+    /// by scrolling belong in the tree even though they are not on the glass.
+    fn describe_semantics_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
+        let cache = self.cache_extent;
+        Some(match self.axis() {
+            Axis::Vertical => {
+                Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache)
+            }
+            Axis::Horizontal => {
+                Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height)
+            }
+        })
+    }
+
+    /// Upstream's `RenderViewportBase.hitTestChildren`: the box position
+    /// becomes sliver coordinates, and each visible sliver is asked in list
+    /// order -- the reverse of paint order, so where slivers overlap the one
+    /// on top is the one hit.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let (main_axis_position, cross_axis_position) = match self.axis() {
+            Axis::Vertical => (position.dy, position.dx),
+            Axis::Horizontal => (position.dx, position.dy),
+        };
+        for index in 0..self.children.len() {
+            let child = &self.children[index];
+            if !child.render.sliver_geometry().visible {
+                continue;
+            }
+            let child_main_axis_position =
+                self.compute_child_main_axis_position(index, main_axis_position);
+            if child
+                .render
+                .sliver_hit_test(child_main_axis_position, cross_axis_position, result)
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// How close two floating point numbers may be and still count as equal.
+/// Upstream's `precisionErrorTolerance` (`foundation/math.dart`), which the
+/// sliver lists use to decide whether a child's measured position disagrees
+/// with where dead reckoning put it.
+const PRECISION_ERROR_TOLERANCE: f32 = 1e-10;
+
+/// A box child's extent along a sliver's main axis, upstream's `paintExtentOf`
+/// in `RenderSliverMultiBoxAdaptor`.
+fn render_main_axis_extent(render: &RenderRef, axis: Axis) -> f32 {
+    let size = render.size();
+    match axis {
+        Axis::Horizontal => size.width,
+        Axis::Vertical => size.height,
+    }
+}
+
+/// One child of a [`RenderSliverList`]: the child itself, and where along the
+/// scroll the last layout put its leading edge. Upstream's
+/// `SliverMultiBoxAdaptorParentData` -- `index` is the child's position in the
+/// `Vec` plus the list's `first_index`, and `layout_offset` is the parent data
+/// slot of the same name (`None` only while an insert is in flight, upstream's
+/// null `layoutOffset`).
+struct SliverListItem {
+    render: RenderRef,
+    layout_offset: Option<f32>,
+}
+
+/// The mutable half of upstream `RenderSliverList.performLayout`: everything
+/// the walk and its `advance` closure read and write together. Vec positions
+/// stand in for upstream's child pointers -- position `p` is logical index
+/// `first_index + p`, so `child_after` is `p + 1` and `index_of` is
+/// `first_index + p`.
+struct ListWalk {
+    /// Upstream's `child`: the child the walk is on, `None` past the last.
+    child: Option<usize>,
+    /// Upstream's `index`: the logical index of `child`.
+    index: usize,
+    /// Upstream's `endScrollOffset`: where the last laid-out child ends.
+    end_scroll_offset: f32,
+    /// Upstream's `inLayoutRange`: whether `child` is still inside the run of
+    /// children that had already been laid out.
+    in_layout_range: bool,
+    /// Upstream's `trailingChildWithLayout`, as a Vec position; the leading
+    /// twin is only ever read before the walk starts, so it stays a local.
+    trailing_child_with_layout: Option<usize>,
+    leading_garbage: usize,
+    trailing_garbage: usize,
+}
+
+/// A sliver that places a window of box children in a linear array along the
+/// main axis.
+///
+/// Upstream's `RenderSliverList` (`rendering/sliver_list.dart`) over
+/// `RenderSliverMultiBoxAdaptor`. The children outside the window do not
+/// exist: the list determines its scroll offset by *dead reckoning* -- each
+/// newly materialized child is placed adjacent to its neighbour, because
+/// nothing knows where it would have been otherwise -- and when the reckoning
+/// contradicts itself (the zeroth child asked to sit anywhere but zero, say)
+/// the list answers a [`SliverGeometry::scroll_offset_correction`] and the
+/// viewport re-walks everything at the corrected offset. That pair -- a
+/// materialized window plus a correction protocol -- is what a thousand-row
+/// list costs a screenful of: [`RenderSliverList::live_range`] is the window.
+///
+/// Where this port departs from upstream, deliberately: upstream's walk seeds
+/// nothing, so a programmatic jump of ten thousand pixels inserts ten
+/// thousand pixels of children one at a time on its way to the window
+/// (upstream's answer to that is `SliverFixedExtentList`, which locates its
+/// window by arithmetic). Here, when the scroll offset has left the
+/// materialized window behind by more than the window's own extent, the list
+/// drops the window and restarts at an index estimated from the
+/// [`RenderSliverList::with_item_extent`] or
+/// [`RenderSliverList::with_estimated_extent`] it was given -- the same
+/// arithmetic `getMinChildIndexForScrollOffset` upstream -- and lets the
+/// correction protocol absorb whatever the estimate got wrong. A smooth
+/// scroll never triggers it; each frame's window overlaps the last.
+///
+/// The child manager -- upstream's `SliverMultiBoxAdaptorElement`, which
+/// builds, indexes and garbage collects on the render object's behalf -- is
+/// here a `child_count` plus a builder closure, and the per-frame rebuild of
+/// live children is [`RenderSliverList::update_from`], which reconfigures
+/// each live child with its freshly built self. There is no `keepAlive`: a
+/// child outside the window is gone.
+pub struct RenderSliverList {
+    child_count: usize,
+    build_child: Rc<dyn Fn(usize) -> RenderRef>,
+    /// The exact extent of every child, when every child has one: makes the
+    /// window arithmetic exact and the geometry's `scroll_extent` the truth
+    /// rather than the extrapolation. Upstream would tell you to use
+    /// `RenderSliverFixedExtentList` for this; one list with a flag is the
+    /// smaller port.
+    item_extent: Option<f32>,
+    /// The average extent to estimate with when there is no exact one.
+    estimated_extent: Option<f32>,
+    /// The logical index of `children[0]`; upstream keeps the index on each
+    /// child's parent data instead.
+    first_index: usize,
+    children: Vec<SliverListItem>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverList {
+    /// The builder stands in for upstream's child manager: asked for index
+    /// `i`, it answers a freshly built render object, exactly as
+    /// `SliverMultiBoxAdaptorElement.createChild` does through the widget
+    /// builder it was given.
+    pub fn new(
+        child_count: usize,
+        build_child: impl Fn(usize) -> RenderRef + 'static,
+    ) -> RenderSliverList {
+        RenderSliverList {
+            child_count,
+            build_child: Rc::new(build_child),
+            item_extent: None,
+            estimated_extent: None,
+            first_index: 0,
+            children: Vec::new(),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    pub fn with_item_extent(mut self, item_extent: f32) -> Self {
+        self.item_extent = Some(item_extent);
+        self
+    }
+
+    /// What to divide the scroll offset by when the window has to be
+    /// restarted from an estimate. The default is the port's
+    /// `DEFAULT_ITEM_ESTIMATE`.
+    pub fn with_estimated_extent(mut self, estimated_extent: f32) -> Self {
+        self.estimated_extent = Some(estimated_extent);
+        self
+    }
+
+    /// The half-open range of logical indices currently materialized -- the
+    /// lazy window. `(first, first + len)`.
+    pub fn live_range(&self) -> (usize, usize) {
+        (self.first_index, self.first_index + self.children.len())
+    }
+
+    /// How many children exist right now.
+    pub fn live_child_count(&self) -> usize {
+        self.children.len()
+    }
+
+    /// The extent each child may be assumed to take: the exact one when there
+    /// is one, otherwise the estimate.
+    fn seed_extent(&self) -> f32 {
+        self.item_extent
+            .or(self.estimated_extent)
+            .unwrap_or(crate::scrolling::DEFAULT_ITEM_ESTIMATE)
+    }
+
+    /// Whether the materialized window has been left behind by more than its
+    /// own extent. Dead reckoning from here to the scroll offset would build
+    /// every child in between -- upstream's walk does exactly that, which is
+    /// the cost of a far jump on upstream's `SliverList`.
+    fn needs_reseed(&self, scroll_offset: f32, remaining_extent: f32, axis: Axis) -> bool {
+        let Some(first) = self.children.first() else {
+            return false;
+        };
+        let Some(last) = self.children.last() else {
+            return false;
+        };
+        let first_offset = first.layout_offset.unwrap_or(0.0);
+        let last_end = last.layout_offset.unwrap_or(0.0) + render_main_axis_extent(&last.render, axis);
+        // Smooth scrolling moves the window a few pixels a frame, so it always
+        // overlaps what the frame before materialized; a jump that clears the
+        // window plus the extent this layout is about to fill is the one to
+        // abandon.
+        first_offset - scroll_offset > remaining_extent || scroll_offset - last_end > remaining_extent
+    }
+
+    /// Where a restart lands: the index whose estimated offset is at or just
+    /// before the scroll offset, and that estimated offset -- which is a
+    /// *guess*, corrected into truth by the walk (and, when the guess was
+    /// badly wrong, by a scroll offset correction). Upstream's
+    /// `RenderSliverFixedExtentList.getMinChildIndexForScrollOffset`
+    /// arithmetic.
+    fn estimated_first_index(&self, scroll_offset: f32) -> (usize, f32) {
+        let per = self.seed_extent();
+        if per <= 0.0 || self.child_count == 0 {
+            return (0, 0.0);
+        }
+        let index = ((scroll_offset / per).floor().max(0.0) as usize).min(self.child_count - 1);
+        (index, index as f32 * per)
+    }
+
+    /// Upstream's `insertAndLayoutLeadingChild`: builds the child *before*
+    /// the first, makes it the first, and lays it out. `None` when there is
+    /// no index before the first -- the walk has reached the list's own zero.
+    /// The caller writes the `layout_offset`, as upstream's caller does.
+    fn insert_leading_child(&mut self, constraints: SliverConstraints, axis: Axis) -> Option<f32> {
+        if self.first_index == 0 {
+            return None;
+        }
+        let index = self.first_index - 1;
+        let render = (self.build_child)(index);
+        self.children.insert(
+            0,
+            SliverListItem {
+                render,
+                layout_offset: None,
+            },
+        );
+        self.first_index = index;
+        let item = &mut self.children[0];
+        item.render.layout_child(
+            constraints.as_box_constraints(0.0, f32::INFINITY, None),
+            true,
+        );
+        Some(render_main_axis_extent(&item.render, axis))
+    }
+
+    /// Upstream's `advance` closure: moves to the next child, laying it out or
+    /// creating it once the walk has left the run of already-laid-out
+    /// children, and answers whether there was one.
+    fn advance(&mut self, walk: &mut ListWalk, constraints: SliverConstraints, axis: Axis) -> bool {
+        // `if (child == trailingChildWithLayout) inLayoutRange = false;` --
+        // the child being left is the last one the previous pass laid out.
+        if walk.child == walk.trailing_child_with_layout {
+            walk.in_layout_range = false;
+        }
+        // child = childAfter(child)
+        let next = walk.child.map(|child| child + 1);
+        walk.child = match next {
+            Some(next) if next < self.children.len() => Some(next),
+            _ => None,
+        };
+        if walk.child.is_none() {
+            walk.in_layout_range = false;
+        }
+        walk.index += 1;
+        if !walk.in_layout_range {
+            // Upstream decides whether the child needs laying out from the set
+            // of indices its element rebuilt this pass; here every child
+            // outside the laid-out run is laid out or created, which is the
+            // same set plus the ones whose rebuild produced nothing new --
+            // `layout_child` is the no-op for those.
+            let missing = match walk.child {
+                None => true,
+                Some(position) => self.first_index + position != walk.index,
+            };
+            if missing {
+                // We are missing a child. Insert it (and lay it out) if
+                // possible, upstream's `insertAndLayoutChild(after:
+                // trailingChildWithLayout)`: the new child goes after the last
+                // laid-out one, at this walk's index.
+                let after = walk
+                    .trailing_child_with_layout
+                    .expect("a laid-out child to insert after");
+                debug_assert_eq!(walk.index, self.first_index + after + 1);
+                if walk.index >= self.child_count {
+                    // We have run out of children.
+                    return false;
+                }
+                let render = (self.build_child)(walk.index);
+                self.children.insert(
+                    after + 1,
+                    SliverListItem {
+                        render,
+                        layout_offset: None,
+                    },
+                );
+                walk.child = Some(after + 1);
+                let item = &mut self.children[after + 1];
+                item.render.layout_child(
+                    constraints.as_box_constraints(0.0, f32::INFINITY, None),
+                    true,
+                );
+            } else {
+                // Lay out the child.
+                let item = &mut self.children[walk.child.unwrap()];
+                item.render.layout_child(
+                    constraints.as_box_constraints(0.0, f32::INFINITY, None),
+                    true,
+                );
+            }
+            walk.trailing_child_with_layout = walk.child;
+        }
+        let item = &mut self.children[walk.child.expect("advance answers true with a child")];
+        item.layout_offset = Some(walk.end_scroll_offset);
+        walk.end_scroll_offset += render_main_axis_extent(&item.render, axis);
+        true
+    }
+
+    /// Upstream's `collectGarbage`: the children the walk labelled as garbage
+    /// are dropped, leading first so the surviving window's `first_index`
+    /// stays true. A dropped child is gone -- there is no `keepAlive`.
+    fn collect_garbage(&mut self, leading: usize, trailing: usize) {
+        if leading > 0 {
+            self.children.drain(0..leading);
+            self.first_index += leading;
+        }
+        if trailing > 0 {
+            self.children.truncate(self.children.len() - trailing);
+        }
+    }
+
+    /// Upstream's `_extrapolateMaxScrollOffset` (`widgets/sliver.dart`): the
+    /// end of the window plus the average extent of what was materialized
+    /// times however many children remain -- the whole list priced from a
+    /// screenful, which is what the scrollbar and the scroll extents show.
+    fn estimate_max_scroll_offset(
+        &self,
+        first_index: usize,
+        last_index: usize,
+        leading_scroll_offset: f32,
+        trailing_scroll_offset: f32,
+    ) -> f32 {
+        if last_index + 1 >= self.child_count {
+            return trailing_scroll_offset;
+        }
+        let reified_count = (last_index - first_index + 1) as f32;
+        let average_extent = (trailing_scroll_offset - leading_scroll_offset) / reified_count;
+        let remaining_count = (self.child_count - last_index - 1) as f32;
+        trailing_scroll_offset + average_extent * remaining_count
+    }
+
+    /// Upstream's `RenderSliverMultiBoxAdaptor.childScrollOffset`: where a
+    /// child's leading edge sits in the sliver's own coordinate system.
+    fn child_scroll_offset(&self, position: usize) -> f32 {
+        self.children[position].layout_offset.unwrap()
+    }
+
+    /// Upstream's `RenderSliverMultiBoxAdaptor.childMainAxisPosition`: the
+    /// child's scroll offset less however far the sliver has been scrolled
+    /// into.
+    fn child_main_axis_position(&self, position: usize) -> f32 {
+        self.child_scroll_offset(position) - self.constraints.scroll_offset
+    }
+}
+
+impl RenderBox for RenderSliverList {
+    /// The per-frame refresh, standing in for upstream's
+    /// `SliverMultiBoxAdaptorElement.update` visiting every live child: each
+    /// materialized child is reconfigured with its freshly built self, the
+    /// builder having already been replaced by the fresh one. Children past a
+    /// shrunken `child_count` are dropped here rather than waiting for the
+    /// next layout's garbage collection, because nothing would ever ask for
+    /// them again.
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverList>()?;
+        let structure_changed = self.child_count != fresh.child_count
+            || self.item_extent != fresh.item_extent
+            || self.estimated_extent != fresh.estimated_extent;
+        self.child_count = fresh.child_count;
+        self.item_extent = fresh.item_extent;
+        self.estimated_extent = fresh.estimated_extent;
+        self.build_child = Rc::clone(&fresh.build_child);
+        while self.first_index + self.children.len() > self.child_count {
+            self.children.pop();
+        }
+        let mut effect = UpdateEffect::relayout_if(structure_changed);
+        for position in 0..self.children.len() {
+            let fresh_child = (self.build_child)(self.first_index + position);
+            if self.children[position].render.reconfigure(fresh_child) {
+                // Whatever the child needed -- repaint or relayout -- it has
+                // marked itself and everything above, this sliver included;
+                // the effect reported here is only what the host might not
+                // otherwise hear about.
+                effect = effect.and(UpdateEffect::Repaint);
+            }
+        }
+        Some(effect)
+    }
+
+    /// A sliver is never laid out through the box protocol -- upstream a
+    /// `RenderSliver` is not a `RenderBox` at all -- so this exists only
+    /// because storage is one type, and zero is the nothing-it-has-to-say.
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    /// Upstream's `RenderSliverList.performLayout`, line for line. The
+    /// child-manager callbacks (`didStartLayout`, `setDidUnderflow`,
+    /// `didFinishLayout`) have no counterpart here: the count and the builder
+    /// are the manager, and nothing downstream asks whether the layout
+    /// underflowed.
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let axis = constraints.axis();
+        let scroll_offset = constraints.scroll_offset + constraints.cache_origin;
+        let remaining_extent = constraints.remaining_cache_extent;
+        let target_end_scroll_offset = scroll_offset + remaining_extent;
+
+        // Upstream opens with `addInitialChild`, which builds index zero at
+        // offset zero. Here the same place also serves a far jump: when the
+        // materialized window was left behind by more than its own extent,
+        // drop it and restart at an estimated index (see this type's doc --
+        // this is the one deliberate departure from the upstream walk).
+        if self.child_count == 0 {
+            self.geometry = SliverGeometry::ZERO;
+            return self.geometry;
+        }
+        if self.children.is_empty() || self.needs_reseed(scroll_offset, remaining_extent, axis) {
+            self.children.clear();
+            let (index, offset) = self.estimated_first_index(scroll_offset);
+            self.first_index = index;
+            self.children.push(SliverListItem {
+                render: (self.build_child)(index),
+                layout_offset: Some(offset),
+            });
+        }
+
+        // Make sure we have at least one child to start from.
+        debug_assert!(!self.children.is_empty());
+
+        // These track the range of children that has been laid out. Within
+        // this range, the children have consecutive indices.
+        let mut leading_child_with_layout: Option<usize> = None;
+        let mut trailing_child_with_layout: Option<usize> = None;
+
+        // Find the last child that is at or before the scrollOffset.
+        let mut earliest_scroll_offset = self.children[0].layout_offset.unwrap();
+        while earliest_scroll_offset > scroll_offset {
+            // We have to add children before the earliestUsefulChild.
+            match self.insert_leading_child(constraints, axis) {
+                Some(extent) => {
+                    // Where the new first child starts: the old first child's
+                    // offset less the new child's extent.
+                    let first_child_scroll_offset = earliest_scroll_offset - extent;
+                    // firstChildScrollOffset may contain double precision
+                    // error.
+                    if first_child_scroll_offset < -PRECISION_ERROR_TOLERANCE {
+                        // Let's assume there is no child before the first
+                        // child. We will correct it on the next layout if it
+                        // is not.
+                        self.geometry = SliverGeometry {
+                            scroll_offset_correction: Some(-first_child_scroll_offset),
+                            ..SliverGeometry::ZERO
+                        };
+                        self.children[0].layout_offset = Some(0.0);
+                        return self.geometry;
+                    }
+                    self.children[0].layout_offset = Some(first_child_scroll_offset);
+                    earliest_scroll_offset = first_child_scroll_offset;
+                    leading_child_with_layout = Some(0);
+                    trailing_child_with_layout.get_or_insert(0);
+                }
+                None => {
+                    // We ran out of children before reaching the scroll
+                    // offset: the walk is at the list's own zero and still
+                    // short of where the viewport is.
+                    self.children[0].layout_offset = Some(0.0);
+                    if scroll_offset == 0.0 {
+                        // Nothing has been laid out. We have to lay out the
+                        // first child manually.
+                        self.children[0].render.layout_child(
+                            constraints.as_box_constraints(0.0, f32::INFINITY, None),
+                            true,
+                        );
+                        leading_child_with_layout = Some(0);
+                        trailing_child_with_layout.get_or_insert(0);
+                        break;
+                    }
+                    // We must inform our parent that this sliver cannot fulfil
+                    // its contract and that we need a scroll offset
+                    // correction.
+                    self.geometry = SliverGeometry {
+                        scroll_offset_correction: Some(-scroll_offset),
+                        ..SliverGeometry::ZERO
+                    };
+                    return self.geometry;
+                }
+            }
+        }
+
+        // If the scroll offset is at zero, we should make sure we are
+        // actually at the beginning of the list.
+        if scroll_offset < PRECISION_ERROR_TOLERANCE {
+            // We iterate from the firstChild in case the leading child has a
+            // 0 paint extent.
+            while self.first_index > 0 {
+                let earliest_scroll_offset = self.children[0].layout_offset.unwrap();
+                // Upstream asserts the insert cannot fail: `first_index > 0`
+                // means there is a child before the first.
+                let Some(extent) = self.insert_leading_child(constraints, axis) else {
+                    break;
+                };
+                self.children[0].layout_offset = Some(0.0);
+                let first_child_scroll_offset = earliest_scroll_offset - extent;
+                // We only need to correct if the leading child actually has a
+                // paint extent.
+                if first_child_scroll_offset < -PRECISION_ERROR_TOLERANCE {
+                    self.geometry = SliverGeometry {
+                        scroll_offset_correction: Some(-first_child_scroll_offset),
+                        ..SliverGeometry::ZERO
+                    };
+                    return self.geometry;
+                }
+            }
+        }
+
+        // Make sure we've laid out at least one child. (Upstream records the
+        // leading twin too; nothing reads it from here on, so only the
+        // trailing one -- which `advance` starts from -- is.)
+        if leading_child_with_layout.is_none() {
+            self.children[0].render.layout_child(
+                constraints.as_box_constraints(0.0, f32::INFINITY, None),
+                true,
+            );
+            trailing_child_with_layout = Some(0);
+        }
+
+        let mut walk = ListWalk {
+            child: Some(0),
+            index: self.first_index,
+            end_scroll_offset: self.children[0].layout_offset.unwrap()
+                + render_main_axis_extent(&self.children[0].render, axis),
+            in_layout_range: true,
+            trailing_child_with_layout,
+            leading_garbage: 0,
+            trailing_garbage: 0,
+        };
+
+        // Find the first child that ends after the scroll offset.
+        while walk.end_scroll_offset < scroll_offset {
+            walk.leading_garbage += 1;
+            if !self.advance(&mut walk, constraints, axis) {
+                // We want to make sure we keep the last child around so we
+                // know the end scroll offset.
+                self.collect_garbage(walk.leading_garbage - 1, 0);
+                let last = self.children.last().unwrap();
+                let extent = last.layout_offset.unwrap()
+                    + render_main_axis_extent(&last.render, axis);
+                self.geometry = SliverGeometry {
+                    scroll_extent: extent,
+                    max_paint_extent: extent,
+                    ..SliverGeometry::ZERO
+                };
+                return self.geometry;
+            }
+        }
+
+        // Now find the first child that ends after our end.
+        let mut reached_end = false;
+        while walk.end_scroll_offset < target_end_scroll_offset {
+            if !self.advance(&mut walk, constraints, axis) {
+                reached_end = true;
+                break;
+            }
+        }
+
+        // Finally count up all the remaining children and label them as
+        // garbage.
+        if let Some(child) = walk.child {
+            walk.trailing_garbage = self.children.len() - child - 1;
+        }
+
+        // At this point everything should be good to go, we just have to
+        // clean up the garbage and report the geometry.
+        self.collect_garbage(walk.leading_garbage, walk.trailing_garbage);
+
+        let first_index = self.first_index;
+        let last_index = self.first_index + self.children.len() - 1;
+        let leading_scroll_offset = self.children[0].layout_offset.unwrap();
+        let estimated_max_scroll_offset = if reached_end {
+            walk.end_scroll_offset
+        } else {
+            self.estimate_max_scroll_offset(
+                first_index,
+                last_index,
+                leading_scroll_offset,
+                walk.end_scroll_offset,
+            )
+        };
+        let paint_extent = calculate_paint_offset(
+            &constraints,
+            leading_scroll_offset,
+            walk.end_scroll_offset,
+        );
+        let cache_extent = calculate_cache_offset(
+            &constraints,
+            leading_scroll_offset,
+            walk.end_scroll_offset,
+        );
+        let target_end_scroll_offset_for_paint =
+            constraints.scroll_offset + constraints.remaining_paint_extent;
+        self.geometry = SliverGeometry::new(
+            estimated_max_scroll_offset,
+            paint_extent,
+            estimated_max_scroll_offset,
+            cache_extent,
+            // Conservative to avoid flickering away the clip during scroll.
+            walk.end_scroll_offset > target_end_scroll_offset_for_paint
+                || constraints.scroll_offset > 0.0,
+        );
+        self.geometry
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    /// Upstream's `RenderSliverMultiBoxAdaptor.paint`: each child at its
+    /// main-axis delta, culled to the paint extent, with the reversed axis
+    /// directions measuring from the far end.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        let axis_direction = apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        );
+        let remaining_paint_extent = self.constraints.remaining_paint_extent;
+        let paint_extent = self.geometry.paint_extent;
+        for position in 0..self.children.len() {
+            let item = &self.children[position];
+            if item.layout_offset.is_none() {
+                continue;
+            }
+            let main_axis_delta = self.child_main_axis_position(position);
+            let extent = render_main_axis_extent(&item.render, self.constraints.axis());
+            if main_axis_delta < remaining_paint_extent && main_axis_delta + extent > 0.0 {
+                let paint_offset = match axis_direction {
+                    AxisDirection::Up => {
+                        Offset::new(0.0, paint_extent - main_axis_delta - extent)
+                    }
+                    AxisDirection::Left => {
+                        Offset::new(paint_extent - main_axis_delta - extent, 0.0)
+                    }
+                    AxisDirection::Right => Offset::new(main_axis_delta, 0.0),
+                    AxisDirection::Down => Offset::new(0.0, main_axis_delta),
+                };
+                context.paint_child(&item.render, offset.plus(paint_offset));
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        let axis_direction = apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        );
+        let paint_extent = self.geometry.paint_extent;
+        for position in 0..self.children.len() {
+            let item = &self.children[position];
+            if item.layout_offset.is_none() {
+                continue;
+            }
+            let main_axis_delta = self.child_main_axis_position(position);
+            let extent = render_main_axis_extent(&item.render, self.constraints.axis());
+            let paint_offset = match axis_direction {
+                AxisDirection::Up => Offset::new(0.0, paint_extent - main_axis_delta - extent),
+                AxisDirection::Left => Offset::new(paint_extent - main_axis_delta - extent, 0.0),
+                AxisDirection::Right => Offset::new(main_axis_delta, 0.0),
+                AxisDirection::Down => Offset::new(0.0, main_axis_delta),
+            };
+            visit(&item.render, paint_offset);
+        }
+    }
+
+    /// Upstream's `RenderSliver.hitTest` over `RenderSliverMultiBoxAdaptor.
+    /// hitTestChildren`: inside the hit-test extent and the cross extent, the
+    /// children are asked from the last one back -- the top of the paint
+    /// order.
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if main_axis_position >= 0.0
+            && main_axis_position < self.geometry.hit_test_extent
+            && cross_axis_position >= 0.0
+            && cross_axis_position < self.constraints.cross_axis_extent
+        {
+            for position in (0..self.children.len()).rev() {
+                let item = &self.children[position];
+                if item.layout_offset.is_none() {
+                    continue;
+                }
+                if sliver_hit_test_box_child(
+                    &self.constraints,
+                    &self.geometry,
+                    &item.render,
+                    self.child_main_axis_position(position),
+                    main_axis_position,
+                    cross_axis_position,
+                    result,
+                ) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A sliver that insets its child sliver by padding on each side.
+///
+/// Upstream's `RenderSliverPadding` (`rendering/sliver_padding.dart`): the
+/// child is laid out against the constraints deflated by the padding -- less
+/// cross axis, a scroll offset shifted past the leading padding, paint and
+/// cache extents that much shorter -- and the geometry answers with the
+/// child's numbers plus the padding put back in. The padding is `EdgeInsets`
+/// here, already resolved: upstream's `EdgeInsetsGeometry.resolve` step has no
+/// work to do for it, and `EdgeInsetsDirectional` is a phase that has not
+/// arrived.
+pub struct RenderSliverPadding {
+    padding: EdgeInsets,
+    child: Option<RenderRef>,
+    /// Where the child sits in the sliver, upstream's
+    /// `SliverPhysicalParentData.paintOffset` written at the end of layout.
+    paint_offset: Offset,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverPadding {
+    pub fn new(padding: EdgeInsets, child: impl RenderBox + 'static) -> RenderSliverPadding {
+        RenderSliverPadding {
+            padding,
+            child: Some(RenderRef::new(child)),
+            paint_offset: Offset::ZERO,
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    /// Padding with nothing in it, whose geometry is the padding's own extent.
+    /// Upstream's `child == null`.
+    pub fn empty(padding: EdgeInsets) -> RenderSliverPadding {
+        RenderSliverPadding {
+            padding,
+            child: None,
+            paint_offset: Offset::ZERO,
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    /// The padding in the scroll direction on the side nearest the zero
+    /// scroll offset. Upstream's `beforePadding`. (The trailing twin,
+    /// upstream's `afterPadding`, has no reader here: layout only ever needs
+    /// it inside `main_axis_padding`, where the two are already summed.)
+    fn before_padding(&self) -> f32 {
+        match apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        ) {
+            AxisDirection::Up => self.padding.bottom,
+            AxisDirection::Right => self.padding.left,
+            AxisDirection::Down => self.padding.top,
+            AxisDirection::Left => self.padding.right,
+        }
+    }
+
+    /// The total padding along the main axis. Upstream's `mainAxisPadding`.
+    fn main_axis_padding(&self) -> f32 {
+        match self.constraints.axis() {
+            Axis::Horizontal => self.padding.horizontal(),
+            Axis::Vertical => self.padding.vertical(),
+        }
+    }
+
+    /// The total padding across the cross axis. Upstream's
+    /// `crossAxisPadding`.
+    fn cross_axis_padding(&self) -> f32 {
+        match self.constraints.axis() {
+            Axis::Horizontal => self.padding.vertical(),
+            Axis::Vertical => self.padding.horizontal(),
+        }
+    }
+
+    /// Where the child's leading edge sits in the sliver's painted area:
+    /// however much of the leading padding is visible. Upstream's
+    /// `childMainAxisPosition`.
+    fn child_main_axis_position(&self) -> f32 {
+        calculate_paint_offset(&self.constraints, 0.0, self.before_padding())
+    }
+
+    /// The child's leading edge across the sliver. Upstream's
+    /// `childCrossAxisPosition`.
+    fn child_cross_axis_position(&self) -> f32 {
+        match self.constraints.axis() {
+            Axis::Horizontal => self.padding.top,
+            Axis::Vertical => self.padding.left,
+        }
+    }
+}
+
+impl RenderBox for RenderSliverPadding {
+    /// The adapter's reconciliation: padding or child changed means layout
+    /// again, everything else about the object is a conclusion of that.
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverPadding>()?;
+        let same_child = match (&self.child, &fresh.child) {
+            (Some(a), Some(b)) => a.is(b),
+            (None, None) => true,
+            _ => false,
+        };
+        let changed = self.padding != fresh.padding || !same_child;
+        self.padding = fresh.padding;
+        self.child = fresh.child.clone();
+        Some(UpdateEffect::relayout_if(changed))
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    /// Upstream's `RenderSliverEdgeInsetsPadding.performLayout`, line for
+    /// line.
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let before_padding = self.before_padding();
+        let main_axis_padding = self.main_axis_padding();
+        let cross_axis_padding = self.cross_axis_padding();
+        let Some(child) = &mut self.child else {
+            // No child: the padding is the whole sliver, and only the part of
+            // it inside the paint extent is shown.
+            let paint_extent =
+                calculate_paint_offset(&constraints, 0.0, main_axis_padding);
+            let cache_extent = calculate_cache_offset(&constraints, 0.0, main_axis_padding);
+            self.geometry = SliverGeometry::new(
+                main_axis_padding,
+                paint_extent.min(constraints.remaining_paint_extent),
+                main_axis_padding,
+                cache_extent,
+                false,
+            );
+            return self.geometry;
+        };
+        let before_padding_paint_extent =
+            calculate_paint_offset(&constraints, 0.0, before_padding);
+        // The incoming overlap is consumed by the leading padding, not passed
+        // on to the child.
+        let mut overlap = constraints.overlap;
+        if overlap > 0.0 {
+            overlap = (constraints.overlap - before_padding_paint_extent).max(0.0);
+        }
+        let child_geometry = child.sliver_layout(SliverConstraints {
+            scroll_offset: (constraints.scroll_offset - before_padding).max(0.0),
+            cache_origin: (constraints.cache_origin + before_padding).min(0.0),
+            overlap,
+            remaining_paint_extent: constraints.remaining_paint_extent
+                - before_padding_paint_extent,
+            remaining_cache_extent: constraints.remaining_cache_extent
+                - calculate_cache_offset(&constraints, 0.0, before_padding),
+            cross_axis_extent: (constraints.cross_axis_extent - cross_axis_padding).max(0.0),
+            preceding_scroll_extent: before_padding + constraints.preceding_scroll_extent,
+            ..constraints
+        });
+        // A child's correction is the one thing passed through untouched: the
+        // viewport's re-walk has to see it, whatever padding is in the way.
+        if let Some(correction) = child_geometry.scroll_offset_correction {
+            self.geometry = SliverGeometry {
+                scroll_offset_correction: Some(correction),
+                ..SliverGeometry::ZERO
+            };
+            return self.geometry;
+        }
+        let scroll_extent = child_geometry.scroll_extent;
+        let before_padding_cache_extent = calculate_cache_offset(&constraints, 0.0, before_padding);
+        let after_padding_cache_extent = calculate_cache_offset(
+            &constraints,
+            before_padding + scroll_extent,
+            main_axis_padding + scroll_extent,
+        );
+        let after_padding_paint_extent = calculate_paint_offset(
+            &constraints,
+            before_padding + scroll_extent,
+            main_axis_padding + scroll_extent,
+        );
+        let main_axis_padding_cache_extent = before_padding_cache_extent + after_padding_cache_extent;
+        let main_axis_padding_paint_extent = before_padding_paint_extent + after_padding_paint_extent;
+        let paint_extent = (before_padding_paint_extent
+            + child_geometry
+                .paint_extent
+                .max(child_geometry.layout_extent + after_padding_paint_extent))
+        .min(constraints.remaining_paint_extent);
+        self.geometry = SliverGeometry {
+            paint_origin: child_geometry.paint_origin,
+            scroll_extent: main_axis_padding + scroll_extent,
+            paint_extent,
+            layout_extent: (main_axis_padding_paint_extent + child_geometry.layout_extent)
+                .min(paint_extent),
+            cache_extent: (main_axis_padding_cache_extent + child_geometry.cache_extent)
+                .min(constraints.remaining_cache_extent),
+            max_paint_extent: main_axis_padding + child_geometry.max_paint_extent,
+            hit_test_extent: (main_axis_padding_paint_extent + child_geometry.paint_extent)
+                .max(before_padding_paint_extent + child_geometry.hit_test_extent),
+            visible: paint_extent > 0.0,
+            has_visual_overflow: child_geometry.has_visual_overflow,
+            scroll_offset_correction: None,
+            max_scroll_obstruction_extent: 0.0,
+            cross_axis_extent: None,
+        };
+        // The child's paint offset: the visible part of the leading padding
+        // along the main axis, the leading padding itself across.
+        let calculated_offset = match apply_growth_direction_to_axis_direction(
+            constraints.axis_direction,
+            constraints.growth_direction,
+        ) {
+            AxisDirection::Up => calculate_paint_offset(
+                &constraints,
+                self.padding.bottom + scroll_extent,
+                self.padding.vertical() + scroll_extent,
+            ),
+            AxisDirection::Left => calculate_paint_offset(
+                &constraints,
+                self.padding.right + scroll_extent,
+                self.padding.horizontal() + scroll_extent,
+            ),
+            AxisDirection::Right => calculate_paint_offset(&constraints, 0.0, self.padding.left),
+            AxisDirection::Down => calculate_paint_offset(&constraints, 0.0, self.padding.top),
+        };
+        self.paint_offset = match constraints.axis() {
+            Axis::Horizontal => Offset::new(calculated_offset, self.padding.top),
+            Axis::Vertical => Offset::new(self.padding.left, calculated_offset),
+        };
+        self.geometry
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    /// Upstream's `RenderSliverEdgeInsetsPadding.paint`: the child, at its
+    /// paint offset, only while there is something of the *child* to show.
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            if child.sliver_geometry().visible {
+                context.paint_child(child, offset.plus(self.paint_offset));
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            if child.sliver_geometry().visible {
+                visit(child, self.paint_offset);
+            }
+        }
+    }
+
+    /// Upstream's `hitTestChildren` through `addWithAxisOffset`: the position
+    /// in the child's sliver coordinates, gated on the child having anything
+    /// to hit.
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if let Some(child) = &self.child {
+            if child.sliver_geometry().hit_test_extent > 0.0
+                && main_axis_position >= 0.0
+                && main_axis_position < self.geometry.hit_test_extent
+                && cross_axis_position >= 0.0
+                && cross_axis_position < self.constraints.cross_axis_extent
+            {
+                return child.sliver_hit_test(
+                    main_axis_position - self.child_main_axis_position(),
+                    cross_axis_position - self.child_cross_axis_position(),
+                    result,
+                );
+            }
+        }
+        false
     }
 }
 
@@ -4765,12 +9923,18 @@ impl RenderBox for RenderPointerRegion {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = self.child.layout(constraints);
+        self.size = self.child.layout_child(constraints, true);
         self.size
     }
 
     fn size(&self) -> Size {
         self.size
+    }
+
+    /// Upstream's proxy dry answer: the child's. What the region wants to hear
+    /// about is not a layout question.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -4835,6 +9999,37 @@ impl RenderBox for RenderPointerRegion {
 mod tests {
     use super::*;
 
+    /// Upstream `_paintImage` only hands the engine a paint when the image
+    /// has an opacity, and it is black with the opacity as the alpha channel.
+    #[test]
+    fn image_opacity_becomes_a_transparent_black_paint() {
+        assert!(image_paint(None).is_none());
+        let paint = image_paint(Some(0.5)).unwrap();
+        assert_eq!(paint.color_for_test(), Color::argb(128, 0, 0, 0));
+    }
+
+    #[test]
+    fn an_unfitted_image_is_painted_at_scale_down() {
+        // `Image.fit` is null unless said otherwise, and a null fit is
+        // `BoxFit.scaleDown` by the time it reaches the canvas --
+        // `paintImage`'s `fit ??= centerSlice == null ? BoxFit.scaleDown :
+        // BoxFit.fill` (`painting/decoration_image.dart`). So the default here
+        // is ScaleDown, not the enum's own Contain, and the scale it paints
+        // at is the contain scale with one as a ceiling: the 100x50 picture
+        // in a 200x200 box stays at 1.0 where contain would grow it to 2.0.
+        let image = Image::from_pixels(&[0, 0, 0, 0], 1, 1).expect("the stub engine hands one back");
+        assert_eq!(RenderImage::new(Rc::new(image)).fit, BoxFit::ScaleDown);
+
+        let natural = Size::new(100.0, 50.0);
+        let roomy = Size::new(200.0, 200.0);
+        assert_eq!(RenderImage::paint_scale(BoxFit::ScaleDown, natural, roomy), 1.0);
+        assert_eq!(RenderImage::paint_scale(BoxFit::Contain, natural, roomy), 2.0);
+
+        // Where the box is the smaller thing, scale-down shrinks with contain.
+        let tight = Size::new(50.0, 50.0);
+        assert_eq!(RenderImage::paint_scale(BoxFit::ScaleDown, natural, tight), 0.5);
+    }
+
     /// A box that reports a fixed size, clamped into whatever it is given.
     struct FixedBox {
         preferred: Size,
@@ -4865,6 +10060,12 @@ mod tests {
         fn size(&self) -> Size {
             self.size
         }
+        /// The same answer `layout` gives -- upstream's test doubles override
+        /// `computeDryLayout` too, because anything a parent dry-measures has
+        /// to be able to say its size without laying itself out.
+        fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(self.preferred)
+        }
         fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
         fn min_intrinsic_width(&self, _height: f32) -> f32 {
             self.preferred.width
@@ -4880,6 +10081,33 @@ mod tests {
         }
         fn distance_to_baseline(&self) -> Option<f32> {
             self.baseline
+        }
+    }
+
+    /// A `FixedBox` a finger can land on: same size answers, plus the
+    /// `hitTestSelf` that says so. Upstream's test doubles override it for the
+    /// same reason -- without it a parent's hit test has nothing to find.
+    struct TappableBox(FixedBox);
+
+    impl TappableBox {
+        fn new(width: f32, height: f32) -> TappableBox {
+            TappableBox(FixedBox::new(width, height))
+        }
+    }
+
+    impl RenderBox for TappableBox {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.0.layout(constraints)
+        }
+        fn size(&self) -> Size {
+            self.0.size()
+        }
+        fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+            self.0.compute_dry_layout(constraints)
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
         }
     }
 
@@ -5023,6 +10251,175 @@ mod tests {
     }
 
     #[test]
+    fn a_row_in_rtl_lays_its_first_child_at_the_right() {
+        // Upstream positions "in visual order: starting from the top-left
+        // child", which under `_flipMainAxis` is the *last* child walked with
+        // `childBefore` -- and the main position still grows from the origin,
+        // so the first child ends up furthest right. `start`'s slack goes to
+        // the leading edge, which is the right one here (`_distributeSpace`
+        // with `flipped: true`).
+        let mut row = RenderFlex::row()
+            .with_text_direction(TextDirection::Rtl)
+            .push(FixedBox::new(20.0, 10.0))
+            .push(FixedBox::new(30.0, 10.0));
+        let size = row.layout(BoxConstraints::tight(100.0, 50.0));
+        assert_eq!(size, Size::new(100.0, 50.0));
+        let offsets = row.child_offsets();
+        // The first child (20 wide) ends at the right edge: 100 - 20; the
+        // second sits to its left, at 80 - 30.
+        assert_eq!(offsets[0].dx, 80.0);
+        assert_eq!(offsets[1].dx, 50.0);
+    }
+
+    #[test]
+    fn a_column_laid_upwards_starts_its_first_child_at_the_bottom() {
+        // The same flip along the vertical axis (`_flipMainAxis` again, from
+        // `verticalDirection` this time): the visual top-left child is the last
+        // one, and the 10 of slack sits at the leading -- bottom -- edge.
+        let mut column = RenderFlex::column()
+            .with_vertical_direction(VerticalDirection::Up)
+            .push(FixedBox::new(20.0, 20.0))
+            .push(FixedBox::new(20.0, 20.0));
+        column.layout(BoxConstraints::tight(100.0, 50.0));
+        let offsets = column.child_offsets();
+        assert_eq!(offsets[0].dy, 30.0, "the first child is not at the bottom");
+        assert_eq!(offsets[1].dy, 10.0);
+    }
+
+    #[test]
+    fn a_flipped_flex_dry_measures_what_the_wet_layout_lays_out() {
+        // `computeDryLayout` and `performLayout` share `_computeSizes`, which
+        // does not look at either direction -- only the placing after it does
+        // -- so the flipped wet size and the dry one are the same answer.
+        let constraints = BoxConstraints::tight(100.0, 50.0);
+        let mut wet = RenderFlex::row()
+            .with_text_direction(TextDirection::Rtl)
+            .with_vertical_direction(VerticalDirection::Up)
+            .push(FixedBox::new(20.0, 10.0))
+            .push(FixedBox::new(30.0, 10.0));
+        let wet_size = wet.layout(constraints);
+        let dry = RenderFlex::row()
+            .with_text_direction(TextDirection::Rtl)
+            .with_vertical_direction(VerticalDirection::Up)
+            .push(FixedBox::new(20.0, 10.0))
+            .push(FixedBox::new(30.0, 10.0));
+        assert_eq!(dry.compute_dry_layout(constraints), wet_size);
+    }
+
+    #[test]
+    fn a_wrapped_row_in_rtl_reads_its_lines_right_to_left() {
+        // `_areAxesFlipped`'s main half: each line is walked from its
+        // `leadingChild` -- the logically last child on it -- by `childBefore`,
+        // and `start`'s free space goes to the right-hand leading edge. The
+        // lines themselves still stack downwards (`verticalDirection` is
+        // untouched by a flipped main axis).
+        //
+        // A window pinned to 100 wide, so there is free space to place: the
+        // content is 80, the first line breaks on the third child.
+        let mut wrap = RenderWrap::horizontal()
+            .with_text_direction(TextDirection::Rtl)
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0));
+        let size = wrap.layout(BoxConstraints::new(100.0, 100.0, 0.0, 200.0));
+        assert_eq!(size, Size::new(100.0, 20.0));
+        let offsets = wrap.child_offsets();
+        // First line (children 0 and 1): 80 of content in 100, so 20 leads from
+        // the right; the second child is the visually first, the first child
+        // ends at the right edge.
+        assert_eq!(offsets[0], Offset::new(60.0, 0.0));
+        assert_eq!(offsets[1], Offset::new(20.0, 0.0));
+        // The overflow child starts the second line, below the first, its lone
+        // width pushed to the right edge too.
+        assert_eq!(offsets[2], Offset::new(60.0, 10.0));
+    }
+
+    #[test]
+    fn a_wrap_stacking_upwards_keeps_its_lines_in_reading_order() {
+        // `_areAxesFlipped`'s cross half: the runs are reversed, so the first
+        // line sinks to the bottom, while the children within each line keep
+        // their left-to-right order (the main axis is not flipped).
+        let mut wrap = RenderWrap::horizontal()
+            .with_vertical_direction(VerticalDirection::Up)
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0));
+        wrap.layout(BoxConstraints::new(100.0, 100.0, 0.0, 200.0));
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0], Offset::new(0.0, 10.0));
+        assert_eq!(offsets[1], Offset::new(40.0, 10.0));
+        assert_eq!(offsets[2], Offset::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_wraps_dry_packing_is_the_same_whichever_way_it_reads() {
+        // `_computeDryLayout` packs runs without ever placing them, and the
+        // direction only says where the placements go -- so the flipped wrap
+        // dry-measures to the same two lines the wet layout laid out above.
+        let wrap = RenderWrap::horizontal()
+            .with_text_direction(TextDirection::Rtl)
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0));
+        assert_eq!(
+            wrap.compute_dry_layout(BoxConstraints::new(100.0, 100.0, 0.0, 200.0)),
+            Size::new(100.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn a_stacks_default_alignment_follows_the_direction() {
+        // Upstream's default alignment is `AlignmentDirectional.topStart`,
+        // which `resolve` turns into `Alignment.topRight` in rtl -- the
+        // unpositioned children sit at the top right, not the top left.
+        let mut stack = RenderStack::new()
+            .with_text_direction(TextDirection::Rtl)
+            .push(FixedBox::new(40.0, 60.0))
+            .push(FixedBox::new(10.0, 10.0));
+        stack.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(stack.child_offsets()[1], Offset::new(30.0, 0.0));
+    }
+
+    #[test]
+    fn an_absolute_stack_alignment_ignores_the_direction() {
+        // An explicit `Alignment` has no start to resolve -- upstream's
+        // `Alignment.resolve` returns it unchanged -- so a `textDirection`
+        // cannot move it.
+        let mut stack = RenderStack::new()
+            .with_alignment(Alignment::TOP_LEFT)
+            .with_text_direction(TextDirection::Rtl)
+            .push(FixedBox::new(40.0, 60.0))
+            .push(FixedBox::new(10.0, 10.0));
+        stack.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(stack.child_offsets()[1], Offset::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_paragraph_tells_the_reader_the_direction_it_was_built_in() {
+        // The direction is captured where the paragraph was built, and the
+        // semantics walk can run anywhere -- so the annotation says the
+        // paragraph's own, not whatever is ambient at collection time.
+        let paragraph = RenderParagraph::new("hello").with_text_direction(TextDirection::Rtl);
+        let annotation = paragraph.describe_semantics().expect("it says something");
+        assert_eq!(annotation.properties.text_direction, Some(TextDirection::Rtl));
+    }
+
+    #[test]
+    fn directional_insets_resolve_start_to_whichever_side_leads() {
+        // `EdgeInsetsDirectional.resolve`: start becomes the left inset in ltr
+        // and the right one in rtl -- the two swap, top and bottom stay.
+        let insets = EdgeInsetsDirectional::only(4.0, 5.0, 6.0, 7.0);
+        assert_eq!(
+            insets.resolve(TextDirection::Ltr),
+            EdgeInsets::only(4.0, 5.0, 6.0, 7.0)
+        );
+        assert_eq!(
+            insets.resolve(TextDirection::Rtl),
+            EdgeInsets::only(6.0, 5.0, 4.0, 7.0)
+        );
+    }
+
+    #[test]
     fn stack_sizes_to_its_largest_unpositioned_child() {
         let mut stack = RenderStack::new()
             .push(FixedBox::new(40.0, 20.0))
@@ -5061,6 +10458,31 @@ mod tests {
     }
 
     #[test]
+    fn stack_fit_expand_tightens_the_unpositioned_children() {
+        // `StackFit.expand` is `BoxConstraints.tight(constraints.biggest())`:
+        // the same loose 200x200 that gave the stack above a 40x60 box makes
+        // this one's child exactly the constraints' own size, and the stack
+        // with it.
+        let mut stack = RenderStack::new()
+            .with_fit(StackFit::Expand)
+            .push(FixedBox::new(40.0, 20.0));
+        let size = stack.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(200.0, 200.0));
+    }
+
+    #[test]
+    fn stack_fit_passthrough_hands_the_constraints_on_whole() {
+        // `StackFit.passthrough` is the constraints as they arrived, minima
+        // included: a 50x50 minimum reaches the child, where the default
+        // loose fit would have let it stay at the 40x20 it preferred.
+        let mut stack = RenderStack::new()
+            .with_fit(StackFit::Passthrough)
+            .push(FixedBox::new(40.0, 20.0));
+        let size = stack.layout(BoxConstraints::new(50.0, 200.0, 50.0, 200.0));
+        assert_eq!(size, Size::new(50.0, 50.0));
+    }
+
+    #[test]
     fn viewport_lets_its_child_exceed_it_and_reports_the_extent() {
         let mut viewport = RenderViewport::new(Axis::Vertical, FixedBox::new(50.0, 500.0));
         let size = viewport.layout(BoxConstraints::tight(100.0, 200.0));
@@ -5074,6 +10496,759 @@ mod tests {
             RenderViewport::new(Axis::Vertical, FixedBox::new(50.0, 500.0)).with_offset(1000.0);
         viewport.layout(BoxConstraints::tight(100.0, 200.0));
         assert_eq!(viewport.offset(), 300.0);
+    }
+
+    #[test]
+    fn a_viewport_scrolling_up_shows_the_far_end_of_its_content() {
+        // `_paintOffsetForPosition`'s `up` half: at offset zero the *end* of
+        // the content sits against the bottom of the window, because the
+        // offset counts into the content from the bottom edge. The extent is
+        // the same as a `down` viewport's -- `_maxScrollExtent` does not look
+        // at the direction -- and paint, the children walk and the hit test
+        // all read the one offset, which is what keeps the three saying the
+        // same thing.
+        let mut viewport = RenderViewport::new(Axis::Vertical, TappableBox::new(50.0, 500.0))
+            .with_axis_direction(AxisDirection::Up);
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(viewport.max_scroll_extent(), 300.0);
+        assert_eq!(viewport.scroll_offset(), Offset::new(0.0, -300.0));
+        // The walk reports the child where paint will draw it.
+        let mut visited = None;
+        viewport.visit_children(&mut |_, offset| visited = Some(offset));
+        assert_eq!(visited, Some(Offset::new(0.0, -300.0)));
+        // A tap at the top of the window lands on content y = 300 -- the far
+        // end -- and one below the content's end does not land on anything.
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(10.0, 10.0), &mut result));
+        let mut beyond = HitTestResult::new();
+        assert!(!viewport.hit_test(Offset::new(10.0, 210.0), &mut beyond));
+    }
+
+    #[test]
+    fn a_viewport_scrolling_left_starts_its_content_at_the_right_edge() {
+        // The horizontal mirror, which is what an rtl list scrolls by
+        // (`textDirectionToAxisDirection`): at offset zero the content's left
+        // (leading) edge is against the window's right edge, 300 of it out of
+        // the window to the right.
+        let mut viewport = RenderViewport::new(Axis::Horizontal, TappableBox::new(500.0, 50.0))
+            .with_axis_direction(AxisDirection::Left);
+        viewport.layout(BoxConstraints::tight(200.0, 100.0));
+        assert_eq!(viewport.scroll_offset(), Offset::new(-300.0, 0.0));
+        let mut visited = None;
+        viewport.visit_children(&mut |_, offset| visited = Some(offset));
+        assert_eq!(visited, Some(Offset::new(-300.0, 0.0)));
+        // The window's right half shows the content's end; its left half
+        // shows 100 of content before that.
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(150.0, 10.0), &mut result));
+    }
+
+    #[test]
+    fn a_viewport_shrink_wraps_content_in_a_loose_parent() {
+        // Upstream `_RenderSingleChildViewport.performLayout`:
+        // `size = constraints.constrain(child.size)`. In a loose parent that
+        // is the content's own size -- a list shorter than the room it was
+        // given is not stretched to fill it.
+        let mut viewport = RenderViewport::new(Axis::Vertical, FixedBox::new(50.0, 40.0));
+        let size = viewport.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(50.0, 40.0));
+        assert_eq!(viewport.max_scroll_extent(), 0.0, "nothing to scroll");
+    }
+
+    #[test]
+    fn a_viewport_takes_the_contents_extent_on_an_unbounded_axis() {
+        // `biggest` cannot name an infinite size, so a viewport that used to
+        // ask for it collapsed to the minimum on the unbounded axis -- a list
+        // inside an unbounded parent came out zero tall. `constrain` has no
+        // such trouble: the window is the content's own extent.
+        let mut viewport = RenderViewport::new(Axis::Vertical, FixedBox::new(50.0, 40.0));
+        let size = viewport
+            .layout(BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY));
+        assert_eq!(size, Size::new(50.0, 40.0));
+    }
+
+    #[test]
+    fn a_viewports_intrinsics_are_its_childs_whichever_way_it_scrolls() {
+        // Upstream delegates all four without looking at the axis: the scroll
+        // axis does not zero an intrinsic size, because a viewport still *is*
+        // its content as far as measuring is concerned.
+        let vertical = RenderViewport::new(Axis::Vertical, FixedBox::new(30.0, 40.0));
+        assert_eq!(vertical.min_intrinsic_width(100.0), 30.0);
+        assert_eq!(vertical.min_intrinsic_height(100.0), 40.0, "the scroll axis was zeroed");
+        let horizontal = RenderViewport::new(Axis::Horizontal, FixedBox::new(30.0, 40.0));
+        assert_eq!(horizontal.max_intrinsic_width(100.0), 30.0, "the scroll axis was zeroed");
+        assert_eq!(horizontal.max_intrinsic_height(100.0), 40.0);
+    }
+
+    // -- Slivers ------------------------------------------------------------------
+    //
+    // The sliver protocol against upstream's sliver.dart and viewport.dart
+    // tests: an adapter's geometry, the viewport's two-phase layout, and the
+    // four axis directions' paint and hit-test math.
+
+    /// A down-scrolling window 200 tall over a 100-wide cross axis, with a
+    /// cache band that reaches 400 past wherever the paint window ends.
+    fn sliver_constraints(scroll_offset: f32, remaining_paint_extent: f32) -> SliverConstraints {
+        SliverConstraints {
+            scroll_offset,
+            remaining_paint_extent,
+            cross_axis_extent: 100.0,
+            viewport_main_axis_extent: 200.0,
+            remaining_cache_extent: 400.0,
+            ..SliverConstraints::default()
+        }
+    }
+
+    /// A box that records where it was painted, with its identity, so a test
+    /// can read a viewport's paint walk back -- both which slivers were painted
+    /// and where, and in what order.
+    struct RecordingBox {
+        preferred: Size,
+        size: Size,
+        id: u64,
+        painted: std::rc::Rc<std::cell::RefCell<Vec<(u64, Offset)>>>,
+    }
+
+    impl RecordingBox {
+        fn shared(
+            width: f32,
+            height: f32,
+            id: u64,
+        ) -> (RecordingBox, std::rc::Rc<std::cell::RefCell<Vec<(u64, Offset)>>>) {
+            let painted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            (
+                RecordingBox {
+                    preferred: Size::new(width, height),
+                    size: Size::ZERO,
+                    id,
+                    painted: std::rc::Rc::clone(&painted),
+                },
+                painted,
+            )
+        }
+    }
+
+    impl RenderBox for RecordingBox {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = constraints.constrain(self.preferred);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(self.preferred)
+        }
+        fn paint(&self, _context: &mut PaintContext, offset: Offset) {
+            self.painted.borrow_mut().push((self.id, offset));
+        }
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+        fn hit_test_id(&self) -> u64 {
+            self.id
+        }
+    }
+
+    #[test]
+    fn sliver_constraints_hand_a_box_child_a_tight_cross_axis() {
+        // Upstream `SliverConstraints.asBoxConstraints`: tight across, and in
+        // the main axis whatever the caller named -- a sliver's box children
+        // are sized by the sliver, not by the viewport.
+        let vertical = sliver_constraints(0.0, 200.0);
+        let c = vertical.as_box_constraints(0.0, f32::INFINITY, None);
+        assert_eq!((c.min_width, c.max_width), (100.0, 100.0));
+        assert_eq!(c.min_height, 0.0);
+        assert!(c.max_height.is_infinite());
+
+        let horizontal = SliverConstraints {
+            axis_direction: AxisDirection::Right,
+            ..sliver_constraints(0.0, 200.0)
+        };
+        let c = horizontal.as_box_constraints(30.0, 60.0, Some(40.0));
+        assert_eq!((c.min_width, c.max_width), (30.0, 60.0));
+        assert_eq!((c.min_height, c.max_height), (40.0, 40.0), "the named cross extent wins");
+    }
+
+    #[test]
+    fn an_adapter_reports_the_childs_extent_clipped_to_the_window() {
+        // Upstream `RenderSliverToBoxAdapter.performLayout`: the scroll extent
+        // is the child's whole extent; the paint extent is how much of it falls
+        // inside `scrollOffset .. scrollOffset + remainingPaintExtent`; the
+        // cache extent is the same question for the cache band.
+        let mut adapter = RenderSliverToBoxAdapter::new(FixedBox::new(100.0, 80.0));
+
+        // Fully inside the window.
+        let geometry = adapter.sliver_layout(sliver_constraints(0.0, 200.0));
+        assert_eq!(geometry.scroll_extent, 80.0);
+        assert_eq!(geometry.paint_extent, 80.0);
+        assert_eq!(geometry.layout_extent, 80.0, "layout defaults to paint");
+        assert_eq!(geometry.hit_test_extent, 80.0, "hit test defaults to paint");
+        assert_eq!(geometry.cache_extent, 80.0);
+        assert!(geometry.visible);
+        assert!(!geometry.has_visual_overflow);
+
+        // Partially scrolled past: half of the child is still in the window,
+        // and having been scrolled at all is an overflow.
+        let geometry = adapter.sliver_layout(sliver_constraints(30.0, 200.0));
+        assert_eq!(geometry.scroll_extent, 80.0, "the scroll extent is the child's");
+        assert_eq!(geometry.paint_extent, 50.0);
+        assert_eq!(geometry.cache_extent, 50.0, "content before the scroll offset is not cached");
+        assert!(geometry.visible);
+        assert!(geometry.has_visual_overflow);
+
+        // Fully scrolled past: nothing to paint, but the extent stands.
+        let geometry = adapter.sliver_layout(sliver_constraints(80.0, 200.0));
+        assert_eq!(geometry.scroll_extent, 80.0);
+        assert_eq!(geometry.paint_extent, 0.0);
+        assert_eq!(geometry.cache_extent, 0.0);
+        assert!(!geometry.visible);
+        assert!(geometry.has_visual_overflow);
+    }
+
+    #[test]
+    fn an_empty_adapter_has_nothing_to_say() {
+        let mut adapter = RenderSliverToBoxAdapter::empty();
+        assert_eq!(adapter.sliver_layout(sliver_constraints(0.0, 200.0)), SliverGeometry::ZERO);
+        let mut result = HitTestResult::new();
+        assert!(!adapter.sliver_hit_test(10.0, 10.0, &mut result));
+    }
+
+    #[test]
+    fn a_sliver_viewport_totals_the_extents_and_clamps_its_offset() {
+        // The two-phase `performLayout`: the first pass totals the slivers'
+        // scroll extents, and an offset past them is corrected -- upstream
+        // through `applyContentDimensions`, here as the clamp -- before the
+        // second pass lays them out where they will actually be.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_sliver(RenderSliverToBoxAdapter::new(FixedBox::new(100.0, 100.0)))
+            .with_sliver(RenderSliverToBoxAdapter::new(FixedBox::new(100.0, 100.0)))
+            .with_sliver(RenderSliverToBoxAdapter::new(FixedBox::new(100.0, 100.0)))
+            .with_offset(500.0);
+        let size = viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(size, Size::new(100.0, 200.0), "sized by the parent, biggest");
+        assert_eq!(viewport.offset(), 100.0, "300 of content in a 200 window");
+        assert_eq!(viewport.max_scroll_extent(), 100.0);
+
+        // After the correction: the first sliver is fully scrolled past, and
+        // the two that remain share the window exactly.
+        let first = viewport.children[0].render.sliver_geometry();
+        let second = viewport.children[1].render.sliver_geometry();
+        let third = viewport.children[2].render.sliver_geometry();
+        assert_eq!(first.paint_extent, 0.0);
+        assert!(!first.visible);
+        assert_eq!(first.cache_extent, 100.0, "still warm behind the leading edge");
+        assert_eq!(second.paint_extent, 100.0);
+        assert_eq!(third.paint_extent, 100.0);
+        assert!(second.visible && third.visible);
+    }
+
+    #[test]
+    fn a_sliver_viewport_paints_each_sliver_at_its_paint_offset() {
+        // Paint runs the list backwards, so where slivers overlap the first is
+        // on top, and only the visible ones are painted at all.
+        use crate::engine::LayerTree;
+
+        let (first, first_painted) = RecordingBox::shared(100.0, 100.0, 1);
+        let (second, second_painted) = RecordingBox::shared(100.0, 100.0, 2);
+        let (third, third_painted) = RecordingBox::shared(100.0, 100.0, 3);
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_sliver(RenderSliverToBoxAdapter::new(first))
+            .with_sliver(RenderSliverToBoxAdapter::new(second))
+            .with_sliver(RenderSliverToBoxAdapter::new(third));
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        let mut layers = LayerTree::new(100, 200);
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 200.0));
+            viewport.paint(&mut context, Offset::ZERO);
+        }
+        assert_eq!(&*third_painted.borrow(), &[] as &[(u64, Offset)], "past the window");
+        assert_eq!(&*second_painted.borrow(), &[(2, Offset::new(0.0, 100.0))]);
+        assert_eq!(&*first_painted.borrow(), &[(1, Offset::new(0.0, 0.0))]);
+
+        // The semantics walk reports the same offsets, and reaches further:
+        // the cache band keeps the out-of-window sliver reachable too.
+        let mut visited = Vec::new();
+        viewport.visit_children(&mut |_, offset| visited.push(offset));
+        assert_eq!(
+            visited,
+            vec![
+                Offset::new(0.0, 0.0),
+                Offset::new(0.0, 100.0),
+                Offset::new(0.0, 200.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_sliver_hit_test_accounts_for_the_scroll() {
+        // A tap is answered by whichever sliver's content is under it *after*
+        // the scroll offset is taken out: at offset 100 the first sliver is
+        // gone, the second starts at the window's top edge.
+        let (first, _) = WatchedBox::shared(100.0, 100.0, 11);
+        let (second, _) = WatchedBox::shared(100.0, 100.0, 12);
+        let (third, _) = WatchedBox::shared(100.0, 100.0, 13);
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_sliver(RenderSliverToBoxAdapter::new(first))
+            .with_sliver(RenderSliverToBoxAdapter::new(second))
+            .with_sliver(RenderSliverToBoxAdapter::new(third))
+            .with_offset(100.0);
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(viewport.offset(), 100.0);
+
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(10.0, 10.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(12));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(10.0, 150.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(13));
+    }
+
+    #[test]
+    fn a_viewport_scrolling_up_grows_its_slivers_from_the_bottom() {
+        // `computeAbsolutePaintOffset` and `computeChildMainAxisPosition` for
+        // the reversed direction: the leading edge is the bottom one, so at
+        // offset zero the first sliver's trailing edge sits at the top of the
+        // window and everything grows downwards-in-content from the bottom.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Up)
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 21).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 22).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 23).0));
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(viewport.max_scroll_extent(), 100.0, "the direction does not change the extent");
+        assert_eq!(viewport.children[0].parent_data.paint_offset, Offset::new(0.0, 100.0));
+        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        assert!(!viewport.children[2].render.sliver_geometry().visible);
+
+        // Scrolled to the end: the first sliver has left through the bottom,
+        // and a tap near the top edge lands on the last sliver's far end --
+        // its content's beginning, read upside down.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Up)
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 31).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 32).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 33).0))
+            .with_offset(100.0);
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(0.0, 100.0));
+        assert_eq!(viewport.children[2].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(50.0, 10.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(33));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(50.0, 110.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(32));
+    }
+
+    #[test]
+    fn a_viewport_scrolling_left_grows_its_slivers_from_the_right() {
+        // The horizontal mirror, which is what an rtl list scrolls by: the
+        // leading edge is the right one.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Left)
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 41).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 42).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 43).0))
+            .with_offset(100.0);
+        viewport.layout(BoxConstraints::tight(200.0, 100.0));
+        assert_eq!(viewport.max_scroll_extent(), 100.0);
+        // The first sliver is scrolled out through the right edge, the second
+        // starts there, and the last one owns the left half of the window.
+        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(100.0, 0.0));
+        assert_eq!(viewport.children[2].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(10.0, 25.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(43));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(110.0, 25.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(42));
+    }
+
+    #[test]
+    fn an_empty_sliver_viewport_clamps_its_offset_to_zero() {
+        // `applyContentDimensions(0, 0)`: with no slivers there is nothing to
+        // scroll to, whatever offset was asked for.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down).with_offset(50.0);
+        let size = viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(size, Size::new(100.0, 200.0));
+        assert_eq!(viewport.offset(), 0.0);
+        assert_eq!(viewport.max_scroll_extent(), 0.0);
+    }
+
+    /// A list row whose extent is read when it is built: growing the shared
+    /// cell and handing the list a fresh configuration is how a test makes
+    /// dead reckoning disagree with itself -- the rebuilt row no longer fits
+    /// where the walk remembers putting it.
+    struct ListProbeRow {
+        preferred: Size,
+        size: Size,
+        id: u64,
+        layouts: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl RenderBox for ListProbeRow {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = constraints.constrain(self.preferred);
+            self.layouts.set(self.layouts.get() + 1);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        /// The per-frame rebuild of a row: a new extent is taken and laid out
+        /// again, and anything else was always this row.
+        fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            let fresh = fresh.as_any_mut().downcast_mut::<ListProbeRow>()?;
+            let changed = self.preferred != fresh.preferred;
+            self.preferred = fresh.preferred;
+            self.id = fresh.id;
+            Some(UpdateEffect::relayout_if(changed))
+        }
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+        fn hit_test_id(&self) -> u64 {
+            self.id
+        }
+    }
+
+    /// A thousand rows' worth of probe: one shared extent every row reads at
+    /// build time, one counter of every row ever built, and one of every row
+    /// layout.
+    struct ListProbe {
+        extent: std::rc::Rc<std::cell::Cell<f32>>,
+        builds: std::rc::Rc<std::cell::Cell<u32>>,
+        layouts: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl ListProbe {
+        fn new(extent: f32) -> ListProbe {
+            ListProbe {
+                extent: std::rc::Rc::new(std::cell::Cell::new(extent)),
+                builds: std::rc::Rc::new(std::cell::Cell::new(0)),
+                layouts: std::rc::Rc::new(std::cell::Cell::new(0)),
+            }
+        }
+
+        /// A list over the probe's rows. `horizontal` rows vary their width
+        /// instead of their height, for the reversed horizontal list.
+        fn build_list(
+            &self,
+            child_count: usize,
+            item_extent: Option<f32>,
+            estimated_extent: Option<f32>,
+            horizontal: bool,
+        ) -> RenderSliverList {
+            let extent = std::rc::Rc::clone(&self.extent);
+            let builds = std::rc::Rc::clone(&self.builds);
+            let layouts = std::rc::Rc::clone(&self.layouts);
+            let mut list = RenderSliverList::new(child_count, move |index| {
+                builds.set(builds.get() + 1);
+                let extent = extent.get();
+                RenderRef::new(ListProbeRow {
+                    preferred: if horizontal {
+                        Size::new(extent, 40.0)
+                    } else {
+                        Size::new(100.0, extent)
+                    },
+                    size: Size::ZERO,
+                    id: index as u64,
+                    layouts: std::rc::Rc::clone(&layouts),
+                })
+            });
+            if let Some(item_extent) = item_extent {
+                list = list.with_item_extent(item_extent);
+            }
+            if let Some(estimated_extent) = estimated_extent {
+                list = list.with_estimated_extent(estimated_extent);
+            }
+            list
+        }
+
+        fn builds(&self) -> u32 {
+            self.builds.get()
+        }
+
+        fn layouts(&self) -> u32 {
+            self.layouts.get()
+        }
+    }
+
+    /// The live window of the sliver list in a viewport's first sliver.
+    fn sliver_list_live_range(viewport: &RenderSliverViewport) -> (usize, usize) {
+        let cell = viewport.children[0].render.render.borrow();
+        let object: &dyn RenderBox = &**cell;
+        object
+            .as_any()
+            .downcast_ref::<RenderSliverList>()
+            .expect("the first sliver is a list")
+            .live_range()
+    }
+
+    #[test]
+    fn a_sliver_list_lays_out_only_the_window_plus_the_cache_band() {
+        // The soul of the thing: a thousand children cost a paint window and
+        // a cache band of layouts, upstream's `performLayout` walking only as
+        // far as `scrollOffset + remainingCacheExtent` before pricing the
+        // rest by extrapolation (`_extrapolateMaxScrollOffset`).
+        let probe = ListProbe::new(50.0);
+        let mut list = probe.build_list(1000, Some(50.0), None, false);
+        list.sliver_layout(sliver_constraints(0.0, 200.0));
+        assert_eq!(
+            list.live_range(),
+            (0, 8),
+            "the 200-tall window plus the 400-tall cache band, and nothing more"
+        );
+        assert_eq!(probe.builds(), 8, "992 children were never built");
+        assert_eq!(probe.layouts(), 8, "and never laid out");
+        let geometry = list.sliver_geometry();
+        assert_eq!(geometry.paint_extent, 200.0);
+        assert_eq!(geometry.scroll_extent, 50_000.0, "the whole list priced from the window's average");
+
+        // A programmatic jump ten thousand pixels down does not walk there
+        // one child at a time: the window was left behind by more than its
+        // own extent, so the list restarts at an index the extent arithmetic
+        // estimates (upstream's `getMinChildIndexForScrollOffset`) and again
+        // lays out only a window and a cache band.
+        list.sliver_layout(sliver_constraints(20_000.0, 200.0));
+        assert_eq!(list.live_range(), (400, 408));
+        assert_eq!(probe.builds(), 16);
+        assert_eq!(list.children[0].layout_offset, Some(20_000.0), "the estimate put item 400 exactly at the scroll offset");
+        assert_eq!(list.children[0].render.size().height, 50.0);
+        assert_eq!(list.sliver_geometry().scroll_extent, 50_000.0);
+    }
+
+    #[test]
+    fn a_scrolled_list_collects_its_leading_and_trailing_garbage() {
+        // Upstream's `collectGarbage` through the same walk: children that
+        // scrolled off the leading edge are dropped, and children the last
+        // layout no longer reaches are never built. Dropped is gone -- there
+        // is no keepAlive here.
+        let probe = ListProbe::new(50.0);
+        let mut list = probe.build_list(1000, Some(50.0), None, false);
+        list.sliver_layout(sliver_constraints(0.0, 200.0));
+        assert_eq!(list.live_range(), (0, 8));
+
+        // Scrolled to 200: items 0-2 are leading garbage, and the walk
+        // builds on until 200 + 400 of cache.
+        list.sliver_layout(sliver_constraints(200.0, 200.0));
+        assert_eq!(list.live_range(), (3, 12));
+        assert_eq!(probe.builds(), 12, "three children were dropped, four more built");
+
+        // Scrolled back to 50: two children before the window are built
+        // again -- they were garbage, not cache -- and nothing past 450 is.
+        list.sliver_layout(sliver_constraints(50.0, 200.0));
+        assert_eq!(list.live_range(), (1, 9));
+        assert_eq!(probe.builds(), 14);
+        assert_eq!(list.children[0].layout_offset, Some(50.0));
+        assert_eq!(
+            list.children[7].layout_offset,
+            Some(400.0),
+            "item 8 ends exactly at the cache band's far edge"
+        );
+    }
+
+    #[test]
+    fn a_grown_list_answers_a_scroll_offset_correction() {
+        // Dead reckoning found out: every child grew after the window
+        // recorded where things were, and walking back towards the list's
+        // beginning puts a child before zero. Upstream's answer is
+        // `geometry = SliverGeometry(scrollOffsetCorrection: ...)`; the next
+        // layout at the corrected offset walks the window true again.
+        let probe = ListProbe::new(50.0);
+        let mut list = probe.build_list(1000, Some(50.0), None, false);
+        list.sliver_layout(sliver_constraints(350.0, 200.0));
+        assert_eq!(list.live_range(), (7, 15));
+
+        // Every child grows to 100, and the list hears about it the way it
+        // does every frame: a fresh configuration, whose rebuild of each
+        // live child replaces the row it was.
+        probe.extent.set(100.0);
+        let mut fresh = probe.build_list(1000, None, Some(100.0), false);
+        list.update_from(&mut fresh);
+
+        // At scroll 30 the walk wants children before item 7, and each
+        // freshly built one is twice as tall as the offsets remember: item 3
+        // lands at -50, which cannot be -- so the list parks it at zero and
+        // asks the viewport for a 50-pixel correction.
+        let geometry = list.sliver_layout(sliver_constraints(30.0, 200.0));
+        assert_eq!(geometry.scroll_offset_correction, Some(50.0));
+        assert_eq!(list.live_range(), (3, 15));
+
+        // The corrected offset is 30 + 50 = 80, and the walk there re-places
+        // the window at the true, grown extents.
+        let geometry = list.sliver_layout(sliver_constraints(80.0, 200.0));
+        assert_eq!(geometry.scroll_offset_correction, None);
+        assert_eq!(list.live_range(), (3, 8));
+        assert_eq!(list.children[0].layout_offset, Some(0.0));
+        assert_eq!(list.children[1].layout_offset, Some(100.0));
+        assert_eq!(
+            list.children[4].layout_offset,
+            Some(400.0),
+            "item 7, re-placed at its grown extent"
+        );
+        assert_eq!(list.children[4].render.size().height, 100.0);
+        assert_eq!(geometry.scroll_extent, 99_700.0, "the extrapolation now prices the grown rows");
+        assert_eq!(
+            probe.builds(),
+            20,
+            "the initial window, its rebuild, and the four inserts: 20 of a thousand"
+        );
+    }
+
+    #[test]
+    fn a_viewport_applies_the_correction_and_rewalks_without_a_jump() {
+        // The other half of the protocol: the viewport applies the
+        // correction (`correctBy`) and lays everything out again, which is
+        // why answering a correction is safe at all. The whole flow is the
+        // facade's: a window, a scroll, growth, and back to the top.
+        let probe = ListProbe::new(50.0);
+        let handle = RenderRef::new(probe.build_list(1000, Some(50.0), None, false));
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_sliver(handle.clone())
+            .with_cache_extent(400.0);
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(sliver_list_live_range(&viewport), (0, 12), "the window plus a cache band either side of nothing");
+        assert_eq!(viewport.max_scroll_extent(), 49_800.0);
+
+        viewport.offset = 550.0;
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(
+            sliver_list_live_range(&viewport),
+            (2, 23),
+            "the cache band never runs past the window grown by the cache on both sides"
+        );
+
+        // Everything doubles, and the frame's rebuild tells the list.
+        probe.extent.set(100.0);
+        let mut fresh = probe.build_list(1000, None, Some(100.0), false);
+        {
+            let mut cell = handle.render.borrow_mut();
+            let object: &mut dyn RenderBox = &mut **cell;
+            object
+                .as_any_mut()
+                .downcast_mut::<RenderSliverList>()
+                .unwrap()
+                .update_from(&mut fresh);
+        }
+
+        // Scroll back near the top: the walk reaches the list's beginning
+        // at the wrong place, answers a +100 correction, and the viewport
+        // applies it and re-walks everything.
+        viewport.offset = 30.0;
+        viewport.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(viewport.offset(), 130.0, "the applied correction: 30 + 100");
+        {
+            let mut cell = handle.render.borrow_mut();
+            let object: &mut dyn RenderBox = &mut **cell;
+            let list = object.as_any_mut().downcast_mut::<RenderSliverList>().unwrap();
+            assert_eq!(list.live_range(), (0, 8));
+            assert_eq!(list.children[2].layout_offset, Some(200.0), "item 2 re-placed at its grown offset");
+            // No jump: before the growth, a scroll to 30 would show item 2
+            // at 100 - 30 = 70 of the window; the corrected walk puts it at
+            // 200 - 130 = 70 -- the same pixels, one correction apart.
+            assert_eq!(list.child_main_axis_position(2), 70.0);
+        }
+        assert_eq!(viewport.max_scroll_extent(), 99_800.0, "priced from the grown rows");
+    }
+
+    #[test]
+    fn sliver_padding_deflates_the_child_and_adds_the_padding_back() {
+        // Upstream `RenderSliverPadding.performLayout`: the child is laid
+        // out against the constraints less the padding -- a scroll offset
+        // shifted past the leading padding, shorter paint and cache extents,
+        // a narrower cross axis -- and the geometry answers with the child's
+        // numbers plus the padding put back.
+        let row = RenderRef::new(RecordingBox::shared(68.0, 200.0, 7).0);
+        let mut padding = RenderSliverPadding::new(
+            EdgeInsets::only(16.0, 24.0, 16.0, 24.0),
+            RenderRef::new(RenderSliverToBoxAdapter::new(row.clone())),
+        );
+        let geometry = padding.sliver_layout(sliver_constraints(0.0, 200.0));
+        {
+            let cell = row.render.borrow();
+            let object: &dyn RenderBox = &**cell;
+            assert_eq!(
+                object.as_any().downcast_ref::<RecordingBox>().unwrap().size,
+                Size::new(68.0, 200.0),
+                "the cross axis was deflated by the padding"
+            );
+        }
+        assert_eq!(geometry.scroll_extent, 248.0, "the child plus the padding before and after it");
+        assert_eq!(geometry.paint_extent, 200.0, "the padded content more than fills the window");
+        assert_eq!(geometry.layout_extent, 200.0);
+        assert_eq!(geometry.cache_extent, 248.0);
+        assert_eq!(geometry.hit_test_extent, 200.0);
+        assert_eq!(padding.paint_offset, Offset::new(16.0, 24.0), "the visible leading padding, and the cross padding");
+
+        // Scrolled to 30: the leading padding has scrolled out of the
+        // window, so the child's paint offset is only the cross padding.
+        let geometry = padding.sliver_layout(sliver_constraints(30.0, 200.0));
+        assert_eq!(geometry.scroll_extent, 248.0);
+        assert_eq!(geometry.paint_extent, 200.0);
+        assert_eq!(geometry.hit_test_extent, 200.0, "the trailing padding's last 6 pixels are hittable");
+        assert_eq!(padding.paint_offset, Offset::new(16.0, 0.0));
+
+        // Padding with nothing in it is a sliver of exactly its own extent.
+        let mut empty = RenderSliverPadding::empty(EdgeInsets::only(0.0, 24.0, 0.0, 24.0));
+        let geometry = empty.sliver_layout(sliver_constraints(0.0, 200.0));
+        assert_eq!(geometry.scroll_extent, 48.0);
+        assert_eq!(geometry.paint_extent, 48.0);
+        let geometry = empty.sliver_layout(sliver_constraints(30.0, 200.0));
+        assert_eq!(geometry.paint_extent, 18.0);
+    }
+
+    #[test]
+    fn a_leftward_list_grows_from_the_right_edge() {
+        // The rtl horizontal list: `AxisDirection.left`, where the leading
+        // edge is the right one. Item zero owns it, the window still only
+        // materializes a screenful, and the paint and hit-test math is
+        // upstream's reversed-direction arithmetic.
+        let painted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let painted_by_builder = std::rc::Rc::clone(&painted);
+        let builds = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let builds_by_builder = std::rc::Rc::clone(&builds);
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Left)
+            .with_sliver(RenderSliverList::new(1000, move |index| {
+                builds_by_builder.set(builds_by_builder.get() + 1);
+                RenderRef::new(RecordingBox {
+                    preferred: Size::new(40.0, 40.0),
+                    size: Size::ZERO,
+                    // One-based, so the hit-test path keeps item zero: a
+                    // target of zero means "no identity" to it.
+                    id: index as u64 + 1,
+                    painted: std::rc::Rc::clone(&painted_by_builder),
+                })
+            }))
+            .with_cache_extent(0.0);
+        viewport.layout(BoxConstraints::tight(200.0, 40.0));
+        assert_eq!(sliver_list_live_range(&viewport), (0, 5), "a window, and no cache band to fill");
+        assert_eq!(builds.get(), 5);
+
+        // Paint: the window grows leftwards from the right edge, so item
+        // zero is the rightmost row and item four the leftmost.
+        let mut layers = LayerTree::new(200, 40);
+        let mut context = PaintContext::new(&mut layers, Size::new(200.0, 40.0));
+        viewport.paint(&mut context, Offset::ZERO);
+        assert_eq!(
+            *painted.borrow(),
+            vec![
+                (1, Offset::new(160.0, 0.0)),
+                (2, Offset::new(120.0, 0.0)),
+                (3, Offset::new(80.0, 0.0)),
+                (4, Offset::new(40.0, 0.0)),
+                (5, Offset::new(0.0, 0.0)),
+            ],
+            "item zero owns the right edge; the list grows leftwards"
+        );
+
+        // Hit testing reads the same coordinates back: a tap near the right
+        // edge is item zero, a tap near the left edge item four.
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(190.0, 20.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(1));
+        let mut result = HitTestResult::new();
+        assert!(viewport.hit_test(Offset::new(10.0, 20.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(5));
     }
 
     #[test]
@@ -5226,10 +11401,115 @@ mod tests {
         // And one per line when nothing else fits.
         assert_eq!(wrap.max_intrinsic_height(40.0), 68.0);
 
-        // The widths are unchanged: everything on one line, and the widest
-        // child.
-        assert_eq!(wrap.max_intrinsic_width(f32::INFINITY), 140.0);
+        // The widths are unchanged: everything on one line as a plain sum --
+        // upstream does not count the spacing -- and the widest child.
+        assert_eq!(wrap.max_intrinsic_width(f32::INFINITY), 120.0);
         assert_eq!(wrap.min_intrinsic_width(f32::INFINITY), 40.0);
+    }
+
+    /// The wrap's max intrinsic along its main axis is upstream's plain sum,
+    /// with the spacing left out: the width at which nothing wraps is the
+    /// width of the children, and the gaps only exist once a line is being
+    /// laid out.
+    #[test]
+    fn a_wraps_max_intrinsic_excludes_the_spacing() {
+        let horizontal = RenderWrap::horizontal()
+            .with_spacing(10.0)
+            .push(FixedBox::new(30.0, 10.0))
+            .push(FixedBox::new(40.0, 10.0));
+        assert_eq!(horizontal.max_intrinsic_width(f32::INFINITY), 70.0);
+
+        let vertical = RenderWrap::new(Axis::Vertical)
+            .with_spacing(10.0)
+            .push(FixedBox::new(10.0, 30.0))
+            .push(FixedBox::new(10.0, 40.0));
+        assert_eq!(vertical.max_intrinsic_height(f32::INFINITY), 70.0);
+    }
+
+    /// A child bigger than the box is not clamped to it: upstream's `inscribe`
+    /// and `alignChild` let the alignment say which sides it spills over, so a
+    /// centered one spills equally and a corner-aligned one spills away from
+    /// its corner.
+    #[test]
+    fn a_child_bigger_than_the_box_spills_over_according_to_the_alignment() {
+        let child = Size::new(200.0, 100.0);
+        let box_ = Size::new(100.0, 100.0);
+        assert_eq!(
+            Alignment::CENTER.inscribe(child, box_),
+            Offset::new(-50.0, 0.0),
+            "a centered child overflows both sides equally"
+        );
+        assert_eq!(Alignment::TOP_LEFT.inscribe(child, box_), Offset::ZERO);
+        assert_eq!(
+            Alignment::BOTTOM_RIGHT.inscribe(child, box_),
+            Offset::new(-100.0, 0.0)
+        );
+        assert_eq!(
+            Alignment::BOTTOM_CENTER.inscribe(Size::new(50.0, 300.0), box_),
+            Offset::new(25.0, -200.0),
+            "and a taller one spills upwards when bottom-aligned"
+        );
+    }
+
+    /// A wrap reports the highest baseline among its children, each measured
+    /// from the wrap's own top -- upstream's
+    /// `defaultComputeDistanceToHighestActualBaseline` -- so a child on a later
+    /// line brings its offset with it.
+    #[test]
+    fn a_wrap_reports_the_highest_baseline_of_its_lines() {
+        let mut wrap = RenderWrap::horizontal()
+            .with_run_spacing(4.0)
+            .push(FixedBox::new(40.0, 20.0).with_baseline(20.0))
+            .push(FixedBox::new(40.0, 20.0).with_baseline(5.0));
+        // 40 wide: one child per line, so the second sits 24 down and its
+        // baseline lands at 29, above which only the first's 20 is higher.
+        wrap.layout(BoxConstraints::new(0.0, 40.0, 0.0, f32::INFINITY));
+        assert_eq!(wrap.distance_to_baseline(), Some(20.0));
+
+        // The same wrap inside a baseline-aligned row: given room for one
+        // line, its highest baseline is the second child's 5, and the row
+        // drops it by the difference so both land on the deeper 20.
+        let mut row = RenderFlex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Baseline)
+            .push(FixedBox::new(10.0, 30.0).with_baseline(20.0))
+            .push(wrap);
+        row.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert_eq!(row.child_offsets()[0].dy, 0.0);
+        assert_eq!(row.child_offsets()[1].dy, 15.0);
+    }
+
+    /// A stack reports the highest baseline among all of its children,
+    /// positioned ones included, each measured from the stack's top.
+    #[test]
+    fn a_stack_reports_the_highest_baseline_of_its_children() {
+        let mut stack = RenderStack::new()
+            .push(FixedBox::new(100.0, 100.0).with_baseline(20.0))
+            .push_positioned(
+                FixedBox::new(10.0, 10.0).with_baseline(4.0),
+                StackPosition { top: Some(30.0), ..Default::default() },
+            );
+        stack.layout(BoxConstraints::loose(200.0, 200.0));
+        // The positioned child's baseline is 30 + 4 = 34 from the top; the
+        // unpositioned one's is 20, which is the higher line.
+        assert_eq!(stack.distance_to_baseline(), Some(20.0));
+    }
+
+    /// The factors multiply the intrinsics, as upstream's
+    /// `RenderPositionedBox` does: an `IntrinsicWidth` above a shrinking
+    /// `Align` has to reserve what the align will actually take.
+    #[test]
+    fn align_intrinsics_count_the_factors() {
+        let doubled = RenderAlign::new(Alignment::CENTER, FixedBox::new(40.0, 20.0))
+            .with_factors(Some(2.0), Some(0.5));
+        assert_eq!(doubled.max_intrinsic_width(f32::INFINITY), 80.0);
+        assert_eq!(doubled.min_intrinsic_width(f32::INFINITY), 80.0);
+        assert_eq!(doubled.max_intrinsic_height(f32::INFINITY), 10.0);
+        assert_eq!(doubled.min_intrinsic_height(f32::INFINITY), 10.0);
+
+        // Without a factor the child's answer passes through, as before.
+        let plain = RenderAlign::new(Alignment::CENTER, FixedBox::new(40.0, 20.0));
+        assert_eq!(plain.max_intrinsic_width(f32::INFINITY), 40.0);
+        assert_eq!(plain.max_intrinsic_height(f32::INFINITY), 20.0);
     }
 
     /// An image keeps its shape when the constraints leave room for it, rather
@@ -5348,6 +11628,268 @@ mod tests {
         handle.distance_to_baseline();
         assert_eq!(asked.get(), 3);
         assert_eq!(baselines.get(), 2);
+    }
+
+    /// The dry protocol's whole promise, in one place: asking `dry_layout`
+    /// changes nothing. A laid-out subtree keeps its sizes and stays clean --
+    /// no size is written, nothing is marked -- and a question the subtree was
+    /// never asked for real is answered and then dropped, leaving the last
+    /// real layout exactly as it was. Upstream guarantees the same by running
+    /// dry layout through the intrinsic cache rather than `RenderObject.layout`.
+    #[test]
+    fn dry_layout_leaves_a_laid_out_subtree_exactly_as_it_was() {
+        let leaf = RenderRef::new(FixedBox::new(20.0, 10.0));
+        let row = RenderRef::new(
+            RenderFlex::row()
+                .with_spacing(4.0)
+                .push(FixedBox::new(30.0, 10.0))
+                .push_flex(FlexChild::expanded(RenderRef::clone(&leaf), 1)),
+        );
+        let mut root = RenderRef::new(RenderPadding::new(EdgeInsets::all(5.0), RenderRef::clone(&row)));
+
+        let constraints = BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY);
+        let wet = root.layout(constraints);
+        assert_eq!(wet, Size::new(100.0, 20.0));
+        assert!(!root.state.needs_layout.get());
+        assert!(!row.state.needs_layout.get());
+        assert!(!leaf.state.needs_layout.get());
+
+        // The same question, asked dry, answers the same and commits nothing.
+        assert_eq!(root.dry_layout(constraints), wet);
+        assert!(!root.state.needs_layout.get(), "a dry answer is not a layout");
+        assert_eq!(root.state.constraints.get(), Some(constraints));
+        assert_eq!(root.state.size.get(), wet);
+
+        // A question the tree was never asked for real is answered and left
+        // uncommitted: the remembered constraints, the remembered size, and
+        // every needs flag are what the real layout left.
+        assert_eq!(root.dry_layout(BoxConstraints::new(0.0, 40.0, 0.0, f32::INFINITY)), Size::new(40.0, 20.0));
+        assert_eq!(root.state.constraints.get(), Some(constraints));
+        assert_eq!(root.state.size.get(), wet);
+        assert!(!root.state.needs_layout.get());
+        assert!(!row.state.needs_layout.get());
+        assert!(!leaf.state.needs_layout.get());
+    }
+
+    /// The other half of the contract, on a subtree that was never laid out:
+    /// dry measuring does not lay it out and does not schedule anything. The
+    /// child stays dirty, unconstrained and sizeless -- and its wet `layout`
+    /// is never called at all, which is what makes a dry pass cheap to abort.
+    #[test]
+    fn dry_layout_measures_without_laying_out_or_marking_anything() {
+        struct DryMeasurable {
+            preferred: Size,
+            size: Size,
+            wet: Rc<Cell<usize>>,
+            dry: Rc<Cell<usize>>,
+        }
+        impl RenderBox for DryMeasurable {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.wet.set(self.wet.get() + 1);
+                self.size = constraints.constrain(self.preferred);
+                self.size
+            }
+            fn size(&self) -> Size {
+                self.size
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+                self.dry.set(self.dry.get() + 1);
+                constraints.constrain(self.preferred)
+            }
+        }
+
+        let wet = Rc::new(Cell::new(0));
+        let dry = Rc::new(Cell::new(0));
+        let child = RenderRef::new(DryMeasurable {
+            preferred: Size::new(30.0, 10.0),
+            size: Size::ZERO,
+            wet: Rc::clone(&wet),
+            dry: Rc::clone(&dry),
+        });
+        let parent = RenderRef::new(RenderFlex::row().push_flex(FlexChild::new(RenderRef::clone(&child))));
+
+        assert_eq!(
+            parent.dry_layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY)),
+            Size::new(100.0, 10.0)
+        );
+        assert_eq!(dry.get(), 1, "the child was measured");
+        assert_eq!(wet.get(), 0, "and never laid out");
+
+        // Nothing was marked, nothing was remembered as laid out: the parent
+        // is still waiting for its first real layout, and so is the child.
+        assert!(parent.state.needs_layout.get());
+        assert!(child.state.needs_layout.get());
+        assert_eq!(child.state.constraints.get(), None);
+        assert_eq!(child.state.size.get(), Size::ZERO);
+    }
+
+    /// A dry layout is remembered like an intrinsic is, and forgotten the same
+    /// way. Upstream keys it in the same `_LayoutCacheStorage`, so a
+    /// `markNeedsLayout` -- which says the last layout's answers are stale --
+    /// takes the remembered dry sizes with it.
+    #[test]
+    fn a_dry_layout_is_remembered_until_the_layout_is_said_to_be_stale() {
+        struct Counting {
+            asked: Rc<Cell<usize>>,
+            size: Size,
+        }
+        impl RenderBox for Counting {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.size = constraints.constrain(Size::new(10.0, 10.0));
+                self.size
+            }
+            fn size(&self) -> Size {
+                self.size
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn compute_dry_layout(&self, _constraints: BoxConstraints) -> Size {
+                self.asked.set(self.asked.get() + 1);
+                Size::new(10.0, 10.0)
+            }
+        }
+
+        let asked = Rc::new(Cell::new(0));
+        let handle = RenderRef::new(Counting { asked: Rc::clone(&asked), size: Size::ZERO });
+        let constraints = BoxConstraints::loose(100.0, 100.0);
+
+        handle.dry_layout(constraints);
+        handle.dry_layout(constraints);
+        assert_eq!(asked.get(), 1, "the second answer came out of the first");
+
+        // Different constraints are a different question.
+        handle.dry_layout(BoxConstraints::tight(10.0, 10.0));
+        assert_eq!(asked.get(), 2);
+
+        // And saying the layout is stale forgets the remembered ones.
+        handle.mark_needs_layout();
+        handle.dry_layout(constraints);
+        assert_eq!(asked.get(), 3);
+    }
+
+    /// Upstream asserts, in debug builds, that `computeDryLayout` answers what
+    /// `performLayout` answers. The wet path here runs the same arithmetic
+    /// inline rather than through `dry_sizes` (it needs `&mut` the children),
+    /// so this is the test that keeps the two honest, over a spread of the
+    /// constraints a flex actually meets.
+    #[test]
+    fn a_flexs_dry_layout_agrees_with_its_layout() {
+        let constraints = [
+            BoxConstraints::loose(100.0, f32::INFINITY),
+            BoxConstraints::new(0.0, 60.0, 0.0, 50.0),
+            BoxConstraints::new(10.0, 80.0, 5.0, 60.0),
+            BoxConstraints::tight(90.0, 40.0),
+            BoxConstraints::new(0.0, f32::INFINITY, 0.0, 50.0),
+        ];
+        for constraints in constraints {
+            for main_axis_size in [MainAxisSize::Max, MainAxisSize::Min] {
+                let make = || {
+                    RenderFlex::row()
+                        .with_spacing(5.0)
+                        .with_main_axis_size(main_axis_size)
+                        .push(FixedBox::new(30.0, 10.0))
+                        .push_flex(FlexChild::expanded(FixedBox::new(20.0, 14.0), 2))
+                        .push_flex(FlexChild::flexible(FixedBox::new(50.0, 8.0), 1))
+                };
+                let wet = make().layout(constraints);
+                let dry = make().compute_dry_layout(constraints);
+                assert_eq!(dry, wet, "row at {constraints:?}, {main_axis_size:?}");
+
+                let make_column = || {
+                    RenderFlex::column()
+                        .with_spacing(2.0)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_main_axis_size(main_axis_size)
+                        .push(FixedBox::new(30.0, 10.0))
+                        .push_flex(FlexChild::expanded(FixedBox::new(20.0, 14.0), 1))
+                };
+                let wet = make_column().layout(constraints);
+                let dry = make_column().compute_dry_layout(constraints);
+                assert_eq!(dry, wet, "column at {constraints:?}, {main_axis_size:?}");
+            }
+
+            // Baseline alignment is the one cross-axis rule with arithmetic of
+            // its own, so it gets its own comparison.
+            let make_baseline = || {
+                RenderFlex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Baseline)
+                    .push(FixedBox::new(10.0, 20.0).with_baseline(15.0))
+                    .push(FixedBox::new(10.0, 20.0).with_baseline(5.0))
+            };
+            assert_eq!(
+                make_baseline().compute_dry_layout(constraints),
+                make_baseline().layout(constraints),
+                "baseline row at {constraints:?}"
+            );
+        }
+    }
+
+    /// The same agreement for a wrap, whose line breaks are the interesting
+    /// part: wherever the lines fall, the dry answer is the wet one.
+    #[test]
+    fn a_wraps_dry_layout_agrees_with_its_layout() {
+        for max_width in [40.0, 90.0, 140.0, 200.0, f32::INFINITY] {
+            let constraints = BoxConstraints::new(0.0, max_width, 0.0, f32::INFINITY);
+            let make = || {
+                RenderWrap::horizontal()
+                    .with_spacing(10.0)
+                    .with_run_spacing(4.0)
+                    .push(FixedBox::new(40.0, 20.0))
+                    .push(FixedBox::new(40.0, 30.0))
+                    .push(FixedBox::new(60.0, 20.0))
+            };
+            assert_eq!(
+                make().compute_dry_layout(constraints),
+                make().layout(constraints),
+                "wrap at {constraints:?}"
+            );
+        }
+    }
+
+    /// What the cross-axis intrinsics of a flex gained from dry layout: each
+    /// child is measured at the main extent the flex would give *it*, not at
+    /// the extent the flex was asked at. A text-like child -- one line wide
+    /// enough, two lines when squeezed -- reports its height at its own
+    /// max-intrinsic width, so a row's intrinsic height says what the row
+    /// would be given room for its children's preferred widths, which is
+    /// upstream's answer and the one an `IntrinsicHeight` above the row wants.
+    #[test]
+    fn a_flexs_cross_intrinsic_measures_children_where_the_flex_would_put_them() {
+        /// Forty wide; twenty tall when it fits on one line, forty when the
+        /// width it is asked at squeezes it onto two.
+        struct Wraps {
+            size: Size,
+        }
+        impl RenderBox for Wraps {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.size = self.compute_dry_layout(constraints);
+                self.size
+            }
+            fn size(&self) -> Size {
+                self.size
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+                let height = if constraints.max_width >= 40.0 { 20.0 } else { 40.0 };
+                constraints.constrain(Size::new(40.0, height))
+            }
+            fn max_intrinsic_width(&self, _height: f32) -> f32 {
+                40.0
+            }
+            fn min_intrinsic_height(&self, width: f32) -> f32 {
+                if width >= 40.0 { 20.0 } else { 40.0 }
+            }
+            fn max_intrinsic_height(&self, width: f32) -> f32 {
+                self.min_intrinsic_height(width)
+            }
+        }
+
+        let row = RenderFlex::row().push(Wraps { size: Size::ZERO });
+        // Asked at 30, the child is nevertheless measured at 40 -- its own
+        // max intrinsic width, the width it gets when nothing squeezes it.
+        assert_eq!(row.max_intrinsic_height(30.0), 20.0);
+        // And a width that fits changes nothing about the answer.
+        assert_eq!(row.max_intrinsic_height(50.0), 20.0);
     }
 
     /// The protocol itself: a container is not a target for its own empty
@@ -5500,6 +12042,89 @@ mod tests {
     }
 
     #[test]
+    fn fade_lays_out_and_shapes_exactly_what_clip_does() {
+        // Upstream's fade is a paint on top of an ordinary clipping layout:
+        // the only overflow that reaches the shaper is ellipsis (the '…' in
+        // the paragraph style), so fade must not cost a second shaping. What
+        // the stubbed engine can measure is the shape of the requests: the
+        // same paragraph served both, and the same box laid out.
+        let constraints = BoxConstraints::tight(120.0, 16.0);
+        let mut clip =
+            RenderParagraph::new("the same overlong sentence").with_overflow(TextOverflow::Clip);
+        let clipped = clip.layout(constraints);
+
+        let before = crate::painting::shaped_paragraph_count();
+        let mut fade =
+            RenderParagraph::new("the same overlong sentence").with_overflow(TextOverflow::Fade);
+        let faded = fade.layout(constraints);
+        assert_eq!(clipped, faded, "fade and clip lay out the same box");
+        assert_eq!(
+            crate::painting::shaped_paragraph_count(),
+            before,
+            "fade re-shaped a paragraph clip had already shaped"
+        );
+    }
+
+    #[test]
+    fn the_width_fade_runs_toward_the_leading_edge_in_rtl() {
+        // The fade band mirrors with the text direction: ltr fades the last
+        // `fadeSizePainter.width` before the right edge, rtl the same stretch
+        // after the left one -- upstream's `(fadeStart, fadeEnd)` answers
+        // `(fadeSizePainter.width, 0.0)` in rtl and
+        // `(size.width - fadeSizePainter.width, size.width)` in ltr. The stub
+        // shaper gives the ellipsis no width, so what there is to see is
+        // which end the band stops at.
+        let mut rtl = RenderParagraph::new("overlong")
+            .with_overflow(TextOverflow::Fade)
+            .with_text_direction(TextDirection::Rtl);
+        rtl.size = Size::new(100.0, 20.0);
+        assert_eq!(rtl.fade_shader(true), ((0.0, 0.0), (0.0, 0.0)));
+
+        let mut ltr = RenderParagraph::new("overlong").with_overflow(TextOverflow::Fade);
+        ltr.size = Size::new(100.0, 20.0);
+        assert_eq!(ltr.fade_shader(true), ((100.0, 0.0), (100.0, 0.0)));
+    }
+
+    #[test]
+    fn a_default_style_in_rtl_reaches_the_shaper_as_start() {
+        // `TextPainter`'s default alignment is `TextAlign.start`, unresolved
+        // until the paragraph style is made -- so a paragraph built under rtl
+        // carries (start, rtl) to the shaper, codes (3, 1), and not a left
+        // that an rtl paragraph would quietly ignore.
+        crate::engine_test_stubs::reset_paragraph_styles();
+        let mut rtl = crate::direction::with_direction(TextDirection::Rtl, || {
+            RenderParagraph::new("start-resolving probe")
+        });
+        rtl.layout(BoxConstraints::tight(100.0, 20.0));
+        let requests = crate::engine_test_stubs::paragraph_style_requests();
+        assert!(
+            requests.iter().any(|&(align, direction)| align == 3 && direction == 1),
+            "the shaper saw {requests:?}"
+        );
+    }
+
+    #[test]
+    fn ellipsis_is_the_one_overflow_that_reaches_the_shaper() {
+        // The other half: `TextOverflow.ellipsis` puts '…' in the paragraph
+        // style, which changes the line breaking, so it is -- and fade is not
+        // -- part of what a shaping is keyed on.
+        let constraints = BoxConstraints::tight(120.0, 16.0);
+        let mut plain =
+            RenderParagraph::new("another overlong sentence").with_overflow(TextOverflow::Clip);
+        plain.layout(constraints);
+
+        let before = crate::painting::shaped_paragraph_count();
+        let mut ellipsized = RenderParagraph::new("another overlong sentence")
+            .with_overflow(TextOverflow::Ellipsis);
+        ellipsized.layout(constraints);
+        assert_eq!(
+            crate::painting::shaped_paragraph_count(),
+            before + 1,
+            "ellipsis did not shape a paragraph of its own"
+        );
+    }
+
+    #[test]
     fn a_wrap_starts_a_new_line_when_one_fills_up() {
         let mut wrap = RenderWrap::horizontal().with_spacing(10.0).with_run_spacing(4.0);
         for _ in 0..3 {
@@ -5527,6 +12152,189 @@ mod tests {
         let mut wrap = RenderWrap::horizontal().push(FixedBox::new(300.0, 10.0));
         let size = wrap.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
         assert_eq!(size.height, 10.0);
+    }
+
+    /// Four chips of 40 in a 100-wide window break into two lines of two, 20
+    /// tall each: 40 of content in a 100-tall wrap, so 60 is `runAlignment`'s
+    /// to place. Everything about the lines below leans on this fixture.
+    fn two_even_lines(run_alignment: MainAxisAlignment) -> RenderWrap {
+        let mut wrap = RenderWrap::horizontal().with_run_alignment(run_alignment);
+        for _ in 0..4 {
+            wrap = wrap.push(FixedBox::new(40.0, 20.0));
+        }
+        wrap
+    }
+
+    /// `runAlignment` defaults to `start` (upstream's `WrapAlignment.start`),
+    /// which stacks the lines from the top and leaves the free space below
+    /// them -- the way this port stacked them before the property existed.
+    #[test]
+    fn a_wraps_lines_stack_from_the_top_by_default() {
+        let mut wrap = two_even_lines(MainAxisAlignment::Start);
+        assert_eq!(wrap.layout(BoxConstraints::tight(100.0, 100.0)), Size::new(100.0, 100.0));
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0].dy, 0.0);
+        assert_eq!(offsets[2].dy, 20.0, "the second line sits just under the first");
+
+        // And the default is start: a wrap that never says otherwise.
+        let mut wrap = RenderWrap::horizontal();
+        for _ in 0..4 {
+            wrap = wrap.push(FixedBox::new(40.0, 20.0));
+        }
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(wrap.child_offsets()[2].dy, 20.0);
+    }
+
+    /// `end` leads with all 60, `center` with half of it -- the free space
+    /// goes before the first line, and none between them.
+    #[test]
+    fn a_wraps_run_alignment_pushes_its_lines_to_the_end_or_middle() {
+        let mut end = two_even_lines(MainAxisAlignment::End);
+        end.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = end.child_offsets();
+        assert_eq!(offsets[0].dy, 60.0, "end leaves the free space above");
+        assert_eq!(offsets[2].dy, 80.0, "and the last line ends at the bottom edge");
+
+        let mut center = two_even_lines(MainAxisAlignment::Center);
+        center.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = center.child_offsets();
+        assert_eq!(offsets[0].dy, 30.0, "center splits the free space both ways");
+        assert_eq!(offsets[2].dy, 50.0);
+    }
+
+    /// `spaceBetween` gives the 60 to the one gap between two lines, putting
+    /// the first against the top edge and the last against the bottom one.
+    /// A lone line has no gap to fill, so upstream falls back to `start` --
+    /// which under an upwards cross axis means the line sinks.
+    #[test]
+    fn a_wraps_run_alignment_space_between_sits_its_lines_on_both_edges() {
+        let mut wrap = two_even_lines(MainAxisAlignment::SpaceBetween);
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0].dy, 0.0);
+        assert_eq!(offsets[2].dy, 80.0, "the whole 60 goes between the lines");
+
+        // One line only: no `itemCount - 1` to divide by, and start's share
+        // is the free space at the end the lines start from.
+        let mut lone = RenderWrap::horizontal()
+            .with_run_alignment(MainAxisAlignment::SpaceBetween)
+            .push(FixedBox::new(40.0, 20.0));
+        lone.layout(BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(lone.child_offsets()[0].dy, 0.0);
+        let mut lone_up = RenderWrap::horizontal()
+            .with_run_alignment(MainAxisAlignment::SpaceBetween)
+            .with_vertical_direction(VerticalDirection::Up)
+            .push(FixedBox::new(40.0, 20.0));
+        lone_up.layout(BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(lone_up.child_offsets()[0].dy, 80.0, "a lone line takes start's share, sunk");
+    }
+
+    /// `spaceAround` and `spaceEvenly` spend some of the 60 at the ends:
+    /// around puts 15 above, 30 between, 15 below; evenly puts 20 in every
+    /// gap, three of them.
+    #[test]
+    fn a_wraps_run_alignment_space_around_and_evenly_share_with_the_edges() {
+        let mut around = two_even_lines(MainAxisAlignment::SpaceAround);
+        around.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = around.child_offsets();
+        assert_eq!(offsets[0].dy, 15.0);
+        assert_eq!(offsets[2].dy, 65.0, "15 + 20 + 30");
+
+        let mut evenly = two_even_lines(MainAxisAlignment::SpaceEvenly);
+        evenly.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = evenly.child_offsets();
+        assert_eq!(offsets[0].dy, 20.0);
+        assert_eq!(offsets[2].dy, 60.0, "20 + 20 + 20");
+    }
+
+    /// Lines that are not the same height: 30 + 10 + 20 of children in a
+    /// 90-tall wrap leaves 30, which the alignment places between the lines
+    /// -- the gaps do not care how tall each line was.
+    #[test]
+    fn a_wraps_run_alignment_splits_the_free_space_between_uneven_lines() {
+        let mut wrap = RenderWrap::horizontal()
+            .with_run_alignment(MainAxisAlignment::SpaceBetween)
+            .push(FixedBox::new(40.0, 30.0))
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 20.0));
+        // One child per line: a second 40 would need 80.
+        wrap.layout(BoxConstraints::tight(40.0, 90.0));
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0].dy, 0.0);
+        assert_eq!(offsets[1].dy, 45.0, "30 down, then half the 30 of slack");
+        assert_eq!(offsets[2].dy, 70.0, "10 down, then the other half");
+
+        let mut wrap = RenderWrap::horizontal()
+            .with_run_alignment(MainAxisAlignment::SpaceEvenly)
+            .push(FixedBox::new(40.0, 30.0))
+            .push(FixedBox::new(40.0, 10.0))
+            .push(FixedBox::new(40.0, 20.0));
+        wrap.layout(BoxConstraints::tight(40.0, 90.0));
+        let offsets = wrap.child_offsets();
+        assert_eq!(offsets[0].dy, 7.5);
+        assert_eq!(offsets[1].dy, 45.0);
+        assert_eq!(offsets[2].dy, 62.5);
+    }
+
+    /// An upwards `verticalDirection` flips the cross axis: the lines are
+    /// walked last-first from the top, and start and end trade places. What
+    /// does not change is the reading order -- the first line is the one
+    /// nearest the bottom, whichever end of the wrap the lines sit at.
+    #[test]
+    fn a_wrap_stacking_upwards_honours_its_run_alignment() {
+        let mut start = two_even_lines(MainAxisAlignment::Start).with_vertical_direction(VerticalDirection::Up);
+        start.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = start.child_offsets();
+        assert_eq!(offsets[0].dy, 80.0, "start under a flip is end: sunk, and reversed");
+        assert_eq!(offsets[2].dy, 60.0);
+
+        let mut end = two_even_lines(MainAxisAlignment::End).with_vertical_direction(VerticalDirection::Up);
+        end.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = end.child_offsets();
+        assert_eq!(offsets[0].dy, 20.0, "end under a flip is start: raised, and reversed");
+        assert_eq!(offsets[2].dy, 0.0);
+
+        let mut between =
+            two_even_lines(MainAxisAlignment::SpaceBetween).with_vertical_direction(VerticalDirection::Up);
+        between.layout(BoxConstraints::tight(100.0, 100.0));
+        let offsets = between.child_offsets();
+        assert_eq!(offsets[0].dy, 80.0, "the first line sits on the start edge, the bottom");
+        assert_eq!(offsets[2].dy, 0.0, "the last on the end edge, the top");
+    }
+
+    /// `runAlignment` spends free cross-axis room; it never makes any. The
+    /// dry layout and the intrinsics measure the lines, not where they sit,
+    /// so every alignment answers the same -- as does the wet size.
+    #[test]
+    fn a_wraps_run_alignment_leaves_its_measured_size_alone() {
+        for run_alignment in [
+            MainAxisAlignment::Start,
+            MainAxisAlignment::End,
+            MainAxisAlignment::Center,
+            MainAxisAlignment::SpaceBetween,
+            MainAxisAlignment::SpaceAround,
+            MainAxisAlignment::SpaceEvenly,
+        ] {
+            let pinned = two_even_lines(run_alignment);
+            assert_eq!(
+                pinned.compute_dry_layout(BoxConstraints::tight(100.0, 100.0)),
+                Size::new(100.0, 100.0),
+                "{run_alignment:?} changed a pinned dry layout"
+            );
+            let shrink_wrapped = two_even_lines(run_alignment);
+            assert_eq!(
+                shrink_wrapped.compute_dry_layout(BoxConstraints::new(0.0, 100.0, 0.0, 200.0)),
+                Size::new(80.0, 40.0),
+                "{run_alignment:?} changed a shrink-wrapped dry layout"
+            );
+            let mut wet = two_even_lines(run_alignment);
+            assert_eq!(
+                wet.layout(BoxConstraints::new(0.0, 100.0, 0.0, 200.0)),
+                Size::new(80.0, 40.0),
+                "{run_alignment:?} changed a shrink-wrapped wet layout"
+            );
+            assert_eq!(wet.max_intrinsic_height(100.0), 40.0, "{run_alignment:?} changed an intrinsic");
+        }
     }
 
     #[test]
@@ -5560,7 +12368,600 @@ mod tests {
         );
     }
 
-}
+    // -- LimitedBox -------------------------------------------------------------
+
+    #[test]
+    fn a_limited_box_passes_bounded_constraints_through() {
+        // `_limitConstraints`: the incoming width is bounded, so the `maxWidth`
+        // the box was given is not written over it -- the child keeps the 100
+        // it preferred under a 200 limit, upstream's "constrains the child
+        // only if it's otherwise unconstrained".
+        let mut limited = RenderLimitedBox::new(FixedBox::new(100.0, 40.0))
+            .with_max_width(50.0)
+            .with_max_height(30.0);
+        let size = limited.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(100.0, 40.0));
+        assert_eq!(
+            limited.compute_dry_layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::new(100.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_limited_box_clamps_only_the_unbounded_axis() {
+        // The same box in a horizontal list: the width is unbounded, so the
+        // limit applies; the height was bounded all along, so it does not.
+        let constraints = BoxConstraints::new(0.0, f32::INFINITY, 0.0, 100.0);
+        let mut limited = RenderLimitedBox::new(FixedBox::new(100.0, 40.0))
+            .with_max_width(50.0)
+            .with_max_height(30.0);
+        let size = limited.layout(constraints);
+        assert_eq!(size, Size::new(50.0, 40.0));
+        assert_eq!(limited.compute_dry_layout(constraints), Size::new(50.0, 40.0));
+    }
+
+    // -- FittedBox ---------------------------------------------------------------
+
+    #[test]
+    fn a_fitted_box_contain_scales_uniformly_and_centres() {
+        // `applyBoxFit(contain, 100x50, 200x60)`: destination (120, 60), the
+        // child's whole 100x50 shown, scale 1.2; centred, the destination
+        // starts 40 in. The box itself is the aspect-preserved size inside a
+        // tight constraint, which is the constraint.
+        let mut fitted = RenderFittedBox::new(FixedBox::new(100.0, 50.0));
+        let size = fitted.layout(BoxConstraints::tight(200.0, 60.0));
+        assert_eq!(size, Size::new(200.0, 60.0));
+        let (translation, scale) = fitted.paint_placement().unwrap();
+        assert_eq!(scale, Size::new(1.2, 1.2));
+        assert_eq!(translation, Offset::new(40.0, 0.0));
+    }
+
+    #[test]
+    fn a_fitted_box_cover_crops_the_longer_axis() {
+        // `applyBoxFit(cover, 100x50, 200x60)`: the whole box is filled, so
+        // only 100x30 of the child is shown; the crop takes the middle 30,
+        // which moves the source rect down 10 and the transform up 20.
+        let mut fitted =
+            RenderFittedBox::new(FixedBox::new(100.0, 50.0)).with_fit(BoxFit::Cover);
+        let size = fitted.layout(BoxConstraints::tight(200.0, 60.0));
+        assert_eq!(size, Size::new(200.0, 60.0));
+        let (translation, scale) = fitted.paint_placement().unwrap();
+        assert_eq!(scale, Size::new(2.0, 2.0));
+        assert_eq!(translation, Offset::new(0.0, -20.0));
+    }
+
+    #[test]
+    fn a_fitted_box_fit_width_pins_the_width() {
+        // `applyBoxFit(fitWidth, 100x50, 60x100)`: the box is taller than the
+        // child's shape, so the fit behaves like contain and the child is
+        // 60x30 -- scale 0.6, centred vertically at 35.
+        let mut fitted =
+            RenderFittedBox::new(FixedBox::new(100.0, 50.0)).with_fit(BoxFit::FitWidth);
+        let size = fitted.layout(BoxConstraints::tight(60.0, 100.0));
+        assert_eq!(size, Size::new(60.0, 100.0));
+        let (translation, scale) = fitted.paint_placement().unwrap();
+        assert_eq!(scale, Size::new(0.6, 0.6));
+        assert_eq!(translation, Offset::new(0.0, 35.0));
+    }
+
+    #[test]
+    fn a_fitted_box_hits_the_child_through_the_scale() {
+        // The hit-test half of `_transform`: a point in the box maps back
+        // through the inverse transform before the child is asked. At contain
+        // scale 1.2 with the child starting 40 in, box (50, 30) is child
+        // ((50-40)/1.2, 30/1.2) -- inside a 100x50 tappable child.
+        let mut fitted = RenderFittedBox::new(TappableBox::new(100.0, 50.0));
+        fitted.layout(BoxConstraints::tight(200.0, 60.0));
+        let mut result = HitTestResult::new();
+        assert!(fitted.hit_test(Offset::new(50.0, 30.0), &mut result));
+        // And 10 further left is outside the transformed child, in the empty
+        // half of the box -- the transform decides, not the box's bounds.
+        let mut missed = HitTestResult::new();
+        assert!(!fitted.hit_test(Offset::new(5.0, 30.0), &mut missed));
+    }
+
+    // -- Baseline ----------------------------------------------------------------
+
+    #[test]
+    fn a_baseline_puts_the_childs_baseline_on_the_line() {
+        // `_computeSizes`: top = 30 - 12, so the child is pushed down 18 and
+        // the box is top + childHeight = 38 tall. The box's own baseline is
+        // the child's from there, which is the 30 it was given.
+        let mut baseline =
+            RenderBaseline::new(30.0, FixedBox::new(40.0, 20.0).with_baseline(12.0));
+        let size = baseline.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(40.0, 38.0));
+        assert_eq!(baseline.child_offset(), Offset::new(0.0, 18.0));
+        assert_eq!(baseline.distance_to_baseline(), Some(30.0));
+    }
+
+    #[test]
+    fn a_baseline_falls_back_to_the_childs_height() {
+        // A child with no baseline is measured by its height, upstream's
+        // `getBaseline(...) ?? childSize.height`: top = 30 - 20, height = 30.
+        let mut baseline = RenderBaseline::new(30.0, FixedBox::new(40.0, 20.0));
+        let size = baseline.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(40.0, 30.0));
+        assert_eq!(baseline.child_offset(), Offset::new(0.0, 10.0));
+    }
+
+    // -- FractionallySizedBox ----------------------------------------------------
+
+    #[test]
+    fn a_fractionally_sized_box_is_the_child_times_the_factor() {
+        // The child is laid out loose (40x20), the box is 40 * 0.5 wide --
+        // and as tall as it is allowed, an axis without a factor taking
+        // everything. Centring a 40-wide child in a 20-wide box puts it 10
+        // past the start edge, unclamped, exactly as upstream places it.
+        let mut fractional = RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0))
+            .with_width_factor(0.5);
+        let size = fractional.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(20.0, 100.0));
+        assert_eq!(fractional.child_offset(), Offset::new(-10.0, 40.0));
+    }
+
+    #[test]
+    fn a_fractionally_sized_box_expands_an_axis_without_a_factor() {
+        // Only the height has a factor: the width takes the incoming maximum
+        // (upstream's `INFINITY` through `constrain`), the height is 20 * 0.5.
+        let mut fractional = RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0))
+            .with_height_factor(0.5);
+        let size = fractional.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(100.0, 10.0));
+        assert_eq!(fractional.child_offset(), Offset::new(30.0, -5.0));
+    }
+
+    // -- OverflowBox / SizedOverflowBox ------------------------------------------
+
+    #[test]
+    fn an_overflow_box_lays_the_child_out_against_the_overrides() {
+        // `_getInnerConstraints`: the incoming 100 is replaced by the given
+        // 50, and a child that wanted 80 takes it. The box itself ignores
+        // the child and is the constraints' biggest.
+        let mut overflow = RenderOverflowBox::new(FixedBox::new(80.0, 40.0))
+            .with_max_width(50.0);
+        let size = overflow.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(100.0, 100.0));
+        assert_eq!(overflow.compute_dry_layout(BoxConstraints::loose(100.0, 100.0)), size);
+        // Centred: a 50x40 child in a 100x100 box.
+        assert_eq!(overflow.child_offset(), Offset::new(25.0, 30.0));
+    }
+
+    #[test]
+    fn an_overflow_box_only_hits_inside_its_own_size() {
+        // The child is let out to 200x200 inside a 60x60 box; a finger at
+        // (70, 30) is over the child but outside the box, and the box's own
+        // bounds are where the hit test stops.
+        let mut overflow = RenderOverflowBox::new(TappableBox::new(200.0, 200.0))
+            .with_max_width(200.0)
+            .with_max_height(200.0);
+        overflow.layout(BoxConstraints::tight(60.0, 60.0));
+        let mut outside = HitTestResult::new();
+        assert!(!overflow.hit_test(Offset::new(70.0, 30.0), &mut outside));
+        let mut inside = HitTestResult::new();
+        assert!(overflow.hit_test(Offset::new(30.0, 30.0), &mut inside));
+    }
+
+    #[test]
+    fn a_sized_overflow_box_is_the_requested_size_and_passes_constraints_through() {
+        // The box is 30x30; the child got the incoming constraints unmodified
+        // and is 80x40, hanging off both axes once centred. The intrinsics
+        // are the requested size, not the child's.
+        let mut sized = RenderSizedOverflowBox::new(
+            Size::new(30.0, 30.0),
+            FixedBox::new(80.0, 40.0),
+        );
+        let size = sized.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(30.0, 30.0));
+        assert_eq!(sized.child_offset(), Offset::new(-25.0, -5.0));
+        assert_eq!(sized.min_intrinsic_width(100.0), 30.0);
+        assert_eq!(sized.max_intrinsic_height(100.0), 30.0);
+    }
+
+    #[test]
+    fn a_sized_overflow_box_dry_answers_the_requested_size() {
+        let sized = RenderSizedOverflowBox::new(Size::new(30.0, 30.0), FixedBox::new(80.0, 40.0));
+        assert_eq!(
+            sized.compute_dry_layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(30.0, 30.0)
+        );
+    }
+
+    // -- IndexedStack ------------------------------------------------------------
+
+    /// A box that counts its layouts and paints, and answers a hit with its
+    /// own identity -- the three questions an indexed stack answers
+    /// differently for the child it shows and the children it does not.
+    struct WatchedBox {
+        preferred: Size,
+        size: Size,
+        id: u64,
+        layouts: std::rc::Rc<std::cell::Cell<usize>>,
+        paints: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl WatchedBox {
+        fn shared(width: f32, height: f32, id: u64) -> (WatchedBox, Watch) {
+            let watch = Watch {
+                layouts: std::rc::Rc::new(std::cell::Cell::new(0)),
+                paints: std::rc::Rc::new(std::cell::Cell::new(0)),
+            };
+            (
+                WatchedBox {
+                    preferred: Size::new(width, height),
+                    size: Size::ZERO,
+                    id,
+                    layouts: watch.layouts.clone(),
+                    paints: watch.paints.clone(),
+                },
+                watch,
+            )
+        }
+    }
+
+    #[derive(Clone)]
+    struct Watch {
+        layouts: std::rc::Rc<std::cell::Cell<usize>>,
+        paints: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl RenderBox for WatchedBox {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.layouts.set(self.layouts.get() + 1);
+            self.size = constraints.constrain(self.preferred);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(self.preferred)
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {
+            self.paints.set(self.paints.get() + 1);
+        }
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+        fn hit_test_id(&self) -> u64 {
+            self.id
+        }
+    }
+
+    #[test]
+    fn an_indexed_stack_lays_out_every_child_and_sizes_to_the_biggest() {
+        // Layout is inherited from `RenderStack`: both children are laid out
+        // (and each keeps whatever a layout keeps), and the size is the
+        // biggest of them -- 30 wide from the first, 50 tall from the second.
+        let (first, first_watch) = WatchedBox::shared(30.0, 10.0, 11);
+        let (second, second_watch) = WatchedBox::shared(10.0, 50.0, 12);
+        let mut stack = RenderIndexedStack::new().push(first).push(second);
+        let size = stack.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(size, Size::new(30.0, 50.0));
+        assert_eq!((first_watch.layouts.get(), second_watch.layouts.get()), (1, 1));
+    }
+
+    #[test]
+    fn an_indexed_stack_paints_only_the_displayed_child() {
+        use crate::engine::LayerTree;
+
+        let (first, first_watch) = WatchedBox::shared(40.0, 30.0, 11);
+        let (second, second_watch) = WatchedBox::shared(20.0, 10.0, 12);
+        let mut stack = RenderIndexedStack::new().push(first).push(second);
+        stack.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut layers = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 100.0));
+            stack.paint(&mut context, Offset::ZERO);
+        }
+        assert_eq!(first_watch.paints.get(), 1);
+        assert_eq!(second_watch.paints.get(), 0);
+    }
+
+    #[test]
+    fn an_indexed_stack_hits_only_the_displayed_child() {
+        // Both children sit at the top start, so the same point is over both;
+        // which one answers is the index's alone.
+        let (first, _) = WatchedBox::shared(40.0, 30.0, 11);
+        let (second, _) = WatchedBox::shared(40.0, 30.0, 12);
+        let mut showing_first =
+            RenderIndexedStack::new().push(first).push(second).with_index(Some(0));
+        showing_first.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut result = HitTestResult::new();
+        assert!(showing_first.hit_test(Offset::new(5.0, 5.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(11));
+
+        let (first, _) = WatchedBox::shared(40.0, 30.0, 11);
+        let (second, _) = WatchedBox::shared(40.0, 30.0, 12);
+        let mut showing_second =
+            RenderIndexedStack::new().push(first).push(second).with_index(Some(1));
+        showing_second.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut result = HitTestResult::new();
+        assert!(showing_second.hit_test(Offset::new(5.0, 5.0), &mut result));
+        assert_eq!(result.innermost().map(|hit| hit.target), Some(12));
+    }
+
+    #[test]
+    fn an_indexed_stack_shows_nothing_at_a_null_index() {
+        // Upstream's `index == null`: laid out, painted by nobody, hit by
+        // nobody, no baseline.
+        use crate::engine::LayerTree;
+
+        let (first, first_watch) = WatchedBox::shared(40.0, 30.0, 11);
+        let (second, _) = WatchedBox::shared(20.0, 10.0, 12);
+        let mut stack = RenderIndexedStack::new().push(first).push(second).with_index(None);
+        let size = stack.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(40.0, 30.0));
+        let mut layers = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 100.0));
+            stack.paint(&mut context, Offset::ZERO);
+        }
+        assert_eq!(first_watch.paints.get(), 0);
+        let mut result = HitTestResult::new();
+        assert!(!stack.hit_test(Offset::new(5.0, 5.0), &mut result));
+        assert_eq!(stack.distance_to_baseline(), None);
+    }
+
+    // -- applyBoxFit -------------------------------------------------------------
+
+    #[test]
+    fn apply_box_fit_scale_down_never_scales_up() {
+        // A child smaller than the box keeps its size; one that does not fit
+        // is scaled to the `Contain` size.
+        let small = apply_box_fit(BoxFit::ScaleDown, Size::new(10.0, 10.0), Size::new(20.0, 20.0));
+        assert_eq!((small.source, small.destination), (Size::new(10.0, 10.0), Size::new(10.0, 10.0)));
+        let tall = apply_box_fit(BoxFit::ScaleDown, Size::new(100.0, 10.0), Size::new(20.0, 5.0));
+        assert_eq!((tall.source, tall.destination), (Size::new(100.0, 10.0), Size::new(20.0, 2.0)));
+    }
+
+    // -- Relayout boundaries ------------------------------------------------------
+    //
+    // Where a frame may start. The questions these pin are upstream's: which
+    // objects a mark climbs through and where it stops (`_isRelayoutBoundary`),
+    // and whether laying out from there is the same frame as laying out from
+    // the root would have been (`flushLayout` over `_nodesNeedingLayout`).
+
+    /// A leaf that counts how many times *it* was measured and can change its
+    /// mind about its size between measurements -- the two things a boundary
+    /// test has to watch, separately from every sibling's versions of them.
+    struct TallyLeaf {
+        preferred: Rc<Cell<Size>>,
+        size: Size,
+        layouts: Rc<Cell<u32>>,
+    }
+
+    impl TallyLeaf {
+        /// The handle the tree will hold, with its two counters.
+        fn tally(width: f32, height: f32) -> (RenderRef, Rc<Cell<u32>>, Rc<Cell<Size>>) {
+            let layouts = Rc::new(Cell::new(0));
+            let preferred = Rc::new(Cell::new(Size::new(width, height)));
+            let handle = RenderRef::new(TallyLeaf {
+                preferred: Rc::clone(&preferred),
+                size: Size::ZERO,
+                layouts: Rc::clone(&layouts),
+            });
+            (handle, layouts, preferred)
+        }
+    }
+
+    impl RenderBox for TallyLeaf {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.layouts.set(self.layouts.get() + 1);
+            self.size = constraints.constrain(self.preferred.get());
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    #[test]
+    fn a_tight_child_is_its_own_relayout_boundary() {
+        // Upstream's `_isRelayoutBoundary` counts `constraints.isTight`: a
+        // child that was told exactly what size to be cannot change anything
+        // its parent did, so a mark on it goes no further, and the frame that
+        // takes the mark lays out that child alone.
+        let (marked, marked_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let (sibling, sibling_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let mut root = RenderRef::new(
+            RenderFlex::column()
+                .push(RenderConstrainedBox::tight(100.0, 100.0).with_child(marked.clone()))
+                .push(RenderConstrainedBox::tight(100.0, 100.0).with_child(sibling.clone())),
+        );
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!((marked_n.get(), sibling_n.get()), (1, 1));
+        assert!(
+            marked.state.relayout_boundary.get(),
+            "tight constraints make the child a boundary"
+        );
+
+        marked.mark_needs_layout();
+        assert!(!root.state.needs_layout.get(), "the mark stopped at the tight child");
+
+        assert!(flush_layout());
+        assert_eq!(marked_n.get(), 2, "the boundary was laid out from itself");
+        assert_eq!(sibling_n.get(), 1, "the sibling was not entered");
+        assert!(!root.state.needs_layout.get(), "nor was anything above it");
+    }
+
+    #[test]
+    fn a_mark_below_a_boundary_is_relaid_from_it_and_nowhere_else() {
+        // The marked leaf is loose inside an Align, the Align is tight inside
+        // a constrained box -- so the walk climbs from the leaf to the Align
+        // and stops, and the frame re-measures from the Align. The sibling
+        // under the column is outside the boundary and is never entered.
+        let (marked, marked_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let (sibling, sibling_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let align = RenderRef::new(RenderAlign::new(Alignment::CENTER, marked.clone()));
+        let tight =
+            RenderRef::new(RenderConstrainedBox::tight(100.0, 100.0).with_child(align.clone()));
+        let mut root = RenderRef::new(
+            RenderFlex::column().push(tight.clone()).push(sibling.clone()),
+        );
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!((marked_n.get(), sibling_n.get()), (1, 1));
+
+        marked.mark_needs_layout();
+        assert!(align.state.needs_layout.get(), "the walk climbed to the boundary");
+        assert!(
+            !tight.state.needs_layout.get(),
+            "and stopped there: the box that made it tight is outside"
+        );
+        assert!(!root.state.needs_layout.get(), "and so is everything above that");
+
+        assert!(flush_layout());
+        assert_eq!(marked_n.get(), 2, "the subtree was re-measured from the boundary");
+        assert_eq!(sibling_n.get(), 1, "the sibling outside it was not");
+        assert!(!align.state.needs_layout.get(), "and the boundary itself is clean again");
+    }
+
+    /// A one-child box whose answer to the `parentUsesSize` question is
+    /// decided by the test that built it.
+    struct UsesSize {
+        child: RenderRef,
+        size: Size,
+        reads_it: bool,
+    }
+
+    impl RenderBox for UsesSize {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = self.child.layout_child(constraints, self.reads_it);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    #[test]
+    fn a_parent_that_does_not_read_the_size_is_not_told() {
+        // Upstream's `parentUsesSize: false`: the child may change its layout
+        // without informing the parent, because the parent's layout never
+        // looked at the answer. The same tree with the flag true is the
+        // control, and there the mark must climb.
+        let (deaf_leaf, deaf_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let mut deaf = RenderRef::new(UsesSize {
+            child: deaf_leaf.clone(),
+            size: Size::ZERO,
+            reads_it: false,
+        });
+        deaf.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(deaf_n.get(), 1);
+        assert!(
+            deaf_leaf.state.relayout_boundary.get(),
+            "a parent that does not read the size cannot be moved by it"
+        );
+
+        deaf_leaf.mark_needs_layout();
+        assert!(!deaf.state.needs_layout.get(), "the mark stopped at the leaf");
+        assert!(flush_layout());
+        assert_eq!(deaf_n.get(), 2, "the leaf was measured again from itself");
+
+        let (heard_leaf, _, _) = TallyLeaf::tally(40.0, 10.0);
+        let mut listening = RenderRef::new(UsesSize {
+            child: heard_leaf.clone(),
+            size: Size::ZERO,
+            reads_it: true,
+        });
+        listening.layout(BoxConstraints::loose(200.0, 200.0));
+        assert!(!heard_leaf.state.relayout_boundary.get());
+        heard_leaf.mark_needs_layout();
+        assert!(listening.state.needs_layout.get(), "a parent that reads the size is told");
+    }
+
+    #[test]
+    fn a_remembered_answer_keeps_the_walk_going_past_a_boundary() {
+        // Upstream's `RenderBox.markNeedsLayout` walks to the parent even
+        // past a relayout boundary when the layout cache had something in it:
+        // whoever asked for the intrinsic is holding a stale number now, and
+        // a boundary only ever promised that *sizes* could not climb, not
+        // remembered answers. Here the leaf is a boundary -- its parent never
+        // reads its size -- and the mark climbs past it anyway.
+        let (leaf, leaf_n, _) = TallyLeaf::tally(40.0, 10.0);
+        let deaf = RenderRef::new(UsesSize {
+            child: leaf.clone(),
+            size: Size::ZERO,
+            reads_it: false,
+        });
+        let mut root = RenderRef::new(
+            RenderFlex::column().push(RenderAlign::new(Alignment::CENTER, deaf.clone())),
+        );
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(leaf_n.get(), 1);
+        assert!(
+            leaf.state.relayout_boundary.get(),
+            "the leaf is a boundary: nothing above reads its size"
+        );
+
+        // Somebody asked this subtree for an intrinsic -- an `IntrinsicWidth`
+        // above it anywhere would -- and the answer was remembered on the leaf.
+        leaf.max_intrinsic_width(f32::INFINITY);
+
+        leaf.mark_needs_layout();
+        assert!(
+            root.state.needs_layout.get(),
+            "the remembered intrinsic kept the walk going to the root"
+        );
+
+        assert!(flush_layout());
+        assert_eq!(leaf_n.get(), 2, "and the frame re-measured through it");
+    }
+
+    #[test]
+    fn a_frame_from_a_boundary_agrees_with_a_frame_from_the_root() {
+        // The same change applied to two identically built trees: one laid
+        // out the way the frame does now -- from the boundary the mark
+        // collected at -- and one the way it did before, a full walk from the
+        // root. The screen cannot tell them apart; only the sibling counts
+        // say where the saving is.
+        let constraints = BoxConstraints::loose(200.0, 50.0);
+        let row_of = |steady: RenderRef, changed: RenderRef| {
+            RenderRef::new(
+                RenderFlex::row()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .push(steady)
+                    .push(changed),
+            )
+        };
+
+        let (steady, steady_n, _) = TallyLeaf::tally(30.0, 10.0);
+        let (changed, changed_n, preferred) = TallyLeaf::tally(60.0, 10.0);
+        let mut from_boundary = row_of(steady.clone(), changed.clone());
+        from_boundary.layout(constraints);
+        assert_eq!(from_boundary.size(), Size::new(90.0, 10.0));
+
+        preferred.set(Size::new(120.0, 10.0));
+        changed.mark_needs_layout();
+        assert!(flush_layout());
+
+        let (walk_steady, walk_steady_n, _) = TallyLeaf::tally(30.0, 10.0);
+        let (walk_changed, walk_changed_n, walk_preferred) = TallyLeaf::tally(60.0, 10.0);
+        let mut from_root = row_of(walk_steady.clone(), walk_changed.clone());
+        from_root.layout(constraints);
+        walk_preferred.set(Size::new(120.0, 10.0));
+        walk_changed.mark_needs_layout();
+        from_root.layout(constraints);
+
+        assert_eq!(
+            from_boundary.size(),
+            from_root.size(),
+            "a frame from the boundary and one from the root are the same frame"
+        );
+        assert_eq!(from_boundary.size(), Size::new(150.0, 10.0));
+        assert_eq!(
+            (steady_n.get(), changed_n.get()),
+            (1, 2),
+            "the flushed frame entered only the changed leaf"
+        );
+        assert_eq!(
+            (walk_steady_n.get(), walk_changed_n.get()),
+            (1, 2),
+            "the walk from the root skipped the clean leaf too -- the saving is not here"
+        );
+    }}
 
 // -- Taking a new configuration -----------------------------------------------
 //
@@ -5784,6 +13185,8 @@ mod reconfiguring_tests {
             "the boundary handed back a drawing of the layout it used to have"
         );
     }
+
+
 }
 
 // -- Compositing tests --------------------------------------------------------
@@ -5798,7 +13201,7 @@ mod reconfiguring_tests {
 mod compositing_tests {
     use super::*;
     use crate::engine::LayerTree;
-    use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+    use crate::engine_test_stubs::{layer_calls, reset_layer_calls, retained_picture_count};
 
     /// A box that paints one rectangle, so a picture is definitely recorded.
     struct Spot;
@@ -5816,6 +13219,35 @@ mod compositing_tests {
         }
     }
 
+    /// A box that paints one rectangle and holds whatever size it was laid
+    /// out at, however much room it was given -- a column of rows taller than
+    /// the window it is going in, for the tests below.
+    struct FixedSpot {
+        preferred: Size,
+        size: Size,
+    }
+
+    impl FixedSpot {
+        fn new(width: f32, height: f32) -> FixedSpot {
+            FixedSpot { preferred: Size::new(width, height), size: Size::ZERO }
+        }
+    }
+
+    impl RenderBox for FixedSpot {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = constraints.constrain(self.preferred);
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, context: &mut PaintContext, offset: Offset) {
+            let bounds =
+                Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+        }
+    }
+
     fn paint_into(root: &mut dyn RenderBox) -> crate::engine_test_stubs::LayerCalls {
         reset_layer_calls();
         let mut tree = LayerTree::new(100, 100);
@@ -5824,6 +13256,51 @@ mod compositing_tests {
             root.paint(&mut context, Offset::ZERO);
         }
         layer_calls()
+    }
+
+    /// A frame as the app runs one: the dirty boundaries flushed into the
+    /// layers they kept, then the walk. Direct callers of `paint` -- a test,
+    /// a tool -- get the walk alone, which is what `paint_into` is.
+    fn frame_with_flush(root: &RenderRef) -> crate::engine_test_stubs::LayerCalls {
+        reset_layer_calls();
+        let mut tree = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut tree, Size::new(100.0, 100.0));
+            flush_paint(&mut context);
+            root.paint(&mut context, Offset::ZERO);
+        }
+        layer_calls()
+    }
+
+    /// The layer handle a boundary is holding, by identity -- what upstream
+    /// asserts on with `identical()`.
+    fn kept_layer_id(boundary: &RenderRef) -> Option<usize> {
+        let render = boundary.render.borrow();
+        let object: &dyn RenderBox = &**render;
+        object
+            .as_any()
+            .downcast_ref::<RenderRepaintBoundary>()
+            .and_then(|boundary| boundary.layer.borrow().as_ref().map(|layer| layer.id()))
+    }
+
+    /// A spot that counts its paintings, so a test can tell a re-record that
+    /// drew from a kept layer that was only handed back.
+    struct CountedSpot {
+        paints: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl RenderBox for CountedSpot {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            constraints.biggest()
+        }
+        fn size(&self) -> Size {
+            Size::new(10.0, 10.0)
+        }
+        fn paint(&self, context: &mut PaintContext, offset: Offset) {
+            self.paints.set(self.paints.get() + 1);
+            let bounds = Rect::xywh(offset.dx, offset.dy, 10.0, 10.0);
+            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+        }
     }
 
     #[test]
@@ -5881,6 +13358,129 @@ mod compositing_tests {
     }
 
     #[test]
+    fn a_dirty_inner_boundary_leaves_the_outer_one_its_layer() {
+        // Upstream's markNeedsPaint stops at the nearest repaint boundary:
+        // that boundary is the one whose layer goes, and everything above it
+        // holds a reference to it rather than a copy, so it hands back what it
+        // kept instead of recording the same drawing again.
+        let inner = RenderRef::new(RenderRepaintBoundary::new(Spot));
+        let mut outer = RenderRef::new(RenderRepaintBoundary::new(inner.clone()));
+        outer.layout(BoxConstraints::tight(50.0, 50.0));
+
+        let first = paint_into(&mut outer);
+        assert_eq!((first.retainable, first.retained), (2, 0), "both boundaries record");
+
+        // Something under the inner boundary changed its appearance: the walk
+        // marks the inner boundary and stops, so the outer one keeps its layer.
+        inner.mark_needs_paint();
+        let after = paint_into(&mut outer);
+        assert_eq!(after.retainable, 0, "the outer boundary recorded again");
+        assert_eq!(after.retained, 1, "rather than handing back its layer");
+
+        // When it is the outer boundary that changed, both record again: the
+        // inner one is still marked from the walk that never reached it.
+        outer.mark_needs_paint();
+        let both = paint_into(&mut outer);
+        assert_eq!((both.retainable, both.retained), (2, 0));
+    }
+
+    #[test]
+    fn a_flushed_dirty_inner_boundary_rerecords_into_the_layer_it_kept() {
+        // The frame as the app runs it, with the dirty boundaries flushed
+        // first: the inner boundary is re-recorded into its own layer object
+        // (upstream's `repaintCompositedChild` reusing `RenderObject.layer`),
+        // and the outer one hands back the very object it kept -- inside which
+        // the inner layer lives, so the new picture is what the frame carries.
+        let paints = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let spot = CountedSpot { paints: std::rc::Rc::clone(&paints) };
+        let inner = RenderRef::new(RenderRepaintBoundary::new(spot));
+        let mut outer = RenderRef::new(RenderRepaintBoundary::new(inner.clone()));
+        outer.layout(BoxConstraints::tight(50.0, 50.0));
+
+        let first = frame_with_flush(&outer);
+        assert_eq!(
+            (first.retainable, first.retained),
+            (2, 0),
+            "both boundaries record"
+        );
+        let (outer_layer, inner_layer) = (kept_layer_id(&outer), kept_layer_id(&inner));
+        assert_eq!(
+            (outer_layer.is_some(), inner_layer.is_some()),
+            (true, true),
+            "both boundaries should be holding layers"
+        );
+        assert_eq!(retained_picture_count(inner_layer.unwrap()), 1);
+        assert_eq!(paints.get(), 1);
+
+        // Something under the inner boundary changed: `markNeedsPaint` marks it
+        // and stops, the outer boundary is never told, and the next frame's
+        // flush is the only thing that repaints it.
+        inner.mark_needs_paint();
+        let after = frame_with_flush(&outer);
+        assert_eq!(after.retainable, 0, "the outer boundary recorded again");
+        assert_eq!(after.retained, 1, "rather than handing back its layer");
+        assert_eq!(
+            after.rerecorded, 1,
+            "the inner boundary made a new layer object"
+        );
+        assert_eq!(paints.get(), 2, "the subtree was not drawn again");
+
+        // The same objects, both of them: re-recording replaces the picture
+        // inside the layer, not the layer.
+        assert_eq!(
+            kept_layer_id(&outer),
+            outer_layer,
+            "the outer layer handle changed"
+        );
+        assert_eq!(
+            kept_layer_id(&inner),
+            inner_layer,
+            "the inner layer handle changed"
+        );
+        assert_eq!(
+            retained_picture_count(inner_layer.unwrap()),
+            1,
+            "the re-record left more than one picture in the layer"
+        );
+        assert_eq!(
+            retained_picture_count(outer_layer.unwrap()),
+            0,
+            "the outer layer gained a picture of its own"
+        );
+
+        // And nothing stays dirty: the frame after carries the inner layer as
+        // it is, without recording or re-recording anything.
+        let quiet = frame_with_flush(&outer);
+        assert_eq!(
+            (quiet.retainable, quiet.retained, quiet.rerecorded),
+            (0, 1, 0)
+        );
+        assert_eq!(paints.get(), 2);
+    }
+
+    #[test]
+    fn a_flushed_boundary_without_a_layer_records_when_the_walk_reaches_it() {
+        // Nothing under it has ever painted, so the flush has no layer to
+        // reuse; the walk reaches it through its parent and records it from
+        // scratch -- the arm `repaintCompositedChild` reaches through
+        // `_compositeChild`'s `debugAlsoPaintedParent`.
+        let boundary = RenderRef::new(RenderRepaintBoundary::new(Spot));
+        let mut padded = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), boundary.clone()));
+        padded.layout(BoxConstraints::tight(50.0, 50.0));
+        boundary.mark_needs_paint();
+
+        let calls = frame_with_flush(&padded);
+        assert_eq!(
+            (calls.retainable, calls.retained, calls.rerecorded),
+            (1, 0, 0)
+        );
+        assert!(
+            kept_layer_id(&boundary).is_some(),
+            "the boundary kept nothing"
+        );
+    }
+
+    #[test]
     fn a_plain_subtree_is_one_picture_and_no_layers() {
         let calls = paint_into(&mut Spot);
         assert_eq!(calls.pushes(), 0, "nothing asked for a layer");
@@ -5894,6 +13494,42 @@ mod compositing_tests {
         let calls = paint_into(&mut clipped);
         assert_eq!(calls.clip_rects, 1, "the clip stayed inside the picture");
         assert_eq!(calls.pops, 1, "the layer was left open");
+    }
+
+    #[test]
+    fn a_stack_clips_a_child_that_ran_past_its_edge() {
+        // Upstream `Stack`'s `clipBehavior: Clip.hardEdge` default, gated on
+        // `_hasVisualOverflow`: the child pinned past the right edge is cut at
+        // the stack's bounds rather than drawn over its neighbours.
+        let mut overflowing = RenderStack::new().push_positioned(
+            FixedSpot::new(60.0, 60.0),
+            StackPosition { left: Some(60.0), top: Some(0.0), ..Default::default() },
+        );
+        overflowing.layout(BoxConstraints::tight(100.0, 100.0));
+        let calls = paint_into(&mut overflowing);
+        assert_eq!(calls.clip_rects, 1, "the overflowing stack did not clip");
+        assert_eq!(calls.pops, 1, "the clip layer was left open");
+
+        // Nothing overflowed: the same stack, child inside, costs no layer --
+        // a clip that would show nothing is not pushed.
+        let mut fitting = RenderStack::new().push_positioned(
+            FixedSpot::new(60.0, 60.0),
+            StackPosition { left: Some(10.0), top: Some(10.0), ..Default::default() },
+        );
+        fitting.layout(BoxConstraints::tight(100.0, 100.0));
+        let calls = paint_into(&mut fitting);
+        assert_eq!(calls.clip_rects, 0, "a fitting stack clipped");
+
+        // `Clip.none` is the opt-out: the overflowing child is painted whole.
+        let mut unclipped = RenderStack::new()
+            .with_clip_behavior(ClipBehavior::None)
+            .push_positioned(
+                FixedSpot::new(60.0, 60.0),
+                StackPosition { left: Some(60.0), top: Some(0.0), ..Default::default() },
+            );
+        unclipped.layout(BoxConstraints::tight(100.0, 100.0));
+        let calls = paint_into(&mut unclipped);
+        assert_eq!(calls.clip_rects, 0, "Clip.none still clipped");
     }
 
     #[test]
@@ -5944,11 +13580,39 @@ mod compositing_tests {
 
     #[test]
     fn a_scrolling_viewport_clips_with_a_layer() {
-        let mut viewport = RenderViewport::new(Axis::Vertical, Spot);
+        // The content is taller than the window, so `_shouldClipAtPaintOffset`
+        // says yes and the clip is its own layer.
+        let mut viewport = RenderViewport::new(Axis::Vertical, FixedSpot::new(50.0, 500.0));
         viewport.layout(BoxConstraints::tight(50.0, 50.0));
         let calls = paint_into(&mut viewport);
         assert_eq!(calls.clip_rects, 1);
         assert_eq!(calls.pops, 1);
+    }
+
+    #[test]
+    fn a_viewport_that_fits_paints_without_a_layer() {
+        // The other arm of `_shouldClipAtPaintOffset`: a child that fits at
+        // this offset is painted whole, with no clip and therefore no layer.
+        // Upstream's `paint` takes the same branch and drops the old
+        // `_clipRectLayer` rather than pushing a degenerate one.
+        let mut viewport = RenderViewport::new(Axis::Vertical, FixedSpot::new(50.0, 40.0));
+        viewport.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut viewport);
+        assert_eq!(calls.pushes(), 0, "a fitting child was clipped anyway");
+        assert_eq!(calls.display_lists, 1, "the child still paints");
+    }
+
+    #[test]
+    fn clip_none_lets_the_content_out_even_when_it_overflows() {
+        // `Clip.none` is not a softer edge but no edge: upstream's
+        // `_shouldClipAtPaintOffset` returns false for it before looking at
+        // any geometry, and so does this one.
+        let mut viewport = RenderViewport::new(Axis::Vertical, FixedSpot::new(50.0, 500.0))
+            .with_clip_behavior(ClipBehavior::None);
+        viewport.layout(BoxConstraints::tight(50.0, 50.0));
+        let calls = paint_into(&mut viewport);
+        assert_eq!(calls.pushes(), 0, "overflowing content was clipped");
+        assert_eq!(calls.display_lists, 1);
     }
 
     #[test]

@@ -43,6 +43,20 @@
 //! on the glass -- and [`crate::scrolling::LazyList`] puts a boundary around
 //! every row. Both stop being possible once the walk is its own.
 //!
+//! # What the walk clips away
+//!
+//! The walk also carries the clips down. Every box that paints through one --
+//! a viewport's window, a `ClipRect`'s bounds -- is asked for it as the walk
+//! passes ([`crate::render::RenderBox::describe_approximate_paint_clip`] and
+//! [`crate::render::RenderBox::describe_semantics_clip`], the pair upstream's
+//! `_SemanticsGeometry.computeChildGeometry` accumulates), the answers are
+//! intersected into the clips already carried, and each node's rectangle is
+//! then cut by the result. A rectangle the clips empty does not reach the
+//! platform at all: upstream keeps a paint-clipped node in the tree under a
+//! `hidden` flag, and this bridge has no such flag to put in
+//! [`SemanticsNode`], so -- of the choices that do not report a rectangle
+//! outside the window -- the node is dropped.
+//!
 //! # The three gates
 //!
 //! A walk of its own is a walk somebody has to pay for, and the first version
@@ -79,6 +93,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::direction::TextDirection;
+use crate::engine::Rect;
 use crate::framework::{AnyWidget, BuildContext, Component, component, single};
 use crate::render::{BoxConstraints, BoxedRender, Offset, PaintContext, RenderBox, Size};
 
@@ -174,6 +190,17 @@ pub struct SemanticsProperties {
     /// What the value would become if increased or decreased.
     pub increased_value: String,
     pub decreased_value: String,
+    /// The reading direction of everything said above: `label`, `value`,
+    /// `hint`, and the two value forecasts.
+    ///
+    /// Upstream's `SemanticsConfiguration.textDirection`, which the
+    /// `Semantics` widget defaults to the ambient `Directionality` and a
+    /// paragraph takes from its own build (`paragraph.dart` sets it on the
+    /// same line as the label), carried to the embedder as
+    /// `SemanticsData.textDirection` and from there as
+    /// `FlutterSemanticsNode2.text_direction`. `None` is that null: a node
+    /// with nothing to read has no direction to read it in.
+    pub text_direction: Option<TextDirection>,
     pub flags: SemanticsFlags,
     /// The actions this node accepts, as a bit set.
     pub actions: i32,
@@ -207,6 +234,7 @@ impl PartialEq for SemanticsProperties {
             && self.hint == other.hint
             && self.increased_value == other.increased_value
             && self.decreased_value == other.decreased_value
+            && self.text_direction == other.text_direction
             && self.flags == other.flags
             && self.actions == other.actions
             && same(self.scroll_position, other.scroll_position)
@@ -229,6 +257,21 @@ impl SemanticsProperties {
     /// Whether this node accepts `action`.
     pub fn has(&self, action: SemanticsAction) -> bool {
         self.actions & action as i32 != 0
+    }
+
+    /// Whether a reader would be told any words, which is whether a direction
+    /// is worth carrying for them.
+    ///
+    /// Upstream's `SemanticsData` insists on a `textDirection` for exactly
+    /// these fields and none other -- `label == '' || textDirection != null`,
+    /// and the same assert for `value`, `increasedValue`, `decreasedValue`,
+    /// and `hint` -- so those are the ones asked about here.
+    fn reads_aloud(&self) -> bool {
+        !(self.label.is_empty()
+            && self.value.is_empty()
+            && self.hint.is_empty()
+            && self.increased_value.is_empty()
+            && self.decreased_value.is_empty())
     }
 
     pub fn with_action(mut self, action: SemanticsAction) -> Self {
@@ -300,13 +343,39 @@ impl SemanticsAnnotation {
     }
 
     /// What a paragraph hands back for text nobody annotated.
+    ///
+    /// The direction is taken with the words, because text is the thing a
+    /// direction is *of*: upstream's `RenderParagraph` sets
+    /// `config.textDirection = textDirection` on the same line as the label.
+    /// A paragraph here does not carry a direction of its own yet -- the
+    /// render-tree half of `directionality` is still landing -- so the
+    /// ambient direction stands in for it, the same stand-in the shaper
+    /// takes for the same reason, and
+    /// [`SemanticsAnnotation::with_text_direction`] is the way in once the
+    /// paragraph has one to give.
     pub fn text(id: i32, said: &str) -> SemanticsAnnotation {
         SemanticsAnnotation {
             id,
-            properties: SemanticsProperties::label(said),
+            properties: SemanticsProperties {
+                text_direction: Some(crate::direction::current_direction()),
+                ..SemanticsProperties::label(said)
+            },
             on_action: None,
             yields_to_a_label: true,
         }
+    }
+
+    /// Says which way this node's words run, for a render object that knows.
+    ///
+    /// [`crate::render::RenderParagraph`] is the case: it will capture the
+    /// ambient direction where it was built, the way it already captures the
+    /// text scale, and hand it back here so the node says which way its text
+    /// runs however late the walk asks. Everything else takes the ambient
+    /// direction by default instead, which is upstream's `Semantics` widget
+    /// defaulting the configuration with `Directionality.maybeOf`.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.properties.text_direction = Some(direction);
+        self
     }
 }
 
@@ -470,7 +539,7 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
         SemanticsProperties::label(""),
         (0.0, 0.0, size.width, size.height),
     );
-    describe_subtree(root, Offset::ZERO);
+    describe_subtree(root, Offset::ZERO, Clips::UNCLIPPED);
     if let Some(index) = opened {
         close(index);
     }
@@ -491,12 +560,13 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
     })
 }
 
-/// One render object and everything under it, at `offset` from the root.
+/// One render object and everything under it, at `offset` from the root and
+/// inside `clips`.
 ///
 /// Upstream's `_RenderObjectSemantics` walk. The recursion is the tree: what a
 /// node opens stays open until its children have been described, so the nesting
 /// of the render tree becomes the nesting a reader is handed.
-fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
+fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
     let opened = match render.describe_semantics() {
         // Text that something above already speaks for. Its children are still
         // walked -- suppressing what a node says is not suppressing what is
@@ -504,25 +574,136 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
         Some(annotation) if annotation.yields_to_a_label && inside_labelled() => None,
         Some(annotation) => {
             let size = render.size();
-            open(
-                annotation.id,
-                annotation.properties,
-                (
-                    offset.dx,
-                    offset.dy,
-                    offset.dx + size.width,
-                    offset.dy + size.height,
+            let bounds = Rect::xywh(offset.dx, offset.dy, size.width, size.height);
+            match clips.applied_to(bounds) {
+                // Nothing of it is inside the clips, so nothing of it is on the
+                // glass. Upstream drops the node out of its parent's children
+                // (`children.removeWhere(shouldDrop)`), and everything under it
+                // leaves with the node -- so the subtree is not walked.
+                None => return,
+                Some(rect) => open(
+                    annotation.id,
+                    annotation.properties,
+                    (rect.left, rect.top, rect.right, rect.bottom),
                 ),
-            )
+            }
         }
         None => None,
     };
     render.visit_children_for_semantics(&mut |child, child_offset| {
-        describe_subtree(child, offset.plus(child_offset));
+        describe_subtree(
+            child,
+            offset.plus(child_offset),
+            clips.refined_by(render, child, offset),
+        );
     });
     if let Some(index) = opened {
         close(index);
     }
+}
+
+// -- The clips the walk carries ------------------------------------------------
+
+/// The clip rectangles that apply below a render object, in root coordinates.
+///
+/// Upstream's `_SemanticsGeometry`, which holds one `paintClipRect` and one
+/// `semanticsClipRect` per semantics node and rebuilds both by walking the
+/// render chain between two nodes, transforming as it goes. Here the walk is
+/// already in root coordinates -- that is what the offsets it carries are --
+/// so the same two rectangles are simply carried down it, each contributor
+/// translating its own answer from its own coordinates.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clips {
+    paint: Option<Rect>,
+    semantics: Option<Rect>,
+}
+
+impl Clips {
+    /// No clip at all, which is what the walk starts with. Upstream's
+    /// `_SemanticsGeometry.root`: the view's own node is clipped by nothing.
+    const UNCLIPPED: Clips = Clips { paint: None, semantics: None };
+
+    /// What `parent`'s answers about `child` leave of these clips.
+    ///
+    /// One link of the accumulation loop in
+    /// `_SemanticsGeometry.computeChildGeometry`, with the translation that
+    /// upstream needs a `Matrix4` for done by the walk instead. Paint clips
+    /// intersect all the way down. A semantics clip *replaces* what was
+    /// carried -- upstream's `localSemanticsClipInParent ??
+    /// semanticsClipRect?.intersect(...)`, where the clip nearest the node
+    /// wins -- and the paint clips below it narrow the replacement further.
+    fn refined_by(
+        self,
+        parent: &dyn RenderBox,
+        child: &dyn RenderBox,
+        parent_offset: Offset,
+    ) -> Clips {
+        let at = |clip: Rect| {
+            Rect::ltrb(
+                clip.left + parent_offset.dx,
+                clip.top + parent_offset.dy,
+                clip.right + parent_offset.dx,
+                clip.bottom + parent_offset.dy,
+            )
+        };
+        let paint = parent.describe_approximate_paint_clip(child).map(at);
+        let semantics = parent.describe_semantics_clip(child).map(at);
+        Clips {
+            paint: match (self.paint, paint) {
+                (Some(carried), Some(local)) => Some(intersect(carried, local)),
+                (carried, local) => carried.or(local),
+            },
+            semantics: semantics.or_else(|| {
+                self.semantics.map(|carried| match paint {
+                    Some(local) => intersect(carried, local),
+                    None => carried,
+                })
+            }),
+        }
+    }
+
+    /// `bounds`, cut down to what the clips leave of it, or `None` when
+    /// nothing a reader could touch survives.
+    ///
+    /// The tail of `_SemanticsGeometry.computeChildGeometry`: the rect is cut
+    /// by the semantics clip first (`semanticsClipRect?.intersect(semanticBounds)`)
+    /// and by the paint clip second. Empty after the semantics clip is
+    /// upstream's `isInvisible`, dropped from the tree. Empty after the paint
+    /// clip but not before it is upstream's `hidden` -- kept in the tree there,
+    /// for the readers that scroll to a node they have been told about. This
+    /// bridge has no hidden flag to carry, and reporting the uncut rectangle
+    /// puts coordinates outside the window onto the glass, so it is dropped
+    /// too.
+    ///
+    /// With neither clip present the rect is reported as it lies, empty or
+    /// not. Upstream drops an empty rect as `isInvisible` wherever it came
+    /// from; here an empty rect usually means the test engine shaped no text,
+    /// and a paragraph that says something is still worth reading.
+    fn applied_to(&self, bounds: Rect) -> Option<Rect> {
+        if self.paint.is_none() && self.semantics.is_none() {
+            return Some(bounds);
+        }
+        let mut rect = self.semantics.map_or(bounds, |clip| intersect(bounds, clip));
+        if let Some(clip) = self.paint {
+            let painted = intersect(rect, clip);
+            if is_empty(painted) && !is_empty(rect) {
+                return None; // `hidden`, upstream; dropped here.
+            }
+            rect = painted;
+        }
+        (!is_empty(rect)).then_some(rect)
+    }
+}
+
+/// Upstream's `Rect.intersect`: the overlap, or an inside-out rectangle where
+/// the two do not meet -- which is empty, and left that way there too.
+fn intersect(a: Rect, b: Rect) -> Rect {
+    Rect::ltrb(a.left.max(b.left), a.top.max(b.top), a.right.min(b.right), a.bottom.min(b.bottom))
+}
+
+/// Upstream's `Rect.isEmpty`.
+fn is_empty(rect: Rect) -> bool {
+    rect.width() <= 0.0 || rect.height() <= 0.0
 }
 
 /// Delivers an action the platform asked for.
@@ -552,19 +733,39 @@ pub fn perform_action(root: &dyn RenderBox, node_id: i32, action: SemanticsActio
 
 /// The handler the node with this id offered, if it is still on screen.
 ///
-/// Walks the same children [`flush`] walks, so a node a reader cannot have
-/// been told about -- one under a fully transparent subtree, say -- cannot be
-/// activated either.
+/// Walks the same children [`flush`] walks and under the same clips, so a node
+/// a reader cannot have been told about -- one under a fully transparent
+/// subtree, or one the clips cut away entirely -- cannot be activated either.
 fn find_handler(render: &dyn RenderBox, node_id: i32) -> Option<ActionHandler> {
-    // Found, handler or not: ids are unique, so nothing below this can be the
-    // node that was asked for.
-    if let Some(annotation) = render.describe_semantics().filter(|it| it.id == node_id) {
-        return annotation.on_action;
+    find_handler_in(render, node_id, Offset::ZERO, Clips::UNCLIPPED)
+}
+
+/// The walk behind [`find_handler`], which is [`describe_subtree`] again with a
+/// different thing collected: the same clips, the same dropping of what they
+/// empty, because a node that was never in the tree is not a node a reader can
+/// name.
+fn find_handler_in(
+    render: &dyn RenderBox,
+    node_id: i32,
+    offset: Offset,
+    clips: Clips,
+) -> Option<ActionHandler> {
+    if let Some(annotation) = render.describe_semantics() {
+        let size = render.size();
+        clips.applied_to(Rect::xywh(offset.dx, offset.dy, size.width, size.height))?;
+        if annotation.id == node_id {
+            return annotation.on_action;
+        }
     }
     let mut found = None;
-    render.visit_children_for_semantics(&mut |child, _| {
+    render.visit_children_for_semantics(&mut |child, child_offset| {
         if found.is_none() {
-            found = find_handler(child, node_id);
+            found = find_handler_in(
+                child,
+                node_id,
+                offset.plus(child_offset),
+                clips.refined_by(render, child, offset),
+            );
         }
     });
     found
@@ -659,6 +860,24 @@ impl RenderSemantics {
         properties: SemanticsProperties,
         child: impl RenderBox + 'static,
     ) -> RenderSemantics {
+        // The direction is taken here rather than at describe time because
+        // construction is the one moment the ambient direction is this
+        // annotation's: the render walk pushes it around the subtree while
+        // the object is being built, and the semantics walk that asks what
+        // this says runs long after it has popped. Upstream's `Semantics`
+        // widget does the same defaulting in its own build
+        // (`textDirection ?? Directionality.maybeOf(context)`), and its
+        // `SemanticsData` insists on the result -- a node that says anything
+        // says which way it runs. A node with nothing to read keeps `None`,
+        // which crosses as "unknown".
+        let properties = if properties.reads_aloud() {
+            SemanticsProperties {
+                text_direction: Some(crate::direction::current_direction()),
+                ..properties
+            }
+        } else {
+            properties
+        };
         RenderSemantics {
             id,
             properties,
@@ -1114,6 +1333,165 @@ mod tests {
     }
 
     #[test]
+    fn a_viewport_clips_its_rows_to_the_window() {
+        // The walk used to report a scrolled-out row at its place in the
+        // content -- the gallery's home had "Tooltips" at y=3651 under a window
+        // a tenth that tall, and the bridges passed it on. Upstream cuts every
+        // node's rect against the clips its ancestors describe
+        // (`_SemanticsGeometry.computeChildGeometry`); this is that, with a
+        // viewport contributing both of its rects.
+        //
+        // Four rows of 100 in a 200-tall window scrolled 150: row one is wholly
+        // above the window, rows two and four straddle its edges, row three is
+        // entirely inside.
+        use crate::render::{Axis, MainAxisSize, RenderFlex, RenderViewport};
+
+        set_enabled(true);
+        let row = |id: i32, said: &str| {
+            semantics_with_action(
+                id,
+                SemanticsProperties::label(said),
+                leaf(|| SizedBox::new(200.0, 100.0)),
+                |_| {},
+            )
+        };
+        let (nodes, root) = describe_tree_keeping_root(
+            single(
+                many(
+                    vec![
+                        row(1, "first"),
+                        row(2, "second"),
+                        row(3, "third"),
+                        row(4, "fourth"),
+                    ],
+                    |children| {
+                        let mut column = RenderFlex::column().with_main_axis_size(MainAxisSize::Min);
+                        for child in children {
+                            column = column.push(child);
+                        }
+                        column
+                    },
+                ),
+                |column| RenderViewport::new(Axis::Vertical, column).with_offset(150.0),
+            ),
+            Size::new(200.0, 200.0),
+        );
+        set_enabled(false);
+
+        // Wholly above the window: not in the tree at all. Upstream drops it
+        // as `isInvisible`, and its subtree goes with it.
+        assert!(nodes.iter().all(|node| node.id != 1), "a row off the window was reported");
+
+        let by_id = |id: i32| nodes.iter().find(|node| node.id == id).unwrap();
+        // The second row is content 100..200, absolute -50..50: the window
+        // keeps 0..50 of it.
+        assert_eq!((by_id(2).top, by_id(2).bottom), (0.0, 50.0), "cut to the part that shows");
+        // The third is content 200..300, absolute 50..150: inside entire.
+        assert_eq!((by_id(3).top, by_id(3).bottom), (50.0, 150.0), "a held row keeps its rect");
+        // The fourth straddles the far edge: 150..250 becomes 150..200.
+        assert_eq!((by_id(4).top, by_id(4).bottom), (150.0, 200.0), "cut at the far edge");
+        // Nothing reports outside the window, which is the whole complaint.
+        for node in &nodes {
+            assert!(
+                node.left >= 0.0 && node.top >= 0.0 && node.right <= 200.0 && node.bottom <= 200.0,
+                "{node:?} is outside the window"
+            );
+        }
+
+        // And the dropping reaches actions: a row the reader was never told
+        // about is not a row a reader can name, so nothing takes an action for
+        // it either.
+        assert!(!perform_action(&root, 1, SemanticsAction::Tap), "an off-window row acted");
+        assert!(perform_action(&root, 3, SemanticsAction::Tap));
+    }
+
+    #[test]
+    fn a_carousel_card_beyond_the_window_is_not_reported() {
+        // The other half of the same complaint: the gallery's carousel in a
+        // window 690 wide reported a card at x=1318. Three cards of 690 in a
+        // window of 690, scrolled 62, puts the third card's left edge exactly
+        // there -- past the window and past the cache band, so it is gone
+        // rather than clipped.
+        use crate::render::{Axis, MainAxisSize, RenderFlex, RenderViewport};
+
+        set_enabled(true);
+        let nodes = describe_tree(
+            single(
+                many(
+                    vec![
+                        semantics(1, SemanticsProperties::label("Rally"), leaf(|| SizedBox::new(690.0, 100.0))),
+                        semantics(2, SemanticsProperties::label("Shrine"), leaf(|| SizedBox::new(690.0, 100.0))),
+                        semantics(3, SemanticsProperties::label("Fortnightly"), leaf(|| SizedBox::new(690.0, 100.0))),
+                    ],
+                    |children| {
+                        let mut row = RenderFlex::row().with_main_axis_size(MainAxisSize::Min);
+                        for child in children {
+                            row = row.push(child);
+                        }
+                        row
+                    },
+                ),
+                |row| RenderViewport::new(Axis::Horizontal, row).with_offset(62.0),
+            ),
+            Size::new(690.0, 100.0),
+        );
+        set_enabled(false);
+
+        assert!(nodes.iter().all(|node| node.id != 3), "the card at x=1318 was reported");
+        let by_id = |id: i32| nodes.iter().find(|node| node.id == id).unwrap();
+        // The first card has scrolled 62 off the leading edge, the second runs
+        // off the trailing one, and neither reports past the window.
+        assert_eq!((by_id(1).left, by_id(1).right), (0.0, 628.0), "cut at the leading edge");
+        assert_eq!((by_id(2).left, by_id(2).right), (628.0, 690.0), "cut at the trailing edge");
+    }
+
+    #[test]
+    fn a_node_overhanging_a_clip_is_held_to_it() {
+        // A `ClipRect` paints through its own bounds, and a reader is told
+        // about the part of a child that is inside them -- upstream's
+        // `RenderClipRect.describeApproximatePaintClip`. The stack is the
+        // window's size with the badge pinned 10 before its bottom edge, so 10
+        // of the badge hang past it; the second badge is wholly outside.
+        use crate::render::{RenderClipRect, RenderStack, StackPosition};
+
+        set_enabled(true);
+        let nodes = describe_tree(
+            single(
+                many(
+                    vec![
+                        semantics(6, SemanticsProperties::label("badge"), leaf(|| SizedBox::new(40.0, 20.0))),
+                        semantics(7, SemanticsProperties::label("gone"), leaf(|| SizedBox::new(40.0, 20.0))),
+                    ],
+                    |children| {
+                        let positions = [
+                            StackPosition { left: Some(10.0), top: Some(90.0), ..Default::default() },
+                            StackPosition { left: Some(10.0), top: Some(120.0), ..Default::default() },
+                        ];
+                        let mut stack = RenderStack::new();
+                        for (child, position) in children.into_iter().zip(positions) {
+                            stack = stack.push_positioned(child, position);
+                        }
+                        stack
+                    },
+                ),
+                |stack| RenderClipRect::new(stack),
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+
+        let badge = nodes.iter().find(|node| node.id == 6).expect("the badge is read");
+        assert_eq!(
+            (badge.left, badge.top, badge.right, badge.bottom),
+            (10.0, 90.0, 50.0, 100.0),
+            "held to the clip it is painted through"
+        );
+        // Wholly past the clip, and with no viewport above to give it a cache
+        // band: nothing of it is on the glass, so it is not in the tree.
+        assert!(nodes.iter().all(|node| node.id != 7), "a node past the clip was reported");
+    }
+
+    #[test]
     fn a_reader_no_longer_costs_the_screen_its_retained_layers() {
         // What collecting on the paint walk used to cost. A boundary could not
         // hand back the layer it kept, because the subtree behind that layer
@@ -1333,6 +1711,120 @@ mod tests {
 
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[1].properties.label, "Rendered by Rust");
+    }
+
+    #[test]
+    fn a_label_under_an_rtl_directionality_says_which_way_it_runs() {
+        // Upstream's `Semantics` widget defaults the configuration's
+        // textDirection to `Directionality.maybeOf(context)`, and the node
+        // carries the result to the embedder -- a reader that is not told
+        // which way "حفظ" runs reads it back to front. The direction is
+        // taken where the annotation is built, inside the render walk that
+        // pushes the ambient direction around the subtree.
+        use crate::direction::{TextDirection, directionality};
+
+        set_enabled(true);
+        let nodes = describe_tree(
+            directionality(
+                TextDirection::Rtl,
+                semantics(
+                    7,
+                    SemanticsProperties::button("حفظ"),
+                    leaf(|| SizedBox::new(80.0, 40.0)),
+                ),
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+
+        let node = nodes.iter().find(|n| n.id == 7).expect("the button is read");
+        assert_eq!(node.properties.text_direction, Some(TextDirection::Rtl));
+        // The view's own node says nothing, so it carries no direction: only
+        // words have one.
+        assert_eq!(nodes[0].properties.text_direction, None);
+    }
+
+    #[test]
+    fn a_label_without_a_directionality_runs_left_to_right() {
+        // Left to right is what a tree with no `directionality` in it gets,
+        // from the ambient direction's own fallback; a label still carries
+        // it rather than nothing, because upstream's `SemanticsData` demands
+        // a direction of everything it can read aloud.
+        use crate::direction::TextDirection;
+
+        set_enabled(true);
+        let nodes = describe_tree(
+            semantics(
+                3,
+                SemanticsProperties::label("plain"),
+                leaf(|| SizedBox::new(50.0, 20.0)),
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+
+        let node = nodes.iter().find(|n| n.id == 3).expect("the label is read");
+        assert_eq!(node.properties.text_direction, Some(TextDirection::Ltr));
+    }
+
+    #[test]
+    fn a_node_with_nothing_to_read_carries_no_direction() {
+        // A node that offers an action but says nothing: upstream's assert
+        // demands a textDirection of the read-aloud fields and none other,
+        // so this one crosses as "unknown" rather than guessing.
+        set_enabled(true);
+        let nodes = describe_tree(
+            semantics_with_action(
+                5,
+                SemanticsProperties::default(),
+                leaf(|| SizedBox::new(50.0, 20.0)),
+                |_| {},
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+
+        let node = nodes.iter().find(|n| n.id == 5).expect("the node is read");
+        assert_eq!(node.properties.label, "");
+        assert_eq!(node.properties.text_direction, None, "no words, no direction");
+    }
+
+    #[test]
+    fn text_takes_the_direction_of_its_context() {
+        // A paragraph's annotation takes the ambient direction with the
+        // words, standing in for the paragraph's own until the render side
+        // captures one; `with_text_direction` is where that lands, and a
+        // render object that already knows can say so through it today.
+        use crate::direction::{TextDirection, with_direction};
+
+        let plain = SemanticsAnnotation::text(1, "plain");
+        assert_eq!(plain.properties.text_direction, Some(TextDirection::Ltr));
+
+        let rtl = with_direction(TextDirection::Rtl, || SemanticsAnnotation::text(2, "مرحبا"));
+        assert_eq!(rtl.properties.text_direction, Some(TextDirection::Rtl));
+
+        let known = SemanticsAnnotation::text(3, "mixed").with_text_direction(TextDirection::Rtl);
+        assert_eq!(known.properties.text_direction, Some(TextDirection::Rtl));
+    }
+
+    #[test]
+    fn a_changed_direction_is_news_to_a_reader() {
+        // A direction participates in the sameness the walk and the update
+        // compare -- upstream's `_isDifferentFromCurrentSemanticAnnotation`
+        // compares `textDirection` beside the label -- so a subtree whose
+        // directionality flipped is re-sent rather than read in the old one.
+        use crate::direction::TextDirection;
+
+        let ltr = SemanticsProperties {
+            text_direction: Some(TextDirection::Ltr),
+            ..SemanticsProperties::label("same words")
+        };
+        let rtl = SemanticsProperties {
+            text_direction: Some(TextDirection::Rtl),
+            ..SemanticsProperties::label("same words")
+        };
+        assert_eq!(ltr, ltr.clone());
+        assert_ne!(ltr, rtl, "the same words run differently");
     }
 
     #[test]

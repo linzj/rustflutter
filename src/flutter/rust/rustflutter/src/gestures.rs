@@ -26,18 +26,66 @@
 //! # What is recognised
 //!
 //! Tap and drag, with the arbitration rule that matters: a press that moves
-//! further than [`TOUCH_SLOP`] stops being a candidate tap and becomes a drag.
-//! Upstream this is a `GestureArena` where several recognisers compete and one
-//! wins; with two recognisers the arena collapses into a single distance test,
-//! and pretending otherwise would be more machinery than decision.
+//! further than [`compute_pan_slop`] for its kind of pointer stops being a
+//! candidate tap and becomes a drag. Which of the recognisers watching a press
+//! gets to say what it was is decided by [`GestureArena`] -- a port of
+//! upstream's `arena.dart`, one arena per pointer, members in the order they
+//! joined, the sweep on pointer up favouring the first member still standing.
 
 use std::rc::Rc;
 
 use crate::render::{HitTestResult, Offset, RenderBox};
 
-/// How far a pointer may move and still count as a tap, in logical pixels.
-/// Upstream's `kTouchSlop`.
+/// How far a touch has to travel before the framework is confident that it is
+/// a scroll, or inversely the maximum distance it can travel before the
+/// framework is confident that it is not a tap. Upstream's `kTouchSlop`.
 pub const TOUCH_SLOP: f32 = 18.0;
+
+/// The same, for pointers that go exactly where they are aimed. Upstream's
+/// `kPrecisePointerHitSlop`: a mouse does not land somewhere near its target,
+/// so it is not forgiven the wobble a finger is.
+pub const PRECISE_POINTER_HIT_SLOP: f32 = 1.0;
+
+/// How far a touch has to travel for the framework to be confident that the
+/// gesture is a panning one -- twice the touch slop, because a drag free to
+/// wander in both axes has twice the room to wobble in. Upstream's `kPanSlop`.
+pub const PAN_SLOP: f32 = TOUCH_SLOP * 2.0;
+
+/// [`PAN_SLOP`] for a precise pointer. Upstream's `kPrecisePointerPanSlop`.
+pub const PRECISE_POINTER_PAN_SLOP: f32 = PRECISE_POINTER_HIT_SLOP * 2.0;
+
+/// How far a pointer has to travel before the movement counts, by what kind of
+/// pointer it is.
+///
+/// Upstream's `computeHitSlop` (`events.dart`): a mouse gets a single logical
+/// pixel, and everything else -- touch, stylus, trackpad, unknown -- gets
+/// [`TOUCH_SLOP`]. The `DeviceGestureSettings` argument is left out because
+/// this port has no platform to source one from.
+pub fn compute_hit_slop(kind: PointerKind) -> f32 {
+    match kind {
+        PointerKind::Mouse => PRECISE_POINTER_HIT_SLOP,
+        _ => TOUCH_SLOP,
+    }
+}
+
+/// How far a pointer has to travel before the movement counts as a pan rather
+/// than a wobble: [`compute_hit_slop`] doubled, the way a free drag is judged
+/// against `kPanSlop` rather than the touch slop. Upstream's `computePanSlop`
+/// (`events.dart`).
+pub fn compute_pan_slop(kind: PointerKind) -> f32 {
+    match kind {
+        PointerKind::Mouse => PRECISE_POINTER_PAN_SLOP,
+        _ => PAN_SLOP,
+    }
+}
+
+/// Bit in `PointerEvent::buttons` for the primary button -- the left mouse
+/// button, a touch, the tip of a stylus. Upstream's `kPrimaryButton`.
+pub const PRIMARY_BUTTON: i32 = 0x01;
+
+/// Bit in `PointerEvent::buttons` for the secondary button -- the right mouse
+/// button, the barrel of a stylus. Upstream's `kSecondaryButton`.
+pub const SECONDARY_BUTTON: i32 = 0x02;
 
 /// What happened to a pointer. Mirrors `flutter::PointerData::Change`.
 /// What a pointer event carries besides a position.
@@ -258,12 +306,16 @@ pub struct HoverEvent {
 /// How long a press has to be held before it is a long press.
 pub const LONG_PRESS_TIMEOUT_MICROS: i64 = 500_000;
 
-/// The longest gap between the start of two taps that still makes a double
-/// tap.
+/// The longest a tap waits to be the first of a double tap: measured from its
+/// own lift to the second tap's press, which is where upstream starts the
+/// clock -- `_registerFirstTap` calls `_startDoubleTapTimer` on the first up.
+/// Upstream's `kDoubleTapTimeout`.
 pub const DOUBLE_TAP_TIMEOUT_MICROS: i64 = 300_000;
 
-/// The shortest gap that does. Two "taps" closer together than this are one
-/// bounce of a finger, not two taps.
+/// The shortest gap that does, measured from the first tap's press to the
+/// second tap's press: two "taps" closer together than this are one bounce of
+/// a finger, not two taps. Upstream's `_TapTracker` starts this countdown when
+/// it is created, at the down. Upstream's `kDoubleTapMinTime`.
 pub const DOUBLE_TAP_MIN_TIME_MICROS: i64 = 40_000;
 
 /// How far apart two taps may land and still be a double tap.
@@ -422,15 +474,17 @@ impl VelocityTracker {
     ///
     /// Both halves of upstream's `PanGestureRecognizer`: `isFlingGesture`,
     /// which wants speed *and* distance -- a slow careful drag and a twitch in
-    /// place are both releases that should leave the content where it is --
-    /// and `Velocity.clampMagnitude`, which is applied along the vector so
+    /// place are both releases that should leave the content where it is, with
+    /// the distance judged against [`compute_hit_slop`] for the pointer's kind
+    /// -- and `Velocity.clampMagnitude`, which is applied along the vector so
     /// that clamping a diagonal fling does not turn it.
-    pub fn fling_velocity(&self, now_micros: i64) -> Offset {
+    pub fn fling_velocity(&self, now_micros: i64, kind: PointerKind) -> Offset {
         let estimate = self.estimate(now_micros);
         let speed_squared = estimate.pixels_per_second.distance_squared();
+        let min_distance = compute_hit_slop(kind);
         let travelled_squared = estimate.offset.distance_squared();
         if speed_squared <= MIN_FLING_VELOCITY * MIN_FLING_VELOCITY
-            || travelled_squared <= TOUCH_SLOP * TOUCH_SLOP
+            || travelled_squared <= min_distance * min_distance
         {
             return Offset::ZERO;
         }
@@ -544,6 +598,12 @@ pub struct PointerHandlers {
     /// double tap is indistinguishable from a single one until the window has
     /// passed. See [`GestureRouter::tick`].
     pub on_tap: Option<Rc<dyn Fn(TapEvent)>>,
+    /// Fired when a secondary press -- the right mouse button, a stylus barrel
+    /// -- ends without having travelled past [`TOUCH_SLOP`]. Upstream's
+    /// `GestureDetector.onSecondaryTap`, and like upstream the primary tap
+    /// callbacks never fire for such a press: the two are different
+    /// recognisers, and only the one whose button this is joins the arena.
+    pub on_secondary_tap: Option<Rc<dyn Fn(TapEvent)>>,
     /// Fired when a press is held still for [`LONG_PRESS_TIMEOUT_MICROS`],
     /// before the finger lifts. A press that becomes a long press is no longer
     /// a tap.
@@ -593,6 +653,11 @@ impl PointerHandlers {
 
     pub fn with_long_press(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
         self.on_long_press = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_secondary_tap(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
+        self.on_secondary_tap = Some(Rc::new(handler));
         self
     }
 
@@ -679,6 +744,7 @@ impl PointerHandlers {
             && self.on_pointer_up.is_none()
             && self.on_pointer_cancel.is_none()
             && self.on_tap.is_none()
+            && self.on_secondary_tap.is_none()
             && self.on_long_press.is_none()
             && self.on_double_tap.is_none()
             && self.on_drag_start.is_none()
@@ -735,6 +801,105 @@ impl Target {
     }
 }
 
+// -- The gesture arena ----------------------------------------------------------
+//
+// A port of upstream's `gestures/arena.dart`. Upstream the members are
+// recogniser objects; here a recogniser is one of the router's own per-kind
+// states on one region, so a member is named by what it recognises and which
+// region it belongs to (`index` says which: see `ActivePointer`).
+
+/// Upstream's `GestureDisposition`: what a member is telling the arena, and
+/// what the arena tells a member when it hands out the verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Disposition {
+    Accepted,
+    Rejected,
+}
+
+/// Which recogniser an arena member is. The order the variants are added in is
+/// upstream's `GestureDetector` recogniser-creation order -- tap, double tap,
+/// long press, then the drags -- and it decides who wins a sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Recognizer {
+    /// The primary-button tap family on one region.
+    Tap,
+    /// `on_secondary_tap` on one region.
+    SecondaryTap,
+    /// `on_double_tap` on the innermost region that wants it.
+    DoubleTap,
+    /// `on_long_press` on one region.
+    LongPress,
+    /// The innermost region on the path that wants drags.
+    Drag,
+    /// The innermost region on the path that wants two fingers.
+    Scale,
+}
+
+/// One member of an arena: a recogniser on a region.
+///
+/// `index` identifies the region. For [`Recognizer::Tap`],
+/// [`Recognizer::DoubleTap`] and [`Recognizer::LongPress`] it is a position in
+/// [`ActivePointer::taps`]; for [`Recognizer::SecondaryTap`] a position in
+/// [`ActivePointer::secondary`]; for [`Recognizer::Drag`] and
+/// [`Recognizer::Scale`] it is unused, because those are recorded once per
+/// pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Member {
+    recognizer: Recognizer,
+    index: usize,
+}
+
+impl Member {
+    fn of(recognizer: Recognizer) -> Member {
+        Member { recognizer, index: 0 }
+    }
+}
+
+/// One verdict the arena has handed down: upstream's `acceptGesture` and
+/// `rejectGesture` calls, which are delivered exactly once per member per
+/// arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Verdict {
+    member: Member,
+    disposition: Disposition,
+}
+
+/// Upstream's `_GestureArena`: the recognisers competing for one pointer, and
+/// the state that decides when they may find out who won.
+///
+/// * the arena is **open** while the pointer-down event is still being
+///   dispatched; a member that accepts during that time can only be recorded
+///   as the *eager winner*, because later members have not had their say yet;
+/// * it closes once the down event has reached everyone, and then the first
+///   member to accept wins outright;
+/// * **holding** it (upstream `hold`) stops the sweep on pointer up, which is
+///   how a double-tap recogniser keeps a single tap from being settled before
+///   the window for the second tap has closed.
+#[derive(Debug)]
+struct GestureArena {
+    /// In join order. A member that rejects is removed, so `first` is the
+    /// first member that has not rejected.
+    members: Vec<Member>,
+    is_open: bool,
+    is_held: bool,
+    has_pending_sweep: bool,
+    /// The member that accepted while the arena was still open, if any.
+    eager_winner: Option<Member>,
+}
+
+impl GestureArena {
+    fn new() -> GestureArena {
+        GestureArena {
+            members: Vec::new(),
+            is_open: true,
+            is_held: false,
+            has_pending_sweep: false,
+            eager_winner: None,
+        }
+    }
+}
+
+
 /// What a single pressed pointer is doing.
 ///
 /// Two targets, not one. A press inside a scrolling list of buttons is both a
@@ -754,6 +919,29 @@ struct ActivePointer {
     /// Recorded on the way down like the other two, because by the time a
     /// second finger lands the tree may have been rebuilt.
     scale: Option<Target>,
+    /// Every region on the hit-test path that wants a primary-button tap, a
+    /// double tap or a long press, innermost first. One arena member each:
+    /// upstream every recogniser along the path joins the arena, and the
+    /// innermost one is added first, which is what makes it win the sweep.
+    taps: Vec<Target>,
+    /// Every region on the path that wants a secondary-button tap, innermost
+    /// first. These only join when the press *is* a secondary one, the way the
+    /// primary tap family only joins when it is not.
+    secondary: Vec<Target>,
+    /// The innermost region in `taps` that wants double taps. A double tap
+    /// spans two pointers, so its recogniser cannot be per-pointer like the
+    /// others; the held-back first tap is what carries it across the gap.
+    double: Option<Target>,
+    /// The member that won this pointer's arena, and the recognisers that
+    /// lost it. A loser must not fire: winning is upstream's
+    /// `acceptGesture`, losing its `rejectGesture`.
+    winner: Option<Member>,
+    rejected: Vec<Recognizer>,
+    /// Whether the drag member has lost the arena. Kept apart from
+    /// [`Self::rejected`] because the drag callbacks are spread over move and
+    /// up, and "no drag may start or end" is the one thing a loss has to
+    /// enforce after the fact.
+    drag_rejected: bool,
     /// Where the press began, in view coordinates.
     origin: Offset,
     /// Movement since the press began.
@@ -776,6 +964,10 @@ struct ActivePointer {
     /// needs in order to work out a focal point.
     down_micros: i64,
     position: Offset,
+    /// What kind of pointer this is, remembered from the down because how far
+    /// it must travel to count as a drag or a fling depends on it. See
+    /// [`compute_pan_slop`] and [`compute_hit_slop`].
+    kind: PointerKind,
     /// Set once this press has been announced as a long press, which is also
     /// what stops it from becoming a tap.
     long_pressed: bool,
@@ -793,14 +985,22 @@ struct ActivePointer {
 /// Upstream a `DoubleTapGestureRecognizer` *holds* the arena open for
 /// `kDoubleTapTimeout` instead of rejecting, which is why a `GestureDetector`
 /// with both callbacks reports a single tap late. This is that hold.
+#[derive(Clone)]
 struct PendingTap {
     target: Target,
     event: TapEvent,
+    /// Which pointer's arena is being held open while this tap waits. Upstream
+    /// the double-tap recogniser calls `hold` on it when the first tap lifts,
+    /// and it is that hold -- not patience -- that keeps the sweep from
+    /// settling the pointer as a single tap.
+    pointer_id: i64,
     /// Where the finger landed, in view coordinates, and when the press
-    /// started and ended. A second tap has to land near `origin`, start no
-    /// later than [`DOUBLE_TAP_TIMEOUT_MICROS`] after `down_micros`, and no
-    /// sooner than [`DOUBLE_TAP_MIN_TIME_MICROS`] after `up_micros` -- the
-    /// last of which is what keeps one finger bouncing from counting twice.
+    /// started and ended. A second tap has to land near `origin`, press no
+    /// later than [`DOUBLE_TAP_TIMEOUT_MICROS`] after `up_micros` -- upstream
+    /// starts that clock at the first tap's lift, in `_registerFirstTap` --
+    /// and no sooner than [`DOUBLE_TAP_MIN_TIME_MICROS`] after `down_micros`,
+    /// where upstream's `_TapTracker` begins its countdown. The last of these
+    /// is what keeps one finger bouncing from counting twice.
     origin: Offset,
     down_micros: i64,
     up_micros: i64,
@@ -827,6 +1027,27 @@ fn normalise_angle(radians: f32) -> f32 {
     angle
 }
 
+/// Delivers verdicts to a pointer's recogniser states. Upstream each
+/// recogniser does this itself in `acceptGesture` and `rejectGesture`: the
+/// winner remembers it won, and a loser may not fire again for this pointer.
+fn apply_verdicts_to(pointer: &mut ActivePointer, verdicts: Vec<Verdict>) {
+    for verdict in verdicts {
+        match verdict.disposition {
+            Disposition::Accepted => {
+                pointer.winner.get_or_insert(verdict.member);
+            }
+            Disposition::Rejected => {
+                if !pointer.rejected.contains(&verdict.member.recognizer) {
+                    pointer.rejected.push(verdict.member.recognizer);
+                }
+                if verdict.member.recognizer == Recognizer::Drag {
+                    pointer.drag_rejected = true;
+                }
+            }
+        }
+    }
+}
+
 /// A two-finger gesture in progress.
 struct ActiveScale {
     handlers: Rc<PointerHandlers>,
@@ -849,6 +1070,11 @@ struct ActiveScale {
 /// given the tree that was painted last.
 pub struct GestureRouter {
     active: Vec<(i64, ActivePointer)>,
+    /// One arena per pressed pointer, upstream's `_arenas` map. Removed as
+    /// soon as the pointer's gesture has been decided, so a resolve that
+    /// arrives after the fact -- a cancelled drag, say -- is a no-op, exactly
+    /// as upstream's `GestureArenaEntry.resolve` on a resolved arena.
+    arenas: Vec<(i64, GestureArena)>,
     /// A tap that has happened and is waiting to see whether a second one
     /// follows it.
     pending_tap: Option<PendingTap>,
@@ -867,6 +1093,7 @@ impl GestureRouter {
     pub fn new() -> GestureRouter {
         GestureRouter {
             active: Vec::new(),
+            arenas: Vec::new(),
             pending_tap: None,
             scale: None,
             hovered: Vec::new(),
@@ -899,14 +1126,14 @@ impl GestureRouter {
                 && !pointer.past_slop
                 && !pointer.scaling
                 && pointer
-                    .tap
-                    .as_ref()
-                    .is_some_and(|target| target.handlers.on_long_press.is_some())
+                    .taps
+                    .iter()
+                    .any(|target| target.handlers.on_long_press.is_some())
         });
         let waiting_to_be_a_double_tap = self
             .pending_tap
             .as_ref()
-            .is_some_and(|tap| now_micros - tap.down_micros < DOUBLE_TAP_TIMEOUT_MICROS);
+            .is_some_and(|tap| now_micros - tap.up_micros < DOUBLE_TAP_TIMEOUT_MICROS);
         waiting_to_be_a_long_press || waiting_to_be_a_double_tap
     }
 
@@ -921,19 +1148,42 @@ impl GestureRouter {
                     && !pointer.scaling
                     && now_micros - pointer.down_micros >= LONG_PRESS_TIMEOUT_MICROS
                     && pointer
-                        .tap
-                        .as_ref()
-                        .is_some_and(|target| target.handlers.on_long_press.is_some())
+                        .taps
+                        .iter()
+                        .any(|target| target.handlers.on_long_press.is_some())
             })
             .map(|(id, _)| *id)
             .collect();
 
         for id in due {
             let Some(pointer) = self.find(id) else { continue };
+            let Some(index) = pointer
+                .taps
+                .iter()
+                .position(|target| target.handlers.on_long_press.is_some())
+            else {
+                continue;
+            };
+            let member = Member { recognizer: Recognizer::LongPress, index };
+            let target = pointer.taps[index].clone();
+            // The long press claims the arena outright the moment its deadline
+            // passes (upstream resolves accepted from `didExceedDeadline`),
+            // which is also what tells the tap and the drag that they have
+            // lost: a press that has become a long press is nothing else.
+            let already_won = self.won_by(id, Recognizer::LongPress);
+            let verdicts = self.arena_resolve(id, member, Disposition::Accepted);
+            let won = already_won
+                || verdicts.iter().any(|verdict| {
+                    verdict.member == member && verdict.disposition == Disposition::Accepted
+                });
+            self.apply_verdicts(id, verdicts);
+            if !won {
+                continue;
+            }
+            let Some(pointer) = self.find(id) else { continue };
             pointer.long_pressed = true;
             let was_pressed = pointer.pressed;
             pointer.pressed = false;
-            let Some(target) = pointer.tap.clone() else { continue };
             let local = target.local_origin;
             // The press has been claimed, so whatever was showing it as held
             // stops. Upstream this is the tap recogniser losing the arena.
@@ -953,20 +1203,14 @@ impl GestureRouter {
         let expired = self
             .pending_tap
             .as_ref()
-            .is_some_and(|tap| now_micros - tap.down_micros >= DOUBLE_TAP_TIMEOUT_MICROS);
+            .is_some_and(|tap| now_micros - tap.up_micros >= DOUBLE_TAP_TIMEOUT_MICROS);
         if !expired {
             return;
         }
-        self.announce_pending_tap();
-    }
-
-    /// Gives up on a second tap arriving and reports the first as a single
-    /// one.
-    fn announce_pending_tap(&mut self) {
-        let Some(tap) = self.pending_tap.take() else { return };
-        if let Some(handler) = &tap.target.handlers.on_tap {
-            handler(tap.event);
-        }
+        // The double-tap window has closed, so the double-tap member leaves
+        // the arena it has been holding against the sweep, and the plain tap
+        // waiting behind it wins by default.
+        self.settle_pending_tap(Disposition::Rejected);
     }
 
     /// How many pointers are currently pressed. Used by tests.
@@ -984,6 +1228,227 @@ impl GestureRouter {
             .iter_mut()
             .find(|(id, _)| *id == pointer_id)
             .map(|(_, pointer)| pointer)
+    }
+
+    // -- The arena manager ----------------------------------------------------
+    //
+    // Upstream's `GestureArenaManager`, one method to one method. Verdicts are
+    // collected and returned rather than delivered on the spot, because the
+    // state machine must not know what a recogniser does with its victory;
+    // `apply_verdicts` is the delivery.
+
+    /// Upstream `add`: a recogniser joins its pointer's arena, opening one if
+    /// this is the first member.
+    fn arena_add(&mut self, pointer: i64, member: Member) {
+        let arena = match self.arenas.iter_mut().find(|(id, _)| *id == pointer) {
+            Some((_, arena)) => arena,
+            None => {
+                self.arenas.push((pointer, GestureArena::new()));
+                &mut self.arenas.last_mut().expect("just pushed").1
+            }
+        };
+        arena.members.push(member);
+    }
+
+    /// Upstream `close`: the pointer-down event has finished dispatching, so
+    /// no further members can arrive and an arena with a single member left is
+    /// decided on the spot.
+    fn arena_close(&mut self, pointer: i64) -> Vec<Verdict> {
+        if let Some((_, arena)) = self.arenas.iter_mut().find(|(id, _)| *id == pointer) {
+            arena.is_open = false;
+        }
+        self.try_to_resolve_arena(pointer)
+    }
+
+    /// Upstream `sweep`: the pointer has lifted, so the first member that has
+    /// not rejected wins rather than anyone waiting to be convinced.
+    fn arena_sweep(&mut self, pointer: i64) -> Vec<Verdict> {
+        let Some(index) = self.arenas.iter().position(|(id, _)| *id == pointer) else {
+            return Vec::new(); // Already resolved, or never opened.
+        };
+        if self.arenas[index].1.is_held {
+            // Held for a long-lived member; the sweep waits for a release.
+            self.arenas[index].1.has_pending_sweep = true;
+            return Vec::new();
+        }
+        let (_, arena) = self.arenas.remove(index);
+        arena
+            .members
+            .iter()
+            .enumerate()
+            .map(|(position, member)| Verdict {
+                member: *member,
+                disposition: if position == 0 {
+                    Disposition::Accepted
+                } else {
+                    Disposition::Rejected
+                },
+            })
+            .collect()
+    }
+
+    /// Upstream `hold`: stop the arena being swept.
+    fn arena_hold(&mut self, pointer: i64) {
+        if let Some((_, arena)) = self.arenas.iter_mut().find(|(id, _)| *id == pointer) {
+            arena.is_held = true;
+        }
+    }
+
+    /// Upstream `release`: let the arena be swept, and sweep it at once if a
+    /// sweep was attempted while it was held.
+    fn arena_release(&mut self, pointer: i64) -> Vec<Verdict> {
+        let held_with_sweep = self
+            .arenas
+            .iter()
+            .find(|(id, _)| *id == pointer)
+            .is_some_and(|(_, arena)| {
+                arena.is_held && arena.has_pending_sweep
+            });
+        if let Some((_, arena)) = self.arenas.iter_mut().find(|(id, _)| *id == pointer) {
+            arena.is_held = false;
+        }
+        if held_with_sweep {
+            return self.arena_sweep(pointer);
+        }
+        Vec::new()
+    }
+
+    /// Upstream `_resolve`, reached through a member's `GestureArenaEntry`:
+    /// the member claims the gesture or admits it is not going to happen.
+    /// Resolving an arena that is already resolved is a no-op, by design --
+    /// that is what keeps a cancelled drag from being told twice.
+    fn arena_resolve(
+        &mut self,
+        pointer: i64,
+        member: Member,
+        disposition: Disposition,
+    ) -> Vec<Verdict> {
+        let Some(index) = self.arenas.iter().position(|(id, _)| *id == pointer) else {
+            return Vec::new(); // Already resolved.
+        };
+        match disposition {
+            Disposition::Accepted => {
+                if self.arenas[index].1.is_open {
+                    // The arena is still filling up, so an early claim can only
+                    // be noted; it becomes a victory when the arena closes.
+                    self.arenas[index].1.eager_winner.get_or_insert(member);
+                    Vec::new()
+                } else {
+                    self.resolve_in_favor_of(pointer, member)
+                }
+            }
+            Disposition::Rejected => {
+                let is_open;
+                {
+                    let (_, arena) = &mut self.arenas[index];
+                    if arena.eager_winner == Some(member) {
+                        arena.eager_winner = None;
+                    }
+                    arena.members.retain(|standing| *standing != member);
+                    is_open = arena.is_open;
+                }
+                let mut verdicts = vec![Verdict { member, disposition: Disposition::Rejected }];
+                if !is_open {
+                    verdicts.extend(self.try_to_resolve_arena(pointer));
+                }
+                verdicts
+            }
+        }
+    }
+
+    /// Upstream `_tryToResolveArena`, called once the arena is closed: a lone
+    /// survivor wins by default, an empty arena disappears, and an eager
+    /// winner takes the lot.
+    fn try_to_resolve_arena(&mut self, pointer: i64) -> Vec<Verdict> {
+        let Some((_, arena)) = self.arenas.iter().find(|(id, _)| *id == pointer) else {
+            return Vec::new();
+        };
+        if arena.members.len() == 1 {
+            // Upstream schedules this as a microtask so the caller finishes
+            // first; resolving inline is the same thing here, where nothing
+            // runs in between.
+            let member = arena.members[0];
+            return self.resolve_by_default(pointer, member);
+        }
+        if arena.members.is_empty() {
+            self.arenas.retain(|(id, _)| *id != pointer);
+            return Vec::new();
+        }
+        if let Some(eager) = arena.eager_winner {
+            return self.resolve_in_favor_of(pointer, eager);
+        }
+        Vec::new()
+    }
+
+    /// Upstream `_resolveByDefault`: the arena's only member has won.
+    fn resolve_by_default(&mut self, pointer: i64, member: Member) -> Vec<Verdict> {
+        let Some(index) = self.arenas.iter().position(|(id, _)| *id == pointer) else {
+            return Vec::new(); // Someone resolved it first.
+        };
+        if self.arenas[index].1.members.first() != Some(&member) {
+            return Vec::new(); // And not with this member alone.
+        }
+        self.arenas.remove(index);
+        vec![Verdict { member, disposition: Disposition::Accepted }]
+    }
+
+    /// Upstream `_resolveInFavorOf`: the arena is settled, everyone else is
+    /// rejected, the loser notifications first as upstream sends them.
+    fn resolve_in_favor_of(&mut self, pointer: i64, member: Member) -> Vec<Verdict> {
+        let Some(index) = self.arenas.iter().position(|(id, _)| *id == pointer) else {
+            return Vec::new();
+        };
+        let (_, arena) = self.arenas.remove(index);
+        let mut verdicts: Vec<Verdict> = arena
+            .members
+            .iter()
+            .filter(|standing| **standing != member)
+            .map(|loser| Verdict { member: *loser, disposition: Disposition::Rejected })
+            .collect();
+        verdicts.push(Verdict { member, disposition: Disposition::Accepted });
+        verdicts
+    }
+
+    /// The members still standing in a pointer's arena, in join order.
+    fn alive_members(&self, pointer: i64) -> Vec<Member> {
+        self.arenas
+            .iter()
+            .find(|(id, _)| *id == pointer)
+            .map(|(_, arena)| arena.members.clone())
+            .unwrap_or_default()
+    }
+
+    /// The standing member of `recognizer` in a pointer's arena, if any.
+    fn member_of(&self, pointer: i64, recognizer: Recognizer) -> Option<Member> {
+        self.arenas
+            .iter()
+            .find(|(id, _)| *id == pointer)
+            .and_then(|(_, arena)| {
+                arena.members.iter().find(|m| m.recognizer == recognizer).copied()
+            })
+    }
+
+    /// Drops a pointer's arena without resolving it, for a down that arrives
+    /// without the previous press having ended.
+    fn take_arena(&mut self, pointer: i64) {
+        self.arenas.retain(|(id, _)| *id != pointer);
+    }
+
+    /// Delivers verdicts to the pointer they are about: the winner is
+    /// remembered, the losers are barred from firing.
+    fn apply_verdicts(&mut self, pointer: i64, verdicts: Vec<Verdict>) {
+        if let Some((_, pointer)) = self.active.iter_mut().find(|(id, _)| *id == pointer) {
+            apply_verdicts_to(pointer, verdicts);
+        }
+    }
+
+    /// Whether a recogniser has won this pointer's arena.
+    fn won_by(&self, pointer: i64, recognizer: Recognizer) -> bool {
+        self.active
+            .iter()
+            .find(|(id, _)| *id == pointer)
+            .and_then(|(_, pointer)| pointer.winner)
+            .is_some_and(|winner| winner.recognizer == recognizer)
     }
 
     /// Dispatches one event against `root`, the render tree painted last frame.
@@ -1108,6 +1573,13 @@ impl GestureRouter {
         let mut tap: Option<Target> = None;
         let mut drag: Option<Target> = None;
         let mut scale: Option<Target> = None;
+        // The arena's membership: every region on the path that has
+        // recognisers for what this press is. Which of the two tap families
+        // joins is decided by the button -- upstream's tap recognisers reject
+        // a pointer whose button is not theirs before it reaches the arena --
+        // while drags and scales take any button.
+        let mut taps: Vec<Target> = Vec::new();
+        let mut secondary: Vec<Target> = Vec::new();
         for entry in &result.path {
             let Some(handlers) = entry.handlers.clone() else { continue };
             if drag.is_none() && handlers.wants_drag() {
@@ -1126,13 +1598,26 @@ impl GestureRouter {
             }
             if tap.is_none() {
                 tap = Some(Target {
-                    handlers,
+                    handlers: handlers.clone(),
                     id: entry.target,
                     local_origin: entry.local_position,
                 });
             }
-            if tap.is_some() && drag.is_some() && scale.is_some() {
-                break;
+            let wants_primary = handlers.on_tap.is_some()
+                || handlers.on_double_tap.is_some()
+                || handlers.on_long_press.is_some();
+            if event.buttons == PRIMARY_BUTTON && wants_primary {
+                taps.push(Target {
+                    handlers,
+                    id: entry.target,
+                    local_origin: entry.local_position,
+                });
+            } else if event.buttons == SECONDARY_BUTTON && handlers.on_secondary_tap.is_some() {
+                secondary.push(Target {
+                    handlers,
+                    id: entry.target,
+                    local_origin: entry.local_position,
+                });
             }
         }
         if tap.is_none() && drag.is_none() && scale.is_none() {
@@ -1143,7 +1628,7 @@ impl GestureRouter {
         // the way up, because it is the *start* of the second tap that the
         // window is measured to, and because a press that lands somewhere else
         // settles the first tap immediately instead of leaving it hanging.
-        let second_tap = self.pair_with_pending_tap(&tap, event);
+        let second_tap = self.pair_with_pending_tap(&taps, event);
 
         // Every region on the path hears the raw pointer events -- not just
         // the one that will end up owning the gesture. That is upstream's
@@ -1189,8 +1674,10 @@ impl GestureRouter {
         }
 
         // A second down from the same pointer without an up should not leave
-        // the first entry stranded.
+        // the first entry stranded, nor the arena it opened.
         self.take(event.pointer_id);
+        self.take_arena(event.pointer_id);
+        let double = taps.iter().find(|t| t.handlers.on_double_tap.is_some()).cloned();
         let mut velocity = VelocityTracker::new();
         velocity.add_position(event.time_stamp_micros, event.position);
         self.active.push((
@@ -1200,6 +1687,12 @@ impl GestureRouter {
                 drag,
                 scale,
                 listeners,
+                taps,
+                secondary,
+                double,
+                winner: None,
+                rejected: Vec::new(),
+                drag_rejected: false,
                 origin: event.position,
                 total: Offset::ZERO,
                 past_slop: false,
@@ -1207,33 +1700,122 @@ impl GestureRouter {
                 velocity,
                 down_micros: event.time_stamp_micros,
                 position: event.position,
+                kind: event.kind,
                 long_pressed: false,
                 second_tap,
                 scaling: false,
             },
         ));
+        self.open_arena(event.pointer_id);
         self.begin_scale_if_two_fingers(event);
         true
     }
 
+    /// Joins this pointer's recognisers to its arena, then closes the arena
+    /// behind them. Upstream the recognisers join as the down event is
+    /// dispatched along the hit-test path -- innermost region first, and
+    /// within a region in the order a `GestureDetector` makes its
+    /// recognisers: tap, double tap, long press, then the drags -- and the
+    /// binding closes the arena when the dispatch is done. That order is not
+    /// cosmetic: it is what the sweep hands the arena to.
+    fn open_arena(&mut self, pointer_id: i64) {
+        let members: Vec<Member> = {
+            let Some((_, pointer)) = self.active.iter().find(|(id, _)| *id == pointer_id)
+            else {
+                return;
+            };
+            let mut members = Vec::new();
+            for (index, target) in pointer.taps.iter().enumerate() {
+                if target.handlers.on_tap.is_some() {
+                    members.push(Member { recognizer: Recognizer::Tap, index });
+                }
+                if target.handlers.on_double_tap.is_some()
+                    && pointer
+                        .double
+                        .as_ref()
+                        .is_some_and(|double| double.is_same_region(target))
+                {
+                    members.push(Member { recognizer: Recognizer::DoubleTap, index });
+                }
+                if target.handlers.on_long_press.is_some() {
+                    members.push(Member { recognizer: Recognizer::LongPress, index });
+                }
+            }
+            for index in 0..pointer.secondary.len() {
+                members.push(Member { recognizer: Recognizer::SecondaryTap, index });
+            }
+            if pointer.drag.is_some() {
+                members.push(Member::of(Recognizer::Drag));
+            }
+            if pointer.scale.is_some() {
+                members.push(Member::of(Recognizer::Scale));
+            }
+            members
+        };
+        if members.is_empty() {
+            return;
+        }
+        for member in members {
+            self.arena_add(pointer_id, member);
+        }
+        // A lone member wins the moment the arena closes -- upstream's
+        // default resolution -- which is why a region with one recogniser
+        // never has to wait for a sweep.
+        let verdicts = self.arena_close(pointer_id);
+        self.apply_verdicts(pointer_id, verdicts);
+    }
+
     /// Whether this press is the second tap of a double tap, settling the
     /// first one either way.
-    fn pair_with_pending_tap(&mut self, tap: &Option<Target>, event: &PointerEvent) -> bool {
-        let Some(pending) = &self.pending_tap else { return false };
-        let matches = tap.as_ref().is_some_and(|target| {
+    ///
+    /// Settling is an arena question: a second tap in time and place has the
+    /// double-tap recogniser *win* the arena the first pointer has been
+    /// holding open (upstream `_registerSecondTap` resolves both entries
+    /// accepted), and a press that arrives too late or too far away has it
+    /// give the arena up (upstream `_reset`), which is what finally lets the
+    /// plain tap that has been waiting behind it be reported.
+    fn pair_with_pending_tap(&mut self, taps: &[Target], event: &PointerEvent) -> bool {
+        let Some(pending) = self.pending_tap.clone() else { return false };
+        // The two clocks start where upstream starts them: the window at the
+        // first tap's lift (`_registerFirstTap` starts the double-tap timer on
+        // the up), the minimum gap at the first tap's press (the `_TapTracker`
+        // is created at the down and counts `kDoubleTapMinTime` from there).
+        let matches = taps.iter().any(|target| {
             target.is_same_region(&pending.target)
                 && event.position.minus(pending.origin).distance() <= DOUBLE_TAP_SLOP
-                && event.time_stamp_micros - pending.down_micros <= DOUBLE_TAP_TIMEOUT_MICROS
-                && event.time_stamp_micros - pending.up_micros >= DOUBLE_TAP_MIN_TIME_MICROS
+                && event.time_stamp_micros - pending.up_micros <= DOUBLE_TAP_TIMEOUT_MICROS
+                && event.time_stamp_micros - pending.down_micros >= DOUBLE_TAP_MIN_TIME_MICROS
         });
         if matches {
             // Held rather than announced: the first tap of a double tap is not
             // also a single tap.
-            self.pending_tap = None;
+            self.settle_pending_tap(Disposition::Accepted);
             true
         } else {
-            self.announce_pending_tap();
+            self.settle_pending_tap(Disposition::Rejected);
             false
+        }
+    }
+
+    /// Takes the pending tap out of limbo by resolving the double-tap member
+    /// that has been holding its arena. If the plain tap ends up the winner of
+    /// that resolution, this is the moment it is finally reported.
+    fn settle_pending_tap(&mut self, disposition: Disposition) {
+        let Some(tap) = self.pending_tap.take() else { return };
+        let Some(member) = self.member_of(tap.pointer_id, Recognizer::DoubleTap) else {
+            return; // The arena resolved some other way; nothing is waiting.
+        };
+        let verdicts = self.arena_resolve(tap.pointer_id, member, disposition);
+        self.arena_release(tap.pointer_id);
+        self.apply_verdicts(tap.pointer_id, verdicts.clone());
+        let tap_won = verdicts.iter().any(|verdict| {
+            verdict.member.recognizer == Recognizer::Tap
+                && verdict.disposition == Disposition::Accepted
+        });
+        if tap_won {
+            if let Some(single) = &tap.target.handlers.on_tap {
+                single(tap.event);
+            }
         }
     }
 
@@ -1353,7 +1935,12 @@ impl GestureRouter {
         let travel = event.position.minus(active.origin);
         let total = active.total;
 
-        let starting = !active.past_slop && travelled > TOUCH_SLOP;
+        // The pan slop, not the touch slop: this recogniser's drag is a free
+        // pan -- both axes at once, as `DragEvent` carries them -- and upstream
+        // judges that against `computePanSlop` (monodrag.dart's
+        // `PanGestureRecognizer.hasSufficientGlobalDistanceToAccept`), twice
+        // the touch slop. A mouse's is two pixels, not thirty-six.
+        let starting = !active.past_slop && travelled > compute_pan_slop(active.kind);
         if starting {
             active.past_slop = true;
         }
@@ -1386,6 +1973,34 @@ impl GestureRouter {
             }
         }
 
+        // The press has travelled, so the recognisers that were waiting to see
+        // whether this was theirs know it is not: upstream every tap-flavoured
+        // one resolves rejected past the slop, and the drag resolves accepted
+        // and takes the arena outright, there and then.
+        let mut drag_won = false;
+        if starting {
+            let mut verdicts = Vec::new();
+            for member in self.alive_members(event.pointer_id) {
+                if matches!(
+                    member.recognizer,
+                    Recognizer::Tap
+                        | Recognizer::SecondaryTap
+                        | Recognizer::DoubleTap
+                        | Recognizer::LongPress
+                ) {
+                    verdicts.extend(
+                        self.arena_resolve(event.pointer_id, member, Disposition::Rejected),
+                    );
+                }
+            }
+            if drag_target.is_some() {
+                verdicts
+                    .extend(self.arena_resolve(event.pointer_id, Member::of(Recognizer::Drag), Disposition::Accepted));
+            }
+            self.apply_verdicts(event.pointer_id, verdicts);
+            drag_won = self.won_by(event.pointer_id, Recognizer::Drag);
+        }
+
         if let Some(target) = &drag_target {
             let drag = DragEvent {
                 delta: event.delta,
@@ -1393,18 +2008,31 @@ impl GestureRouter {
                 local_position: target.local_origin.plus(travel),
                 pointer_id: event.pointer_id,
             };
-            if starting {
+            // `won_by` rather than "is there a drag target", because a drag
+            // that lost the arena -- to a long press, say -- may not start;
+            // and won at the close of a one-member arena, which is why a
+            // drag-only region starts without a contest.
+            if drag_won {
                 if let Some(start) = &target.handlers.on_drag_start {
                     start(drag);
                 }
             }
-            if past_slop {
+            if past_slop && !self.drag_rejected(event.pointer_id) {
                 if let Some(update) = &target.handlers.on_drag_update {
                     update(drag);
                 }
             }
         }
         true
+    }
+
+    /// Whether this pointer's drag member has lost its arena, in which case no
+    /// drag callbacks may fire for it any more.
+    fn drag_rejected(&self, pointer_id: i64) -> bool {
+        self.active
+            .iter()
+            .find(|(id, _)| *id == pointer_id)
+            .is_some_and(|(_, pointer)| pointer.drag_rejected)
     }
 
     /// Reports where the two fingers are now, relative to where they started.
@@ -1487,7 +2115,7 @@ impl GestureRouter {
 
     fn on_up(&mut self, event: &PointerEvent) -> bool {
         self.end_scale_if_involved(event.pointer_id);
-        let Some(active) = self.take(event.pointer_id) else {
+        let Some(mut active) = self.take(event.pointer_id) else {
             return false;
         };
         if active.scaling {
@@ -1505,42 +2133,119 @@ impl GestureRouter {
         }
 
         if let Some(target) = &active.tap {
-            let local = target.local_origin.plus(travel);
             if active.pressed {
                 if let Some(press_change) = &target.handlers.on_press_change {
                     press_change(false);
                 }
             }
-            // A press that travelled is not a tap, however short the travel,
-            // and neither is one that was already announced as a long press.
-            if !active.past_slop && !active.long_pressed {
-                let tap_event = TapEvent { local_position: local, pointer_id: event.pointer_id };
-                if active.second_tap {
+        }
+
+        // The recognisers see the up before the arena is swept -- upstream's
+        // order too: the binding routes the event and only then sweeps. A
+        // long press whose deadline never came gives up, the pointer being
+        // gone, and so does a drag that never crossed the slop.
+        let mut verdicts = Vec::new();
+        for member in self.alive_members(event.pointer_id) {
+            match member.recognizer {
+                Recognizer::LongPress => {
+                    verdicts
+                        .extend(self.arena_resolve(event.pointer_id, member, Disposition::Rejected));
+                }
+                Recognizer::Drag if !active.past_slop => {
+                    verdicts
+                        .extend(self.arena_resolve(event.pointer_id, member, Disposition::Rejected));
+                }
+                _ => {}
+            }
+        }
+
+        // The double tap is the one that does not give up on an up. Either
+        // this was the second tap of a pair, and it wins the arena outright
+        // (upstream `_registerSecondTap` resolves both entries accepted), or
+        // it was the first, and it *holds* the arena against the sweep until
+        // the window for a second tap has closed (upstream `_registerFirstTap`
+        // calls `hold`).
+        let mut held_for_double = false;
+        if !active.past_slop && !active.long_pressed {
+            if active.second_tap {
+                if let Some(member) = self.member_of(event.pointer_id, Recognizer::DoubleTap) {
+                    verdicts.extend(
+                        self.arena_resolve(event.pointer_id, member, Disposition::Accepted),
+                    );
+                }
+            } else if active.double.is_some()
+                && self.member_of(event.pointer_id, Recognizer::DoubleTap).is_some()
+            {
+                let target = active.double.clone().expect("checked above");
+                self.pending_tap = Some(PendingTap {
+                    event: TapEvent {
+                        local_position: target.local_origin.plus(travel),
+                        pointer_id: event.pointer_id,
+                    },
+                    pointer_id: event.pointer_id,
+                    target,
+                    origin: active.origin,
+                    down_micros: active.down_micros,
+                    up_micros: event.time_stamp_micros,
+                });
+                self.arena_hold(event.pointer_id);
+                held_for_double = true;
+            }
+        }
+
+        // The sweep: pointer up, so the first member still standing wins
+        // rather than anyone being convinced.
+        verdicts.extend(self.arena_sweep(event.pointer_id));
+        apply_verdicts_to(&mut active, verdicts);
+
+        // What the arena decided. A tap that won is reported right here --
+        // unless the double-tap recogniser has the arena on hold, in which
+        // case nothing is reported until the window for a second tap closes.
+        // A press that travelled is not a tap however the arena went, and
+        // neither is one that was already announced as a long press.
+        let won = |recognizer: Recognizer| {
+            active.winner.is_some_and(|winner| winner.recognizer == recognizer)
+        };
+        if !held_for_double && !active.past_slop && !active.long_pressed {
+            if won(Recognizer::Tap) {
+                let winner = active.winner.expect("just checked");
+                let target = &active.taps[winner.index];
+                if let Some(tap) = &target.handlers.on_tap {
+                    tap(TapEvent {
+                        local_position: target.local_origin.plus(travel),
+                        pointer_id: event.pointer_id,
+                    });
+                }
+            }
+            if won(Recognizer::SecondaryTap) {
+                let winner = active.winner.expect("just checked");
+                let target = &active.secondary[winner.index];
+                if let Some(secondary) = &target.handlers.on_secondary_tap {
+                    secondary(TapEvent {
+                        local_position: target.local_origin.plus(travel),
+                        pointer_id: event.pointer_id,
+                    });
+                }
+            }
+            if active.second_tap {
+                if let Some(target) = &active.double {
+                    let tap_event = TapEvent {
+                        local_position: target.local_origin.plus(travel),
+                        pointer_id: event.pointer_id,
+                    };
                     if let Some(double) = &target.handlers.on_double_tap {
                         double(tap_event);
                     }
-                } else if target.handlers.on_double_tap.is_some() {
-                    // This region wants double taps, so a single one cannot be
-                    // reported until it is clear that no second tap is coming.
-                    // `tick` announces it when the window closes.
-                    self.pending_tap = Some(PendingTap {
-                        target: target.clone(),
-                        event: tap_event,
-                        origin: active.origin,
-                        down_micros: active.down_micros,
-                        up_micros: event.time_stamp_micros,
-                    });
-                } else if let Some(tap) = &target.handlers.on_tap {
-                    tap(tap_event);
                 }
             }
         }
 
-        if active.past_slop {
+        if active.past_slop && !active.drag_rejected {
             if let Some(target) = &active.drag {
                 if let Some(end) = &target.handlers.on_drag_end {
                     end(DragEndEvent {
-                        velocity: active.velocity.fling_velocity(event.time_stamp_micros),
+                        velocity: active.velocity
+                            .fling_velocity(event.time_stamp_micros, active.kind),
                         total: active.total,
                         local_position: target.local_origin.plus(travel),
                         pointer_id: event.pointer_id,
@@ -1553,7 +2258,7 @@ impl GestureRouter {
 
     fn on_cancel(&mut self, event: &PointerEvent) -> bool {
         self.end_scale_if_involved(event.pointer_id);
-        let Some(active) = self.take(event.pointer_id) else {
+        let Some(mut active) = self.take(event.pointer_id) else {
             return false;
         };
         if active.scaling {
@@ -1567,6 +2272,16 @@ impl GestureRouter {
             }
         }
 
+        // The platform has taken the pointer away: every recogniser still in
+        // the arena gives up. Members of an arena that already resolved --
+        // a drag that had won, say -- hear nothing, which is what lets the
+        // drag end with a whimper rather than not at all.
+        let mut verdicts = Vec::new();
+        for member in self.alive_members(event.pointer_id) {
+            verdicts.extend(self.arena_resolve(event.pointer_id, member, Disposition::Rejected));
+        }
+        apply_verdicts_to(&mut active, verdicts);
+
         // A cancelled press is not a tap. Only the pressed state is unwound.
         if active.pressed {
             if let Some(target) = &active.tap {
@@ -1575,7 +2290,7 @@ impl GestureRouter {
                 }
             }
         }
-        if active.past_slop {
+        if active.past_slop && !active.drag_rejected {
             if let Some(target) = &active.drag {
                 if let Some(end) = &target.handlers.on_drag_end {
                     // No velocity: a cancelled drag is the platform taking the
@@ -1704,12 +2419,47 @@ mod tests {
 
         let mut router = GestureRouter::new();
         router.dispatch(&root, &event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
-        // Below the slop: no drag yet.
-        router.dispatch(&root, &event(PointerChange::Move, 25.0, 20.0, 5.0, 0.0));
+        // 25px: past the 18px touch slop, still short of the 36px pan slop a
+        // free drag is judged against. No drag yet.
+        router.dispatch(&root, &event(PointerChange::Move, 45.0, 20.0, 25.0, 0.0));
         assert!(log.borrow().is_empty());
         // Past it.
-        router.dispatch(&root, &event(PointerChange::Move, 45.0, 20.0, 20.0, 0.0));
-        router.dispatch(&root, &event(PointerChange::Up, 45.0, 20.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Move, 60.0, 20.0, 15.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Up, 60.0, 20.0, 0.0, 0.0));
+
+        assert_eq!(*log.borrow(), vec!["start", "update", "end"]);
+    }
+
+    /// One event from a mouse rather than a finger: the same gesture, judged
+    /// against a mouse's far smaller slop.
+    fn mouse(change: PointerChange, x: f32, y: f32, dx: f32, dy: f32) -> PointerEvent {
+        PointerEvent { kind: PointerKind::Mouse, ..event(change, x, y, dx, dy) }
+    }
+
+    #[test]
+    fn a_mouse_drag_starts_almost_at_once() {
+        // A mouse goes exactly where it is aimed, so upstream forgives it
+        // almost nothing: kPrecisePointerPanSlop is two logical pixels, not
+        // thirty-six, and a click-drag takes hold immediately.
+        let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let starts = log.clone();
+        let updates = log.clone();
+        let ends = log.clone();
+        let taps = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_drag_start(move |_| starts.borrow_mut().push("start"))
+                .with_drag_update(move |_| updates.borrow_mut().push("update"))
+                .with_drag_end(move |_| ends.borrow_mut().push("end"))
+                .with_tap(move |_| taps.borrow_mut().push("tap")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &mouse(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
+        router.dispatch(&root, &mouse(PointerChange::Move, 21.0, 20.0, 1.0, 0.0));
+        assert!(log.borrow().is_empty(), "one pixel is still within the slop");
+        router.dispatch(&root, &mouse(PointerChange::Move, 24.0, 20.0, 3.0, 0.0));
+        router.dispatch(&root, &mouse(PointerChange::Up, 24.0, 20.0, 0.0, 0.0));
 
         assert_eq!(*log.borrow(), vec!["start", "update", "end"]);
     }
@@ -1791,6 +2541,16 @@ mod tests {
     /// Swipes upwards from (40, 70) at `per_frame` logical pixels every 60Hz
     /// frame, and returns the velocity the release reported.
     fn swipe(frames: i64, per_frame: f32, hold_before_lifting_micros: i64) -> Offset {
+        swipe_with(PointerKind::Touch, frames, per_frame, hold_before_lifting_micros)
+    }
+
+    /// The same swipe by some other kind of pointer, whose slops may differ.
+    fn swipe_with(
+        kind: PointerKind,
+        frames: i64,
+        per_frame: f32,
+        hold_before_lifting_micros: i64,
+    ) -> Offset {
         let velocity = Rc::new(RefCell::new(Offset::ZERO));
         let sink = velocity.clone();
         // The 80x80 region, so that a swipe has somewhere to start: the
@@ -1805,14 +2565,19 @@ mod tests {
         let mut router = GestureRouter::new();
         let mut y = 70.0;
         let mut now = 1_000_000;
-        router.dispatch(&root, &at(PointerChange::Down, y, 0.0, now));
+        let event_as = |change, y: f32, dy: f32, now: i64| {
+            let mut event = at(change, y, dy, now);
+            event.kind = kind;
+            event
+        };
+        router.dispatch(&root, &event_as(PointerChange::Down, y, 0.0, now));
         for _ in 0..frames {
             now += 16_667;
             y -= per_frame;
-            router.dispatch(&root, &at(PointerChange::Move, y, -per_frame, now));
+            router.dispatch(&root, &event_as(PointerChange::Move, y, -per_frame, now));
         }
         now += hold_before_lifting_micros.max(16_667);
-        router.dispatch(&root, &at(PointerChange::Up, y, 0.0, now));
+        router.dispatch(&root, &event_as(PointerChange::Up, y, 0.0, now));
         *velocity.borrow()
     }
 
@@ -1849,6 +2614,21 @@ mod tests {
         // Upstream wants distance as well as speed for the same reason.
         let velocity = swipe(3, 4.0, 0);
         assert_eq!(velocity, Offset::ZERO);
+    }
+
+    #[test]
+    fn a_short_fast_flick_carries_for_a_mouse_but_not_a_finger() {
+        // Twelve logical pixels in three frames, about 240 pixels a second:
+        // well past kMinFlingVelocity, but not past a finger's 18px hit slop.
+        // A mouse's slop is a single pixel, so the same flick carries.
+        let finger = swipe(3, 4.0, 0);
+        assert_eq!(finger, Offset::ZERO, "a finger is forgiven twelve pixels of travel");
+        let mouse = swipe_with(PointerKind::Mouse, 3, 4.0, 0);
+        assert!(
+            (mouse.dy + 240.0).abs() < 60.0,
+            "the mouse flick should carry, not {}",
+            mouse.dy
+        );
     }
 
     #[test]
@@ -1944,10 +2724,10 @@ mod tests {
 
         let mut router = GestureRouter::new();
         router.dispatch(&root, &event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0));
-        router.dispatch(&root, &event(PointerChange::Move, 40.0, 70.0, 0.0, 30.0));
-        router.dispatch(&root, &event(PointerChange::Up, 40.0, 70.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Move, 40.0, 80.0, 0.0, 40.0));
+        router.dispatch(&root, &event(PointerChange::Up, 40.0, 80.0, 0.0, 0.0));
 
-        assert_eq!(*dragged.borrow(), 30.0, "the list should have been scrolled");
+        assert_eq!(*dragged.borrow(), 40.0, "the list should have been scrolled");
         assert_eq!(*taps.borrow(), 0, "a scroll is not a tap on the row it began on");
     }
 
@@ -2093,7 +2873,7 @@ mod tests {
 
         let mut router = GestureRouter::new();
         router.dispatch(&root, &at(PointerChange::Down, 70.0, 0.0, 0));
-        router.dispatch(&root, &at(PointerChange::Move, 40.0, -30.0, 100_000));
+        router.dispatch(&root, &at(PointerChange::Move, 30.0, -40.0, 100_000));
         assert!(!router.awaits_deadline(100_000), "a scroll is not a long press");
         router.tick(700_000);
         assert_eq!(*presses.borrow(), 0);
@@ -2155,7 +2935,11 @@ mod tests {
         assert!(log.borrow().is_empty());
         router.tick(200_000);
         assert!(log.borrow().is_empty(), "the window has not closed yet");
-        router.tick(DOUBLE_TAP_TIMEOUT_MICROS);
+        // The window runs from the first tap's lift at 30ms, so it closes at
+        // 330ms -- a frame before 300ms after the press it is still open.
+        router.tick(300_000);
+        assert!(log.borrow().is_empty(), "the clock starts at the lift, not the press");
+        router.tick(30_000 + DOUBLE_TAP_TIMEOUT_MICROS);
         assert_eq!(*log.borrow(), vec!["tap"]);
     }
 
@@ -2184,7 +2968,8 @@ mod tests {
         tap_at(&mut router, &root, 0);
         router.tick(DOUBLE_TAP_TIMEOUT_MICROS);
         tap_at(&mut router, &root, 500_000);
-        router.tick(500_000 + DOUBLE_TAP_TIMEOUT_MICROS);
+        // The second tap lifted at 530ms, so its own window closes at 830ms.
+        router.tick(530_000 + DOUBLE_TAP_TIMEOUT_MICROS);
         assert_eq!(*log.borrow(), vec!["tap", "tap"]);
     }
 
@@ -2261,6 +3046,250 @@ mod tests {
         router.dispatch(&root, &held(PointerChange::Up, 40_000));
         router.tick(DOUBLE_TAP_TIMEOUT_MICROS * 2);
         assert_eq!(*log.borrow(), vec!["tap", "tap"]);
+    }
+
+    #[test]
+    fn a_first_tap_held_down_still_leaves_the_window_for_the_second() {
+        // The 300ms window runs from the first tap's lift, not its press --
+        // upstream starts the clock in `_registerFirstTap`, on the up -- so a
+        // reader who presses, holds for 250ms and lifts still has the whole
+        // window left to tap again, not the last 50ms of it.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let double = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(move |_| double.borrow_mut().push("double")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        router.dispatch(&root, &held(PointerChange::Up, 250_000));
+        // 400ms after the press is 150ms after the lift: still waiting.
+        assert!(router.awaits_deadline(400_000));
+        router.dispatch(&root, &held(PointerChange::Down, 400_000));
+        router.dispatch(&root, &held(PointerChange::Up, 430_000));
+        assert_eq!(*log.borrow(), vec!["double"]);
+    }
+
+    #[test]
+    fn the_double_tap_minimum_gap_is_measured_from_the_first_press() {
+        // The 40ms minimum runs from the first tap's press -- upstream's
+        // `_TapTracker` starts its countdown when it is created, at the down --
+        // so a brisk 10ms tap followed by a press 45ms after the first one is
+        // a double tap, even though only 35ms separates the lift from the
+        // second press.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let single = log.clone();
+        let double = log.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| single.borrow_mut().push("tap"))
+                .with_double_tap(move |_| double.borrow_mut().push("double")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &held(PointerChange::Down, 0));
+        router.dispatch(&root, &held(PointerChange::Up, 10_000));
+        router.dispatch(&root, &held(PointerChange::Down, 45_000));
+        router.dispatch(&root, &held(PointerChange::Up, 60_000));
+        assert_eq!(*log.borrow(), vec!["double"]);
+    }
+
+    // -- The arena -------------------------------------------------------------
+
+    #[test]
+    fn two_taps_competing_for_one_pointer_and_only_one_wins() {
+        let inner = Rc::new(RefCell::new(0));
+        let outer = Rc::new(RefCell::new(0));
+        let inner_sink = inner.clone();
+        let outer_sink = outer.clone();
+        let root = nested(
+            PointerHandlers::new().with_tap(move |_| *inner_sink.borrow_mut() += 1),
+            PointerHandlers::new().with_tap(move |_| *outer_sink.borrow_mut() += 1),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Up, 40.0, 40.0, 0.0, 0.0));
+
+        assert_eq!(
+            *inner.borrow(),
+            1,
+            "the innermost tap joined first, and the sweep favours the first member"
+        );
+        assert_eq!(*outer.borrow(), 0, "the outer tap lost the arena and may not fire");
+    }
+
+    #[test]
+    fn a_drag_wins_the_arena_past_the_slop_and_the_tap_is_rejected() {
+        let taps = Rc::new(RefCell::new(0));
+        let ends = Rc::new(RefCell::new(0));
+        let tap_sink = taps.clone();
+        let end_sink = ends.clone();
+        let root = nested(
+            PointerHandlers::new().with_tap(move |_| *tap_sink.borrow_mut() += 1),
+            PointerHandlers::new()
+                .with_drag_update(|_| {})
+                .with_drag_end(move |_| *end_sink.borrow_mut() += 1),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Move, 40.0, 80.0, 0.0, 40.0));
+        // Nothing has fired yet -- but the tap has already lost, told so when
+        // the drag claimed the arena, before the finger ever lifted.
+        assert_eq!(*taps.borrow(), 0);
+        assert_eq!(*ends.borrow(), 0);
+        router.dispatch(&root, &event(PointerChange::Up, 40.0, 80.0, 0.0, 0.0));
+
+        assert_eq!(*taps.borrow(), 0, "a rejected tap does not fire on release");
+        assert_eq!(*ends.borrow(), 1, "the drag owns the gesture outright");
+    }
+
+    #[test]
+    fn a_long_press_win_rejects_both_the_tap_and_the_drag() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let tap = log.clone();
+        let long = log.clone();
+        let update = log.clone();
+        let end = log.clone();
+        let root = nested(
+            PointerHandlers::new()
+                .with_tap(move |_| tap.borrow_mut().push("tap"))
+                .with_long_press(move |_| long.borrow_mut().push("long")),
+            PointerHandlers::new()
+                .with_drag_update(move |_| update.borrow_mut().push("update"))
+                .with_drag_end(move |_| end.borrow_mut().push("end")),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &at(PointerChange::Down, 70.0, 0.0, 0));
+        router.tick(LONG_PRESS_TIMEOUT_MICROS);
+        // The long press resolved the arena in its favour; the drag and the
+        // tap were rejected with it, so neither may fire again.
+        router.dispatch(&root, &at(PointerChange::Move, 40.0, -30.0, 700_000));
+        router.dispatch(&root, &at(PointerChange::Up, 40.0, 0.0, 800_000));
+
+        assert_eq!(*log.borrow(), vec!["long"]);
+    }
+
+    #[test]
+    fn a_lone_recognizer_wins_as_soon_as_the_arena_closes() {
+        let taps = Rc::new(RefCell::new(0));
+        let sink = taps.clone();
+        let root = tree(PointerHandlers::new().with_tap(move |_| *sink.borrow_mut() += 1));
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
+        assert!(
+            router.arenas.is_empty(),
+            "a one-member arena is resolved at the close, not held for a sweep"
+        );
+        assert!(router.won_by(1, Recognizer::Tap));
+        router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0));
+        assert_eq!(*taps.borrow(), 1, "and the tap is still reported on release");
+    }
+
+    #[test]
+    fn a_secondary_button_tap_reports_to_the_secondary_handler_only() {
+        let primary = Rc::new(RefCell::new(0));
+        let secondary = Rc::new(RefCell::new(0));
+        let primary_sink = primary.clone();
+        let secondary_sink = secondary.clone();
+        let root = tree(
+            PointerHandlers::new()
+                .with_tap(move |_| *primary_sink.borrow_mut() += 1)
+                .with_secondary_tap(move |_| *secondary_sink.borrow_mut() += 1),
+        );
+
+        let mut router = GestureRouter::new();
+        let mut right = event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0);
+        right.buttons = SECONDARY_BUTTON;
+        assert!(router.dispatch(&root, &right));
+        let mut right = event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0);
+        right.buttons = SECONDARY_BUTTON;
+        router.dispatch(&root, &right);
+
+        assert_eq!(*secondary.borrow(), 1);
+        assert_eq!(*primary.borrow(), 0, "the primary tap never joins for another button's press");
+    }
+
+    #[test]
+    fn a_secondary_tap_loses_to_a_drag_past_the_slop() {
+        let secondary = Rc::new(RefCell::new(0));
+        let ends = Rc::new(RefCell::new(0));
+        let secondary_sink = secondary.clone();
+        let end_sink = ends.clone();
+        let root = nested(
+            PointerHandlers::new()
+                .with_secondary_tap(move |_| *secondary_sink.borrow_mut() += 1),
+            PointerHandlers::new()
+                .with_drag_update(|_| {})
+                .with_drag_end(move |_| *end_sink.borrow_mut() += 1),
+        );
+
+        let mut router = GestureRouter::new();
+        let mut right = event(PointerChange::Down, 40.0, 40.0, 0.0, 0.0);
+        right.buttons = SECONDARY_BUTTON;
+        router.dispatch(&root, &right);
+        let mut right = event(PointerChange::Move, 40.0, 80.0, 0.0, 40.0);
+        right.buttons = SECONDARY_BUTTON;
+        router.dispatch(&root, &right);
+        let mut right = event(PointerChange::Up, 40.0, 80.0, 0.0, 0.0);
+        right.buttons = SECONDARY_BUTTON;
+        router.dispatch(&root, &right);
+
+        assert_eq!(*secondary.borrow(), 0, "the secondary tap lost the arena");
+        assert_eq!(*ends.borrow(), 1, "the drag won it");
+    }
+
+    #[test]
+    fn an_eager_accept_is_only_a_promise_until_the_arena_closes() {
+        let mut router = GestureRouter::new();
+        let tap = Member { recognizer: Recognizer::Tap, index: 0 };
+        let drag = Member::of(Recognizer::Drag);
+        router.arena_add(9, tap);
+        router.arena_add(9, drag);
+        // The arena is still open -- later members have not had their say --
+        // so accepting now can only be noted, not settled.
+        assert!(router.arena_resolve(9, tap, Disposition::Accepted).is_empty());
+        // Closing keeps the promise: the eager winner takes the arena and
+        // everyone else is told they lost.
+        let verdicts = router.arena_close(9);
+        assert_eq!(
+            verdicts,
+            vec![
+                Verdict { member: drag, disposition: Disposition::Rejected },
+                Verdict { member: tap, disposition: Disposition::Accepted },
+            ]
+        );
+        assert!(router.arenas.is_empty(), "a resolved arena is discarded");
+    }
+
+    #[test]
+    fn a_sweep_attempted_on_a_held_arena_runs_when_it_is_released() {
+        let mut router = GestureRouter::new();
+        let tap = Member { recognizer: Recognizer::Tap, index: 0 };
+        let long_press = Member { recognizer: Recognizer::LongPress, index: 0 };
+        router.arena_add(5, tap);
+        router.arena_add(5, long_press);
+        router.arena_close(5);
+        router.arena_hold(5);
+        // Pointer up with the arena held: the sweep waits, which is why a
+        // held-back single tap reports late rather than never.
+        assert!(router.arena_sweep(5).is_empty());
+        let verdicts = router.arena_release(5);
+        assert_eq!(
+            verdicts,
+            vec![
+                Verdict { member: tap, disposition: Disposition::Accepted },
+                Verdict { member: long_press, disposition: Disposition::Rejected },
+            ],
+            "the release runs the pending sweep, first member first"
+        );
+        assert!(router.arenas.is_empty());
     }
 
     // -- Scale ----------------------------------------------------------------

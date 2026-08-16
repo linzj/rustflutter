@@ -964,6 +964,23 @@ void rf_layer_tree_add_retained(RfLayerTree* tree,
   tree->Pop();
 }
 
+void rf_layer_tree_push_retained(RfLayerTree* tree, RfLayer* layer) {
+  if (tree == nullptr || layer == nullptr || layer->layer == nullptr) {
+    return;
+  }
+  // The reuse branch of upstream's `pushLayer`: a layer that is being recorded
+  // into again may still hold the last frame's children, and they are dropped
+  // so the recording that follows starts clean. The object itself survives --
+  // that is the whole mechanism, because the trees that already hold it are
+  // holding this object and not a copy of it.
+  layer->layer->RemoveAllChildren();
+  // Pushed without Add, unlike every other push: this tree is only the place
+  // the recording happens in, not a place the layer goes. Rasterizing any tree
+  // that holds the layer reads the children as they are by then, which is how
+  // one boundary's repaint becomes visible without its parent recording again.
+  tree->stack.push_back(layer->layer);
+}
+
 void rf_layer_free(RfLayer* layer) {
   delete layer;
 }

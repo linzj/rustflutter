@@ -157,10 +157,20 @@ pub fn has_focus(id: u64) -> bool {
 }
 
 /// Moves the keyboard to `id`. Returns whether anything changed.
+///
+/// `id` must name a registered node: upstream's `FocusNode.requestFocus` on a
+/// node that is not attached to the tree is a no-op -- there is nothing to
+/// hand the keyboard to -- and so is this, leaving focus exactly where it was
+/// rather than parked on an id nothing owns.
 pub fn focus(id: u64) -> bool {
     let (changed, lost, gained) = MANAGER.with(|manager| {
         let mut manager = manager.borrow_mut();
         if manager.focused == Some(id) {
+            return (false, None, None);
+        }
+        // An unregistered id is not a node. Focusing it anyway would move the
+        // keyboard somewhere no widget can give it back.
+        if !manager.entries.iter().any(|entry| entry.id == id) {
             return (false, None, None);
         }
         let lost = manager
@@ -594,6 +604,47 @@ mod tests {
         focus(1);
         focus(2);
         assert_eq!(*log.borrow(), vec!["1:true", "1:false", "2:true"]);
+        drop(tree);
+    }
+
+    #[test]
+    fn focusing_an_id_nothing_registered_changes_nothing() {
+        // Upstream `requestFocus` on a detached node is a no-op: the keyboard
+        // stays with whatever held it, and nothing is told it moved -- not the
+        // focused node, which did not lose it, and not the id asked for,
+        // which has no node to be told anything.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let first = log.clone();
+        let second = log.clone();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                component(Focus::new(1, leaf(|| Empty)).with_on_focus_change(move |has| {
+                    first.borrow_mut().push(format!("1:{has}"));
+                })),
+                component(Focus::new(2, leaf(|| Empty)).with_on_focus_change(move |has| {
+                    second.borrow_mut().push(format!("2:{has}"));
+                })),
+            ],
+            |children| {
+                let mut column = Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                Box::new(column)
+            },
+        ));
+        let _ = tree.build_render_tree();
+        focus(1);
+        assert_eq!(*log.borrow(), vec!["1:true".to_string()]);
+
+        assert!(!focus(999), "there is no node 999 to focus");
+        assert_eq!(focused(), Some(1), "and focus stayed where it was");
+        assert_eq!(
+            *log.borrow(),
+            vec!["1:true".to_string()],
+            "nothing was told the keyboard moved"
+        );
         drop(tree);
     }
 

@@ -13,22 +13,23 @@
 //! immediately obvious next to any other application on the device.
 //!
 //! [`Scroll`] is both halves. It holds the offset, it clamps against the
-//! content, and it owns the fling: [`Scroll::fling`] starts one and
-//! [`Scroll::advance`] moves it along, once per frame, returning whether it
-//! wants another.
+//! content, and it owns the flight: [`Scroll::fling`] starts a ballistic one
+//! and [`Scroll::animate_to`] a driven one, and [`Scroll::advance`] moves
+//! either along, once per frame, returning whether it wants another.
 //!
 //! # What upstream splits up
 //!
 //! Upstream this is three objects. `ScrollPosition` holds the offset and the
 //! extents; `ScrollActivity` is what is currently in charge of it -- a
 //! `DragScrollActivity` while a finger is down, a `BallisticScrollActivity`
-//! after it lifts, an `IdleScrollActivity` when nothing is happening; and
-//! `ScrollPhysics` decides which activity comes next and with what simulation.
-//! The split earns its keep there because activities are pluggable: page
-//! snapping, `ScrollController.animateTo` and overscroll bouncing are each
-//! another activity. Here there are two states -- dragging and flinging --
-//! and one physics, so they are fields on one struct, and the day a third
-//! activity is wanted is the day this becomes an enum.
+//! after it lifts, a `DrivenScrollActivity` for `animateTo`, an
+//! `IdleScrollActivity` when nothing is happening; and `ScrollPhysics` decides
+//! which activity comes next and with what simulation. The split earns its
+//! keep there because activities are pluggable: page snapping and overscroll
+//! bouncing are each another activity. Dragging is a field here as it is
+//! there, and everything else that can be in charge of the offset is one
+//! enum, [`Motion`], because the day a third activity was wanted was the day
+//! it became one.
 //!
 //! # Which way is positive
 //!
@@ -38,11 +39,189 @@
 //! it decreases the offset. Handlers negate, and it is worth doing in the one
 //! place they do it rather than here, because a wheel does not need negating
 //! and a scrollbar drag does not either.
+//!
+//! The same holds for a viewport laid out the other way (an `Up` or `Left`
+//! [`AxisDirection`](crate::render::AxisDirection)): the offset is still
+//! measured from the start of the content, whichever screen edge that start
+//! sits at, and the viewport is the one that turns the offset into a paint
+//! translation. Upstream reverses the *finger*, not the offset, and it does
+//! so in the drag plumbing -- `ScrollDragController._reversed` -- which is
+//! why this file does not: the drag handlers are where that knowledge lives.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::animation::Curve;
+use crate::framework::{Notification, NotificationSink};
 use crate::physics::{ClampingScrollSimulation, Simulation};
+
+// -- Scroll notifications -----------------------------------------------------
+
+/// What a scrollable reports about itself along with a notification.
+///
+/// Upstream's `ScrollMetrics`, as far as a [`Scroll`] can know it: the offset,
+/// the two ends of the content, and how much of it is on screen. The viewport
+/// dimension is upstream's fourth field, `viewportDimension` -- it belongs to
+/// the viewport, so it arrives when the extent does, in
+/// [`Scroll::set_extent`], told by whoever laid the content out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollMetrics {
+    /// How far into the content the view is. Upstream's `pixels`.
+    pub pixels: f32,
+    /// The least the offset can be. Zero in this port; upstream's
+    /// `minScrollExtent` is negative for center-aligned and reversed viewports.
+    pub min_scroll_extent: f32,
+    /// How far the content can be scrolled. Upstream's `maxScrollExtent`.
+    pub max_scroll_extent: f32,
+    /// How much of the content is on screen. Upstream's `viewportDimension`;
+    /// without it "where" cannot be turned into "how far along", which is what
+    /// every listener above a scroll -- a scrollbar is one -- wants to know.
+    pub viewport_dimension: f32,
+}
+
+impl ScrollMetrics {
+    /// The quantity of content above the viewport. Upstream's
+    /// `ScrollMetrics.extentBefore`: `max(pixels - minScrollExtent, 0.0)` --
+    /// the content above what [`extent_inside`](ScrollMetrics::extent_inside)
+    /// describes.
+    pub fn extent_before(&self) -> f32 {
+        (self.pixels - self.min_scroll_extent).max(0.0)
+    }
+
+    /// The quantity of content inside the viewport, empty space included when
+    /// there is less content than viewport. Upstream's
+    /// `ScrollMetrics.extentInside`: the viewport dimension less the overscroll
+    /// at either end, each clamped so the answer stays between zero and the
+    /// viewport -- it can be less while overscrolled, and never negative.
+    pub fn extent_inside(&self) -> f32 {
+        self.viewport_dimension
+            - (self.min_scroll_extent - self.pixels).clamp(0.0, self.viewport_dimension)
+            - (self.pixels - self.max_scroll_extent).clamp(0.0, self.viewport_dimension)
+    }
+
+    /// The quantity of content below the viewport. Upstream's
+    /// `ScrollMetrics.extentAfter`: `max(maxScrollExtent - pixels, 0.0)` --
+    /// the content below what [`extent_inside`](ScrollMetrics::extent_inside)
+    /// describes.
+    pub fn extent_after(&self) -> f32 {
+        (self.max_scroll_extent - self.pixels).max(0.0)
+    }
+
+    /// Whether the offset is outside the content bounds. Upstream's
+    /// `ScrollMetrics.outOfRange`:
+    /// `pixels < minScrollExtent || pixels > maxScrollExtent`.
+    pub fn out_of_range(&self) -> bool {
+        self.pixels < self.min_scroll_extent || self.pixels > self.max_scroll_extent
+    }
+
+    /// Whether the offset is exactly at either end of the content. Upstream's
+    /// `ScrollMetrics.atEdge`:
+    /// `pixels == minScrollExtent || pixels == maxScrollExtent`.
+    pub fn at_edge(&self) -> bool {
+        self.pixels == self.min_scroll_extent || self.pixels == self.max_scroll_extent
+    }
+}
+
+/// Which way the reader is moving through the content.
+///
+/// Upstream's `ScrollDirection`, and the same trap: it describes the *reader*,
+/// not the offset. `Forward` is towards the start of the content, which is a
+/// decreasing offset, and `Reverse` is towards the end, an increasing one --
+/// because the finger and the offset point opposite ways (see "Which way is
+/// positive" above).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollDirection {
+    #[default]
+    Idle,
+    Forward,
+    Reverse,
+}
+
+/// A notification from a scrollable, bubbling up through
+/// [`notification_listener`](crate::framework::notification_listener)s above
+/// it.
+///
+/// Upstream's `scroll_notification.dart` family -- `ScrollStartNotification`,
+/// `ScrollUpdateNotification`, `OverscrollNotification`,
+/// `ScrollEndNotification`, `UserScrollNotification` -- as one enum, because a
+/// listener is chosen by exact type here and "everything about scrolling,
+/// whichever kind" has to be one name to listen for. The variant is where
+/// upstream would switch on `runtimeType`; the fields are that class's.
+///
+/// The lifecycle is upstream's, and the order it arrives in:
+///
+/// * [`Start`](ScrollNotification::Start) when the scrolling begins -- a
+///   drag's first move, a fling, an [`animate_to`](Scroll::animate_to).
+/// * [`Update`](ScrollNotification::Update) per change of position, and
+///   [`Overscroll`](ScrollNotification::Overscroll) per change the content
+///   bounds ate instead.
+/// * [`UserScroll`](ScrollNotification::UserScroll) whenever the reader's
+///   direction changes, including to [`Idle`](ScrollDirection::Idle).
+/// * [`End`](ScrollNotification::End) when the scrolling stops -- a drag let
+///   go without a throw, a fling settling, an animation arriving, a touch
+///   catching a moving list.
+#[derive(Clone, Copy, Debug)]
+pub enum ScrollNotification {
+    Start {
+        metrics: ScrollMetrics,
+        /// How many viewports this has bubbled through. Zero from the
+        /// scrollable it came from; each enclosing viewport adds one, which is
+        /// upstream's `ViewportNotificationMixin.depth` bumped by
+        /// `ViewportElementMixin`. There are no viewport elements to bump it
+        /// yet, so it is always zero -- the field is the seam it will arrive
+        /// through.
+        depth: u32,
+    },
+    Update {
+        metrics: ScrollMetrics,
+        /// How far the position moved, in logical pixels. Upstream's
+        /// `scrollDelta`.
+        scroll_delta: f32,
+        depth: u32,
+    },
+    Overscroll {
+        metrics: ScrollMetrics,
+        /// How much of the requested motion the content bounds kept. Upstream's
+        /// `overscroll`.
+        overscroll: f32,
+        /// How fast the scroll was going when it hit the bound, in logical
+        /// pixels per second. Upstream's `velocity`, which a ballistic
+        /// activity fills in with its simulation's and a drag leaves at the
+        /// default of zero.
+        velocity: f32,
+        depth: u32,
+    },
+    End {
+        metrics: ScrollMetrics,
+        depth: u32,
+    },
+    UserScroll {
+        metrics: ScrollMetrics,
+        /// The reader's new direction. Idle means they stopped.
+        direction: ScrollDirection,
+        depth: u32,
+    },
+}
+
+impl ScrollNotification {
+    /// Where the scrollable was when this was dispatched.
+    pub fn metrics(&self) -> ScrollMetrics {
+        match *self {
+            ScrollNotification::Start { metrics, .. }
+            | ScrollNotification::Update { metrics, .. }
+            | ScrollNotification::Overscroll { metrics, .. }
+            | ScrollNotification::End { metrics, .. }
+            | ScrollNotification::UserScroll { metrics, .. } => metrics,
+        }
+    }
+}
+
+impl Notification for ScrollNotification {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 /// A scroll offset, its limit, and any fling in progress.
 ///
@@ -53,21 +232,41 @@ use crate::physics::{ClampingScrollSimulation, Simulation};
 /// fills it in from the other side.
 #[derive(Clone)]
 pub struct Scroll {
-    /// How far into the content the view is, in logical pixels. Always within
-    /// `0..=`[`max_extent`](Scroll::max_extent) as of the last thing that
-    /// moved it.
+    /// How far into the content the view is, in logical pixels. Upstream's
+    /// `pixels`, which `forcePixels` can leave outside the content bounds
+    /// until the next layout corrects it; here a
+    /// [`jump_to`](Scroll::jump_to) can do the same, and
+    /// [`set_extent`](Scroll::set_extent) is the correction.
     pub offset: f32,
     /// How far this list can scroll, filled in at layout.
     pub extent: Rc<Cell<f32>>,
-    /// The fling in flight, if any.
-    ballistic: Option<Ballistic>,
+    /// How much of the content is on screen, filled in at layout alongside the
+    /// extent. Upstream's `ScrollPosition.viewportDimension`.
+    viewport: Rc<Cell<f32>>,
+    /// What is in flight, if anything: a fling or an animation. Upstream's
+    /// current `ScrollActivity`.
+    activity: Option<Activity>,
+    /// Where this scroll's notifications are dispatched from, if it has been
+    /// given anywhere to dispatch them to. Bound with
+    /// [`Scroll::set_notification_sink`] during a build; without one the
+    /// scrolling works exactly as before and says nothing to anyone.
+    sink: RefCell<Option<NotificationSink>>,
+    /// Whether something that constitutes scrolling is in charge: a drag, a
+    /// fling, an animation. Upstream's `activity.isScrolling`, and the answer
+    /// to "would `beginActivity` dispatch a start or an end notification" --
+    /// false going to true dispatches the start, true going to false the end.
+    scrolling: Cell<bool>,
+    /// Which way the reader is last known to be moving. Upstream's
+    /// `userScrollDirection`; kept so a [`UserScrollNotification`] goes out
+    /// only when it actually changed.
+    user_direction: Cell<ScrollDirection>,
 }
 
-/// A fling being played out.
+/// A motion in flight: what is moving the offset, and when it started.
 #[derive(Clone, Copy)]
-struct Ballistic {
-    simulation: ClampingScrollSimulation,
-    /// When it started, in frame-clock microseconds. Not known when the fling
+struct Activity {
+    motion: Motion,
+    /// When it started, in frame-clock microseconds. Not known when the motion
     /// is created -- the finger lifts between frames -- so it is taken from
     /// the first frame that advances it, which is also the first frame that
     /// could draw it. Upstream a `Ticker` does the same thing: its elapsed
@@ -75,9 +274,102 @@ struct Ballistic {
     started_micros: Option<i64>,
 }
 
+/// What is in charge of the offset once the finger is off it. Upstream these
+/// are activities -- `BallisticScrollActivity` for a fling,
+/// `DrivenScrollActivity` for `animateTo` -- and they are one enum here
+/// because they are driven the same way: ask a simulation where the offset is
+/// now, once a frame, until it is done or something replaces them.
+#[derive(Clone, Copy)]
+enum Motion {
+    /// A fling, its physics deciding where it goes and when it stops.
+    Ballistic(ClampingScrollSimulation),
+    /// An [`Scroll::animate_to`]: a chosen distance in a chosen time.
+    Driven(Driven),
+}
+
+impl Motion {
+    /// What to ask for the offset, per frame. Both variants answer, because
+    /// both are simulations upstream too -- the driven one is what an
+    /// `AnimationController.animateTo` runs, as `_InterpolationSimulation`.
+    fn simulation(&self) -> &dyn Simulation {
+        match self {
+            Motion::Ballistic(simulation) => simulation,
+            Motion::Driven(driven) => driven,
+        }
+    }
+}
+
+/// An [`Scroll::animate_to`] being played out.
+///
+/// A line from `from` to `to`, bent by `curve` and walked over `duration`
+/// seconds. Upstream's `DrivenScrollActivity` holds exactly this in an
+/// `AnimationController.unbounded` started at `from` and `animateTo`'d to
+/// `to`; this is that controller's simulation, sampled on the same frame
+/// clock a fling is.
+#[derive(Clone, Copy)]
+struct Driven {
+    /// Where the animation started.
+    from: f32,
+    /// Where it is going. Not clamped to the content: the per-frame clamp in
+    /// [`Scroll::advance`] stops the animation at the end of it instead, as
+    /// upstream's `setPixels` does.
+    to: f32,
+    /// How long it takes, in seconds.
+    duration: f32,
+    /// The shape of the travel.
+    curve: Curve,
+}
+
+impl Simulation for Driven {
+    fn x(&self, time: f32) -> f32 {
+        if self.duration <= 0.0 {
+            return self.to;
+        }
+        let t = (time / self.duration).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * self.curve.transform(t)
+    }
+
+    /// A difference, not a formula: a Bezier's slope has no closed form, so
+    /// this is the central difference upstream's `_InterpolationSimulation`
+    /// takes over the tolerance's time.
+    fn dx(&self, time: f32) -> f32 {
+        const EPSILON: f32 = 1e-3;
+        (self.x(time + EPSILON) - self.x(time - EPSILON)) / (2.0 * EPSILON)
+    }
+
+    fn is_done(&self, time: f32) -> bool {
+        // Strictly past the end, not at it: upstream's
+        // `_InterpolationSimulation.isDone` is `timeInSeconds >
+        // _durationInSeconds`, so the frame that lands exactly on the duration
+        // is still going. It is also already at `to`, which `x` clamps, so the
+        // arrival is the same either way.
+        time > self.duration
+    }
+}
+
+/// How slow a throw may be and still start a fling, in logical pixels per
+/// second. Upstream's tolerance velocity, `ScrollPhysics.toleranceFor`'s
+/// `1.0 / (0.050 * devicePixelRatio)`; this port's logical pixels are the
+/// device-independent kind at a ratio of one, so the number is 20.
+const FLING_TOLERANCE_VELOCITY: f32 = 20.0;
+
+/// How far apart two offsets may be and still count as the same place, when
+/// the question is whether an animation to the second is worth starting.
+/// Upstream's tolerance distance, `toleranceFor`'s `1.0 / devicePixelRatio`
+/// logical pixels.
+const SCROLL_TOLERANCE_DISTANCE: f32 = 1.0;
+
 impl Default for Scroll {
     fn default() -> Scroll {
-        Scroll { offset: 0.0, extent: Rc::new(Cell::new(0.0)), ballistic: None }
+        Scroll {
+            offset: 0.0,
+            extent: Rc::new(Cell::new(0.0)),
+            viewport: Rc::new(Cell::new(0.0)),
+            activity: None,
+            sink: RefCell::new(None),
+            scrolling: Cell::new(false),
+            user_direction: Cell::new(ScrollDirection::Idle),
+        }
     }
 }
 
@@ -91,99 +383,378 @@ impl Scroll {
         self.extent.get().max(0.0)
     }
 
-    /// Records how far the list can scroll, for callers that measure the
-    /// content themselves rather than handing [`extent`](Scroll::extent) to a
-    /// [`ListView`](crate::widgets::ListView).
+    /// Records how far the list can scroll and how much of it is on screen,
+    /// for callers that measure the content themselves rather than handing
+    /// [`extent`](Scroll::extent) to a [`ListView`](crate::widgets::ListView).
     ///
-    /// Takes `&self` because a build is handed its state by shared reference
-    /// and the limit is discovered during the build that lays the content out.
-    pub fn set_extent(&self, extent: f32) {
+    /// Both numbers in one call because upstream hands them to its position
+    /// together, in `applyNewDimensions`: they are settled by the same layout,
+    /// and a listener that got one without the other could not answer "how far
+    /// along" -- a [`Scrollbar`](crate::scrollbar::Scrollbar) is exactly that
+    /// listener.
+    ///
+    /// The same call is where an offset put out of range by
+    /// [`jump_to`](Scroll::jump_to) -- which stores what it was given, as
+    /// upstream's `forcePixels` does -- comes back into range: upstream's
+    /// layout corrects the pixels when the dimensions arrive, in
+    /// `applyContentDimensions`, and this is that moment here. A jump made
+    /// before anything was measured therefore survives to be measured.
+    pub fn set_extent(&mut self, extent: f32, viewport_dimension: f32) {
         self.extent.set(extent);
+        self.viewport.set(viewport_dimension);
+        self.offset = self.offset.clamp(0.0, self.max_extent());
     }
 
-    /// Moves by `delta` and stays inside the content.
+    /// Gives this scroll somewhere to dispatch its notifications from.
     ///
-    /// Clamping here rather than in the viewport is what stops an overscroll
-    /// from banking travel: without it, flinging past the end and dragging
-    /// back would do nothing until the imaginary distance had been paid off.
+    /// ```ignore
+    /// fn build(&self, state: &State, handle: StateHandle<State>, context: &mut BuildContext) -> AnyWidget {
+    ///     state.scroll.set_notification_sink(context.notification_sink());
+    ///     ListView::new().with_offset(state.scroll.offset)
+    /// }
+    /// ```
     ///
-    /// A drag or a wheel also ends any fling. Upstream the drag *replaces* the
-    /// ballistic activity, which is the same thing said in objects: whatever
-    /// the reader is doing now wins over what they did a moment ago.
+    /// Takes `&self` for the same reason [`Scroll::set_extent`] does: the one
+    /// moment the context exists is a build, which sees the state read-only.
+    /// The sink names this element, so the listeners that hear the scroll are
+    /// the ones above it -- upstream's arrangement, where a `Scrollbar` is an
+    /// ancestor of the `Scrollable` and hears its notifications from there.
+    pub fn set_notification_sink(&self, sink: NotificationSink) {
+        *self.sink.borrow_mut() = Some(sink);
+    }
+
+    // -- Notification dispatch ------------------------------------------------
+    //
+    // Upstream's `ScrollPosition` reports through `didStartScroll` and
+    // friends, which hand a notification to the current activity to dispatch
+    // through the Scrollable's context. The activities are one enum here, so
+    // the reporting is three small helpers the movers call at the moments the
+    // activity transitions would have.
+
+    fn metrics(&self) -> ScrollMetrics {
+        ScrollMetrics {
+            pixels: self.offset,
+            min_scroll_extent: 0.0,
+            max_scroll_extent: self.max_extent(),
+            viewport_dimension: self.viewport.get(),
+        }
+    }
+
+    fn notify(&self, notification: ScrollNotification) {
+        if let Some(sink) = self.sink.borrow().as_ref() {
+            sink.dispatch(&notification);
+        }
+    }
+
+    /// Scrolling has begun, unless it already had.
+    ///
+    /// Upstream's `beginActivity` trading a non-scrolling activity for a
+    /// scrolling one: the drag taking over from idle, the ballistic taking
+    /// over from the hold. A scrolling activity taking over from another
+    /// scrolling one -- a thrown drag becoming a fling -- dispatches nothing,
+    /// which is why this is idempotent.
+    fn start_scroll(&self) {
+        if self.scrolling.replace(true) {
+            return;
+        }
+        self.notify(ScrollNotification::Start { metrics: self.metrics(), depth: 0 });
+    }
+
+    /// Scrolling has stopped, if it had not already.
+    ///
+    /// The end first and the user direction going idle after it, in that
+    /// order, because that is the order upstream's `beginActivity` does both
+    /// in: `didEndScroll`, then `updateUserScrollDirection(idle)`.
+    fn end_scroll(&self) {
+        if !self.scrolling.replace(false) {
+            return;
+        }
+        self.notify(ScrollNotification::End { metrics: self.metrics(), depth: 0 });
+        self.update_user_direction(ScrollDirection::Idle);
+    }
+
+    /// The reader's direction changed, if it did.
+    fn update_user_direction(&self, direction: ScrollDirection) {
+        if self.user_direction.replace(direction) == direction {
+            return;
+        }
+        self.notify(ScrollNotification::UserScroll {
+            metrics: self.metrics(),
+            direction,
+            depth: 0,
+        });
+    }
+
+    /// Applies `delta` to the offset and reports what happened, which is
+    /// upstream's `setPixels`: an update for the part that moved, an
+    /// overscroll for the part the content bounds kept.
+    fn move_by(&mut self, delta: f32) {
+        let max = self.max_extent();
+        let requested = self.offset + delta;
+        let applied = requested.clamp(0.0, max);
+        let overscroll = requested - applied;
+
+        if applied != self.offset {
+            let scroll_delta = applied - self.offset;
+            self.offset = applied;
+            self.notify(ScrollNotification::Update {
+                metrics: self.metrics(),
+                scroll_delta,
+                depth: 0,
+            });
+        }
+        if overscroll != 0.0 {
+            // A drag's overscroll carries no velocity upstream -- only the
+            // ballistic activity's does, and this is the drag and wheel path.
+            self.notify(ScrollNotification::Overscroll {
+                metrics: self.metrics(),
+                overscroll,
+                velocity: 0.0,
+                depth: 0,
+            });
+        }
+    }
+
+    /// Moves by `delta` and stays inside the content, as one whole scroll.
+    ///
+    /// This is upstream's `pointerScroll`, the wheel notch: a scroll that
+    /// begins and ends in a single event. Whatever was in flight ends first --
+    /// `goIdle` -- then the reader's new direction is reported, then the move
+    /// as a start, its update, and the end; a wheel scroll left open would
+    /// leave everything above it thinking a scroll was still underway, which
+    /// is why the end is here rather than left to whatever comes next. A
+    /// delta of zero ends whatever was in flight and reports nothing, exactly
+    /// as upstream's early return.
+    ///
+    /// Clamping to the content rather than in the viewport is what stops an
+    /// overscroll from banking travel: without it, flinging past the end and
+    /// dragging back would do nothing until the imaginary distance had been
+    /// paid off. The part the bounds keep is an
+    /// [`Overscroll`](ScrollNotification::Overscroll), so a scroll pinned at
+    /// the edge is still heard -- by a
+    /// [`Scrollbar`](crate::scrollbar::Scrollbar), among others.
     pub fn scroll_by(&mut self, delta: f32) {
-        self.ballistic = None;
-        self.offset = (self.offset + delta).clamp(0.0, self.max_extent());
+        self.activity = None;
+        self.end_scroll();
+        if delta == 0.0 {
+            return;
+        }
+        // The direction is the reader's, so it is negated with the finger: a
+        // positive delta here is further into the content, which upstream
+        // calls reverse. See "Which way is positive" above.
+        if delta < 0.0 {
+            self.update_user_direction(ScrollDirection::Forward);
+        } else {
+            self.update_user_direction(ScrollDirection::Reverse);
+        }
+        self.start_scroll();
+        self.move_by(delta);
+        self.end_scroll();
     }
 
     /// Puts the offset somewhere, without any physics. For jumping to a
     /// position rather than travelling to it.
+    ///
+    /// Ends whatever was in flight, as upstream's `jumpTo` goes idle before it
+    /// moves. The new offset is there the moment this returns; the frame that
+    /// shows it is whatever the caller does next, because a jump has nothing
+    /// to wait for and never asks for one.
+    ///
+    /// The target is stored exactly as given, clamped by nobody here --
+    /// upstream's `forcePixels`, which `jumpTo` moves with, stores the raw
+    /// value and leaves it to the next layout to bring the position back into
+    /// range ([`set_extent`](Scroll::set_extent) is that correction here). So
+    /// a jump made before the content has been measured is not silently lost
+    /// to an extent of zero, and the notifications a jump past the ends
+    /// dispatches say where the position was really put. A jump that moves
+    /// reports as a whole scroll of its own -- start, one update, end -- and
+    /// no overscroll, which is upstream's `jumpTo` exactly: idle, then the
+    /// three dispatched by hand between `forcePixels` and `goBallistic`.
     pub fn jump_to(&mut self, offset: f32) {
-        self.ballistic = None;
-        self.offset = offset.clamp(0.0, self.max_extent());
+        self.activity = None;
+        self.end_scroll();
+        if offset != self.offset {
+            let scroll_delta = offset - self.offset;
+            self.offset = offset;
+            self.start_scroll();
+            self.notify(ScrollNotification::Update {
+                metrics: self.metrics(),
+                scroll_delta,
+                depth: 0,
+            });
+            self.end_scroll();
+        }
     }
 
-    /// Stops a fling where it is. What a finger touching the content does.
+    /// Stops whatever is in flight where it is. What a finger touching the
+    /// content does.
+    ///
+    /// Upstream's `hold`: a touch trades whatever is in flight for a hold,
+    /// which does not constitute scrolling, so a fling or an animation being
+    /// caught ends here. A drag in charge is left alone -- a second finger on
+    /// a list someone is already dragging does not end their drag -- and ends
+    /// when the drag ends, at the [`fling`](Scroll::fling) that follows it.
     pub fn stop(&mut self) {
-        self.ballistic = None;
+        if self.activity.take().is_some() {
+            self.end_scroll();
+        }
     }
 
-    /// Whether a fling is in flight.
+    /// Whether anything is in flight: a fling or an
+    /// [`animate_to`](Scroll::animate_to).
+    ///
+    /// Upstream's position always has an activity -- idle is one -- so the
+    /// question there is which kind is in charge, and this answers it for
+    /// exactly the two that run on a ticker, a `BallisticScrollActivity` and a
+    /// `DrivenScrollActivity`: false, and the frame loop can go back to sleep.
+    /// Whether a scroll is underway at all, a drag included, is the other
+    /// question -- upstream's `activity.isScrolling` -- and the `scrolling`
+    /// cell is what tracks it here, because a drag is scrolling that costs no
+    /// frames.
     pub fn is_ballistic(&self) -> bool {
-        self.ballistic.is_some()
+        self.activity.is_some()
     }
 
     /// Starts a fling at `velocity` logical pixels per second, in offset
     /// space -- positive meaning further into the content.
     ///
     /// Does nothing when there is nowhere to go, which is upstream's
-    /// `ClampingScrollPhysics.createBallisticSimulation` returning null: no
-    /// velocity, or already at the end the fling is heading for. Starting one
-    /// anyway would cost a run of frames that each clamp to the same number.
+    /// `ClampingScrollPhysics.createBallisticSimulation` returning null: a
+    /// dead throw -- a velocity under `ScrollPhysics.toleranceFor`'s
+    /// velocity -- or already at the end the fling is heading for. Starting
+    /// one anyway would cost a run of frames that each clamp to the same
+    /// number. That null
+    /// simulation is `goBallistic` going idle instead, so these are also the
+    /// ways a drag that was not thrown ends: an
+    /// [`End`](ScrollNotification::End) notification, and nothing starts.
+    ///
+    /// When the fling does start, this is upstream's drag handing the offset
+    /// to a ballistic activity, scrolling to scrolling: no end, no second
+    /// start, and the end arrives when the fling settles. From idle it is a
+    /// start, like any scrolling activity taking over.
     pub fn fling(&mut self, velocity: f32) {
-        self.ballistic = None;
-        if velocity == 0.0 {
+        self.activity = None;
+        // The dead throw, first of upstream's nulls: below the tolerance
+        // velocity there is no simulation, and the release is an end and an
+        // idle and nothing more.
+        if velocity.abs() < FLING_TOLERANCE_VELOCITY {
+            self.end_scroll();
             return;
         }
         if velocity > 0.0 && self.offset >= self.max_extent() {
+            self.end_scroll();
             return;
         }
         if velocity < 0.0 && self.offset <= 0.0 {
+            self.end_scroll();
             return;
         }
-        self.ballistic = Some(Ballistic {
-            simulation: ClampingScrollSimulation::new(self.offset, velocity),
+        self.start_scroll();
+        self.activity = Some(Activity {
+            motion: Motion::Ballistic(ClampingScrollSimulation::new(self.offset, velocity)),
             started_micros: None,
         });
     }
 
-    /// Moves a fling on by one frame, and says whether another is wanted.
+    /// Animates the offset to `target` over `duration_micros` on `curve`.
+    ///
+    /// Upstream's `ScrollPosition.animateTo`: driven rather than thrown -- a
+    /// chosen distance in a chosen time, not a particle left to physics. There
+    /// are no defaults upstream, where `duration` and `curve` are required, so
+    /// there are none here; a caller wanting the usual ones passes
+    /// [`Curve::EASE`] and whatever duration suits the distance. A zero
+    /// duration is a [`jump_to`](Scroll::jump_to), as upstream's `moveTo`
+    /// treats `Duration.zero`.
+    ///
+    /// Runs on the same channel a fling does: [`Scroll::advance`] moves it
+    /// once a frame, it stops at the end of the content rather than pushing
+    /// past it, and whatever else takes over -- a drag, a touch, a
+    /// `jump_to`, another `animate_to`, a `fling` -- replaces it, exactly as
+    /// upstream's `beginActivity` replaces the current activity.
+    ///
+    /// A driven activity is a scrolling one, so starting it from idle
+    /// dispatches a [`Start`](ScrollNotification::Start) and arriving
+    /// dispatches the [`End`](ScrollNotification::End); starting it over a
+    /// drag in flight dispatches neither, as no scrolling-to-scrolling
+    /// transition does.
+    pub fn animate_to(&mut self, target: f32, duration_micros: i64, curve: Curve) {
+        // Already there, to within a pixel: upstream skips the animation and
+        // jumps -- `nearEqual(to, pixels, tolerance)`, whose tolerance here is
+        // the scroll one, a logical pixel, rather than the simulation
+        // machinery's thousandth.
+        if (target - self.offset).abs() <= SCROLL_TOLERANCE_DISTANCE {
+            self.jump_to(target);
+            return;
+        }
+        if duration_micros <= 0 {
+            self.jump_to(target);
+            return;
+        }
+        self.start_scroll();
+        self.activity = Some(Activity {
+            motion: Motion::Driven(Driven {
+                from: self.offset,
+                to: target,
+                duration: duration_micros as f32 / 1_000_000.0,
+                curve,
+            }),
+            started_micros: None,
+        });
+    }
+
+    /// Moves a fling or an animation on by one frame, and says whether another
+    /// is wanted.
     ///
     /// Call once per frame from a
     /// [`StatefulComponent::advance`](crate::framework::StatefulComponent::advance).
     /// Returns false when nothing is moving, which is what lets the frame loop
     /// go back to sleep.
+    ///
+    /// Each frame that moves dispatches an [`Update`](ScrollNotification::Update);
+    /// the frame the motion finishes -- or runs into the end of the content --
+    /// dispatches the [`End`](ScrollNotification::End) and nothing further.
     pub fn advance(&mut self, frame_time_micros: i64) -> bool {
-        let max = self.max_extent();
-        let Some(ballistic) = &mut self.ballistic else {
+        // Ask the simulation first and let it go, before anything is notified:
+        // the notification is dispatched into the tree, which may rebuild, and
+        // nothing there may still be borrowed when it is.
+        let Some(activity) = self.activity.as_mut() else {
             return false;
         };
-        let started = *ballistic.started_micros.get_or_insert(frame_time_micros);
+        let started = *activity.started_micros.get_or_insert(frame_time_micros);
         let elapsed = (frame_time_micros - started).max(0) as f32 / 1_000_000.0;
-        let position = ballistic.simulation.x(elapsed);
-        let done = ballistic.simulation.is_done(elapsed);
+        let simulation = activity.motion.simulation();
+        let position = simulation.x(elapsed);
+        let velocity = simulation.dx(elapsed);
+        let done = simulation.is_done(elapsed);
 
+        let max = self.max_extent();
         let clamped = position.clamp(0.0, max);
         let moved = clamped != self.offset;
-        self.offset = clamped;
+        if moved {
+            self.move_by(clamped - self.offset);
+        }
 
-        // Hitting either end ends the fling, however much of the simulation is
-        // left: the content has run out, and continuing would be a run of
-        // frames that each clamp to the same number. Upstream's
-        // `BallisticScrollActivity` stops the same way -- `applyMoveTo`
-        // returning false means the position could not go where the simulation
+        // Hitting either end ends the motion, however much of the simulation
+        // is left: the content has run out, and continuing would be a run of
+        // frames that each clamp to the same number. Upstream stops the same
+        // way, a fling and an animation both -- every activity's `applyMoveTo`
+        // returns false when the position could not go where the simulation
         // asked, and the activity goes idle.
         if done || clamped != position {
-            self.ballistic = None;
+            self.activity = None;
+            if clamped != position {
+                // The part the content bounds kept, on the way to going idle,
+                // carrying how fast it was going: upstream's
+                // `BallisticScrollActivity` dispatches its overscroll with
+                // `velocity: velocity`, read off the simulation.
+                self.notify(ScrollNotification::Overscroll {
+                    metrics: self.metrics(),
+                    overscroll: position - clamped,
+                    velocity,
+                    depth: 0,
+                });
+            }
+            self.end_scroll();
             return moved;
         }
         true
@@ -446,6 +1017,311 @@ impl crate::framework::Component for LazyList {
             // quietly decline every rebuild. See `RenderBox for Box<R>`.
             column
         })
+    }
+}
+
+// -- The sliver door -----------------------------------------------------------
+
+/// A lazily built list through the sliver protocol.
+///
+/// The door onto [`crate::render::RenderSliverList`] -- a sliver whose
+/// children outside the window do not exist -- inside a
+/// [`crate::render::RenderSliverViewport`], with a
+/// [`crate::render::RenderSliverPadding`] in front of it when padding was
+/// asked for. Upstream this is `ListView.builder` (a `CustomScrollView` with a
+/// `SliverPadding` and a `SliverList`); [`LazyList`] above is this port's
+/// fixed-extent shortcut that predates the slivers and stays. The two read
+/// alike:
+///
+/// ```ignore
+/// component(
+///     SliverListView::new(1000, move |index| row(index))
+///         .with_item_extent(40.0)
+///         .with_offset(state.scroll.offset),
+/// )
+/// ```
+///
+/// The builder answers *render objects* rather than widgets, because the list
+/// builds its children while it is being laid out -- where the widget walk has
+/// already been and gone. What a builder cannot know -- where row ten thousand
+/// is -- the list answers by dead reckoning plus a scroll offset correction,
+/// seeded from the item extent or estimate it was given (see
+/// [`crate::render::RenderSliverList`], whose doc says which parts are
+/// upstream and which one thing is not).
+///
+/// The viewport, the padding sliver and the list sliver survive every frame,
+/// which is the whole reason a sliver list is cheaper than the column it
+/// replaces: a rebuild hands the same objects their new configuration, and the
+/// materialized window -- every child in it, measured -- moves rather than
+/// being made again.
+#[derive(Clone)]
+pub struct SliverListView {
+    axis_direction: crate::render::AxisDirection,
+    child_count: usize,
+    build_item: Rc<dyn Fn(usize) -> crate::render::RenderRef>,
+    item_extent: Option<f32>,
+    estimated_extent: Option<f32>,
+    padding: Option<crate::render::EdgeInsets>,
+    offset: f32,
+    cache_extent: f32,
+    user_scroll_direction: ScrollDirection,
+    extent_sink: Option<Rc<Cell<f32>>>,
+}
+
+impl SliverListView {
+    pub fn new(
+        child_count: usize,
+        build_item: impl Fn(usize) -> crate::render::RenderRef + 'static,
+    ) -> SliverListView {
+        SliverListView {
+            axis_direction: crate::render::AxisDirection::Down,
+            child_count,
+            build_item: Rc::new(build_item),
+            item_extent: None,
+            estimated_extent: None,
+            padding: None,
+            offset: 0.0,
+            cache_extent: DEFAULT_CACHE_EXTENT,
+            user_scroll_direction: ScrollDirection::Idle,
+            extent_sink: None,
+        }
+    }
+
+    /// A horizontal list. Which way it scrolls follows the ambient text
+    /// direction where the list was built, the same line upstream's
+    /// `ScrollView` builds its viewport with: rightward in an LTR subtree,
+    /// leftward in an RTL one.
+    pub fn horizontal(
+        child_count: usize,
+        build_item: impl Fn(usize) -> crate::render::RenderRef + 'static,
+    ) -> SliverListView {
+        let axis_direction =
+            if crate::direction::current_direction() == crate::direction::TextDirection::Rtl {
+                crate::render::AxisDirection::Left
+            } else {
+                crate::render::AxisDirection::Right
+            };
+        SliverListView { axis_direction, ..Self::new(child_count, build_item) }
+    }
+
+    /// The exact extent of every child, when every child has one. Makes the
+    /// lazy window arithmetic exact -- upstream would say to use a
+    /// `SliverFixedExtentList`, and this is the same arithmetic arrived at
+    /// from the same fact.
+    pub fn with_item_extent(mut self, item_extent: f32) -> Self {
+        self.item_extent = Some(item_extent);
+        self
+    }
+
+    /// What to estimate a child's extent at when they vary. Only read on a
+    /// far jump, and corrected into truth as the reader scrolls.
+    pub fn with_estimated_extent(mut self, estimated_extent: f32) -> Self {
+        self.estimated_extent = Some(estimated_extent);
+        self
+    }
+
+    /// Pads the list, as a `SliverPadding` in front of the `SliverList` --
+    /// padding that scrolls with the content, upstream's
+    /// `ListView(padding: ...)`.
+    pub fn with_padding(mut self, padding: crate::render::EdgeInsets) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    /// How far the content is scrolled. Clamped to the scrollable extent once
+    /// the content has been measured.
+    pub fn with_offset(mut self, offset: f32) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// The axis direction to lay the viewport out in -- the door a reversed
+    /// list (`Up`, `Left`) comes in by.
+    pub fn with_axis_direction(mut self, axis_direction: crate::render::AxisDirection) -> Self {
+        self.axis_direction = axis_direction;
+        self
+    }
+
+    /// The band before the leading and after the trailing edge kept warm.
+    pub fn with_cache_extent(mut self, cache_extent: f32) -> Self {
+        self.cache_extent = cache_extent;
+        self
+    }
+
+    /// Reports how far this list can scroll, once it has been laid out. The
+    /// cell is the way back out; see [`ListView`]'s note on the same trick.
+    pub fn with_extent_sink(mut self, sink: Rc<Cell<f32>>) -> Self {
+        self.extent_sink = Some(sink);
+        self
+    }
+}
+
+impl crate::framework::Component for SliverListView {
+    fn build(&self, _context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        // The host is mounted as a leaf so that it -- not this description --
+        // is what the element tree reconciles against, and the sliver chain
+        // under it survives the rebuild.
+        let config = self.clone();
+        crate::framework::leaf(move || SliverListHost::new(config.clone()))
+    }
+}
+
+/// The render half of [`SliverListView`]: composes the sliver chain once and
+/// keeps it, handing the same objects their new configuration every rebuild.
+/// Upstream the elements between the widgets and the render objects are what
+/// keeps the chain alive across a rebuild; here the host is.
+struct SliverListHost {
+    config: SliverListView,
+    /// The list sliver, and the padding around it when there is one. The
+    /// viewport's child is whichever of the two is the outermost.
+    sliver: Option<crate::render::RenderRef>,
+    padding_sliver: Option<crate::render::RenderRef>,
+    viewport: Option<crate::render::RenderSliverViewport>,
+}
+
+impl SliverListHost {
+    fn new(config: SliverListView) -> SliverListHost {
+        SliverListHost { config, sliver: None, padding_sliver: None, viewport: None }
+    }
+
+    /// A fresh list sliver describing the current configuration, for
+    /// reconfiguring the kept one with.
+    fn fresh_sliver(config: &SliverListView) -> crate::render::RenderSliverList {
+        // The `Rc` is cloned into a plain closure because `Rc<dyn Fn>` is not
+        // itself an `Fn`, and the list asks for the latter.
+        let build = Rc::clone(&config.build_item);
+        let mut sliver =
+            crate::render::RenderSliverList::new(config.child_count, move |index| build(index));
+        if let Some(extent) = config.item_extent {
+            sliver = sliver.with_item_extent(extent);
+        }
+        if let Some(extent) = config.estimated_extent {
+            sliver = sliver.with_estimated_extent(extent);
+        }
+        sliver
+    }
+}
+
+impl crate::render::RenderBox for SliverListHost {
+    /// The host's half of the reconciliation: the list sliver is reconfigured
+    /// first (which reconfigures every live child with its freshly built
+    /// self, upstream's element rebuild visiting them), then the padding, then
+    /// the viewport -- staged around the *same* handles, so the viewport's
+    /// same-children test passes and the window below survives the rebuild.
+    fn update_from(&mut self, fresh: &mut dyn crate::render::RenderBox) -> Option<crate::render::UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<SliverListHost>()?;
+        self.config = fresh.config.clone();
+        let Some(sliver) = self.sliver.clone() else {
+            // Never composed: the first layout builds out of what was just
+            // taken.
+            return Some(crate::render::UpdateEffect::Relayout);
+        };
+        let mut effect = crate::render::UpdateEffect::Nothing;
+        if !sliver
+            .reconfigure(crate::render::RenderRef::new(Self::fresh_sliver(&self.config)))
+        {
+            return None;
+        }
+        // The padding sliver comes and goes with the configuration; either
+        // way the root of the chain is whatever the viewport is handed.
+        let root = match (self.padding_sliver.take(), self.config.padding) {
+            (Some(padding), Some(insets)) => {
+                let staged =
+                    crate::render::RenderSliverPadding::new(insets, sliver.clone());
+                if !padding.reconfigure(crate::render::RenderRef::new(staged)) {
+                    return None;
+                }
+                effect = effect.and(crate::render::UpdateEffect::Relayout);
+                padding
+            }
+            (None, Some(insets)) => {
+                // Padding added to a list that did not have it: a new sliver
+                // in front of the list, which the viewport is restaged with.
+                let padding = crate::render::RenderRef::new(
+                    crate::render::RenderSliverPadding::new(insets, sliver.clone()),
+                );
+                self.padding_sliver = Some(padding.clone());
+                effect = effect.and(crate::render::UpdateEffect::Relayout);
+                padding
+            }
+            (Some(_), None) => {
+                // Padding removed: the list is the root again.
+                effect = effect.and(crate::render::UpdateEffect::Relayout);
+                sliver.clone()
+            }
+            (None, None) => sliver.clone(),
+        };
+        let mut staged = crate::render::RenderSliverViewport::new(self.config.axis_direction)
+            .with_sliver(root)
+            .with_offset(self.config.offset)
+            .with_cache_extent(self.config.cache_extent)
+            .with_user_scroll_direction(self.config.user_scroll_direction);
+        self.viewport
+            .as_mut()
+            .expect("built with the slivers")
+            .update_from(&mut staged)
+            .map(|viewport_effect| effect.and(viewport_effect))
+    }
+
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+        if self.viewport.is_none() {
+            let sliver = crate::render::RenderRef::new(Self::fresh_sliver(&self.config));
+            let root = if let Some(insets) = self.config.padding {
+                let padding = crate::render::RenderRef::new(
+                    crate::render::RenderSliverPadding::new(insets, sliver.clone()),
+                );
+                self.padding_sliver = Some(padding.clone());
+                padding
+            } else {
+                sliver.clone()
+            };
+            self.sliver = Some(sliver);
+            self.viewport = Some(
+                crate::render::RenderSliverViewport::new(self.config.axis_direction)
+                    .with_sliver(root)
+                    .with_offset(self.config.offset)
+                    .with_cache_extent(self.config.cache_extent)
+                    .with_user_scroll_direction(self.config.user_scroll_direction),
+            );
+        }
+        let viewport = self.viewport.as_mut().expect("built just above");
+        let size = viewport.layout(constraints);
+        if let Some(sink) = &self.config.extent_sink {
+            sink.set(viewport.max_scroll_extent());
+        }
+        size
+    }
+
+    fn size(&self) -> crate::render::Size {
+        self.viewport.as_ref().map_or(crate::render::Size::ZERO, |v| v.size())
+    }
+
+    fn paint(
+        &self,
+        context: &mut crate::render::PaintContext,
+        offset: crate::render::Offset,
+    ) {
+        if let Some(viewport) = &self.viewport {
+            viewport.paint(context, offset);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset)) {
+        if let Some(viewport) = &self.viewport {
+            visit(viewport, crate::render::Offset::ZERO);
+        }
+    }
+
+    fn hit_test(
+        &self,
+        position: crate::render::Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        self.viewport
+            .as_ref()
+            .is_some_and(|v| v.hit_test(position, result))
     }
 }
 
@@ -876,10 +1752,11 @@ impl crate::render::RenderBox for RenderMeasuredItem {
 mod tests {
     use super::*;
 
-    /// A scroll with room to move, for the tests below.
+    /// A scroll with room to move, for the tests below. The viewport is the
+    /// conventional 500 logical pixels; the physics below never reads it.
     fn scroll(extent: f32) -> Scroll {
-        let scroll = Scroll::new();
-        scroll.set_extent(extent);
+        let mut scroll = Scroll::new();
+        scroll.set_extent(extent, 500.0);
         scroll
     }
 
@@ -893,6 +1770,49 @@ mod tests {
             assert!(frames < 600, "a fling should not last ten seconds");
         }
         frames
+    }
+
+    #[test]
+    fn the_metrics_derive_what_upstream_derives_from_them() {
+        // extentBefore/Inside/After and outOfRange/atEdge, as
+        // scroll_metrics.dart defines them: before is what is above, inside is
+        // the viewport less any overscroll at either end, after is what is
+        // below, and the edges are exact.
+        let metrics = ScrollMetrics {
+            pixels: 100.0,
+            min_scroll_extent: 0.0,
+            max_scroll_extent: 400.0,
+            viewport_dimension: 250.0,
+        };
+        assert_eq!(metrics.extent_before(), 100.0);
+        assert_eq!(metrics.extent_inside(), 250.0);
+        assert_eq!(metrics.extent_after(), 300.0);
+        assert!(!metrics.out_of_range());
+        assert!(!metrics.at_edge());
+
+        // At the end, exactly: at edge, and nothing after.
+        let bottom = ScrollMetrics { pixels: 400.0, ..metrics };
+        assert!(bottom.at_edge());
+        assert_eq!(bottom.extent_after(), 0.0);
+
+        // Past it: out of range, the inside shrinks by the overscroll, and
+        // the after stays at zero rather than going negative.
+        let past = ScrollMetrics { pixels: 450.0, ..metrics };
+        assert!(past.out_of_range());
+        assert_eq!(past.extent_inside(), 200.0);
+        assert_eq!(past.extent_after(), 0.0);
+        assert_eq!(past.extent_before(), 450.0);
+
+        // Less content than viewport: the inside is the whole viewport, empty
+        // space and all.
+        let fits = ScrollMetrics {
+            pixels: 0.0,
+            min_scroll_extent: 0.0,
+            max_scroll_extent: 0.0,
+            viewport_dimension: 500.0,
+        };
+        assert_eq!(fits.extent_inside(), 500.0);
+        assert!(fits.at_edge());
     }
 
     #[test]
@@ -1021,7 +1941,466 @@ mod tests {
         );
     }
 
-    // -- Lazy lists -----------------------------------------------------------
+    // -- Programmatic scrolling ------------------------------------------------
+
+    #[test]
+    fn animate_to_travels_to_the_target() {
+        let mut scroll = scroll(5000.0);
+        scroll.animate_to(400.0, 300_000, Curve::EASE);
+
+        // The first frame only starts the clock, exactly as a fling's does.
+        assert!(scroll.advance(1_000_000));
+        assert_eq!(scroll.offset, 0.0);
+
+        // From there, monotonically to the target: an ease never backs up and
+        // never overshoots.
+        let mut last = 0.0;
+        let mut now = 1_000_000;
+        while scroll.advance(now) {
+            now += 16_667;
+            assert!(scroll.offset >= last, "backed up at {}", scroll.offset);
+            assert!(scroll.offset <= 400.0, "overshot at {}", scroll.offset);
+            last = scroll.offset;
+        }
+        assert_eq!(scroll.offset, 400.0, "arrives exactly, on the last frame");
+    }
+
+    #[test]
+    fn animate_to_stops_at_the_end_of_the_content() {
+        // The target is not clamped when the animation starts -- upstream's
+        // animateTo does not clamp it either -- but the animation stops the
+        // frame the content runs out.
+        let mut scroll = scroll(300.0);
+        scroll.animate_to(10_000.0, 300_000, Curve::EASE);
+        settle(&mut scroll);
+        assert_eq!(scroll.offset, 300.0);
+        assert!(!scroll.is_ballistic(), "and does not keep asking for frames");
+    }
+
+    #[test]
+    fn a_drag_interrupts_an_animate_to() {
+        let mut scroll = scroll(5000.0);
+        scroll.animate_to(1000.0, 300_000, Curve::EASE);
+        scroll.advance(1_000_000);
+        scroll.advance(1_050_000);
+        let caught = scroll.offset;
+        assert!(caught > 0.0, "the animation had got going: {caught}");
+
+        // The reader's finger. Upstream the drag activity replaces the driven
+        // one; here that is one field.
+        scroll.scroll_by(-20.0);
+        assert!(!scroll.is_ballistic());
+        assert!(!scroll.advance(1_100_000), "an interrupted animation asks for nothing");
+        assert_eq!(scroll.offset, caught - 20.0, "and stays where the finger left it");
+    }
+
+    #[test]
+    fn touching_the_content_stops_an_animate_to() {
+        let mut scroll = scroll(5000.0);
+        scroll.animate_to(1000.0, 300_000, Curve::EASE);
+        scroll.advance(1_000_000);
+        scroll.advance(1_050_000);
+        let caught = scroll.offset;
+
+        scroll.stop();
+        assert!(!scroll.advance(1_100_000));
+        assert_eq!(scroll.offset, caught, "and leaves the offset where it was");
+    }
+
+    #[test]
+    fn animate_to_and_a_fling_replace_each_other() {
+        // Both are activities; whichever started last is in charge.
+        let mut scroll = scroll(5000.0);
+        scroll.fling(2000.0);
+        scroll.animate_to(100.0, 200_000, Curve::EASE);
+        settle(&mut scroll);
+        assert_eq!(scroll.offset, 100.0, "the animation won, wherever the fling was going");
+
+        scroll.fling(2000.0);
+        assert!(scroll.is_ballistic());
+        settle(&mut scroll);
+        // The fling's own distance, from where the animation left it.
+        assert!(
+            (scroll.offset - 747.0).abs() < 10.0,
+            "should have travelled the simulation's distance, not {}",
+            scroll.offset
+        );
+    }
+
+    #[test]
+    fn animate_to_where_it_already_is_jumps() {
+        // Upstream skips the animation when nearEqual(to, pixels, tolerance)
+        // and goes straight to the position -- and the tolerance is the scroll
+        // one, a logical pixel, not the simulation machinery's thousandth.
+        let mut scroll = scroll(5000.0);
+        scroll.jump_to(250.0);
+        scroll.animate_to(250.6, 300_000, Curve::EASE);
+        assert!(!scroll.is_ballistic(), "less than a pixel away is nothing to animate");
+        assert_eq!(scroll.offset, 250.6);
+
+        // A pixel and a half away is: there is ground to cover.
+        scroll.animate_to(252.1, 300_000, Curve::EASE);
+        assert!(scroll.is_ballistic());
+    }
+
+    #[test]
+    fn animate_to_with_no_duration_jumps() {
+        // What upstream's moveTo does with Duration.zero.
+        let mut scroll = scroll(5000.0);
+        scroll.animate_to(250.0, 0, Curve::EASE);
+        assert_eq!(scroll.offset, 250.0);
+        assert!(!scroll.advance(1_000_000), "nothing is in flight");
+    }
+
+    #[test]
+    fn jump_to_takes_effect_immediately() {
+        let mut scroll = scroll(5000.0);
+        scroll.animate_to(1000.0, 300_000, Curve::EASE);
+        scroll.advance(1_000_000);
+        scroll.advance(1_050_000);
+        assert!(scroll.offset > 0.0 && scroll.offset < 1000.0, "part way there");
+
+        // No frame needed to see it, and it cancels the animation.
+        scroll.jump_to(300.0);
+        assert_eq!(scroll.offset, 300.0);
+        assert!(!scroll.is_ballistic());
+        assert!(!scroll.advance(1_100_000), "and asks for no more frames");
+
+        // Out of range both ways: stored exactly as given, as forcePixels
+        // stores it, for the next dimensions to correct.
+        scroll.jump_to(-50.0);
+        assert_eq!(scroll.offset, -50.0);
+        scroll.jump_to(90_000.0);
+        assert_eq!(scroll.offset, 90_000.0);
+        scroll.set_extent(5000.0, 500.0);
+        assert_eq!(scroll.offset, 5000.0, "the correction the dimensions make");
+    }
+
+    #[test]
+    fn a_jump_before_measurement_survives_it() {
+        // The bug this is not: a jump clamped against an extent nobody had
+        // measured yet, and so lost. forcePixels stores what it is given.
+        let mut scroll = Scroll::new();
+        scroll.jump_to(300.0);
+        assert_eq!(scroll.offset, 300.0);
+        scroll.set_extent(5000.0, 500.0);
+        assert_eq!(scroll.offset, 300.0, "in range, so the correction corrects nothing");
+    }
+
+    #[test]
+    fn an_out_of_range_jump_reports_where_it_was_put() {
+        // jumpTo's notifications carry the raw target -- the metrics are a
+        // copyWith of a position whose pixels really are past the end -- and
+        // no overscroll, because none of the move was applied against bounds.
+        let (_tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.jump_to(9000.0));
+        assert_eq!(labels(&log.borrow()), vec!["start", "update", "end"]);
+        match log.borrow().iter().find(|n| matches!(n, ScrollNotification::Update { .. })) {
+            Some(ScrollNotification::Update { metrics, scroll_delta, .. }) => {
+                assert_eq!(metrics.pixels, 9000.0, "the notification carries the raw target");
+                assert_eq!(*scroll_delta, 9000.0);
+                assert!(metrics.out_of_range(), "and says so, as the metrics would upstream");
+            }
+            _ => panic!("the jump reported its move"),
+        }
+        assert!(
+            !log.borrow().iter().any(|n| matches!(n, ScrollNotification::Overscroll { .. })),
+            "a jump dispatches no overscroll"
+        );
+    }
+
+    #[test]
+    fn a_fling_below_the_tolerance_velocity_is_only_a_release() {
+        // Upstream's createBallisticSimulation returns null below the
+        // tolerance velocity -- 20 logical px/s here -- so the release ends
+        // whatever was underway and starts nothing.
+        let (tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.fling(19.9));
+        assert_eq!(
+            tree.state::<ScrollerState, _>(handle.element(), |s| s.scroll.is_ballistic()),
+            Some(false),
+            "a dead throw is not a fling"
+        );
+        assert!(log.borrow().is_empty(), "nothing started, so nothing was reported");
+
+        // The tolerance itself still throws.
+        handle.set_state(|state| state.scroll.fling(20.0));
+        assert_eq!(labels(&log.borrow()), vec!["start"]);
+    }
+
+    // -- Scroll notifications -----------------------------------------------
+
+    use crate::framework::{
+        AnyWidget, BuildContext, ElementTree, StateHandle, StatefulComponent, notification_listener,
+        stateful,
+    };
+
+    /// What kind each dispatched notification was, in the order they arrived.
+    fn labels(log: &[ScrollNotification]) -> Vec<&'static str> {
+        log.iter()
+            .map(|notification| match notification {
+                ScrollNotification::Start { .. } => "start",
+                ScrollNotification::Update { .. } => "update",
+                ScrollNotification::Overscroll { .. } => "overscroll",
+                ScrollNotification::End { .. } => "end",
+                ScrollNotification::UserScroll { .. } => "user",
+            })
+            .collect()
+    }
+
+    /// A scroll, in a widget, with somewhere for its notifications to go.
+    #[derive(Default)]
+    struct ScrollerState {
+        scroll: Scroll,
+    }
+
+    struct Scroller {
+        handles: Rc<RefCell<Option<StateHandle<ScrollerState>>>>,
+        extent: f32,
+    }
+
+    impl StatefulComponent for Scroller {
+        type State = ScrollerState;
+
+        fn initial_state(&self) -> ScrollerState {
+            let mut state = ScrollerState::default();
+            state.scroll.set_extent(self.extent, 500.0);
+            state
+        }
+
+        fn advance(&self, state: &mut ScrollerState, frame_time_micros: i64) -> bool {
+            state.scroll.advance(frame_time_micros)
+        }
+
+        fn build(
+            &self,
+            state: &ScrollerState,
+            handle: StateHandle<ScrollerState>,
+            context: &mut BuildContext,
+        ) -> AnyWidget {
+            // The binding every scrolling screen wants: the scroll gets the
+            // sink this element's build was given, once per build, and keeps
+            // dispatching through it long after.
+            state.scroll.set_notification_sink(context.notification_sink());
+            *self.handles.borrow_mut() = Some(handle);
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    /// A listening tree with a scroll under it, and a way to drive the scroll.
+    fn listened_scroll(extent: f32) -> (ElementTree, Rc<RefCell<Option<StateHandle<ScrollerState>>>>, Rc<RefCell<Vec<ScrollNotification>>>) {
+        let handles = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut tree = ElementTree::new();
+        let recorder = log.clone();
+        tree.rebuild(notification_listener(
+            move |notification: &ScrollNotification| {
+                recorder.borrow_mut().push(*notification);
+                false
+            },
+            stateful(Scroller { handles: handles.clone(), extent }),
+        ));
+        (tree, handles, log)
+    }
+
+    /// Runs frames at 60Hz until the scroll goes idle, as a host would.
+    fn settle_tree(tree: &mut ElementTree) {
+        for step in 0..600 {
+            let wants_more = tree.advance_frame(1_000_000 + step * 16_667);
+            tree.rebuild_dirty();
+            if !wants_more {
+                return;
+            }
+        }
+        panic!("a fling should not last ten seconds");
+    }
+
+    #[test]
+    fn a_wheel_scroll_is_a_whole_scroll_from_start_to_end() {
+        let (tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        // Two notches of the wheel, each a scroll that begins and ends in one
+        // event -- upstream's pointerScroll, which reports the reader's
+        // direction, then a start, the update, and the end, and idles the
+        // reader. The second notch begins by ending nothing, so the two runs
+        // sit end to end, two idles deep.
+        handle.set_state(|state| state.scroll.scroll_by(50.0));
+        handle.set_state(|state| state.scroll.scroll_by(30.0));
+
+        assert_eq!(
+            labels(&log.borrow()),
+            vec![
+                "user", "start", "update", "end", "user", //
+                "user", "start", "update", "end", "user",
+            ],
+            "each notch: the direction, a start, the move, the end, idle"
+        );
+        // The last update says where the wheel had got to and by how much.
+        let updates: Vec<ScrollNotification> = log
+            .borrow()
+            .iter()
+            .filter(|n| matches!(n, ScrollNotification::Update { .. }))
+            .copied()
+            .collect();
+        match updates.last() {
+            Some(ScrollNotification::Update { metrics, scroll_delta, .. }) => {
+                assert_eq!(metrics.pixels, 80.0);
+                assert_eq!(*scroll_delta, 30.0);
+                assert_eq!(metrics.max_scroll_extent, 5000.0);
+            }
+            _ => panic!("the wheel reported its moves"),
+        }
+        assert_eq!(tree.state::<ScrollerState, _>(handle.element(), |s| s.scroll.offset), Some(80.0));
+    }
+
+    #[test]
+    fn a_fling_after_a_wheel_scroll_is_a_scroll_of_its_own() {
+        // The wheel's scroll ended with it; the throw that follows is a new
+        // one. Upstream's drag-to-fling handover is the seamless one --
+        // scrolling to scrolling, no end between -- and this is not that: the
+        // wheel was finished, so its end had already gone out.
+        let (mut tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.scroll_by(40.0));
+        assert_eq!(
+            labels(&log.borrow()),
+            vec!["user", "start", "update", "end", "user"],
+            "the notch came and went whole"
+        );
+
+        handle.set_state(|state| state.scroll.fling(2000.0));
+        settle_tree(&mut tree);
+        let all = labels(&log.borrow());
+        assert_eq!(&all[..5], &["user", "start", "update", "end", "user"]);
+        assert_eq!(all[5], "start", "the throw started a new scroll");
+        assert_eq!(all.last(), Some(&"end"), "the throw ended at the settle");
+        // and no idle after it: a ballistic activity does not touch the
+        // reader's direction upstream -- only a drag's applyUserOffset and a
+        // wheel's pointerScroll do -- so it had been idle since the wheel's
+        // end, and the settle's idle update is suppressed, as
+        // updateUserScrollDirection's unchanged-direction check does there.
+        assert!(
+            all.iter().filter(|l| **l == "update").count() > 2,
+            "the fling's frames each reported a move"
+        );
+        assert_eq!(
+            all.iter().filter(|l| **l == "end").count(),
+            2,
+            "each scroll ended exactly once"
+        );
+    }
+
+    #[test]
+    fn a_touch_catches_a_fling_and_ends_the_scroll_where_it_stands() {
+        let (mut tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        // Thrown from rest: a start, the fling's updates.
+        handle.set_state(|state| state.scroll.fling(3000.0));
+        tree.advance_frame(1_000_000);
+        tree.advance_frame(1_050_000);
+        let caught = tree.state::<ScrollerState, _>(handle.element(), |s| s.scroll.offset);
+        assert!(caught.unwrap_or(0.0) > 0.0, "the fling had got going");
+
+        // The reader's finger. The hold does not constitute scrolling, so this
+        // is the end of it. No UserScroll follows: the reader's direction was
+        // never anything but idle, and a direction that did not change is not
+        // reported -- upstream's updateUserScrollDirection returns early too.
+        handle.set_state(|state| state.scroll.stop());
+        let all = labels(&log.borrow());
+        assert_eq!(all.last(), Some(&"end"));
+        assert!(!tree.advance_frame(1_100_000), "nothing more is in flight");
+    }
+
+    #[test]
+    fn a_jump_is_a_whole_scroll_of_its_own() {
+        // Upstream's jumpTo: idle, then a start, one update, an end, by hand.
+        let (_tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.jump_to(300.0));
+        assert_eq!(labels(&log.borrow()), vec!["start", "update", "end"]);
+
+        // And a jump that interrupts a wheel scroll ends it first, as goIdle
+        // does, then reports itself.
+        log.borrow_mut().clear();
+        handle.set_state(|state| state.scroll.scroll_by(10.0));
+        handle.set_state(|state| state.scroll.jump_to(400.0));
+        assert_eq!(
+            labels(&log.borrow()),
+            vec![
+                "user", "start", "update", "end", "user", //
+                "start", "update", "end",
+            ]
+        );
+    }
+
+    #[test]
+    fn what_the_content_bounds_keep_is_an_overscroll() {
+        let (_tree, handles, log) = listened_scroll(500.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.scroll_by(9000.0));
+        let overscrolls: Vec<ScrollNotification> = log
+            .borrow()
+            .iter()
+            .filter(|n| matches!(n, ScrollNotification::Overscroll { .. }))
+            .copied()
+            .collect();
+        match overscrolls.last() {
+            Some(ScrollNotification::Overscroll { metrics, overscroll, velocity, .. }) => {
+                assert_eq!(metrics.pixels, 500.0, "it moved as far as it could");
+                assert_eq!(*overscroll, 8500.0, "and reported the rest as overscroll");
+                assert_eq!(*velocity, 0.0, "a wheel carries no velocity into the bound");
+            }
+            _ => panic!("the clamped-off travel should have been reported"),
+        }
+    }
+
+    #[test]
+    fn an_overscroll_from_a_fling_carries_the_fling_s_velocity() {
+        // Upstream's ballistic activity dispatches its overscroll with the
+        // velocity it was still moving at when it hit the bound.
+        let (mut tree, handles, log) = listened_scroll(200.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.fling(4000.0));
+        settle_tree(&mut tree);
+        let overscrolls: Vec<ScrollNotification> = log
+            .borrow()
+            .iter()
+            .filter(|n| matches!(n, ScrollNotification::Overscroll { .. }))
+            .copied()
+            .collect();
+        match overscrolls.last() {
+            Some(ScrollNotification::Overscroll { velocity, .. }) => {
+                assert!(*velocity > 0.0, "still moving into the bound when it hit: {velocity}");
+            }
+            _ => panic!("the bound kept some of the fling"),
+        }
+    }
+
+    #[test]
+    fn an_animate_to_reports_like_any_scrolling_activity() {
+        let (mut tree, handles, log) = listened_scroll(5000.0);
+        let handle = handles.borrow().clone().expect("built");
+
+        handle.set_state(|state| state.scroll.animate_to(400.0, 300_000, Curve::EASE));
+        assert_eq!(labels(&log.borrow()), vec!["start"], "a driven activity is a scrolling one");
+
+        settle_tree(&mut tree);
+        let all = labels(&log.borrow());
+        assert_eq!(all.first(), Some(&"start"));
+        assert_eq!(all.last(), Some(&"end"), "arrived, reported, and no direction ever changed");
+        assert!(all.iter().any(|l| *l == "update"));
+    }
+
 
     #[test]
     fn a_lazy_list_builds_a_screenful_and_not_a_hundred_thousand() {
@@ -1075,6 +2454,39 @@ mod tests {
         let exact = item_window(100, 50.0, 500.0, 500.0, 0.0).expect("items");
         let hair = item_window(100, 50.0, 500.000_01, 500.0, 0.0).expect("items");
         assert_eq!(exact, hair);
+    }
+
+    #[test]
+    fn a_sliver_list_view_builds_only_the_window_it_is_asked_for() {
+        use crate::framework::{ElementTree, component};
+        use crate::render::{BoxConstraints, RenderBox};
+
+        let built = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = built.clone();
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            SliverListView::new(1000, move |_| {
+                counter.set(counter.get() + 1);
+                crate::render::RenderRef::new(
+                    crate::render::RenderConstrainedBox::tight(100.0, 50.0),
+                )
+            })
+            .with_item_extent(50.0)
+            .with_offset(0.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        let size = root.layout(BoxConstraints::new(0.0, 300.0, 0.0, 500.0));
+        // The viewport is the window it was given, not the list behind it:
+        // upstream's `ListView` sizes to its viewport, and the fifty thousand
+        // pixels of content live in the scroll extent, not in the box.
+        assert_eq!(size.height, 500.0);
+        // A 500-pixel window plus the default 250 of cache, in 50-pixel rows.
+        assert!(
+            built.get() <= 15,
+            "a thousand rows were offered, {} were built",
+            built.get()
+        );
+        assert!(built.get() >= 10, "the visible window was not even filled");
     }
 
     #[test]

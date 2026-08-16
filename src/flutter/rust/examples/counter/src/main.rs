@@ -30,7 +30,9 @@ use std::os::raw::{c_char, c_int};
 
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::prelude::*;
-use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisAlignment, RenderFlex};
+use rustflutter::render::{
+    Alignment, CrossAxisAlignment, MainAxisAlignment, MainAxisSize, RenderFlex,
+};
 use rustflutter::widgets::{Align, Center, Column, Empty, Pointer, Row, SizedBox};
 
 const WIDTH: i32 = 420;
@@ -180,7 +182,11 @@ impl StatefulComponent for Counter {
 
         leaf(move || {
             Center::new(
+                // Min, so the `Center` has a content-sized column to centre;
+                // the max default would fill the window and start the count
+                // at the top instead.
                 Column::new()
+                    .with_main_axis_size(MainAxisSize::Min)
                     .with_spacing(26.0)
                     .push(
                         Text::new(format!("{count}"))
@@ -190,6 +196,7 @@ impl StatefulComponent for Counter {
                     )
                     .push(
                         Row::new()
+                            .with_main_axis_size(MainAxisSize::Min)
                             .with_spacing(14.0)
                             .push(decrement.render())
                             .push(increment.render())

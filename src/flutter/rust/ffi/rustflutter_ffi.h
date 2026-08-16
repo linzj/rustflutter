@@ -293,13 +293,44 @@ int32_t rf_register_font(const uint8_t* data, size_t length, const char* family)
 // a flag and not a string because the framework above only ever wants the one
 // character: Flutter's RenderParagraph sets `_textPainter.ellipsis` to
 // `_kEllipsis` ('…') or to null, and to nothing else.
+//
+// The rest is one run's txt::TextStyle. font_fallbacks are families tried
+// after font_family, in order, when it has no glyph for a codepoint.
+// letter_spacing and word_spacing are in logical pixels, 0 being the font's
+// own. height is a multiple of the font size and only applies when has_height
+// is set -- txt::TextStyle::has_height_override, because 1.0 is not the same
+// as unset there. decoration is a bitmask of txt::TextDecoration (1 underline,
+// 2 overline, 4 line-through). feature_tags/feature_values are OpenType
+// features as (tag, value) pairs.
 RfParagraph* rf_paragraph_new(const char* text,
                               size_t text_len,
                               const char* font_family,
+                              const char* const* font_fallbacks,
+                              size_t font_fallback_count,
                               float font_size,
                               int32_t font_weight,  // 100..900, 400 = normal
+                              bool italic,
+                              float letter_spacing,
+                              float word_spacing,
+                              float height,
+                              bool has_height,
+                              int32_t decoration,
+                              const char* const* feature_tags,
+                              const uint32_t* feature_values,
+                              size_t feature_count,
                               uint32_t argb,
-                              int32_t text_align,  // 0 left .. 2 center
+                              // 0 left, 1 right, 2 center, 3 start, 4 end,
+                              // 5 justify, in dart:ui TextAlign's order.
+                              // start and end are resolved against
+                              // text_direction by the paragraph, the way
+                              // dart:ui's ParagraphStyle carries both
+                              // textAlign and textDirection and lets the
+                              // engine resolve.
+                              int32_t text_align,
+                              // 0 ltr, 1 rtl. The paragraph's base direction:
+                              // what bidi resolution and start/end alignment
+                              // are measured against.
+                              int32_t text_direction,
                               size_t max_lines,    // 0 = no limit
                               bool ellipsis);
 void rf_paragraph_free(RfParagraph* paragraph);
@@ -321,14 +352,30 @@ float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph);
 // ParagraphBuilder, and for the same reason: line breaking, bidi and baselines
 // have to see the whole paragraph, so a sentence with a bold word in it is one
 // paragraph and not three.
+//
+// text_align and text_direction mean what they mean on rf_paragraph_new.
 RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
+                                             int32_t text_direction,
                                              size_t max_lines,  // 0 = no limit
                                              bool ellipsis);
 void rf_paragraph_builder_free(RfParagraphBuilder* builder);
+// The run style carries the same fields as rf_paragraph_new's, described
+// there; the paragraph's own settings came in when the builder was made.
 void rf_paragraph_builder_push_style(RfParagraphBuilder* builder,
                                      const char* font_family,
+                                     const char* const* font_fallbacks,
+                                     size_t font_fallback_count,
                                      float font_size,
                                      int32_t font_weight,
+                                     bool italic,
+                                     float letter_spacing,
+                                     float word_spacing,
+                                     float height,
+                                     bool has_height,
+                                     int32_t decoration,
+                                     const char* const* feature_tags,
+                                     const uint32_t* feature_values,
+                                     size_t feature_count,
                                      uint32_t argb);
 void rf_paragraph_builder_add_text(RfParagraphBuilder* builder,
                                    const char* text,
@@ -423,6 +470,19 @@ void rf_layer_tree_add_retained(RfLayerTree* tree,
                                 RfLayer* layer,
                                 float dx,
                                 float dy);
+
+// Re-records into a layer kept from an earlier frame. Its old children are
+// dropped -- upstream `PaintingContext.pushLayer`'s reuse branch, where
+// `removeAllChildren` runs before the layer is painted into again -- and it
+// becomes the current container, so what is recorded next lands in the same
+// object. A matching `rf_layer_tree_pop` closes it.
+//
+// Unlike a push, the layer is NOT added to this tree: trees that already hold
+// it (an enclosing boundary's kept layer) pick the new content up by identity
+// when they are rasterized, which is how upstream repaints a boundary without
+// anything above it recording again. A frame that wants it composited adds it
+// with `rf_layer_tree_add_retained` as usual.
+void rf_layer_tree_push_retained(RfLayerTree* tree, RfLayer* layer);
 
 void rf_layer_free(RfLayer* layer);
 

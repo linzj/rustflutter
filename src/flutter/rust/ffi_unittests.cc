@@ -105,9 +105,16 @@ TEST(RustFFI, ShapesTextAndReportsItsMetrics) {
 
   const char kText[] = "Hello, World!";
   RfParagraph* paragraph =
-      rf_paragraph_new(kText, std::strlen(kText), nullptr, 24.0f, 400,
-                       0xFF000000, /*text_align=*/0, /*max_lines=*/0,
-                       /*ellipsis=*/false);
+      rf_paragraph_new(kText, std::strlen(kText), nullptr,
+                       /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
+                       24.0f, 400, /*italic=*/false,
+                       /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+                       /*height=*/1.0f, /*has_height=*/false,
+                       /*decoration=*/0,
+                       /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+                       /*feature_count=*/0,
+                       0xFF000000, /*text_align=*/0, /*text_direction=*/0,
+                       /*max_lines=*/0, /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
 
   rf_paragraph_layout(paragraph, 400.0f);
@@ -130,9 +137,16 @@ TEST(RustFFI, PaintsTextIntoTheSurface) {
 
   const char kText[] = "Hello";
   RfParagraph* paragraph =
-      rf_paragraph_new(kText, std::strlen(kText), nullptr, 32.0f, 700,
-                       0xFFFFFFFF, /*text_align=*/0, /*max_lines=*/0,
-                       /*ellipsis=*/false);
+      rf_paragraph_new(kText, std::strlen(kText), nullptr,
+                       /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
+                       32.0f, 700, /*italic=*/false,
+                       /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+                       /*height=*/1.0f, /*has_height=*/false,
+                       /*decoration=*/0,
+                       /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+                       /*feature_count=*/0,
+                       0xFFFFFFFF, /*text_align=*/0, /*text_direction=*/0,
+                       /*max_lines=*/0, /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
   rf_paragraph_layout(paragraph, static_cast<float>(kWidth));
 
@@ -186,6 +200,73 @@ std::vector<uint8_t> Rasterize(RfDisplayList* display_list,
 }
 
 }  // namespace
+
+// start resolves against the paragraph's direction, the way
+// txt::ParagraphStyle::effective_align does: the same narrow line in the same
+// layout width hugs the left edge in ltr and the right edge in rtl.
+TEST(RustFFI, ResolvesStartAlignmentAgainstDirection) {
+  ASSERT_EQ(rf_initialize(nullptr), 0);
+
+  constexpr int32_t kWidth = 200;
+  constexpr int32_t kHeight = 100;
+  constexpr uint32_t kBackground = 0xFF000000;
+
+  const char kText[] = "short text";
+  const int32_t kDirections[] = {0, 1};  // ltr, rtl
+  const float kBandTop[] = {4.0f, 54.0f};
+
+  RfCanvas* canvas = rf_canvas_new(kWidth, kHeight);
+  rf_canvas_draw_color(canvas, kBackground);
+  RfParagraph* paragraphs[2] = {nullptr, nullptr};
+  for (int i = 0; i < 2; ++i) {
+    paragraphs[i] =
+        rf_paragraph_new(kText, std::strlen(kText), nullptr,
+                         /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
+                         20.0f, 400, /*italic=*/false,
+                         /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+                         /*height=*/1.0f, /*has_height=*/false,
+                         /*decoration=*/0,
+                         /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+                         /*feature_count=*/0,
+                         0xFFFFFFFF, /*text_align=*/3 /* start */,
+                         kDirections[i], /*max_lines=*/0, /*ellipsis=*/false);
+    ASSERT_NE(paragraphs[i], nullptr);
+    rf_paragraph_layout(paragraphs[i], static_cast<float>(kWidth));
+    rf_canvas_draw_paragraph(canvas, paragraphs[i], 0.0f, kBandTop[i]);
+  }
+  RfDisplayList* display_list = rf_canvas_build(canvas);
+  std::vector<uint8_t> pixels = Rasterize(display_list, kWidth, kHeight);
+
+  // The ink extents of each band: which edge the line hugged.
+  auto ink_extents = [&](int32_t y0, int32_t y1, int32_t* min_x, int32_t* max_x) {
+    *min_x = kWidth;
+    *max_x = -1;
+    for (int32_t y = y0; y < y1; ++y) {
+      for (int32_t x = 0; x < kWidth; ++x) {
+        if (PixelAt(pixels, kWidth, x, y) != kBackground) {
+          *min_x = std::min(*min_x, x);
+          *max_x = std::max(*max_x, x);
+        }
+      }
+    }
+  };
+  int32_t ltr_min = 0, ltr_max = 0, rtl_min = 0, rtl_max = 0;
+  ink_extents(0, 50, &ltr_min, &ltr_max);
+  ink_extents(50, kHeight, &rtl_min, &rtl_max);
+
+  // A line of ~80px at 20px font in a 200px width: ltr starts at the left
+  // edge and ends well before the middle; rtl is its mirror.
+  EXPECT_GE(ltr_min, 0);
+  EXPECT_LT(ltr_min, 20);
+  EXPECT_LT(ltr_max, 100);
+  EXPECT_GT(rtl_max, kWidth - 20);
+  EXPECT_GT(rtl_min, 100);
+
+  rf_display_list_free(display_list);
+  rf_canvas_free(canvas);
+  rf_paragraph_free(paragraphs[0]);
+  rf_paragraph_free(paragraphs[1]);
+}
 
 // A path is a real outline, not a bounding box: the far corner of a triangle's
 // bounding box must stay unpainted.
@@ -393,6 +474,91 @@ TEST(RustFFI, RefusesToRetainTheRoot) {
   RfLayerTree* tree = rf_layer_tree_new(8, 8);
   EXPECT_EQ(rf_layer_tree_pop_retained(tree), nullptr);
   rf_layer_tree_free(tree);
+}
+
+// A repaint boundary whose subtree changed, under trees that did not.
+//
+// What upstream's `_repaintCompositedChild` does with the layer a boundary
+// keeps: the old children are dropped and the new picture lands in the same
+// layer *object*, so every tree holding that object -- an enclosing boundary's
+// kept layer, in particular -- composites the new content without a single
+// call above the boundary. The pixels here prove the sharing: the first tree
+// is rasterized again after the re-record and shows the new picture, with no
+// new add into that tree.
+TEST(RustFFI, RerecordsIntoTheLayerItKept) {
+  constexpr int32_t kSize = 64;
+
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_anti_alias(paint, 0);
+
+  rf_paint_set_color(paint, 0xFFFF0000);
+  RfCanvas* red_canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_rect(red_canvas, 0, 0, 8, 8, paint);
+  RfDisplayList* red = rf_canvas_build(red_canvas);
+
+  rf_paint_set_color(paint, 0xFF0000FF);
+  RfCanvas* blue_canvas = rf_canvas_new(kSize, kSize);
+  rf_canvas_draw_rect(blue_canvas, 0, 0, 8, 8, paint);
+  RfDisplayList* blue = rf_canvas_build(blue_canvas);
+
+  // First frame: a boundary records the red square and keeps the layer, and
+  // the frame's tree carries it at (8, 8).
+  RfLayerTree* first = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_push_offset(first, 8, 8);
+  rf_layer_tree_push_retainable(first);
+  rf_layer_tree_add_display_list(first, red, 0, 0);
+  RfLayer* kept = rf_layer_tree_pop_retained(first);
+  ASSERT_NE(kept, nullptr);
+  rf_layer_tree_pop(first);
+
+  std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()), 0);
+  EXPECT_EQ(PixelAt(pixels, kSize, 10, 10), 0xFFFF0000)
+      << "the layer did not draw what it was recorded with";
+
+  // The repaint: whatever changed under the boundary is drawn again, straight
+  // into the layer it kept. The tree this happens in is only the recording
+  // context -- the layer is not added to it, so rasterizing it draws nothing.
+  RfLayerTree* rerecorded = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_push_retained(rerecorded, kept);
+  rf_layer_tree_add_display_list(rerecorded, blue, 0, 0);
+  rf_layer_tree_pop(rerecorded);
+
+  std::vector<uint8_t> nowhere(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(
+      rf_layer_tree_rasterize_bgra(rerecorded, nowhere.data(), nowhere.size()), 0);
+  EXPECT_EQ(PixelAt(nowhere, kSize, 10, 10), 0u)
+      << "a re-record attached the layer to the tree it was recorded in";
+
+  // The first tree was not touched, and rasterizing it again shows the new
+  // picture: it holds the object, and the object holds the blue square now.
+  // This is the whole mechanism -- an enclosing boundary's repaint becomes
+  // visible without anything above it recording again.
+  std::vector<uint8_t> shared(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, shared.data(), shared.size()), 0);
+  EXPECT_EQ(PixelAt(shared, kSize, 10, 10), 0xFF0000FF)
+      << "the tree holding the layer did not see the re-record";
+  EXPECT_NE(PixelAt(shared, kSize, 10, 10), 0xFFFF0000)
+      << "the picture it was recorded with survived the re-record";
+
+  // And a later frame composites the same object the ordinary way, still
+  // showing what the re-record left in it.
+  RfLayerTree* next = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_add_retained(next, kept, 8, 8);
+  std::vector<uint8_t> carried(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(next, carried.data(), carried.size()), 0);
+  EXPECT_EQ(PixelAt(carried, kSize, 10, 10), 0xFF0000FF)
+      << "the layer handed to a later frame lost the re-recorded picture";
+
+  rf_layer_tree_free(next);
+  rf_layer_tree_free(rerecorded);
+  rf_layer_tree_free(first);
+  rf_layer_free(kept);
+  rf_display_list_free(blue);
+  rf_display_list_free(red);
+  rf_canvas_free(blue_canvas);
+  rf_canvas_free(red_canvas);
+  rf_paint_free(paint);
 }
 
 // The root transform every frame is composed under on a display that is not at

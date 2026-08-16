@@ -264,6 +264,7 @@ pub(crate) mod sys {
             dx: f32,
             dy: f32,
         );
+        pub fn rf_layer_tree_push_retained(tree: *mut RfLayerTree, layer: *mut RfLayer);
         pub fn rf_layer_free(layer: *mut RfLayer);
 
         pub fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage;
@@ -314,20 +315,43 @@ pub(crate) mod sys {
 
         pub fn rf_register_font(data: *const u8, length: usize, family: *const c_char) -> c_int;
 
+        // The run-style parameters are the same list twice over -- once for
+        // the single-run paragraph, once per run of a rich one -- because a
+        // txt style is assembled at PushStyle time and cannot be amended
+        // afterwards. Their meanings mirror `txt::TextStyle`: fallbacks are
+        // tried after the family, the spacings are 0 for the font's own, the
+        // height only applies with its flag, the decoration is a bitmask, and
+        // the features are (tag, value) pairs.
         pub fn rf_paragraph_new(
             text: *const c_char,
             text_len: usize,
             font_family: *const c_char,
+            font_fallbacks: *const *const c_char,
+            font_fallback_count: usize,
             font_size: f32,
             font_weight: c_int,
+            italic: bool,
+            letter_spacing: f32,
+            word_spacing: f32,
+            height: f32,
+            has_height: bool,
+            decoration: c_int,
+            feature_tags: *const *const c_char,
+            feature_values: *const u32,
+            feature_count: usize,
             argb: u32,
+            // 0 left .. 5 justify, in TextAlign's order; direction 0 ltr,
+            // 1 rtl. The pair is the paragraph's, like dart:ui's
+            // ParagraphStyle taking both textAlign and textDirection.
             text_align: c_int,
+            text_direction: c_int,
             max_lines: usize,
             ellipsis: bool,
         ) -> *mut RfParagraph;
         pub fn rf_paragraph_free(paragraph: *mut RfParagraph);
         pub fn rf_paragraph_builder_new(
             text_align: c_int,
+            text_direction: c_int,
             max_lines: usize,
             ellipsis: bool,
         ) -> *mut RfParagraphBuilder;
@@ -338,8 +362,19 @@ pub(crate) mod sys {
         pub fn rf_paragraph_builder_push_style(
             builder: *mut RfParagraphBuilder,
             font_family: *const c_char,
+            font_fallbacks: *const *const c_char,
+            font_fallback_count: usize,
             font_size: f32,
             font_weight: c_int,
+            italic: bool,
+            letter_spacing: f32,
+            word_spacing: f32,
+            height: f32,
+            has_height: bool,
+            decoration: c_int,
+            feature_tags: *const *const c_char,
+            feature_values: *const u32,
+            feature_count: usize,
             argb: u32,
         );
         pub fn rf_paragraph_builder_add_text(
@@ -504,6 +539,13 @@ impl Paint {
         Paint { raw }
     }
 
+    /// Reads the colour back through the stub engine's thread-local record;
+    /// only meaningful under `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) fn color_for_test(&self) -> Color {
+        Color(crate::engine_test_stubs::last_paint_color())
+    }
+
     pub fn with_style(self, style: Style) -> Paint {
         match style {
             Style::Fill => unsafe { sys::rf_paint_set_stroke(self.raw, 0, 0.0) },
@@ -525,21 +567,105 @@ impl Drop for Paint {
 }
 
 /// Horizontal alignment of a laid-out paragraph.
+///
+/// Upstream's six, from `dart:ui`: `start` and `end` are resolved against the
+/// paragraph's direction at shaping time -- for left-to-right text `start` is
+/// the left edge, for right-to-left text the right -- which is why they travel
+/// with a [`TextDirection`](crate::direction::TextDirection) rather than
+/// meaning one side outright.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {
     Left,
     Right,
     Center,
+    /// The leading edge: left in [`TextDirection::Ltr`], right in
+    /// [`TextDirection::Rtl`].
+    Start,
+    /// The trailing edge: right in [`TextDirection::Ltr`], left in
+    /// [`TextDirection::Rtl`].
+    End,
+    /// Stretch lines that end in a soft line break to the full width.
+    Justify,
+}
+
+impl TextAlign {
+    /// The code the FFI expects, in the order the variants are declared.
+    pub(crate) fn code(self) -> c_int {
+        match self {
+            TextAlign::Left => 0,
+            TextAlign::Right => 1,
+            TextAlign::Center => 2,
+            TextAlign::Start => 3,
+            TextAlign::End => 4,
+            TextAlign::Justify => 5,
+        }
+    }
+}
+
+/// A line drawn with the text: under it, over it, or through it.
+///
+/// A bitmask rather than an enum because several can be asked for at once --
+/// `UNDERLINE | LINE_THROUGH` is a book title. The values are `txt::TextDecoration`'s,
+/// which are `dart:ui`'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct TextDecoration(pub u8);
+
+impl TextDecoration {
+    /// No line. The default, and the engine's.
+    pub const NONE: TextDecoration = TextDecoration(0);
+    /// A line under the baseline the text sits on.
+    pub const UNDERLINE: TextDecoration = TextDecoration(1);
+    /// A line over the tallest glyph.
+    pub const OVERLINE: TextDecoration = TextDecoration(2);
+    /// A line through the middle of every glyph.
+    pub const LINE_THROUGH: TextDecoration = TextDecoration(4);
+}
+
+impl std::ops::BitOr for TextDecoration {
+    type Output = TextDecoration;
+
+    fn bitor(self, rhs: TextDecoration) -> TextDecoration {
+        TextDecoration(self.0 | rhs.0)
+    }
 }
 
 /// Text appearance. Mirrors the subset of `txt::TextStyle` the FFI exposes.
+///
+/// The optional fields are `None` for the engine's own value rather than some
+/// number standing in as one: `height: Some(1.0)` is a different paragraph
+/// from `height: None`, because a font's natural line height is not its font
+/// size.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     pub font_family: Option<String>,
+    /// Families tried, in order, after `font_family` has no glyph for a
+    /// codepoint. Upstream's `fontFamilyFallback`.
+    pub font_family_fallback: Option<Vec<String>>,
     pub font_size: f32,
     /// CSS-style weight, 100..=900. 400 is normal, 700 is bold.
     pub font_weight: i32,
+    /// False is upright, the engine's normal. Upstream's `FontStyle.italic`.
+    pub italic: bool,
+    /// Extra space after each glyph, in logical pixels. `None` is the font's
+    /// own spacing.
+    pub letter_spacing: Option<f32>,
+    /// Extra space at each word break, in logical pixels. `None` is the
+    /// font's own.
+    pub word_spacing: Option<f32>,
+    /// The line height as a multiple of `font_size`. `None` is the font's own
+    /// metrics; `Some(1.0)` is the EM square, which is not the same thing.
+    pub height: Option<f32>,
+    pub decoration: TextDecoration,
+    /// OpenType features as (tag, value) pairs -- `("tnum", 1)` for tabular
+    /// figures, `("smcp", 1)` for small caps.
+    pub font_features: Option<Vec<(String, u32)>>,
     pub color: Color,
+    /// How the paragraph's lines are justified. The default is
+    /// [`TextAlign::Start`], which is upstream's default too: `TextPainter`'s
+    /// `TextAlign textAlign = TextAlign.start` (`painting/text_painter.dart`),
+    /// where a null `Text.textAlign` lands. `Start` travels unresolved to the
+    /// shaper, which reads it against the paragraph's text direction; `Left`
+    /// is the fixed left edge and never the default.
     pub align: TextAlign,
 }
 
@@ -547,11 +673,82 @@ impl Default for TextStyle {
     fn default() -> Self {
         TextStyle {
             font_family: None,
+            font_family_fallback: None,
             font_size: 14.0,
             font_weight: 400,
+            italic: false,
+            letter_spacing: None,
+            word_spacing: None,
+            height: None,
+            decoration: TextDecoration::NONE,
+            font_features: None,
             color: Color::BLACK,
-            align: TextAlign::Left,
+            // `TextAlign.start`, per `TextPainter` above -- not `left`.
+            align: TextAlign::Start,
         }
+    }
+}
+
+/// One run's style as the C ABI wants it: strings NUL-terminated, optional
+/// numbers resolved to the engine's defaults, and the lists still alive for
+/// the pointers passed alongside them to point into.
+struct RunStyleArgs {
+    family: Option<CString>,
+    // These two are never read: they keep the CStrings alive for the pointer
+    // vectors below to point into. Dropping them would dangle the pointers.
+    #[allow(dead_code)]
+    fallbacks: Vec<CString>,
+    fallback_ptrs: Vec<*const c_char>,
+    #[allow(dead_code)]
+    feature_tags: Vec<CString>,
+    feature_tag_ptrs: Vec<*const c_char>,
+    feature_values: Vec<u32>,
+    letter_spacing: f32,
+    word_spacing: f32,
+    height: f32,
+    has_height: bool,
+    decoration: c_int,
+    italic: bool,
+}
+
+impl RunStyleArgs {
+    fn new(style: &TextStyle) -> RunStyleArgs {
+        let to_cstring = |text: &str| {
+            CString::new(text)
+                .expect("font families and feature tags must not contain NUL")
+        };
+        let fallbacks = style
+            .font_family_fallback
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|family| to_cstring(family))
+            .collect::<Vec<_>>();
+        let features = style.font_features.as_deref().unwrap_or(&[]);
+        let feature_tags = features
+            .iter()
+            .map(|(tag, _)| to_cstring(tag))
+            .collect::<Vec<_>>();
+        RunStyleArgs {
+            family: style.font_family.as_deref().map(|f| to_cstring(f)),
+            fallback_ptrs: fallbacks.iter().map(|c| c.as_ptr()).collect(),
+            feature_tag_ptrs: feature_tags.iter().map(|c| c.as_ptr()).collect(),
+            feature_values: features.iter().map(|(_, value)| *value).collect(),
+            fallbacks,
+            feature_tags,
+            letter_spacing: style.letter_spacing.unwrap_or(0.0),
+            word_spacing: style.word_spacing.unwrap_or(0.0),
+            // The 1.0 stand-in is meaningless without the flag; see the
+            // `has_height_override` note on `TextStyle::height`.
+            height: style.height.unwrap_or(1.0),
+            has_height: style.height.is_some(),
+            decoration: style.decoration.0 as c_int,
+            italic: style.italic,
+        }
+    }
+
+    fn family_ptr(&self) -> *const c_char {
+        self.family.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
     }
 }
 
@@ -563,26 +760,24 @@ pub struct Paragraph {
 impl Paragraph {
     /// Builds and lays out `text` within `max_width` logical pixels.
     ///
-    /// `max_lines` and `ellipsis` are the paragraph's, not the run's, and are
-    /// what upstream's `TextPainter` puts in its `ui.ParagraphStyle`.
+    /// `max_lines`, `ellipsis`, `align` and `direction` are the paragraph's,
+    /// not the run's, and are what upstream's `TextPainter` puts in its
+    /// `ui.ParagraphStyle`. The direction is the paragraph's base direction --
+    /// what bidi resolution and `TextAlign::start`/`end` are measured against
+    /// -- taken by the caller from where the paragraph was built; see
+    /// [`crate::direction::current_direction`].
     pub fn new(
         text: &str,
         style: &TextStyle,
         max_lines: Option<usize>,
         ellipsis: bool,
         max_width: f32,
+        direction: crate::direction::TextDirection,
     ) -> Paragraph {
-        let family = style
-            .font_family
-            .as_deref()
-            .map(|f| CString::new(f).expect("font family must not contain NUL"));
-        let family_ptr = family.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        let run = RunStyleArgs::new(style);
 
-        let align = match style.align {
-            TextAlign::Left => 0,
-            TextAlign::Right => 1,
-            TextAlign::Center => 2,
-        };
+        let align = style.align.code();
+        let direction = (direction == crate::direction::TextDirection::Rtl) as c_int;
 
         // The engine takes a pointer + length, so interior NULs are fine and
         // the string does not need to be re-encoded.
@@ -590,11 +785,23 @@ impl Paragraph {
             sys::rf_paragraph_new(
                 text.as_ptr() as *const c_char,
                 text.len(),
-                family_ptr,
+                run.family_ptr(),
+                run.fallback_ptrs.as_ptr(),
+                run.fallback_ptrs.len(),
                 style.font_size,
                 style.font_weight,
+                run.italic,
+                run.letter_spacing,
+                run.word_spacing,
+                run.height,
+                run.has_height,
+                run.decoration,
+                run.feature_tag_ptrs.as_ptr(),
+                run.feature_values.as_ptr(),
+                run.feature_tag_ptrs.len(),
                 style.color.0,
                 align,
+                direction,
                 max_lines.unwrap_or(0),
                 ellipsis,
             )
@@ -625,36 +832,44 @@ impl Paragraph {
     /// in a row. Upstream this is `ParagraphBuilder` in `dart:ui`, driven by
     /// `TextPainter` from a tree of `TextSpan`s.
     ///
-    /// `align` and `max_lines` belong to the paragraph; everything else comes
-    /// from each run's own style.
+    /// `align`, `direction` and `max_lines` belong to the paragraph; everything
+    /// else comes from each run's own style.
     pub fn rich(
         runs: &[(String, TextStyle)],
         align: TextAlign,
         max_lines: Option<usize>,
         ellipsis: bool,
         max_width: f32,
+        direction: crate::direction::TextDirection,
     ) -> Paragraph {
-        let align_code = match align {
-            TextAlign::Left => 0,
-            TextAlign::Right => 1,
-            TextAlign::Center => 2,
+        let align_code = align.code();
+        let direction_code = (direction == crate::direction::TextDirection::Rtl) as c_int;
+        let builder = unsafe {
+            sys::rf_paragraph_builder_new(align_code, direction_code, max_lines.unwrap_or(0), ellipsis)
         };
-        let builder =
-            unsafe { sys::rf_paragraph_builder_new(align_code, max_lines.unwrap_or(0), ellipsis) };
         assert!(!builder.is_null(), "engine failed to make a paragraph builder");
 
         for (text, style) in runs {
-            let family = style
-                .font_family
-                .as_deref()
-                .map(|f| CString::new(f).expect("font family must not contain NUL"));
-            let family_ptr = family.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+            // Each run's style is marshalled inside the loop, and the args
+            // stay alive until the push that reads them returns.
+            let run = RunStyleArgs::new(style);
             unsafe {
                 sys::rf_paragraph_builder_push_style(
                     builder,
-                    family_ptr,
+                    run.family_ptr(),
+                    run.fallback_ptrs.as_ptr(),
+                    run.fallback_ptrs.len(),
                     style.font_size,
                     style.font_weight,
+                    run.italic,
+                    run.letter_spacing,
+                    run.word_spacing,
+                    run.height,
+                    run.has_height,
+                    run.decoration,
+                    run.feature_tag_ptrs.as_ptr(),
+                    run.feature_values.as_ptr(),
+                    run.feature_tag_ptrs.len(),
                     style.color.0,
                 );
                 sys::rf_paragraph_builder_add_text(
@@ -793,6 +1008,18 @@ pub struct RetainedLayer {
     raw: *mut sys::RfLayer,
 }
 
+impl RetainedLayer {
+    /// The identity of the engine-side layer object behind this handle.
+    ///
+    /// Stable for as long as the handle is alive, and different for every
+    /// layer the engine makes -- which makes it the thing to assert on when
+    /// the question is whether a boundary kept its layer or was given a new
+    /// one. Upstream asks the same question with `identical()`.
+    pub fn id(&self) -> usize {
+        self.raw as usize
+    }
+}
+
 impl Drop for RetainedLayer {
     fn drop(&mut self) {
         unsafe { sys::rf_layer_free(self.raw) };
@@ -842,6 +1069,23 @@ impl LayerTree {
     /// Adds a layer kept from an earlier frame, at `(dx, dy)`.
     pub fn add_retained(&mut self, layer: &RetainedLayer, dx: f32, dy: f32) {
         unsafe { sys::rf_layer_tree_add_retained(self.raw, layer.raw, dx, dy) };
+    }
+
+    /// Re-records into `layer`, an earlier frame's kept layer.
+    ///
+    /// The layer's old children are dropped and it becomes the container the
+    /// next recording lands in -- the same object, which is the whole point:
+    /// trees that already hold it composite the new content without anything
+    /// above recording again. Upstream does this with the layer a repaint
+    /// boundary keeps (`_repaintCompositedChild` clears its children and hands
+    /// a `PaintingContext` bound to it); the enclosing layer tree here plays
+    /// the part of that context's canvas.
+    ///
+    /// The layer is *not* added to this tree; close the recording with
+    /// [`LayerTree::pop`], and composite the layer where it goes with
+    /// [`LayerTree::add_retained`].
+    pub fn push_retained(&mut self, layer: &RetainedLayer) {
+        unsafe { sys::rf_layer_tree_push_retained(self.raw, layer.raw) };
     }
 
     /// Rasterizes and writes a PNG. Headless, no GPU context required.
@@ -983,5 +1227,14 @@ mod tests {
     #[test]
     fn color_packing() {
         assert_eq!(Color::rgb(0x12, 0x34, 0x56).0, 0xFF12_3456);
+    }
+
+    #[test]
+    fn a_default_style_aligns_to_the_start_not_the_left() {
+        // `TextPainter`'s default is `TextAlign.start`
+        // (`painting/text_painter.dart`), so a style that never set an
+        // alignment must resolve against the paragraph's direction, not pin
+        // the left edge.
+        assert_eq!(TextStyle::default().align, TextAlign::Start);
     }
 }

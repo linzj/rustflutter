@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::rc::Rc;
 
-use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, TextAlign, TextStyle, sys};
+use crate::engine::{
+    Canvas, Color, LayerTree, Paint, Paragraph, Rect, TextAlign, TextStyle, sys,
+};
 
 // -- Enums --------------------------------------------------------------------
 
@@ -539,6 +541,11 @@ struct ShapeKey {
     /// because changing any run reshapes the paragraph.
     runs: Vec<RunKey>,
     align: u8,
+    /// The paragraph's base direction, as a code. Part of the key for the
+    /// same reason `align` is: it is a paragraph-style input, and
+    /// `TextAlign::start` in one direction and `TextAlign::end` in the other
+    /// are the *same* code shaped two different ways.
+    direction: u8,
     max_lines: usize,
     /// Part of the key because it goes into the paragraph style: the same text
     /// in the same width is a different paragraph with an ellipsis than
@@ -551,35 +558,65 @@ struct ShapeKey {
 struct RunKey {
     text: String,
     family: Option<String>,
+    /// Empty and `None` are the same request -- no fallback -- so the empty
+    /// list is folded away here rather than cached twice.
+    fallback: Option<Vec<String>>,
     size_bits: u32,
     weight: i32,
+    italic: bool,
+    letter_spacing_bits: Option<u32>,
+    word_spacing_bits: Option<u32>,
+    /// Bits rather than value, and `None` kept apart from `Some(1.0)`: the
+    /// font's own line height is not its font size.
+    height_bits: Option<u32>,
+    decoration: u8,
+    /// Folded the same way as `fallback`.
+    font_features: Option<Vec<(String, u32)>>,
     color: u32,
 }
 
 impl RunKey {
     fn new(text: &str, style: &TextStyle) -> RunKey {
+        let bits = |value: Option<f32>| value.map(f32::to_bits);
+        // An empty list asks for nothing, which is what `None` asks for.
+        fn non_empty<T: Clone>(list: Option<&Vec<T>>) -> Option<Vec<T>> {
+            list.filter(|list| !list.is_empty()).cloned()
+        }
         RunKey {
             text: text.to_string(),
             family: style.font_family.clone(),
+            fallback: non_empty(style.font_family_fallback.as_ref()),
             size_bits: style.font_size.to_bits(),
             weight: style.font_weight,
+            italic: style.italic,
+            letter_spacing_bits: bits(style.letter_spacing),
+            word_spacing_bits: bits(style.word_spacing),
+            height_bits: bits(style.height),
+            decoration: style.decoration.0,
+            font_features: non_empty(style.font_features.as_ref()),
             color: style.color.0,
         }
     }
 }
 
+/// The FFI's code for an alignment, in [`TextAlign`](crate::engine::TextAlign)'s
+/// variant order: 0 left .. 5 justify. The enum owns the mapping; see
+/// `TextAlign::code` for why start and end are codes of their own rather than
+/// resolved here.
 fn align_code(align: TextAlign) -> u8 {
-    match align {
-        TextAlign::Left => 0,
-        TextAlign::Right => 1,
-        TextAlign::Center => 2,
-    }
+    align.code() as u8
+}
+
+/// The FFI's code for a direction: 0 ltr, 1 rtl.
+fn direction_code(direction: crate::direction::TextDirection) -> u8 {
+    (direction == crate::direction::TextDirection::Rtl) as u8
 }
 
 impl ShapeKey {
     fn new(
         text: &str,
         style: &TextStyle,
+        direction: crate::direction::TextDirection,
         max_lines: Option<usize>,
         ellipsis: bool,
         max_width: f32,
@@ -587,6 +624,7 @@ impl ShapeKey {
         ShapeKey {
             runs: vec![RunKey::new(text, style)],
             align: align_code(style.align),
+            direction: direction_code(direction),
             max_lines: max_lines.unwrap_or(0),
             ellipsis,
             max_width_bits: max_width.to_bits(),
@@ -596,6 +634,7 @@ impl ShapeKey {
     fn rich(
         runs: &[(String, TextStyle)],
         align: TextAlign,
+        direction: crate::direction::TextDirection,
         max_lines: Option<usize>,
         ellipsis: bool,
         max_width: f32,
@@ -603,6 +642,7 @@ impl ShapeKey {
         ShapeKey {
             runs: runs.iter().map(|(text, style)| RunKey::new(text, style)).collect(),
             align: align_code(align),
+            direction: direction_code(direction),
             max_lines: max_lines.unwrap_or(0),
             ellipsis,
             max_width_bits: max_width.to_bits(),
@@ -657,6 +697,17 @@ thread_local! {
 ///
 /// The cache needs no help with this: the scale changes the style it keys on,
 /// so text shaped at the old size is simply never asked for again.
+///
+/// # The direction text runs in
+///
+/// The paragraph's base direction is read here rather than passed in, from
+/// [`crate::direction::current_direction`]: it is what
+/// `TextAlign::start`/`end` and bidi resolution are measured against, and it
+/// is part of the cache key for the same reason the alignment is. Once the
+/// render-tree side of directionality lands, a paragraph's own direction
+/// travels the way the scale does -- captured where the object was built,
+/// passed in here -- and this read becomes the fallback for paragraphs shaped
+/// outside a tree.
 pub fn shape(
     text: &str,
     style: &TextStyle,
@@ -672,7 +723,8 @@ pub fn shape(
         scaled = TextStyle { font_size: style.font_size * scale, ..style.clone() };
         &scaled
     };
-    let key = ShapeKey::new(text, style, max_lines, ellipsis, max_width);
+    let direction = crate::direction::current_direction();
+    let key = ShapeKey::new(text, style, direction, max_lines, ellipsis, max_width);
     SHAPED.with(|cache| {
         {
             let cache = cache.borrow();
@@ -687,7 +739,8 @@ pub fn shape(
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped = Rc::new(Paragraph::new(text, style, max_lines, ellipsis, max_width));
+        let shaped =
+            Rc::new(Paragraph::new(text, style, max_lines, ellipsis, max_width, direction));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -721,7 +774,8 @@ pub fn shape_rich(
             })
             .collect()
     };
-    let key = ShapeKey::rich(&scaled, align, max_lines, ellipsis, max_width);
+    let direction = crate::direction::current_direction();
+    let key = ShapeKey::rich(&scaled, align, direction, max_lines, ellipsis, max_width);
     SHAPED.with(|cache| {
         {
             let cache = cache.borrow();
@@ -734,7 +788,8 @@ pub fn shape_rich(
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped = Rc::new(Paragraph::rich(&scaled, align, max_lines, ellipsis, max_width));
+        let shaped =
+            Rc::new(Paragraph::rich(&scaled, align, max_lines, ellipsis, max_width, direction));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -1321,6 +1376,7 @@ impl LayerTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::TextDecoration;
 
     // Each test gets the cache to itself: they run on separate threads and the
     // cache is thread-local, but a name shared between two of them would still
@@ -1402,6 +1458,142 @@ mod tests {
         let a = shape("weight matters", &plain, None, false, 200.0, 1.0);
         let b = shape("weight matters", &bold, None, false, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn a_different_letter_spacing_is_a_different_paragraph() {
+        let plain = TextStyle::default();
+        let tracked = TextStyle { letter_spacing: Some(2.0), ..TextStyle::default() };
+        let a = shape("tracked out", &plain, None, false, 200.0, 1.0);
+        let b = shape("tracked out", &tracked, None, false, 200.0, 1.0);
+        // Spacing changes the glyph advances, so sharing a shaping between
+        // the two would draw them back together.
+        assert!(!Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn a_taller_line_is_a_different_paragraph() {
+        let plain = TextStyle::default();
+        let airy = TextStyle { height: Some(2.0), ..TextStyle::default() };
+        let a = shape("deep breath", &plain, None, false, 200.0, 1.0);
+        let b = shape("deep breath", &airy, None, false, 200.0, 1.0);
+        // The multiplier moves every line after the first, and the first
+        // one's baseline too.
+        assert!(!Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn italic_and_decorated_text_is_shaped_again() {
+        let plain = TextStyle::default();
+        let slanted = TextStyle { italic: true, ..TextStyle::default() };
+        let ruled =
+            TextStyle { decoration: TextDecoration::UNDERLINE, ..TextStyle::default() };
+        let a = shape("emphasis", &plain, None, false, 200.0, 1.0);
+        let b = shape("emphasis", &slanted, None, false, 200.0, 1.0);
+        let c = shape("emphasis", &ruled, None, false, 200.0, 1.0);
+        assert!(!Rc::ptr_eq(&a, &b), "italic glyphs are different glyphs");
+        assert!(!Rc::ptr_eq(&a, &c), "a decorated run has more to draw");
+        assert!(!Rc::ptr_eq(&b, &c));
+    }
+
+    #[test]
+    fn unset_fields_are_the_engine_defaults() {
+        // `None` is the neutral case: leaving the new fields unset keys the
+        // same as asking for nothing explicitly, and neither asks the engine
+        // for a second paragraph where one would do.
+        let unset = TextStyle::default();
+        let explicit = TextStyle {
+            font_family_fallback: Some(vec![]),
+            font_features: Some(vec![]),
+            ..TextStyle::default()
+        };
+        let a = shape("unchanged defaults", &unset, None, false, 200.0, 1.0);
+        let b = shape("unchanged defaults", &explicit, None, false, 200.0, 1.0);
+        assert!(Rc::ptr_eq(&a, &b));
+    }
+
+    // -- Direction and alignment ----------------------------------------------
+    //
+    // The stub engine cannot measure where a line landed, so these assert the
+    // pair of codes the FFI was handed -- start (3) in an rtl base direction
+    // (1) is what the real engine resolves to the right edge, the same
+    // resolution txt::ParagraphStyle::effective_align makes.
+
+    #[test]
+    fn start_in_an_rtl_context_reaches_the_engine_as_start_plus_rtl() {
+        crate::engine_test_stubs::reset_paragraph_styles();
+        let style = TextStyle { align: TextAlign::Start, ..TextStyle::default() };
+        crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
+            shape("rtl start", &style, None, false, 300.0, 1.0);
+        });
+        assert_eq!(
+            crate::engine_test_stubs::paragraph_style_requests(),
+            vec![(3, 1)],
+            "start in an rtl context must travel unresolved, with the direction"
+        );
+    }
+
+    #[test]
+    fn justify_reaches_the_engine_as_code_five() {
+        crate::engine_test_stubs::reset_paragraph_styles();
+        let style = TextStyle { align: TextAlign::Justify, ..TextStyle::default() };
+        shape("justify me across the width", &style, None, false, 300.0, 1.0);
+        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(5, 0)]);
+    }
+
+    #[test]
+    fn end_in_an_ltr_context_is_the_default_paragraph() {
+        // The default direction is ltr, so a plain `end` needs no
+        // directionality around it to mean the right edge.
+        crate::engine_test_stubs::reset_paragraph_styles();
+        let style = TextStyle { align: TextAlign::End, ..TextStyle::default() };
+        shape("plain end", &style, None, false, 300.0, 1.0);
+        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(4, 0)]);
+    }
+
+    #[test]
+    fn a_different_direction_is_a_different_paragraph() {
+        // `start` means the left edge in ltr and the right one in rtl, so two
+        // asks that differ only in direction must not share a shaping -- the
+        // cache key carries the direction for exactly this reason.
+        let style = TextStyle { align: TextAlign::Start, ..TextStyle::default() };
+        let ltr = shape("direction matters", &style, None, false, 300.0, 1.0);
+        let rtl = crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
+            shape("direction matters", &style, None, false, 300.0, 1.0)
+        });
+        assert!(!Rc::ptr_eq(&ltr, &rtl));
+    }
+
+    #[test]
+    fn rich_paragraphs_carry_their_direction_too() {
+        crate::engine_test_stubs::reset_paragraph_styles();
+        let runs = vec![(String::from("rich rtl run"), TextStyle::default())];
+        crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
+            shape_rich(&runs, TextAlign::End, None, false, 300.0, 1.0);
+        });
+        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(4, 1)]);
+    }
+
+    #[test]
+    fn rich_runs_style_one_run_at_a_time() {
+        let plain = TextStyle::default();
+        let slanted = TextStyle { italic: true, ..plain.clone() };
+        let runs = |first: TextStyle| {
+            vec![
+                (String::from("one style"), first),
+                (String::from(" another"), plain.clone()),
+            ]
+        };
+        let straight =
+            shape_rich(&runs(plain.clone()), TextAlign::Left, None, false, 200.0, 1.0);
+        let mixed =
+            shape_rich(&runs(slanted), TextAlign::Left, None, false, 200.0, 1.0);
+        // The same words in the same order: only the style of the first run
+        // differs, and that is still a different paragraph.
+        assert!(!Rc::ptr_eq(&straight, &mixed));
+        // And asking for the plain one again finds it, not the italic one.
+        assert!(Rc::ptr_eq(&straight, &shape_rich(&runs(plain.clone()), TextAlign::Left,
+                                                  None, false, 200.0, 1.0)));
     }
 
     #[test]

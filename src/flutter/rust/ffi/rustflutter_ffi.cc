@@ -264,7 +264,15 @@ namespace {
 //
 // The ellipsis is the '…' that Flutter's RenderParagraph hands its TextPainter
 // for TextOverflow.ellipsis, spelled here as the flag the header describes.
+//
+// text_align and text_direction are the codes the header documents: the
+// alignment in dart:ui TextAlign's order, the direction 0 ltr / 1 rtl. start
+// and end are handed to the paragraph unresolved -- txt's own
+// ParagraphStyle::effective_align (and skparagraph underneath it) resolves
+// them against the paragraph's direction, exactly as dart:ui's ParagraphStyle
+// carries both and lets the engine decide.
 txt::ParagraphStyle MakeParagraphStyle(int32_t text_align,
+                                       int32_t text_direction,
                                        size_t max_lines,
                                        bool ellipsis) {
   txt::ParagraphStyle paragraph_style;
@@ -275,10 +283,22 @@ txt::ParagraphStyle MakeParagraphStyle(int32_t text_align,
     case 2:
       paragraph_style.text_align = txt::TextAlign::center;
       break;
+    case 3:
+      paragraph_style.text_align = txt::TextAlign::start;
+      break;
+    case 4:
+      paragraph_style.text_align = txt::TextAlign::end;
+      break;
+    case 5:
+      paragraph_style.text_align = txt::TextAlign::justify;
+      break;
     default:
       paragraph_style.text_align = txt::TextAlign::left;
       break;
   }
+  paragraph_style.text_direction = text_direction == 1
+                                       ? txt::TextDirection::rtl
+                                       : txt::TextDirection::ltr;
   if (max_lines > 0) {
     paragraph_style.max_lines = max_lines;
   }
@@ -290,13 +310,81 @@ txt::ParagraphStyle MakeParagraphStyle(int32_t text_align,
 
 }  // namespace
 
+namespace {
+
+// The one place a text style is assembled, so the single-run and multi-run
+// paths cannot drift apart. The field meanings are the ones documented on
+// rf_paragraph_new in the header.
+txt::TextStyle MakeTextStyle(const char* font_family,
+                             const char* const* font_fallbacks,
+                             size_t font_fallback_count,
+                             float font_size,
+                             int32_t font_weight,
+                             bool italic,
+                             float letter_spacing,
+                             float word_spacing,
+                             float height,
+                             bool has_height,
+                             int32_t decoration,
+                             const char* const* feature_tags,
+                             const uint32_t* feature_values,
+                             size_t feature_count,
+                             uint32_t argb) {
+  txt::TextStyle style;
+  style.font_size = font_size;
+  style.color = argb;
+  // txt::FontWeight is a plain int holding the CSS weight (400 == normal),
+  // so the value passes straight through after clamping.
+  style.font_weight =
+      font_weight < 100 ? 100 : (font_weight > 900 ? 900 : font_weight);
+  style.font_style =
+      italic ? txt::FontStyle::italic : txt::FontStyle::normal;
+  // 0 is txt's own default for both spacings, so the unset case needs no flag.
+  style.letter_spacing = letter_spacing;
+  style.word_spacing = word_spacing;
+  // The font's own line height is not 1.0, so the multiplier travels with an
+  // override flag rather than as a bare number.
+  style.height = height;
+  style.has_height_override = has_height;
+  style.decoration = decoration;
+  // The decoration colour stays transparent: skparagraph then draws the
+  // decoration in the text's own colour, which is what Flutter does too.
+  if (font_family != nullptr && *font_family != 0) {
+    style.font_families.emplace_back(font_family);
+  }
+  for (size_t i = 0; i < font_fallback_count; ++i) {
+    style.font_families.emplace_back(font_fallbacks[i]);
+  }
+  if (style.font_families.empty()) {
+    style.font_families = txt::GetDefaultFontFamilies();
+  }
+  for (size_t i = 0; i < feature_count; ++i) {
+    style.font_features.SetFeature(feature_tags[i], feature_values[i]);
+  }
+  return style;
+}
+
+}  // namespace
+
 RfParagraph* rf_paragraph_new(const char* text,
                               size_t text_len,
                               const char* font_family,
+                              const char* const* font_fallbacks,
+                              size_t font_fallback_count,
                               float font_size,
                               int32_t font_weight,
+                              bool italic,
+                              float letter_spacing,
+                              float word_spacing,
+                              float height,
+                              bool has_height,
+                              int32_t decoration,
+                              const char* const* feature_tags,
+                              const uint32_t* feature_values,
+                              size_t feature_count,
                               uint32_t argb,
                               int32_t text_align,
+                              int32_t text_direction,
                               size_t max_lines,
                               bool ellipsis) {
   if (text == nullptr) {
@@ -304,25 +392,18 @@ RfParagraph* rf_paragraph_new(const char* text,
   }
 
   txt::ParagraphStyle paragraph_style =
-      MakeParagraphStyle(text_align, max_lines, ellipsis);
+      MakeParagraphStyle(text_align, text_direction, max_lines, ellipsis);
 
   auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
       paragraph_style, GetFontCollection(),
       g_impeller_text.load(std::memory_order_relaxed));
 
-  txt::TextStyle style;
-  style.font_size = font_size;
-  style.color = argb;
-  // txt::FontWeight is a plain int holding the CSS weight (400 == normal),
-  // so the value passes straight through after clamping.
-  style.font_weight = font_weight < 100 ? 100 : (font_weight > 900 ? 900 : font_weight);
-  if (font_family != nullptr && font_family[0] != '\0') {
-    style.font_families = std::vector<std::string>{std::string(font_family)};
-  } else {
-    style.font_families = txt::GetDefaultFontFamilies();
-  }
+  builder->PushStyle(MakeTextStyle(font_family, font_fallbacks,
+                                   font_fallback_count, font_size, font_weight,
+                                   italic, letter_spacing, word_spacing, height,
+                                   has_height, decoration, feature_tags,
+                                   feature_values, feature_count, argb));
 
-  builder->PushStyle(style);
   builder->AddText(reinterpret_cast<const uint8_t*>(text), text_len);
   builder->Pop();
 
@@ -335,36 +416,12 @@ void rf_paragraph_free(RfParagraph* paragraph) {
   delete paragraph;
 }
 
-namespace {
-
-// The one place a text style is assembled, so the single-run and multi-run
-// paths cannot drift apart.
-txt::TextStyle MakeTextStyle(const char* font_family,
-                             float font_size,
-                             int32_t font_weight,
-                             uint32_t argb) {
-  txt::TextStyle style;
-  style.font_size = font_size;
-  style.color = argb;
-  // txt::FontWeight is a plain int holding the CSS weight (400 == normal),
-  // so the value passes straight through after clamping.
-  style.font_weight =
-      font_weight < 100 ? 100 : (font_weight > 900 ? 900 : font_weight);
-  if (font_family != nullptr && *font_family != 0) {
-    style.font_families = std::vector<std::string>{std::string(font_family)};
-  } else {
-    style.font_families = txt::GetDefaultFontFamilies();
-  }
-  return style;
-}
-
-}  // namespace
-
 RfParagraphBuilder* rf_paragraph_builder_new(int32_t text_align,
+                                             int32_t text_direction,
                                              size_t max_lines,
                                              bool ellipsis) {
   txt::ParagraphStyle paragraph_style =
-      MakeParagraphStyle(text_align, max_lines, ellipsis);
+      MakeParagraphStyle(text_align, text_direction, max_lines, ellipsis);
 
   auto* out = new RfParagraphBuilder();
   out->builder = txt::ParagraphBuilder::CreateSkiaBuilder(
@@ -379,14 +436,27 @@ void rf_paragraph_builder_free(RfParagraphBuilder* builder) {
 
 void rf_paragraph_builder_push_style(RfParagraphBuilder* builder,
                                      const char* font_family,
+                                     const char* const* font_fallbacks,
+                                     size_t font_fallback_count,
                                      float font_size,
                                      int32_t font_weight,
+                                     bool italic,
+                                     float letter_spacing,
+                                     float word_spacing,
+                                     float height,
+                                     bool has_height,
+                                     int32_t decoration,
+                                     const char* const* feature_tags,
+                                     const uint32_t* feature_values,
+                                     size_t feature_count,
                                      uint32_t argb) {
   if (builder == nullptr || builder->builder == nullptr) {
     return;
   }
-  builder->builder->PushStyle(
-      MakeTextStyle(font_family, font_size, font_weight, argb));
+  builder->builder->PushStyle(MakeTextStyle(
+      font_family, font_fallbacks, font_fallback_count, font_size, font_weight,
+      italic, letter_spacing, word_spacing, height, has_height, decoration,
+      feature_tags, feature_values, feature_count, argb));
 }
 
 void rf_paragraph_builder_add_text(RfParagraphBuilder* builder,

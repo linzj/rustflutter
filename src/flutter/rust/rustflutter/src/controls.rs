@@ -103,9 +103,11 @@ impl Component for Checkbox {
                 Container::new().with_size(10.0, 5.0)
             };
             let box_widget = Container::new()
-                .with_size(20.0, 20.0)
+                // Upstream's `_kEdgeSize`: an 18-by-18 box with 2-radius
+                // corners.
+                .with_size(18.0, 18.0)
                 .with_color(fill)
-                .with_corner_radius(4.0)
+                .with_corner_radius(2.0)
                 .with_border(2.0, border)
                 .with_child(Center::new(mark));
 
@@ -133,13 +135,16 @@ impl Component for Checkbox {
 pub struct Radio {
     id: u64,
     selected: bool,
+    /// A radio that cannot be chosen. Mirrors [`Checkbox`]: no handlers, the
+    /// ring and dot drawn in the outline colour.
+    enabled: bool,
     label: Option<String>,
     handlers: PointerHandlers,
 }
 
 impl Radio {
     pub fn new(id: u64, selected: bool) -> Radio {
-        Radio { id, selected, label: None, handlers: PointerHandlers::new() }
+        Radio { id, selected, enabled: true, label: None, handlers: PointerHandlers::new() }
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
@@ -147,11 +152,18 @@ impl Radio {
         self
     }
 
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
     /// `choose` is given the state and sets whatever field records the choice.
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, choose: fn(&mut S)) -> Self {
-        self.handlers = PointerHandlers::new().with_tap(move |_| {
-            handle.set_state(move |state| choose(state));
-        });
+        if self.enabled {
+            self.handlers = PointerHandlers::new().with_tap(move |_| {
+                handle.set_state(move |state| choose(state));
+            });
+        }
         self
     }
 }
@@ -160,6 +172,7 @@ impl Component for Radio {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let selected = self.selected;
+        let enabled = self.enabled;
         let id = self.id;
         let handlers = self.handlers.clone();
         let label = self.label.clone();
@@ -172,7 +185,7 @@ impl Component for Radio {
             let dot = if selected {
                 Container::new()
                     .with_size(10.0, 10.0)
-                    .with_color(primary)
+                    .with_color(if enabled { primary } else { outline })
                     .with_corner_radius(5.0)
             } else {
                 Container::new().with_size(10.0, 10.0)
@@ -180,7 +193,10 @@ impl Component for Radio {
             let ring = Container::new()
                 .with_size(20.0, 20.0)
                 .with_corner_radius(10.0)
-                .with_border(2.0, if selected { primary } else { outline })
+                .with_border(
+                    2.0,
+                    if enabled && selected { primary } else { outline },
+                )
                 .with_child(Center::new(dot));
 
             let content: crate::widgets::BoxedWidget = match &label {
@@ -362,9 +378,11 @@ impl Component for TabBar {
                             // The indicator is a child of the tab rather than a
                             // separate positioned layer, so it moves with the
                             // tab's own layout instead of being placed twice.
+                            // Two pixels is the default weight upstream's
+                            // `TabBar` underlines its tabs with.
                             .push(
                                 Container::new()
-                                    .with_height(2.5)
+                                    .with_height(2.0)
                                     .with_color(if active { primary } else { outline.with_alpha(0x30) }),
                             ),
                     );
@@ -456,7 +474,12 @@ impl Component for BottomNavigation {
                 let active = index == selected;
                 let color = if active { primary } else { muted };
                 let item = Container::new().with_child(Center::new(
+                    // `MainAxisSize.min` is upstream's own choice here:
+                    // `_BottomNavigationTile.build` wraps its icon and label
+                    // in `Column(mainAxisSize: MainAxisSize.min)`, and the
+                    // `Center` above is what centres the pair in the bar.
                     Column::new()
+                        .with_main_axis_size(MainAxisSize::Min)
                         .with_spacing(3.0)
                         .push(
                             Container::new()
@@ -490,7 +513,9 @@ impl Component for BottomNavigation {
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new()
-                .with_height(64.0 + bottom)
+                // Upstream's `kBottomNavigationBarHeight`; the safe-area inset
+                // rides on top of it.
+                .with_height(56.0 + bottom)
                 .with_color(surface)
                 .with_border(1.0, outline)
                 .with_padding(EdgeInsets::only(0.0, 0.0, 0.0, bottom))
@@ -611,7 +636,9 @@ impl Component for NavigationRail {
                 column = column.push(region);
             }
             Container::new()
-                .with_width(if extended { 168.0 } else { 78.0 })
+                // Upstream `NavigationRail`'s widths: 80 collapsed, 256 with
+                // the labels out.
+                .with_width(if extended { 256.0 } else { 80.0 })
                 .with_color(surface)
                 .with_border(1.0, outline)
                 .with_padding(EdgeInsets::symmetric(0.0, spacing))
@@ -652,7 +679,7 @@ impl Component for Scrim {
         leaf(move || {
             Pointer::new(
                 id,
-                Container::new().with_color(Color::argb(0x99, 0, 0, 0)),
+                Container::new().with_color(Color::argb(0x8A, 0, 0, 0)),
             )
             .with_handlers(handlers.clone())
         })
@@ -673,7 +700,9 @@ impl Dialog {
             title: title.into(),
             body: None,
             actions: RefCell::new(Vec::new()),
-            width: 320.0,
+            // Material 3's dialog is 280 across at the least; a wider one is
+            // `with_width`'s to ask for.
+            width: 280.0,
         }
     }
 
@@ -701,7 +730,8 @@ impl Component for Dialog {
         let width = self.width;
         let surface = theme.surface;
         let outline = theme.outline;
-        let radius = theme.radius + 4.0;
+        // Material 3's dialog shape: a 28-radius corner all round.
+        let radius = 28.0;
         let spacing = theme.spacing;
         let title_style = theme.title();
         let muted = theme.muted();
@@ -792,11 +822,12 @@ impl Component for BottomSheet {
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_spacing(spacing);
             // The grab handle: a short bar that says the sheet can be dragged,
-            // even though dragging it is the caller's to wire up.
+            // even though dragging it is the caller's to wire up. Thirty-two
+            // by four is upstream's drag handle.
             column = column.push(Box::new(Align::new(
                 Alignment::CENTER,
                 Container::new()
-                    .with_size(38.0, 4.0)
+                    .with_size(32.0, 4.0)
                     .with_color(outline)
                     .with_corner_radius(2.0),
             )));
@@ -826,8 +857,10 @@ impl Component for BottomSheet {
 
 /// Sheets are rounded only conceptually at the top; the renderer has one
 /// radius, so the bottom corners are rounded too and fall off the screen.
+/// Twenty-eight is Material 3's sheet shape; the top-only half of it waits on
+/// per-corner radii.
 fn theme_sheet_radius() -> f32 {
-    18.0
+    28.0
 }
 
 /// A brief message along the bottom.
@@ -898,9 +931,11 @@ impl Component for Snackbar {
             Pointer::new(
                 id,
                 Container::new()
-                    .with_height(52.0)
+                    // Upstream's snackbar is at least 48 tall with a
+                    // 4-radius corner.
+                    .with_height(48.0)
                     .with_color(background)
-                    .with_corner_radius(10.0)
+                    .with_corner_radius(4.0)
                     // A snack bar floats over whatever it interrupts; six is
                     // the elevation upstream gives it.
                     .with_elevation(6)

@@ -14,12 +14,14 @@
 //! `FocusManager.handleKeyMessage` starts at `primaryFocus`, walks up its
 //! ancestors, and drops the event on the floor when there is no primary focus.
 //!
-//! There is no focus tree here yet. What there is instead is the layer upstream
-//! runs *before* the focus walk: `FocusManager`'s early key handlers, which see
-//! every key regardless of what has focus. That is [`Application::on_key`], and
-//! it is the honest subset -- application-wide shortcuts, which is what a
-//! window-level Escape or a Ctrl+O actually is. Per-widget keyboard handling
-//! needs focus, and needs it to be real rather than approximated, so it waits.
+//! Per-widget keyboard handling is the focus tree's job -- see
+//! [`crate::focus`], which is where keys are offered to the focused node and
+//! then to its ancestors, as upstream's `FocusManager.handleKeyMessage` does.
+//! What this module holds underneath it is the layer upstream runs before
+//! that walk: the pressed-key set (below) and [`crate::app::Application`]'s
+//! early handlers, which see every key regardless of what has focus --
+//! application-wide shortcuts, which is what a window-level Escape or a
+//! Ctrl+O actually is.
 //!
 //! # What the host does and does not do
 //!
@@ -38,11 +40,21 @@
 //! message's reply -- one byte, exactly as dart:ui writes it. What is missing is
 //! a reader: no host re-posts, so today the return value only schedules a frame.
 //!
-//! # What is missing
+//! # Where text input is
 //!
-//! No text input. A character arrives on [`KeyEvent::character`], which is
-//! enough to know that pressing `A` produced "a", but there is no IME
-//! composition, no candidate window, and no editable text to put it in.
+//! Not here. A character arrives on [`KeyEvent::character`], which is enough
+//! to know that pressing `A` produced "a", but real text input is a
+//! conversation with the platform's input method -- composition regions,
+//! candidate windows, a caret the OS can position -- and that travels on a
+//! channel rather than through key events: [`crate::services::text_input`]
+//! is the channel, and [`crate::editable`]'s `TextField` is the widget that
+//! opens it, which is upstream's arrangement too (`EditableText` talks to
+//! `TextInput`, never to a key listener, because no amount of key handling
+//! turns four pinyin keystrokes into one character).
+//!
+//! What this module is still missing is what upstream's `KeyboardManager`
+//! adds around the focus walk: consuming a key so the platform never sees
+//! it, and re-posting an unhandled one so it is not handled twice.
 
 mod keys;
 
