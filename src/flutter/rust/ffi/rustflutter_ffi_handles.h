@@ -125,6 +125,27 @@ struct RfLayerTree {
       stack.pop_back();
     }
   }
+
+  /// Pops and hands back what was popped, for a caller that wants to keep it.
+  /// Null at the root, which is nobody's to keep.
+  std::shared_ptr<flutter::ContainerLayer> PopAndTake() {
+    if (stack.size() <= 1) {
+      return nullptr;
+    }
+    auto layer = stack.back();
+    stack.pop_back();
+    return layer;
+  }
+};
+
+/// A layer that outlived the tree it was built in.
+///
+/// Upstream this is what a `RenderObject` with `isRepaintBoundary` holds on to
+/// between frames, and it is the same object rather than a copy of it -- so
+/// the next frame's tree points at the layer the last frame's tree also points
+/// at, which is exactly the sharing that makes reusing it worth anything.
+struct RfLayer {
+  std::shared_ptr<flutter::ContainerLayer> layer;
 };
 
 #endif  // FLUTTER_RUST_FFI_RUSTFLUTTER_FFI_HANDLES_H_

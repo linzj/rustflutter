@@ -929,6 +929,45 @@ void rf_layer_tree_pop(RfLayerTree* tree) {
   }
 }
 
+void rf_layer_tree_push_retainable(RfLayerTree* tree) {
+  if (tree == nullptr) {
+    return;
+  }
+  tree->Push(std::make_shared<flutter::ContainerLayer>());
+}
+
+RfLayer* rf_layer_tree_pop_retained(RfLayerTree* tree) {
+  if (tree == nullptr) {
+    return nullptr;
+  }
+  auto layer = tree->PopAndTake();
+  if (layer == nullptr) {
+    return nullptr;
+  }
+  auto* handle = new RfLayer();
+  handle->layer = std::move(layer);
+  return handle;
+}
+
+void rf_layer_tree_add_retained(RfLayerTree* tree,
+                                RfLayer* layer,
+                                float dx,
+                                float dy) {
+  if (tree == nullptr || layer == nullptr || layer->layer == nullptr) {
+    return;
+  }
+  // Under a transform of its own, because the retained layer knows what it
+  // drew and not where it goes. A boundary that only scrolled therefore costs
+  // one matrix and nothing else.
+  rf_layer_tree_push_offset(tree, dx, dy);
+  tree->Current().Add(layer->layer);
+  tree->Pop();
+}
+
+void rf_layer_free(RfLayer* layer) {
+  delete layer;
+}
+
 // -- Images -------------------------------------------------------------------
 
 RfImage* rf_image_decode(const uint8_t* data, size_t length) {

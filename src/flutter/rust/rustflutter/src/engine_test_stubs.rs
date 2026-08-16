@@ -259,6 +259,10 @@ pub struct LayerCalls {
     pub opacities: u32,
     pub pops: u32,
     pub display_lists: u32,
+    /// Layers opened for keeping, by a repaint boundary that had to record.
+    pub retainable: u32,
+    /// Layers handed back from an earlier frame instead of being recorded.
+    pub retained: u32,
 }
 
 // The three below are what a *dependent* crate's tests read -- this module is
@@ -282,6 +286,7 @@ thread_local! {
         const { std::cell::Cell::new(LayerCalls {
             transforms: 0, offsets: 0, clip_rects: 0, clip_rounded_rects: 0,
             clip_paths: 0, opacities: 0, pops: 0, display_lists: 0,
+            retainable: 0, retained: 0,
         }) };
 }
 
@@ -346,6 +351,32 @@ pub unsafe extern "C" fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_pop(tree: *mut RfLayerTree) {
     note(|calls| calls.pops += 1);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_layer_tree_push_retainable(tree: *mut RfLayerTree) {
+    note(|calls| calls.retainable += 1);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_layer_tree_pop_retained(tree: *mut RfLayerTree) -> *mut RfLayer {
+    note(|calls| calls.pops += 1);
+    allocate::<RfLayer>()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_layer_tree_add_retained(
+    tree: *mut RfLayerTree,
+    layer: *mut RfLayer,
+    dx: f32,
+    dy: f32,
+) {
+    note(|calls| calls.retained += 1);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_layer_free(layer: *mut RfLayer) {
+    unsafe { release(layer) };
 }
 
 #[unsafe(no_mangle)]

@@ -33,11 +33,17 @@ use crate::render::{
 /// returns and what a parent stores for a child.
 pub type BoxedWidget = BoxedRender;
 
-/// Wraps a render object as a [`BoxedWidget`].
+/// Paints `child` into a layer of its own, and keeps it.
 ///
-/// The thing a `build` hands back. It used to be a `Box`; it is a shared
-/// handle now, because an element holds on to what it made -- see
-/// [`crate::render::RenderRef`].
+/// Upstream's `RepaintBoundary`. A frame in which nothing under it changed
+/// hands the engine the layer it made last time instead of recording the same
+/// drawing again -- so it is worth putting where a sibling changes often and
+/// this does not. See [`crate::render::RenderRepaintBoundary`].
+pub fn repaint_boundary(child: crate::framework::AnyWidget) -> crate::framework::AnyWidget {
+    crate::framework::single(child, crate::render::RenderRepaintBoundary::new)
+}
+
+/// Wraps a render object as a [`BoxedWidget`].
 pub fn boxed(render: impl crate::render::RenderBox + 'static) -> BoxedWidget {
     crate::render::RenderRef::new(render)
 }

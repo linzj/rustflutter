@@ -30,6 +30,7 @@ typedef struct RfDisplayList RfDisplayList;
 typedef struct RfParagraph RfParagraph;
 typedef struct RfParagraphBuilder RfParagraphBuilder;
 typedef struct RfLayerTree RfLayerTree;
+typedef struct RfLayer RfLayer;
 typedef struct RfPath RfPath;
 typedef struct RfImage RfImage;
 
@@ -384,6 +385,37 @@ void rf_layer_tree_push_backdrop_blur(RfLayerTree* tree,
 // Blurs the layer's own subtree.
 void rf_layer_tree_push_blur(RfLayerTree* tree, float sigma_x, float sigma_y);
 void rf_layer_tree_pop(RfLayerTree* tree);
+
+// -- Retained layers ---------------------------------------------------------
+//
+// What a repaint boundary keeps. A subtree that painted the same thing last
+// frame does not have to be recorded again: the layer it produced is handed
+// back to the next tree as it is, which is what upstream's
+// `RenderObject.layer` is and how `PaintingContext` reuses it.
+//
+// The retained layer holds no position of its own -- it is added under a fresh
+// transform each frame -- so a boundary that only moved costs one matrix.
+
+// Opens a layer that `rf_layer_tree_pop_retained` can keep. Otherwise exactly
+// `rf_layer_tree_push_offset(tree, 0, 0)` without the transform: content
+// inside is recorded in the layer's own coordinates.
+void rf_layer_tree_push_retainable(RfLayerTree* tree);
+
+// Closes the layer a matching push opened and returns a handle that keeps it
+// alive after this tree is gone. The layer stays where it was added, so the
+// frame being built is unaffected. NULL if nothing was open.
+RfLayer* rf_layer_tree_pop_retained(RfLayerTree* tree);
+
+// Adds a layer kept from an earlier frame, at `dx, dy` in the current layer's
+// coordinates. The layer is shared rather than copied -- which is the point,
+// and is what upstream does with `RenderObject.layer` -- so it must not be
+// changed while a tree that holds it is still being rasterized.
+void rf_layer_tree_add_retained(RfLayerTree* tree,
+                                RfLayer* layer,
+                                float dx,
+                                float dy);
+
+void rf_layer_free(RfLayer* layer);
 
 // -- Images -----------------------------------------------------------------
 

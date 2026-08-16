@@ -27,6 +27,7 @@ pub(crate) mod sys {
     pub enum RfParagraph {}
     pub enum RfParagraphBuilder {}
     pub enum RfLayerTree {}
+    pub enum RfLayer {}
     pub enum RfPath {}
     pub enum RfImage {}
 
@@ -255,6 +256,15 @@ pub(crate) mod sys {
         );
         pub fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32);
         pub fn rf_layer_tree_pop(tree: *mut RfLayerTree);
+        pub fn rf_layer_tree_push_retainable(tree: *mut RfLayerTree);
+        pub fn rf_layer_tree_pop_retained(tree: *mut RfLayerTree) -> *mut RfLayer;
+        pub fn rf_layer_tree_add_retained(
+            tree: *mut RfLayerTree,
+            layer: *mut RfLayer,
+            dx: f32,
+            dy: f32,
+        );
+        pub fn rf_layer_free(layer: *mut RfLayer);
 
         pub fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage;
         pub fn rf_image_from_pixels(
@@ -757,6 +767,23 @@ impl Drop for DisplayList {
     }
 }
 
+//------------------------------------------------------------------------------
+/// A layer that outlived the tree it was built in.
+///
+/// What a repaint boundary keeps: upstream's `RenderObject.layer`. The next
+/// frame hands the engine the same object rather than a copy, which is the
+/// whole point -- a subtree that painted the same thing does not have to be
+/// recorded again, and one that only moved costs a matrix.
+pub struct RetainedLayer {
+    raw: *mut sys::RfLayer,
+}
+
+impl Drop for RetainedLayer {
+    fn drop(&mut self) {
+        unsafe { sys::rf_layer_free(self.raw) };
+    }
+}
+
 /// The tree the engine rasterizes.
 ///
 /// This is the actual handoff point: upstream, `RuntimeDelegate::Render()`
@@ -777,6 +804,29 @@ impl LayerTree {
 
     pub fn add_display_list(&mut self, display_list: &DisplayList, offset_x: f32, offset_y: f32) {
         unsafe { sys::rf_layer_tree_add_display_list(self.raw, display_list.raw, offset_x, offset_y) };
+    }
+
+    //--------------------------------------------------------------------------
+    /// Opens a layer that [`pop_retained`](LayerTree::pop_retained) can keep.
+    ///
+    /// Content inside is recorded in the layer's own coordinates, because where
+    /// it goes is decided when it is added rather than when it is drawn -- that
+    /// is what lets a subtree that only moved be reused rather than recorded
+    /// again.
+    pub fn push_retainable(&mut self) {
+        unsafe { sys::rf_layer_tree_push_retainable(self.raw) };
+    }
+
+    /// Closes the layer a matching [`push_retainable`](LayerTree::push_retainable)
+    /// opened, and keeps it. The layer stays in this tree as well.
+    pub fn pop_retained(&mut self) -> Option<RetainedLayer> {
+        let raw = unsafe { sys::rf_layer_tree_pop_retained(self.raw) };
+        (!raw.is_null()).then_some(RetainedLayer { raw })
+    }
+
+    /// Adds a layer kept from an earlier frame, at `(dx, dy)`.
+    pub fn add_retained(&mut self, layer: &RetainedLayer, dx: f32, dy: f32) {
+        unsafe { sys::rf_layer_tree_add_retained(self.raw, layer.raw, dx, dy) };
     }
 
     /// Rasterizes and writes a PNG. Headless, no GPU context required.

@@ -97,7 +97,7 @@ pub use scrolling::{
 };
 pub use widgets::{
     BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
-    boxed,
+    boxed, repaint_boundary,
     Widget,
 };
 

@@ -415,7 +415,13 @@ impl crate::framework::Component for LazyList {
             // the top.
             children.push(crate::framework::keyed_single(
                 index as u64,
-                (self.build_item)(index),
+                // In a layer of its own, as upstream's
+                // `SliverChildBuilderDelegate` does by default
+                // (`addRepaintBoundaries`), and for the reason a list is the
+                // example everyone gives: the rows that did not change are
+                // every row, and scrolling moves them rather than redrawing
+                // them.
+                crate::widgets::repaint_boundary((self.build_item)(index)),
                 |child| child,
             ));
         }
@@ -762,7 +768,8 @@ impl crate::framework::Component for VariableExtentList {
             // the window moves past it.
             children.push(crate::framework::keyed_single(
                 index as u64,
-                (self.build_item)(index),
+                // In a layer of its own, as in `LazyList` and upstream.
+                crate::widgets::repaint_boundary((self.build_item)(index)),
                 move |child| RenderMeasuredItem::new(index, book.clone(), child),
             ));
         }

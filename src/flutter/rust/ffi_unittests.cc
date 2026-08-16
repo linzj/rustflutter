@@ -332,6 +332,67 @@ TEST(RustFFI, ComposesThroughTheLayerStack) {
   rf_canvas_free(background_canvas);
 }
 
+// A layer built in one frame and handed to the next.
+//
+// What a repaint boundary keeps. The layer holds the drawing and not the
+// position, so the second tree puts the same object down somewhere else and the
+// pixels land there -- which is the thing worth having, because a scrolling
+// list moves every row it keeps and redraws none of them.
+TEST(RustFFI, KeepsALayerAcrossTwoTrees) {
+  constexpr int32_t kSize = 64;
+
+  RfCanvas* canvas = rf_canvas_new(kSize, kSize);
+  RfPaint* paint = rf_paint_new();
+  rf_paint_set_color(paint, 0xFFFFFFFF);
+  rf_paint_set_anti_alias(paint, 0);
+  // Recorded at the origin, which is where a retained layer's content lives.
+  rf_canvas_draw_rect(canvas, 0, 0, 8, 8, paint);
+  RfDisplayList* square = rf_canvas_build(canvas);
+
+  // First frame: record the square into a layer at (8, 8) and keep it.
+  RfLayerTree* first = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_push_offset(first, 8, 8);
+  rf_layer_tree_push_retainable(first);
+  rf_layer_tree_add_display_list(first, square, 0, 0);
+  RfLayer* kept = rf_layer_tree_pop_retained(first);
+  ASSERT_NE(kept, nullptr);
+  rf_layer_tree_pop(first);
+
+  std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()), 0);
+  EXPECT_EQ(PixelAt(pixels, kSize, 10, 10), 0xFFFFFFFF)
+      << "the layer did not draw where it was put";
+  EXPECT_NE(PixelAt(pixels, kSize, 42, 42), 0xFFFFFFFF);
+
+  // Second frame: the same layer, forty rows down, with nothing recorded.
+  RfLayerTree* second = rf_layer_tree_new(kSize, kSize);
+  rf_layer_tree_add_retained(second, kept, 8, 40);
+
+  std::vector<uint8_t> moved(static_cast<size_t>(kSize) * kSize * 4u);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(second, moved.data(), moved.size()), 0);
+  EXPECT_EQ(PixelAt(moved, kSize, 10, 42), 0xFFFFFFFF)
+      << "the kept layer did not move with its new offset";
+  EXPECT_NE(PixelAt(moved, kSize, 10, 10), 0xFFFFFFFF)
+      << "and it should not still be where it was";
+
+  // The first tree still holds it, so freeing the handle is not freeing the
+  // layer -- which is the whole reason the two trees can share one.
+  rf_layer_free(kept);
+  rf_layer_tree_free(second);
+  rf_layer_tree_free(first);
+  rf_display_list_free(square);
+  rf_paint_free(paint);
+  rf_canvas_free(canvas);
+}
+
+// Nothing is open at the root, so there is nothing to keep. A framework that
+// popped one too many should get a null rather than the root of its own tree.
+TEST(RustFFI, RefusesToRetainTheRoot) {
+  RfLayerTree* tree = rf_layer_tree_new(8, 8);
+  EXPECT_EQ(rf_layer_tree_pop_retained(tree), nullptr);
+  rf_layer_tree_free(tree);
+}
+
 // The root transform every frame is composed under on a display that is not at
 // 100%: the framework paints in logical pixels, the tree is measured in
 // physical ones, and a transform layer at the root is what reconciles them.

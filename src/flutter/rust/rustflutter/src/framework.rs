@@ -2145,6 +2145,61 @@ mod tests {
         assert_eq!(after.size(), measured);
     }
 
+    // -- Paintings that do not happen twice --------------------------------
+
+    /// A leaf inside a repaint boundary, which is where a layer comes from.
+    struct Kept;
+
+    impl Component for Kept {
+        fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+            crate::widgets::repaint_boundary(leaf(|| Sized(10.0)))
+        }
+    }
+
+    #[test]
+    fn a_subtree_that_did_not_change_hands_back_the_layer_it_had() {
+        // The three pieces of this section together. A component nobody
+        // rebuilt keeps its render object; a render object nobody rebuilt is
+        // not laid out again; and a repaint boundary over one that was not
+        // laid out again gives the engine the layer it already made. What the
+        // frame costs is the part that changed.
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Kept),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+
+        let mut frame = |tree: &mut ElementTree| {
+            let mut root = tree.build_render_tree().expect("a mounted root");
+            root.layout(BoxConstraints::loose(200.0, 200.0));
+            reset_layer_calls();
+            let mut layers = LayerTree::new(200, 200);
+            {
+                let mut context =
+                    crate::render::PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            layer_calls()
+        };
+
+        let first = frame(&mut tree);
+        assert_eq!(first.retainable, 1, "the first frame has to draw it");
+        assert_eq!(first.retained, 0);
+
+        // The counter beside it ticks. Nothing under the boundary changed.
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        assert_eq!(tree.rebuild_dirty(), 1, "only the counter was rebuilt");
+
+        let second = frame(&mut tree);
+        assert_eq!(second.retained, 1, "the layer it already had was thrown away");
+        assert_eq!(second.retainable, 0, "and the same drawing recorded again");
+    }
+
     // -- Layouts that do not happen twice ----------------------------------
 
     thread_local! {

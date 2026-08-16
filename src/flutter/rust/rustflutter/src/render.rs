@@ -360,6 +360,40 @@ impl<'a> PaintContext<'a> {
         self.tree.pop();
     }
 
+    //--------------------------------------------------------------------------
+    /// Records `child` into a layer of its own and keeps it.
+    ///
+    /// The content is recorded at the origin, not at `offset`: where the layer
+    /// goes is decided when it is added, so a boundary that only moved is
+    /// re-added rather than re-recorded. Upstream's `PaintingContext` does the
+    /// same for the same reason -- the layer is `RenderObject.layer` and its
+    /// position is the parent's business.
+    pub fn record_retained(
+        &mut self,
+        child: &dyn RenderBox,
+        offset: Offset,
+    ) -> Option<crate::engine::RetainedLayer> {
+        self.flush();
+        // The transform that puts the recorded content where it belongs. The
+        // layer inside it holds only the drawing, which is what makes it worth
+        // keeping.
+        self.tree.push_offset(offset.dx, offset.dy);
+        self.tree.push_retainable();
+        child.paint(self, Offset::ZERO);
+        self.flush();
+        let kept = self.tree.pop_retained();
+        self.tree.pop();
+        kept
+    }
+
+    /// Adds a layer kept from an earlier frame, at `offset`.
+    pub fn add_retained(&mut self, layer: &crate::engine::RetainedLayer, offset: Offset) {
+        // Whatever is being recorded has to be closed first, or it would land
+        // on top of a subtree that was painted before it.
+        self.flush();
+        self.tree.add_retained(layer, offset.dx, offset.dy);
+    }
+
     /// Clips `child` to `rect`, optionally with rounded corners.
     ///
     /// `rect` is in the same coordinates the caller paints in, and `child` is
@@ -581,6 +615,91 @@ pub trait RenderBox {
     /// aligned on, or None if it has no baseline.
     fn distance_to_baseline(&self) -> Option<f32> {
         None
+    }
+}
+
+//------------------------------------------------------------------------------
+/// A subtree that keeps what it painted.
+///
+/// Upstream this is `RepaintBoundary`, over a `RenderObject` whose
+/// `isRepaintBoundary` is true. The layer it produces is kept on the render
+/// object, and a frame in which nothing under it changed hands the engine the
+/// same layer rather than recording the same drawing again -- which is also
+/// what lets the raster cache keep the pixels.
+///
+/// **When the layer is still good.** Upstream tracks it with `markNeedsPaint`,
+/// which walks up to the enclosing boundary. Here it is object identity, the
+/// same answer the layout skip uses: a render object that survived the frame is
+/// one the element tree did not rebuild, and the drawing of a subtree that was
+/// not rebuilt is the drawing it was. A boundary that is laid out again throws
+/// its layer away, because a subtree that changed size did not draw the same
+/// thing.
+///
+/// So this is worth putting somewhere a sibling changes often and this does
+/// not -- which is why upstream puts one around every item of a lazy list, and
+/// why [`crate::scrolling::LazyList`] does too.
+pub struct RenderRepaintBoundary {
+    child: RenderRef,
+    size: Size,
+    /// What was painted last time, if it is still what would be painted.
+    layer: RefCell<Option<crate::engine::RetainedLayer>>,
+}
+
+impl RenderRepaintBoundary {
+    pub fn new(child: impl RenderBox + 'static) -> RenderRepaintBoundary {
+        RenderRepaintBoundary {
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+            layer: RefCell::new(None),
+        }
+    }
+}
+
+impl RenderBox for RenderRepaintBoundary {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // Reaching here at all means the answer was not already known -- the
+        // handle would have returned it otherwise -- so whatever was drawn was
+        // drawn for a different question.
+        *self.layer.borrow_mut() = None;
+        self.size = self.child.layout(constraints);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(layer) = self.layer.borrow().as_ref() {
+            context.add_retained(layer, offset);
+            return;
+        }
+        let kept = context.record_retained(&self.child, offset);
+        *self.layer.borrow_mut() = kept;
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -3860,6 +3979,60 @@ mod compositing_tests {
             root.paint(&mut context, Offset::ZERO);
         }
         layer_calls()
+    }
+
+    #[test]
+    fn a_repaint_boundary_records_once_and_then_hands_the_same_layer_back() {
+        // The whole point of a render object that outlives its frame, for
+        // painting: the drawing of a subtree that was not rebuilt is the
+        // drawing it was. Upstream keeps it as `RenderObject.layer` and
+        // `PaintingContext` re-adds it; the same layer comes back here.
+        let mut boundary = RenderRepaintBoundary::new(Spot);
+        boundary.layout(BoxConstraints::tight(50.0, 50.0));
+
+        let first = paint_into(&mut boundary);
+        assert_eq!(first.retainable, 1, "the first frame has to record it");
+        assert_eq!(first.retained, 0);
+        assert_eq!(first.display_lists, 1, "and the recording is a picture");
+
+        let second = paint_into(&mut boundary);
+        assert_eq!(second.retainable, 0, "it was recorded a second time");
+        assert_eq!(second.retained, 1, "rather than handed back");
+        assert_eq!(second.display_lists, 0, "nothing was drawn at all");
+    }
+
+    #[test]
+    fn a_boundary_that_moved_is_not_recorded_again() {
+        // What a scrolling list does to every row it keeps. The layer holds
+        // the drawing and not the position, so moving it costs the transform
+        // it is added under.
+        let mut boundary = RenderRepaintBoundary::new(Spot);
+        boundary.layout(BoxConstraints::tight(50.0, 50.0));
+
+        reset_layer_calls();
+        let mut tree = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut tree, Size::new(100.0, 100.0));
+            boundary.paint(&mut context, Offset::new(0.0, 0.0));
+            boundary.paint(&mut context, Offset::new(0.0, 40.0));
+        }
+        let calls = layer_calls();
+        assert_eq!(calls.retainable, 1, "recorded once");
+        assert_eq!(calls.retained, 1, "and put down again somewhere else");
+    }
+
+    #[test]
+    fn a_boundary_asked_a_new_question_draws_again() {
+        // A window that resized. The layer holds what was drawn for the old
+        // size, and a subtree that changed size did not draw the same thing.
+        let mut boundary = RenderRepaintBoundary::new(Spot);
+        boundary.layout(BoxConstraints::tight(50.0, 50.0));
+        let _ = paint_into(&mut boundary);
+
+        boundary.layout(BoxConstraints::tight(80.0, 50.0));
+        let after = paint_into(&mut boundary);
+        assert_eq!(after.retained, 0, "a stale layer was handed back");
+        assert_eq!(after.retainable, 1, "it should have been recorded again");
     }
 
     #[test]
