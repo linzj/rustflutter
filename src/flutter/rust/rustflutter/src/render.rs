@@ -17,17 +17,30 @@
 //!
 //! # What is here and what is not
 //!
-//! Upstream `RenderObject` carries a parent pointer so that `markNeedsLayout`
-//! can walk up to the nearest relayout boundary and dirty only that. This tree
-//! is owned top-down -- a parent owns its children as `Box<dyn RenderBox>` --
-//! and lays out in full each frame. That is a real cost on deep trees and the
-//! obvious thing to fix next; it is not a correctness compromise, and it keeps
-//! the ownership story simple enough to read.
+//! Upstream keeps its bookkeeping on `RenderObject`, the base class every
+//! render object extends: the parent pointer, whether the layout is stale,
+//! what it was last laid out against. There is no base class here -- `RenderBox`
+//! is a trait and each implementor has only its own fields -- so it lives on
+//! [`RenderRef`], the handle every render object is reached through and that
+//! every parent stores its children as. That makes the handle the one place a
+//! question can be asked about *any* render object, which is what a base class
+//! is for.
+//!
+//! Three things follow from it, and they are the same three upstream gets:
+//! a frame does not lay out what it laid out before ([`RenderRef::layout`]),
+//! a rebuild does not replace what it can tell instead
+//! ([`RenderRef::reconfigure`]), and a subtree that drew the same thing hands
+//! back the drawing ([`RenderRepaintBoundary`]). What is missing is the
+//! *relayout boundary*: upstream can begin a frame part-way down the tree
+//! because `PipelineOwner` keeps the dirty ones and visits each, and there is
+//! no pipeline owner here, so [`RenderRef::mark_needs_layout`] walks to the
+//! root and the saving is in the siblings the descent never enters.
 //!
 //! Hit testing is here rather than with input, because only a render object
 //! knows its own geometry. [`RenderBox::hit_test`] walks the tree back to front
 //! and records the entries a gesture recogniser will later arbitrate over.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
@@ -547,6 +560,66 @@ impl HitTestResult {
 
 // -- The protocol -------------------------------------------------------------
 
+/// Reaching a render object's concrete type again after it has been erased.
+///
+/// Needed because taking a new configuration means comparing against an object
+/// of the same type, and by then the type is behind `dyn RenderBox`. The
+/// blanket implementation means no render object writes this itself; upstream
+/// gets the same thing for nothing, since `updateRenderObject` is declared
+/// `covariant` and the framework has already guaranteed the type.
+pub trait AsAny {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Any> AsAny for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// What taking a new configuration changed.
+///
+/// Upstream says this by which method a setter calls: `set padding` calls
+/// `markNeedsLayout`, `set color` calls `markNeedsPaint`, and `set onTap` calls
+/// neither. The three are ordered because an object with several changed fields
+/// is worth the loudest of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum UpdateEffect {
+    /// Nothing that is measured or drawn: a callback was replaced, and a
+    /// callback is neither. Upstream's `set onTap`.
+    #[default]
+    Nothing,
+    /// Drawn differently, measured the same. Upstream's `markNeedsPaint`.
+    Repaint,
+    /// Measured differently -- and so drawn differently too, since a box that
+    /// changed size did not draw the same thing. Upstream's `markNeedsLayout`.
+    Relayout,
+}
+
+impl UpdateEffect {
+    /// The louder of the two. What an object accumulates as it takes each
+    /// field, standing in for upstream's several separate `markNeeds…` calls.
+    pub fn and(self, other: UpdateEffect) -> UpdateEffect {
+        if other > self { other } else { self }
+    }
+
+    /// `Relayout` if `changed`, otherwise nothing. The shape of nearly every
+    /// line in an `update_from`, and upstream's `if (_field == value) return;`
+    /// read the other way round.
+    pub fn relayout_if(changed: bool) -> UpdateEffect {
+        if changed { UpdateEffect::Relayout } else { UpdateEffect::Nothing }
+    }
+
+    /// `Repaint` if `changed`. For a field the layout does not read.
+    pub fn repaint_if(changed: bool) -> UpdateEffect {
+        if changed { UpdateEffect::Repaint } else { UpdateEffect::Nothing }
+    }
+}
+
 /// A box in the render tree.
 ///
 /// Implementors must obey three rules, all of which the built-in objects here
@@ -556,7 +629,7 @@ impl HitTestResult {
 /// 2. `size` returns what the last `layout` returned.
 /// 3. `paint` draws at the offset it is given and nowhere else; a render object
 ///    never knows its absolute position.
-pub trait RenderBox {
+pub trait RenderBox: AsAny {
     /// Chooses a size for the given constraints, laying out children as needed.
     fn layout(&mut self, constraints: BoxConstraints) -> Size;
 
@@ -616,6 +689,41 @@ pub trait RenderBox {
     fn distance_to_baseline(&self) -> Option<f32> {
         None
     }
+
+    // -- Taking a new configuration -------------------------------------------
+
+    /// Takes over `fresh`'s configuration -- `fresh` being a newly built object
+    /// of this same type, describing this same position after a rebuild -- and
+    /// says what that changed.
+    ///
+    /// This is upstream's `RenderObjectWidget.updateRenderObject` and the
+    /// comparing setters it writes through, in one method. Upstream `Padding`
+    /// says `renderObject.padding = padding`, and `RenderPadding.set padding`
+    /// returns without marking anything when the value is the one already
+    /// there. The two halves are together here because there is no widget class
+    /// holding the fields separately to assign from: the new configuration
+    /// arrives as a whole object, so it is unpicked in one place per type.
+    ///
+    /// Returning `None` means "will not", and the caller then makes a new object
+    /// as it always did. That is never wrong -- it is what every type did before
+    /// any of them answered this -- so an object with a field it cannot compare
+    /// should say so rather than guess.
+    ///
+    /// **Every field is either taken or compared.** A field taken without its
+    /// effect being reported shows a stale frame; a field neither taken nor
+    /// compared shows a stale value forever. The tests in this module walk the
+    /// list.
+    fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        None
+    }
+
+    /// Throws away whatever was kept from an earlier frame's painting.
+    ///
+    /// The far end of [`RenderRef::mark_needs_paint`], which is upstream's
+    /// `markNeedsPaint` -- there it clears `_layer` on the enclosing repaint
+    /// boundary. Only [`RenderRepaintBoundary`] keeps anything, so only it
+    /// overrides.
+    fn discard_retained(&self) {}
 }
 
 //------------------------------------------------------------------------------
@@ -670,9 +778,21 @@ impl RenderBox for RenderRepaintBoundary {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        if let Some(layer) = self.layer.borrow().as_ref() {
-            context.add_retained(layer, offset);
-            return;
+        // Handing back the layer skips the subtree, and the subtree is where
+        // the semantics come from: this framework gathers them during the
+        // paint walk, so a subtree that is not walked says nothing about
+        // itself. Upstream never meets this, because there the semantics tree
+        // is built by its own walk over the render objects and a retained
+        // layer is invisible to it. So while a reader is being answered, the
+        // drawing is recorded again -- the layer is an optimisation and the
+        // reading order is not.
+        let describing = crate::semantics::collecting();
+        {
+            let layer = self.layer.borrow();
+            if let Some(layer) = layer.as_ref().filter(|_| !describing) {
+                context.add_retained(layer, offset);
+                return;
+            }
         }
         let kept = context.record_retained(&self.child, offset);
         *self.layer.borrow_mut() = kept;
@@ -701,6 +821,24 @@ impl RenderBox for RenderRepaintBoundary {
     fn distance_to_baseline(&self) -> Option<f32> {
         self.child.distance_to_baseline()
     }
+
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderRepaintBoundary>()?;
+        // A boundary has no configuration of its own beyond what it wraps, so
+        // the whole question is whether it is still wrapping the same object.
+        // If it is, the layer it kept is still the drawing of that object.
+        if self.child.is(&fresh.child) {
+            return Some(UpdateEffect::Nothing);
+        }
+        self.child = fresh.child.clone();
+        Some(UpdateEffect::Relayout)
+    }
+
+    /// Upstream's `markNeedsPaint` clearing `_layer`: what was drawn is no
+    /// longer what would be drawn.
+    fn discard_retained(&self) {
+        *self.layer.borrow_mut() = None;
+    }
 }
 
 /// A render object, held by more than one thing at once.
@@ -714,9 +852,15 @@ impl RenderBox for RenderRepaintBoundary {
 /// render object, it happens on one thread, and a tree has one path to each
 /// node -- so the borrow is uncontended by construction, and a panic here would
 /// mean the tree had stopped being a tree.
+///
+/// The object is behind a `Box` inside the cell rather than being the cell, so
+/// that it can be *replaced* without the handle changing: an element that keeps
+/// its render object across a rebuild has to keep the same handle too, or the
+/// parent holding it would be holding the old one. Upstream has no equivalent
+/// because a Dart field simply points at whatever it points at.
 #[derive(Clone)]
 pub struct RenderRef {
-    render: Rc<RefCell<dyn RenderBox>>,
+    render: Rc<RefCell<Box<dyn RenderBox>>>,
     state: Rc<RenderState>,
 }
 
@@ -732,6 +876,12 @@ struct RenderState {
     /// true when it is made and whenever [`RenderRef::mark_needs_layout`] says
     /// so.
     needs_layout: Cell<bool>,
+    /// Whether what this drew last time is still what it would draw.
+    ///
+    /// Only a repaint boundary keeps a drawing, so only a boundary reads this;
+    /// it is on the handle because the walk that sets it is the walk up the
+    /// parents, and the parents are here. Upstream's `_needsPaint`.
+    needs_paint: Cell<bool>,
     /// What it was last laid out against, and what came out.
     constraints: Cell<Option<BoxConstraints>>,
     size: Cell<Size>,
@@ -768,10 +918,22 @@ impl Drop for LayoutFrame {
 
 impl RenderRef {
     pub fn new<R: RenderBox + 'static>(render: R) -> RenderRef {
+        let mut render = render;
+        // A handle wrapped in a handle is two objects where the tree has one,
+        // and the outer one is new every frame -- which hides the inner one's
+        // identity from the two things that ask for it, the layout skip and the
+        // kept layer. It happens because a combinator hands its children's
+        // handles to a constructor that wraps whatever it is given. Upstream
+        // cannot reach this shape at all: a `RenderObject` is never another
+        // `RenderObject`'s entire content.
+        if let Some(handle) = (&mut render as &mut dyn Any).downcast_mut::<RenderRef>() {
+            return handle.clone();
+        }
         RenderRef {
-            render: Rc::new(RefCell::new(render)),
+            render: Rc::new(RefCell::new(Box::new(render) as Box<dyn RenderBox>)),
             state: Rc::new(RenderState {
                 needs_layout: Cell::new(true),
+                needs_paint: Cell::new(false),
                 constraints: Cell::new(None),
                 size: Cell::new(Size::ZERO),
                 parent: RefCell::new(Weak::new()),
@@ -817,9 +979,80 @@ impl RenderRef {
         }
     }
 
+    /// Says what this object drew is no longer what it would draw, without
+    /// saying its size changed.
+    ///
+    /// Upstream's `markNeedsPaint`, and the reason it is separate from
+    /// `markNeedsLayout` is the reason upstream keeps them separate: a box that
+    /// changed colour is the same size, and re-measuring the screen to repaint
+    /// a swatch is work for nothing.
+    ///
+    /// Upstream stops at the nearest enclosing repaint boundary, since that is
+    /// the layer that has to be recorded again and no layer above it contains
+    /// anything but a reference to it. This walks to the root instead and drops
+    /// every kept layer on the way, for the same reason
+    /// [`RenderRef::mark_needs_layout`] does: there is nothing here holding a
+    /// list of boundaries to visit, so the walk cannot stop somewhere it would
+    /// then have to be resumed from.
+    pub fn mark_needs_paint(&self) {
+        let mut state = Rc::clone(&self.state);
+        loop {
+            if state.needs_paint.get() {
+                return;
+            }
+            state.needs_paint.set(true);
+            let parent = state.parent.borrow().upgrade();
+            match parent {
+                Some(parent) => state = parent,
+                None => return,
+            }
+        }
+    }
+
     /// Whether the next `layout` at these constraints would do any work.
     pub fn needs_layout(&self, constraints: BoxConstraints) -> bool {
         self.state.needs_layout.get() || self.state.constraints.get() != Some(constraints)
+    }
+
+    //--------------------------------------------------------------------------
+    /// Gives this object a freshly built one describing the same position, and
+    /// says whether it took it.
+    ///
+    /// This is upstream's `RenderObjectElement.update`, which is the whole
+    /// point of there being an element in the middle: when its widget changes,
+    /// the element does not make a new render object, it hands the new
+    /// configuration to the one it already has. What that object had measured,
+    /// shaped and drawn survives, and -- because the handle is the same handle
+    /// -- so does every parent's belief about which child it is holding, all the
+    /// way up. Without it, one changed leaf remakes its whole spine.
+    ///
+    /// False means the object would not take it: a type that has not answered
+    /// [`RenderBox::update_from`], or a `fresh` that turned out to be shared
+    /// rather than newly made. The caller then makes a new object, which is what
+    /// it did before this existed.
+    pub fn reconfigure(&self, fresh: RenderRef) -> bool {
+        // The same handle, because whatever built `fresh` had nothing of its
+        // own and handed back what it was given. There is no configuration here
+        // to take, and taking one from itself would deadlock the cell.
+        if self.is(&fresh) {
+            return true;
+        }
+        // Shared means somebody else is already holding it, so it is not a
+        // description that was just built for this -- and it cannot be taken
+        // apart while they hold it.
+        let Ok(cell) = Rc::try_unwrap(fresh.render) else {
+            return false;
+        };
+        let mut fresh = cell.into_inner();
+        let Some(effect) = self.render.borrow_mut().update_from(&mut *fresh) else {
+            return false;
+        };
+        match effect {
+            UpdateEffect::Nothing => {}
+            UpdateEffect::Repaint => self.mark_needs_paint(),
+            UpdateEffect::Relayout => self.mark_needs_layout(),
+        }
+        true
     }
 }
 
@@ -865,7 +1098,13 @@ impl RenderBox for RenderRef {
         self.render.borrow().size()
     }
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        self.render.borrow().paint(context, offset)
+        let render = self.render.borrow();
+        // The near end of `mark_needs_paint`. Cleared as it is acted on, so a
+        // frame that draws is a frame that answered the question.
+        if self.state.needs_paint.replace(false) {
+            render.discard_retained();
+        }
+        render.paint(context, offset)
     }
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.render.borrow().hit_test(position, result)
@@ -894,8 +1133,35 @@ impl RenderBox for RenderRef {
 /// hands back.
 pub type BoxedRender = RenderRef;
 
+/// Whether two optional children are the same object -- the same one, not an
+/// equal one. Identity is the only thing a render tree is reconciled on, and
+/// the only thing that says a child survived the rebuild.
+fn same_child(a: &Option<BoxedRender>, b: &Option<BoxedRender>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.is(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Whether two child lists are the same objects in the same order.
+fn same_children(a: &[BoxedRender], b: &[BoxedRender]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.is(b))
+}
+
+/// Whether two optional callbacks are the same closure. A closure has no
+/// equality beyond where it lives, which is all this needs: a rebuild that
+/// handed back the same `Rc` handed back the same behaviour.
+pub(crate) fn same_callback<T: ?Sized>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// So a boxed render object works anywhere an unboxed one does.
-impl<R: RenderBox + ?Sized> RenderBox for Box<R> {
+impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
     }
@@ -925,6 +1191,22 @@ impl<R: RenderBox + ?Sized> RenderBox for Box<R> {
     }
     fn distance_to_baseline(&self) -> Option<f32> {
         (**self).distance_to_baseline()
+    }
+    /// Forwards to the object, and only unwraps `self`.
+    ///
+    /// `fresh` arrives already unwrapped -- [`RenderRef::reconfigure`] takes it
+    /// out of the box it was built in -- so there is nothing to peel off it.
+    /// That is also why a *second* box, put there by a combinator whose closure
+    /// says `Box::new(...)`, would stop the object recognising the
+    /// configuration as its own: the two sides would be one layer apart.
+    /// Nothing goes wrong when they are -- the object declines and is replaced,
+    /// as everything was before this existed -- but the saving quietly does not
+    /// happen, so a combinator should hand back the object, not a box round it.
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        (**self).update_from(fresh)
+    }
+    fn discard_retained(&self) {
+        (**self).discard_retained()
     }
 }
 
@@ -1016,7 +1298,7 @@ pub enum MainAxisSize {
 // -- Leaf: a solid or gradient-filled box -------------------------------------
 
 /// How a [`RenderDecoratedBox`] fills itself.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Fill {
     Solid(Color),
     Linear { start: Alignment, end: Alignment, gradient: Gradient },
@@ -1124,6 +1406,27 @@ impl Default for RenderDecoratedBox {
 }
 
 impl RenderBox for RenderDecoratedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderDecoratedBox>()?;
+        // Nothing a decoration says is read by `layout`, which measures only
+        // the child. Upstream splits the same way: `RenderDecoratedBox`'s
+        // `set decoration` calls `markNeedsPaint`, never `markNeedsLayout`.
+        let mut effect = UpdateEffect::repaint_if(
+            self.fill != fresh.fill
+                || self.corner_radius != fresh.corner_radius
+                || self.border_width != fresh.border_width
+                || self.border_color != fresh.border_color
+                || self.shadows != fresh.shadows,
+        );
+        self.fill = fresh.fill.take();
+        self.corner_radius = fresh.corner_radius;
+        self.border_width = fresh.border_width;
+        self.border_color = fresh.border_color;
+        self.shadows = std::mem::take(&mut fresh.shadows);
+        effect = effect.and(UpdateEffect::relayout_if(!same_child(&self.child, &fresh.child)));
+        self.child = fresh.child.take();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = match &mut self.child {
             Some(child) => child.layout(constraints),
@@ -1359,6 +1662,29 @@ impl RenderParagraph {
 }
 
 impl RenderBox for RenderParagraph {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderParagraph>()?;
+        let changed = self.content != fresh.content
+            || self.style != fresh.style
+            || self.runs != fresh.runs
+            || self.max_lines != fresh.max_lines
+            || self.text_scale != fresh.text_scale;
+        if !changed {
+            // Everything the shaping depends on is the same, so the shaping is
+            // the same -- and shaping is nearly all of what a paragraph costs.
+            // The semantics id stays with it: a reader that has been told about
+            // this text goes on hearing about the same node.
+            return Some(UpdateEffect::Nothing);
+        }
+        self.content = std::mem::take(&mut fresh.content);
+        self.style = fresh.style.clone();
+        self.runs = std::mem::take(&mut fresh.runs);
+        self.max_lines = fresh.max_lines;
+        self.text_scale = fresh.text_scale;
+        // What was shaped was shaped for text this no longer holds.
+        self.paragraph = None;
+        Some(UpdateEffect::Relayout)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         // An unbounded width means "as wide as you like", which for text means
         // one line; Paragraph cannot shape against infinity.
@@ -1495,6 +1821,18 @@ impl RenderImage {
 }
 
 impl RenderBox for RenderImage {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderImage>()?;
+        // The same pixels, not equal pixels: an `Image` is a handle to a
+        // decoded bitmap, and comparing two of them any other way would mean
+        // reading both.
+        let mut effect = UpdateEffect::relayout_if(!Rc::ptr_eq(&self.image, &fresh.image));
+        self.image = Rc::clone(&fresh.image);
+        // The fit decides the destination rect, which only `paint` asks for.
+        effect = effect.and(UpdateEffect::repaint_if(self.fit != fresh.fit));
+        self.fit = fresh.fit;
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = constraints.constrain(self.natural());
         self.size
@@ -1569,6 +1907,12 @@ impl Default for RenderFullWidth {
 }
 
 impl RenderBox for RenderFullWidth {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderFullWidth>()?;
+        let effect = UpdateEffect::relayout_if(!same_child(&self.child, &fresh.child));
+        self.child = fresh.child.take();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let inner = if constraints.has_bounded_width() {
             BoxConstraints {
@@ -1651,6 +1995,15 @@ impl RenderConstrainedBox {
 }
 
 impl RenderBox for RenderConstrainedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderConstrainedBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            self.extra != fresh.extra || !same_child(&self.child, &fresh.child),
+        );
+        self.extra = fresh.extra;
+        self.child = fresh.child.take();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let inner = self.extra.enforce(constraints);
         self.size = match &mut self.child {
@@ -1728,6 +2081,17 @@ impl RenderPadding {
 }
 
 impl RenderBox for RenderPadding {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderPadding>()?;
+        // Upstream's `Padding.updateRenderObject` and `RenderPadding.set
+        // padding`, which is the pair this whole method stands for.
+        let effect = UpdateEffect::relayout_if(
+            self.insets != fresh.insets || !self.child.is(&fresh.child),
+        );
+        self.insets = fresh.insets;
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let inner = constraints.deflate(self.insets);
         let child_size = self.child.layout(inner);
@@ -1823,6 +2187,23 @@ impl RenderAlign {
 }
 
 impl RenderBox for RenderAlign {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderAlign>()?;
+        // The alignment is resolved into `child_offset` during layout rather
+        // than during paint, so it is a layout field here even though all it
+        // does is move something. Upstream resolves it in `performLayout` too.
+        let effect = UpdateEffect::relayout_if(
+            self.alignment != fresh.alignment
+                || self.width_factor != fresh.width_factor
+                || self.height_factor != fresh.height_factor
+                || !self.child.is(&fresh.child),
+        );
+        self.alignment = fresh.alignment;
+        self.width_factor = fresh.width_factor;
+        self.height_factor = fresh.height_factor;
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let child_size = self.child.layout(constraints.loosen());
 
@@ -2056,6 +2437,33 @@ impl RenderFlex {
 }
 
 impl RenderBox for RenderFlex {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderFlex>()?;
+        let kept_children = self.children.len() == fresh.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&fresh.children)
+                .all(|(a, b)| a.render.is(&b.render) && a.flex == b.flex && a.tight == b.tight);
+        let effect = UpdateEffect::relayout_if(
+            self.direction != fresh.direction
+                || self.main_axis_alignment != fresh.main_axis_alignment
+                || self.cross_axis_alignment != fresh.cross_axis_alignment
+                || self.main_axis_size != fresh.main_axis_size
+                || self.spacing != fresh.spacing
+                || !kept_children,
+        );
+        self.direction = fresh.direction;
+        self.main_axis_alignment = fresh.main_axis_alignment;
+        self.cross_axis_alignment = fresh.cross_axis_alignment;
+        self.main_axis_size = fresh.main_axis_size;
+        self.spacing = fresh.spacing;
+        self.children = std::mem::take(&mut fresh.children);
+        // `offsets` is where the last layout put them, and the next layout
+        // rebuilds it -- which the effect above has just asked for if anything
+        // that decides an offset moved.
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let count = self.children.len();
         let total_spacing = if count > 1 { self.spacing * (count - 1) as f32 } else { 0.0 };
@@ -2266,7 +2674,7 @@ impl RenderBox for RenderFlex {
 
 /// How a stacked child is positioned. `None` on a side means "not anchored
 /// there"; anchoring both sides of an axis stretches the child across it.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StackPosition {
     pub left: Option<f32>,
     pub top: Option<f32>,
@@ -2365,6 +2773,19 @@ impl Default for RenderStack {
 }
 
 impl RenderBox for RenderStack {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderStack>()?;
+        let kept_children = self.children.len() == fresh.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&fresh.children)
+                .all(|(a, b)| a.render.is(&b.render) && a.position == b.position);
+        let effect = UpdateEffect::relayout_if(self.alignment != fresh.alignment || !kept_children);
+        self.alignment = fresh.alignment;
+        self.children = std::mem::take(&mut fresh.children);
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let mut widest = constraints.min_width;
         let mut tallest = constraints.min_height;
@@ -2520,6 +2941,12 @@ impl RenderIgnorePointer {
 }
 
 impl RenderBox for RenderIgnorePointer {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderIgnorePointer>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -2579,6 +3006,18 @@ impl RenderSizeReporter {
 }
 
 impl RenderBox for RenderSizeReporter {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSizeReporter>()?;
+        // A different cell has not been told anything yet, and it is `layout`
+        // that tells it -- so a new sink is a reason to lay out again even
+        // though nothing about the geometry changed.
+        let effect = UpdateEffect::relayout_if(
+            !Rc::ptr_eq(&self.sink, &fresh.sink) || !self.child.is(&fresh.child),
+        );
+        self.sink = Rc::clone(&fresh.sink);
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.sink.set(self.size);
@@ -2712,6 +3151,24 @@ struct Run {
 }
 
 impl RenderBox for RenderWrap {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderWrap>()?;
+        let effect = UpdateEffect::relayout_if(
+            self.direction != fresh.direction
+                || self.spacing != fresh.spacing
+                || self.run_spacing != fresh.run_spacing
+                || self.alignment != fresh.alignment
+                || self.cross_alignment != fresh.cross_alignment
+                || !same_children(&self.children, &fresh.children),
+        );
+        self.direction = fresh.direction;
+        self.spacing = fresh.spacing;
+        self.run_spacing = fresh.run_spacing;
+        self.alignment = fresh.alignment;
+        self.cross_alignment = fresh.cross_alignment;
+        self.children = std::mem::take(&mut fresh.children);
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.offsets.clear();
         self.offsets.resize(self.children.len(), Offset::ZERO);
@@ -2923,6 +3380,14 @@ impl RenderAspectRatio {
 }
 
 impl RenderBox for RenderAspectRatio {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderAspectRatio>()?;
+        let effect =
+            UpdateEffect::relayout_if(self.ratio != fresh.ratio || !self.child.is(&fresh.child));
+        self.ratio = fresh.ratio;
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.applied(constraints);
         self.child.layout(BoxConstraints::tight(self.size.width, self.size.height));
@@ -2982,6 +3447,12 @@ impl RenderIntrinsicWidth {
 }
 
 impl RenderBox for RenderIntrinsicWidth {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderIntrinsicWidth>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let wanted = self.child.max_intrinsic_width(constraints.max_height);
         let width = wanted.clamp(constraints.min_width, constraints.max_width);
@@ -3042,6 +3513,12 @@ impl RenderIntrinsicHeight {
 }
 
 impl RenderBox for RenderIntrinsicHeight {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderIntrinsicHeight>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let wanted = self.child.max_intrinsic_height(constraints.max_width);
         let height = wanted.clamp(constraints.min_height, constraints.max_height);
@@ -3122,6 +3599,19 @@ impl RenderTransform {
 }
 
 impl RenderBox for RenderTransform {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderTransform>()?;
+        // A transform does not change what the child was measured at -- it is
+        // applied on the way to the canvas. Upstream's `set transform` calls
+        // `markNeedsPaint` for the same reason.
+        let mut effect =
+            UpdateEffect::repaint_if(self.matrix != fresh.matrix || self.origin != fresh.origin);
+        self.matrix = fresh.matrix;
+        self.origin = fresh.origin;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -3179,6 +3669,14 @@ impl RenderOpacity {
 }
 
 impl RenderBox for RenderOpacity {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderOpacity>()?;
+        let mut effect = UpdateEffect::repaint_if(self.opacity != fresh.opacity);
+        self.opacity = fresh.opacity;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -3246,6 +3744,14 @@ impl RenderClipRect {
 }
 
 impl RenderBox for RenderClipRect {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderClipRect>()?;
+        let mut effect = UpdateEffect::repaint_if(self.corner_radius != fresh.corner_radius);
+        self.corner_radius = fresh.corner_radius;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -3306,6 +3812,10 @@ impl RenderClipPath {
 }
 
 impl RenderBox for RenderClipPath {
+    // No `update_from`. The path is the configuration, and two paths cannot be
+    // told apart without walking both -- which is the work the comparison
+    // exists to save. A rebuilt clip path makes a new render object, as
+    // everything did before any of this.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -3398,6 +3908,22 @@ impl RenderViewport {
 }
 
 impl RenderBox for RenderViewport {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderViewport>()?;
+        // The offset is read by `layout`, which also re-clamps it against
+        // content that may have shrunk -- so a scroll is a relayout. It is
+        // upstream too: `RenderViewport` listens to its `ViewportOffset` and
+        // answers with `markNeedsLayout`.
+        let effect = UpdateEffect::relayout_if(
+            self.axis != fresh.axis
+                || self.offset != fresh.offset
+                || !self.child.is(&fresh.child),
+        );
+        self.axis = fresh.axis;
+        self.offset = fresh.offset;
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let child_constraints = match self.axis {
             Axis::Vertical => BoxConstraints::new(
@@ -3504,6 +4030,17 @@ impl RenderPointerRegion {
 }
 
 impl RenderBox for RenderPointerRegion {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderPointerRegion>()?;
+        // Neither the id nor the handlers are measured or drawn: they are read
+        // when a finger arrives, out of whatever this object holds then.
+        // Upstream's gesture setters mark nothing about the frame either.
+        self.id = fresh.id;
+        self.handlers = Rc::clone(&fresh.handlers);
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -3939,6 +4476,190 @@ mod tests {
         );
     }
 
+}
+
+// -- Taking a new configuration -----------------------------------------------
+//
+// Upstream tests this by asserting that a rebuilt widget did not produce a
+// second render object, which it can do because a Dart object has an identity
+// anyone can compare. Here the same question is asked of the handle, and the
+// answers a type gives -- nothing, repaint, relayout -- are asserted directly,
+// because they are the part that can be wrong quietly.
+
+#[cfg(test)]
+mod reconfiguring_tests {
+    use super::*;
+
+    thread_local! {
+        static LAYOUTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A leaf that says how many times it has been measured.
+    struct Counted(f32);
+
+    impl RenderBox for Counted {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            LAYOUTS.with(|n| n.set(n.get() + 1));
+            constraints.constrain(Size::square(self.0))
+        }
+        fn size(&self) -> Size {
+            Size::square(self.0)
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            let fresh = fresh.as_any_mut().downcast_mut::<Counted>()?;
+            let effect = UpdateEffect::relayout_if(self.0 != fresh.0);
+            self.0 = fresh.0;
+            Some(effect)
+        }
+    }
+
+    fn layouts() -> usize {
+        LAYOUTS.with(|n| n.get())
+    }
+
+    fn reset() {
+        LAYOUTS.with(|n| n.set(0));
+    }
+
+    /// Reaches the object inside a handle.
+    ///
+    /// Deliberately through `&**cell` rather than through the `Ref`: a `Box`
+    /// is itself `Any`, so asking the box would answer about the box.
+    fn with_paragraph<T>(handle: &RenderRef, read: impl FnOnce(&RenderParagraph) -> T) -> T {
+        let cell = handle.render.borrow();
+        let object: &dyn RenderBox = &**cell;
+        read(object.as_any().downcast_ref::<RenderParagraph>().expect("a paragraph"))
+    }
+
+    #[test]
+    fn a_handle_is_never_wrapped_in_a_second_handle() {
+        // The combinators hand a child's handle to a constructor that wraps
+        // whatever it is given, so without this every parent would be holding a
+        // brand new outer handle every frame -- and the identity the whole
+        // scheme rests on would be invisible one level down.
+        let inner = RenderRef::new(Counted(10.0));
+        let again = RenderRef::new(inner.clone());
+        assert!(inner.is(&again), "wrapping a handle made a second object");
+    }
+
+    #[test]
+    fn a_padding_that_did_not_change_asks_for_nothing() {
+        reset();
+        let child = RenderRef::new(Counted(10.0));
+        let padded = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), child.clone()));
+        let mut root = padded.clone();
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1);
+
+        // What a rebuild produces when nothing about it moved.
+        let same = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), child.clone()));
+        assert!(padded.reconfigure(same), "a padding would not take a padding");
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1, "nothing changed and it was measured again");
+    }
+
+    #[test]
+    fn a_padding_that_did_change_asks_to_be_measured_again() {
+        // The half that matters more: a skip that skips too much shows a stale
+        // interface, and no amount of saved measuring is worth that.
+        reset();
+        let child = RenderRef::new(Counted(10.0));
+        let padded = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), child.clone()));
+        let mut root = padded.clone();
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+
+        let wider = RenderRef::new(RenderPadding::new(EdgeInsets::all(12.0), child.clone()));
+        assert!(padded.reconfigure(wider));
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 2, "the child sits somewhere else now");
+        assert_eq!(root.size(), Size::new(34.0, 34.0), "and the padding is the new one");
+    }
+
+    #[test]
+    fn a_colour_is_not_a_reason_to_measure_anything() {
+        // Upstream's `RenderDecoratedBox.set decoration` calls `markNeedsPaint`
+        // and stops there. Nothing about a fill is read while measuring, and a
+        // screen that re-measures itself to change a swatch is doing the whole
+        // frame for a rectangle.
+        reset();
+        let child = RenderRef::new(Counted(10.0));
+        let decorated = RenderRef::new(
+            RenderDecoratedBox::new().with_color(Color(0xFF00FF00)).with_child(child.clone()),
+        );
+        let mut root = decorated.clone();
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1);
+
+        let repainted = RenderRef::new(
+            RenderDecoratedBox::new().with_color(Color(0xFFFF0000)).with_child(child.clone()),
+        );
+        assert!(decorated.reconfigure(repainted));
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1, "a new colour was measured");
+    }
+
+    #[test]
+    fn a_handler_that_changed_costs_nothing_at_all() {
+        // A callback is neither measured nor drawn: it is read when a finger
+        // arrives, out of whatever the object holds then. Upstream's gesture
+        // setters mark nothing about the frame either.
+        reset();
+        let child = RenderRef::new(Counted(10.0));
+        let region = RenderRef::new(RenderPointerRegion::new(7, child.clone()));
+        let mut root = region.clone();
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1);
+
+        let rebuilt = RenderRef::new(
+            RenderPointerRegion::new(7, child.clone())
+                .with_handlers(crate::gestures::PointerHandlers::default()),
+        );
+        assert!(region.reconfigure(rebuilt));
+        root.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(layouts(), 1, "a new closure was measured");
+    }
+
+    #[test]
+    fn text_that_says_the_same_thing_is_not_shaped_again() {
+        // Shaping is nearly all of what a paragraph costs, and a list of a
+        // hundred rows rebuilt for one of them would otherwise shape all
+        // hundred. The shaped paragraph is kept on the render object, so
+        // keeping the render object is what keeps it.
+        let text = RenderRef::new(RenderParagraph::new("Hello"));
+        let mut root = text.clone();
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        let shaped = with_paragraph(&text, |p| p.paragraph.clone()).expect("laying out shapes it");
+
+        assert!(text.reconfigure(RenderRef::new(RenderParagraph::new("Hello"))));
+        let after = with_paragraph(&text, |p| p.paragraph.clone()).expect("still shaped");
+        assert!(Rc::ptr_eq(&shaped, &after), "the same words were shaped twice");
+
+        // And different words are not the same words.
+        assert!(text.reconfigure(RenderRef::new(RenderParagraph::new("Goodbye"))));
+        assert!(
+            with_paragraph(&text, |p| p.paragraph.is_none()),
+            "it kept a shaping of the old text"
+        );
+        assert_eq!(with_paragraph(&text, |p| p.content.clone()), "Goodbye");
+    }
+
+    #[test]
+    fn a_type_that_will_not_take_one_says_so() {
+        // `None` is always a safe answer -- it is what every type said before
+        // any of them said anything else -- and a clip path says it, because
+        // two paths cannot be compared without walking both.
+        let child = RenderRef::new(Counted(10.0));
+        let clipped = RenderRef::new(RenderClipPath::new(
+            crate::painting::RenderPath::new(),
+            child.clone(),
+        ));
+        let other = RenderRef::new(RenderClipPath::new(
+            crate::painting::RenderPath::new(),
+            child.clone(),
+        ));
+        assert!(!clipped.reconfigure(other), "a clip path claimed it could compare paths");
+    }
 }
 
 // -- Compositing tests --------------------------------------------------------

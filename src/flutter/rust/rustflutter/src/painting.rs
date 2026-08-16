@@ -135,7 +135,7 @@ pub enum FillType {
 
 /// A colour ramp. Stops are positions in 0..1; leaving them out spaces the
 /// colours evenly.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     colors: Vec<u32>,
     stops: Option<Vec<f32>>,

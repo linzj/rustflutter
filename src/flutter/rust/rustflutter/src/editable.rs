@@ -184,6 +184,48 @@ impl RenderEditable {
 }
 
 impl RenderBox for RenderEditable {
+    fn update_from(
+        &mut self,
+        fresh: &mut dyn RenderBox,
+    ) -> Option<crate::render::UpdateEffect> {
+        use crate::render::UpdateEffect;
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderEditable>()?;
+
+        // Only these two are measured: the height of a field is the height of
+        // a line of its own text, whatever the text happens to say.
+        let mut effect = UpdateEffect::relayout_if(
+            self.style != fresh.style || self.text_scale != fresh.text_scale,
+        );
+        self.style = fresh.style.clone();
+        self.text_scale = fresh.text_scale;
+
+        effect = effect.and(UpdateEffect::repaint_if(
+            self.value != fresh.value
+                || self.placeholder != fresh.placeholder
+                || self.placeholder_style != fresh.placeholder_style
+                || self.caret_color != fresh.caret_color
+                || self.selection_color != fresh.selection_color
+                || self.show_caret != fresh.show_caret,
+        ));
+        self.value = fresh.value.clone();
+        self.placeholder = std::mem::take(&mut fresh.placeholder);
+        self.placeholder_style = fresh.placeholder_style.clone();
+        self.caret_color = fresh.caret_color;
+        self.selection_color = fresh.selection_color;
+        self.show_caret = fresh.show_caret;
+
+        // Where the field ended up is reported from `paint`, so a new listener
+        // is only reached by painting again -- and it has not been told
+        // anything yet, so the guard against saying the same thing twice has to
+        // forget what it last said.
+        if !crate::render::same_callback(&self.report, &fresh.report) {
+            self.report = fresh.report.take();
+            self.reported.set(None);
+            effect = effect.and(UpdateEffect::Repaint);
+        }
+        Some(effect)
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let line = painting::shape("Ag", &self.style, f32::MAX / 4.0, self.text_scale).height();
         self.size = constraints.constrain(Size::new(

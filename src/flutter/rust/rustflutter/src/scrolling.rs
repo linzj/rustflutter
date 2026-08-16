@@ -440,7 +440,11 @@ impl crate::framework::Component for LazyList {
             for child in rendered {
                 column = column.push(child);
             }
-            Box::new(column)
+            // The column itself, not a box round it: a second box between the
+            // handle and the object puts the object one layer away from the
+            // description it is asked to compare itself against, and it would
+            // quietly decline every rebuild. See `RenderBox for Box<R>`.
+            column
         })
     }
 }
@@ -788,7 +792,11 @@ impl crate::framework::Component for VariableExtentList {
             for child in rendered {
                 column = column.push(child);
             }
-            Box::new(column)
+            // The column itself, not a box round it: a second box between the
+            // handle and the object puts the object one layer away from the
+            // description it is asked to compare itself against, and it would
+            // quietly decline every rebuild. See `RenderBox for Box<R>`.
+            column
         })
     }
 }
@@ -1167,6 +1175,56 @@ mod tests {
     fn an_empty_variable_list_has_no_window() {
         let book = ExtentBook::new();
         assert!(book.window(0, 0.0, 800.0, 250.0, 50.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_list_that_scrolled_redraws_none_of_the_rows_it_kept() {
+        // What the repaint boundary around every row is for, and it could not
+        // be shown until a rebuilt element stopped remaking its render object:
+        // scrolling rebuilds the whole list, so before that every row was a new
+        // object with nothing drawn yet, and a boundary over a new object has
+        // nothing to hand back. Upstream's `SliverChildBuilderDelegate` puts one
+        // around every item by default for exactly this frame.
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+        use crate::widgets::SizedBox;
+
+        let list = |offset: f32| {
+            component(
+                LazyList::new(100, 50.0, |_| leaf(|| SizedBox::new(100.0, 50.0)))
+                    .with_offset(offset)
+                    .with_viewport(200.0)
+                    .with_cache_extent(0.0),
+            )
+        };
+
+        let frame = |tree: &mut ElementTree| {
+            let mut root = tree.build_render_tree().expect("a mounted root");
+            root.layout(BoxConstraints::new(0.0, 100.0, 0.0, 200.0));
+            reset_layer_calls();
+            let mut layers = LayerTree::new(100, 200);
+            {
+                let mut context = PaintContext::new(&mut layers, Size::new(100.0, 200.0));
+                root.paint(&mut context, Offset::ZERO);
+            }
+            layer_calls()
+        };
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(list(0.0));
+        let first = frame(&mut tree);
+        assert_eq!(first.retainable, 4, "four rows fit, and all four had to be drawn");
+        assert_eq!(first.retained, 0, "nothing had been drawn before this");
+
+        // One row further down. Every row still on screen is the same row, in
+        // the same place relative to the list, holding the same drawing; only
+        // the list moves under the window.
+        tree.rebuild(list(50.0));
+        let second = frame(&mut tree);
+        assert_eq!(second.retained, 3, "the three rows that stayed did not keep their drawing");
+        assert_eq!(second.retainable, 1, "more than the newly revealed row was drawn");
     }
 
     #[test]

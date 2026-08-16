@@ -454,6 +454,29 @@ impl RenderSemantics {
 }
 
 impl RenderBox for RenderSemantics {
+    fn update_from(
+        &mut self,
+        fresh: &mut dyn RenderBox,
+    ) -> Option<crate::render::UpdateEffect> {
+        use crate::render::UpdateEffect;
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSemantics>()?;
+        // The id, the properties and the handler are read in `paint`, and
+        // nowhere else -- but they are only ever read while a reader is
+        // listening, and a frame that is describing itself to a reader paints
+        // in full: `RenderRepaintBoundary` deliberately declines to hand back
+        // its layer while `collect` is running, because a subtree that is not
+        // walked says nothing about itself. So a changed label is read from
+        // this object on the next frame without anything having to be marked.
+        // The test `a_new_label_under_a_boundary_is_still_read_out` is what
+        // holds that arrangement in place.
+        self.id = fresh.id;
+        self.properties = fresh.properties.clone();
+        self.on_action = fresh.on_action.take();
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.child.layout(constraints);
         self.size
@@ -1072,5 +1095,87 @@ mod tests {
             assert_eq!(SemanticsAction::from_bits(action as i32), Some(action));
         }
         assert_eq!(SemanticsAction::from_bits(1 << 30), None, "a bit we have no name for");
+    }
+
+    #[test]
+    fn a_new_label_under_a_boundary_is_still_read_out() {
+        // This framework gathers semantics during the paint walk, and a repaint
+        // boundary that hands back the layer it kept does not walk. So a
+        // subtree that has not been drawn again would say nothing about itself
+        // -- a reader would lose every row of a list after the first frame.
+        // Upstream never meets this, because there the semantics tree is built
+        // by its own walk over the render objects and a kept layer is invisible
+        // to it. Here the boundary declines to hand its layer back while a
+        // reader is being answered, and this is what holds that in place.
+        //
+        // It is also what lets `RenderSemantics::update_from` mark nothing: a
+        // changed label is read out of the live object on the next frame,
+        // because the walk that reads it is a real walk.
+        use crate::framework::{StateHandle, StatefulComponent, BuildContext, stateful};
+        use crate::widgets::repaint_boundary;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Default)]
+        struct Which {
+            second: bool,
+        }
+
+        struct Label {
+            sink: Rc<RefCell<Option<StateHandle<Which>>>>,
+        }
+
+        impl StatefulComponent for Label {
+            type State = Which;
+
+            fn build(
+                &self,
+                state: &Which,
+                handle: StateHandle<Which>,
+                _context: &mut BuildContext,
+            ) -> AnyWidget {
+                *self.sink.borrow_mut() = Some(handle);
+                let said = if state.second { "after" } else { "before" };
+                repaint_boundary(semantics(
+                    9,
+                    SemanticsProperties::label(said),
+                    leaf(|| SizedBox::new(80.0, 40.0)),
+                ))
+            }
+        }
+
+        set_enabled(true);
+        let sink: Rc<RefCell<Option<StateHandle<Which>>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Label { sink: sink.clone() }));
+
+        let size = Size::new(200.0, 100.0);
+        let frame = |tree: &mut ElementTree| {
+            let mut root = tree.build_render_tree().expect("mounted");
+            root.layout(BoxConstraints::loose(size.width, size.height));
+            let mut layers = crate::engine::LayerTree::new(size.width as i32, size.height as i32);
+            collect(size, || {
+                let mut context = PaintContext::new(&mut layers, size);
+                root.paint(&mut context, Offset::ZERO);
+            })
+            .expect("semantics are on")
+        };
+
+        let said = |nodes: &[SemanticsNode]| {
+            nodes
+                .iter()
+                .find(|n| n.id == 9)
+                .map(|n| n.properties.label.clone())
+                .unwrap_or_default()
+        };
+
+        assert_eq!(said(&frame(&mut tree)), "before");
+        // Painted once already, so the boundary is holding a layer.
+        assert_eq!(said(&frame(&mut tree)), "before", "the node stopped being reported");
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.second = true);
+        tree.rebuild_dirty();
+        assert_eq!(said(&frame(&mut tree)), "after", "a reader was told last frame's label");
+        set_enabled(false);
     }
 }

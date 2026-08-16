@@ -530,7 +530,7 @@ pub enum TextAlign {
 }
 
 /// Text appearance. Mirrors the subset of `txt::TextStyle` the FFI exposes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     pub font_family: Option<String>,
     pub font_size: f32,

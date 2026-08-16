@@ -355,6 +355,16 @@ impl RenderBox for Container {
 pub struct Empty;
 
 impl RenderBox for Empty {
+    /// Nothing to describe, so nothing can have changed. The one render object
+    /// whose answer is a foregone conclusion.
+    fn update_from(
+        &mut self,
+        fresh: &mut dyn RenderBox,
+    ) -> Option<crate::render::UpdateEffect> {
+        fresh.as_any_mut().downcast_mut::<Empty>()?;
+        Some(crate::render::UpdateEffect::Nothing)
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         constraints.smallest()
     }

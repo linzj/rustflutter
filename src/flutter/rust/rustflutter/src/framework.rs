@@ -41,6 +41,13 @@
 //! mismatch unmounts the old subtree and mounts a new one, so its state does
 //! not. That single rule is what a `Key` is for: it lets the caller say "this
 //! is still the same thing" when position alone would say otherwise.
+//!
+//! An element that is updated in place does not make a second render object
+//! either. It hands the new description to the one it has, which takes what
+//! differs and says whether anything it takes has to be measured or drawn
+//! again -- upstream's `updateRenderObject`, and the reason a screen that
+//! rebuilt is not a screen that has to be re-measured. See
+//! [`crate::render::RenderBox::update_from`].
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -142,6 +149,12 @@ pub trait RenderWidget: 'static {
 
     /// Builds the render object, given the children's already-built ones in
     /// the same order.
+    ///
+    /// Upstream's `createRenderObject`, except that upstream deliberately says
+    /// "this method should not do anything with the children" and attaches them
+    /// separately through the element's slots. Here they are arguments, because
+    /// a parent owns its children directly and there is nothing to attach them
+    /// to before the parent exists.
     fn create_render(&self, children: Vec<BoxedRender>) -> BoxedRender;
 }
 
@@ -191,6 +204,18 @@ trait ComponentObject {
 trait RenderWidgetObject {
     fn children(&self) -> Vec<AnyWidget>;
     fn create_render(&self, children: Vec<BoxedRender>) -> BoxedRender;
+    /// Gives `target` this widget's configuration instead of making a second
+    /// render object, and says whether it took it.
+    ///
+    /// Upstream's `updateRenderObject`, which every `RenderObjectWidget` writes
+    /// by hand: `Padding` assigns its `padding` onto the `RenderPadding` the
+    /// element already has. There is no widget class here holding those fields
+    /// separately -- the configuration lives inside the closure a combinator
+    /// captured -- so the new values are reached the only way they can be, by
+    /// building the object the closure would have built and letting the old one
+    /// take what it needs from it. The comparison that decides what changed is
+    /// then the render object's own, which is where upstream puts it too.
+    fn reconfigure(&self, target: &BoxedRender, children: Vec<BoxedRender>) -> bool;
 }
 
 struct StatelessObject<C: Component>(C);
@@ -258,6 +283,10 @@ impl<W: RenderWidget> RenderWidgetObject for RenderObjectWidget<W> {
 
     fn create_render(&self, children: Vec<BoxedRender>) -> BoxedRender {
         self.0.create_render(children)
+    }
+
+    fn reconfigure(&self, target: &BoxedRender, children: Vec<BoxedRender>) -> bool {
+        target.reconfigure(self.0.create_render(children))
     }
 }
 
@@ -1300,12 +1329,11 @@ impl ElementTree {
             node.widget = widget;
             node.depth = depth;
             node.parent = parent;
-            // A new widget describes a new render object. Upstream calls
-            // `updateRenderObject` here and mutates the existing one in place;
-            // this makes a new one, which is the same thing from every
-            // observer's point of view except the identity -- and the identity
-            // only matters for the elements that were *not* touched, which is
-            // most of them.
+            // A new widget describes the render object differently, so the
+            // object has to be asked to take the difference. Upstream does that
+            // here, in `RenderObjectElement.update`; it happens on the render
+            // walk instead, because the children's objects are arguments to
+            // this one's and they are not built until then.
             node.render_dirty = true;
         }
         self.shared.parents.borrow_mut().insert(id, parent);
@@ -1410,14 +1438,21 @@ impl ElementTree {
 
     /// Walks the element tree and produces the render tree for this frame.
     ///
-    /// "Produces" overstates it now. An element whose widget did not change,
-    /// and none of whose descendants' render objects were remade, hands back
-    /// the object it made before -- so a screen where one counter ticks keeps
-    /// every other render object it had, along with everything they had
-    /// measured. Upstream's arrangement, reached the other way round: there
-    /// the render object is the thing that persists and the widget is the
-    /// description, and an element only calls `updateRenderObject` when the
-    /// description changed.
+    /// "Produces" overstates it. Almost nothing is produced twice: an element
+    /// whose widget did not change hands back the object it made before, and an
+    /// element whose widget *did* change hands the difference to the object it
+    /// made before. So a screen where one counter ticks keeps every render
+    /// object it had -- including the counter's own -- along with everything
+    /// they had measured, shaped and drawn.
+    ///
+    /// This is upstream's arrangement, reached the other way round. There the
+    /// render object is what persists and the widget is the description, and an
+    /// element's `update` calls `updateRenderObject` on the object it is
+    /// already holding; here the description arrives first and the object it
+    /// describes is looked up. Where the walk still differs is when: upstream
+    /// updates the render object as the element tree is reconciled, and this
+    /// does it here, because a render object is built from its children's and
+    /// they are not built until now.
     pub fn build_render_tree(&mut self) -> Option<BoxedRender> {
         let root = self.root?;
         Some(self.build_render(root).0)
@@ -1492,7 +1527,31 @@ impl ElementTree {
         }
 
         if !dirty && !a_child_was_remade {
-            if let Some(cached) = cached {
+            if let Some(cached) = cached.clone() {
+                return (cached, false);
+            }
+        }
+
+        // The widget changed, so the object it describes has to change with it
+        // -- but not into a different object. Upstream's
+        // `RenderObjectElement.update` hands the new configuration to the
+        // render object that is already there, and everything that object had
+        // worked out stays worked out: the text it shaped, the extent it
+        // measured, the layer it drew. Just as much to the point, the parent is
+        // still holding the child it was holding, so a leaf that changed does
+        // not remake the spine above it.
+        if let Some(cached) = cached {
+            let took = {
+                let node = self.nodes[id.0].as_ref().expect("element vanished mid-walk");
+                let WidgetKind::Render(render) = &node.widget.inner else {
+                    unreachable!("checked above");
+                };
+                render.reconfigure(&cached, child_renders.clone())
+            };
+            if took {
+                if let Some(node) = self.nodes[id.0].as_mut() {
+                    node.render_dirty = false;
+                }
                 return (cached, false);
             }
         }
@@ -2218,6 +2277,15 @@ mod tests {
             Size::square(self.0)
         }
         fn paint(&self, _c: &mut crate::render::PaintContext, _o: crate::render::Offset) {}
+        fn update_from(
+            &mut self,
+            fresh: &mut dyn RenderBox,
+        ) -> Option<crate::render::UpdateEffect> {
+            let fresh = fresh.as_any_mut().downcast_mut::<Counted>()?;
+            let effect = crate::render::UpdateEffect::relayout_if(self.0 != fresh.0);
+            self.0 = fresh.0;
+            Some(effect)
+        }
     }
 
     struct Watched;
@@ -2312,10 +2380,10 @@ mod tests {
 
     #[test]
     fn a_render_object_can_be_told_its_answer_went_stale() {
-        // Nothing in this framework changes a render object in place today --
-        // a change comes through the element tree and comes out as a new
-        // object -- but "unchanged" is only worth trusting if it can be
-        // revoked. Upstream's `markNeedsLayout` is the same escape hatch.
+        // "Unchanged" is only worth trusting if it can be revoked, and this is
+        // the revoking: upstream's `markNeedsLayout`. It is what an object
+        // calls on itself after taking a configuration that moved something,
+        // and what the tests below are watching for.
         let sink = Rc::new(RefCell::new(None));
         let mut tree = watched_tree(&sink);
         let mut root = tree.build_render_tree().expect("mounted");
@@ -2326,5 +2394,147 @@ mod tests {
         tree.render_of(watched).expect("built").mark_needs_layout();
         root.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(layouts(), 2, "it was told to measure again and did not");
+    }
+
+    // -- Render objects that are told, rather than replaced ------------------
+    //
+    // Everything above is about the subtrees a rebuild did not reach. This is
+    // about the one it did: upstream's `RenderObjectElement.update` hands the
+    // new widget to the render object that is already there, so a screen that
+    // rebuilt keeps every object in it and only the parts that actually differ
+    // are measured again. Without it, a list where one row changed rebuilds one
+    // row and re-measures all of them.
+
+    /// A screen with a half that never changes and a half that ticks. Both are
+    /// rebuilt every time, which is the point: being rebuilt is not the same as
+    /// being different.
+    struct Screen {
+        sink: Rc<RefCell<Option<StateHandle<Counter>>>>,
+        boundary: bool,
+    }
+
+    impl StatefulComponent for Screen {
+        type State = Counter;
+
+        fn build(
+            &self,
+            state: &Counter,
+            handle: StateHandle<Counter>,
+            _context: &mut BuildContext,
+        ) -> AnyWidget {
+            *self.sink.borrow_mut() = Some(handle);
+            let ticking = 10.0 + state.count as f32;
+            let steady = leaf(|| Counted(10.0));
+            let steady =
+                if self.boundary { crate::widgets::repaint_boundary(steady) } else { steady };
+            column(vec![steady, leaf(move || Counted(ticking))])
+        }
+    }
+
+    fn screen(boundary: bool) -> (ElementTree, Rc<RefCell<Option<StateHandle<Counter>>>>) {
+        LAYOUTS.with(|n| n.set(0));
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Screen { sink: sink.clone(), boundary }));
+        (tree, sink)
+    }
+
+    /// The two halves of the screen, as elements.
+    fn halves(tree: &ElementTree) -> (ElementId, ElementId) {
+        let column = tree.children_of(tree.root().expect("mounted"))[0];
+        let children = tree.children_of(column);
+        (children[0], children[1])
+    }
+
+    #[test]
+    fn a_rebuilt_subtree_keeps_the_render_objects_it_had() {
+        // The headline. A `set_state` rebuilds both halves of this screen --
+        // both widgets are new objects -- and neither render object is.
+        let (mut tree, sink) = screen(false);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 2, "the first frame measures both");
+
+        let (steady, ticking) = halves(&tree);
+        let was_steady = tree.render_of(steady).expect("built");
+        let was_ticking = tree.render_of(ticking).expect("built");
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("still mounted");
+
+        assert!(
+            tree.render_of(steady).expect("still there").is(&was_steady),
+            "a row that was rebuilt and did not change was replaced"
+        );
+        assert!(
+            tree.render_of(ticking).expect("still there").is(&was_ticking),
+            "a row that changed was replaced instead of being told"
+        );
+
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 3, "the half that did not change was measured again");
+    }
+
+    #[test]
+    fn a_row_that_did_change_still_shows_the_change() {
+        // The other half, and the one worth being afraid of: an object that
+        // takes a new configuration and does not act on it shows the old
+        // interface forever, and no test of identity would notice.
+        let (mut tree, sink) = screen(false);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+
+        let (_, ticking) = halves(&tree);
+        assert_eq!(tree.render_of(ticking).expect("built").size(), Size::square(10.0));
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 3);
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("still mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+
+        assert_eq!(
+            tree.render_of(ticking).expect("still there").size(),
+            Size::square(13.0),
+            "the object was kept and the new size was not"
+        );
+    }
+
+    #[test]
+    fn a_boundary_inside_a_rebuilt_subtree_keeps_its_layer() {
+        // What the two before this are for. Upstream puts a repaint boundary
+        // around every item of a lazy list; it only pays if an item that was
+        // rebuilt without changing keeps the object holding the layer, which is
+        // exactly what taking a configuration instead of making an object does.
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+
+        let (mut tree, sink) = screen(true);
+
+        let frame = |tree: &mut ElementTree| {
+            let mut root = tree.build_render_tree().expect("a mounted root");
+            root.layout(BoxConstraints::loose(200.0, 200.0));
+            reset_layer_calls();
+            let mut layers = LayerTree::new(200, 200);
+            {
+                let mut context =
+                    crate::render::PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            layer_calls()
+        };
+
+        let first = frame(&mut tree);
+        assert_eq!(first.retainable, 1, "the first frame has to draw it");
+        assert_eq!(first.retained, 0);
+
+        // The other half ticks. The boundary is rebuilt along with it, and has
+        // nothing new to say.
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+
+        let second = frame(&mut tree);
+        assert_eq!(second.retained, 1, "the drawing it already had was thrown away");
+        assert_eq!(second.retainable, 0, "and recorded a second time");
     }
 }
