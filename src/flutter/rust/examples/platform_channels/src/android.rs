@@ -24,7 +24,7 @@
 //! the half this example exists to check, because it is the half that crosses
 //! the C ABI.
 //!
-//! Everything skipped here is covered by hand instead: see PORTING_STATUS.md.
+//! Everything skipped here is covered by hand instead.
 
 use std::ffi::c_void;
 

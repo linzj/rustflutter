@@ -7,9 +7,8 @@
 // This is deliberately the smallest thing that puts a rendered frame on screen:
 // a Win32 window that blits a BGRA8888 buffer with StretchDIBits. It is not the
 // production path -- that is `shell/platform/windows` driving Impeller through
-// the Shell, which still needs the Engine/RuntimeController rework described in
-// PORTING_STATUS.md. Until then this lets an app be looked at rather than
-// merely diffed as a PNG.
+// the Shell, which still needs the Engine/RuntimeController rework. Until then
+// this lets an app be looked at rather than merely diffed as a PNG.
 
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 

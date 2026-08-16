@@ -155,7 +155,7 @@ L = [
     '# wired up with directory junctions into an existing flutter checkout rather',
     '# than a real `gclient sync`, so what the build links against is whatever',
     '# those junctions point at -- not what is written here. The two drift apart',
-    '# silently; `tools/check_deps.py` is what catches it. See PORTING_STATUS.md.',
+    '# silently; `tools/check_deps.py` is what catches it.',
     '',
 ]
 

@@ -6,7 +6,7 @@
 //!
 //! The engine's rendering, compositing, text-layout and threading stack is used
 //! unmodified; the Dart VM, `dart:ui` and `packages/flutter` are replaced by
-//! this crate. See `PORTING_STATUS.md` at the repository root.
+//! this crate.
 //!
 //! ```no_run
 //! use rustflutter::prelude::*;

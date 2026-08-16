@@ -94,8 +94,7 @@ ninja -C out/host_release flutter/rust:rustflutter_engine
 ## Android
 
 The same engine, the same framework crate and the same nine examples, packaged
-as APKs. What differs is the host -- see `flutter/rust/host/rustflutter_host_android.cc`
-and section 十七 of PORTING_STATUS.md.
+as APKs. What differs is the host -- see `flutter/rust/host/rustflutter_host_android.cc`.
 
 ```sh
 cd src
@@ -337,9 +336,7 @@ src/
 ```
 
 Of the 4,559 engine files here, 64 are modified and the rest are byte-for-byte
-upstream. A per-directory breakdown, the full record of what each milestone
-changed, and what is worth doing next are in
-**[PORTING_STATUS.md](PORTING_STATUS.md)** (Chinese).
+upstream.
 
 ## Known limitations
 

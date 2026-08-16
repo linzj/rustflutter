@@ -82,7 +82,7 @@ ninja -C out/host_release flutter/rust:rustflutter_engine
 ## Android
 
 同一个引擎、同一个框架 crate、同样那九个示例，打成 APK。不同的只有 host——
-见 `flutter/rust/host/rustflutter_host_android.cc` 和 PORTING_STATUS.md 第十七节。
+见 `flutter/rust/host/rustflutter_host_android.cc`。
 
 ```sh
 cd src
@@ -313,8 +313,6 @@ src/
 ```
 
 这里的 4,559 个引擎文件中，64 个改过，其余与上游逐字节相同。
-逐目录分级、各里程碑的完整改动记录、以及下一步的优先级，
-见 **[PORTING_STATUS.md](PORTING_STATUS.md)**。
 
 ## 已知限制
 

@@ -7,7 +7,7 @@
 # The upstream root BUILD.gn is preserved as BUILD.gn.upstream. It aggregates
 # the full engine (embedders, //flutter/sky, gen_snapshot, dart_plugin_registrant,
 # tonic tests, ...), all of which pull in the Dart SDK. It is re-enabled
-# incrementally as each layer is de-Dart-ified; see PORTING_STATUS.md.
+# incrementally as each layer is de-Dart-ified.
 #
 # What builds today is Tier A only: the rendering / compositing / text /
 # threading stack, which has zero Dart coupling.
