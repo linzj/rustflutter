@@ -100,6 +100,7 @@ if (enable_unittests) {
       "rustflutter/src/components.rs",
       "rustflutter/src/controls.rs",
       "rustflutter/src/editable.rs",
+      "rustflutter/src/focus.rs",
       "rustflutter/src/framework.rs",
       "rustflutter/src/gestures.rs",
       "rustflutter/src/implicit.rs",

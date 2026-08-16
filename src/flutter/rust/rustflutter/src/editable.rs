@@ -41,9 +41,8 @@ use std::rc::Rc;
 use crate::components::theme_of;
 use crate::engine::{Color, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, Key, StateHandle, StatefulComponent, leaf};
-use crate::gestures::PointerHandlers;
 use crate::painting;
-use crate::render::{BoxConstraints, HitTestResult, PaintContext, RenderBox, RenderPointerRegion};
+use crate::render::{BoxConstraints, HitTestResult, PaintContext, RenderBox};
 use crate::services::text_input::{
     self, TextEditingValue, TextInputAction, TextInputClient, TextInputConfiguration,
     TextInputConnection, TextInputType,
@@ -456,11 +455,13 @@ impl StatefulComponent for TextField {
             state.value.clone()
         };
 
-        // Opening the session on tap is what stands in for a focus tree: there
-        // is none yet, and "the field that was last tapped" is what focus would
-        // have answered anyway. The client id makes it exclusive -- attaching
-        // one field detaches the last.
-        let tap_handle = handle;
+        // The session follows focus. Tapping the field focuses it, and so does
+        // Tab; either way the connection is opened when it gains focus and
+        // dropped when it loses it, which is what upstream's `EditableText`
+        // does in its focus listener. The client id makes it exclusive as
+        // well -- attaching one field detaches the last -- but that is the
+        // platform's exclusivity, not this framework's.
+        let field_handle = handle;
         let on_changed = self.on_changed.clone();
         let on_submitted = self.on_submitted.clone();
         let configuration = TextInputConfiguration {
@@ -469,9 +470,21 @@ impl StatefulComponent for TextField {
             obscure_text: self.obscure,
             autocorrect: !self.obscure,
         };
-        let handlers = PointerHandlers::new().with_tap(move |_| {
+        let focus_handle = field_handle.clone();
+        let on_focus_change = move |has_focus: bool| {
+            if !has_focus {
+                focus_handle.set_state(|state| {
+                    if let Some(connection) = state.connection.take() {
+                        // Closing tells the platform to take the keyboard
+                        // away and forget the client; `hide` alone would
+                        // leave a session open that nothing is listening to.
+                        connection.close();
+                    }
+                });
+                return;
+            }
             let client = FieldClient {
-                handle: tap_handle.clone(),
+                handle: focus_handle.clone(),
                 on_changed: on_changed.clone(),
                 on_submitted: on_submitted.clone(),
                 last: TextEditingValue::default(),
@@ -479,12 +492,12 @@ impl StatefulComponent for TextField {
             let opened = text_input::attach(Box::new(client), configuration);
             // The platform starts from whatever the field already holds, so a
             // field that was typed into, left, and come back to keeps its text.
-            tap_handle.set_state(move |state| {
+            focus_handle.set_state(move |state| {
                 opened.set_editing_state(&state.value);
                 state.connection = Some(opened);
             });
             opened.show();
-        });
+        };
 
         let caret_color = theme.primary;
         // The theme's own colour, made translucent, as upstream's `TextField`
@@ -493,7 +506,7 @@ impl StatefulComponent for TextField {
         let placeholder = self.placeholder.clone().unwrap_or_default();
         let id = self.id;
 
-        leaf(move || {
+        let editable = leaf(move || {
             let report_connection = connection;
             let report: ReportPlacement =
                 Rc::new(move |offset, size, caret_x| {
@@ -512,17 +525,23 @@ impl StatefulComponent for TextField {
                     );
                 });
 
-            RenderPointerRegion::new(
-                id,
-                RenderEditable::new(shown.clone())
-                    .with_style(style.clone())
-                    .with_placeholder(placeholder.clone(), placeholder_style.clone())
-                    .with_caret(caret_color, editing)
-                    .with_selection_color(selection_color)
-                    .with_report(report),
-            )
-            .with_handlers(handlers.clone())
-        })
+            // No pointer region of its own: the `Focus` below wraps this in
+            // one, with the same id, and a second region with nothing attached
+            // would take the tap and shield the one that wanted it.
+            RenderEditable::new(shown.clone())
+                .with_style(style.clone())
+                .with_placeholder(placeholder.clone(), placeholder_style.clone())
+                .with_caret(caret_color, editing)
+                .with_selection_color(selection_color)
+                .with_report(report)
+        });
+
+        // The field is a focus node, which is what makes Tab reach it and what
+        // opens and closes its session. Upstream `TextField` wraps its
+        // `EditableText` in a `Focus` for the same reason.
+        crate::framework::component(
+            crate::focus::Focus::new(id, editable).with_on_focus_change(on_focus_change),
+        )
     }
 }
 
@@ -531,6 +550,47 @@ mod tests {
     use super::*;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    #[test]
+    fn tab_moves_between_two_fields_and_takes_the_session_with_it() {
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::begin_frame();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::framework::stateful(TextField::new(1)),
+                crate::framework::stateful(TextField::new(2)),
+            ],
+            |children| {
+                let mut column = crate::render::RenderFlex::column();
+                for child in children {
+                    column = column.push(child);
+                }
+                Box::new(column)
+            },
+        ));
+        let _ = tree.build_render_tree();
+
+        assert!(!text_input::is_editing(), "nothing focused, nothing editing");
+
+        // Tab into the first field: it opens a session.
+        assert!(crate::focus::next());
+        assert_eq!(crate::focus::focused(), Some(1));
+        tree.rebuild_dirty();
+        assert!(text_input::is_editing(), "the focused field should be editing");
+
+        // Tab to the second: the first one's session goes with it. What the
+        // platform sees is one client at a time either way; what this asserts
+        // is that the *field* let go, which is what makes its caret stop
+        // blinking.
+        assert!(crate::focus::next());
+        assert_eq!(crate::focus::focused(), Some(2));
+        tree.rebuild_dirty();
+        assert!(text_input::is_editing());
+        drop(tree);
+    }
 
     fn value(text: &str, caret: i32, composing: (i32, i32)) -> TextEditingValue {
         TextEditingValue {

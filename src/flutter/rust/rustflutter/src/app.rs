@@ -434,6 +434,10 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // The clock was already moved forward in begin_frame; this only makes
         // sure every build in the frame reads the same value.
         self.tree.set_frame_time(context.frame_time_micros);
+        // Last frame's focus nodes are forgotten here; the builds below
+        // register this frame's. Which node *has* the keyboard survives, so a
+        // widget that rebuilds keeps focus by registering the same id again.
+        crate::focus::begin_frame();
 
         // A photograph that finished decoding since the last frame is not on
         // screen until whoever asked for it is built again, and nothing records
@@ -772,10 +776,20 @@ impl AppInstance {
         // has to see it held when the next key it does care about arrives.
         self.keyboard.record(event);
 
-        let Some(application) = self.application.as_mut() else {
-            return false;
+        // The application first, then the focused widget, then Tab.
+        //
+        // Upstream's order, from `WidgetsBinding.handleKeyMessage`: the
+        // application-wide handlers run before the focus walk, and the
+        // traversal shortcuts are the last thing to see a key -- they are a
+        // default rather than a rule, so an application that wants Tab for
+        // something else takes it here and the focus tree never sees it.
+        let handled = match self.application.as_mut() {
+            Some(application) => application.on_key(event, &self.keyboard),
+            None => false,
         };
-        let handled = application.on_key(event, &self.keyboard);
+        let handled = handled
+            || crate::focus::dispatch_key(event)
+            || crate::focus::handle_traversal_key(event, &self.keyboard);
         if handled {
             self.schedule_frame();
         }

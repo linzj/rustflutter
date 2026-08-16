@@ -29,6 +29,7 @@ pub mod components;
 pub mod controls;
 pub mod editable;
 pub mod engine;
+pub mod focus;
 pub mod framework;
 pub mod gestures;
 pub mod implicit;
@@ -62,6 +63,7 @@ pub use components::{
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
 pub use editable::{RenderEditable, TextField, TextFieldState};
+pub use focus::{Focus, KeyResult, focusable};
 pub use implicit::{Animated, Lerp, animated};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use media_query::{MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area};
@@ -107,6 +109,7 @@ pub mod prelude {
         theme_of,
     };
     pub use crate::editable::{TextField, TextFieldState};
+    pub use crate::focus::{Focus, KeyResult, focusable};
     pub use crate::implicit::{Animated, animated};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::media_query::{
