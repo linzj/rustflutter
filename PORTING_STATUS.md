@@ -1558,7 +1558,10 @@ Gradle 的存在是为了解决"一个 Java 工程和它的传递依赖";这里�
 
 ## 十六、下一步
 
-按价值排序：
+**这七条已经在第十八节里做完了**,下面留着的是当时的排序和理由 —— 它写清了
+每一条为什么值得做,而那部分没有过期。做完之后剩下什么,见第十八节末尾。
+
+按价值排序:
 
 1. **持久化 render object。** 元素复用现在保住了状态、跳过了 `build`，
    但 render tree 每帧仍整棵重建，布局和绘制照跑不误。注意这不是性能理由：
@@ -1588,10 +1591,10 @@ Gradle 的存在是为了解决"一个 Java 工程和它的传递依赖";这里�
 
 ---
 
-## 十八、补齐与上游 framework 的差距 —— 进行中
+## 十八、补齐与上游 framework 的差距 —— 已完成 ✅
 
-第十六节按价值排了七条待办；这一节记录已经做掉的部分，以及做的过程中
-抓出来的两个真实缺陷。每一块都对着上游的对应文件写，测试和真机验证在
+第十六节按价值排了七条待办;**七条都做完了**。这一节记录每一块,以及做的
+过程中抓出来的几个真实缺陷。每一块都对着上游的对应文件写,测试和真机验证在
 每块末尾。
 
 ### 1. 视图内边距、MediaQuery 与 SafeArea
@@ -1904,9 +1907,51 @@ object 都活着,量过的东西也都还在。上游是从另一头到达同一
 同一个对象,变了的那个不是;什么都没发生的一帧一个都不重造;留下来的对象
 仍然报得出上一帧量到的尺寸。所有示例的渲染与改动前**逐像素相同**。
 
+### 16. 无障碍(第十六节第 7 条)
+
+这个框架里其他所有东西描述的都是像素。这一节用读屏软件唯一能用的说法把同一个
+界面再描述一遍:这里有个按钮,它叫"保存",点它会做事,它在这个坐标上 ——
+所以一根手指在玻璃上滑过时能找到它。
+
+**只在有人读的时候才建。** 上游也是这样(`SetSemanticsEnabled`),而理由不只是
+开销:一棵没有人消费的语义树,错了也没有任何人会发现,于是它会烂掉。只在被读
+的时候建,它才是被读的。
+
+**矩形从绘制里来。** 一个节点需要的是根坐标下的矩形,而渲染对象只有在被绘制时
+才知道自己在哪儿 —— 绘制是那趟带着 offset 的遍历。所以标注在绘制下降时压栈、
+上升时出栈:结果树的嵌套就是绘制的嵌套,而那正是一个读者应当依次遇到它们的
+顺序。上游是在自己那趟渲染树遍历里编译语义树的,它能这么做是因为
+`RenderObject` 知道自己的父亲;这里没有谁知道,而绘制本来就有答案。
+
+词汇是上游的,因为它本来就不是我们的:`SemanticsProperties`、
+`flutter::SemanticsAction` 的动作位、以及决定"读出什么"的那些 flag。它以每个
+节点一个扁平结构体穿过 C ABI,在 `RuntimeController` 里变成
+`SemanticsNodeUpdates`,再以 JSON 到 Android —— 因为它是一棵树,而 Android
+本来就有解析器。
+
+Java 那头是挂在唯一那个真 View 上的 `AccessibilityNodeProvider`,它的虚拟子节点
+就是语义节点:上游的 `AccessibilityBridge`,换成这个分支的单 Activity 允许的
+形状。标签、角色、选中与可用状态、屏幕上的矩形,以及读者可以执行的动作。
+
+**这些都不需要谁去要。** 内建组件自己会描述自己 —— `Label` 就是它的文字、标题
+同时是一个可跳转的标题层级,`Button` 是按钮、用自己的命中测试 id、动作调的是
+手指会调的同一个闭包,`Switch` 会说自己是开还是关,`TextField` 会说自己是输入
+框并且**拒绝**把遮蔽的内容念出来 —— 而且每一个 `RenderParagraph` 也描述自己,
+所以没有人标注过的文字照样被读。最后这条是持久化 render object 的红利:一段
+文字取一次 id 就一直留着,而那正好是"读屏软件应当继续把它当作同一段文字"的
+时长。已经有标签的东西内部的文字会被抑制,否则按钮的名字会被念两遍。
+
+**用真的读屏软件验的。** 一个在本仓库之外单独构建的无障碍服务,读出了 showcase
+的标题、正文、按钮(可点击,而禁用的那个不可点击)和带状态的开关,每个都带着
+正确的矩形;它对 Primary 按钮发出的 `ACTION_CLICK` 到达了框架,跑的是手指会跑
+的同一个闭包 —— 计数跟着动了。
+
+Windows 还没有桥。Narrator 需要一个 UI Automation provider,那是上游的
+`AccessibilityBridgeWindows`,是另一件独立的活。框架那一半两边是同一份。
+
 ### 验证
 
-**Windows**:框架 357 个测试、FFI 15 个、flutter_gallery 21 个、相册 60 个
+**Windows**:框架 369 个测试、FFI 15 个、flutter_gallery 21 个、相册 60 个
 (cargo 独立构建)全过;`platform_channels --probe` **PASS**(两处既有 SKIP);
 hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无头
 渲染正常;cursor_demo、exit_demo、settings_demo、text_demo 起得来且不 panic;
@@ -1922,6 +1967,8 @@ hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无�
 从触点扩散出水波并在松手后淡出(且点击照常计数);flutter_gallery
 滑动 → 打开 demo → 返回后截图与滑动后**逐字节相同**(列表位置保住);
 `platform_channels` **PASS**;showcase 的"Text scale"卡片两行大小不同;
+用一个单独构建的无障碍服务读 showcase:标题、正文、按钮(禁用的那个不可点击)、
+开关的状态和每个节点的矩形都对,它的 `ACTION_CLICK` 让应用的计数动了;
 相册 150 张图滚动时右侧出现滑块;相册双击照片
 在 fit 与 1:1 之间切换 —— 双指捏合无法在这台镜像上注入(生产镜像不给 root,
 `/dev/input` 拒绝写),所以捏合走的是端到端测试:命中测试 → 路由判定 → viewer。
@@ -1931,8 +1978,8 @@ hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无�
 
 ### 这一节没做的
 
-- **无障碍**(第十六节第 7 条)。框架侧可以做,但真正让 TalkBack 能用需要
-  Android 那边的 `AccessibilityBridge`(上游三千多行 Java)以及引擎的语义更新
-  通道。半做出来的语义树不会让任何读屏软件多读出一个字,所以没有半做。
+- **Windows 的无障碍桥**。框架那一半两边是同一份,Android 那一半通了;
+  Narrator 要的是一个 UI Automation provider(上游的 `AccessibilityBridgeWindows`),
+  那是另一件独立的活。
 - **持久化之上还没建的东西**:repaint boundary、跳过没变过的布局、变高度的
   惰性列表。render object 现在活得够久了,这三件事各自还是一件事。
