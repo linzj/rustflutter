@@ -347,8 +347,8 @@ impl Component for ProductTile {
             let picture: BoxedWidget = match photo.clone() {
                 // Contain rather than Cover: upstream shows the whole product,
                 // which is why it carries an aspect ratio per photograph at all.
-                Some(photo) => Box::new(ImageView::with_fit(photo, BoxFit::Contain)),
-                None => Box::new(Container::new().with_color(surface)),
+                Some(photo) => boxed(ImageView::with_fit(photo, BoxFit::Contain)),
+                None => boxed(Container::new().with_color(surface)),
             };
 
             Column::expanded()

@@ -32,7 +32,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, component, single};
+use crate::framework::{
+    AnyWidget, BuildContext, Component, ElementRef, StateHandle, component, single,
+};
 use crate::gestures::PointerHandlers;
 use crate::keyboard::{KeyEvent, Keyboard, LogicalKey};
 
@@ -53,6 +55,11 @@ type KeyHandler = Rc<dyn Fn(&KeyEvent) -> KeyResult>;
 #[derive(Clone)]
 struct FocusEntry {
     id: u64,
+    /// Which element put it here, so that it can be taken away again when that
+    /// element goes. Upstream a `FocusNode` is disposed by the `State` that
+    /// made it; this is the same lifetime said in the terms this framework
+    /// has.
+    element: ElementRef,
     /// Ancestors, outermost first: a key the focused node ignores walks back
     /// up this. Upstream this is the node's parent chain.
     ancestors: Vec<u64>,
@@ -74,7 +81,7 @@ struct FocusEntry {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct FocusScope(Vec<u64>);
 
-/// The nodes of one frame, and where the keyboard is.
+/// The nodes, and where the keyboard is.
 #[derive(Default)]
 struct FocusManager {
     entries: Vec<FocusEntry>,
@@ -88,25 +95,54 @@ thread_local! {
     static MANAGER: RefCell<FocusManager> = RefCell::new(FocusManager::default());
 }
 
-/// Forgets last frame's nodes, keeping the focused id.
+/// Drops the nodes whose elements have gone.
 ///
-/// Called once per frame before building. A node that is built again
-/// re-registers with the same id and keeps focus; one that is gone takes its
-/// registration with it, and focus is left pointing at nothing -- which is the
-/// same as nothing being focused, and is what happens upstream when a focused
-/// widget is disposed.
-pub fn begin_frame() {
-    MANAGER.with(|manager| manager.borrow_mut().entries.clear());
+/// Called once per frame, before building. The registry is *not* rebuilt each
+/// frame: a node lives as long as the element that registered it, which is
+/// upstream's arrangement -- a `FocusNode` is made in `initState` and disposed
+/// in `dispose`, and nothing about it is per-frame. It has to be that way here
+/// too, because only dirty elements rebuild and only changed subtrees produce
+/// new render objects, so "everything that is on screen" is not a thing any
+/// one frame walks past.
+///
+/// Focus itself follows: a node that is gone cannot hold the keyboard, which
+/// is what upstream does when a focused widget is disposed.
+pub fn prune(is_live: impl Fn(ElementRef) -> bool) {
+    MANAGER.with(|manager| {
+        let mut manager = manager.borrow_mut();
+        manager.entries.retain(|entry| is_live(entry.element));
+        if let Some(focused) = manager.focused {
+            if !manager.entries.iter().any(|entry| entry.id == focused) {
+                manager.focused = None;
+            }
+        }
+    });
 }
 
-/// Registers a node for this frame.
+/// Forgets every node and where the keyboard was.
+///
+/// Only for tests: the registry outlives frames now, so a test that mounts its
+/// own tree has to say when the last one stopped existing. Nothing in a
+/// running application calls this -- `prune` is the real thing.
+#[cfg(test)]
+pub(crate) fn reset() {
+    MANAGER.with(|manager| *manager.borrow_mut() = FocusManager::default());
+}
+
+/// Adds a node, or replaces what an id already had.
+///
+/// Replacing in place rather than appending is what keeps Tab order stable
+/// across a rebuild: the position in this list is the order the tree was
+/// walked in when the node first appeared, and rebuilding a widget does not
+/// move it. New handlers do replace the old ones, because they close over the
+/// state the rebuild produced.
 fn register(entry: FocusEntry) {
     MANAGER.with(|manager| {
         let mut manager = manager.borrow_mut();
-        if manager.entries.iter().any(|existing| existing.id == entry.id) {
-            return;
+        match manager.entries.iter().position(|existing| existing.id == entry.id) {
+            Some(index) => manager.entries[index] = entry,
+            None => manager.entries.push(entry),
         }
-        manager.entries.push(entry);
     });
 }
 
@@ -338,24 +374,22 @@ impl Component for Focus {
         inner.push(self.id);
         let built = crate::framework::provide(FocusScope(inner), child);
 
-        let entry = FocusEntry {
+        // Registered from the build, which is where upstream registers too
+        // (`_FocusState.initState` and `didUpdateWidget`). It survives the
+        // frames this widget does not rebuild, because the registry is not
+        // rebuilt per frame -- see `prune`.
+        register(FocusEntry {
             id: self.id,
+            element: context.element_ref(),
             ancestors: scope,
             on_key: self.on_key.clone(),
             traversable: self.traversable,
             on_focus_change: self.on_focus_change.clone(),
-        };
+        });
+
         let id = self.id;
         let focus_on_tap = self.focus_on_tap;
         single(built, move |child| {
-            // Registered here rather than in `build`, and the difference
-            // matters: only *dirty* elements are rebuilt, so a node that
-            // registered during its build would vanish on the first frame it
-            // had no reason to rebuild. Render objects are assembled for every
-            // element every frame, which is exactly the "still there" this
-            // needs -- and the order they are assembled in is tree order,
-            // which is the order Tab should walk.
-            register(entry.clone());
             let mut handlers = PointerHandlers::new();
             if focus_on_tap {
                 handlers = handlers.with_tap(move |_| {
@@ -408,7 +442,7 @@ mod tests {
     /// register when the render objects are made, which is what the host does
     /// once per frame.
     fn two_fields() -> ElementTree {
-        begin_frame();
+        reset();
         let mut tree = ElementTree::new();
         tree.rebuild(crate::framework::many(
             vec![
@@ -467,7 +501,7 @@ mod tests {
 
     #[test]
     fn a_key_goes_to_the_focused_node() {
-        begin_frame();
+        reset();
         let seen = Rc::new(RefCell::new(Vec::new()));
         let first = seen.clone();
         let second = seen.clone();
@@ -505,7 +539,7 @@ mod tests {
 
     #[test]
     fn a_key_the_focused_node_ignores_goes_to_its_ancestor() {
-        begin_frame();
+        reset();
         let seen = Rc::new(RefCell::new(Vec::new()));
         let inner = seen.clone();
         let outer = seen.clone();
@@ -533,7 +567,7 @@ mod tests {
 
     #[test]
     fn losing_focus_is_reported_as_well_as_gaining_it() {
-        begin_frame();
+        reset();
         let log = Rc::new(RefCell::new(Vec::new()));
         let first = log.clone();
         let second = log.clone();
@@ -565,14 +599,15 @@ mod tests {
 
     #[test]
     fn a_frame_that_rebuilds_nothing_keeps_its_focus_nodes() {
-        // The bug this rules out: registering during `build` looks right and
-        // is wrong, because only dirty elements are built. The first idle
-        // frame would then leave the tree with no focus nodes at all, and Tab
-        // would stop working until something happened to change.
+        // The bug this rules out: a registry rebuilt once per frame is a
+        // registry that empties on the first frame with nothing to do, and
+        // only dirty elements rebuild. Tab would stop working until something
+        // happened to change.
         let mut tree = two_fields();
         focus(2);
 
-        begin_frame();
+        // A frame in which nothing at all happens.
+        prune(|element| tree.is_live(element));
         assert_eq!(tree.rebuild_dirty(), 0, "nothing is dirty");
         let _ = tree.build_render_tree();
 
@@ -582,14 +617,27 @@ mod tests {
     }
 
     #[test]
-    fn a_node_that_is_no_longer_built_holds_nothing() {
-        let _tree = two_fields();
+    fn a_node_whose_widget_is_gone_holds_nothing() {
+        let mut tree = two_fields();
         focus(2);
         assert_eq!(focused(), Some(2));
 
-        // A frame in which nothing registers: the id is still remembered, but
-        // there is no node to deliver anything to.
-        begin_frame();
+        // The same shape of tree with the focusables taken out of it. Their
+        // elements are released, so their nodes go with them -- and the
+        // keyboard cannot be somewhere that no longer exists.
+        tree.rebuild(crate::framework::many(
+            vec![leaf(|| SizedBox::new(10.0, 10.0)), leaf(|| SizedBox::new(10.0, 10.0))],
+            |children| {
+                let mut column = Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        prune(|element| tree.is_live(element));
+
+        assert_eq!(focused(), None, "a disposed node cannot hold the keyboard");
         assert!(!dispatch_key(&key(LogicalKey::ENTER)));
         assert!(!next(), "and nowhere for Tab to go");
     }

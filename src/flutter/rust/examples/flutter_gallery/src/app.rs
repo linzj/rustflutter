@@ -394,8 +394,8 @@ fn page_stack(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWid
     // turns out to have. A FractionalTranslation render object would be the
     // tidy way; this is the same arithmetic without one.
     many(vec![previous, current], move |mut rendered| {
-        let current = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-        let previous = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+        let current = rendered.pop().unwrap_or_else(|| boxed(Empty));
+        let previous = rendered.pop().unwrap_or_else(|| boxed(Empty));
         Box::new(TransitionStack {
             previous,
             current,
@@ -457,7 +457,7 @@ impl rustflutter::render::RenderBox for TransitionStack {
     ) {
         paint_layer(
             context,
-            self.previous.as_ref(),
+            &self.previous,
             offset,
             self.size,
             self.previous_offset,
@@ -466,7 +466,7 @@ impl rustflutter::render::RenderBox for TransitionStack {
         );
         paint_layer(
             context,
-            self.current.as_ref(),
+            &self.current,
             offset,
             self.size,
             self.current_offset,
@@ -776,8 +776,8 @@ pub fn with_overlay(page: AnyWidget, overlay: Option<AnyWidget>) -> AnyWidget {
     match overlay {
         None => page,
         Some(overlay) => many(vec![page, overlay], |mut rendered| {
-            let overlay = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-            let page = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+            let overlay = rendered.pop().unwrap_or_else(|| boxed(Empty));
+            let page = rendered.pop().unwrap_or_else(|| boxed(Empty));
             Box::new(
                 Stack::new()
                     .push(page)
@@ -796,8 +796,8 @@ pub fn with_overlay(page: AnyWidget, overlay: Option<AnyWidget>) -> AnyWidget {
 /// A row that puts `trailing` at the far edge of whatever width it gets.
 pub fn spread(leading: AnyWidget, trailing: AnyWidget) -> AnyWidget {
     many(vec![leading, trailing], |mut rendered| {
-        let trailing = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-        let leading = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+        let trailing = rendered.pop().unwrap_or_else(|| boxed(Empty));
+        let leading = rendered.pop().unwrap_or_else(|| boxed(Empty));
         Box::new(
             RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)

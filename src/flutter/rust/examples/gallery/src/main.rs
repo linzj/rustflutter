@@ -119,7 +119,7 @@ impl Application for Gallery {
         // only the way to reach it differs.
         let padding = context.metrics.padding();
         let scrollable_height = context.size.height - header_height() - padding.vertical();
-        Box::new(rustflutter::render::RenderPadding::new(
+        boxed(rustflutter::render::RenderPadding::new(
             padding,
             Column::expanded()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)

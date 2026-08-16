@@ -322,7 +322,7 @@ where
 {
     render_widget(LeafWidget {
         key: None,
-        build: move || Box::new(build()) as BoxedRender,
+        build: move || crate::render::RenderRef::new(build()),
     })
 }
 
@@ -334,7 +334,7 @@ where
 {
     render_widget(LeafWidget {
         key: Some(key),
-        build: move || Box::new(build()) as BoxedRender,
+        build: move || crate::render::RenderRef::new(build()),
     })
 }
 
@@ -344,7 +344,11 @@ struct SingleWidget<F> {
     wrap: F,
 }
 
-impl<F: Fn(BoxedRender) -> BoxedRender + 'static> RenderWidget for SingleWidget<F> {
+impl<F, R> RenderWidget for SingleWidget<F>
+where
+    F: Fn(BoxedRender) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
+{
     fn key(&self) -> Key {
         self.key
     }
@@ -357,10 +361,10 @@ impl<F: Fn(BoxedRender) -> BoxedRender + 'static> RenderWidget for SingleWidget<
 
     fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
         match children.pop() {
-            Some(child) => (self.wrap)(child),
+            Some(child) => crate::render::RenderRef::new((self.wrap)(child)),
             // A child that failed to build leaves nothing to wrap. Producing an
             // empty box keeps the frame going rather than dropping the parent.
-            None => Box::new(crate::widgets::Empty),
+            None => crate::render::RenderRef::new(crate::widgets::Empty),
         }
     }
 }
@@ -371,17 +375,19 @@ impl<F: Fn(BoxedRender) -> BoxedRender + 'static> RenderWidget for SingleWidget<
 /// ```ignore
 /// single(child, |c| Box::new(RenderPadding::new(EdgeInsets::all(8.0), c)))
 /// ```
-pub fn single<F>(child: AnyWidget, wrap: F) -> AnyWidget
+pub fn single<F, R>(child: AnyWidget, wrap: F) -> AnyWidget
 where
-    F: Fn(BoxedRender) -> BoxedRender + 'static,
+    F: Fn(BoxedRender) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
 {
     render_widget(SingleWidget { key: None, child: RefCell::new(Some(child)), wrap })
 }
 
 /// [`single`] with an explicit key.
-pub fn keyed_single<F>(key: u64, child: AnyWidget, wrap: F) -> AnyWidget
+pub fn keyed_single<F, R>(key: u64, child: AnyWidget, wrap: F) -> AnyWidget
 where
-    F: Fn(BoxedRender) -> BoxedRender + 'static,
+    F: Fn(BoxedRender) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
 {
     render_widget(SingleWidget { key: Some(key), child: RefCell::new(Some(child)), wrap })
 }
@@ -392,7 +398,11 @@ struct ManyWidget<F> {
     assemble: F,
 }
 
-impl<F: Fn(Vec<BoxedRender>) -> BoxedRender + 'static> RenderWidget for ManyWidget<F> {
+impl<F, R> RenderWidget for ManyWidget<F>
+where
+    F: Fn(Vec<BoxedRender>) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
+{
     fn key(&self) -> Key {
         self.key
     }
@@ -402,7 +412,7 @@ impl<F: Fn(Vec<BoxedRender>) -> BoxedRender + 'static> RenderWidget for ManyWidg
     }
 
     fn create_render(&self, children: Vec<BoxedRender>) -> BoxedRender {
-        (self.assemble)(children)
+        crate::render::RenderRef::new((self.assemble)(children))
     }
 }
 
@@ -416,17 +426,19 @@ impl<F: Fn(Vec<BoxedRender>) -> BoxedRender + 'static> RenderWidget for ManyWidg
 ///     Box::new(flex)
 /// })
 /// ```
-pub fn many<F>(children: Vec<AnyWidget>, assemble: F) -> AnyWidget
+pub fn many<F, R>(children: Vec<AnyWidget>, assemble: F) -> AnyWidget
 where
-    F: Fn(Vec<BoxedRender>) -> BoxedRender + 'static,
+    F: Fn(Vec<BoxedRender>) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
 {
     render_widget(ManyWidget { key: None, children: RefCell::new(children), assemble })
 }
 
 /// [`many`] with an explicit key.
-pub fn keyed_many<F>(key: u64, children: Vec<AnyWidget>, assemble: F) -> AnyWidget
+pub fn keyed_many<F, R>(key: u64, children: Vec<AnyWidget>, assemble: F) -> AnyWidget
 where
-    F: Fn(Vec<BoxedRender>) -> BoxedRender + 'static,
+    F: Fn(Vec<BoxedRender>) -> R + 'static,
+    R: crate::render::RenderBox + 'static,
 {
     render_widget(ManyWidget { key: Some(key), children: RefCell::new(children), assemble })
 }
@@ -456,7 +468,7 @@ impl<T: 'static> RenderWidget for Provider<T> {
         // its child through.
         match children.pop() {
             Some(child) => child,
-            None => Box::new(crate::widgets::Empty),
+            None => crate::render::RenderRef::new(crate::widgets::Empty),
         }
     }
 }
@@ -769,6 +781,16 @@ impl BuildContext {
         self.element
     }
 
+    /// A way to ask, later, whether this element is still the one that was
+    /// built here.
+    ///
+    /// Not just the id: an id is a slot in an arena, and a released slot is
+    /// handed to the next element that needs one. The generation is what tells
+    /// "still mounted" from "somebody else lives here now".
+    pub fn element_ref(&self) -> ElementRef {
+        ElementRef { id: self.element, generation: self.shared.generation(self.element) }
+    }
+
     /// How deep in the element tree this build is. Useful for diagnostics.
     pub fn depth(&self) -> usize {
         self.depth
@@ -818,6 +840,35 @@ struct ElementNode {
     children: Vec<ElementId>,
     parent: Option<ElementId>,
     depth: usize,
+    /// The render object this element owns, kept across frames.
+    ///
+    /// Upstream's `RenderObjectElement._renderObject`, and the reason it is
+    /// here rather than only inside its parent is the same: an element that
+    /// did not rebuild has nothing new to say, and the object it made last
+    /// time is still the right one -- with its measurements, its shaped text
+    /// and its scroll extent still in it.
+    ///
+    /// A component has none. Upstream says so with a separate element class;
+    /// here it is simply never filled in, because a component's render object
+    /// is its child's.
+    render: Option<BoxedRender>,
+    /// Whether the widget has changed since `render` was made.
+    ///
+    /// Set by `mount` and `update` -- that is, exactly when this element was
+    /// given a new widget. A widget that was not replaced describes the same
+    /// render object it described last frame.
+    render_dirty: bool,
+}
+
+/// A reference to a particular element, one that stops being true when that
+/// element goes away.
+///
+/// The generation is the whole point: element ids are arena slots and are
+/// re-used, so an id on its own cannot tell "still there" from "replaced".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ElementRef {
+    id: ElementId,
+    generation: u64,
 }
 
 /// The persistent tree between widgets and render objects.
@@ -927,6 +978,26 @@ impl ElementTree {
     /// [`ElementTree::rebuild_dirty`].
     pub fn last_rebuilt(&self) -> &[ElementId] {
         &self.last_rebuilt
+    }
+
+    /// The root element, if anything is mounted.
+    pub fn root(&self) -> Option<ElementId> {
+        self.root
+    }
+
+    /// An element's children, in build order.
+    pub fn children_of(&self, id: ElementId) -> Vec<ElementId> {
+        self.nodes[id.0].as_ref().map(|node| node.children.clone()).unwrap_or_default()
+    }
+
+    /// Whether an element is still in the tree.
+    pub fn is_mounted(&self, id: ElementId) -> bool {
+        self.nodes.get(id.0).is_some_and(|slot| slot.is_some())
+    }
+
+    /// Whether the element a [`ElementRef`] names is still that element.
+    pub fn is_live(&self, element: ElementRef) -> bool {
+        self.is_mounted(element.id) && self.shared.generation(element.id) == element.generation
     }
 
     /// Reads an element's state, for tests and diagnostics.
@@ -1168,6 +1239,8 @@ impl ElementTree {
             children: Vec::new(),
             parent,
             depth,
+            render: None,
+            render_dirty: true,
         });
         if let Some(state) = state {
             self.shared.states.borrow_mut().insert(id, state);
@@ -1227,6 +1300,13 @@ impl ElementTree {
             node.widget = widget;
             node.depth = depth;
             node.parent = parent;
+            // A new widget describes a new render object. Upstream calls
+            // `updateRenderObject` here and mutates the existing one in place;
+            // this makes a new one, which is the same thing from every
+            // observer's point of view except the identity -- and the identity
+            // only matters for the elements that were *not* touched, which is
+            // most of them.
+            node.render_dirty = true;
         }
         self.shared.parents.borrow_mut().insert(id, parent);
         match provided {
@@ -1329,8 +1409,26 @@ impl ElementTree {
     }
 
     /// Walks the element tree and produces the render tree for this frame.
-    pub fn build_render_tree(&self) -> Option<BoxedRender> {
-        self.root.map(|root| self.build_render(root))
+    ///
+    /// "Produces" overstates it now. An element whose widget did not change,
+    /// and none of whose descendants' render objects were remade, hands back
+    /// the object it made before -- so a screen where one counter ticks keeps
+    /// every other render object it had, along with everything they had
+    /// measured. Upstream's arrangement, reached the other way round: there
+    /// the render object is the thing that persists and the widget is the
+    /// description, and an element only calls `updateRenderObject` when the
+    /// description changed.
+    pub fn build_render_tree(&mut self) -> Option<BoxedRender> {
+        let root = self.root?;
+        Some(self.build_render(root).0)
+    }
+
+    /// The render object an element is currently holding, if it has one.
+    ///
+    /// For tests: persistence is only observable as identity, and identity is
+    /// only reachable from here.
+    pub fn render_of(&self, id: ElementId) -> Option<BoxedRender> {
+        self.nodes[id.0].as_ref().and_then(|node| node.render.clone())
     }
 
     /// Builds `id`'s render object, and its subtree's underneath it.
@@ -1343,7 +1441,8 @@ impl ElementTree {
     /// constructed inside it. Same value, same place in the frame -- the
     /// paragraph ends up holding it either way, which is what matters, since
     /// shaping happens at layout when the walk is long over.
-    fn build_render(&self, id: ElementId) -> BoxedRender {
+    /// Returns this element's render object, and whether it is a new one.
+    fn build_render(&mut self, id: ElementId) -> (BoxedRender, bool) {
         let scale = {
             let provided = self.shared.provided.borrow();
             provided.get(&id).and_then(|entry| {
@@ -1361,22 +1460,55 @@ impl ElementTree {
         }
     }
 
-    fn build_render_node(&self, id: ElementId) -> BoxedRender {
-        let node = self.nodes[id.0].as_ref().expect("render walk hit a freed element");
-        match &node.widget.inner {
-            WidgetKind::Component(_) => match node.children.first() {
+    fn build_render_node(&mut self, id: ElementId) -> (BoxedRender, bool) {
+        let (is_component, children, dirty, cached) = {
+            let node = self.nodes[id.0].as_ref().expect("render walk hit a freed element");
+            (
+                matches!(node.widget.inner, WidgetKind::Component(_)),
+                node.children.clone(),
+                node.render_dirty,
+                node.render.clone(),
+            )
+        };
+
+        if is_component {
+            // A component's render object is its child's; it owns none itself.
+            return match children.first() {
                 Some(child) => self.build_render(*child),
-                None => Box::new(crate::widgets::Empty),
-            },
-            WidgetKind::Render(render) => {
-                let children = node
-                    .children
-                    .iter()
-                    .map(|child| self.build_render(*child))
-                    .collect();
-                render.create_render(children)
+                None => (crate::render::RenderRef::new(crate::widgets::Empty), true),
+            };
+        }
+
+        // The children first, because whether this object can be re-used
+        // depends on whether theirs were: a parent holds its children by
+        // handle, and a child that was remade is not the one this parent is
+        // holding.
+        let mut child_renders = Vec::with_capacity(children.len());
+        let mut a_child_was_remade = false;
+        for child in &children {
+            let (render, remade) = self.build_render(*child);
+            a_child_was_remade |= remade;
+            child_renders.push(render);
+        }
+
+        if !dirty && !a_child_was_remade {
+            if let Some(cached) = cached {
+                return (cached, false);
             }
         }
+
+        let built = {
+            let node = self.nodes[id.0].as_ref().expect("element vanished mid-walk");
+            let WidgetKind::Render(render) = &node.widget.inner else {
+                unreachable!("checked above");
+            };
+            render.create_render(child_renders)
+        };
+        if let Some(node) = self.nodes[id.0].as_mut() {
+            node.render = Some(built.clone());
+            node.render_dirty = false;
+        }
+        (built, true)
     }
 }
 
@@ -1891,5 +2023,125 @@ mod tests {
 
         tree.publish(Published(3));
         assert_eq!(tree.rebuild_dirty(), 0, "and should not be rebuilt for it");
+    }
+
+    // -- Persistent render objects -----------------------------------------
+
+    /// The element under the root that a probe leaf ends up at.
+    ///
+    /// Reached by walking rather than guessed, because the numbering is an
+    /// arena's business and a test that hard-codes it is testing the arena.
+    fn only_leaf_under(tree: &ElementTree, root: ElementId) -> ElementId {
+        let mut id = root;
+        loop {
+            let children = tree.children_of(id);
+            match children.first() {
+                Some(child) => id = *child,
+                None => return id,
+            }
+        }
+    }
+
+    #[test]
+    fn an_element_that_did_not_rebuild_keeps_its_render_object() {
+        // The whole point of section sixteen's first item: a render object
+        // survives the frame, so it can be given a layer, or asked to skip a
+        // layout, or trusted to remember what it measured.
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Static("static")),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+        let _ = tree.build_render_tree();
+
+        let root = tree.root().expect("mounted");
+        let children = tree.children_of(root);
+        let static_side = only_leaf_under(&tree, children[0]);
+        let counter_side = only_leaf_under(&tree, children[1]);
+        let static_before = tree.render_of(static_side).expect("built");
+        let counter_before = tree.render_of(counter_side).expect("built");
+
+        // One counter ticks. Nothing else has anything new to say.
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        assert_eq!(tree.rebuild_dirty(), 1);
+        let _ = tree.build_render_tree();
+
+        let static_after = tree.render_of(static_side).expect("still there");
+        let counter_after = tree.render_of(counter_side).expect("still there");
+        assert!(static_before.is(&static_after), "an untouched element was rebuilt anyway");
+        assert!(!counter_before.is(&counter_after), "the one that changed should be new");
+    }
+
+    #[test]
+    fn a_remade_child_remakes_the_parents_that_hold_it() {
+        // A parent holds its children by handle. If a child is remade and its
+        // parent is not, the parent is holding last frame's child -- so the
+        // spine from the change to the root has to come with it, and nothing
+        // else does.
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Static("static")),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+        let _ = tree.build_render_tree();
+
+        let root = tree.root().expect("mounted");
+        let root_before = tree.render_of(root).expect("built");
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+        let _ = tree.build_render_tree();
+
+        let root_after = tree.render_of(root).expect("still there");
+        assert!(!root_before.is(&root_after), "the column still holds the old child");
+    }
+
+    #[test]
+    fn an_idle_frame_remakes_nothing_at_all() {
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Static("static")),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+        let first = tree.build_render_tree().expect("mounted");
+
+        assert_eq!(tree.rebuild_dirty(), 0, "nothing is dirty");
+        let second = tree.build_render_tree().expect("still mounted");
+        assert!(first.is(&second), "a frame with no changes rebuilt the render tree");
+    }
+
+    #[test]
+    fn what_a_kept_render_object_kept() {
+        // Identity is only interesting because state rides on it. A render
+        // object that survived is the one that did the measuring.
+        reset_builds();
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Static("static")),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+
+        let static_side = only_leaf_under(&tree, tree.children_of(tree.root().unwrap())[0]);
+        let kept = tree.render_of(static_side).expect("built");
+        let measured = kept.size();
+
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+        let _ = tree.build_render_tree();
+
+        // Before any layout has run this frame: the size is last frame's,
+        // because it is the same object. A tree rebuilt from nothing would
+        // report zero here.
+        let after = tree.render_of(static_side).expect("still there");
+        assert_eq!(after.size(), measured);
     }
 }

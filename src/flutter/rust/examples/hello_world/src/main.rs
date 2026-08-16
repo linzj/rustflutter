@@ -27,7 +27,7 @@ impl Application for HelloWorld {
     }
 
     fn build(&mut self, _context: &BuildContext) -> BoxedWidget {
-        Box::new(Center::new(
+        boxed(Center::new(
             Container::new()
                 .with_color(CARD)
                 .with_corner_radius(16.0)

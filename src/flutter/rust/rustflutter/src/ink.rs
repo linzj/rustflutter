@@ -247,9 +247,9 @@ impl StatefulComponent for Ink {
             let region = crate::render::RenderPointerRegion::new(id, watched)
                 .with_handlers(handlers.clone());
             if contained {
-                Box::new(crate::render::RenderClipRect::new(region))
+                crate::render::RenderRef::new(crate::render::RenderClipRect::new(region))
             } else {
-                Box::new(region)
+                crate::render::RenderRef::new(region)
             }
         })
     }
@@ -376,7 +376,7 @@ mod tests {
             pressure: 1.0,
             local_position: Offset::new(50.0, 22.0),
         };
-        assert!(router.dispatch(root.as_ref(), &down), "the press should land on the ink");
+        assert!(router.dispatch(&root, &down), "the press should land on the ink");
 
         tree.advance_frame(16_000);
         tree.rebuild_dirty();

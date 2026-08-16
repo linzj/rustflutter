@@ -560,7 +560,7 @@ mod tests {
     fn tab_moves_between_two_fields_and_takes_the_session_with_it() {
         let _messenger = install();
         text_input::reset();
-        crate::focus::begin_frame();
+        crate::focus::reset();
 
         let mut tree = crate::framework::ElementTree::new();
         tree.rebuild(crate::framework::many(

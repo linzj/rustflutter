@@ -110,13 +110,13 @@ impl Component for Checkbox {
                 .with_child(Center::new(mark));
 
             let content: crate::widgets::BoxedWidget = match &label {
-                Some(text) => Box::new(
+                Some(text) => crate::render::RenderRef::new(
                     Row::new()
                         .with_spacing(spacing)
                         .push(box_widget)
                         .push(Text::new(text.clone()).with_style(body.clone())),
                 ),
-                None => Box::new(box_widget),
+                None => crate::render::RenderRef::new(box_widget),
             };
             Pointer::new(
                 id,
@@ -184,13 +184,13 @@ impl Component for Radio {
                 .with_child(Center::new(dot));
 
             let content: crate::widgets::BoxedWidget = match &label {
-                Some(text) => Box::new(
+                Some(text) => crate::render::RenderRef::new(
                     Row::new()
                         .with_spacing(spacing)
                         .push(ring)
                         .push(Text::new(text.clone()).with_style(body.clone())),
                 ),
-                None => Box::new(ring),
+                None => crate::render::RenderRef::new(ring),
             };
             Pointer::new(
                 id,
@@ -573,7 +573,7 @@ impl Component for NavigationRail {
                             .with_color(color),
                     ));
                 let content: crate::widgets::BoxedWidget = if extended {
-                    Box::new(
+                    crate::render::RenderRef::new(
                         Row::new()
                             .with_spacing(spacing)
                             .push(mark)
@@ -585,7 +585,7 @@ impl Component for NavigationRail {
                             ),
                     )
                 } else {
-                    Box::new(
+                    crate::render::RenderRef::new(
                         Column::new()
                             .with_spacing(2.0)
                             .push(mark)
@@ -723,7 +723,7 @@ impl Component for Dialog {
 
         many(children, move |mut rendered| {
             let header = if rendered.is_empty() {
-                Box::new(Empty) as crate::widgets::BoxedWidget
+                crate::render::RenderRef::new(Empty) as crate::widgets::BoxedWidget
             } else {
                 rendered.remove(0)
             };
@@ -947,7 +947,7 @@ impl Component for Banner {
 
         many(children, move |mut rendered| {
             let text = if rendered.is_empty() {
-                Box::new(Empty) as crate::widgets::BoxedWidget
+                crate::render::RenderRef::new(Empty) as crate::widgets::BoxedWidget
             } else {
                 rendered.remove(0)
             };
@@ -1036,7 +1036,7 @@ impl Component for GridList {
                     // A short last row is padded with empties rather than left
                     // short, so its tiles keep the width the rest have instead
                     // of stretching to fill.
-                    let cell = tiles.next().unwrap_or_else(|| Box::new(Empty));
+                    let cell = tiles.next().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
                     row = row.push_flex(FlexChild::expanded(cell, 1));
                 }
                 column = column.push(Box::new(AspectRow { row, aspect, columns, spacing }));

@@ -332,13 +332,13 @@ fn render_png(path: &str, taps: u32) -> c_int {
 
         if tap < taps {
             // Find the increment button and press it where it actually is.
-            let Some(target) = find_target(built.as_ref(), size, BUTTON_INCREMENT) else {
+            let Some(target) = find_target(&built, size, BUTTON_INCREMENT) else {
                 eprintln!("counter: could not find the increment button");
                 return 1;
             };
             for change in [PointerChange::Down, PointerChange::Up] {
                 router.dispatch(
-                    built.as_ref(),
+                    &built,
                     &PointerEvent {
                         view_id: 0,
                         device: 0,

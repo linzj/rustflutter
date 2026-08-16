@@ -434,10 +434,10 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // The clock was already moved forward in begin_frame; this only makes
         // sure every build in the frame reads the same value.
         self.tree.set_frame_time(context.frame_time_micros);
-        // Last frame's focus nodes are forgotten here; the builds below
-        // register this frame's. Which node *has* the keyboard survives, so a
-        // widget that rebuilds keeps focus by registering the same id again.
-        crate::focus::begin_frame();
+        // Focus nodes outlive the frames their widgets do not rebuild in, so
+        // this drops only the ones whose elements have actually gone.
+        let tree = &self.tree;
+        crate::focus::prune(|element| tree.is_live(element));
 
         // A photograph that finished decoding since the last frame is not on
         // screen until whoever asked for it is built again, and nothing records
@@ -491,7 +491,7 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
 
         self.tree
             .build_render_tree()
-            .unwrap_or_else(|| Box::new(crate::widgets::Empty))
+            .unwrap_or_else(|| crate::render::RenderRef::new(crate::widgets::Empty))
     }
 }
 
@@ -748,7 +748,7 @@ impl AppInstance {
         // The router needs the tree immutably and itself mutably; they are
         // different fields, so this is a split borrow rather than an alias.
         let router = &mut self.router;
-        let handled = router.dispatch(root.as_ref(), event);
+        let handled = router.dispatch(root, event);
         // A press that could still become a long press, or a tap that could
         // still become a double one, is waiting for the clock rather than for
         // the finger. Nothing else would ask for the frame that moves it, and

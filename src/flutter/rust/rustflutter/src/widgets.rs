@@ -33,6 +33,15 @@ use crate::render::{
 /// returns and what a parent stores for a child.
 pub type BoxedWidget = BoxedRender;
 
+/// Wraps a render object as a [`BoxedWidget`].
+///
+/// The thing a `build` hands back. It used to be a `Box`; it is a shared
+/// handle now, because an element holds on to what it made -- see
+/// [`crate::render::RenderRef`].
+pub fn boxed(render: impl crate::render::RenderBox + 'static) -> BoxedWidget {
+    crate::render::RenderRef::new(render)
+}
+
 // -- Text ---------------------------------------------------------------------
 
 /// A run of text, shaped by the engine's `txt` / skparagraph stack.
@@ -228,7 +237,7 @@ impl Container {
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
-        self.child = Some(Box::new(child));
+        self.child = Some(crate::render::RenderRef::new(child));
         self
     }
 
@@ -237,13 +246,13 @@ impl Container {
         let mut current: Option<BoxedWidget> = self.child.take();
 
         if let Some(alignment) = self.alignment {
-            let inner = current.take().unwrap_or_else(|| Box::new(Empty));
-            current = Some(Box::new(RenderAlign::new(alignment, inner)));
+            let inner = current.take().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
+            current = Some(crate::render::RenderRef::new(RenderAlign::new(alignment, inner)));
         }
 
         if self.padding != EdgeInsets::ZERO {
-            let inner = current.take().unwrap_or_else(|| Box::new(Empty));
-            current = Some(Box::new(RenderPadding::new(self.padding, inner)));
+            let inner = current.take().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
+            current = Some(crate::render::RenderRef::new(RenderPadding::new(self.padding, inner)));
         }
 
         let has_decoration =
@@ -259,7 +268,7 @@ impl Container {
             if let Some(inner) = current.take() {
                 decorated = decorated.with_child(inner);
             }
-            current = Some(Box::new(decorated));
+            current = Some(crate::render::RenderRef::new(decorated));
         }
 
         if self.width.is_some() || self.height.is_some() {
@@ -273,12 +282,12 @@ impl Container {
             if let Some(inner) = current.take() {
                 sized = sized.with_child(inner);
             }
-            current = Some(Box::new(sized));
+            current = Some(crate::render::RenderRef::new(sized));
         }
 
-        let mut result = current.unwrap_or_else(|| Box::new(Empty));
+        let mut result = current.unwrap_or_else(|| crate::render::RenderRef::new(Empty));
         if self.margin != EdgeInsets::ZERO {
-            result = Box::new(RenderPadding::new(self.margin, result));
+            result = crate::render::RenderRef::new(RenderPadding::new(self.margin, result));
         }
         result
     }
@@ -635,7 +644,7 @@ impl ListView {
     }
 
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
-        self.children.push(Box::new(child));
+        self.children.push(crate::render::RenderRef::new(child));
         self
     }
 

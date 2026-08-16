@@ -28,6 +28,7 @@
 //! knows its own geometry. [`RenderBox::hit_test`] walks the tree back to front
 //! and records the entries a gesture recogniser will later arbitrate over.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
@@ -583,7 +584,70 @@ pub trait RenderBox {
     }
 }
 
-pub type BoxedRender = Box<dyn RenderBox>;
+/// A render object, held by more than one thing at once.
+///
+/// The parent holds it because it is a child; the element that produced it
+/// holds it because it owns it across frames. Upstream both hold the same
+/// `RenderObject` and the garbage collector makes that unremarkable; here it
+/// takes a reference count and a cell, which is what `Rc<RefCell<..>>` is.
+///
+/// The cell is not a lock in disguise. Layout is the only thing that mutates a
+/// render object, it happens on one thread, and a tree has one path to each
+/// node -- so the borrow is uncontended by construction, and a panic here would
+/// mean the tree had stopped being a tree.
+#[derive(Clone)]
+pub struct RenderRef(Rc<RefCell<dyn RenderBox>>);
+
+impl RenderRef {
+    pub fn new<R: RenderBox + 'static>(render: R) -> RenderRef {
+        RenderRef(Rc::new(RefCell::new(render)))
+    }
+
+    /// Whether two handles are the same render object.
+    ///
+    /// What "persistent" means, and the only way to ask: an object that
+    /// survived a frame is the same object, not an equal one.
+    pub fn is(&self, other: &RenderRef) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl RenderBox for RenderRef {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.0.borrow_mut().layout(constraints)
+    }
+    fn size(&self) -> Size {
+        self.0.borrow().size()
+    }
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        self.0.borrow().paint(context, offset)
+    }
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.0.borrow().hit_test(position, result)
+    }
+    fn hit_test_id(&self) -> u64 {
+        self.0.borrow().hit_test_id()
+    }
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.0.borrow().min_intrinsic_width(height)
+    }
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.0.borrow().max_intrinsic_width(height)
+    }
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.0.borrow().min_intrinsic_height(width)
+    }
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.0.borrow().max_intrinsic_height(width)
+    }
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.0.borrow().distance_to_baseline()
+    }
+}
+
+/// What a parent stores for each of its children, and what a build closure
+/// hands back.
+pub type BoxedRender = RenderRef;
 
 /// So a boxed render object works anywhere an unboxed one does.
 impl<R: RenderBox + ?Sized> RenderBox for Box<R> {
@@ -777,7 +841,7 @@ impl RenderDecoratedBox {
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
-        self.child = Some(Box::new(child));
+        self.child = Some(RenderRef::new(child));
         self
     }
 
@@ -864,7 +928,7 @@ impl RenderBox for RenderDecoratedBox {
             }
         }
         if let Some(child) = &self.child {
-            context.paint_child(child.as_ref(), offset);
+            context.paint_child(child, offset);
         }
         if self.border_width > 0.0 {
             // Stroked on the boundary, so half the width falls outside. Insetting
@@ -1222,7 +1286,7 @@ impl RenderFullWidth {
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
-        self.child = Some(Box::new(child));
+        self.child = Some(RenderRef::new(child));
         self
     }
 }
@@ -1257,7 +1321,7 @@ impl RenderBox for RenderFullWidth {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(child) = &self.child {
-            context.paint_child(child.as_ref(), offset);
+            context.paint_child(child, offset);
         }
     }
 
@@ -1310,7 +1374,7 @@ impl RenderConstrainedBox {
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
-        self.child = Some(Box::new(child));
+        self.child = Some(RenderRef::new(child));
         self
     }
 }
@@ -1331,7 +1395,7 @@ impl RenderBox for RenderConstrainedBox {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(child) = &self.child {
-            context.paint_child(child.as_ref(), offset);
+            context.paint_child(child, offset);
         }
     }
 
@@ -1388,7 +1452,7 @@ pub struct RenderPadding {
 
 impl RenderPadding {
     pub fn new(insets: EdgeInsets, child: impl RenderBox + 'static) -> RenderPadding {
-        RenderPadding { insets, child: Box::new(child), size: Size::ZERO }
+        RenderPadding { insets, child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -1409,7 +1473,7 @@ impl RenderBox for RenderPadding {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         context.paint_child(
-            self.child.as_ref(),
+            &self.child,
             offset.translate(self.insets.left, self.insets.top),
         );
     }
@@ -1470,7 +1534,7 @@ impl RenderAlign {
             alignment,
             width_factor: None,
             height_factor: None,
-            child: Box::new(child),
+            child: RenderRef::new(child),
             child_offset: Offset::ZERO,
             size: Size::ZERO,
         }
@@ -1514,7 +1578,7 @@ impl RenderBox for RenderAlign {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         context.paint_child(
-            self.child.as_ref(),
+            &self.child,
             offset.plus(self.child_offset),
         );
     }
@@ -1563,15 +1627,15 @@ pub struct FlexChild {
 
 impl FlexChild {
     pub fn new(render: impl RenderBox + 'static) -> FlexChild {
-        FlexChild { render: Box::new(render), flex: 0, tight: true }
+        FlexChild { render: RenderRef::new(render), flex: 0, tight: true }
     }
 
     pub fn expanded(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
-        FlexChild { render: Box::new(render), flex: flex.max(1), tight: true }
+        FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: true }
     }
 
     pub fn flexible(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
-        FlexChild { render: Box::new(render), flex: flex.max(1), tight: false }
+        FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: false }
     }
 }
 
@@ -1855,7 +1919,7 @@ impl RenderBox for RenderFlex {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
-            context.paint_child(child.render.as_ref(), offset.plus(*placement));
+            context.paint_child(&child.render, offset.plus(*placement));
         }
     }
 
@@ -1997,7 +2061,7 @@ impl RenderStack {
 
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
         self.children.push(StackChild {
-            render: Box::new(child),
+            render: RenderRef::new(child),
             position: StackPosition::default(),
         });
         self
@@ -2014,7 +2078,7 @@ impl RenderStack {
         child: impl RenderBox + 'static,
         position: StackPosition,
     ) -> Self {
-        self.children.push(StackChild { render: Box::new(child), position });
+        self.children.push(StackChild { render: RenderRef::new(child), position });
         self
     }
 
@@ -2112,7 +2176,7 @@ impl RenderBox for RenderStack {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
-            context.paint_child(child.render.as_ref(), offset.plus(*placement));
+            context.paint_child(&child.render, offset.plus(*placement));
         }
     }
 
@@ -2176,7 +2240,7 @@ pub struct RenderIgnorePointer {
 
 impl RenderIgnorePointer {
     pub fn new(child: impl RenderBox + 'static) -> RenderIgnorePointer {
-        RenderIgnorePointer { child: Box::new(child), size: Size::ZERO }
+        RenderIgnorePointer { child: RenderRef::new(child), size: Size::ZERO }
     }
 
     pub fn boxed(child: BoxedRender) -> RenderIgnorePointer {
@@ -2195,7 +2259,7 @@ impl RenderBox for RenderIgnorePointer {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
@@ -2239,7 +2303,7 @@ impl RenderSizeReporter {
         sink: Rc<std::cell::Cell<Size>>,
         child: impl RenderBox + 'static,
     ) -> RenderSizeReporter {
-        RenderSizeReporter { sink, child: Box::new(child), size: Size::ZERO }
+        RenderSizeReporter { sink, child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -2255,7 +2319,7 @@ impl RenderBox for RenderSizeReporter {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2344,7 +2408,7 @@ impl RenderWrap {
     }
 
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
-        self.children.push(Box::new(child));
+        self.children.push(RenderRef::new(child));
         self
     }
 
@@ -2493,7 +2557,7 @@ impl RenderBox for RenderWrap {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         for (child, child_offset) in self.children.iter().zip(&self.offsets) {
-            context.paint_child(child.as_ref(), offset.plus(*child_offset));
+            context.paint_child(child, offset.plus(*child_offset));
         }
     }
 
@@ -2551,7 +2615,7 @@ pub struct RenderAspectRatio {
 
 impl RenderAspectRatio {
     pub fn new(ratio: f32, child: impl RenderBox + 'static) -> RenderAspectRatio {
-        RenderAspectRatio { ratio, child: Box::new(child), size: Size::ZERO }
+        RenderAspectRatio { ratio, child: RenderRef::new(child), size: Size::ZERO }
     }
 
     fn applied(&self, constraints: BoxConstraints) -> Size {
@@ -2599,7 +2663,7 @@ impl RenderBox for RenderAspectRatio {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2642,7 +2706,7 @@ pub struct RenderIntrinsicWidth {
 
 impl RenderIntrinsicWidth {
     pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicWidth {
-        RenderIntrinsicWidth { child: Box::new(child), size: Size::ZERO }
+        RenderIntrinsicWidth { child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -2665,7 +2729,7 @@ impl RenderBox for RenderIntrinsicWidth {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2702,7 +2766,7 @@ pub struct RenderIntrinsicHeight {
 
 impl RenderIntrinsicHeight {
     pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicHeight {
-        RenderIntrinsicHeight { child: Box::new(child), size: Size::ZERO }
+        RenderIntrinsicHeight { child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -2721,7 +2785,7 @@ impl RenderBox for RenderIntrinsicHeight {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2765,7 +2829,7 @@ impl RenderTransform {
         RenderTransform {
             matrix,
             origin: Alignment::CENTER,
-            child: Box::new(child),
+            child: RenderRef::new(child),
             size: Size::ZERO,
         }
     }
@@ -2798,7 +2862,7 @@ impl RenderBox for RenderTransform {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let pivot = self.origin.inscribe(Size::ZERO, self.size);
-        context.push_transform(self.matrix, pivot, offset, self.child.as_ref());
+        context.push_transform(self.matrix, pivot, offset, &self.child);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2839,7 +2903,7 @@ pub struct RenderOpacity {
 
 impl RenderOpacity {
     pub fn new(opacity: f32, child: impl RenderBox + 'static) -> RenderOpacity {
-        RenderOpacity { opacity: opacity.clamp(0.0, 1.0), child: Box::new(child), size: Size::ZERO }
+        RenderOpacity { opacity: opacity.clamp(0.0, 1.0), child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -2858,12 +2922,12 @@ impl RenderBox for RenderOpacity {
             return;
         }
         if self.opacity >= 1.0 {
-            context.paint_child(self.child.as_ref(), offset);
+            context.paint_child(&self.child, offset);
             return;
         }
         // 0..255, the alpha an OpacityLayer carries.
         let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u8;
-        context.push_opacity(alpha, offset, self.child.as_ref());
+        context.push_opacity(alpha, offset, &self.child);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2901,7 +2965,7 @@ pub struct RenderClipRect {
 
 impl RenderClipRect {
     pub fn new(child: impl RenderBox + 'static) -> RenderClipRect {
-        RenderClipRect { corner_radius: 0.0, child: Box::new(child), size: Size::ZERO }
+        RenderClipRect { corner_radius: 0.0, child: RenderRef::new(child), size: Size::ZERO }
     }
 
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
@@ -2926,7 +2990,7 @@ impl RenderBox for RenderClipRect {
             bounds,
             self.corner_radius,
             ClipBehavior::AntiAlias,
-            self.child.as_ref(),
+            &self.child,
             offset,
         );
     }
@@ -2966,7 +3030,7 @@ pub struct RenderClipPath {
 
 impl RenderClipPath {
     pub fn new(path: RenderPath, child: impl RenderBox + 'static) -> RenderClipPath {
-        RenderClipPath { path, child: Box::new(child), size: Size::ZERO }
+        RenderClipPath { path, child: RenderRef::new(child), size: Size::ZERO }
     }
 }
 
@@ -2984,7 +3048,7 @@ impl RenderBox for RenderClipPath {
         context.push_clip_path(
             &self.path,
             ClipBehavior::AntiAlias,
-            self.child.as_ref(),
+            &self.child,
             offset,
         );
     }
@@ -3019,7 +3083,7 @@ impl RenderViewport {
         RenderViewport {
             axis,
             offset: 0.0,
-            child: Box::new(child),
+            child: RenderRef::new(child),
             child_size: Size::ZERO,
             size: Size::ZERO,
         }
@@ -3097,7 +3161,7 @@ impl RenderBox for RenderViewport {
             bounds,
             0.0,
             ClipBehavior::HardEdge,
-            self.child.as_ref(),
+            &self.child,
             offset.plus(self.scroll_offset()),
         );
     }
@@ -3155,7 +3219,7 @@ impl RenderPointerRegion {
         RenderPointerRegion {
             id,
             handlers: Rc::new(PointerHandlers::default()),
-            child: Box::new(child),
+            child: RenderRef::new(child),
             size: Size::ZERO,
         }
     }
@@ -3179,7 +3243,7 @@ impl RenderBox for RenderPointerRegion {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(self.child.as_ref(), offset);
+        context.paint_child(&self.child, offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

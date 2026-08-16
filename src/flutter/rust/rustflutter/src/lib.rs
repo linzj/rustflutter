@@ -94,6 +94,7 @@ pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ItemWindow, LazyList, Scroll, item_window};
 pub use widgets::{
     BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
+    boxed,
     Widget,
 };
 
@@ -144,6 +145,7 @@ pub mod prelude {
     };
     pub use crate::widgets::{
         BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text,
+        boxed,
         TextSpan, Widget,
     };
     pub use crate::App;

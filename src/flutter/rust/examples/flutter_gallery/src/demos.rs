@@ -428,8 +428,8 @@ fn sheet_overlay(handle: StateHandle<GalleryState>) -> AnyWidget {
             .with_title("Share")),
         ],
         |mut rendered| {
-            let sheet = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-            let scrim = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+            let sheet = rendered.pop().unwrap_or_else(|| boxed(Empty));
+            let scrim = rendered.pop().unwrap_or_else(|| boxed(Empty));
             Box::new(
                 rustflutter::widgets::Stack::new()
                     .push_positioned(scrim, rustflutter::widgets::Positioned::fill())
@@ -630,8 +630,8 @@ fn dialog_overlay(state: &GalleryState, handle: StateHandle<GalleryState>) -> An
             ),
         ],
         |mut rendered| {
-            let dialog = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-            let scrim = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+            let dialog = rendered.pop().unwrap_or_else(|| boxed(Empty));
+            let scrim = rendered.pop().unwrap_or_else(|| boxed(Empty));
             Box::new(
                 rustflutter::widgets::Stack::new()
                     .push_positioned(scrim, rustflutter::widgets::Positioned::fill())
@@ -750,8 +750,8 @@ fn navigation_rail(
         vec![
             caption("A rail suits a window too wide for a bottom bar"),
             many(vec![rail, body], |mut rendered| {
-                let body = rendered.pop().unwrap_or_else(|| Box::new(Empty));
-                let rail = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+                let body = rendered.pop().unwrap_or_else(|| boxed(Empty));
+                let rail = rendered.pop().unwrap_or_else(|| boxed(Empty));
                 Box::new(
                     RenderFlex::row()
                         .with_main_axis_size(MainAxisSize::Max)
@@ -915,7 +915,7 @@ fn snackbar_overlay(handle: StateHandle<GalleryState>) -> AnyWidget {
             .wired(handle, |s| s.demo.snackbar_open = false),
     );
     many(vec![bar], |mut rendered| {
-        let bar = rendered.pop().unwrap_or_else(|| Box::new(Empty));
+        let bar = rendered.pop().unwrap_or_else(|| boxed(Empty));
         Box::new(rustflutter::widgets::Stack::new().push_positioned(
             bar,
             rustflutter::render::StackPosition {

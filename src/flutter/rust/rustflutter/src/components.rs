@@ -952,8 +952,10 @@ impl Component for ListTile {
                 .with_corner_radius(radius)
                 .with_child(row);
             match id {
-                Some(id) => Box::new(Pointer::new(id, padded).with_handlers(handlers.clone())),
-                None => Box::new(padded),
+                Some(id) => crate::render::RenderRef::new(
+                    Pointer::new(id, padded).with_handlers(handlers.clone()),
+                ),
+                None => crate::render::RenderRef::new(padded),
             }
         })
     }
