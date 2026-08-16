@@ -1821,19 +1821,72 @@ widget 存成 widget 的组件,第一次 build 交出去、第二次就没有了
 照片"的点击都吞了。相册的网格现在有一条:240 张照片往下滑,原本没有任何东西
 说滑到哪儿了。
 
+### 13. 文字缩放按子树给
+
+上游的 `Text` 在自己的 build 里读 `MediaQuery.textScalerOf(context)`,把答案
+作为字段交给 `RenderParagraph`,后者在布局时把它交给 `TextPainter`。这里原来
+是在 `shape` 里直接读平台设置,于是整个应用只能有一个缩放,子树没法不一样。
+
+现在走同一条路。`shape` / `shape_rich` 收缩放作为参数而不是读全局;
+`RenderParagraph` 和 `RenderEditable` 把它存成字段,在**造出来的地方**取。
+取在那里,是因为排版发生在布局时,而那时候"这段文字在哪个 `MediaQuery`
+底下"的那次遍历早已结束 —— 上游把它存起来而不是回头查,也正是这个原因。
+
+渲染树遍历在下降穿过一个 `MediaQuery` 时压入缩放,这是"从 `BuildContext`
+读"在闭包形态下的等价物。所以 `MediaQuery.withNoTextScaling` 和
+`withClampedTextScaling` 都有了对应:图标字体、标志这种"尺寸不是阅读尺寸"
+的东西可以退出;而一个确实撑不住 2.0 的布局可以被夹到 1.6 —— 夹住而不是
+推翻,因为小一点的放大仍然是放大。
+
+缓存不需要为此做任何事:缩放改变的是条目所依据的那个 style,所以两个不同
+尺寸的子树只是两条缓存条目。
+
+### 14. 键盘 redispatch(第十六节第 6 条)
+
+Win32 问"这个键你处理了吗"并且要在窗口过程返回之前拿到答案;框架的答案在
+另一个线程上,什么时候到就什么时候到。此前这里的解法是**根本不问**:每个键
+都上报,每个键也都照样交给 `DefWindowProc`,于是"handled"不代表任何事。
+
+上游 `KeyboardManager` 的解法是反过来的,这次移植的就是那套算法。键在进来
+时被拿走,带着一个序号发给框架;`SendKey` 现在带响应处理器,判决作为
+`kMessageKeyResult` 回到窗口线程。框架要的键直接丢掉;框架不要的键**原样
+放回**本窗口自己的消息队列,记下来,并在回来时认出来,让第二份落到
+`DefWindowProc`。
+
+顺序才是重点。文字和编辑键原来是在进来时就应用的,意味着不管有没有别人先
+认领,字段都会看到每一个键。现在它们被扣到判决之后:Tab 移动焦点时不会同时
+落进它离开的那个字段,快捷键被吃掉时不会同时打出一个字符。
+
+三件事留在外面,都是上游的规矩。系统键(`IsSysAction`)上报但不拿走也不放回
+—— 它们的默认处理就是 Alt+F4 和窗口菜单。前面没有按键的孤立 `WM_CHAR`(小
+键盘、输入法上屏)把文字直接送进去而不放回,因为根本没有键事件可以拒绝。
+没有框架可问时到达的键(启动和关闭那两段时间)立刻应用而不是丢掉。
+
+引擎那头需要一处修正才安全:`DispatchKeyDataPacket` 有三条路径没有完成响应
+就返回了。以前没人等这个答案,所以没人发现。现在窗口在等它,而丢掉的回复
+不是少了一行日志 —— 是一个再也到不了任何地方的按键。
+
+这块过程中还发现一个自己的错:编辑键原本记在"按键分支",但 Backspace 和
+Enter 都会产生 `WM_CHAR`,会话是在**字符分支**结束的,于是退格失效。编辑键
+现在记在会话收尾处,两条分支都经过那里。
+
 ### 验证
 
-**Windows**:框架 346 个测试、FFI 15 个、flutter_gallery 21 个、相册 60 个
+**Windows**:框架 353 个测试、FFI 15 个、flutter_gallery 21 个、相册 60 个
 (cargo 独立构建)全过;`platform_channels --probe` **PASS**(两处既有 SKIP);
 hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无头
 渲染正常;cursor_demo、exit_demo、settings_demo、text_demo 起得来且不 panic;
-相册 `cargo build --release` 独立构建并跑得住。
+相册 `cargo build --release` 独立构建并跑得住;showcase 的"Text scale"卡片里
+1.6x 那行明显比退出缩放那行大(而且行高跟着长,说明缩放确实到了排版而不是
+只到了 style);用真键盘驱动真窗口:Tab 在两个字段之间移动焦点、退格与左右键
+编辑、打字落在光标处、Alt+F4 照常关窗。
 
 **Android**(模拟器,Android 14,x86_64):11 个 APK 全部安装启动;showcase 的
 标题栏在状态栏之下、卡片有阴影、富文本三种样式同段渲染正确、按下按钮
 从触点扩散出水波并在松手后淡出(且点击照常计数);flutter_gallery
 滑动 → 打开 demo → 返回后截图与滑动后**逐字节相同**(列表位置保住);
-`platform_channels` **PASS**;相册 240 张图甩动后连续三帧都在变、滚动时右侧出现滑块;相册双击照片
+`platform_channels` **PASS**;showcase 的"Text scale"卡片两行大小不同;
+相册 150 张图滚动时右侧出现滑块;相册双击照片
 在 fit 与 1:1 之间切换 —— 双指捏合无法在这台镜像上注入(生产镜像不给 root,
 `/dev/input` 拒绝写),所以捏合走的是端到端测试:命中测试 → 路由判定 → viewer。
 
@@ -1847,7 +1900,3 @@ hello_world / gallery / showcase / counter / flutter_gallery 首页与 demo 无�
   通道。半做出来的语义树不会让任何读屏软件多读出一个字,所以没有半做。
 - **持久化 render object**(第十六节第 1 条)。仍然是每帧整棵重建。惰性列表
   的定高那一半已经不需要它;变高度的那一半、repaint boundary 和布局跳过需要。
-- **键盘 redispatch**(第十六节第 6 条)。
-- **文字缩放按子树给**。`MediaQueryData` 带着它了,但没有人读 —— `Text` 是在
-  闭包里造的渲染对象,没有 `BuildContext` 可读,而缩放是在排版时而不是构建时
-  用到的。
