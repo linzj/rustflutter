@@ -239,6 +239,47 @@ impl BoxConstraints {
         Size { width: self.min_width, height: self.min_height }
     }
 
+    /// The largest size inside these constraints that keeps `size`'s shape and
+    /// is no bigger than `size` itself.
+    ///
+    /// Upstream's `constrainSizeAndAttemptToPreserveAspectRatio`, four `if`s in
+    /// the order it wrote them, and the order is the point: each one fixes the
+    /// dimension it names and re-derives the other from the ratio, so a later
+    /// one can undo an earlier one's work. What survives all four is then run
+    /// through `constrain` anyway, which is where "attempt" gets its name --
+    /// constraints that cannot hold the ratio win, and the ratio is lost.
+    pub fn constrain_size_preserving_aspect_ratio(&self, size: Size) -> Size {
+        if self.is_tight() {
+            return self.smallest();
+        }
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return self.constrain(size);
+        }
+
+        let mut width = size.width;
+        let mut height = size.height;
+        let aspect_ratio = width / height;
+
+        if width > self.max_width {
+            width = self.max_width;
+            height = width / aspect_ratio;
+        }
+        if height > self.max_height {
+            height = self.max_height;
+            width = height * aspect_ratio;
+        }
+        if width < self.min_width {
+            width = self.min_width;
+            height = width / aspect_ratio;
+        }
+        if height < self.min_height {
+            height = self.min_height;
+            width = height * aspect_ratio;
+        }
+
+        self.constrain(Size::new(width, height))
+    }
+
     /// Narrows these constraints to fit inside `other`. Used where a child's
     /// own preference must not escape its parent's limits.
     pub fn enforce(&self, other: BoxConstraints) -> Self {
@@ -268,6 +309,25 @@ impl BoxConstraints {
 
     pub fn has_bounded_height(&self) -> bool {
         self.max_height.is_finite()
+    }
+
+    /// Whether the *minimum* is infinite, which is the only way a box can be
+    /// forced to be infinitely wide. Upstream's `hasInfiniteWidth`.
+    pub fn has_infinite_width(&self) -> bool {
+        self.min_width >= f32::INFINITY
+    }
+
+    pub fn has_infinite_height(&self) -> bool {
+        self.min_height >= f32::INFINITY
+    }
+
+    /// Clamps one dimension, for the callers that have a width but not a size.
+    pub fn constrain_width(&self, width: f32) -> f32 {
+        width.clamp(self.min_width, self.max_width)
+    }
+
+    pub fn constrain_height(&self, height: f32) -> f32 {
+        height.clamp(self.min_height, self.max_height)
     }
 }
 
@@ -558,6 +618,25 @@ impl HitTestResult {
     }
 }
 
+/// How a region behaves during a hit test. Upstream's `HitTestBehavior`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HitTestBehavior {
+    /// Receives events inside its bounds only where a child was hit.
+    DeferToChild,
+    /// Receives events anywhere inside its bounds, and keeps whatever is
+    /// visually behind it from receiving them.
+    ///
+    /// The default here, where upstream's is `deferToChild`, because the two
+    /// places that build a [`RenderPointerRegion`] -- an ink response and a
+    /// focus scope -- are upstream's `InkResponse`, which passes
+    /// `HitTestBehavior.opaque` (`material/ink_well.dart`).
+    #[default]
+    Opaque,
+    /// Receives events anywhere inside its bounds, and lets whatever is behind
+    /// it receive them too. Both are on the path, innermost first.
+    Translucent,
+}
+
 // -- The protocol -------------------------------------------------------------
 
 /// Reaching a render object's concrete type again after it has been erased.
@@ -641,16 +720,44 @@ pub trait RenderBox: AsAny {
     /// Records the objects under `position` (local coordinates), innermost
     /// first. Returns whether this object or a descendant was hit.
     ///
-    /// The default tests the box itself and stops there, which is right for a
-    /// leaf; anything with children should override and test them first, since
-    /// children paint on top.
+    /// Upstream's `RenderBox.hitTest`, and the protocol is the whole of it:
+    /// being inside the box is **not** enough. A box adds itself only once a
+    /// child was hit or it is a target in its own right, and otherwise answers
+    /// `false` -- which is what lets whatever is behind it in a stack still be
+    /// asked. A container that answered `true` for its own empty space would
+    /// swallow every press that landed on the gaps between its children.
+    ///
+    /// Override [`RenderBox::hit_test_children`] or
+    /// [`RenderBox::hit_test_self`] rather than this; the two places that
+    /// override this one -- [`RenderIgnorePointer`] and
+    /// [`RenderPointerRegion`] -- are the two upstream overrides as well.
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if self.size().contains(position) {
+        if self.size().contains(position)
+            && (self.hit_test_children(position, result) || self.hit_test_self(position))
+        {
             result.add(self.hit_test_id(), position);
-            true
-        } else {
-            false
+            return true;
         }
+        false
+    }
+
+    /// Whether this box is a target at `position` in its own right, ignoring
+    /// its children.
+    ///
+    /// Upstream's `hitTestSelf`, and false for the same things: anything that
+    /// is only a container -- padding, alignment, a flex, a clip -- is not
+    /// something a finger can land on. The boxes that draw something a finger
+    /// can land on say so: text, an image, an editable, a decoration.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        false
+    }
+
+    /// Whether a child is under `position`, recording it if so.
+    ///
+    /// Upstream's `hitTestChildren`. Children are tested back to front, since
+    /// the last one painted is the one on top, and the first hit wins.
+    fn hit_test_children(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
+        false
     }
 
     /// Identity recorded in a [`HitTestResult`]. Zero -- the default -- means
@@ -930,6 +1037,46 @@ struct RenderState {
     /// `layout` is always called from inside its parent's, so the parent is
     /// whatever was already laying out when this one started.
     parent: RefCell<Weak<RenderState>>,
+    /// What the intrinsic questions asked of this object were answered with,
+    /// and at what extent. Upstream's `_LayoutCacheStorage`.
+    ///
+    /// A list rather than a map, because the interesting size is one or two:
+    /// an object is asked for one dimension at one extent, and a `RenderFlex`
+    /// asking each child once a frame is the busy case. Hashing that would
+    /// cost more than walking it.
+    intrinsics: RefCell<Vec<(IntrinsicQuery, u32, f32)>>,
+    /// The last answer to `distance_to_baseline`, `None` if nothing asked.
+    /// Upstream keys its baseline cache by constraints; there is no dry
+    /// baseline here, so there is one answer to keep.
+    baseline: Cell<Option<Option<f32>>>,
+}
+
+/// Which intrinsic an answer belongs to. Upstream's `_IntrinsicDimension`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntrinsicQuery {
+    MinWidth,
+    MaxWidth,
+    MinHeight,
+    MaxHeight,
+}
+
+impl RenderState {
+    /// Forgets every remembered intrinsic, and says whether there had been one.
+    ///
+    /// Upstream's `_LayoutCacheStorage.clear`, down to the return value, which
+    /// is what tells `markNeedsLayout` that somebody above depended on this
+    /// object's intrinsics and has to be told too.
+    fn clear_layout_cache(&self) -> bool {
+        let had_intrinsics = !self.intrinsics.borrow().is_empty();
+        let had_baseline = self.baseline.get().is_some();
+        if had_intrinsics {
+            self.intrinsics.borrow_mut().clear();
+        }
+        if had_baseline {
+            self.baseline.set(None);
+        }
+        had_intrinsics || had_baseline
+    }
 }
 
 thread_local! {
@@ -977,6 +1124,8 @@ impl RenderRef {
                 constraints: Cell::new(None),
                 size: Cell::new(Size::ZERO),
                 parent: RefCell::new(Weak::new()),
+                intrinsics: RefCell::new(Vec::new()),
+                baseline: Cell::new(None),
             }),
         }
     }
@@ -1007,7 +1156,15 @@ impl RenderRef {
     pub fn mark_needs_layout(&self) {
         let mut state = Rc::clone(&self.state);
         loop {
-            if state.needs_layout.get() {
+            // Cleared before the early return, and a cache that had something
+            // in it keeps the walk going even past an ancestor that was already
+            // dirty: an ancestor that remembered an answer derived from this
+            // object is holding a stale number whatever its own flag says.
+            // Upstream is the same shape -- `RenderBox.markNeedsLayout` clears
+            // its storage and calls `markParentNeedsLayout` when there was
+            // something to clear, rather than stopping.
+            let had_cache = state.clear_layout_cache();
+            if state.needs_layout.get() && !had_cache {
                 return;
             }
             state.needs_layout.set(true);
@@ -1094,6 +1251,44 @@ impl RenderRef {
         }
         true
     }
+
+    /// Answers an intrinsic question out of what the last one was told, if the
+    /// same question was asked at the same extent since the last
+    /// [`RenderRef::mark_needs_layout`].
+    ///
+    /// Upstream's `_computeIntrinsics`. Worth having for the same reason it is
+    /// there: an intrinsic is allowed to be expensive -- a paragraph's is a
+    /// full re-shape of its text -- and the callers that ask are the ones that
+    /// ask repeatedly. `RenderIntrinsicWidth` asks its child, and if that child
+    /// is a flex the flex asks every one of its own children, so a nested pair
+    /// re-derives the whole subtree once per level without this.
+    ///
+    /// The extent is keyed on its bits rather than its value, which is what
+    /// makes `f32` a key at all -- and it is the right comparison too, since
+    /// the caller that asks twice asks with the same number both times.
+    fn memoize(
+        &self,
+        query: IntrinsicQuery,
+        extent: f32,
+        compute: impl FnOnce(&dyn RenderBox) -> f32,
+    ) -> f32 {
+        let bits = extent.to_bits();
+        if let Some(&(_, _, cached)) = self
+            .state
+            .intrinsics
+            .borrow()
+            .iter()
+            .find(|(cached_query, cached_bits, _)| *cached_query == query && *cached_bits == bits)
+        {
+            return cached;
+        }
+        // Computed with nothing borrowed but the object itself: answering may
+        // descend into children, and a child that shares this handle would find
+        // the list already borrowed.
+        let answer = compute(&**self.render.borrow());
+        self.state.intrinsics.borrow_mut().push((query, bits, answer));
+        answer
+    }
 }
 
 impl RenderBox for RenderRef {
@@ -1167,23 +1362,46 @@ impl RenderBox for RenderRef {
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.render.borrow().hit_test(position, result)
     }
+    fn hit_test_self(&self, position: Offset) -> bool {
+        self.render.borrow().hit_test_self(position)
+    }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.render.borrow().hit_test_children(position, result)
+    }
     fn hit_test_id(&self) -> u64 {
         self.render.borrow().hit_test_id()
     }
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.render.borrow().min_intrinsic_width(height)
+        self.memoize(IntrinsicQuery::MinWidth, height, |render| {
+            render.min_intrinsic_width(height)
+        })
     }
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.render.borrow().max_intrinsic_width(height)
+        self.memoize(IntrinsicQuery::MaxWidth, height, |render| {
+            render.max_intrinsic_width(height)
+        })
     }
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.render.borrow().min_intrinsic_height(width)
+        self.memoize(IntrinsicQuery::MinHeight, width, |render| {
+            render.min_intrinsic_height(width)
+        })
     }
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.render.borrow().max_intrinsic_height(width)
+        self.memoize(IntrinsicQuery::MaxHeight, width, |render| {
+            render.max_intrinsic_height(width)
+        })
     }
+    /// Upstream caches this alongside the intrinsics and for the same reason:
+    /// a baseline is as expensive as the text under it, and a `RenderFlex`
+    /// aligning a row asks every child twice -- once to find the deepest and
+    /// once to place each against it.
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.render.borrow().distance_to_baseline()
+        if let Some(cached) = self.state.baseline.get() {
+            return cached;
+        }
+        let answer = self.render.borrow().distance_to_baseline();
+        self.state.baseline.set(Some(answer));
+        answer
     }
 }
 
@@ -1231,6 +1449,12 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         (**self).hit_test(position, result)
+    }
+    fn hit_test_self(&self, position: Offset) -> bool {
+        (**self).hit_test_self(position)
+    }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        (**self).hit_test_children(position, result)
     }
     fn hit_test_id(&self) -> u64 {
         (**self).hit_test_id()
@@ -1460,6 +1684,36 @@ impl RenderDecoratedBox {
     }
 }
 
+/// Whether `position` is inside a `size` rectangle rounded by `radius`.
+///
+/// Upstream's `RRect.contains`, narrowed to the one uniform radius a
+/// [`RenderDecoratedBox`] can have: inside the bounds, and -- when the point
+/// falls in a corner's own quadrant -- inside that corner's circle. The caller
+/// has already checked the bounds, which is why anything not in a corner is in.
+fn rounded_rect_contains(size: Size, radius: f32, position: Offset) -> bool {
+    let radius = radius.min(size.width / 2.0).min(size.height / 2.0);
+    if radius <= 0.0 {
+        return true;
+    }
+    let centre_x = if position.dx < radius {
+        radius
+    } else if position.dx > size.width - radius {
+        size.width - radius
+    } else {
+        return true;
+    };
+    let centre_y = if position.dy < radius {
+        radius
+    } else if position.dy > size.height - radius {
+        size.height - radius
+    } else {
+        return true;
+    };
+    let dx = position.dx - centre_x;
+    let dy = position.dy - centre_y;
+    dx * dx + dy * dy <= radius * radius
+}
+
 fn point_in(rect: Rect, alignment: Alignment) -> (f32, f32) {
     (
         rect.left + rect.width() * (alignment.x + 1.0) / 2.0,
@@ -1577,15 +1831,21 @@ impl RenderBox for RenderDecoratedBox {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        if let Some(child) = &self.child {
-            child.hit_test(position, result);
-        }
-        result.add(self.hit_test_id(), position);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+    }
+
+    /// A decoration is something a finger lands on, so this is the one
+    /// container here that is a target in its own right.
+    ///
+    /// Upstream's `RenderDecoratedBox.hitTestSelf` asks the decoration and
+    /// `BoxDecoration.hitTest` answers by shape: a plain rectangle takes
+    /// everything inside it, a rounded one only what is inside the rounding.
+    /// It does not ask whether the decoration draws anything -- and it need
+    /// not, because upstream builds no `RenderDecoratedBox` for a `Container`
+    /// without a decoration, and neither does `Container::shape` here.
+    fn hit_test_self(&self, position: Offset) -> bool {
+        rounded_rect_contains(self.size, self.corner_radius, position)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -1786,6 +2046,14 @@ impl RenderBox for RenderParagraph {
         }
     }
 
+    /// Text is something a finger lands on. Upstream `RenderParagraph` says the
+    /// same in one line (`paragraph.dart`), and it says it for the whole box
+    /// rather than the inked glyphs, because a tap between two words is still a
+    /// tap on the label.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        true
+    }
+
     /// Text on screen is text a reader came for, and nothing had to ask for it.
     ///
     /// Upstream `Text` reaches this by wrapping itself in a `Semantics` widget
@@ -1844,6 +2112,7 @@ pub enum BoxFit {
 pub struct RenderImage {
     image: Rc<Image>,
     fit: BoxFit,
+    alignment: Alignment,
     size: Size,
 }
 
@@ -1852,11 +2121,23 @@ impl RenderImage {
     /// and decoding a PNG sixty times a second to draw the same picture is not
     /// a thing anyone wants. The caller decodes once and keeps the handle.
     pub fn new(image: Rc<Image>) -> RenderImage {
-        RenderImage { image, fit: BoxFit::default(), size: Size::ZERO }
+        RenderImage {
+            image,
+            fit: BoxFit::default(),
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+        }
     }
 
     pub fn with_fit(mut self, fit: BoxFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// Where the scaled picture sits in the box, when `fit` left room. Centred
+    /// unless said otherwise, which is upstream's default too.
+    pub fn with_alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
         self
     }
 
@@ -1885,9 +2166,16 @@ impl RenderImage {
         };
         let width = natural.width * scale;
         let height = natural.height * scale;
+        // Upstream's `paintImage`: half the slack, moved by the alignment
+        // across that same half. Alignment -1 puts the picture flush against
+        // the leading edge, 0 centres it, 1 pushes it to the far edge -- and
+        // the slack is negative when `Cover` overflowed, which is what makes
+        // the same two lines crop as well as position.
+        let half_width_delta = (self.size.width - width) / 2.0;
+        let half_height_delta = (self.size.height - height) / 2.0;
         Rect::xywh(
-            offset.dx + (self.size.width - width) / 2.0,
-            offset.dy + (self.size.height - height) / 2.0,
+            offset.dx + half_width_delta * (1.0 + self.alignment.x),
+            offset.dy + half_height_delta * (1.0 + self.alignment.y),
             width,
             height,
         )
@@ -1902,13 +2190,25 @@ impl RenderBox for RenderImage {
         // reading both.
         let mut effect = UpdateEffect::relayout_if(!Rc::ptr_eq(&self.image, &fresh.image));
         self.image = Rc::clone(&fresh.image);
-        // The fit decides the destination rect, which only `paint` asks for.
-        effect = effect.and(UpdateEffect::repaint_if(self.fit != fresh.fit));
+        // The fit and the alignment decide the destination rect, which only
+        // `paint` asks for.
+        effect = effect.and(UpdateEffect::repaint_if(
+            self.fit != fresh.fit || self.alignment != fresh.alignment,
+        ));
         self.fit = fresh.fit;
+        self.alignment = fresh.alignment;
         Some(effect)
     }
+    /// Upstream's `_sizeForConstraints` (`image.dart`): the picture's own shape
+    /// is kept if the constraints leave any room to keep it.
+    ///
+    /// A plain `constrain` would squash it -- a 200x100 picture in a box at
+    /// most 50 wide and at most 100 tall would come out 50x100, a box twice as
+    /// tall as the thing in it. The picture would still be drawn undistorted,
+    /// because `BoxFit` fixes that at paint time, but everything laid out
+    /// around it would be laid out around the wrong rectangle.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.size = constraints.constrain(self.natural());
+        self.size = constraints.constrain_size_preserving_aspect_ratio(self.natural());
         self.size
     }
 
@@ -1925,6 +2225,13 @@ impl RenderBox for RenderImage {
         context
             .canvas()
             .draw_image_rect(&self.image, source, self.destination(offset), None);
+    }
+
+    /// Upstream `RenderImage.hitTestSelf` is `true` (`image.dart`), for the box
+    /// and not the drawn pixels: the letterboxing around a `BoxFit.contain`
+    /// picture belongs to the picture as far as a finger is concerned.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        true
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
@@ -2014,14 +2321,8 @@ impl RenderBox for RenderFullWidth {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        if let Some(child) = &self.child {
-            child.hit_test(position, result);
-        }
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -2103,14 +2404,8 @@ impl RenderBox for RenderConstrainedBox {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        if let Some(child) = &self.child {
-            child.hit_test(position, result);
-        }
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -2119,32 +2414,42 @@ impl RenderBox for RenderConstrainedBox {
         }
     }
 
+    // All four are upstream's, and the shape is the same each time: a tight
+    // extra constraint is the whole answer, and otherwise the child's answer is
+    // put *through* the extra constraints -- a `SizedBox(width: 50)` around
+    // something that wants 200 wants 50, and saying 200 makes an
+    // `IntrinsicWidth` above it reserve four times what will be used.
+
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        if self.extra.has_tight_width() {
+        if self.extra.has_bounded_width() && self.extra.has_tight_width() {
             return self.extra.min_width;
         }
-        self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_width(height))
+        let width = self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_width(height));
+        if self.extra.has_infinite_width() { width } else { self.extra.constrain_width(width) }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        if self.extra.has_tight_width() {
+        if self.extra.has_bounded_width() && self.extra.has_tight_width() {
             return self.extra.min_width;
         }
-        self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_width(height))
+        let width = self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_width(height));
+        if self.extra.has_infinite_width() { width } else { self.extra.constrain_width(width) }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        if self.extra.has_tight_height() {
+        if self.extra.has_bounded_height() && self.extra.has_tight_height() {
             return self.extra.min_height;
         }
-        self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_height(width))
+        let height = self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_height(width));
+        if self.extra.has_infinite_height() { height } else { self.extra.constrain_height(height) }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        if self.extra.has_tight_height() {
+        if self.extra.has_bounded_height() && self.extra.has_tight_height() {
             return self.extra.min_height;
         }
-        self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_height(width))
+        let height = self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_height(width));
+        if self.extra.has_infinite_height() { height } else { self.extra.constrain_height(height) }
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
@@ -2203,13 +2508,9 @@ impl RenderBox for RenderPadding {
         visit(&self.child, Offset::new(self.insets.left, self.insets.top));
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child
-            .hit_test(position.translate(-self.insets.left, -self.insets.top), result);
-        true
+            .hit_test(position.translate(-self.insets.left, -self.insets.top), result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -2329,12 +2630,8 @@ impl RenderBox for RenderAlign {
         visit(&self.child, self.child_offset);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position.minus(self.child_offset), result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.child_offset), result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -2468,6 +2765,12 @@ impl RenderFlex {
         self.direction == Axis::Horizontal
     }
 
+    /// Upstream's `_isBaselineAligned`: baseline alignment is a horizontal
+    /// idea, and a column asking for it is not aligning anything.
+    fn is_baseline_aligned(&self) -> bool {
+        self.cross_axis_alignment == CrossAxisAlignment::Baseline && self.is_horizontal()
+    }
+
     fn main_of(&self, size: Size) -> f32 {
         if self.is_horizontal() { size.width } else { size.height }
     }
@@ -2490,6 +2793,44 @@ impl RenderFlex {
         } else {
             Offset::new(cross, main)
         }
+    }
+
+    /// The intrinsic extent along the main axis: upstream's `_getIntrinsicSize`
+    /// in its `INTRINSIC MAIN SIZE` half, line for line.
+    ///
+    /// A sum is wrong twice over. The gaps are space the flex will take
+    /// whatever its children want, so they start the count; and a flexible
+    /// child asking for `n` at flex `f` is really asking every *other* flexible
+    /// child for `n / f` of its own share, so what the whole row needs is the
+    /// greediest such fraction paid out to all of them -- `maxFraction *
+    /// totalFlex` -- rather than the sum of what each asked for.
+    fn intrinsic_main(&self, extent: f32, child_size: impl Fn(&dyn RenderBox, f32) -> f32) -> f32 {
+        let mut total_flex = 0.0f32;
+        let mut inflexible_space = self.spacing * (self.children.len() as f32 - 1.0).max(0.0);
+        let mut max_flex_fraction_so_far = 0.0f32;
+        for child in &self.children {
+            total_flex += child.flex as f32;
+            if child.flex > 0 {
+                let fraction = child_size(&child.render, extent) / child.flex as f32;
+                max_flex_fraction_so_far = max_flex_fraction_so_far.max(fraction);
+            } else {
+                inflexible_space += child_size(&child.render, extent);
+            }
+        }
+        max_flex_fraction_so_far * total_flex + inflexible_space
+    }
+
+    /// The intrinsic extent across the main axis: the largest any child wants.
+    ///
+    /// Upstream runs a dry layout here so that flexible children are measured
+    /// at the width they will actually get. There is no dry layout here, so
+    /// each child is asked at the extent the flex was asked at -- which is what
+    /// upstream did too before `computeDryLayout` existed.
+    fn intrinsic_cross(&self, extent: f32, child_size: impl Fn(&dyn RenderBox, f32) -> f32) -> f32 {
+        self.children
+            .iter()
+            .map(|child| child_size(&child.render, extent))
+            .fold(0.0, f32::max)
     }
 
     /// Constraints for one child, given the cross-axis limits and, for a
@@ -2616,6 +2957,38 @@ impl RenderBox for RenderFlex {
             }
         }
 
+        // Baseline-aligned children contribute to the cross axis differently
+        // from every other alignment, and upstream keeps a separate running
+        // total for them (`_AscentDescent` in `_computeSizes`): the deepest
+        // ascent and the deepest descent, added. A row aligned on its baseline
+        // is as tall as the tallest thing above the line plus the tallest thing
+        // below it, which is more than the tallest single child whenever those
+        // are two different children -- and taking the tallest child instead
+        // overflows the shorter-ascent one off the bottom.
+        //
+        // Only horizontal, because that is upstream's `_isBaselineAligned`.
+        let ascent_descent = if self.is_baseline_aligned() {
+            let mut accumulated: Option<(f32, f32)> = None;
+            for (index, child) in self.children.iter().enumerate() {
+                let Some(baseline) = child.render.distance_to_baseline() else {
+                    continue;
+                };
+                let descent = self.cross_of(sizes[index]) - baseline;
+                accumulated = Some(match accumulated {
+                    Some((ascent_so_far, descent_so_far)) => {
+                        (ascent_so_far.max(baseline), descent_so_far.max(descent))
+                    }
+                    None => (baseline, descent),
+                });
+            }
+            accumulated
+        } else {
+            None
+        };
+        if let Some((ascent, descent)) = ascent_descent {
+            cross = cross.max(ascent + descent);
+        }
+
         // Size ourselves.
         let content_main = allocated + total_spacing;
         let main_extent = match self.main_axis_size {
@@ -2648,14 +3021,16 @@ impl RenderBox for RenderFlex {
         };
 
         // Baseline alignment needs the deepest baseline before it can place
-        // anything, so it is resolved up front.
-        let max_baseline = if self.cross_axis_alignment == CrossAxisAlignment::Baseline {
-            self.children
+        // anything -- upstream's `sizes.baselineOffset`, which is the same
+        // deepest ascent the cross-axis extent above was computed from.
+        let max_baseline = match ascent_descent {
+            Some((ascent, _)) => ascent,
+            None if self.cross_axis_alignment == CrossAxisAlignment::Baseline => self
+                .children
                 .iter()
                 .filter_map(|c| c.render.distance_to_baseline())
-                .fold(0.0f32, f32::max)
-        } else {
-            0.0
+                .fold(0.0f32, f32::max),
+            None => 0.0,
         };
 
         self.offsets.clear();
@@ -2702,71 +3077,73 @@ impl RenderBox for RenderFlex {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         // Back to front: the last child painted is on top.
         for (child, placement) in self.children.iter().zip(self.offsets.iter()).rev() {
             if child.render.hit_test(position.minus(*placement), result) {
-                break;
+                return true;
             }
         }
-        true
+        false
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
         if self.is_horizontal() {
-            self.children.iter().map(|c| c.render.min_intrinsic_width(height)).sum::<f32>()
+            self.intrinsic_main(height, |child, extent| child.min_intrinsic_width(extent))
         } else {
-            self.children
-                .iter()
-                .map(|c| c.render.min_intrinsic_width(height))
-                .fold(0.0, f32::max)
+            self.intrinsic_cross(height, |child, extent| child.min_intrinsic_width(extent))
         }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
         if self.is_horizontal() {
-            self.children.iter().map(|c| c.render.max_intrinsic_width(height)).sum::<f32>()
+            self.intrinsic_main(height, |child, extent| child.max_intrinsic_width(extent))
         } else {
-            self.children
-                .iter()
-                .map(|c| c.render.max_intrinsic_width(height))
-                .fold(0.0, f32::max)
+            self.intrinsic_cross(height, |child, extent| child.max_intrinsic_width(extent))
         }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
         if self.is_horizontal() {
-            self.children
-                .iter()
-                .map(|c| c.render.min_intrinsic_height(width))
-                .fold(0.0, f32::max)
+            self.intrinsic_cross(width, |child, extent| child.min_intrinsic_height(extent))
         } else {
-            self.children.iter().map(|c| c.render.min_intrinsic_height(width)).sum::<f32>()
+            self.intrinsic_main(width, |child, extent| child.min_intrinsic_height(extent))
         }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         if self.is_horizontal() {
-            self.children
-                .iter()
-                .map(|c| c.render.max_intrinsic_height(width))
-                .fold(0.0, f32::max)
+            self.intrinsic_cross(width, |child, extent| child.max_intrinsic_height(extent))
         } else {
-            self.children.iter().map(|c| c.render.max_intrinsic_height(width)).sum::<f32>()
+            self.intrinsic_main(width, |child, extent| child.max_intrinsic_height(extent))
         }
     }
 
+    /// Upstream's `RenderFlex.computeDistanceToActualBaseline`, which picks by
+    /// direction: a row reports the **highest** baseline among its children --
+    /// the smallest distance down from its own top -- and a column reports the
+    /// **first** one.
+    ///
+    /// The difference is what the children are: a row's are side by side, so
+    /// none of them is first in any sense a reader of a baseline cares about,
+    /// and the line the row sits on is the topmost line any of them drew on. A
+    /// column's are stacked, so the first is the one at the top and the only
+    /// one that can be on the line. Either way the child's own offset counts,
+    /// because a baseline is measured from the flex's top and not the child's.
     fn distance_to_baseline(&self) -> Option<f32> {
-        // The first child that has one, offset by where it was placed.
-        self.children
-            .iter()
-            .zip(self.offsets.iter())
-            .find_map(|(child, offset)| {
-                child.render.distance_to_baseline().map(|b| b + offset.dy)
+        let placed = self.children.iter().zip(self.offsets.iter()).filter_map(
+            |(child, offset)| child.render.distance_to_baseline().map(|b| b + offset.dy),
+        );
+        if self.is_horizontal() {
+            placed.fold(None, |best: Option<f32>, candidate| {
+                Some(match best {
+                    Some(best) => best.min(candidate),
+                    None => candidate,
+                })
             })
+        } else {
+            placed.into_iter().next()
+        }
     }
 }
 
@@ -2926,11 +3303,18 @@ impl RenderBox for RenderStack {
                 (_, _, Some(height)) => Some(height),
                 _ => None,
             };
+            // Upstream's `positionedChildConstraints`, which ends in a
+            // `BoxConstraints.tightFor`: an axis the child was pinned on is
+            // tight, and an axis it was not is left **unbounded**, not capped
+            // at the stack. A child anchored by its left edge alone is being
+            // told where it starts and nothing about how far it may run, and
+            // capping it there silently wraps text that upstream would let
+            // overflow -- which is a different picture, not a safer one.
             let child_constraints = BoxConstraints::new(
                 width.unwrap_or(0.0),
-                width.unwrap_or(self.size.width),
+                width.unwrap_or(f32::INFINITY),
                 height.unwrap_or(0.0),
-                height.unwrap_or(self.size.height),
+                height.unwrap_or(f32::INFINITY),
             );
             sizes[index] = child.render.layout(child_constraints);
         }
@@ -2978,16 +3362,13 @@ impl RenderBox for RenderStack {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         for (child, placement) in self.children.iter().zip(self.offsets.iter()).rev() {
             if child.render.hit_test(position.minus(*placement), result) {
-                break;
+                return true;
             }
         }
-        true
+        false
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -3268,6 +3649,68 @@ struct Run {
     cross: f32,
 }
 
+impl RenderWrap {
+    /// Breaks the children into lines, given how long and how thick each one
+    /// is. The whole of what a wrap does, in one place so that the layout and
+    /// the intrinsics cannot disagree about where the lines fall.
+    fn break_into_runs(
+        &self,
+        extents: impl Iterator<Item = (f32, f32)>,
+        limit: f32,
+    ) -> Vec<Run> {
+        let mut runs: Vec<Run> = Vec::new();
+        let mut current = Run { first: 0, count: 0, main: 0.0, cross: 0.0 };
+        for (index, (child_main, child_cross)) in extents.enumerate() {
+            let with_spacing =
+                if current.count == 0 { child_main } else { current.main + self.spacing + child_main };
+            // A line that is already full starts another. The first child of a
+            // line stays on it however long it is: there is nowhere else for it
+            // to go, and moving it would leave an empty line.
+            if current.count > 0 && with_spacing > limit {
+                runs.push(current);
+                current = Run { first: index, count: 0, main: 0.0, cross: 0.0 };
+            }
+            current.main =
+                if current.count == 0 { child_main } else { current.main + self.spacing + child_main };
+            current.cross = current.cross.max(child_cross);
+            current.count += 1;
+        }
+        runs.push(current);
+        runs
+    }
+
+    /// How big this wrap comes out inside `limit` along its main axis, worked
+    /// out from the children's intrinsics rather than by laying them out.
+    ///
+    /// Upstream asks `getDryLayout` at exactly these four places. There is no
+    /// dry layout here, so this breaks the same lines with each child's max
+    /// intrinsic main extent standing in for the size a dry layout would have
+    /// handed it -- the same number, for any child whose two axes are
+    /// independent, which is most of them.
+    fn packed(&self, limit: f32) -> Size {
+        let extents = self.children.iter().map(|child| {
+            let child_main = match self.direction {
+                Axis::Horizontal => child.max_intrinsic_width(f32::INFINITY),
+                Axis::Vertical => child.max_intrinsic_height(f32::INFINITY),
+            }
+            .min(limit);
+            let child_cross = match self.direction {
+                Axis::Horizontal => child.max_intrinsic_height(child_main),
+                Axis::Vertical => child.max_intrinsic_width(child_main),
+            };
+            (child_main, child_cross)
+        });
+        let runs = self.break_into_runs(extents, limit);
+        let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
+        let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
+            + self.run_spacing * (runs.len() as f32 - 1.0).max(0.0);
+        match self.direction {
+            Axis::Horizontal => Size::new(longest, total_cross),
+            Axis::Vertical => Size::new(total_cross, longest),
+        }
+    }
+}
+
 impl RenderBox for RenderWrap {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderWrap>()?;
@@ -3306,38 +3749,14 @@ impl RenderBox for RenderWrap {
             Axis::Vertical => BoxConstraints::new(0.0, f32::INFINITY, 0.0, limit),
         };
 
-        let direction = self.direction;
-        let spacing = self.spacing;
-        let mut runs: Vec<Run> = Vec::new();
         let mut sizes: Vec<Size> = Vec::with_capacity(self.children.len());
-        let mut current = Run { first: 0, count: 0, main: 0.0, cross: 0.0 };
-
-        for (index, child) in self.children.iter_mut().enumerate() {
-            let size = child.layout(child_constraints);
-            sizes.push(size);
-            let child_main = match direction {
-                Axis::Horizontal => size.width,
-                Axis::Vertical => size.height,
-            };
-            let child_cross = match direction {
-                Axis::Horizontal => size.height,
-                Axis::Vertical => size.width,
-            };
-            let with_spacing =
-                if current.count == 0 { child_main } else { current.main + spacing + child_main };
-            // A line that is already full starts another. The first child of a
-            // line stays on it however long it is: there is nowhere else for it
-            // to go, and moving it would leave an empty line.
-            if current.count > 0 && with_spacing > limit {
-                runs.push(current);
-                current = Run { first: index, count: 0, main: 0.0, cross: 0.0 };
-            }
-            current.main =
-                if current.count == 0 { child_main } else { current.main + spacing + child_main };
-            current.cross = current.cross.max(child_cross);
-            current.count += 1;
+        for child in self.children.iter_mut() {
+            sizes.push(child.layout(child_constraints));
         }
-        runs.push(current);
+        let runs = self.break_into_runs(
+            sizes.iter().map(|size| (self.main(*size), self.cross(*size))),
+            limit,
+        );
 
         let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
         let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
@@ -3413,10 +3832,7 @@ impl RenderBox for RenderWrap {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         for (child, child_offset) in self.children.iter().zip(&self.offsets).rev() {
             if child.hit_test(position.minus(*child_offset), result) {
                 return true;
@@ -3425,28 +3841,58 @@ impl RenderBox for RenderWrap {
         false
     }
 
-    fn max_intrinsic_width(&self, height: f32) -> f32 {
-        // Everything on one line, which is the width at which nothing wraps.
+    // The four follow upstream's switch (`wrap.dart`): along the main axis the
+    // answer comes from the children directly, and across it the wrap has to
+    // know where the lines fell, which is what `packed` works out. Note the
+    // children are asked at infinity, not at the extent this was asked at --
+    // upstream does the same, because a child's contribution to the line it is
+    // on does not depend on how thick the whole wrap is allowed to be.
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
         match self.direction {
+            // One child per line, so the widest child is the narrowest this
+            // can be without clipping one.
+            Axis::Horizontal => self
+                .children
+                .iter()
+                .map(|c| c.min_intrinsic_width(f32::INFINITY))
+                .fold(0.0, f32::max),
+            Axis::Vertical => self.packed(height).width,
+        }
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        match self.direction {
+            // Everything on one line, which is the width at which nothing wraps.
             Axis::Horizontal => {
                 let sum: f32 =
-                    self.children.iter().map(|c| c.max_intrinsic_width(height)).sum();
+                    self.children.iter().map(|c| c.max_intrinsic_width(f32::INFINITY)).sum();
                 sum + self.spacing * (self.children.len() as f32 - 1.0).max(0.0)
             }
+            Axis::Vertical => self.packed(height).width,
+        }
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        match self.direction {
+            Axis::Horizontal => self.packed(width).height,
             Axis::Vertical => self
                 .children
                 .iter()
-                .map(|c| c.max_intrinsic_width(height))
+                .map(|c| c.min_intrinsic_height(f32::INFINITY))
                 .fold(0.0, f32::max),
         }
     }
 
-    fn min_intrinsic_width(&self, height: f32) -> f32 {
-        // One child per line, so the widest child is the narrowest this can be.
-        self.children
-            .iter()
-            .map(|c| c.min_intrinsic_width(height))
-            .fold(0.0, f32::max)
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        match self.direction {
+            Axis::Horizontal => self.packed(width).height,
+            Axis::Vertical => {
+                let sum: f32 =
+                    self.children.iter().map(|c| c.max_intrinsic_height(f32::INFINITY)).sum();
+                sum + self.spacing * (self.children.len() as f32 - 1.0).max(0.0)
+            }
+        }
     }
 }
 
@@ -3530,12 +3976,8 @@ impl RenderBox for RenderAspectRatio {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -3606,12 +4048,8 @@ impl RenderBox for RenderIntrinsicWidth {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -3672,12 +4110,8 @@ impl RenderBox for RenderIntrinsicHeight {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
@@ -3776,15 +4210,11 @@ impl RenderBox for RenderTransform {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         // Inverting the affine to hit-test through a transform is M3 work; a
         // transformed subtree currently tests against its untransformed
         // geometry, which is right for the common identity and translate cases.
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+        self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -3871,13 +4301,14 @@ impl RenderBox for RenderOpacity {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        // A fully transparent subtree is not a target, matching upstream.
-        if self.opacity <= 0.0 || !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        // A fully transparent subtree is not a target. Upstream's
+        // `RenderOpacity` does *not* draw this line -- it leaves an invisible
+        // subtree hittable and expects an `IgnorePointer` over it -- so this is
+        // stricter than upstream rather than a mistranslation of it. Kept
+        // because every caller here means "gone", and relaxing it would hand
+        // taps to things that are being faded out.
+        self.opacity > 0.0 && self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -3948,13 +4379,10 @@ impl RenderBox for RenderClipRect {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        // Outside the clip nothing is visible, so nothing is hittable.
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        // Outside the clip nothing is visible, so nothing is hittable -- and
+        // the bounds check that says so is in `hit_test`, before this runs.
+        self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -4014,12 +4442,8 @@ impl RenderBox for RenderClipPath {
         visit(&self.child, Offset::ZERO);
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position, result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
     }
 }
 
@@ -4154,12 +4578,8 @@ impl RenderBox for RenderViewport {
         visit(&self.child, self.scroll_offset());
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
-        }
-        self.child.hit_test(position.minus(self.scroll_offset()), result);
-        true
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.scroll_offset()), result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -4198,6 +4618,7 @@ impl RenderBox for RenderViewport {
 pub struct RenderPointerRegion {
     id: u64,
     handlers: Rc<PointerHandlers>,
+    behavior: HitTestBehavior,
     child: BoxedRender,
     size: Size,
 }
@@ -4207,6 +4628,7 @@ impl RenderPointerRegion {
         RenderPointerRegion {
             id,
             handlers: Rc::new(PointerHandlers::default()),
+            behavior: HitTestBehavior::default(),
             child: RenderRef::new(child),
             size: Size::ZERO,
         }
@@ -4216,6 +4638,12 @@ impl RenderPointerRegion {
     /// takes part in hit testing, so it can shield whatever is behind it.
     pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
         self.handlers = Rc::new(handlers);
+        self
+    }
+
+    /// How much of its bounds this region claims. See [`HitTestBehavior`].
+    pub fn with_behavior(mut self, behavior: HitTestBehavior) -> Self {
+        self.behavior = behavior;
         self
     }
 }
@@ -4228,6 +4656,7 @@ impl RenderBox for RenderPointerRegion {
         // Upstream's gesture setters mark nothing about the frame either.
         self.id = fresh.id;
         self.handlers = Rc::clone(&fresh.handlers);
+        self.behavior = fresh.behavior;
         let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
         self.child = fresh.child.clone();
         Some(effect)
@@ -4249,13 +4678,27 @@ impl RenderBox for RenderPointerRegion {
         visit(&self.child, Offset::ZERO);
     }
 
+    /// Upstream's `RenderProxyBoxWithHitTestBehavior.hitTest`, line for line:
+    /// the region joins the path when it or a child was hit *or* when it is
+    /// translucent, and it reports only whether something was actually hit --
+    /// so a translucent region hears the press without keeping it from
+    /// whatever is behind.
+    ///
+    /// This is one of the two overrides of `hit_test` here, because the entry
+    /// carries the handlers with it and `result.add` cannot.
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if !self.size.contains(position) {
-            return false;
+        let mut hit_target = false;
+        if self.size.contains(position) {
+            hit_target = self.child.hit_test(position, result) || self.hit_test_self(position);
+            if hit_target || self.behavior == HitTestBehavior::Translucent {
+                result.add_with_handlers(self.id, position, Some(Rc::clone(&self.handlers)));
+            }
         }
-        self.child.hit_test(position, result);
-        result.add_with_handlers(self.id, position, Some(Rc::clone(&self.handlers)));
-        true
+        hit_target
+    }
+
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        self.behavior == HitTestBehavior::Opaque
     }
 
     fn hit_test_id(&self) -> u64 {
@@ -4561,6 +5004,349 @@ mod tests {
         let mut result = HitTestResult::new();
         assert!(!region.hit_test(Offset::new(50.0, 50.0), &mut result));
         assert!(result.is_empty());
+    }
+
+    /// The main-axis intrinsic counts the gaps, and asks a flexible child what
+    /// its share implies for the whole row rather than adding up what each
+    /// child asked for.
+    ///
+    /// A 30-wide inflexible child and a 20-wide child at flex 1, five apart:
+    /// the gap is 5, the inflexible child is 30, and the flexible one wants 20
+    /// for one unit of flex, so one unit of flex must be worth 20. 55, not the
+    /// 50 a sum gives.
+    #[test]
+    fn flex_intrinsics_count_the_spacing_and_the_flex_factors() {
+        let row = RenderFlex::row()
+            .with_spacing(5.0)
+            .push(FixedBox::new(30.0, 10.0))
+            .push_flex(FlexChild::expanded(FixedBox::new(20.0, 10.0), 1));
+        assert_eq!(row.max_intrinsic_width(f32::INFINITY), 55.0);
+        assert_eq!(row.min_intrinsic_width(f32::INFINITY), 55.0);
+
+        // Two units of flex asking for 20 each: one unit is worth 10, so the
+        // pair is worth 20 -- and the gap and the inflexible child still count.
+        let shared = RenderFlex::row()
+            .with_spacing(5.0)
+            .push(FixedBox::new(30.0, 10.0))
+            .push_flex(FlexChild::expanded(FixedBox::new(20.0, 10.0), 2));
+        assert_eq!(shared.max_intrinsic_width(f32::INFINITY), 55.0);
+
+        // The cross axis is still the largest child, gaps and all.
+        assert_eq!(row.max_intrinsic_height(f32::INFINITY), 10.0);
+    }
+
+    /// A baseline-aligned row is as tall as the deepest ascent plus the deepest
+    /// descent. Two children 20 tall with baselines at 15 and 5: the first has
+    /// 15 above the line, the second has 15 below it, and the row needs 30 --
+    /// where the tallest single child is only 20 and the second would hang ten
+    /// pixels out of the bottom.
+    #[test]
+    fn a_baseline_row_is_as_tall_as_its_ascent_plus_its_descent() {
+        let mut row = RenderFlex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Baseline)
+            .push(FixedBox::new(10.0, 20.0).with_baseline(15.0))
+            .push(FixedBox::new(10.0, 20.0).with_baseline(5.0));
+        let size = row.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        assert_eq!(size.height, 30.0);
+        // Both baselines land on 15, which is where they landed before too.
+        assert_eq!(row.child_offsets(), [Offset::ZERO, Offset::new(10.0, 10.0)]);
+    }
+
+    /// And a row without baseline alignment is unaffected: the deepest child.
+    #[test]
+    fn an_ordinary_row_is_as_tall_as_its_tallest_child() {
+        let mut row = RenderFlex::row()
+            .push(FixedBox::new(10.0, 20.0).with_baseline(15.0))
+            .push(FixedBox::new(10.0, 24.0).with_baseline(5.0));
+        let size = row.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        assert_eq!(size.height, 24.0);
+    }
+
+    /// A row reports the highest baseline of its children, a column the first.
+    /// Upstream's `computeDistanceToActualBaseline`, which switches on
+    /// direction for exactly this.
+    #[test]
+    fn a_row_reports_its_highest_baseline_and_a_column_its_first() {
+        let mut row = RenderFlex::row()
+            .push(FixedBox::new(10.0, 30.0).with_baseline(20.0))
+            .push(FixedBox::new(10.0, 30.0).with_baseline(8.0));
+        row.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        // Both sit at the top, so the highest baseline is the smaller number.
+        assert_eq!(row.distance_to_baseline(), Some(8.0));
+
+        let mut column = RenderFlex::column()
+            .push(FixedBox::new(10.0, 30.0).with_baseline(20.0))
+            .push(FixedBox::new(10.0, 30.0).with_baseline(8.0));
+        column.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        // The first child's, and it is at the top, so no offset to add.
+        assert_eq!(column.distance_to_baseline(), Some(20.0));
+    }
+
+    /// A constrained box puts the child's intrinsic through its own extra
+    /// constraints. A `SizedBox(width: 50)` around something that wants 200
+    /// wants 50 -- saying 200 makes an `IntrinsicWidth` above it reserve four
+    /// times what will ever be drawn.
+    #[test]
+    fn a_constrained_box_applies_its_own_constraints_to_the_intrinsics() {
+        let capped = RenderConstrainedBox::new(BoxConstraints::new(0.0, 50.0, 0.0, f32::INFINITY))
+            .with_child(FixedBox::new(200.0, 10.0));
+        assert_eq!(capped.max_intrinsic_width(f32::INFINITY), 50.0);
+
+        // A floor works the same way round.
+        let floored = RenderConstrainedBox::new(BoxConstraints::new(80.0, f32::INFINITY, 0.0, f32::INFINITY))
+            .with_child(FixedBox::new(20.0, 10.0));
+        assert_eq!(floored.max_intrinsic_width(f32::INFINITY), 80.0);
+
+        // Tight is the whole answer, child or no child.
+        let tight = RenderConstrainedBox::tight(30.0, 40.0).with_child(FixedBox::new(200.0, 200.0));
+        assert_eq!(tight.max_intrinsic_width(f32::INFINITY), 30.0);
+        assert_eq!(tight.max_intrinsic_height(f32::INFINITY), 40.0);
+    }
+
+    /// A wrap can say how tall it is, which needs knowing where its lines fell.
+    /// Before this it answered zero, so an `IntrinsicHeight` around one
+    /// collapsed it.
+    #[test]
+    fn a_wrap_reports_the_height_of_the_lines_it_would_break_into() {
+        let wrap = RenderWrap::horizontal()
+            .with_spacing(10.0)
+            .with_run_spacing(4.0)
+            .push(FixedBox::new(40.0, 20.0))
+            .push(FixedBox::new(40.0, 20.0))
+            .push(FixedBox::new(40.0, 20.0));
+
+        // 100 wide fits two per line (40 + 10 + 40 = 90, a third would be 140),
+        // so two lines: 20 + 4 + 20.
+        assert_eq!(wrap.max_intrinsic_height(100.0), 44.0);
+        // 200 wide fits all three (40 + 10 + 40 + 10 + 40 = 140): one line.
+        assert_eq!(wrap.max_intrinsic_height(200.0), 20.0);
+        // And one per line when nothing else fits.
+        assert_eq!(wrap.max_intrinsic_height(40.0), 68.0);
+
+        // The widths are unchanged: everything on one line, and the widest
+        // child.
+        assert_eq!(wrap.max_intrinsic_width(f32::INFINITY), 140.0);
+        assert_eq!(wrap.min_intrinsic_width(f32::INFINITY), 40.0);
+    }
+
+    /// An image keeps its shape when the constraints leave room for it, rather
+    /// than being squashed into the box and only un-squashed at paint time.
+    #[test]
+    fn constraints_keep_an_aspect_ratio_when_they_can() {
+        // 200x100 into "at most 50 wide": 50x25, not 50x100.
+        let room = BoxConstraints::new(0.0, 50.0, 0.0, 100.0);
+        assert_eq!(
+            room.constrain_size_preserving_aspect_ratio(Size::new(200.0, 100.0)),
+            Size::new(50.0, 25.0)
+        );
+
+        // Both maxima bite: the tighter one decides, and the ratio holds.
+        let narrow = BoxConstraints::new(0.0, 50.0, 0.0, 10.0);
+        assert_eq!(
+            narrow.constrain_size_preserving_aspect_ratio(Size::new(200.0, 100.0)),
+            Size::new(20.0, 10.0)
+        );
+
+        // Tight constraints win outright -- this is why it is only an attempt.
+        let tight = BoxConstraints::tight(30.0, 30.0);
+        assert_eq!(
+            tight.constrain_size_preserving_aspect_ratio(Size::new(200.0, 100.0)),
+            Size::new(30.0, 30.0)
+        );
+    }
+
+    /// A positioned child pinned on one side only is given an unbounded axis,
+    /// not one capped at the stack. Upstream's `positionedChildConstraints`
+    /// builds from a bare `BoxConstraints()`.
+    #[test]
+    fn a_positioned_child_is_unbounded_on_the_axis_it_was_not_pinned_across() {
+        let mut stack = RenderStack::new()
+            .push(FixedBox::new(100.0, 100.0))
+            .push_positioned(
+                // Wants to be far wider than the stack.
+                FixedBox::new(500.0, 10.0),
+                StackPosition { left: Some(0.0), top: Some(0.0), ..Default::default() },
+            );
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+        // Pinned across neither edge, so it got all the room it asked for and
+        // simply overflows -- which is what upstream draws too.
+        assert_eq!(stack.child_offsets()[1], Offset::ZERO);
+
+        // And pinned across both edges it is still exactly the span between.
+        let mut pinned = RenderStack::new()
+            .push(FixedBox::new(100.0, 100.0))
+            .push_positioned(
+                FixedBox::new(500.0, 10.0),
+                StackPosition {
+                    left: Some(10.0),
+                    right: Some(10.0),
+                    bottom: Some(0.0),
+                    ..Default::default()
+                },
+            );
+        pinned.layout(BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(pinned.child_offsets()[1], Offset::new(10.0, 90.0));
+    }
+
+    /// An intrinsic is worked out once and then remembered, until something
+    /// says the layout is stale. Upstream's `_LayoutCacheStorage`, and it earns
+    /// its keep because an intrinsic is allowed to be expensive -- a
+    /// paragraph's is a full re-shape of its text.
+    #[test]
+    fn an_intrinsic_is_worked_out_once_and_then_remembered() {
+        struct Counting {
+            asked: Rc<Cell<usize>>,
+            baselines: Rc<Cell<usize>>,
+            size: Size,
+        }
+
+        impl RenderBox for Counting {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.size = constraints.constrain(Size::new(10.0, 10.0));
+                self.size
+            }
+            fn size(&self) -> Size {
+                self.size
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn max_intrinsic_width(&self, _height: f32) -> f32 {
+                self.asked.set(self.asked.get() + 1);
+                10.0
+            }
+            fn distance_to_baseline(&self) -> Option<f32> {
+                self.baselines.set(self.baselines.get() + 1);
+                Some(7.0)
+            }
+        }
+
+        let asked = Rc::new(Cell::new(0));
+        let baselines = Rc::new(Cell::new(0));
+        let handle = RenderRef::new(Counting {
+            asked: Rc::clone(&asked),
+            baselines: Rc::clone(&baselines),
+            size: Size::ZERO,
+        });
+
+        assert_eq!(handle.max_intrinsic_width(f32::INFINITY), 10.0);
+        assert_eq!(handle.max_intrinsic_width(f32::INFINITY), 10.0);
+        assert_eq!(asked.get(), 1, "the second answer came out of the first");
+
+        // A different extent is a different question.
+        handle.max_intrinsic_width(50.0);
+        assert_eq!(asked.get(), 2);
+
+        assert_eq!(handle.distance_to_baseline(), Some(7.0));
+        assert_eq!(handle.distance_to_baseline(), Some(7.0));
+        assert_eq!(baselines.get(), 1);
+
+        // And saying the layout is stale forgets all of it.
+        handle.mark_needs_layout();
+        handle.max_intrinsic_width(f32::INFINITY);
+        handle.distance_to_baseline();
+        assert_eq!(asked.get(), 3);
+        assert_eq!(baselines.get(), 2);
+    }
+
+    /// The protocol itself: a container is not a target for its own empty
+    /// space, so a press that lands on it and misses everything inside falls
+    /// through to whatever is behind it in the stack.
+    ///
+    /// Before this the padding answered `true` merely for containing the
+    /// point, and the button underneath never heard the press.
+    #[test]
+    fn an_undecorated_container_lets_the_press_reach_what_is_behind_it() {
+        let button = RenderPointerRegion::new(7, FixedBox::new(100.0, 100.0));
+        let overlay = RenderPadding::new(EdgeInsets::all(10.0), FixedBox::new(1.0, 1.0));
+        let mut stack = RenderStack::new().push(button).push(overlay);
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+
+        let mut result = HitTestResult::new();
+        assert!(stack.hit_test(Offset::new(50.0, 50.0), &mut result));
+        let path: Vec<u64> = result.path.iter().map(|entry| entry.target).collect();
+        assert_eq!(path, vec![7]);
+    }
+
+    /// And the other half of the protocol: a *decorated* box is a target, so
+    /// it does take the press. Upstream is the same and for the same reason --
+    /// `RenderDecoratedBox.hitTestSelf` asks the decoration, and
+    /// `BoxDecoration.hitTest` says yes to everything inside a rectangle. A
+    /// transparent `Container` over a button swallows taps in Flutter too.
+    #[test]
+    fn a_decorated_box_over_a_button_takes_the_press() {
+        let button = RenderPointerRegion::new(7, FixedBox::new(100.0, 100.0));
+        let overlay = RenderDecoratedBox::new().with_color(Color::TRANSPARENT);
+        let mut stack = RenderStack::new().push(button).push(overlay);
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+
+        let mut result = HitTestResult::new();
+        assert!(stack.hit_test(Offset::new(50.0, 50.0), &mut result));
+        // The decoration has no identity of its own, so nothing is recorded --
+        // but it was hit, and the stack stopped there rather than going on to
+        // the button.
+        assert!(result.is_empty());
+    }
+
+    /// A rounded decoration takes only what is inside the rounding, which is
+    /// `BoxDecoration.hitTest` asking the `RRect`.
+    #[test]
+    fn a_rounded_decoration_lets_its_corners_through() {
+        let button = RenderPointerRegion::new(7, FixedBox::new(100.0, 100.0));
+        let overlay = RenderDecoratedBox::new()
+            .with_color(Color::BLACK)
+            .with_corner_radius(20.0);
+        let mut stack = RenderStack::new().push(button).push(overlay);
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+
+        // Well inside: the decoration takes it.
+        let mut middle = HitTestResult::new();
+        assert!(stack.hit_test(Offset::new(50.0, 50.0), &mut middle));
+        assert!(middle.is_empty());
+
+        // The top-left corner, outside the arc: through to the button.
+        let mut corner = HitTestResult::new();
+        assert!(stack.hit_test(Offset::new(2.0, 2.0), &mut corner));
+        assert_eq!(corner.innermost().unwrap().target, 7);
+    }
+
+    /// `HitTestBehavior::Translucent`: on the path, and not in the way.
+    #[test]
+    fn a_translucent_region_hears_the_press_without_keeping_it() {
+        let below = RenderPointerRegion::new(1, FixedBox::new(100.0, 100.0));
+        let above = RenderPointerRegion::new(2, FixedBox::new(100.0, 100.0))
+            .with_behavior(HitTestBehavior::Translucent);
+        let mut stack = RenderStack::new().push(below).push(above);
+        stack.layout(BoxConstraints::tight(100.0, 100.0));
+
+        let mut result = HitTestResult::new();
+        assert!(stack.hit_test(Offset::new(50.0, 50.0), &mut result));
+        let path: Vec<u64> = result.path.iter().map(|entry| entry.target).collect();
+        assert_eq!(path, vec![2, 1]);
+    }
+
+    /// `HitTestBehavior::DeferToChild`: nothing hittable inside, so nothing
+    /// hit -- the case that catches an upstream reader out and behaves the
+    /// same way here.
+    #[test]
+    fn a_defer_to_child_region_over_nothing_is_not_hit() {
+        let region = {
+            let mut region = RenderPointerRegion::new(7, FixedBox::new(100.0, 100.0))
+                .with_behavior(HitTestBehavior::DeferToChild);
+            region.layout(BoxConstraints::tight(100.0, 100.0));
+            region
+        };
+        let mut result = HitTestResult::new();
+        assert!(!region.hit_test(Offset::new(50.0, 50.0), &mut result));
+        assert!(result.is_empty());
+    }
+
+    /// Text and pictures are targets in their own right, so a press on a label
+    /// inside a deferring region still reaches it. Upstream's
+    /// `RenderParagraph.hitTestSelf` and `RenderImage.hitTestSelf`, both of
+    /// which are a bare `true`. Asked directly, because laying either of them
+    /// out needs an engine and this does not.
+    #[test]
+    fn text_is_a_target_in_its_own_right() {
+        assert!(RenderParagraph::new("hello").hit_test_self(Offset::ZERO));
     }
 
     #[test]

@@ -228,8 +228,15 @@ impl StatefulComponent for Ink {
                         .with_size(radius * 2.0, radius * 2.0)
                         .with_color(color)
                         .with_corner_radius(radius);
+                    // Invisible to the pointer. Upstream a splash is not in the
+                    // tree at all -- `_RenderInkFeatures` paints it over its
+                    // child -- so nothing about it can take a press; here it is
+                    // a real box stacked on top of the content, and this is
+                    // what keeps it from being one.
                     stack = stack.push_positioned(
-                        crate::render::RenderOpacity::new(opacity, circle),
+                        crate::render::RenderIgnorePointer::new(
+                            crate::render::RenderOpacity::new(opacity, circle),
+                        ),
                         StackPosition {
                             left: Some(at.dx - radius),
                             top: Some(at.dy - radius),

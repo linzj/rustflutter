@@ -42,7 +42,7 @@ use crate::components::theme_of;
 use crate::engine::{Color, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, Key, StateHandle, StatefulComponent, leaf};
 use crate::painting;
-use crate::render::{BoxConstraints, HitTestResult, PaintContext, RenderBox};
+use crate::render::{BoxConstraints, PaintContext, RenderBox};
 use crate::services::text_input::{
     self, TextEditingValue, TextInputAction, TextInputClient, TextInputConfiguration,
     TextInputConnection, TextInputType,
@@ -315,13 +315,11 @@ impl RenderBox for RenderEditable {
         }
     }
 
-    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        if self.size.contains(position) {
-            result.add(0, position);
-            true
-        } else {
-            false
-        }
+    /// Upstream `RenderEditable.hitTestSelf` is `true` (`editable.dart`): a
+    /// press anywhere in the field places the caret, including in the empty
+    /// space after the last character.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        true
     }
 
     fn max_intrinsic_width(&self, _height: f32) -> f32 {
