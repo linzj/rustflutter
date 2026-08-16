@@ -243,6 +243,13 @@ pub struct ScaleEvent {
     pub pointer_count: usize,
 }
 
+/// A mouse moving over a region without pressing anything.
+#[derive(Clone, Copy, Debug)]
+pub struct HoverEvent {
+    /// Where the pointer is, in the region's local coordinates.
+    pub local_position: Offset,
+}
+
 // -- Timings ------------------------------------------------------------------
 //
 // Upstream's `gestures/constants.dart`. They are durations there and
@@ -556,6 +563,16 @@ pub struct PointerHandlers {
     pub on_scale_update: Option<Rc<dyn Fn(ScaleEvent)>>,
     /// Fired when the gesture stops being a two-finger one.
     pub on_scale_end: Option<Rc<dyn Fn(ScaleEvent)>>,
+    /// Fired when a mouse moves onto or off this region.
+    ///
+    /// Nothing on a touch screen ever calls it: a finger is either touching or
+    /// not there, so there is no hovering to report. Upstream's `MouseRegion`
+    /// onEnter/onExit, and the same caveat applies -- a region that appears
+    /// under a stationary pointer is entered upstream by the mouse tracker's
+    /// post-frame check, and here only by the next thing the mouse does.
+    pub on_hover_change: Option<Rc<dyn Fn(bool)>>,
+    /// Fired as a mouse moves inside this region.
+    pub on_hover: Option<Rc<dyn Fn(HoverEvent)>>,
 }
 
 impl PointerHandlers {
@@ -575,6 +592,16 @@ impl PointerHandlers {
 
     pub fn with_double_tap(mut self, handler: impl Fn(TapEvent) + 'static) -> Self {
         self.on_double_tap = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_hover_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.on_hover_change = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_hover(mut self, handler: impl Fn(HoverEvent) + 'static) -> Self {
+        self.on_hover = Some(Rc::new(handler));
         self
     }
 
@@ -647,6 +674,8 @@ impl PointerHandlers {
             && self.on_drag_end.is_none()
             && self.on_press_change.is_none()
             && self.on_scroll.is_none()
+            && self.on_hover_change.is_none()
+            && self.on_hover.is_none()
             && !self.wants_scale()
     }
 
@@ -809,11 +838,23 @@ pub struct GestureRouter {
     pending_tap: Option<PendingTap>,
     /// The two-finger gesture in progress, if there is one.
     scale: Option<ActiveScale>,
+    /// Which regions the mouse is currently inside, innermost first, and what
+    /// to tell them when it leaves.
+    ///
+    /// The *whole* path rather than the innermost region: a button inside a
+    /// card is inside both, and both want to know. Upstream's `MouseTracker`
+    /// keeps the same set for the same reason.
+    hovered: Vec<(u64, Rc<PointerHandlers>)>,
 }
 
 impl GestureRouter {
     pub fn new() -> GestureRouter {
-        GestureRouter { active: Vec::new(), pending_tap: None, scale: None }
+        GestureRouter {
+            active: Vec::new(),
+            pending_tap: None,
+            scale: None,
+            hovered: Vec::new(),
+        }
     }
 
     /// Moves the clock forward, and returns whether anything is still waiting
@@ -944,11 +985,70 @@ impl GestureRouter {
             PointerChange::Down => self.on_down(root, event),
             PointerChange::Move => self.on_move(event),
             PointerChange::Up => self.on_up(event),
-            PointerChange::Cancel | PointerChange::Remove => self.on_cancel(event),
-            // Hover, add, and the pan-zoom family have no recogniser yet. They
-            // are accepted so the shell's contract holds.
+            // A mouse leaving the window is a Remove with nothing pressed:
+            // whatever it was hovering, it is not hovering it now.
+            PointerChange::Cancel | PointerChange::Remove => {
+                self.leave_all();
+                self.on_cancel(event)
+            }
+            PointerChange::Hover => self.on_hover(root, event),
+            // Add and the pan-zoom family have no recogniser yet. They are
+            // accepted so the shell's contract holds.
             _ => false,
         }
+
+    }
+
+    /// Tells the regions under the mouse that it is there, and the ones it has
+    /// left that it is gone.
+    fn on_hover(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
+        let mut result = HitTestResult::new();
+        root.hit_test(event.position, &mut result);
+
+        let mut under: Vec<(u64, Rc<PointerHandlers>, Offset)> = Vec::new();
+        for entry in &result.path {
+            let Some(handlers) = entry.handlers.clone() else { continue };
+            if handlers.on_hover_change.is_some() || handlers.on_hover.is_some() {
+                under.push((entry.target, handlers, entry.local_position));
+            }
+        }
+
+        // Left: everything that was under the mouse and no longer is. Told
+        // first, so a region cannot see two things highlighted at once.
+        let still_here: Vec<u64> = under.iter().map(|(id, _, _)| *id).collect();
+        let left: Vec<Rc<PointerHandlers>> = self
+            .hovered
+            .iter()
+            .filter(|(id, _)| !still_here.contains(id))
+            .map(|(_, handlers)| Rc::clone(handlers))
+            .collect();
+        for handlers in &left {
+            if let Some(changed) = &handlers.on_hover_change {
+                changed(false);
+            }
+        }
+
+        let was_here: Vec<u64> = self.hovered.iter().map(|(id, _)| *id).collect();
+        let mut told_anyone = !left.is_empty();
+        for (id, handlers, local) in &under {
+            if !was_here.contains(id) {
+                if let Some(changed) = &handlers.on_hover_change {
+                    changed(true);
+                    told_anyone = true;
+                }
+            }
+            if let Some(hover) = &handlers.on_hover {
+                hover(HoverEvent { local_position: *local });
+                told_anyone = true;
+            }
+        }
+
+        self.hovered =
+            under.into_iter().map(|(id, handlers, _)| (id, handlers)).collect();
+        // Only when something was actually told. A mouse crossing a window
+        // with nothing hoverable in it, or sitting still inside a region that
+        // only cares about being entered, must not cost a frame per pixel.
+        told_anyone
     }
 
     /// Gives a scroll to the innermost region under the pointer that wants one.
@@ -970,6 +1070,15 @@ impl GestureRouter {
             }
         }
         false
+    }
+
+    /// The mouse has gone: nothing is hovered any more.
+    fn leave_all(&mut self) {
+        for (_, handlers) in std::mem::take(&mut self.hovered) {
+            if let Some(changed) = &handlers.on_hover_change {
+                changed(false);
+            }
+        }
     }
 
     fn on_down(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
@@ -2251,5 +2360,88 @@ mod tests {
             vec![Offset::ZERO],
             "the drag ended, and a cancelled drag does not fling"
         );
+    }
+
+    // -- Hover ----------------------------------------------------------------
+
+    /// A mouse at a position, hovering rather than pressing.
+    fn hover_at(x: f32, y: f32) -> PointerEvent {
+        PointerEvent {
+            kind: PointerKind::Mouse,
+            buttons: 0,
+            ..event(PointerChange::Hover, x, y, 0.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn a_mouse_entering_and_leaving_is_reported_once_each() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sink = log.clone();
+        let root = tree(PointerHandlers::new().with_hover_change(move |inside| {
+            sink.borrow_mut().push(inside);
+        }));
+
+        let mut router = GestureRouter::new();
+        // Outside the 40x40 region at (10,10), then inside it twice, then out.
+        router.dispatch(&root, &hover_at(90.0, 90.0));
+        assert!(log.borrow().is_empty());
+        router.dispatch(&root, &hover_at(20.0, 20.0));
+        router.dispatch(&root, &hover_at(30.0, 30.0));
+        assert_eq!(*log.borrow(), vec![true], "entering is one event, not one per move");
+        router.dispatch(&root, &hover_at(90.0, 90.0));
+        assert_eq!(*log.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn moving_inside_a_region_reports_where() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let root = tree(PointerHandlers::new().with_hover(move |hover| {
+            sink.borrow_mut().push(hover.local_position);
+        }));
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &hover_at(20.0, 20.0));
+        // Local to the region, which starts at (10, 10).
+        assert_eq!(seen.borrow().len(), 1);
+        assert_eq!(seen.borrow()[0], Offset::new(10.0, 10.0));
+    }
+
+    #[test]
+    fn a_button_inside_a_card_hovers_both() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let inner = log.clone();
+        let outer = log.clone();
+        let root = nested(
+            PointerHandlers::new().with_hover_change(move |inside| {
+                inner.borrow_mut().push(format!("inner:{inside}"));
+            }),
+            PointerHandlers::new().with_hover_change(move |inside| {
+                outer.borrow_mut().push(format!("outer:{inside}"));
+            }),
+        );
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &hover_at(40.0, 40.0));
+        assert_eq!(*log.borrow(), vec!["inner:true", "outer:true"]);
+        router.dispatch(&root, &PointerEvent {
+            change: PointerChange::Remove,
+            ..hover_at(40.0, 40.0)
+        });
+        assert_eq!(
+            *log.borrow(),
+            vec!["inner:true", "outer:true", "inner:false", "outer:false"],
+            "the pointer left the window, so nothing is hovered"
+        );
+    }
+
+    #[test]
+    fn a_press_is_not_a_hover() {
+        let root = tree(PointerHandlers::new().with_hover_change(|_| {
+            panic!("a finger touching the screen is not hovering over it")
+        }));
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0));
     }
 }

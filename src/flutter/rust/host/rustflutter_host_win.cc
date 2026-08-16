@@ -2262,6 +2262,11 @@ struct WindowState {
   fml::RefPtr<fml::TaskRunner> platform_task_runner;
   fml::RefPtr<fml::TaskRunner> raster_task_runner;
   double device_pixel_ratio = 1.0;
+  /// Whether Windows has been asked to report the mouse leaving this window.
+  /// The request is one-shot -- it is spent by the WM_MOUSELEAVE it produces --
+  /// so it is re-armed by the next hover.
+  bool tracking_mouse_leave = false;
+
   /// Whether the primary button is currently down, so a WM_MOUSEMOVE can be
   /// told apart from a drag.
   bool pressed = false;
@@ -2878,22 +2883,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
           // message, for the same reason: it is frequent enough to fix the
           // state before anybody notices and free when nothing has changed.
           SyncModifiers(state);
-          // A move with no button down is a hover, which no recogniser wants
-          // yet; sending it anyway would be a packet per mouse pixel.
           if (state->pressed) {
             state->platform_view->SendPointer(
                 MakePointerData(state, PointerData::Change::kMove, x, y));
           } else {
+            // A move with nothing pressed is a hover. It is a packet per mouse
+            // pixel, which is what every Flutter embedder sends and what the
+            // framework's hover tracking needs -- there is no other way to
+            // know that the pointer has entered something. Asking Windows to
+            // tell us when it leaves is part of the same bargain: without
+            // WM_MOUSELEAVE the last region stays highlighted after the mouse
+            // has gone somewhere else entirely.
+            if (!state->tracking_mouse_leave) {
+              TRACKMOUSEEVENT track = {};
+              track.cbSize = sizeof(track);
+              track.dwFlags = TME_LEAVE;
+              track.hwndTrack = hwnd;
+              TrackMouseEvent(&track);
+              state->tracking_mouse_leave = true;
+            }
             state->last_x = x;
             state->last_y = y;
+            state->platform_view->SendPointer(
+                MakePointerData(state, PointerData::Change::kHover, x, y));
           }
           break;
         }
         case WM_MOUSELEAVE: {
+          state->tracking_mouse_leave = false;
           if (state->pressed) {
             state->platform_view->SendPointer(
                 MakePointerData(state, PointerData::Change::kCancel, x, y));
             state->pressed = false;
+          } else {
+            // Nothing is under the pointer any more. Remove is what the
+            // framework reads as "this pointer is gone", and is what upstream
+            // sends when a mouse leaves a view.
+            state->platform_view->SendPointer(
+                MakePointerData(state, PointerData::Change::kRemove, x, y));
           }
           break;
         }
