@@ -4660,6 +4660,46 @@ mod reconfiguring_tests {
         ));
         assert!(!clipped.reconfigure(other), "a clip path claimed it could compare paths");
     }
+
+    #[test]
+    fn a_boundary_over_a_new_layout_draws_it_again() {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+
+        let child = RenderRef::new(Counted(10.0));
+        let padding = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), child.clone()));
+        let mut boundary = RenderRef::new(RenderRepaintBoundary::new(padding.clone()));
+
+        let frame = |root: &mut RenderRef| {
+            root.layout(BoxConstraints::loose(200.0, 200.0));
+            reset_layer_calls();
+            let mut layers = LayerTree::new(200, 200);
+            {
+                let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+                root.paint(&mut context, Offset::ZERO);
+            }
+            layer_calls()
+        };
+
+        let first = frame(&mut boundary);
+        assert_eq!((first.retainable, first.retained), (1, 0), "the first frame has to draw");
+        assert_eq!(boundary.size(), Size::square(18.0));
+
+        let quiet = frame(&mut boundary);
+        assert_eq!((quiet.retainable, quiet.retained), (0, 1), "nothing changed and it drew");
+
+        // A wider padding is a relayout and not a repaint -- and the layer the
+        // boundary kept is a drawing of the layout that is now gone.
+        assert!(padding
+            .reconfigure(RenderRef::new(RenderPadding::new(EdgeInsets::all(8.0), child.clone()))));
+        let second = frame(&mut boundary);
+        assert_eq!(boundary.size(), Size::square(26.0));
+        assert_eq!(
+            (second.retainable, second.retained),
+            (1, 0),
+            "the boundary handed back a drawing of the layout it used to have"
+        );
+    }
 }
 
 // -- Compositing tests --------------------------------------------------------

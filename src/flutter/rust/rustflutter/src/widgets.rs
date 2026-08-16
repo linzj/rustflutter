@@ -12,8 +12,11 @@
 //!
 //! Upstream the same names sit at a further remove -- a `Widget` is an immutable
 //! description, an `Element` holds the state, and only the `RenderObject` does
-//! the work. That third layer arrives with M6; until then a widget *is* its
-//! render object, so a tree is built fresh each frame.
+//! the work. That split is here too, in [`crate::framework`]; what this file
+//! holds is the third layer. A render object here outlives the frame that built
+//! it, which is why the two types that assemble a subtree of their own --
+//! [`Container`] and [`ListView`] -- have to reconcile that subtree themselves,
+//! the job the element tree does for everything else.
 
 use crate::engine::{Color, TextAlign, TextStyle};
 pub use crate::render::{
@@ -26,7 +29,8 @@ use crate::render::{
     RenderAlign, RenderAspectRatio, RenderBox, RenderClipPath, RenderClipRect,
     RenderConstrainedBox, RenderDecoratedBox, RenderFlex, RenderFullWidth, RenderImage,
     RenderIntrinsicHeight, RenderIntrinsicWidth, RenderOpacity, RenderPadding, RenderParagraph,
-    RenderPointerRegion, RenderStack, RenderTransform, RenderViewport, RenderWrap,
+    RenderPointerRegion, RenderRef, RenderStack, RenderTransform, RenderViewport, RenderWrap,
+    UpdateEffect,
 };
 
 /// A widget with its concrete type erased, which is what a `build` method
@@ -130,12 +134,35 @@ impl RenderParagraph {
 
 // -- Container ----------------------------------------------------------------
 
+/// One wrapper a container puts around its child.
+///
+/// The order is the order [`Container::compose`] applies them, innermost
+/// first. Recording which ones a container actually built is what lets the
+/// next configuration be handed to them instead of replacing them: two
+/// containers line up only when they asked for the same wrappers in the same
+/// order, which is upstream's rule that an element survives only where the
+/// widget at its slot kept its type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layer {
+    Align,
+    Padding,
+    Decoration,
+    Sizing,
+    Margin,
+}
+
 /// A box that paints a background, pads, sizes and aligns a child.
 ///
 /// Upstream `Container` is famously a composition rather than a render object,
 /// and it is the same here: whichever of padding, decoration, sizing and
 /// alignment were asked for get layered, and the ones that were not cost
 /// nothing.
+///
+/// The difference is who reconciles that composition. Upstream `Container` is a
+/// `StatelessWidget` and the wrappers its `build` returns are widgets, so the
+/// element tree updates them one slot at a time and never asks the container
+/// about it. Here the wrappers are render objects this one made, so it has to
+/// do that itself -- see [`Container::update_from`].
 pub struct Container {
     fill: Option<Fill>,
     corner_radius: f32,
@@ -148,6 +175,9 @@ pub struct Container {
     height: Option<f32>,
     alignment: Option<Alignment>,
     child: Option<BoxedWidget>,
+    /// The wrappers the last [`Container::compose`] built, innermost first, so
+    /// the next one can hand them their configuration rather than replace them.
+    layers: Vec<(Layer, BoxedWidget)>,
     composed: Option<BoxedWidget>,
 }
 
@@ -165,6 +195,7 @@ impl Container {
             height: None,
             alignment: None,
             child: None,
+            layers: Vec::new(),
             composed: None,
         }
     }
@@ -243,59 +274,111 @@ impl Container {
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
-        self.child = Some(crate::render::RenderRef::new(child));
+        self.child = Some(RenderRef::new(child));
         self
     }
 
-    /// Builds the render tree this container describes, innermost first.
-    fn compose(&mut self) -> BoxedWidget {
-        let mut current: Option<BoxedWidget> = self.child.take();
-
-        if let Some(alignment) = self.alignment {
-            let inner = current.take().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
-            current = Some(crate::render::RenderRef::new(RenderAlign::new(alignment, inner)));
+    /// The wrappers this configuration asks for, innermost first.
+    fn shape(&self) -> Vec<Layer> {
+        let mut shape = Vec::new();
+        if self.alignment.is_some() {
+            shape.push(Layer::Align);
         }
-
         if self.padding != EdgeInsets::ZERO {
-            let inner = current.take().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
-            current = Some(crate::render::RenderRef::new(RenderPadding::new(self.padding, inner)));
+            shape.push(Layer::Padding);
         }
-
-        let has_decoration =
-            self.fill.is_some() || self.border_width > 0.0 || !self.shadows.is_empty();
-        if has_decoration {
-            let mut decorated = RenderDecoratedBox::new()
-                .with_corner_radius(self.corner_radius)
-                .with_shadows(std::mem::take(&mut self.shadows))
-                .with_border(self.border_width, self.border_color);
-            if let Some(fill) = self.fill.clone() {
-                decorated = decorated.with_fill(fill);
-            }
-            if let Some(inner) = current.take() {
-                decorated = decorated.with_child(inner);
-            }
-            current = Some(crate::render::RenderRef::new(decorated));
+        if self.fill.is_some() || self.border_width > 0.0 || !self.shadows.is_empty() {
+            shape.push(Layer::Decoration);
         }
-
         if self.width.is_some() || self.height.is_some() {
-            let extra = BoxConstraints::new(
-                self.width.unwrap_or(0.0),
-                self.width.unwrap_or(f32::INFINITY),
-                self.height.unwrap_or(0.0),
-                self.height.unwrap_or(f32::INFINITY),
-            );
-            let mut sized = RenderConstrainedBox::new(extra);
-            if let Some(inner) = current.take() {
-                sized = sized.with_child(inner);
-            }
-            current = Some(crate::render::RenderRef::new(sized));
+            shape.push(Layer::Sizing);
         }
-
-        let mut result = current.unwrap_or_else(|| crate::render::RenderRef::new(Empty));
         if self.margin != EdgeInsets::ZERO {
-            result = crate::render::RenderRef::new(RenderPadding::new(self.margin, result));
+            shape.push(Layer::Margin);
         }
-        result
+        shape
+    }
+
+    /// Builds one wrapper around `inner`, as this container is configured now.
+    fn build_layer(&self, kind: Layer, inner: Option<BoxedWidget>) -> BoxedWidget {
+        match kind {
+            // Aligning and padding need something to align and pad, even when
+            // that is nothing at all.
+            Layer::Align => {
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
+                let alignment = self.alignment.expect("the shape said there was one");
+                RenderRef::new(RenderAlign::new(alignment, inner))
+            }
+            Layer::Padding => {
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
+                RenderRef::new(RenderPadding::new(self.padding, inner))
+            }
+            Layer::Decoration => {
+                let mut decorated = RenderDecoratedBox::new()
+                    .with_corner_radius(self.corner_radius)
+                    .with_shadows(self.shadows.clone())
+                    .with_border(self.border_width, self.border_color);
+                if let Some(fill) = self.fill.clone() {
+                    decorated = decorated.with_fill(fill);
+                }
+                if let Some(inner) = inner {
+                    decorated = decorated.with_child(inner);
+                }
+                RenderRef::new(decorated)
+            }
+            Layer::Sizing => {
+                let extra = BoxConstraints::new(
+                    self.width.unwrap_or(0.0),
+                    self.width.unwrap_or(f32::INFINITY),
+                    self.height.unwrap_or(0.0),
+                    self.height.unwrap_or(f32::INFINITY),
+                );
+                let mut sized = RenderConstrainedBox::new(extra);
+                if let Some(inner) = inner {
+                    sized = sized.with_child(inner);
+                }
+                RenderRef::new(sized)
+            }
+            // Margin is padding on the outside of the decoration rather than
+            // the inside, which is the only thing that makes it a second one.
+            Layer::Margin => {
+                let inner = inner.unwrap_or_else(|| RenderRef::new(Empty));
+                RenderRef::new(RenderPadding::new(self.margin, inner))
+            }
+        }
+    }
+
+    /// Builds the render tree this container describes, innermost first.
+    ///
+    /// `onto` is the chain the last build left behind, in the same order, or
+    /// `None` for a first build. Where it is given, each wrapper is handed its
+    /// new configuration instead of being replaced and the handle that comes
+    /// back out is the one that was already there -- which is the whole point,
+    /// since a measured size and a kept layer are both held by identity.
+    ///
+    /// `None` comes back when a wrapper would not take what it was given. A
+    /// first build has nothing to refuse it and always answers `Some`.
+    fn compose(&mut self, onto: Option<&[BoxedWidget]>) -> Option<BoxedWidget> {
+        let shape = self.shape();
+        let mut layers = Vec::with_capacity(shape.len());
+        let mut current: Option<BoxedWidget> = self.child.clone();
+        for (step, kind) in shape.into_iter().enumerate() {
+            let fresh = self.build_layer(kind, current.take());
+            let handle = match onto {
+                Some(onto) => {
+                    let old = onto.get(step)?;
+                    if !old.reconfigure(fresh) {
+                        return None;
+                    }
+                    old.clone()
+                }
+                None => fresh,
+            };
+            layers.push((kind, handle.clone()));
+            current = Some(handle);
+        }
+        self.layers = layers;
+        Some(current.unwrap_or_else(|| RenderRef::new(Empty)))
     }
 }
 
@@ -305,10 +388,95 @@ impl Default for Container {
     }
 }
 
+impl Container {
+    /// Copies across everything the new container was configured with, which is
+    /// what an upstream `updateRenderObject` does field by field.
+    ///
+    /// The child is not here. It is a subtree rather than a value, so it gets
+    /// offered to the one already in place instead of overwriting it.
+    fn take_configuration(&mut self, fresh: &Container) {
+        self.fill = fresh.fill.clone();
+        self.corner_radius = fresh.corner_radius;
+        self.border_width = fresh.border_width;
+        self.border_color = fresh.border_color;
+        self.shadows = fresh.shadows.clone();
+        self.padding = fresh.padding;
+        self.margin = fresh.margin;
+        self.width = fresh.width;
+        self.height = fresh.height;
+        self.alignment = fresh.alignment;
+    }
+}
+
 impl RenderBox for Container {
+    /// Upstream there is no `Container.updateRenderObject` to copy, because
+    /// upstream `Container` is not a render object: it is a `StatelessWidget`
+    /// whose `build` nests a handful of others, and the element tree reconciles
+    /// that nesting one slot at a time. This does the same job in one place,
+    /// because here the nesting is render objects and there is no element
+    /// between them to do it.
+    ///
+    /// The two rules are upstream's. A slot whose widget kept its type keeps
+    /// its element, so a wrapper this container asks for again is told rather
+    /// than replaced. A slot whose widget changed type gets a new element, so a
+    /// container asking for a different set of wrappers declines and the caller
+    /// makes a new one -- which is what returning `None` means.
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<Container>()?;
+        // Nothing composed yet means nothing to keep, and nothing that could go
+        // stale either: the first layout builds the tree out of what is taken
+        // here.
+        if self.composed.is_none() {
+            self.take_configuration(fresh);
+            self.child = fresh.child.take();
+            return Some(UpdateEffect::Relayout);
+        }
+        // Both of the checks that can refuse come before anything is taken, so
+        // that declining leaves this container exactly as it was.
+        if fresh.shape() != self.layers.iter().map(|(kind, _)| *kind).collect::<Vec<_>>() {
+            return None;
+        }
+        // The child is the one part of this tree that came from outside, so it
+        // is the one part that can refuse. Offer it the new one the way an
+        // element offers the new widget at its slot, and keep the object that
+        // was there when it takes.
+        let child = match (self.child.clone(), fresh.child.take()) {
+            (Some(old), Some(new)) => {
+                if !old.reconfigure(new) {
+                    return None;
+                }
+                Some(old)
+            }
+            (None, None) => None,
+            // A child that appeared or vanished changes the tree rather than
+            // its configuration, and there is no wrapper to hand that to.
+            _ => return None,
+        };
+        self.take_configuration(fresh);
+        self.child = child;
+        if self.layers.is_empty() {
+            // Wrapping nothing, this container *is* its child -- or an `Empty`
+            // when it has none, and an `Empty` has nothing to be told.
+            if self.child.is_some() {
+                self.composed = self.child.clone();
+            }
+            return Some(UpdateEffect::Nothing);
+        }
+        let onto: Vec<BoxedWidget> = self.layers.iter().map(|(_, handle)| handle.clone()).collect();
+        // The shape matched, so every handle in `onto` is the type the wrapper
+        // at that step builds and none of them can refuse.
+        let root = self.compose(Some(&onto))?;
+        self.composed = Some(root);
+        // Whatever changed has already marked itself, and those marks walk all
+        // the way to the root -- so by the time they are done this container is
+        // marked too and has nothing of its own left to ask for.
+        Some(UpdateEffect::Nothing)
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         if self.composed.is_none() {
-            self.composed = Some(self.compose());
+            // A first build has nothing to line up against, so it cannot refuse.
+            self.composed = self.compose(None);
         }
         self.composed.as_mut().unwrap().layout(constraints)
     }
@@ -604,6 +772,12 @@ pub struct ListView {
     centred_item: Option<f32>,
     extent_sink: Option<std::rc::Rc<std::cell::Cell<f32>>>,
     children: Vec<BoxedWidget>,
+    /// How much padding each end got so an item could sit in the middle. Not
+    /// known until layout, because it depends on the constraints.
+    inset: Option<f32>,
+    /// The column inside the viewport, kept so a new set of children can be
+    /// given to it rather than replace it.
+    flex: Option<BoxedWidget>,
     composed: Option<RenderViewport>,
 }
 
@@ -616,6 +790,8 @@ impl ListView {
             centred_item: None,
             extent_sink: None,
             children: Vec::new(),
+            inset: None,
+            flex: None,
             composed: None,
         }
     }
@@ -660,13 +836,47 @@ impl ListView {
     }
 
     pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
-        self.children.push(crate::render::RenderRef::new(child));
+        self.children.push(RenderRef::new(child));
         self
     }
 
     /// How far this list can still scroll. Zero until it has been laid out.
     pub fn max_scroll_extent(&self) -> f32 {
         self.composed.as_ref().map_or(0.0, |v| v.max_scroll_extent())
+    }
+
+    /// How much padding each end needs for an item to be able to sit in the
+    /// middle, at these constraints.
+    fn inset_for(&self, constraints: BoxConstraints) -> Option<f32> {
+        self.centred_item.and_then(|extent| {
+            let available = match self.axis {
+                Axis::Horizontal => constraints.max_width,
+                Axis::Vertical => constraints.max_height,
+            };
+            // Unbounded means there is no middle to sit in.
+            (available.is_finite() && available > extent).then(|| (available - extent) / 2.0)
+        })
+    }
+
+    /// Builds the column this list scrolls, children and end padding and all.
+    ///
+    /// The children are cloned rather than taken, so that a later build -- a
+    /// resize that changes the end padding -- still has them.
+    fn build_flex(&self) -> RenderFlex {
+        let mut flex = RenderFlex::new(self.axis)
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(self.spacing);
+        if let Some(inset) = self.inset {
+            flex = flex.push(spacer(self.axis, inset));
+        }
+        for child in &self.children {
+            flex = flex.push(child.clone());
+        }
+        if let Some(inset) = self.inset {
+            flex = flex.push(spacer(self.axis, inset));
+        }
+        flex
     }
 }
 
@@ -685,34 +895,54 @@ impl Default for ListView {
 }
 
 impl RenderBox for ListView {
+    /// Upstream a `ListView` is a widget as well, and the viewport and slivers
+    /// under it are reconciled by the elements between them. Here the viewport
+    /// and the column it scrolls are this object's own, so it hands them their
+    /// new configuration itself -- the same job [`Container::update_from`] does
+    /// for its wrappers.
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<ListView>()?;
+        self.axis = fresh.axis;
+        self.offset = fresh.offset;
+        self.spacing = fresh.spacing;
+        self.centred_item = fresh.centred_item;
+        self.extent_sink = fresh.extent_sink.take();
+        self.children = std::mem::take(&mut fresh.children);
+        // Never laid out, so there is nothing to keep and no end padding to
+        // keep it with: the first layout builds the tree out of what was just
+        // taken.
+        let Some(flex) = self.flex.clone() else {
+            return Some(UpdateEffect::Relayout);
+        };
+        // The column takes the new children, and every child that came back the
+        // same object is one it will not measure or draw again.
+        if !flex.reconfigure(RenderRef::new(self.build_flex())) {
+            return None;
+        }
+        // The viewport takes the axis and the scroll offset. It is not behind a
+        // handle of its own -- this list is its handle -- so its answer is this
+        // one's answer.
+        let mut staged = RenderViewport::new(self.axis, flex).with_offset(self.offset);
+        self.composed.as_mut().expect("built with the column")
+            .update_from(&mut staged)
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let inset = self.inset_for(constraints);
         if self.composed.is_none() {
-            let mut flex = RenderFlex::new(self.axis)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_spacing(self.spacing);
             // Computed here rather than at construction because it depends on
             // the size being handed down, which the caller does not know.
-            let inset = self.centred_item.and_then(|extent| {
-                let available = match self.axis {
-                    Axis::Horizontal => constraints.max_width,
-                    Axis::Vertical => constraints.max_height,
-                };
-                // Unbounded means there is no middle to sit in.
-                (available.is_finite() && available > extent)
-                    .then(|| (available - extent) / 2.0)
-            });
-            if let Some(inset) = inset {
-                flex = flex.push(spacer(self.axis, inset));
-            }
-            for child in self.children.drain(..) {
-                flex = flex.push(child);
-            }
-            if let Some(inset) = inset {
-                flex = flex.push(spacer(self.axis, inset));
-            }
-            self.composed =
-                Some(RenderViewport::new(self.axis, flex).with_offset(self.offset));
+            self.inset = inset;
+            let flex = RenderRef::new(self.build_flex());
+            self.flex = Some(flex.clone());
+            self.composed = Some(RenderViewport::new(self.axis, flex).with_offset(self.offset));
+        } else if self.inset != inset {
+            // The space to centre an item in changed, so the padding at both
+            // ends did. This is the only place the new constraints are known,
+            // and the column keeps its identity across the change.
+            self.inset = inset;
+            let flex = self.flex.clone().expect("built with the viewport");
+            flex.reconfigure(RenderRef::new(self.build_flex()));
         }
         let viewport = self.composed.as_mut().expect("built just above");
         let size = viewport.layout(constraints);
@@ -932,5 +1162,214 @@ mod tests {
     fn constraints_clamp_desired_size() {
         let c = BoxConstraints::loose(100.0, 50.0);
         assert_eq!(c.constrain(Size::new(200.0, 10.0)), Size::new(100.0, 10.0));
+    }
+
+    // -- The two that assemble their own subtrees -----------------------------
+
+    /// A child that says how many times it has been measured, and takes a new
+    /// configuration the way a real render object does.
+    struct Counted {
+        extent: f32,
+        laid_out: std::rc::Rc<std::cell::Cell<u32>>,
+        size: Size,
+    }
+
+    impl Counted {
+        fn new(extent: f32, laid_out: &std::rc::Rc<std::cell::Cell<u32>>) -> Counted {
+            Counted { extent, laid_out: std::rc::Rc::clone(laid_out), size: Size::ZERO }
+        }
+    }
+
+    impl RenderBox for Counted {
+        fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            let fresh = fresh.as_any_mut().downcast_mut::<Counted>()?;
+            let effect = UpdateEffect::relayout_if(self.extent != fresh.extent);
+            self.extent = fresh.extent;
+            self.laid_out = std::rc::Rc::clone(&fresh.laid_out);
+            Some(effect)
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.laid_out.set(self.laid_out.get() + 1);
+            self.size = constraints.constrain(Size::square(self.extent));
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    fn counter() -> std::rc::Rc<std::cell::Cell<u32>> {
+        std::rc::Rc::new(std::cell::Cell::new(0))
+    }
+
+    #[test]
+    fn a_container_that_did_not_change_keeps_its_wrappers() {
+        let laid_out = counter();
+        let describe = || {
+            Container::new()
+                .with_padding(EdgeInsets::all(8.0))
+                .with_color(Color::WHITE)
+                .with_child(Counted::new(20.0, &laid_out))
+        };
+        let mut container = describe();
+        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+        assert_eq!(laid_out.get(), 1);
+
+        let before: Vec<BoxedWidget> = container.layers.iter().map(|(_, h)| h.clone()).collect();
+        assert_eq!(container.update_from(&mut describe()), Some(UpdateEffect::Nothing));
+
+        let after: Vec<BoxedWidget> = container.layers.iter().map(|(_, h)| h.clone()).collect();
+        assert_eq!(before.len(), 2, "a padded, decorated container is two wrappers");
+        assert!(
+            before.iter().zip(&after).all(|(a, b)| a.is(b)),
+            "the wrappers were replaced instead of told"
+        );
+        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+        assert_eq!(laid_out.get(), 1, "a container that did not change measured again");
+    }
+
+    #[test]
+    fn a_container_whose_padding_changed_still_shows_it() {
+        // The half worth being afraid of: keeping the wrappers and not telling
+        // them would show the old layout forever, and no test of identity would
+        // notice.
+        let laid_out = counter();
+        let mut container = Container::new()
+            .with_padding(EdgeInsets::all(8.0))
+            .with_child(Counted::new(20.0, &laid_out));
+        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+
+        let mut fresh = Container::new()
+            .with_padding(EdgeInsets::all(4.0))
+            .with_child(Counted::new(20.0, &laid_out));
+        assert_eq!(container.update_from(&mut fresh), Some(UpdateEffect::Nothing));
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(28.0),
+            "the wrapper was kept and the new padding was not"
+        );
+    }
+
+    #[test]
+    fn a_container_that_changed_tells_the_tree_above_it() {
+        // A container answers `Nothing` and leans on its wrappers having marked
+        // themselves. That is only true if the mark walks out of the container
+        // and up, which is what the parent chain a layout records is for.
+        let laid_out = counter();
+        let container = RenderRef::new(
+            Container::new()
+                .with_padding(EdgeInsets::all(8.0))
+                .with_child(Counted::new(20.0, &laid_out)),
+        );
+        let mut root = RenderRef::new(RenderPadding::new(EdgeInsets::all(2.0), container.clone()));
+        assert_eq!(root.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(40.0));
+
+        let fresh = RenderRef::new(
+            Container::new()
+                .with_padding(EdgeInsets::all(4.0))
+                .with_child(Counted::new(20.0, &laid_out)),
+        );
+        assert!(container.reconfigure(fresh));
+        assert_eq!(
+            root.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(32.0),
+            "the change stopped inside the container"
+        );
+    }
+
+    #[test]
+    fn a_container_that_wants_a_different_wrapper_will_not_take_it() {
+        // Upstream a slot whose widget changed type gets a new element. The
+        // same answer here is to decline, and the caller makes a new container.
+        let laid_out = counter();
+        let mut container = Container::new()
+            .with_padding(EdgeInsets::all(8.0))
+            .with_child(Counted::new(20.0, &laid_out));
+        container.layout(BoxConstraints::loose(200.0, 200.0));
+
+        let mut fresh = Container::new()
+            .with_padding(EdgeInsets::all(8.0))
+            .with_color(Color::WHITE)
+            .with_child(Counted::new(20.0, &laid_out));
+        assert_eq!(container.update_from(&mut fresh), None);
+    }
+
+    #[test]
+    fn a_container_whose_child_will_not_take_it_declines_too() {
+        // The child came from outside and can be any type at all, including one
+        // that answers `None`. Keeping the wrappers around a child that had to
+        // be replaced would leave them wrapping the old one.
+        let mut container = Container::new()
+            .with_padding(EdgeInsets::all(8.0))
+            .with_child(FixedBox::new(20.0, 20.0));
+        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+
+        let mut fresh = Container::new()
+            .with_padding(EdgeInsets::all(4.0))
+            .with_child(FixedBox::new(20.0, 20.0));
+        assert_eq!(container.update_from(&mut fresh), None);
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(36.0),
+            "declining left the container half updated"
+        );
+    }
+
+    #[test]
+    fn a_list_that_kept_its_rows_keeps_its_column() {
+        let first = counter();
+        let second = counter();
+        let a = RenderRef::new(Counted::new(40.0, &first));
+        let b = RenderRef::new(Counted::new(40.0, &second));
+
+        let mut list = ListView::new().push(a.clone()).push(b.clone());
+        assert_eq!(list.layout(BoxConstraints::tight(100.0, 60.0)), Size::new(100.0, 60.0));
+        assert_eq!((first.get(), second.get()), (1, 1));
+        assert_eq!(list.max_scroll_extent(), 20.0);
+        let column = list.flex.clone().expect("built by the layout");
+
+        // A rebuild that handed back the same rows and a new scroll offset.
+        let mut fresh = ListView::new().with_offset(10.0).push(a.clone()).push(b.clone());
+        assert_eq!(list.update_from(&mut fresh), Some(UpdateEffect::Relayout));
+
+        assert!(list.flex.as_ref().expect("kept").is(&column), "the column was replaced");
+        assert_eq!(
+            list.max_scroll_extent(),
+            20.0,
+            "a list that was told rather than replaced forgot how far it can scroll"
+        );
+        list.layout(BoxConstraints::tight(100.0, 60.0));
+        assert_eq!(
+            (first.get(), second.get()),
+            (1, 1),
+            "a row that did not change was measured again"
+        );
+        assert_eq!(
+            list.composed.as_ref().expect("laid out").offset(),
+            10.0,
+            "the list took the new offset and did not scroll"
+        );
+    }
+
+    #[test]
+    fn a_list_whose_rows_changed_still_shows_them() {
+        // The scary half again: a column that kept its identity and not its
+        // children would scroll the list it had last frame.
+        let laid_out = counter();
+        let a = RenderRef::new(Counted::new(40.0, &laid_out));
+        let mut list = ListView::new().push(a.clone());
+        assert_eq!(list.layout(BoxConstraints::tight(100.0, 200.0)), Size::new(100.0, 200.0));
+        assert_eq!(list.max_scroll_extent(), 0.0);
+
+        let b = RenderRef::new(Counted::new(300.0, &laid_out));
+        let mut fresh = ListView::new().push(a.clone()).push(b.clone());
+        assert_eq!(list.update_from(&mut fresh), Some(UpdateEffect::Nothing));
+        list.layout(BoxConstraints::tight(100.0, 200.0));
+        assert_eq!(
+            list.max_scroll_extent(),
+            140.0,
+            "the column was kept and the second row was not"
+        );
     }
 }
