@@ -827,7 +827,7 @@ fn progress(state: &DemoState, context: &mut BuildContext) -> AnyWidget {
 
 /// The spinner's current value, published by the app so the progress demo can
 /// read it without the demo owning the controller.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpinnerValue(pub f32);
 
 fn selection_controls(state: &DemoState, handle: StateHandle<GalleryState>) -> AnyWidget {
@@ -1113,7 +1113,7 @@ fn motion(context: &mut BuildContext) -> AnyWidget {
 }
 
 /// The value the motion demo's controller is at, published by the app.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionValue(pub f32);
 
 struct CurveTrack {

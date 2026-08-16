@@ -44,7 +44,7 @@ use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, Size
 // -- Theme --------------------------------------------------------------------
 
 /// Colours and metrics shared by every component.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub background: Color,
     pub surface: Color,

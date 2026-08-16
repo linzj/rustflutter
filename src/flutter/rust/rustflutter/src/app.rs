@@ -441,18 +441,30 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // `painting::take_images_arrived` for what the narrow version needs.
         let images_arrived = crate::painting::take_images_arrived();
         let resized = self.last_size != Some(context.size);
+        let data = crate::media_query::MediaQueryData::from_view(&context.metrics);
         let mounted = if self.tree.is_empty() || resized || images_arrived {
             // Published above the application's own root, which is where
             // upstream puts it too: `WidgetsApp` wraps what you gave it in a
             // `MediaQuery.fromView`. Everything below can then ask how big the
             // view is and what is covering it without being handed either.
-            let data = crate::media_query::MediaQueryData::from_view(&context.metrics);
+            //
+            // A resize goes through here rather than through `publish` because
+            // the application's own `build` is handed the size: whatever it
+            // decides from that has to be decided again.
             let root = crate::media_query::MediaQuery::new(data, self.app.build(context));
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
             true
         } else {
-            self.tree.rebuild_dirty() > 0
+            // Everything else about the view -- the keyboard arriving, the
+            // status bar changing height, the reader turning the text size up
+            // -- goes to the widgets that asked about it and to nothing else.
+            // This is what the dependency tracking is for, and the case that
+            // shows it is a keyboard opening: the insets change on every frame
+            // of that animation, and the answer should not be rebuilding the
+            // page thirty times.
+            let republished = self.tree.publish(data);
+            self.tree.rebuild_dirty() > 0 || republished
         };
 
         // Anything built this frame has never been asked whether it wants to

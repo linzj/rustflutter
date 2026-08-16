@@ -602,10 +602,13 @@ thread_local! {
 /// It belongs one layer up. Upstream it is `MediaQuery.textScaler`, read by
 /// each `Text` from the widget tree, so a subtree can be given a different one
 /// -- a dense table that opts out, a preview that shows what another size would
-/// look like. There is no `InheritedWidget` dependency tracking here yet, so
-/// there is nowhere for a subtree to say that; applying it to all text is the
-/// closest thing to right, and the alternative is ignoring an accessibility
-/// setting the reader has already asked every application for.
+/// look like. [`crate::media_query::MediaQueryData`] carries the scale now and
+/// a subtree can publish its own, but nothing reads it here: `Text` is a render
+/// object built inside a closure, with no `BuildContext` to read it from, and
+/// the scale is needed at shaping time rather than at build time. Applying it
+/// to all text is the closest thing to right until `Text` is a widget that
+/// knows where it is; the alternative is ignoring an accessibility setting the
+/// reader has already asked every application for.
 ///
 /// The cache needs no help with this: the scale changes the style it keys on,
 /// so text shaped at the old size is simply never asked for again.

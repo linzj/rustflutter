@@ -152,7 +152,7 @@ pub struct AnyWidget {
     key: Key,
     /// Set only by [`provide`]. The element registers it so descendants can
     /// find it with [`BuildContext::inherited`].
-    provided: Option<(TypeId, Rc<dyn Any>)>,
+    provided: Option<Provided>,
 }
 
 enum WidgetKind {
@@ -461,20 +461,57 @@ impl<T: 'static> RenderWidget for Provider<T> {
     }
 }
 
+/// A published value, plus what the element needs in order to decide whether
+/// republishing it means anything.
+///
+/// `same` is this port of upstream's `updateShouldNotify`. There it is a method
+/// each `InheritedWidget` implements -- `MediaQuery`'s is `data != old.data` --
+/// and here it is a function pointer that the generic `provide` fills in, for
+/// the same reason: by the time the element tree holds the value it has
+/// forgotten the type, and a value that cannot be compared cannot say whether
+/// anything changed, which makes every rebuild look like a change.
+#[derive(Clone)]
+struct Provided {
+    type_id: TypeId,
+    value: Rc<dyn Any>,
+    same: fn(&dyn Any, &dyn Any) -> bool,
+}
+
 /// The value a [`Provider`] publishes, kept out of the widget so the element
 /// can register it without knowing `T`.
 trait ProvidedValue {
-    fn provided(&self) -> (TypeId, Rc<dyn Any>);
+    fn provided(&self) -> Provided;
 }
 
-impl<T: 'static> ProvidedValue for Provider<T> {
-    fn provided(&self) -> (TypeId, Rc<dyn Any>) {
-        (TypeId::of::<T>(), Rc::clone(&self.value) as Rc<dyn Any>)
+impl<T: PartialEq + 'static> ProvidedValue for Provider<T> {
+    fn provided(&self) -> Provided {
+        Provided::of(Rc::clone(&self.value))
+    }
+}
+
+impl Provided {
+    /// Wraps a value with the comparison for its own type.
+    fn of<T: PartialEq + 'static>(value: Rc<T>) -> Provided {
+        Provided {
+            type_id: TypeId::of::<T>(),
+            value: value as Rc<dyn Any>,
+            same: |a, b| match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
+                (Some(a), Some(b)) => a == b,
+                // Different types cannot be the same value. Not reachable:
+                // the type id is checked before this is called.
+                _ => false,
+            },
+        }
     }
 }
 
 /// Publishes `value` to `child` and everything below it.
-pub fn provide<T: 'static>(value: T, child: AnyWidget) -> AnyWidget {
+///
+/// `T` has to be comparable, because publishing the same value again must not
+/// count as a change -- a provider rebuilt every frame would otherwise rebuild
+/// everything that reads it every frame, which is the thing dependency
+/// tracking exists to avoid.
+pub fn provide<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget {
     let widget = Provider { value: Rc::new(value), child: RefCell::new(Some(child)) };
     let provided = widget.provided();
     let mut any = render_widget(widget);
@@ -501,7 +538,14 @@ struct Shared {
     /// it is being built inside.
     parents: RefCell<HashMap<ElementId, Option<ElementId>>>,
     /// Values a [`Provider`] has published, by the type it publishes.
-    provided: RefCell<HashMap<ElementId, (TypeId, Rc<dyn Any>)>>,
+    provided: RefCell<HashMap<ElementId, Provided>>,
+    /// Who reads each provider, and what each reader reads. Two maps of the
+    /// same relation: the first is what a change has to rebuild, the second is
+    /// what an unmounted element has to be removed from. Upstream keeps the
+    /// same pair, as `InheritedElement._dependents` and
+    /// `Element._dependencies`.
+    dependents: RefCell<HashMap<ElementId, Vec<ElementId>>>,
+    dependencies: RefCell<HashMap<ElementId, Vec<ElementId>>>,
 }
 
 impl Shared {
@@ -514,6 +558,8 @@ impl Shared {
             generations: RefCell::new(HashMap::new()),
             parents: RefCell::new(HashMap::new()),
             provided: RefCell::new(HashMap::new()),
+            dependents: RefCell::new(HashMap::new()),
+            dependencies: RefCell::new(HashMap::new()),
         })
     }
 
@@ -526,20 +572,71 @@ impl Shared {
         *generations.entry(id).or_insert(0) += 1;
     }
 
-    /// The nearest value of type `T` published at or above `start`.
-    fn lookup(&self, start: ElementId, wanted: TypeId) -> Option<Rc<dyn Any>> {
+    /// The nearest value of type `T` published at or above `start`, and which
+    /// element published it.
+    fn lookup(&self, start: ElementId, wanted: TypeId) -> Option<(ElementId, Rc<dyn Any>)> {
         let parents = self.parents.borrow();
         let provided = self.provided.borrow();
         let mut current = Some(start);
         while let Some(id) = current {
-            if let Some((type_id, value)) = provided.get(&id) {
-                if *type_id == wanted {
-                    return Some(Rc::clone(value));
+            if let Some(entry) = provided.get(&id) {
+                if entry.type_id == wanted {
+                    return Some((id, Rc::clone(&entry.value)));
                 }
             }
             current = parents.get(&id).copied().flatten();
         }
         None
+    }
+
+    /// Records that `reader` read what `provider` publishes.
+    ///
+    /// Upstream's `InheritedElement.updateDependencies`, called from
+    /// `dependOnInheritedWidgetOfExactType` for the same reason: reading a
+    /// value is what makes a widget care about it changing, and nothing else
+    /// can tell.
+    fn depend(&self, provider: ElementId, reader: ElementId) {
+        let mut dependents = self.dependents.borrow_mut();
+        let readers = dependents.entry(provider).or_default();
+        if !readers.contains(&reader) {
+            readers.push(reader);
+        }
+        let mut dependencies = self.dependencies.borrow_mut();
+        let providers = dependencies.entry(reader).or_default();
+        if !providers.contains(&provider) {
+            providers.push(provider);
+        }
+    }
+
+    /// Forgets everything `reader` used to read, before it reads again.
+    ///
+    /// A build that no longer looks at the theme must stop being rebuilt when
+    /// the theme changes, and the only place that is known is here, just
+    /// before the build that will register whatever it does read.
+    fn clear_dependencies(&self, reader: ElementId) {
+        let providers = self.dependencies.borrow_mut().remove(&reader);
+        if let Some(providers) = providers {
+            let mut dependents = self.dependents.borrow_mut();
+            for provider in providers {
+                if let Some(readers) = dependents.get_mut(&provider) {
+                    readers.retain(|id| *id != reader);
+                }
+            }
+        }
+    }
+
+    /// Marks everything that reads `provider` for rebuilding.
+    fn notify_dependents(&self, provider: ElementId) -> usize {
+        let readers = self
+            .dependents
+            .borrow()
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default();
+        for reader in &readers {
+            self.mark_dirty(*reader);
+        }
+        readers.len()
     }
 
     fn mark_dirty(&self, id: ElementId) {
@@ -696,16 +793,14 @@ impl BuildContext {
     /// The nearest value of type `T` published by a [`Provider`] above this
     /// element, or `None` if there is none.
     ///
-    /// Upstream this is `dependOnInheritedWidgetOfExactType`, and the important
-    /// difference is what happens when the value changes. Upstream records the
-    /// dependency and rebuilds exactly the widgets that read it. Here a
-    /// `Provider` that rebuilds rebuilds its child, and the subtree below
-    /// follows -- correct, and more work than upstream would do. Tracking the
-    /// readers is the obvious next step and does not change this signature.
+    /// Upstream this is `dependOnInheritedWidgetOfExactType`, and the *depend*
+    /// is the point: reading the value registers this element as a reader, so
+    /// that publishing a different one later rebuilds this widget and not the
+    /// tree around it. See [`ElementTree::publish`].
     pub fn inherited<T: 'static>(&self) -> Option<Rc<T>> {
-        self.shared
-            .lookup(self.element, TypeId::of::<T>())
-            .and_then(|value| value.downcast::<T>().ok())
+        let (provider, value) = self.shared.lookup(self.element, TypeId::of::<T>())?;
+        self.shared.depend(provider, self.element);
+        value.downcast::<T>().ok()
     }
 
     /// [`BuildContext::inherited`], or the type's default if nothing published
@@ -866,6 +961,8 @@ impl ElementTree {
         self.shared.states.borrow_mut().remove(&id);
         self.shared.parents.borrow_mut().remove(&id);
         self.shared.provided.borrow_mut().remove(&id);
+        self.shared.clear_dependencies(id);
+        self.shared.dependents.borrow_mut().remove(&id);
         self.shared.dirty.borrow_mut().retain(|d| *d != id);
         self.shared.pending.borrow_mut().retain(|(d, _)| *d != id);
         self.free.push(id.0);
@@ -925,6 +1022,61 @@ impl ElementTree {
         rebuilt
     }
 
+    /// Republishes a provided value, rebuilding only what reads it.
+    ///
+    /// Returns whether anything changed. This is the half of inherited widgets
+    /// that a full rebuild cannot express: the view's metrics change many
+    /// times a second while a keyboard opens, and the answer to that should be
+    /// rebuilding the two widgets that asked about the padding, not the page.
+    ///
+    /// Upstream reaches the same place along a different road -- the widget
+    /// above is rebuilt with a new value and its child is the *same widget
+    /// object*, which stops the reconciliation there and leaves
+    /// `notifyClients` to mark the dependents. Widgets here are closures and
+    /// cannot be compared, so the value is replaced on the element instead of
+    /// being carried down to it. What is published is the element's, not the
+    /// widget's: the next full rebuild will publish whatever the widget says
+    /// again.
+    pub fn publish<T: PartialEq + 'static>(&mut self, value: T) -> bool {
+        let wanted = TypeId::of::<T>();
+        // Shallowest first, so the root's theme wins over one published deeper
+        // in for a subtree -- and there is no ambiguity about which is meant.
+        let target = (0..self.nodes.len())
+            .map(ElementId)
+            .filter(|id| self.nodes[id.0].is_some())
+            .filter(|id| {
+                self.shared
+                    .provided
+                    .borrow()
+                    .get(id)
+                    .is_some_and(|entry| entry.type_id == wanted)
+            })
+            .min_by_key(|id| self.nodes[id.0].as_ref().map_or(usize::MAX, |n| n.depth));
+        let Some(target) = target else { return false };
+
+        let replacement = Provided::of(Rc::new(value));
+        {
+            let mut provided = self.shared.provided.borrow_mut();
+            let Some(current) = provided.get(&target) else { return false };
+            if (current.same)(current.value.as_ref(), replacement.value.as_ref()) {
+                return false;
+            }
+            provided.insert(target, replacement);
+        }
+        self.shared.notify_dependents(target);
+        true
+    }
+
+    /// How many elements read what `provider` publishes. For tests: the whole
+    /// point of the dependency map is that this is smaller than the tree.
+    pub fn dependent_count(&self, provider: ElementId) -> usize {
+        self.shared
+            .dependents
+            .borrow()
+            .get(&provider)
+            .map_or(0, |readers| readers.len())
+    }
+
     fn is_ancestor(&self, ancestor: ElementId, descendant: ElementId) -> bool {
         let mut current = self.nodes[descendant.0].as_ref().and_then(|n| n.parent);
         while let Some(id) = current {
@@ -974,6 +1126,9 @@ impl ElementTree {
     /// Runs a component's `build`, checking its state out for the duration so
     /// a `set_state` from inside it queues instead of aliasing.
     fn build_component(&mut self, id: ElementId, depth: usize) -> AnyWidget {
+        // Whatever it read last time is forgotten now; this build registers
+        // what it reads this time.
+        self.shared.clear_dependencies(id);
         let mut state = self.shared.states.borrow_mut().remove(&id);
         let mut context = BuildContext {
             shared: Rc::clone(&self.shared),
@@ -1587,5 +1742,126 @@ mod tests {
         assert_eq!(tree.rebuild_dirty(), 1);
         assert_eq!(builds_of("outer"), 2);
         assert_eq!(builds_of("inner"), 2);
+    }
+
+    // -- Inherited values -----------------------------------------------------
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Published(i32);
+
+    /// Reads the published value, and says what it read.
+    struct Reader;
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let value = context.inherited::<Published>().map_or(0, |v| v.0);
+            record("reader");
+            leaf(move || Sized(value as f32))
+        }
+    }
+
+    /// Sits in the same tree and reads nothing.
+    struct Bystander;
+
+    impl Component for Bystander {
+        fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+            record("bystander");
+            leaf(|| Sized(1.0))
+        }
+    }
+
+    fn published_tree() -> ElementTree {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Published(1),
+            column(vec![component(Reader), component(Bystander)]),
+        ));
+        tree
+    }
+
+    #[test]
+    fn reading_a_value_registers_a_dependency() {
+        reset_builds();
+        let tree = published_tree();
+        let provider = tree.root.expect("a mounted root");
+        assert_eq!(tree.dependent_count(provider), 1, "one of the two read it");
+    }
+
+    #[test]
+    fn a_new_value_rebuilds_its_readers_and_nothing_else() {
+        reset_builds();
+        let mut tree = published_tree();
+        assert_eq!(builds_of("reader"), 1);
+        assert_eq!(builds_of("bystander"), 1);
+
+        assert!(tree.publish(Published(2)));
+        assert_eq!(tree.rebuild_dirty(), 1);
+        assert_eq!(builds_of("reader"), 2, "the reader should have been rebuilt");
+        assert_eq!(builds_of("bystander"), 1, "and nothing else should have been");
+    }
+
+    #[test]
+    fn the_new_value_is_the_one_that_gets_read() {
+        reset_builds();
+        let mut tree = published_tree();
+        tree.publish(Published(7));
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        root.layout(BoxConstraints::new(0.0, 100.0, 0.0, 100.0));
+        // The reader sizes itself to what it read.
+        assert_eq!(root.size().width, 7.0);
+    }
+
+    #[test]
+    fn publishing_the_same_value_is_not_a_change() {
+        reset_builds();
+        let mut tree = published_tree();
+        assert!(!tree.publish(Published(1)), "the same value is not news");
+        assert_eq!(tree.rebuild_dirty(), 0);
+        assert_eq!(builds_of("reader"), 1);
+    }
+
+    #[test]
+    fn publishing_a_type_nobody_provides_does_nothing() {
+        #[derive(PartialEq)]
+        struct Unrelated(bool);
+        let mut tree = published_tree();
+        assert!(!tree.publish(Unrelated(true)));
+    }
+
+    #[test]
+    fn a_widget_that_stops_reading_stops_being_rebuilt() {
+        // The dependency is re-registered by each build, so one that stops
+        // asking has to stop hearing about it. Without clearing, the map grows
+        // stale entries and a widget is rebuilt for a value it no longer uses.
+        thread_local! {
+            static READS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+        }
+        struct Fickle;
+        impl Component for Fickle {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                if READS.with(|r| r.get()) {
+                    context.inherited::<Published>();
+                }
+                record("fickle");
+                leaf(|| Sized(1.0))
+            }
+        }
+
+        reset_builds();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Published(1), component(Fickle)));
+        let provider = tree.root.expect("a mounted root");
+        assert_eq!(tree.dependent_count(provider), 1);
+
+        // Stop reading, and rebuild for a reason of its own.
+        READS.with(|r| r.set(false));
+        tree.publish(Published(2));
+        tree.rebuild_dirty();
+        assert_eq!(builds_of("fickle"), 2);
+        assert_eq!(tree.dependent_count(provider), 0, "it no longer reads the value");
+
+        tree.publish(Published(3));
+        assert_eq!(tree.rebuild_dirty(), 0, "and should not be rebuilt for it");
     }
 }
