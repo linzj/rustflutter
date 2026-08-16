@@ -782,35 +782,21 @@ impl AppInstance {
         root.layout(BoxConstraints::tight(context.size.width, context.size.height));
         let laid_out = FrameTimings::now();
 
-        // The semantics tree comes out of the same paint that produces the
-        // pixels, because paint is the walk that knows where everything ended
-        // up. Nothing is collected unless a screen reader is listening, so the
-        // ordinary case is one boolean.
-        let mut tree = None;
-        let described = crate::semantics::collect(context.size, || {
-            tree = Some(compose_frame(
-                physical_width,
-                physical_height,
-                metrics.device_pixel_ratio,
-                context.size,
-                background,
-                |paint_context| root.paint(paint_context, Offset::ZERO),
-            ));
-        });
-        let tree = match tree {
-            Some(tree) => tree,
-            // `collect` did not run the paint, which it only does when
-            // semantics are off -- so paint here instead.
-            None => compose_frame(
-                physical_width,
-                physical_height,
-                metrics.device_pixel_ratio,
-                context.size,
-                background,
-                |paint_context| root.paint(paint_context, Offset::ZERO),
-            ),
-        };
-        if let Some(nodes) = described {
+        let tree = compose_frame(
+            physical_width,
+            physical_height,
+            metrics.device_pixel_ratio,
+            context.size,
+            background,
+            |paint_context| root.paint(paint_context, Offset::ZERO),
+        );
+
+        // A walk of its own over the laid-out tree, the way upstream's
+        // `flushSemantics` is its own walk. It runs after the paint only
+        // because that is the tidier place to read it; it needs the layout, not
+        // the drawing. Nothing happens at all unless a screen reader is
+        // listening, so the ordinary case is one boolean.
+        if let Some(nodes) = crate::semantics::collect(context.size, &root) {
             self.send_semantics(view_id, &nodes);
         }
         // All the shaping this frame needed has happened by now -- layout asked

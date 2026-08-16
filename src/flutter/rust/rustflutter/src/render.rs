@@ -690,6 +690,51 @@ pub trait RenderBox: AsAny {
         None
     }
 
+    // -- Walking the tree without painting it ---------------------------------
+
+    /// Visits the children in paint order, each with where it is painted
+    /// relative to this box's own origin.
+    ///
+    /// This is upstream's `visitChildren` and `applyPaintTransform` in one
+    /// method, and they are one here because there is no `parentData` to keep
+    /// them apart. Upstream a child carries a `BoxParentData.offset` that its
+    /// parent wrote during layout, and `applyPaintTransform` reads it back off
+    /// the child; here the parent keeps that offset in whatever field suits it
+    /// -- `RenderFlex` has a vector of them, `RenderPadding` computes one from
+    /// its insets -- so the parent is the only one who can answer, and it
+    /// answers both questions at once.
+    ///
+    /// **Only a translation.** Upstream's is a `Matrix4`, because a
+    /// `RenderTransform` can rotate its child. Here it is an offset, and
+    /// [`RenderTransform`] reports its child untransformed -- see the comment
+    /// there for why that is the answer that agrees with `hit_test`.
+    ///
+    /// A box that draws children and does not override this is invisible to
+    /// everything that walks without painting, which today is the semantics
+    /// tree.
+    fn visit_children(&self, _visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {}
+
+    /// The children a screen reader should meet, in reading order.
+    ///
+    /// Upstream's `visitChildrenForSemantics`, with the same default and the
+    /// same reason to override it: a box that would not *paint* a child should
+    /// not describe it either, because a thing that is not on the screen is not
+    /// on the screen for a reader who is exploring it by touch.
+    fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        self.visit_children(visit)
+    }
+
+    /// What this box says about itself to a screen reader, if anything.
+    ///
+    /// Upstream's `describeSemanticsConfiguration`, which fills in a
+    /// `SemanticsConfiguration` the framework then assembles into a node. The
+    /// two things that answer here are the annotation put there on purpose and
+    /// the paragraph, which describes itself because the text on the screen is
+    /// the text a reader came for.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        None
+    }
+
     // -- Taking a new configuration -------------------------------------------
 
     /// Takes over `fresh`'s configuration -- `fresh` being a newly built object
@@ -778,24 +823,19 @@ impl RenderBox for RenderRepaintBoundary {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        // Handing back the layer skips the subtree, and the subtree is where
-        // the semantics come from: this framework gathers them during the
-        // paint walk, so a subtree that is not walked says nothing about
-        // itself. Upstream never meets this, because there the semantics tree
-        // is built by its own walk over the render objects and a retained
-        // layer is invisible to it. So while a reader is being answered, the
-        // drawing is recorded again -- the layer is an optimisation and the
-        // reading order is not.
-        let describing = crate::semantics::collecting();
         {
             let layer = self.layer.borrow();
-            if let Some(layer) = layer.as_ref().filter(|_| !describing) {
+            if let Some(layer) = layer.as_ref() {
                 context.add_retained(layer, offset);
                 return;
             }
         }
         let kept = context.record_retained(&self.child, offset);
         *self.layer.borrow_mut() = kept;
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -1106,6 +1146,16 @@ impl RenderBox for RenderRef {
         }
         render.paint(context, offset)
     }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        self.render.borrow().visit_children(visit)
+    }
+    fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        self.render.borrow().visit_children_for_semantics(visit)
+    }
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        self.render.borrow().describe_semantics()
+    }
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.render.borrow().hit_test(position, result)
     }
@@ -1191,6 +1241,16 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn distance_to_baseline(&self) -> Option<f32> {
         (**self).distance_to_baseline()
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        (**self).visit_children(visit)
+    }
+    fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        (**self).visit_children_for_semantics(visit)
+    }
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        (**self).describe_semantics()
     }
     /// Forwards to the object, and only unwraps `self`.
     ///
@@ -1503,6 +1563,12 @@ impl RenderBox for RenderDecoratedBox {
         }
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -1710,24 +1776,24 @@ impl RenderBox for RenderParagraph {
         if let Some(paragraph) = &self.paragraph {
             context.canvas().draw_paragraph(paragraph, offset.dx, offset.dy);
         }
-        // Text on screen is text a reader should be read, and nothing had to
-        // ask for it. Upstream `Text` does this in its own build; here the
-        // paragraph is the only thing that knows what it says.
-        if crate::semantics::collecting() {
-            if self.semantics_id.get() == 0 {
-                self.semantics_id.set(crate::semantics::take_text_id());
-            }
-            crate::semantics::describe_text(
-                self.semantics_id.get(),
-                &self.content,
-                (
-                    offset.dx,
-                    offset.dy,
-                    offset.dx + self.size.width,
-                    offset.dy + self.size.height,
-                ),
-            );
+    }
+
+    /// Text on screen is text a reader came for, and nothing had to ask for it.
+    ///
+    /// Upstream `Text` reaches this by wrapping itself in a `Semantics` widget
+    /// during its own build; here the paragraph is the only thing that knows
+    /// what it says, so it says it itself.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        if self.content.trim().is_empty() {
+            return None;
         }
+        if self.semantics_id.get() == 0 {
+            self.semantics_id.set(crate::semantics::take_text_id());
+        }
+        Some(crate::semantics::SemanticsAnnotation::text(
+            self.semantics_id.get(),
+            &self.content,
+        ))
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
@@ -1950,6 +2016,12 @@ impl RenderBox for RenderFullWidth {
         true
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
     fn min_intrinsic_width(&self, height: f32) -> f32 {
         self.child.as_ref().map_or(0.0, |child| child.min_intrinsic_width(height))
     }
@@ -2033,6 +2105,12 @@ impl RenderBox for RenderConstrainedBox {
         true
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
     fn min_intrinsic_width(&self, height: f32) -> f32 {
         if self.extra.has_tight_width() {
             return self.extra.min_width;
@@ -2111,6 +2189,10 @@ impl RenderBox for RenderPadding {
             &self.child,
             offset.translate(self.insets.left, self.insets.top),
         );
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::new(self.insets.left, self.insets.top));
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2233,6 +2315,10 @@ impl RenderBox for RenderAlign {
             &self.child,
             offset.plus(self.child_offset),
         );
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.child_offset);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -2602,6 +2688,12 @@ impl RenderBox for RenderFlex {
         }
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
+            visit(&child.render, *placement);
+        }
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -2872,6 +2964,12 @@ impl RenderBox for RenderStack {
         }
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
+            visit(&child.render, *placement);
+        }
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -2960,6 +3058,14 @@ impl RenderBox for RenderIgnorePointer {
         context.paint_child(&self.child, offset);
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        // Invisible to the pointer, not to a reader. Upstream draws the same
+        // line -- `RenderIgnorePointer` blocks user actions and leaves the
+        // description alone, and hiding a subtree from a screen reader is a
+        // different widget (`ExcludeSemantics`).
+        visit(&self.child, Offset::ZERO);
+    }
+
     fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
         // The whole point: nothing here, look further down.
         false
@@ -3030,6 +3136,10 @@ impl RenderBox for RenderSizeReporter {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -3289,6 +3399,12 @@ impl RenderBox for RenderWrap {
         }
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, child_offset) in self.children.iter().zip(&self.offsets) {
+            visit(child, *child_offset);
+        }
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -3402,6 +3518,10 @@ impl RenderBox for RenderAspectRatio {
         context.paint_child(&self.child, offset);
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -3474,6 +3594,10 @@ impl RenderBox for RenderIntrinsicWidth {
         context.paint_child(&self.child, offset);
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -3534,6 +3658,10 @@ impl RenderBox for RenderIntrinsicHeight {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -3626,6 +3754,20 @@ impl RenderBox for RenderTransform {
         context.push_transform(self.matrix, pivot, offset, &self.child);
     }
 
+    /// The child where it would be without the transform.
+    ///
+    /// Upstream applies the matrix here, because upstream's is a `Matrix4` and
+    /// a semantics node carries one. This carries an offset, so a rotation has
+    /// no expression -- and reporting the untransformed rectangle is not a
+    /// worse guess, it is the *agreeing* one: the rectangle exists so a finger
+    /// dragged across the glass can find the node, and what the finger finds
+    /// comes from `hit_test`, which tests against the untransformed geometry
+    /// for the same reason. Two answers to "where is this" that disagreed
+    /// would be worse than one that is approximate.
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         // Inverting the affine to hit-test through a transform is M3 work; a
         // transformed subtree currently tests against its untransformed
@@ -3697,6 +3839,19 @@ impl RenderBox for RenderOpacity {
         // 0..255, the alpha an OpacityLayer carries.
         let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u8;
         context.push_opacity(alpha, offset, &self.child);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// Nothing at all is drawn at zero, so there is nothing to describe.
+    /// Upstream's `RenderOpacity.visitChildrenForSemantics` skips for the same
+    /// reason, and `hit_test` here already refuses for it.
+    fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if self.opacity > 0.0 {
+            visit(&self.child, Offset::ZERO);
+        }
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -3772,6 +3927,10 @@ impl RenderBox for RenderClipRect {
         );
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         // Outside the clip nothing is visible, so nothing is hittable.
         if !self.size.contains(position) {
@@ -3832,6 +3991,10 @@ impl RenderBox for RenderClipPath {
             &self.child,
             offset,
         );
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
@@ -3963,6 +4126,17 @@ impl RenderBox for RenderViewport {
         );
     }
 
+    /// The scrolled column, moved by however far it is scrolled.
+    ///
+    /// Everything outside the viewport is reported too, with a rectangle that
+    /// falls outside it. Upstream trims those against the clip in
+    /// `_SemanticsGeometry` and marks what is left over as hidden; the same
+    /// rows were reported before this walk existed, because the clip is a layer
+    /// and painting into it still painted them.
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.scroll_offset());
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         if !self.size.contains(position) {
             return false;
@@ -4052,6 +4226,10 @@ impl RenderBox for RenderPointerRegion {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

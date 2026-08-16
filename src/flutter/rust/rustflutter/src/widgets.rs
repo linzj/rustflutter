@@ -491,6 +491,12 @@ impl RenderBox for Container {
         }
     }
 
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(composed) = &self.composed {
+            visit(composed, Offset::ZERO);
+        }
+    }
+
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.composed
             .as_ref()
@@ -959,6 +965,12 @@ impl RenderBox for ListView {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(composed) = &self.composed {
             composed.paint(context, offset);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(composed) = &self.composed {
+            visit(composed, Offset::ZERO);
         }
     }
 

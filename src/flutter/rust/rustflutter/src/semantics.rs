@@ -23,14 +23,25 @@
 //!
 //! # Where the rectangles come from
 //!
-//! A node needs a rectangle in root coordinates, and a render object only
-//! learns where it is when it is painted -- paint is the walk that carries the
-//! offset. So [`RenderSemantics`] collects during paint: it pushes itself on
-//! the way down and pops on the way up, so the nesting of the resulting tree is
-//! the nesting of the paint, which is the order a reader should meet things in.
-//! Upstream compiles the tree in its own walk over the render tree, which it
-//! can do because a `RenderObject` knows its parent; here nothing does, and
-//! paint is the walk that has the answer anyway.
+//! A node needs a rectangle in root coordinates, and only the walk down the
+//! render tree can work one out -- each parent knows where it put each child,
+//! and nothing knows where it is itself. Upstream walks the render tree for
+//! exactly this, through `visitChildrenForSemantics` and `applyPaintTransform`;
+//! [`collect`] does the same walk through
+//! [`crate::render::RenderBox::visit_children_for_semantics`], which carries
+//! the offset because there is no `parentData` here to read it off the child.
+//!
+//! **It used to ride on the paint walk instead**, which had the offset already
+//! and cost nothing extra. Two things were wrong with that and both were
+//! structural. A repaint boundary that handed back the layer it kept did not
+//! walk, so a subtree that had not been drawn again said nothing -- which was
+//! patched by making the boundary redraw whenever a reader was listening,
+//! throwing away every retained layer on the screen for as long as a screen
+//! reader was open. And the offsets were wrong: a boundary paints its child at
+//! the origin and puts the offset in the layer, so every node inside one
+//! reported its position *within the boundary* as though it were the position
+//! on the glass -- and [`crate::scrolling::LazyList`] puts a boundary around
+//! every row. Both stop being possible once the walk is its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -192,15 +203,56 @@ impl SemanticsNode {
     }
 }
 
+// -- What a render object says about itself -----------------------------------
+
+/// One render object's answer to "what are you, for a reader".
+///
+/// Upstream's `SemanticsConfiguration`, filled in by
+/// `describeSemanticsConfiguration`. Narrower here because there is no
+/// merging step to configure: what an object says is what its node says.
+pub struct SemanticsAnnotation {
+    pub id: i32,
+    pub properties: SemanticsProperties,
+    pub on_action: Option<ActionHandler>,
+    /// Whether an enclosing label already speaks for this.
+    ///
+    /// Set on text and nothing else. A button says "Save" and the text inside
+    /// it says "Save"; read as two nodes a reader hears it twice, which is
+    /// worse than hearing it once in the wrong voice. Upstream reaches the same
+    /// place with `excludeSemantics` and `MergeSemantics` -- this is the common
+    /// case of both, and it is the text that yields because the label is the
+    /// one somebody chose.
+    pub yields_to_a_label: bool,
+}
+
+impl SemanticsAnnotation {
+    /// What [`crate::render::RenderBox::describe_semantics`] hands back for an
+    /// annotation somebody wrote.
+    pub fn new(
+        id: i32,
+        properties: SemanticsProperties,
+        on_action: Option<ActionHandler>,
+    ) -> SemanticsAnnotation {
+        SemanticsAnnotation { id, properties, on_action, yields_to_a_label: false }
+    }
+
+    /// What a paragraph hands back for text nobody annotated.
+    pub fn text(id: i32, said: &str) -> SemanticsAnnotation {
+        SemanticsAnnotation {
+            id,
+            properties: SemanticsProperties::label(said),
+            on_action: None,
+            yields_to_a_label: true,
+        }
+    }
+}
+
 // -- The frame's collection ---------------------------------------------------
 
 #[derive(Default)]
 struct Collector {
     /// Whether anything is listening. Nothing is collected otherwise.
     enabled: bool,
-    /// Whether a collection is running right now, so `RenderSemantics::paint`
-    /// knows to record rather than just paint.
-    collecting: bool,
     nodes: Vec<SemanticsNode>,
     /// Indices into `nodes` for the annotations currently open, outermost
     /// last. This is what turns the paint recursion into a tree.
@@ -221,7 +273,7 @@ struct Collector {
     next_text_id: i32,
 }
 
-type ActionHandler = Rc<dyn Fn(SemanticsAction)>;
+pub type ActionHandler = Rc<dyn Fn(SemanticsAction)>;
 
 thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
@@ -256,42 +308,91 @@ pub fn set_enabled(on: bool) {
 /// Without a parent above them, the top-level nodes have nowhere to carry it.
 pub const ROOT_ID: i32 = 0;
 
-/// Runs `paint` with collection turned on, and returns the tree it produced.
+/// Walks a laid-out render tree and returns what it says about itself.
 ///
 /// Returns `None` when nothing is listening, which is the ordinary case and
-/// costs one boolean.
+/// costs one boolean -- the walk does not happen at all.
 ///
-/// `size` is the view, and becomes [`ROOT_ID`]'s rectangle.
-pub fn collect(size: Size, paint: impl FnOnce()) -> Option<Vec<SemanticsNode>> {
+/// This is upstream's `PipelineOwner.flushSemantics`, minus the part that makes
+/// it cheap: upstream keeps a persistent semantics tree and revisits only the
+/// render objects that marked themselves dirty, where this rebuilds the whole
+/// tree every frame a reader is listening. That is affordable for the same
+/// reason the whole-tree layout descent is (see
+/// [`crate::render::RenderRef::mark_needs_layout`]) -- there is no pipeline
+/// owner here holding a list of dirty nodes to resume from -- and it is
+/// strictly cheaper than what it replaces, which forced a full repaint of the
+/// screen as well.
+///
+/// `size` is the view, and becomes [`ROOT_ID`]'s rectangle. The tree must be
+/// laid out already: every offset this reads was written during layout.
+pub fn collect(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
     if !enabled() {
         return None;
     }
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
-        collector.collecting = true;
         collector.nodes.clear();
         collector.open.clear();
         collector.handlers.clear();
         collector.labelled_depth = 0;
     });
-    // Opened before the paint and closed after it, so that everything the
-    // paint reports lands inside it -- in paint order, which is reading order.
-    let root = open(
+    // Opened before the walk and closed after it, so that everything the walk
+    // finds lands inside it -- in paint order, which is reading order.
+    let opened = open(
         ROOT_ID,
         SemanticsProperties::label(""),
         (0.0, 0.0, size.width, size.height),
     );
-    paint();
-    if let Some(index) = root {
+    describe_subtree(root, Offset::ZERO);
+    if let Some(index) = opened {
         close(index);
     }
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
-        collector.collecting = false;
         collector.open.clear();
         collector.labelled_depth = 0;
         Some(collector.nodes.clone())
     })
+}
+
+/// One render object and everything under it, at `offset` from the root.
+///
+/// Upstream's `_RenderObjectSemantics` walk. The recursion is the tree: what a
+/// node opens stays open until its children have been described, so the nesting
+/// of the render tree becomes the nesting a reader is handed.
+fn describe_subtree(render: &dyn RenderBox, offset: Offset) {
+    let opened = match render.describe_semantics() {
+        // Text that something above already speaks for. Its children are still
+        // walked -- suppressing what a node says is not suppressing what is
+        // under it -- though a paragraph has none.
+        Some(annotation) if annotation.yields_to_a_label && inside_labelled() => None,
+        Some(annotation) => {
+            let size = render.size();
+            let opened = open(
+                annotation.id,
+                annotation.properties,
+                (
+                    offset.dx,
+                    offset.dy,
+                    offset.dx + size.width,
+                    offset.dy + size.height,
+                ),
+            );
+            if opened.is_some() {
+                if let Some(handler) = annotation.on_action {
+                    remember_handler(annotation.id, handler);
+                }
+            }
+            opened
+        }
+        None => None,
+    };
+    render.visit_children_for_semantics(&mut |child, child_offset| {
+        describe_subtree(child, offset.plus(child_offset));
+    });
+    if let Some(index) = opened {
+        close(index);
+    }
 }
 
 /// Delivers an action the platform asked for.
@@ -317,17 +418,9 @@ pub fn perform_action(node_id: i32, action: SemanticsAction) -> bool {
     }
 }
 
-/// Whether a paint in progress is inside something that already has a label.
-pub(crate) fn inside_labelled() -> bool {
-    COLLECTOR.with(|collector| {
-        let collector = collector.borrow();
-        collector.collecting && collector.labelled_depth > 0
-    })
-}
-
-/// Whether a collection is running right now.
-pub(crate) fn collecting() -> bool {
-    COLLECTOR.with(|collector| collector.borrow().collecting)
+/// Whether the walk is inside something that already has a label.
+fn inside_labelled() -> bool {
+    COLLECTOR.with(|collector| collector.borrow().labelled_depth > 0)
 }
 
 /// Hands out an identifier for a node that has none of its own.
@@ -349,25 +442,11 @@ pub(crate) fn take_text_id() -> i32 {
 /// Where text node ids start. The third of the three ranges; see [`AUTO_BASE`].
 const TEXT_BASE: i32 = 2 << 28;
 
-/// Records a paragraph as a node of its own, for text nobody annotated.
-///
-/// Called from `RenderParagraph::paint`. Suppressed inside anything that gave
-/// itself a label, because there the text *is* what the label says and reading
-/// it twice is worse than not reading it at all.
-pub(crate) fn describe_text(id: i32, text: &str, rect: (f32, f32, f32, f32)) {
-    if text.trim().is_empty() || inside_labelled() {
-        return;
-    }
-    if let Some(index) = open(id, SemanticsProperties::label(text), rect) {
-        close(index);
-    }
-}
-
-/// Opens a node during paint, returning its index.
+/// Opens a node during the walk, returning its index.
 fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) -> Option<usize> {
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
-        if !collector.collecting {
+        if !collector.enabled {
             return None;
         }
         let index = collector.nodes.len();
@@ -410,11 +489,7 @@ fn close(index: usize) {
 
 fn remember_handler(id: i32, handler: ActionHandler) {
     COLLECTOR.with(|collector| {
-        let mut collector = collector.borrow_mut();
-        if !collector.collecting {
-            return;
-        }
-        collector.handlers.push((id, handler));
+        collector.borrow_mut().handlers.push((id, handler));
     });
 }
 
@@ -460,15 +535,17 @@ impl RenderBox for RenderSemantics {
     ) -> Option<crate::render::UpdateEffect> {
         use crate::render::UpdateEffect;
         let fresh = fresh.as_any_mut().downcast_mut::<RenderSemantics>()?;
-        // The id, the properties and the handler are read in `paint`, and
-        // nowhere else -- but they are only ever read while a reader is
-        // listening, and a frame that is describing itself to a reader paints
-        // in full: `RenderRepaintBoundary` deliberately declines to hand back
-        // its layer while `collect` is running, because a subtree that is not
-        // walked says nothing about itself. So a changed label is read from
-        // this object on the next frame without anything having to be marked.
-        // The test `a_new_label_under_a_boundary_is_still_read_out` is what
-        // holds that arrangement in place.
+        // The id, the properties and the handler are read by `collect` and
+        // nowhere else, and `collect` walks the live objects from the root
+        // every frame a reader is listening -- so a changed label is read out
+        // next frame without anything having to be marked. Nothing about
+        // layout or drawing changed, which is what the answer says.
+        //
+        // This used to be true for a worse reason: the walk was the paint walk,
+        // and the paint walk reached here only because repaint boundaries were
+        // made to stop keeping their layers whenever a reader was listening.
+        // The test `a_new_label_under_a_boundary_is_still_read_out` was written
+        // to hold that arrangement in place and now holds this one, unchanged.
         self.id = fresh.id;
         self.properties = fresh.properties.clone();
         self.on_action = fresh.on_action.take();
@@ -487,25 +564,19 @@ impl RenderBox for RenderSemantics {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        let opened = open(
+        context.paint_child(&self.child, offset);
+    }
+
+    fn describe_semantics(&self) -> Option<SemanticsAnnotation> {
+        Some(SemanticsAnnotation::new(
             self.id,
             self.properties.clone(),
-            (
-                offset.dx,
-                offset.dy,
-                offset.dx + self.size.width,
-                offset.dy + self.size.height,
-            ),
-        );
-        if opened.is_some() {
-            if let Some(handler) = &self.on_action {
-                remember_handler(self.id, Rc::clone(handler));
-            }
-        }
-        context.paint_child(&self.child, offset);
-        if let Some(index) = opened {
-            close(index);
-        }
+            self.on_action.as_ref().map(Rc::clone),
+        ))
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
     }
 
     fn hit_test(&self, position: Offset, result: &mut crate::render::HitTestResult) -> bool {
@@ -758,7 +829,10 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::Cell;
 
-    /// Lays out and paints a tree, and returns what the paint said about it.
+    /// Lays out a tree, paints it, and returns what it says about itself.
+    ///
+    /// The paint is here because a real frame paints -- and because a walk that
+    /// still worked when the drawing had been skipped is the whole point.
     fn describe_tree(widget: AnyWidget, size: Size) -> Vec<SemanticsNode> {
         let mut tree = ElementTree::new();
         tree.rebuild(widget);
@@ -768,18 +842,20 @@ mod tests {
         root.layout(BoxConstraints::loose(size.width, size.height));
         let mut layers =
             crate::engine::LayerTree::new(size.width as i32, size.height as i32);
-        collect(size, || {
+        {
             let mut context = PaintContext::new(&mut layers, size);
             root.paint(&mut context, Offset::ZERO);
-        })
-        .expect("semantics are on")
+        }
+        collect(size, &root).expect("semantics are on")
     }
 
     #[test]
     fn nothing_is_collected_until_something_asks() {
         set_enabled(false);
-        let collected =
-            collect(Size::new(200.0, 100.0), || unreachable!("paint should not even run"));
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| crate::widgets::Text::new("unread")));
+        let root = tree.build_render_tree().expect("mounted");
+        let collected = collect(Size::new(200.0, 100.0), &root);
         assert!(collected.is_none(), "a tree nobody reads should not be built");
     }
 
@@ -811,6 +887,102 @@ mod tests {
         // where on the glass this is, not where inside its parent.
         assert_eq!((node.left, node.top), (10.0, 10.0));
         assert_eq!((node.width(), node.height()), (80.0, 40.0));
+    }
+
+    #[test]
+    fn a_node_under_a_boundary_still_says_where_it_is() {
+        set_enabled(true);
+        let nodes = describe_tree(
+            single(
+                crate::widgets::repaint_boundary(semantics(
+                    7,
+                    SemanticsProperties::button("Increment"),
+                    leaf(|| SizedBox::new(80.0, 40.0)),
+                )),
+                |child| RenderPadding::new(EdgeInsets::all(10.0), child),
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+        let node = nodes.iter().find(|n| n.id == 7).expect("the button is read");
+        assert_eq!((node.left, node.top), (10.0, 10.0), "reported somewhere else");
+    }
+
+    #[test]
+    fn a_node_under_a_layer_still_says_where_it_is() {
+        // A repaint boundary is not the only thing that puts the offset in a
+        // layer and paints its child at the origin -- opacity and transform do
+        // it too, because a layer carries its own position. Anything reading a
+        // node's rectangle out of the paint walk read the position *inside* the
+        // layer, and a partly faded subtree is an ordinary thing to have.
+        use crate::render::{RenderOpacity, RenderTransform};
+
+        set_enabled(true);
+        for (what, wrap) in [
+            ("opacity", 0),
+            ("transform", 1),
+        ] {
+            let inner = semantics(
+                8,
+                SemanticsProperties::button("Increment"),
+                leaf(|| SizedBox::new(80.0, 40.0)),
+            );
+            let wrapped = match wrap {
+                0 => single(inner, |child| RenderOpacity::new(0.5, child)),
+                _ => single(inner, |child| {
+                    RenderTransform::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], child)
+                }),
+            };
+            let nodes = describe_tree(
+                single(wrapped, |child| RenderPadding::new(EdgeInsets::all(10.0), child)),
+                Size::new(200.0, 100.0),
+            );
+            let node = nodes.iter().find(|n| n.id == 8).expect("the button is read");
+            assert_eq!((node.left, node.top), (10.0, 10.0), "under {what}");
+        }
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_reader_no_longer_costs_the_screen_its_retained_layers() {
+        // What collecting on the paint walk used to cost. A boundary could not
+        // hand back the layer it kept, because the subtree behind that layer
+        // was where the semantics came from -- so opening a screen reader threw
+        // away every retained layer on the screen, for as long as it stayed
+        // open. The walk is its own now, so the layer and the reader are no
+        // longer in each other's way.
+        use crate::engine_test_stubs::{layer_calls, reset_layer_calls};
+        use crate::widgets::repaint_boundary;
+
+        set_enabled(true);
+        let size = Size::new(200.0, 100.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(repaint_boundary(semantics(
+            11,
+            SemanticsProperties::button("Increment"),
+            leaf(|| SizedBox::new(80.0, 40.0)),
+        )));
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(size.width, size.height));
+
+        let frame = |root: &mut crate::render::BoxedRender| {
+            reset_layer_calls();
+            let mut layers = crate::engine::LayerTree::new(200, 100);
+            {
+                let mut context = PaintContext::new(&mut layers, size);
+                root.paint(&mut context, Offset::ZERO);
+            }
+            (layer_calls(), collect(size, root).expect("semantics are on"))
+        };
+
+        let (first, said) = frame(&mut root);
+        assert_eq!((first.retainable, first.retained), (1, 0), "the first frame draws");
+        assert!(said.iter().any(|node| node.id == 11), "and is read");
+
+        let (quiet, said) = frame(&mut root);
+        assert_eq!((quiet.retainable, quiet.retained), (0, 1), "drawn again for a reader");
+        assert!(said.iter().any(|node| node.id == 11), "the node stopped being reported");
+        set_enabled(false);
     }
 
     #[test]
@@ -1021,11 +1193,11 @@ mod tests {
 
         let describe_once = |root: &mut crate::render::BoxedRender| {
             let mut layers = crate::engine::LayerTree::new(200, 100);
-            collect(Size::new(200.0, 100.0), || {
+            {
                 let mut context = PaintContext::new(&mut layers, Size::new(200.0, 100.0));
                 root.paint(&mut context, Offset::ZERO);
-            })
-            .expect("on")
+            }
+            collect(Size::new(200.0, 100.0), root).expect("on")
         };
 
         let first = describe_once(&mut root);
@@ -1154,11 +1326,11 @@ mod tests {
             let mut root = tree.build_render_tree().expect("mounted");
             root.layout(BoxConstraints::loose(size.width, size.height));
             let mut layers = crate::engine::LayerTree::new(size.width as i32, size.height as i32);
-            collect(size, || {
+            {
                 let mut context = PaintContext::new(&mut layers, size);
                 root.paint(&mut context, Offset::ZERO);
-            })
-            .expect("semantics are on")
+            }
+            collect(size, &root).expect("semantics are on")
         };
 
         let said = |nodes: &[SemanticsNode]| {
