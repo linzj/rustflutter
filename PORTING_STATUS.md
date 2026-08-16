@@ -932,9 +932,10 @@ ui thread: advance 0.04   build 0.29   layout 0.09   record 0.12   total 0.54 ms
 
 ### 还剩下的
 
-* **持久化 render object。** 见上文：流水线后果只剩 UI 线程 0.15 ms，
+* ~~**持久化 render object。**~~ 见上文：流水线后果只剩 UI 线程 0.15 ms，
   合成侧为零。它要解决的是框架架构问题（repaint boundary、重场景的布局成本），
-  排期理由是那个，不是这一节的理由。
+  排期理由是那个，不是这一节的理由 —— 第十七节第 15 条做了，第 18–22 条是
+  长在它上面的四件。
 * **microtask。** 上游在 `onBeginFrame` 和 `onDrawFrame` 之间抽干微任务队列
   （`platform_configuration.cc` 的 `FlushMicrotasksNow`）。这个位置是有意义的，
   不只是顺带：dart:ui 自己的 `scheduleWarmUpFrame` 用两个 timer 而不是一个，
@@ -944,7 +945,7 @@ ui thread: advance 0.04   build 0.29   layout 0.09   record 0.12   total 0.54 ms
 
 ---
 
-## 十四、键盘 —— 部分完成
+## 十四、键盘 —— 已完成 ✅
 
 ### 上游是怎么送的
 
@@ -1011,25 +1012,25 @@ channel，其余照丢。所以引擎侧的改动只落在 `runtime_controller.{
 办法是在鼠标移动时对账（`SyncModifiersIfNeeded`），补发合成事件。照抄了，
 连挂在 `WM_MOUSEMOVE` 上都一样——它足够频繁,而没有变化时不花钱。
 
-### 没做的,以及为什么
+### 写这一节时没做的三件,后来都做了
 
-**redispatch。** 上游把每个键先吃掉，等框架回话，没人要的再合成一份 post
-回消息队列，并在回来的路上认出它。这是 `KeyboardManager` 413 行里的大半。
-这里不吃——每条消息都照样落到 `DefWindowProc`——所以 Alt+F4、Alt+Space
-照常工作,代价是框架**挡不住**任何一个键。`on_key` 的返回值会变成平台消息的
-reply,但没人读。
+**redispatch。** 上游把每个键先吃掉,等框架回话,没人要的再合成一份 post 回
+消息队列,并在回来的路上认出它 —— `KeyboardManager` 那 413 行里的大半。写这
+一节的时候不吃,每条消息都照样落到 `DefWindowProc`,于是 Alt+F4、Alt+Space
+照常工作,代价是框架**挡不住**任何一个键。第十七节第 14 条把那套算法移了过来。
 
-**焦点树。** 指针事件自带地址（坐标 + 命中测试），按键没有。上游由
-`FocusManager.handleKeyMessage` 回答，第一行就是 `primaryFocus == null` 就丢。
-框架侧那一摊：`focus_manager.dart` 2422 行、`focus_traversal.dart` 2575 行、
-`shortcuts.dart` 1565、`actions.dart` 1904、`keyboard_key.g.dart` 5604。
+**焦点树。** 指针事件自带地址(坐标 + 命中测试),按键没有;上游由
+`FocusManager.handleKeyMessage` 回答,第一行就是 `primaryFocus == null` 就丢。
+框架侧那一摊:`focus_manager.dart` 2422 行、`focus_traversal.dart` 2575 行、
+`shortcuts.dart` 1565、`actions.dart` 1904、`keyboard_key.g.dart` 5604。写这
+一节的时候这里只有上游在焦点遍历**之前**跑的那一层(`FocusManager` 的
+`_earlyKeyEventHandlers`,它不看焦点)—— `Application::on_key`。那不是绕开
+焦点的临时方案,是上游自己就承认存在的一层,焦点长出来之后它仍在原位。
+第十七节第 7 条把树长出来了。
 
-现在有的是上游在焦点遍历**之前**跑的那一层（`FocusManager` 的
-`_earlyKeyEventHandlers`，它不看焦点）——`Application::on_key`。这不是绕开
-焦点的临时方案，是上游自己就承认存在的一层，焦点长出来之后它仍然在原位。
-
-**文本输入 / IME。** 字符送到了 `KeyEvent::character`，但没有输入法组词、
-没有候选框、也没有可编辑文本可放。
+**文本输入 / IME。** 写这一节的时候字符送到了 `KeyEvent::character`,但没有
+输入法组词、没有候选框、也没有可编辑的文本可放。第十五节"文本输入与输入法"
+三样都有了,Android 那一侧是 `onCreateInputConnection`(第十六节)。
 
 ### 顺带改掉的
 
