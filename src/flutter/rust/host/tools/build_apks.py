@@ -20,6 +20,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MAKE_APK = os.path.join(HERE, 'make_apk.py')
 JAVA = os.path.join(HERE, os.pardir, 'android')
 
+# The data upstream ships, trimmed to what Flutter needs (see the README
+# beside it) -- not the full Chromium bundle the build copies to the out dir.
+ICU_DATA = os.path.join(HERE, os.pardir, os.pardir, os.pardir,
+                        'third_party', 'icu', 'flutter', 'icudtl.dat')
+
 # Which ABI an output directory holds, by the suffix the gn wrapper gives it.
 ABIS = {
     'arm64': 'arm64-v8a',
@@ -61,9 +66,9 @@ def main(argv):
   if not os.path.isdir(stripped):
     raise SystemExit('No lib.stripped in %s -- has ninja run?' % args.out)
 
-  icu = os.path.join(args.out, 'icudtl.dat')
+  icu = ICU_DATA
   if not os.path.exists(icu):
-    raise SystemExit('No icudtl.dat in %s.' % args.out)
+    raise SystemExit('No icudtl.dat at %s.' % icu)
 
   names = sorted(name[3:-3] for name in os.listdir(stripped)
                  if name.startswith('lib') and name.endswith('.so'))

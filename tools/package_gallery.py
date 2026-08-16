@@ -16,6 +16,12 @@ import zipfile
 DEFAULT_OUT = 'K:/rustflutter/src/out/host_release'
 DEFAULT_DEST = 'K:/rustflutter/dist/rustflutter-gallery'
 
+# The data upstream ships, trimmed to what Flutter needs (see the README
+# beside it) -- not the full Chromium bundle the build copies to the out dir.
+ICU_DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'src', 'flutter', 'third_party', 'icu', 'flutter',
+                        'icudtl.dat')
+
 README = """rustflutter Gallery
 ===================
 
@@ -65,7 +71,7 @@ def main():
   parser.add_argument('--zip', action='store_true', help='also write a zip beside it')
   args = parser.parse_args()
 
-  required = ['flutter_gallery.exe', 'icudtl.dat']
+  required = ['flutter_gallery.exe']
   # ANGLE compiles its shaders through this. Windows ships a copy, so it is
   # taken along only if the build produced one.
   optional = ['d3dcompiler_47.dll']
@@ -73,6 +79,8 @@ def main():
   missing = [n for n in required if not os.path.isfile(os.path.join(args.out, n))]
   if missing:
     raise SystemExit('not in %s: %s' % (args.out, ', '.join(missing)))
+  if not os.path.isfile(ICU_DATA):
+    raise SystemExit('not found: %s' % ICU_DATA)
 
   if os.path.isdir(args.dest):
     shutil.rmtree(args.dest)
@@ -85,6 +93,8 @@ def main():
       continue
     shutil.copy2(source, os.path.join(args.dest, name))
     copied.append((name, os.path.getsize(source)))
+  shutil.copy2(ICU_DATA, os.path.join(args.dest, 'icudtl.dat'))
+  copied.append(('icudtl.dat', os.path.getsize(ICU_DATA)))
 
   with open(os.path.join(args.dest, 'README.txt'), 'w', newline='\r\n') as f:
     f.write(README)
