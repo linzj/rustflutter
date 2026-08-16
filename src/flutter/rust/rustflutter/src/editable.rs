@@ -565,7 +565,13 @@ impl StatefulComponent for TextField {
             properties,
             focused,
             move |action| {
-                if action == crate::semantics::SemanticsAction::Tap {
+                // Both mean the same thing to a field: the reader wants to be
+                // in it. A touch reader taps, a keyboard reader focuses.
+                if matches!(
+                    action,
+                    crate::semantics::SemanticsAction::Tap
+                        | crate::semantics::SemanticsAction::Focus
+                ) {
                     crate::focus::focus(id);
                 }
             },

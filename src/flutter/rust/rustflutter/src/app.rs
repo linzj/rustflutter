@@ -787,7 +787,7 @@ impl AppInstance {
         // up. Nothing is collected unless a screen reader is listening, so the
         // ordinary case is one boolean.
         let mut tree = None;
-        let described = crate::semantics::collect(|| {
+        let described = crate::semantics::collect(context.size, || {
             tree = Some(compose_frame(
                 physical_width,
                 physical_height,

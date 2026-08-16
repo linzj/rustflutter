@@ -31,6 +31,7 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <imm.h>
+#include <objbase.h>
 #include <windowsx.h>
 
 #include <atomic>
@@ -57,6 +58,7 @@
 #include "flutter/lib/ui/window/key_data_packet.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/pointer_data.h"
+#include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/shell/common/platform_view.h"
@@ -69,6 +71,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl.h"
+#include "flutter/rust/host/rustflutter_host_a11y_win.h"
 #include "flutter/rust/host/rustflutter_key_map_win.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
@@ -190,6 +193,11 @@ constexpr UINT kMessageQuitApproved = WM_APP + 3;
 // the framework to consume a key at all, because Win32 wants a synchronous
 // answer and the framework's is three threads away.
 constexpr UINT kMessageKeyResult = WM_APP + 4;
+
+/// Posted by the platform thread after a semantics tree arrives, so that
+/// the events it owes are raised on the thread that owns the window --
+/// which is the apartment a provider asking for COM threading belongs to.
+constexpr UINT kMessageSemanticsUpdated = WM_APP + 5;
 
 //------------------------------------------------------------------------------
 /// The pixels the window paints, and the lock that lets two threads share them.
@@ -1801,12 +1809,14 @@ class HostPlatformView final : public PlatformView,
                    FrameBuffer* frame_buffer,
                    TextInputHandler* text_input,
                    SharedWindowState* shared,
+                   AccessibilityBridgeWin* a11y,
                    bool prefer_impeller)
       : PlatformView(delegate, task_runners),
         window_(window),
         frame_buffer_(frame_buffer),
         text_input_(text_input),
         shared_(shared),
+        a11y_(a11y),
         prefer_impeller_(prefer_impeller) {}
 
   ~HostPlatformView() override = default;
@@ -1988,6 +1998,28 @@ class HostPlatformView final : public PlatformView,
     }
     response->Complete(
         std::make_unique<fml::DataMapping>(std::move(*reply)));
+  }
+
+  //----------------------------------------------------------------------------
+  /// Hands one frame's semantics tree to the bridge.
+  ///
+  /// Upstream this is `FlutterWindowsView::UpdateSemantics`, which feeds an
+  /// `AXTree` and lets the event generator work out what changed. The bridge
+  /// here compares the two snapshots itself, which is the same job on a tree
+  /// small enough that a comparison is cheaper than a change log.
+  ///
+  /// Runs on the platform thread. The window thread is the one UI Automation
+  /// talks to, so the events are raised there instead -- hence the post.
+  ///
+  /// |PlatformView|
+  void UpdateSemantics(int64_t view_id,
+                       SemanticsNodeUpdates update,
+                       CustomAccessibilityActionUpdates actions) override {
+    if (a11y_ == nullptr) {
+      return;
+    }
+    a11y_->Update(update);
+    PostMessage(window_, kMessageSemanticsUpdated, 0, 0);
   }
 
   // |PlatformView|
@@ -2261,6 +2293,9 @@ class HostPlatformView final : public PlatformView,
   HWND window_ = nullptr;
   FrameBuffer* frame_buffer_ = nullptr;
   TextInputHandler* text_input_ = nullptr;
+  /// What a screen reader is answered from. Owned by the window, which
+  /// outlives the shell.
+  AccessibilityBridgeWin* a11y_ = nullptr;
   SharedWindowState* shared_ = nullptr;
   bool prefer_impeller_ = false;
   std::unique_ptr<ImpellerGlContext> gl_context_;
@@ -2361,6 +2396,10 @@ struct WindowState {
   HWND window = nullptr;
   /// The text field the framework has attached, and the IME serving it.
   TextInputHandler text_input;
+  /// What a screen reader is answered from. Created with the window rather
+  /// than when a reader arrives, because it costs a mutex and two empty maps
+  /// and the alternative is a lock around its own creation.
+  std::optional<AccessibilityBridgeWin> a11y;
   std::optional<ImeContext> ime;
   /// The cursor and the exit handshake, which the platform thread also writes.
   SharedWindowState shared;
@@ -2965,6 +3004,36 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
 
+    case kMessageSemanticsUpdated:
+      if (state != nullptr && state->a11y.has_value()) {
+        state->a11y->RaisePendingEvents();
+      }
+      return 0;
+
+    case WM_GETOBJECT: {
+      // The only notice Windows ever gives that something is reading the
+      // screen. There is a system parameter for it and Narrator does not set
+      // it, so the question itself is the answer -- upstream's
+      // `FlutterWindow::OnGetObject` says the same at greater length.
+      if (state == nullptr || !state->a11y.has_value()) {
+        break;
+      }
+      bool reading = false;
+      LRESULT provider = state->a11y->GetObject(wparam, lparam, &reading);
+      if (reading && state->shell != nullptr) {
+        state->platform_task_runner->PostTask(
+            [view = state->shell->GetPlatformView()]() {
+              if (view) {
+                view->SetSemanticsEnabled(true);
+              }
+            });
+      }
+      if (provider != 0) {
+        return provider;
+      }
+      break;
+    }
+
     case WM_SETTINGCHANGE:
     case WM_THEMECHANGED:
       // The reader changed something in Settings. Windows does not say what,
@@ -3078,6 +3147,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       state->device_pixel_ratio =
           static_cast<double>(HIWORD(wparam)) / USER_DEFAULT_SCREEN_DPI;
+      if (state->a11y.has_value()) {
+        // A reader's rectangles are in physical pixels, so the scale between
+        // them and the framework's has to follow the display the window is on.
+        state->a11y->SetDevicePixelRatio(state->device_pixel_ratio);
+      }
       const auto* suggested = reinterpret_cast<const RECT*>(lparam);
       if (suggested != nullptr) {
         // This resizes, so WM_SIZE follows and re-sends the metrics -- with the
@@ -3297,6 +3371,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       return TRUE;
 
     case WM_DESTROY:
+      if (state != nullptr && state->a11y.has_value()) {
+        // Before the window goes: a client holding a fragment of a destroyed
+        // window is what the documented teardown call prevents.
+        state->a11y->Shutdown();
+      }
       // The last thing the framework hears. It is sent rather than skipped
       // because an application may have something to write down before it
       // goes -- upstream's `detached` is where state restoration saves.
@@ -3378,6 +3457,14 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // what this process is and will not be told otherwise.
   DpiApi::Get().MakeProcessPerMonitorAware();
 
+  // A single-threaded apartment on the thread that owns the window, which is
+  // what a UI Automation provider asking for `ProviderOptions_UseComThreading`
+  // is asking to be called on. Upstream's Win32 runner does this in `main` for
+  // the same reason. Failing is not fatal: it means COM was already
+  // initialised, and only a conflicting apartment model would matter.
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool owns_com = SUCCEEDED(com);
+
   HINSTANCE instance = GetModuleHandle(nullptr);
   WNDCLASSEX window_class = {};
   window_class.cbSize = sizeof(window_class);
@@ -3414,6 +3501,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // The IME needs the window handle, so it cannot exist before this point.
   state.ime.emplace(window);
 
+  // Nor can the accessibility bridge: a UI Automation fragment root *is* a
+  // window as far as the desktop's tree is concerned.
+  state.a11y.emplace(window);
+
   // What WM_SETCURSOR applies until the framework says otherwise. The window
   // class carries the same cursor, but the class's copy stops being consulted
   // the moment WM_SETCURSOR starts returning TRUE.
@@ -3423,6 +3514,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // sizing at that display's DPI; at 100% this is the same rectangle and the
   // SetWindowPos is a no-op.
   state.device_pixel_ratio = DpiApi::Get().ScaleForWindow(window);
+  state.a11y->SetDevicePixelRatio(state.device_pixel_ratio);
   if (state.device_pixel_ratio != 1.0) {
     const UINT dpi =
         static_cast<UINT>(state.device_pixel_ratio * USER_DEFAULT_SCREEN_DPI);
@@ -3456,7 +3548,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
       [window, &state, impeller = settings.enable_impeller](Shell& shell) {
         auto view = std::make_unique<HostPlatformView>(
             shell, shell.GetTaskRunners(), window, &state.frame_buffer,
-            &state.text_input, &state.shared, impeller);
+            &state.text_input, &state.shared, &state.a11y.value(), impeller);
         // The window proc needs to reach the view to send pointers. The shell
         // owns it and outlives the message loop, so a raw pointer is enough.
         state.platform_view = view.get();
@@ -3478,6 +3570,22 @@ int32_t rf_host_run(const RfHostOptions* options) {
   }
   state.shell = shell.get();
   state.platform_task_runner = task_runners.GetPlatformTaskRunner();
+
+  // How a reader's action reaches the framework. UI Automation calls in on
+  // whichever thread it likes, and `DispatchSemanticsAction` belongs to the
+  // platform thread, so this is where the hop happens -- upstream's
+  // `AccessibilityBridgeWindows::DispatchAccessibilityAction` reaches the same
+  // engine method from a thread that is already the right one.
+  state.a11y->SetActionDispatcher(
+      [runner = task_runners.GetPlatformTaskRunner(), shell = shell.get()](
+          int32_t node_id, SemanticsAction action) {
+        runner->PostTask([shell, node_id, action]() {
+          if (auto view = shell->GetPlatformView()) {
+            view->DispatchSemanticsAction(kFlutterImplicitViewId, node_id,
+                                          action, {});
+          }
+        });
+      });
   state.raster_task_runner = task_runners.GetRasterTaskRunner();
 
   // The requested size is a request: Windows clamps a window that will not fit
@@ -3556,6 +3664,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
         latch.Signal();
       }));
   latch.Wait();
+
+  if (owns_com) {
+    CoUninitialize();
+  }
 
   // What PostQuitMessage was given, which is zero for every way of closing the
   // window except a `System.exitApplication` that asked for something else.

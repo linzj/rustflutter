@@ -245,11 +245,24 @@ pub fn set_enabled(on: bool) {
     });
 }
 
+/// The view's own node, which everything painted into it hangs from.
+///
+/// Upstream this is `RenderView`'s semantics node, and it is always zero. It
+/// exists here for the reason it exists there -- a screen reader is handed one
+/// tree, not a heap of unrelated ones -- and for one more that upstream never
+/// had to think about: the order the nodes reach a platform is lost on the way
+/// (`SemanticsNodeUpdates` is a map, on this branch and upstream both), so the
+/// order a reader meets them in has to be carried by a parent's child list.
+/// Without a parent above them, the top-level nodes have nowhere to carry it.
+pub const ROOT_ID: i32 = 0;
+
 /// Runs `paint` with collection turned on, and returns the tree it produced.
 ///
 /// Returns `None` when nothing is listening, which is the ordinary case and
 /// costs one boolean.
-pub fn collect(paint: impl FnOnce()) -> Option<Vec<SemanticsNode>> {
+///
+/// `size` is the view, and becomes [`ROOT_ID`]'s rectangle.
+pub fn collect(size: Size, paint: impl FnOnce()) -> Option<Vec<SemanticsNode>> {
     if !enabled() {
         return None;
     }
@@ -261,7 +274,17 @@ pub fn collect(paint: impl FnOnce()) -> Option<Vec<SemanticsNode>> {
         collector.handlers.clear();
         collector.labelled_depth = 0;
     });
+    // Opened before the paint and closed after it, so that everything the
+    // paint reports lands inside it -- in paint order, which is reading order.
+    let root = open(
+        ROOT_ID,
+        SemanticsProperties::label(""),
+        (0.0, 0.0, size.width, size.height),
+    );
     paint();
+    if let Some(index) = root {
+        close(index);
+    }
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
         collector.collecting = false;
@@ -585,7 +608,11 @@ impl SemanticsProperties {
             flags: SemanticsFlags { is_text_field: true, ..SemanticsFlags::default() },
             ..SemanticsProperties::label(label)
         }
+        // Tap because a finger reaches a field by touching it, and Focus
+        // because a keyboard-shaped reader reaches it by moving to it --
+        // upstream's `EditableText` offers both for the same two ways in.
         .with_action(SemanticsAction::Tap)
+        .with_action(SemanticsAction::Focus)
     }
 
     /// A heading. Screen readers let a reader jump between these.
@@ -627,9 +654,10 @@ const AUTO_BASE: i32 = 1 << 28;
 ///
 /// Folded into the low range rather than truncated, so a caller who chose a
 /// large id -- the examples hand out blocks at `1 << 40` -- still lands
-/// somewhere that cannot be mistaken for an automatic one.
+/// somewhere that cannot be mistaken for an automatic one. Never zero, which
+/// belongs to [`ROOT_ID`].
 pub fn node_id_for(caller: u64) -> i32 {
-    (caller % AUTO_BASE as u64) as i32
+    1 + (caller % (AUTO_BASE as u64 - 1)) as i32
 }
 
 /// [`Semantics`] as a widget.
@@ -717,7 +745,7 @@ mod tests {
         root.layout(BoxConstraints::loose(size.width, size.height));
         let mut layers =
             crate::engine::LayerTree::new(size.width as i32, size.height as i32);
-        collect(|| {
+        collect(size, || {
             let mut context = PaintContext::new(&mut layers, size);
             root.paint(&mut context, Offset::ZERO);
         })
@@ -727,7 +755,8 @@ mod tests {
     #[test]
     fn nothing_is_collected_until_something_asks() {
         set_enabled(false);
-        let collected = collect(|| unreachable!("paint should not even run"));
+        let collected =
+            collect(Size::new(200.0, 100.0), || unreachable!("paint should not even run"));
         assert!(collected.is_none(), "a tree nobody reads should not be built");
     }
 
@@ -747,8 +776,10 @@ mod tests {
         );
         set_enabled(false);
 
-        assert_eq!(nodes.len(), 1);
-        let node = &nodes[0];
+        // The view's own node, and the annotation inside it.
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].id, ROOT_ID);
+        let node = &nodes[1];
         assert_eq!(node.id, 7);
         assert_eq!(node.properties.label, "Increment");
         assert!(node.properties.flags.is_button);
@@ -784,14 +815,15 @@ mod tests {
         );
         set_enabled(false);
 
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].id, 1);
-        assert_eq!(nodes[0].children, vec![2, 3], "reading order is paint order");
-        assert!(nodes[1].children.is_empty());
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].children, vec![1], "the view's node holds the tree");
+        assert_eq!(nodes[1].id, 1);
+        assert_eq!(nodes[1].children, vec![2, 3], "reading order is paint order");
+        assert!(nodes[2].children.is_empty());
         // The second row is below the first, which is the whole reason a
         // rectangle is worth carrying: a finger dragged down the glass meets
         // them in this order.
-        assert!(nodes[2].top >= nodes[1].bottom);
+        assert!(nodes[3].top >= nodes[2].bottom);
     }
 
     #[test]
@@ -933,8 +965,8 @@ mod tests {
         );
         set_enabled(false);
 
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].properties.label, "Rendered by Rust");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].properties.label, "Rendered by Rust");
     }
 
     #[test]
@@ -966,7 +998,7 @@ mod tests {
 
         let describe_once = |root: &mut crate::render::BoxedRender| {
             let mut layers = crate::engine::LayerTree::new(200, 100);
-            collect(|| {
+            collect(Size::new(200.0, 100.0), || {
                 let mut context = PaintContext::new(&mut layers, Size::new(200.0, 100.0));
                 root.paint(&mut context, Offset::ZERO);
             })
@@ -979,7 +1011,52 @@ mod tests {
         let second = describe_once(&mut again);
         set_enabled(false);
 
-        assert_eq!(first[0].id, second[0].id, "the same text became a new node");
+        assert_eq!(first[1].id, second[1].id, "the same text became a new node");
+    }
+
+    #[test]
+    fn the_view_is_one_node_with_everything_under_it() {
+        // A reader is handed a tree, not a heap. Upstream's `RenderView` node
+        // is what makes that true there, and it is what makes reading *order*
+        // survive the crossing here: the platform is handed a map, so the only
+        // place a sequence can live is a parent's list of children.
+        use crate::components::Label;
+        use crate::framework::component;
+        use crate::components::stack_column;
+
+        set_enabled(true);
+        let nodes = describe_tree(
+            stack_column(
+                vec![
+                    component(Label::new("first")),
+                    component(Label::new("second")),
+                    component(Label::new("third")),
+                ],
+                4.0,
+            ),
+            Size::new(300.0, 400.0),
+        );
+        set_enabled(false);
+
+        assert_eq!(nodes[0].id, ROOT_ID);
+        assert_eq!((nodes[0].width(), nodes[0].height()), (300.0, 400.0));
+        // Everything else is somebody's child, so nothing is loose.
+        let claimed: Vec<i32> = nodes.iter().flat_map(|n| n.children.clone()).collect();
+        for node in &nodes[1..] {
+            assert!(claimed.contains(&node.id), "{node:?} hangs from nothing");
+        }
+        let said: Vec<&str> = nodes[0]
+            .children
+            .iter()
+            .map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| n.id == *id)
+                    .map(|n| n.properties.label.as_str())
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(said, vec!["first", "second", "third"], "top to bottom");
     }
 
     #[test]

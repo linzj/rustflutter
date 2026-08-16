@@ -21,6 +21,8 @@ source_set("host") {
 
   if (is_win) {
     sources += [
+      "rustflutter_host_a11y_win.cc",
+      "rustflutter_host_a11y_win.h",
       "rustflutter_host_win.cc",
 
       # Generated. See tools/gen_key_map.py.
@@ -79,6 +81,13 @@ source_set("host") {
 
       # The IME. `flutter/textinput` is served through IMM32.
       "imm32.lib",
+
+      # What a screen reader reads the interface through. `ole32` for the
+      # apartment the provider lives in and `oleaut32` for the BSTRs and safe
+      # arrays every answer is spelled in.
+      "ole32.lib",
+      "oleaut32.lib",
+      "uiautomationcore.lib",
       "user32.lib",
     ]
   }
