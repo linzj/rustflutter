@@ -92,7 +92,9 @@ pub use painting::{
     TileMode,
 };
 pub use scrollbar::{Scrollbar, scrollbar};
-pub use scrolling::{ItemWindow, LazyList, Scroll, item_window};
+pub use scrolling::{
+    ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window,
+};
 pub use widgets::{
     BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
     boxed,
@@ -132,7 +134,7 @@ pub mod prelude {
     pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
     pub use crate::platform::{Brightness, Locale, UserSettings};
     pub use crate::scrollbar::{Scrollbar, scrollbar};
-    pub use crate::scrolling::{LazyList, Scroll};
+    pub use crate::scrolling::{ExtentBook, LazyList, Scroll, VariableExtentList};
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
         keyed_single, leaf, many, provide, single, stateful,

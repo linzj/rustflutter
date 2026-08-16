@@ -39,7 +39,7 @@
 //! place they do it rather than here, because a wheel does not need negating
 //! and a scrollbar drag does not either.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::physics::{ClampingScrollSimulation, Simulation};
@@ -391,13 +391,23 @@ impl crate::framework::Component for LazyList {
         // The items that are not built are still taken up: a gap at each end,
         // as tall as the rows it stands in for. Without it every offset below
         // the window would be wrong by however much was skipped.
-        let leading = window.first as f32 * step;
-        let trailing = (self.count - 1 - window.last) as f32 * step;
+        //
+        // A spacer that stands for nothing is left out rather than given a
+        // height of zero, and one that stands for something is a gap shorter
+        // than the rows it replaces. Both because the column puts a gap
+        // *between* its children: the gap above the first built row is the
+        // column's to add, and counting it here as well made a spaced list
+        // two gaps taller than its own content.
+        let leading = (window.first as f32 * step - self.spacing).max(0.0);
+        let after = self.count - 1 - window.last;
+        let trailing = (after as f32 * step - self.spacing).max(0.0);
 
         let mut children = Vec::with_capacity(window.len() + 2);
-        children.push(crate::framework::leaf(move || {
-            crate::render::RenderConstrainedBox::tight(0.0, leading)
-        }));
+        if window.first > 0 {
+            children.push(crate::framework::leaf(move || {
+                crate::render::RenderConstrainedBox::tight(0.0, leading)
+            }));
+        }
         for index in window.first..=window.last {
             // Keyed by index, so an item keeps its element -- and therefore
             // its state -- when the window moves. Matching by position would
@@ -409,9 +419,11 @@ impl crate::framework::Component for LazyList {
                 |child| child,
             ));
         }
-        children.push(crate::framework::leaf(move || {
-            crate::render::RenderConstrainedBox::tight(0.0, trailing)
-        }));
+        if after > 0 {
+            children.push(crate::framework::leaf(move || {
+                crate::render::RenderConstrainedBox::tight(0.0, trailing)
+            }));
+        }
 
         let spacing = self.spacing;
         crate::framework::many(children, move |rendered| {
@@ -424,6 +436,424 @@ impl crate::framework::Component for LazyList {
             }
             Box::new(column)
         })
+    }
+}
+
+// -- Lists whose items are not all the same height ----------------------------
+
+/// What a variable-extent list has learned about how tall its items are.
+///
+/// Upstream's `RenderSliverList` keeps the same knowledge on the children
+/// themselves, as `SliverMultiBoxAdaptorParentData.layoutOffset`, and can
+/// afford to because it creates its children inside its own `performLayout`:
+/// it lays one out, learns its height, and knows where the next one starts.
+///
+/// Nothing here can do that. Children are elements, and elements are built one
+/// step before anything is measured -- so the window has to be chosen from what
+/// is already known. The measurements are therefore kept beside the list rather
+/// than inside it, and a frame reads what the frame before it wrote. That is
+/// already how this framework answers "how far can this scroll" (see
+/// [`Scroll::extent`]) and it is the same one-frame lag, for the same reason.
+///
+/// A book belongs to whoever holds the scroll offset, and lives as long as it
+/// does. Sharing is the point: two frames of the same list are the same list.
+#[derive(Clone, Default)]
+pub struct ExtentBook(Rc<RefCell<Book>>);
+
+#[derive(Default)]
+struct Book {
+    /// Measured extents by index. `None` for an item that has never been laid
+    /// out -- which at the start is all of them.
+    measured: Vec<Option<f32>>,
+    /// Sum of the measured ones, and how many there are, so the average is not
+    /// a walk.
+    total: f32,
+    known: usize,
+    /// Bumped whenever a measurement arrives that was not already the answer.
+    /// A caller that wants the correction applied without waiting for the next
+    /// thing to happen watches this and asks for a frame.
+    revision: u64,
+}
+
+impl ExtentBook {
+    pub fn new() -> ExtentBook {
+        ExtentBook::default()
+    }
+
+    /// Records how tall item `index` turned out. Called from layout.
+    pub fn record(&self, index: usize, extent: f32) {
+        if !extent.is_finite() || extent < 0.0 {
+            return;
+        }
+        let mut book = self.0.borrow_mut();
+        if book.measured.len() <= index {
+            book.measured.resize(index + 1, None);
+        }
+        match book.measured[index] {
+            Some(before) if before == extent => return,
+            Some(before) => book.total += extent - before,
+            None => {
+                book.total += extent;
+                book.known += 1;
+            }
+        }
+        book.measured[index] = Some(extent);
+        book.revision += 1;
+    }
+
+    /// What was measured for `index`, if it has ever been on screen.
+    pub fn measured(&self, index: usize) -> Option<f32> {
+        self.0.borrow().measured.get(index).copied().flatten()
+    }
+
+    /// How many items have been measured.
+    pub fn known(&self) -> usize {
+        self.0.borrow().known
+    }
+
+    /// Changes so far. Only useful compared against an earlier reading.
+    pub fn revision(&self) -> u64 {
+        self.0.borrow().revision
+    }
+
+    //--------------------------------------------------------------------------
+    /// The height to assume for an item nobody has measured.
+    ///
+    /// The average of the ones that have been, which is upstream's
+    /// `_extrapolateMaxScrollOffset`: it takes the extent of the children it
+    /// currently has and spreads it over the ones it does not. The difference
+    /// is that this averages over everything ever measured rather than only
+    /// what is alive now, which is strictly better informed and converges to
+    /// the same number.
+    ///
+    /// `fallback` is the answer before anything at all has been measured, and
+    /// it is the caller's guess -- upstream has no equivalent because its first
+    /// layout is a real one.
+    pub fn average(&self, fallback: f32) -> f32 {
+        let book = self.0.borrow();
+        if book.known == 0 {
+            fallback.max(0.0)
+        } else {
+            book.total / book.known as f32
+        }
+    }
+
+    /// Where item `index` starts, counting from the top of the content.
+    fn offset_of(&self, index: usize, fallback: f32, spacing: f32) -> f32 {
+        let average = self.average(fallback);
+        let book = self.0.borrow();
+        let mut at = 0.0;
+        for item in 0..index {
+            at += book.measured.get(item).copied().flatten().unwrap_or(average) + spacing;
+        }
+        at
+    }
+
+    /// How tall the whole list is, measured where it can be and estimated
+    /// where it cannot.
+    fn content_extent(&self, count: usize, fallback: f32, spacing: f32) -> f32 {
+        if count == 0 {
+            return 0.0;
+        }
+        let average = self.average(fallback);
+        let book = self.0.borrow();
+        let mut total = 0.0;
+        for index in 0..count {
+            total += book.measured.get(index).copied().flatten().unwrap_or(average);
+        }
+        total + spacing * (count - 1) as f32
+    }
+
+    //--------------------------------------------------------------------------
+    /// Which items a viewport at `offset` needs built.
+    ///
+    /// The fixed-extent answer is arithmetic ([`item_window`]); this one is a
+    /// walk, because the only way to know where item ten thousand is, is to
+    /// add up the nine thousand nine hundred and ninety-nine before it.
+    /// Upstream pays the same price and manages it the same way -- it walks
+    /// from the children it already has rather than from zero. Here the walk is
+    /// over a vector of floats, which is cheap enough that starting from zero
+    /// is not worth avoiding until a list is long enough to prove otherwise.
+    fn window(
+        &self,
+        count: usize,
+        offset: f32,
+        viewport: f32,
+        cache_extent: f32,
+        fallback: f32,
+        spacing: f32,
+    ) -> Option<ItemWindow> {
+        if count == 0 {
+            return None;
+        }
+        let average = self.average(fallback);
+        if average <= 0.0 && spacing <= 0.0 {
+            return None;
+        }
+        let start = (offset - cache_extent).max(0.0);
+        let end = offset + viewport + cache_extent;
+
+        let book = self.0.borrow();
+        let mut at = 0.0;
+        let mut first = None;
+        let mut last = 0;
+        for index in 0..count {
+            let extent = book.measured.get(index).copied().flatten().unwrap_or(average);
+            let bottom = at + extent;
+            // An item that starts at or past the end of the window is below it,
+            // and so is everything after it.
+            if first.is_some() && at >= end - PRECISION_ERROR {
+                break;
+            }
+            // An item that ends exactly where the window starts is above it,
+            // which is the same boundary the fixed-extent arithmetic draws.
+            if bottom > start + PRECISION_ERROR {
+                if first.is_none() {
+                    first = Some(index);
+                }
+                last = index;
+            }
+            at = bottom + spacing;
+        }
+        let first = first.unwrap_or(count - 1);
+        Some(ItemWindow { first, last: last.max(first) })
+    }
+}
+
+/// A list that builds only the items it is showing, without being told how
+/// tall they are.
+///
+/// Upstream this is `ListView.builder` over a plain `SliverList`, as opposed to
+/// the `SliverFixedExtentList` that [`LazyList`] is. The difference is the
+/// whole of it: a fixed extent makes "which items are on screen" arithmetic,
+/// and without one the list has to remember what it measured and estimate the
+/// rest. So this needs two things [`LazyList`] does not -- an [`ExtentBook`]
+/// that outlives the frame, and render objects that report their height into it
+/// as they are laid out.
+///
+/// ```ignore
+/// component(
+///     VariableExtentList::new(messages.len(), state.extents.clone(), move |index| {
+///         row_for(index)
+///     })
+///     .with_estimate(72.0)
+///     .with_offset(state.scroll.offset)
+///     .with_viewport(size.height),
+/// )
+/// ```
+pub struct VariableExtentList {
+    count: usize,
+    book: ExtentBook,
+    /// What to assume before anything has been measured. Only ever used for
+    /// the first frame; after that the average of what was measured is a
+    /// better guess than any constant.
+    estimate: f32,
+    offset: f32,
+    viewport: f32,
+    cache_extent: f32,
+    spacing: f32,
+    build_item: Rc<dyn Fn(usize) -> crate::framework::AnyWidget>,
+}
+
+impl VariableExtentList {
+    pub fn new(
+        count: usize,
+        book: ExtentBook,
+        build_item: impl Fn(usize) -> crate::framework::AnyWidget + 'static,
+    ) -> VariableExtentList {
+        VariableExtentList {
+            count,
+            book,
+            estimate: DEFAULT_ITEM_ESTIMATE,
+            offset: 0.0,
+            viewport: 0.0,
+            cache_extent: DEFAULT_CACHE_EXTENT,
+            spacing: 0.0,
+            build_item: Rc::new(build_item),
+        }
+    }
+
+    /// What to assume an unmeasured item is worth on the very first frame.
+    pub fn with_estimate(mut self, estimate: f32) -> Self {
+        self.estimate = estimate.max(0.0);
+        self
+    }
+
+    pub fn with_offset(mut self, offset: f32) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub fn with_viewport(mut self, viewport: f32) -> Self {
+        self.viewport = viewport;
+        self
+    }
+
+    pub fn with_cache_extent(mut self, cache_extent: f32) -> Self {
+        self.cache_extent = cache_extent.max(0.0);
+        self
+    }
+
+    pub fn with_spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// How tall the whole list is, as well as it is currently known.
+    pub fn content_extent(&self) -> f32 {
+        self.book.content_extent(self.count, self.estimate, self.spacing)
+    }
+
+    /// How far this list can scroll, given the viewport it is in.
+    pub fn max_scroll_extent(&self) -> f32 {
+        (self.content_extent() - self.viewport).max(0.0)
+    }
+
+    /// Which items this list would build right now.
+    pub fn window(&self) -> Option<ItemWindow> {
+        self.book.window(
+            self.count,
+            self.offset,
+            self.viewport,
+            self.cache_extent,
+            self.estimate,
+            self.spacing,
+        )
+    }
+}
+
+/// What an unmeasured item is worth before anything better is known.
+///
+/// A row of one line of text with the padding a list tile has. Upstream has no
+/// such number because its first layout measures for real; this is the price of
+/// choosing the window a step earlier, and it is paid for exactly one frame.
+pub const DEFAULT_ITEM_ESTIMATE: f32 = 56.0;
+
+impl crate::framework::Component for VariableExtentList {
+    fn build(&self, _context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        let Some(window) = self.window() else {
+            return crate::framework::leaf(|| crate::widgets::Empty);
+        };
+
+        // The items outside the window are still accounted for: a gap at each
+        // end as tall as the rows it stands in for, measured where they have
+        // been and estimated where they have not. A gap short of the rows it
+        // replaces, and left out entirely when there are none, because the
+        // column supplies the space between its own children -- see the same
+        // arithmetic in `LazyList`.
+        let leading =
+            (self.book.offset_of(window.first, self.estimate, self.spacing) - self.spacing)
+                .max(0.0);
+        let after_last =
+            self.book.offset_of(window.last + 1, self.estimate, self.spacing);
+        let trailing = (self.content_extent() - after_last).max(0.0);
+        let more_below = window.last + 1 < self.count;
+
+        let mut children = Vec::with_capacity(window.len() + 2);
+        if window.first > 0 {
+            children.push(crate::framework::leaf(move || {
+                crate::render::RenderConstrainedBox::tight(0.0, leading)
+            }));
+        }
+        for index in window.first..=window.last {
+            let book = self.book.clone();
+            // Keyed by index, as the fixed-extent list is and for the same
+            // reason: an item keeps its element, and therefore its state, when
+            // the window moves past it.
+            children.push(crate::framework::keyed_single(
+                index as u64,
+                (self.build_item)(index),
+                move |child| RenderMeasuredItem::new(index, book.clone(), child),
+            ));
+        }
+        if more_below {
+            children.push(crate::framework::leaf(move || {
+                crate::render::RenderConstrainedBox::tight(0.0, trailing)
+            }));
+        }
+
+        let spacing = self.spacing;
+        crate::framework::many(children, move |rendered| {
+            let mut column = crate::render::RenderFlex::column()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Stretch)
+                .with_spacing(spacing);
+            for child in rendered {
+                column = column.push(child);
+            }
+            Box::new(column)
+        })
+    }
+}
+
+/// Reports how tall its child turned out, into the book its list reads.
+///
+/// Draws nothing and changes no layout: it is the same box as its child, with
+/// one number written down on the way out. Upstream needs no equivalent because
+/// the sliver that laid the child out is the thing that wanted the number.
+pub struct RenderMeasuredItem {
+    index: usize,
+    book: ExtentBook,
+    child: crate::render::BoxedRender,
+    size: crate::render::Size,
+}
+
+impl RenderMeasuredItem {
+    pub fn new(
+        index: usize,
+        book: ExtentBook,
+        child: impl crate::render::RenderBox + 'static,
+    ) -> RenderMeasuredItem {
+        RenderMeasuredItem {
+            index,
+            book,
+            child: crate::render::BoxedRender::new(child),
+            size: crate::render::Size::ZERO,
+        }
+    }
+}
+
+impl crate::render::RenderBox for RenderMeasuredItem {
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+        self.size = self.child.layout(constraints);
+        self.book.record(self.index, self.size.height);
+        self.size
+    }
+
+    fn size(&self) -> crate::render::Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn hit_test(
+        &self,
+        position: crate::render::Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -651,6 +1081,193 @@ mod tests {
     }
 
     #[test]
+    fn a_spaced_list_is_as_tall_as_its_own_content() {
+        // The gap between two rows belongs to the column that puts it there.
+        // Counting it in the spacers as well made a list two gaps taller than
+        // the sum of what is in it, which is invisible until the scrollbar is
+        // asked where the bottom is.
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox};
+        use crate::widgets::SizedBox;
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            LazyList::new(100, 40.0, |_| leaf(|| SizedBox::new(100.0, 40.0)))
+                .with_spacing(8.0)
+                .with_offset(1000.0)
+                .with_viewport(400.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        let size = root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
+        // A hundred rows of forty, with ninety-nine gaps of eight between them.
+        assert_eq!(size.height, 100.0 * 40.0 + 99.0 * 8.0);
+    }
+
+    // -- Items that are not all the same height ----------------------------
+
+    #[test]
+    fn a_book_with_nothing_in_it_falls_back_to_the_guess() {
+        let book = ExtentBook::new();
+        assert_eq!(book.known(), 0);
+        assert_eq!(book.average(72.0), 72.0);
+        assert_eq!(book.content_extent(10, 72.0, 0.0), 720.0);
+    }
+
+    #[test]
+    fn an_unmeasured_item_is_worth_the_average_of_the_measured_ones() {
+        // Upstream's `_extrapolateMaxScrollOffset`: take what the children you
+        // have are worth and spread it over the ones you do not.
+        let book = ExtentBook::new();
+        book.record(0, 100.0);
+        book.record(1, 50.0);
+        assert_eq!(book.average(999.0), 75.0, "the guess stops mattering");
+        // Two measured, eight at the average.
+        assert_eq!(book.content_extent(10, 999.0, 0.0), 100.0 + 50.0 + 8.0 * 75.0);
+    }
+
+    #[test]
+    fn a_measurement_that_says_the_same_thing_is_not_a_change() {
+        let book = ExtentBook::new();
+        book.record(3, 40.0);
+        let after_first = book.revision();
+        book.record(3, 40.0);
+        assert_eq!(book.revision(), after_first, "nothing was learned");
+        book.record(3, 41.0);
+        assert!(book.revision() > after_first, "and something was");
+        assert_eq!(book.known(), 1, "the same item, remeasured");
+        assert_eq!(book.average(0.0), 41.0, "and the total followed it");
+    }
+
+    #[test]
+    fn the_window_walks_past_the_tall_ones() {
+        // The whole difference from a fixed extent: which items are on screen
+        // is not arithmetic, because item zero being tall pushes item one down.
+        let book = ExtentBook::new();
+        book.record(0, 300.0);
+        book.record(1, 20.0);
+        book.record(2, 20.0);
+        let window = book.window(10, 0.0, 100.0, 0.0, 50.0, 0.0).expect("items");
+        assert_eq!(window.first, 0);
+        assert_eq!(window.last, 0, "one very tall row fills the viewport");
+
+        // Below the tall one, the short ones fit several to a screen.
+        let window = book.window(10, 300.0, 100.0, 0.0, 50.0, 0.0).expect("items");
+        assert_eq!(window.first, 1);
+        assert!(window.last >= 3, "several short rows fit where one tall one did");
+    }
+
+    #[test]
+    fn an_empty_variable_list_has_no_window() {
+        let book = ExtentBook::new();
+        assert!(book.window(0, 0.0, 800.0, 250.0, 50.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_variable_list_measures_what_it_built() {
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox};
+        use crate::widgets::SizedBox;
+
+        // Every third row is twice as tall.
+        let height = |index: usize| if index % 3 == 0 { 80.0 } else { 40.0 };
+        let book = ExtentBook::new();
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            VariableExtentList::new(60, book.clone(), move |index| {
+                leaf(move || SizedBox::new(100.0, height(index)))
+            })
+            .with_estimate(50.0)
+            .with_offset(0.0)
+            .with_viewport(200.0)
+            .with_cache_extent(0.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
+
+        assert!(book.known() > 0, "nothing was measured");
+        assert!(book.known() < 60, "everything was built, so it was not lazy");
+        assert_eq!(book.measured(0), Some(80.0));
+        assert_eq!(book.measured(1), Some(40.0));
+    }
+
+    #[test]
+    fn a_variable_list_learns_the_whole_list_by_being_scrolled_through_it() {
+        // The list starts with one guess for every row and ends holding the
+        // measurements. Nothing corrects it inside a single frame -- upstream
+        // corrects mid-layout with `scrollOffsetCorrection`, and this cannot,
+        // because the window is chosen before anything is measured. What it
+        // does instead is be right by the next frame, which is the lag this
+        // framework already has for `Scroll::extent`.
+        //
+        // The estimate is not monotonic on the way there, and neither is
+        // upstream's: a sample that happens to be all short rows says the list
+        // is shorter than it is, and the next tall row it meets corrects it
+        // upwards. What is monotonic is what has been measured.
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox};
+        use crate::widgets::SizedBox;
+
+        let height = |index: usize| if index % 3 == 0 { 80.0 } else { 40.0 };
+        let truth: f32 = (0..60).map(height).sum();
+
+        let book = ExtentBook::new();
+        let list = |offset: f32, book: ExtentBook| {
+            component(
+                VariableExtentList::new(60, book, move |index| {
+                    leaf(move || SizedBox::new(100.0, height(index)))
+                })
+                .with_estimate(50.0)
+                .with_offset(offset)
+                .with_viewport(200.0)
+                .with_cache_extent(0.0),
+            )
+        };
+
+        let mut tree = ElementTree::new();
+        let mut known = 0;
+        let mut offset = 0.0;
+        for _ in 0..40 {
+            tree.rebuild(list(offset, book.clone()));
+            let mut root = tree.build_render_tree().expect("a mounted root");
+            root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
+            assert!(book.known() >= known, "a measurement was forgotten");
+            known = book.known();
+            // Follow the list down as it is currently understood, which is what
+            // a reader dragging the scrollbar to the bottom would do.
+            offset = (offset + 120.0).min(book.content_extent(60, 50.0, 0.0) - 200.0);
+        }
+
+        assert_eq!(book.known(), 60, "the whole list was scrolled past");
+        assert_eq!(
+            book.content_extent(60, 50.0, 0.0),
+            truth,
+            "with nothing left to estimate the answer is not an estimate"
+        );
+    }
+
+    #[test]
+    fn a_variable_list_reserves_the_space_of_what_it_did_not_build() {
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox};
+        use crate::widgets::SizedBox;
+
+        // All the same height, so the answer is one nobody has to estimate.
+        let book = ExtentBook::new();
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            VariableExtentList::new(500, book.clone(), |_| {
+                leaf(|| SizedBox::new(100.0, 40.0))
+            })
+            .with_estimate(40.0)
+            .with_offset(0.0)
+            .with_viewport(400.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        let size = root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
+        assert_eq!(size.height, 500.0 * 40.0);
+    }
+
+    #[test]
     fn an_item_keeps_its_state_when_the_window_moves() {
         use crate::framework::{ElementTree, component, leaf};
         use crate::widgets::SizedBox;
@@ -664,11 +1281,14 @@ mod tests {
             )
         };
         let mut tree = ElementTree::new();
-        tree.rebuild(build(0.0));
+        // Below the first row, so that both windows have a spacer standing in
+        // for what is above them -- at the very top there is nothing to stand
+        // in for and the list does not build one.
+        tree.rebuild(build(50.0));
         let before = tree.len();
 
         // One row further down: three of the four rows are the same rows.
-        tree.rebuild(build(50.0));
+        tree.rebuild(build(100.0));
         assert_eq!(tree.len(), before, "the window is the same size, so is the tree");
     }
 }
