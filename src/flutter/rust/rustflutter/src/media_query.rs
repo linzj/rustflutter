@@ -34,12 +34,12 @@
 //! The subtraction happens in [`ViewMetrics::padding`], because upstream it
 //! happens in `dart:ui` (`window.dart`) rather than in the widget layer.
 //!
-//! # What this is not, yet
+//! # The reader's text size
 //!
-//! Upstream a widget that reads a `MediaQuery` is registered as a dependent of
-//! it, and a change rebuilds exactly the dependents. [`provide`] has no
-//! dependency tracking, so a change here rebuilds from the root -- which is
-//! what a resize already did before this existed. See `PORTING_STATUS.md`.
+//! `text_scale_factor` is here rather than read straight off the platform so
+//! that a subtree can have its own -- an icon font that should not grow, a
+//! preview showing what another setting looks like. See
+//! [`MediaQuery::no_text_scaling`] and [`current_text_scale`].
 
 use std::rc::Rc;
 
@@ -141,6 +141,25 @@ impl MediaQueryData {
             ..*self
         }
     }
+
+    /// The same data with a different text scale.
+    ///
+    /// Upstream's `copyWith(textScaler: ...)`. See [`MediaQuery::no_text_scaling`]
+    /// for why a subtree would want one.
+    pub fn with_text_scale(&self, factor: f32) -> MediaQueryData {
+        MediaQueryData { text_scale_factor: factor, ..*self }
+    }
+
+    /// The same data with the text scale held inside a range.
+    ///
+    /// Upstream's `TextScaler.clamp`, reached through
+    /// `MediaQuery.withClampedTextScaling`. The point is not to overrule the
+    /// reader but to keep a layout that genuinely cannot survive 2.0 from
+    /// breaking outright -- a smaller enlargement is still an enlargement.
+    pub fn clamp_text_scale(&self, min: f32, max: f32) -> MediaQueryData {
+        debug_assert!(max >= min, "a clamp with no room in it");
+        MediaQueryData { text_scale_factor: self.text_scale_factor.clamp(min, max), ..*self }
+    }
 }
 
 /// Publishes [`MediaQueryData`] to a subtree.
@@ -154,6 +173,87 @@ impl MediaQuery {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(data: MediaQueryData, child: AnyWidget) -> AnyWidget {
         provide(data, child)
+    }
+
+    /// A subtree that does not scale its text.
+    ///
+    /// Upstream's `MediaQuery.withNoTextScaling`. It is for things whose size
+    /// is not a reading size: an icon font, a logotype, a preview that is
+    /// showing what some *other* setting looks like. Everything else should
+    /// scale, which is why this is a deliberate opt-out rather than a default.
+    pub fn no_text_scaling(child: AnyWidget) -> AnyWidget {
+        component(RescaleText { child: std::cell::RefCell::new(Some(child)), min: 1.0, max: 1.0 })
+    }
+
+    /// A subtree whose text scale is held between `min` and `max`.
+    ///
+    /// Upstream's `MediaQuery.withClampedTextScaling`.
+    pub fn clamped_text_scaling(min: f32, max: f32, child: AnyWidget) -> AnyWidget {
+        component(RescaleText { child: std::cell::RefCell::new(Some(child)), min, max })
+    }
+}
+
+/// Republishes the enclosing [`MediaQueryData`] with its text scale clamped.
+///
+/// A component rather than a plain `provide`, because it has to *read* the
+/// enclosing data before it can change one field of it -- upstream reaches the
+/// same way, through a `Builder`.
+struct RescaleText {
+    child: std::cell::RefCell<Option<AnyWidget>>,
+    min: f32,
+    max: f32,
+}
+
+impl Component for RescaleText {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let data = media_query_of(context);
+        let child =
+            self.child.borrow_mut().take().unwrap_or_else(|| crate::framework::leaf(|| Empty));
+        MediaQuery::new(data.clamp_text_scale(self.min, self.max), child)
+    }
+}
+
+// -- The scale in force while a subtree's render objects are being built ------
+//
+// Text is shaped at layout time, long after the walk that built the render
+// tree has finished, so a paragraph cannot go looking for its `MediaQuery`
+// when it needs the scale: it has to have been told. Upstream has the same
+// split and answers it the same way -- `Text.build` reads
+// `MediaQuery.textScalerOf(context)` and hands the result to `RenderParagraph`
+// as a field, which passes it to `TextPainter` at layout.
+//
+// The equivalent of "reading it from the context" here is this: the render
+// walk pushes the scale as it descends through a `MediaQuery`, and a paragraph
+// constructed inside a build closure takes a copy. Which means the value is
+// only meaningful *during* that walk -- hence a plain thread-local rather than
+// anything the rest of the framework can see.
+
+thread_local! {
+    static TEXT_SCALE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The text scale a paragraph built right now should be shaped at.
+///
+/// Outside any [`MediaQuery`] -- a render object built on its own in a test,
+/// say -- this is what the platform last said, which is what all text used
+/// before a subtree could have its own. An accessibility setting the reader
+/// has already asked every application for is the wrong thing to lose by
+/// default.
+pub fn current_text_scale() -> f32 {
+    TEXT_SCALE.with(|scale| scale.get()).unwrap_or_else(|| crate::platform::text_scale_factor() as f32)
+}
+
+/// Runs `body` with `scale` as the ambient text scale, restoring whatever was
+/// in force before. Called by the render walk; not public API.
+pub(crate) fn with_text_scale<R>(scale: f32, body: impl FnOnce() -> R) -> R {
+    let previous = TEXT_SCALE.with(|current| current.replace(Some(scale)));
+    // The restore has to happen even if `body` unwinds, or one panicking
+    // subtree would leave every later frame shaping at its scale.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    TEXT_SCALE.with(|current| current.set(previous));
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
     }
 }
 
@@ -242,7 +342,7 @@ pub fn safe_area(child: AnyWidget) -> AnyWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::{ElementTree, leaf};
+    use crate::framework::{ElementTree, leaf, many};
     use crate::render::RenderBox;
     use crate::widgets::{Constraints, SizedBox};
 
@@ -342,5 +442,112 @@ mod tests {
         let mut root = tree.build_render_tree().expect("a tree was mounted");
         root.layout(Constraints::loose(400.0, 800.0));
         assert_eq!(root.size().height, 116.0);
+    }
+
+    // -- The reader's text size --------------------------------------------
+
+    /// A leaf that records the text scale in force where it was built.
+    ///
+    /// Which is the whole question: a paragraph made inside this closure takes
+    /// the same value, and shapes at it later.
+    fn scale_probe(into: Rc<std::cell::Cell<f32>>) -> AnyWidget {
+        leaf(move || {
+            into.set(current_text_scale());
+            SizedBox::new(1.0, 1.0)
+        })
+    }
+
+    #[test]
+    fn a_subtree_is_built_at_its_own_media_querys_text_scale() {
+        let seen = Rc::new(std::cell::Cell::new(0.0));
+        let data = MediaQueryData::from_view(&metrics(0.0, 0.0)).with_text_scale(1.5);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(data, scale_probe(Rc::clone(&seen))));
+        let _ = tree.build_render_tree();
+        assert_eq!(seen.get(), 1.5);
+    }
+
+    #[test]
+    fn a_nested_media_query_only_changes_its_own_subtree() {
+        let outer = Rc::new(std::cell::Cell::new(0.0));
+        let inner = Rc::new(std::cell::Cell::new(0.0));
+        let after = Rc::new(std::cell::Cell::new(0.0));
+        let data = MediaQueryData::from_view(&metrics(0.0, 0.0)).with_text_scale(1.5);
+
+        let (o, i, a) = (Rc::clone(&outer), Rc::clone(&inner), Rc::clone(&after));
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(
+            data,
+            many(
+                vec![
+                    scale_probe(o),
+                    MediaQuery::new(data.with_text_scale(3.0), scale_probe(i)),
+                    // Built after the nested one, so it is what catches a
+                    // scale that was pushed and never popped.
+                    scale_probe(a),
+                ],
+                |children| {
+                    let mut flex = crate::render::RenderFlex::column();
+                    for child in children {
+                        flex = flex.push(child);
+                    }
+                    Box::new(flex)
+                },
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        assert_eq!(outer.get(), 1.5);
+        assert_eq!(inner.get(), 3.0);
+        assert_eq!(after.get(), 1.5, "the inner scale leaked out of its subtree");
+    }
+
+    #[test]
+    fn a_subtree_can_opt_out_of_scaling_altogether() {
+        // An icon font, a logotype: things whose size is not a reading size.
+        let seen = Rc::new(std::cell::Cell::new(0.0));
+        let data = MediaQueryData::from_view(&metrics(0.0, 0.0)).with_text_scale(2.0);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(
+            data,
+            MediaQuery::no_text_scaling(scale_probe(Rc::clone(&seen))),
+        ));
+        let _ = tree.build_render_tree();
+        assert_eq!(seen.get(), 1.0);
+    }
+
+    #[test]
+    fn a_subtree_can_hold_the_scale_inside_a_range() {
+        let seen = Rc::new(std::cell::Cell::new(0.0));
+        let data = MediaQueryData::from_view(&metrics(0.0, 0.0)).with_text_scale(2.5);
+        let mut tree = ElementTree::new();
+        tree.rebuild(MediaQuery::new(
+            data,
+            MediaQuery::clamped_text_scaling(1.0, 1.6, scale_probe(Rc::clone(&seen))),
+        ));
+        let _ = tree.build_render_tree();
+        // Clamped, not overruled: a smaller enlargement is still an
+        // enlargement, which is the difference between this and opting out.
+        assert_eq!(seen.get(), 1.6);
+    }
+
+    #[test]
+    fn a_paragraph_takes_the_scale_where_it_was_built() {
+        let outside = crate::render::RenderParagraph::new("plain");
+        assert_eq!(outside.text_scale(), 1.0, "no media query, no platform scale set");
+
+        let inside = with_text_scale(1.75, || crate::render::RenderParagraph::new("bigger"));
+        assert_eq!(inside.text_scale(), 1.75);
+        // And the scale is not still in force afterwards.
+        assert_eq!(crate::render::RenderParagraph::new("after").text_scale(), 1.0);
+    }
+
+    #[test]
+    fn without_a_media_query_the_platform_setting_still_applies() {
+        // Every application asked the reader for this setting; a render object
+        // built outside a tree is not a reason to throw the answer away.
+        crate::platform::set_user_settings(r#"{"textScaleFactor":1.3}"#);
+        assert_eq!(current_text_scale(), 1.3);
+        assert_eq!(crate::render::RenderParagraph::new("x").text_scale(), 1.3);
+        crate::platform::reset();
     }
 }

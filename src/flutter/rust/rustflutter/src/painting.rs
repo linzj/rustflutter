@@ -630,26 +630,21 @@ thread_local! {
 ///
 /// # The reader's text size
 ///
-/// The platform's text scale is applied here, which makes this the one place
-/// in the framework that obeys it -- every size on screen is a font size that
-/// came through this function, and every measurement the framework makes comes
-/// back out of the paragraph rather than out of the style.
+/// `scale` is the reader's text size setting, and it is applied here -- every
+/// size on screen is a font size that came through this function, and every
+/// measurement the framework makes comes back out of the paragraph rather than
+/// out of the style, so this is the only place it has to be applied.
 ///
-/// It belongs one layer up. Upstream it is `MediaQuery.textScaler`, read by
-/// each `Text` from the widget tree, so a subtree can be given a different one
-/// -- a dense table that opts out, a preview that shows what another size would
-/// look like. [`crate::media_query::MediaQueryData`] carries the scale now and
-/// a subtree can publish its own, but nothing reads it here: `Text` is a render
-/// object built inside a closure, with no `BuildContext` to read it from, and
-/// the scale is needed at shaping time rather than at build time. Applying it
-/// to all text is the closest thing to right until `Text` is a widget that
-/// knows where it is; the alternative is ignoring an accessibility setting the
-/// reader has already asked every application for.
+/// It is a parameter rather than a global read because a subtree can have its
+/// own: an icon font that should not grow, a preview showing what some other
+/// setting looks like. Upstream the same value is a `TextScaler` field on
+/// `TextPainter`, put there by whoever built the `RenderParagraph` after
+/// reading `MediaQuery.textScalerOf(context)`. The callers here do the same;
+/// see [`crate::media_query::current_text_scale`].
 ///
 /// The cache needs no help with this: the scale changes the style it keys on,
 /// so text shaped at the old size is simply never asked for again.
-pub fn shape(text: &str, style: &TextStyle, max_width: f32) -> Rc<Paragraph> {
-    let scale = crate::platform::text_scale_factor() as f32;
+pub fn shape(text: &str, style: &TextStyle, max_width: f32, scale: f32) -> Rc<Paragraph> {
     let scaled;
     let style = if scale == 1.0 {
         style
@@ -691,8 +686,8 @@ pub fn shape_rich(
     align: TextAlign,
     max_lines: Option<usize>,
     max_width: f32,
+    scale: f32,
 ) -> Rc<Paragraph> {
-    let scale = crate::platform::text_scale_factor() as f32;
     let scaled: Vec<(String, TextStyle)> = if scale == 1.0 {
         runs.to_vec()
     } else {
@@ -1364,16 +1359,16 @@ mod tests {
     #[test]
     fn the_same_request_is_shaped_once() {
         let style = TextStyle::default();
-        let first = shape("shaped once", &style, 200.0);
-        let second = shape("shaped once", &style, 200.0);
+        let first = shape("shaped once", &style, 200.0, 1.0);
+        let second = shape("shaped once", &style, 200.0, 1.0);
         assert!(Rc::ptr_eq(&first, &second), "the second ask re-shaped");
     }
 
     #[test]
     fn a_different_width_is_a_different_paragraph() {
         let style = TextStyle::default();
-        let narrow = shape("wraps differently", &style, 100.0);
-        let wide = shape("wraps differently", &style, 400.0);
+        let narrow = shape("wraps differently", &style, 100.0, 1.0);
+        let wide = shape("wraps differently", &style, 400.0, 1.0);
         // Line breaking depends on the width, so sharing one shaping between
         // two widths would put the breaks in the wrong place.
         assert!(!Rc::ptr_eq(&narrow, &wide));
@@ -1383,34 +1378,32 @@ mod tests {
     fn a_different_style_is_a_different_paragraph() {
         let plain = TextStyle::default();
         let bold = TextStyle { font_weight: 700, ..TextStyle::default() };
-        let a = shape("weight matters", &plain, 200.0);
-        let b = shape("weight matters", &bold, 200.0);
+        let a = shape("weight matters", &plain, 200.0, 1.0);
+        let b = shape("weight matters", &bold, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&a, &b));
     }
 
     #[test]
     fn text_still_on_screen_survives_a_frame() {
         let style = TextStyle::default();
-        let first = shape("still drawn", &style, 200.0);
+        let first = shape("still drawn", &style, 200.0, 1.0);
         end_text_frame();
-        let second = shape("still drawn", &style, 200.0);
+        let second = shape("still drawn", &style, 200.0, 1.0);
         assert!(Rc::ptr_eq(&first, &second), "a live paragraph was re-shaped");
     }
 
     #[test]
     fn the_readers_text_size_reaches_the_shaper() {
-        // The setting has one consumer and this is it. Checked through the
-        // cache rather than through a metric, because the stubbed engine every
-        // unit test shapes against reports zero for every measurement -- what
-        // can be shown is that the scale is part of the request, which is what
-        // decides the size the engine is asked for.
+        // Checked through the cache rather than through a metric, because the
+        // stubbed engine every unit test shapes against reports zero for every
+        // measurement -- what can be shown is that the scale is part of the
+        // request, which is what decides the size the engine is asked for.
         let style = TextStyle::default();
         let before = shaped_paragraph_count();
-        let unscaled = shape("the reader's size", &style, 200.0);
+        let unscaled = shape("the reader's size", &style, 200.0, 1.0);
         assert_eq!(shaped_paragraph_count(), before + 1);
 
-        crate::platform::set_user_settings(r#"{"textScaleFactor":1.5}"#);
-        let scaled = shape("the reader's size", &style, 200.0);
+        let scaled = shape("the reader's size", &style, 200.0, 1.5);
         assert!(
             !Rc::ptr_eq(&unscaled, &scaled),
             "the same text at a different size must be shaped again"
@@ -1419,16 +1412,27 @@ mod tests {
 
         // And back, which the cache still has: the scale changes the style the
         // entry is keyed on rather than invalidating anything.
-        crate::platform::set_user_settings(r#"{"textScaleFactor":1.0}"#);
-        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, 200.0)));
-        crate::platform::reset();
+        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, 200.0, 1.0)));
+    }
+
+    #[test]
+    fn two_subtrees_can_be_shaped_at_two_sizes_at_once() {
+        // The whole point of the scale being an argument: a dense table that
+        // opted out and the page around it are on screen together, and the
+        // cache has to hold both rather than one evicting the other.
+        let style = TextStyle::default();
+        let big = shape("side by side", &style, 200.0, 2.0);
+        let small = shape("side by side", &style, 200.0, 1.0);
+        assert!(!Rc::ptr_eq(&big, &small));
+        assert!(Rc::ptr_eq(&big, &shape("side by side", &style, 200.0, 2.0)));
+        assert!(Rc::ptr_eq(&small, &shape("side by side", &style, 200.0, 1.0)));
     }
 
     #[test]
     fn text_that_stopped_being_drawn_is_dropped() {
         let style = TextStyle::default();
         let before = shaped_paragraph_count();
-        let _ = shape("shown briefly", &style, 200.0);
+        let _ = shape("shown briefly", &style, 200.0, 1.0);
         assert_eq!(shaped_paragraph_count(), before + 1);
         // Two frames: the first moves it to the previous generation, the second
         // drops that generation entirely.

@@ -94,6 +94,10 @@ pub struct RenderEditable {
     /// Told where the field ended up, so the platform can put the IME there.
     /// Called from `paint`, which is the first moment the answer is known.
     report: Option<ReportPlacement>,
+    /// The reader's text size, taken where this was built. Same reason as
+    /// [`crate::render::RenderParagraph`]'s: shaping happens at layout, by
+    /// which time the enclosing `MediaQuery` is no longer reachable.
+    text_scale: f32,
     /// What was last reported, so an unmoved field does not send a message per
     /// frame. Sixty a second would be sixty thread hops for nothing.
     reported: Cell<Option<(i32, i32, i32)>>,
@@ -111,6 +115,7 @@ impl RenderEditable {
             selection_color: DEFAULT_SELECTION,
             show_caret: false,
             report: None,
+            text_scale: crate::media_query::current_text_scale(),
             reported: Cell::new(None),
             size: Size::ZERO,
         }
@@ -155,7 +160,7 @@ impl RenderEditable {
         // Trailing spaces are part of the position even though they are not
         // part of the ink, so the advance width is what is wanted rather than
         // the tight box `width()` reports.
-        painting::shape(prefix, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+        painting::shape(prefix, &self.style, f32::MAX / 4.0, self.text_scale).max_intrinsic_width()
     }
 
     /// Where a byte range of the text starts, and how wide it is.
@@ -170,7 +175,7 @@ impl RenderEditable {
             if text.is_empty() {
                 0.0
             } else {
-                painting::shape(text, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+                painting::shape(text, &self.style, f32::MAX / 4.0, self.text_scale).max_intrinsic_width()
             }
         };
         let start = measure(&self.value.text[..range.start]);
@@ -180,7 +185,7 @@ impl RenderEditable {
 
 impl RenderBox for RenderEditable {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let line = painting::shape("Ag", &self.style, f32::MAX / 4.0).height();
+        let line = painting::shape("Ag", &self.style, f32::MAX / 4.0, self.text_scale).height();
         self.size = constraints.constrain(Size::new(
             if constraints.has_bounded_width() { constraints.max_width } else { 200.0 },
             line,
@@ -215,10 +220,10 @@ impl RenderBox for RenderEditable {
 
         if self.value.text.is_empty() && !self.placeholder.is_empty() {
             let hint =
-                painting::shape(&self.placeholder, &self.placeholder_style, self.size.width);
+                painting::shape(&self.placeholder, &self.placeholder_style, self.size.width, self.text_scale);
             context.canvas().draw_paragraph(&hint, offset.dx, offset.dy);
         } else if !self.value.text.is_empty() {
-            let text = painting::shape(&self.value.text, &self.style, f32::MAX / 4.0);
+            let text = painting::shape(&self.value.text, &self.style, f32::MAX / 4.0, self.text_scale);
             context.canvas().draw_paragraph(&text, offset.dx, offset.dy);
         }
 
@@ -278,11 +283,11 @@ impl RenderBox for RenderEditable {
     }
 
     fn max_intrinsic_width(&self, _height: f32) -> f32 {
-        painting::shape(&self.value.text, &self.style, f32::MAX / 4.0).max_intrinsic_width()
+        painting::shape(&self.value.text, &self.style, f32::MAX / 4.0, self.text_scale).max_intrinsic_width()
     }
 
     fn min_intrinsic_height(&self, _width: f32) -> f32 {
-        painting::shape("Ag", &self.style, f32::MAX / 4.0).height()
+        painting::shape("Ag", &self.style, f32::MAX / 4.0, self.text_scale).height()
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {

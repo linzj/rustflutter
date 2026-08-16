@@ -237,6 +237,26 @@ impl Component for Body {
             spacing,
         )));
 
+        // The reader's text size, and the two ways a subtree can differ from
+        // it. Upstream this is `MediaQuery.textScaler`, and the reason it is
+        // per-subtree rather than global is on screen here: the first line is
+        // a reading size and grows; the second is a logotype and does not.
+        let scaled = component(Card::new(stack_column(
+            vec![
+                component(Label::title("Text scale")),
+                gap(0.5),
+                MediaQuery::clamped_text_scaling(
+                    1.6,
+                    1.6,
+                    component(Label::new("This subtree reads at 1.6x")),
+                ),
+                MediaQuery::no_text_scaling(component(Label::muted(
+                    "and this one opted out entirely",
+                ))),
+            ],
+            spacing,
+        )));
+
         let badges = component(Card::new(stack_column(
             vec![
                 component(Label::title("Badges")),
@@ -276,7 +296,7 @@ impl Component for Body {
         )));
 
         // A ListView so the page scrolls if the window is short.
-        let cards = vec![buttons, controls, mixed, badges, tile];
+        let cards = vec![buttons, mixed, scaled, controls, badges, tile];
         many(cards, move |rendered| {
             let mut column = RenderFlex::column()
                 .with_main_axis_size(MainAxisSize::Min)

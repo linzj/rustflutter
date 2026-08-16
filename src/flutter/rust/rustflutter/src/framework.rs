@@ -1333,7 +1333,35 @@ impl ElementTree {
         self.root.map(|root| self.build_render(root))
     }
 
+    /// Builds `id`'s render object, and its subtree's underneath it.
+    ///
+    /// A `MediaQuery` on the way down changes the text scale for everything
+    /// below it, so the walk carries it. Upstream a `Text` reads
+    /// `MediaQuery.textScalerOf(context)` in its own `build`; a render object
+    /// here is made inside a closure that has no context, so the scale is
+    /// pushed for the duration of the subtree instead and taken by whatever is
+    /// constructed inside it. Same value, same place in the frame -- the
+    /// paragraph ends up holding it either way, which is what matters, since
+    /// shaping happens at layout when the walk is long over.
     fn build_render(&self, id: ElementId) -> BoxedRender {
+        let scale = {
+            let provided = self.shared.provided.borrow();
+            provided.get(&id).and_then(|entry| {
+                entry
+                    .value
+                    .downcast_ref::<crate::media_query::MediaQueryData>()
+                    .map(|data| data.text_scale_factor)
+            })
+        };
+        match scale {
+            Some(scale) => {
+                crate::media_query::with_text_scale(scale, || self.build_render_node(id))
+            }
+            None => self.build_render_node(id),
+        }
+    }
+
+    fn build_render_node(&self, id: ElementId) -> BoxedRender {
         let node = self.nodes[id.0].as_ref().expect("render walk hit a freed element");
         match &node.widget.inner {
             WidgetKind::Component(_) => match node.children.first() {

@@ -69,7 +69,9 @@ pub use focus::{Focus, KeyResult, focusable};
 pub use implicit::{Animated, Lerp, animated};
 pub use ink::{Ink, ink};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
-pub use media_query::{MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area};
+pub use media_query::{
+    MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
+};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
@@ -119,7 +121,7 @@ pub mod prelude {
     pub use crate::ink::{Ink, ink};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::media_query::{
-        MediaQuery, MediaQueryData, SafeArea, media_query_of, safe_area,
+        MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
     };
     pub use crate::services::system::{
         AppExitResponse, AppExitType, AppLifecycleState, Clipboard, HapticFeedback, SystemChrome,

@@ -938,6 +938,13 @@ pub struct RenderParagraph {
     /// and it is worth not allocating for it.
     runs: Vec<(String, TextStyle)>,
     max_lines: Option<usize>,
+    /// The reader's text size, as it was where this paragraph was built.
+    ///
+    /// Taken at construction rather than read at layout, because by layout the
+    /// walk that knew which `MediaQuery` this sits under is over. Upstream
+    /// `RenderParagraph` keeps the same value in the same way, as a
+    /// `textScaler` field set by `Text.build`.
+    text_scale: f32,
     /// Shared with the cache rather than owned, so a tree rebuilt around
     /// unchanged text re-uses the shaping instead of repeating it.
     paragraph: Option<Rc<Paragraph>>,
@@ -951,6 +958,7 @@ impl RenderParagraph {
             style: TextStyle::default(),
             runs: Vec::new(),
             max_lines: None,
+            text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
             size: Size::ZERO,
         }
@@ -971,6 +979,7 @@ impl RenderParagraph {
             style,
             runs,
             max_lines: None,
+            text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
             size: Size::ZERO,
         }
@@ -984,10 +993,31 @@ impl RenderParagraph {
     /// Shapes this paragraph at `width`, however many runs it has.
     fn shape_at(&self, width: f32) -> Rc<Paragraph> {
         if self.is_rich() {
-            crate::painting::shape_rich(&self.runs, self.style.align, self.max_lines, width)
+            crate::painting::shape_rich(
+                &self.runs,
+                self.style.align,
+                self.max_lines,
+                width,
+                self.text_scale,
+            )
         } else {
-            crate::painting::shape(&self.content, &self.style, width)
+            crate::painting::shape(&self.content, &self.style, width, self.text_scale)
         }
+    }
+
+    /// Shapes at a scale of the caller's choosing rather than the one that was
+    /// in force where this was built.
+    ///
+    /// Upstream's `Text.textScaler` argument, which overrides the
+    /// `MediaQuery`'s for that one paragraph.
+    pub fn with_text_scale(mut self, scale: f32) -> Self {
+        self.text_scale = scale;
+        self
+    }
+
+    /// The scale this paragraph will be shaped at.
+    pub fn text_scale(&self) -> f32 {
+        self.text_scale
     }
 
     pub fn with_style(mut self, style: TextStyle) -> Self {
