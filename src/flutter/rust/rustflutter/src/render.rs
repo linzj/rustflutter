@@ -1012,6 +1012,12 @@ pub struct RenderParagraph {
     /// Shared with the cache rather than owned, so a tree rebuilt around
     /// unchanged text re-uses the shaping instead of repeating it.
     paragraph: Option<Rc<Paragraph>>,
+    /// The accessibility node this paragraph is, once anything has asked.
+    ///
+    /// Taken lazily and kept: a render object outlives the frame now, so an id
+    /// taken once stays this paragraph's for as long as it exists -- which is
+    /// how long a screen reader should go on treating it as the same text.
+    semantics_id: std::cell::Cell<i32>,
     size: Size,
 }
 
@@ -1024,6 +1030,7 @@ impl RenderParagraph {
             max_lines: None,
             text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
+            semantics_id: std::cell::Cell::new(0),
             size: Size::ZERO,
         }
     }
@@ -1045,6 +1052,7 @@ impl RenderParagraph {
             max_lines: None,
             text_scale: crate::media_query::current_text_scale(),
             paragraph: None,
+            semantics_id: std::cell::Cell::new(0),
             size: Size::ZERO,
         }
     }
@@ -1130,6 +1138,24 @@ impl RenderBox for RenderParagraph {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(paragraph) = &self.paragraph {
             context.canvas().draw_paragraph(paragraph, offset.dx, offset.dy);
+        }
+        // Text on screen is text a reader should be read, and nothing had to
+        // ask for it. Upstream `Text` does this in its own build; here the
+        // paragraph is the only thing that knows what it says.
+        if crate::semantics::collecting() {
+            if self.semantics_id.get() == 0 {
+                self.semantics_id.set(crate::semantics::take_text_id());
+            }
+            crate::semantics::describe_text(
+                self.semantics_id.get(),
+                &self.content,
+                (
+                    offset.dx,
+                    offset.dy,
+                    offset.dx + self.size.width,
+                    offset.dy + self.size.height,
+                ),
+            );
         }
     }
 

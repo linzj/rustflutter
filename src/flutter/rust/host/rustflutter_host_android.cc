@@ -233,8 +233,28 @@ class JavaBridge {
                                       "(ILjava/lang/String;)Ljava/lang/String;");
     editing_ = env->GetStaticMethodID(class_, "onEditingState",
                                       "(Ljava/lang/String;IIII)V");
-    FML_CHECK(request_ != nullptr && editing_ != nullptr)
+    semantics_ = env->GetStaticMethodID(class_, "onSemanticsUpdate",
+                                        "(Ljava/lang/String;)V");
+    FML_CHECK(request_ != nullptr && editing_ != nullptr &&
+              semantics_ != nullptr)
         << "RustflutterActivity is missing a method the host calls.";
+  }
+
+  /// Hands the semantics tree to Java, as JSON.
+  ///
+  /// JSON rather than an array of structs across JNI, because the tree is a
+  /// tree: every node carries a child list of its own, and marshalling that
+  /// by hand is more code than parsing it with the `org.json` that is already
+  /// on every Android device. It runs only while a screen reader is on.
+  static void SemanticsUpdate(const std::string& json) {
+    if (class_ == nullptr) {
+      return;
+    }
+    JNIEnv* env = fml::jni::AttachCurrentThread();
+    fml::jni::ScopedJavaLocalRef<jstring> java_json =
+        fml::jni::StringToJavaString(env, json);
+    env->CallStaticVoidMethod(class_, semantics_, java_json.obj());
+    fml::jni::CheckException(env);
   }
 
   /// Sends one request to Java. Returns the answer, or nothing for a null one.
@@ -287,11 +307,13 @@ class JavaBridge {
   static jclass class_;
   static jmethodID request_;
   static jmethodID editing_;
+  static jmethodID semantics_;
 };
 
 jclass JavaBridge::class_ = nullptr;
 jmethodID JavaBridge::request_ = nullptr;
 jmethodID JavaBridge::editing_ = nullptr;
+jmethodID JavaBridge::semantics_ = nullptr;
 
 //------------------------------------------------------------------------------
 /// Frames, from the display's own clock.
@@ -999,6 +1021,94 @@ class HostPlatformView final : public PlatformView,
     return nullptr;
   }
 
+  //----------------------------------------------------------------------------
+  /// Hands one frame's semantics tree to the accessibility bridge in Java.
+  ///
+  /// Upstream this is `PlatformViewAndroid::UpdateSemantics`, which packs the
+  /// nodes into two buffers and hands them to `AccessibilityBridge.java`. The
+  /// destination here is the same kind of object -- an
+  /// `AccessibilityNodeProvider` over the host view -- and the difference is
+  /// only in the wire format: JSON, because the tree is a tree and Android
+  /// already has a parser.
+  ///
+  /// |PlatformView|
+  void UpdateSemantics(int64_t view_id,
+                       SemanticsNodeUpdates update,
+                       CustomAccessibilityActionUpdates actions) override {
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartArray();
+    for (const auto& [id, node] : update) {
+      writer.StartObject();
+      writer.Key("id");
+      writer.Int(node.id);
+      writer.Key("actions");
+      writer.Int(node.actions);
+
+      // The flags a screen reader reads out. Sent as they are here -- named
+      // rather than packed -- because the bridge on the other side sets one
+      // AccessibilityNodeInfo property per flag anyway, and a bit set would
+      // have to be taken apart again at both ends.
+      writer.Key("button");
+      writer.Bool(node.flags.isButton);
+      writer.Key("textField");
+      writer.Bool(node.flags.isTextField);
+      writer.Key("header");
+      writer.Bool(node.flags.isHeader);
+      writer.Key("image");
+      writer.Bool(node.flags.isImage);
+      writer.Key("link");
+      writer.Bool(node.flags.isLink);
+      writer.Key("obscured");
+      writer.Bool(node.flags.isObscured);
+      writer.Key("liveRegion");
+      writer.Bool(node.flags.isLiveRegion);
+      // Three states, not two: "checkable at all" is a separate fact from
+      // "checked", and it is the one that makes *off* sayable.
+      writer.Key("checkable");
+      writer.Bool(node.flags.isChecked != SemanticsCheckState::kNone);
+      writer.Key("checked");
+      writer.Bool(node.flags.isChecked == SemanticsCheckState::kTrue);
+      writer.Key("hasEnabled");
+      writer.Bool(node.flags.isEnabled != SemanticsTristate::kNone);
+      writer.Key("enabled");
+      writer.Bool(node.flags.isEnabled != SemanticsTristate::kFalse);
+      writer.Key("selected");
+      writer.Bool(node.flags.isSelected == SemanticsTristate::kTrue);
+      writer.Key("focused");
+      writer.Bool(node.flags.isFocused == SemanticsTristate::kTrue);
+
+      writer.Key("label");
+      writer.String(node.label.c_str());
+      writer.Key("value");
+      writer.String(node.value.c_str());
+      writer.Key("hint");
+      writer.String(node.hint.c_str());
+
+      // Logical pixels here; Java scales by the density, because the
+      // rectangle Android wants is in the view's own pixels.
+      writer.Key("left");
+      writer.Double(node.rect.left());
+      writer.Key("top");
+      writer.Double(node.rect.top());
+      writer.Key("right");
+      writer.Double(node.rect.right());
+      writer.Key("bottom");
+      writer.Double(node.rect.bottom());
+
+      writer.Key("children");
+      writer.StartArray();
+      for (int32_t child : node.childrenInTraversalOrder) {
+        writer.Int(child);
+      }
+      writer.EndArray();
+      writer.EndObject();
+    }
+    writer.EndArray();
+
+    JavaBridge::SemanticsUpdate(std::string(buffer.GetString(), buffer.GetSize()));
+  }
+
   // |PlatformView|
   std::unique_ptr<VsyncWaiter> CreateVSyncWaiter() override {
     return std::make_unique<ChoreographerVsyncWaiter>(task_runners_);
@@ -1341,6 +1451,15 @@ struct HostState {
 
   ANativeWindow* window = nullptr;
 
+  /// Whether an accessibility service is listening, as the Activity last said.
+  ///
+  /// Kept here because the Activity asks before there is a shell to ask: it
+  /// looks at `AccessibilityManager` in `onCreate`, and the shell does not
+  /// exist until the Surface does. Replayed once there is somewhere to send
+  /// it, the same way `PlatformData` replays everything else the platform said
+  /// too early.
+  bool semantics_enabled = false;
+
   /// Where each pointer was last seen, so a move can say how far it moved.
   ///
   /// The framework measures a drag by accumulating `physical_delta`, not by
@@ -1525,6 +1644,9 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // reasons: a surface before the first frame is rasterised, a size before the
   // framework lays anything out, and the settings before the first build.
   state.shell->RunEngine(RunConfiguration{});
+  if (state.semantics_enabled && state.platform_view != nullptr) {
+    state.platform_view->SetSemanticsEnabled(true);
+  }
   if (auto view = state.shell->GetPlatformView()) {
     view->NotifyCreated();
   }
@@ -1820,6 +1942,47 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeEditorAction(
     JNIEnv* env,
     jclass clazz) {
   flutter::HostState::Get().text_input.OnAction();
+}
+
+/// A screen reader arriving or leaving.
+///
+/// Upstream this is `FlutterJNI.setSemanticsEnabled`, called from
+/// `AccessibilityBridge` when Android's `AccessibilityManager` says touch
+/// exploration went on or off. Nothing is built while it is off, so this is
+/// the switch that decides whether there is an accessibility tree at all.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeSemanticsEnabled(
+    JNIEnv* env,
+    jclass clazz,
+    jboolean enabled) {
+  auto& state = flutter::HostState::Get();
+  state.semantics_enabled = enabled == JNI_TRUE;
+  if (state.platform_view == nullptr) {
+    // Asked before the shell exists, which is the ordinary order: the Activity
+    // reads AccessibilityManager in onCreate and the Surface arrives after.
+    // Replayed when the shell starts.
+    return;
+  }
+  state.platform_view->SetSemanticsEnabled(state.semantics_enabled);
+}
+
+/// An action a screen reader asked for.
+///
+/// `action` is one flutter::SemanticsAction bit, chosen by the bridge from
+/// whatever `AccessibilityNodeInfo` action Android delivered.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeSemanticsAction(
+    JNIEnv* env,
+    jclass clazz,
+    jint node_id,
+    jint action) {
+  auto& state = flutter::HostState::Get();
+  if (state.platform_view == nullptr) {
+    return;
+  }
+  state.platform_view->DispatchSemanticsAction(
+      flutter::kFlutterImplicitViewId, node_id,
+      static_cast<flutter::SemanticsAction>(action), fml::MallocMapping());
 }
 
 /// The back gesture.

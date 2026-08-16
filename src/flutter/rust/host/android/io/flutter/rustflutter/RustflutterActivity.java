@@ -31,6 +31,15 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeProvider;
+import android.graphics.Rect;
+import android.util.SparseArray;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -134,6 +143,12 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     mView.setFocusable(true);
     mView.setFocusableInTouchMode(true);
     mView.requestFocus();
+    // The one real view stands in for every semantics node; the provider makes
+    // them virtual children of it. Upstream's FlutterView does the same, for
+    // the same reason: Android's accessibility tree is a tree of Views, and
+    // there is only ever going to be one of those here.
+    mView.setSemanticsProvider(new SemanticsProvider());
+    watchAccessibility();
 
     // The soft keyboard resizes the window rather than covering it, so a field
     // near the bottom of the screen stays visible while it is being typed into.
@@ -159,6 +174,17 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   @Override
   protected void onDestroy() {
     if (mStarted) {
+      if (mAccessibilityManager != null) {
+        if (mTouchExplorationListener != null) {
+          mAccessibilityManager.removeTouchExplorationStateChangeListener(
+              mTouchExplorationListener);
+          mTouchExplorationListener = null;
+        }
+        if (mAccessibilityListener != null) {
+          mAccessibilityManager.removeAccessibilityStateChangeListener(mAccessibilityListener);
+          mAccessibilityListener = null;
+        }
+      }
       nativeStop();
       mStarted = false;
     }
@@ -244,6 +270,17 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     // engine cache, so "the Surface is gone" and "the application is gone" are
     // the same event.
     if (mStarted) {
+      if (mAccessibilityManager != null) {
+        if (mTouchExplorationListener != null) {
+          mAccessibilityManager.removeTouchExplorationStateChangeListener(
+              mTouchExplorationListener);
+          mTouchExplorationListener = null;
+        }
+        if (mAccessibilityListener != null) {
+          mAccessibilityManager.removeAccessibilityStateChangeListener(mAccessibilityListener);
+          mAccessibilityListener = null;
+        }
+      }
       nativeStop();
       mStarted = false;
       mSurfaceReady = false;
@@ -512,8 +549,19 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
    * would only put the two halves of each pair further apart.
    */
   private static final class HostView extends SurfaceView {
+    private AccessibilityNodeProvider mSemanticsProvider;
+
     HostView(Context context) {
       super(context);
+    }
+
+    void setSemanticsProvider(AccessibilityNodeProvider provider) {
+      mSemanticsProvider = provider;
+    }
+
+    @Override
+    public AccessibilityNodeProvider getAccessibilityNodeProvider() {
+      return mSemanticsProvider;
     }
 
     /**
@@ -780,6 +828,432 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     }
   }
 
+  // -- Accessibility ----------------------------------------------------------
+
+  /**
+   * What one semantics node says, as it arrived from the framework.
+   *
+   * <p>A flat copy rather than a live reference: the framework's tree is rebuilt
+   * every frame and is not this thread's to hold, while a screen reader asks
+   * about nodes whenever it gets round to it.
+   */
+  private static final class SemanticsNode {
+    int id;
+    int actions;
+    boolean button;
+    boolean textField;
+    boolean header;
+    boolean image;
+    boolean link;
+    boolean obscured;
+    boolean liveRegion;
+    boolean checkable;
+    boolean checked;
+    boolean hasEnabled;
+    boolean enabled;
+    boolean selected;
+    boolean focused;
+    String label = "";
+    String value = "";
+    String hint = "";
+    float left;
+    float top;
+    float right;
+    float bottom;
+    int[] children = new int[0];
+
+    /** What a screen reader reads out: the name, then what it currently says. */
+    CharSequence spoken() {
+      StringBuilder text = new StringBuilder();
+      if (label.length() > 0) {
+        text.append(label);
+      }
+      // An obscured field's contents are exactly what must not be read aloud.
+      if (!obscured && value.length() > 0) {
+        if (text.length() > 0) {
+          text.append(", ");
+        }
+        text.append(value);
+      }
+      return text.toString();
+    }
+  }
+
+  /** Bits of flutter::SemanticsAction. Four copies of this set upstream. */
+  private static final int ACTION_TAP = 1;
+  private static final int ACTION_LONG_PRESS = 1 << 1;
+  private static final int ACTION_SCROLL_LEFT = 1 << 2;
+  private static final int ACTION_SCROLL_RIGHT = 1 << 3;
+  private static final int ACTION_SCROLL_UP = 1 << 4;
+  private static final int ACTION_SCROLL_DOWN = 1 << 5;
+  private static final int ACTION_GAIN_ACCESSIBILITY_FOCUS = 1 << 15;
+  private static final int ACTION_LOSE_ACCESSIBILITY_FOCUS = 1 << 16;
+
+  /** The last tree the framework sent, by node id. */
+  private static final SparseArray<SemanticsNode> sSemantics = new SparseArray<>();
+
+  /** Node ids in the order they arrived, which is the order they are read in. */
+  private static int[] sSemanticsOrder = new int[0];
+
+  /** Ids that are somebody's child, so the rest are the root's. */
+  private static final java.util.HashSet<Integer> sSemanticsChildren = new java.util.HashSet<>();
+
+  /** Which node the reader's finger is on, so a change can be announced. */
+  private static int sAccessibilityFocus = -1;
+
+  /**
+   * Receives one frame's semantics tree from the host.
+   *
+   * <p>Called from the platform thread. The nodes are copied into the static
+   * table under its own lock and the view is asked to re-read, which is what
+   * upstream's {@code AccessibilityBridge.updateSemantics} does with the two
+   * buffers it is handed.
+   */
+  @SuppressWarnings("unused")
+  private static void onSemanticsUpdate(String json) {
+    try {
+      JSONArray array = new JSONArray(json);
+      SparseArray<SemanticsNode> parsed = new SparseArray<>();
+      int[] order = new int[array.length()];
+      java.util.HashSet<Integer> childrenOfSomething = new java.util.HashSet<>();
+      for (int i = 0; i < array.length(); i++) {
+        JSONObject object = array.getJSONObject(i);
+        SemanticsNode node = new SemanticsNode();
+        node.id = object.getInt("id");
+        node.actions = object.getInt("actions");
+        node.button = object.optBoolean("button");
+        node.textField = object.optBoolean("textField");
+        node.header = object.optBoolean("header");
+        node.image = object.optBoolean("image");
+        node.link = object.optBoolean("link");
+        node.obscured = object.optBoolean("obscured");
+        node.liveRegion = object.optBoolean("liveRegion");
+        node.checkable = object.optBoolean("checkable");
+        node.checked = object.optBoolean("checked");
+        node.hasEnabled = object.optBoolean("hasEnabled");
+        node.enabled = object.optBoolean("enabled", true);
+        node.selected = object.optBoolean("selected");
+        node.focused = object.optBoolean("focused");
+        node.label = object.optString("label", "");
+        node.value = object.optString("value", "");
+        node.hint = object.optString("hint", "");
+        node.left = (float) object.optDouble("left", 0);
+        node.top = (float) object.optDouble("top", 0);
+        node.right = (float) object.optDouble("right", 0);
+        node.bottom = (float) object.optDouble("bottom", 0);
+        JSONArray children = object.optJSONArray("children");
+        if (children != null) {
+          node.children = new int[children.length()];
+          for (int c = 0; c < children.length(); c++) {
+            node.children[c] = children.getInt(c);
+            childrenOfSomething.add(node.children[c]);
+          }
+        }
+        parsed.put(node.id, node);
+        order[i] = node.id;
+      }
+      synchronized (sSemantics) {
+        sSemantics.clear();
+        for (int i = 0; i < parsed.size(); i++) {
+          sSemantics.put(parsed.keyAt(i), parsed.valueAt(i));
+        }
+        sSemanticsOrder = order;
+        sSemanticsChildren.clear();
+        sSemanticsChildren.addAll(childrenOfSomething);
+      }
+
+      // Tell the reader the screen changed. Without this it goes on describing
+      // the tree it read the first time, which is worse than saying nothing:
+      // it is confidently wrong.
+      final RustflutterActivity activity = sInstance;
+      if (activity != null && activity.mView != null) {
+        activity.mView.post(
+            new Runnable() {
+              @Override
+              public void run() {
+                if (activity.mView != null) {
+                  activity.mView.sendAccessibilityEvent(
+                      AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+                }
+              }
+            });
+      }
+    } catch (Exception error) {
+      Log.w(TAG, "could not read the semantics update: " + error);
+    }
+  }
+
+  /** A snapshot of the tree, for the provider to answer from. */
+  private static SemanticsNode semanticsNode(int id) {
+    synchronized (sSemantics) {
+      return sSemantics.get(id);
+    }
+  }
+
+  private static int[] semanticsRoots() {
+    synchronized (sSemantics) {
+      int count = 0;
+      for (int id : sSemanticsOrder) {
+        if (!sSemanticsChildren.contains(id)) {
+          count++;
+        }
+      }
+      int[] roots = new int[count];
+      int at = 0;
+      for (int id : sSemanticsOrder) {
+        if (!sSemanticsChildren.contains(id)) {
+          roots[at++] = id;
+        }
+      }
+      return roots;
+    }
+  }
+
+  /**
+   * Turns the framework's tree into the one Android asks about.
+   *
+   * <p>Upstream this is {@code AccessibilityBridge}, and the shape is the same:
+   * an {@link AccessibilityNodeProvider} over a single real {@link View}, whose
+   * children are virtual and are the semantics nodes. Android calls it whenever
+   * a reader's finger moves; nothing here is per-frame.
+   */
+  private final class SemanticsProvider extends AccessibilityNodeProvider {
+    @Override
+    public AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualViewId) {
+      if (virtualViewId == View.NO_ID) {
+        // The host view itself, whose children are the top-level nodes.
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(mView);
+        mView.onInitializeAccessibilityNodeInfo(info);
+        for (int id : semanticsRoots()) {
+          info.addChild(mView, id);
+        }
+        return info;
+      }
+
+      SemanticsNode node = semanticsNode(virtualViewId);
+      if (node == null) {
+        return null;
+      }
+
+      AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(mView, virtualViewId);
+      info.setPackageName(getPackageName());
+      info.setSource(mView, virtualViewId);
+      info.setParent(mView);
+      info.setClassName(className(node));
+      info.setText(node.spoken());
+      info.setContentDescription(node.spoken());
+      if (node.hint.length() > 0) {
+        info.setHintText(node.hint);
+      }
+
+      info.setVisibleToUser(true);
+      info.setEnabled(!node.hasEnabled || node.enabled);
+      info.setCheckable(node.checkable);
+      info.setChecked(node.checked);
+      info.setSelected(node.selected);
+      info.setFocusable(true);
+      info.setFocused(node.focused);
+      info.setPassword(node.obscured);
+      info.setEditable(node.textField);
+      if (Build.VERSION.SDK_INT >= 28) {
+        info.setHeading(node.header);
+      }
+
+      // Where on the glass. The framework works in logical pixels and Android
+      // wants the view's own, so this is the one place the density comes back
+      // in. Without a rectangle a reader cannot find the node by touch at all.
+      float density = getResources().getDisplayMetrics().density;
+      int[] origin = new int[2];
+      mView.getLocationOnScreen(origin);
+      Rect bounds =
+          new Rect(
+              Math.round(node.left * density),
+              Math.round(node.top * density),
+              Math.round(node.right * density),
+              Math.round(node.bottom * density));
+      info.setBoundsInParent(bounds);
+      Rect onScreen = new Rect(bounds);
+      onScreen.offset(origin[0], origin[1]);
+      info.setBoundsInScreen(onScreen);
+
+      // What the reader can do here. Accessibility focus is always offered,
+      // because it is how touch exploration works rather than something the
+      // application chose to support.
+      info.addAction(
+          sAccessibilityFocus == virtualViewId
+              ? AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
+              : AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS);
+      if ((node.actions & ACTION_TAP) != 0) {
+        info.addAction(AccessibilityNodeInfo.ACTION_CLICK);
+        info.setClickable(true);
+      }
+      if ((node.actions & ACTION_LONG_PRESS) != 0) {
+        info.addAction(AccessibilityNodeInfo.ACTION_LONG_CLICK);
+        info.setLongClickable(true);
+      }
+      if ((node.actions & (ACTION_SCROLL_UP | ACTION_SCROLL_LEFT)) != 0) {
+        info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+        info.setScrollable(true);
+      }
+      if ((node.actions & (ACTION_SCROLL_DOWN | ACTION_SCROLL_RIGHT)) != 0) {
+        info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+        info.setScrollable(true);
+      }
+
+      for (int child : node.children) {
+        if (semanticsNode(child) != null) {
+          info.addChild(mView, child);
+        }
+      }
+      return info;
+    }
+
+    /**
+     * The Android widget a reader is told this behaves like.
+     *
+     * <p>Screen readers say "button" and "switch" from the class name rather
+     * than from the flags, which is why upstream's bridge does the same
+     * mapping.
+     */
+    private String className(SemanticsNode node) {
+      if (node.textField) {
+        return "android.widget.EditText";
+      }
+      if (node.checkable) {
+        return "android.widget.Switch";
+      }
+      if (node.button) {
+        return "android.widget.Button";
+      }
+      if (node.image) {
+        return "android.widget.ImageView";
+      }
+      return "android.view.View";
+    }
+
+    @Override
+    public boolean performAction(int virtualViewId, int action, Bundle arguments) {
+      SemanticsNode node = semanticsNode(virtualViewId);
+      if (node == null) {
+        return false;
+      }
+      switch (action) {
+        case AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS:
+          sAccessibilityFocus = virtualViewId;
+          nativeSemanticsAction(virtualViewId, ACTION_GAIN_ACCESSIBILITY_FOCUS);
+          sendSemanticsEvent(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+          return true;
+        case AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS:
+          if (sAccessibilityFocus == virtualViewId) {
+            sAccessibilityFocus = -1;
+          }
+          nativeSemanticsAction(virtualViewId, ACTION_LOSE_ACCESSIBILITY_FOCUS);
+          sendSemanticsEvent(
+              virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
+          return true;
+        case AccessibilityNodeInfo.ACTION_CLICK:
+          nativeSemanticsAction(virtualViewId, ACTION_TAP);
+          return true;
+        case AccessibilityNodeInfo.ACTION_LONG_CLICK:
+          nativeSemanticsAction(virtualViewId, ACTION_LONG_PRESS);
+          return true;
+        case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD:
+          nativeSemanticsAction(
+              virtualViewId,
+              (node.actions & ACTION_SCROLL_UP) != 0 ? ACTION_SCROLL_UP : ACTION_SCROLL_LEFT);
+          return true;
+        case AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD:
+          nativeSemanticsAction(
+              virtualViewId,
+              (node.actions & ACTION_SCROLL_DOWN) != 0 ? ACTION_SCROLL_DOWN : ACTION_SCROLL_RIGHT);
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    @Override
+    public AccessibilityNodeInfo findFocus(int focus) {
+      if (focus == AccessibilityNodeInfo.FOCUS_ACCESSIBILITY && sAccessibilityFocus != -1) {
+        return createAccessibilityNodeInfo(sAccessibilityFocus);
+      }
+      return null;
+    }
+  }
+
+  private void sendSemanticsEvent(int virtualViewId, int type) {
+    if (mView == null) {
+      return;
+    }
+    AccessibilityEvent event = AccessibilityEvent.obtain(type);
+    event.setPackageName(getPackageName());
+    event.setSource(mView, virtualViewId);
+    android.view.accessibility.AccessibilityManager manager =
+        (android.view.accessibility.AccessibilityManager)
+            getSystemService(Context.ACCESSIBILITY_SERVICE);
+    if (manager != null && manager.isEnabled()) {
+      manager.sendAccessibilityEvent(event);
+    }
+  }
+
+  /**
+   * Watches for an accessibility service arriving or leaving, and tells the
+   * framework whether to build a semantics tree at all.
+   *
+   * <p>The gate is {@code isEnabled} rather than touch exploration, which is
+   * upstream's choice too ({@code AccessibilityBridge}'s
+   * {@code accessibilityStateChangeListener}): a screen reader is not the only
+   * thing that reads an accessibility tree, and a service that is not a screen
+   * reader still deserves an answer. Touch exploration is watched separately,
+   * because it is what decides whether a reader is dragging a finger around --
+   * a different question from whether anybody is listening.
+   */
+  private void watchAccessibility() {
+    AccessibilityManager manager =
+        (AccessibilityManager) getSystemService(Context.ACCESSIBILITY_SERVICE);
+    if (manager == null) {
+      return;
+    }
+    mAccessibilityManager = manager;
+    mAccessibilityListener =
+        new AccessibilityManager.AccessibilityStateChangeListener() {
+          @Override
+          public void onAccessibilityStateChanged(boolean enabled) {
+            nativeSemanticsEnabled(enabled);
+            if (!enabled) {
+              forgetSemantics();
+            }
+          }
+        };
+    manager.addAccessibilityStateChangeListener(mAccessibilityListener);
+
+    mTouchExplorationListener =
+        new AccessibilityManager.TouchExplorationStateChangeListener() {
+          @Override
+          public void onTouchExplorationStateChanged(boolean enabled) {
+            if (!enabled) {
+              sAccessibilityFocus = -1;
+            }
+          }
+        };
+    manager.addTouchExplorationStateChangeListener(mTouchExplorationListener);
+
+    nativeSemanticsEnabled(manager.isEnabled());
+  }
+
+  private static void forgetSemantics() {
+    synchronized (sSemantics) {
+      sSemantics.clear();
+      sSemanticsOrder = new int[0];
+      sSemanticsChildren.clear();
+    }
+    sAccessibilityFocus = -1;
+  }
+
+  private AccessibilityManager mAccessibilityManager;
+  private AccessibilityManager.AccessibilityStateChangeListener mAccessibilityListener;
+  private AccessibilityManager.TouchExplorationStateChangeListener mTouchExplorationListener;
+
   // -- The native half --------------------------------------------------------
 
   private static native void nativeSurfaceCreated(
@@ -824,4 +1298,8 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   private static native void nativeEditorAction();
 
   private static native boolean nativeBackPressed();
+
+  private static native void nativeSemanticsEnabled(boolean enabled);
+
+  private static native void nativeSemanticsAction(int nodeId, int action);
 }

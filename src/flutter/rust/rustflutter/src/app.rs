@@ -142,6 +142,77 @@ struct RfAppHost {
     respond_to_platform_message:
         Option<unsafe extern "C" fn(*mut c_void, i64, *const u8, usize)>,
     send_channel_update: Option<unsafe extern "C" fn(*mut c_void, *const c_char, bool)>,
+    update_semantics:
+        Option<unsafe extern "C" fn(*mut c_void, i64, *const RfSemanticsNode, usize)>,
+}
+
+/// One semantics node, as the C ABI carries it. Mirrors `RfSemanticsNode` in
+/// `rust_app_api.h`; the two have to agree field for field.
+#[repr(C)]
+pub struct RfSemanticsNode {
+    pub id: i32,
+    pub flags: i32,
+    pub actions: i32,
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub label: *const c_char,
+    pub value: *const c_char,
+    pub hint: *const c_char,
+    pub increased_value: *const c_char,
+    pub decreased_value: *const c_char,
+    pub scroll_position: f64,
+    pub scroll_extent_min: f64,
+    pub scroll_extent_max: f64,
+    pub children: *const i32,
+    pub child_count: usize,
+}
+
+/// Bit positions of `RfSemanticsNode::flags`, matching `rust_app_api.h`.
+mod semantics_bits {
+    pub const IS_BUTTON: i32 = 1 << 0;
+    pub const IS_TEXT_FIELD: i32 = 1 << 1;
+    pub const IS_HEADER: i32 = 1 << 2;
+    pub const IS_IMAGE: i32 = 1 << 3;
+    pub const IS_LINK: i32 = 1 << 4;
+    pub const IS_SLIDER: i32 = 1 << 5;
+    pub const IS_OBSCURED: i32 = 1 << 6;
+    pub const IS_READ_ONLY: i32 = 1 << 7;
+    pub const IS_LIVE_REGION: i32 = 1 << 8;
+    pub const HAS_CHECKED_STATE: i32 = 1 << 9;
+    pub const IS_CHECKED: i32 = 1 << 10;
+    pub const HAS_ENABLED_STATE: i32 = 1 << 11;
+    pub const IS_ENABLED: i32 = 1 << 12;
+    pub const IS_SELECTED: i32 = 1 << 13;
+    pub const IS_FOCUSED: i32 = 1 << 14;
+}
+
+/// Packs the framework's flags into the ABI's bit set.
+pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
+    use semantics_bits::*;
+    let mut bits = 0;
+    let set = |bits: &mut i32, on: bool, bit: i32| {
+        if on {
+            *bits |= bit;
+        }
+    };
+    set(&mut bits, flags.is_button, IS_BUTTON);
+    set(&mut bits, flags.is_text_field, IS_TEXT_FIELD);
+    set(&mut bits, flags.is_header, IS_HEADER);
+    set(&mut bits, flags.is_image, IS_IMAGE);
+    set(&mut bits, flags.is_link, IS_LINK);
+    set(&mut bits, flags.is_slider, IS_SLIDER);
+    set(&mut bits, flags.is_obscured, IS_OBSCURED);
+    set(&mut bits, flags.is_read_only, IS_READ_ONLY);
+    set(&mut bits, flags.is_live_region, IS_LIVE_REGION);
+    set(&mut bits, flags.has_checked_state, HAS_CHECKED_STATE);
+    set(&mut bits, flags.is_checked, IS_CHECKED);
+    set(&mut bits, flags.has_enabled_state, HAS_ENABLED_STATE);
+    set(&mut bits, flags.is_enabled, IS_ENABLED);
+    set(&mut bits, flags.is_selected, IS_SELECTED);
+    set(&mut bits, flags.is_focused, IS_FOCUSED);
+    bits
 }
 
 /// The shell, as the messenger sees it.
@@ -271,6 +342,7 @@ impl Default for FrameScheduler {
                 send_platform_message: None,
                 respond_to_platform_message: None,
                 send_channel_update: None,
+                update_semantics: None,
             },
         }
     }
@@ -710,14 +782,37 @@ impl AppInstance {
         root.layout(BoxConstraints::tight(context.size.width, context.size.height));
         let laid_out = FrameTimings::now();
 
-        let tree = compose_frame(
-            physical_width,
-            physical_height,
-            metrics.device_pixel_ratio,
-            context.size,
-            background,
-            |paint_context| root.paint(paint_context, Offset::ZERO),
-        );
+        // The semantics tree comes out of the same paint that produces the
+        // pixels, because paint is the walk that knows where everything ended
+        // up. Nothing is collected unless a screen reader is listening, so the
+        // ordinary case is one boolean.
+        let mut tree = None;
+        let described = crate::semantics::collect(|| {
+            tree = Some(compose_frame(
+                physical_width,
+                physical_height,
+                metrics.device_pixel_ratio,
+                context.size,
+                background,
+                |paint_context| root.paint(paint_context, Offset::ZERO),
+            ));
+        });
+        let tree = match tree {
+            Some(tree) => tree,
+            // `collect` did not run the paint, which it only does when
+            // semantics are off -- so paint here instead.
+            None => compose_frame(
+                physical_width,
+                physical_height,
+                metrics.device_pixel_ratio,
+                context.size,
+                background,
+                |paint_context| root.paint(paint_context, Offset::ZERO),
+            ),
+        };
+        if let Some(nodes) = described {
+            self.send_semantics(view_id, &nodes);
+        }
         // All the shaping this frame needed has happened by now -- layout asked
         // for it and paint drew from what layout kept. Ageing the cache here
         // retires anything that stopped being drawn a frame ago.
@@ -736,6 +831,63 @@ impl AppInstance {
         // it. `root` has been through layout and paint, so its geometry is the
         // geometry the user is looking at.
         self.painted.insert(view_id, root);
+    }
+
+    /// Hands one frame's semantics tree to the shell.
+    ///
+    /// Everything crosses in one call and borrowed: the C side copies what it
+    /// wants before returning, which is what upstream's `SemanticsUpdate` does
+    /// too. The `CString`s are held in a vector for exactly as long as the
+    /// pointers into them are on the other side of the call.
+    fn send_semantics(&self, view_id: i64, nodes: &[crate::semantics::SemanticsNode]) {
+        let Some(update) = self.host.update_semantics else { return };
+
+        // A string the framework knows cannot contain a NUL, since it came
+        // from Rust `String`s -- but an interior NUL would truncate a label
+        // rather than crash, so it is replaced instead of unwrapped.
+        let owned = |text: &str| {
+            std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default()
+        };
+
+        let mut strings: Vec<std::ffi::CString> = Vec::with_capacity(nodes.len() * 5);
+        let mut children: Vec<Vec<i32>> = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            strings.push(owned(&node.properties.label));
+            strings.push(owned(&node.properties.value));
+            strings.push(owned(&node.properties.hint));
+            strings.push(owned(&node.properties.increased_value));
+            strings.push(owned(&node.properties.decreased_value));
+            children.push(node.children.clone());
+        }
+
+        let raw: Vec<RfSemanticsNode> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let base = index * 5;
+                RfSemanticsNode {
+                    id: node.id,
+                    flags: pack_semantics_flags(&node.properties.flags),
+                    actions: node.properties.actions,
+                    left: node.left,
+                    top: node.top,
+                    right: node.right,
+                    bottom: node.bottom,
+                    label: strings[base].as_ptr(),
+                    value: strings[base + 1].as_ptr(),
+                    hint: strings[base + 2].as_ptr(),
+                    increased_value: strings[base + 3].as_ptr(),
+                    decreased_value: strings[base + 4].as_ptr(),
+                    scroll_position: node.properties.scroll_position as f64,
+                    scroll_extent_min: node.properties.scroll_extent_min as f64,
+                    scroll_extent_max: node.properties.scroll_extent_max as f64,
+                    children: children[index].as_ptr(),
+                    child_count: children[index].len(),
+                }
+            })
+            .collect();
+
+        unsafe { update(self.host.user_data, view_id, raw.as_ptr(), raw.len()) };
     }
 
     /// Routes one event to the tree that was painted for its view.
@@ -1230,6 +1382,40 @@ mod abi {
             time_stamp_micros: raw.time_stamp_micros,
         };
         instance.dispatch_key(&mut event)
+    }
+
+    /// Turns the semantics tree on or off.
+    ///
+    /// Upstream's `PlatformView::SetSemanticsEnabled`. Nothing is built while
+    /// it is off: a tree nobody reads is a tree that would quietly rot.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_set_semantics_enabled(app: *mut RfApp, enabled: bool) {
+        let Some(instance) = instance(app) else { return };
+        crate::semantics::set_enabled(enabled);
+        // The tree only exists as a by-product of a frame, so turning it on
+        // has to ask for one -- otherwise a reader gets nothing until
+        // something else happens to change.
+        instance.schedule_frame();
+    }
+
+    /// Delivers an action a screen reader asked for.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_dispatch_semantics_action(
+        app: *mut RfApp,
+        node_id: i32,
+        action: i32,
+    ) -> bool {
+        let Some(instance) = instance(app) else { return false };
+        let Some(action) = crate::semantics::SemanticsAction::from_bits(action) else {
+            return false;
+        };
+        let handled = crate::semantics::perform_action(node_id, action);
+        if handled {
+            // Whatever the handler did, the reader is owed the frame that
+            // shows it -- and the fresh semantics tree that goes with it.
+            instance.schedule_frame();
+        }
+        handled
     }
 
     /// Delivers a platform message from the embedder.

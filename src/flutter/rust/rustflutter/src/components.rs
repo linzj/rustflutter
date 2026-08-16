@@ -345,17 +345,47 @@ impl Component for Button {
             })
         };
 
+        // What a reader is told, and what activating it does. The
+        // semantics id is the hit-test id, so the two answers to "which
+        // control is this" cannot drift apart; the action calls the same
+        // closure the finger would, which is upstream's rule for
+        // `Semantics.onTap` -- the two paths must not be able to disagree
+        // about what pressing this does.
+        let described = |inner: AnyWidget| {
+            let properties = if enabled {
+                crate::semantics::SemanticsProperties::button(&self.label)
+            } else {
+                crate::semantics::SemanticsProperties::disabled_button(&self.label)
+            };
+            let tap = self.handlers.on_tap.clone();
+            crate::semantics::semantics_with_action(
+                crate::semantics::node_id_for(id),
+                properties,
+                inner,
+                move |action| {
+                    if action == crate::semantics::SemanticsAction::Tap {
+                        if let Some(tap) = &tap {
+                            tap(crate::gestures::TapEvent {
+                                local_position: crate::render::Offset::ZERO,
+                                pointer_id: 0,
+                            });
+                        }
+                    }
+                },
+            )
+        };
+
         if !enabled {
-            return face();
+            return described(face());
         }
         // The splash goes inside the button's own region, and hears the
         // pointer because raw pointer events reach every listener on the path
         // -- the tap still belongs to the button. Clipped to the button's
         // corners, which is what `containedInkWell` means upstream.
-        crate::framework::stateful(
+        described(crate::framework::stateful(
             crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
                 .with_color(splash_color),
-        )
+        ))
     }
 }
 
@@ -466,7 +496,17 @@ impl Component for Label {
             LabelStyle::Title => theme.title(),
         };
         let content = self.content.clone();
-        leaf(move || Text::new(content.clone()).with_style(style.clone()))
+        let text = leaf(move || Text::new(content.clone()).with_style(style.clone()));
+
+        // Text is the one thing that needs no arranging to be accessible: what
+        // it says is what it is. A title is also a heading, which is what lets
+        // a screen reader jump between sections instead of reading everything.
+        // Upstream `Text` does the same, in its own `build`.
+        let properties = match self.style {
+            LabelStyle::Title => crate::semantics::SemanticsProperties::header(&self.content),
+            _ => crate::semantics::SemanticsProperties::label(&self.content),
+        };
+        crate::semantics::describe(properties, text)
     }
 }
 
@@ -500,8 +540,9 @@ impl Component for Switch {
         let handlers = self.handlers.clone();
         let track = if value { theme.primary } else { theme.outline };
         let knob = if value { theme.on_primary } else { theme.text_muted };
+        let tap = self.handlers.on_tap.clone();
 
-        leaf(move || {
+        let switch = leaf(move || {
             // The knob is a positioned child of a row rather than a Stack, so
             // that the track's own padding does the insetting.
             let knob_box = Container::new()
@@ -526,7 +567,28 @@ impl Component for Switch {
                     .with_child(row),
             )
             .with_handlers(handlers.clone())
-        })
+        });
+
+        // A switch says which way it is, and that is the whole point of
+        // `has_checked_state`: without it a reader is told there is a switch
+        // and not whether it is on. The label is left to whatever is beside
+        // it -- upstream's `Switch` has none of its own either, because a
+        // switch with no context is not a thing a reader can act on.
+        crate::semantics::semantics_with_action(
+            crate::semantics::node_id_for(id),
+            crate::semantics::SemanticsProperties::toggle("", value),
+            switch,
+            move |action| {
+                if action == crate::semantics::SemanticsAction::Tap {
+                    if let Some(tap) = &tap {
+                        tap(crate::gestures::TapEvent {
+                            local_position: crate::render::Offset::ZERO,
+                            pointer_id: 0,
+                        });
+                    }
+                }
+            },
+        )
     }
 }
 

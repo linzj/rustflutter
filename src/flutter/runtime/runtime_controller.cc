@@ -122,6 +122,7 @@ bool RuntimeController::LaunchApplication() {
   host.respond_to_platform_message =
       &RuntimeController::OnRespondToPlatformMessage;
   host.send_channel_update = &RuntimeController::OnSendChannelUpdate;
+  host.update_semantics = &RuntimeController::OnUpdateSemantics;
 
   app_ = rf_app_create(&host);
   if (app_ == nullptr) {
@@ -289,7 +290,14 @@ bool RuntimeController::SetInitialLifecycleState(const std::string& data) {
 
 bool RuntimeController::SetSemanticsEnabled(bool enabled) {
   platform_data_.semantics_enabled = enabled;
-  return app_ != nullptr;
+  if (app_ == nullptr) {
+    return false;
+  }
+  // The framework builds no semantics tree until it is told one is being read,
+  // which is upstream's arrangement (`SemanticsBinding.semanticsEnabled`) and
+  // is why this is a message rather than a flag the shell keeps to itself.
+  rf_app_set_semantics_enabled(app_, enabled);
+  return true;
 }
 
 bool RuntimeController::SetAccessibilityFeatures(int32_t flags) {
@@ -478,6 +486,87 @@ void RuntimeController::OnRespondToPlatformMessage(void* user_data,
       std::vector<uint8_t>(reply, reply + length)));
 }
 
+void RuntimeController::OnUpdateSemantics(void* user_data,
+                                          int64_t view_id,
+                                          const RfSemanticsNode* nodes,
+                                          size_t count) {
+  auto* controller = static_cast<RuntimeController*>(user_data);
+  if (controller == nullptr || (nodes == nullptr && count > 0)) {
+    return;
+  }
+  TRACE_EVENT0("flutter", "RuntimeController::OnUpdateSemantics");
+
+  // Copied rather than referenced: everything the framework passed is valid
+  // only for the duration of this call, and what is built here travels to the
+  // platform thread. Upstream's SemanticsUpdate does the same copying, one
+  // layer further out.
+  SemanticsNodeUpdates update;
+  update.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const RfSemanticsNode& in = nodes[i];
+    SemanticsNode out;
+    out.id = in.id;
+    out.actions = in.actions;
+
+    out.flags.isButton = (in.flags & kRfSemanticsIsButton) != 0;
+    out.flags.isTextField = (in.flags & kRfSemanticsIsTextField) != 0;
+    out.flags.isHeader = (in.flags & kRfSemanticsIsHeader) != 0;
+    out.flags.isImage = (in.flags & kRfSemanticsIsImage) != 0;
+    out.flags.isLink = (in.flags & kRfSemanticsIsLink) != 0;
+    out.flags.isSlider = (in.flags & kRfSemanticsIsSlider) != 0;
+    out.flags.isObscured = (in.flags & kRfSemanticsIsObscured) != 0;
+    out.flags.isReadOnly = (in.flags & kRfSemanticsIsReadOnly) != 0;
+    out.flags.isLiveRegion = (in.flags & kRfSemanticsIsLiveRegion) != 0;
+    // The tristates say three things, and "has no checked state at all" is one
+    // of them: kNone is what stops a screen reader announcing "not checked"
+    // about a thing that was never checkable.
+    if ((in.flags & kRfSemanticsHasCheckedState) != 0) {
+      out.flags.isChecked = (in.flags & kRfSemanticsIsChecked) != 0
+                                ? SemanticsCheckState::kTrue
+                                : SemanticsCheckState::kFalse;
+    }
+    if ((in.flags & kRfSemanticsHasEnabledState) != 0) {
+      out.flags.isEnabled = (in.flags & kRfSemanticsIsEnabled) != 0
+                                ? SemanticsTristate::kTrue
+                                : SemanticsTristate::kFalse;
+    }
+    out.flags.isSelected = (in.flags & kRfSemanticsIsSelected) != 0
+                               ? SemanticsTristate::kTrue
+                               : SemanticsTristate::kNone;
+    out.flags.isFocused = (in.flags & kRfSemanticsIsFocused) != 0
+                              ? SemanticsTristate::kTrue
+                              : SemanticsTristate::kNone;
+
+    const auto text = [](const char* value) {
+      return value == nullptr ? std::string() : std::string(value);
+    };
+    out.label = text(in.label);
+    out.value = text(in.value);
+    out.hint = text(in.hint);
+    out.increasedValue = text(in.increased_value);
+    out.decreasedValue = text(in.decreased_value);
+
+    out.rect = SkRect::MakeLTRB(in.left, in.top, in.right, in.bottom);
+    out.scrollPosition = in.scroll_position;
+    out.scrollExtentMin = in.scroll_extent_min;
+    out.scrollExtentMax = in.scroll_extent_max;
+    // Left to right by default: this framework has no bidi paragraph
+    // direction to report yet, and "unknown" makes some readers guess.
+    out.textDirection = 2;
+
+    if (in.children != nullptr) {
+      out.childrenInTraversalOrder.assign(in.children,
+                                          in.children + in.child_count);
+      // The same order. They differ upstream only where a widget deliberately
+      // separates reading order from hit-test order, which nothing here does.
+      out.childrenInHitTestOrder = out.childrenInTraversalOrder;
+    }
+    update.emplace(out.id, std::move(out));
+  }
+
+  controller->client_.UpdateSemantics(view_id, std::move(update), {});
+}
+
 void RuntimeController::OnSendChannelUpdate(void* user_data,
                                             const char* channel,
                                             bool listening) {
@@ -611,7 +700,15 @@ bool RuntimeController::DispatchSemanticsAction(int64_t view_id,
                                                 int32_t node_id,
                                                 SemanticsAction action,
                                                 fml::MallocMapping args) {
-  return app_ != nullptr;
+  if (app_ == nullptr) {
+    return false;
+  }
+  // `args` is dropped. Upstream it carries the payload of the two actions that
+  // have one -- `setSelection` and `setText` -- and neither has an equivalent
+  // on this side yet; every action the framework offers is an action with no
+  // arguments. When one grows arguments this is where they arrive.
+  return rf_app_dispatch_semantics_action(app_, node_id,
+                                          static_cast<int32_t>(action));
 }
 
 // -- Callbacks from the framework ---------------------------------------------

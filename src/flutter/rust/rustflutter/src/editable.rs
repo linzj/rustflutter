@@ -544,8 +544,31 @@ impl StatefulComponent for TextField {
         // The field is a focus node, which is what makes Tab reach it and what
         // opens and closes its session. Upstream `TextField` wraps its
         // `EditableText` in a `Focus` for the same reason.
-        crate::framework::component(
+        let focused = crate::framework::component(
             crate::focus::Focus::new(id, editable).with_on_focus_change(on_focus_change),
+        );
+
+        // What a reader is told about a field: that it is one, what is in it,
+        // and -- for an obscured field -- that the contents are not to be read
+        // out. The value sent is the real text rather than the bullets: a
+        // screen reader is the reason the text exists in the first place, and
+        // upstream's `EditableText` sends the same, guarding it with
+        // `obscured` instead of by hiding it.
+        let mut properties = crate::semantics::SemanticsProperties::text_field(
+            self.placeholder.clone().unwrap_or_default(),
+            state.value.text.clone(),
+        );
+        properties.flags.is_obscured = self.obscure;
+        properties.flags.is_focused = crate::focus::has_focus(id);
+        crate::semantics::semantics_with_action(
+            crate::semantics::node_id_for(id),
+            properties,
+            focused,
+            move |action| {
+                if action == crate::semantics::SemanticsAction::Tap {
+                    crate::focus::focus(id);
+                }
+            },
         )
     }
 }

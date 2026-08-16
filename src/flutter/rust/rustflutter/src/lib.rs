@@ -43,6 +43,7 @@ pub mod platform;
 pub mod render;
 pub mod scrollbar;
 pub mod scrolling;
+pub mod semantics;
 pub mod services;
 pub mod widgets;
 

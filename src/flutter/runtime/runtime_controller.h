@@ -148,6 +148,11 @@ class RuntimeController {
                                          int64_t response_id,
                                          const uint8_t* reply,
                                          size_t length);
+  static void OnUpdateSemantics(void* user_data,
+                                int64_t view_id,
+                                const RfSemanticsNode* nodes,
+                                size_t count);
+
   static void OnSendChannelUpdate(void* user_data,
                                   const char* channel,
                                   bool listening);

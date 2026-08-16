@@ -39,6 +39,65 @@ extern "C" {
 // Opaque handle to the Rust-side application instance.
 typedef struct RfApp RfApp;
 
+// -- Semantics ----------------------------------------------------------------
+//
+// What the interface says, for a reader who is not looking at it. Upstream
+// this crosses as a SemanticsUpdate built by SemanticsUpdateBuilder; the
+// payload is the same set of facts, flattened into one struct because there is
+// no builder on this side of the ABI to accumulate into.
+
+// Bits of RfSemanticsNode::flags. A subset of flutter::SemanticsFlags: the
+// ones that change what a screen reader says out loud, rather than how a
+// particular platform arranges its own accessibility tree.
+enum {
+  kRfSemanticsIsButton = 1 << 0,
+  kRfSemanticsIsTextField = 1 << 1,
+  kRfSemanticsIsHeader = 1 << 2,
+  kRfSemanticsIsImage = 1 << 3,
+  kRfSemanticsIsLink = 1 << 4,
+  kRfSemanticsIsSlider = 1 << 5,
+  kRfSemanticsIsObscured = 1 << 6,
+  kRfSemanticsIsReadOnly = 1 << 7,
+  kRfSemanticsIsLiveRegion = 1 << 8,
+  // "Has a checked state" is separate from "is checked" because it is what
+  // makes *off* sayable: a node without it is a label, and a reader is told
+  // nothing about which way the switch is.
+  kRfSemanticsHasCheckedState = 1 << 9,
+  kRfSemanticsIsChecked = 1 << 10,
+  kRfSemanticsHasEnabledState = 1 << 11,
+  kRfSemanticsIsEnabled = 1 << 12,
+  kRfSemanticsIsSelected = 1 << 13,
+  kRfSemanticsIsFocused = 1 << 14,
+};
+
+typedef struct RfSemanticsNode {
+  // Stable while the widget that produced it keeps the same identifier. The
+  // platform keys its own accessibility nodes on this; an id that changed is,
+  // to a screen reader, a new thing where the old one was.
+  int32_t id;
+  int32_t flags;
+  // A bit set of flutter::SemanticsAction values.
+  int32_t actions;
+  // In root logical coordinates: where on the glass this is.
+  float left;
+  float top;
+  float right;
+  float bottom;
+  // NUL-terminated UTF-8, never NULL; empty means "nothing to say".
+  const char* label;
+  const char* value;
+  const char* hint;
+  const char* increased_value;
+  const char* decreased_value;
+  // NaN for a node that does not scroll, which is what upstream uses for the
+  // same "no answer".
+  double scroll_position;
+  double scroll_extent_min;
+  double scroll_extent_max;
+  const int32_t* children;
+  size_t child_count;
+} RfSemanticsNode;
+
 // Mirrors flutter::ViewportMetrics. Physical pixels throughout, matching the
 // engine; the framework divides by device_pixel_ratio to get logical pixels.
 typedef struct RfViewMetrics {
@@ -100,6 +159,19 @@ typedef struct RfAppHost {
   void (*send_channel_update)(void* user_data,
                               const char* channel,
                               bool listening);
+
+  // Hands over the semantics tree for a view, in the order a reader should
+  // meet it: a node's children come after it, and `children` names them by id.
+  // Equivalent to dart:ui's PlatformDispatcher.updateSemantics.
+  //
+  // Only ever called between rf_app_set_semantics_enabled(true) and the next
+  // (false), because a tree nobody is reading is not built. The array and
+  // every string in it belong to the framework and are valid only for the
+  // duration of the call.
+  void (*update_semantics)(void* user_data,
+                           int64_t view_id,
+                           const RfSemanticsNode* nodes,
+                           size_t count);
 } RfAppHost;
 
 // -- Lifecycle ----------------------------------------------------------------
@@ -260,6 +332,19 @@ void rf_app_complete_platform_message_reply(RfApp* app,
                                             int64_t response_id,
                                             const uint8_t* reply,
                                             size_t length);
+
+// -- Accessibility ------------------------------------------------------------
+
+// Turns the semantics tree on or off. Nothing is built while it is off, which
+// is upstream's arrangement too (PlatformView::SetSemanticsEnabled): the shell
+// says so when an assistive technology arrives, and says so again when it
+// leaves.
+void rf_app_set_semantics_enabled(RfApp* app, bool enabled);
+
+// Delivers an action a screen reader asked for. `action` is one
+// flutter::SemanticsAction bit. Returns whether anything took it -- false for
+// a node that has gone, which is a race with the reader rather than an error.
+bool rf_app_dispatch_semantics_action(RfApp* app, int32_t node_id, int32_t action);
 
 #if defined(__cplusplus)
 }  // extern "C"
