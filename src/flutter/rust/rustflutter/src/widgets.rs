@@ -471,6 +471,16 @@ impl Wrap {
     }
 }
 
+/// Draws its child and lets every pointer through it.
+pub struct IgnorePointer;
+
+impl IgnorePointer {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> crate::render::RenderIgnorePointer {
+        crate::render::RenderIgnorePointer::new(child)
+    }
+}
+
 /// Sizes itself to a width-over-height ratio.
 pub struct AspectRatio;
 

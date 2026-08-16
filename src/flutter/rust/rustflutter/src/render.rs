@@ -2133,6 +2133,63 @@ impl RenderBox for RenderStack {
 
 // -- Single child: effects ----------------------------------------------------
 
+/// Draws its child and is invisible to the pointer.
+///
+/// Upstream's `IgnorePointer`. What it is for: something drawn over the top --
+/// a scrollbar, a gradient, a watermark -- that must not take the taps meant
+/// for what is underneath it. Without it the topmost thing in a stack takes
+/// every press that lands on it, whether or not it wanted one.
+pub struct RenderIgnorePointer {
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderIgnorePointer {
+    pub fn new(child: impl RenderBox + 'static) -> RenderIgnorePointer {
+        RenderIgnorePointer { child: Box::new(child), size: Size::ZERO }
+    }
+
+    pub fn boxed(child: BoxedRender) -> RenderIgnorePointer {
+        RenderIgnorePointer { child, size: Size::ZERO }
+    }
+}
+
+impl RenderBox for RenderIgnorePointer {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout(constraints);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(self.child.as_ref(), offset);
+    }
+
+    fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
+        // The whole point: nothing here, look further down.
+        false
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+}
+
 /// Passes its child through and writes down how big it turned out.
 ///
 /// Layout answers a question the build could not: how much room this widget

@@ -114,6 +114,7 @@ if (enable_unittests) {
       "rustflutter/src/physics.rs",
       "rustflutter/src/platform.rs",
       "rustflutter/src/render.rs",
+      "rustflutter/src/scrollbar.rs",
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/services/channel.rs",
       "rustflutter/src/services/codec.rs",

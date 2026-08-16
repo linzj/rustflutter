@@ -41,6 +41,7 @@ pub mod painting;
 pub mod physics;
 pub mod platform;
 pub mod render;
+pub mod scrollbar;
 pub mod scrolling;
 pub mod services;
 pub mod widgets;
@@ -87,6 +88,7 @@ pub use painting::{
     BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap, StrokeJoin,
     TileMode,
 };
+pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ItemWindow, LazyList, Scroll, item_window};
 pub use widgets::{
     BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text, TextSpan,
@@ -125,6 +127,7 @@ pub mod prelude {
     };
     pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
     pub use crate::platform::{Brightness, Locale, UserSettings};
+    pub use crate::scrollbar::{Scrollbar, scrollbar};
     pub use crate::scrolling::{LazyList, Scroll};
     pub use crate::framework::{
         AnyWidget, Component, StateHandle, StatefulComponent, component, keyed_leaf, keyed_many,
