@@ -28,8 +28,8 @@
 //! knows its own geometry. [`RenderBox::hit_test`] walks the tree back to front
 //! and records the entries a gesture recogniser will later arbitrate over.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
@@ -596,11 +596,68 @@ pub trait RenderBox {
 /// node -- so the borrow is uncontended by construction, and a panic here would
 /// mean the tree had stopped being a tree.
 #[derive(Clone)]
-pub struct RenderRef(Rc<RefCell<dyn RenderBox>>);
+pub struct RenderRef {
+    render: Rc<RefCell<dyn RenderBox>>,
+    state: Rc<RenderState>,
+}
+
+/// The bookkeeping upstream keeps on `RenderObject` itself.
+///
+/// There is no base class here to put it on -- `RenderBox` is a trait and each
+/// implementor has only its own fields -- so it goes on the handle, which every
+/// render object is reached through and which every parent stores its children
+/// as. That makes it the one place a question can be asked about *any* render
+/// object, which is what a base class is for.
+struct RenderState {
+    /// Whether this object's last answer is still good. False after a layout,
+    /// true when it is made and whenever [`RenderRef::mark_needs_layout`] says
+    /// so.
+    needs_layout: Cell<bool>,
+    /// What it was last laid out against, and what came out.
+    constraints: Cell<Option<BoxConstraints>>,
+    size: Cell<Size>,
+    /// Who laid it out last. Upstream is told this in `adoptChild`; there is no
+    /// adoption step here, so it is noticed during layout instead -- a child's
+    /// `layout` is always called from inside its parent's, so the parent is
+    /// whatever was already laying out when this one started.
+    parent: RefCell<Weak<RenderState>>,
+}
+
+thread_local! {
+    /// The render objects whose layout is running, innermost last.
+    static LAYING_OUT: RefCell<Vec<Rc<RenderState>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Keeps the stack right even if a layout panics.
+struct LayoutFrame;
+
+impl LayoutFrame {
+    fn push(state: &Rc<RenderState>) -> LayoutFrame {
+        LAYING_OUT.with(|stack| stack.borrow_mut().push(Rc::clone(state)));
+        LayoutFrame
+    }
+}
+
+impl Drop for LayoutFrame {
+    fn drop(&mut self) {
+        LAYING_OUT.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
 
 impl RenderRef {
     pub fn new<R: RenderBox + 'static>(render: R) -> RenderRef {
-        RenderRef(Rc::new(RefCell::new(render)))
+        RenderRef {
+            render: Rc::new(RefCell::new(render)),
+            state: Rc::new(RenderState {
+                needs_layout: Cell::new(true),
+                constraints: Cell::new(None),
+                size: Cell::new(Size::ZERO),
+                parent: RefCell::new(Weak::new()),
+            }),
+        }
     }
 
     /// Whether two handles are the same render object.
@@ -608,40 +665,109 @@ impl RenderRef {
     /// What "persistent" means, and the only way to ask: an object that
     /// survived a frame is the same object, not an equal one.
     pub fn is(&self, other: &RenderRef) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        Rc::ptr_eq(&self.render, &other.render)
+    }
+
+    /// Says this object's layout is no longer good, so the next frame does it
+    /// again even at the same constraints.
+    ///
+    /// Upstream's `markNeedsLayout`, including its early return: an object
+    /// already marked has already marked its ancestors, so there is nothing
+    /// above it left to tell.
+    ///
+    /// The marking has to reach the root, because the root is the only place a
+    /// layout is ever started from. Upstream stops at the nearest *relayout
+    /// boundary* -- an ancestor whose own size this cannot change -- and lays
+    /// that subtree out directly, which it can do because `PipelineOwner` keeps
+    /// the list of dirty boundaries and visits each. There is no pipeline owner
+    /// here; a frame descends from the root or it does not happen. So the
+    /// saving is not in starting lower down, it is in the siblings the descent
+    /// never enters.
+    pub fn mark_needs_layout(&self) {
+        let mut state = Rc::clone(&self.state);
+        loop {
+            if state.needs_layout.get() {
+                return;
+            }
+            state.needs_layout.set(true);
+            let parent = state.parent.borrow().upgrade();
+            match parent {
+                Some(parent) => state = parent,
+                None => return,
+            }
+        }
+    }
+
+    /// Whether the next `layout` at these constraints would do any work.
+    pub fn needs_layout(&self, constraints: BoxConstraints) -> bool {
+        self.state.needs_layout.get() || self.state.constraints.get() != Some(constraints)
     }
 }
 
 impl RenderBox for RenderRef {
+    //--------------------------------------------------------------------------
+    /// Lays this object out, unless the last answer is still the answer.
+    ///
+    /// Upstream's `RenderObject.layout` opens with the same test -- if the
+    /// object is not dirty and the constraints have not changed, it returns
+    /// without descending -- and the reason it is worth having is the same too:
+    /// a frame usually changes one thing, and everything else is asked the
+    /// question it was asked last time.
+    ///
+    /// The saving is from above rather than from below: a subtree the element
+    /// tree did not rebuild is the same objects it was, so the first of them to
+    /// be asked ends the descent for all of them. See
+    /// [`RenderRef::mark_needs_layout`] for what that costs -- upstream can
+    /// start a layout part-way down and this cannot.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        self.0.borrow_mut().layout(constraints)
+        // Noted before the early return, not after: a child that moved to a
+        // new parent and did not need laying out has still moved, and a later
+        // `mark_needs_layout` would otherwise walk up a chain it left.
+        *self.state.parent.borrow_mut() =
+            LAYING_OUT.with(|stack| match stack.borrow().last() {
+                Some(parent) => Rc::downgrade(parent),
+                None => Weak::new(),
+            });
+
+        if !self.state.needs_layout.get() && self.state.constraints.get() == Some(constraints) {
+            return self.state.size.get();
+        }
+
+        let size = {
+            let _frame = LayoutFrame::push(&self.state);
+            self.render.borrow_mut().layout(constraints)
+        };
+        self.state.needs_layout.set(false);
+        self.state.constraints.set(Some(constraints));
+        self.state.size.set(size);
+        size
     }
     fn size(&self) -> Size {
-        self.0.borrow().size()
+        self.render.borrow().size()
     }
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        self.0.borrow().paint(context, offset)
+        self.render.borrow().paint(context, offset)
     }
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.0.borrow().hit_test(position, result)
+        self.render.borrow().hit_test(position, result)
     }
     fn hit_test_id(&self) -> u64 {
-        self.0.borrow().hit_test_id()
+        self.render.borrow().hit_test_id()
     }
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.0.borrow().min_intrinsic_width(height)
+        self.render.borrow().min_intrinsic_width(height)
     }
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.0.borrow().max_intrinsic_width(height)
+        self.render.borrow().max_intrinsic_width(height)
     }
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.0.borrow().min_intrinsic_height(width)
+        self.render.borrow().min_intrinsic_height(width)
     }
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.0.borrow().max_intrinsic_height(width)
+        self.render.borrow().max_intrinsic_height(width)
     }
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.0.borrow().distance_to_baseline()
+        self.render.borrow().distance_to_baseline()
     }
 }
 

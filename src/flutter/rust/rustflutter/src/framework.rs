@@ -2144,4 +2144,132 @@ mod tests {
         let after = tree.render_of(static_side).expect("still there");
         assert_eq!(after.size(), measured);
     }
+
+    // -- Layouts that do not happen twice ----------------------------------
+
+    thread_local! {
+        static LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A leaf that says how many times it was asked to lay itself out.
+    struct Counted(f32);
+
+    impl RenderBox for Counted {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            LAYOUTS.with(|n| n.set(n.get() + 1));
+            constraints.constrain(Size::square(self.0))
+        }
+        fn size(&self) -> Size {
+            Size::square(self.0)
+        }
+        fn paint(&self, _c: &mut crate::render::PaintContext, _o: crate::render::Offset) {}
+    }
+
+    struct Watched;
+
+    impl Component for Watched {
+        fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+            leaf(|| Counted(10.0))
+        }
+    }
+
+    fn layouts() -> usize {
+        LAYOUTS.with(|n| n.get())
+    }
+
+    /// A tree with one watched leaf beside one that a counter can dirty.
+    fn watched_tree(sink: &Rc<RefCell<Option<crate::framework::StateHandle<Counter>>>>)
+        -> ElementTree
+    {
+        LAYOUTS.with(|n| n.set(0));
+        let mut tree = ElementTree::new();
+        tree.rebuild(column(vec![
+            component(Watched),
+            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+        ]));
+        tree
+    }
+
+    #[test]
+    fn a_subtree_that_did_not_change_is_not_laid_out_again() {
+        // The point of a render object outliving its frame. Upstream's
+        // `RenderObject.layout` returns immediately when the object is clean
+        // and the constraints are the ones it already answered; the same test
+        // is on the handle here, and this is it working through a real frame.
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = watched_tree(&sink);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 1, "the first frame has to measure it");
+
+        // Something else entirely changes.
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("still mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 1, "the untouched leaf was measured a second time");
+    }
+
+    #[test]
+    fn a_subtree_that_did_change_is_laid_out_again() {
+        // The other half, and the more important one: a skip that skips too
+        // much shows a stale interface, which is worse than any amount of
+        // measuring.
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = watched_tree(&sink);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        let before = layouts();
+
+        // The counter's own leaf is remade, so it is a new render object with
+        // nothing measured yet.
+        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("still mounted");
+        let counter_side =
+            only_leaf_under(&tree, tree.children_of(tree.root().unwrap())[1]);
+        let counter = tree.render_of(counter_side).expect("built");
+        assert!(
+            counter.needs_layout(BoxConstraints::loose(200.0, 200.0)),
+            "a render object that was just made has never been measured"
+        );
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), before, "and the watched leaf still was not");
+    }
+
+    #[test]
+    fn different_constraints_are_a_different_question() {
+        // A window that resized asks the same objects something new, and the
+        // answer they have is to the old question. Upstream tests the
+        // constraints for exactly this reason.
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = watched_tree(&sink);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 1);
+
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 1, "the same question twice");
+
+        root.layout(BoxConstraints::loose(120.0, 200.0));
+        assert_eq!(layouts(), 2, "a narrower window is a new question");
+    }
+
+    #[test]
+    fn a_render_object_can_be_told_its_answer_went_stale() {
+        // Nothing in this framework changes a render object in place today --
+        // a change comes through the element tree and comes out as a new
+        // object -- but "unchanged" is only worth trusting if it can be
+        // revoked. Upstream's `markNeedsLayout` is the same escape hatch.
+        let sink = Rc::new(RefCell::new(None));
+        let mut tree = watched_tree(&sink);
+        let mut root = tree.build_render_tree().expect("mounted");
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 1);
+
+        let watched = only_leaf_under(&tree, tree.children_of(tree.root().unwrap())[0]);
+        tree.render_of(watched).expect("built").mark_needs_layout();
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        assert_eq!(layouts(), 2, "it was told to measure again and did not");
+    }
 }
