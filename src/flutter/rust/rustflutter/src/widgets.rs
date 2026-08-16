@@ -23,10 +23,10 @@ pub use crate::render::{
 };
 use crate::painting::{Gradient, Image, RenderPath};
 use crate::render::{
-    RenderAlign, RenderBox, RenderClipPath, RenderClipRect, RenderConstrainedBox,
-    RenderDecoratedBox, RenderFlex, RenderFullWidth, RenderImage, RenderOpacity, RenderPadding,
-    RenderParagraph,
-    RenderPointerRegion, RenderStack, RenderTransform, RenderViewport,
+    RenderAlign, RenderAspectRatio, RenderBox, RenderClipPath, RenderClipRect,
+    RenderConstrainedBox, RenderDecoratedBox, RenderFlex, RenderFullWidth, RenderImage,
+    RenderIntrinsicHeight, RenderIntrinsicWidth, RenderOpacity, RenderPadding, RenderParagraph,
+    RenderPointerRegion, RenderStack, RenderTransform, RenderViewport, RenderWrap,
 };
 
 /// A widget with its concrete type erased, which is what a `build` method
@@ -415,6 +415,53 @@ impl Row {
 
     pub fn expanded() -> RenderFlex {
         RenderFlex::row().with_main_axis_size(MainAxisSize::Max)
+    }
+}
+
+/// Lays children out in lines, starting a new one when a line fills up.
+///
+/// What a `Row` cannot do: a row of unknown things overflows, and this wraps.
+pub struct Wrap;
+
+impl Wrap {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> RenderWrap {
+        RenderWrap::horizontal()
+    }
+
+    pub fn vertical() -> RenderWrap {
+        RenderWrap::new(Axis::Vertical)
+    }
+}
+
+/// Sizes itself to a width-over-height ratio.
+pub struct AspectRatio;
+
+impl AspectRatio {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(ratio: f32, child: impl RenderBox + 'static) -> RenderAspectRatio {
+        RenderAspectRatio::new(ratio, child)
+    }
+}
+
+/// Sizes its child to the width the child would like to be. Expensive; see
+/// [`RenderIntrinsicWidth`].
+pub struct IntrinsicWidth;
+
+impl IntrinsicWidth {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicWidth {
+        RenderIntrinsicWidth::new(child)
+    }
+}
+
+/// Sizes its child to the height the child would like to be.
+pub struct IntrinsicHeight;
+
+impl IntrinsicHeight {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicHeight {
+        RenderIntrinsicHeight::new(child)
     }
 }
 

@@ -2084,6 +2084,472 @@ impl RenderBox for RenderStack {
 
 // -- Single child: effects ----------------------------------------------------
 
+// -- Wrap ---------------------------------------------------------------------
+
+/// A flex that starts a new line when it runs out of room.
+///
+/// Upstream's `RenderWrap`. A `Row` overflows; this one wraps, which is what
+/// anything made of an unknown number of small things wants -- a bag of chips,
+/// a set of tags, a keyboard.
+pub struct RenderWrap {
+    direction: Axis,
+    /// Between children in a line, and between the lines themselves.
+    spacing: f32,
+    run_spacing: f32,
+    alignment: MainAxisAlignment,
+    cross_alignment: CrossAxisAlignment,
+    children: Vec<BoxedRender>,
+    /// Where each child ended up, filled in by layout.
+    offsets: Vec<Offset>,
+    size: Size,
+}
+
+impl RenderWrap {
+    pub fn new(direction: Axis) -> RenderWrap {
+        RenderWrap {
+            direction,
+            spacing: 0.0,
+            run_spacing: 0.0,
+            alignment: MainAxisAlignment::Start,
+            cross_alignment: CrossAxisAlignment::Start,
+            children: Vec::new(),
+            offsets: Vec::new(),
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn horizontal() -> RenderWrap {
+        RenderWrap::new(Axis::Horizontal)
+    }
+
+    pub fn with_spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// Between one line and the next.
+    pub fn with_run_spacing(mut self, run_spacing: f32) -> Self {
+        self.run_spacing = run_spacing;
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: MainAxisAlignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    /// How a child sits inside its line, when the line is taller than it is.
+    pub fn with_cross_alignment(mut self, alignment: CrossAxisAlignment) -> Self {
+        self.cross_alignment = alignment;
+        self
+    }
+
+    pub fn push(mut self, child: impl RenderBox + 'static) -> Self {
+        self.children.push(Box::new(child));
+        self
+    }
+
+    pub fn push_boxed(mut self, child: BoxedRender) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    fn main(&self, size: Size) -> f32 {
+        match self.direction {
+            Axis::Horizontal => size.width,
+            Axis::Vertical => size.height,
+        }
+    }
+
+    fn cross(&self, size: Size) -> f32 {
+        match self.direction {
+            Axis::Horizontal => size.height,
+            Axis::Vertical => size.width,
+        }
+    }
+}
+
+/// One line of a [`RenderWrap`]: which children, how long, how thick.
+struct Run {
+    first: usize,
+    count: usize,
+    main: f32,
+    cross: f32,
+}
+
+impl RenderBox for RenderWrap {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.offsets.clear();
+        self.offsets.resize(self.children.len(), Offset::ZERO);
+        if self.children.is_empty() {
+            self.size = constraints.constrain(Size::ZERO);
+            return self.size;
+        }
+
+        // Each child is measured against the line's length and nothing else:
+        // it may be as thick as it likes, because the line grows to fit it.
+        let limit = match self.direction {
+            Axis::Horizontal => constraints.max_width,
+            Axis::Vertical => constraints.max_height,
+        };
+        let child_constraints = match self.direction {
+            Axis::Horizontal => BoxConstraints::new(0.0, limit, 0.0, f32::INFINITY),
+            Axis::Vertical => BoxConstraints::new(0.0, f32::INFINITY, 0.0, limit),
+        };
+
+        let direction = self.direction;
+        let spacing = self.spacing;
+        let mut runs: Vec<Run> = Vec::new();
+        let mut sizes: Vec<Size> = Vec::with_capacity(self.children.len());
+        let mut current = Run { first: 0, count: 0, main: 0.0, cross: 0.0 };
+
+        for (index, child) in self.children.iter_mut().enumerate() {
+            let size = child.layout(child_constraints);
+            sizes.push(size);
+            let child_main = match direction {
+                Axis::Horizontal => size.width,
+                Axis::Vertical => size.height,
+            };
+            let child_cross = match direction {
+                Axis::Horizontal => size.height,
+                Axis::Vertical => size.width,
+            };
+            let with_spacing =
+                if current.count == 0 { child_main } else { current.main + spacing + child_main };
+            // A line that is already full starts another. The first child of a
+            // line stays on it however long it is: there is nowhere else for it
+            // to go, and moving it would leave an empty line.
+            if current.count > 0 && with_spacing > limit {
+                runs.push(current);
+                current = Run { first: index, count: 0, main: 0.0, cross: 0.0 };
+            }
+            current.main =
+                if current.count == 0 { child_main } else { current.main + spacing + child_main };
+            current.cross = current.cross.max(child_cross);
+            current.count += 1;
+        }
+        runs.push(current);
+
+        let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
+        let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
+            + self.run_spacing * (runs.len() as f32 - 1.0).max(0.0);
+        self.size = constraints.constrain(match self.direction {
+            Axis::Horizontal => Size::new(longest, total_cross),
+            Axis::Vertical => Size::new(total_cross, longest),
+        });
+
+        // Position: along each line by the main-axis alignment, across it by
+        // the cross-axis one.
+        let available_main = self.main(self.size);
+        let mut cross_offset = 0.0;
+        for run in &runs {
+            let free = (available_main - run.main).max(0.0);
+            let (mut main_offset, gap) = match self.alignment {
+                MainAxisAlignment::Start => (0.0, 0.0),
+                MainAxisAlignment::Center => (free / 2.0, 0.0),
+                MainAxisAlignment::End => (free, 0.0),
+                MainAxisAlignment::SpaceBetween if run.count > 1 => {
+                    (0.0, free / (run.count as f32 - 1.0))
+                }
+                MainAxisAlignment::SpaceBetween => (0.0, 0.0),
+                MainAxisAlignment::SpaceAround => {
+                    let each = free / run.count as f32;
+                    (each / 2.0, each)
+                }
+                MainAxisAlignment::SpaceEvenly => {
+                    let each = free / (run.count as f32 + 1.0);
+                    (each, each)
+                }
+            };
+            for index in run.first..run.first + run.count {
+                let size = sizes[index];
+                let child_cross = self.cross(size);
+                let within = match self.cross_alignment {
+                    // Baseline alignment needs every child in the line
+                    // measured against one another's text, which a wrap does
+                    // not do -- upstream's `Wrap` has no baseline option
+                    // either. It sits at the start, like everything else that
+                    // is not centred or ended.
+                    CrossAxisAlignment::Start
+                    | CrossAxisAlignment::Stretch
+                    | CrossAxisAlignment::Baseline => 0.0,
+                    CrossAxisAlignment::Center => (run.cross - child_cross) / 2.0,
+                    CrossAxisAlignment::End => run.cross - child_cross,
+                };
+                self.offsets[index] = match self.direction {
+                    Axis::Horizontal => Offset::new(main_offset, cross_offset + within),
+                    Axis::Vertical => Offset::new(cross_offset + within, main_offset),
+                };
+                main_offset += self.main(size) + self.spacing + gap;
+            }
+            cross_offset += run.cross + self.run_spacing;
+        }
+
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        for (child, child_offset) in self.children.iter().zip(&self.offsets) {
+            context.paint_child(child.as_ref(), offset.plus(*child_offset));
+        }
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        for (child, child_offset) in self.children.iter().zip(&self.offsets).rev() {
+            if child.hit_test(position.minus(*child_offset), result) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        // Everything on one line, which is the width at which nothing wraps.
+        match self.direction {
+            Axis::Horizontal => {
+                let sum: f32 =
+                    self.children.iter().map(|c| c.max_intrinsic_width(height)).sum();
+                sum + self.spacing * (self.children.len() as f32 - 1.0).max(0.0)
+            }
+            Axis::Vertical => self
+                .children
+                .iter()
+                .map(|c| c.max_intrinsic_width(height))
+                .fold(0.0, f32::max),
+        }
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        // One child per line, so the widest child is the narrowest this can be.
+        self.children
+            .iter()
+            .map(|c| c.min_intrinsic_width(height))
+            .fold(0.0, f32::max)
+    }
+}
+
+// -- Aspect ratio -------------------------------------------------------------
+
+/// Sizes itself to a width-over-height ratio, inside its constraints.
+///
+/// Upstream's `RenderAspectRatio`, including the order it tries things in:
+/// take the width if there is one, work the height out from it, then walk the
+/// result back inside each constraint in turn. The order matters -- doing it
+/// the other way round gives a box that satisfies the ratio and breaks the
+/// constraints.
+pub struct RenderAspectRatio {
+    ratio: f32,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderAspectRatio {
+    pub fn new(ratio: f32, child: impl RenderBox + 'static) -> RenderAspectRatio {
+        RenderAspectRatio { ratio, child: Box::new(child), size: Size::ZERO }
+    }
+
+    fn applied(&self, constraints: BoxConstraints) -> Size {
+        if constraints.is_tight() {
+            return constraints.smallest();
+        }
+        let ratio = if self.ratio > 0.0 { self.ratio } else { 1.0 };
+        let mut width = constraints.max_width;
+        let mut height;
+        if width.is_finite() {
+            height = width / ratio;
+        } else {
+            height = constraints.max_height;
+            width = height * ratio;
+        }
+        if width > constraints.max_width {
+            width = constraints.max_width;
+            height = width / ratio;
+        }
+        if height > constraints.max_height {
+            height = constraints.max_height;
+            width = height * ratio;
+        }
+        if width < constraints.min_width {
+            width = constraints.min_width;
+            height = width / ratio;
+        }
+        if height < constraints.min_height {
+            height = constraints.min_height;
+            width = height * ratio;
+        }
+        constraints.constrain(Size::new(width, height))
+    }
+}
+
+impl RenderBox for RenderAspectRatio {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.applied(constraints);
+        self.child.layout(BoxConstraints::tight(self.size.width, self.size.height));
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(self.child.as_ref(), offset);
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        self.child.hit_test(position, result);
+        true
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        if height.is_finite() { height * self.ratio } else { self.child.min_intrinsic_width(height) }
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        if height.is_finite() { height * self.ratio } else { self.child.max_intrinsic_width(height) }
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        if width.is_finite() { width / self.ratio } else { self.child.min_intrinsic_height(width) }
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        if width.is_finite() { width / self.ratio } else { self.child.max_intrinsic_height(width) }
+    }
+}
+
+// -- Intrinsics ---------------------------------------------------------------
+
+/// Sizes its child to the child's own preferred width.
+///
+/// Upstream's `RenderIntrinsicWidth`, and upstream's warning applies word for
+/// word: this asks the child how wide it would like to be, which means laying
+/// it out speculatively, which is expensive. It is the answer to "make these
+/// buttons all as wide as the widest of them" and not much else.
+pub struct RenderIntrinsicWidth {
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderIntrinsicWidth {
+    pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicWidth {
+        RenderIntrinsicWidth { child: Box::new(child), size: Size::ZERO }
+    }
+}
+
+impl RenderBox for RenderIntrinsicWidth {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let wanted = self.child.max_intrinsic_width(constraints.max_height);
+        let width = wanted.clamp(constraints.min_width, constraints.max_width);
+        let tightened = BoxConstraints::new(
+            width,
+            width,
+            constraints.min_height,
+            constraints.max_height,
+        );
+        self.size = self.child.layout(tightened);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(self.child.as_ref(), offset);
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        self.child.hit_test(position, result);
+        true
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+}
+
+/// Sizes its child to the child's own preferred height. See
+/// [`RenderIntrinsicWidth`], including the cost.
+pub struct RenderIntrinsicHeight {
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderIntrinsicHeight {
+    pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicHeight {
+        RenderIntrinsicHeight { child: Box::new(child), size: Size::ZERO }
+    }
+}
+
+impl RenderBox for RenderIntrinsicHeight {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let wanted = self.child.max_intrinsic_height(constraints.max_width);
+        let height = wanted.clamp(constraints.min_height, constraints.max_height);
+        let tightened =
+            BoxConstraints::new(constraints.min_width, constraints.max_width, height, height);
+        self.size = self.child.layout(tightened);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(self.child.as_ref(), offset);
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        self.child.hit_test(position, result);
+        true
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+}
+
 /// Applies a 2D affine to its child. Layout is unaffected -- the child is laid
 /// out and sized as if untransformed, which is why a rotated box still
 /// occupies its original slot.
@@ -2853,6 +3319,67 @@ mod tests {
         // A point 10 down the window is 60 down the content.
         assert_eq!(result.innermost().unwrap().local_position.dy, 60.0);
     }
+    #[test]
+    fn a_wrap_starts_a_new_line_when_one_fills_up() {
+        let mut wrap = RenderWrap::horizontal().with_spacing(10.0).with_run_spacing(4.0);
+        for _ in 0..3 {
+            wrap = wrap.push(FixedBox::new(40.0, 20.0));
+        }
+        // Two fit on a line: 40 + 10 + 40 = 90, and a third would need 140.
+        let size = wrap.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        assert_eq!(size.width, 90.0);
+        assert_eq!(size.height, 44.0, "two lines and the gap between them");
+    }
+
+    #[test]
+    fn a_wrap_that_fits_is_a_row() {
+        let mut wrap = RenderWrap::horizontal().with_spacing(10.0);
+        for _ in 0..3 {
+            wrap = wrap.push(FixedBox::new(20.0, 20.0));
+        }
+        let size = wrap.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert_eq!(size, Size::new(80.0, 20.0));
+    }
+
+    #[test]
+    fn a_child_too_wide_for_any_line_still_gets_one() {
+        // Otherwise it would start a new line for ever, or vanish.
+        let mut wrap = RenderWrap::horizontal().push(FixedBox::new(300.0, 10.0));
+        let size = wrap.layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY));
+        assert_eq!(size.height, 10.0);
+    }
+
+    #[test]
+    fn an_aspect_ratio_takes_the_width_and_works_out_the_height() {
+        let mut box_ = RenderAspectRatio::new(2.0, FixedBox::new(0.0, 0.0));
+        let size = box_.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+        assert_eq!(size, Size::new(200.0, 100.0));
+    }
+
+    #[test]
+    fn an_aspect_ratio_gives_up_the_ratio_before_the_constraints() {
+        // 2:1 inside a box that is only 50 tall: the width comes down to
+        // match, rather than the box overflowing.
+        let mut box_ = RenderAspectRatio::new(2.0, FixedBox::new(0.0, 0.0));
+        let size = box_.layout(BoxConstraints::new(0.0, 200.0, 0.0, 50.0));
+        assert_eq!(size, Size::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn intrinsic_width_asks_the_child_how_wide_it_wants_to_be() {
+        // A paragraph's max intrinsic width is its one-line width, which is
+        // the case IntrinsicWidth exists for.
+        let text = RenderParagraph::new("a short line").with_style(TextStyle::default());
+        let wanted = text.max_intrinsic_width(f32::INFINITY);
+        let mut sized = RenderIntrinsicWidth::new(text);
+        let size = sized.layout(BoxConstraints::new(0.0, 1000.0, 0.0, f32::INFINITY));
+        assert!(
+            (size.width - wanted).abs() < 1.0,
+            "{} should be the text's own width, {wanted}",
+            size.width
+        );
+    }
+
 }
 
 // -- Compositing tests --------------------------------------------------------
