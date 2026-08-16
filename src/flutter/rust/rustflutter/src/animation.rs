@@ -31,63 +31,214 @@ use std::time::Duration;
 /// Bends the flow of time. Every curve maps 0..1 to 0..1, passing through both
 /// endpoints -- so an animation always starts where it started and ends where
 /// it ends, however strangely it gets there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Curve {
     #[default]
     Linear,
-    /// Slow in. What something entering the screen should use.
-    EaseIn,
-    /// Slow out. What something leaving should use.
-    EaseOut,
-    /// Slow at both ends. The safe default for a change in place.
-    EaseInOut,
-    /// Overshoots and comes back. For an arrival that should feel physical.
-    EaseOutBack,
-    /// Decelerating, matching upstream's `decelerate`.
+    /// Decelerating, matching upstream's `Curves.decelerate`.
     Decelerate,
+    /// A cubic Bezier easing, given its two control points.
+    ///
+    /// This is what almost every named curve upstream is -- `Curves.easeIn` is
+    /// `Cubic(0.42, 0.0, 1.0, 1.0)` and nothing more -- so the named ones
+    /// below are constants rather than variants.
+    Cubic(f32, f32, f32, f32),
+    /// Overshoots, comes back, and does it again, smaller each time. The
+    /// number is the period of the oscillation.
+    ElasticIn(f32),
+    ElasticOut(f32),
+    ElasticInOut(f32),
+    /// Bounces, like something dropped.
+    BounceIn,
+    BounceOut,
+    BounceInOut,
 }
 
+/// Upstream's `Curves`, as constants.
+///
+/// The coefficients are copied rather than derived: they are a design
+/// decision, and a curve that is nearly `easeInOut` reads as a mistake next to
+/// one that is.
 impl Curve {
+    /// Material's usual choice for a change in place.
+    pub const EASE: Curve = Curve::Cubic(0.25, 0.1, 0.25, 1.0);
+    /// Slow in. What something entering the screen should use.
+    pub const EASE_IN: Curve = Curve::Cubic(0.42, 0.0, 1.0, 1.0);
+    /// Slow out. What something leaving should use.
+    pub const EASE_OUT: Curve = Curve::Cubic(0.0, 0.0, 0.58, 1.0);
+    /// Slow at both ends. The safe default.
+    pub const EASE_IN_OUT: Curve = Curve::Cubic(0.42, 0.0, 0.58, 1.0);
+
+    /// Material's standard easing: quick to leave, slow to arrive.
+    pub const FAST_OUT_SLOW_IN: Curve = Curve::Cubic(0.4, 0.0, 0.2, 1.0);
+    pub const SLOW_MIDDLE: Curve = Curve::Cubic(0.15, 0.85, 0.85, 0.15);
+
+    pub const EASE_IN_SINE: Curve = Curve::Cubic(0.47, 0.0, 0.745, 0.715);
+    pub const EASE_IN_QUAD: Curve = Curve::Cubic(0.55, 0.085, 0.68, 0.53);
+    pub const EASE_IN_CUBIC: Curve = Curve::Cubic(0.55, 0.055, 0.675, 0.19);
+    pub const EASE_IN_QUART: Curve = Curve::Cubic(0.895, 0.03, 0.685, 0.22);
+    pub const EASE_IN_QUINT: Curve = Curve::Cubic(0.755, 0.05, 0.855, 0.06);
+    pub const EASE_IN_EXPO: Curve = Curve::Cubic(0.95, 0.05, 0.795, 0.035);
+    pub const EASE_IN_CIRC: Curve = Curve::Cubic(0.6, 0.04, 0.98, 0.335);
+    /// Backs up before setting off.
+    pub const EASE_IN_BACK: Curve = Curve::Cubic(0.6, -0.28, 0.735, 0.045);
+
+    pub const EASE_OUT_SINE: Curve = Curve::Cubic(0.39, 0.575, 0.565, 1.0);
+    pub const EASE_OUT_QUAD: Curve = Curve::Cubic(0.25, 0.46, 0.45, 0.94);
+    pub const EASE_OUT_CUBIC: Curve = Curve::Cubic(0.215, 0.61, 0.355, 1.0);
+    pub const EASE_OUT_QUART: Curve = Curve::Cubic(0.165, 0.84, 0.44, 1.0);
+    pub const EASE_OUT_QUINT: Curve = Curve::Cubic(0.23, 1.0, 0.32, 1.0);
+    pub const EASE_OUT_EXPO: Curve = Curve::Cubic(0.19, 1.0, 0.22, 1.0);
+    pub const EASE_OUT_CIRC: Curve = Curve::Cubic(0.075, 0.82, 0.165, 1.0);
+    /// Overshoots and comes back. For an arrival that should feel physical.
+    pub const EASE_OUT_BACK: Curve = Curve::Cubic(0.175, 0.885, 0.32, 1.275);
+
+    pub const EASE_IN_OUT_SINE: Curve = Curve::Cubic(0.445, 0.05, 0.55, 0.95);
+    pub const EASE_IN_OUT_QUAD: Curve = Curve::Cubic(0.455, 0.03, 0.515, 0.955);
+    pub const EASE_IN_OUT_CUBIC: Curve = Curve::Cubic(0.645, 0.045, 0.355, 1.0);
+    pub const EASE_IN_OUT_QUART: Curve = Curve::Cubic(0.77, 0.0, 0.175, 1.0);
+    pub const EASE_IN_OUT_QUINT: Curve = Curve::Cubic(0.86, 0.0, 0.07, 1.0);
+    pub const EASE_IN_OUT_EXPO: Curve = Curve::Cubic(1.0, 0.0, 0.0, 1.0);
+    pub const EASE_IN_OUT_CIRC: Curve = Curve::Cubic(0.785, 0.135, 0.15, 0.86);
+    pub const EASE_IN_OUT_BACK: Curve = Curve::Cubic(0.68, -0.55, 0.265, 1.55);
+
+    /// The elastic curves at upstream's default period.
+    pub const ELASTIC_IN: Curve = Curve::ElasticIn(0.4);
+    pub const ELASTIC_OUT: Curve = Curve::ElasticOut(0.4);
+    pub const ELASTIC_IN_OUT: Curve = Curve::ElasticInOut(0.4);
+
+    // The names the rest of this crate was written against, from when the
+    // curves were a handful of hand-fitted polynomials. They are the cubics
+    // above now, which is what upstream always meant by them.
+    #[allow(non_upper_case_globals)]
+    pub const EaseIn: Curve = Curve::EASE_IN;
+    #[allow(non_upper_case_globals)]
+    pub const EaseOut: Curve = Curve::EASE_OUT;
+    #[allow(non_upper_case_globals)]
+    pub const EaseInOut: Curve = Curve::EASE_IN_OUT;
+    #[allow(non_upper_case_globals)]
+    pub const EaseOutBack: Curve = Curve::EASE_OUT_BACK;
+
     /// Transforms `t`, which is clamped to 0..1 first.
     pub fn transform(self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
+        // The endpoints are exact, whatever the shape says. Upstream's
+        // `Curve.transform` does the same and asserts that the shape agrees to
+        // within rounding: an elastic curve is a decaying sine, and at t=0 it
+        // evaluates to a thousandth rather than to nothing, which would be an
+        // animation that starts by jumping.
+        if t == 0.0 || t == 1.0 {
+            return t;
+        }
+        let tau = std::f32::consts::PI * 2.0;
         match self {
             Curve::Linear => t,
-            // Cubic in/out, which is what the standard material curves are to
-            // within a few thousandths and needs no coefficient table.
-            Curve::EaseIn => t * t * t,
-            Curve::EaseOut => {
-                let inverted = 1.0 - t;
-                1.0 - inverted * inverted * inverted
-            }
-            Curve::EaseInOut => {
-                if t < 0.5 {
-                    4.0 * t * t * t
-                } else {
-                    let inverted = -2.0 * t + 2.0;
-                    1.0 - inverted * inverted * inverted / 2.0
-                }
-            }
-            Curve::EaseOutBack => {
-                const OVERSHOOT: f32 = 1.70158;
-                let inverted = t - 1.0;
-                1.0 + (OVERSHOOT + 1.0) * inverted * inverted * inverted
-                    + OVERSHOOT * inverted * inverted
-            }
             Curve::Decelerate => {
                 let inverted = 1.0 - t;
                 1.0 - inverted * inverted
             }
+            Curve::Cubic(a, b, c, d) => cubic(a, b, c, d, t),
+            Curve::ElasticIn(period) => {
+                let s = period / 4.0;
+                let t = t - 1.0;
+                -(2f32.powf(10.0 * t)) * ((t - s) * tau / period).sin()
+            }
+            Curve::ElasticOut(period) => {
+                let s = period / 4.0;
+                2f32.powf(-10.0 * t) * ((t - s) * tau / period).sin() + 1.0
+            }
+            Curve::ElasticInOut(period) => {
+                let s = period / 4.0;
+                let t = 2.0 * t - 1.0;
+                if t < 0.0 {
+                    -0.5 * 2f32.powf(10.0 * t) * ((t - s) * tau / period).sin()
+                } else {
+                    2f32.powf(-10.0 * t) * ((t - s) * tau / period).sin() * 0.5 + 1.0
+                }
+            }
+            Curve::BounceIn => 1.0 - bounce(1.0 - t),
+            Curve::BounceOut => bounce(t),
+            Curve::BounceInOut => {
+                if t < 0.5 {
+                    (1.0 - bounce(1.0 - t * 2.0)) * 0.5
+                } else {
+                    bounce(t * 2.0 - 1.0) * 0.5 + 0.5
+                }
+            }
         }
     }
 
-    /// The curve that undoes this one's asymmetry, for playing in reverse.
+    /// The curve run backwards: `1 - curve(1 - t)`.
+    ///
+    /// Upstream's `FlippedCurve`, and what a reversing animation wants -- an
+    /// ease-in played in reverse should still start slowly, which means easing
+    /// out. For a cubic it is exact rather than approximate: the reverse of a
+    /// Bezier easing with control points (a, b) and (c, d) is the one with
+    /// (1-c, 1-d) and (1-a, 1-b).
     pub fn flipped(self) -> Curve {
         match self {
-            Curve::EaseIn => Curve::EaseOut,
-            Curve::EaseOut => Curve::EaseIn,
+            Curve::Cubic(a, b, c, d) => Curve::Cubic(1.0 - c, 1.0 - d, 1.0 - a, 1.0 - b),
+            Curve::BounceIn => Curve::BounceOut,
+            Curve::BounceOut => Curve::BounceIn,
+            Curve::ElasticIn(period) => Curve::ElasticOut(period),
+            Curve::ElasticOut(period) => Curve::ElasticIn(period),
             other => other,
         }
+    }
+}
+
+/// Where a cubic Bezier easing is at `t`.
+///
+/// The curve is a parametric Bezier through (0,0) and (1,1) with control
+/// points (a,b) and (c,d), so the answer is not a formula in `t`: the
+/// parameter that puts the curve at time `t` has to be found first. Upstream
+/// bisects, and so does this, to the same error bound -- which is loose
+/// because a curve is being sampled for a pixel position, not solved.
+fn cubic(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    const ERROR_BOUND: f32 = 0.001;
+    fn evaluate(a: f32, b: f32, m: f32) -> f32 {
+        3.0 * a * (1.0 - m) * (1.0 - m) * m + 3.0 * b * (1.0 - m) * m * m + m * m * m
+    }
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let mut start = 0.0f32;
+    let mut end = 1.0f32;
+    // Bounded rather than `loop`: bisection converges in about ten steps, and
+    // control points that make the curve non-monotonic must not be able to
+    // hang a frame looking for a parameter that is not there.
+    for _ in 0..30 {
+        let midpoint = (start + end) / 2.0;
+        let estimate = evaluate(a, c, midpoint);
+        if (t - estimate).abs() < ERROR_BOUND {
+            return evaluate(b, d, midpoint);
+        }
+        if estimate < t {
+            start = midpoint;
+        } else {
+            end = midpoint;
+        }
+    }
+    evaluate(b, d, (start + end) / 2.0)
+}
+
+/// Upstream's `_bounce`: four parabolic arcs, each a quarter the height of the
+/// one before.
+fn bounce(t: f32) -> f32 {
+    if t < 1.0 / 2.75 {
+        7.5625 * t * t
+    } else if t < 2.0 / 2.75 {
+        let t = t - 1.5 / 2.75;
+        7.5625 * t * t + 0.75
+    } else if t < 2.5 / 2.75 {
+        let t = t - 2.25 / 2.75;
+        7.5625 * t * t + 0.9375
+    } else {
+        let t = t - 2.625 / 2.75;
+        7.5625 * t * t + 0.984375
     }
 }
 
@@ -358,7 +509,16 @@ impl Controller {
                 }
             }
         }
-        self.running
+        // True even on the tick that finished, because this answer is also what
+        // marks the widget for rebuilding: a tick that moved the value has to
+        // be drawn, and the tick that moves it to exactly the end is the one
+        // that matters most. Reporting `self.running` here left every animation
+        // showing its second-to-last frame for ever -- a fade-out that stopped
+        // at ninety-eight per cent leaves a ghost on the screen.
+        //
+        // The next tick returns false at the top, so this costs one frame and
+        // stops.
+        true
     }
 
     /// Whether the animation is at rest at either end.
@@ -457,6 +617,16 @@ mod tests {
             Curve::EaseInOut,
             Curve::EaseOutBack,
             Curve::Decelerate,
+            Curve::EASE,
+            Curve::FAST_OUT_SLOW_IN,
+            Curve::EASE_IN_OUT_CUBIC,
+            Curve::EASE_IN_BACK,
+            Curve::BounceIn,
+            Curve::BounceOut,
+            Curve::BounceInOut,
+            Curve::ELASTIC_IN,
+            Curve::ELASTIC_OUT,
+            Curve::ELASTIC_IN_OUT,
         ] {
             assert!((curve.transform(0.0) - 0.0).abs() < 1e-5, "{curve:?} at 0");
             assert!((curve.transform(1.0) - 1.0).abs() < 1e-5, "{curve:?} at 1");
@@ -467,6 +637,57 @@ mod tests {
     fn curves_clamp_out_of_range_input() {
         assert_eq!(Curve::Linear.transform(-1.0), 0.0);
         assert_eq!(Curve::Linear.transform(2.0), 1.0);
+    }
+
+    #[test]
+    fn a_cubic_matches_the_curve_it_names() {
+        // Sampled against upstream's Curves.easeInOut, which is this cubic.
+        // The bisection's error bound is a thousandth, so the tolerance is the
+        // solver's rather than the curve's.
+        let ease_in_out = Curve::EASE_IN_OUT;
+        assert!((ease_in_out.transform(0.5) - 0.5).abs() < 2e-3, "symmetric at the middle");
+        assert!(ease_in_out.transform(0.25) < 0.25, "still easing in");
+        assert!(ease_in_out.transform(0.75) > 0.75, "already easing out");
+    }
+
+    #[test]
+    fn a_flipped_cubic_is_the_curve_run_backwards() {
+        // What FlippedCurve means: flipped(t) == 1 - curve(1 - t). For a cubic
+        // the flip is another cubic, which is why this is exact rather than
+        // approximated.
+        let curve = Curve::EASE_IN_BACK;
+        let flipped = curve.flipped();
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let expected = 1.0 - curve.transform(1.0 - t);
+            assert!(
+                (flipped.transform(t) - expected).abs() < 5e-3,
+                "at {t}: {} against {expected}",
+                flipped.transform(t)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bounce_lands_and_bounces_smaller() {
+        // Three landings on the way, each lower than the last bounce's peak.
+        let peak = |from: i32, to: i32| {
+            (from..=to)
+                .map(|i| Curve::BounceOut.transform(i as f32 / 100.0))
+                .fold(f32::MIN, f32::max)
+        };
+        let first = peak(30, 45);
+        let second = peak(70, 85);
+        assert!(first < 1.0 && second < 1.0);
+        assert!(second > first, "later bounces are closer to the ground, not further");
+    }
+
+    #[test]
+    fn elastic_overshoots_in_both_directions() {
+        let samples: Vec<f32> =
+            (0..=100).map(|i| Curve::ELASTIC_OUT.transform(i as f32 / 100.0)).collect();
+        assert!(samples.iter().any(|v| *v > 1.0), "never overshot");
+        assert!(samples.iter().any(|v| *v < 1.0), "never came back");
     }
 
     #[test]
@@ -490,9 +711,14 @@ mod tests {
         controller.forward();
         assert!(controller.tick(Duration::from_millis(50)));
         assert!((controller.value() - 0.5).abs() < 1e-5);
-        assert!(!controller.tick(Duration::from_millis(60)));
+        // The tick that arrives at the end still reports that it did
+        // something: that answer is what marks the widget for rebuilding, and
+        // this is the tick whose value is the one to draw.
+        assert!(controller.tick(Duration::from_millis(60)));
         assert_eq!(controller.value(), 1.0);
         assert!(!controller.is_running());
+        // Only the tick after it is idle.
+        assert!(!controller.tick(Duration::from_millis(16)));
     }
 
     #[test]
@@ -500,8 +726,9 @@ mod tests {
         let mut controller = Controller::new(Duration::from_millis(100));
         controller.set_value(1.0);
         controller.reverse();
-        assert!(!controller.tick(Duration::from_millis(200)));
+        assert!(controller.tick(Duration::from_millis(200)), "the arriving tick counts");
         assert_eq!(controller.value(), 0.0);
+        assert!(!controller.tick(Duration::from_millis(16)));
     }
 
     #[test]
@@ -586,7 +813,8 @@ mod tests {
 
         animations.tick(0);
         assert!(animations.tick(5_000));
-        assert!(!animations.tick(20_000));
+        assert!(animations.tick(20_000), "the frame it lands on still has to be drawn");
+        assert!(!animations.tick(30_000));
         assert!(!animations.is_running());
     }
 

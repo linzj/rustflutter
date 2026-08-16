@@ -276,13 +276,16 @@ impl Navigator {
         if self.outgoing.is_none() {
             return false;
         }
-        let running = self.controller.tick(elapsed);
-        if !running {
+        let advanced = self.controller.tick(elapsed);
+        if !self.controller.is_running() {
             // The outgoing route is only dropped here, so its state survives
-            // for as long as it is on screen.
+            // for as long as it is on screen. Asked of the controller rather
+            // than of the tick's answer: a tick that arrives at the end
+            // reports that it did something -- that is what gets the last
+            // frame drawn -- and the transition is over all the same.
             self.outgoing = None;
         }
-        running
+        advanced
     }
 
     pub fn is_transitioning(&self) -> bool {
@@ -416,9 +419,13 @@ mod tests {
         nav.push(Route::new("detail"), Transition::SlideFromRight);
         assert!(nav.tick(Duration::from_millis(50)));
         assert!(nav.is_transitioning());
-        assert!(!nav.tick(Duration::from_millis(60)));
+        // The tick that arrives still counts as work -- it is the frame that
+        // puts the page in its final position -- and the transition is over by
+        // the end of it.
+        assert!(nav.tick(Duration::from_millis(60)));
         assert!(!nav.is_transitioning());
         assert_eq!(nav.presentation().progress, 1.0);
+        assert!(!nav.tick(Duration::from_millis(16)), "and then it is idle");
     }
 
     #[test]
