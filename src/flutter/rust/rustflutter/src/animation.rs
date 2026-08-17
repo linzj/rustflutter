@@ -281,10 +281,7 @@ pub struct ColorTween {
 }
 
 impl ColorTween {
-    pub const fn new(
-        begin: crate::engine::Color,
-        end: crate::engine::Color,
-    ) -> ColorTween {
+    pub const fn new(begin: crate::engine::Color, end: crate::engine::Color) -> ColorTween {
         ColorTween { begin, end }
     }
 }
@@ -294,7 +291,9 @@ impl Tween for ColorTween {
 
     fn lerp(&self, t: f32) -> crate::engine::Color {
         let mix = |a: u8, b: u8| -> u8 {
-            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+            (a as f32 + (b as f32 - a as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
         };
         crate::engine::Color::argb(
             mix(self.begin.alpha(), self.end.alpha()),
@@ -313,10 +312,7 @@ pub struct OffsetTween {
 }
 
 impl OffsetTween {
-    pub const fn new(
-        begin: crate::render::Offset,
-        end: crate::render::Offset,
-    ) -> OffsetTween {
+    pub const fn new(begin: crate::render::Offset, end: crate::render::Offset) -> OffsetTween {
         OffsetTween { begin, end }
     }
 }
@@ -571,7 +567,8 @@ impl Animations {
     /// Reading a missing animation is a caller mistake, but a build that fails
     /// to draw is worse than one that draws the resting state.
     pub fn value_or(&self, name: &str, default: f32) -> f32 {
-        self.get(name).map_or(default, |controller| controller.curved())
+        self.get(name)
+            .map_or(default, |controller| controller.curved())
     }
 
     /// Advances every controller to `frame_time_micros`.
@@ -645,7 +642,10 @@ mod tests {
         // The bisection's error bound is a thousandth, so the tolerance is the
         // solver's rather than the curve's.
         let ease_in_out = Curve::EASE_IN_OUT;
-        assert!((ease_in_out.transform(0.5) - 0.5).abs() < 2e-3, "symmetric at the middle");
+        assert!(
+            (ease_in_out.transform(0.5) - 0.5).abs() < 2e-3,
+            "symmetric at the middle"
+        );
         assert!(ease_in_out.transform(0.25) < 0.25, "still easing in");
         assert!(ease_in_out.transform(0.75) > 0.75, "already easing out");
     }
@@ -679,13 +679,17 @@ mod tests {
         let first = peak(30, 45);
         let second = peak(70, 85);
         assert!(first < 1.0 && second < 1.0);
-        assert!(second > first, "later bounces are closer to the ground, not further");
+        assert!(
+            second > first,
+            "later bounces are closer to the ground, not further"
+        );
     }
 
     #[test]
     fn elastic_overshoots_in_both_directions() {
-        let samples: Vec<f32> =
-            (0..=100).map(|i| Curve::ELASTIC_OUT.transform(i as f32 / 100.0)).collect();
+        let samples: Vec<f32> = (0..=100)
+            .map(|i| Curve::ELASTIC_OUT.transform(i as f32 / 100.0))
+            .collect();
         assert!(samples.iter().any(|v| *v > 1.0), "never overshot");
         assert!(samples.iter().any(|v| *v < 1.0), "never came back");
     }
@@ -726,7 +730,10 @@ mod tests {
         let mut controller = Controller::new(Duration::from_millis(100));
         controller.set_value(1.0);
         controller.reverse();
-        assert!(controller.tick(Duration::from_millis(200)), "the arriving tick counts");
+        assert!(
+            controller.tick(Duration::from_millis(200)),
+            "the arriving tick counts"
+        );
         assert_eq!(controller.value(), 0.0);
         assert!(!controller.tick(Duration::from_millis(16)));
     }
@@ -748,8 +755,7 @@ mod tests {
 
     #[test]
     fn looping_wraps_rather_than_stopping() {
-        let mut controller =
-            Controller::new(Duration::from_millis(100)).with_repeat(Repeat::Loop);
+        let mut controller = Controller::new(Duration::from_millis(100)).with_repeat(Repeat::Loop);
         controller.forward();
         assert!(controller.tick(Duration::from_millis(250)));
         // 2.5 cycles in: a quarter of the way through the third.
@@ -813,7 +819,10 @@ mod tests {
 
         animations.tick(0);
         assert!(animations.tick(5_000));
-        assert!(animations.tick(20_000), "the frame it lands on still has to be drawn");
+        assert!(
+            animations.tick(20_000),
+            "the frame it lands on still has to be drawn"
+        );
         assert!(!animations.tick(30_000));
         assert!(!animations.is_running());
     }

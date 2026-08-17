@@ -53,7 +53,7 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -510,7 +510,11 @@ where
     F: Fn(BoxedRender) -> R + 'static,
     R: crate::render::RenderBox + 'static,
 {
-    render_widget(SingleWidget { key: None, child: RefCell::new(Some(child)), wrap })
+    render_widget(SingleWidget {
+        key: None,
+        child: RefCell::new(Some(child)),
+        wrap,
+    })
 }
 
 /// [`single`] with an explicit key.
@@ -519,7 +523,11 @@ where
     F: Fn(BoxedRender) -> R + 'static,
     R: crate::render::RenderBox + 'static,
 {
-    render_widget(SingleWidget { key: Some(key), child: RefCell::new(Some(child)), wrap })
+    render_widget(SingleWidget {
+        key: Some(key),
+        child: RefCell::new(Some(child)),
+        wrap,
+    })
 }
 
 struct ManyWidget<F> {
@@ -561,7 +569,11 @@ where
     F: Fn(Vec<BoxedRender>) -> R + 'static,
     R: crate::render::RenderBox + 'static,
 {
-    render_widget(ManyWidget { key: None, children: RefCell::new(children), assemble })
+    render_widget(ManyWidget {
+        key: None,
+        children: RefCell::new(children),
+        assemble,
+    })
 }
 
 /// [`many`] with an explicit key.
@@ -570,7 +582,11 @@ where
     F: Fn(Vec<BoxedRender>) -> R + 'static,
     R: crate::render::RenderBox + 'static,
 {
-    render_widget(ManyWidget { key: Some(key), children: RefCell::new(children), assemble })
+    render_widget(ManyWidget {
+        key: Some(key),
+        children: RefCell::new(children),
+        assemble,
+    })
 }
 
 // -- The build error placeholder ----------------------------------------------
@@ -719,10 +735,12 @@ impl Provided {
     /// changed. Upstream's `InheritedModel.updateShouldNotifyDependent`.
     fn of_model<T: DependentNotify + 'static>(value: Rc<T>) -> Provided {
         Provided {
-            aspect_stale: Some(|a, b, aspect| match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
-                (Some(old), Some(new)) => T::is_aspect_stale(old, new, aspect),
-                // Not reachable: the type id is checked before this is called.
-                _ => true,
+            aspect_stale: Some(|a, b, aspect| {
+                match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
+                    (Some(old), Some(new)) => T::is_aspect_stale(old, new, aspect),
+                    // Not reachable: the type id is checked before this is called.
+                    _ => true,
+                }
             }),
             ..Provided::of(value)
         }
@@ -736,7 +754,10 @@ impl Provided {
 /// everything that reads it every frame, which is the thing dependency
 /// tracking exists to avoid.
 pub fn provide<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget {
-    let widget = Provider { value: Rc::new(value), child: RefCell::new(Some(child)) };
+    let widget = Provider {
+        value: Rc::new(value),
+        child: RefCell::new(Some(child)),
+    };
     let provided = widget.provided();
     let mut any = render_widget(widget);
     any.provided = Some(provided);
@@ -752,7 +773,10 @@ pub fn provide<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget 
 /// the value whole, is rebuilt for any change exactly as [`provide`] would
 /// have it.
 pub fn provide_model<T: DependentNotify + 'static>(value: T, child: AnyWidget) -> AnyWidget {
-    let widget = Provider { value: Rc::new(value), child: RefCell::new(Some(child)) };
+    let widget = Provider {
+        value: Rc::new(value),
+        child: RefCell::new(Some(child)),
+    };
     let provided = Provided::of_model(Rc::clone(&widget.value));
     let mut any = render_widget(widget);
     any.provided = Some(provided);
@@ -834,7 +858,9 @@ pub fn notification_listener<N: Notification>(
             None => false,
         }
     });
-    let mut any = render_widget(ListenerWidget { child: RefCell::new(Some(child)) });
+    let mut any = render_widget(ListenerWidget {
+        child: RefCell::new(Some(child)),
+    });
     any.listener = Some(ListenerRegistration { call });
     any
 }
@@ -885,7 +911,9 @@ impl NotificationSink {
     /// to the listener at that element (if it is one) and then to each
     /// listener above it, until one returns `true` or the root runs out.
     pub fn dispatch(&self, notification: &dyn Notification) {
-        let Some(shared) = self.shared.upgrade() else { return };
+        let Some(shared) = self.shared.upgrade() else {
+            return;
+        };
         if shared.generation(self.element.id) != self.element.generation {
             return;
         }
@@ -910,7 +938,10 @@ struct Dependent {
 
 impl Clone for Dependent {
     fn clone(&self) -> Dependent {
-        Dependent { reader: self.reader, aspects: self.aspects.clone() }
+        Dependent {
+            reader: self.reader,
+            aspects: self.aspects.clone(),
+        }
     }
 }
 
@@ -1023,12 +1054,18 @@ impl Shared {
     fn depend(&self, provider: ElementId, reader: ElementId) {
         let mut dependents = self.dependents.borrow_mut();
         let readers = dependents.entry(provider).or_default();
-        match readers.iter_mut().find(|dependent| dependent.reader == reader) {
+        match readers
+            .iter_mut()
+            .find(|dependent| dependent.reader == reader)
+        {
             // Whatever aspects this reader asked about before, it reads
             // everything now. Upstream replaces the dependent's aspect set
             // with an empty one here, which means the same thing.
             Some(dependent) => dependent.aspects.clear(),
-            None => readers.push(Dependent { reader, aspects: Vec::new() }),
+            None => readers.push(Dependent {
+                reader,
+                aspects: Vec::new(),
+            }),
         }
         let mut dependencies = self.dependencies.borrow_mut();
         let providers = dependencies.entry(reader).or_default();
@@ -1046,13 +1083,19 @@ impl Shared {
     fn depend_on_aspect(&self, provider: ElementId, reader: ElementId, aspect: &'static str) {
         let mut dependents = self.dependents.borrow_mut();
         let readers = dependents.entry(provider).or_default();
-        match readers.iter_mut().find(|dependent| dependent.reader == reader) {
+        match readers
+            .iter_mut()
+            .find(|dependent| dependent.reader == reader)
+        {
             Some(dependent) => {
                 if !dependent.aspects.is_empty() && !dependent.aspects.contains(&aspect) {
                     dependent.aspects.push(aspect);
                 }
             }
-            None => readers.push(Dependent { reader, aspects: vec![aspect] }),
+            None => readers.push(Dependent {
+                reader,
+                aspects: vec![aspect],
+            }),
         }
         let mut dependencies = self.dependencies.borrow_mut();
         let providers = dependencies.entry(reader).or_default();
@@ -1247,7 +1290,10 @@ impl BuildContext {
     /// handed to the next element that needs one. The generation is what tells
     /// "still mounted" from "somebody else lives here now".
     pub fn element_ref(&self) -> ElementRef {
-        ElementRef { id: self.element, generation: self.shared.generation(self.element) }
+        ElementRef {
+            id: self.element,
+            generation: self.shared.generation(self.element),
+        }
     }
 
     /// How deep in the element tree this build is. Useful for diagnostics.
@@ -1288,7 +1334,8 @@ impl BuildContext {
     /// one. What a theme lookup wants: a page that forgot to install a theme
     /// should look plain, not fail to build.
     pub fn inherited_or_default<T: Default + 'static>(&self) -> Rc<T> {
-        self.inherited::<T>().unwrap_or_else(|| Rc::new(T::default()))
+        self.inherited::<T>()
+            .unwrap_or_else(|| Rc::new(T::default()))
     }
 
     /// [`BuildContext::inherited`], qualified by one aspect of the value.
@@ -1310,7 +1357,8 @@ impl BuildContext {
     /// [`BuildContext::inherited_aspect`], or the type's default if nothing
     /// published one.
     pub fn inherited_aspect_or_default<T: Default + 'static>(&self, aspect: &'static str) -> Rc<T> {
-        self.inherited_aspect::<T>(aspect).unwrap_or_else(|| Rc::new(T::default()))
+        self.inherited_aspect::<T>(aspect)
+            .unwrap_or_else(|| Rc::new(T::default()))
     }
 
     /// Starts `notification` bubbling up from this element.
@@ -1319,7 +1367,8 @@ impl BuildContext {
     /// offered to every [`notification_listener`] above this element, nearest
     /// first, until one returns `true` from its callback.
     pub fn dispatch_notification(&self, notification: &dyn Notification) {
-        self.shared.dispatch_notification(self.element, notification);
+        self.shared
+            .dispatch_notification(self.element, notification);
     }
 
     /// A way to dispatch notifications from this element after the build.
@@ -1434,7 +1483,10 @@ impl ElementTree {
     /// An element parked for a [`GlobalKey`] to claim does not count: it is
     /// not in the tree, it is waiting to be.
     pub fn len(&self) -> usize {
-        self.nodes.iter().filter(|n| n.as_ref().is_some_and(|n| !n.inactive)).count()
+        self.nodes
+            .iter()
+            .filter(|n| n.as_ref().is_some_and(|n| !n.inactive))
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1467,8 +1519,12 @@ impl ElementTree {
 
         let mut wants_frame = false;
         for id in ids {
-            let Some(node) = self.nodes[id.0].as_ref() else { continue };
-            let WidgetKind::Component(_) = &node.widget.inner else { continue };
+            let Some(node) = self.nodes[id.0].as_ref() else {
+                continue;
+            };
+            let WidgetKind::Component(_) = &node.widget.inner else {
+                continue;
+            };
 
             // Check the state out for the duration, exactly as a build does, so
             // a set_state from inside advance queues instead of aliasing.
@@ -1520,7 +1576,10 @@ impl ElementTree {
 
     /// An element's children, in build order.
     pub fn children_of(&self, id: ElementId) -> Vec<ElementId> {
-        self.nodes[id.0].as_ref().map(|node| node.children.clone()).unwrap_or_default()
+        self.nodes[id.0]
+            .as_ref()
+            .map(|node| node.children.clone())
+            .unwrap_or_default()
     }
 
     /// Whether an element is still in the tree.
@@ -1528,7 +1587,9 @@ impl ElementTree {
     /// An element parked for a [`GlobalKey`] to claim is not: it left its
     /// parent and nothing reaches it until a claim puts it back.
     pub fn is_mounted(&self, id: ElementId) -> bool {
-        self.nodes.get(id.0).is_some_and(|slot| slot.as_ref().is_some_and(|n| !n.inactive))
+        self.nodes
+            .get(id.0)
+            .is_some_and(|slot| slot.as_ref().is_some_and(|n| !n.inactive))
     }
 
     /// Whether the element a [`ElementRef`] names is still that element.
@@ -1552,7 +1613,10 @@ impl ElementTree {
     /// parked for a claim is gone only once the frame ends without one.
     pub fn current_element(&self, key: &GlobalKey) -> Option<ElementId> {
         let id = self.global_keys.get(key).copied()?;
-        self.nodes.get(id.0).is_some_and(|slot| slot.is_some()).then_some(id)
+        self.nodes
+            .get(id.0)
+            .is_some_and(|slot| slot.is_some())
+            .then_some(id)
     }
 
     /// Reads the state of the element this [`GlobalKey`] names.
@@ -1638,7 +1702,10 @@ impl ElementTree {
         match self.nodes[id.0].as_ref() {
             Some(node) => {
                 node.widget.global_key.is_some()
-                    || node.children.iter().any(|child| self.has_global_key_in_subtree(*child))
+                    || node
+                        .children
+                        .iter()
+                        .any(|child| self.has_global_key_in_subtree(*child))
             }
             None => false,
         }
@@ -1657,7 +1724,9 @@ impl ElementTree {
     /// release, happens at [`ElementTree::finalize_inactive`] if no claim
     /// comes.
     fn deactivate_subtree(&mut self, id: ElementId) {
-        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        let Some(node) = self.nodes[id.0].as_mut() else {
+            return;
+        };
         if node.inactive {
             // Already parked under an earlier drop this frame; upstream's
             // inactive list holds each element once for the same reason.
@@ -1677,7 +1746,9 @@ impl ElementTree {
     }
 
     fn deactivate_descendant(&mut self, id: ElementId) {
-        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        let Some(node) = self.nodes[id.0].as_mut() else {
+            return;
+        };
         if node.inactive {
             return;
         }
@@ -1790,7 +1861,9 @@ impl ElementTree {
     }
 
     fn attach_at_depth(&mut self, id: ElementId, parent: Option<ElementId>, depth: usize) {
-        let Some(node) = self.nodes[id.0].as_mut() else { return };
+        let Some(node) = self.nodes[id.0].as_mut() else {
+            return;
+        };
         node.inactive = false;
         node.parent = parent;
         node.depth = depth;
@@ -1911,7 +1984,9 @@ impl ElementTree {
         let value = Rc::new(value);
         let (old, new) = {
             let mut provided = self.shared.provided.borrow_mut();
-            let Some(current) = provided.get(&target) else { return false };
+            let Some(current) = provided.get(&target) else {
+                return false;
+            };
             let replacement = Provided {
                 type_id: current.type_id,
                 value: Rc::clone(&value) as Rc<dyn Any>,
@@ -1974,7 +2049,9 @@ impl ElementTree {
         };
 
         let built = self.build_component(id, depth);
-        let old_child = self.nodes[id.0].as_ref().and_then(|n| n.children.first().copied());
+        let old_child = self.nodes[id.0]
+            .as_ref()
+            .and_then(|n| n.children.first().copied());
         let new_child = match old_child {
             Some(child) => self.update(child, built, Some(id), depth + 1),
             None => self.mount(built, Some(id), depth + 1),
@@ -2009,7 +2086,9 @@ impl ElementTree {
         };
 
         let built = {
-            let node = self.nodes[id.0].as_ref().expect("element vanished mid-build");
+            let node = self.nodes[id.0]
+                .as_ref()
+                .expect("element vanished mid-build");
             let WidgetKind::Component(component) = &node.widget.inner else {
                 unreachable!("build_component on a render element");
             };
@@ -2134,7 +2213,10 @@ impl ElementTree {
         // this parent's to update or to drop -- upstream's `forgottenChildren`:
         // the walk acts as if the child had never been in the list, and the
         // new widget mounts without touching the moved element.
-        if !self.nodes[id.0].as_ref().is_some_and(|node| node.parent == parent) {
+        if !self.nodes[id.0]
+            .as_ref()
+            .is_some_and(|node| node.parent == parent)
+        {
             return self.mount(widget, parent, depth);
         }
         let matches = self.nodes[id.0]
@@ -2192,7 +2274,9 @@ impl ElementTree {
             }
             let built = self.build_component(id, depth);
             self.last_rebuilt.push(id);
-            let old_child = self.nodes[id.0].as_ref().and_then(|n| n.children.first().copied());
+            let old_child = self.nodes[id.0]
+                .as_ref()
+                .and_then(|n| n.children.first().copied());
             let child = match old_child {
                 Some(child) => self.update(child, built, Some(id), depth + 1),
                 None => self.mount(built, Some(id), depth + 1),
@@ -2272,7 +2356,9 @@ impl ElementTree {
         // updated in place, up to the first mismatch.
         while old_top as isize <= old_bottom && new_top as isize <= new_bottom {
             let old_child = old[old_top];
-            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            let widget = new_widgets[new_top]
+                .take()
+                .expect("each new child is placed once");
             let matched = self.nodes[old_child.0]
                 .as_ref()
                 .is_some_and(|node| node.widget.can_update(&widget));
@@ -2336,7 +2422,9 @@ impl ElementTree {
         // after the lookup, with the losers left for the cleanup below. An
         // unkeyed child here is new, and mounts.
         while new_top as isize <= new_bottom {
-            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            let widget = new_widgets[new_top]
+                .take()
+                .expect("each new child is placed once");
             let reuse = widget
                 .key
                 .and_then(|key| old_keyed.remove(&(widget.type_id, key)));
@@ -2356,7 +2444,9 @@ impl ElementTree {
         // Update the bottom of the list.
         while old_top as isize <= old_bottom && new_top as isize <= new_bottom {
             let old_child = old[old_top];
-            let widget = new_widgets[new_top].take().expect("each new child is placed once");
+            let widget = new_widgets[new_top]
+                .take()
+                .expect("each new child is placed once");
             new_children[new_top] = Some(self.update(old_child, widget, Some(parent), depth));
             new_top += 1;
             old_top += 1;
@@ -2364,7 +2454,10 @@ impl ElementTree {
 
         // Whatever keyed middle child never came by is gone.
         for (_, id) in old_keyed {
-            if self.nodes[id.0].as_ref().is_some_and(|node| node.parent == Some(parent)) {
+            if self.nodes[id.0]
+                .as_ref()
+                .is_some_and(|node| node.parent == Some(parent))
+            {
                 self.deactivate_child(id);
             }
         }
@@ -2402,7 +2495,9 @@ impl ElementTree {
     /// For tests: persistence is only observable as identity, and identity is
     /// only reachable from here.
     pub fn render_of(&self, id: ElementId) -> Option<BoxedRender> {
-        self.nodes[id.0].as_ref().and_then(|node| node.render.clone())
+        self.nodes[id.0]
+            .as_ref()
+            .and_then(|node| node.render.clone())
     }
 
     /// Builds `id`'s render object, and its subtree's underneath it.
@@ -2429,7 +2524,11 @@ impl ElementTree {
                         .map(|data| data.text_scale_factor)
                 }),
                 entry
-                    .and_then(|entry| entry.value.downcast_ref::<crate::direction::TextDirection>())
+                    .and_then(|entry| {
+                        entry
+                            .value
+                            .downcast_ref::<crate::direction::TextDirection>()
+                    })
                     .copied(),
             )
         };
@@ -2449,7 +2548,9 @@ impl ElementTree {
 
     fn build_render_node(&mut self, id: ElementId) -> (BoxedRender, bool) {
         let (is_component, children, dirty, cached) = {
-            let node = self.nodes[id.0].as_ref().expect("render walk hit a freed element");
+            let node = self.nodes[id.0]
+                .as_ref()
+                .expect("render walk hit a freed element");
             (
                 matches!(node.widget.inner, WidgetKind::Component(_)),
                 node.children.clone(),
@@ -2494,7 +2595,9 @@ impl ElementTree {
         // not remake the spine above it.
         if let Some(cached) = cached {
             let took = {
-                let node = self.nodes[id.0].as_ref().expect("element vanished mid-walk");
+                let node = self.nodes[id.0]
+                    .as_ref()
+                    .expect("element vanished mid-walk");
                 let WidgetKind::Render(render) = &node.widget.inner else {
                     unreachable!("checked above");
                 };
@@ -2509,7 +2612,9 @@ impl ElementTree {
         }
 
         let built = {
-            let node = self.nodes[id.0].as_ref().expect("element vanished mid-walk");
+            let node = self.nodes[id.0]
+                .as_ref()
+                .expect("element vanished mid-walk");
             let WidgetKind::Render(render) = &node.widget.inner else {
                 unreachable!("checked above");
             };
@@ -2627,7 +2732,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("a")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         assert_eq!(builds_of("a"), 1);
         assert_eq!(builds_of("counter"), 1);
@@ -2663,7 +2772,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("sibling")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         assert_eq!(builds_of("sibling"), 1);
         assert_eq!(builds_of("counter"), 1);
@@ -2693,7 +2806,12 @@ mod tests {
 
         // A different widget type in the same slot cannot be updated in place.
         tree.rebuild(column(vec![component(Static("replacement"))]));
-        assert!(!handle.is_valid() || tree.state::<Counter, _>(handle.element(), |s| s.count).is_none());
+        assert!(
+            !handle.is_valid()
+                || tree
+                    .state::<Counter, _>(handle.element(), |s| s.count)
+                    .is_none()
+        );
         assert_eq!(builds_of("replacement"), 1);
     }
 
@@ -2707,9 +2825,21 @@ mod tests {
         let widgets = |a: &Rc<RefCell<Option<StateHandle<Counter>>>>,
                        b: &Rc<RefCell<Option<StateHandle<Counter>>>>,
                        swap: bool| {
-            let one = stateful(CounterWidget { label: "one", key: Some(1), sink: a.clone() });
-            let two = stateful(CounterWidget { label: "two", key: Some(2), sink: b.clone() });
-            if swap { column(vec![two, one]) } else { column(vec![one, two]) }
+            let one = stateful(CounterWidget {
+                label: "one",
+                key: Some(1),
+                sink: a.clone(),
+            });
+            let two = stateful(CounterWidget {
+                label: "two",
+                key: Some(2),
+                sink: b.clone(),
+            });
+            if swap {
+                column(vec![two, one])
+            } else {
+                column(vec![one, two])
+            }
         };
 
         tree.rebuild(widgets(&first, &second, false));
@@ -2721,8 +2851,14 @@ mod tests {
         tree.rebuild(widgets(&first, &second, true));
 
         // Both kept their own counts even though their positions swapped.
-        assert_eq!(tree.state::<Counter, _>(handle_one.element(), |s| s.count), Some(11));
-        assert_eq!(tree.state::<Counter, _>(handle_two.element(), |s| s.count), Some(22));
+        assert_eq!(
+            tree.state::<Counter, _>(handle_one.element(), |s| s.count),
+            Some(11)
+        );
+        assert_eq!(
+            tree.state::<Counter, _>(handle_two.element(), |s| s.count),
+            Some(22)
+        );
     }
 
     #[test]
@@ -2735,8 +2871,16 @@ mod tests {
         let widgets = |a: &Rc<RefCell<Option<StateHandle<Counter>>>>,
                        b: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
             column(vec![
-                stateful(CounterWidget { label: "one", key: None, sink: a.clone() }),
-                stateful(CounterWidget { label: "two", key: None, sink: b.clone() }),
+                stateful(CounterWidget {
+                    label: "one",
+                    key: None,
+                    sink: a.clone(),
+                }),
+                stateful(CounterWidget {
+                    label: "two",
+                    key: None,
+                    sink: b.clone(),
+                }),
             ])
         };
 
@@ -2747,7 +2891,10 @@ mod tests {
         // Rebuild with the sinks swapped: the widgets are the same type with no
         // key, so position wins and the first slot keeps its state.
         tree.rebuild(widgets(&second, &first));
-        assert_eq!(tree.state::<Counter, _>(handle_one.element(), |s| s.count), Some(11));
+        assert_eq!(
+            tree.state::<Counter, _>(handle_one.element(), |s| s.count),
+            Some(11)
+        );
     }
 
     #[test]
@@ -2763,7 +2910,11 @@ mod tests {
         let sinks: Vec<Rc<RefCell<Option<StateHandle<Counter>>>>> =
             (0..3).map(|_| Rc::new(RefCell::new(None))).collect();
         let counter = |label: &'static str, sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
-            stateful(CounterWidget { label, key: None, sink: sink.clone() })
+            stateful(CounterWidget {
+                label,
+                key: None,
+                sink: sink.clone(),
+            })
         };
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
@@ -2784,13 +2935,19 @@ mod tests {
             counter("third", &sinks[2]),
         ]));
 
-        assert_eq!(tree.state::<Counter, _>(handles[0].element(), |s| s.count), Some(11));
+        assert_eq!(
+            tree.state::<Counter, _>(handles[0].element(), |s| s.count),
+            Some(11)
+        );
         assert_eq!(
             tree.state::<Counter, _>(handles[1].element(), |s| s.count),
             Some(22),
             "the child after the insertion kept neither its element nor its state"
         );
-        assert_eq!(tree.state::<Counter, _>(handles[2].element(), |s| s.count), Some(33));
+        assert_eq!(
+            tree.state::<Counter, _>(handles[2].element(), |s| s.count),
+            Some(33)
+        );
     }
 
     #[test]
@@ -2802,10 +2959,18 @@ mod tests {
         let second = Rc::new(RefCell::new(None));
         let mut tree = ElementTree::new();
         let one = |sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
-            stateful(CounterWidget { label: "one", key: Some(1), sink: sink.clone() })
+            stateful(CounterWidget {
+                label: "one",
+                key: Some(1),
+                sink: sink.clone(),
+            })
         };
         let two = |sink: &Rc<RefCell<Option<StateHandle<Counter>>>>| {
-            stateful(CounterWidget { label: "two", key: Some(2), sink: sink.clone() })
+            stateful(CounterWidget {
+                label: "two",
+                key: Some(2),
+                sink: sink.clone(),
+            })
         };
         tree.rebuild(column(vec![one(&first), two(&second)]));
         let handle_one = first.borrow().clone().unwrap();
@@ -2813,11 +2978,21 @@ mod tests {
         handle_one.set_state(|s| s.count = 11);
         handle_two.set_state(|s| s.count = 22);
 
-        tree.rebuild(column(vec![two(&second), component(Static("inserted")), one(&first)]));
+        tree.rebuild(column(vec![
+            two(&second),
+            component(Static("inserted")),
+            one(&first),
+        ]));
 
         // Both kept their own counts through the reorder and the insertion.
-        assert_eq!(tree.state::<Counter, _>(handle_one.element(), |s| s.count), Some(11));
-        assert_eq!(tree.state::<Counter, _>(handle_two.element(), |s| s.count), Some(22));
+        assert_eq!(
+            tree.state::<Counter, _>(handle_one.element(), |s| s.count),
+            Some(11)
+        );
+        assert_eq!(
+            tree.state::<Counter, _>(handle_two.element(), |s| s.count),
+            Some(22)
+        );
     }
 
     #[test]
@@ -2886,7 +3061,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("keep")),
-            stateful(CounterWidget { label: "drop", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "drop",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         let mounted = tree.len();
         let handle = sink.borrow().clone().unwrap();
@@ -2894,7 +3073,10 @@ mod tests {
 
         tree.rebuild(column(vec![component(Static("keep"))]));
         assert!(tree.len() < mounted);
-        assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), None);
+        assert_eq!(
+            tree.state::<Counter, _>(handle.element(), |s| s.count),
+            None
+        );
     }
 
     #[test]
@@ -2913,7 +3095,10 @@ mod tests {
         // It may still report success if the slot has not been recycled, but
         // it must never write into another element's state.
         handle.set_state(|s| s.count = 99);
-        assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), None);
+        assert_eq!(
+            tree.state::<Counter, _>(handle.element(), |s| s.count),
+            None
+        );
     }
 
     #[test]
@@ -2946,13 +3131,22 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(stateful(SelfDirtying(sink.clone())));
         let handle = sink.borrow().clone().unwrap();
-        assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), Some(0));
+        assert_eq!(
+            tree.state::<Counter, _>(handle.element(), |s| s.count),
+            Some(0)
+        );
 
         // The queued mutation lands at the start of the next pass.
         tree.rebuild_dirty();
-        assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), Some(1));
+        assert_eq!(
+            tree.state::<Counter, _>(handle.element(), |s| s.count),
+            Some(1)
+        );
         tree.rebuild_dirty();
-        assert_eq!(tree.state::<Counter, _>(handle.element(), |s| s.count), Some(2));
+        assert_eq!(
+            tree.state::<Counter, _>(handle.element(), |s| s.count),
+            Some(2)
+        );
     }
 
     #[test]
@@ -3011,7 +3205,10 @@ mod tests {
     fn rebuilding_an_ancestor_subsumes_its_dirty_descendants() {
         reset_builds();
 
-        struct Outer(Rc<RefCell<Option<StateHandle<Counter>>>>, Rc<RefCell<Option<StateHandle<Counter>>>>);
+        struct Outer(
+            Rc<RefCell<Option<StateHandle<Counter>>>>,
+            Rc<RefCell<Option<StateHandle<Counter>>>>,
+        );
 
         impl StatefulComponent for Outer {
             type State = Counter;
@@ -3024,7 +3221,11 @@ mod tests {
             ) -> AnyWidget {
                 record("outer");
                 *self.0.borrow_mut() = Some(handle);
-                stateful(CounterWidget { label: "inner", key: None, sink: self.1.clone() })
+                stateful(CounterWidget {
+                    label: "inner",
+                    key: None,
+                    sink: self.1.clone(),
+                })
             }
         }
 
@@ -3035,8 +3236,16 @@ mod tests {
         assert_eq!(builds_of("outer"), 1);
         assert_eq!(builds_of("inner"), 1);
 
-        outer_sink.borrow().clone().unwrap().set_state(|s| s.count += 1);
-        inner_sink.borrow().clone().unwrap().set_state(|s| s.count += 1);
+        outer_sink
+            .borrow()
+            .clone()
+            .unwrap()
+            .set_state(|s| s.count += 1);
+        inner_sink
+            .borrow()
+            .clone()
+            .unwrap()
+            .set_state(|s| s.count += 1);
 
         // Two dirty elements, one of which contains the other: one rebuild.
         assert_eq!(tree.rebuild_dirty(), 1);
@@ -3096,8 +3305,16 @@ mod tests {
 
         assert!(tree.publish(Published(2)));
         assert_eq!(tree.rebuild_dirty(), 1);
-        assert_eq!(builds_of("reader"), 2, "the reader should have been rebuilt");
-        assert_eq!(builds_of("bystander"), 1, "and nothing else should have been");
+        assert_eq!(
+            builds_of("reader"),
+            2,
+            "the reader should have been rebuilt"
+        );
+        assert_eq!(
+            builds_of("bystander"),
+            1,
+            "and nothing else should have been"
+        );
     }
 
     #[test]
@@ -3159,7 +3376,11 @@ mod tests {
         tree.publish(Published(2));
         tree.rebuild_dirty();
         assert_eq!(builds_of("fickle"), 2);
-        assert_eq!(tree.dependent_count(provider), 0, "it no longer reads the value");
+        assert_eq!(
+            tree.dependent_count(provider),
+            0,
+            "it no longer reads the value"
+        );
 
         tree.publish(Published(3));
         assert_eq!(tree.rebuild_dirty(), 0, "and should not be rebuilt for it");
@@ -3196,7 +3417,9 @@ mod tests {
 
     impl Component for AspectReader {
         fn build(&self, context: &mut BuildContext) -> AnyWidget {
-            let value = context.inherited_aspect::<AB>(self.aspect).map_or(0, |v| v.a);
+            let value = context
+                .inherited_aspect::<AB>(self.aspect)
+                .map_or(0, |v| v.a);
             record(self.label);
             leaf(move || Sized(value as f32))
         }
@@ -3212,8 +3435,14 @@ mod tests {
     fn an_aspect_reader_is_rebuilt_only_when_its_aspect_changed() {
         reset_builds();
         let mut tree = model_tree(vec![
-            component(AspectReader { label: "reads-a", aspect: "a" }),
-            component(AspectReader { label: "reads-b", aspect: "b" }),
+            component(AspectReader {
+                label: "reads-a",
+                aspect: "a",
+            }),
+            component(AspectReader {
+                label: "reads-b",
+                aspect: "b",
+            }),
         ]);
         assert_eq!(builds_of("reads-a"), 1);
         assert_eq!(builds_of("reads-b"), 1);
@@ -3275,7 +3504,10 @@ mod tests {
         reset_builds();
         let mut tree = model_tree(vec![
             component(ReadsWhole),
-            component(AspectReader { label: "reads-a", aspect: "a" }),
+            component(AspectReader {
+                label: "reads-a",
+                aspect: "a",
+            }),
         ]);
 
         // `b` moved: the aspect reader of `a` is spared, the whole reader is
@@ -3313,8 +3545,10 @@ mod tests {
         // Same shape as the readers above, but the aspect names no part of the
         // value: every change is its news, never none.
         reset_builds();
-        let mut tree =
-            model_tree(vec![component(AspectReader { label: "reads-c", aspect: "c" })]);
+        let mut tree = model_tree(vec![component(AspectReader {
+            label: "reads-c",
+            aspect: "c",
+        })]);
         tree.publish(AB { a: 1, b: 9 });
         tree.rebuild_dirty();
         assert_eq!(builds_of("reads-c"), 2);
@@ -3329,7 +3563,9 @@ mod tests {
 
         impl Component for Qualified {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
-                let value = context.inherited_aspect::<Published>("anything").map_or(0, |v| v.0);
+                let value = context
+                    .inherited_aspect::<Published>("anything")
+                    .map_or(0, |v| v.0);
                 record("qualified");
                 leaf(move || Sized(value as f32))
             }
@@ -3348,8 +3584,14 @@ mod tests {
         // The whole-value comparison still gates everything, aspect or no:
         // republishing what is already published rebuilds nobody.
         reset_builds();
-        let mut tree = model_tree(vec![component(AspectReader { label: "reads-a", aspect: "a" })]);
-        assert!(!tree.publish(AB { a: 1, b: 1 }), "the same value is not news");
+        let mut tree = model_tree(vec![component(AspectReader {
+            label: "reads-a",
+            aspect: "a",
+        })]);
+        assert!(
+            !tree.publish(AB { a: 1, b: 1 }),
+            "the same value is not news"
+        );
         assert_eq!(tree.rebuild_dirty(), 0);
         assert_eq!(builds_of("reads-a"), 1);
     }
@@ -3421,7 +3663,10 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(notification_listener(
             recorder(&log, "outer", false),
-            notification_listener(recorder(&log, "inner", false), component(Dispatcher("ping"))),
+            notification_listener(
+                recorder(&log, "inner", false),
+                component(Dispatcher("ping")),
+            ),
         ));
         assert_eq!(*log.borrow(), vec!["inner", "outer"], "nearest first");
     }
@@ -3434,7 +3679,11 @@ mod tests {
             recorder(&log, "outer", false),
             notification_listener(recorder(&log, "inner", true), component(Dispatcher("ping"))),
         ));
-        assert_eq!(*log.borrow(), vec!["inner"], "the outer listener never heard it");
+        assert_eq!(
+            *log.borrow(),
+            vec!["inner"],
+            "the outer listener never heard it"
+        );
     }
 
     #[test]
@@ -3470,7 +3719,10 @@ mod tests {
             ),
         ));
         assert_eq!(*others.borrow(), vec!["other"]);
-        assert!(pings.borrow().is_empty(), "the Ping listener was offered an Other");
+        assert!(
+            pings.borrow().is_empty(),
+            "the Ping listener was offered an Other"
+        );
     }
 
     #[test]
@@ -3481,7 +3733,10 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(notification_listener(
             recorder(&log, "outer", false),
-            notification_listener(recorder(&log, "inner", false), component(Dispatcher("first"))),
+            notification_listener(
+                recorder(&log, "inner", false),
+                component(Dispatcher("first")),
+            ),
         ));
         assert_eq!(*log.borrow(), vec!["inner", "outer"]);
 
@@ -3491,7 +3746,11 @@ mod tests {
             recorder(&log, "outer", false),
             component(Dispatcher("second")),
         ));
-        assert_eq!(*log.borrow(), vec!["outer"], "the released listener heard a dispatch");
+        assert_eq!(
+            *log.borrow(),
+            vec!["outer"],
+            "the released listener heard a dispatch"
+        );
     }
 
     #[test]
@@ -3528,12 +3787,19 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(notification_listener(
             recorder(&log, "heard", false),
-            stateful(Holder { handles: handles.clone(), sinks: sinks.clone() }),
+            stateful(Holder {
+                handles: handles.clone(),
+                sinks: sinks.clone(),
+            }),
         ));
 
         // Not from a build -- from nowhere in particular, as a pointer event
         // arrives between frames.
-        sinks.borrow().as_ref().expect("built").dispatch(&Ping("late"));
+        sinks
+            .borrow()
+            .as_ref()
+            .expect("built")
+            .dispatch(&Ping("late"));
         assert_eq!(*log.borrow(), vec!["heard"]);
 
         // And once the tree is gone the sink is quietly inert, the way a
@@ -3571,7 +3837,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("static")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         let _ = tree.build_render_tree();
 
@@ -3583,14 +3853,23 @@ mod tests {
         let counter_before = tree.render_of(counter_side).expect("built");
 
         // One counter ticks. Nothing else has anything new to say.
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         assert_eq!(tree.rebuild_dirty(), 1);
         let _ = tree.build_render_tree();
 
         let static_after = tree.render_of(static_side).expect("still there");
         let counter_after = tree.render_of(counter_side).expect("still there");
-        assert!(static_before.is(&static_after), "an untouched element was rebuilt anyway");
-        assert!(!counter_before.is(&counter_after), "the one that changed should be new");
+        assert!(
+            static_before.is(&static_after),
+            "an untouched element was rebuilt anyway"
+        );
+        assert!(
+            !counter_before.is(&counter_after),
+            "the one that changed should be new"
+        );
     }
 
     #[test]
@@ -3604,19 +3883,29 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("static")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         let _ = tree.build_render_tree();
 
         let root = tree.root().expect("mounted");
         let root_before = tree.render_of(root).expect("built");
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
         let _ = tree.build_render_tree();
 
         let root_after = tree.render_of(root).expect("still there");
-        assert!(!root_before.is(&root_after), "the column still holds the old child");
+        assert!(
+            !root_before.is(&root_after),
+            "the column still holds the old child"
+        );
     }
 
     #[test]
@@ -3626,13 +3915,20 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("static")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         let first = tree.build_render_tree().expect("mounted");
 
         assert_eq!(tree.rebuild_dirty(), 0, "nothing is dirty");
         let second = tree.build_render_tree().expect("still mounted");
-        assert!(first.is(&second), "a frame with no changes rebuilt the render tree");
+        assert!(
+            first.is(&second),
+            "a frame with no changes rebuilt the render tree"
+        );
     }
 
     #[test]
@@ -3644,7 +3940,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Static("static")),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         let mut root = tree.build_render_tree().expect("mounted");
         root.layout(BoxConstraints::loose(200.0, 200.0));
@@ -3653,7 +3953,10 @@ mod tests {
         let kept = tree.render_of(static_side).expect("built");
         let measured = kept.size();
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
         let _ = tree.build_render_tree();
 
@@ -3690,7 +3993,11 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Kept),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
 
         let mut frame = |tree: &mut ElementTree| {
@@ -3711,11 +4018,17 @@ mod tests {
         assert_eq!(first.retained, 0);
 
         // The counter beside it ticks. Nothing under the boundary changed.
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         assert_eq!(tree.rebuild_dirty(), 1, "only the counter was rebuilt");
 
         let second = frame(&mut tree);
-        assert_eq!(second.retained, 1, "the layer it already had was thrown away");
+        assert_eq!(
+            second.retained, 1,
+            "the layer it already had was thrown away"
+        );
         assert_eq!(second.retainable, 0, "and the same drawing recorded again");
     }
 
@@ -3761,14 +4074,18 @@ mod tests {
     }
 
     /// A tree with one watched leaf beside one that a counter can dirty.
-    fn watched_tree(sink: &Rc<RefCell<Option<crate::framework::StateHandle<Counter>>>>)
-        -> ElementTree
-    {
+    fn watched_tree(
+        sink: &Rc<RefCell<Option<crate::framework::StateHandle<Counter>>>>,
+    ) -> ElementTree {
         LAYOUTS.with(|n| n.set(0));
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![
             component(Watched),
-            stateful(CounterWidget { label: "counter", key: None, sink: sink.clone() }),
+            stateful(CounterWidget {
+                label: "counter",
+                key: None,
+                sink: sink.clone(),
+            }),
         ]));
         tree
     }
@@ -3786,11 +4103,18 @@ mod tests {
         assert_eq!(layouts(), 1, "the first frame has to measure it");
 
         // Something else entirely changes.
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("still mounted");
         root.layout(BoxConstraints::loose(200.0, 200.0));
-        assert_eq!(layouts(), 1, "the untouched leaf was measured a second time");
+        assert_eq!(
+            layouts(),
+            1,
+            "the untouched leaf was measured a second time"
+        );
     }
 
     #[test]
@@ -3806,11 +4130,13 @@ mod tests {
 
         // The counter's own leaf is remade, so it is a new render object with
         // nothing measured yet.
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("still mounted");
-        let counter_side =
-            only_leaf_under(&tree, tree.children_of(tree.root().unwrap())[1]);
+        let counter_side = only_leaf_under(&tree, tree.children_of(tree.root().unwrap())[1]);
         let counter = tree.render_of(counter_side).expect("built");
         assert!(
             counter.needs_layout(BoxConstraints::loose(200.0, 200.0)),
@@ -3885,8 +4211,11 @@ mod tests {
             *self.sink.borrow_mut() = Some(handle);
             let ticking = 10.0 + state.count as f32;
             let steady = leaf(|| Counted(10.0));
-            let steady =
-                if self.boundary { crate::widgets::repaint_boundary(steady) } else { steady };
+            let steady = if self.boundary {
+                crate::widgets::repaint_boundary(steady)
+            } else {
+                steady
+            };
             column(vec![steady, leaf(move || Counted(ticking))])
         }
     }
@@ -3895,7 +4224,10 @@ mod tests {
         LAYOUTS.with(|n| n.set(0));
         let sink = Rc::new(RefCell::new(None));
         let mut tree = ElementTree::new();
-        tree.rebuild(stateful(Screen { sink: sink.clone(), boundary }));
+        tree.rebuild(stateful(Screen {
+            sink: sink.clone(),
+            boundary,
+        }));
         (tree, sink)
     }
 
@@ -3919,7 +4251,10 @@ mod tests {
         let was_steady = tree.render_of(steady).expect("built");
         let was_ticking = tree.render_of(ticking).expect("built");
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("still mounted");
 
@@ -3928,12 +4263,18 @@ mod tests {
             "a row that was rebuilt and did not change was replaced"
         );
         assert!(
-            tree.render_of(ticking).expect("still there").is(&was_ticking),
+            tree.render_of(ticking)
+                .expect("still there")
+                .is(&was_ticking),
             "a row that changed was replaced instead of being told"
         );
 
         root.layout(BoxConstraints::loose(200.0, 200.0));
-        assert_eq!(layouts(), 3, "the half that did not change was measured again");
+        assert_eq!(
+            layouts(),
+            3,
+            "the half that did not change was measured again"
+        );
     }
 
     #[test]
@@ -3946,9 +4287,15 @@ mod tests {
         root.layout(BoxConstraints::loose(200.0, 200.0));
 
         let (_, ticking) = halves(&tree);
-        assert_eq!(tree.render_of(ticking).expect("built").size(), Size::square(10.0));
+        assert_eq!(
+            tree.render_of(ticking).expect("built").size(),
+            Size::square(10.0)
+        );
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 3);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 3);
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("still mounted");
         root.layout(BoxConstraints::loose(200.0, 200.0));
@@ -3990,11 +4337,17 @@ mod tests {
 
         // The other half ticks. The boundary is rebuilt along with it, and has
         // nothing new to say.
-        sink.borrow().as_ref().expect("built").set_state(|state| state.count += 1);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.count += 1);
         tree.rebuild_dirty();
 
         let second = frame(&mut tree);
-        assert_eq!(second.retained, 1, "the drawing it already had was thrown away");
+        assert_eq!(
+            second.retained, 1,
+            "the drawing it already had was thrown away"
+        );
         assert_eq!(second.retainable, 0, "and recorded a second time");
     }
 
@@ -4040,9 +4393,9 @@ mod tests {
 
     /// Whether the element is the gray box a panicked build leaves behind.
     fn is_error_placeholder(tree: &ElementTree, id: ElementId) -> bool {
-        tree.nodes[id.0].as_ref().is_some_and(|node| {
-            node.widget.type_id == TypeId::of::<ErrorPlaceholder>()
-        })
+        tree.nodes[id.0]
+            .as_ref()
+            .is_some_and(|node| node.widget.type_id == TypeId::of::<ErrorPlaceholder>())
     }
 
     /// The one child of a component element, which is where the placeholder
@@ -4072,13 +4425,19 @@ mod tests {
         let root = tree.root().expect("mounted");
         let [sibling, flaky_element] = [tree.children_of(root)[0], tree.children_of(root)[1]];
         // The subtree that threw is the placeholder; the sibling is not.
-        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert!(is_error_placeholder(
+            &tree,
+            only_child(&tree, flaky_element)
+        ));
         assert!(!is_error_placeholder(&tree, only_child(&tree, sibling)));
 
         // The frame completes: a render tree still comes out, and the
         // element's state survived the panic.
         assert!(tree.build_render_tree().is_some());
-        assert_eq!(tree.state::<Counter, _>(flaky_element, |s| s.count), Some(0));
+        assert_eq!(
+            tree.state::<Counter, _>(flaky_element, |s| s.count),
+            Some(0)
+        );
     }
 
     #[test]
@@ -4090,7 +4449,10 @@ mod tests {
         tree.rebuild(column(vec![flaky(&fail, &sink)]));
         let handle = sink.borrow().clone().expect("built");
         let flaky_element = handle.element();
-        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert!(is_error_placeholder(
+            &tree,
+            only_child(&tree, flaky_element)
+        ));
 
         // The next rebuild of the same element runs build again; this time it
         // returns, and the real subtree takes the placeholder's place.
@@ -4098,9 +4460,15 @@ mod tests {
         handle.set_state(|s| s.count += 1);
         assert_eq!(tree.rebuild_dirty(), 1);
         assert_eq!(builds_of("flaky"), 2);
-        assert!(!is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert!(!is_error_placeholder(
+            &tree,
+            only_child(&tree, flaky_element)
+        ));
         // The state carried over: the build drew the count the set_state wrote.
-        assert_eq!(tree.state::<Counter, _>(flaky_element, |s| s.count), Some(1));
+        assert_eq!(
+            tree.state::<Counter, _>(flaky_element, |s| s.count),
+            Some(1)
+        );
         assert!(tree.build_render_tree().is_some());
     }
 
@@ -4126,7 +4494,10 @@ mod tests {
             assert_eq!(tree.rebuild_dirty(), 1, "frame {frame}");
             assert_eq!(builds_of("flaky"), 2 + frame, "frame {frame}");
         }
-        assert!(is_error_placeholder(&tree, only_child(&tree, flaky_element)));
+        assert!(is_error_placeholder(
+            &tree,
+            only_child(&tree, flaky_element)
+        ));
         assert_eq!(
             tree.state::<Counter, _>(flaky_element, |s| s.count),
             Some(100),
@@ -4229,14 +4600,24 @@ mod tests {
         reset_builds();
         let key = GlobalKey::new();
         let sink = Rc::new(RefCell::new(None));
-        let mover =
-            || with_global_key(key, stateful(Mover { label: "mover", sink: sink.clone() }));
+        let mover = || {
+            with_global_key(
+                key,
+                stateful(Mover {
+                    label: "mover",
+                    sink: sink.clone(),
+                }),
+            )
+        };
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
         let handle = sink.borrow().clone().unwrap();
         handle.set_state(|state| state.count = 41);
         let element = tree.current_element(&key).expect("mounted under the key");
-        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(41));
+        assert_eq!(
+            tree.current_state::<MoverState, _>(&key, |s| s.count),
+            Some(41)
+        );
 
         // Same rebuild: the first holder loses it, the second gains it.
         tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
@@ -4258,7 +4639,10 @@ mod tests {
         );
         // The handle the first build was given still writes.
         assert!(handle.set_state(|state| state.count += 1));
-        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(42));
+        assert_eq!(
+            tree.current_state::<MoverState, _>(&key, |s| s.count),
+            Some(42)
+        );
         assert!(tree.build_render_tree().is_some());
     }
 
@@ -4271,8 +4655,15 @@ mod tests {
         reset_builds();
         let key = GlobalKey::new();
         let sink = Rc::new(RefCell::new(None));
-        let mover =
-            || with_global_key(key, stateful(Mover { label: "mover", sink: sink.clone() }));
+        let mover = || {
+            with_global_key(
+                key,
+                stateful(Mover {
+                    label: "mover",
+                    sink: sink.clone(),
+                }),
+            )
+        };
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
         let handle = sink.borrow().clone().unwrap();
@@ -4281,7 +4672,10 @@ mod tests {
         tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
 
         assert_eq!(tree.current_element(&key), Some(handle.element()));
-        assert_eq!(tree.current_state::<MoverState, _>(&key, |s| s.count), Some(41));
+        assert_eq!(
+            tree.current_state::<MoverState, _>(&key, |s| s.count),
+            Some(41)
+        );
         assert_eq!(initial_states_of("mover"), 1);
     }
 
@@ -4295,7 +4689,11 @@ mod tests {
         let key = GlobalKey::new();
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![with_global_key(key, stateful(DropCounted))]));
-        assert_eq!(STATE_DROPS.with(|drops| drops.get()), 0, "mounted, not dropped");
+        assert_eq!(
+            STATE_DROPS.with(|drops| drops.get()),
+            0,
+            "mounted, not dropped"
+        );
         let element = tree.current_element(&key).expect("mounted under the key");
 
         tree.rebuild(column(vec![component(Static("after"))]));
@@ -4305,8 +4703,15 @@ mod tests {
             1,
             "released exactly once, at frame end"
         );
-        assert_eq!(tree.current_element(&key), None, "the key names nothing now");
-        assert!(!tree.is_mounted(element), "the parked element was released, not left parked");
+        assert_eq!(
+            tree.current_element(&key),
+            None,
+            "the key names nothing now"
+        );
+        assert!(
+            !tree.is_mounted(element),
+            "the parked element was released, not left parked"
+        );
     }
 
     #[test]
@@ -4327,10 +4732,18 @@ mod tests {
         // starts over.
         reset_builds();
         let sink = Rc::new(RefCell::new(None));
-        let mover = || stateful(Mover { label: "plain", sink: sink.clone() });
+        let mover = || {
+            stateful(Mover {
+                label: "plain",
+                sink: sink.clone(),
+            })
+        };
         let mut tree = ElementTree::new();
         tree.rebuild(column(vec![holder(mover()), holder(leaf(|| Empty))]));
-        sink.borrow().clone().unwrap().set_state(|state| state.count = 41);
+        sink.borrow()
+            .clone()
+            .unwrap()
+            .set_state(|state| state.count = 41);
 
         tree.rebuild(column(vec![holder(leaf(|| Empty)), holder(mover())]));
 
@@ -4340,6 +4753,9 @@ mod tests {
             "the move remounted, as it does without a key"
         );
         let handle = sink.borrow().clone().unwrap();
-        assert_eq!(tree.state::<MoverState, _>(handle.element(), |s| s.count), Some(0));
+        assert_eq!(
+            tree.state::<MoverState, _>(handle.element(), |s| s.count),
+            Some(0)
+        );
     }
 }

@@ -199,7 +199,11 @@ impl StatefulComponent for Scrollbar {
         }
         // The delay is up: the fade turns around, from full shown, on the
         // frame that passes the deadline.
-        if !state.fading_out && state.fadeout_at_micros.is_some_and(|at| frame_time_micros >= at) {
+        if !state.fading_out
+            && state
+                .fadeout_at_micros
+                .is_some_and(|at| frame_time_micros >= at)
+        {
             state.fading_out = true;
         }
         let now = state.opacity();
@@ -254,8 +258,7 @@ impl StatefulComponent for Scrollbar {
                             // content can *scroll*; the whole of it is that
                             // plus a viewport's worth, which is upstream's
                             // `maxScrollExtent + viewportDimension` too.
-                            state.content = metrics.max_scroll_extent
-                                + metrics.viewport_dimension;
+                            state.content = metrics.max_scroll_extent + metrics.viewport_dimension;
                             if moved {
                                 state.moved = state.moved.wrapping_add(1);
                             }
@@ -273,7 +276,11 @@ impl StatefulComponent for Scrollbar {
                     let (bar, position) = match axis {
                         Axis::Vertical => (
                             bar.with_size(THICKNESS, length),
-                            StackPosition { top: Some(start), right: Some(2.0), ..Default::default() },
+                            StackPosition {
+                                top: Some(start),
+                                right: Some(2.0),
+                                ..Default::default()
+                            },
                         ),
                         Axis::Horizontal => (
                             bar.with_size(length, THICKNESS),
@@ -372,7 +379,10 @@ mod tests {
             (half_out - Curve::FAST_OUT_SLOW_IN.transform(0.5)).abs() < 1e-4,
             "the way out is the same curve: {half_out}"
         );
-        assert!(bar.advance(&mut state, 1_900_000), "the frame that reaches zero still draws");
+        assert!(
+            bar.advance(&mut state, 1_900_000),
+            "the frame that reaches zero still draws"
+        );
         assert_eq!(state.opacity(), 0.0);
         assert!(!bar.advance(&mut state, 1_916_667), "and then it is idle");
     }
@@ -445,7 +455,9 @@ mod tests {
             handle: StateHandle<ScrollerState>,
             context: &mut BuildContext,
         ) -> AnyWidget {
-            state.scroll.set_notification_sink(context.notification_sink());
+            state
+                .scroll
+                .set_notification_sink(context.notification_sink());
             *self.handles.borrow_mut() = Some(handle);
             leaf(|| crate::widgets::Empty)
         }
@@ -456,27 +468,42 @@ mod tests {
         let handles = Rc::new(RefCell::new(None));
         let builder_handles = handles.clone();
         let mut tree = ElementTree::new();
-        tree.rebuild(stateful(Scrollbar::new(
-            move || stateful(Scroller { handles: builder_handles.clone(), extent: 2000.0 }),
-        )));
+        tree.rebuild(stateful(Scrollbar::new(move || {
+            stateful(Scroller {
+                handles: builder_handles.clone(),
+                extent: 2000.0,
+            })
+        })));
         let bar = tree.root().expect("mounted");
         let handle = handles.borrow().clone().expect("built");
 
         // Nothing has happened; no thumb anywhere.
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.offset), Some(0.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.offset),
+            Some(0.0)
+        );
 
         // A wheel notch of 80px: the scrollbar hears the update through the
         // tree, without the caller telling it anything -- and the notch ends
         // its own scroll, so there is nothing to release.
         handle.set_state(|state| state.scroll.scroll_by(80.0));
         tree.rebuild_dirty();
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.offset), Some(80.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.offset),
+            Some(80.0)
+        );
 
         // The geometry came the same way: the metrics carried a 500-viewport
         // and 2000 of scroll, so the content the bar sizes its thumb against
         // is a viewport's worth more than the scroll.
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.viewport), Some(500.0));
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.content), Some(2500.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.viewport),
+            Some(500.0)
+        );
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.content),
+            Some(2500.0)
+        );
 
         // And the movement brought the thumb up -- fading in, so the frame
         // that notices the movement is nothing yet and 300ms later it is all
@@ -484,10 +511,16 @@ mod tests {
         let wants_more = tree.advance_frame(1_000_000);
         tree.rebuild_dirty();
         assert!(wants_more, "the fade wants frames");
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.opacity()), Some(0.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.opacity()),
+            Some(0.0)
+        );
         tree.advance_frame(1_300_000);
         tree.rebuild_dirty();
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.opacity()), Some(1.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.opacity()),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -499,9 +532,12 @@ mod tests {
         let handles = Rc::new(RefCell::new(None));
         let builder_handles = handles.clone();
         let mut tree = ElementTree::new();
-        tree.rebuild(stateful(Scrollbar::new(
-            move || stateful(Scroller { handles: builder_handles.clone(), extent: 500.0 }),
-        )));
+        tree.rebuild(stateful(Scrollbar::new(move || {
+            stateful(Scroller {
+                handles: builder_handles.clone(),
+                extent: 500.0,
+            })
+        })));
         let bar = tree.root().expect("mounted");
         let handle = handles.borrow().clone().expect("built");
 
@@ -514,7 +550,10 @@ mod tests {
             tree.rebuild_dirty();
             now += 100_000;
         }
-        assert_eq!(tree.state::<ScrollbarState, _>(bar, |state| state.opacity()), Some(0.0));
+        assert_eq!(
+            tree.state::<ScrollbarState, _>(bar, |state| state.opacity()),
+            Some(0.0)
+        );
 
         // A fling started and caught before it moved anything: its start (and
         // the catch's end) show nothing.
@@ -559,9 +598,12 @@ mod tests {
                 *count.borrow_mut() += 1;
                 true
             },
-            stateful(Scrollbar::new(
-                move || stateful(Scroller { handles: builder_handles.clone(), extent: 2000.0 }),
-            )),
+            stateful(Scrollbar::new(move || {
+                stateful(Scroller {
+                    handles: builder_handles.clone(),
+                    extent: 2000.0,
+                })
+            })),
         ));
         let bar = tree.children_of(tree.root().expect("mounted"))[0];
         let handle = handles.borrow().clone().expect("built");

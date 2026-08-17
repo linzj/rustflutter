@@ -59,7 +59,9 @@ thread_local! {
 /// some other way: there the root `WidgetsApp` wraps everything in one, and a
 /// tree without it is a mistake in the app.
 pub fn current_direction() -> TextDirection {
-    CURRENT_DIRECTION.with(|direction| direction.get()).unwrap_or(TextDirection::Ltr)
+    CURRENT_DIRECTION
+        .with(|direction| direction.get())
+        .unwrap_or(TextDirection::Ltr)
 }
 
 /// Runs `body` with `direction` as the ambient direction, restoring whatever
@@ -124,7 +126,11 @@ mod tests {
             with_direction(TextDirection::Ltr, || {
                 assert_eq!(current_direction(), TextDirection::Ltr);
             });
-            assert_eq!(current_direction(), TextDirection::Rtl, "the inner direction leaked out");
+            assert_eq!(
+                current_direction(),
+                TextDirection::Rtl,
+                "the inner direction leaked out"
+            );
         });
         assert_eq!(current_direction(), TextDirection::Ltr);
     }
@@ -146,7 +152,10 @@ mod tests {
     fn a_subtree_is_built_at_its_own_directionalitys_direction() {
         let seen = std::rc::Rc::new(Cell::new(TextDirection::Ltr));
         let mut tree = ElementTree::new();
-        tree.rebuild(directionality(TextDirection::Rtl, direction_probe(std::rc::Rc::clone(&seen))));
+        tree.rebuild(directionality(
+            TextDirection::Rtl,
+            direction_probe(std::rc::Rc::clone(&seen)),
+        ));
         let _ = tree.build_render_tree();
         assert_eq!(seen.get(), TextDirection::Rtl);
     }
@@ -157,7 +166,11 @@ mod tests {
         let inner = std::rc::Rc::new(Cell::new(TextDirection::Ltr));
         let after = std::rc::Rc::new(Cell::new(TextDirection::Ltr));
 
-        let (o, i, a) = (std::rc::Rc::clone(&outer), std::rc::Rc::clone(&inner), std::rc::Rc::clone(&after));
+        let (o, i, a) = (
+            std::rc::Rc::clone(&outer),
+            std::rc::Rc::clone(&inner),
+            std::rc::Rc::clone(&after),
+        );
         let mut tree = ElementTree::new();
         tree.rebuild(directionality(
             TextDirection::Rtl,
@@ -181,7 +194,11 @@ mod tests {
         let _ = tree.build_render_tree();
         assert_eq!(outer.get(), TextDirection::Rtl);
         assert_eq!(inner.get(), TextDirection::Ltr);
-        assert_eq!(after.get(), TextDirection::Rtl, "the inner direction leaked out of its subtree");
+        assert_eq!(
+            after.get(),
+            TextDirection::Rtl,
+            "the inner direction leaked out of its subtree"
+        );
     }
 
     // -- Reading it from a build ----------------------------------------------
@@ -203,7 +220,10 @@ mod tests {
     #[test]
     fn direction_of_reads_the_nearest_provider() {
         let mut tree = ElementTree::new();
-        tree.rebuild(directionality(TextDirection::Rtl, component(DirectionReader)));
+        tree.rebuild(directionality(
+            TextDirection::Rtl,
+            component(DirectionReader),
+        ));
         let _ = tree.build_render_tree();
         assert_eq!(SEEN.with(|seen| seen.get()), TextDirection::Rtl);
     }

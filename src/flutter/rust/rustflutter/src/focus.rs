@@ -139,7 +139,11 @@ pub(crate) fn reset() {
 fn register(entry: FocusEntry) {
     MANAGER.with(|manager| {
         let mut manager = manager.borrow_mut();
-        match manager.entries.iter().position(|existing| existing.id == entry.id) {
+        match manager
+            .entries
+            .iter()
+            .position(|existing| existing.id == entry.id)
+        {
             Some(index) => manager.entries[index] = entry,
             None => manager.entries.push(entry),
         }
@@ -230,12 +234,18 @@ pub fn previous() -> bool {
 fn step(direction: isize) -> bool {
     let target = MANAGER.with(|manager| {
         let manager = manager.borrow();
-        let stops: Vec<u64> =
-            manager.entries.iter().filter(|e| e.traversable).map(|e| e.id).collect();
+        let stops: Vec<u64> = manager
+            .entries
+            .iter()
+            .filter(|e| e.traversable)
+            .map(|e| e.id)
+            .collect();
         if stops.is_empty() {
             return None;
         }
-        let current = manager.focused.and_then(|id| stops.iter().position(|s| *s == id));
+        let current = manager
+            .focused
+            .and_then(|id| stops.iter().position(|s| *s == id));
         let next = match current {
             Some(index) => {
                 let count = stops.len() as isize;
@@ -262,7 +272,9 @@ fn step(direction: isize) -> bool {
 pub fn dispatch_key(event: &KeyEvent) -> bool {
     let chain: Vec<KeyHandler> = MANAGER.with(|manager| {
         let manager = manager.borrow();
-        let Some(focused) = manager.focused else { return Vec::new() };
+        let Some(focused) = manager.focused else {
+            return Vec::new();
+        };
         let Some(entry) = manager.entries.iter().find(|e| e.id == focused) else {
             return Vec::new();
         };
@@ -374,10 +386,15 @@ impl Focus {
 
 impl Component for Focus {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let scope = context.inherited::<FocusScope>().map(|s| s.0.clone()).unwrap_or_default();
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| {
-            crate::framework::leaf(|| crate::widgets::Empty)
-        });
+        let scope = context
+            .inherited::<FocusScope>()
+            .map(|s| s.0.clone())
+            .unwrap_or_default();
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         // Anything focusable below this is inside it, and says so by reading
         // what this publishes.
         let mut inner = scope.clone();
@@ -406,9 +423,7 @@ impl Component for Focus {
                     focus(id);
                 });
             }
-            Box::new(
-                crate::render::RenderPointerRegion::new(id, child).with_handlers(handlers),
-            )
+            Box::new(crate::render::RenderPointerRegion::new(id, child).with_handlers(handlers))
         })
     }
 }
@@ -505,7 +520,11 @@ mod tests {
         assert!(handle_traversal_key(&key(LogicalKey::TAB), &plain));
         assert_eq!(focused(), Some(1));
         assert!(handle_traversal_key(&key(LogicalKey::TAB), &with_shift()));
-        assert_eq!(focused(), Some(2), "shift+tab from the first wraps to the last");
+        assert_eq!(
+            focused(),
+            Some(2),
+            "shift+tab from the first wraps to the last"
+        );
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
     }
 
@@ -518,18 +537,14 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(crate::framework::many(
             vec![
-                component(
-                    Focus::new(1, leaf(|| Empty)).with_on_key(move |_| {
-                        first.borrow_mut().push(1);
-                        KeyResult::Handled
-                    }),
-                ),
-                component(
-                    Focus::new(2, leaf(|| Empty)).with_on_key(move |_| {
-                        second.borrow_mut().push(2);
-                        KeyResult::Handled
-                    }),
-                ),
+                component(Focus::new(1, leaf(|| Empty)).with_on_key(move |_| {
+                    first.borrow_mut().push(1);
+                    KeyResult::Handled
+                })),
+                component(Focus::new(2, leaf(|| Empty)).with_on_key(move |_| {
+                    second.borrow_mut().push(2);
+                    KeyResult::Handled
+                })),
             ],
             |children| {
                 let mut column = Column::new();
@@ -543,7 +558,11 @@ mod tests {
         let _ = tree.build_render_tree();
         focus(2);
         assert!(dispatch_key(&key(LogicalKey::ENTER)));
-        assert_eq!(*seen.borrow(), vec![2], "the unfocused node should hear nothing");
+        assert_eq!(
+            *seen.borrow(),
+            vec![2],
+            "the unfocused node should hear nothing"
+        );
         drop(tree);
     }
 
@@ -571,7 +590,11 @@ mod tests {
         let _ = tree.build_render_tree();
         focus(11);
         assert!(dispatch_key(&key(LogicalKey::ESCAPE)));
-        assert_eq!(*seen.borrow(), vec!["inner", "outer"], "innermost first, then out");
+        assert_eq!(
+            *seen.borrow(),
+            vec!["inner", "outer"],
+            "innermost first, then out"
+        );
         drop(tree);
     }
 
@@ -584,12 +607,16 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(crate::framework::many(
             vec![
-                component(Focus::new(1, leaf(|| Empty)).with_on_focus_change(move |has| {
-                    first.borrow_mut().push(format!("1:{has}"));
-                })),
-                component(Focus::new(2, leaf(|| Empty)).with_on_focus_change(move |has| {
-                    second.borrow_mut().push(format!("2:{has}"));
-                })),
+                component(
+                    Focus::new(1, leaf(|| Empty)).with_on_focus_change(move |has| {
+                        first.borrow_mut().push(format!("1:{has}"));
+                    }),
+                ),
+                component(
+                    Focus::new(2, leaf(|| Empty)).with_on_focus_change(move |has| {
+                        second.borrow_mut().push(format!("2:{has}"));
+                    }),
+                ),
             ],
             |children| {
                 let mut column = Column::new();
@@ -619,12 +646,16 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(crate::framework::many(
             vec![
-                component(Focus::new(1, leaf(|| Empty)).with_on_focus_change(move |has| {
-                    first.borrow_mut().push(format!("1:{has}"));
-                })),
-                component(Focus::new(2, leaf(|| Empty)).with_on_focus_change(move |has| {
-                    second.borrow_mut().push(format!("2:{has}"));
-                })),
+                component(
+                    Focus::new(1, leaf(|| Empty)).with_on_focus_change(move |has| {
+                        first.borrow_mut().push(format!("1:{has}"));
+                    }),
+                ),
+                component(
+                    Focus::new(2, leaf(|| Empty)).with_on_focus_change(move |has| {
+                        second.borrow_mut().push(format!("2:{has}"));
+                    }),
+                ),
             ],
             |children| {
                 let mut column = Column::new();
@@ -677,7 +708,10 @@ mod tests {
         // elements are released, so their nodes go with them -- and the
         // keyboard cannot be somewhere that no longer exists.
         tree.rebuild(crate::framework::many(
-            vec![leaf(|| SizedBox::new(10.0, 10.0)), leaf(|| SizedBox::new(10.0, 10.0))],
+            vec![
+                leaf(|| SizedBox::new(10.0, 10.0)),
+                leaf(|| SizedBox::new(10.0, 10.0)),
+            ],
             |children| {
                 let mut column = Column::new();
                 for child in children {

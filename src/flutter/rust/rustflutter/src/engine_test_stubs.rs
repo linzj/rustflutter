@@ -79,52 +79,72 @@ pub fn last_paint_color() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int, width: f32) {
+pub unsafe extern "C" fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int, width: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_stroke_cap(paint: *mut RfPaint, cap: c_int) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_stroke_join(paint: *mut RfPaint, join: c_int) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_blur(paint: *mut RfPaint, sigma: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_clear_blur(paint: *mut RfPaint) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_linear_gradient(
+    paint: *mut RfPaint,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    colors: *const u32,
+    stops: *const f32,
+    stop_count: c_int,
+    tile_mode: c_int,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int) {
+pub unsafe extern "C" fn rf_paint_set_radial_gradient(
+    paint: *mut RfPaint,
+    center_x: f32,
+    center_y: f32,
+    radius: f32,
+    colors: *const u32,
+    stops: *const f32,
+    stop_count: c_int,
+    tile_mode: c_int,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32) {
+pub unsafe extern "C" fn rf_paint_set_sweep_gradient(
+    paint: *mut RfPaint,
+    center_x: f32,
+    center_y: f32,
+    start_degrees: f32,
+    end_degrees: f32,
+    colors: *const u32,
+    stops: *const f32,
+    stop_count: c_int,
+    tile_mode: c_int,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_stroke_cap(paint: *mut RfPaint, cap: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_stroke_join(paint: *mut RfPaint, join: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_blur(paint: *mut RfPaint, sigma: f32) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_clear_blur(paint: *mut RfPaint) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_linear_gradient(paint: *mut RfPaint, x0: f32, y0: f32, x1: f32, y1: f32, colors: *const u32, stops: *const f32, stop_count: c_int, tile_mode: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_radial_gradient(paint: *mut RfPaint, center_x: f32, center_y: f32, radius: f32, colors: *const u32, stops: *const f32, stop_count: c_int, tile_mode: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_sweep_gradient(paint: *mut RfPaint, center_x: f32, center_y: f32, start_degrees: f32, end_degrees: f32, colors: *const u32, stops: *const f32, stop_count: c_int, tile_mode: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_clear_shader(paint: *mut RfPaint) {
-}
+pub unsafe extern "C" fn rf_paint_clear_shader(paint: *mut RfPaint) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_new() -> *mut RfPath {
@@ -137,80 +157,151 @@ pub unsafe extern "C" fn rf_path_free(path: *mut RfPath) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_set_fill_type(path: *mut RfPath, fill_type: c_int) {
-}
+pub unsafe extern "C" fn rf_path_set_fill_type(path: *mut RfPath, fill_type: c_int) {}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32) {
-}
+pub unsafe extern "C" fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32) {}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32) {
-}
+pub unsafe extern "C" fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_quadratic_to(path: *mut RfPath, cx: f32, cy: f32, x: f32, y: f32) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_cubic_to(path: *mut RfPath, cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32) {
+pub unsafe extern "C" fn rf_path_cubic_to(
+    path: *mut RfPath,
+    cx1: f32,
+    cy1: f32,
+    cx2: f32,
+    cy2: f32,
+    x: f32,
+    y: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_close(path: *mut RfPath) {
+pub unsafe extern "C" fn rf_path_close(path: *mut RfPath) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_path_add_rect(
+    path: *mut RfPath,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_add_rect(path: *mut RfPath, left: f32, top: f32, right: f32, bottom: f32) {
+pub unsafe extern "C" fn rf_path_add_oval(
+    path: *mut RfPath,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_add_oval(path: *mut RfPath, left: f32, top: f32, right: f32, bottom: f32) {
+pub unsafe extern "C" fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_path_add_rounded_rect(
+    path: *mut RfPath,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius_x: f32,
+    radius_y: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32) {
+pub unsafe extern "C" fn rf_canvas_draw_line(
+    canvas: *mut RfCanvas,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_add_rounded_rect(path: *mut RfPath, left: f32, top: f32, right: f32, bottom: f32, radius_x: f32, radius_y: f32) {
+pub unsafe extern "C" fn rf_canvas_draw_oval(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_line(canvas: *mut RfCanvas, x0: f32, y0: f32, x1: f32, y1: f32, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_path(
+    canvas: *mut RfCanvas,
+    path: *const RfPath,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_oval(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_arc(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    start_degrees: f32,
+    sweep_degrees: f32,
+    use_center: c_int,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_path(canvas: *mut RfCanvas, path: *const RfPath, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_image(
+    canvas: *mut RfCanvas,
+    image: *const RfImage,
+    x: f32,
+    y: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_arc(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, start_degrees: f32, sweep_degrees: f32, use_center: c_int, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_image_rect(
+    canvas: *mut RfCanvas,
+    image: *const RfImage,
+    src_left: f32,
+    src_top: f32,
+    src_right: f32,
+    src_bottom: f32,
+    dst_left: f32,
+    dst_top: f32,
+    dst_right: f32,
+    dst_bottom: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_image(canvas: *mut RfCanvas, image: *const RfImage, x: f32, y: f32, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_save(canvas: *mut RfCanvas) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_save_layer(
+    canvas: *mut RfCanvas,
+    bounds_ltrb: *const f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_image_rect(canvas: *mut RfCanvas, image: *const RfImage, src_left: f32, src_top: f32, src_right: f32, src_bottom: f32, dst_left: f32, dst_top: f32, dst_right: f32, dst_bottom: f32, paint: *const RfPaint) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_save(canvas: *mut RfCanvas) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_save_layer(canvas: *mut RfCanvas, bounds_ltrb: *const f32, paint: *const RfPaint) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_restore(canvas: *mut RfCanvas) {
-}
+pub unsafe extern "C" fn rf_canvas_restore(canvas: *mut RfCanvas) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_save_count(canvas: *mut RfCanvas) -> c_int {
@@ -218,39 +309,65 @@ pub unsafe extern "C" fn rf_canvas_save_count(canvas: *mut RfCanvas) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_restore_to_count(canvas: *mut RfCanvas, count: c_int) {
+pub unsafe extern "C" fn rf_canvas_restore_to_count(canvas: *mut RfCanvas, count: c_int) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_rotate(canvas: *mut RfCanvas, degrees: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_skew(canvas: *mut RfCanvas, sx: f32, sy: f32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_transform(
+    canvas: *mut RfCanvas,
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy: f32) {
+pub unsafe extern "C" fn rf_canvas_clip_rect(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    clip_op: c_int,
+    anti_alias: c_int,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32) {
+pub unsafe extern "C" fn rf_canvas_clip_rounded_rect(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius_x: f32,
+    radius_y: f32,
+    clip_op: c_int,
+    anti_alias: c_int,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_rotate(canvas: *mut RfCanvas, degrees: f32) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_skew(canvas: *mut RfCanvas, sx: f32, sy: f32) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_transform(canvas: *mut RfCanvas, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_clip_rect(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, clip_op: c_int, anti_alias: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_clip_rounded_rect(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, radius_x: f32, radius_y: f32, clip_op: c_int, anti_alias: c_int) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_clip_path(canvas: *mut RfCanvas, path: *const RfPath, clip_op: c_int, anti_alias: c_int) {
+pub unsafe extern "C" fn rf_canvas_clip_path(
+    canvas: *mut RfCanvas,
+    path: *const RfPath,
+    clip_op: c_int,
+    anti_alias: c_int,
+) {
 }
 
 /// What the framework asked the compositor for.
@@ -385,7 +502,15 @@ pub fn reset_layer_calls() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_transform(tree: *mut RfLayerTree, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+pub unsafe extern "C" fn rf_layer_tree_push_transform(
+    tree: *mut RfLayerTree,
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+) {
     note(|calls| calls.transforms += 1);
     open_container();
 }
@@ -397,36 +522,69 @@ pub unsafe extern "C" fn rf_layer_tree_push_offset(tree: *mut RfLayerTree, dx: f
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_clip_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, clip_behavior: c_int) {
+pub unsafe extern "C" fn rf_layer_tree_push_clip_rect(
+    tree: *mut RfLayerTree,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    clip_behavior: c_int,
+) {
     note(|calls| calls.clip_rects += 1);
     open_container();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_clip_rounded_rect(tree: *mut RfLayerTree, left: f32, top: f32, right: f32, bottom: f32, radius_x: f32, radius_y: f32, clip_behavior: c_int) {
+pub unsafe extern "C" fn rf_layer_tree_push_clip_rounded_rect(
+    tree: *mut RfLayerTree,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius_x: f32,
+    radius_y: f32,
+    clip_behavior: c_int,
+) {
     note(|calls| calls.clip_rounded_rects += 1);
     open_container();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_clip_path(tree: *mut RfLayerTree, path: *const RfPath, clip_behavior: c_int) {
+pub unsafe extern "C" fn rf_layer_tree_push_clip_path(
+    tree: *mut RfLayerTree,
+    path: *const RfPath,
+    clip_behavior: c_int,
+) {
     note(|calls| calls.clip_paths += 1);
     open_container();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_opacity(tree: *mut RfLayerTree, alpha: u8, offset_x: f32, offset_y: f32) {
+pub unsafe extern "C" fn rf_layer_tree_push_opacity(
+    tree: *mut RfLayerTree,
+    alpha: u8,
+    offset_x: f32,
+    offset_y: f32,
+) {
     note(|calls| calls.opacities += 1);
     open_container();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_backdrop_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32) {
+pub unsafe extern "C" fn rf_layer_tree_push_backdrop_blur(
+    tree: *mut RfLayerTree,
+    sigma_x: f32,
+    sigma_y: f32,
+) {
     open_container();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32) {
+pub unsafe extern "C" fn rf_layer_tree_push_blur(
+    tree: *mut RfLayerTree,
+    sigma_x: f32,
+    sigma_y: f32,
+) {
     open_container();
 }
 
@@ -529,23 +687,48 @@ pub unsafe extern "C" fn rf_canvas_free(canvas: *mut RfCanvas) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_color(canvas: *mut RfCanvas, argb: u32) {
+pub unsafe extern "C" fn rf_canvas_draw_color(canvas: *mut RfCanvas, argb: u32) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_canvas_draw_rect(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_rect(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_rrect(
+    canvas: *mut RfCanvas,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_rrect(canvas: *mut RfCanvas, left: f32, top: f32, right: f32, bottom: f32, radius: f32, paint: *const RfPaint) {
+pub unsafe extern "C" fn rf_canvas_draw_circle(
+    canvas: *mut RfCanvas,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    paint: *const RfPaint,
+) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_circle(canvas: *mut RfCanvas, cx: f32, cy: f32, radius: f32, paint: *const RfPaint) {
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_paragraph(canvas: *mut RfCanvas, paragraph: *mut RfParagraph, x: f32, y: f32) {
+pub unsafe extern "C" fn rf_canvas_draw_paragraph(
+    canvas: *mut RfCanvas,
+    paragraph: *mut RfParagraph,
+    x: f32,
+    y: f32,
+) {
 }
 
 #[unsafe(no_mangle)]
@@ -668,8 +851,7 @@ pub unsafe extern "C" fn rf_paragraph_builder_add_text(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paragraph_builder_pop(builder: *mut RfParagraphBuilder) {
-}
+pub unsafe extern "C" fn rf_paragraph_builder_pop(builder: *mut RfParagraphBuilder) {}
 
 /// Consumes the builder and hands back a paragraph, as the engine does.
 #[unsafe(no_mangle)]
@@ -681,8 +863,7 @@ pub unsafe extern "C" fn rf_paragraph_builder_build(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32) {
-}
+pub unsafe extern "C" fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_width(paragraph: *mut RfParagraph) -> f32 {
@@ -725,23 +906,41 @@ pub unsafe extern "C" fn rf_layer_tree_free(tree: *mut RfLayerTree) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_add_display_list(tree: *mut RfLayerTree, display_list: *mut RfDisplayList, offset_x: f32, offset_y: f32) {
+pub unsafe extern "C" fn rf_layer_tree_add_display_list(
+    tree: *mut RfLayerTree,
+    display_list: *mut RfDisplayList,
+    offset_x: f32,
+    offset_y: f32,
+) {
     note(|calls| calls.display_lists += 1);
     record_picture();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_write_png(tree: *mut RfLayerTree, path: *const c_char) -> c_int {
+pub unsafe extern "C" fn rf_layer_tree_write_png(
+    tree: *mut RfLayerTree,
+    path: *const c_char,
+) -> c_int {
     0
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_layer_tree_rasterize_bgra(tree: *mut RfLayerTree, out_pixels: *mut u8, out_len: usize) -> c_int {
+pub unsafe extern "C" fn rf_layer_tree_rasterize_bgra(
+    tree: *mut RfLayerTree,
+    out_pixels: *mut u8,
+    out_len: usize,
+) -> c_int {
     0
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_window_show(width: c_int, height: c_int, bgra: *const u8, bgra_len: usize, title: *const c_char) -> c_int {
+pub unsafe extern "C" fn rf_window_show(
+    width: c_int,
+    height: c_int,
+    bgra: *const u8,
+    bgra_len: usize,
+    title: *const c_char,
+) -> c_int {
     0
 }
 

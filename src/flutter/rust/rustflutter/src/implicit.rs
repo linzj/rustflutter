@@ -59,7 +59,10 @@ impl Lerp for Offset {
 
 impl Lerp for Size {
     fn lerp(from: Size, to: Size, t: f32) -> Size {
-        Size::new(f32::lerp(from.width, to.width, t), f32::lerp(from.height, to.height, t))
+        Size::new(
+            f32::lerp(from.width, to.width, t),
+            f32::lerp(from.height, to.height, t),
+        )
     }
 }
 
@@ -124,7 +127,9 @@ impl<T> Default for AnimatedState<T> {
 impl<T: Lerp> AnimatedState<T> {
     /// How far through the current flight, 0..1. One when there is none.
     fn progress(&self, duration: Duration) -> f32 {
-        let Some(started) = self.started_micros else { return 1.0 };
+        let Some(started) = self.started_micros else {
+            return 1.0;
+        };
         let total = duration.as_micros() as f32;
         if total <= 0.0 {
             return 1.0;
@@ -158,7 +163,13 @@ where
     F: Fn(T) -> AnyWidget + 'static,
 {
     pub fn new(target: T, duration: Duration, build: F) -> Animated<T, F> {
-        Animated { target, duration, curve: Curve::EASE_IN_OUT, build, key: None }
+        Animated {
+            target,
+            duration,
+            curve: Curve::EASE_IN_OUT,
+            build,
+            key: None,
+        }
     }
 
     pub fn with_curve(mut self, curve: Curve) -> Self {
@@ -211,7 +222,9 @@ where
             // wherever this is *now*, not from where the last flight was
             // heading -- see the module comment.
             state.restart_pending = false;
-            let current = state.value(self.duration, self.curve).unwrap_or(self.target);
+            let current = state
+                .value(self.duration, self.curve)
+                .unwrap_or(self.target);
             state.from = Some(current);
             state.to = Some(self.target);
             state.started_micros = Some(frame_time_micros);
@@ -238,7 +251,11 @@ where
         _handle: StateHandle<Self::State>,
         _context: &mut BuildContext,
     ) -> AnyWidget {
-        (self.build)(state.value(self.duration, self.curve).unwrap_or(self.target))
+        (self.build)(
+            state
+                .value(self.duration, self.curve)
+                .unwrap_or(self.target),
+        )
     }
 }
 
@@ -289,7 +306,10 @@ mod tests {
 
         // The target moves to 100 over 100ms.
         tree.rebuild(tree_of(100.0, seen.clone()));
-        assert!(tree.advance_frame(2_000_000), "a moved target should want frames");
+        assert!(
+            tree.advance_frame(2_000_000),
+            "a moved target should want frames"
+        );
         tree.rebuild_dirty();
         assert_eq!(seen.get(), 0.0, "starts where it was");
 
@@ -303,7 +323,10 @@ mod tests {
 
         // The frame that lands still wants a rebuild -- it is the one that
         // shows the target -- and only the frame after it is idle.
-        assert!(tree.advance_frame(2_100_000), "the landing frame has to be drawn");
+        assert!(
+            tree.advance_frame(2_100_000),
+            "the landing frame has to be drawn"
+        );
         tree.rebuild_dirty();
         assert_eq!(seen.get(), 100.0);
         assert!(!tree.advance_frame(2_116_000), "and then it stops asking");
@@ -341,7 +364,11 @@ mod tests {
         let white = Color(0xffffffff);
         let grey = Color::lerp(black, white, 0.5);
         assert_eq!(grey.0 & 0xff, 0x80);
-        assert_eq!((grey.0 >> 24) & 0xff, 0xff, "the alpha is not a colour channel to skip");
+        assert_eq!(
+            (grey.0 >> 24) & 0xff,
+            0xff,
+            "the alpha is not a colour channel to skip"
+        );
     }
 
     #[test]

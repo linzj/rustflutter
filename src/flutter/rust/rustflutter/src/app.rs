@@ -28,8 +28,8 @@ use crate::framework::{AnyWidget, ElementTree};
 use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind};
 use crate::keyboard::{KeyEvent, Keyboard};
 use crate::platform;
-use crate::services;
 use crate::render::{BoxConstraints, EdgeInsets, PaintContext, RenderBox};
+use crate::services;
 use crate::widgets::{BoxedWidget, Offset, Size};
 
 // -- The platform's view of a view --------------------------------------------
@@ -132,18 +132,13 @@ impl ViewMetrics {
 #[derive(Clone, Copy)]
 struct RfAppHost {
     user_data: *mut c_void,
-    render: Option<
-        unsafe extern "C" fn(*mut c_void, i64, *mut engine::sys::RfLayerTree, f64),
-    >,
+    render: Option<unsafe extern "C" fn(*mut c_void, i64, *mut engine::sys::RfLayerTree, f64)>,
     schedule_frame: Option<unsafe extern "C" fn(*mut c_void)>,
-    send_platform_message: Option<
-        unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize, i64),
-    >,
-    respond_to_platform_message:
-        Option<unsafe extern "C" fn(*mut c_void, i64, *const u8, usize)>,
+    send_platform_message:
+        Option<unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize, i64)>,
+    respond_to_platform_message: Option<unsafe extern "C" fn(*mut c_void, i64, *const u8, usize)>,
     send_channel_update: Option<unsafe extern "C" fn(*mut c_void, *const c_char, bool)>,
-    update_semantics:
-        Option<unsafe extern "C" fn(*mut c_void, i64, *const RfSemanticsNode, usize)>,
+    update_semantics: Option<unsafe extern "C" fn(*mut c_void, i64, *const RfSemanticsNode, usize)>,
 }
 
 /// One semantics node, as the C ABI carries it. Mirrors `RfSemanticsNode` in
@@ -256,7 +251,10 @@ struct HostSink {
 
 impl HostSink {
     fn new(host: RfAppHost) -> HostSink {
-        HostSink { host, alive: std::cell::Cell::new(true) }
+        HostSink {
+            host,
+            alive: std::cell::Cell::new(true),
+        }
     }
 
     /// Cuts the sink off from the shell. Called before the shell is destroyed.
@@ -492,7 +490,11 @@ pub struct WidgetHost<W: WidgetApplication> {
 
 impl<W: WidgetApplication> WidgetHost<W> {
     pub fn new(app: W) -> WidgetHost<W> {
-        WidgetHost { app, tree: ElementTree::new(), last_size: None }
+        WidgetHost {
+            app,
+            tree: ElementTree::new(),
+            last_size: None,
+        }
     }
 
     /// The element tree, for tests and diagnostics.
@@ -809,10 +811,8 @@ impl AppInstance {
         // been), and the view having changed size -- the constraints come
         // from outside the tree, so no boundary's remembered ones can carry
         // them, and the descent is where every object is re-asked.
-        let view_constraints =
-            BoxConstraints::tight(context.size.width, context.size.height);
-        if root.was_last_laid_out_against_other(view_constraints)
-            || !crate::render::flush_layout()
+        let view_constraints = BoxConstraints::tight(context.size.width, context.size.height);
+        if root.was_last_laid_out_against_other(view_constraints) || !crate::render::flush_layout()
         {
             root.layout(view_constraints);
         }
@@ -856,7 +856,14 @@ impl AppInstance {
             // Ownership crosses here: the shell converts the handle into a
             // flow::LayerTree and frees it.
             let raw = tree.into_raw();
-            unsafe { render(self.host.user_data, view_id, raw, metrics.device_pixel_ratio) };
+            unsafe {
+                render(
+                    self.host.user_data,
+                    view_id,
+                    raw,
+                    metrics.device_pixel_ratio,
+                )
+            };
         }
 
         // Keep the laid-out tree for hit testing until the next frame replaces
@@ -872,14 +879,15 @@ impl AppInstance {
     /// too. The `CString`s are held in a vector for exactly as long as the
     /// pointers into them are on the other side of the call.
     fn send_semantics(&self, view_id: i64, nodes: &[crate::semantics::SemanticsNode]) {
-        let Some(update) = self.host.update_semantics else { return };
+        let Some(update) = self.host.update_semantics else {
+            return;
+        };
 
         // A string the framework knows cannot contain a NUL, since it came
         // from Rust `String`s -- but an interior NUL would truncate a label
         // rather than crash, so it is replaced instead of unwrapped.
-        let owned = |text: &str| {
-            std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default()
-        };
+        let owned =
+            |text: &str| std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default();
 
         let mut strings: Vec<std::ffi::CString> = Vec::with_capacity(nodes.len() * 5);
         let mut children: Vec<Vec<i32>> = Vec::with_capacity(nodes.len());
@@ -1078,7 +1086,6 @@ pub fn run(options: &RunOptions) -> Result<(), i32> {
 mod abi {
     use super::*;
 
-
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rf_app_create(host: *const c_void) -> *mut RfApp {
         if host.is_null() {
@@ -1162,11 +1169,17 @@ mod abi {
         view_id: i64,
         metrics: *const ViewMetrics,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         if metrics.is_null() {
             return;
         }
-        if instance.views.insert(view_id, unsafe { *metrics }).is_none() {
+        if instance
+            .views
+            .insert(view_id, unsafe { *metrics })
+            .is_none()
+        {
             instance.view_order.push(view_id);
         }
         instance.schedule_frame();
@@ -1174,7 +1187,9 @@ mod abi {
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rf_app_remove_view(app: *mut RfApp, view_id: i64) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         instance.views.remove(&view_id);
         instance.view_order.retain(|id| *id != view_id);
         instance.painted.remove(&view_id);
@@ -1186,7 +1201,9 @@ mod abi {
         view_id: i64,
         metrics: *const ViewMetrics,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         if metrics.is_null() {
             return;
         }
@@ -1266,12 +1283,16 @@ mod abi {
         frame_time_micros: i64,
         frame_number: u64,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         instance.frame_time_micros = frame_time_micros;
         instance.frame_number = frame_number;
         // Copy the host out first: `application` borrows `instance` mutably,
         // and the scheduler needs the host at the same time.
-        let scheduler = FrameScheduler { host: instance.host };
+        let scheduler = FrameScheduler {
+            host: instance.host,
+        };
         let started = FrameTimings::now();
         // Gestures that are decided by time rather than by movement -- a long
         // press, and a single tap waiting to find out whether it is the first
@@ -1289,13 +1310,14 @@ mod abi {
                 scheduler,
             });
         }
-        instance.advance_ms =
-            FrameTimings::now().duration_since(started).as_secs_f64() * 1000.0;
+        instance.advance_ms = FrameTimings::now().duration_since(started).as_secs_f64() * 1000.0;
     }
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rf_app_draw_frame(app: *mut RfApp) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         let views = instance.view_order.clone();
         for view_id in views {
             instance.draw_view(view_id);
@@ -1331,7 +1353,9 @@ mod abi {
         events: *const RfPointerEvent,
         count: usize,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         if events.is_null() || count == 0 {
             return;
         }
@@ -1384,11 +1408,10 @@ mod abi {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn rf_app_dispatch_key(
-        app: *mut RfApp,
-        raw: *const RfKeyEvent,
-    ) -> bool {
-        let Some(instance) = instance(app) else { return false };
+    pub unsafe extern "C" fn rf_app_dispatch_key(app: *mut RfApp, raw: *const RfKeyEvent) -> bool {
+        let Some(instance) = instance(app) else {
+            return false;
+        };
         if raw.is_null() {
             return false;
         }
@@ -1403,7 +1426,11 @@ mod abi {
         } else {
             let text = unsafe { std::ffi::CStr::from_ptr(raw.character) };
             let text = text.to_string_lossy();
-            if text.is_empty() { None } else { Some(text.into_owned()) }
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.into_owned())
+            }
         };
 
         let mut event = KeyEvent {
@@ -1423,7 +1450,9 @@ mod abi {
     /// it is off: a tree nobody reads is a tree that would quietly rot.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rf_app_set_semantics_enabled(app: *mut RfApp, enabled: bool) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         crate::semantics::set_enabled(enabled);
         // The tree only exists as a by-product of a frame, so turning it on
         // has to ask for one -- otherwise a reader gets nothing until
@@ -1438,7 +1467,9 @@ mod abi {
         node_id: i32,
         action: i32,
     ) -> bool {
-        let Some(instance) = instance(app) else { return false };
+        let Some(instance) = instance(app) else {
+            return false;
+        };
         let Some(action) = crate::semantics::SemanticsAction::from_bits(action) else {
             return false;
         };
@@ -1471,7 +1502,9 @@ mod abi {
         length: usize,
         response_id: i64,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         if channel.is_null() {
             return;
         }
@@ -1502,7 +1535,9 @@ mod abi {
         reply: *const u8,
         length: usize,
     ) {
-        let Some(instance) = instance(app) else { return };
+        let Some(instance) = instance(app) else {
+            return;
+        };
         // Null is "nothing handled it", which the caller tells apart from an
         // empty reply all the way up to MethodChannel::invoke_with_reply.
         let bytes = if reply.is_null() {
@@ -1527,6 +1562,10 @@ mod tests {
         // 0 = unknown, 1 = rtl, 2 = ltr, and the ABI has to speak both.
         assert_eq!(pack_text_direction(Some(TextDirection::Rtl)), 1);
         assert_eq!(pack_text_direction(Some(TextDirection::Ltr)), 2);
-        assert_eq!(pack_text_direction(None), 0, "nothing to read is unknown, not guessed");
+        assert_eq!(
+            pack_text_direction(None),
+            0,
+            "nothing to read is unknown, not guessed"
+        );
     }
 }

@@ -188,14 +188,20 @@ fn wrap_hard_line(
     while cursor < hard.end {
         // One unit: a word plus the spaces after it, or a run of spaces
         // before the first word on a line.
-        let word_end = text[cursor..hard.end].find(' ').map_or(hard.end, |i| cursor + i);
-        let unit_end =
-            text[word_end..hard.end].find(|c: char| c != ' ').map_or(hard.end, |i| word_end + i);
+        let word_end = text[cursor..hard.end]
+            .find(' ')
+            .map_or(hard.end, |i| cursor + i);
+        let unit_end = text[word_end..hard.end]
+            .find(|c: char| c != ' ')
+            .map_or(hard.end, |i| word_end + i);
 
         if cursor > line_start && measure(&text[line_start..unit_end]) > width {
             // The unit does not fit on the line being built. The line ends
             // before its word, and the word starts the next one.
-            lines.push(VisualLine { start: line_start, end: cursor });
+            lines.push(VisualLine {
+                start: line_start,
+                end: cursor,
+            });
             line_start = cursor;
         }
         if measure(&text[line_start..unit_end]) > width {
@@ -210,7 +216,10 @@ fn wrap_hard_line(
             let mut previous = line_start;
             for boundary in boundaries.into_iter().skip(1) {
                 if previous > line_start && measure(&text[line_start..boundary]) > width {
-                    lines.push(VisualLine { start: line_start, end: previous });
+                    lines.push(VisualLine {
+                        start: line_start,
+                        end: previous,
+                    });
                     line_start = previous;
                 }
                 previous = boundary;
@@ -220,7 +229,10 @@ fn wrap_hard_line(
     }
     // The line being built when the text ran out, empty text included: an
     // empty hard line is still a line, for the caret to be on.
-    lines.push(VisualLine { start: line_start, end: hard.end });
+    lines.push(VisualLine {
+        start: line_start,
+        end: hard.end,
+    });
 }
 
 /// Which line a caret at byte `position` sits on.
@@ -238,9 +250,7 @@ fn caret_line(lines: &[VisualLine], position: usize) -> usize {
         if line.start <= position && position <= line.end {
             // The boundary a soft wrap shares with the line after it is that
             // line's start.
-            if position == line.end
-                && index + 1 < lines.len()
-                && lines[index + 1].start == position
+            if position == line.end && index + 1 < lines.len() && lines[index + 1].start == position
             {
                 return index + 1;
             }
@@ -308,7 +318,9 @@ fn caret_position_at(
 /// then clamped to what the content allows, because there is no overscrolling
 /// just to reach a caret.
 fn reveal(leading: f32, trailing: f32, viewport: f32, scroll: f32, max_scroll: f32) -> f32 {
-    let additional = 0.0f32.max(trailing - scroll - viewport).min(leading - scroll);
+    let additional = 0.0f32
+        .max(trailing - scroll - viewport)
+        .min(leading - scroll);
     (scroll + additional).clamp(0.0, max_scroll.max(0.0))
 }
 
@@ -428,7 +440,15 @@ impl RenderEditable {
     /// it: shape a line and read the height, rather than reading the style's
     /// font size and guessing what leading the font adds.
     fn line_height(&self) -> f32 {
-        painting::shape("Ag", &self.style, None, false, f32::MAX / 4.0, self.text_scale).height()
+        painting::shape(
+            "Ag",
+            &self.style,
+            None,
+            false,
+            f32::MAX / 4.0,
+            self.text_scale,
+        )
+        .height()
     }
 
     /// The advance width of `text`: what a position among the glyphs is
@@ -441,8 +461,15 @@ impl RenderEditable {
         if text.is_empty() {
             return 0.0;
         }
-        painting::shape(text, &self.style, None, false, f32::MAX / 4.0, self.text_scale)
-            .max_intrinsic_width()
+        painting::shape(
+            text,
+            &self.style,
+            None,
+            false,
+            f32::MAX / 4.0,
+            self.text_scale,
+        )
+        .max_intrinsic_width()
     }
 
     /// How far into the line the caret sits, by measuring the text before it.
@@ -466,7 +493,10 @@ impl RenderEditable {
     /// is that, minus the paragraph.
     fn visual_lines(&self, width: f32) -> Vec<VisualLine> {
         match self.max_lines {
-            MaxLines::Single => vec![VisualLine { start: 0, end: self.value.text.len() }],
+            MaxLines::Single => vec![VisualLine {
+                start: 0,
+                end: self.value.text.len(),
+            }],
             _ => {
                 let text = &self.value.text;
                 wrap_lines(text, width, &|run: &str| self.measure(run))
@@ -505,10 +535,7 @@ impl RenderEditable {
 }
 
 impl RenderBox for RenderEditable {
-    fn update_from(
-        &mut self,
-        fresh: &mut dyn RenderBox,
-    ) -> Option<crate::render::UpdateEffect> {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<crate::render::UpdateEffect> {
         use crate::render::UpdateEffect;
         let fresh = fresh.as_any_mut().downcast_mut::<RenderEditable>()?;
 
@@ -516,7 +543,9 @@ impl RenderBox for RenderEditable {
         // line of its own text (or of several, once it can have several),
         // whatever the text happens to say.
         let mut effect = UpdateEffect::relayout_if(
-            self.style != fresh.style || self.text_scale != fresh.text_scale || self.max_lines != fresh.max_lines,
+            self.style != fresh.style
+                || self.text_scale != fresh.text_scale
+                || self.max_lines != fresh.max_lines,
         );
         self.style = fresh.style.clone();
         self.text_scale = fresh.text_scale;
@@ -555,7 +584,11 @@ impl RenderBox for RenderEditable {
 
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let line_height = self.line_height();
-        let width = if constraints.has_bounded_width() { constraints.max_width } else { 200.0 };
+        let width = if constraints.has_bounded_width() {
+            constraints.max_width
+        } else {
+            200.0
+        };
         let count = match self.max_lines {
             MaxLines::Single => 1,
             _ => self.visual_lines(width).len(),
@@ -597,14 +630,26 @@ impl RenderBox for RenderEditable {
             MaxLines::Single => {
                 let max_scroll = (content_width - self.size.width).max(0.0);
                 if let Some(rect) = caret {
-                    scroll.dx = reveal(rect.left, rect.right, self.size.width, scroll.dx, max_scroll);
+                    scroll.dx = reveal(
+                        rect.left,
+                        rect.right,
+                        self.size.width,
+                        scroll.dx,
+                        max_scroll,
+                    );
                 }
                 scroll.dy = 0.0;
             }
             _ => {
                 let max_scroll = (content_height - self.size.height).max(0.0);
                 if let Some(rect) = caret {
-                    scroll.dy = reveal(rect.top, rect.bottom, self.size.height, scroll.dy, max_scroll);
+                    scroll.dy = reveal(
+                        rect.top,
+                        rect.bottom,
+                        self.size.height,
+                        scroll.dy,
+                        max_scroll,
+                    );
                 }
                 scroll.dx = 0.0;
             }
@@ -669,8 +714,14 @@ impl RenderBox for RenderEditable {
 
                 let slice = &self.value.text[line.start..line.end];
                 if !slice.is_empty() {
-                    let text =
-                        painting::shape(slice, &self.style, None, false, f32::MAX / 4.0, self.text_scale);
+                    let text = painting::shape(
+                        slice,
+                        &self.style,
+                        None,
+                        false,
+                        f32::MAX / 4.0,
+                        self.text_scale,
+                    );
                     canvas.draw_paragraph(&text, base, top);
                 }
 
@@ -731,7 +782,8 @@ impl RenderBox for RenderEditable {
         // reported where it was drawn, scroll included, because the candidate
         // list belongs under what the reader can see.
         if let Some(report) = &self.report {
-            let caret = caret.unwrap_or_else(|| Rect::ltrb(0.0, 0.0, CARET_WIDTH, self.size.height));
+            let caret =
+                caret.unwrap_or_else(|| Rect::ltrb(0.0, 0.0, CARET_WIDTH, self.size.height));
             let on_screen = Rect::ltrb(
                 caret.left - scroll.dx,
                 caret.top - scroll.dy,
@@ -759,7 +811,15 @@ impl RenderBox for RenderEditable {
     }
 
     fn max_intrinsic_width(&self, _height: f32) -> f32 {
-        painting::shape(&self.value.text, &self.style, None, false, f32::MAX / 4.0, self.text_scale).max_intrinsic_width()
+        painting::shape(
+            &self.value.text,
+            &self.style,
+            None,
+            false,
+            f32::MAX / 4.0,
+            self.text_scale,
+        )
+        .max_intrinsic_width()
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
@@ -982,7 +1042,9 @@ impl StatefulComponent for TextField {
     /// there is no platform timer to borrow here, so the half-seconds are
     /// counted in frame time, the way every other animation in this crate is.
     fn advance(&self, state: &mut TextFieldState, frame_time_micros: i64) -> bool {
-        let editing = state.connection.is_some_and(|connection| connection.is_attached());
+        let editing = state
+            .connection
+            .is_some_and(|connection| connection.is_attached());
         if !editing {
             // A session that ended without this field hearing about it -- the
             // platform moved to another client. The one frame that clears the
@@ -1126,22 +1188,21 @@ impl StatefulComponent for TextField {
 
         let editable = leaf(move || {
             let report_connection = connection;
-            let report: ReportPlacement =
-                Rc::new(move |offset, _size, caret| {
-                    let Some(connection) = report_connection else {
-                        return;
-                    };
-                    // Two halves of one answer, as the channel defines them:
-                    // where the field is in the window, and where the caret is
-                    // inside the field -- on whichever line it has scrolled to.
-                    connection.set_editable_transform(offset.dx as f64, offset.dy as f64);
-                    connection.set_caret_rect(
-                        caret.left as f64,
-                        caret.top as f64,
-                        caret.width() as f64,
-                        caret.height() as f64,
-                    );
-                });
+            let report: ReportPlacement = Rc::new(move |offset, _size, caret| {
+                let Some(connection) = report_connection else {
+                    return;
+                };
+                // Two halves of one answer, as the channel defines them:
+                // where the field is in the window, and where the caret is
+                // inside the field -- on whichever line it has scrolled to.
+                connection.set_editable_transform(offset.dx as f64, offset.dy as f64);
+                connection.set_caret_rect(
+                    caret.left as f64,
+                    caret.top as f64,
+                    caret.width() as f64,
+                    caret.height() as f64,
+                );
+            });
 
             // The tap handler, made fresh on every build because the region
             // consumes it. A tap does what upstream's `handleTap` ->
@@ -1179,8 +1240,13 @@ impl StatefulComponent for TextField {
                         .max_intrinsic_width()
                     }
                 };
-                let byte =
-                    caret_position_at(&tapped_shown, &layout.lines, layout.line_height, at, &measure);
+                let byte = caret_position_at(
+                    &tapped_shown,
+                    &layout.lines,
+                    layout.line_height,
+                    at,
+                    &measure,
+                );
                 // The lines are ranges of the text as drawn -- bullets, for an
                 // obscured field -- while the platform counts UTF-16 units of
                 // the text as typed. The two have a character for each of the
@@ -1295,13 +1361,19 @@ mod tests {
         ));
         let _ = tree.build_render_tree();
 
-        assert!(!text_input::is_editing(), "nothing focused, nothing editing");
+        assert!(
+            !text_input::is_editing(),
+            "nothing focused, nothing editing"
+        );
 
         // Tab into the first field: it opens a session.
         assert!(crate::focus::next());
         assert_eq!(crate::focus::focused(), Some(1));
         tree.rebuild_dirty();
-        assert!(text_input::is_editing(), "the focused field should be editing");
+        assert!(
+            text_input::is_editing(),
+            "the focused field should be editing"
+        );
 
         // Tab to the second: the first one's session goes with it. What the
         // platform sees is one client at a time either way; what this asserts
@@ -1448,7 +1520,10 @@ mod tests {
         client.update_editing_value(value("zh", 2, (0, 2)));
         client.update_editing_value(value("\u{4e2d}", 1, (-1, -1)));
 
-        assert_eq!(seen.borrow().as_slice(), &["zh".to_string(), "\u{4e2d}".to_string()]);
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &["zh".to_string(), "\u{4e2d}".to_string()]
+        );
     }
 
     #[test]
@@ -1608,7 +1683,10 @@ mod tests {
             text: "\u{2022}".repeat(value.text.chars().count()),
             ..value.clone()
         };
-        assert_eq!(shown.text, "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}");
+        assert_eq!(
+            shown.text,
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
         assert_eq!(shown.selection_extent, value.selection_extent);
     }
 
@@ -1673,8 +1751,8 @@ mod tests {
     fn a_field_that_allows_several_lines_lays_out_by_them() {
         // The wire format counts UTF-16, so a caret on the second line of
         // "ab\ncd" is selection extent 3: two for "ab", one for the newline.
-        let field = RenderEditable::new(value("ab\ncd", 3, (-1, -1)))
-            .with_max_lines(MaxLines::Growing);
+        let field =
+            RenderEditable::new(value("ab\ncd", 3, (-1, -1))).with_max_lines(MaxLines::Growing);
         let lines = field.visual_lines(500.0);
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 2), (3, 5)]);
@@ -1682,7 +1760,9 @@ mod tests {
         // The stubbed engine measures nothing, so the caret's x is zero, but
         // which line it is on is the wrapping's decision, not the metrics':
         // the second, one line height down.
-        let caret = field.caret_rect(&lines, 10.0).expect("the caret is at a boundary");
+        let caret = field
+            .caret_rect(&lines, 10.0)
+            .expect("the caret is at a boundary");
         assert_eq!(caret.top, 10.0);
         assert_eq!(caret.height(), 10.0);
     }
@@ -1696,7 +1776,11 @@ mod tests {
         // last character of a wrapped line shows at the start of the next
         // line rather than trailing on the one that just filled.
         let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
-        assert_eq!(caret_line(&lines, 4), 1, "downstream: the next line's start");
+        assert_eq!(
+            caret_line(&lines, 4),
+            1,
+            "downstream: the next line's start"
+        );
         assert_eq!(caret_line(&lines, 3), 0);
         // And at a hard break the newline itself belongs to no line, so the
         // affinity has nothing to decide: before it is the end of "ab", after
@@ -1714,25 +1798,49 @@ mod tests {
         // pointer; this is the same walk without the paragraph.
         let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
         assert_eq!(
-            caret_position_at("aaa bb", &lines, 10.0, Offset::new(24.0, 0.0), &ten_a_character),
+            caret_position_at(
+                "aaa bb",
+                &lines,
+                10.0,
+                Offset::new(24.0, 0.0),
+                &ten_a_character
+            ),
             2,
             "24 is nearer 20 than 30"
         );
         assert_eq!(
-            caret_position_at("aaa bb", &lines, 10.0, Offset::new(26.0, 0.0), &ten_a_character),
+            caret_position_at(
+                "aaa bb",
+                &lines,
+                10.0,
+                Offset::new(26.0, 0.0),
+                &ten_a_character
+            ),
             3,
             "26 is nearer 30"
         );
         // A tie leans to the earlier boundary, and so to the character the
         // finger is on rather than the one after it.
         assert_eq!(
-            caret_position_at("aaa bb", &lines, 10.0, Offset::new(25.0, 0.0), &ten_a_character),
+            caret_position_at(
+                "aaa bb",
+                &lines,
+                10.0,
+                Offset::new(25.0, 0.0),
+                &ten_a_character
+            ),
             2
         );
         // A tap below the last line is a tap on it, and past its end is its
         // end -- upstream's answer for a position beyond the text.
         assert_eq!(
-            caret_position_at("aaa bb", &lines, 10.0, Offset::new(100.0, 95.0), &ten_a_character),
+            caret_position_at(
+                "aaa bb",
+                &lines,
+                10.0,
+                Offset::new(100.0, 95.0),
+                &ten_a_character
+            ),
             6
         );
     }
@@ -1766,7 +1874,10 @@ mod tests {
             TextInputConfiguration::default(),
         ));
         assert!(field.advance(&mut state, 10_000));
-        assert!(state.caret_blink_on, "the blink starts with the caret shown");
+        assert!(
+            state.caret_blink_on,
+            "the blink starts with the caret shown"
+        );
 
         // Half a second hides it; the next half second shows it again.
         assert!(field.advance(&mut state, 400_000));
@@ -1776,7 +1887,10 @@ mod tests {
         assert!(field.advance(&mut state, 900_000));
         assert!(!state.caret_blink_on, "and 390ms more does not show it");
         assert!(field.advance(&mut state, 1_010_000));
-        assert!(state.caret_blink_on, "the second half second shows it again");
+        assert!(
+            state.caret_blink_on,
+            "the second half second shows it again"
+        );
 
         // The session ending stops the clock. The one frame that clears the
         // caret is still asked for -- it is the frame that paints the caret
@@ -1784,7 +1898,10 @@ mod tests {
         text_input::reset();
         assert!(field.advance(&mut state, 1_010_001));
         assert!(!state.caret_blink_on);
-        assert!(!field.advance(&mut state, 1_010_002), "the caret is gone; so is the clock");
+        assert!(
+            !field.advance(&mut state, 1_010_002),
+            "the caret is gone; so is the clock"
+        );
     }
 
     #[test]
@@ -1816,10 +1933,20 @@ mod tests {
         // any positive y is past them all: the last line, whose earliest
         // boundary is byte 3 -- "ab\ncd" with the caret before the "c".
         let mut router = crate::gestures::GestureRouter::new();
-        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 10.0, 40.0, 0.0, 0.0));
-        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 10.0, 40.0, 0.0, 0.0));
+        router.dispatch(
+            &root,
+            &event(crate::gestures::PointerChange::Down, 10.0, 40.0, 0.0, 0.0),
+        );
+        router.dispatch(
+            &root,
+            &event(crate::gestures::PointerChange::Up, 10.0, 40.0, 0.0, 0.0),
+        );
 
-        assert_eq!(crate::focus::focused(), Some(1), "the tap focused the field");
+        assert_eq!(
+            crate::focus::focused(),
+            Some(1),
+            "the tap focused the field"
+        );
         assert_eq!(
             last_selection(&_messenger),
             Some((3, 3)),
@@ -1827,8 +1954,14 @@ mod tests {
         );
 
         // And a tap at the top of the field is the first line's start.
-        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 5.0, 0.0, 0.0, 0.0));
-        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 5.0, 0.0, 0.0, 0.0));
+        router.dispatch(
+            &root,
+            &event(crate::gestures::PointerChange::Down, 5.0, 0.0, 0.0, 0.0),
+        );
+        router.dispatch(
+            &root,
+            &event(crate::gestures::PointerChange::Up, 5.0, 0.0, 0.0, 0.0),
+        );
         assert_eq!(
             last_selection(&_messenger),
             Some((0, 0)),
@@ -1880,9 +2013,7 @@ mod tests {
     }
 
     /// The editing state the field last told the platform it holds.
-    fn last_selection(
-        recorder: &crate::services::tests_support::Recorder,
-    ) -> Option<(i32, i32)> {
+    fn last_selection(recorder: &crate::services::tests_support::Recorder) -> Option<(i32, i32)> {
         use crate::services::codec::MethodCodec;
         for (channel, bytes, _) in recorder.sent().into_iter().rev() {
             if channel != "flutter/textinput" {
@@ -1901,19 +2032,43 @@ mod tests {
     }
 
     /// The state message the host sends, in the host's own shape.
-    fn state_message(id: i64, text: &str, base: i32, extent: i32, composing: (i32, i32)) -> Vec<u8> {
+    fn state_message(
+        id: i64,
+        text: &str,
+        base: i32,
+        extent: i32,
+        composing: (i32, i32),
+    ) -> Vec<u8> {
         crate::services::codec::JsonMethodCodec
             .encode_method_call(&crate::services::codec::MethodCall::new(
                 "TextInputClient.updateEditingState",
                 crate::services::codec::Value::List(vec![
                     crate::services::codec::Value::I64(id),
                     crate::services::codec::Value::map([
-                        ("selectionAffinity", crate::services::codec::Value::from("TextAffinity.downstream")),
-                        ("selectionBase", crate::services::codec::Value::I64(base as i64)),
-                        ("selectionExtent", crate::services::codec::Value::I64(extent as i64)),
-                        ("selectionIsDirectional", crate::services::codec::Value::Bool(false)),
-                        ("composingBase", crate::services::codec::Value::I64(composing.0 as i64)),
-                        ("composingExtent", crate::services::codec::Value::I64(composing.1 as i64)),
+                        (
+                            "selectionAffinity",
+                            crate::services::codec::Value::from("TextAffinity.downstream"),
+                        ),
+                        (
+                            "selectionBase",
+                            crate::services::codec::Value::I64(base as i64),
+                        ),
+                        (
+                            "selectionExtent",
+                            crate::services::codec::Value::I64(extent as i64),
+                        ),
+                        (
+                            "selectionIsDirectional",
+                            crate::services::codec::Value::Bool(false),
+                        ),
+                        (
+                            "composingBase",
+                            crate::services::codec::Value::I64(composing.0 as i64),
+                        ),
+                        (
+                            "composingExtent",
+                            crate::services::codec::Value::I64(composing.1 as i64),
+                        ),
                         ("text", crate::services::codec::Value::from(text)),
                     ]),
                 ]),
@@ -1950,8 +2105,8 @@ mod tests {
 
     #[test]
     fn a_selection_covers_one_rectangle_per_line_it_crosses() {
-        let field = RenderEditable::new(value("aaa bb", 0, (-1, -1)))
-            .with_max_lines(MaxLines::Growing);
+        let field =
+            RenderEditable::new(value("aaa bb", 0, (-1, -1))).with_max_lines(MaxLines::Growing);
         let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
         // "aaa bb" selected whole: a rect on the wrapped first line and one on
         // the second. The widths are the stub's zeros; which lines get a rect
@@ -1995,6 +2150,9 @@ mod tests {
         assert_eq!(bounded.input_type, TextInputType::Multiline);
         assert_eq!(bounded.action, TextInputAction::Newline);
         // One is the single-line field it already was.
-        assert_eq!(TextField::new(1).with_max_lines(1).max_lines, MaxLines::Single);
+        assert_eq!(
+            TextField::new(1).with_max_lines(1).max_lines,
+            MaxLines::Single
+        );
     }
 }

@@ -19,8 +19,8 @@
 
 use std::cell::RefCell;
 
-use crate::engine::{Color, TextStyle};
 use crate::components::theme_of;
+use crate::engine::{Color, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, leaf, many};
 use crate::gestures::PointerHandlers;
 use crate::render::{
@@ -87,7 +87,11 @@ impl Component for Checkbox {
         } else {
             Color::TRANSPARENT
         };
-        let border = if enabled { theme.primary } else { theme.outline };
+        let border = if enabled {
+            theme.primary
+        } else {
+            theme.outline
+        };
         let tick = theme.on_primary;
         let spacing = theme.spacing;
 
@@ -144,7 +148,13 @@ pub struct Radio {
 
 impl Radio {
     pub fn new(id: u64, selected: bool) -> Radio {
-        Radio { id, selected, enabled: true, label: None, handlers: PointerHandlers::new() }
+        Radio {
+            id,
+            selected,
+            enabled: true,
+            label: None,
+            handlers: PointerHandlers::new(),
+        }
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
@@ -195,7 +205,11 @@ impl Component for Radio {
                 .with_corner_radius(10.0)
                 .with_border(
                     2.0,
-                    if enabled && selected { primary } else { outline },
+                    if enabled && selected {
+                        primary
+                    } else {
+                        outline
+                    },
                 )
                 .with_child(Center::new(dot));
 
@@ -256,7 +270,11 @@ impl Chip {
     }
 
     pub fn selected(self, selected: bool) -> Self {
-        self.with_style(if selected { ChipStyle::Selected } else { ChipStyle::Filter })
+        self.with_style(if selected {
+            ChipStyle::Selected
+        } else {
+            ChipStyle::Filter
+        })
     }
 
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, action: fn(&mut S)) -> Self {
@@ -275,7 +293,11 @@ impl Component for Chip {
         let handlers = self.handlers.clone();
         let (fill, text_color, border) = match self.style {
             ChipStyle::Filter => (Color::TRANSPARENT, theme.text, Some(theme.outline)),
-            ChipStyle::Selected => (theme.primary.with_alpha(0x33), theme.primary, Some(theme.primary)),
+            ChipStyle::Selected => (
+                theme.primary.with_alpha(0x33),
+                theme.primary,
+                Some(theme.primary),
+            ),
             ChipStyle::Action => (theme.surface_variant, theme.text, None),
         };
         let size = theme.body_size - 1.0;
@@ -288,7 +310,10 @@ impl Component for Chip {
                 .with_padding(EdgeInsets::symmetric(14.0, 0.0))
                 .with_child(Align::new(
                     Alignment::CENTER,
-                    Text::new(label.clone()).with_size(size).with_weight(600).with_color(text_color),
+                    Text::new(label.clone())
+                        .with_size(size)
+                        .with_weight(600)
+                        .with_color(text_color),
                 ));
             if let Some(border) = border {
                 container = container.with_border(1.0, border);
@@ -321,11 +346,7 @@ impl TabBar {
     }
 
     /// `select` is given the state and the index that was tapped.
-    pub fn wired<S: 'static>(
-        self,
-        handle: StateHandle<S>,
-        select: fn(&mut S, usize),
-    ) -> TabBar {
+    pub fn wired<S: 'static>(self, handle: StateHandle<S>, select: fn(&mut S, usize)) -> TabBar {
         let handlers = (0..self.labels.len())
             .map(|index| {
                 let handle = handle.clone();
@@ -360,35 +381,34 @@ impl Component for TabBar {
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for (index, label) in labels.iter().enumerate() {
                 let active = index == selected;
-                let tab = Container::new()
-                    .with_height(46.0)
-                    .with_child(
-                        Column::expanded()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                            .push_flex(FlexChild::expanded(
-                                Align::new(
-                                    Alignment::CENTER,
-                                    Text::new(label.clone())
-                                        .with_size(size)
-                                        .with_weight(if active { 700 } else { 500 })
-                                        .with_color(if active { primary } else { muted }),
-                                ),
-                                1,
-                            ))
-                            // The indicator is a child of the tab rather than a
-                            // separate positioned layer, so it moves with the
-                            // tab's own layout instead of being placed twice.
-                            // Two pixels is the default weight upstream's
-                            // `TabBar` underlines its tabs with.
-                            .push(
-                                Container::new()
-                                    .with_height(2.0)
-                                    .with_color(if active { primary } else { outline.with_alpha(0x30) }),
+                let tab = Container::new().with_height(46.0).with_child(
+                    Column::expanded()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .push_flex(FlexChild::expanded(
+                            Align::new(
+                                Alignment::CENTER,
+                                Text::new(label.clone())
+                                    .with_size(size)
+                                    .with_weight(if active { 700 } else { 500 })
+                                    .with_color(if active { primary } else { muted }),
                             ),
-                    );
+                            1,
+                        ))
+                        // The indicator is a child of the tab rather than a
+                        // separate positioned layer, so it moves with the
+                        // tab's own layout instead of being placed twice.
+                        // Two pixels is the default weight upstream's
+                        // `TabBar` underlines its tabs with.
+                        .push(Container::new().with_height(2.0).with_color(if active {
+                            primary
+                        } else {
+                            outline.with_alpha(0x30)
+                        })),
+                );
                 let region = match handlers.get(index) {
-                    Some(handlers) => Pointer::new(first_id + index as u64, tab)
-                        .with_handlers(handlers.clone()),
+                    Some(handlers) => {
+                        Pointer::new(first_id + index as u64, tab).with_handlers(handlers.clone())
+                    }
                     None => Pointer::new(first_id + index as u64, tab),
                 };
                 row = row.push_flex(FlexChild::expanded(region, 1));
@@ -411,7 +431,10 @@ pub struct Destination {
 
 impl Destination {
     pub fn new(label: impl Into<String>, mark: impl Into<String>) -> Destination {
-        Destination { label: label.into(), mark: mark.into() }
+        Destination {
+            label: label.into(),
+            mark: mark.into(),
+        }
     }
 }
 
@@ -464,7 +487,9 @@ impl Component for BottomNavigation {
         // Upstream's `BottomNavigationBar` calls this `additionalBottomPadding`
         // and takes it from `viewPadding` rather than `padding`: the gesture
         // bar is there whether or not a keyboard is over it.
-        let bottom = crate::media_query::media_query_of(context).view_padding.bottom;
+        let bottom = crate::media_query::media_query_of(context)
+            .view_padding
+            .bottom;
 
         leaf(move || {
             let mut row = RenderFlex::row()
@@ -506,8 +531,9 @@ impl Component for BottomNavigation {
                         ),
                 ));
                 let region = match handlers.get(index) {
-                    Some(handlers) => Pointer::new(first_id + index as u64, item)
-                        .with_handlers(handlers.clone()),
+                    Some(handlers) => {
+                        Pointer::new(first_id + index as u64, item).with_handlers(handlers.clone())
+                    }
                     None => Pointer::new(first_id + index as u64, item),
                 };
                 row = row.push_flex(FlexChild::expanded(region, 1));
@@ -588,7 +614,11 @@ impl Component for NavigationRail {
                 let color = if active { primary } else { muted };
                 let mark = Container::new()
                     .with_size(34.0, 30.0)
-                    .with_color(if active { primary.with_alpha(0x33) } else { Color::TRANSPARENT })
+                    .with_color(if active {
+                        primary.with_alpha(0x33)
+                    } else {
+                        Color::TRANSPARENT
+                    })
                     .with_corner_radius(10.0)
                     .with_child(Align::new(
                         Alignment::CENTER,
@@ -599,26 +629,20 @@ impl Component for NavigationRail {
                     ));
                 let content: crate::widgets::BoxedWidget = if extended {
                     crate::render::RenderRef::new(
-                        Row::new()
-                            .with_spacing(spacing)
-                            .push(mark)
-                            .push(
-                                Text::new(destination.label.clone())
-                                    .with_size(13.0)
-                                    .with_weight(if active { 700 } else { 500 })
-                                    .with_color(color),
-                            ),
+                        Row::new().with_spacing(spacing).push(mark).push(
+                            Text::new(destination.label.clone())
+                                .with_size(13.0)
+                                .with_weight(if active { 700 } else { 500 })
+                                .with_color(color),
+                        ),
                     )
                 } else {
                     crate::render::RenderRef::new(
-                        Column::new()
-                            .with_spacing(2.0)
-                            .push(mark)
-                            .push(
-                                Text::new(destination.label.clone())
-                                    .with_size(10.0)
-                                    .with_color(color),
-                            ),
+                        Column::new().with_spacing(2.0).push(mark).push(
+                            Text::new(destination.label.clone())
+                                .with_size(10.0)
+                                .with_color(color),
+                        ),
                     )
                 };
                 let item = Container::new()
@@ -629,8 +653,9 @@ impl Component for NavigationRail {
                         Align::new(Alignment::CENTER, content)
                     });
                 let region = match handlers.get(index) {
-                    Some(handlers) => Pointer::new(first_id + index as u64, item)
-                        .with_handlers(handlers.clone()),
+                    Some(handlers) => {
+                        Pointer::new(first_id + index as u64, item).with_handlers(handlers.clone())
+                    }
                     None => Pointer::new(first_id + index as u64, item),
                 };
                 column = column.push(region);
@@ -660,7 +685,10 @@ pub struct Scrim {
 
 impl Scrim {
     pub fn new(id: u64) -> Scrim {
-        Scrim { id, handlers: PointerHandlers::new() }
+        Scrim {
+            id,
+            handlers: PointerHandlers::new(),
+        }
     }
 
     /// Dismisses when tapped.
@@ -677,11 +705,8 @@ impl Component for Scrim {
         let id = self.id;
         let handlers = self.handlers.clone();
         leaf(move || {
-            Pointer::new(
-                id,
-                Container::new().with_color(Color::argb(0x8A, 0, 0, 0)),
-            )
-            .with_handlers(handlers.clone())
+            Pointer::new(id, Container::new().with_color(Color::argb(0x8A, 0, 0, 0)))
+                .with_handlers(handlers.clone())
         })
     }
 }
@@ -797,7 +822,10 @@ pub struct BottomSheet {
 
 impl BottomSheet {
     pub fn new(child: AnyWidget) -> BottomSheet {
-        BottomSheet { title: None, child: RefCell::new(Some(child)) }
+        BottomSheet {
+            title: None,
+            child: RefCell::new(Some(child)),
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -810,7 +838,11 @@ impl Component for BottomSheet {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let title = self.title.clone();
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| leaf(|| Empty));
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
         let surface = theme.surface;
         let outline = theme.outline;
         let spacing = theme.spacing;
@@ -916,7 +948,9 @@ impl Component for Snackbar {
                 .push_flex(FlexChild::expanded(
                     Align::new(
                         Alignment::CENTER_LEFT,
-                        Text::new(message.clone()).with_size(size).with_color(foreground),
+                        Text::new(message.clone())
+                            .with_size(size)
+                            .with_color(foreground),
                     ),
                     1,
                 ));
@@ -955,7 +989,10 @@ pub struct Banner {
 
 impl Banner {
     pub fn new(message: impl Into<String>) -> Banner {
-        Banner { message: message.into(), actions: RefCell::new(Vec::new()) }
+        Banner {
+            message: message.into(),
+            actions: RefCell::new(Vec::new()),
+        }
     }
 
     pub fn with_action(self, action: AnyWidget) -> Self {
@@ -1071,10 +1108,17 @@ impl Component for GridList {
                     // A short last row is padded with empties rather than left
                     // short, so its tiles keep the width the rest have instead
                     // of stretching to fill.
-                    let cell = tiles.next().unwrap_or_else(|| crate::render::RenderRef::new(Empty));
+                    let cell = tiles
+                        .next()
+                        .unwrap_or_else(|| crate::render::RenderRef::new(Empty));
                     row = row.push_flex(FlexChild::expanded(cell, 1));
                 }
-                column = column.push(Box::new(AspectRow { row, aspect, columns, spacing }));
+                column = column.push(Box::new(AspectRow {
+                    row,
+                    aspect,
+                    columns,
+                    spacing,
+                }));
             }
             Box::new(column)
         })
@@ -1102,7 +1146,8 @@ impl crate::render::RenderBox for AspectRow {
         let gaps = self.spacing * (self.columns.saturating_sub(1)) as f32;
         let cell = ((width - gaps) / self.columns as f32).max(0.0);
         let height = (cell / self.aspect).max(0.0);
-        self.row.layout(crate::render::BoxConstraints::tight(width, height))
+        self.row
+            .layout(crate::render::BoxConstraints::tight(width, height))
     }
 
     fn size(&self) -> Size {
@@ -1130,7 +1175,10 @@ pub struct DataTable {
 
 impl DataTable {
     pub fn new(headers: Vec<String>) -> DataTable {
-        DataTable { headers, rows: Vec::new() }
+        DataTable {
+            headers,
+            rows: Vec::new(),
+        }
     }
 
     pub fn push_row(mut self, row: Vec<String>) -> Self {
@@ -1189,7 +1237,9 @@ impl Component for DataTable {
                 }
                 table = table.push(data_row);
                 table = table.push(
-                    Container::new().with_height(1.0).with_color(outline.with_alpha(0x60)),
+                    Container::new()
+                        .with_height(1.0)
+                        .with_color(outline.with_alpha(0x60)),
                 );
             }
             table
@@ -1205,7 +1255,9 @@ pub struct Tooltip {
 
 impl Tooltip {
     pub fn new(message: impl Into<String>) -> Tooltip {
-        Tooltip { message: message.into() }
+        Tooltip {
+            message: message.into(),
+        }
     }
 }
 
@@ -1221,7 +1273,9 @@ impl Component for Tooltip {
                 .with_corner_radius(6.0)
                 .with_padding(EdgeInsets::symmetric(10.0, 6.0))
                 .with_child(
-                    Text::new(message.clone()).with_size(11.0).with_color(foreground),
+                    Text::new(message.clone())
+                        .with_size(11.0)
+                        .with_color(foreground),
                 )
         })
     }
@@ -1237,7 +1291,10 @@ impl Spinner {
     /// `value` is 0..1. Feed it from an [`crate::animation::Controller`] set to
     /// loop for an indeterminate spinner.
     pub fn new(value: f32) -> Spinner {
-        Spinner { value: value.clamp(0.0, 1.0), size: 36.0 }
+        Spinner {
+            value: value.clamp(0.0, 1.0),
+            size: 36.0,
+        }
     }
 
     pub fn with_size(mut self, size: f32) -> Self {
@@ -1253,7 +1310,13 @@ impl Component for Spinner {
         let size = self.size;
         let track = theme.surface_variant;
         let fill = theme.primary;
-        leaf(move || ArcSpinner { value, extent: size, track, fill, laid_out: Size::ZERO })
+        leaf(move || ArcSpinner {
+            value,
+            extent: size,
+            track,
+            fill,
+            laid_out: Size::ZERO,
+        })
     }
 }
 
@@ -1317,7 +1380,10 @@ pub struct Section {
 
 impl Section {
     pub fn new(title: impl Into<String>, child: AnyWidget) -> Section {
-        Section { title: title.into(), child: RefCell::new(Some(child)) }
+        Section {
+            title: title.into(),
+            child: RefCell::new(Some(child)),
+        }
     }
 }
 
@@ -1325,7 +1391,11 @@ impl Component for Section {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let title = self.title.clone();
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| leaf(|| Empty));
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
         let spacing = theme.spacing;
         let caption = TextStyle {
             font_size: theme.body_size - 2.0,
@@ -1372,15 +1442,22 @@ mod tests {
     #[test]
     fn a_labelled_checkbox_is_wider_than_a_bare_one() {
         let bare = lay_out(component(Checkbox::new(1, false)), 300.0, 100.0);
-        let labelled =
-            lay_out(component(Checkbox::new(1, false).with_label("Remember me")), 300.0, 100.0);
+        let labelled = lay_out(
+            component(Checkbox::new(1, false).with_label("Remember me")),
+            300.0,
+            100.0,
+        );
         assert!(labelled.width > bare.width);
     }
 
     #[test]
     fn a_tab_bar_fills_its_width() {
         let size = lay_out(
-            component(TabBar::new(1, vec!["One".into(), "Two".into(), "Three".into()], 0)),
+            component(TabBar::new(
+                1,
+                vec!["One".into(), "Two".into(), "Three".into()],
+                0,
+            )),
             400.0,
             200.0,
         );
@@ -1418,7 +1495,9 @@ mod tests {
     #[test]
     fn a_data_table_grows_with_its_rows() {
         let one = lay_out(
-            component(DataTable::new(vec!["A".into(), "B".into()]).push_row(vec!["1".into(), "2".into()])),
+            component(
+                DataTable::new(vec!["A".into(), "B".into()]).push_row(vec!["1".into(), "2".into()]),
+            ),
             300.0,
             1000.0,
         );
@@ -1442,7 +1521,10 @@ mod tests {
 
     #[test]
     fn a_navigation_rail_is_wider_when_extended() {
-        let destinations = vec![Destination::new("Home", "H"), Destination::new("Settings", "S")];
+        let destinations = vec![
+            Destination::new("Home", "H"),
+            Destination::new("Settings", "S"),
+        ];
         let narrow = lay_out(
             component(NavigationRail::new(1, destinations.clone(), 0)),
             400.0,

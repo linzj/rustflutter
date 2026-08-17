@@ -397,7 +397,9 @@ impl VelocityTracker {
     const MIN_SAMPLES: usize = 3;
 
     pub fn new() -> VelocityTracker {
-        VelocityTracker { samples: Vec::with_capacity(VelocityTracker::HISTORY) }
+        VelocityTracker {
+            samples: Vec::with_capacity(VelocityTracker::HISTORY),
+        }
     }
 
     /// Records where the pointer was at `time_micros`.
@@ -405,7 +407,10 @@ impl VelocityTracker {
         if self.samples.len() == VelocityTracker::HISTORY {
             self.samples.remove(0);
         }
-        self.samples.push(Sample { time_micros, position });
+        self.samples.push(Sample {
+            time_micros,
+            position,
+        });
     }
 
     /// Estimates the velocity as of `now_micros`, which is when the pointer
@@ -439,8 +444,7 @@ impl VelocityTracker {
             let age = newest.time_micros - sample.time_micros;
             let gap = (sample.time_micros - previous.time_micros).abs();
             previous = sample;
-            if age > VelocityTracker::HORIZON_MICROS
-                || gap > VelocityTracker::ASSUME_STOPPED_MICROS
+            if age > VelocityTracker::HORIZON_MICROS || gap > VelocityTracker::ASSUME_STOPPED_MICROS
             {
                 break;
             }
@@ -467,7 +471,11 @@ impl VelocityTracker {
         }
 
         // Something was recorded, but not enough of it to say how fast.
-        VelocityEstimate { pixels_per_second: Offset::ZERO, offset, duration_micros }
+        VelocityEstimate {
+            pixels_per_second: Offset::ZERO,
+            offset,
+            duration_micros,
+        }
     }
 
     /// The velocity to hand to a fling, or zero if this release was not one.
@@ -530,9 +538,8 @@ fn fit_quadratic(times: &[f32], values: &[f32]) -> Option<[f32; 3]> {
         }
     }
 
-    let dot = |left: &[f32], right: &[f32]| -> f32 {
-        left.iter().zip(right).map(|(l, r)| l * r).sum()
-    };
+    let dot =
+        |left: &[f32], right: &[f32]| -> f32 { left.iter().zip(right).map(|(l, r)| l * r).sum() };
 
     // Q and R, by Gram-Schmidt.
     let mut q = [vec![0.0f32; m], vec![0.0f32; m], vec![0.0f32; m]];
@@ -769,9 +776,7 @@ impl PointerHandlers {
     /// Whether this region wants drags. What tells a scrollable ancestor apart
     /// from a button on the way out of a hit test.
     pub fn wants_drag(&self) -> bool {
-        self.on_drag_start.is_some()
-            || self.on_drag_update.is_some()
-            || self.on_drag_end.is_some()
+        self.on_drag_start.is_some() || self.on_drag_update.is_some() || self.on_drag_end.is_some()
     }
 }
 
@@ -851,7 +856,10 @@ pub(crate) struct Member {
 
 impl Member {
     fn of(recognizer: Recognizer) -> Member {
-        Member { recognizer, index: 0 }
+        Member {
+            recognizer,
+            index: 0,
+        }
     }
 }
 
@@ -898,7 +906,6 @@ impl GestureArena {
         }
     }
 }
-
 
 /// What a single pressed pointer is doing.
 ///
@@ -1008,7 +1015,10 @@ struct PendingTap {
 
 /// Halfway between two points, which is where a two-finger gesture happens.
 fn midpoint(a: Offset, b: Offset) -> Offset {
-    Offset { dx: (a.dx + b.dx) / 2.0, dy: (a.dy + b.dy) / 2.0 }
+    Offset {
+        dx: (a.dx + b.dx) / 2.0,
+        dy: (a.dy + b.dy) / 2.0,
+    }
 }
 
 /// Brings an angle back into -pi..pi.
@@ -1156,7 +1166,9 @@ impl GestureRouter {
             .collect();
 
         for id in due {
-            let Some(pointer) = self.find(id) else { continue };
+            let Some(pointer) = self.find(id) else {
+                continue;
+            };
             let Some(index) = pointer
                 .taps
                 .iter()
@@ -1164,7 +1176,10 @@ impl GestureRouter {
             else {
                 continue;
             };
-            let member = Member { recognizer: Recognizer::LongPress, index };
+            let member = Member {
+                recognizer: Recognizer::LongPress,
+                index,
+            };
             let target = pointer.taps[index].clone();
             // The long press claims the arena outright the moment its deadline
             // passes (upstream resolves accepted from `didExceedDeadline`),
@@ -1180,7 +1195,9 @@ impl GestureRouter {
             if !won {
                 continue;
             }
-            let Some(pointer) = self.find(id) else { continue };
+            let Some(pointer) = self.find(id) else {
+                continue;
+            };
             pointer.long_pressed = true;
             let was_pressed = pointer.pressed;
             pointer.pressed = false;
@@ -1193,7 +1210,10 @@ impl GestureRouter {
                 }
             }
             if let Some(long_press) = &target.handlers.on_long_press {
-                long_press(TapEvent { local_position: local, pointer_id: id });
+                long_press(TapEvent {
+                    local_position: local,
+                    pointer_id: id,
+                });
             }
         }
     }
@@ -1301,9 +1321,7 @@ impl GestureRouter {
             .arenas
             .iter()
             .find(|(id, _)| *id == pointer)
-            .is_some_and(|(_, arena)| {
-                arena.is_held && arena.has_pending_sweep
-            });
+            .is_some_and(|(_, arena)| arena.is_held && arena.has_pending_sweep);
         if let Some((_, arena)) = self.arenas.iter_mut().find(|(id, _)| *id == pointer) {
             arena.is_held = false;
         }
@@ -1347,7 +1365,10 @@ impl GestureRouter {
                     arena.members.retain(|standing| *standing != member);
                     is_open = arena.is_open;
                 }
-                let mut verdicts = vec![Verdict { member, disposition: Disposition::Rejected }];
+                let mut verdicts = vec![Verdict {
+                    member,
+                    disposition: Disposition::Rejected,
+                }];
                 if !is_open {
                     verdicts.extend(self.try_to_resolve_arena(pointer));
                 }
@@ -1389,7 +1410,10 @@ impl GestureRouter {
             return Vec::new(); // And not with this member alone.
         }
         self.arenas.remove(index);
-        vec![Verdict { member, disposition: Disposition::Accepted }]
+        vec![Verdict {
+            member,
+            disposition: Disposition::Accepted,
+        }]
     }
 
     /// Upstream `_resolveInFavorOf`: the arena is settled, everyone else is
@@ -1403,9 +1427,15 @@ impl GestureRouter {
             .members
             .iter()
             .filter(|standing| **standing != member)
-            .map(|loser| Verdict { member: *loser, disposition: Disposition::Rejected })
+            .map(|loser| Verdict {
+                member: *loser,
+                disposition: Disposition::Rejected,
+            })
             .collect();
-        verdicts.push(Verdict { member, disposition: Disposition::Accepted });
+        verdicts.push(Verdict {
+            member,
+            disposition: Disposition::Accepted,
+        });
         verdicts
     }
 
@@ -1424,7 +1454,11 @@ impl GestureRouter {
             .iter()
             .find(|(id, _)| *id == pointer)
             .and_then(|(_, arena)| {
-                arena.members.iter().find(|m| m.recognizer == recognizer).copied()
+                arena
+                    .members
+                    .iter()
+                    .find(|m| m.recognizer == recognizer)
+                    .copied()
             })
     }
 
@@ -1477,7 +1511,6 @@ impl GestureRouter {
             // accepted so the shell's contract holds.
             _ => false,
         }
-
     }
 
     /// Tells the regions under the mouse that it is there, and the ones it has
@@ -1488,7 +1521,9 @@ impl GestureRouter {
 
         let mut under: Vec<(u64, Rc<PointerHandlers>, Offset)> = Vec::new();
         for entry in &result.path {
-            let Some(handlers) = entry.handlers.clone() else { continue };
+            let Some(handlers) = entry.handlers.clone() else {
+                continue;
+            };
             if handlers.on_hover_change.is_some() || handlers.on_hover.is_some() {
                 under.push((entry.target, handlers, entry.local_position));
             }
@@ -1519,13 +1554,17 @@ impl GestureRouter {
                 }
             }
             if let Some(hover) = &handlers.on_hover {
-                hover(HoverEvent { local_position: *local });
+                hover(HoverEvent {
+                    local_position: *local,
+                });
                 told_anyone = true;
             }
         }
 
-        self.hovered =
-            under.into_iter().map(|(id, handlers, _)| (id, handlers)).collect();
+        self.hovered = under
+            .into_iter()
+            .map(|(id, handlers, _)| (id, handlers))
+            .collect();
         // Only when something was actually told. A mouse crossing a window
         // with nothing hoverable in it, or sitting still inside a region that
         // only cares about being entered, must not cost a frame per pixel.
@@ -1541,7 +1580,9 @@ impl GestureRouter {
         let mut result = HitTestResult::new();
         root.hit_test(event.position, &mut result);
         for entry in &result.path {
-            let Some(handlers) = &entry.handlers else { continue };
+            let Some(handlers) = &entry.handlers else {
+                continue;
+            };
             if let Some(scroll) = &handlers.on_scroll {
                 scroll(ScrollEvent {
                     delta: event.scroll_delta,
@@ -1581,7 +1622,9 @@ impl GestureRouter {
         let mut taps: Vec<Target> = Vec::new();
         let mut secondary: Vec<Target> = Vec::new();
         for entry in &result.path {
-            let Some(handlers) = entry.handlers.clone() else { continue };
+            let Some(handlers) = entry.handlers.clone() else {
+                continue;
+            };
             if drag.is_none() && handlers.wants_drag() {
                 drag = Some(Target {
                     handlers: handlers.clone(),
@@ -1677,7 +1720,10 @@ impl GestureRouter {
         // the first entry stranded, nor the arena it opened.
         self.take(event.pointer_id);
         self.take_arena(event.pointer_id);
-        let double = taps.iter().find(|t| t.handlers.on_double_tap.is_some()).cloned();
+        let double = taps
+            .iter()
+            .find(|t| t.handlers.on_double_tap.is_some())
+            .cloned();
         let mut velocity = VelocityTracker::new();
         velocity.add_position(event.time_stamp_micros, event.position);
         self.active.push((
@@ -1720,14 +1766,16 @@ impl GestureRouter {
     /// cosmetic: it is what the sweep hands the arena to.
     fn open_arena(&mut self, pointer_id: i64) {
         let members: Vec<Member> = {
-            let Some((_, pointer)) = self.active.iter().find(|(id, _)| *id == pointer_id)
-            else {
+            let Some((_, pointer)) = self.active.iter().find(|(id, _)| *id == pointer_id) else {
                 return;
             };
             let mut members = Vec::new();
             for (index, target) in pointer.taps.iter().enumerate() {
                 if target.handlers.on_tap.is_some() {
-                    members.push(Member { recognizer: Recognizer::Tap, index });
+                    members.push(Member {
+                        recognizer: Recognizer::Tap,
+                        index,
+                    });
                 }
                 if target.handlers.on_double_tap.is_some()
                     && pointer
@@ -1735,14 +1783,23 @@ impl GestureRouter {
                         .as_ref()
                         .is_some_and(|double| double.is_same_region(target))
                 {
-                    members.push(Member { recognizer: Recognizer::DoubleTap, index });
+                    members.push(Member {
+                        recognizer: Recognizer::DoubleTap,
+                        index,
+                    });
                 }
                 if target.handlers.on_long_press.is_some() {
-                    members.push(Member { recognizer: Recognizer::LongPress, index });
+                    members.push(Member {
+                        recognizer: Recognizer::LongPress,
+                        index,
+                    });
                 }
             }
             for index in 0..pointer.secondary.len() {
-                members.push(Member { recognizer: Recognizer::SecondaryTap, index });
+                members.push(Member {
+                    recognizer: Recognizer::SecondaryTap,
+                    index,
+                });
             }
             if pointer.drag.is_some() {
                 members.push(Member::of(Recognizer::Drag));
@@ -1775,7 +1832,9 @@ impl GestureRouter {
     /// give the arena up (upstream `_reset`), which is what finally lets the
     /// plain tap that has been waiting behind it be reported.
     fn pair_with_pending_tap(&mut self, taps: &[Target], event: &PointerEvent) -> bool {
-        let Some(pending) = self.pending_tap.clone() else { return false };
+        let Some(pending) = self.pending_tap.clone() else {
+            return false;
+        };
         // The two clocks start where upstream starts them: the window at the
         // first tap's lift (`_registerFirstTap` starts the double-tap timer on
         // the up), the minimum gap at the first tap's press (the `_TapTracker`
@@ -1801,7 +1860,9 @@ impl GestureRouter {
     /// that has been holding its arena. If the plain tap ends up the winner of
     /// that resolution, this is the moment it is finally reported.
     fn settle_pending_tap(&mut self, disposition: Disposition) {
-        let Some(tap) = self.pending_tap.take() else { return };
+        let Some(tap) = self.pending_tap.take() else {
+            return;
+        };
         let Some(member) = self.member_of(tap.pointer_id, Recognizer::DoubleTap) else {
             return; // The arena resolved some other way; nothing is waiting.
         };
@@ -1840,7 +1901,10 @@ impl GestureRouter {
             .iter()
             .find(|(id, pointer)| {
                 *id != event.pointer_id
-                    && pointer.scale.as_ref().is_some_and(|t| t.is_same_region(&target))
+                    && pointer
+                        .scale
+                        .as_ref()
+                        .is_some_and(|t| t.is_same_region(&target))
             })
             .map(|(id, pointer)| (*id, pointer.position))
         else {
@@ -1887,7 +1951,9 @@ impl GestureRouter {
     /// Takes a pointer out of whatever drag it was in, because a two-finger
     /// gesture has claimed it.
     fn end_drag_for_scale(&mut self, pointer_id: i64) {
-        let Some(pointer) = self.find(pointer_id) else { return };
+        let Some(pointer) = self.find(pointer_id) else {
+            return;
+        };
         pointer.scaling = true;
         pointer.long_pressed = true; // No long press out of a pinch either.
         let past_slop = pointer.past_slop;
@@ -1924,7 +1990,9 @@ impl GestureRouter {
         };
         active.total = active.total.plus(event.delta);
         active.position = event.position;
-        active.velocity.add_position(event.time_stamp_micros, event.position);
+        active
+            .velocity
+            .add_position(event.time_stamp_micros, event.position);
         if active.scaling {
             // A finger in a pinch is not dragging, tapping or long-pressing;
             // the only thing left to report is the pinch itself.
@@ -1988,14 +2056,19 @@ impl GestureRouter {
                         | Recognizer::DoubleTap
                         | Recognizer::LongPress
                 ) {
-                    verdicts.extend(
-                        self.arena_resolve(event.pointer_id, member, Disposition::Rejected),
-                    );
+                    verdicts.extend(self.arena_resolve(
+                        event.pointer_id,
+                        member,
+                        Disposition::Rejected,
+                    ));
                 }
             }
             if drag_target.is_some() {
-                verdicts
-                    .extend(self.arena_resolve(event.pointer_id, Member::of(Recognizer::Drag), Disposition::Accepted));
+                verdicts.extend(self.arena_resolve(
+                    event.pointer_id,
+                    Member::of(Recognizer::Drag),
+                    Disposition::Accepted,
+                ));
             }
             self.apply_verdicts(event.pointer_id, verdicts);
             drag_won = self.won_by(event.pointer_id, Recognizer::Drag);
@@ -2037,16 +2110,24 @@ impl GestureRouter {
 
     /// Reports where the two fingers are now, relative to where they started.
     fn update_scale(&mut self, _event: &PointerEvent) -> bool {
-        let Some(scale) = &self.scale else { return true };
-        let Some(first) = self.position_of(scale.pointers.0) else { return true };
-        let Some(second) = self.position_of(scale.pointers.1) else { return true };
+        let Some(scale) = &self.scale else {
+            return true;
+        };
+        let Some(first) = self.position_of(scale.pointers.0) else {
+            return true;
+        };
+        let Some(second) = self.position_of(scale.pointers.1) else {
+            return true;
+        };
 
         let focal = midpoint(first, second);
         let separation = second.minus(first);
         let distance = separation.distance();
         let angle = separation.dy.atan2(separation.dx);
 
-        let Some(scale) = &mut self.scale else { return true };
+        let Some(scale) = &mut self.scale else {
+            return true;
+        };
         let details = ScaleEvent {
             focal_point: focal,
             // The focal point is reported in the target's coordinates by
@@ -2090,7 +2171,9 @@ impl GestureRouter {
         if !involved {
             return;
         }
-        let Some(scale) = self.scale.take() else { return };
+        let Some(scale) = self.scale.take() else {
+            return;
+        };
         let details = ScaleEvent {
             focal_point: scale.last_focal,
             local_focal_point: scale
@@ -2148,12 +2231,18 @@ impl GestureRouter {
         for member in self.alive_members(event.pointer_id) {
             match member.recognizer {
                 Recognizer::LongPress => {
-                    verdicts
-                        .extend(self.arena_resolve(event.pointer_id, member, Disposition::Rejected));
+                    verdicts.extend(self.arena_resolve(
+                        event.pointer_id,
+                        member,
+                        Disposition::Rejected,
+                    ));
                 }
                 Recognizer::Drag if !active.past_slop => {
-                    verdicts
-                        .extend(self.arena_resolve(event.pointer_id, member, Disposition::Rejected));
+                    verdicts.extend(self.arena_resolve(
+                        event.pointer_id,
+                        member,
+                        Disposition::Rejected,
+                    ));
                 }
                 _ => {}
             }
@@ -2169,12 +2258,16 @@ impl GestureRouter {
         if !active.past_slop && !active.long_pressed {
             if active.second_tap {
                 if let Some(member) = self.member_of(event.pointer_id, Recognizer::DoubleTap) {
-                    verdicts.extend(
-                        self.arena_resolve(event.pointer_id, member, Disposition::Accepted),
-                    );
+                    verdicts.extend(self.arena_resolve(
+                        event.pointer_id,
+                        member,
+                        Disposition::Accepted,
+                    ));
                 }
             } else if active.double.is_some()
-                && self.member_of(event.pointer_id, Recognizer::DoubleTap).is_some()
+                && self
+                    .member_of(event.pointer_id, Recognizer::DoubleTap)
+                    .is_some()
             {
                 let target = active.double.clone().expect("checked above");
                 self.pending_tap = Some(PendingTap {
@@ -2204,7 +2297,9 @@ impl GestureRouter {
         // A press that travelled is not a tap however the arena went, and
         // neither is one that was already announced as a long press.
         let won = |recognizer: Recognizer| {
-            active.winner.is_some_and(|winner| winner.recognizer == recognizer)
+            active
+                .winner
+                .is_some_and(|winner| winner.recognizer == recognizer)
         };
         if !held_for_double && !active.past_slop && !active.long_pressed {
             if won(Recognizer::Tap) {
@@ -2244,7 +2339,8 @@ impl GestureRouter {
             if let Some(target) = &active.drag {
                 if let Some(end) = &target.handlers.on_drag_end {
                     end(DragEndEvent {
-                        velocity: active.velocity
+                        velocity: active
+                            .velocity
                             .fling_velocity(event.time_stamp_micros, active.kind),
                         total: active.total,
                         local_position: target.local_origin.plus(travel),
@@ -2320,8 +2416,7 @@ impl Default for GestureRouter {
 mod tests {
     use super::*;
     use crate::render::{
-        BoxConstraints, Offset, PaintContext, RenderPointerRegion, RenderStack, Size,
-        StackPosition,
+        BoxConstraints, Offset, PaintContext, RenderPointerRegion, RenderStack, Size, StackPosition,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2361,9 +2456,12 @@ mod tests {
         let mut stack = RenderStack::new()
             .push(Sized(Size::square(100.0)))
             .push_positioned(
-                RenderPointerRegion::new(7, Sized(Size::square(40.0)))
-                    .with_handlers(handlers),
-                StackPosition { left: Some(10.0), top: Some(10.0), ..Default::default() },
+                RenderPointerRegion::new(7, Sized(Size::square(40.0))).with_handlers(handlers),
+                StackPosition {
+                    left: Some(10.0),
+                    top: Some(10.0),
+                    ..Default::default()
+                },
             );
         stack.layout(BoxConstraints::tight(100.0, 100.0));
         stack
@@ -2433,7 +2531,10 @@ mod tests {
     /// One event from a mouse rather than a finger: the same gesture, judged
     /// against a mouse's far smaller slop.
     fn mouse(change: PointerChange, x: f32, y: f32, dx: f32, dy: f32) -> PointerEvent {
-        PointerEvent { kind: PointerKind::Mouse, ..event(change, x, y, dx, dy) }
+        PointerEvent {
+            kind: PointerKind::Mouse,
+            ..event(change, x, y, dx, dy)
+        }
     }
 
     #[test]
@@ -2457,7 +2558,10 @@ mod tests {
         let mut router = GestureRouter::new();
         router.dispatch(&root, &mouse(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
         router.dispatch(&root, &mouse(PointerChange::Move, 21.0, 20.0, 1.0, 0.0));
-        assert!(log.borrow().is_empty(), "one pixel is still within the slop");
+        assert!(
+            log.borrow().is_empty(),
+            "one pixel is still within the slop"
+        );
         router.dispatch(&root, &mouse(PointerChange::Move, 24.0, 20.0, 3.0, 0.0));
         router.dispatch(&root, &mouse(PointerChange::Up, 24.0, 20.0, 0.0, 0.0));
 
@@ -2482,7 +2586,8 @@ mod tests {
         let states = Rc::new(RefCell::new(Vec::new()));
         let sink = states.clone();
         let root = tree(
-            PointerHandlers::new().with_press_change(move |pressed| sink.borrow_mut().push(pressed)),
+            PointerHandlers::new()
+                .with_press_change(move |pressed| sink.borrow_mut().push(pressed)),
         );
 
         let mut router = GestureRouter::new();
@@ -2518,9 +2623,11 @@ mod tests {
     /// scrolled, because every press lands on a row.
     fn nested(inner: PointerHandlers, outer: PointerHandlers) -> RenderStack {
         let mut stack = RenderStack::new().push(
-            RenderPointerRegion::new(1, RenderPointerRegion::new(2, Sized(Size::square(80.0)))
-                .with_handlers(inner))
-                .with_handlers(outer),
+            RenderPointerRegion::new(
+                1,
+                RenderPointerRegion::new(2, Sized(Size::square(80.0))).with_handlers(inner),
+            )
+            .with_handlers(outer),
         );
         stack.layout(BoxConstraints::tight(100.0, 100.0));
         stack
@@ -2541,7 +2648,12 @@ mod tests {
     /// Swipes upwards from (40, 70) at `per_frame` logical pixels every 60Hz
     /// frame, and returns the velocity the release reported.
     fn swipe(frames: i64, per_frame: f32, hold_before_lifting_micros: i64) -> Offset {
-        swipe_with(PointerKind::Touch, frames, per_frame, hold_before_lifting_micros)
+        swipe_with(
+            PointerKind::Touch,
+            frames,
+            per_frame,
+            hold_before_lifting_micros,
+        )
     }
 
     /// The same swipe by some other kind of pointer, whose slops may differ.
@@ -2590,7 +2702,11 @@ mod tests {
             "should be about -1200 px/s, not {}",
             velocity.dy
         );
-        assert!(velocity.dx.abs() < 1.0, "and nothing sideways, not {}", velocity.dx);
+        assert!(
+            velocity.dx.abs() < 1.0,
+            "and nothing sideways, not {}",
+            velocity.dx
+        );
     }
 
     #[test]
@@ -2622,7 +2738,11 @@ mod tests {
         // well past kMinFlingVelocity, but not past a finger's 18px hit slop.
         // A mouse's slop is a single pixel, so the same flick carries.
         let finger = swipe(3, 4.0, 0);
-        assert_eq!(finger, Offset::ZERO, "a finger is forgiven twelve pixels of travel");
+        assert_eq!(
+            finger,
+            Offset::ZERO,
+            "a finger is forgiven twelve pixels of travel"
+        );
         let mouse = swipe_with(PointerKind::Mouse, 3, 4.0, 0);
         assert!(
             (mouse.dy + 240.0).abs() < 60.0,
@@ -2657,16 +2777,23 @@ mod tests {
         let mut router = GestureRouter::new();
         router.dispatch(&root, &at(PointerChange::Down, 70.0, 0.0, 1_000_000));
         for step in 1..=6 {
-            router.dispatch(&root, &at(
-                PointerChange::Move,
-                70.0 - 20.0 * step as f32,
-                -20.0,
-                1_000_000 + step * 16_667,
-            ));
+            router.dispatch(
+                &root,
+                &at(
+                    PointerChange::Move,
+                    70.0 - 20.0 * step as f32,
+                    -20.0,
+                    1_000_000 + step * 16_667,
+                ),
+            );
         }
         router.dispatch(&root, &at(PointerChange::Cancel, 0.0, 0.0, 1_120_000));
 
-        assert_eq!(*velocity.borrow(), Offset::ZERO, "a cancelled drag throws nothing");
+        assert_eq!(
+            *velocity.borrow(),
+            Offset::ZERO,
+            "a cancelled drag throws nothing"
+        );
     }
 
     #[test]
@@ -2727,8 +2854,16 @@ mod tests {
         router.dispatch(&root, &event(PointerChange::Move, 40.0, 80.0, 0.0, 40.0));
         router.dispatch(&root, &event(PointerChange::Up, 40.0, 80.0, 0.0, 0.0));
 
-        assert_eq!(*dragged.borrow(), 40.0, "the list should have been scrolled");
-        assert_eq!(*taps.borrow(), 0, "a scroll is not a tap on the row it began on");
+        assert_eq!(
+            *dragged.borrow(),
+            40.0,
+            "the list should have been scrolled"
+        );
+        assert_eq!(
+            *taps.borrow(),
+            0,
+            "a scroll is not a tap on the row it began on"
+        );
     }
 
     #[test]
@@ -2820,7 +2955,10 @@ mod tests {
 
     /// One event of a press held in place, at a stated moment.
     fn held(change: PointerChange, micros: i64) -> PointerEvent {
-        PointerEvent { time_stamp_micros: micros, ..event(change, 20.0, 20.0, 0.0, 0.0) }
+        PointerEvent {
+            time_stamp_micros: micros,
+            ..event(change, 20.0, 20.0, 0.0, 0.0)
+        }
     }
 
     #[test]
@@ -2831,7 +2969,10 @@ mod tests {
 
         let mut router = GestureRouter::new();
         router.dispatch(&root, &held(PointerChange::Down, 0));
-        assert!(router.awaits_deadline(0), "the clock is what decides this one");
+        assert!(
+            router.awaits_deadline(0),
+            "the clock is what decides this one"
+        );
 
         // A frame before the deadline, and one after it.
         assert!(router.tick(400_000));
@@ -2874,7 +3015,10 @@ mod tests {
         let mut router = GestureRouter::new();
         router.dispatch(&root, &at(PointerChange::Down, 70.0, 0.0, 0));
         router.dispatch(&root, &at(PointerChange::Move, 30.0, -40.0, 100_000));
-        assert!(!router.awaits_deadline(100_000), "a scroll is not a long press");
+        assert!(
+            !router.awaits_deadline(100_000),
+            "a scroll is not a long press"
+        );
         router.tick(700_000);
         assert_eq!(*presses.borrow(), 0);
     }
@@ -2938,7 +3082,10 @@ mod tests {
         // The window runs from the first tap's lift at 30ms, so it closes at
         // 330ms -- a frame before 300ms after the press it is still open.
         router.tick(300_000);
-        assert!(log.borrow().is_empty(), "the clock starts at the lift, not the press");
+        assert!(
+            log.borrow().is_empty(),
+            "the clock starts at the lift, not the press"
+        );
         router.tick(30_000 + DOUBLE_TAP_TIMEOUT_MICROS);
         assert_eq!(*log.borrow(), vec!["tap"]);
     }
@@ -2999,7 +3146,11 @@ mod tests {
         // pixels away.
         router.dispatch(&root, &corner(PointerChange::Down, 78.0, 78.0, 100_000));
         router.dispatch(&root, &corner(PointerChange::Up, 78.0, 78.0, 130_000));
-        assert_eq!(*log.borrow(), vec!["tap"], "the first tap was settled by the second press");
+        assert_eq!(
+            *log.borrow(),
+            vec!["tap"],
+            "the first tap was settled by the second press"
+        );
     }
 
     #[test]
@@ -3119,7 +3270,11 @@ mod tests {
             1,
             "the innermost tap joined first, and the sweep favours the first member"
         );
-        assert_eq!(*outer.borrow(), 0, "the outer tap lost the arena and may not fire");
+        assert_eq!(
+            *outer.borrow(),
+            0,
+            "the outer tap lost the arena and may not fire"
+        );
     }
 
     #[test]
@@ -3189,7 +3344,11 @@ mod tests {
         );
         assert!(router.won_by(1, Recognizer::Tap));
         router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0));
-        assert_eq!(*taps.borrow(), 1, "and the tap is still reported on release");
+        assert_eq!(
+            *taps.borrow(),
+            1,
+            "and the tap is still reported on release"
+        );
     }
 
     #[test]
@@ -3213,7 +3372,11 @@ mod tests {
         router.dispatch(&root, &right);
 
         assert_eq!(*secondary.borrow(), 1);
-        assert_eq!(*primary.borrow(), 0, "the primary tap never joins for another button's press");
+        assert_eq!(
+            *primary.borrow(),
+            0,
+            "the primary tap never joins for another button's press"
+        );
     }
 
     #[test]
@@ -3223,8 +3386,7 @@ mod tests {
         let secondary_sink = secondary.clone();
         let end_sink = ends.clone();
         let root = nested(
-            PointerHandlers::new()
-                .with_secondary_tap(move |_| *secondary_sink.borrow_mut() += 1),
+            PointerHandlers::new().with_secondary_tap(move |_| *secondary_sink.borrow_mut() += 1),
             PointerHandlers::new()
                 .with_drag_update(|_| {})
                 .with_drag_end(move |_| *end_sink.borrow_mut() += 1),
@@ -3248,21 +3410,34 @@ mod tests {
     #[test]
     fn an_eager_accept_is_only_a_promise_until_the_arena_closes() {
         let mut router = GestureRouter::new();
-        let tap = Member { recognizer: Recognizer::Tap, index: 0 };
+        let tap = Member {
+            recognizer: Recognizer::Tap,
+            index: 0,
+        };
         let drag = Member::of(Recognizer::Drag);
         router.arena_add(9, tap);
         router.arena_add(9, drag);
         // The arena is still open -- later members have not had their say --
         // so accepting now can only be noted, not settled.
-        assert!(router.arena_resolve(9, tap, Disposition::Accepted).is_empty());
+        assert!(
+            router
+                .arena_resolve(9, tap, Disposition::Accepted)
+                .is_empty()
+        );
         // Closing keeps the promise: the eager winner takes the arena and
         // everyone else is told they lost.
         let verdicts = router.arena_close(9);
         assert_eq!(
             verdicts,
             vec![
-                Verdict { member: drag, disposition: Disposition::Rejected },
-                Verdict { member: tap, disposition: Disposition::Accepted },
+                Verdict {
+                    member: drag,
+                    disposition: Disposition::Rejected
+                },
+                Verdict {
+                    member: tap,
+                    disposition: Disposition::Accepted
+                },
             ]
         );
         assert!(router.arenas.is_empty(), "a resolved arena is discarded");
@@ -3271,8 +3446,14 @@ mod tests {
     #[test]
     fn a_sweep_attempted_on_a_held_arena_runs_when_it_is_released() {
         let mut router = GestureRouter::new();
-        let tap = Member { recognizer: Recognizer::Tap, index: 0 };
-        let long_press = Member { recognizer: Recognizer::LongPress, index: 0 };
+        let tap = Member {
+            recognizer: Recognizer::Tap,
+            index: 0,
+        };
+        let long_press = Member {
+            recognizer: Recognizer::LongPress,
+            index: 0,
+        };
         router.arena_add(5, tap);
         router.arena_add(5, long_press);
         router.arena_close(5);
@@ -3284,8 +3465,14 @@ mod tests {
         assert_eq!(
             verdicts,
             vec![
-                Verdict { member: tap, disposition: Disposition::Accepted },
-                Verdict { member: long_press, disposition: Disposition::Rejected },
+                Verdict {
+                    member: tap,
+                    disposition: Disposition::Accepted
+                },
+                Verdict {
+                    member: long_press,
+                    disposition: Disposition::Rejected
+                },
             ],
             "the release runs the pending sweep, first member first"
         );
@@ -3295,13 +3482,7 @@ mod tests {
     // -- Scale ----------------------------------------------------------------
 
     /// One finger's event, at a position and a moment.
-    fn finger(
-        pointer_id: i64,
-        change: PointerChange,
-        x: f32,
-        y: f32,
-        micros: i64,
-    ) -> PointerEvent {
+    fn finger(pointer_id: i64, change: PointerChange, x: f32, y: f32, micros: i64) -> PointerEvent {
         PointerEvent {
             pointer_id,
             time_stamp_micros: micros,
@@ -3336,9 +3517,17 @@ mod tests {
         router.dispatch(&root, &finger(2, PointerChange::Move, 60.0, 40.0, 30_000));
 
         let events = events.borrow();
-        assert_eq!(events.first().map(|s| s.scale), Some(1.0), "a pinch starts at one");
+        assert_eq!(
+            events.first().map(|s| s.scale),
+            Some(1.0),
+            "a pinch starts at one"
+        );
         let last = events.last().expect("an update");
-        assert!((last.scale - 2.0).abs() < 0.01, "fingers twice as far apart: {}", last.scale);
+        assert!(
+            (last.scale - 2.0).abs() < 0.01,
+            "fingers twice as far apart: {}",
+            last.scale
+        );
         // The focal point has not moved: the fingers moved apart symmetrically.
         assert!((last.focal_point.dx - 40.0).abs() < 0.01);
     }
@@ -3357,7 +3546,10 @@ mod tests {
         let events = events.borrow();
         let last = events.last().expect("an update");
         assert!((last.scale - 1.0).abs() < 0.01, "no pinch, only a move");
-        assert!((last.focal_point.dy - 50.0).abs() < 0.01, "the focal point followed them");
+        assert!(
+            (last.focal_point.dy - 50.0).abs() < 0.01,
+            "the focal point followed them"
+        );
     }
 
     #[test]
@@ -3457,7 +3649,11 @@ mod tests {
         assert!(log.borrow().is_empty());
         router.dispatch(&root, &hover_at(20.0, 20.0));
         router.dispatch(&root, &hover_at(30.0, 30.0));
-        assert_eq!(*log.borrow(), vec![true], "entering is one event, not one per move");
+        assert_eq!(
+            *log.borrow(),
+            vec![true],
+            "entering is one event, not one per move"
+        );
         router.dispatch(&root, &hover_at(90.0, 90.0));
         assert_eq!(*log.borrow(), vec![true, false]);
     }
@@ -3494,10 +3690,13 @@ mod tests {
         let mut router = GestureRouter::new();
         router.dispatch(&root, &hover_at(40.0, 40.0));
         assert_eq!(*log.borrow(), vec!["inner:true", "outer:true"]);
-        router.dispatch(&root, &PointerEvent {
-            change: PointerChange::Remove,
-            ..hover_at(40.0, 40.0)
-        });
+        router.dispatch(
+            &root,
+            &PointerEvent {
+                change: PointerChange::Remove,
+                ..hover_at(40.0, 40.0)
+            },
+        );
         assert_eq!(
             *log.borrow(),
             vec!["inner:true", "outer:true", "inner:false", "outer:false"],
@@ -3507,9 +3706,10 @@ mod tests {
 
     #[test]
     fn a_press_is_not_a_hover() {
-        let root = tree(PointerHandlers::new().with_hover_change(|_| {
-            panic!("a finger touching the screen is not hovering over it")
-        }));
+        let root =
+            tree(PointerHandlers::new().with_hover_change(|_| {
+                panic!("a finger touching the screen is not hovering over it")
+            }));
         let mut router = GestureRouter::new();
         router.dispatch(&root, &event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
         router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0));

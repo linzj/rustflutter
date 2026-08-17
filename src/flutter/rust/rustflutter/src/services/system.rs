@@ -189,9 +189,10 @@ impl Clipboard {
     pub fn get_data(callback: impl FnOnce(Option<String>) + 'static) {
         PLATFORM.invoke_with_reply("Clipboard.getData", Value::from(TEXT_PLAIN), move |reply| {
             callback(match reply {
-                Ok(Some(value)) => {
-                    value.get("text").and_then(Value::as_str).map(str::to_string)
-                }
+                Ok(Some(value)) => value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 _ => None,
             });
         });
@@ -199,7 +200,10 @@ impl Clipboard {
 
     /// Puts text on the clipboard.
     pub fn set_data(text: &str) {
-        PLATFORM.invoke("Clipboard.setData", Value::map([("text", Value::from(text))]));
+        PLATFORM.invoke(
+            "Clipboard.setData",
+            Value::map([("text", Value::from(text))]),
+        );
     }
 
     /// Asks whether the clipboard holds any text.
@@ -212,12 +216,16 @@ impl Clipboard {
         // Upstream's `Clipboard.hasStrings` passes `kTextPlain`, and the
         // embedders check it -- sending nothing gets an "Unknown clipboard
         // format" error back, which reads here as "no text on the clipboard".
-        PLATFORM.invoke_with_reply("Clipboard.hasStrings", Value::from(TEXT_PLAIN), move |reply| {
-            callback(match reply {
-                Ok(Some(value)) => value.get("value").and_then(Value::as_bool).unwrap_or(false),
-                _ => false,
-            });
-        });
+        PLATFORM.invoke_with_reply(
+            "Clipboard.hasStrings",
+            Value::from(TEXT_PLAIN),
+            move |reply| {
+                callback(match reply {
+                    Ok(Some(value)) => value.get("value").and_then(Value::as_bool).unwrap_or(false),
+                    _ => false,
+                });
+            },
+        );
     }
 }
 
@@ -421,7 +429,10 @@ pub(crate) fn install_exit_handler() {
             AppExitType::Required => AppExitResponse::Exit,
             AppExitType::Cancelable => response,
         };
-        responder.success(Value::map([("response", Value::from(response.as_message()))]));
+        responder.success(Value::map([(
+            "response",
+            Value::from(response.as_message()),
+        )]));
     });
 }
 
@@ -571,7 +582,10 @@ impl SystemMouseCursor {
     pub fn activate(self, device: i64) {
         MOUSE_CURSOR.invoke(
             "activateSystemCursor",
-            Value::map([("device", Value::I64(device)), ("kind", Value::from(self.kind()))]),
+            Value::map([
+                ("device", Value::I64(device)),
+                ("kind", Value::from(self.kind())),
+            ]),
         );
     }
 }
@@ -714,7 +728,11 @@ mod tests {
             .collect();
         assert_eq!(
             methods,
-            vec!["SystemNavigator.pop", "SystemSound.play", "Clipboard.setData"]
+            vec![
+                "SystemNavigator.pop",
+                "SystemSound.play",
+                "Clipboard.setData"
+            ]
         );
     }
 
@@ -779,7 +797,11 @@ mod tests {
             SystemMouseCursor::ResizeRow,
         ];
         for cursor in all {
-            assert!(known.contains(&cursor.kind()), "{} is not in the table", cursor.kind());
+            assert!(
+                known.contains(&cursor.kind()),
+                "{} is not in the table",
+                cursor.kind()
+            );
         }
     }
 
@@ -823,7 +845,10 @@ mod tests {
             AppLifecycleState::Paused,
             AppLifecycleState::Detached,
         ] {
-            assert_eq!(AppLifecycleState::from_message(state.as_message()), Some(state));
+            assert_eq!(
+                AppLifecycleState::from_message(state.as_message()),
+                Some(state)
+            );
         }
     }
 
@@ -844,9 +869,7 @@ mod tests {
         let recorder = install();
         let seen = Rc::new(RefCell::new(Vec::new()));
         let recorded = seen.clone();
-        on_route_message(move |method, _arguments| {
-            recorded.borrow_mut().push(method.to_string())
-        });
+        on_route_message(move |method, _arguments| recorded.borrow_mut().push(method.to_string()));
 
         let call = JsonMethodCodec
             .encode_method_call(&super::super::MethodCall::new("popRoute", Value::Null))
@@ -857,7 +880,10 @@ mod tests {
         let (response_id, reply) = recorder.responses().remove(0);
         assert_eq!(response_id, 2);
         // A success envelope carrying null -- not a bool. See on_route_message.
-        assert_eq!(JsonMethodCodec.decode_envelope(&reply.unwrap()), Ok(Some(Value::Null)));
+        assert_eq!(
+            JsonMethodCodec.decode_envelope(&reply.unwrap()),
+            Ok(Some(Value::Null))
+        );
     }
 
     #[test]
@@ -871,7 +897,13 @@ mod tests {
 
         let (channel, bytes, response_id) = recorder.sent().remove(0);
         assert_eq!(channel, "com.example/battery");
-        assert_eq!(StandardMethodCodec.decode_method_call(&bytes).unwrap().method, "level");
+        assert_eq!(
+            StandardMethodCodec
+                .decode_method_call(&bytes)
+                .unwrap()
+                .method,
+            "level"
+        );
 
         let error = MethodError::new("UNAVAILABLE", None);
         let envelope = StandardMethodCodec.encode_error_envelope(&error).unwrap();
@@ -902,13 +934,13 @@ mod tests {
             .find(|(id, _)| *id == response_id)
             .expect("the handler answered");
         let value = JsonMethodCodec.decode_envelope(&reply?).ok()??;
-        value.get("response").and_then(Value::as_str).map(str::to_string)
+        value
+            .get("response")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }
 
-    fn ask_to_exit(
-        recorder: &super::super::tests_support::Recorder,
-        kind: &str,
-    ) -> Option<String> {
+    fn ask_to_exit(recorder: &super::super::tests_support::Recorder, kind: &str) -> Option<String> {
         call_platform(
             recorder,
             "System.requestAppExit",
@@ -922,7 +954,10 @@ mod tests {
         // embedder would ask and nothing would answer, and the close button
         // would do nothing at all.
         let recorder = install();
-        assert_eq!(ask_to_exit(&recorder, "cancelable").as_deref(), Some("exit"));
+        assert_eq!(
+            ask_to_exit(&recorder, "cancelable").as_deref(),
+            Some("exit")
+        );
     }
 
     #[test]
@@ -932,7 +967,10 @@ mod tests {
             assert_eq!(kind, AppExitType::Cancelable);
             AppExitResponse::Cancel
         });
-        assert_eq!(ask_to_exit(&recorder, "cancelable").as_deref(), Some("cancel"));
+        assert_eq!(
+            ask_to_exit(&recorder, "cancelable").as_deref(),
+            Some("cancel")
+        );
     }
 
     #[test]
@@ -985,7 +1023,10 @@ mod tests {
         assert_eq!(channel, "flutter/platform");
         let call = JsonMethodCodec.decode_method_call(&bytes).unwrap();
         assert_eq!(call.method, "System.exitApplication");
-        assert_eq!(call.arguments.get("type").and_then(Value::as_str), Some("required"));
+        assert_eq!(
+            call.arguments.get("type").and_then(Value::as_str),
+            Some("required")
+        );
         // An int, not a double: the embedder reads it with `IsInt` and rejects
         // the whole request if it is anything else.
         assert_eq!(call.arguments.get("exitCode"), Some(&Value::I64(3)));

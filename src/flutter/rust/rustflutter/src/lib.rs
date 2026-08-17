@@ -48,116 +48,112 @@ pub mod semantics;
 pub mod services;
 pub mod widgets;
 
+pub use animation::{
+    Animations, ColorTween, Controller, Curve, Direction, FloatTween, OffsetTween, Repeat, Tween,
+};
+#[cfg(not(test))]
+pub use app::run;
 pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
-pub use animation::{
-    Animations, ColorTween, Controller, Curve, Direction, FloatTween, OffsetTween, Repeat, Tween,
+pub use components::{
+    AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+    LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
 pub use controls::{
     Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
     Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
 };
 pub use direction::{TextDirection, current_direction, direction_of, directionality};
-pub use navigation::{
-    Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
-};
-pub use components::{
-    AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
-    LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
-};
 pub use editable::{RenderEditable, TextField, TextFieldState};
+pub use engine::{
+    Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
+    TextStyle,
+};
 pub use focus::{Focus, KeyResult, focusable};
+pub use framework::{
+    AnyWidget, Component, ElementTree, GlobalKey, Key, RenderWidget, StateHandle,
+    StatefulComponent, component, keyed_leaf, keyed_many, keyed_single, leaf, many, provide,
+    single, stateful, with_global_key,
+};
 pub use implicit::{Animated, Lerp, animated};
 pub use ink::{Ink, ink};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use media_query::{
     MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
 };
-pub use services::{
-    BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
-    MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
-};
-pub use framework::{
-    AnyWidget, Component, ElementTree, GlobalKey, Key, RenderWidget, StateHandle,
-    StatefulComponent, component, leaf, keyed_leaf, keyed_many, keyed_single, many, provide,
-    single, stateful, with_global_key,
-};
-#[cfg(not(test))]
-pub use app::run;
-pub use engine::{
-    Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
-    TextStyle,
+pub use navigation::{
+    Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
 pub use painting::{
     BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap, StrokeJoin,
     TileMode,
 };
 pub use scrollbar::{Scrollbar, scrollbar};
-pub use scrolling::{
-    ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window,
+pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};
+pub use services::{
+    BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
+    MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
 };
 pub use widgets::{
-    BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox, IndexedStack,
-    Offset, Size, Text, TextSpan, Baseline, FractionallySizedBox, LimitedBox, OverflowBox,
-    SizedOverflowBox, boxed, repaint_boundary,
-    Widget,
+    Baseline, BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox,
+    FractionallySizedBox, IndexedStack, LimitedBox, Offset, OverflowBox, Size, SizedOverflowBox,
+    Text, TextSpan, Widget, boxed, repaint_boundary,
 };
 
 /// Everything a typical app needs in one import.
 pub mod prelude {
+    pub use crate::App;
+    pub use crate::animation::{Animations, ColorTween, Controller, Curve, FloatTween, Tween};
+    #[cfg(not(test))]
+    pub use crate::app::run;
     pub use crate::app::{
         Application, BuildContext, FrameContext, FrameScheduler, RunOptions, WidgetApplication,
         WidgetHost, register_application,
     };
-    pub use crate::animation::{Animations, ColorTween, Controller, Curve, FloatTween, Tween};
+    pub use crate::components::{
+        AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+        ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
+        theme_of,
+    };
     pub use crate::controls::{
         Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
         Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
         Tooltip,
     };
     pub use crate::direction::{TextDirection, current_direction, directionality};
-    pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
-    pub use crate::components::{
-        AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
-        ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
-        theme_of,
-    };
     pub use crate::editable::{TextField, TextFieldState};
+    pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
     pub use crate::focus::{Focus, KeyResult, focusable};
+    pub use crate::framework::{
+        AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, component, keyed_leaf,
+        keyed_many, keyed_single, leaf, many, provide, single, stateful, with_global_key,
+    };
     pub use crate::implicit::{Animated, animated};
     pub use crate::ink::{Ink, ink};
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::media_query::{
         MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
     };
+    pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
+    pub use crate::painting::{
+        BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap,
+        StrokeJoin, TileMode,
+    };
+    pub use crate::platform::{Brightness, Locale, UserSettings};
+    pub use crate::scrollbar::{Scrollbar, scrollbar};
+    pub use crate::scrolling::{ExtentBook, LazyList, Scroll, SliverListView, VariableExtentList};
     pub use crate::services::system::{
         AppExitResponse, AppExitType, AppLifecycleState, Clipboard, HapticFeedback, SystemChrome,
         SystemMouseCursor, SystemNavigator, SystemSound, SystemSoundType,
     };
     pub use crate::services::{MethodCall, MethodChannel, MethodError, Value};
-    pub use crate::platform::{Brightness, Locale, UserSettings};
-    pub use crate::scrollbar::{Scrollbar, scrollbar};
-    pub use crate::scrolling::{ExtentBook, LazyList, Scroll, SliverListView, VariableExtentList};
-    pub use crate::framework::{
-        AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, component, keyed_leaf,
-        keyed_many, keyed_single, leaf, many, provide, single, stateful, with_global_key,
-    };
-    #[cfg(not(test))]
-    pub use crate::app::run;
-    pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
-    pub use crate::painting::{
-        BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap,
-        StrokeJoin, TileMode,
-    };
     pub use crate::widgets::{
-        BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, Offset, Size, Text,
-        boxed, Baseline, FittedBox, FractionallySizedBox, IndexedStack, LimitedBox, OverflowBox,
-        SizedOverflowBox,
-        TextSpan, Widget,
+        Baseline, BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox,
+        FractionallySizedBox, IndexedStack, LimitedBox, Offset, OverflowBox, Size,
+        SizedOverflowBox, Text, TextSpan, Widget, boxed,
     };
-    pub use crate::App;
 }
 
 /// Drives one frame: lays the widget tree out against the window size, paints

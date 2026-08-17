@@ -26,9 +26,7 @@ use std::rc::Rc;
 use crate::animation::Curve;
 use crate::components::theme_of;
 use crate::engine::Color;
-use crate::framework::{
-    AnyWidget, BuildContext, StateHandle, StatefulComponent, single, stateful,
-};
+use crate::framework::{AnyWidget, BuildContext, StateHandle, StatefulComponent, single, stateful};
 use crate::gestures::PointerHandlers;
 use crate::render::{Alignment, Offset, Size, StackPosition};
 
@@ -139,7 +137,12 @@ pub struct Ink {
 
 impl Ink {
     pub fn new(id: u64, build_child: impl Fn() -> AnyWidget + 'static) -> Ink {
-        Ink { id, build_child: Rc::new(build_child), color: None, contained: true }
+        Ink {
+            id,
+            build_child: Rc::new(build_child),
+            color: None,
+            contained: true,
+        }
     }
 
     /// The splash colour. Defaults to the theme's primary at a tenth, which is
@@ -164,7 +167,9 @@ impl StatefulComponent for Ink {
     }
 
     fn advance(&self, state: &mut InkState, frame_time_micros: i64) -> bool {
-        let Some(splash) = &mut state.splash else { return false };
+        let Some(splash) = &mut state.splash else {
+            return false;
+        };
         splash.now_micros = frame_time_micros;
         if !splash.alive() {
             state.splash = None;
@@ -234,9 +239,9 @@ impl StatefulComponent for Ink {
                     // a real box stacked on top of the content, and this is
                     // what keeps it from being one.
                     stack = stack.push_positioned(
-                        crate::render::RenderIgnorePointer::new(
-                            crate::render::RenderOpacity::new(opacity, circle),
-                        ),
+                        crate::render::RenderIgnorePointer::new(crate::render::RenderOpacity::new(
+                            opacity, circle,
+                        )),
                         StackPosition {
                             left: Some(at.dx - radius),
                             top: Some(at.dy - radius),
@@ -247,10 +252,7 @@ impl StatefulComponent for Ink {
             }
             // Reports the size the region was actually given, for the next
             // splash to measure itself against.
-            let watched = crate::render::RenderSizeReporter::new(
-                Rc::clone(&size_sink),
-                stack,
-            );
+            let watched = crate::render::RenderSizeReporter::new(Rc::clone(&size_sink), stack);
             let region = crate::render::RenderPointerRegion::new(id, watched)
                 .with_handlers(handlers.clone());
             if contained {
@@ -292,7 +294,12 @@ mod tests {
     use super::*;
 
     fn splash_at(at: Offset, started: i64, now: i64, released: Option<i64>) -> Splash {
-        Splash { at, started_micros: started, released_micros: released, now_micros: now }
+        Splash {
+            at,
+            started_micros: started,
+            released_micros: released,
+            now_micros: now,
+        }
     }
 
     #[test]
@@ -312,7 +319,10 @@ mod tests {
         let target = 100.0;
         let splash = splash_at(Offset::new(10.0, 10.0), 0, 0, None);
         let first = splash.radius(target);
-        assert!(first >= target * 0.3, "a splash that starts at nothing looks like a delay");
+        assert!(
+            first >= target * 0.3,
+            "a splash that starts at nothing looks like a delay"
+        );
 
         let later = splash_at(Offset::new(10.0, 10.0), 0, 500_000, None).radius(target);
         assert!(later > first);
@@ -322,7 +332,10 @@ mod tests {
     fn a_splash_fades_in_quickly_and_out_slowly() {
         let at = Offset::new(10.0, 10.0);
         assert_eq!(splash_at(at, 0, 0, None).opacity(), 0.0, "not there yet");
-        assert!(splash_at(at, 0, FADE_IN_MICROS, None).opacity() > 0.99, "arrived");
+        assert!(
+            splash_at(at, 0, FADE_IN_MICROS, None).opacity() > 0.99,
+            "arrived"
+        );
 
         // Released at 200ms, and 375ms later it is gone.
         let leaving = splash_at(at, 0, 200_000 + FADE_OUT_MICROS / 2, Some(200_000));
@@ -335,7 +348,10 @@ mod tests {
     #[test]
     fn a_press_that_is_still_held_does_not_fade() {
         let held = splash_at(Offset::new(1.0, 1.0), 0, 5_000_000, None);
-        assert!(held.alive(), "a finger that has not lifted is still pressing");
+        assert!(
+            held.alive(),
+            "a finger that has not lifted is still pressing"
+        );
         assert!(held.opacity() > 0.99);
     }
 
@@ -349,7 +365,11 @@ mod tests {
         tree.rebuild(super::ink(1, || leaf(|| SizedBox::new(100.0, 44.0))));
         let mut root = tree.build_render_tree().expect("mounted");
         let size = root.layout(BoxConstraints::new(0.0, 400.0, 0.0, 400.0));
-        assert_eq!(size, Size::new(100.0, 44.0), "the ink must not resize the button");
+        assert_eq!(
+            size,
+            Size::new(100.0, 44.0),
+            "the ink must not resize the button"
+        );
     }
 
     #[test]
@@ -358,7 +378,9 @@ mod tests {
         // splash is drawn *over* the child and must not change what the parent
         // measures.
         use crate::framework::{ElementTree, leaf};
-        use crate::gestures::{GestureRouter, PointerChange, PointerEvent, PointerKind, SignalKind};
+        use crate::gestures::{
+            GestureRouter, PointerChange, PointerEvent, PointerKind, SignalKind,
+        };
         use crate::render::{BoxConstraints, RenderBox};
         use crate::widgets::SizedBox;
 
@@ -383,12 +405,19 @@ mod tests {
             pressure: 1.0,
             local_position: Offset::new(50.0, 22.0),
         };
-        assert!(router.dispatch(&root, &down), "the press should land on the ink");
+        assert!(
+            router.dispatch(&root, &down),
+            "the press should land on the ink"
+        );
 
         tree.advance_frame(16_000);
         tree.rebuild_dirty();
         let mut splashing = tree.build_render_tree().expect("mounted");
         let size = splashing.layout(BoxConstraints::new(0.0, 400.0, 0.0, 400.0));
-        assert_eq!(size, Size::new(100.0, 44.0), "the splash resized the button");
+        assert_eq!(
+            size,
+            Size::new(100.0, 44.0),
+            "the splash resized the button"
+        );
     }
 }

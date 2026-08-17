@@ -46,8 +46,8 @@
 //! Without them the list of characters the reader is choosing from appears in
 //! the corner of the window instead of under the word being typed.
 
-use super::codec::{JsonMethodCodec, MethodCall, Value};
 use super::MethodChannel;
+use super::codec::{JsonMethodCodec, MethodCall, Value};
 
 /// What a text field holds, and where the caret is in it.
 ///
@@ -146,7 +146,11 @@ impl TextEditingValue {
 
     fn from_state(state: &Value) -> Option<TextEditingValue> {
         let number = |key: &str, fallback: i32| {
-            state.get(key).and_then(Value::as_i64).map(|v| v as i32).unwrap_or(fallback)
+            state
+                .get(key)
+                .and_then(Value::as_i64)
+                .map(|v| v as i32)
+                .unwrap_or(fallback)
         };
         Some(TextEditingValue {
             text: state.get("text")?.as_str()?.to_string(),
@@ -386,7 +390,10 @@ impl TextInputConnection {
     /// is how it knows not to act on it.
     pub fn is_attached(&self) -> bool {
         ATTACHED.with(|attached| {
-            attached.borrow().as_ref().is_some_and(|current| current.id == self.id)
+            attached
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| current.id == self.id)
         })
     }
 
@@ -520,16 +527,16 @@ fn dispatch(call: &MethodCall) {
     };
     // A message for a field that has since been detached. Dropping it is the
     // point of the id: applying it would put one field's text into another.
-    let current = ATTACHED.with(|attached| {
-        attached.borrow().as_ref().map(|current| current.id)
-    });
+    let current = ATTACHED.with(|attached| attached.borrow().as_ref().map(|current| current.id));
     if current != Some(id as i32) {
         return;
     }
 
     match call.method.as_str() {
         "TextInputClient.updateEditingState" => {
-            let Some(state) = arguments.get(1) else { return };
+            let Some(state) = arguments.get(1) else {
+                return;
+            };
             let Some(value) = TextEditingValue::from_state(state) else {
                 return;
             };
@@ -625,7 +632,13 @@ mod tests {
     }
 
     /// The state message the host sends, in the host's own shape.
-    fn state_message(id: i32, text: &str, base: i32, extent: i32, composing: (i32, i32)) -> Vec<u8> {
+    fn state_message(
+        id: i32,
+        text: &str,
+        base: i32,
+        extent: i32,
+        composing: (i32, i32),
+    ) -> Vec<u8> {
         JsonMethodCodec
             .encode_method_call(&MethodCall::new(
                 "TextInputClient.updateEditingState",
@@ -679,7 +692,11 @@ mod tests {
         let (recorded, connection) = attach_field();
         let id = connection.id;
 
-        recorder.deliver("flutter/textinput", &state_message(id, "hello", 5, 5, (-1, -1)), 0);
+        recorder.deliver(
+            "flutter/textinput",
+            &state_message(id, "hello", 5, 5, (-1, -1)),
+            0,
+        );
 
         let values = &recorded.borrow().values;
         assert_eq!(values.len(), 1);
@@ -744,7 +761,11 @@ mod tests {
             .collect();
         assert_eq!(
             methods,
-            vec!["TextInput.setClient", "TextInput.clearClient", "TextInput.setClient"]
+            vec![
+                "TextInput.setClient",
+                "TextInput.clearClient",
+                "TextInput.setClient"
+            ]
         );
     }
 
@@ -784,10 +805,16 @@ mod tests {
             ("TextInputAction.send", TextInputAction::Send),
             ("TextInputAction.next", TextInputAction::Next),
             ("TextInputAction.previous", TextInputAction::Previous),
-            ("TextInputAction.continueAction", TextInputAction::ContinueAction),
+            (
+                "TextInputAction.continueAction",
+                TextInputAction::ContinueAction,
+            ),
             ("TextInputAction.join", TextInputAction::Join),
             ("TextInputAction.route", TextInputAction::Route),
-            ("TextInputAction.emergencyCall", TextInputAction::EmergencyCall),
+            (
+                "TextInputAction.emergencyCall",
+                TextInputAction::EmergencyCall,
+            ),
             ("TextInputAction.newline", TextInputAction::Newline),
         ];
         for (name, action) in pairs {
@@ -831,7 +858,10 @@ mod tests {
             (TextInputType::Datetime, "TextInputType.datetime"),
             (TextInputType::Email, "TextInputType.emailAddress"),
             (TextInputType::Url, "TextInputType.url"),
-            (TextInputType::VisiblePassword, "TextInputType.visiblePassword"),
+            (
+                TextInputType::VisiblePassword,
+                "TextInputType.visiblePassword",
+            ),
             (TextInputType::Name, "TextInputType.name"),
             // Upstream's `_names` table says "address", not "streetAddress".
             (TextInputType::StreetAddress, "TextInputType.address"),
@@ -858,7 +888,10 @@ mod tests {
             .iter()
             .map(|(_, bytes, _)| JsonMethodCodec.decode_method_call(bytes).unwrap().method)
             .collect();
-        assert_eq!(methods, vec!["TextInput.setClient", "TextInput.clearClient"]);
+        assert_eq!(
+            methods,
+            vec!["TextInput.setClient", "TextInput.clearClient"]
+        );
 
         // Anything still in flight is for a field nobody is editing.
         recorder.deliver(
@@ -894,7 +927,10 @@ mod tests {
         let call = JsonMethodCodec
             .encode_method_call(&MethodCall::new(
                 "TextInputClient.performAction",
-                Value::List(vec![Value::I64(next.id as i64), Value::from("TextInputAction.next")]),
+                Value::List(vec![
+                    Value::I64(next.id as i64),
+                    Value::from("TextInputAction.next"),
+                ]),
             ))
             .unwrap();
         recorder.deliver("flutter/textinput", &call, 0);
@@ -919,7 +955,10 @@ mod tests {
         assert_eq!(value.caret_bytes(), Some(5));
 
         // An offset landing inside the surrogate pair is not a position.
-        let inside = TextEditingValue { selection_extent: 2, ..value.clone() };
+        let inside = TextEditingValue {
+            selection_extent: 2,
+            ..value.clone()
+        };
         assert_eq!(inside.caret_bytes(), None);
 
         assert_eq!(TextEditingValue::new("abc").selection_extent, 3);

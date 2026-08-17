@@ -19,20 +19,20 @@
 //! the job the element tree does for everything else.
 
 use crate::engine::{Color, TextAlign, TextStyle};
+use crate::painting::{Gradient, Image, RenderPath};
 pub use crate::render::{
     Alignment, AlignmentDirectional, Axis, AxisDirection, BoxConstraints, BoxFit, BoxedRender,
     Constraints, CrossAxisAlignment, EdgeInsets, EdgeInsetsDirectional, Fill, FlexChild,
     HitTestEntry, HitTestResult, MainAxisAlignment, MainAxisSize, Offset, PaintContext,
     RenderBox as Widget, Size, StackFit, StackPosition, VerticalDirection,
 };
-use crate::painting::{Gradient, Image, RenderPath};
 use crate::render::{
     RenderAlign, RenderAspectRatio, RenderBaseline, RenderBox, RenderClipPath, RenderClipRect,
-    RenderConstrainedBox, RenderDecoratedBox, RenderFittedBox, RenderFlex, RenderFractionallySizedBox,
-    RenderFullWidth, RenderImage, RenderIndexedStack, RenderIntrinsicHeight, RenderIntrinsicWidth,
-    RenderLimitedBox, RenderOpacity, RenderOverflowBox, RenderPadding, RenderParagraph,
-    RenderPointerRegion, RenderRef, RenderSizedOverflowBox, RenderStack, RenderTransform,
-    RenderViewport, RenderWrap, UpdateEffect,
+    RenderConstrainedBox, RenderDecoratedBox, RenderFittedBox, RenderFlex,
+    RenderFractionallySizedBox, RenderFullWidth, RenderImage, RenderIndexedStack,
+    RenderIntrinsicHeight, RenderIntrinsicWidth, RenderLimitedBox, RenderOpacity,
+    RenderOverflowBox, RenderPadding, RenderParagraph, RenderPointerRegion, RenderRef,
+    RenderSizedOverflowBox, RenderStack, RenderTransform, RenderViewport, RenderWrap, UpdateEffect,
 };
 
 /// A widget with its concrete type erased, which is what a `build` method
@@ -72,13 +72,22 @@ pub struct TextSpan {
 
 impl TextSpan {
     pub fn new(text: impl Into<String>, style: TextStyle) -> TextSpan {
-        TextSpan { text: text.into(), style }
+        TextSpan {
+            text: text.into(),
+            style,
+        }
     }
 
     /// The same text in a bolder weight, which is what a run inside a sentence
     /// usually differs by.
     pub fn bold(text: impl Into<String>, style: &TextStyle) -> TextSpan {
-        TextSpan::new(text, TextStyle { font_weight: 700, ..style.clone() })
+        TextSpan::new(
+            text,
+            TextStyle {
+                font_weight: 700,
+                ..style.clone()
+            },
+        )
     }
 }
 
@@ -208,7 +217,11 @@ impl Container {
     }
 
     pub fn with_gradient(mut self, start: Alignment, end: Alignment, gradient: Gradient) -> Self {
-        self.fill = Some(Fill::Linear { start, end, gradient });
+        self.fill = Some(Fill::Linear {
+            start,
+            end,
+            gradient,
+        });
         self
     }
 
@@ -327,7 +340,10 @@ impl Container {
             }
             Layer::Padding => {
                 let inner = inner.unwrap_or_else(|| RenderRef::new(Expand::new()));
-                RenderRef::new(RenderPadding::new(self.padding_including_decoration(), inner))
+                RenderRef::new(RenderPadding::new(
+                    self.padding_including_decoration(),
+                    inner,
+                ))
             }
             Layer::Decoration => {
                 let mut decorated = RenderDecoratedBox::new()
@@ -449,7 +465,13 @@ impl RenderBox for Container {
         }
         // Both of the checks that can refuse come before anything is taken, so
         // that declining leaves this container exactly as it was.
-        if fresh.shape() != self.layers.iter().map(|(kind, _)| *kind).collect::<Vec<_>>() {
+        if fresh.shape()
+            != self
+                .layers
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
+        {
             return None;
         }
         // The child is the one part of this tree that came from outside, so it
@@ -479,7 +501,11 @@ impl RenderBox for Container {
             }
             return Some(UpdateEffect::Nothing);
         }
-        let onto: Vec<BoxedWidget> = self.layers.iter().map(|(_, handle)| handle.clone()).collect();
+        let onto: Vec<BoxedWidget> = self
+            .layers
+            .iter()
+            .map(|(_, handle)| handle.clone())
+            .collect();
         // The shape matched, so every handle in `onto` is the type the wrapper
         // at that step builds and none of them can refuse.
         let root = self.compose(Some(&onto))?;
@@ -521,23 +547,33 @@ impl RenderBox for Container {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.composed.as_ref().map_or(0.0, |c| c.min_intrinsic_width(height))
+        self.composed
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_width(height))
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.composed.as_ref().map_or(0.0, |c| c.max_intrinsic_width(height))
+        self.composed
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_width(height))
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.composed.as_ref().map_or(0.0, |c| c.min_intrinsic_height(width))
+        self.composed
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_height(width))
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.composed.as_ref().map_or(0.0, |c| c.max_intrinsic_height(width))
+        self.composed
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_height(width))
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.composed.as_ref().and_then(|c| c.distance_to_baseline())
+        self.composed
+            .as_ref()
+            .and_then(|c| c.distance_to_baseline())
     }
 }
 
@@ -571,10 +607,7 @@ impl Default for Expand {
 }
 
 impl RenderBox for Expand {
-    fn update_from(
-        &mut self,
-        fresh: &mut dyn RenderBox,
-    ) -> Option<crate::render::UpdateEffect> {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<crate::render::UpdateEffect> {
         fresh.as_any_mut().downcast_mut::<Expand>()?;
         Some(crate::render::UpdateEffect::Nothing)
     }
@@ -599,10 +632,7 @@ pub struct Empty;
 impl RenderBox for Empty {
     /// Nothing to describe, so nothing can have changed. The one render object
     /// whose answer is a foregone conclusion.
-    fn update_from(
-        &mut self,
-        fresh: &mut dyn RenderBox,
-    ) -> Option<crate::render::UpdateEffect> {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<crate::render::UpdateEffect> {
         fresh.as_any_mut().downcast_mut::<Empty>()?;
         Some(crate::render::UpdateEffect::Nothing)
     }
@@ -717,7 +747,9 @@ impl Default for RenderNavigationToolbar {
 
 impl RenderBox for RenderNavigationToolbar {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-        let fresh = fresh.as_any_mut().downcast_mut::<RenderNavigationToolbar>()?;
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderNavigationToolbar>()?;
         let same_part = |a: &Option<BoxedRender>, b: &Option<BoxedRender>| match (a, b) {
             (Some(a), Some(b)) => a.is(b),
             (None, None) => true,
@@ -760,12 +792,14 @@ impl RenderBox for RenderNavigationToolbar {
         let mut trailing_width = 0.0f32;
 
         // "The height should be exactly the height of the bar."
-        let leading_size = self
-            .leading
-            .as_mut()
-            .map(|leading| {
-                leading.layout(BoxConstraints::new(0.0, size.width, size.height, size.height))
-            });
+        let leading_size = self.leading.as_mut().map(|leading| {
+            leading.layout(BoxConstraints::new(
+                0.0,
+                size.width,
+                size.height,
+                size.height,
+            ))
+        });
         if let Some(leading_size) = leading_size {
             leading_width = leading_size.width;
             let leading_x = if rtl { size.width - leading_width } else { 0.0 };
@@ -779,15 +813,17 @@ impl RenderBox for RenderNavigationToolbar {
             .map(|trailing| trailing.layout(BoxConstraints::loose(size.width, size.height)));
         if let Some(trailing_size) = trailing_size {
             trailing_width = trailing_size.width;
-            let trailing_x = if rtl { 0.0 } else { size.width - trailing_size.width };
-            self.offsets[2] = Offset::new(
-                trailing_x,
-                (size.height - trailing_size.height) / 2.0,
-            );
+            let trailing_x = if rtl {
+                0.0
+            } else {
+                size.width - trailing_size.width
+            };
+            self.offsets[2] = Offset::new(trailing_x, (size.height - trailing_size.height) / 2.0);
         }
 
         let middle_spacing = self.middle_spacing;
-        let max_width = (size.width - leading_width - trailing_width - middle_spacing * 2.0).max(0.0);
+        let max_width =
+            (size.width - leading_width - trailing_width - middle_spacing * 2.0).max(0.0);
         // `BoxConstraints.loose(size).copyWith(maxWidth: maxWidth)`.
         let middle_size = self
             .middle
@@ -809,8 +845,11 @@ impl RenderBox for RenderNavigationToolbar {
                     middle_start = middle_start_margin;
                 }
             }
-            let middle_x =
-                if rtl { size.width - middle_size.width - middle_start } else { middle_start };
+            let middle_x = if rtl {
+                size.width - middle_size.width - middle_start
+            } else {
+                middle_start
+            };
             self.offsets[1] = Offset::new(middle_x, middle_y);
         }
 
@@ -906,7 +945,10 @@ impl Padding {
     /// the left in an LTR subtree and the right in an RTL one, which is a
     /// different `EdgeInsets` and so a different render object -- resolved
     /// here rather than at layout, the same moment upstream's `build` runs.
-    pub fn directional(insets: EdgeInsetsDirectional, child: impl RenderBox + 'static) -> RenderPadding {
+    pub fn directional(
+        insets: EdgeInsetsDirectional,
+        child: impl RenderBox + 'static,
+    ) -> RenderPadding {
         RenderPadding::new(insets.resolve(crate::direction::current_direction()), child)
     }
 }
@@ -1164,7 +1206,11 @@ pub struct Positioned;
 
 impl Positioned {
     pub fn at(left: f32, top: f32) -> StackPosition {
-        StackPosition { left: Some(left), top: Some(top), ..Default::default() }
+        StackPosition {
+            left: Some(left),
+            top: Some(top),
+            ..Default::default()
+        }
     }
 
     pub fn fill() -> StackPosition {
@@ -1199,14 +1245,19 @@ impl PositionedDirectional {
         end: Option<f32>,
         bottom: Option<f32>,
     ) -> StackPosition {
-        let (left, right) = if crate::direction::current_direction()
-            == crate::direction::TextDirection::Rtl
-        {
-            (end, start)
-        } else {
-            (start, end)
-        };
-        StackPosition { left, top, right, bottom, ..Default::default() }
+        let (left, right) =
+            if crate::direction::current_direction() == crate::direction::TextDirection::Rtl {
+                (end, start)
+            } else {
+                (start, end)
+            };
+        StackPosition {
+            left,
+            top,
+            right,
+            bottom,
+            ..Default::default()
+        }
     }
 
     /// `start` and `top`, the common two.
@@ -1288,7 +1339,11 @@ impl ListView {
             } else {
                 AxisDirection::Right
             };
-        ListView { axis: Axis::Horizontal, axis_direction, ..ListView::new() }
+        ListView {
+            axis: Axis::Horizontal,
+            axis_direction,
+            ..ListView::new()
+        }
     }
 
     pub fn with_spacing(mut self, spacing: f32) -> Self {
@@ -1333,7 +1388,9 @@ impl ListView {
 
     /// How far this list can still scroll. Zero until it has been laid out.
     pub fn max_scroll_extent(&self) -> f32 {
-        self.composed.as_ref().map_or(0.0, |v| v.max_scroll_extent())
+        self.composed
+            .as_ref()
+            .map_or(0.0, |v| v.max_scroll_extent())
     }
 
     /// How much padding each end needs for an item to be able to sit in the
@@ -1363,13 +1420,11 @@ impl ListView {
             // layout. A leftward (RTL) row lays its first child at the right
             // edge -- the order upstream's slivers lay theirs in -- and an
             // upward one lays it at the bottom.
-            .with_text_direction(
-                if self.axis_direction == AxisDirection::Left {
-                    crate::direction::TextDirection::Rtl
-                } else {
-                    crate::direction::TextDirection::Ltr
-                },
-            )
+            .with_text_direction(if self.axis_direction == AxisDirection::Left {
+                crate::direction::TextDirection::Rtl
+            } else {
+                crate::direction::TextDirection::Ltr
+            })
             .with_vertical_direction(match self.axis_direction {
                 AxisDirection::Up => VerticalDirection::Up,
                 _ => VerticalDirection::Down,
@@ -1433,7 +1488,9 @@ impl RenderBox for ListView {
         let mut staged = RenderViewport::new(self.axis, flex)
             .with_offset(self.offset)
             .with_axis_direction(self.axis_direction);
-        self.composed.as_mut().expect("built with the column")
+        self.composed
+            .as_mut()
+            .expect("built with the column")
             .update_from(&mut staged)
     }
 
@@ -1617,7 +1674,11 @@ mod tests {
         // it is measured before the middle is told anything, so no title can
         // move it.
         assert_eq!(toolbar.offsets[2].dx, 240.0, "the action left the bar");
-        assert_eq!(toolbar.offsets[2].dx + 60.0, 300.0, "the action is not flush right");
+        assert_eq!(
+            toolbar.offsets[2].dx + 60.0,
+            300.0,
+            "the action is not flush right"
+        );
     }
 
     #[test]
@@ -1893,7 +1954,11 @@ mod tests {
 
     impl Counted {
         fn new(extent: f32, laid_out: &std::rc::Rc<std::cell::Cell<u32>>) -> Counted {
-            Counted { extent, laid_out: std::rc::Rc::clone(laid_out), size: Size::ZERO }
+            Counted {
+                extent,
+                laid_out: std::rc::Rc::clone(laid_out),
+                size: Size::ZERO,
+            }
         }
     }
 
@@ -1930,20 +1995,37 @@ mod tests {
                 .with_child(Counted::new(20.0, &laid_out))
         };
         let mut container = describe();
-        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(36.0)
+        );
         assert_eq!(laid_out.get(), 1);
 
         let before: Vec<BoxedWidget> = container.layers.iter().map(|(_, h)| h.clone()).collect();
-        assert_eq!(container.update_from(&mut describe()), Some(UpdateEffect::Nothing));
+        assert_eq!(
+            container.update_from(&mut describe()),
+            Some(UpdateEffect::Nothing)
+        );
 
         let after: Vec<BoxedWidget> = container.layers.iter().map(|(_, h)| h.clone()).collect();
-        assert_eq!(before.len(), 2, "a padded, decorated container is two wrappers");
+        assert_eq!(
+            before.len(),
+            2,
+            "a padded, decorated container is two wrappers"
+        );
         assert!(
             before.iter().zip(&after).all(|(a, b)| a.is(b)),
             "the wrappers were replaced instead of told"
         );
-        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
-        assert_eq!(laid_out.get(), 1, "a container that did not change measured again");
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(36.0)
+        );
+        assert_eq!(
+            laid_out.get(),
+            1,
+            "a container that did not change measured again"
+        );
     }
 
     #[test]
@@ -1955,12 +2037,18 @@ mod tests {
         let mut container = Container::new()
             .with_padding(EdgeInsets::all(8.0))
             .with_child(Counted::new(20.0, &laid_out));
-        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(36.0)
+        );
 
         let mut fresh = Container::new()
             .with_padding(EdgeInsets::all(4.0))
             .with_child(Counted::new(20.0, &laid_out));
-        assert_eq!(container.update_from(&mut fresh), Some(UpdateEffect::Nothing));
+        assert_eq!(
+            container.update_from(&mut fresh),
+            Some(UpdateEffect::Nothing)
+        );
         assert_eq!(
             container.layout(BoxConstraints::loose(200.0, 200.0)),
             Size::square(28.0),
@@ -1980,7 +2068,10 @@ mod tests {
                 .with_child(Counted::new(20.0, &laid_out)),
         );
         let mut root = RenderRef::new(RenderPadding::new(EdgeInsets::all(2.0), container.clone()));
-        assert_eq!(root.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(40.0));
+        assert_eq!(
+            root.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(40.0)
+        );
 
         let fresh = RenderRef::new(
             Container::new()
@@ -2020,7 +2111,10 @@ mod tests {
         let mut container = Container::new()
             .with_padding(EdgeInsets::all(8.0))
             .with_child(FixedBox::new(20.0, 20.0));
-        assert_eq!(container.layout(BoxConstraints::loose(200.0, 200.0)), Size::square(36.0));
+        assert_eq!(
+            container.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::square(36.0)
+        );
 
         let mut fresh = Container::new()
             .with_padding(EdgeInsets::all(4.0))
@@ -2041,16 +2135,25 @@ mod tests {
         let b = RenderRef::new(Counted::new(40.0, &second));
 
         let mut list = ListView::new().push(a.clone()).push(b.clone());
-        assert_eq!(list.layout(BoxConstraints::tight(100.0, 60.0)), Size::new(100.0, 60.0));
+        assert_eq!(
+            list.layout(BoxConstraints::tight(100.0, 60.0)),
+            Size::new(100.0, 60.0)
+        );
         assert_eq!((first.get(), second.get()), (1, 1));
         assert_eq!(list.max_scroll_extent(), 20.0);
         let column = list.flex.clone().expect("built by the layout");
 
         // A rebuild that handed back the same rows and a new scroll offset.
-        let mut fresh = ListView::new().with_offset(10.0).push(a.clone()).push(b.clone());
+        let mut fresh = ListView::new()
+            .with_offset(10.0)
+            .push(a.clone())
+            .push(b.clone());
         assert_eq!(list.update_from(&mut fresh), Some(UpdateEffect::Relayout));
 
-        assert!(list.flex.as_ref().expect("kept").is(&column), "the column was replaced");
+        assert!(
+            list.flex.as_ref().expect("kept").is(&column),
+            "the column was replaced"
+        );
         assert_eq!(
             list.max_scroll_extent(),
             20.0,
@@ -2076,7 +2179,10 @@ mod tests {
         let laid_out = counter();
         let a = RenderRef::new(Counted::new(40.0, &laid_out));
         let mut list = ListView::new().push(a.clone());
-        assert_eq!(list.layout(BoxConstraints::tight(100.0, 200.0)), Size::new(100.0, 200.0));
+        assert_eq!(
+            list.layout(BoxConstraints::tight(100.0, 200.0)),
+            Size::new(100.0, 200.0)
+        );
         assert_eq!(list.max_scroll_extent(), 0.0);
 
         let b = RenderRef::new(Counted::new(300.0, &laid_out));

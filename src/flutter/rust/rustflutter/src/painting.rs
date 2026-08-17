@@ -13,9 +13,7 @@ use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::rc::Rc;
 
-use crate::engine::{
-    Canvas, Color, LayerTree, Paint, Paragraph, Rect, TextAlign, TextStyle, sys,
-};
+use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, TextAlign, TextStyle, sys};
 
 // -- Enums --------------------------------------------------------------------
 
@@ -503,10 +501,21 @@ impl RenderPath {
         self
     }
 
-    pub fn add_rounded_rect(&mut self, rect: Rect, radius_x: f32, radius_y: f32) -> &mut RenderPath {
+    pub fn add_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius_x: f32,
+        radius_y: f32,
+    ) -> &mut RenderPath {
         unsafe {
             sys::rf_path_add_rounded_rect(
-                self.raw, rect.left, rect.top, rect.right, rect.bottom, radius_x, radius_y,
+                self.raw,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                radius_x,
+                radius_y,
             )
         };
         self
@@ -640,7 +649,10 @@ impl ShapeKey {
         max_width: f32,
     ) -> ShapeKey {
         ShapeKey {
-            runs: runs.iter().map(|(text, style)| RunKey::new(text, style)).collect(),
+            runs: runs
+                .iter()
+                .map(|(text, style)| RunKey::new(text, style))
+                .collect(),
             align: align_code(align),
             direction: direction_code(direction),
             max_lines: max_lines.unwrap_or(0),
@@ -720,7 +732,10 @@ pub fn shape(
     let style = if scale == 1.0 {
         style
     } else {
-        scaled = TextStyle { font_size: style.font_size * scale, ..style.clone() };
+        scaled = TextStyle {
+            font_size: style.font_size * scale,
+            ..style.clone()
+        };
         &scaled
     };
     let direction = crate::direction::current_direction();
@@ -739,8 +754,9 @@ pub fn shape(
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped =
-            Rc::new(Paragraph::new(text, style, max_lines, ellipsis, max_width, direction));
+        let shaped = Rc::new(Paragraph::new(
+            text, style, max_lines, ellipsis, max_width, direction,
+        ));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -769,7 +785,10 @@ pub fn shape_rich(
             .map(|(text, style)| {
                 (
                     text.clone(),
-                    TextStyle { font_size: style.font_size * scale, ..style.clone() },
+                    TextStyle {
+                        font_size: style.font_size * scale,
+                        ..style.clone()
+                    },
                 )
             })
             .collect()
@@ -788,8 +807,9 @@ pub fn shape_rich(
             cache.borrow_mut().current.insert(key, hit.clone());
             return hit;
         }
-        let shaped =
-            Rc::new(Paragraph::rich(&scaled, align, max_lines, ellipsis, max_width, direction));
+        let shaped = Rc::new(Paragraph::rich(
+            &scaled, align, max_lines, ellipsis, max_width, direction,
+        ));
         cache.borrow_mut().current.insert(key, shaped.clone());
         shaped
     })
@@ -883,7 +903,9 @@ impl ImageCache {
                         // is the same arrangement with one fewer moving part.
                         // Whoever holds it takes the next request and lets go.
                         let request = {
-                            let Ok(receiver) = requests.lock() else { return };
+                            let Ok(receiver) = requests.lock() else {
+                                return;
+                            };
                             receiver.recv()
                         };
                         let Ok(request) = request else {
@@ -891,8 +913,10 @@ impl ImageCache {
                             return;
                         };
                         let image = Image::decode(&request.data);
-                        let decoded =
-                            Decoded { key: request.key, image: Handoff(image) };
+                        let decoded = Decoded {
+                            key: request.key,
+                            image: Handoff(image),
+                        };
                         if results.send(decoded).is_err() {
                             return;
                         }
@@ -937,7 +961,10 @@ impl ImageCache {
         // The bytes are copied because the worker outlives this call and the
         // caller's slice may not. For baked-in assets that is a few hundred
         // kilobytes in flight, freed as each decode finishes.
-        let request = Request { key: key.to_string(), data: data.to_vec() };
+        let request = Request {
+            key: key.to_string(),
+            data: data.to_vec(),
+        };
         match self.requests.send(request) {
             Ok(()) => {
                 self.entries.insert(key.to_string(), Slot::Decoding);
@@ -947,7 +974,8 @@ impl ImageCache {
             Err(returned) => {
                 // No workers came up. Decode here rather than never.
                 let image = Image::decode(&returned.0.data).map(Rc::new);
-                self.entries.insert(key.to_string(), Slot::Done(image.clone()));
+                self.entries
+                    .insert(key.to_string(), Slot::Done(image.clone()));
                 image
             }
         }
@@ -967,7 +995,8 @@ impl ImageCache {
             }
         }
         let image = Image::decode(data).map(Rc::new);
-        self.entries.insert(key.to_string(), Slot::Done(image.clone()));
+        self.entries
+            .insert(key.to_string(), Slot::Done(image.clone()));
         image
     }
 
@@ -1045,7 +1074,11 @@ impl Image {
     /// was not recognised or the data was truncated.
     pub fn decode(data: &[u8]) -> Option<Image> {
         let raw = unsafe { sys::rf_image_decode(data.as_ptr(), data.len()) };
-        if raw.is_null() { None } else { Some(Image { raw }) }
+        if raw.is_null() {
+            None
+        } else {
+            Some(Image { raw })
+        }
     }
 
     /// Wraps pixels somebody else decoded: `width * height * 4` bytes, tightly
@@ -1063,12 +1096,18 @@ impl Image {
         }
         // Checked rather than trusted: the length is what the engine reads
         // against, and a short buffer is a read past the end of it.
-        let needed = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        let needed = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
         if pixels.len() < needed {
             return None;
         }
         let raw = unsafe { sys::rf_image_from_pixels(pixels.as_ptr(), width, height) };
-        if raw.is_null() { None } else { Some(Image { raw }) }
+        if raw.is_null() {
+            None
+        } else {
+            Some(Image { raw })
+        }
     }
 
     pub fn width(&self) -> i32 {
@@ -1130,7 +1169,14 @@ impl Canvas {
 
     pub fn draw_oval(&mut self, rect: Rect, paint: &Paint) {
         unsafe {
-            sys::rf_canvas_draw_oval(self.raw, rect.left, rect.top, rect.right, rect.bottom, paint.raw)
+            sys::rf_canvas_draw_oval(
+                self.raw,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                paint.raw,
+            )
         };
     }
 
@@ -1454,7 +1500,10 @@ mod tests {
     #[test]
     fn a_different_style_is_a_different_paragraph() {
         let plain = TextStyle::default();
-        let bold = TextStyle { font_weight: 700, ..TextStyle::default() };
+        let bold = TextStyle {
+            font_weight: 700,
+            ..TextStyle::default()
+        };
         let a = shape("weight matters", &plain, None, false, 200.0, 1.0);
         let b = shape("weight matters", &bold, None, false, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&a, &b));
@@ -1463,7 +1512,10 @@ mod tests {
     #[test]
     fn a_different_letter_spacing_is_a_different_paragraph() {
         let plain = TextStyle::default();
-        let tracked = TextStyle { letter_spacing: Some(2.0), ..TextStyle::default() };
+        let tracked = TextStyle {
+            letter_spacing: Some(2.0),
+            ..TextStyle::default()
+        };
         let a = shape("tracked out", &plain, None, false, 200.0, 1.0);
         let b = shape("tracked out", &tracked, None, false, 200.0, 1.0);
         // Spacing changes the glyph advances, so sharing a shaping between
@@ -1474,7 +1526,10 @@ mod tests {
     #[test]
     fn a_taller_line_is_a_different_paragraph() {
         let plain = TextStyle::default();
-        let airy = TextStyle { height: Some(2.0), ..TextStyle::default() };
+        let airy = TextStyle {
+            height: Some(2.0),
+            ..TextStyle::default()
+        };
         let a = shape("deep breath", &plain, None, false, 200.0, 1.0);
         let b = shape("deep breath", &airy, None, false, 200.0, 1.0);
         // The multiplier moves every line after the first, and the first
@@ -1485,9 +1540,14 @@ mod tests {
     #[test]
     fn italic_and_decorated_text_is_shaped_again() {
         let plain = TextStyle::default();
-        let slanted = TextStyle { italic: true, ..TextStyle::default() };
-        let ruled =
-            TextStyle { decoration: TextDecoration::UNDERLINE, ..TextStyle::default() };
+        let slanted = TextStyle {
+            italic: true,
+            ..TextStyle::default()
+        };
+        let ruled = TextStyle {
+            decoration: TextDecoration::UNDERLINE,
+            ..TextStyle::default()
+        };
         let a = shape("emphasis", &plain, None, false, 200.0, 1.0);
         let b = shape("emphasis", &slanted, None, false, 200.0, 1.0);
         let c = shape("emphasis", &ruled, None, false, 200.0, 1.0);
@@ -1522,7 +1582,10 @@ mod tests {
     #[test]
     fn start_in_an_rtl_context_reaches_the_engine_as_start_plus_rtl() {
         crate::engine_test_stubs::reset_paragraph_styles();
-        let style = TextStyle { align: TextAlign::Start, ..TextStyle::default() };
+        let style = TextStyle {
+            align: TextAlign::Start,
+            ..TextStyle::default()
+        };
         crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
             shape("rtl start", &style, None, false, 300.0, 1.0);
         });
@@ -1536,9 +1599,22 @@ mod tests {
     #[test]
     fn justify_reaches_the_engine_as_code_five() {
         crate::engine_test_stubs::reset_paragraph_styles();
-        let style = TextStyle { align: TextAlign::Justify, ..TextStyle::default() };
-        shape("justify me across the width", &style, None, false, 300.0, 1.0);
-        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(5, 0)]);
+        let style = TextStyle {
+            align: TextAlign::Justify,
+            ..TextStyle::default()
+        };
+        shape(
+            "justify me across the width",
+            &style,
+            None,
+            false,
+            300.0,
+            1.0,
+        );
+        assert_eq!(
+            crate::engine_test_stubs::paragraph_style_requests(),
+            vec![(5, 0)]
+        );
     }
 
     #[test]
@@ -1546,9 +1622,15 @@ mod tests {
         // The default direction is ltr, so a plain `end` needs no
         // directionality around it to mean the right edge.
         crate::engine_test_stubs::reset_paragraph_styles();
-        let style = TextStyle { align: TextAlign::End, ..TextStyle::default() };
+        let style = TextStyle {
+            align: TextAlign::End,
+            ..TextStyle::default()
+        };
         shape("plain end", &style, None, false, 300.0, 1.0);
-        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(4, 0)]);
+        assert_eq!(
+            crate::engine_test_stubs::paragraph_style_requests(),
+            vec![(4, 0)]
+        );
     }
 
     #[test]
@@ -1556,7 +1638,10 @@ mod tests {
         // `start` means the left edge in ltr and the right one in rtl, so two
         // asks that differ only in direction must not share a shaping -- the
         // cache key carries the direction for exactly this reason.
-        let style = TextStyle { align: TextAlign::Start, ..TextStyle::default() };
+        let style = TextStyle {
+            align: TextAlign::Start,
+            ..TextStyle::default()
+        };
         let ltr = shape("direction matters", &style, None, false, 300.0, 1.0);
         let rtl = crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
             shape("direction matters", &style, None, false, 300.0, 1.0)
@@ -1571,29 +1656,49 @@ mod tests {
         crate::direction::with_direction(crate::direction::TextDirection::Rtl, || {
             shape_rich(&runs, TextAlign::End, None, false, 300.0, 1.0);
         });
-        assert_eq!(crate::engine_test_stubs::paragraph_style_requests(), vec![(4, 1)]);
+        assert_eq!(
+            crate::engine_test_stubs::paragraph_style_requests(),
+            vec![(4, 1)]
+        );
     }
 
     #[test]
     fn rich_runs_style_one_run_at_a_time() {
         let plain = TextStyle::default();
-        let slanted = TextStyle { italic: true, ..plain.clone() };
+        let slanted = TextStyle {
+            italic: true,
+            ..plain.clone()
+        };
         let runs = |first: TextStyle| {
             vec![
                 (String::from("one style"), first),
                 (String::from(" another"), plain.clone()),
             ]
         };
-        let straight =
-            shape_rich(&runs(plain.clone()), TextAlign::Left, None, false, 200.0, 1.0);
-        let mixed =
-            shape_rich(&runs(slanted), TextAlign::Left, None, false, 200.0, 1.0);
+        let straight = shape_rich(
+            &runs(plain.clone()),
+            TextAlign::Left,
+            None,
+            false,
+            200.0,
+            1.0,
+        );
+        let mixed = shape_rich(&runs(slanted), TextAlign::Left, None, false, 200.0, 1.0);
         // The same words in the same order: only the style of the first run
         // differs, and that is still a different paragraph.
         assert!(!Rc::ptr_eq(&straight, &mixed));
         // And asking for the plain one again finds it, not the italic one.
-        assert!(Rc::ptr_eq(&straight, &shape_rich(&runs(plain.clone()), TextAlign::Left,
-                                                  None, false, 200.0, 1.0)));
+        assert!(Rc::ptr_eq(
+            &straight,
+            &shape_rich(
+                &runs(plain.clone()),
+                TextAlign::Left,
+                None,
+                false,
+                200.0,
+                1.0
+            )
+        ));
     }
 
     #[test]
@@ -1602,7 +1707,10 @@ mod tests {
         let first = shape("still drawn", &style, None, false, 200.0, 1.0);
         end_text_frame();
         let second = shape("still drawn", &style, None, false, 200.0, 1.0);
-        assert!(Rc::ptr_eq(&first, &second), "a live paragraph was re-shaped");
+        assert!(
+            Rc::ptr_eq(&first, &second),
+            "a live paragraph was re-shaped"
+        );
     }
 
     #[test]
@@ -1625,7 +1733,10 @@ mod tests {
 
         // And back, which the cache still has: the scale changes the style the
         // entry is keyed on rather than invalidating anything.
-        assert!(Rc::ptr_eq(&unscaled, &shape("the reader's size", &style, None, false, 200.0, 1.0)));
+        assert!(Rc::ptr_eq(
+            &unscaled,
+            &shape("the reader's size", &style, None, false, 200.0, 1.0)
+        ));
     }
 
     #[test]
@@ -1637,8 +1748,14 @@ mod tests {
         let big = shape("side by side", &style, None, false, 200.0, 2.0);
         let small = shape("side by side", &style, None, false, 200.0, 1.0);
         assert!(!Rc::ptr_eq(&big, &small));
-        assert!(Rc::ptr_eq(&big, &shape("side by side", &style, None, false, 200.0, 2.0)));
-        assert!(Rc::ptr_eq(&small, &shape("side by side", &style, None, false, 200.0, 1.0)));
+        assert!(Rc::ptr_eq(
+            &big,
+            &shape("side by side", &style, None, false, 200.0, 2.0)
+        ));
+        assert!(Rc::ptr_eq(
+            &small,
+            &shape("side by side", &style, None, false, 200.0, 1.0)
+        ));
     }
 
     #[test]
@@ -1673,7 +1790,10 @@ mod image_tests {
         // here and failed on a loaded machine.
         assert!(Image::shared("async:first", PNG).is_none());
         assert!(wait_for_images(), "nothing was queued");
-        assert!(Image::shared("async:first", PNG).is_some(), "and then it arrives");
+        assert!(
+            Image::shared("async:first", PNG).is_some(),
+            "and then it arrives"
+        );
     }
 
     #[test]

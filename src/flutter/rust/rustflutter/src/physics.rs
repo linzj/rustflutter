@@ -39,8 +39,11 @@ pub struct Tolerance {
 }
 
 impl Tolerance {
-    pub const DEFAULT: Tolerance =
-        Tolerance { distance: 1e-3, time: 1e-3, velocity: 1e-3 };
+    pub const DEFAULT: Tolerance = Tolerance {
+        distance: 1e-3,
+        time: 1e-3,
+        velocity: 1e-3,
+    };
 }
 
 impl Default for Tolerance {
@@ -141,7 +144,12 @@ impl ClampingScrollSimulation {
         // fling upwards travels upwards.
         let distance = velocity * duration / rate;
 
-        ClampingScrollSimulation { position, velocity, duration, distance }
+        ClampingScrollSimulation {
+            position,
+            velocity,
+            duration,
+            distance,
+        }
     }
 
     /// How long this fling lasts, in seconds. Nothing needs it to animate; it
@@ -199,7 +207,11 @@ pub struct SpringDescription {
 
 impl SpringDescription {
     pub const fn new(mass: f32, stiffness: f32, damping: f32) -> SpringDescription {
-        SpringDescription { mass, stiffness, damping }
+        SpringDescription {
+            mass,
+            stiffness,
+            damping,
+        }
     }
 
     /// A spring described by how bouncy it is instead of by its damping.
@@ -207,7 +219,11 @@ impl SpringDescription {
     /// `ratio` is the damping ratio: 1 is critical damping, the fastest
     /// arrival with no overshoot; less overshoots, more is sluggish.
     pub fn with_damping_ratio(mass: f32, stiffness: f32, ratio: f32) -> SpringDescription {
-        SpringDescription { mass, stiffness, damping: ratio * 2.0 * (mass * stiffness).sqrt() }
+        SpringDescription {
+            mass,
+            stiffness,
+            damping: ratio * 2.0 * (mass * stiffness).sqrt(),
+        }
     }
 }
 
@@ -249,12 +265,7 @@ enum SpringSolution {
 
 impl SpringSimulation {
     /// A spring from `start` to `end`, starting at `velocity`.
-    pub fn new(
-        spring: SpringDescription,
-        start: f32,
-        end: f32,
-        velocity: f32,
-    ) -> SpringSimulation {
+    pub fn new(spring: SpringDescription, start: f32, end: f32, velocity: f32) -> SpringSimulation {
         SpringSimulation::with_tolerance(spring, start, end, velocity, Tolerance::DEFAULT)
     }
 
@@ -279,23 +290,35 @@ impl SpringSimulation {
 
 impl SpringSolution {
     fn new(spring: SpringDescription, distance: f32, velocity: f32) -> SpringSolution {
-        let discriminant =
-            spring.damping * spring.damping - 4.0 * spring.mass * spring.stiffness;
+        let discriminant = spring.damping * spring.damping - 4.0 * spring.mass * spring.stiffness;
         if discriminant > 0.0 {
             let root = discriminant.sqrt();
             let r1 = (-spring.damping - root) / (2.0 * spring.mass);
             let r2 = (-spring.damping + root) / (2.0 * spring.mass);
             let c2 = (velocity - r1 * distance) / (r2 - r1);
-            SpringSolution::Over { r1, r2, c1: distance - c2, c2 }
+            SpringSolution::Over {
+                r1,
+                r2,
+                c1: distance - c2,
+                c2,
+            }
         } else if discriminant < 0.0 {
-            let w = (4.0 * spring.mass * spring.stiffness - spring.damping * spring.damping)
-                .sqrt()
+            let w = (4.0 * spring.mass * spring.stiffness - spring.damping * spring.damping).sqrt()
                 / (2.0 * spring.mass);
             let r = -(spring.damping / 2.0 / spring.mass);
-            SpringSolution::Under { w, r, c1: distance, c2: (velocity - r * distance) / w }
+            SpringSolution::Under {
+                w,
+                r,
+                c1: distance,
+                c2: (velocity - r * distance) / w,
+            }
         } else {
             let r = -spring.damping / (2.0 * spring.mass);
-            SpringSolution::Critical { r, c1: distance, c2: velocity - r * distance }
+            SpringSolution::Critical {
+                r,
+                c1: distance,
+                c2: velocity - r * distance,
+            }
         }
     }
 
@@ -332,8 +355,7 @@ impl SpringSolution {
                 let power = (r * time).exp();
                 let cosine = (w * time).cos();
                 let sine = (w * time).sin();
-                power * (c2 * w * cosine - c1 * w * sine)
-                    + r * power * (c2 * sine + c1 * cosine)
+                power * (c2 * w * cosine - c1 * w * sine) + r * power * (c2 * sine + c1 * cosine)
             }
         }
     }
@@ -431,7 +453,14 @@ impl FrictionSimulation {
             |time| velocity * drag.powf(time) * drag_log,
             10,
         );
-        FrictionSimulation { drag, drag_log, position, velocity, final_time, tolerance }
+        FrictionSimulation {
+            drag,
+            drag_log,
+            position,
+            velocity,
+            final_time,
+            tolerance,
+        }
     }
 
     /// Where it comes to rest.
@@ -479,13 +508,13 @@ pub struct GravitySimulation {
 impl GravitySimulation {
     /// Falls from `position` at `velocity`, accelerating at `acceleration`,
     /// and is done once it is `end` away from zero.
-    pub fn new(
-        acceleration: f32,
-        position: f32,
-        end: f32,
-        velocity: f32,
-    ) -> GravitySimulation {
-        GravitySimulation { acceleration, position, velocity, end: end.abs() }
+    pub fn new(acceleration: f32, position: f32, end: f32, velocity: f32) -> GravitySimulation {
+        GravitySimulation {
+            acceleration,
+            position,
+            velocity,
+            end: end.abs(),
+        }
     }
 }
 
@@ -552,7 +581,10 @@ mod tests {
         let mut previous = f32::NEG_INFINITY;
         for step in 0..60 {
             let x = fling.x(step as f32 / 60.0);
-            assert!(x >= previous, "went backwards at {step}: {x} after {previous}");
+            assert!(
+                x >= previous,
+                "went backwards at {step}: {x} after {previous}"
+            );
             previous = x;
         }
     }
@@ -587,7 +619,10 @@ mod tests {
             let x = simulation.x(step as f32 / 100.0);
             assert!(x <= 100.0 + 1e-3, "overshot to {x}");
         }
-        assert!(simulation.is_done(2.0), "should have settled by two seconds");
+        assert!(
+            simulation.is_done(2.0),
+            "should have settled by two seconds"
+        );
         assert!((simulation.x(2.0) - 100.0).abs() < 0.1);
     }
 
@@ -599,7 +634,10 @@ mod tests {
         let peak = (0..200)
             .map(|step| simulation.x(step as f32 / 100.0))
             .fold(f32::MIN, f32::max);
-        assert!(peak > 100.0, "a bouncy spring should pass its target, not stop at {peak}");
+        assert!(
+            peak > 100.0,
+            "a bouncy spring should pass its target, not stop at {peak}"
+        );
         assert!(simulation.is_done(5.0), "and should still settle");
     }
 
@@ -633,7 +671,10 @@ mod tests {
             .map(|step| step as f32 / 100.0)
             .find(|time| simulation.x(*time) >= 100.0)
             .expect("an underdamped spring crosses its target");
-        assert!(!simulation.is_done(crossing), "moving fast, exactly at the end");
+        assert!(
+            !simulation.is_done(crossing),
+            "moving fast, exactly at the end"
+        );
     }
 
     // -- Friction -------------------------------------------------------------
@@ -688,7 +729,10 @@ mod tests {
     fn friction_the_other_way_travels_the_other_way() {
         let simulation = FrictionSimulation::new(0.135, 100.0, -600.0);
         assert!(simulation.final_x() < 100.0);
-        assert!(simulation.is_done(5.0), "it stops at the same time in either direction");
+        assert!(
+            simulation.is_done(5.0),
+            "it stops at the same time in either direction"
+        );
     }
 
     // -- Gravity --------------------------------------------------------------
@@ -697,7 +741,10 @@ mod tests {
     fn gravity_accelerates_and_finishes_at_the_edge() {
         let simulation = GravitySimulation::new(1000.0, 0.0, 500.0, 0.0);
         assert_eq!(simulation.x(0.0), 0.0);
-        assert!((simulation.x(1.0) - 500.0).abs() < 1e-3, "half of a t squared");
+        assert!(
+            (simulation.x(1.0) - 500.0).abs() < 1e-3,
+            "half of a t squared"
+        );
         assert!(!simulation.is_done(0.5));
         assert!(simulation.is_done(1.0));
         assert!((simulation.dx(1.0) - 1000.0).abs() < 1e-3);

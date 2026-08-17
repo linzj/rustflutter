@@ -76,7 +76,10 @@ pub struct Route {
 
 impl Route {
     pub fn new(name: impl Into<String>) -> Route {
-        Route { name: name.into(), args: RouteArgs::new() }
+        Route {
+            name: name.into(),
+            args: RouteArgs::new(),
+        }
     }
 
     pub fn with_args(mut self, args: RouteArgs) -> Route {
@@ -175,10 +178,12 @@ impl Navigator {
         Navigator {
             // The root arrived from nowhere, so it has no transition of its
             // own; it can never be popped, so none is ever needed.
-            stack: vec![Entry { route: root, transition: Transition::None }],
+            stack: vec![Entry {
+                route: root,
+                transition: Transition::None,
+            }],
             outgoing: None,
-            controller: Controller::new(Duration::from_millis(300))
-                .with_curve(Curve::EaseInOut),
+            controller: Controller::new(Duration::from_millis(300)).with_curve(Curve::EaseInOut),
             transition: Transition::default(),
             motion: Motion::Pushing,
             duration: Duration::from_millis(300),
@@ -204,7 +209,11 @@ impl Navigator {
     pub fn current(&self) -> &Route {
         // The stack is never empty, so this cannot fail; the expect documents
         // that rather than hiding it behind an Option every caller unwraps.
-        &self.stack.last().expect("the navigator always has a root").route
+        &self
+            .stack
+            .last()
+            .expect("the navigator always has a root")
+            .route
     }
 
     /// Every route on the stack, root first.
@@ -297,7 +306,11 @@ impl Navigator {
         Presentation {
             current: self.current(),
             previous: self.outgoing.as_ref(),
-            progress: if self.outgoing.is_some() { self.controller.curved() } else { 1.0 },
+            progress: if self.outgoing.is_some() {
+                self.controller.curved()
+            } else {
+                1.0
+            },
             transition: self.transition,
             motion: self.motion,
         }
@@ -359,9 +372,7 @@ impl Presentation<'_> {
                 // dims, which is what gives the stack its sense of depth.
                 (-0.25 * t, 0.0, 1.0 - 0.35 * t),
             ),
-            Transition::SlideFromBottom => {
-                ((0.0, 1.0 - t, 1.0), (0.0, 0.0, 1.0 - 0.2 * t))
-            }
+            Transition::SlideFromBottom => ((0.0, 1.0 - t, 1.0), (0.0, 0.0, 1.0 - 0.2 * t)),
             Transition::Fade => ((0.0, 0.0, t), (0.0, 0.0, 1.0 - t)),
         };
 
@@ -444,7 +455,10 @@ mod tests {
         assert!(nav.pop());
         assert_eq!(nav.current().name, "home");
         // The popped route is still on screen while it animates away.
-        assert_eq!(nav.presentation().previous.map(|r| r.name.as_str()), Some("detail"));
+        assert_eq!(
+            nav.presentation().previous.map(|r| r.name.as_str()),
+            Some("detail")
+        );
         nav.tick(Duration::from_millis(200));
         assert!(!nav.is_transitioning());
     }
@@ -502,7 +516,11 @@ mod tests {
     fn arguments_survive_the_round_trip() {
         let mut nav = navigator();
         nav.push(
-            Route::new("demo").with_args(RouteArgs::new().with("slug", "buttons").with_int("index", 3)),
+            Route::new("demo").with_args(
+                RouteArgs::new()
+                    .with("slug", "buttons")
+                    .with_int("index", 3),
+            ),
             Transition::None,
         );
         assert_eq!(nav.current().arg("slug"), Some("buttons"));
@@ -547,7 +565,10 @@ mod tests {
 
         assert_eq!(nav.current().name, "b");
         // The screen it animates past is the one that was on top, not the root.
-        assert_eq!(nav.presentation().previous.map(|r| r.name.as_str()), Some("a"));
+        assert_eq!(
+            nav.presentation().previous.map(|r| r.name.as_str()),
+            Some("a")
+        );
         assert_eq!(nav.depth(), 3);
     }
 

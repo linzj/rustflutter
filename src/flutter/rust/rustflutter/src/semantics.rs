@@ -339,7 +339,12 @@ impl SemanticsAnnotation {
         properties: SemanticsProperties,
         on_action: Option<ActionHandler>,
     ) -> SemanticsAnnotation {
-        SemanticsAnnotation { id, properties, on_action, yields_to_a_label: false }
+        SemanticsAnnotation {
+            id,
+            properties,
+            on_action,
+            yields_to_a_label: false,
+        }
     }
 
     /// What a paragraph hands back for text nobody annotated.
@@ -621,7 +626,10 @@ struct Clips {
 impl Clips {
     /// No clip at all, which is what the walk starts with. Upstream's
     /// `_SemanticsGeometry.root`: the view's own node is clipped by nothing.
-    const UNCLIPPED: Clips = Clips { paint: None, semantics: None };
+    const UNCLIPPED: Clips = Clips {
+        paint: None,
+        semantics: None,
+    };
 
     /// What `parent`'s answers about `child` leave of these clips.
     ///
@@ -683,7 +691,9 @@ impl Clips {
         if self.paint.is_none() && self.semantics.is_none() {
             return Some(bounds);
         }
-        let mut rect = self.semantics.map_or(bounds, |clip| intersect(bounds, clip));
+        let mut rect = self
+            .semantics
+            .map_or(bounds, |clip| intersect(bounds, clip));
         if let Some(clip) = self.paint {
             let painted = intersect(rect, clip);
             if is_empty(painted) && !is_empty(rect) {
@@ -698,7 +708,12 @@ impl Clips {
 /// Upstream's `Rect.intersect`: the overlap, or an inside-out rectangle where
 /// the two do not meet -- which is empty, and left that way there too.
 fn intersect(a: Rect, b: Rect) -> Rect {
-    Rect::ltrb(a.left.max(b.left), a.top.max(b.top), a.right.min(b.right), a.bottom.min(b.bottom))
+    Rect::ltrb(
+        a.left.max(b.left),
+        a.top.max(b.top),
+        a.right.min(b.right),
+        a.bottom.min(b.bottom),
+    )
 }
 
 /// Upstream's `Rect.isEmpty`.
@@ -894,10 +909,7 @@ impl RenderSemantics {
 }
 
 impl RenderBox for RenderSemantics {
-    fn update_from(
-        &mut self,
-        fresh: &mut dyn RenderBox,
-    ) -> Option<crate::render::UpdateEffect> {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<crate::render::UpdateEffect> {
         use crate::render::UpdateEffect;
         let fresh = fresh.as_any_mut().downcast_mut::<RenderSemantics>()?;
         // Nothing here is measured and nothing is drawn, so the effect this
@@ -992,7 +1004,12 @@ pub struct Semantics {
 
 impl Semantics {
     pub fn new(id: i32, properties: SemanticsProperties, child: AnyWidget) -> Semantics {
-        Semantics { id, properties, on_action: None, child: RefCell::new(Some(child)) }
+        Semantics {
+            id,
+            properties,
+            on_action: None,
+            child: RefCell::new(Some(child)),
+        }
     }
 
     /// What to do when the reader activates this node.
@@ -1070,7 +1087,10 @@ impl SemanticsProperties {
     pub fn text_field(label: impl Into<String>, text: impl Into<String>) -> SemanticsProperties {
         SemanticsProperties {
             value: text.into(),
-            flags: SemanticsFlags { is_text_field: true, ..SemanticsFlags::default() },
+            flags: SemanticsFlags {
+                is_text_field: true,
+                ..SemanticsFlags::default()
+            },
             ..SemanticsProperties::label(label)
         }
         // Tap because a finger reaches a field by touching it, and Focus
@@ -1083,7 +1103,10 @@ impl SemanticsProperties {
     /// A heading. Screen readers let a reader jump between these.
     pub fn header(label: impl Into<String>) -> SemanticsProperties {
         SemanticsProperties {
-            flags: SemanticsFlags { is_header: true, ..SemanticsFlags::default() },
+            flags: SemanticsFlags {
+                is_header: true,
+                ..SemanticsFlags::default()
+            },
             ..SemanticsProperties::label(label)
         }
     }
@@ -1166,7 +1189,11 @@ impl Component for AutoSemantics {
 
 /// [`AutoSemantics`] as a widget.
 pub fn describe(properties: SemanticsProperties, child: AnyWidget) -> AnyWidget {
-    component(AutoSemantics { properties, on_action: None, child: RefCell::new(Some(child)) })
+    component(AutoSemantics {
+        properties,
+        on_action: None,
+        child: RefCell::new(Some(child)),
+    })
 }
 
 /// [`AutoSemantics`] with an action handler.
@@ -1189,14 +1216,16 @@ pub fn semantics_with_action(
     child: AnyWidget,
     handler: impl Fn(SemanticsAction) + 'static,
 ) -> AnyWidget {
-    Semantics::new(id, properties, child).with_on_action(handler).build()
+    Semantics::new(id, properties, child)
+        .with_on_action(handler)
+        .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::framework::{ElementTree, leaf, many};
-    use crate::render::{RenderFlex, RenderPadding, EdgeInsets};
+    use crate::render::{EdgeInsets, RenderFlex, RenderPadding};
     use crate::widgets::SizedBox;
     use std::cell::Cell;
 
@@ -1221,8 +1250,7 @@ mod tests {
         // Loose, so a child that asked for a size keeps it: a tight box
         // would stretch the very thing whose rectangle is under test.
         root.layout(BoxConstraints::loose(size.width, size.height));
-        let mut layers =
-            crate::engine::LayerTree::new(size.width as i32, size.height as i32);
+        let mut layers = crate::engine::LayerTree::new(size.width as i32, size.height as i32);
         {
             let mut context = PaintContext::new(&mut layers, size);
             root.paint(&mut context, Offset::ZERO);
@@ -1234,7 +1262,10 @@ mod tests {
     /// What the platform is holding, which had better be something.
     fn tree_or_fail() -> Vec<SemanticsNode> {
         let nodes = tree();
-        assert!(!nodes.is_empty(), "semantics are on but nothing was collected");
+        assert!(
+            !nodes.is_empty(),
+            "semantics are on but nothing was collected"
+        );
         nodes
     }
 
@@ -1245,7 +1276,10 @@ mod tests {
         tree.rebuild(leaf(|| crate::widgets::Text::new("unread")));
         let root = tree.build_render_tree().expect("mounted");
         let collected = flush(Size::new(200.0, 100.0), &root);
-        assert!(collected.is_none(), "a tree nobody reads should not be built");
+        assert!(
+            collected.is_none(),
+            "a tree nobody reads should not be built"
+        );
     }
 
     #[test]
@@ -1293,8 +1327,15 @@ mod tests {
             Size::new(200.0, 100.0),
         );
         set_enabled(false);
-        let node = nodes.iter().find(|n| n.id == 7).expect("the button is read");
-        assert_eq!((node.left, node.top), (10.0, 10.0), "reported somewhere else");
+        let node = nodes
+            .iter()
+            .find(|n| n.id == 7)
+            .expect("the button is read");
+        assert_eq!(
+            (node.left, node.top),
+            (10.0, 10.0),
+            "reported somewhere else"
+        );
     }
 
     #[test]
@@ -1307,10 +1348,7 @@ mod tests {
         use crate::render::{RenderOpacity, RenderTransform};
 
         set_enabled(true);
-        for (what, wrap) in [
-            ("opacity", 0),
-            ("transform", 1),
-        ] {
+        for (what, wrap) in [("opacity", 0), ("transform", 1)] {
             let inner = semantics(
                 8,
                 SemanticsProperties::button("Increment"),
@@ -1323,10 +1361,15 @@ mod tests {
                 }),
             };
             let nodes = describe_tree(
-                single(wrapped, |child| RenderPadding::new(EdgeInsets::all(10.0), child)),
+                single(wrapped, |child| {
+                    RenderPadding::new(EdgeInsets::all(10.0), child)
+                }),
                 Size::new(200.0, 100.0),
             );
-            let node = nodes.iter().find(|n| n.id == 8).expect("the button is read");
+            let node = nodes
+                .iter()
+                .find(|n| n.id == 8)
+                .expect("the button is read");
             assert_eq!((node.left, node.top), (10.0, 10.0), "under {what}");
         }
         set_enabled(false);
@@ -1365,7 +1408,8 @@ mod tests {
                         row(4, "fourth"),
                     ],
                     |children| {
-                        let mut column = RenderFlex::column().with_main_axis_size(MainAxisSize::Min);
+                        let mut column =
+                            RenderFlex::column().with_main_axis_size(MainAxisSize::Min);
                         for child in children {
                             column = column.push(child);
                         }
@@ -1380,16 +1424,31 @@ mod tests {
 
         // Wholly above the window: not in the tree at all. Upstream drops it
         // as `isInvisible`, and its subtree goes with it.
-        assert!(nodes.iter().all(|node| node.id != 1), "a row off the window was reported");
+        assert!(
+            nodes.iter().all(|node| node.id != 1),
+            "a row off the window was reported"
+        );
 
         let by_id = |id: i32| nodes.iter().find(|node| node.id == id).unwrap();
         // The second row is content 100..200, absolute -50..50: the window
         // keeps 0..50 of it.
-        assert_eq!((by_id(2).top, by_id(2).bottom), (0.0, 50.0), "cut to the part that shows");
+        assert_eq!(
+            (by_id(2).top, by_id(2).bottom),
+            (0.0, 50.0),
+            "cut to the part that shows"
+        );
         // The third is content 200..300, absolute 50..150: inside entire.
-        assert_eq!((by_id(3).top, by_id(3).bottom), (50.0, 150.0), "a held row keeps its rect");
+        assert_eq!(
+            (by_id(3).top, by_id(3).bottom),
+            (50.0, 150.0),
+            "a held row keeps its rect"
+        );
         // The fourth straddles the far edge: 150..250 becomes 150..200.
-        assert_eq!((by_id(4).top, by_id(4).bottom), (150.0, 200.0), "cut at the far edge");
+        assert_eq!(
+            (by_id(4).top, by_id(4).bottom),
+            (150.0, 200.0),
+            "cut at the far edge"
+        );
         // Nothing reports outside the window, which is the whole complaint.
         for node in &nodes {
             assert!(
@@ -1401,7 +1460,10 @@ mod tests {
         // And the dropping reaches actions: a row the reader was never told
         // about is not a row a reader can name, so nothing takes an action for
         // it either.
-        assert!(!perform_action(&root, 1, SemanticsAction::Tap), "an off-window row acted");
+        assert!(
+            !perform_action(&root, 1, SemanticsAction::Tap),
+            "an off-window row acted"
+        );
         assert!(perform_action(&root, 3, SemanticsAction::Tap));
     }
 
@@ -1419,9 +1481,21 @@ mod tests {
             single(
                 many(
                     vec![
-                        semantics(1, SemanticsProperties::label("Rally"), leaf(|| SizedBox::new(690.0, 100.0))),
-                        semantics(2, SemanticsProperties::label("Shrine"), leaf(|| SizedBox::new(690.0, 100.0))),
-                        semantics(3, SemanticsProperties::label("Fortnightly"), leaf(|| SizedBox::new(690.0, 100.0))),
+                        semantics(
+                            1,
+                            SemanticsProperties::label("Rally"),
+                            leaf(|| SizedBox::new(690.0, 100.0)),
+                        ),
+                        semantics(
+                            2,
+                            SemanticsProperties::label("Shrine"),
+                            leaf(|| SizedBox::new(690.0, 100.0)),
+                        ),
+                        semantics(
+                            3,
+                            SemanticsProperties::label("Fortnightly"),
+                            leaf(|| SizedBox::new(690.0, 100.0)),
+                        ),
                     ],
                     |children| {
                         let mut row = RenderFlex::row().with_main_axis_size(MainAxisSize::Min);
@@ -1437,12 +1511,23 @@ mod tests {
         );
         set_enabled(false);
 
-        assert!(nodes.iter().all(|node| node.id != 3), "the card at x=1318 was reported");
+        assert!(
+            nodes.iter().all(|node| node.id != 3),
+            "the card at x=1318 was reported"
+        );
         let by_id = |id: i32| nodes.iter().find(|node| node.id == id).unwrap();
         // The first card has scrolled 62 off the leading edge, the second runs
         // off the trailing one, and neither reports past the window.
-        assert_eq!((by_id(1).left, by_id(1).right), (0.0, 628.0), "cut at the leading edge");
-        assert_eq!((by_id(2).left, by_id(2).right), (628.0, 690.0), "cut at the trailing edge");
+        assert_eq!(
+            (by_id(1).left, by_id(1).right),
+            (0.0, 628.0),
+            "cut at the leading edge"
+        );
+        assert_eq!(
+            (by_id(2).left, by_id(2).right),
+            (628.0, 690.0),
+            "cut at the trailing edge"
+        );
     }
 
     #[test]
@@ -1459,13 +1544,29 @@ mod tests {
             single(
                 many(
                     vec![
-                        semantics(6, SemanticsProperties::label("badge"), leaf(|| SizedBox::new(40.0, 20.0))),
-                        semantics(7, SemanticsProperties::label("gone"), leaf(|| SizedBox::new(40.0, 20.0))),
+                        semantics(
+                            6,
+                            SemanticsProperties::label("badge"),
+                            leaf(|| SizedBox::new(40.0, 20.0)),
+                        ),
+                        semantics(
+                            7,
+                            SemanticsProperties::label("gone"),
+                            leaf(|| SizedBox::new(40.0, 20.0)),
+                        ),
                     ],
                     |children| {
                         let positions = [
-                            StackPosition { left: Some(10.0), top: Some(90.0), ..Default::default() },
-                            StackPosition { left: Some(10.0), top: Some(120.0), ..Default::default() },
+                            StackPosition {
+                                left: Some(10.0),
+                                top: Some(90.0),
+                                ..Default::default()
+                            },
+                            StackPosition {
+                                left: Some(10.0),
+                                top: Some(120.0),
+                                ..Default::default()
+                            },
                         ];
                         let mut stack = RenderStack::new();
                         for (child, position) in children.into_iter().zip(positions) {
@@ -1480,7 +1581,10 @@ mod tests {
         );
         set_enabled(false);
 
-        let badge = nodes.iter().find(|node| node.id == 6).expect("the badge is read");
+        let badge = nodes
+            .iter()
+            .find(|node| node.id == 6)
+            .expect("the badge is read");
         assert_eq!(
             (badge.left, badge.top, badge.right, badge.bottom),
             (10.0, 90.0, 50.0, 100.0),
@@ -1488,7 +1592,10 @@ mod tests {
         );
         // Wholly past the clip, and with no viewport above to give it a cache
         // band: nothing of it is on the glass, so it is not in the tree.
-        assert!(nodes.iter().all(|node| node.id != 7), "a node past the clip was reported");
+        assert!(
+            nodes.iter().all(|node| node.id != 7),
+            "a node past the clip was reported"
+        );
     }
 
     #[test]
@@ -1525,12 +1632,23 @@ mod tests {
         };
 
         let (first, said) = frame(&mut root);
-        assert_eq!((first.retainable, first.retained), (1, 0), "the first frame draws");
+        assert_eq!(
+            (first.retainable, first.retained),
+            (1, 0),
+            "the first frame draws"
+        );
         assert!(said.iter().any(|node| node.id == 11), "and is read");
 
         let (quiet, said) = frame(&mut root);
-        assert_eq!((quiet.retainable, quiet.retained), (0, 1), "drawn again for a reader");
-        assert!(said.iter().any(|node| node.id == 11), "the node stopped being reported");
+        assert_eq!(
+            (quiet.retainable, quiet.retained),
+            (0, 1),
+            "drawn again for a reader"
+        );
+        assert!(
+            said.iter().any(|node| node.id == 11),
+            "the node stopped being reported"
+        );
         set_enabled(false);
     }
 
@@ -1543,8 +1661,16 @@ mod tests {
                 SemanticsProperties::label("a list"),
                 many(
                     vec![
-                        semantics(2, SemanticsProperties::label("first"), leaf(|| SizedBox::new(50.0, 20.0))),
-                        semantics(3, SemanticsProperties::label("second"), leaf(|| SizedBox::new(50.0, 20.0))),
+                        semantics(
+                            2,
+                            SemanticsProperties::label("first"),
+                            leaf(|| SizedBox::new(50.0, 20.0)),
+                        ),
+                        semantics(
+                            3,
+                            SemanticsProperties::label("second"),
+                            leaf(|| SizedBox::new(50.0, 20.0)),
+                        ),
                     ],
                     |children| {
                         let mut flex = RenderFlex::column();
@@ -1562,7 +1688,11 @@ mod tests {
         assert_eq!(nodes.len(), 4);
         assert_eq!(nodes[0].children, vec![1], "the view's node holds the tree");
         assert_eq!(nodes[1].id, 1);
-        assert_eq!(nodes[1].children, vec![2, 3], "reading order is paint order");
+        assert_eq!(
+            nodes[1].children,
+            vec![2, 3],
+            "reading order is paint order"
+        );
         assert!(nodes[2].children.is_empty());
         // The second row is below the first, which is the whole reason a
         // rectangle is worth carrying: a finger dragged down the glass meets
@@ -1591,7 +1721,10 @@ mod tests {
 
         assert!(perform_action(&root, 4, SemanticsAction::Tap));
         assert_eq!(taps.get(), 1);
-        assert!(!perform_action(&root, 99, SemanticsAction::Tap), "no such node");
+        assert!(
+            !perform_action(&root, 99, SemanticsAction::Tap),
+            "no such node"
+        );
         set_enabled(false);
     }
 
@@ -1641,16 +1774,26 @@ mod tests {
         let says = |text: &str| nodes.iter().find(|n| n.properties.label == text);
 
         let title = says("Settings").expect("the title is read");
-        assert!(title.properties.flags.is_header, "a title is a heading to jump to");
+        assert!(
+            title.properties.flags.is_header,
+            "a title is a heading to jump to"
+        );
 
         assert!(says("Notifications are on").is_some(), "body text is read");
 
-        let switch = nodes.iter().find(|n| n.id == node_id_for(2)).expect("the switch is there");
+        let switch = nodes
+            .iter()
+            .find(|n| n.id == node_id_for(2))
+            .expect("the switch is there");
         assert!(switch.properties.flags.has_checked_state);
         assert!(switch.properties.flags.is_checked, "and it is on");
 
         let save = says("Save").expect("the button is read");
-        assert_eq!(save.id, node_id_for(3), "its semantics id is its hit-test id");
+        assert_eq!(
+            save.id,
+            node_id_for(3),
+            "its semantics id is its hit-test id"
+        );
         assert!(save.properties.flags.is_button);
         assert!(save.properties.has(SemanticsAction::Tap));
         assert!(save.properties.flags.is_enabled);
@@ -1672,8 +1815,14 @@ mod tests {
             assert!(node.left.is_finite() && node.top.is_finite(), "{node:?}");
             assert!(node.width() >= 0.0 && node.height() >= 0.0, "{node:?}");
         }
-        assert!(switch.width() > 0.0 && switch.height() > 0.0, "the switch is a target");
-        assert!(save.width() > 0.0 && save.height() > 0.0, "so is the button");
+        assert!(
+            switch.width() > 0.0 && switch.height() > 0.0,
+            "the switch is a target"
+        );
+        assert!(
+            save.width() > 0.0 && save.height() > 0.0,
+            "so is the button"
+        );
     }
 
     #[test]
@@ -1693,7 +1842,11 @@ mod tests {
         );
 
         assert!(perform_action(&root, node_id_for(9), SemanticsAction::Tap));
-        assert_eq!(saves.get(), 1, "the same closure a finger would have called");
+        assert_eq!(
+            saves.get(),
+            1,
+            "the same closure a finger would have called"
+        );
         set_enabled(false);
     }
 
@@ -1737,7 +1890,10 @@ mod tests {
         );
         set_enabled(false);
 
-        let node = nodes.iter().find(|n| n.id == 7).expect("the button is read");
+        let node = nodes
+            .iter()
+            .find(|n| n.id == 7)
+            .expect("the button is read");
         assert_eq!(node.properties.text_direction, Some(TextDirection::Rtl));
         // The view's own node says nothing, so it carries no direction: only
         // words have one.
@@ -1786,7 +1942,10 @@ mod tests {
 
         let node = nodes.iter().find(|n| n.id == 5).expect("the node is read");
         assert_eq!(node.properties.label, "");
-        assert_eq!(node.properties.text_direction, None, "no words, no direction");
+        assert_eq!(
+            node.properties.text_direction, None,
+            "no words, no direction"
+        );
     }
 
     #[test]
@@ -1839,8 +1998,11 @@ mod tests {
         let nodes = describe_tree(component(Button::new(5, "Save")), Size::new(200.0, 100.0));
         set_enabled(false);
 
-        let said: Vec<&str> =
-            nodes.iter().map(|n| n.properties.label.as_str()).filter(|l| !l.is_empty()).collect();
+        let said: Vec<&str> = nodes
+            .iter()
+            .map(|n| n.properties.label.as_str())
+            .filter(|l| !l.is_empty())
+            .collect();
         assert_eq!(said, vec!["Save"], "heard once, from the button");
     }
 
@@ -1884,8 +2046,8 @@ mod tests {
         // survive the crossing here: the platform is handed a map, so the only
         // place a sequence can live is a parent's list of children.
         use crate::components::Label;
-        use crate::framework::component;
         use crate::components::stack_column;
+        use crate::framework::component;
 
         set_enabled(true);
         let nodes = describe_tree(
@@ -1934,7 +2096,11 @@ mod tests {
         ] {
             assert_eq!(SemanticsAction::from_bits(action as i32), Some(action));
         }
-        assert_eq!(SemanticsAction::from_bits(1 << 30), None, "a bit we have no name for");
+        assert_eq!(
+            SemanticsAction::from_bits(1 << 30),
+            None,
+            "a bit we have no name for"
+        );
     }
 
     #[test]
@@ -1950,7 +2116,7 @@ mod tests {
         //
         // Three things at once, then: a label that changed is read, a label
         // that did not is not re-derived, and neither depends on the drawing.
-        use crate::framework::{StateHandle, StatefulComponent, BuildContext, stateful};
+        use crate::framework::{BuildContext, StateHandle, StatefulComponent, stateful};
         use crate::widgets::repaint_boundary;
         use std::cell::RefCell;
         use std::rc::Rc;
@@ -2011,11 +2177,22 @@ mod tests {
 
         assert_eq!(said(&frame(&mut tree)), "before");
         // Painted once already, so the boundary is holding a layer.
-        assert_eq!(said(&frame(&mut tree)), "before", "the node stopped being reported");
+        assert_eq!(
+            said(&frame(&mut tree)),
+            "before",
+            "the node stopped being reported"
+        );
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.second = true);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.second = true);
         tree.rebuild_dirty();
-        assert_eq!(said(&frame(&mut tree)), "after", "a reader was told last frame's label");
+        assert_eq!(
+            said(&frame(&mut tree)),
+            "after",
+            "a reader was told last frame's label"
+        );
         set_enabled(false);
     }
 
@@ -2051,13 +2228,21 @@ mod tests {
             } else {
                 "the same as ever".to_string()
             };
-            Some(SemanticsAnnotation::new(21, SemanticsProperties::label(label), None))
+            Some(SemanticsAnnotation::new(
+                21,
+                SemanticsProperties::label(label),
+                None,
+            ))
         }
     }
 
     fn counting(asked: &Rc<Cell<u32>>, chatty: bool) -> AnyWidget {
         let asked = Rc::clone(asked);
-        leaf(move || Counted { asked: Rc::clone(&asked), chatty, size: Size::ZERO })
+        leaf(move || Counted {
+            asked: Rc::clone(&asked),
+            chatty,
+            size: Size::ZERO,
+        })
     }
 
     #[test]
@@ -2078,7 +2263,10 @@ mod tests {
         let mut root = tree.build_render_tree().expect("mounted");
         root.layout(BoxConstraints::loose(size.width, size.height));
 
-        assert!(flush(size, &root).is_some(), "the first frame has everything to say");
+        assert!(
+            flush(size, &root).is_some(),
+            "the first frame has everything to say"
+        );
         assert_eq!(asked.get(), 1);
 
         // Frames two and three change nothing: no rebuild, no layout, nothing
@@ -2112,7 +2300,10 @@ mod tests {
         let mut root = tree.build_render_tree().expect("mounted");
         root.layout(BoxConstraints::loose(size.width, size.height));
 
-        assert!(flush(size, &root).is_some(), "the first frame has everything to say");
+        assert!(
+            flush(size, &root).is_some(),
+            "the first frame has everything to say"
+        );
         assert_eq!(asked.get(), 1);
 
         mark_needs_update();
@@ -2143,12 +2334,18 @@ mod tests {
 
         // Same constraints, clean tree: the early return, and nothing marked.
         root.layout(BoxConstraints::loose(size.width, size.height));
-        assert!(flush(size, &root).is_none(), "an unchanged layout marked semantics");
+        assert!(
+            flush(size, &root).is_none(),
+            "an unchanged layout marked semantics"
+        );
 
         // A different size is a real layout, and everything that moved has
         // something new to say about where it is.
         root.layout(BoxConstraints::loose(180.0, 90.0));
-        assert!(flush(Size::new(180.0, 90.0), &root).is_some(), "a re-layout said nothing");
+        assert!(
+            flush(Size::new(180.0, 90.0), &root).is_some(),
+            "a re-layout said nothing"
+        );
         set_enabled(false);
     }
 
@@ -2201,20 +2398,33 @@ mod tests {
         let sink: Rc<RefCell<Option<StateHandle<Round>>>> = Rc::new(RefCell::new(None));
         let called = Rc::new(Cell::new("nobody"));
         let mut tree = ElementTree::new();
-        tree.rebuild(stateful(Chooser { sink: sink.clone(), called: Rc::clone(&called) }));
+        tree.rebuild(stateful(Chooser {
+            sink: sink.clone(),
+            called: Rc::clone(&called),
+        }));
         let mut root = tree.build_render_tree().expect("mounted");
         root.layout(BoxConstraints::loose(size.width, size.height));
         assert!(flush(size, &root).is_some());
         assert!(perform_action(&root, 12, SemanticsAction::Tap));
         assert_eq!(called.get(), "first");
 
-        sink.borrow().as_ref().expect("built").set_state(|state| state.second = true);
+        sink.borrow()
+            .as_ref()
+            .expect("built")
+            .set_state(|state| state.second = true);
         tree.rebuild_dirty();
         let root = tree.build_render_tree().expect("still mounted");
         // No layout and no walk: nothing about this frame is worth either.
-        assert!(flush(size, &root).is_none(), "a new closure should not be news");
+        assert!(
+            flush(size, &root).is_none(),
+            "a new closure should not be news"
+        );
         assert!(perform_action(&root, 12, SemanticsAction::Tap));
-        assert_eq!(called.get(), "second", "the reader called last build's closure");
+        assert_eq!(
+            called.get(),
+            "second",
+            "the reader called last build's closure"
+        );
         set_enabled(false);
     }
 
@@ -2234,7 +2444,10 @@ mod tests {
 
         // The reader leaves and another arrives. Nothing on screen moved.
         set_enabled(false);
-        assert!(super::tree().is_empty(), "a tree nobody holds should not be kept");
+        assert!(
+            super::tree().is_empty(),
+            "a tree nobody holds should not be kept"
+        );
         set_enabled(true);
         let sent = flush(size, &root).expect("the new reader was told nothing");
         assert!(sent.iter().any(|node| node.id == 21));
@@ -2260,11 +2473,21 @@ mod tests {
         };
 
         let (effect, marked) = step(&mut faded, 0.5);
-        assert_eq!(effect, Some(UpdateEffect::Relayout), "the child is a new object");
-        assert!(!marked, "half way is still visible, and says the same thing");
+        assert_eq!(
+            effect,
+            Some(UpdateEffect::Relayout),
+            "the child is a new object"
+        );
+        assert!(
+            !marked,
+            "half way is still visible, and says the same thing"
+        );
 
         let (_, marked) = step(&mut faded, 0.0);
-        assert!(marked, "a subtree that stopped being drawn stopped being described");
+        assert!(
+            marked,
+            "a subtree that stopped being drawn stopped being described"
+        );
 
         let (_, marked) = step(&mut faded, 0.25);
         assert!(marked, "and it is describable again");

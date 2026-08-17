@@ -221,7 +221,10 @@ pub struct MethodCall {
 
 impl MethodCall {
     pub fn new(method: impl Into<String>, arguments: Value) -> MethodCall {
-        MethodCall { method: method.into(), arguments }
+        MethodCall {
+            method: method.into(),
+            arguments,
+        }
     }
 
     /// The named argument, for the map-shaped arguments most calls use.
@@ -244,7 +247,11 @@ pub struct MethodError {
 
 impl MethodError {
     pub fn new(code: impl Into<String>, message: Option<String>) -> MethodError {
-        MethodError { code: code.into(), message, details: Value::Null }
+        MethodError {
+            code: code.into(),
+            message,
+            details: Value::Null,
+        }
     }
 }
 
@@ -930,7 +937,10 @@ mod json {
 
     pub fn parse(text: &str) -> Result<Value, CodecError> {
         let characters: Vec<char> = text.chars().collect();
-        let mut parser = Parser { input: &characters, offset: 0 };
+        let mut parser = Parser {
+            input: &characters,
+            offset: 0,
+        };
         parser.skip_whitespace();
         let value = parser.value()?;
         parser.skip_whitespace();
@@ -1050,14 +1060,16 @@ mod json {
             self.expect('"')?;
             let mut text = String::new();
             loop {
-                let character =
-                    self.peek().ok_or_else(|| malformed("unterminated JSON string"))?;
+                let character = self
+                    .peek()
+                    .ok_or_else(|| malformed("unterminated JSON string"))?;
                 self.offset += 1;
                 match character {
                     '"' => return Ok(text),
                     '\\' => {
-                        let escape =
-                            self.peek().ok_or_else(|| malformed("unterminated JSON escape"))?;
+                        let escape = self
+                            .peek()
+                            .ok_or_else(|| malformed("unterminated JSON escape"))?;
                         self.offset += 1;
                         match escape {
                             '"' => text.push('"'),
@@ -1070,9 +1082,7 @@ mod json {
                             't' => text.push('\t'),
                             'u' => text.push(self.escaped_code_point()?),
                             other => {
-                                return Err(CodecError(format!(
-                                    "unknown JSON escape '\\{other}'"
-                                )));
+                                return Err(CodecError(format!("unknown JSON escape '\\{other}'")));
                             }
                         }
                     }
@@ -1095,7 +1105,9 @@ mod json {
             self.expect('u')?;
             let second = self.hex4()?;
             if !(0xDC00..0xE000).contains(&second) {
-                return Err(malformed("JSON high surrogate is not followed by a low one"));
+                return Err(malformed(
+                    "JSON high surrogate is not followed by a low one",
+                ));
             }
             let combined = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
             char::from_u32(combined).ok_or_else(|| malformed("invalid JSON surrogate pair"))
@@ -1104,9 +1116,12 @@ mod json {
         fn hex4(&mut self) -> Result<u32, CodecError> {
             let mut value = 0u32;
             for _ in 0..4 {
-                let digit = self.peek().ok_or_else(|| malformed("truncated JSON escape"))?;
-                let digit =
-                    digit.to_digit(16).ok_or_else(|| malformed("bad JSON escape digit"))?;
+                let digit = self
+                    .peek()
+                    .ok_or_else(|| malformed("truncated JSON escape"))?;
+                let digit = digit
+                    .to_digit(16)
+                    .ok_or_else(|| malformed("bad JSON escape digit"))?;
                 self.offset += 1;
                 value = value * 16 + digit;
             }
@@ -1142,7 +1157,11 @@ mod json {
             // fits, is an integer. Anything else falls through to a double --
             // including an integer too large for one, which is what Dart does
             // with it too.
-            let integral = if floating { None } else { text.parse::<i64>().ok() };
+            let integral = if floating {
+                None
+            } else {
+                text.parse::<i64>().ok()
+            };
             if let Some(number) = integral {
                 return Ok(Value::I64(number));
             }
@@ -1230,9 +1249,18 @@ mod tests {
         // little-endian. These are the bytes an Android or iOS plugin reads, so
         // they are not ours to choose.
         assert_eq!(StandardMessageCodec.encode(&Value::Null).unwrap(), vec![0]);
-        assert_eq!(StandardMessageCodec.encode(&Value::Bool(true)).unwrap(), vec![1]);
-        assert_eq!(StandardMessageCodec.encode(&Value::Bool(false)).unwrap(), vec![2]);
-        assert_eq!(StandardMessageCodec.encode(&Value::I32(7)).unwrap(), vec![3, 7, 0, 0, 0]);
+        assert_eq!(
+            StandardMessageCodec.encode(&Value::Bool(true)).unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            StandardMessageCodec.encode(&Value::Bool(false)).unwrap(),
+            vec![2]
+        );
+        assert_eq!(
+            StandardMessageCodec.encode(&Value::I32(7)).unwrap(),
+            vec![3, 7, 0, 0, 0]
+        );
         assert_eq!(
             StandardMessageCodec.encode(&Value::I64(-2)).unwrap(),
             vec![4, 254, 255, 255, 255, 255, 255, 255, 255]
@@ -1264,7 +1292,10 @@ mod tests {
         // rather than the buffer would get wrong.
         let value = Value::List(vec![Value::Bool(true), Value::I32List(vec![1, 2])]);
         let bytes = StandardMessageCodec.encode(&value).unwrap();
-        let position = bytes.iter().position(|byte| *byte == 9).expect("has an int32 list");
+        let position = bytes
+            .iter()
+            .position(|byte| *byte == 9)
+            .expect("has an int32 list");
         // tag, size, then padding up to a multiple of four.
         let elements = position + 2 + ((4 - (position + 2) % 4) % 4);
         assert_eq!(elements % 4, 0);
@@ -1343,14 +1374,22 @@ mod tests {
             Value::map([("type", Value::from("SystemSoundType.click"))]),
         );
         let bytes = StandardMethodCodec.encode_method_call(&call).unwrap();
-        assert_eq!(StandardMethodCodec.decode_method_call(&bytes).unwrap(), call);
+        assert_eq!(
+            StandardMethodCodec.decode_method_call(&bytes).unwrap(),
+            call
+        );
     }
 
     #[test]
     fn a_standard_envelope_carries_success_failure_and_absence() {
-        let success = StandardMethodCodec.encode_success_envelope(&Value::I32(42)).unwrap();
+        let success = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(42))
+            .unwrap();
         assert_eq!(success[0], 0);
-        assert_eq!(StandardMethodCodec.decode_envelope(&success), Ok(Some(Value::I32(42))));
+        assert_eq!(
+            StandardMethodCodec.decode_envelope(&success),
+            Ok(Some(Value::I32(42)))
+        );
 
         let error = MethodError {
             code: "unavailable".to_string(),
@@ -1388,7 +1427,10 @@ mod tests {
         // the same.
         let text = String::from_utf8(JsonMessageCodec.encode(&Value::F64(2.0)).unwrap()).unwrap();
         assert_eq!(text, "2.0");
-        assert_eq!(JsonMessageCodec.decode(text.as_bytes()).unwrap(), Value::F64(2.0));
+        assert_eq!(
+            JsonMessageCodec.decode(text.as_bytes()).unwrap(),
+            Value::F64(2.0)
+        );
     }
 
     #[test]
@@ -1428,7 +1470,10 @@ mod tests {
         // interchangeable to the reader: a keyCode has to stay an integer.
         assert_eq!(JsonMessageCodec.decode(b"3").unwrap(), Value::I64(3));
         assert_eq!(JsonMessageCodec.decode(b"3.0").unwrap(), Value::F64(3.0));
-        assert_eq!(JsonMessageCodec.decode(b"-4e2").unwrap(), Value::F64(-400.0));
+        assert_eq!(
+            JsonMessageCodec.decode(b"-4e2").unwrap(),
+            Value::F64(-400.0)
+        );
     }
 
     #[test]
@@ -1441,14 +1486,21 @@ mod tests {
         // reader loses: JSON escapes are code *units*, so anything outside the
         // basic plane arrives as a surrogate pair that has to be recombined.
         let pair = "\"\\ud83d\\ude00\"";
-        assert_eq!(JsonMessageCodec.decode(pair.as_bytes()).unwrap(), Value::from("\u{1F600}"));
+        assert_eq!(
+            JsonMessageCodec.decode(pair.as_bytes()).unwrap(),
+            Value::from("\u{1F600}")
+        );
     }
 
     #[test]
     fn json_refuses_what_it_cannot_carry() {
         assert!(JsonMessageCodec.encode(&Value::Bytes(vec![1])).is_err());
         assert!(JsonMessageCodec.encode(&Value::F64(f64::NAN)).is_err());
-        assert!(JsonMessageCodec.encode(&Value::Map(vec![(Value::I32(1), Value::Null)])).is_err());
+        assert!(
+            JsonMessageCodec
+                .encode(&Value::Map(vec![(Value::I32(1), Value::Null)]))
+                .is_err()
+        );
         assert!(JsonMessageCodec.decode(b"{\"a\":1,}").is_err());
         assert!(JsonMessageCodec.decode(b"[1] junk").is_err());
     }
@@ -1467,13 +1519,21 @@ mod tests {
     #[test]
     fn a_json_envelope_is_one_element_or_three() {
         // The shape is the tag: JSON has nowhere to put a type byte.
-        let success = JsonMethodCodec.encode_success_envelope(&Value::from("ok")).unwrap();
+        let success = JsonMethodCodec
+            .encode_success_envelope(&Value::from("ok"))
+            .unwrap();
         assert_eq!(String::from_utf8(success.clone()).unwrap(), r#"["ok"]"#);
-        assert_eq!(JsonMethodCodec.decode_envelope(&success), Ok(Some(Value::from("ok"))));
+        assert_eq!(
+            JsonMethodCodec.decode_envelope(&success),
+            Ok(Some(Value::from("ok")))
+        );
 
         let error = MethodError::new("bad", Some("no".to_string()));
         let encoded = JsonMethodCodec.encode_error_envelope(&error).unwrap();
-        assert_eq!(String::from_utf8(encoded.clone()).unwrap(), r#"["bad","no",null]"#);
+        assert_eq!(
+            String::from_utf8(encoded.clone()).unwrap(),
+            r#"["bad","no",null]"#
+        );
         assert_eq!(JsonMethodCodec.decode_envelope(&encoded), Err(error));
 
         assert_eq!(JsonMethodCodec.decode_envelope(&[]), Ok(None));
@@ -1481,7 +1541,9 @@ mod tests {
 
     #[test]
     fn the_string_and_binary_codecs_are_the_identity_they_claim_to_be() {
-        let encoded = StringCodec.encode(&Value::from("AppLifecycleState.resumed")).unwrap();
+        let encoded = StringCodec
+            .encode(&Value::from("AppLifecycleState.resumed"))
+            .unwrap();
         assert_eq!(encoded, b"AppLifecycleState.resumed");
         assert_eq!(
             StringCodec.decode(&encoded).unwrap(),
@@ -1490,7 +1552,13 @@ mod tests {
         // An empty message is the absence of one, not an empty string.
         assert_eq!(StringCodec.decode(&[]).unwrap(), Value::Null);
 
-        assert_eq!(BinaryCodec.encode(&Value::Bytes(vec![1, 2, 3])).unwrap(), vec![1, 2, 3]);
-        assert_eq!(BinaryCodec.decode(&[1, 2, 3]).unwrap(), Value::Bytes(vec![1, 2, 3]));
+        assert_eq!(
+            BinaryCodec.encode(&Value::Bytes(vec![1, 2, 3])).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            BinaryCodec.decode(&[1, 2, 3]).unwrap(),
+            Value::Bytes(vec![1, 2, 3])
+        );
     }
 }

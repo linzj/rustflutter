@@ -21,10 +21,8 @@
 
 use std::borrow::Cow;
 
-use super::codec::{
-    MessageCodec, MethodCall, MethodCodec, MethodError, MethodResult, Value,
-};
 use super::Responder;
+use super::codec::{MessageCodec, MethodCall, MethodCodec, MethodError, MethodResult, Value};
 
 /// The answer to a message, when a channel deals in values rather than bytes.
 ///
@@ -56,13 +54,19 @@ pub struct BasicMessageChannel<C> {
 impl<C: MessageCodec + Copy + 'static> BasicMessageChannel<C> {
     /// A channel with a name known at compile time, so it can be a constant.
     pub const fn new(name: &'static str, codec: C) -> BasicMessageChannel<C> {
-        BasicMessageChannel { name: Cow::Borrowed(name), codec }
+        BasicMessageChannel {
+            name: Cow::Borrowed(name),
+            codec,
+        }
     }
 
     /// A channel named at run time -- one per instance of something, which is
     /// what a plugin that can be opened twice needs.
     pub fn named(name: impl Into<String>, codec: C) -> BasicMessageChannel<C> {
-        BasicMessageChannel { name: Cow::Owned(name.into()), codec }
+        BasicMessageChannel {
+            name: Cow::Owned(name.into()),
+            codec,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -101,10 +105,7 @@ impl<C: MessageCodec + Copy + 'static> BasicMessageChannel<C> {
     /// call the responder exactly once -- now or later; a handler that has to
     /// wait for something is why the answer is a callback rather than a return
     /// value.
-    pub fn set_handler(
-        &self,
-        mut handler: impl FnMut(Value, ValueResponder) + 'static,
-    ) {
+    pub fn set_handler(&self, mut handler: impl FnMut(Value, ValueResponder) + 'static) {
         let codec = self.codec;
         super::set_handler(
             &self.name,
@@ -176,11 +177,17 @@ pub type MethodReply = Result<Option<Value>, MethodError>;
 
 impl<C: MethodCodec + Copy + 'static> MethodChannel<C> {
     pub const fn new(name: &'static str, codec: C) -> MethodChannel<C> {
-        MethodChannel { name: Cow::Borrowed(name), codec }
+        MethodChannel {
+            name: Cow::Borrowed(name),
+            codec,
+        }
     }
 
     pub fn named(name: impl Into<String>, codec: C) -> MethodChannel<C> {
-        MethodChannel { name: Cow::Owned(name.into()), codec }
+        MethodChannel {
+            name: Cow::Owned(name.into()),
+            codec,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -335,11 +342,17 @@ impl EventSink {
 
 impl<C: MethodCodec + Copy + 'static> EventChannel<C> {
     pub const fn new(name: &'static str, codec: C) -> EventChannel<C> {
-        EventChannel { name: Cow::Borrowed(name), codec }
+        EventChannel {
+            name: Cow::Borrowed(name),
+            codec,
+        }
     }
 
     pub fn named(name: impl Into<String>, codec: C) -> EventChannel<C> {
-        EventChannel { name: Cow::Owned(name.into()), codec }
+        EventChannel {
+            name: Cow::Owned(name.into()),
+            codec,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -381,7 +394,10 @@ impl<C: MethodCodec + Copy + 'static> EventChannel<C> {
     }
 
     fn method_channel(&self) -> MethodChannel<C> {
-        MethodChannel { name: self.name.clone(), codec: self.codec }
+        MethodChannel {
+            name: self.name.clone(),
+            codec: self.codec,
+        }
     }
 }
 
@@ -400,11 +416,9 @@ mod tests {
 
         let answer = Rc::new(RefCell::new(None));
         let recorded = answer.clone();
-        channel.invoke_with_reply(
-            "add",
-            Value::map([("a", Value::I32(1))]),
-            move |reply| *recorded.borrow_mut() = Some(reply),
-        );
+        channel.invoke_with_reply("add", Value::map([("a", Value::I32(1))]), move |reply| {
+            *recorded.borrow_mut() = Some(reply)
+        });
 
         let (name, bytes, response_id) = recorder.sent().remove(0);
         assert_eq!(name, "test/method");
@@ -413,7 +427,9 @@ mod tests {
             MethodCall::new("add", Value::map([("a", Value::I32(1))]))
         );
 
-        let envelope = StandardMethodCodec.encode_success_envelope(&Value::I32(2)).unwrap();
+        let envelope = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(2))
+            .unwrap();
         recorder.reply(response_id, Some(&envelope));
         assert_eq!(*answer.borrow(), Some(Ok(Some(Value::I32(2)))));
     }
@@ -471,7 +487,10 @@ mod tests {
         let (response_id, reply) = recorder.responses().remove(0);
         assert_eq!(response_id, 3);
         let reply = reply.expect("answered");
-        assert_eq!(StandardMethodCodec.decode_envelope(&reply), Ok(Some(Value::from("pong"))));
+        assert_eq!(
+            StandardMethodCodec.decode_envelope(&reply),
+            Ok(Some(Value::from("pong")))
+        );
     }
 
     #[test]
@@ -511,7 +530,9 @@ mod tests {
 
         let (_, reply) = recorder.responses().remove(0);
         assert_eq!(
-            StandardMessageCodec.decode(&reply.expect("answered")).unwrap(),
+            StandardMessageCodec
+                .decode(&reply.expect("answered"))
+                .unwrap(),
             Value::from("ok")
         );
     }
@@ -536,9 +557,17 @@ mod tests {
 
         let (name, bytes, _) = recorder.sent().remove(0);
         assert_eq!(name, "test/events");
-        assert_eq!(StandardMethodCodec.decode_method_call(&bytes).unwrap().method, "listen");
+        assert_eq!(
+            StandardMethodCodec
+                .decode_method_call(&bytes)
+                .unwrap()
+                .method,
+            "listen"
+        );
 
-        let event = StandardMethodCodec.encode_success_envelope(&Value::I32(1)).unwrap();
+        let event = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(1))
+            .unwrap();
         recorder.deliver("test/events", &event, 0);
         assert_eq!(events.borrow().as_slice(), &[Value::I32(1)]);
 
@@ -590,14 +619,19 @@ mod tests {
             .sent()
             .iter()
             .map(|(_, bytes, _)| {
-                StandardMethodCodec.decode_method_call(bytes).unwrap().method
+                StandardMethodCodec
+                    .decode_method_call(bytes)
+                    .unwrap()
+                    .method
             })
             .collect();
         assert_eq!(methods, vec!["listen", "cancel"]);
 
         // Anything still in flight when cancel was sent must not be delivered:
         // the sink it would go to is what the caller has just given up.
-        let event = StandardMethodCodec.encode_success_envelope(&Value::I32(9)).unwrap();
+        let event = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(9))
+            .unwrap();
         recorder.deliver("test/stream", &event, 0);
         assert!(events.borrow().is_empty());
     }
@@ -620,9 +654,13 @@ mod tests {
             }),
         );
 
-        let event = StandardMethodCodec.encode_success_envelope(&Value::I32(1)).unwrap();
+        let event = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(1))
+            .unwrap();
         recorder.deliver("test/first", &event, 0);
-        let second = StandardMethodCodec.encode_success_envelope(&Value::I32(2)).unwrap();
+        let second = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(2))
+            .unwrap();
         recorder.deliver("test/first", &second, 0);
 
         assert_eq!(events.borrow().as_slice(), &[Value::I32(1)]);

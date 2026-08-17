@@ -61,14 +61,20 @@ pub struct Size {
 }
 
 impl Size {
-    pub const ZERO: Size = Size { width: 0.0, height: 0.0 };
+    pub const ZERO: Size = Size {
+        width: 0.0,
+        height: 0.0,
+    };
 
     pub const fn new(width: f32, height: f32) -> Size {
         Size { width, height }
     }
 
     pub const fn square(side: f32) -> Size {
-        Size { width: side, height: side }
+        Size {
+            width: side,
+            height: side,
+        }
     }
 
     pub fn contains(&self, point: Offset) -> bool {
@@ -90,19 +96,31 @@ impl Offset {
     }
 
     pub fn translate(&self, dx: f32, dy: f32) -> Offset {
-        Offset { dx: self.dx + dx, dy: self.dy + dy }
+        Offset {
+            dx: self.dx + dx,
+            dy: self.dy + dy,
+        }
     }
 
     pub fn plus(&self, other: Offset) -> Offset {
-        Offset { dx: self.dx + other.dx, dy: self.dy + other.dy }
+        Offset {
+            dx: self.dx + other.dx,
+            dy: self.dy + other.dy,
+        }
     }
 
     pub fn minus(&self, other: Offset) -> Offset {
-        Offset { dx: self.dx - other.dx, dy: self.dy - other.dy }
+        Offset {
+            dx: self.dx - other.dx,
+            dy: self.dy - other.dy,
+        }
     }
 
     pub fn scaled(&self, factor: f32) -> Offset {
-        Offset { dx: self.dx * factor, dy: self.dy * factor }
+        Offset {
+            dx: self.dx * factor,
+            dy: self.dy * factor,
+        }
     }
 
     /// How long this offset is. Upstream's `Offset.distance`.
@@ -127,18 +145,38 @@ pub struct EdgeInsets {
 }
 
 impl EdgeInsets {
-    pub const ZERO: EdgeInsets = EdgeInsets { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+    pub const ZERO: EdgeInsets = EdgeInsets {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
 
     pub const fn all(value: f32) -> EdgeInsets {
-        EdgeInsets { left: value, top: value, right: value, bottom: value }
+        EdgeInsets {
+            left: value,
+            top: value,
+            right: value,
+            bottom: value,
+        }
     }
 
     pub const fn symmetric(horizontal: f32, vertical: f32) -> EdgeInsets {
-        EdgeInsets { left: horizontal, top: vertical, right: horizontal, bottom: vertical }
+        EdgeInsets {
+            left: horizontal,
+            top: vertical,
+            right: horizontal,
+            bottom: vertical,
+        }
     }
 
     pub const fn only(left: f32, top: f32, right: f32, bottom: f32) -> EdgeInsets {
-        EdgeInsets { left, top, right, bottom }
+        EdgeInsets {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     pub fn horizontal(&self) -> f32 {
@@ -177,15 +215,29 @@ pub struct EdgeInsetsDirectional {
 }
 
 impl EdgeInsetsDirectional {
-    pub const ZERO: EdgeInsetsDirectional =
-        EdgeInsetsDirectional { start: 0.0, top: 0.0, end: 0.0, bottom: 0.0 };
+    pub const ZERO: EdgeInsetsDirectional = EdgeInsetsDirectional {
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+    };
 
     pub const fn all(value: f32) -> EdgeInsetsDirectional {
-        EdgeInsetsDirectional { start: value, top: value, end: value, bottom: value }
+        EdgeInsetsDirectional {
+            start: value,
+            top: value,
+            end: value,
+            bottom: value,
+        }
     }
 
     pub const fn only(start: f32, top: f32, end: f32, bottom: f32) -> EdgeInsetsDirectional {
-        EdgeInsetsDirectional { start, top, end, bottom }
+        EdgeInsetsDirectional {
+            start,
+            top,
+            end,
+            bottom,
+        }
     }
 
     /// The absolute insets these are, once `direction` says which side start
@@ -215,7 +267,12 @@ pub struct BoxConstraints {
 
 impl BoxConstraints {
     pub const fn new(min_width: f32, max_width: f32, min_height: f32, max_height: f32) -> Self {
-        BoxConstraints { min_width, max_width, min_height, max_height }
+        BoxConstraints {
+            min_width,
+            max_width,
+            min_height,
+            max_height,
+        }
     }
 
     /// Exactly this size, no choice.
@@ -234,7 +291,12 @@ impl BoxConstraints {
 
     /// At most this size, and any smaller size is allowed.
     pub const fn loose(max_width: f32, max_height: f32) -> Self {
-        BoxConstraints { min_width: 0.0, max_width, min_height: 0.0, max_height }
+        BoxConstraints {
+            min_width: 0.0,
+            max_width,
+            min_height: 0.0,
+            max_height,
+        }
     }
 
     /// Unbounded on both axes.
@@ -283,13 +345,24 @@ impl BoxConstraints {
     /// the minimum, since a box cannot be infinitely large.
     pub fn biggest(&self) -> Size {
         Size {
-            width: if self.max_width.is_finite() { self.max_width } else { self.min_width },
-            height: if self.max_height.is_finite() { self.max_height } else { self.min_height },
+            width: if self.max_width.is_finite() {
+                self.max_width
+            } else {
+                self.min_width
+            },
+            height: if self.max_height.is_finite() {
+                self.max_height
+            } else {
+                self.min_height
+            },
         }
     }
 
     pub fn smallest(&self) -> Size {
-        Size { width: self.min_width, height: self.min_height }
+        Size {
+            width: self.min_width,
+            height: self.min_height,
+        }
     }
 
     /// The largest size inside these constraints that keeps `size`'s shape and
@@ -519,9 +592,7 @@ impl SliverConstraints {
     ) -> BoxConstraints {
         let cross = cross_axis_extent.unwrap_or(self.cross_axis_extent);
         match self.axis() {
-            Axis::Horizontal => {
-                BoxConstraints::new(min_extent, max_extent, cross, cross)
-            }
+            Axis::Horizontal => BoxConstraints::new(min_extent, max_extent, cross, cross),
             // Vertical: the width is the cross axis.
             Axis::Vertical => BoxConstraints::new(cross, cross, min_extent, max_extent),
         }
@@ -673,7 +744,11 @@ impl<'a> PaintContext<'a> {
     /// Starts painting a frame into `tree`. `cull` is the viewport in logical
     /// pixels; anything recorded outside it is dropped at record time.
     pub fn new(tree: &'a mut LayerTree, cull: Size) -> PaintContext<'a> {
-        PaintContext { canvas: None, tree, cull }
+        PaintContext {
+            canvas: None,
+            tree,
+            cull,
+        }
     }
 
     /// The picture being recorded, started if this is the first draw since the
@@ -845,7 +920,14 @@ impl<'a> PaintContext<'a> {
     ) {
         // Move the origin to the pivot, transform, move back -- one composed
         // affine rather than three canvas calls, because a layer takes one.
-        let to_pivot = [1.0, 0.0, 0.0, 1.0, offset.dx + pivot.dx, offset.dy + pivot.dy];
+        let to_pivot = [
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            offset.dx + pivot.dx,
+            offset.dy + pivot.dy,
+        ];
         let from_pivot = [1.0, 0.0, 0.0, 1.0, -pivot.dx, -pivot.dy];
         let composed = compose_affine(compose_affine(to_pivot, matrix), from_pivot);
         let [a, b, c, d, e, f] = composed;
@@ -913,7 +995,11 @@ impl HitTestResult {
         if target == 0 {
             return;
         }
-        self.path.push(HitTestEntry { target, local_position, handlers });
+        self.path.push(HitTestEntry {
+            target,
+            local_position,
+            handlers,
+        });
     }
 
     pub fn is_empty(&self) -> bool {
@@ -998,12 +1084,20 @@ impl UpdateEffect {
     /// line in an `update_from`, and upstream's `if (_field == value) return;`
     /// read the other way round.
     pub fn relayout_if(changed: bool) -> UpdateEffect {
-        if changed { UpdateEffect::Relayout } else { UpdateEffect::Nothing }
+        if changed {
+            UpdateEffect::Relayout
+        } else {
+            UpdateEffect::Nothing
+        }
     }
 
     /// `Repaint` if `changed`. For a field the layout does not read.
     pub fn repaint_if(changed: bool) -> UpdateEffect {
-        if changed { UpdateEffect::Repaint } else { UpdateEffect::Nothing }
+        if changed {
+            UpdateEffect::Repaint
+        } else {
+            UpdateEffect::Nothing
+        }
     }
 }
 
@@ -1637,7 +1731,9 @@ pub(crate) fn flush_paint(context: &mut PaintContext) {
         if !state.needs_paint.replace(false) {
             continue;
         }
-        let Some(handle) = state.render.borrow().upgrade() else { continue };
+        let Some(handle) = state.render.borrow().upgrade() else {
+            continue;
+        };
         let render = handle.borrow();
         // Downcast through the object rather than the box it is in, which is
         // the one `update_from` reaches the same type by.
@@ -1693,7 +1789,9 @@ pub(crate) fn flush_layout() -> bool {
             }
             let handle = state.render.borrow().upgrade();
             let Some(handle) = handle else { continue };
-            let Some(constraints) = state.constraints.get() else { continue };
+            let Some(constraints) = state.constraints.get() else {
+                continue;
+            };
             let size = {
                 let _frame = LayoutFrame::push(&state);
                 handle.borrow_mut().layout(constraints)
@@ -1701,7 +1799,11 @@ pub(crate) fn flush_layout() -> bool {
             state.needs_layout.set(false);
             state.size.set(size);
             crate::semantics::mark_needs_update();
-            RenderRef { render: handle, state: Rc::clone(&state) }.mark_needs_paint();
+            RenderRef {
+                render: handle,
+                state: Rc::clone(&state),
+            }
+            .mark_needs_paint();
             did_layout = true;
         }
     }
@@ -2010,7 +2112,10 @@ impl RenderRef {
         // does: answering may descend into children, and a child that shares
         // this handle would find the list already borrowed.
         let size = self.render.borrow().compute_dry_layout(constraints);
-        self.state.dry_layouts.borrow_mut().push((constraints, size));
+        self.state
+            .dry_layouts
+            .borrow_mut()
+            .push((constraints, size));
         size
     }
 
@@ -2090,7 +2195,10 @@ impl RenderRef {
         // descend into children, and a child that shares this handle would find
         // the list already borrowed.
         let answer = compute(&**self.render.borrow());
-        self.state.intrinsics.borrow_mut().push((query, bits, answer));
+        self.state
+            .intrinsics
+            .borrow_mut()
+            .push((query, bits, answer));
         answer
     }
 }
@@ -2394,13 +2502,28 @@ pub struct AlignmentDirectional {
 }
 
 impl AlignmentDirectional {
-    pub const TOP_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: -1.0 };
-    pub const TOP_CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: -1.0 };
-    pub const TOP_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: -1.0 };
-    pub const CENTER_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: 0.0 };
+    pub const TOP_START: AlignmentDirectional = AlignmentDirectional {
+        start: -1.0,
+        y: -1.0,
+    };
+    pub const TOP_CENTER: AlignmentDirectional = AlignmentDirectional {
+        start: 0.0,
+        y: -1.0,
+    };
+    pub const TOP_END: AlignmentDirectional = AlignmentDirectional {
+        start: 1.0,
+        y: -1.0,
+    };
+    pub const CENTER_START: AlignmentDirectional = AlignmentDirectional {
+        start: -1.0,
+        y: 0.0,
+    };
     pub const CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: 0.0 };
     pub const CENTER_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: 0.0 };
-    pub const BOTTOM_START: AlignmentDirectional = AlignmentDirectional { start: -1.0, y: 1.0 };
+    pub const BOTTOM_START: AlignmentDirectional = AlignmentDirectional {
+        start: -1.0,
+        y: 1.0,
+    };
     pub const BOTTOM_CENTER: AlignmentDirectional = AlignmentDirectional { start: 0.0, y: 1.0 };
     pub const BOTTOM_END: AlignmentDirectional = AlignmentDirectional { start: 1.0, y: 1.0 };
 
@@ -2511,8 +2634,16 @@ pub enum MainAxisSize {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fill {
     Solid(Color),
-    Linear { start: Alignment, end: Alignment, gradient: Gradient },
-    Radial { center: Alignment, radius: f32, gradient: Gradient },
+    Linear {
+        start: Alignment,
+        end: Alignment,
+        gradient: Gradient,
+    },
+    Radial {
+        center: Alignment,
+        radius: f32,
+        gradient: Gradient,
+    },
 }
 
 /// Paints a background behind an optional child.
@@ -2589,12 +2720,20 @@ impl RenderDecoratedBox {
     fn build_paint(&self, rect: Rect) -> Option<Paint> {
         match self.fill.as_ref()? {
             Fill::Solid(color) => Some(Paint::new(*color)),
-            Fill::Linear { start, end, gradient } => {
+            Fill::Linear {
+                start,
+                end,
+                gradient,
+            } => {
                 let from = point_in(rect, *start);
                 let to = point_in(rect, *end);
                 Some(Paint::new(Color::WHITE).with_linear_gradient(from, to, gradient))
             }
-            Fill::Radial { center, radius, gradient } => {
+            Fill::Radial {
+                center,
+                radius,
+                gradient,
+            } => {
                 let at = point_in(rect, *center);
                 Some(Paint::new(Color::WHITE).with_radial_gradient(at, *radius, gradient))
             }
@@ -2663,7 +2802,10 @@ impl RenderBox for RenderDecoratedBox {
         self.border_width = fresh.border_width;
         self.border_color = fresh.border_color;
         self.shadows = std::mem::take(&mut fresh.shadows);
-        effect = effect.and(UpdateEffect::relayout_if(!same_child(&self.child, &fresh.child)));
+        effect = effect.and(UpdateEffect::relayout_if(!same_child(
+            &self.child,
+            &fresh.child,
+        )));
         self.child = fresh.child.take();
         Some(effect)
     }
@@ -2713,14 +2855,18 @@ impl RenderBox for RenderDecoratedBox {
             let paint = shadow.to_paint();
             if self.corner_radius > 0.0 {
                 let radius = (self.corner_radius + spread).max(0.0);
-                context.canvas().draw_rounded_rect(shadow_rect, radius, &paint);
+                context
+                    .canvas()
+                    .draw_rounded_rect(shadow_rect, radius, &paint);
             } else {
                 context.canvas().draw_rect(shadow_rect, &paint);
             }
         }
         if let Some(paint) = self.build_paint(rect) {
             if self.corner_radius > 0.0 {
-                context.canvas().draw_rounded_rect(rect, self.corner_radius, &paint);
+                context
+                    .canvas()
+                    .draw_rounded_rect(rect, self.corner_radius, &paint);
             } else {
                 context.canvas().draw_rect(rect, &paint);
             }
@@ -2739,8 +2885,9 @@ impl RenderBox for RenderDecoratedBox {
                 rect.right - half,
                 rect.bottom - half,
             );
-            let paint = Paint::new(self.border_color)
-                .with_style(Style::Stroke { width: self.border_width });
+            let paint = Paint::new(self.border_color).with_style(Style::Stroke {
+                width: self.border_width,
+            });
             if self.corner_radius > 0.0 {
                 context.canvas().draw_rounded_rect(
                     inset,
@@ -2760,7 +2907,9 @@ impl RenderBox for RenderDecoratedBox {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.hit_test(position, result))
     }
 
     /// A decoration is something a finger lands on, so this is the one
@@ -2777,19 +2926,27 @@ impl RenderBox for RenderDecoratedBox {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_width(height))
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_width(height))
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_width(height))
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_width(height))
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_height(width))
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_height(width))
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_height(width))
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_height(width))
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
@@ -2909,8 +3066,14 @@ impl RenderParagraph {
     /// tree of `TextSpan`s; the tree is flat here because a nested span's
     /// style is resolved against its parent's before shaping anyway.
     pub fn rich(runs: Vec<(String, TextStyle)>) -> RenderParagraph {
-        let content = runs.iter().map(|(text, _)| text.as_str()).collect::<String>();
-        let style = runs.first().map(|(_, style)| style.clone()).unwrap_or_default();
+        let content = runs
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>();
+        let style = runs
+            .first()
+            .map(|(_, style)| style.clone())
+            .unwrap_or_default();
         RenderParagraph {
             content,
             style,
@@ -3130,7 +3293,11 @@ impl RenderBox for RenderParagraph {
         };
         // An unbounded width means "as wide as you like", which for text means
         // one line; Paragraph cannot shape against infinity.
-        let width = if width.is_finite() { width } else { f32::MAX / 4.0 };
+        let width = if width.is_finite() {
+            width
+        } else {
+            f32::MAX / 4.0
+        };
         let paragraph = self.shape_at(width);
         // Paragraph::new re-lays out at the ink width, so width() is the tight
         // box around the glyphs. That is what makes centring a text inside a
@@ -3143,8 +3310,7 @@ impl RenderBox for RenderParagraph {
         // by clipping. The width one is kept apart because the fade needs to
         // know *which* way the text ran out of room.
         let did_overflow_width = self.size.width < text_size.width;
-        self.has_visual_overflow =
-            did_overflow_width || self.size.height < text_size.height;
+        self.has_visual_overflow = did_overflow_width || self.size.height < text_size.height;
         self.fade = (self.has_visual_overflow && self.overflow == TextOverflow::Fade)
             .then(|| self.fade_shader(did_overflow_width));
         self.paragraph = Some(paragraph);
@@ -3165,7 +3331,11 @@ impl RenderBox for RenderParagraph {
         } else {
             f32::INFINITY
         };
-        let width = if width.is_finite() { width } else { f32::MAX / 4.0 };
+        let width = if width.is_finite() {
+            width
+        } else {
+            f32::MAX / 4.0
+        };
         let paragraph = self.shape_at(width);
         let text_size = Size::new(paragraph.width(), paragraph.height());
         constraints.constrain(text_size)
@@ -3179,7 +3349,9 @@ impl RenderBox for RenderParagraph {
         // overflow but `visible` clips, and only when something overflowed.
         // `visible` is the one that lets glyphs spill outside the box.
         if !self.has_visual_overflow || self.overflow == TextOverflow::Visible {
-            context.canvas().draw_paragraph(paragraph, offset.dx, offset.dy);
+            context
+                .canvas()
+                .draw_paragraph(paragraph, offset.dx, offset.dy);
             return;
         }
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
@@ -3235,11 +3407,10 @@ impl RenderBox for RenderParagraph {
         // The direction the paragraph was built in, not the one ambient
         // wherever the semantics walk runs -- the field is upstream's
         // paragraph-style `textDirection`, and a reader is told the same.
-        Some(crate::semantics::SemanticsAnnotation::text(
-            self.semantics_id.get(),
-            &self.content,
+        Some(
+            crate::semantics::SemanticsAnnotation::text(self.semantics_id.get(), &self.content)
+                .with_text_direction(self.text_direction),
         )
-        .with_text_direction(self.text_direction))
     }
 
     fn min_intrinsic_width(&self, _height: f32) -> f32 {
@@ -3306,12 +3477,11 @@ pub struct FittedSizes {
 /// every fit other than `Fill` the two sizes keep the input's aspect ratio, so
 /// the map between them is a uniform scale; `Fill` is the one that stretches.
 pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
-    if input.height <= 0.0
-        || input.width <= 0.0
-        || output.height <= 0.0
-        || output.width <= 0.0
-    {
-        return FittedSizes { source: Size::ZERO, destination: Size::ZERO };
+    if input.height <= 0.0 || input.width <= 0.0 || output.height <= 0.0 || output.width <= 0.0 {
+        return FittedSizes {
+            source: Size::ZERO,
+            destination: Size::ZERO,
+        };
     }
 
     let source;
@@ -3324,25 +3494,17 @@ pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
         BoxFit::Contain => {
             source = input;
             if output.width / output.height > source.width / source.height {
-                destination = Size::new(
-                    source.width * output.height / source.height,
-                    output.height,
-                );
+                destination =
+                    Size::new(source.width * output.height / source.height, output.height);
             } else {
-                destination = Size::new(
-                    output.width,
-                    source.height * output.width / source.width,
-                );
+                destination = Size::new(output.width, source.height * output.width / source.width);
             }
         }
         BoxFit::Cover => {
             if output.width / output.height > input.width / input.height {
                 source = Size::new(input.width, input.width * output.height / output.width);
             } else {
-                source = Size::new(
-                    input.height * output.width / output.height,
-                    input.height,
-                );
+                source = Size::new(input.height * output.width / output.height, input.height);
             }
             destination = output;
         }
@@ -3354,26 +3516,18 @@ pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
             } else {
                 // Like "contain".
                 source = input;
-                destination = Size::new(
-                    output.width,
-                    source.height * output.width / source.width,
-                );
+                destination = Size::new(output.width, source.height * output.width / source.width);
             }
         }
         BoxFit::FitHeight => {
             if output.width / output.height > input.width / input.height {
                 // Like "contain".
                 source = input;
-                destination = Size::new(
-                    source.width * output.height / source.height,
-                    output.height,
-                );
+                destination =
+                    Size::new(source.width * output.height / source.height, output.height);
             } else {
                 // Like "cover".
-                source = Size::new(
-                    input.height * output.width / output.height,
-                    input.height,
-                );
+                source = Size::new(input.height * output.width / output.height, input.height);
                 destination = output;
             }
         }
@@ -3398,7 +3552,10 @@ pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
             destination = fitted;
         }
     }
-    FittedSizes { source, destination }
+    FittedSizes {
+        source,
+        destination,
+    }
 }
 
 /// Upstream `_paintImage` (image.dart): a paint is passed to `drawImageRect`
@@ -3475,18 +3632,16 @@ impl RenderImage {
                 1.0
             }
             BoxFit::None => 1.0,
-            BoxFit::Contain => {
-                (size.width / natural.width).min(size.height / natural.height)
-            }
+            BoxFit::Contain => (size.width / natural.width).min(size.height / natural.height),
             BoxFit::Cover => (size.width / natural.width).max(size.height / natural.height),
             // The uniform scales `applyBoxFit` works out for these: `FitWidth`
             // pins the width, `FitHeight` the height, and `ScaleDown` is the
             // `Contain` scale with one as a ceiling -- it never scales up.
             BoxFit::FitWidth => size.width / natural.width,
             BoxFit::FitHeight => size.height / natural.height,
-            BoxFit::ScaleDown => {
-                (size.width / natural.width).min(size.height / natural.height).min(1.0)
-            }
+            BoxFit::ScaleDown => (size.width / natural.width)
+                .min(size.height / natural.height)
+                .min(1.0),
         }
     }
 
@@ -3617,7 +3772,10 @@ pub struct RenderFullWidth {
 
 impl RenderFullWidth {
     pub fn new() -> RenderFullWidth {
-        RenderFullWidth { child: None, size: Size::ZERO }
+        RenderFullWidth {
+            child: None,
+            size: Size::ZERO,
+        }
     }
 
     pub fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
@@ -3685,7 +3843,9 @@ impl RenderBox for RenderFullWidth {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.hit_test(position, result))
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -3695,19 +3855,27 @@ impl RenderBox for RenderFullWidth {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |child| child.min_intrinsic_width(height))
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.min_intrinsic_width(height))
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |child| child.max_intrinsic_width(height))
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.max_intrinsic_width(height))
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |child| child.min_intrinsic_height(width))
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.min_intrinsic_height(width))
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.as_ref().map_or(0.0, |child| child.max_intrinsic_height(width))
+        self.child
+            .as_ref()
+            .map_or(0.0, |child| child.max_intrinsic_height(width))
     }
 }
 
@@ -3725,7 +3893,11 @@ pub struct RenderConstrainedBox {
 
 impl RenderConstrainedBox {
     pub fn new(extra: BoxConstraints) -> RenderConstrainedBox {
-        RenderConstrainedBox { extra, child: None, size: Size::ZERO }
+        RenderConstrainedBox {
+            extra,
+            child: None,
+            size: Size::ZERO,
+        }
     }
 
     pub fn tight(width: f32, height: f32) -> RenderConstrainedBox {
@@ -3779,7 +3951,9 @@ impl RenderBox for RenderConstrainedBox {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.hit_test(position, result))
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -3798,32 +3972,60 @@ impl RenderBox for RenderConstrainedBox {
         if self.extra.has_bounded_width() && self.extra.has_tight_width() {
             return self.extra.min_width;
         }
-        let width = self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_width(height));
-        if self.extra.has_infinite_width() { width } else { self.extra.constrain_width(width) }
+        let width = self
+            .child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_width(height));
+        if self.extra.has_infinite_width() {
+            width
+        } else {
+            self.extra.constrain_width(width)
+        }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
         if self.extra.has_bounded_width() && self.extra.has_tight_width() {
             return self.extra.min_width;
         }
-        let width = self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_width(height));
-        if self.extra.has_infinite_width() { width } else { self.extra.constrain_width(width) }
+        let width = self
+            .child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_width(height));
+        if self.extra.has_infinite_width() {
+            width
+        } else {
+            self.extra.constrain_width(width)
+        }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
         if self.extra.has_bounded_height() && self.extra.has_tight_height() {
             return self.extra.min_height;
         }
-        let height = self.child.as_ref().map_or(0.0, |c| c.min_intrinsic_height(width));
-        if self.extra.has_infinite_height() { height } else { self.extra.constrain_height(height) }
+        let height = self
+            .child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_height(width));
+        if self.extra.has_infinite_height() {
+            height
+        } else {
+            self.extra.constrain_height(height)
+        }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         if self.extra.has_bounded_height() && self.extra.has_tight_height() {
             return self.extra.min_height;
         }
-        let height = self.child.as_ref().map_or(0.0, |c| c.max_intrinsic_height(width));
-        if self.extra.has_infinite_height() { height } else { self.extra.constrain_height(height) }
+        let height = self
+            .child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_height(width));
+        if self.extra.has_infinite_height() {
+            height
+        } else {
+            self.extra.constrain_height(height)
+        }
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
@@ -3841,7 +4043,11 @@ pub struct RenderPadding {
 
 impl RenderPadding {
     pub fn new(insets: EdgeInsets, child: impl RenderBox + 'static) -> RenderPadding {
-        RenderPadding { insets, child: RenderRef::new(child), size: Size::ZERO }
+        RenderPadding {
+            insets,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -3850,9 +4056,8 @@ impl RenderBox for RenderPadding {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderPadding>()?;
         // Upstream's `Padding.updateRenderObject` and `RenderPadding.set
         // padding`, which is the pair this whole method stands for.
-        let effect = UpdateEffect::relayout_if(
-            self.insets != fresh.insets || !self.child.is(&fresh.child),
-        );
+        let effect =
+            UpdateEffect::relayout_if(self.insets != fresh.insets || !self.child.is(&fresh.child));
         self.insets = fresh.insets;
         self.child = fresh.child.clone();
         Some(effect)
@@ -3894,32 +4099,40 @@ impl RenderBox for RenderPadding {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child
-            .hit_test(position.translate(-self.insets.left, -self.insets.top), result)
+        self.child.hit_test(
+            position.translate(-self.insets.left, -self.insets.top),
+            result,
+        )
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.min_intrinsic_width((height - self.insets.vertical()).max(0.0))
+        self.child
+            .min_intrinsic_width((height - self.insets.vertical()).max(0.0))
             + self.insets.horizontal()
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.child.max_intrinsic_width((height - self.insets.vertical()).max(0.0))
+        self.child
+            .max_intrinsic_width((height - self.insets.vertical()).max(0.0))
             + self.insets.horizontal()
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.min_intrinsic_height((width - self.insets.horizontal()).max(0.0))
+        self.child
+            .min_intrinsic_height((width - self.insets.horizontal()).max(0.0))
             + self.insets.vertical()
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.child.max_intrinsic_height((width - self.insets.horizontal()).max(0.0))
+        self.child
+            .max_intrinsic_height((width - self.insets.horizontal()).max(0.0))
             + self.insets.vertical()
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.child.distance_to_baseline().map(|b| b + self.insets.top)
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.insets.top)
     }
 }
 
@@ -3996,7 +4209,8 @@ impl RenderAlign {
     /// The alignment this places its child by: the directional one resolved,
     /// or the absolute one as it stands. Upstream's `_resolvedAlignment`.
     fn resolved_alignment(&self) -> Alignment {
-        self.directional.map_or(self.alignment, |d| d.resolve(self.text_direction))
+        self.directional
+            .map_or(self.alignment, |d| d.resolve(self.text_direction))
     }
 }
 
@@ -4065,10 +4279,7 @@ impl RenderBox for RenderAlign {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(
-            &self.child,
-            offset.plus(self.child_offset),
-        );
+        context.paint_child(&self.child, offset.plus(self.child_offset));
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -4076,7 +4287,8 @@ impl RenderBox for RenderAlign {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.child_offset), result)
+        self.child
+            .hit_test(position.minus(self.child_offset), result)
     }
 
     // Upstream's `RenderPositionedBox` intrinsics multiply the child's answer
@@ -4099,7 +4311,9 @@ impl RenderBox for RenderAlign {
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.child_offset.dy)
     }
 }
 
@@ -4118,7 +4332,11 @@ pub struct FlexChild {
 
 impl FlexChild {
     pub fn new(render: impl RenderBox + 'static) -> FlexChild {
-        FlexChild { render: RenderRef::new(render), flex: 0, tight: true }
+        FlexChild {
+            render: RenderRef::new(render),
+            flex: 0,
+            tight: true,
+        }
     }
 
     pub fn expanded(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
@@ -4127,13 +4345,21 @@ impl FlexChild {
         // clamp keeps a release build from dividing free space by zero; the
         // assert is what tells the caller what they did.
         debug_assert!(flex > 0, "the flex factor must be positive");
-        FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: true }
+        FlexChild {
+            render: RenderRef::new(render),
+            flex: flex.max(1),
+            tight: true,
+        }
     }
 
     pub fn flexible(render: impl RenderBox + 'static, flex: u32) -> FlexChild {
         // The same assert, the same clamp -- see `expanded`.
         debug_assert!(flex > 0, "the flex factor must be positive");
-        FlexChild { render: RenderRef::new(render), flex: flex.max(1), tight: false }
+        FlexChild {
+            render: RenderRef::new(render),
+            flex: flex.max(1),
+            tight: false,
+        }
     }
 }
 
@@ -4273,11 +4499,19 @@ impl RenderFlex {
     }
 
     fn main_of(&self, size: Size) -> f32 {
-        if self.is_horizontal() { size.width } else { size.height }
+        if self.is_horizontal() {
+            size.width
+        } else {
+            size.height
+        }
     }
 
     fn cross_of(&self, size: Size) -> f32 {
-        if self.is_horizontal() { size.height } else { size.width }
+        if self.is_horizontal() {
+            size.height
+        } else {
+            size.width
+        }
     }
 
     fn compose(&self, main: f32, cross: f32) -> Size {
@@ -4372,7 +4606,11 @@ impl RenderFlex {
 
     /// Constraints for one child, given the cross-axis limits and, for a
     /// flexible child, the main-axis extent it has been allotted.
-    fn child_constraints(&self, constraints: BoxConstraints, main: Option<(f32, bool)>) -> BoxConstraints {
+    fn child_constraints(
+        &self,
+        constraints: BoxConstraints,
+        main: Option<(f32, bool)>,
+    ) -> BoxConstraints {
         let (cross_min, cross_max) = if self.is_horizontal() {
             (constraints.min_height, constraints.max_height)
         } else {
@@ -4425,7 +4663,11 @@ impl RenderFlex {
         get_baseline: &mut dyn FnMut(&RenderRef, BoxConstraints) -> Option<f32>,
     ) -> (Vec<Size>, Size) {
         let count = self.children.len();
-        let total_spacing = if count > 1 { self.spacing * (count - 1) as f32 } else { 0.0 };
+        let total_spacing = if count > 1 {
+            self.spacing * (count - 1) as f32
+        } else {
+            0.0
+        };
 
         let mut sizes: Vec<Size> = vec![Size::ZERO; count];
         let mut allocated = 0.0f32;
@@ -4479,7 +4721,11 @@ impl RenderFlex {
             f32::INFINITY
         };
         if total_flex > 0 {
-            let per_flex = if free.is_finite() { free / total_flex as f32 } else { f32::INFINITY };
+            let per_flex = if free.is_finite() {
+                free / total_flex as f32
+            } else {
+                f32::INFINITY
+            };
             for index in 0..count {
                 let flex = self.children[index].flex;
                 if flex == 0 {
@@ -4544,7 +4790,11 @@ impl RenderBox for RenderFlex {
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let count = self.children.len();
-        let total_spacing = if count > 1 { self.spacing * (count - 1) as f32 } else { 0.0 };
+        let total_spacing = if count > 1 {
+            self.spacing * (count - 1) as f32
+        } else {
+            0.0
+        };
 
         let mut sizes: Vec<Size> = vec![Size::ZERO; count];
         let mut allocated = 0.0f32;
@@ -4558,7 +4808,9 @@ impl RenderBox for RenderFlex {
                 continue;
             }
             let child_constraints = self.child_constraints(constraints, None);
-            let size = self.children[index].render.layout_child(child_constraints, true);
+            let size = self.children[index]
+                .render
+                .layout_child(child_constraints, true);
             sizes[index] = size;
             allocated += self.main_of(size);
             cross = cross.max(self.cross_of(size));
@@ -4580,7 +4832,11 @@ impl RenderBox for RenderFlex {
         };
 
         if total_flex > 0 {
-            let per_flex = if free.is_finite() { free / total_flex as f32 } else { f32::INFINITY };
+            let per_flex = if free.is_finite() {
+                free / total_flex as f32
+            } else {
+                f32::INFINITY
+            };
             for index in 0..count {
                 let flex = self.children[index].flex;
                 if flex == 0 {
@@ -4593,7 +4849,9 @@ impl RenderBox for RenderFlex {
                     None
                 };
                 let child_constraints = self.child_constraints(constraints, extent);
-                let size = self.children[index].render.layout_child(child_constraints, true);
+                let size = self.children[index]
+                    .render
+                    .layout_child(child_constraints, true);
                 sizes[index] = size;
                 allocated += self.main_of(size);
                 cross = cross.max(self.cross_of(size));
@@ -4721,13 +4979,12 @@ impl RenderBox for RenderFlex {
                     }
                 }
                 CrossAxisAlignment::Center => cross_free / 2.0,
-                CrossAxisAlignment::Baseline => match self.children[index]
-                    .render
-                    .distance_to_baseline()
-                {
-                    Some(baseline) => (max_baseline - baseline).max(0.0),
-                    None => 0.0,
-                },
+                CrossAxisAlignment::Baseline => {
+                    match self.children[index].render.distance_to_baseline() {
+                        Some(baseline) => (max_baseline - baseline).max(0.0),
+                        None => 0.0,
+                    }
+                }
             };
             self.offsets[index] = self.offset_of(main_position, cross_position);
             main_position += self.main_of(size);
@@ -4825,9 +5082,13 @@ impl RenderBox for RenderFlex {
     /// one that can be on the line. Either way the child's own offset counts,
     /// because a baseline is measured from the flex's top and not the child's.
     fn distance_to_baseline(&self) -> Option<f32> {
-        let placed = self.children.iter().zip(self.offsets.iter()).filter_map(
-            |(child, offset)| child.render.distance_to_baseline().map(|b| b + offset.dy),
-        );
+        let placed = self
+            .children
+            .iter()
+            .zip(self.offsets.iter())
+            .filter_map(|(child, offset)| {
+                child.render.distance_to_baseline().map(|b| b + offset.dy)
+            });
         if self.is_horizontal() {
             placed.fold(None, |best: Option<f32>, candidate| {
                 Some(match best {
@@ -5028,7 +5289,10 @@ impl RenderStack {
 
     /// Adds an already-boxed child, for a caller that has one.
     pub fn push_boxed(mut self, child: BoxedRender) -> Self {
-        self.children.push(StackChild { render: child, position: StackPosition::default() });
+        self.children.push(StackChild {
+            render: child,
+            position: StackPosition::default(),
+        });
         self
     }
 
@@ -5040,7 +5304,10 @@ impl RenderStack {
         // The one place every position reaches the render tree, so the one
         // place upstream `Positioned`'s constructor asserts belong.
         position.debug_assert_valid();
-        self.children.push(StackChild { render: RenderRef::new(child), position });
+        self.children.push(StackChild {
+            render: RenderRef::new(child),
+            position,
+        });
         self
     }
 
@@ -5207,7 +5474,9 @@ impl RenderBox for RenderStack {
                 || self.fit != fresh.fit
                 || !kept_children,
         )
-        .and(UpdateEffect::repaint_if(self.clip_behavior != fresh.clip_behavior));
+        .and(UpdateEffect::repaint_if(
+            self.clip_behavior != fresh.clip_behavior,
+        ));
         self.alignment = fresh.alignment;
         self.default_alignment = fresh.default_alignment;
         self.text_direction = fresh.text_direction;
@@ -5217,12 +5486,8 @@ impl RenderBox for RenderStack {
         Some(effect)
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let (size, offsets, has_visual_overflow) = layout_stack_children(
-            &mut self.children,
-            self.alignment,
-            self.fit,
-            constraints,
-        );
+        let (size, offsets, has_visual_overflow) =
+            layout_stack_children(&mut self.children, self.alignment, self.fit, constraints);
         self.offsets = offsets;
         self.has_visual_overflow = has_visual_overflow;
         self.size = size;
@@ -5330,7 +5595,9 @@ impl RenderBox for RenderStack {
         self.children
             .iter()
             .zip(self.offsets.iter())
-            .filter_map(|(child, offset)| child.render.distance_to_baseline().map(|b| b + offset.dy))
+            .filter_map(|(child, offset)| {
+                child.render.distance_to_baseline().map(|b| b + offset.dy)
+            })
             .fold(None, |best: Option<f32>, candidate| {
                 Some(match best {
                     Some(best) => best.min(candidate),
@@ -5438,7 +5705,10 @@ impl RenderIndexedStack {
     }
 
     pub fn push_boxed(mut self, child: BoxedRender) -> Self {
-        self.children.push(StackChild { render: child, position: StackPosition::default() });
+        self.children.push(StackChild {
+            render: child,
+            position: StackPosition::default(),
+        });
         self
     }
 
@@ -5472,7 +5742,9 @@ impl RenderBox for RenderIndexedStack {
                 || self.index != fresh.index
                 || !kept_children,
         )
-        .and(UpdateEffect::repaint_if(self.clip_behavior != fresh.clip_behavior));
+        .and(UpdateEffect::repaint_if(
+            self.clip_behavior != fresh.clip_behavior,
+        ));
         self.alignment = fresh.alignment;
         self.default_alignment = fresh.default_alignment;
         self.text_direction = fresh.text_direction;
@@ -5547,7 +5819,10 @@ impl RenderBox for RenderIndexedStack {
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         if let Some(index) = self.index {
             if let Some(child) = self.children.get(index) {
-                visit(&child.render, self.offsets.get(index).copied().unwrap_or(Offset::ZERO));
+                visit(
+                    &child.render,
+                    self.offsets.get(index).copied().unwrap_or(Offset::ZERO),
+                );
             }
         }
     }
@@ -5637,7 +5912,12 @@ impl RenderLimitedBox {
     }
 
     pub fn boxed(child: BoxedRender) -> RenderLimitedBox {
-        RenderLimitedBox { child, max_width: f32::INFINITY, max_height: f32::INFINITY, size: Size::ZERO }
+        RenderLimitedBox {
+            child,
+            max_width: f32::INFINITY,
+            max_height: f32::INFINITY,
+            size: Size::ZERO,
+        }
     }
 
     /// The width to use when the incoming width is unbounded. Upstream's
@@ -5694,7 +5974,8 @@ impl RenderBox for RenderLimitedBox {
     /// under what the child may ask for, not a ceiling over the box.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = constraints.constrain(
-            self.child.layout_child(self.limit_constraints(constraints), true),
+            self.child
+                .layout_child(self.limit_constraints(constraints), true),
         );
         self.size
     }
@@ -5764,7 +6045,12 @@ impl RenderFittedBox {
     }
 
     pub fn boxed(child: BoxedRender) -> RenderFittedBox {
-        RenderFittedBox { child, fit: BoxFit::Contain, alignment: Alignment::CENTER, size: Size::ZERO }
+        RenderFittedBox {
+            child,
+            fit: BoxFit::Contain,
+            alignment: Alignment::CENTER,
+            size: Size::ZERO,
+        }
     }
 
     pub fn with_fit(mut self, fit: BoxFit) -> Self {
@@ -5832,8 +6118,11 @@ impl RenderBox for RenderFittedBox {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let child_size = self.child.layout_child(BoxConstraints::unbounded(), true);
         self.size = match self.fit {
-            BoxFit::ScaleDown => constraints
-                .constrain(constraints.loosen().constrain_size_preserving_aspect_ratio(child_size)),
+            BoxFit::ScaleDown => constraints.constrain(
+                constraints
+                    .loosen()
+                    .constrain_size_preserving_aspect_ratio(child_size),
+            ),
             _ => constraints.constrain_size_preserving_aspect_ratio(child_size),
         };
         self.size
@@ -5848,8 +6137,11 @@ impl RenderBox for RenderFittedBox {
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
         let child_size = self.child.dry_layout(BoxConstraints::unbounded());
         match self.fit {
-            BoxFit::ScaleDown => constraints
-                .constrain(constraints.loosen().constrain_size_preserving_aspect_ratio(child_size)),
+            BoxFit::ScaleDown => constraints.constrain(
+                constraints
+                    .loosen()
+                    .constrain_size_preserving_aspect_ratio(child_size),
+            ),
             _ => constraints.constrain_size_preserving_aspect_ratio(child_size),
         }
     }
@@ -5860,7 +6152,14 @@ impl RenderBox for RenderFittedBox {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some((translation, scale)) = self.paint_placement() {
             context.push_transform(
-                [scale.width, 0.0, 0.0, scale.height, translation.dx, translation.dy],
+                [
+                    scale.width,
+                    0.0,
+                    0.0,
+                    scale.height,
+                    translation.dx,
+                    translation.dy,
+                ],
                 Offset::ZERO,
                 offset,
                 &self.child,
@@ -5945,7 +6244,12 @@ impl RenderBaseline {
     }
 
     pub fn boxed(baseline: f32, child: BoxedRender) -> RenderBaseline {
-        RenderBaseline { child, baseline, size: Size::ZERO, child_offset: Offset::ZERO }
+        RenderBaseline {
+            child,
+            baseline,
+            size: Size::ZERO,
+            child_offset: Offset::ZERO,
+        }
     }
 
     pub fn child_offset(&self) -> Offset {
@@ -5968,7 +6272,10 @@ impl RenderBox for RenderBaseline {
     /// childBaseline`, the size `constrain(childWidth, top + childHeight)`.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let child_size = self.child.layout_child(constraints.loosen(), true);
-        let child_baseline = self.child.distance_to_baseline().unwrap_or(child_size.height);
+        let child_baseline = self
+            .child
+            .distance_to_baseline()
+            .unwrap_or(child_size.height);
         let top = self.baseline - child_baseline;
         self.size = constraints.constrain(Size::new(child_size.width, top + child_size.height));
         self.child_offset = Offset::new(0.0, top);
@@ -5982,7 +6289,10 @@ impl RenderBox for RenderBaseline {
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
         let child_constraints = constraints.loosen();
         let child_size = self.child.dry_layout(child_constraints);
-        let child_baseline = self.child.distance_to_baseline().unwrap_or(child_size.height);
+        let child_baseline = self
+            .child
+            .distance_to_baseline()
+            .unwrap_or(child_size.height);
         constraints.constrain(Size::new(
             child_size.width,
             self.baseline - child_baseline + child_size.height,
@@ -5998,7 +6308,8 @@ impl RenderBox for RenderBaseline {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.child_offset), result)
+        self.child
+            .hit_test(position.minus(self.child_offset), result)
     }
 
     /// The inherited default: the child's baseline, from wherever the child
@@ -6077,15 +6388,9 @@ impl RenderFractionallySizedBox {
     /// `child * factor` where a factor was given **or** the axis is
     /// unbounded, and takes everything otherwise -- `INFINITY` run through
     /// `constrain`, which turns it into the incoming maximum.
-    fn sized(
-        &self,
-        child_size: Size,
-        constraints: BoxConstraints,
-    ) -> Size {
-        let shrink_wrap_width =
-            self.width_factor.is_some() || !constraints.has_bounded_width();
-        let shrink_wrap_height =
-            self.height_factor.is_some() || !constraints.has_bounded_height();
+    fn sized(&self, child_size: Size, constraints: BoxConstraints) -> Size {
+        let shrink_wrap_width = self.width_factor.is_some() || !constraints.has_bounded_width();
+        let shrink_wrap_height = self.height_factor.is_some() || !constraints.has_bounded_height();
         constraints.constrain(Size::new(
             if shrink_wrap_width {
                 child_size.width * self.width_factor.unwrap_or(1.0)
@@ -6103,7 +6408,9 @@ impl RenderFractionallySizedBox {
 
 impl RenderBox for RenderFractionallySizedBox {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-        let fresh = fresh.as_any_mut().downcast_mut::<RenderFractionallySizedBox>()?;
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderFractionallySizedBox>()?;
         let effect = UpdateEffect::relayout_if(
             !self.child.is(&fresh.child)
                 || self.width_factor != fresh.width_factor
@@ -6143,7 +6450,8 @@ impl RenderBox for RenderFractionallySizedBox {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.child_offset), result)
+        self.child
+            .hit_test(position.minus(self.child_offset), result)
     }
 
     /// Upstream's intrinsics: the child's answer times the factor, exactly as
@@ -6165,7 +6473,9 @@ impl RenderBox for RenderFractionallySizedBox {
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.child_offset.dy)
     }
 }
 
@@ -6280,7 +6590,9 @@ impl RenderBox for RenderOverflowBox {
     /// constraints, the box `constraints.biggest()` -- the child's size
     /// counts for nothing, which is what "let it overflow" means.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let child_size = self.child.layout_child(self.inner_constraints(constraints), true);
+        let child_size = self
+            .child
+            .layout_child(self.inner_constraints(constraints), true);
         self.size = constraints.biggest();
         self.child_offset = self.alignment.inscribe(child_size, self.size);
         self.size
@@ -6305,11 +6617,14 @@ impl RenderBox for RenderOverflowBox {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.child_offset), result)
+        self.child
+            .hit_test(position.minus(self.child_offset), result)
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.child_offset.dy)
     }
 }
 
@@ -6329,10 +6644,7 @@ pub struct RenderSizedOverflowBox {
 }
 
 impl RenderSizedOverflowBox {
-    pub fn new(
-        requested_size: Size,
-        child: impl RenderBox + 'static,
-    ) -> RenderSizedOverflowBox {
+    pub fn new(requested_size: Size, child: impl RenderBox + 'static) -> RenderSizedOverflowBox {
         RenderSizedOverflowBox {
             child: RenderRef::new(child),
             requested_size,
@@ -6364,7 +6676,9 @@ impl RenderSizedOverflowBox {
 
 impl RenderBox for RenderSizedOverflowBox {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-        let fresh = fresh.as_any_mut().downcast_mut::<RenderSizedOverflowBox>()?;
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSizedOverflowBox>()?;
         let effect = UpdateEffect::relayout_if(
             !self.child.is(&fresh.child)
                 || self.requested_size != fresh.requested_size
@@ -6403,7 +6717,8 @@ impl RenderBox for RenderSizedOverflowBox {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.child_offset), result)
+        self.child
+            .hit_test(position.minus(self.child_offset), result)
     }
 
     /// Upstream's intrinsics: the requested size, on every axis, regardless
@@ -6428,7 +6743,9 @@ impl RenderBox for RenderSizedOverflowBox {
     /// from wherever the alignment put it, falling back to the default walk
     /// (which is the same walk, at the same offset) when the child has none.
     fn distance_to_baseline(&self) -> Option<f32> {
-        self.child.distance_to_baseline().map(|b| b + self.child_offset.dy)
+        self.child
+            .distance_to_baseline()
+            .map(|b| b + self.child_offset.dy)
     }
 }
 
@@ -6447,11 +6764,17 @@ pub struct RenderIgnorePointer {
 
 impl RenderIgnorePointer {
     pub fn new(child: impl RenderBox + 'static) -> RenderIgnorePointer {
-        RenderIgnorePointer { child: RenderRef::new(child), size: Size::ZERO }
+        RenderIgnorePointer {
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 
     pub fn boxed(child: BoxedRender) -> RenderIgnorePointer {
-        RenderIgnorePointer { child, size: Size::ZERO }
+        RenderIgnorePointer {
+            child,
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -6529,7 +6852,11 @@ impl RenderSizeReporter {
         sink: Rc<std::cell::Cell<Size>>,
         child: impl RenderBox + 'static,
     ) -> RenderSizeReporter {
-        RenderSizeReporter { sink, child: RenderRef::new(child), size: Size::ZERO }
+        RenderSizeReporter {
+            sink,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -6753,25 +7080,37 @@ impl RenderWrap {
     /// Breaks the children into lines, given how long and how thick each one
     /// is. The whole of what a wrap does, in one place so that the layout and
     /// the intrinsics cannot disagree about where the lines fall.
-    fn break_into_runs(
-        &self,
-        extents: impl Iterator<Item = (f32, f32)>,
-        limit: f32,
-    ) -> Vec<Run> {
+    fn break_into_runs(&self, extents: impl Iterator<Item = (f32, f32)>, limit: f32) -> Vec<Run> {
         let mut runs: Vec<Run> = Vec::new();
-        let mut current = Run { first: 0, count: 0, main: 0.0, cross: 0.0 };
+        let mut current = Run {
+            first: 0,
+            count: 0,
+            main: 0.0,
+            cross: 0.0,
+        };
         for (index, (child_main, child_cross)) in extents.enumerate() {
-            let with_spacing =
-                if current.count == 0 { child_main } else { current.main + self.spacing + child_main };
+            let with_spacing = if current.count == 0 {
+                child_main
+            } else {
+                current.main + self.spacing + child_main
+            };
             // A line that is already full starts another. The first child of a
             // line stays on it however long it is: there is nowhere else for it
             // to go, and moving it would leave an empty line.
             if current.count > 0 && with_spacing > limit {
                 runs.push(current);
-                current = Run { first: index, count: 0, main: 0.0, cross: 0.0 };
+                current = Run {
+                    first: index,
+                    count: 0,
+                    main: 0.0,
+                    cross: 0.0,
+                };
             }
-            current.main =
-                if current.count == 0 { child_main } else { current.main + self.spacing + child_main };
+            current.main = if current.count == 0 {
+                child_main
+            } else {
+                current.main + self.spacing + child_main
+            };
             current.cross = current.cross.max(child_cross);
             current.count += 1;
         }
@@ -6810,7 +7149,9 @@ impl RenderWrap {
             }),
             limit,
         );
-        let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
+        let longest = runs
+            .iter()
+            .fold(0.0f32, |longest, run| longest.max(run.main));
         let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
             + self.run_spacing * (runs.len() as f32 - 1.0).max(0.0);
         constraints.constrain(match self.direction {
@@ -6869,11 +7210,15 @@ impl RenderBox for RenderWrap {
             sizes.push(child.layout_child(child_constraints, true));
         }
         let runs = self.break_into_runs(
-            sizes.iter().map(|size| (self.main(*size), self.cross(*size))),
+            sizes
+                .iter()
+                .map(|size| (self.main(*size), self.cross(*size))),
             limit,
         );
 
-        let longest = runs.iter().fold(0.0f32, |longest, run| longest.max(run.main));
+        let longest = runs
+            .iter()
+            .fold(0.0f32, |longest, run| longest.max(run.main));
         let total_cross: f32 = runs.iter().map(|run| run.cross).sum::<f32>()
             + self.run_spacing * (runs.len() as f32 - 1.0).max(0.0);
         self.size = constraints.constrain(match self.direction {
@@ -6962,11 +7307,19 @@ impl RenderBox for RenderWrap {
                     CrossAxisAlignment::Start
                     | CrossAxisAlignment::Stretch
                     | CrossAxisAlignment::Baseline => {
-                        if flip_cross { run.cross - child_cross } else { 0.0 }
+                        if flip_cross {
+                            run.cross - child_cross
+                        } else {
+                            0.0
+                        }
                     }
                     CrossAxisAlignment::Center => (run.cross - child_cross) / 2.0,
                     CrossAxisAlignment::End => {
-                        if flip_cross { 0.0 } else { run.cross - child_cross }
+                        if flip_cross {
+                            0.0
+                        } else {
+                            run.cross - child_cross
+                        }
                     }
                 };
                 self.offsets[index] = match self.direction {
@@ -7033,9 +7386,10 @@ impl RenderBox for RenderWrap {
                 .iter()
                 .map(|c| c.min_intrinsic_width(f32::INFINITY))
                 .fold(0.0, f32::max),
-            Axis::Vertical => self
-                .compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
-                .width,
+            Axis::Vertical => {
+                self.compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
+                    .width
+            }
         }
     }
 
@@ -7049,17 +7403,19 @@ impl RenderBox for RenderWrap {
                 .iter()
                 .map(|c| c.max_intrinsic_width(f32::INFINITY))
                 .sum(),
-            Axis::Vertical => self
-                .compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
-                .width,
+            Axis::Vertical => {
+                self.compute_dry_layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, height))
+                    .width
+            }
         }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
         match self.direction {
-            Axis::Horizontal => self
-                .compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
-                .height,
+            Axis::Horizontal => {
+                self.compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
+                    .height
+            }
             Axis::Vertical => self
                 .children
                 .iter()
@@ -7070,9 +7426,10 @@ impl RenderBox for RenderWrap {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         match self.direction {
-            Axis::Horizontal => self
-                .compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
-                .height,
+            Axis::Horizontal => {
+                self.compute_dry_layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
+                    .height
+            }
             // One child per line, the same plain sum as the width above.
             Axis::Vertical => self
                 .children
@@ -7117,7 +7474,11 @@ pub struct RenderAspectRatio {
 
 impl RenderAspectRatio {
     pub fn new(ratio: f32, child: impl RenderBox + 'static) -> RenderAspectRatio {
-        RenderAspectRatio { ratio, child: RenderRef::new(child), size: Size::ZERO }
+        RenderAspectRatio {
+            ratio,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 
     fn applied(&self, constraints: BoxConstraints) -> Size {
@@ -7164,8 +7525,10 @@ impl RenderBox for RenderAspectRatio {
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         self.size = self.applied(constraints);
-        self.child
-            .layout_child(BoxConstraints::tight(self.size.width, self.size.height), true);
+        self.child.layout_child(
+            BoxConstraints::tight(self.size.width, self.size.height),
+            true,
+        );
         self.size
     }
 
@@ -7193,19 +7556,35 @@ impl RenderBox for RenderAspectRatio {
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        if height.is_finite() { height * self.ratio } else { self.child.min_intrinsic_width(height) }
+        if height.is_finite() {
+            height * self.ratio
+        } else {
+            self.child.min_intrinsic_width(height)
+        }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        if height.is_finite() { height * self.ratio } else { self.child.max_intrinsic_width(height) }
+        if height.is_finite() {
+            height * self.ratio
+        } else {
+            self.child.max_intrinsic_width(height)
+        }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        if width.is_finite() { width / self.ratio } else { self.child.min_intrinsic_height(width) }
+        if width.is_finite() {
+            width / self.ratio
+        } else {
+            self.child.min_intrinsic_height(width)
+        }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        if width.is_finite() { width / self.ratio } else { self.child.max_intrinsic_height(width) }
+        if width.is_finite() {
+            width / self.ratio
+        } else {
+            self.child.max_intrinsic_height(width)
+        }
     }
 }
 
@@ -7224,7 +7603,10 @@ pub struct RenderIntrinsicWidth {
 
 impl RenderIntrinsicWidth {
     pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicWidth {
-        RenderIntrinsicWidth { child: RenderRef::new(child), size: Size::ZERO }
+        RenderIntrinsicWidth {
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -7238,12 +7620,8 @@ impl RenderBox for RenderIntrinsicWidth {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let wanted = self.child.max_intrinsic_width(constraints.max_height);
         let width = wanted.clamp(constraints.min_width, constraints.max_width);
-        let tightened = BoxConstraints::new(
-            width,
-            width,
-            constraints.min_height,
-            constraints.max_height,
-        );
+        let tightened =
+            BoxConstraints::new(width, width, constraints.min_height, constraints.max_height);
         self.size = self.child.layout_child(tightened, true);
         self.size
     }
@@ -7258,12 +7636,8 @@ impl RenderBox for RenderIntrinsicWidth {
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
         let wanted = self.child.max_intrinsic_width(constraints.max_height);
         let width = wanted.clamp(constraints.min_width, constraints.max_width);
-        let tightened = BoxConstraints::new(
-            width,
-            width,
-            constraints.min_height,
-            constraints.max_height,
-        );
+        let tightened =
+            BoxConstraints::new(width, width, constraints.min_height, constraints.max_height);
         self.child.dry_layout(tightened)
     }
 
@@ -7305,7 +7679,10 @@ pub struct RenderIntrinsicHeight {
 
 impl RenderIntrinsicHeight {
     pub fn new(child: impl RenderBox + 'static) -> RenderIntrinsicHeight {
-        RenderIntrinsicHeight { child: RenderRef::new(child), size: Size::ZERO }
+        RenderIntrinsicHeight {
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -7487,7 +7864,11 @@ pub struct RenderOpacity {
 
 impl RenderOpacity {
     pub fn new(opacity: f32, child: impl RenderBox + 'static) -> RenderOpacity {
-        RenderOpacity { opacity: opacity.clamp(0.0, 1.0), child: RenderRef::new(child), size: Size::ZERO }
+        RenderOpacity {
+            opacity: opacity.clamp(0.0, 1.0),
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -7587,7 +7968,11 @@ pub struct RenderClipRect {
 
 impl RenderClipRect {
     pub fn new(child: impl RenderBox + 'static) -> RenderClipRect {
-        RenderClipRect { corner_radius: 0.0, child: RenderRef::new(child), size: Size::ZERO }
+        RenderClipRect {
+            corner_radius: 0.0,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
@@ -7677,7 +8062,11 @@ pub struct RenderClipPath {
 
 impl RenderClipPath {
     pub fn new(path: RenderPath, child: impl RenderBox + 'static) -> RenderClipPath {
-        RenderClipPath { path, child: RenderRef::new(child), size: Size::ZERO }
+        RenderClipPath {
+            path,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
     }
 }
 
@@ -7702,12 +8091,7 @@ impl RenderBox for RenderClipPath {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.push_clip_path(
-            &self.path,
-            ClipBehavior::AntiAlias,
-            &self.child,
-            offset,
-        );
+        context.push_clip_path(&self.path, ClipBehavior::AntiAlias, &self.child, offset);
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -7995,17 +8379,14 @@ impl RenderBox for RenderViewport {
     fn describe_semantics_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
         let cache = crate::scrolling::DEFAULT_CACHE_EXTENT;
         Some(match self.axis() {
-            Axis::Vertical => {
-                Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache)
-            }
-            Axis::Horizontal => {
-                Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height)
-            }
+            Axis::Vertical => Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache),
+            Axis::Horizontal => Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height),
         })
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.scroll_offset()), result)
+        self.child
+            .hit_test(position.minus(self.scroll_offset()), result)
     }
 
     // All four delegate to the child without looking at the axis, which is
@@ -8072,11 +8453,7 @@ pub struct SliverLogicalParentData {
 /// `scrollOffset..scrollOffset + remainingPaintExtent` is. Upstream's
 /// `RenderSliver.calculatePaintOffset`, the shared math behind every sliver
 /// that has a linear mapping between the scroll offset and the paint offset.
-pub fn calculate_paint_offset(
-    constraints: &SliverConstraints,
-    from: f32,
-    to: f32,
-) -> f32 {
+pub fn calculate_paint_offset(constraints: &SliverConstraints, from: f32, to: f32) -> f32 {
     let a = constraints.scroll_offset;
     let b = constraints.scroll_offset + constraints.remaining_paint_extent;
     (to.clamp(a, b) - from.clamp(a, b)).clamp(0.0, constraints.remaining_paint_extent)
@@ -8257,22 +8634,21 @@ impl RenderSliverToBoxAdapter {
     fn set_child_parent_data(&mut self) {
         let constraints = self.constraints;
         let geometry = self.geometry;
-        self.parent_data.paint_offset =
-            match apply_growth_direction_to_axis_direction(
-                constraints.axis_direction,
-                constraints.growth_direction,
-            ) {
-                AxisDirection::Up => Offset::new(
-                    0.0,
-                    geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
-                ),
-                AxisDirection::Left => Offset::new(
-                    geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
-                    0.0,
-                ),
-                AxisDirection::Right => Offset::new(-constraints.scroll_offset, 0.0),
-                AxisDirection::Down => Offset::new(0.0, -constraints.scroll_offset),
-            };
+        self.parent_data.paint_offset = match apply_growth_direction_to_axis_direction(
+            constraints.axis_direction,
+            constraints.growth_direction,
+        ) {
+            AxisDirection::Up => Offset::new(
+                0.0,
+                geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
+            ),
+            AxisDirection::Left => Offset::new(
+                geometry.paint_extent + constraints.scroll_offset - geometry.scroll_extent,
+                0.0,
+            ),
+            AxisDirection::Right => Offset::new(-constraints.scroll_offset, 0.0),
+            AxisDirection::Down => Offset::new(0.0, -constraints.scroll_offset),
+        };
     }
 
     /// Whether the box child is under the given sliver coordinates: the shared
@@ -8284,7 +8660,9 @@ impl RenderSliverToBoxAdapter {
         cross_axis_position: f32,
         result: &mut HitTestResult,
     ) -> bool {
-        let Some(child) = &self.child else { return false };
+        let Some(child) = &self.child else {
+            return false;
+        };
         sliver_hit_test_box_child(
             &self.constraints,
             &self.geometry,
@@ -8299,7 +8677,9 @@ impl RenderSliverToBoxAdapter {
 
 impl RenderBox for RenderSliverToBoxAdapter {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverToBoxAdapter>()?;
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverToBoxAdapter>()?;
         let same_child = match (&self.child, &fresh.child) {
             (Some(a), Some(b)) => a.is(b),
             (None, None) => true,
@@ -8332,8 +8712,10 @@ impl RenderBox for RenderSliverToBoxAdapter {
             self.geometry = SliverGeometry::ZERO;
             return self.geometry;
         };
-        let size = child
-            .layout_child(constraints.as_box_constraints(0.0, f32::INFINITY, None), true);
+        let size = child.layout_child(
+            constraints.as_box_constraints(0.0, f32::INFINITY, None),
+            true,
+        );
         let child_extent = match constraints.axis() {
             Axis::Horizontal => size.width,
             Axis::Vertical => size.height,
@@ -8345,8 +8727,7 @@ impl RenderBox for RenderSliverToBoxAdapter {
             painted_child_size,
             child_extent,
             cache_extent,
-            child_extent > constraints.remaining_paint_extent
-                || constraints.scroll_offset > 0.0,
+            child_extent > constraints.remaining_paint_extent || constraints.scroll_offset > 0.0,
         );
         self.set_child_parent_data();
         self.geometry
@@ -8577,7 +8958,11 @@ impl RenderSliverViewport {
         for child in &mut self.children {
             // If the scroll offset is too small, ask from zero: it makes no
             // sense to want content from before a sliver's own beginning.
-            let sliver_scroll_offset = if scroll_offset <= 0.0 { 0.0 } else { scroll_offset };
+            let sliver_scroll_offset = if scroll_offset <= 0.0 {
+                0.0
+            } else {
+                scroll_offset
+            };
             let corrected_cache_origin = cache_origin.max(-sliver_scroll_offset);
             let cache_extent_correction = cache_origin - corrected_cache_origin;
 
@@ -8594,8 +8979,7 @@ impl RenderSliverViewport {
                 cross_axis_extent,
                 cross_axis_direction,
                 viewport_main_axis_extent: main_axis_extent,
-                remaining_cache_extent: (remaining_cache_extent + cache_extent_correction)
-                    .max(0.0),
+                remaining_cache_extent: (remaining_cache_extent + cache_extent_correction).max(0.0),
                 cache_origin: corrected_cache_origin,
             });
             // A correction means this pass is void; the caller applies it and
@@ -8707,7 +9091,11 @@ impl RenderSliverViewport {
     /// `RenderViewport.computeChildMainAxisPosition`, with the growth
     /// direction every child here has: for the reversed directions the
     /// child's coordinate system starts at its far end.
-    fn compute_child_main_axis_position(&self, index: usize, parent_main_axis_position: f32) -> f32 {
+    fn compute_child_main_axis_position(
+        &self,
+        index: usize,
+        parent_main_axis_position: f32,
+    ) -> f32 {
         let child = &self.children[index];
         let paint_offset = child.parent_data.paint_offset;
         let paint_extent = child.render.sliver_geometry().paint_extent;
@@ -8791,8 +9179,10 @@ impl RenderBox for RenderSliverViewport {
                 // max(0, _maxScrollExtent - mainAxisExtent)): anchor zero and
                 // nothing in reverse makes the minimum zero, and staying put
                 // is what ends the loop.
-                let clamped =
-                    self.offset.clamp(0.0, (self.content_scroll_extent - self.main_axis_extent()).max(0.0));
+                let clamped = self.offset.clamp(
+                    0.0,
+                    (self.content_scroll_extent - self.main_axis_extent()).max(0.0),
+                );
                 if clamped == self.offset {
                     break;
                 }
@@ -8861,12 +9251,8 @@ impl RenderBox for RenderSliverViewport {
     fn describe_semantics_clip(&self, _child: &dyn RenderBox) -> Option<Rect> {
         let cache = self.cache_extent;
         Some(match self.axis() {
-            Axis::Vertical => {
-                Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache)
-            }
-            Axis::Horizontal => {
-                Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height)
-            }
+            Axis::Vertical => Rect::ltrb(0.0, -cache, self.size.width, self.size.height + cache),
+            Axis::Horizontal => Rect::ltrb(-cache, 0.0, self.size.width + cache, self.size.height),
         })
     }
 
@@ -9063,12 +9449,14 @@ impl RenderSliverList {
             return false;
         };
         let first_offset = first.layout_offset.unwrap_or(0.0);
-        let last_end = last.layout_offset.unwrap_or(0.0) + render_main_axis_extent(&last.render, axis);
+        let last_end =
+            last.layout_offset.unwrap_or(0.0) + render_main_axis_extent(&last.render, axis);
         // Smooth scrolling moves the window a few pixels a frame, so it always
         // overlaps what the frame before materialized; a jump that clears the
         // window plus the extent this layout is about to fill is the one to
         // abandon.
-        first_offset - scroll_offset > remaining_extent || scroll_offset - last_end > remaining_extent
+        first_offset - scroll_offset > remaining_extent
+            || scroll_offset - last_end > remaining_extent
     }
 
     /// Where a restart lands: the index whose estimated offset is at or just
@@ -9426,8 +9814,8 @@ impl RenderBox for RenderSliverList {
                 // know the end scroll offset.
                 self.collect_garbage(walk.leading_garbage - 1, 0);
                 let last = self.children.last().unwrap();
-                let extent = last.layout_offset.unwrap()
-                    + render_main_axis_extent(&last.render, axis);
+                let extent =
+                    last.layout_offset.unwrap() + render_main_axis_extent(&last.render, axis);
                 self.geometry = SliverGeometry {
                     scroll_extent: extent,
                     max_paint_extent: extent,
@@ -9469,16 +9857,10 @@ impl RenderBox for RenderSliverList {
                 walk.end_scroll_offset,
             )
         };
-        let paint_extent = calculate_paint_offset(
-            &constraints,
-            leading_scroll_offset,
-            walk.end_scroll_offset,
-        );
-        let cache_extent = calculate_cache_offset(
-            &constraints,
-            leading_scroll_offset,
-            walk.end_scroll_offset,
-        );
+        let paint_extent =
+            calculate_paint_offset(&constraints, leading_scroll_offset, walk.end_scroll_offset);
+        let cache_extent =
+            calculate_cache_offset(&constraints, leading_scroll_offset, walk.end_scroll_offset);
         let target_end_scroll_offset_for_paint =
             constraints.scroll_offset + constraints.remaining_paint_extent;
         self.geometry = SliverGeometry::new(
@@ -9519,9 +9901,7 @@ impl RenderBox for RenderSliverList {
             let extent = render_main_axis_extent(&item.render, self.constraints.axis());
             if main_axis_delta < remaining_paint_extent && main_axis_delta + extent > 0.0 {
                 let paint_offset = match axis_direction {
-                    AxisDirection::Up => {
-                        Offset::new(0.0, paint_extent - main_axis_delta - extent)
-                    }
+                    AxisDirection::Up => Offset::new(0.0, paint_extent - main_axis_delta - extent),
                     AxisDirection::Left => {
                         Offset::new(paint_extent - main_axis_delta - extent, 0.0)
                     }
@@ -9720,8 +10100,7 @@ impl RenderBox for RenderSliverPadding {
         let Some(child) = &mut self.child else {
             // No child: the padding is the whole sliver, and only the part of
             // it inside the paint extent is shown.
-            let paint_extent =
-                calculate_paint_offset(&constraints, 0.0, main_axis_padding);
+            let paint_extent = calculate_paint_offset(&constraints, 0.0, main_axis_padding);
             let cache_extent = calculate_cache_offset(&constraints, 0.0, main_axis_padding);
             self.geometry = SliverGeometry::new(
                 main_axis_padding,
@@ -9732,8 +10111,7 @@ impl RenderBox for RenderSliverPadding {
             );
             return self.geometry;
         };
-        let before_padding_paint_extent =
-            calculate_paint_offset(&constraints, 0.0, before_padding);
+        let before_padding_paint_extent = calculate_paint_offset(&constraints, 0.0, before_padding);
         // The incoming overlap is consumed by the leading padding, not passed
         // on to the child.
         let mut overlap = constraints.overlap;
@@ -9773,8 +10151,10 @@ impl RenderBox for RenderSliverPadding {
             before_padding + scroll_extent,
             main_axis_padding + scroll_extent,
         );
-        let main_axis_padding_cache_extent = before_padding_cache_extent + after_padding_cache_extent;
-        let main_axis_padding_paint_extent = before_padding_paint_extent + after_padding_paint_extent;
+        let main_axis_padding_cache_extent =
+            before_padding_cache_extent + after_padding_cache_extent;
+        let main_axis_padding_paint_extent =
+            before_padding_paint_extent + after_padding_paint_extent;
         let paint_extent = (before_padding_paint_extent
             + child_geometry
                 .paint_extent
@@ -10017,17 +10397,27 @@ mod tests {
         // is ScaleDown, not the enum's own Contain, and the scale it paints
         // at is the contain scale with one as a ceiling: the 100x50 picture
         // in a 200x200 box stays at 1.0 where contain would grow it to 2.0.
-        let image = Image::from_pixels(&[0, 0, 0, 0], 1, 1).expect("the stub engine hands one back");
+        let image =
+            Image::from_pixels(&[0, 0, 0, 0], 1, 1).expect("the stub engine hands one back");
         assert_eq!(RenderImage::new(Rc::new(image)).fit, BoxFit::ScaleDown);
 
         let natural = Size::new(100.0, 50.0);
         let roomy = Size::new(200.0, 200.0);
-        assert_eq!(RenderImage::paint_scale(BoxFit::ScaleDown, natural, roomy), 1.0);
-        assert_eq!(RenderImage::paint_scale(BoxFit::Contain, natural, roomy), 2.0);
+        assert_eq!(
+            RenderImage::paint_scale(BoxFit::ScaleDown, natural, roomy),
+            1.0
+        );
+        assert_eq!(
+            RenderImage::paint_scale(BoxFit::Contain, natural, roomy),
+            2.0
+        );
 
         // Where the box is the smaller thing, scale-down shrinks with contain.
         let tight = Size::new(50.0, 50.0);
-        assert_eq!(RenderImage::paint_scale(BoxFit::ScaleDown, natural, tight), 0.5);
+        assert_eq!(
+            RenderImage::paint_scale(BoxFit::ScaleDown, natural, tight),
+            0.5
+        );
     }
 
     /// A box that reports a fixed size, clamped into whatever it is given.
@@ -10401,7 +10791,10 @@ mod tests {
         // paragraph's own, not whatever is ambient at collection time.
         let paragraph = RenderParagraph::new("hello").with_text_direction(TextDirection::Rtl);
         let annotation = paragraph.describe_semantics().expect("it says something");
-        assert_eq!(annotation.properties.text_direction, Some(TextDirection::Rtl));
+        assert_eq!(
+            annotation.properties.text_direction,
+            Some(TextDirection::Rtl)
+        );
     }
 
     #[test]
@@ -10434,7 +10827,11 @@ mod tests {
             .push(FixedBox::new(100.0, 100.0))
             .push_positioned(
                 FixedBox::new(10.0, 10.0),
-                StackPosition { right: Some(5.0), bottom: Some(5.0), ..Default::default() },
+                StackPosition {
+                    right: Some(5.0),
+                    bottom: Some(5.0),
+                    ..Default::default()
+                },
             );
         stack.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(stack.child_offsets()[1], Offset::new(85.0, 85.0));
@@ -10562,8 +10959,7 @@ mod tests {
         // inside an unbounded parent came out zero tall. `constrain` has no
         // such trouble: the window is the content's own extent.
         let mut viewport = RenderViewport::new(Axis::Vertical, FixedBox::new(50.0, 40.0));
-        let size = viewport
-            .layout(BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY));
+        let size = viewport.layout(BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY));
         assert_eq!(size, Size::new(50.0, 40.0));
     }
 
@@ -10574,9 +10970,17 @@ mod tests {
         // its content as far as measuring is concerned.
         let vertical = RenderViewport::new(Axis::Vertical, FixedBox::new(30.0, 40.0));
         assert_eq!(vertical.min_intrinsic_width(100.0), 30.0);
-        assert_eq!(vertical.min_intrinsic_height(100.0), 40.0, "the scroll axis was zeroed");
+        assert_eq!(
+            vertical.min_intrinsic_height(100.0),
+            40.0,
+            "the scroll axis was zeroed"
+        );
         let horizontal = RenderViewport::new(Axis::Horizontal, FixedBox::new(30.0, 40.0));
-        assert_eq!(horizontal.max_intrinsic_width(100.0), 30.0, "the scroll axis was zeroed");
+        assert_eq!(
+            horizontal.max_intrinsic_width(100.0),
+            30.0,
+            "the scroll axis was zeroed"
+        );
         assert_eq!(horizontal.max_intrinsic_height(100.0), 40.0);
     }
 
@@ -10614,7 +11018,10 @@ mod tests {
             width: f32,
             height: f32,
             id: u64,
-        ) -> (RecordingBox, std::rc::Rc<std::cell::RefCell<Vec<(u64, Offset)>>>) {
+        ) -> (
+            RecordingBox,
+            std::rc::Rc<std::cell::RefCell<Vec<(u64, Offset)>>>,
+        ) {
             let painted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             (
                 RecordingBox {
@@ -10667,7 +11074,11 @@ mod tests {
         };
         let c = horizontal.as_box_constraints(30.0, 60.0, Some(40.0));
         assert_eq!((c.min_width, c.max_width), (30.0, 60.0));
-        assert_eq!((c.min_height, c.max_height), (40.0, 40.0), "the named cross extent wins");
+        assert_eq!(
+            (c.min_height, c.max_height),
+            (40.0, 40.0),
+            "the named cross extent wins"
+        );
     }
 
     #[test]
@@ -10691,9 +11102,15 @@ mod tests {
         // Partially scrolled past: half of the child is still in the window,
         // and having been scrolled at all is an overflow.
         let geometry = adapter.sliver_layout(sliver_constraints(30.0, 200.0));
-        assert_eq!(geometry.scroll_extent, 80.0, "the scroll extent is the child's");
+        assert_eq!(
+            geometry.scroll_extent, 80.0,
+            "the scroll extent is the child's"
+        );
         assert_eq!(geometry.paint_extent, 50.0);
-        assert_eq!(geometry.cache_extent, 50.0, "content before the scroll offset is not cached");
+        assert_eq!(
+            geometry.cache_extent, 50.0,
+            "content before the scroll offset is not cached"
+        );
         assert!(geometry.visible);
         assert!(geometry.has_visual_overflow);
 
@@ -10709,7 +11126,10 @@ mod tests {
     #[test]
     fn an_empty_adapter_has_nothing_to_say() {
         let mut adapter = RenderSliverToBoxAdapter::empty();
-        assert_eq!(adapter.sliver_layout(sliver_constraints(0.0, 200.0)), SliverGeometry::ZERO);
+        assert_eq!(
+            adapter.sliver_layout(sliver_constraints(0.0, 200.0)),
+            SliverGeometry::ZERO
+        );
         let mut result = HitTestResult::new();
         assert!(!adapter.sliver_hit_test(10.0, 10.0, &mut result));
     }
@@ -10726,7 +11146,11 @@ mod tests {
             .with_sliver(RenderSliverToBoxAdapter::new(FixedBox::new(100.0, 100.0)))
             .with_offset(500.0);
         let size = viewport.layout(BoxConstraints::tight(100.0, 200.0));
-        assert_eq!(size, Size::new(100.0, 200.0), "sized by the parent, biggest");
+        assert_eq!(
+            size,
+            Size::new(100.0, 200.0),
+            "sized by the parent, biggest"
+        );
         assert_eq!(viewport.offset(), 100.0, "300 of content in a 200 window");
         assert_eq!(viewport.max_scroll_extent(), 100.0);
 
@@ -10737,7 +11161,10 @@ mod tests {
         let third = viewport.children[2].render.sliver_geometry();
         assert_eq!(first.paint_extent, 0.0);
         assert!(!first.visible);
-        assert_eq!(first.cache_extent, 100.0, "still warm behind the leading edge");
+        assert_eq!(
+            first.cache_extent, 100.0,
+            "still warm behind the leading edge"
+        );
         assert_eq!(second.paint_extent, 100.0);
         assert_eq!(third.paint_extent, 100.0);
         assert!(second.visible && third.visible);
@@ -10762,7 +11189,11 @@ mod tests {
             let mut context = PaintContext::new(&mut layers, Size::new(100.0, 200.0));
             viewport.paint(&mut context, Offset::ZERO);
         }
-        assert_eq!(&*third_painted.borrow(), &[] as &[(u64, Offset)], "past the window");
+        assert_eq!(
+            &*third_painted.borrow(),
+            &[] as &[(u64, Offset)],
+            "past the window"
+        );
         assert_eq!(&*second_painted.borrow(), &[(2, Offset::new(0.0, 100.0))]);
         assert_eq!(&*first_painted.borrow(), &[(1, Offset::new(0.0, 0.0))]);
 
@@ -10811,26 +11242,54 @@ mod tests {
         // offset zero the first sliver's trailing edge sits at the top of the
         // window and everything grows downwards-in-content from the bottom.
         let mut viewport = RenderSliverViewport::new(AxisDirection::Up)
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 21).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 22).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 23).0));
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 21).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 22).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 23).0,
+            ));
         viewport.layout(BoxConstraints::tight(100.0, 200.0));
-        assert_eq!(viewport.max_scroll_extent(), 100.0, "the direction does not change the extent");
-        assert_eq!(viewport.children[0].parent_data.paint_offset, Offset::new(0.0, 100.0));
-        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        assert_eq!(
+            viewport.max_scroll_extent(),
+            100.0,
+            "the direction does not change the extent"
+        );
+        assert_eq!(
+            viewport.children[0].parent_data.paint_offset,
+            Offset::new(0.0, 100.0)
+        );
+        assert_eq!(
+            viewport.children[1].parent_data.paint_offset,
+            Offset::new(0.0, 0.0)
+        );
         assert!(!viewport.children[2].render.sliver_geometry().visible);
 
         // Scrolled to the end: the first sliver has left through the bottom,
         // and a tap near the top edge lands on the last sliver's far end --
         // its content's beginning, read upside down.
         let mut viewport = RenderSliverViewport::new(AxisDirection::Up)
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 31).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 32).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 100.0, 33).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 31).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 32).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 100.0, 33).0,
+            ))
             .with_offset(100.0);
         viewport.layout(BoxConstraints::tight(100.0, 200.0));
-        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(0.0, 100.0));
-        assert_eq!(viewport.children[2].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        assert_eq!(
+            viewport.children[1].parent_data.paint_offset,
+            Offset::new(0.0, 100.0)
+        );
+        assert_eq!(
+            viewport.children[2].parent_data.paint_offset,
+            Offset::new(0.0, 0.0)
+        );
         let mut result = HitTestResult::new();
         assert!(viewport.hit_test(Offset::new(50.0, 10.0), &mut result));
         assert_eq!(result.innermost().map(|hit| hit.target), Some(33));
@@ -10844,16 +11303,28 @@ mod tests {
         // The horizontal mirror, which is what an rtl list scrolls by: the
         // leading edge is the right one.
         let mut viewport = RenderSliverViewport::new(AxisDirection::Left)
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 41).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 42).0))
-            .with_sliver(RenderSliverToBoxAdapter::new(WatchedBox::shared(100.0, 50.0, 43).0))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 50.0, 41).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 50.0, 42).0,
+            ))
+            .with_sliver(RenderSliverToBoxAdapter::new(
+                WatchedBox::shared(100.0, 50.0, 43).0,
+            ))
             .with_offset(100.0);
         viewport.layout(BoxConstraints::tight(200.0, 100.0));
         assert_eq!(viewport.max_scroll_extent(), 100.0);
         // The first sliver is scrolled out through the right edge, the second
         // starts there, and the last one owns the left half of the window.
-        assert_eq!(viewport.children[1].parent_data.paint_offset, Offset::new(100.0, 0.0));
-        assert_eq!(viewport.children[2].parent_data.paint_offset, Offset::new(0.0, 0.0));
+        assert_eq!(
+            viewport.children[1].parent_data.paint_offset,
+            Offset::new(100.0, 0.0)
+        );
+        assert_eq!(
+            viewport.children[2].parent_data.paint_offset,
+            Offset::new(0.0, 0.0)
+        );
         let mut result = HitTestResult::new();
         assert!(viewport.hit_test(Offset::new(10.0, 25.0), &mut result));
         assert_eq!(result.innermost().map(|hit| hit.target), Some(43));
@@ -11002,7 +11473,10 @@ mod tests {
         assert_eq!(probe.layouts(), 8, "and never laid out");
         let geometry = list.sliver_geometry();
         assert_eq!(geometry.paint_extent, 200.0);
-        assert_eq!(geometry.scroll_extent, 50_000.0, "the whole list priced from the window's average");
+        assert_eq!(
+            geometry.scroll_extent, 50_000.0,
+            "the whole list priced from the window's average"
+        );
 
         // A programmatic jump ten thousand pixels down does not walk there
         // one child at a time: the window was left behind by more than its
@@ -11012,7 +11486,11 @@ mod tests {
         list.sliver_layout(sliver_constraints(20_000.0, 200.0));
         assert_eq!(list.live_range(), (400, 408));
         assert_eq!(probe.builds(), 16);
-        assert_eq!(list.children[0].layout_offset, Some(20_000.0), "the estimate put item 400 exactly at the scroll offset");
+        assert_eq!(
+            list.children[0].layout_offset,
+            Some(20_000.0),
+            "the estimate put item 400 exactly at the scroll offset"
+        );
         assert_eq!(list.children[0].render.size().height, 50.0);
         assert_eq!(list.sliver_geometry().scroll_extent, 50_000.0);
     }
@@ -11032,7 +11510,11 @@ mod tests {
         // builds on until 200 + 400 of cache.
         list.sliver_layout(sliver_constraints(200.0, 200.0));
         assert_eq!(list.live_range(), (3, 12));
-        assert_eq!(probe.builds(), 12, "three children were dropped, four more built");
+        assert_eq!(
+            probe.builds(),
+            12,
+            "three children were dropped, four more built"
+        );
 
         // Scrolled back to 50: two children before the window are built
         // again -- they were garbage, not cache -- and nothing past 450 is.
@@ -11087,7 +11569,10 @@ mod tests {
             "item 7, re-placed at its grown extent"
         );
         assert_eq!(list.children[4].render.size().height, 100.0);
-        assert_eq!(geometry.scroll_extent, 99_700.0, "the extrapolation now prices the grown rows");
+        assert_eq!(
+            geometry.scroll_extent, 99_700.0,
+            "the extrapolation now prices the grown rows"
+        );
         assert_eq!(
             probe.builds(),
             20,
@@ -11107,7 +11592,11 @@ mod tests {
             .with_sliver(handle.clone())
             .with_cache_extent(400.0);
         viewport.layout(BoxConstraints::tight(100.0, 200.0));
-        assert_eq!(sliver_list_live_range(&viewport), (0, 12), "the window plus a cache band either side of nothing");
+        assert_eq!(
+            sliver_list_live_range(&viewport),
+            (0, 12),
+            "the window plus a cache band either side of nothing"
+        );
         assert_eq!(viewport.max_scroll_extent(), 49_800.0);
 
         viewport.offset = 550.0;
@@ -11140,15 +11629,26 @@ mod tests {
         {
             let mut cell = handle.render.borrow_mut();
             let object: &mut dyn RenderBox = &mut **cell;
-            let list = object.as_any_mut().downcast_mut::<RenderSliverList>().unwrap();
+            let list = object
+                .as_any_mut()
+                .downcast_mut::<RenderSliverList>()
+                .unwrap();
             assert_eq!(list.live_range(), (0, 8));
-            assert_eq!(list.children[2].layout_offset, Some(200.0), "item 2 re-placed at its grown offset");
+            assert_eq!(
+                list.children[2].layout_offset,
+                Some(200.0),
+                "item 2 re-placed at its grown offset"
+            );
             // No jump: before the growth, a scroll to 30 would show item 2
             // at 100 - 30 = 70 of the window; the corrected walk puts it at
             // 200 - 130 = 70 -- the same pixels, one correction apart.
             assert_eq!(list.child_main_axis_position(2), 70.0);
         }
-        assert_eq!(viewport.max_scroll_extent(), 99_800.0, "priced from the grown rows");
+        assert_eq!(
+            viewport.max_scroll_extent(),
+            99_800.0,
+            "priced from the grown rows"
+        );
     }
 
     #[test]
@@ -11173,19 +11673,32 @@ mod tests {
                 "the cross axis was deflated by the padding"
             );
         }
-        assert_eq!(geometry.scroll_extent, 248.0, "the child plus the padding before and after it");
-        assert_eq!(geometry.paint_extent, 200.0, "the padded content more than fills the window");
+        assert_eq!(
+            geometry.scroll_extent, 248.0,
+            "the child plus the padding before and after it"
+        );
+        assert_eq!(
+            geometry.paint_extent, 200.0,
+            "the padded content more than fills the window"
+        );
         assert_eq!(geometry.layout_extent, 200.0);
         assert_eq!(geometry.cache_extent, 248.0);
         assert_eq!(geometry.hit_test_extent, 200.0);
-        assert_eq!(padding.paint_offset, Offset::new(16.0, 24.0), "the visible leading padding, and the cross padding");
+        assert_eq!(
+            padding.paint_offset,
+            Offset::new(16.0, 24.0),
+            "the visible leading padding, and the cross padding"
+        );
 
         // Scrolled to 30: the leading padding has scrolled out of the
         // window, so the child's paint offset is only the cross padding.
         let geometry = padding.sliver_layout(sliver_constraints(30.0, 200.0));
         assert_eq!(geometry.scroll_extent, 248.0);
         assert_eq!(geometry.paint_extent, 200.0);
-        assert_eq!(geometry.hit_test_extent, 200.0, "the trailing padding's last 6 pixels are hittable");
+        assert_eq!(
+            geometry.hit_test_extent, 200.0,
+            "the trailing padding's last 6 pixels are hittable"
+        );
         assert_eq!(padding.paint_offset, Offset::new(16.0, 0.0));
 
         // Padding with nothing in it is a sliver of exactly its own extent.
@@ -11221,7 +11734,11 @@ mod tests {
             }))
             .with_cache_extent(0.0);
         viewport.layout(BoxConstraints::tight(200.0, 40.0));
-        assert_eq!(sliver_list_live_range(&viewport), (0, 5), "a window, and no cache band to fill");
+        assert_eq!(
+            sliver_list_live_range(&viewport),
+            (0, 5),
+            "a window, and no cache band to fill"
+        );
         assert_eq!(builds.get(), 5);
 
         // Paint: the window grows leftwards from the right edge, so item
@@ -11257,14 +11774,21 @@ mod tests {
             .push(RenderPointerRegion::new(1, FixedBox::new(100.0, 100.0)))
             .push_positioned(
                 RenderPointerRegion::new(2, FixedBox::new(20.0, 20.0)),
-                StackPosition { left: Some(10.0), top: Some(10.0), ..Default::default() },
+                StackPosition {
+                    left: Some(10.0),
+                    top: Some(10.0),
+                    ..Default::default()
+                },
             );
         stack.layout(BoxConstraints::loose(200.0, 200.0));
 
         let mut result = HitTestResult::new();
         assert!(stack.hit_test(Offset::new(15.0, 15.0), &mut result));
         assert_eq!(result.innermost().unwrap().target, 2);
-        assert_eq!(result.innermost().unwrap().local_position, Offset::new(5.0, 5.0));
+        assert_eq!(
+            result.innermost().unwrap().local_position,
+            Offset::new(5.0, 5.0)
+        );
 
         // Outside the small child, only the big one is hit.
         let mut result = HitTestResult::new();
@@ -11371,8 +11895,9 @@ mod tests {
         assert_eq!(capped.max_intrinsic_width(f32::INFINITY), 50.0);
 
         // A floor works the same way round.
-        let floored = RenderConstrainedBox::new(BoxConstraints::new(80.0, f32::INFINITY, 0.0, f32::INFINITY))
-            .with_child(FixedBox::new(20.0, 10.0));
+        let floored =
+            RenderConstrainedBox::new(BoxConstraints::new(80.0, f32::INFINITY, 0.0, f32::INFINITY))
+                .with_child(FixedBox::new(20.0, 10.0));
         assert_eq!(floored.max_intrinsic_width(f32::INFINITY), 80.0);
 
         // Tight is the whole answer, child or no child.
@@ -11486,7 +12011,10 @@ mod tests {
             .push(FixedBox::new(100.0, 100.0).with_baseline(20.0))
             .push_positioned(
                 FixedBox::new(10.0, 10.0).with_baseline(4.0),
-                StackPosition { top: Some(30.0), ..Default::default() },
+                StackPosition {
+                    top: Some(30.0),
+                    ..Default::default()
+                },
             );
         stack.layout(BoxConstraints::loose(200.0, 200.0));
         // The positioned child's baseline is 30 + 4 = 34 from the top; the
@@ -11548,7 +12076,11 @@ mod tests {
             .push_positioned(
                 // Wants to be far wider than the stack.
                 FixedBox::new(500.0, 10.0),
-                StackPosition { left: Some(0.0), top: Some(0.0), ..Default::default() },
+                StackPosition {
+                    left: Some(0.0),
+                    top: Some(0.0),
+                    ..Default::default()
+                },
             );
         stack.layout(BoxConstraints::tight(100.0, 100.0));
         // Pinned across neither edge, so it got all the room it asked for and
@@ -11645,7 +12177,10 @@ mod tests {
                 .push(FixedBox::new(30.0, 10.0))
                 .push_flex(FlexChild::expanded(RenderRef::clone(&leaf), 1)),
         );
-        let mut root = RenderRef::new(RenderPadding::new(EdgeInsets::all(5.0), RenderRef::clone(&row)));
+        let mut root = RenderRef::new(RenderPadding::new(
+            EdgeInsets::all(5.0),
+            RenderRef::clone(&row),
+        ));
 
         let constraints = BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY);
         let wet = root.layout(constraints);
@@ -11656,14 +12191,20 @@ mod tests {
 
         // The same question, asked dry, answers the same and commits nothing.
         assert_eq!(root.dry_layout(constraints), wet);
-        assert!(!root.state.needs_layout.get(), "a dry answer is not a layout");
+        assert!(
+            !root.state.needs_layout.get(),
+            "a dry answer is not a layout"
+        );
         assert_eq!(root.state.constraints.get(), Some(constraints));
         assert_eq!(root.state.size.get(), wet);
 
         // A question the tree was never asked for real is answered and left
         // uncommitted: the remembered constraints, the remembered size, and
         // every needs flag are what the real layout left.
-        assert_eq!(root.dry_layout(BoxConstraints::new(0.0, 40.0, 0.0, f32::INFINITY)), Size::new(40.0, 20.0));
+        assert_eq!(
+            root.dry_layout(BoxConstraints::new(0.0, 40.0, 0.0, f32::INFINITY)),
+            Size::new(40.0, 20.0)
+        );
         assert_eq!(root.state.constraints.get(), Some(constraints));
         assert_eq!(root.state.size.get(), wet);
         assert!(!root.state.needs_layout.get());
@@ -11707,7 +12248,8 @@ mod tests {
             wet: Rc::clone(&wet),
             dry: Rc::clone(&dry),
         });
-        let parent = RenderRef::new(RenderFlex::row().push_flex(FlexChild::new(RenderRef::clone(&child))));
+        let parent =
+            RenderRef::new(RenderFlex::row().push_flex(FlexChild::new(RenderRef::clone(&child))));
 
         assert_eq!(
             parent.dry_layout(BoxConstraints::new(0.0, 100.0, 0.0, f32::INFINITY)),
@@ -11750,7 +12292,10 @@ mod tests {
         }
 
         let asked = Rc::new(Cell::new(0));
-        let handle = RenderRef::new(Counting { asked: Rc::clone(&asked), size: Size::ZERO });
+        let handle = RenderRef::new(Counting {
+            asked: Rc::clone(&asked),
+            size: Size::ZERO,
+        });
         let constraints = BoxConstraints::loose(100.0, 100.0);
 
         handle.dry_layout(constraints);
@@ -11870,7 +12415,11 @@ mod tests {
             }
             fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
             fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
-                let height = if constraints.max_width >= 40.0 { 20.0 } else { 40.0 };
+                let height = if constraints.max_width >= 40.0 {
+                    20.0
+                } else {
+                    40.0
+                };
                 constraints.constrain(Size::new(40.0, height))
             }
             fn max_intrinsic_width(&self, _height: f32) -> f32 {
@@ -11996,7 +12545,8 @@ mod tests {
 
     #[test]
     fn transparent_subtrees_are_not_hit_targets() {
-        let mut opacity = RenderOpacity::new(0.0, RenderPointerRegion::new(3, FixedBox::new(50.0, 50.0)));
+        let mut opacity =
+            RenderOpacity::new(0.0, RenderPointerRegion::new(3, FixedBox::new(50.0, 50.0)));
         opacity.layout(BoxConstraints::loose(100.0, 100.0));
         let mut result = HitTestResult::new();
         assert!(!opacity.hit_test(Offset::new(10.0, 10.0), &mut result));
@@ -12023,20 +12573,29 @@ mod tests {
         // the shape of the request -- one paragraph object for three runs --
         // and that the runs are what the cache keys on.
         let style = TextStyle::default();
-        let bold = TextStyle { font_weight: 700, ..style.clone() };
+        let bold = TextStyle {
+            font_weight: 700,
+            ..style.clone()
+        };
         let mut text = RenderParagraph::rich(vec![
             (String::from("Hold "), style.clone()),
             (String::from("Shift"), bold),
             (String::from(" to select"), style.clone()),
         ]);
         text.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
-        assert_eq!(text.content, "Hold Shift to select", "the runs make one string");
+        assert_eq!(
+            text.content, "Hold Shift to select",
+            "the runs make one string"
+        );
     }
 
     #[test]
     fn a_paragraph_with_one_style_is_not_rich() {
         let plain = RenderParagraph::new("just text");
-        assert!(!plain.is_rich(), "the single-style case should stay the cheap one");
+        assert!(
+            !plain.is_rich(),
+            "the single-style case should stay the cheap one"
+        );
         let one_run = RenderParagraph::rich(vec![(String::from("x"), TextStyle::default())]);
         assert!(!one_run.is_rich());
     }
@@ -12098,7 +12657,9 @@ mod tests {
         rtl.layout(BoxConstraints::tight(100.0, 20.0));
         let requests = crate::engine_test_stubs::paragraph_style_requests();
         assert!(
-            requests.iter().any(|&(align, direction)| align == 3 && direction == 1),
+            requests
+                .iter()
+                .any(|&(align, direction)| align == 3 && direction == 1),
             "the shaper saw {requests:?}"
         );
     }
@@ -12114,8 +12675,8 @@ mod tests {
         plain.layout(constraints);
 
         let before = crate::painting::shaped_paragraph_count();
-        let mut ellipsized = RenderParagraph::new("another overlong sentence")
-            .with_overflow(TextOverflow::Ellipsis);
+        let mut ellipsized =
+            RenderParagraph::new("another overlong sentence").with_overflow(TextOverflow::Ellipsis);
         ellipsized.layout(constraints);
         assert_eq!(
             crate::painting::shaped_paragraph_count(),
@@ -12126,7 +12687,9 @@ mod tests {
 
     #[test]
     fn a_wrap_starts_a_new_line_when_one_fills_up() {
-        let mut wrap = RenderWrap::horizontal().with_spacing(10.0).with_run_spacing(4.0);
+        let mut wrap = RenderWrap::horizontal()
+            .with_spacing(10.0)
+            .with_run_spacing(4.0);
         for _ in 0..3 {
             wrap = wrap.push(FixedBox::new(40.0, 20.0));
         }
@@ -12171,10 +12734,16 @@ mod tests {
     #[test]
     fn a_wraps_lines_stack_from_the_top_by_default() {
         let mut wrap = two_even_lines(MainAxisAlignment::Start);
-        assert_eq!(wrap.layout(BoxConstraints::tight(100.0, 100.0)), Size::new(100.0, 100.0));
+        assert_eq!(
+            wrap.layout(BoxConstraints::tight(100.0, 100.0)),
+            Size::new(100.0, 100.0)
+        );
         let offsets = wrap.child_offsets();
         assert_eq!(offsets[0].dy, 0.0);
-        assert_eq!(offsets[2].dy, 20.0, "the second line sits just under the first");
+        assert_eq!(
+            offsets[2].dy, 20.0,
+            "the second line sits just under the first"
+        );
 
         // And the default is start: a wrap that never says otherwise.
         let mut wrap = RenderWrap::horizontal();
@@ -12193,12 +12762,18 @@ mod tests {
         end.layout(BoxConstraints::tight(100.0, 100.0));
         let offsets = end.child_offsets();
         assert_eq!(offsets[0].dy, 60.0, "end leaves the free space above");
-        assert_eq!(offsets[2].dy, 80.0, "and the last line ends at the bottom edge");
+        assert_eq!(
+            offsets[2].dy, 80.0,
+            "and the last line ends at the bottom edge"
+        );
 
         let mut center = two_even_lines(MainAxisAlignment::Center);
         center.layout(BoxConstraints::tight(100.0, 100.0));
         let offsets = center.child_offsets();
-        assert_eq!(offsets[0].dy, 30.0, "center splits the free space both ways");
+        assert_eq!(
+            offsets[0].dy, 30.0,
+            "center splits the free space both ways"
+        );
         assert_eq!(offsets[2].dy, 50.0);
     }
 
@@ -12226,7 +12801,11 @@ mod tests {
             .with_vertical_direction(VerticalDirection::Up)
             .push(FixedBox::new(40.0, 20.0));
         lone_up.layout(BoxConstraints::tight(100.0, 100.0));
-        assert_eq!(lone_up.child_offsets()[0].dy, 80.0, "a lone line takes start's share, sunk");
+        assert_eq!(
+            lone_up.child_offsets()[0].dy,
+            80.0,
+            "a lone line takes start's share, sunk"
+        );
     }
 
     /// `spaceAround` and `spaceEvenly` spend some of the 60 at the ends:
@@ -12282,23 +12861,34 @@ mod tests {
     /// nearest the bottom, whichever end of the wrap the lines sit at.
     #[test]
     fn a_wrap_stacking_upwards_honours_its_run_alignment() {
-        let mut start = two_even_lines(MainAxisAlignment::Start).with_vertical_direction(VerticalDirection::Up);
+        let mut start =
+            two_even_lines(MainAxisAlignment::Start).with_vertical_direction(VerticalDirection::Up);
         start.layout(BoxConstraints::tight(100.0, 100.0));
         let offsets = start.child_offsets();
-        assert_eq!(offsets[0].dy, 80.0, "start under a flip is end: sunk, and reversed");
+        assert_eq!(
+            offsets[0].dy, 80.0,
+            "start under a flip is end: sunk, and reversed"
+        );
         assert_eq!(offsets[2].dy, 60.0);
 
-        let mut end = two_even_lines(MainAxisAlignment::End).with_vertical_direction(VerticalDirection::Up);
+        let mut end =
+            two_even_lines(MainAxisAlignment::End).with_vertical_direction(VerticalDirection::Up);
         end.layout(BoxConstraints::tight(100.0, 100.0));
         let offsets = end.child_offsets();
-        assert_eq!(offsets[0].dy, 20.0, "end under a flip is start: raised, and reversed");
+        assert_eq!(
+            offsets[0].dy, 20.0,
+            "end under a flip is start: raised, and reversed"
+        );
         assert_eq!(offsets[2].dy, 0.0);
 
-        let mut between =
-            two_even_lines(MainAxisAlignment::SpaceBetween).with_vertical_direction(VerticalDirection::Up);
+        let mut between = two_even_lines(MainAxisAlignment::SpaceBetween)
+            .with_vertical_direction(VerticalDirection::Up);
         between.layout(BoxConstraints::tight(100.0, 100.0));
         let offsets = between.child_offsets();
-        assert_eq!(offsets[0].dy, 80.0, "the first line sits on the start edge, the bottom");
+        assert_eq!(
+            offsets[0].dy, 80.0,
+            "the first line sits on the start edge, the bottom"
+        );
         assert_eq!(offsets[2].dy, 0.0, "the last on the end edge, the top");
     }
 
@@ -12333,7 +12923,11 @@ mod tests {
                 Size::new(80.0, 40.0),
                 "{run_alignment:?} changed a shrink-wrapped wet layout"
             );
-            assert_eq!(wet.max_intrinsic_height(100.0), 40.0, "{run_alignment:?} changed an intrinsic");
+            assert_eq!(
+                wet.max_intrinsic_height(100.0),
+                40.0,
+                "{run_alignment:?} changed an intrinsic"
+            );
         }
     }
 
@@ -12397,7 +12991,10 @@ mod tests {
             .with_max_height(30.0);
         let size = limited.layout(constraints);
         assert_eq!(size, Size::new(50.0, 40.0));
-        assert_eq!(limited.compute_dry_layout(constraints), Size::new(50.0, 40.0));
+        assert_eq!(
+            limited.compute_dry_layout(constraints),
+            Size::new(50.0, 40.0)
+        );
     }
 
     // -- FittedBox ---------------------------------------------------------------
@@ -12421,8 +13018,7 @@ mod tests {
         // `applyBoxFit(cover, 100x50, 200x60)`: the whole box is filled, so
         // only 100x30 of the child is shown; the crop takes the middle 30,
         // which moves the source rect down 10 and the transform up 20.
-        let mut fitted =
-            RenderFittedBox::new(FixedBox::new(100.0, 50.0)).with_fit(BoxFit::Cover);
+        let mut fitted = RenderFittedBox::new(FixedBox::new(100.0, 50.0)).with_fit(BoxFit::Cover);
         let size = fitted.layout(BoxConstraints::tight(200.0, 60.0));
         assert_eq!(size, Size::new(200.0, 60.0));
         let (translation, scale) = fitted.paint_placement().unwrap();
@@ -12467,8 +13063,7 @@ mod tests {
         // `_computeSizes`: top = 30 - 12, so the child is pushed down 18 and
         // the box is top + childHeight = 38 tall. The box's own baseline is
         // the child's from there, which is the 30 it was given.
-        let mut baseline =
-            RenderBaseline::new(30.0, FixedBox::new(40.0, 20.0).with_baseline(12.0));
+        let mut baseline = RenderBaseline::new(30.0, FixedBox::new(40.0, 20.0).with_baseline(12.0));
         let size = baseline.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(40.0, 38.0));
         assert_eq!(baseline.child_offset(), Offset::new(0.0, 18.0));
@@ -12493,8 +13088,8 @@ mod tests {
         // and as tall as it is allowed, an axis without a factor taking
         // everything. Centring a 40-wide child in a 20-wide box puts it 10
         // past the start edge, unclamped, exactly as upstream places it.
-        let mut fractional = RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0))
-            .with_width_factor(0.5);
+        let mut fractional =
+            RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0)).with_width_factor(0.5);
         let size = fractional.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(20.0, 100.0));
         assert_eq!(fractional.child_offset(), Offset::new(-10.0, 40.0));
@@ -12504,8 +13099,8 @@ mod tests {
     fn a_fractionally_sized_box_expands_an_axis_without_a_factor() {
         // Only the height has a factor: the width takes the incoming maximum
         // (upstream's `INFINITY` through `constrain`), the height is 20 * 0.5.
-        let mut fractional = RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0))
-            .with_height_factor(0.5);
+        let mut fractional =
+            RenderFractionallySizedBox::new(FixedBox::new(40.0, 20.0)).with_height_factor(0.5);
         let size = fractional.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(100.0, 10.0));
         assert_eq!(fractional.child_offset(), Offset::new(30.0, -5.0));
@@ -12518,11 +13113,13 @@ mod tests {
         // `_getInnerConstraints`: the incoming 100 is replaced by the given
         // 50, and a child that wanted 80 takes it. The box itself ignores
         // the child and is the constraints' biggest.
-        let mut overflow = RenderOverflowBox::new(FixedBox::new(80.0, 40.0))
-            .with_max_width(50.0);
+        let mut overflow = RenderOverflowBox::new(FixedBox::new(80.0, 40.0)).with_max_width(50.0);
         let size = overflow.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(100.0, 100.0));
-        assert_eq!(overflow.compute_dry_layout(BoxConstraints::loose(100.0, 100.0)), size);
+        assert_eq!(
+            overflow.compute_dry_layout(BoxConstraints::loose(100.0, 100.0)),
+            size
+        );
         // Centred: a 50x40 child in a 100x100 box.
         assert_eq!(overflow.child_offset(), Offset::new(25.0, 30.0));
     }
@@ -12547,10 +13144,8 @@ mod tests {
         // The box is 30x30; the child got the incoming constraints unmodified
         // and is 80x40, hanging off both axes once centred. The intrinsics
         // are the requested size, not the child's.
-        let mut sized = RenderSizedOverflowBox::new(
-            Size::new(30.0, 30.0),
-            FixedBox::new(80.0, 40.0),
-        );
+        let mut sized =
+            RenderSizedOverflowBox::new(Size::new(30.0, 30.0), FixedBox::new(80.0, 40.0));
         let size = sized.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(30.0, 30.0));
         assert_eq!(sized.child_offset(), Offset::new(-25.0, -5.0));
@@ -12638,7 +13233,10 @@ mod tests {
         let mut stack = RenderIndexedStack::new().push(first).push(second);
         let size = stack.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(size, Size::new(30.0, 50.0));
-        assert_eq!((first_watch.layouts.get(), second_watch.layouts.get()), (1, 1));
+        assert_eq!(
+            (first_watch.layouts.get(), second_watch.layouts.get()),
+            (1, 1)
+        );
     }
 
     #[test]
@@ -12664,8 +13262,10 @@ mod tests {
         // which one answers is the index's alone.
         let (first, _) = WatchedBox::shared(40.0, 30.0, 11);
         let (second, _) = WatchedBox::shared(40.0, 30.0, 12);
-        let mut showing_first =
-            RenderIndexedStack::new().push(first).push(second).with_index(Some(0));
+        let mut showing_first = RenderIndexedStack::new()
+            .push(first)
+            .push(second)
+            .with_index(Some(0));
         showing_first.layout(BoxConstraints::loose(100.0, 100.0));
         let mut result = HitTestResult::new();
         assert!(showing_first.hit_test(Offset::new(5.0, 5.0), &mut result));
@@ -12673,8 +13273,10 @@ mod tests {
 
         let (first, _) = WatchedBox::shared(40.0, 30.0, 11);
         let (second, _) = WatchedBox::shared(40.0, 30.0, 12);
-        let mut showing_second =
-            RenderIndexedStack::new().push(first).push(second).with_index(Some(1));
+        let mut showing_second = RenderIndexedStack::new()
+            .push(first)
+            .push(second)
+            .with_index(Some(1));
         showing_second.layout(BoxConstraints::loose(100.0, 100.0));
         let mut result = HitTestResult::new();
         assert!(showing_second.hit_test(Offset::new(5.0, 5.0), &mut result));
@@ -12689,7 +13291,10 @@ mod tests {
 
         let (first, first_watch) = WatchedBox::shared(40.0, 30.0, 11);
         let (second, _) = WatchedBox::shared(20.0, 10.0, 12);
-        let mut stack = RenderIndexedStack::new().push(first).push(second).with_index(None);
+        let mut stack = RenderIndexedStack::new()
+            .push(first)
+            .push(second)
+            .with_index(None);
         let size = stack.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(size, Size::new(40.0, 30.0));
         let mut layers = LayerTree::new(100, 100);
@@ -12709,10 +13314,24 @@ mod tests {
     fn apply_box_fit_scale_down_never_scales_up() {
         // A child smaller than the box keeps its size; one that does not fit
         // is scaled to the `Contain` size.
-        let small = apply_box_fit(BoxFit::ScaleDown, Size::new(10.0, 10.0), Size::new(20.0, 20.0));
-        assert_eq!((small.source, small.destination), (Size::new(10.0, 10.0), Size::new(10.0, 10.0)));
-        let tall = apply_box_fit(BoxFit::ScaleDown, Size::new(100.0, 10.0), Size::new(20.0, 5.0));
-        assert_eq!((tall.source, tall.destination), (Size::new(100.0, 10.0), Size::new(20.0, 2.0)));
+        let small = apply_box_fit(
+            BoxFit::ScaleDown,
+            Size::new(10.0, 10.0),
+            Size::new(20.0, 20.0),
+        );
+        assert_eq!(
+            (small.source, small.destination),
+            (Size::new(10.0, 10.0), Size::new(10.0, 10.0))
+        );
+        let tall = apply_box_fit(
+            BoxFit::ScaleDown,
+            Size::new(100.0, 10.0),
+            Size::new(20.0, 5.0),
+        );
+        assert_eq!(
+            (tall.source, tall.destination),
+            (Size::new(100.0, 10.0), Size::new(20.0, 2.0))
+        );
     }
 
     // -- Relayout boundaries ------------------------------------------------------
@@ -12778,7 +13397,10 @@ mod tests {
         );
 
         marked.mark_needs_layout();
-        assert!(!root.state.needs_layout.get(), "the mark stopped at the tight child");
+        assert!(
+            !root.state.needs_layout.get(),
+            "the mark stopped at the tight child"
+        );
 
         assert!(flush_layout());
         assert_eq!(marked_n.get(), 2, "the boundary was laid out from itself");
@@ -12798,23 +13420,38 @@ mod tests {
         let tight =
             RenderRef::new(RenderConstrainedBox::tight(100.0, 100.0).with_child(align.clone()));
         let mut root = RenderRef::new(
-            RenderFlex::column().push(tight.clone()).push(sibling.clone()),
+            RenderFlex::column()
+                .push(tight.clone())
+                .push(sibling.clone()),
         );
         root.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!((marked_n.get(), sibling_n.get()), (1, 1));
 
         marked.mark_needs_layout();
-        assert!(align.state.needs_layout.get(), "the walk climbed to the boundary");
+        assert!(
+            align.state.needs_layout.get(),
+            "the walk climbed to the boundary"
+        );
         assert!(
             !tight.state.needs_layout.get(),
             "and stopped there: the box that made it tight is outside"
         );
-        assert!(!root.state.needs_layout.get(), "and so is everything above that");
+        assert!(
+            !root.state.needs_layout.get(),
+            "and so is everything above that"
+        );
 
         assert!(flush_layout());
-        assert_eq!(marked_n.get(), 2, "the subtree was re-measured from the boundary");
+        assert_eq!(
+            marked_n.get(),
+            2,
+            "the subtree was re-measured from the boundary"
+        );
         assert_eq!(sibling_n.get(), 1, "the sibling outside it was not");
-        assert!(!align.state.needs_layout.get(), "and the boundary itself is clean again");
+        assert!(
+            !align.state.needs_layout.get(),
+            "and the boundary itself is clean again"
+        );
     }
 
     /// A one-child box whose answer to the `parentUsesSize` question is
@@ -12856,7 +13493,10 @@ mod tests {
         );
 
         deaf_leaf.mark_needs_layout();
-        assert!(!deaf.state.needs_layout.get(), "the mark stopped at the leaf");
+        assert!(
+            !deaf.state.needs_layout.get(),
+            "the mark stopped at the leaf"
+        );
         assert!(flush_layout());
         assert_eq!(deaf_n.get(), 2, "the leaf was measured again from itself");
 
@@ -12869,7 +13509,10 @@ mod tests {
         listening.layout(BoxConstraints::loose(200.0, 200.0));
         assert!(!heard_leaf.state.relayout_boundary.get());
         heard_leaf.mark_needs_layout();
-        assert!(listening.state.needs_layout.get(), "a parent that reads the size is told");
+        assert!(
+            listening.state.needs_layout.get(),
+            "a parent that reads the size is told"
+        );
     }
 
     #[test]
@@ -12961,7 +13604,8 @@ mod tests {
             (1, 2),
             "the walk from the root skipped the clean leaf too -- the saving is not here"
         );
-    }}
+    }
+}
 
 // -- Taking a new configuration -----------------------------------------------
 //
@@ -13014,7 +13658,12 @@ mod reconfiguring_tests {
     fn with_paragraph<T>(handle: &RenderRef, read: impl FnOnce(&RenderParagraph) -> T) -> T {
         let cell = handle.render.borrow();
         let object: &dyn RenderBox = &**cell;
-        read(object.as_any().downcast_ref::<RenderParagraph>().expect("a paragraph"))
+        read(
+            object
+                .as_any()
+                .downcast_ref::<RenderParagraph>()
+                .expect("a paragraph"),
+        )
     }
 
     #[test]
@@ -13039,7 +13688,10 @@ mod reconfiguring_tests {
 
         // What a rebuild produces when nothing about it moved.
         let same = RenderRef::new(RenderPadding::new(EdgeInsets::all(4.0), child.clone()));
-        assert!(padded.reconfigure(same), "a padding would not take a padding");
+        assert!(
+            padded.reconfigure(same),
+            "a padding would not take a padding"
+        );
         root.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(layouts(), 1, "nothing changed and it was measured again");
     }
@@ -13058,7 +13710,11 @@ mod reconfiguring_tests {
         assert!(padded.reconfigure(wider));
         root.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(layouts(), 2, "the child sits somewhere else now");
-        assert_eq!(root.size(), Size::new(34.0, 34.0), "and the padding is the new one");
+        assert_eq!(
+            root.size(),
+            Size::new(34.0, 34.0),
+            "and the padding is the new one"
+        );
     }
 
     #[test]
@@ -13070,14 +13726,18 @@ mod reconfiguring_tests {
         reset();
         let child = RenderRef::new(Counted(10.0));
         let decorated = RenderRef::new(
-            RenderDecoratedBox::new().with_color(Color(0xFF00FF00)).with_child(child.clone()),
+            RenderDecoratedBox::new()
+                .with_color(Color(0xFF00FF00))
+                .with_child(child.clone()),
         );
         let mut root = decorated.clone();
         root.layout(BoxConstraints::loose(100.0, 100.0));
         assert_eq!(layouts(), 1);
 
         let repainted = RenderRef::new(
-            RenderDecoratedBox::new().with_color(Color(0xFFFF0000)).with_child(child.clone()),
+            RenderDecoratedBox::new()
+                .with_color(Color(0xFFFF0000))
+                .with_child(child.clone()),
         );
         assert!(decorated.reconfigure(repainted));
         root.layout(BoxConstraints::loose(100.0, 100.0));
@@ -13118,7 +13778,10 @@ mod reconfiguring_tests {
 
         assert!(text.reconfigure(RenderRef::new(RenderParagraph::new("Hello"))));
         let after = with_paragraph(&text, |p| p.paragraph.clone()).expect("still shaped");
-        assert!(Rc::ptr_eq(&shaped, &after), "the same words were shaped twice");
+        assert!(
+            Rc::ptr_eq(&shaped, &after),
+            "the same words were shaped twice"
+        );
 
         // And different words are not the same words.
         assert!(text.reconfigure(RenderRef::new(RenderParagraph::new("Goodbye"))));
@@ -13143,7 +13806,10 @@ mod reconfiguring_tests {
             crate::painting::RenderPath::new(),
             child.clone(),
         ));
-        assert!(!clipped.reconfigure(other), "a clip path claimed it could compare paths");
+        assert!(
+            !clipped.reconfigure(other),
+            "a clip path claimed it could compare paths"
+        );
     }
 
     #[test]
@@ -13167,16 +13833,26 @@ mod reconfiguring_tests {
         };
 
         let first = frame(&mut boundary);
-        assert_eq!((first.retainable, first.retained), (1, 0), "the first frame has to draw");
+        assert_eq!(
+            (first.retainable, first.retained),
+            (1, 0),
+            "the first frame has to draw"
+        );
         assert_eq!(boundary.size(), Size::square(18.0));
 
         let quiet = frame(&mut boundary);
-        assert_eq!((quiet.retainable, quiet.retained), (0, 1), "nothing changed and it drew");
+        assert_eq!(
+            (quiet.retainable, quiet.retained),
+            (0, 1),
+            "nothing changed and it drew"
+        );
 
         // A wider padding is a relayout and not a repaint -- and the layer the
         // boundary kept is a drawing of the layout that is now gone.
-        assert!(padding
-            .reconfigure(RenderRef::new(RenderPadding::new(EdgeInsets::all(8.0), child.clone()))));
+        assert!(padding.reconfigure(RenderRef::new(RenderPadding::new(
+            EdgeInsets::all(8.0),
+            child.clone()
+        ))));
         let second = frame(&mut boundary);
         assert_eq!(boundary.size(), Size::square(26.0));
         assert_eq!(
@@ -13185,8 +13861,6 @@ mod reconfiguring_tests {
             "the boundary handed back a drawing of the layout it used to have"
         );
     }
-
-
 }
 
 // -- Compositing tests --------------------------------------------------------
@@ -13215,7 +13889,9 @@ mod compositing_tests {
         }
         fn paint(&self, context: &mut PaintContext, offset: Offset) {
             let bounds = Rect::xywh(offset.dx, offset.dy, 10.0, 10.0);
-            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+            context
+                .canvas()
+                .draw_rect(bounds, &Paint::new(Color::WHITE));
         }
     }
 
@@ -13229,7 +13905,10 @@ mod compositing_tests {
 
     impl FixedSpot {
         fn new(width: f32, height: f32) -> FixedSpot {
-            FixedSpot { preferred: Size::new(width, height), size: Size::ZERO }
+            FixedSpot {
+                preferred: Size::new(width, height),
+                size: Size::ZERO,
+            }
         }
     }
 
@@ -13242,9 +13921,10 @@ mod compositing_tests {
             self.size
         }
         fn paint(&self, context: &mut PaintContext, offset: Offset) {
-            let bounds =
-                Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+            let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+            context
+                .canvas()
+                .draw_rect(bounds, &Paint::new(Color::WHITE));
         }
     }
 
@@ -13299,7 +13979,9 @@ mod compositing_tests {
         fn paint(&self, context: &mut PaintContext, offset: Offset) {
             self.paints.set(self.paints.get() + 1);
             let bounds = Rect::xywh(offset.dx, offset.dy, 10.0, 10.0);
-            context.canvas().draw_rect(bounds, &Paint::new(Color::WHITE));
+            context
+                .canvas()
+                .draw_rect(bounds, &Paint::new(Color::WHITE));
         }
     }
 
@@ -13368,7 +14050,11 @@ mod compositing_tests {
         outer.layout(BoxConstraints::tight(50.0, 50.0));
 
         let first = paint_into(&mut outer);
-        assert_eq!((first.retainable, first.retained), (2, 0), "both boundaries record");
+        assert_eq!(
+            (first.retainable, first.retained),
+            (2, 0),
+            "both boundaries record"
+        );
 
         // Something under the inner boundary changed its appearance: the walk
         // marks the inner boundary and stops, so the outer one keeps its layer.
@@ -13392,7 +14078,9 @@ mod compositing_tests {
         // and the outer one hands back the very object it kept -- inside which
         // the inner layer lives, so the new picture is what the frame carries.
         let paints = std::rc::Rc::new(std::cell::Cell::new(0u32));
-        let spot = CountedSpot { paints: std::rc::Rc::clone(&paints) };
+        let spot = CountedSpot {
+            paints: std::rc::Rc::clone(&paints),
+        };
         let inner = RenderRef::new(RenderRepaintBoundary::new(spot));
         let mut outer = RenderRef::new(RenderRepaintBoundary::new(inner.clone()));
         outer.layout(BoxConstraints::tight(50.0, 50.0));
@@ -13503,7 +14191,11 @@ mod compositing_tests {
         // the stack's bounds rather than drawn over its neighbours.
         let mut overflowing = RenderStack::new().push_positioned(
             FixedSpot::new(60.0, 60.0),
-            StackPosition { left: Some(60.0), top: Some(0.0), ..Default::default() },
+            StackPosition {
+                left: Some(60.0),
+                top: Some(0.0),
+                ..Default::default()
+            },
         );
         overflowing.layout(BoxConstraints::tight(100.0, 100.0));
         let calls = paint_into(&mut overflowing);
@@ -13514,7 +14206,11 @@ mod compositing_tests {
         // a clip that would show nothing is not pushed.
         let mut fitting = RenderStack::new().push_positioned(
             FixedSpot::new(60.0, 60.0),
-            StackPosition { left: Some(10.0), top: Some(10.0), ..Default::default() },
+            StackPosition {
+                left: Some(10.0),
+                top: Some(10.0),
+                ..Default::default()
+            },
         );
         fitting.layout(BoxConstraints::tight(100.0, 100.0));
         let calls = paint_into(&mut fitting);
@@ -13525,7 +14221,11 @@ mod compositing_tests {
             .with_clip_behavior(ClipBehavior::None)
             .push_positioned(
                 FixedSpot::new(60.0, 60.0),
-                StackPosition { left: Some(60.0), top: Some(0.0), ..Default::default() },
+                StackPosition {
+                    left: Some(60.0),
+                    top: Some(0.0),
+                    ..Default::default()
+                },
             );
         unclipped.layout(BoxConstraints::tight(100.0, 100.0));
         let calls = paint_into(&mut unclipped);
@@ -13566,7 +14266,10 @@ mod compositing_tests {
         faded.layout(BoxConstraints::tight(50.0, 50.0));
         let calls = paint_into(&mut faded);
         assert_eq!(calls.pushes(), 0);
-        assert_eq!(calls.display_lists, 0, "an invisible subtree still recorded");
+        assert_eq!(
+            calls.display_lists, 0,
+            "an invisible subtree still recorded"
+        );
     }
 
     #[test]
@@ -13647,13 +14350,19 @@ mod compositing_tests {
             }
             fn paint(&self, context: &mut PaintContext, offset: Offset) {
                 let paint = Paint::new(Color::WHITE);
-                context.canvas().draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
+                context
+                    .canvas()
+                    .draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
                 context.paint_child(&self.inner, offset);
-                context.canvas().draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
+                context
+                    .canvas()
+                    .draw_rect(Rect::xywh(0.0, 0.0, 5.0, 5.0), &paint);
             }
         }
 
-        let mut root = BeforeAndAfter { inner: RenderClipRect::new(Spot) };
+        let mut root = BeforeAndAfter {
+            inner: RenderClipRect::new(Spot),
+        };
         root.layout(BoxConstraints::tight(50.0, 50.0));
         let calls = paint_into(&mut root);
         // Before, inside, after.

@@ -162,7 +162,10 @@ impl MediaQueryData {
     /// Upstream's `copyWith(textScaler: ...)`. See [`MediaQuery::no_text_scaling`]
     /// for why a subtree would want one.
     pub fn with_text_scale(&self, factor: f32) -> MediaQueryData {
-        MediaQueryData { text_scale_factor: factor, ..*self }
+        MediaQueryData {
+            text_scale_factor: factor,
+            ..*self
+        }
     }
 
     /// The same data with the text scale held inside a range.
@@ -173,7 +176,10 @@ impl MediaQueryData {
     /// breaking outright -- a smaller enlargement is still an enlargement.
     pub fn clamp_text_scale(&self, min: f32, max: f32) -> MediaQueryData {
         debug_assert!(max >= min, "a clamp with no room in it");
-        MediaQueryData { text_scale_factor: self.text_scale_factor.clamp(min, max), ..*self }
+        MediaQueryData {
+            text_scale_factor: self.text_scale_factor.clamp(min, max),
+            ..*self
+        }
     }
 }
 
@@ -217,14 +223,22 @@ impl MediaQuery {
     /// showing what some *other* setting looks like. Everything else should
     /// scale, which is why this is a deliberate opt-out rather than a default.
     pub fn no_text_scaling(child: AnyWidget) -> AnyWidget {
-        component(RescaleText { child: std::cell::RefCell::new(Some(child)), min: 1.0, max: 1.0 })
+        component(RescaleText {
+            child: std::cell::RefCell::new(Some(child)),
+            min: 1.0,
+            max: 1.0,
+        })
     }
 
     /// A subtree whose text scale is held between `min` and `max`.
     ///
     /// Upstream's `MediaQuery.withClampedTextScaling`.
     pub fn clamped_text_scaling(min: f32, max: f32, child: AnyWidget) -> AnyWidget {
-        component(RescaleText { child: std::cell::RefCell::new(Some(child)), min, max })
+        component(RescaleText {
+            child: std::cell::RefCell::new(Some(child)),
+            min,
+            max,
+        })
     }
 }
 
@@ -242,8 +256,11 @@ struct RescaleText {
 impl Component for RescaleText {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let data = media_query_of(context);
-        let child =
-            self.child.borrow_mut().take().unwrap_or_else(|| crate::framework::leaf(|| Empty));
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| Empty));
         MediaQuery::new(data.clamp_text_scale(self.min, self.max), child)
     }
 }
@@ -275,7 +292,9 @@ thread_local! {
 /// has already asked every application for is the wrong thing to lose by
 /// default.
 pub fn current_text_scale() -> f32 {
-    TEXT_SCALE.with(|scale| scale.get()).unwrap_or_else(|| crate::platform::text_scale_factor() as f32)
+    TEXT_SCALE
+        .with(|scale| scale.get())
+        .unwrap_or_else(|| crate::platform::text_scale_factor() as f32)
 }
 
 /// Runs `body` with `scale` as the ambient text scale, restoring whatever was
@@ -310,25 +329,33 @@ pub fn media_query_of(context: &BuildContext) -> Rc<MediaQueryData> {
 /// rebuilt when the keyboard opens -- that is `view_insets`, and somebody
 /// else's news.
 pub fn size_of(context: &BuildContext) -> Size {
-    context.inherited_aspect_or_default::<MediaQueryData>(aspect::SIZE).size
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::SIZE)
+        .size
 }
 
 /// The nearest [`MediaQuery`]'s padding, and a dependence on nothing else
 /// about it. Upstream's `MediaQuery.paddingOf`.
 pub fn padding_of(context: &BuildContext) -> EdgeInsets {
-    context.inherited_aspect_or_default::<MediaQueryData>(aspect::PADDING).padding
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::PADDING)
+        .padding
 }
 
 /// The nearest [`MediaQuery`]'s view insets -- the keyboard -- and a
 /// dependence on nothing else about it. Upstream's `MediaQuery.viewInsetsOf`.
 pub fn view_insets_of(context: &BuildContext) -> EdgeInsets {
-    context.inherited_aspect_or_default::<MediaQueryData>(aspect::VIEW_INSETS).view_insets
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::VIEW_INSETS)
+        .view_insets
 }
 
 /// The nearest [`MediaQuery`]'s text scale, and a dependence on nothing else
 /// about it. Upstream's `MediaQuery.textScalerOf`.
 pub fn text_scale_of(context: &BuildContext) -> f32 {
-    context.inherited_aspect_or_default::<MediaQueryData>(aspect::TEXT_SCALE).text_scale_factor
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::TEXT_SCALE)
+        .text_scale_factor
 }
 
 /// Insets its child by whatever the system is covering.
@@ -387,9 +414,18 @@ impl Component for SafeArea {
             left: if self.left { data.padding.left } else { 0.0 }.max(self.minimum.left),
             top: if self.top { data.padding.top } else { 0.0 }.max(self.minimum.top),
             right: if self.right { data.padding.right } else { 0.0 }.max(self.minimum.right),
-            bottom: if self.bottom { data.padding.bottom } else { 0.0 }.max(self.minimum.bottom),
+            bottom: if self.bottom {
+                data.padding.bottom
+            } else {
+                0.0
+            }
+            .max(self.minimum.bottom),
         };
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| crate::framework::leaf(|| Empty));
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| Empty));
         let inner = data.remove_padding(self.left, self.top, self.right, self.bottom);
         crate::framework::single(MediaQuery::new(inner, child), move |child| {
             Box::new(crate::render::RenderPadding::new(padding, child))
@@ -561,7 +597,11 @@ mod tests {
         let _ = tree.build_render_tree();
         assert_eq!(outer.get(), 1.5);
         assert_eq!(inner.get(), 3.0);
-        assert_eq!(after.get(), 1.5, "the inner scale leaked out of its subtree");
+        assert_eq!(
+            after.get(),
+            1.5,
+            "the inner scale leaked out of its subtree"
+        );
     }
 
     #[test]
@@ -596,12 +636,19 @@ mod tests {
     #[test]
     fn a_paragraph_takes_the_scale_where_it_was_built() {
         let outside = crate::render::RenderParagraph::new("plain");
-        assert_eq!(outside.text_scale(), 1.0, "no media query, no platform scale set");
+        assert_eq!(
+            outside.text_scale(),
+            1.0,
+            "no media query, no platform scale set"
+        );
 
         let inside = with_text_scale(1.75, || crate::render::RenderParagraph::new("bigger"));
         assert_eq!(inside.text_scale(), 1.75);
         // And the scale is not still in force afterwards.
-        assert_eq!(crate::render::RenderParagraph::new("after").text_scale(), 1.0);
+        assert_eq!(
+            crate::render::RenderParagraph::new("after").text_scale(),
+            1.0
+        );
     }
 
     #[test]
@@ -633,7 +680,13 @@ mod tests {
 
     fn probe(read: fn(&BuildContext) -> f32) -> (AnyWidget, Rc<std::cell::Cell<u32>>) {
         let builds = Rc::new(std::cell::Cell::new(0));
-        (component(Probe { read, builds: Rc::clone(&builds) }), builds)
+        (
+            component(Probe {
+                read,
+                builds: Rc::clone(&builds),
+            }),
+            builds,
+        )
     }
 
     fn probe_column(probes: Vec<AnyWidget>) -> AnyWidget {
@@ -668,10 +721,17 @@ mod tests {
 
         // The status bar grows; the view does not change size.
         let mut barred = taller;
-        barred.padding = EdgeInsets { top: 42.0, ..EdgeInsets::ZERO };
+        barred.padding = EdgeInsets {
+            top: 42.0,
+            ..EdgeInsets::ZERO
+        };
         assert!(tree.publish(barred));
         assert_eq!(tree.rebuild_dirty(), 1);
-        assert_eq!(size_builds.get(), 2, "and this time the size reader was not");
+        assert_eq!(
+            size_builds.get(),
+            2,
+            "and this time the size reader was not"
+        );
         assert_eq!(padding_builds.get(), 2, "but the padding reader was");
     }
 
@@ -688,7 +748,10 @@ mod tests {
         ));
 
         let mut keyboard_up = MediaQueryData::default();
-        keyboard_up.view_insets = EdgeInsets { bottom: 300.0, ..EdgeInsets::ZERO };
+        keyboard_up.view_insets = EdgeInsets {
+            bottom: 300.0,
+            ..EdgeInsets::ZERO
+        };
         assert!(tree.publish(keyboard_up));
         assert_eq!(tree.rebuild_dirty(), 1);
         assert_eq!(insets_builds.get(), 2, "the keyboard reader was rebuilt");
@@ -697,7 +760,11 @@ mod tests {
         let louder = keyboard_up.with_text_scale(2.0);
         assert!(tree.publish(louder));
         assert_eq!(tree.rebuild_dirty(), 1);
-        assert_eq!(insets_builds.get(), 2, "and this time the keyboard reader was not");
+        assert_eq!(
+            insets_builds.get(),
+            2,
+            "and this time the keyboard reader was not"
+        );
         assert_eq!(scale_builds.get(), 2, "but the text scale reader was");
     }
 

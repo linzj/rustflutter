@@ -80,14 +80,14 @@ pub mod system;
 pub mod text_input;
 
 pub use channel::{BasicMessageChannel, EventChannel, EventSink, MethodChannel};
-pub use text_input::{
-    TextEditingValue, TextInputAction, TextInputClient, TextInputConfiguration,
-    TextInputConnection, TextInputType,
-};
 pub use codec::{
     BinaryCodec, CodecError, JsonMessageCodec, JsonMethodCodec, MessageCodec, MethodCall,
     MethodCodec, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, StringCodec,
     Value,
+};
+pub use text_input::{
+    TextEditingValue, TextInputAction, TextInputClient, TextInputConfiguration,
+    TextInputConnection, TextInputType,
 };
 
 use std::cell::RefCell;
@@ -221,7 +221,9 @@ impl Messenger {
     }
 
     fn channel(&mut self, name: &str) -> &mut Channel {
-        self.channels.entry(name.to_string()).or_insert_with(Channel::new)
+        self.channels
+            .entry(name.to_string())
+            .or_insert_with(Channel::new)
     }
 
     /// The callback a handler answers through.
@@ -434,7 +436,10 @@ pub fn clear_handler(channel: &str) {
 
 pub fn has_handler(channel: &str) -> bool {
     with_messenger(|messenger| {
-        messenger.channels.get(channel).is_some_and(Channel::is_listening)
+        messenger
+            .channels
+            .get(channel)
+            .is_some_and(Channel::is_listening)
     })
 }
 
@@ -488,7 +493,10 @@ pub fn handle_platform_message(channel: &str, message: &[u8], response_id: i64) 
             // not yet. Dropping it would lose a message on a channel that has a
             // listener, which the buffer is not for.
             with_messenger(|messenger| {
-                messenger.channel(channel).pending.push_back((message.to_vec(), response_id));
+                messenger
+                    .channel(channel)
+                    .pending
+                    .push_back((message.to_vec(), response_id));
             });
             return true;
         }
@@ -632,15 +640,24 @@ pub(crate) mod tests_support {
 
     impl PlatformSink for Recorder {
         fn send(&self, channel: &str, message: &[u8], response_id: i64) {
-            self.0.borrow_mut().sent.push((channel.to_string(), message.to_vec(), response_id));
+            self.0
+                .borrow_mut()
+                .sent
+                .push((channel.to_string(), message.to_vec(), response_id));
         }
 
         fn respond(&self, response_id: i64, reply: ReplyData<'_>) {
-            self.0.borrow_mut().responses.push((response_id, reply.map(<[u8]>::to_vec)));
+            self.0
+                .borrow_mut()
+                .responses
+                .push((response_id, reply.map(<[u8]>::to_vec)));
         }
 
         fn channel_update(&self, channel: &str, listening: bool) {
-            self.0.borrow_mut().updates.push((channel.to_string(), listening));
+            self.0
+                .borrow_mut()
+                .updates
+                .push((channel.to_string(), listening));
         }
 
         fn request_frame(&self) {
@@ -741,7 +758,10 @@ mod tests {
 
         let (seen, handler) = collector();
         set_handler("flutter/lifecycle", handler);
-        assert_eq!(seen.borrow().as_slice(), &[b"AppLifecycleState.resumed".to_vec()]);
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[b"AppLifecycleState.resumed".to_vec()]
+        );
     }
 
     #[test]
@@ -795,7 +815,10 @@ mod tests {
         let (channel, message, response_id) = recorder.sent().remove(0);
         assert_eq!(channel, "test/ask");
         assert_eq!(message, b"?");
-        assert_ne!(response_id, 0, "a reply was asked for, so an id must have been allocated");
+        assert_ne!(
+            response_id, 0,
+            "a reply was asked for, so an id must have been allocated"
+        );
 
         complete_reply(response_id, Some(b"!"));
         assert_eq!(*answer.borrow(), Some(Some(b"!".to_vec())));
@@ -838,7 +861,10 @@ mod tests {
 
         assert_eq!(recorder.sent()[0].0, "test/inner");
         assert_eq!(recorder.responses(), vec![(7, Some(b"done".to_vec()))]);
-        assert!(has_handler("test/outer"), "the handler must survive being run");
+        assert!(
+            has_handler("test/outer"),
+            "the handler must survive being run"
+        );
     }
 
     #[test]
@@ -862,7 +888,10 @@ mod tests {
             }),
         );
         handle_platform_message("test/loop", b"first", 0);
-        assert_eq!(seen.borrow().as_slice(), &[b"first".to_vec(), b"second".to_vec()]);
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[b"first".to_vec(), b"second".to_vec()]
+        );
     }
 
     #[test]
@@ -896,10 +925,7 @@ mod tests {
         );
         handle_platform_message("test/once", b"go", 0);
         // Registering, then the handler removing itself. Not two of either.
-        assert_eq!(
-            updates_for(&recorder, "test/once"),
-            vec![true, false]
-        );
+        assert_eq!(updates_for(&recorder, "test/once"), vec![true, false]);
     }
 
     #[test]
@@ -1021,7 +1047,10 @@ mod tests {
     #[test]
     fn a_handler_answers_through_the_sink() {
         let recorder = install();
-        set_handler("test/ask", Box::new(|_message, respond| respond(Some(b"answered"))));
+        set_handler(
+            "test/ask",
+            Box::new(|_message, respond| respond(Some(b"answered"))),
+        );
         handle_platform_message("test/ask", b"?", 9);
         assert_eq!(recorder.responses(), vec![(9, Some(b"answered".to_vec()))]);
     }

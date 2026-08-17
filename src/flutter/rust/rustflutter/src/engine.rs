@@ -249,11 +249,7 @@ pub(crate) mod sys {
             offset_x: f32,
             offset_y: f32,
         );
-        pub fn rf_layer_tree_push_backdrop_blur(
-            tree: *mut RfLayerTree,
-            sigma_x: f32,
-            sigma_y: f32,
-        );
+        pub fn rf_layer_tree_push_backdrop_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32);
         pub fn rf_layer_tree_push_blur(tree: *mut RfLayerTree, sigma_x: f32, sigma_y: f32);
         pub fn rf_layer_tree_pop(tree: *mut RfLayerTree);
         pub fn rf_layer_tree_push_retainable(tree: *mut RfLayerTree);
@@ -268,11 +264,8 @@ pub(crate) mod sys {
         pub fn rf_layer_free(layer: *mut RfLayer);
 
         pub fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage;
-        pub fn rf_image_from_pixels(
-            pixels: *const u8,
-            width: c_int,
-            height: c_int,
-        ) -> *mut RfImage;
+        pub fn rf_image_from_pixels(pixels: *const u8, width: c_int, height: c_int)
+        -> *mut RfImage;
         pub fn rf_image_free(image: *mut RfImage);
         pub fn rf_image_width(image: *const RfImage) -> c_int;
         pub fn rf_image_height(image: *const RfImage) -> c_int;
@@ -434,7 +427,9 @@ pub fn initialize() {
 /// The data is copied, so the caller's buffer can go away afterwards. Returns
 /// false if Skia cannot read it as a font.
 pub fn register_font(data: &[u8], family: &str) -> bool {
-    let Ok(family) = std::ffi::CString::new(family) else { return false };
+    let Ok(family) = std::ffi::CString::new(family) else {
+        return false;
+    };
     if data.is_empty() {
         return false;
     }
@@ -488,7 +483,12 @@ impl Color {
     pub fn darkened(self, amount: f32) -> Color {
         let keep = 1.0 - amount.clamp(0.0, 1.0);
         let scale = |c: u8| (c as f32 * keep).round().clamp(0.0, 255.0) as u8;
-        Color::argb(self.alpha(), scale(self.red()), scale(self.green()), scale(self.blue()))
+        Color::argb(
+            self.alpha(),
+            scale(self.red()),
+            scale(self.green()),
+            scale(self.blue()),
+        )
     }
 }
 
@@ -503,11 +503,21 @@ pub struct Rect {
 
 impl Rect {
     pub const fn ltrb(left: f32, top: f32, right: f32, bottom: f32) -> Rect {
-        Rect { left, top, right, bottom }
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     pub const fn xywh(x: f32, y: f32, width: f32, height: f32) -> Rect {
-        Rect { left: x, top: y, right: x + width, bottom: y + height }
+        Rect {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        }
     }
 
     pub fn width(&self) -> f32 {
@@ -714,8 +724,7 @@ struct RunStyleArgs {
 impl RunStyleArgs {
     fn new(style: &TextStyle) -> RunStyleArgs {
         let to_cstring = |text: &str| {
-            CString::new(text)
-                .expect("font families and feature tags must not contain NUL")
+            CString::new(text).expect("font families and feature tags must not contain NUL")
         };
         let fallbacks = style
             .font_family_fallback
@@ -748,7 +757,9 @@ impl RunStyleArgs {
     }
 
     fn family_ptr(&self) -> *const c_char {
-        self.family.as_ref().map_or(std::ptr::null(), |c| c.as_ptr())
+        self.family
+            .as_ref()
+            .map_or(std::ptr::null(), |c| c.as_ptr())
     }
 }
 
@@ -845,9 +856,17 @@ impl Paragraph {
         let align_code = align.code();
         let direction_code = (direction == crate::direction::TextDirection::Rtl) as c_int;
         let builder = unsafe {
-            sys::rf_paragraph_builder_new(align_code, direction_code, max_lines.unwrap_or(0), ellipsis)
+            sys::rf_paragraph_builder_new(
+                align_code,
+                direction_code,
+                max_lines.unwrap_or(0),
+                ellipsis,
+            )
         };
-        assert!(!builder.is_null(), "engine failed to make a paragraph builder");
+        assert!(
+            !builder.is_null(),
+            "engine failed to make a paragraph builder"
+        );
 
         for (text, style) in runs {
             // Each run's style is marshalled inside the loop, and the args
@@ -951,14 +970,27 @@ impl Canvas {
 
     pub fn draw_rect(&mut self, rect: Rect, paint: &Paint) {
         unsafe {
-            sys::rf_canvas_draw_rect(self.raw, rect.left, rect.top, rect.right, rect.bottom, paint.raw)
+            sys::rf_canvas_draw_rect(
+                self.raw,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                paint.raw,
+            )
         };
     }
 
     pub fn draw_rounded_rect(&mut self, rect: Rect, radius: f32, paint: &Paint) {
         unsafe {
             sys::rf_canvas_draw_rrect(
-                self.raw, rect.left, rect.top, rect.right, rect.bottom, radius, paint.raw,
+                self.raw,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                radius,
+                paint.raw,
             )
         };
     }
@@ -1045,7 +1077,9 @@ impl LayerTree {
     }
 
     pub fn add_display_list(&mut self, display_list: &DisplayList, offset_x: f32, offset_y: f32) {
-        unsafe { sys::rf_layer_tree_add_display_list(self.raw, display_list.raw, offset_x, offset_y) };
+        unsafe {
+            sys::rf_layer_tree_add_display_list(self.raw, display_list.raw, offset_x, offset_y)
+        };
     }
 
     //--------------------------------------------------------------------------
@@ -1093,7 +1127,11 @@ impl LayerTree {
         let path_str = path.to_str().ok_or(RenderError::InvalidPath)?;
         let c_path = CString::new(path_str).map_err(|_| RenderError::InvalidPath)?;
         let rc = unsafe { sys::rf_layer_tree_write_png(self.raw, c_path.as_ptr()) };
-        if rc == 0 { Ok(()) } else { Err(RenderError::from_code(rc)) }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(RenderError::from_code(rc))
+        }
     }
 
     /// Rasterizes into a freshly allocated BGRA8888 buffer.
@@ -1101,7 +1139,11 @@ impl LayerTree {
         let len = (self.width as usize) * (self.height as usize) * 4;
         let mut pixels = vec![0u8; len];
         let rc = unsafe { sys::rf_layer_tree_rasterize_bgra(self.raw, pixels.as_mut_ptr(), len) };
-        if rc == 0 { Ok(pixels) } else { Err(RenderError::from_code(rc)) }
+        if rc == 0 {
+            Ok(pixels)
+        } else {
+            Err(RenderError::from_code(rc))
+        }
     }
 
     /// Opens a window showing this frame and blocks until it is closed.
@@ -1120,7 +1162,11 @@ impl LayerTree {
                 c_title.as_ptr(),
             )
         };
-        if rc == 0 { Ok(()) } else { Err(RenderError::from_code(rc)) }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(RenderError::from_code(rc))
+        }
     }
 
     pub fn size(&self) -> (i32, i32) {
@@ -1176,12 +1222,17 @@ impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RenderError::InvalidPath => write!(f, "invalid output path"),
-            RenderError::RasterizationFailed => write!(f, "engine failed to rasterize the layer tree"),
+            RenderError::RasterizationFailed => {
+                write!(f, "engine failed to rasterize the layer tree")
+            }
             RenderError::SnapshotFailed => write!(f, "engine failed to snapshot the surface"),
             RenderError::WriteFailed => write!(f, "could not open the output file"),
             RenderError::EncodeFailed => write!(f, "PNG encoding failed"),
             RenderError::NoPresenter => {
-                write!(f, "no window presenter on this platform yet; render to a PNG instead")
+                write!(
+                    f,
+                    "no window presenter on this platform yet; render to a PNG instead"
+                )
             }
             RenderError::Unknown(c) => write!(f, "unknown engine error ({c})"),
         }

@@ -457,7 +457,10 @@ impl Scroll {
         if self.scrolling.replace(true) {
             return;
         }
-        self.notify(ScrollNotification::Start { metrics: self.metrics(), depth: 0 });
+        self.notify(ScrollNotification::Start {
+            metrics: self.metrics(),
+            depth: 0,
+        });
     }
 
     /// Scrolling has stopped, if it had not already.
@@ -469,7 +472,10 @@ impl Scroll {
         if !self.scrolling.replace(false) {
             return;
         }
-        self.notify(ScrollNotification::End { metrics: self.metrics(), depth: 0 });
+        self.notify(ScrollNotification::End {
+            metrics: self.metrics(),
+            depth: 0,
+        });
         self.update_user_direction(ScrollDirection::Idle);
     }
 
@@ -844,7 +850,10 @@ pub fn item_window(
 
     let first = (first.max(0.0) as usize).min(count - 1);
     let last = (last.max(0.0) as usize).min(count - 1);
-    Some(ItemWindow { first, last: last.max(first) })
+    Some(ItemWindow {
+        first,
+        last: last.max(first),
+    })
 }
 
 /// A list that builds only the items it is showing.
@@ -1101,7 +1110,10 @@ impl SliverListView {
             } else {
                 crate::render::AxisDirection::Right
             };
-        SliverListView { axis_direction, ..Self::new(child_count, build_item) }
+        SliverListView {
+            axis_direction,
+            ..Self::new(child_count, build_item)
+        }
     }
 
     /// The exact extent of every child, when every child has one. Makes the
@@ -1181,7 +1193,12 @@ struct SliverListHost {
 
 impl SliverListHost {
     fn new(config: SliverListView) -> SliverListHost {
-        SliverListHost { config, sliver: None, padding_sliver: None, viewport: None }
+        SliverListHost {
+            config,
+            sliver: None,
+            padding_sliver: None,
+            viewport: None,
+        }
     }
 
     /// A fresh list sliver describing the current configuration, for
@@ -1208,10 +1225,11 @@ impl crate::render::RenderBox for SliverListHost {
     /// self, upstream's element rebuild visiting them), then the padding, then
     /// the viewport -- staged around the *same* handles, so the viewport's
     /// same-children test passes and the window below survives the rebuild.
-    fn update_from(&mut self, fresh: &mut dyn crate::render::RenderBox) -> Option<crate::render::UpdateEffect> {
-        let fresh = fresh
-            .as_any_mut()
-            .downcast_mut::<SliverListHost>()?;
+    fn update_from(
+        &mut self,
+        fresh: &mut dyn crate::render::RenderBox,
+    ) -> Option<crate::render::UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<SliverListHost>()?;
         self.config = fresh.config.clone();
         let Some(sliver) = self.sliver.clone() else {
             // Never composed: the first layout builds out of what was just
@@ -1219,17 +1237,16 @@ impl crate::render::RenderBox for SliverListHost {
             return Some(crate::render::UpdateEffect::Relayout);
         };
         let mut effect = crate::render::UpdateEffect::Nothing;
-        if !sliver
-            .reconfigure(crate::render::RenderRef::new(Self::fresh_sliver(&self.config)))
-        {
+        if !sliver.reconfigure(crate::render::RenderRef::new(Self::fresh_sliver(
+            &self.config,
+        ))) {
             return None;
         }
         // The padding sliver comes and goes with the configuration; either
         // way the root of the chain is whatever the viewport is handed.
         let root = match (self.padding_sliver.take(), self.config.padding) {
             (Some(padding), Some(insets)) => {
-                let staged =
-                    crate::render::RenderSliverPadding::new(insets, sliver.clone());
+                let staged = crate::render::RenderSliverPadding::new(insets, sliver.clone());
                 if !padding.reconfigure(crate::render::RenderRef::new(staged)) {
                     return None;
                 }
@@ -1295,20 +1312,21 @@ impl crate::render::RenderBox for SliverListHost {
     }
 
     fn size(&self) -> crate::render::Size {
-        self.viewport.as_ref().map_or(crate::render::Size::ZERO, |v| v.size())
+        self.viewport
+            .as_ref()
+            .map_or(crate::render::Size::ZERO, |v| v.size())
     }
 
-    fn paint(
-        &self,
-        context: &mut crate::render::PaintContext,
-        offset: crate::render::Offset,
-    ) {
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
         if let Some(viewport) = &self.viewport {
             viewport.paint(context, offset);
         }
     }
 
-    fn visit_children(&self, visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset)) {
+    fn visit_children(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
         if let Some(viewport) = &self.viewport {
             visit(viewport, crate::render::Offset::ZERO);
         }
@@ -1430,7 +1448,13 @@ impl ExtentBook {
         let book = self.0.borrow();
         let mut at = 0.0;
         for item in 0..index {
-            at += book.measured.get(item).copied().flatten().unwrap_or(average) + spacing;
+            at += book
+                .measured
+                .get(item)
+                .copied()
+                .flatten()
+                .unwrap_or(average)
+                + spacing;
         }
         at
     }
@@ -1445,7 +1469,12 @@ impl ExtentBook {
         let book = self.0.borrow();
         let mut total = 0.0;
         for index in 0..count {
-            total += book.measured.get(index).copied().flatten().unwrap_or(average);
+            total += book
+                .measured
+                .get(index)
+                .copied()
+                .flatten()
+                .unwrap_or(average);
         }
         total + spacing * (count - 1) as f32
     }
@@ -1484,7 +1513,12 @@ impl ExtentBook {
         let mut first = None;
         let mut last = 0;
         for index in 0..count {
-            let extent = book.measured.get(index).copied().flatten().unwrap_or(average);
+            let extent = book
+                .measured
+                .get(index)
+                .copied()
+                .flatten()
+                .unwrap_or(average);
             let bottom = at + extent;
             // An item that starts at or past the end of the window is below it,
             // and so is everything after it.
@@ -1502,7 +1536,10 @@ impl ExtentBook {
             at = bottom + spacing;
         }
         let first = first.unwrap_or(count - 1);
-        Some(ItemWindow { first, last: last.max(first) })
+        Some(ItemWindow {
+            first,
+            last: last.max(first),
+        })
     }
 }
 
@@ -1587,7 +1624,8 @@ impl VariableExtentList {
 
     /// How tall the whole list is, as well as it is currently known.
     pub fn content_extent(&self) -> f32 {
-        self.book.content_extent(self.count, self.estimate, self.spacing)
+        self.book
+            .content_extent(self.count, self.estimate, self.spacing)
     }
 
     /// How far this list can scroll, given the viewport it is in.
@@ -1627,11 +1665,14 @@ impl crate::framework::Component for VariableExtentList {
         // replaces, and left out entirely when there are none, because the
         // column supplies the space between its own children -- see the same
         // arithmetic in `LazyList`.
-        let leading =
-            (self.book.offset_of(window.first, self.estimate, self.spacing) - self.spacing)
-                .max(0.0);
-        let after_last =
-            self.book.offset_of(window.last + 1, self.estimate, self.spacing);
+        let leading = (self
+            .book
+            .offset_of(window.first, self.estimate, self.spacing)
+            - self.spacing)
+            .max(0.0);
+        let after_last = self
+            .book
+            .offset_of(window.last + 1, self.estimate, self.spacing);
         let trailing = (self.content_extent() - after_last).max(0.0);
         let more_below = window.last + 1 < self.count;
 
@@ -1791,13 +1832,19 @@ mod tests {
         assert!(!metrics.at_edge());
 
         // At the end, exactly: at edge, and nothing after.
-        let bottom = ScrollMetrics { pixels: 400.0, ..metrics };
+        let bottom = ScrollMetrics {
+            pixels: 400.0,
+            ..metrics
+        };
         assert!(bottom.at_edge());
         assert_eq!(bottom.extent_after(), 0.0);
 
         // Past it: out of range, the inside shrinks by the overscroll, and
         // the after stays at zero rather than going negative.
-        let past = ScrollMetrics { pixels: 450.0, ..metrics };
+        let past = ScrollMetrics {
+            pixels: 450.0,
+            ..metrics
+        };
         assert!(past.out_of_range());
         assert_eq!(past.extent_inside(), 200.0);
         assert_eq!(past.extent_after(), 0.0);
@@ -1838,7 +1885,10 @@ mod tests {
 
         assert!(scroll.advance(1_100_000));
         let after_a_tenth = scroll.offset;
-        assert!(after_a_tenth > 100.0, "a tenth of a second in: {after_a_tenth}");
+        assert!(
+            after_a_tenth > 100.0,
+            "a tenth of a second in: {after_a_tenth}"
+        );
 
         settle(&mut scroll);
         assert!(!scroll.is_ballistic());
@@ -1867,7 +1917,10 @@ mod tests {
         scroll.fling(4000.0);
         settle(&mut scroll);
         assert_eq!(scroll.offset, 200.0);
-        assert!(!scroll.is_ballistic(), "and does not keep asking for frames");
+        assert!(
+            !scroll.is_ballistic(),
+            "and does not keep asking for frames"
+        );
     }
 
     #[test]
@@ -1893,7 +1946,10 @@ mod tests {
 
         scroll.stop();
         assert!(!scroll.is_ballistic());
-        assert!(!scroll.advance(1_100_000), "a stopped fling asks for nothing");
+        assert!(
+            !scroll.advance(1_100_000),
+            "a stopped fling asks for nothing"
+        );
         assert_eq!(scroll.offset, caught, "and leaves the offset where it was");
     }
 
@@ -1974,7 +2030,10 @@ mod tests {
         scroll.animate_to(10_000.0, 300_000, Curve::EASE);
         settle(&mut scroll);
         assert_eq!(scroll.offset, 300.0);
-        assert!(!scroll.is_ballistic(), "and does not keep asking for frames");
+        assert!(
+            !scroll.is_ballistic(),
+            "and does not keep asking for frames"
+        );
     }
 
     #[test]
@@ -1990,8 +2049,15 @@ mod tests {
         // one; here that is one field.
         scroll.scroll_by(-20.0);
         assert!(!scroll.is_ballistic());
-        assert!(!scroll.advance(1_100_000), "an interrupted animation asks for nothing");
-        assert_eq!(scroll.offset, caught - 20.0, "and stays where the finger left it");
+        assert!(
+            !scroll.advance(1_100_000),
+            "an interrupted animation asks for nothing"
+        );
+        assert_eq!(
+            scroll.offset,
+            caught - 20.0,
+            "and stays where the finger left it"
+        );
     }
 
     #[test]
@@ -2014,7 +2080,10 @@ mod tests {
         scroll.fling(2000.0);
         scroll.animate_to(100.0, 200_000, Curve::EASE);
         settle(&mut scroll);
-        assert_eq!(scroll.offset, 100.0, "the animation won, wherever the fling was going");
+        assert_eq!(
+            scroll.offset, 100.0,
+            "the animation won, wherever the fling was going"
+        );
 
         scroll.fling(2000.0);
         assert!(scroll.is_ballistic());
@@ -2035,7 +2104,10 @@ mod tests {
         let mut scroll = scroll(5000.0);
         scroll.jump_to(250.0);
         scroll.animate_to(250.6, 300_000, Curve::EASE);
-        assert!(!scroll.is_ballistic(), "less than a pixel away is nothing to animate");
+        assert!(
+            !scroll.is_ballistic(),
+            "less than a pixel away is nothing to animate"
+        );
         assert_eq!(scroll.offset, 250.6);
 
         // A pixel and a half away is: there is ground to cover.
@@ -2058,7 +2130,10 @@ mod tests {
         scroll.animate_to(1000.0, 300_000, Curve::EASE);
         scroll.advance(1_000_000);
         scroll.advance(1_050_000);
-        assert!(scroll.offset > 0.0 && scroll.offset < 1000.0, "part way there");
+        assert!(
+            scroll.offset > 0.0 && scroll.offset < 1000.0,
+            "part way there"
+        );
 
         // No frame needed to see it, and it cancels the animation.
         scroll.jump_to(300.0);
@@ -2084,7 +2159,10 @@ mod tests {
         scroll.jump_to(300.0);
         assert_eq!(scroll.offset, 300.0);
         scroll.set_extent(5000.0, 500.0);
-        assert_eq!(scroll.offset, 300.0, "in range, so the correction corrects nothing");
+        assert_eq!(
+            scroll.offset, 300.0,
+            "in range, so the correction corrects nothing"
+        );
     }
 
     #[test]
@@ -2097,16 +2175,32 @@ mod tests {
 
         handle.set_state(|state| state.scroll.jump_to(9000.0));
         assert_eq!(labels(&log.borrow()), vec!["start", "update", "end"]);
-        match log.borrow().iter().find(|n| matches!(n, ScrollNotification::Update { .. })) {
-            Some(ScrollNotification::Update { metrics, scroll_delta, .. }) => {
-                assert_eq!(metrics.pixels, 9000.0, "the notification carries the raw target");
+        match log
+            .borrow()
+            .iter()
+            .find(|n| matches!(n, ScrollNotification::Update { .. }))
+        {
+            Some(ScrollNotification::Update {
+                metrics,
+                scroll_delta,
+                ..
+            }) => {
+                assert_eq!(
+                    metrics.pixels, 9000.0,
+                    "the notification carries the raw target"
+                );
                 assert_eq!(*scroll_delta, 9000.0);
-                assert!(metrics.out_of_range(), "and says so, as the metrics would upstream");
+                assert!(
+                    metrics.out_of_range(),
+                    "and says so, as the metrics would upstream"
+                );
             }
             _ => panic!("the jump reported its move"),
         }
         assert!(
-            !log.borrow().iter().any(|n| matches!(n, ScrollNotification::Overscroll { .. })),
+            !log.borrow()
+                .iter()
+                .any(|n| matches!(n, ScrollNotification::Overscroll { .. })),
             "a jump dispatches no overscroll"
         );
     }
@@ -2125,7 +2219,10 @@ mod tests {
             Some(false),
             "a dead throw is not a fling"
         );
-        assert!(log.borrow().is_empty(), "nothing started, so nothing was reported");
+        assert!(
+            log.borrow().is_empty(),
+            "nothing started, so nothing was reported"
+        );
 
         // The tolerance itself still throws.
         handle.set_state(|state| state.scroll.fling(20.0));
@@ -2135,8 +2232,8 @@ mod tests {
     // -- Scroll notifications -----------------------------------------------
 
     use crate::framework::{
-        AnyWidget, BuildContext, ElementTree, StateHandle, StatefulComponent, notification_listener,
-        stateful,
+        AnyWidget, BuildContext, ElementTree, StateHandle, StatefulComponent,
+        notification_listener, stateful,
     };
 
     /// What kind each dispatched notification was, in the order they arrived.
@@ -2185,14 +2282,22 @@ mod tests {
             // The binding every scrolling screen wants: the scroll gets the
             // sink this element's build was given, once per build, and keeps
             // dispatching through it long after.
-            state.scroll.set_notification_sink(context.notification_sink());
+            state
+                .scroll
+                .set_notification_sink(context.notification_sink());
             *self.handles.borrow_mut() = Some(handle);
             crate::framework::leaf(|| crate::widgets::Empty)
         }
     }
 
     /// A listening tree with a scroll under it, and a way to drive the scroll.
-    fn listened_scroll(extent: f32) -> (ElementTree, Rc<RefCell<Option<StateHandle<ScrollerState>>>>, Rc<RefCell<Vec<ScrollNotification>>>) {
+    fn listened_scroll(
+        extent: f32,
+    ) -> (
+        ElementTree,
+        Rc<RefCell<Option<StateHandle<ScrollerState>>>>,
+        Rc<RefCell<Vec<ScrollNotification>>>,
+    ) {
         let handles = Rc::new(RefCell::new(None));
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut tree = ElementTree::new();
@@ -2202,7 +2307,10 @@ mod tests {
                 recorder.borrow_mut().push(*notification);
                 false
             },
-            stateful(Scroller { handles: handles.clone(), extent }),
+            stateful(Scroller {
+                handles: handles.clone(),
+                extent,
+            }),
         ));
         (tree, handles, log)
     }
@@ -2248,14 +2356,21 @@ mod tests {
             .copied()
             .collect();
         match updates.last() {
-            Some(ScrollNotification::Update { metrics, scroll_delta, .. }) => {
+            Some(ScrollNotification::Update {
+                metrics,
+                scroll_delta,
+                ..
+            }) => {
                 assert_eq!(metrics.pixels, 80.0);
                 assert_eq!(*scroll_delta, 30.0);
                 assert_eq!(metrics.max_scroll_extent, 5000.0);
             }
             _ => panic!("the wheel reported its moves"),
         }
-        assert_eq!(tree.state::<ScrollerState, _>(handle.element(), |s| s.scroll.offset), Some(80.0));
+        assert_eq!(
+            tree.state::<ScrollerState, _>(handle.element(), |s| s.scroll.offset),
+            Some(80.0)
+        );
     }
 
     #[test]
@@ -2354,7 +2469,12 @@ mod tests {
             .copied()
             .collect();
         match overscrolls.last() {
-            Some(ScrollNotification::Overscroll { metrics, overscroll, velocity, .. }) => {
+            Some(ScrollNotification::Overscroll {
+                metrics,
+                overscroll,
+                velocity,
+                ..
+            }) => {
                 assert_eq!(metrics.pixels, 500.0, "it moved as far as it could");
                 assert_eq!(*overscroll, 8500.0, "and reported the rest as overscroll");
                 assert_eq!(*velocity, 0.0, "a wheel carries no velocity into the bound");
@@ -2380,7 +2500,10 @@ mod tests {
             .collect();
         match overscrolls.last() {
             Some(ScrollNotification::Overscroll { velocity, .. }) => {
-                assert!(*velocity > 0.0, "still moving into the bound when it hit: {velocity}");
+                assert!(
+                    *velocity > 0.0,
+                    "still moving into the bound when it hit: {velocity}"
+                );
             }
             _ => panic!("the bound kept some of the fling"),
         }
@@ -2392,15 +2515,22 @@ mod tests {
         let handle = handles.borrow().clone().expect("built");
 
         handle.set_state(|state| state.scroll.animate_to(400.0, 300_000, Curve::EASE));
-        assert_eq!(labels(&log.borrow()), vec!["start"], "a driven activity is a scrolling one");
+        assert_eq!(
+            labels(&log.borrow()),
+            vec!["start"],
+            "a driven activity is a scrolling one"
+        );
 
         settle_tree(&mut tree);
         let all = labels(&log.borrow());
         assert_eq!(all.first(), Some(&"start"));
-        assert_eq!(all.last(), Some(&"end"), "arrived, reported, and no direction ever changed");
+        assert_eq!(
+            all.last(),
+            Some(&"end"),
+            "arrived, reported, and no direction ever changed"
+        );
         assert!(all.iter().any(|l| *l == "update"));
     }
-
 
     #[test]
     fn a_lazy_list_builds_a_screenful_and_not_a_hundred_thousand() {
@@ -2418,7 +2548,11 @@ mod tests {
         let down = item_window(1000, 50.0, 5000.0, 500.0, 0.0).expect("items");
         assert_eq!(top.first, 0);
         assert_eq!(down.first, 100);
-        assert_eq!(down.len(), top.len(), "the same number of rows, further down");
+        assert_eq!(
+            down.len(),
+            top.len(),
+            "the same number of rows, further down"
+        );
     }
 
     #[test]
@@ -2443,7 +2577,10 @@ mod tests {
     #[test]
     fn an_empty_list_has_no_window() {
         assert!(item_window(0, 50.0, 0.0, 800.0, 250.0).is_none());
-        assert!(item_window(10, 0.0, 0.0, 800.0, 250.0).is_none(), "no extent, no arithmetic");
+        assert!(
+            item_window(10, 0.0, 0.0, 800.0, 250.0).is_none(),
+            "no extent, no arithmetic"
+        );
     }
 
     #[test]
@@ -2467,9 +2604,9 @@ mod tests {
         tree.rebuild(component(
             SliverListView::new(1000, move |_| {
                 counter.set(counter.get() + 1);
-                crate::render::RenderRef::new(
-                    crate::render::RenderConstrainedBox::tight(100.0, 50.0),
-                )
+                crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(
+                    100.0, 50.0,
+                ))
             })
             .with_item_extent(50.0)
             .with_offset(0.0),
@@ -2549,7 +2686,10 @@ mod tests {
         book.record(1, 50.0);
         assert_eq!(book.average(999.0), 75.0, "the guess stops mattering");
         // Two measured, eight at the average.
-        assert_eq!(book.content_extent(10, 999.0, 0.0), 100.0 + 50.0 + 8.0 * 75.0);
+        assert_eq!(
+            book.content_extent(10, 999.0, 0.0),
+            100.0 + 50.0 + 8.0 * 75.0
+        );
     }
 
     #[test]
@@ -2578,9 +2718,14 @@ mod tests {
         assert_eq!(window.last, 0, "one very tall row fills the viewport");
 
         // Below the tall one, the short ones fit several to a screen.
-        let window = book.window(10, 300.0, 100.0, 0.0, 50.0, 0.0).expect("items");
+        let window = book
+            .window(10, 300.0, 100.0, 0.0, 50.0, 0.0)
+            .expect("items");
         assert_eq!(window.first, 1);
-        assert!(window.last >= 3, "several short rows fit where one tall one did");
+        assert!(
+            window.last >= 3,
+            "several short rows fit where one tall one did"
+        );
     }
 
     #[test]
@@ -2627,7 +2772,10 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(list(0.0));
         let first = frame(&mut tree);
-        assert_eq!(first.retainable, 4, "four rows fit, and all four had to be drawn");
+        assert_eq!(
+            first.retainable, 4,
+            "four rows fit, and all four had to be drawn"
+        );
         assert_eq!(first.retained, 0, "nothing had been drawn before this");
 
         // One row further down. Every row still on screen is the same row, in
@@ -2635,8 +2783,14 @@ mod tests {
         // the list moves under the window.
         tree.rebuild(list(50.0));
         let second = frame(&mut tree);
-        assert_eq!(second.retained, 3, "the three rows that stayed did not keep their drawing");
-        assert_eq!(second.retainable, 1, "more than the newly revealed row was drawn");
+        assert_eq!(
+            second.retained, 3,
+            "the three rows that stayed did not keep their drawing"
+        );
+        assert_eq!(
+            second.retainable, 1,
+            "more than the newly revealed row was drawn"
+        );
     }
 
     #[test]
@@ -2662,7 +2816,10 @@ mod tests {
         root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
 
         assert!(book.known() > 0, "nothing was measured");
-        assert!(book.known() < 60, "everything was built, so it was not lazy");
+        assert!(
+            book.known() < 60,
+            "everything was built, so it was not lazy"
+        );
         assert_eq!(book.measured(0), Some(80.0));
         assert_eq!(book.measured(1), Some(40.0));
     }
@@ -2732,12 +2889,10 @@ mod tests {
         let book = ExtentBook::new();
         let mut tree = ElementTree::new();
         tree.rebuild(component(
-            VariableExtentList::new(500, book.clone(), |_| {
-                leaf(|| SizedBox::new(100.0, 40.0))
-            })
-            .with_estimate(40.0)
-            .with_offset(0.0)
-            .with_viewport(400.0),
+            VariableExtentList::new(500, book.clone(), |_| leaf(|| SizedBox::new(100.0, 40.0)))
+                .with_estimate(40.0)
+                .with_offset(0.0)
+                .with_viewport(400.0),
         ));
         let mut root = tree.build_render_tree().expect("a mounted root");
         let size = root.layout(BoxConstraints::new(0.0, 300.0, 0.0, f32::INFINITY));
@@ -2766,6 +2921,10 @@ mod tests {
 
         // One row further down: three of the four rows are the same rows.
         tree.rebuild(build(100.0));
-        assert_eq!(tree.len(), before, "the window is the same size, so is the tree");
+        assert_eq!(
+            tree.len(),
+            before,
+            "the window is the same size, so is the tree"
+        );
     }
 }
