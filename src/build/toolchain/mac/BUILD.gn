@@ -10,6 +10,7 @@ import("//build/toolchain/ccache.gni")
 import("//build/toolchain/clang.gni")
 import("//build/toolchain/clang_static_analyzer.gni")
 import("//build/toolchain/rbe.gni")
+import("//build/toolchain/rust.gni")
 import("//build/toolchain/toolchain.gni")
 
 declare_args() {
@@ -176,6 +177,54 @@ template("mac_toolchain") {
       description = "ASM {{output}}"
       outputs =
           [ "{{source_out_dir}}/{{target_output_name}}.{{source_name_part}}.o" ]
+    }
+
+    # rustflutter: the same Rust crate types the Windows and GCC-style
+    # toolchains declare, for the same reason -- GN has native Rust support, so
+    # `rust_library` and rust-sourced `static_library` targets work once these
+    # exist. `--target` is spelled out rather than left to rustc's default
+    # because a Darwin toolchain is not always the host: an arm64 machine
+    # building `clang_x64`, or anything building for iOS, is a cross-compile,
+    # and rustc's default would quietly produce the wrong architecture. Neither
+    # crate type links, so no linker is passed.
+    if (invoker.toolchain_os == "ios") {
+      if (invoker.toolchain_cpu == "arm64") {
+        rust_abi_target = "aarch64-apple-ios"
+      } else if (invoker.toolchain_cpu == "x64") {
+        rust_abi_target = "x86_64-apple-ios"
+      } else {
+        rust_abi_target = ""
+      }
+    } else {
+      if (invoker.toolchain_cpu == "arm64") {
+        rust_abi_target = "aarch64-apple-darwin"
+      } else if (invoker.toolchain_cpu == "x64") {
+        rust_abi_target = "x86_64-apple-darwin"
+      } else {
+        rust_abi_target = ""
+      }
+    }
+
+    if (rust_abi_target != "") {
+      rust_common = "--target=$rust_abi_target " +
+                    "--edition=$rust_edition --emit=dep-info={{output}}.d,link " +
+                    "-o {{output}} {{rustflags}} {{externs}} {{rustdeps}}"
+
+      tool("rust_rlib") {
+        depfile = "{{output}}.d"
+        command = "$rustc_path --crate-name {{crate_name}} {{source}} --crate-type rlib $rust_common"
+        description = "RUST {{output}}"
+        outputs = [ "{{output_dir}}/lib{{target_output_name}}.rlib" ]
+        default_output_dir = "{{target_out_dir}}"
+      }
+
+      tool("rust_staticlib") {
+        depfile = "{{output}}.d"
+        command = "$rustc_path --crate-name {{crate_name}} {{source}} --crate-type staticlib $rust_common"
+        description = "RUST(STATICLIB) {{output}}"
+        outputs = [ "{{output_dir}}/lib{{target_output_name}}.a" ]
+        default_output_dir = "{{target_out_dir}}"
+      }
     }
 
     tool("objc") {

@@ -58,18 +58,25 @@ static_library("rustflutter_engine") {
     "//flutter/rust/host",
   ]
 
-  if (is_android) {
+  if (is_android || is_mac) {
     # Named here because nothing else names it. The buildroot adds libc++ as a
     # default dependency of every executable, loadable_module and
     # shared_library -- see BUILDCONFIG.gn -- and this is a static_library, so
     # it is the one target type that misses out. The application linking this
-    # archive is the shared library, and by then it is too late for GN to add
-    # anything.
+    # archive is the shared library (Android) or the Cargo binary (macOS), and
+    # by then it is too late for GN to add anything.
     #
-    # Only on Android, because only there is anything missing. On Windows the
-    # MSVC runtime supplies what a program actually reaches for -- thread-safe
-    # statics are `_Init_thread_header`, not `__cxa_guard_acquire` -- and the
-    # libc++ sources are not built at all in that configuration.
+    # On Windows there is nothing missing: the MSVC runtime supplies what a
+    # program actually reaches for -- thread-safe statics are
+    # `_Init_thread_header`, not `__cxa_guard_acquire` -- and the libc++ sources
+    # are not built at all in that configuration.
+    #
+    # On macOS there is, and it is not only the guard functions: this tree
+    # builds libc++ into the inline namespace `std::__fl`, so the platform's own
+    # `libc++.dylib` cannot supply a single one of the symbols the engine
+    # references. Everything from `std::__fl::basic_string`'s out-of-line
+    # members to the `basic_ostringstream` vtable `fml::LogMessage` needs has to
+    # come from here.
     deps += [ "//flutter/third_party/libcxx" ]
   }
 }

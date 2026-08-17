@@ -31,6 +31,14 @@ source_set("host") {
     ]
   } else if (is_android) {
     sources += [ "rustflutter_host_android.cc" ]
+  } else if (is_mac) {
+    sources += [
+      "rustflutter_host_mac.mm",
+
+      # Generated. See tools/gen_key_map_mac.py.
+      "rustflutter_key_map_mac.cc",
+      "rustflutter_key_map_mac.h",
+    ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]
   }
@@ -109,6 +117,26 @@ source_set("host") {
 
       # FML_LOG goes to logcat, which is where a device's output is read from.
       "log",
+    ]
+  }
+
+  if (is_mac) {
+    frameworks = [
+      # The window, the view, the events and the pasteboard.
+      "Cocoa.framework",
+
+      # The bitmap the software surface is blitted through, and the display
+      # mode the vsync waiter paces against.
+      "CoreGraphics.framework",
+
+      # CFStringGetLongCharacterForSurrogatePair, for a key that types an
+      # astral character.
+      "CoreFoundation.framework",
+
+      # Writing the frame dump: the PNG encoder, and the type identifier that
+      # says which encoder. See FrameBuffer::WritePng.
+      "ImageIO.framework",
+      "UniformTypeIdentifiers.framework",
     ]
   }
 }

@@ -167,7 +167,9 @@ pub struct IdSource {
 
 impl IdSource {
     pub fn new(first: u64) -> IdSource {
-        IdSource { next: std::cell::Cell::new(first.max(1)) }
+        IdSource {
+            next: std::cell::Cell::new(first.max(1)),
+        }
     }
 
     pub fn take(&self) -> u64 {
@@ -245,7 +247,12 @@ struct ButtonBounds {
 
 impl ButtonBounds {
     fn new(min_width: f32, min_height: f32) -> ButtonBounds {
-        ButtonBounds { min_width, min_height, child: None, size: Size::ZERO }
+        ButtonBounds {
+            min_width,
+            min_height,
+            child: None,
+            size: Size::ZERO,
+        }
     }
 
     fn with_child(mut self, child: impl RenderBox + 'static) -> Self {
@@ -276,7 +283,12 @@ impl RenderBox for ButtonBounds {
     /// `_InputPadding.performLayout`: the child's answer at nothing but the
     /// minimums, put through the constraints the button itself was given.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let inner = BoxConstraints::new(self.min_width, f32::INFINITY, self.min_height, f32::INFINITY);
+        let inner = BoxConstraints::new(
+            self.min_width,
+            f32::INFINITY,
+            self.min_height,
+            f32::INFINITY,
+        );
         self.size = match &mut self.child {
             Some(child) => constraints.constrain(child.layout_child(inner, true)),
             None => constraints.constrain(Size::new(self.min_width, self.min_height)),
@@ -289,7 +301,12 @@ impl RenderBox for ButtonBounds {
     }
 
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
-        let inner = BoxConstraints::new(self.min_width, f32::INFINITY, self.min_height, f32::INFINITY);
+        let inner = BoxConstraints::new(
+            self.min_width,
+            f32::INFINITY,
+            self.min_height,
+            f32::INFINITY,
+        );
         match &self.child {
             Some(child) => constraints.constrain(child.dry_layout(inner)),
             None => constraints.constrain(Size::new(self.min_width, self.min_height)),
@@ -303,7 +320,9 @@ impl RenderBox for ButtonBounds {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.as_ref().is_some_and(|child| child.hit_test(position, result))
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.hit_test(position, result))
     }
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
@@ -486,46 +505,47 @@ impl Component for Button {
             let label = label.clone();
             let handlers = handlers.clone();
             leaf(move || {
-            let mut container = Container::new()
-                .with_height(BUTTON_HEIGHT)
-                .with_corner_radius(radius)
-                .with_padding(EdgeInsets::symmetric(padding, 0.0))
-                .with_child(Align::new(
-                    Alignment::CENTER,
-                    // Upstream's label style for buttons is `labelLarge`:
-                    // medium weight, not bold.
-                    Text::new(label.clone())
-                        .with_size(body_size)
-                        .with_weight(500)
-                        .with_color(label_color),
-                ));
-            if let Some(color) = fill {
-                container = container.with_color(color);
-            }
-            if let Some(color) = border {
-                container = container.with_border(1.5, if pressed { theme_border(color) } else { color });
-            }
-            // A press tints the whole button over its opaque fill, the way
-            // the splash does, rather than thinning the fill.
-            let body = if let Some(overlay) = press_overlay {
-                RenderStack::new()
-                    .push(container)
-                    .push_positioned(
-                        Container::new().with_color(overlay).with_corner_radius(radius),
+                let mut container = Container::new()
+                    .with_height(BUTTON_HEIGHT)
+                    .with_corner_radius(radius)
+                    .with_padding(EdgeInsets::symmetric(padding, 0.0))
+                    .with_child(Align::new(
+                        Alignment::CENTER,
+                        // Upstream's label style for buttons is `labelLarge`:
+                        // medium weight, not bold.
+                        Text::new(label.clone())
+                            .with_size(body_size)
+                            .with_weight(500)
+                            .with_color(label_color),
+                    ));
+                if let Some(color) = fill {
+                    container = container.with_color(color);
+                }
+                if let Some(color) = border {
+                    container = container
+                        .with_border(1.5, if pressed { theme_border(color) } else { color });
+                }
+                // A press tints the whole button over its opaque fill, the way
+                // the splash does, rather than thinning the fill.
+                let body = if let Some(overlay) = press_overlay {
+                    RenderStack::new().push(container).push_positioned(
+                        Container::new()
+                            .with_color(overlay)
+                            .with_corner_radius(radius),
                         StackPosition::fill(),
                     )
-            } else {
-                RenderStack::new().push(container)
-            };
-            // The least size a button may be, upstream's `minimumSize`, held
-            // by the bounds box above: a longer label still widens it, a
-            // short one stops here.
-            Pointer::new(
-                id,
-                ButtonBounds::new(min_width.unwrap_or(BUTTON_MIN_WIDTH), BUTTON_HEIGHT)
-                    .with_child(body),
-            )
-            .with_handlers(handlers.clone())
+                } else {
+                    RenderStack::new().push(container)
+                };
+                // The least size a button may be, upstream's `minimumSize`, held
+                // by the bounds box above: a longer label still widens it, a
+                // short one stops here.
+                Pointer::new(
+                    id,
+                    ButtonBounds::new(min_width.unwrap_or(BUTTON_MIN_WIDTH), BUTTON_HEIGHT)
+                        .with_child(body),
+                )
+                .with_handlers(handlers.clone())
             })
         };
 
@@ -567,8 +587,7 @@ impl Component for Button {
         // -- the tap still belongs to the button. Clipped to the button's
         // corners, which is what `containedInkWell` means upstream.
         described(crate::framework::stateful(
-            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
-                .with_color(splash_color),
+            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face).with_color(splash_color),
         ))
     }
 }
@@ -607,7 +626,10 @@ pub struct Card {
 
 impl Card {
     pub fn new(child: AnyWidget) -> Card {
-        Card { child: std::cell::RefCell::new(Some(child)), padding: None }
+        Card {
+            child: std::cell::RefCell::new(Some(child)),
+            padding: None,
+        }
     }
 
     pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
@@ -620,7 +642,11 @@ impl Component for Card {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let padding = self.padding.unwrap_or(EdgeInsets::all(theme.spacing * 2.0));
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| leaf(|| Empty));
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
         let surface = theme.surface;
         let outline = theme.outline;
         let radius = theme.radius;
@@ -659,15 +685,24 @@ pub enum LabelStyle {
 
 impl Label {
     pub fn new(content: impl Into<String>) -> Label {
-        Label { content: content.into(), style: LabelStyle::default() }
+        Label {
+            content: content.into(),
+            style: LabelStyle::default(),
+        }
     }
 
     pub fn title(content: impl Into<String>) -> Label {
-        Label { content: content.into(), style: LabelStyle::Title }
+        Label {
+            content: content.into(),
+            style: LabelStyle::Title,
+        }
     }
 
     pub fn muted(content: impl Into<String>) -> Label {
-        Label { content: content.into(), style: LabelStyle::Muted }
+        Label {
+            content: content.into(),
+            style: LabelStyle::Muted,
+        }
     }
 }
 
@@ -705,13 +740,30 @@ pub struct Switch {
 
 impl Switch {
     pub fn new(id: u64, value: bool) -> Switch {
-        Switch { id, value, handlers: PointerHandlers::new() }
+        Switch {
+            id,
+            value,
+            handlers: PointerHandlers::new(),
+        }
     }
 
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, toggle: fn(&mut S)) -> Self {
         self.handlers = PointerHandlers::new().with_tap(move |_| {
             handle.set_state(move |state| toggle(state));
         });
+        self
+    }
+
+    /// Handlers built by the caller, for a switch whose action needs to carry
+    /// something with it.
+    ///
+    /// [`Switch::wired`] takes a `fn` and not a closure, which is what makes it
+    /// short: there is nothing to capture and nothing to allocate. That is the
+    /// right trade for a switch that toggles one named field, and the wrong one
+    /// for a row of switches built from a list, where the action has to know
+    /// *which* row it is. [`Button::with_handlers`] exists for the same reason.
+    pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
+        self.handlers = handlers;
         self
     }
 }
@@ -723,7 +775,11 @@ impl Component for Switch {
         let id = self.id;
         let handlers = self.handlers.clone();
         let track = if value { theme.primary } else { theme.outline };
-        let knob = if value { theme.on_primary } else { theme.text_muted };
+        let knob = if value {
+            theme.on_primary
+        } else {
+            theme.text_muted
+        };
         let tap = self.handlers.on_tap.clone();
 
         let switch = leaf(move || {
@@ -737,9 +793,11 @@ impl Component for Switch {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center);
             row = if value {
-                row.with_main_axis_alignment(MainAxisAlignment::End).push(knob_box)
+                row.with_main_axis_alignment(MainAxisAlignment::End)
+                    .push(knob_box)
             } else {
-                row.with_main_axis_alignment(MainAxisAlignment::Start).push(knob_box)
+                row.with_main_axis_alignment(MainAxisAlignment::Start)
+                    .push(knob_box)
             };
             Pointer::new(
                 id,
@@ -786,7 +844,10 @@ pub struct ProgressBar {
 
 impl ProgressBar {
     pub fn new(value: f32) -> ProgressBar {
-        ProgressBar { value: value.clamp(0.0, 1.0), width: 200.0 }
+        ProgressBar {
+            value: value.clamp(0.0, 1.0),
+            width: 200.0,
+        }
     }
 
     pub fn with_width(mut self, width: f32) -> Self {
@@ -805,25 +866,32 @@ impl Component for ProgressBar {
         leaf(move || {
             // Align hands its child loose constraints, which is what stops a
             // stretching parent from widening the bar past `width`.
-            Align::new(Alignment::CENTER_LEFT, Container::new()
-                .with_size(width, 8.0)
-                .with_color(track)
-                .with_corner_radius(4.0)
-                .with_child(
-                    RenderFlex::row()
-                        .with_main_axis_size(MainAxisSize::Max)
-                        .with_main_axis_alignment(MainAxisAlignment::Start)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                        // A zero-width child would be invisible either way, but
-                        // an explicit floor keeps the rounded cap from
-                        // collapsing into a sliver at very low values.
-                        .push(
-                            Container::new()
-                                .with_width((width * value).max(if value > 0.0 { 8.0 } else { 0.0 }))
-                                .with_color(fill)
-                                .with_corner_radius(4.0),
-                        ),
-                ))
+            Align::new(
+                Alignment::CENTER_LEFT,
+                Container::new()
+                    .with_size(width, 8.0)
+                    .with_color(track)
+                    .with_corner_radius(4.0)
+                    .with_child(
+                        RenderFlex::row()
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_main_axis_alignment(MainAxisAlignment::Start)
+                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                            // A zero-width child would be invisible either way, but
+                            // an explicit floor keeps the rounded cap from
+                            // collapsing into a sliver at very low values.
+                            .push(
+                                Container::new()
+                                    .with_width((width * value).max(if value > 0.0 {
+                                        8.0
+                                    } else {
+                                        0.0
+                                    }))
+                                    .with_color(fill)
+                                    .with_corner_radius(4.0),
+                            ),
+                    ),
+            )
         })
     }
 }
@@ -840,7 +908,12 @@ pub struct Slider {
 
 impl Slider {
     pub fn new(id: u64, value: f32) -> Slider {
-        Slider { id, value: value.clamp(0.0, 1.0), width: 200.0, handlers: PointerHandlers::new() }
+        Slider {
+            id,
+            value: value.clamp(0.0, 1.0),
+            width: 200.0,
+            handlers: PointerHandlers::new(),
+        }
     }
 
     pub fn with_width(mut self, width: f32) -> Self {
@@ -885,37 +958,40 @@ impl Component for Slider {
             // from local_position.dx / width, so a region that a stretching
             // parent widened would reach 100% before the thumb did. Align
             // loosens the constraints, which keeps the size the one asked for.
-            Align::new(Alignment::CENTER_LEFT, Pointer::new(
-                id,
-                Container::new()
-                    // A 32px tall hit area over an 8px track: the thing you can
-                    // hit should be bigger than the thing you can see.
-                    .with_size(width, 32.0)
-                    .with_child(Center::new(
-                        Container::new()
-                            .with_size(width, 8.0)
-                            .with_color(track)
-                            .with_corner_radius(4.0)
-                            .with_child(
-                                RenderFlex::row()
-                                    .with_main_axis_size(MainAxisSize::Max)
-                                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                    .push(
-                                        Container::new()
-                                            .with_size(filled, 8.0)
-                                            .with_color(fill)
-                                            .with_corner_radius(4.0),
-                                    )
-                                    .push(
-                                        Container::new()
-                                            .with_size(18.0, 18.0)
-                                            .with_color(knob)
-                                            .with_corner_radius(9.0),
-                                    ),
-                            ),
-                    )),
+            Align::new(
+                Alignment::CENTER_LEFT,
+                Pointer::new(
+                    id,
+                    Container::new()
+                        // A 32px tall hit area over an 8px track: the thing you can
+                        // hit should be bigger than the thing you can see.
+                        .with_size(width, 32.0)
+                        .with_child(Center::new(
+                            Container::new()
+                                .with_size(width, 8.0)
+                                .with_color(track)
+                                .with_corner_radius(4.0)
+                                .with_child(
+                                    RenderFlex::row()
+                                        .with_main_axis_size(MainAxisSize::Max)
+                                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                        .push(
+                                            Container::new()
+                                                .with_size(filled, 8.0)
+                                                .with_color(fill)
+                                                .with_corner_radius(4.0),
+                                        )
+                                        .push(
+                                            Container::new()
+                                                .with_size(18.0, 18.0)
+                                                .with_color(knob)
+                                                .with_corner_radius(9.0),
+                                        ),
+                                ),
+                        )),
+                )
+                .with_handlers(handlers.clone()),
             )
-            .with_handlers(handlers.clone()))
         })
     }
 }
@@ -954,7 +1030,11 @@ pub struct AppBar {
 
 impl AppBar {
     pub fn new(title: impl Into<String>) -> AppBar {
-        AppBar { title: title.into(), subtitle: None, trailing: std::cell::RefCell::new(None) }
+        AppBar {
+            title: title.into(),
+            subtitle: None,
+            trailing: std::cell::RefCell::new(None),
+        }
     }
 
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
@@ -987,8 +1067,11 @@ impl Component for AppBar {
         let muted = theme.muted();
 
         let has_subtitle = subtitle.is_some();
-        let toolbar_height =
-            if has_subtitle { TOOLBAR_HEIGHT_WITH_SUBTITLE } else { K_TOOLBAR_HEIGHT };
+        let toolbar_height = if has_subtitle {
+            TOOLBAR_HEIGHT_WITH_SUBTITLE
+        } else {
+            K_TOOLBAR_HEIGHT
+        };
 
         let mut children = vec![leaf(move || {
             // One line each, cut with an ellipsis. Upstream wraps the title in
@@ -1008,8 +1091,7 @@ impl Component for AppBar {
                     // is also what keeps a reader's larger text inside a bar
                     // whose height does not grow with it.
                     .with_text_scale(
-                        crate::media_query::current_text_scale()
-                            .min(MAX_TITLE_TEXT_SCALE_FACTOR),
+                        crate::media_query::current_text_scale().min(MAX_TITLE_TEXT_SCALE_FACTOR),
                     )
             };
             // `MainAxisSize.min` because `_ToolbarLayout` centres a
@@ -1143,7 +1225,11 @@ impl Component for Scaffold {
         let theme = theme_of(context);
         let background = theme.background;
         let app_bar = self.app_bar.borrow_mut().take();
-        let body = self.body.borrow_mut().take().unwrap_or_else(|| leaf(|| Empty));
+        let body = self
+            .body
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
 
         let has_app_bar = app_bar.is_some();
         // A bar has already moved the page down past the status bar, so the
@@ -1176,11 +1262,7 @@ impl Component for Scaffold {
                 // The body takes everything the bar left.
                 column = column.push_flex(crate::render::FlexChild::expanded(body, 1));
             }
-            Box::new(
-                Container::new()
-                    .with_color(background)
-                    .with_child(column),
-            )
+            Box::new(Container::new().with_color(background).with_child(column))
         })
     }
 }
@@ -1253,10 +1335,10 @@ impl Component for ListTile {
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Start)
                 .with_spacing(3.0)
-                .push(
-                    Text::new(title.clone())
-                        .with_style(TextStyle { font_weight: 700, ..body.clone() }),
-                );
+                .push(Text::new(title.clone()).with_style(TextStyle {
+                    font_weight: 700,
+                    ..body.clone()
+                }));
             if let Some(subtitle) = &subtitle {
                 column = column.push(Text::new(subtitle.clone()).with_style(muted.clone()));
             }
@@ -1279,7 +1361,11 @@ impl Component for ListTile {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(if has_trailing { HORIZONTAL_TITLE_GAP } else { 0.0 });
+                .with_spacing(if has_trailing {
+                    HORIZONTAL_TITLE_GAP
+                } else {
+                    0.0
+                });
             if has_trailing {
                 // The trailing is inflexible, so pass one gives it its width
                 // and the title takes what is left rather than shouldering the
@@ -1366,7 +1452,10 @@ pub struct Badge {
 
 impl Badge {
     pub fn new(label: impl Into<String>) -> Badge {
-        Badge { label: label.into(), color: None }
+        Badge {
+            label: label.into(),
+            color: None,
+        }
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
@@ -1454,8 +1543,8 @@ mod tests {
             let mut tree = ElementTree::new();
             tree.rebuild(provide(
                 Theme::dark(),
-                component(ListTile::new(title.to_string()).with_trailing(crate::framework::leaf(
-                    || {
+                component(
+                    ListTile::new(title.to_string()).with_trailing(crate::framework::leaf(|| {
                         // A fixed box rather than a Label: the engine stubs
                         // these tests link report zero-sized text, so a
                         // paragraph would measure nothing.
@@ -1463,13 +1552,16 @@ mod tests {
                             TRAILING,
                             Container::new().with_size(TRAILING_WIDTH, 12.0),
                         )
-                    },
-                ))),
+                    })),
+                ),
             ));
             let mut root = tree.build_render_tree().expect("a root");
             let size = root.layout(BoxConstraints::tight(WIDTH, 60.0));
             let mut result = crate::render::HitTestResult::new();
-            root.hit_test(crate::render::Offset::new(x, size.height / 2.0), &mut result);
+            root.hit_test(
+                crate::render::Offset::new(x, size.height / 2.0),
+                &mut result,
+            );
             result.path.iter().any(|entry| entry.target == TRAILING)
         }
 
@@ -1479,7 +1571,10 @@ mod tests {
         let inside = WIDTH - inset - TRAILING_WIDTH / 2.0;
 
         for title in ["Rent", "RedPay Credit", "A considerably longer bill name"] {
-            assert!(hits(title, inside), "trailing should be at the right for {title:?}");
+            assert!(
+                hits(title, inside),
+                "trailing should be at the right for {title:?}"
+            );
             assert!(
                 !hits(title, WIDTH / 2.0),
                 "trailing should not stretch back to the middle for {title:?}"

@@ -42,3 +42,7 @@ rel_err.log
 
 # 临时运行日志
 try_*.log
+.cipd/
+.gclient*
+.port_batch_*/
+.probe_*
