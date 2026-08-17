@@ -1,0 +1,50 @@
+#!/bin/sh
+# Presubmit: refuse a commit whose staged code is not format-clean.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Fix what it complains about with:  cargo fmt / clang-format -i <files>
+
+# Staged, still-present files only (a `git rm` need not be formatted).
+files=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$files" ] && exit 0
+
+repo_root=$(git rev-parse --show-toplevel)
+fail=0
+
+# The framework crate carries its own rustfmt config and edition; everything
+# under it must be checked through cargo so those settings apply.
+crate="$repo_root/src/flutter/rust/rustflutter"
+crate_files=$(printf '%s\n' $files | grep '^src/flutter/rust/rustflutter/.*\.rs$' || true)
+if [ -n "$crate_files" ]; then
+    if ! (cd "$crate" && cargo fmt --check); then
+        echo "pre-commit: cargo fmt --check failed for the framework crate" >&2
+        echo "  fix with: (cd $crate && cargo fmt)" >&2
+        fail=1
+    fi
+fi
+
+for f in $files; do
+    case "$f" in
+        *.rs)
+            # Covered by the crate-wide check above.
+            case "$f" in src/flutter/rust/rustflutter/*) continue ;; esac
+            if ! rustfmt --check --edition 2021 "$repo_root/$f" >/dev/null 2>&1; then
+                echo "pre-commit: rustfmt: $f" >&2
+                fail=1
+            fi
+            ;;
+        *.cc|*.mm|*.h|*.cpp|*.hpp)
+            # The nearest .clang-format (src/.clang-format, Chromium style)
+            # applies to the host and ffi sources.
+            if ! clang-format --dry-run -Werror "$repo_root/$f" >/dev/null 2>&1; then
+                echo "pre-commit: clang-format: $f" >&2
+                echo "  fix with: clang-format -i $f" >&2
+                fail=1
+            fi
+            ;;
+    esac
+done
+
+# BUILD.gn files would want `gn format`, but gn is not installed on this
+# machine; the try bots own that check.
+
+exit $fail
