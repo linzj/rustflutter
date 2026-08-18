@@ -18284,6 +18284,365 @@ impl RenderBox for RenderSliverGrid {
     }
 }
 
+// -- Persistent headers (upstream sliver_persistent_header.dart) ---------------------
+
+/// Upstream `OverScrollHeaderStretchConfiguration`: how far the header may
+/// stretch when overscrolled, and what to call when it passes the trigger.
+#[derive(Clone, Default)]
+pub struct OverScrollHeaderStretchConfiguration {
+    pub stretch_trigger_offset: f32,
+    pub on_stretch_trigger: Option<Rc<dyn Fn()>>,
+}
+
+/// Upstream `PersistentHeaderShowOnScreenConfiguration`: the extent range a
+/// `show_on_screen` ask may expand the header to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PersistentHeaderShowOnScreenConfiguration {
+    pub min_show_on_screen_extent: f32,
+    pub max_show_on_screen_extent: f32,
+}
+
+impl Default for PersistentHeaderShowOnScreenConfiguration {
+    fn default() -> Self {
+        PersistentHeaderShowOnScreenConfiguration {
+            min_show_on_screen_extent: f32::MIN,
+            max_show_on_screen_extent: f32::INFINITY,
+        }
+    }
+}
+
+/// Upstream `FloatingHeaderSnapConfiguration`: where a released floating
+/// header snaps to and how the trip there looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloatingHeaderSnapConfiguration {
+    /// The curve of the snap; until the `Animation<T>` object graph lands,
+    /// only the snap decision and target are honoured -- see PORTING_STATUS.
+    pub duration_ms: f32,
+    pub curve: crate::animation::Curve,
+}
+
+/// Which of the four header behaviours, upstream's four subclasses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersistentHeaderBehavior {
+    /// `RenderSliverScrollingPersistentHeader`: scrolls away normally.
+    Scrolling,
+    /// `RenderSliverPinnedPersistentHeader`: pinned at the leading edge.
+    Pinned,
+    /// `RenderSliverFloatingPersistentHeader`: floats in as the reader
+    /// scrolls back, expanding to `max_extent`.
+    Floating,
+    /// `RenderSliverFloatingPinnedPersistentHeader`: floating, but pinned
+    /// while any of it shows.
+    FloatingPinned,
+}
+
+/// Upstream `RenderSliverPersistentHeader` and its four subclasses: one
+/// box child whose extent lives between `min_extent` and `max_extent`,
+/// laid out at `max_extent - shrinkOffset` and shown per behavior.
+pub struct RenderSliverPersistentHeader {
+    pub behavior: PersistentHeaderBehavior,
+    pub min_extent: f32,
+    pub max_extent: f32,
+    pub stretch: Option<OverScrollHeaderStretchConfiguration>,
+    /// Floating state: the scroll offset the reveal is working from, and
+    /// the last actual offset, upstream's `_effectiveScrollOffset` and
+    /// `_lastActualScrollOffset`.
+    effective_scroll_offset: Option<f32>,
+    last_actual_scroll_offset: Option<f32>,
+    child: Option<BoxedRender>,
+    child_position: f32,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverPersistentHeader {
+    pub fn new(
+        behavior: PersistentHeaderBehavior,
+        min_extent: f32,
+        max_extent: f32,
+        child: impl RenderBox + 'static,
+    ) -> RenderSliverPersistentHeader {
+        debug_assert!(min_extent <= max_extent);
+        RenderSliverPersistentHeader {
+            behavior,
+            min_extent,
+            max_extent,
+            stretch: None,
+            effective_scroll_offset: None,
+            last_actual_scroll_offset: None,
+            child: Some(RenderRef::new(child)),
+            child_position: 0.0,
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    pub fn with_stretch(mut self, stretch: OverScrollHeaderStretchConfiguration) -> Self {
+        self.stretch = Some(stretch);
+        self
+    }
+
+    /// The child's extent along the main axis, upstream `childExtent`.
+    fn child_extent(&self) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| {
+            render_main_axis_extent(child, self.constraints.axis())
+        })
+    }
+
+    /// Upstream `layoutChild`: shrink by the scroll offset, never below
+    /// `min_extent`, stretched by the overscroll at the very top.
+    fn layout_child(&mut self, scroll_offset: f32) {
+        let shrink_offset = scroll_offset.min(self.max_extent);
+        let mut stretch_offset = 0.0;
+        if self.stretch.is_some() && self.constraints.scroll_offset == 0.0 {
+            stretch_offset += self.constraints.overlap.abs();
+        }
+        let extent =
+            (self.min_extent.max(self.max_extent - shrink_offset) + stretch_offset).max(0.0);
+        if let Some(child) = &mut self.child {
+            child.layout_child(self.constraints.as_box_constraints(0.0, extent, None), true);
+        }
+        if let Some(stretch) = &self.stretch {
+            if let Some(on_trigger) = &stretch.on_stretch_trigger {
+                if stretch_offset >= stretch.stretch_trigger_offset {
+                    on_trigger();
+                }
+            }
+        }
+    }
+
+    /// Upstream `RenderSliverScrollingPersistentHeader.updateGeometry`.
+    fn update_scrolling_geometry(&mut self) -> f32 {
+        let stretch_offset = self
+            .stretch
+            .as_ref()
+            .map_or(0.0, |_| self.constraints.overlap.abs());
+        let max_extent = self.max_extent;
+        let paint_extent = max_extent - self.constraints.scroll_offset;
+        let child_extent = self.child_extent();
+        self.geometry = SliverGeometry {
+            scroll_extent: max_extent,
+            paint_origin: self.constraints.overlap.min(0.0),
+            paint_extent: paint_extent.clamp(0.0, self.constraints.remaining_paint_extent),
+            max_paint_extent: max_extent + stretch_offset,
+            has_visual_overflow: true,
+            visible: paint_extent > 0.0,
+            ..SliverGeometry::ZERO
+        };
+        // The child sits at the top of what shows, or flush with the
+        // shrinking window's bottom when it is smaller than the space.
+        if stretch_offset > 0.0 {
+            0.0
+        } else {
+            (paint_extent - child_extent).min(0.0)
+        }
+    }
+
+    /// Upstream `RenderSliverPinnedPersistentHeader.performLayout`'s
+    /// geometry half.
+    fn update_pinned_geometry(&mut self) {
+        let constraints = self.constraints;
+        let effective_remaining =
+            (constraints.remaining_paint_extent - constraints.overlap).max(0.0);
+        let layout_extent =
+            (self.max_extent - constraints.scroll_offset).clamp(0.0, effective_remaining);
+        let stretch_offset = self
+            .stretch
+            .as_ref()
+            .map_or(0.0, |_| constraints.overlap.abs());
+        let child_extent = self.child_extent();
+        self.geometry = SliverGeometry {
+            scroll_extent: self.max_extent,
+            paint_origin: constraints.overlap,
+            paint_extent: child_extent.min(effective_remaining),
+            layout_extent,
+            max_paint_extent: self.max_extent + stretch_offset,
+            max_scroll_obstruction_extent: self.min_extent,
+            has_visual_overflow: true,
+            visible: child_extent > 0.0,
+            ..SliverGeometry::ZERO
+        };
+    }
+
+    /// Upstream `RenderSliverFloatingPersistentHeader.performLayout`'s
+    /// effective-offset walk: reveal when scrolling back, expand while the
+    /// reader means forward, clamp at the max extent.
+    fn update_effective_scroll_offset(&mut self) {
+        let constraints = self.constraints;
+        let max_extent = self.max_extent;
+        // Upstream's walk verbatim: laid out once before and either
+        // scrolling back or still partly open -- reveal by the delta when
+        // the reader means forward, hold when they do not; never more
+        // collapsed than the scroll offset nor more open than the extent.
+        if let Some(last) = self.last_actual_scroll_offset {
+            let effective = self.effective_scroll_offset.unwrap_or(0.0);
+            if constraints.scroll_offset < last || effective < max_extent {
+                let mut delta = last - constraints.scroll_offset;
+                let allow_floating_expansion =
+                    constraints.user_scroll_direction == crate::scrolling::ScrollDirection::Forward;
+                let mut effective = effective;
+                if allow_floating_expansion {
+                    if effective > max_extent {
+                        effective = max_extent;
+                    }
+                } else if delta > 0.0 {
+                    delta = 0.0;
+                }
+                self.effective_scroll_offset =
+                    Some((effective - delta).clamp(0.0, constraints.scroll_offset));
+            } else {
+                self.effective_scroll_offset = Some(constraints.scroll_offset);
+            }
+        } else {
+            self.effective_scroll_offset = Some(constraints.scroll_offset);
+        }
+        self.last_actual_scroll_offset = Some(constraints.scroll_offset);
+    }
+
+    /// The floating geometry, upstream's floating `updateGeometry`.
+    fn update_floating_geometry(&mut self) -> f32 {
+        let stretch_offset = self
+            .stretch
+            .as_ref()
+            .map_or(0.0, |_| self.constraints.overlap.abs());
+        let max_extent = self.max_extent;
+        let effective = self.effective_scroll_offset.unwrap_or(0.0);
+        let paint_extent = max_extent - effective;
+        let layout_extent = max_extent - self.constraints.scroll_offset;
+        let child_extent = self.child_extent();
+        self.geometry = SliverGeometry {
+            scroll_extent: max_extent,
+            paint_origin: self.constraints.overlap.min(0.0),
+            paint_extent: paint_extent.clamp(0.0, self.constraints.remaining_paint_extent),
+            layout_extent: layout_extent.clamp(0.0, self.constraints.remaining_paint_extent),
+            max_paint_extent: max_extent + stretch_offset,
+            has_visual_overflow: true,
+            visible: paint_extent > 0.0,
+            ..SliverGeometry::ZERO
+        };
+        if stretch_offset > 0.0 {
+            0.0
+        } else {
+            (paint_extent - child_extent).min(0.0)
+        }
+    }
+}
+
+impl RenderBox for RenderSliverPersistentHeader {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverPersistentHeader>()?;
+        let structure_changed = self.behavior != fresh.behavior
+            || self.min_extent != fresh.min_extent
+            || self.max_extent != fresh.max_extent;
+        self.behavior = fresh.behavior;
+        self.min_extent = fresh.min_extent;
+        self.max_extent = fresh.max_extent;
+        let stretch_changed = match (&self.stretch, &fresh.stretch) {
+            (Some(a), Some(b)) => a.stretch_trigger_offset != b.stretch_trigger_offset,
+            (None, None) => false,
+            _ => true,
+        };
+        self.stretch = fresh.stretch.take();
+        let child_changed = !same_child(&self.child, &fresh.child);
+        self.child = fresh.child.take();
+        Some(UpdateEffect::relayout_if(
+            structure_changed || stretch_changed || child_changed,
+        ))
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        match self.behavior {
+            PersistentHeaderBehavior::Scrolling => {
+                self.layout_child(constraints.scroll_offset);
+                self.child_position = self.update_scrolling_geometry();
+            }
+            PersistentHeaderBehavior::Pinned => {
+                self.layout_child(constraints.scroll_offset);
+                self.update_pinned_geometry();
+                self.child_position = 0.0;
+            }
+            PersistentHeaderBehavior::Floating | PersistentHeaderBehavior::FloatingPinned => {
+                self.update_effective_scroll_offset();
+                let effective = self.effective_scroll_offset.unwrap_or(0.0);
+                self.layout_child(effective);
+                self.child_position = self.update_floating_geometry();
+                if self.behavior == PersistentHeaderBehavior::FloatingPinned {
+                    // Pinned while any of it shows.
+                    self.child_position = 0.0;
+                }
+            }
+        }
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        let Some(child) = &self.child else {
+            return;
+        };
+        let axis_direction = apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        );
+        // Where the child sits in the painted window: its position within
+        // the sliver, over the paint origin.
+        let main = self.child_position + self.geometry.paint_origin;
+        let paint_offset = match axis_direction {
+            AxisDirection::Up => Offset::new(0.0, main),
+            AxisDirection::Left => Offset::new(main, 0.0),
+            AxisDirection::Right => Offset::new(main, 0.0),
+            AxisDirection::Down => Offset::new(0.0, main),
+        };
+        context.paint_child(child, offset.plus(paint_offset));
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if !self.geometry.visible || self.geometry.hit_test_extent <= 0.0 {
+            return false;
+        }
+        let Some(child) = &self.child else {
+            return false;
+        };
+        sliver_hit_test_box_child(
+            &self.constraints,
+            &self.geometry,
+            child,
+            self.child_position,
+            main_axis_position,
+            cross_axis_position,
+            result,
+        )
+    }
+}
+
 #[cfg(test)]
 mod custom_paint_tests {
     use super::*;
@@ -19452,5 +19811,150 @@ mod sliver_grid_tests {
         // Tile 0, normally at cross 0, mirrors to the far column.
         let tile = layout.geometry_for_child_index(0);
         assert_eq!(tile.cross_axis_offset, 50.0);
+    }
+}
+
+#[cfg(test)]
+mod persistent_header_tests {
+    use super::*;
+
+    /// A child that sizes to its constraints along the main axis.
+    struct Panel {
+        size: std::cell::Cell<Size>,
+    }
+    impl RenderBox for Panel {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(Size::new(100.0, 300.0));
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+
+    fn panel() -> Panel {
+        Panel {
+            size: std::cell::Cell::new(Size::ZERO),
+        }
+    }
+
+    fn constraints(scroll: f32, remaining: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: scroll,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: 100.0,
+            viewport_main_axis_extent: remaining,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    #[test]
+    fn a_scrolling_header_shrinks_away_with_the_scroll() {
+        let mut header = RenderSliverPersistentHeader::new(
+            PersistentHeaderBehavior::Scrolling,
+            56.0,
+            120.0,
+            panel(),
+        );
+        // Fully in view: paints its whole max extent.
+        let geometry = header.sliver_layout(constraints(0.0, 400.0));
+        assert_eq!(geometry.scroll_extent, 120.0);
+        assert_eq!(geometry.paint_extent, 120.0);
+        // Half-scrolled: half shows, the child laid at 60.
+        let geometry = header.sliver_layout(constraints(60.0, 400.0));
+        assert_eq!(geometry.paint_extent, 60.0);
+        // Past its extent: nothing.
+        let geometry = header.sliver_layout(constraints(150.0, 400.0));
+        assert_eq!(geometry.paint_extent, 0.0);
+        assert!(!geometry.visible);
+    }
+
+    #[test]
+    fn a_scrolling_child_never_shrinks_below_min_extent() {
+        let mut header = RenderSliverPersistentHeader::new(
+            PersistentHeaderBehavior::Scrolling,
+            80.0,
+            120.0,
+            panel(),
+        );
+        header.sliver_layout(constraints(100.0, 400.0));
+        // maxExtent - shrink = 20, below min 80: the child holds at 80 and
+        // overflows the window it was given -- upstream's rule.
+        let child_size = header.children_size();
+        assert_eq!(child_size.map(|s| s.height), Some(80.0));
+    }
+
+    #[test]
+    fn a_pinned_header_stays_painted_at_the_leading_edge() {
+        let mut header = RenderSliverPersistentHeader::new(
+            PersistentHeaderBehavior::Pinned,
+            56.0,
+            120.0,
+            panel(),
+        );
+        // In view.
+        let geometry = header.sliver_layout(constraints(0.0, 400.0));
+        assert_eq!(geometry.paint_extent, 120.0f32.min(300.0));
+        assert_eq!(geometry.max_scroll_obstruction_extent, 56.0);
+        // Far past it: the pinned header still paints its child's extent.
+        let geometry = header.sliver_layout(constraints(500.0, 400.0));
+        assert!(geometry.paint_extent > 0.0);
+        assert_eq!(geometry.layout_extent, 0.0);
+    }
+
+    #[test]
+    fn a_floating_header_reveals_as_the_reader_scrolls_back() {
+        let mut header = RenderSliverPersistentHeader::new(
+            PersistentHeaderBehavior::Floating,
+            56.0,
+            120.0,
+            panel(),
+        );
+        // Scroll far past, then back: the header floats in.
+        header.sliver_layout(constraints(500.0, 400.0));
+        let geometry = header.sliver_layout(constraints(440.0, 400.0));
+        // 60 back: 60 of the max extent floats in.
+        assert!((geometry.paint_extent - 60.0).abs() < 1e-4);
+        // Scroll back the whole way: the full extent.
+        let geometry = header.sliver_layout(constraints(320.0, 400.0));
+        assert!((geometry.paint_extent - 120.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_floating_header_holds_while_the_reader_means_reverse() {
+        let mut header = RenderSliverPersistentHeader::new(
+            PersistentHeaderBehavior::Floating,
+            56.0,
+            120.0,
+            panel(),
+        );
+        header.sliver_layout(constraints(500.0, 400.0));
+        // The offset moves back but the reader's direction is reverse:
+        // upstream's `delta` is zeroed and nothing reveals.
+        let mut reverse = constraints(440.0, 400.0);
+        reverse.user_scroll_direction = crate::scrolling::ScrollDirection::Reverse;
+        let geometry = header.sliver_layout(reverse);
+        assert!((geometry.paint_extent - 0.0).abs() < 1e-4);
+    }
+
+    impl RenderSliverPersistentHeader {
+        fn children_size(&self) -> Option<Size> {
+            self.child.as_ref().map(|child| child.size())
+        }
     }
 }

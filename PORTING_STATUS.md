@@ -164,7 +164,24 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
-**P3 sliver 开工(2026-08-18)。** `sliver_grid.dart` 八类已入账:
+**P3 sliver:除 sliver_tree 外全部入账(2026-08-18)。** 协议族
+(`sliver.dart` 的 RenderSliver/HitTest 双件/ParentData 双件/Helpers、
+`sliver_padding` 的 directional 变体、`RenderSliverSingleBoxAdapter`)记
+mapped——本 crate 以 RenderBox 的 trait 方法承载 sliver 协议,基类职责并入
+具体形,是记录在案的形态而非漏译。`sliver_tree`(3 类,树形懒列表)待立项。
+
+**P3 sliver 开工(2026-08-18)。** `sliver_persistent_header.dart` 八类已入账:
+`OverScrollHeaderStretchConfiguration`/`PersistentHeaderShowOnScreenConfiguration`/
+`FloatingHeaderSnapConfiguration`(数据)、基类 `layoutChild`(shrink=
+min(scroll,max),子约束 max(maxExtent−shrink, minExtent),顶部 overlap 拉伸)+
+四行为(Scrolling:updateGeometry 的 paintExtent=maxExtent−scroll 与子位
+min(0,paint−child);Pinned:paintOrigin=overlap、paint=min(child,
+remaining−overlap)、maxScrollObstructionExtent=minExtent;Floating:
+effectiveScrollOffset 的 reveal 状态机逐字照抄——forward 方向允许展开、
+reverse 将 delta 归零、结果 clamp [0, scrollOffset];FloatingPinned 再钉
+子位于 0)。分歧:snap 动画只落决策与目标,补间待 P5 的 Animation<T>。
+
+ `sliver_grid.dart` 八类已入账:
 `SliverGridGeometry`(trailing/getBoxConstraints)、`SliverGridRegularTileLayout`
 (min/maxChildIndexForScrollOffset 的整除算式、reverseCrossAxis 的镜像、
 computeMaxScrollOffset 去尾行 spacing)、`SliverGridDelegate` 枚举两式

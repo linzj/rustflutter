@@ -276,6 +276,58 @@
     "SliverGridDelegateWithMaxCrossAxisExtent": {
       "rust": "SliverGridDelegate::MaxCrossAxisExtent",
       "note": "同上"
+    },
+    "RenderSliverScrollingPersistentHeader": {
+      "rust": "RenderSliverPersistentHeader::new(PersistentHeaderBehavior::Scrolling, …)",
+      "note": "四子类并为一型，行为枚举即上游各类（render.rs）；floating 的 snap 动画待 Animation<T> 对象图"
+    },
+    "RenderSliverPinnedPersistentHeader": {
+      "rust": "RenderSliverPersistentHeader::new(PersistentHeaderBehavior::Pinned, …)",
+      "note": "四子类并为一型，行为枚举即上游各类（render.rs）；floating 的 snap 动画待 Animation<T> 对象图"
+    },
+    "RenderSliverFloatingPersistentHeader": {
+      "rust": "RenderSliverPersistentHeader::new(PersistentHeaderBehavior::Floating, …)",
+      "note": "四子类并为一型，行为枚举即上游各类（render.rs）；floating 的 snap 动画待 Animation<T> 对象图"
+    },
+    "RenderSliverFloatingPinnedPersistentHeader": {
+      "rust": "RenderSliverPersistentHeader::new(PersistentHeaderBehavior::FloatingPinned, …)",
+      "note": "四子类并为一型，行为枚举即上游各类（render.rs）；floating 的 snap 动画待 Animation<T> 对象图"
+    },
+    "SliverLayoutDimensions": {
+      "rust": "SliverConstraints 的字段集",
+      "note": "维度即约束所带"
+    },
+    "SliverHitTestResult": {
+      "rust": "render::HitTestResult",
+      "note": "同一结果对象，sliver 命中直接复用"
+    },
+    "SliverHitTestEntry": {
+      "rust": "render::HitTestEntry",
+      "note": "同一 entry"
+    },
+    "SliverLogicalContainerParentData": {
+      "rust": "SliverLogicalParentData",
+      "note": "容器变体与基类字段一体"
+    },
+    "SliverPhysicalContainerParentData": {
+      "rust": "SliverPhysicalParentData",
+      "note": "同上"
+    },
+    "RenderSliver": {
+      "rust": "RenderBox::sliver_layout/sliver_geometry/sliver_hit_test 协议",
+      "note": "RenderSliver 不是独立类型——crate 以 trait 方法挂在 RenderBox 上（记录在案的形态）"
+    },
+    "RenderSliverHelpers": {
+      "rust": "calculate_paint_offset / sliver_hit_test_box_child 等自由函数",
+      "note": "mixin 的职责以函数承载"
+    },
+    "RenderSliverSingleBoxAdapter": {
+      "rust": "RenderSliverToBoxAdapter / RenderSliverFillRemaining 的单子路径",
+      "note": "基类职责并入两个具体形"
+    },
+    "RenderSliverEdgeInsetsPadding": {
+      "rust": "RenderSliverPadding",
+      "note": "directional 变体与基类一体（resolve 后同一路径）"
     }
   },
   "blocked_engine": {
