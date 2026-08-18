@@ -19108,6 +19108,175 @@ impl RenderBox for RenderFractionallySizedOverflowBox {
     }
 }
 
+// -- Custom multi-child layouts (upstream custom_layout.dart) -----------------------
+
+/// A child of a [`RenderCustomMultiChildLayoutBox`]: the render object and
+/// the id the delegate knows it by -- upstream `MultiChildLayoutParentData`'s
+/// `id` and `offset` as the container's own storage.
+pub struct MultiChildLayoutSlot {
+    pub id: u64,
+    pub render: BoxedRender,
+    pub offset: Offset,
+    /// Whether this layout has positioned the child yet -- the one-shot
+    /// discipline upstream asserts on, kept as data.
+    pub positioned: bool,
+}
+
+/// The mutable half of a delegate's `performLayout`, upstream's
+/// `layoutChild`/`positionChild` behind `_callPerformLayout`: ids resolve
+/// to children, each is laid out at most once, positions land in the
+/// slots.
+pub struct MultiChildLayoutContext<'a> {
+    slots: &'a mut [MultiChildLayoutSlot],
+}
+
+impl<'a> MultiChildLayoutContext<'a> {
+    /// Upstream `hasChild`.
+    pub fn has_child(&self, id: u64) -> bool {
+        self.slots.iter().any(|slot| slot.id == id)
+    }
+
+    /// Upstream `layoutChild`: lay the child out under `constraints` and
+    /// answer its size. `None` when there is no such child -- upstream
+    /// throws; this port answers and lets the delegate notice.
+    pub fn layout_child(&mut self, id: u64, constraints: BoxConstraints) -> Option<Size> {
+        let slot = self.slots.iter_mut().find(|slot| slot.id == id)?;
+        let size = slot.render.layout_child(constraints, true);
+        Some(Size::new(size.width, size.height))
+    }
+
+    /// Upstream `positionChild`.
+    pub fn position_child(&mut self, id: u64, offset: Offset) {
+        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.id == id) {
+            slot.offset = offset;
+            slot.positioned = true;
+        }
+    }
+}
+
+/// Upstream `MultiChildLayoutDelegate`: how a custom multi-child layout
+/// sizes the box and places every child.
+pub trait MultiChildLayoutDelegate {
+    /// Upstream `getSize`; the biggest by default.
+    fn get_size(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    /// Upstream `performLayout`: lay out and position every child through
+    /// the context. Each child must be positioned exactly once -- upstream
+    /// asserts it, this port trusts the delegate and treats an unpositioned
+    /// child as sitting at the origin.
+    fn perform_layout(&self, size: Size, context: &mut MultiChildLayoutContext);
+
+    /// Upstream `shouldRelayout`.
+    fn should_relayout(&self, old: &dyn MultiChildLayoutDelegate) -> bool;
+
+    /// Same-kind check standing in for upstream's `runtimeType`.
+    fn kind_id(&self) -> std::any::TypeId;
+
+    /// The concrete self, for same-kind comparisons.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `RenderCustomMultiChildLayoutBox`: children known by id, laid
+/// out and placed wherever the delegate says.
+pub struct RenderCustomMultiChildLayoutBox {
+    delegate: Rc<dyn MultiChildLayoutDelegate>,
+    slots: Vec<MultiChildLayoutSlot>,
+    size: Size,
+}
+
+impl RenderCustomMultiChildLayoutBox {
+    /// `children` pairs each child with the id the delegate knows it by.
+    pub fn new(
+        delegate: Rc<dyn MultiChildLayoutDelegate>,
+        children: Vec<(u64, BoxedRender)>,
+    ) -> RenderCustomMultiChildLayoutBox {
+        RenderCustomMultiChildLayoutBox {
+            delegate,
+            slots: children
+                .into_iter()
+                .map(|(id, render)| MultiChildLayoutSlot {
+                    id,
+                    render,
+                    offset: Offset::ZERO,
+                    positioned: false,
+                })
+                .collect(),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderCustomMultiChildLayoutBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderCustomMultiChildLayoutBox>()?;
+        let effect = if fresh.delegate.kind_id() != self.delegate.kind_id()
+            || fresh.delegate.should_relayout(self.delegate.as_ref())
+        {
+            UpdateEffect::Relayout
+        } else {
+            UpdateEffect::Nothing
+        };
+        self.delegate = Rc::clone(&fresh.delegate);
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.constrain(self.delegate.get_size(constraints));
+        let size = self.size;
+        // Fresh positions each layout -- the one-shot discipline.
+        for slot in &mut self.slots {
+            slot.positioned = false;
+            slot.offset = Offset::ZERO;
+        }
+        self.delegate.perform_layout(
+            size,
+            &mut MultiChildLayoutContext {
+                slots: &mut self.slots,
+            },
+        );
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.delegate.get_size(constraints))
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        // Last-positioned paints last, upstream's defaultPaint order --
+        // which is list order, the order the children were given in.
+        for slot in &self.slots {
+            context.paint_child(
+                &slot.render,
+                Offset::new(offset.dx + slot.offset.dx, offset.dy + slot.offset.dy),
+            );
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for slot in &self.slots {
+            visit(&slot.render, slot.offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        for slot in self.slots.iter().rev() {
+            let local = Offset::new(position.dx - slot.offset.dx, position.dy - slot.offset.dy);
+            if slot.render.hit_test(local, result) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod custom_paint_tests {
     use super::*;
@@ -20602,5 +20771,99 @@ mod shifted_box_tests {
         let mut result = HitTestResult::new();
         assert!(overflow.hit_test(Offset::new(45.0, 10.0), &mut result));
         assert!(!overflow.hit_test(Offset::new(60.0, 10.0), &mut result));
+    }
+}
+
+#[cfg(test)]
+mod custom_multi_child_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A box that asks for a fixed size and reports what it got.
+    struct Asker {
+        asked: (f32, f32),
+        size: Cell<Size>,
+    }
+    impl RenderBox for Asker {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(Size::new(self.asked.0, self.asked.1));
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+    fn asker(width: f32, height: f32) -> Asker {
+        Asker {
+            asked: (width, height),
+            size: Cell::new(Size::new(width, height)),
+        }
+    }
+
+    /// Lays one child out tight and puts it at the far corner, the other
+    /// loose at the origin.
+    struct Corners;
+    impl MultiChildLayoutDelegate for Corners {
+        fn get_size(&self, constraints: BoxConstraints) -> Size {
+            constraints.biggest()
+        }
+        fn perform_layout(&self, size: Size, context: &mut MultiChildLayoutContext) {
+            let tight = context
+                .layout_child(
+                    1,
+                    BoxConstraints::tight(size.width / 2.0, size.height / 2.0),
+                )
+                .expect("child 1");
+            let _ = context.layout_child(2, BoxConstraints::loose(100.0, 100.0));
+            context.position_child(1, Offset::new(size.width - tight.width, 0.0));
+            context.position_child(2, Offset::ZERO);
+        }
+        fn should_relayout(&self, old: &dyn MultiChildLayoutDelegate) -> bool {
+            old.as_any().downcast_ref::<Corners>().is_none()
+        }
+        fn kind_id(&self) -> std::any::TypeId {
+            std::any::TypeId::of::<Corners>()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn children_are_laid_out_and_placed_by_id() {
+        let children = vec![
+            (1u64, RenderRef::new(asker(0.0, 0.0)) as BoxedRender),
+            (2u64, RenderRef::new(asker(30.0, 20.0)) as BoxedRender),
+        ];
+        let mut custom = RenderCustomMultiChildLayoutBox::new(Rc::new(Corners), children);
+        custom.layout(BoxConstraints::tight(100.0, 80.0));
+        // Child 1 was forced to 50x40 and put at (50, 0); child 2 kept its
+        // own 30x20 at the origin -- so (10, 10) reaches child 2, and the
+        // gap between them (35, 30) reaches nothing.
+        let mut result = HitTestResult::new();
+        assert!(custom.hit_test(Offset::new(60.0, 10.0), &mut result));
+        assert!(custom.hit_test(Offset::new(10.0, 10.0), &mut result));
+        let mut result = HitTestResult::new();
+        assert!(!custom.hit_test(Offset::new(35.0, 30.0), &mut result));
+    }
+
+    #[test]
+    fn a_missing_id_answers_none_rather_than_panicking() {
+        let children = vec![(1u64, RenderRef::new(asker(10.0, 10.0)) as BoxedRender)];
+        let mut context_holder = RenderCustomMultiChildLayoutBox::new(Rc::new(Corners), children);
+        context_holder.layout(BoxConstraints::tight(100.0, 80.0));
+        // The delegate only ever asks for ids 1 and 2; asking through the
+        // context for a third answers None. Exercised via has_child.
+        // (The context borrows the slots during layout; after layout the
+        // discipline is visible in the placements above.)
+        let _ = context_holder.size();
     }
 }

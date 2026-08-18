@@ -164,6 +164,12 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**custom_layout 三类(2026-08-18)。** `MultiChildLayoutDelegate` trait
+(getSize 缺省+performLayout(Size, &mut Context)+shouldRelayout+kind_id)、
+`MultiChildLayoutContext`(hasChild/layoutChild/positionChild 按 id;一次性纪律
+以数据承载——上游是 debug 断言,缺失 id 答 None 而非抛)、
+`RenderCustomMultiChildLayoutBox`(逐符号,命中从后声明优先)。
+
 **shifted_box 六类(2026-08-18)。** `SingleChildLayoutDelegate` trait(getSize/
 getConstraintsForChild/getPositionForChild 三问缺省+shouldRelayout+kind_id)+
 `RenderCustomSingleChildLayoutBox`(逐符号:尺寸取 delegate 收紧、子位随

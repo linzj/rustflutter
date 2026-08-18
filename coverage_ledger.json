@@ -372,6 +372,18 @@
     "RenderFractionallySizedOverflowBox": {
       "rust": "render::RenderFractionallySizedOverflowBox",
       "note": "逐符号（_getInnerConstraints 的因子收紧）"
+    },
+    "MultiChildLayoutParentData": {
+      "rust": "MultiChildLayoutSlot（id+render+offset）",
+      "note": "parentData 由容器持有"
+    },
+    "MultiChildLayoutDelegate": {
+      "rust": "render::MultiChildLayoutDelegate trait + MultiChildLayoutContext",
+      "note": "layoutChild/positionChild 经 context；一次性纪律以数据承载（上游 debug 断言）"
+    },
+    "RenderCustomMultiChildLayoutBox": {
+      "rust": "render::RenderCustomMultiChildLayoutBox",
+      "note": "逐符号"
     }
   },
   "blocked_engine": {
