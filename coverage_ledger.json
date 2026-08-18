@@ -348,6 +348,30 @@
     "ViewportOffset": {
       "rust": "RenderSliverViewport::offset/set_offset 的 f32",
       "note": "pixels/dimension 回报折叠进 layout 的 clamp 循环（文档自陈形态）"
+    },
+    "RenderShiftedBox": {
+      "rust": "各具体位移盒（render.rs）",
+      "note": "crate 无基类——位移盒各自持有 child+child_offset"
+    },
+    "RenderAligningShiftedBox": {
+      "rust": "alignment.inscribe 的对齐位移",
+      "note": "对齐职责以 Alignment::inscribe 承载"
+    },
+    "SingleChildLayoutDelegate": {
+      "rust": "render::SingleChildLayoutDelegate trait",
+      "note": "三问（size/constraints/position）+shouldRelayout"
+    },
+    "RenderCustomSingleChildLayoutBox": {
+      "rust": "render::RenderCustomSingleChildLayoutBox",
+      "note": "逐符号"
+    },
+    "RenderConstraintsTransformBox": {
+      "rust": "render::RenderConstraintsTransformBox + ConstraintsTransform 枚举",
+      "note": "widthCapture/heightCapture/unconstrained 三式"
+    },
+    "RenderFractionallySizedOverflowBox": {
+      "rust": "render::RenderFractionallySizedOverflowBox",
+      "note": "逐符号（_getInnerConstraints 的因子收紧）"
     }
   },
   "blocked_engine": {

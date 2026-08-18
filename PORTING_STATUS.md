@@ -164,6 +164,14 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**shifted_box 六类(2026-08-18)。** `SingleChildLayoutDelegate` trait(getSize/
+getConstraintsForChild/getPositionForChild 三问缺省+shouldRelayout+kind_id)+
+`RenderCustomSingleChildLayoutBox`(逐符号:尺寸取 delegate 收紧、子位随
+getPositionForChild、基线加子位移);`RenderConstraintsTransformBox`
+(widthCapture/heightCapture/unconstrained 三式枚举+对齐位移);
+`RenderFractionallySizedOverflowBox`(因子收紧 `_getInnerConstraints`、对齐、
+允许溢出)。基类二件记 mapped(无基类形态)。
+
 **viewport 收缩包裹(2026-08-18)。** `RenderSliverViewport::with_shrink_wrap`
 即上游 `RenderShrinkWrappingViewport`:同一 attempt/correct 循环,尺寸取
 `_shrinkWrapExtent`(slivers 绘制实际到达处)而非约束;先给临时 biggest 尺寸

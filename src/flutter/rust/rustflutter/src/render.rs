@@ -18732,6 +18732,382 @@ impl RenderBox for RenderSliverPersistentHeader {
     }
 }
 
+// -- Shifted-box remainder (upstream shifted_box.dart) ------------------------------
+
+/// Upstream `SingleChildLayoutDelegate`: the three questions a custom
+/// single-child layout asks -- the box's size, the child's constraints, the
+/// child's position.
+pub trait SingleChildLayoutDelegate {
+    /// Upstream `getSize`; the biggest by default.
+    fn get_size(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    /// Upstream `getConstraintsForChild`; the parent's own by default.
+    fn get_constraints_for_child(&self, constraints: BoxConstraints) -> BoxConstraints {
+        constraints
+    }
+
+    /// Upstream `getPositionForChild`; the top-left corner by default.
+    fn get_position_for_child(&self, _size: Size, _child_size: Size) -> Offset {
+        Offset::ZERO
+    }
+
+    /// Upstream `shouldRelayout`.
+    fn should_relayout(&self, old: &dyn SingleChildLayoutDelegate) -> bool;
+
+    /// Same-kind check standing in for upstream's `runtimeType`.
+    fn kind_id(&self) -> std::any::TypeId;
+
+    /// The concrete self, for same-kind comparisons.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `RenderCustomSingleChildLayoutBox`: the child placed wherever
+/// the delegate says, in the size the delegate says.
+pub struct RenderCustomSingleChildLayoutBox {
+    delegate: Rc<dyn SingleChildLayoutDelegate>,
+    child: Option<BoxedRender>,
+    child_offset: Offset,
+    size: Size,
+}
+
+impl RenderCustomSingleChildLayoutBox {
+    pub fn new(
+        delegate: Rc<dyn SingleChildLayoutDelegate>,
+        child: impl RenderBox + 'static,
+    ) -> Self {
+        Self {
+            delegate,
+            child: Some(RenderRef::new(child)),
+            child_offset: Offset::ZERO,
+            size: Size::ZERO,
+        }
+    }
+
+    fn delegate_size(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.delegate.get_size(constraints))
+    }
+}
+
+impl RenderBox for RenderCustomSingleChildLayoutBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderCustomSingleChildLayoutBox>()?;
+        // A different kind always relayouts; the same kind gets the
+        // delegate's own judgment.
+        let effect = if fresh.delegate.kind_id() != self.delegate.kind_id()
+            || fresh.delegate.should_relayout(self.delegate.as_ref())
+        {
+            UpdateEffect::Relayout
+        } else {
+            UpdateEffect::Nothing
+        };
+        self.delegate = Rc::clone(&fresh.delegate);
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.delegate_size(constraints);
+        if let Some(child) = &mut self.child {
+            let child_constraints = self.delegate.get_constraints_for_child(constraints);
+            let child_size = child.layout_child(child_constraints, true);
+            self.child_offset = self.delegate.get_position_for_child(self.size, child_size);
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.delegate_size(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            context.paint_child(
+                child,
+                Offset::new(
+                    offset.dx + self.child_offset.dx,
+                    offset.dy + self.child_offset.dy,
+                ),
+            );
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, self.child_offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        let local = Offset::new(
+            position.dx - self.child_offset.dx,
+            position.dy - self.child_offset.dy,
+        );
+        child.hit_test(local, result)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child
+            .as_ref()
+            .and_then(|c| c.distance_to_baseline())
+            .map(|baseline| baseline + self.child_offset.dy)
+    }
+}
+
+/// How `RenderConstraintsTransformBox` rewrites the child's constraints,
+/// upstream's named transforms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstraintsTransform {
+    /// `widthCapture`: the child's max width becomes its min.
+    WidthCapture,
+    /// `heightCapture`: the child's max height becomes its min.
+    HeightCapture,
+    /// `unconstrained`: minima cleared.
+    Unconstrained,
+}
+
+impl ConstraintsTransform {
+    /// Upstream's `BoxConstraintsTransform` functions.
+    pub fn apply(&self, constraints: BoxConstraints) -> BoxConstraints {
+        match self {
+            ConstraintsTransform::WidthCapture => BoxConstraints {
+                min_width: constraints.max_width,
+                ..constraints
+            },
+            ConstraintsTransform::HeightCapture => BoxConstraints {
+                min_height: constraints.max_height,
+                ..constraints
+            },
+            ConstraintsTransform::Unconstrained => BoxConstraints {
+                min_width: 0.0,
+                min_height: 0.0,
+                ..constraints
+            },
+        }
+    }
+}
+
+/// Upstream `RenderConstraintsTransformBox`: the child laid out under
+/// rewritten constraints, then aligned within this box -- `SizedBox`'s
+/// loose/tight dance in its general form.
+pub struct RenderConstraintsTransformBox {
+    transform: ConstraintsTransform,
+    alignment: Alignment,
+    child: Option<BoxedRender>,
+    child_offset: Offset,
+    size: Size,
+}
+
+impl RenderConstraintsTransformBox {
+    pub fn new(
+        transform: ConstraintsTransform,
+        alignment: Alignment,
+        child: impl RenderBox + 'static,
+    ) -> Self {
+        Self {
+            transform,
+            alignment,
+            child: Some(RenderRef::new(child)),
+            child_offset: Offset::ZERO,
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderConstraintsTransformBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderConstraintsTransformBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            self.transform != fresh.transform || self.alignment != fresh.alignment,
+        );
+        self.transform = fresh.transform;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.biggest();
+        if let Some(child) = &mut self.child {
+            let child_constraints = self.transform.apply(constraints);
+            let child_size = child.layout_child(child_constraints, true);
+            // Aligned within this box, `RenderAligningShiftedBox`'s shift.
+            let aligned = self.alignment.inscribe(
+                Size::new(child_size.width, child_size.height),
+                Size::new(self.size.width, self.size.height),
+            );
+            self.child_offset = aligned;
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            context.paint_child(
+                child,
+                Offset::new(
+                    offset.dx + self.child_offset.dx,
+                    offset.dy + self.child_offset.dy,
+                ),
+            );
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, self.child_offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        let local = Offset::new(
+            position.dx - self.child_offset.dx,
+            position.dy - self.child_offset.dy,
+        );
+        child.hit_test(local, result)
+    }
+}
+
+/// Upstream `RenderFractionallySizedOverflowBox`: the child sized to a
+/// factor of this box and aligned inside it, allowed to overflow. The
+/// existing [`RenderFractionallySizedBox`] is the non-overflowing spelling
+/// that sizes *this box* fractionally; this one is the child-side twin.
+pub struct RenderFractionallySizedOverflowBox {
+    width_factor: Option<f32>,
+    height_factor: Option<f32>,
+    alignment: Alignment,
+    child: Option<BoxedRender>,
+    child_offset: Offset,
+    size: Size,
+}
+
+impl RenderFractionallySizedOverflowBox {
+    pub fn new(alignment: Alignment, child: impl RenderBox + 'static) -> Self {
+        Self {
+            width_factor: None,
+            height_factor: None,
+            alignment,
+            child: Some(RenderRef::new(child)),
+            child_offset: Offset::ZERO,
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_factors(mut self, width: Option<f32>, height: Option<f32>) -> Self {
+        debug_assert!(width.unwrap_or(0.0) >= 0.0 && height.unwrap_or(0.0) >= 0.0);
+        self.width_factor = width;
+        self.height_factor = height;
+        self
+    }
+
+    /// Upstream `_getInnerConstraints`: a set factor tightens that axis to
+    /// the factor of the incoming maximum.
+    fn inner_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        let (mut min_width, mut max_width) = (constraints.min_width, constraints.max_width);
+        if let Some(factor) = self.width_factor {
+            let width = max_width * factor;
+            min_width = width;
+            max_width = width;
+        }
+        let (mut min_height, mut max_height) = (constraints.min_height, constraints.max_height);
+        if let Some(factor) = self.height_factor {
+            let height = max_height * factor;
+            min_height = height;
+            max_height = height;
+        }
+        BoxConstraints::new(min_width, max_width, min_height, max_height)
+    }
+}
+
+impl RenderBox for RenderFractionallySizedOverflowBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderFractionallySizedOverflowBox>()?;
+        let effect = UpdateEffect::relayout_if(
+            self.width_factor != fresh.width_factor
+                || self.height_factor != fresh.height_factor
+                || self.alignment != fresh.alignment,
+        );
+        self.width_factor = fresh.width_factor;
+        self.height_factor = fresh.height_factor;
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.biggest();
+        let inner = self.inner_constraints(constraints);
+        if let Some(child) = &mut self.child {
+            let child_size = child.layout_child(inner, true);
+            let aligned = self.alignment.inscribe(
+                Size::new(child_size.width, child_size.height),
+                Size::new(self.size.width, self.size.height),
+            );
+            self.child_offset = aligned;
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            context.paint_child(
+                child,
+                Offset::new(
+                    offset.dx + self.child_offset.dx,
+                    offset.dy + self.child_offset.dy,
+                ),
+            );
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, self.child_offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        let local = Offset::new(
+            position.dx - self.child_offset.dx,
+            position.dy - self.child_offset.dy,
+        );
+        child.hit_test(local, result)
+    }
+}
+
 #[cfg(test)]
 mod custom_paint_tests {
     use super::*;
@@ -20133,5 +20509,98 @@ mod shrink_wrap_viewport_tests {
         viewport.layout(BoxConstraints::new(300.0, 300.0, 0.0, 800.0));
         // The offset is clamped to max(0, content - extent) = 0.
         assert_eq!(viewport.offset(), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod shifted_box_tests {
+    use super::*;
+
+    /// A box that asks for a fixed size and reports what it was given.
+    struct Asker {
+        asked: (f32, f32),
+        size: std::cell::Cell<Size>,
+    }
+    impl RenderBox for Asker {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(Size::new(self.asked.0, self.asked.1));
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+    fn asker(width: f32, height: f32) -> Asker {
+        Asker {
+            asked: (width, height),
+            size: std::cell::Cell::new(Size::new(width, height)),
+        }
+    }
+
+    #[test]
+    fn a_custom_single_child_layout_places_the_child_by_delegate() {
+        /// Puts the child at half this box's size, sized to a quarter of it.
+        struct Quarter;
+        impl SingleChildLayoutDelegate for Quarter {
+            fn get_size(&self, constraints: BoxConstraints) -> Size {
+                constraints.biggest()
+            }
+            fn get_constraints_for_child(&self, constraints: BoxConstraints) -> BoxConstraints {
+                let quarter = Size::new(constraints.max_width / 4.0, constraints.max_height / 4.0);
+                BoxConstraints::tight_for(quarter)
+            }
+            fn get_position_for_child(&self, size: Size, _child_size: Size) -> Offset {
+                Offset::new(size.width / 2.0, size.height / 2.0)
+            }
+            fn should_relayout(&self, old: &dyn SingleChildLayoutDelegate) -> bool {
+                old.as_any().downcast_ref::<Quarter>().is_none()
+            }
+            fn kind_id(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Quarter>()
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let mut custom = RenderCustomSingleChildLayoutBox::new(Rc::new(Quarter), asker(0.0, 0.0));
+        custom.layout(BoxConstraints::tight(100.0, 80.0));
+        // The child was given a tight 25x20 at (50, 40).
+        let mut result = HitTestResult::new();
+        assert!(custom.hit_test(Offset::new(55.0, 45.0), &mut result));
+        assert!(!custom.hit_test(Offset::new(10.0, 10.0), &mut result));
+    }
+
+    #[test]
+    fn width_capture_tightens_the_child() {
+        let mut transformed = RenderConstraintsTransformBox::new(
+            ConstraintsTransform::WidthCapture,
+            Alignment::TOP_LEFT,
+            asker(30.0, 20.0),
+        );
+        transformed.layout(BoxConstraints::new(0.0, 100.0, 0.0, 80.0));
+        // Untransformed the child would be 30 wide; captured, the min is
+        // 100 and the child stretches to it.
+        let mut result = HitTestResult::new();
+        assert!(transformed.hit_test(Offset::new(90.0, 5.0), &mut result));
+    }
+
+    #[test]
+    fn fractionally_sized_overflow_tightens_by_factor() {
+        let mut overflow =
+            RenderFractionallySizedOverflowBox::new(Alignment::TOP_LEFT, asker(0.0, 0.0))
+                .with_factors(Some(0.5), Some(0.25));
+        overflow.layout(BoxConstraints::loose(100.0, 80.0));
+        // The child was forced to 50x20 at the top-left.
+        let mut result = HitTestResult::new();
+        assert!(overflow.hit_test(Offset::new(45.0, 10.0), &mut result));
+        assert!(!overflow.hit_test(Offset::new(60.0, 10.0), &mut result));
     }
 }
