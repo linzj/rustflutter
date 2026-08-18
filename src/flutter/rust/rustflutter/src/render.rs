@@ -19277,6 +19277,236 @@ impl RenderBox for RenderCustomMultiChildLayoutBox {
     }
 }
 
+// -- Animated size (upstream animated_size.dart) -------------------------------------
+
+/// The states of a [`RenderAnimatedSize`]'s child-tracking, upstream
+/// `RenderAnimatedSizeState`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimatedSizeState {
+    /// The child has not been laid out yet.
+    #[default]
+    Start,
+    /// The child's size is not changing between layouts.
+    Stable,
+    /// The child changed size once after being stable; the animation is
+    /// catching up.
+    Changed,
+    /// The child keeps changing size; the animation tracks it.
+    Unstable,
+}
+
+/// Upstream `RenderAnimatedSize`: this box animates between the child's old
+/// and new sizes, the child laid out at full size and clipped if the box
+/// has not caught up. The crate's `Controller` (animation.rs) drives the
+/// tween; this render object ticks it from outside, the same way every
+/// animation here is driven.
+pub struct RenderAnimatedSize {
+    controller: crate::animation::Controller,
+    alignment: Alignment,
+    state: AnimatedSizeState,
+    tween_begin: Size,
+    tween_end: Size,
+    current_size: Size,
+    has_visual_overflow: bool,
+    child: Option<BoxedRender>,
+    child_offset: Offset,
+    size: Size,
+}
+
+impl RenderAnimatedSize {
+    pub fn new(alignment: Alignment, child: impl RenderBox + 'static) -> RenderAnimatedSize {
+        RenderAnimatedSize {
+            controller: crate::animation::Controller::new(std::time::Duration::from_millis(200)),
+            alignment,
+            state: AnimatedSizeState::Start,
+            tween_begin: Size::ZERO,
+            tween_end: Size::ZERO,
+            current_size: Size::ZERO,
+            has_visual_overflow: false,
+            child: Some(RenderRef::new(child)),
+            child_offset: Offset::ZERO,
+            size: Size::ZERO,
+        }
+    }
+
+    /// Upstream's `duration` constructor argument.
+    pub fn with_duration(mut self, duration_ms: u32) -> Self {
+        self.controller =
+            crate::animation::Controller::new(std::time::Duration::from_millis(duration_ms as u64));
+        self
+    }
+
+    /// The controller's value, the tween's parameter.
+    fn progress(&self) -> f32 {
+        self.controller.value()
+    }
+
+    /// The tween's current answer, upstream's `_animatedSize`.
+    fn animated_size(&self) -> Size {
+        let t = self.progress();
+        Size::new(
+            self.tween_begin.width + (self.tween_end.width - self.tween_begin.width) * t,
+            self.tween_begin.height + (self.tween_end.height - self.tween_begin.height) * t,
+        )
+    }
+
+    /// Upstream `_restartAnimation`: the tween starts over from zero.
+    fn restart_animation(&mut self) {
+        self.controller.restart();
+    }
+
+    /// Upstream `_layoutStart`.
+    fn layout_start(&mut self, child_size: Size) {
+        self.tween_begin = child_size;
+        self.tween_end = child_size;
+        self.state = AnimatedSizeState::Stable;
+    }
+
+    /// Upstream `_layoutStable`.
+    fn layout_stable(&mut self, child_size: Size) {
+        if self.tween_end != child_size {
+            self.tween_begin = self.size;
+            self.tween_end = child_size;
+            self.restart_animation();
+            self.state = AnimatedSizeState::Changed;
+        } else if self.progress() >= 1.0 {
+            // Animation finished. Reset target sizes.
+            self.tween_begin = child_size;
+            self.tween_end = child_size;
+        } else if !self.controller.is_running() {
+            self.controller.forward();
+        }
+    }
+
+    /// Upstream `_layoutChanged`.
+    fn layout_changed(&mut self, child_size: Size) {
+        if self.tween_end != child_size {
+            // Child size changed again: match it and restart.
+            self.tween_begin = child_size;
+            self.tween_end = child_size;
+            self.restart_animation();
+            self.state = AnimatedSizeState::Unstable;
+        } else {
+            // Child size stabilized.
+            self.state = AnimatedSizeState::Stable;
+            if !self.controller.is_running() {
+                self.controller.forward();
+            }
+        }
+    }
+
+    /// Upstream `_layoutUnstable`.
+    fn layout_unstable(&mut self, child_size: Size) {
+        if self.tween_end != child_size {
+            // Still unstable. Continue tracking the child.
+            self.tween_begin = child_size;
+            self.tween_end = child_size;
+            self.restart_animation();
+        } else {
+            // Child size stabilized.
+            self.controller.stop();
+            self.state = AnimatedSizeState::Stable;
+        }
+    }
+}
+
+impl RenderBox for RenderAnimatedSize {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderAnimatedSize>()?;
+        let effect = UpdateEffect::relayout_if(self.alignment != fresh.alignment);
+        self.alignment = fresh.alignment;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.has_visual_overflow = false;
+        if self.child.is_none() || constraints.is_tight() {
+            self.controller.stop();
+            self.size = constraints.smallest();
+            self.current_size = self.size;
+            self.tween_begin = self.size;
+            self.tween_end = self.size;
+            self.state = AnimatedSizeState::Start;
+            if let Some(child) = &mut self.child {
+                child.layout_child(constraints, false);
+            }
+            return self.size;
+        }
+        let child_size = self
+            .child
+            .as_mut()
+            .map(|child| child.layout_child(constraints, true))
+            .unwrap_or(Size::ZERO);
+        match self.state {
+            AnimatedSizeState::Start => self.layout_start(child_size),
+            AnimatedSizeState::Stable => self.layout_stable(child_size),
+            AnimatedSizeState::Changed => self.layout_changed(child_size),
+            AnimatedSizeState::Unstable => self.layout_unstable(child_size),
+        }
+        self.current_size = constraints.constrain(self.animated_size());
+        self.size = self.current_size;
+        // Align the (possibly larger) child within the animating box.
+        let aligned = self.alignment.inscribe(
+            Size::new(child_size.width, child_size.height),
+            Size::new(self.size.width, self.size.height),
+        );
+        self.child_offset = aligned;
+        if self.size.width < self.tween_end.width || self.size.height < self.tween_end.height {
+            self.has_visual_overflow = true;
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        if self.child.is_none() || constraints.is_tight() {
+            return constraints.smallest();
+        }
+        let child_size = self.child.as_ref().unwrap().dry_layout(constraints);
+        match self.state {
+            AnimatedSizeState::Start => constraints.constrain(child_size),
+            _ => constraints.constrain(self.animated_size()),
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            let child_offset = Offset::new(
+                offset.dx + self.child_offset.dx,
+                offset.dy + self.child_offset.dy,
+            );
+            if self.has_visual_overflow {
+                // The child is bigger than the animating box: clip to it,
+                // upstream's hard-edge default.
+                let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+                context.push_clip_rect(bounds, 0.0, ClipBehavior::HardEdge, child, offset);
+            } else {
+                context.paint_child(child, child_offset);
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, self.child_offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        let local = Offset::new(
+            position.dx - self.child_offset.dx,
+            position.dy - self.child_offset.dy,
+        );
+        child.hit_test(local, result)
+    }
+}
+
 #[cfg(test)]
 mod custom_paint_tests {
     use super::*;
@@ -20865,5 +21095,93 @@ mod custom_multi_child_tests {
         // (The context borrows the slots during layout; after layout the
         // discipline is visible in the placements above.)
         let _ = context_holder.size();
+    }
+}
+
+#[cfg(test)]
+mod animated_size_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A child whose size is switched from outside between layouts.
+    struct Resizable {
+        size: Cell<Size>,
+    }
+    impl RenderBox for Resizable {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(self.size.get());
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_tight_box_snapshots_and_stops() {
+        let mut animated = RenderAnimatedSize::new(
+            Alignment::CENTER,
+            Resizable {
+                size: Cell::new(Size::new(50.0, 50.0)),
+            },
+        );
+        animated.layout(BoxConstraints::tight(100.0, 100.0));
+        // Tight: no animation, the constraints' smallest.
+        assert_eq!(animated.size(), Size::new(100.0, 100.0));
+    }
+
+    #[test]
+    fn a_stable_child_that_grows_starts_an_animation() {
+        let child = Resizable {
+            size: Cell::new(Size::new(50.0, 50.0)),
+        };
+        let shared = Rc::new(child);
+        // The child as a render ref sharing one resizable cell.
+        let child_cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        struct Resizing {
+            cell: Rc<Cell<Size>>,
+        }
+        impl RenderBox for Resizing {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                let size = constraints.constrain(self.cell.get());
+                self.cell.set(size);
+                size
+            }
+            fn size(&self) -> Size {
+                self.cell.get()
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+        }
+        let _ = shared;
+        let mut animated = RenderAnimatedSize::new(
+            Alignment::CENTER,
+            Resizing {
+                cell: Rc::clone(&child_cell),
+            },
+        );
+        animated.layout(BoxConstraints::loose(200.0, 200.0));
+        // Start -> Stable at the child's own 50x50.
+        assert_eq!(animated.size(), Size::new(50.0, 50.0));
+
+        // The child grows to 100x100: the box animates from 50 toward 100.
+        child_cell.set(Size::new(100.0, 100.0));
+        animated.layout(BoxConstraints::loose(200.0, 200.0));
+        // The tween restarted from zero, so the box still paints ~50 -- and
+        // the state has moved to Changed.
+        assert!(animated.size().width < 100.0);
     }
 }

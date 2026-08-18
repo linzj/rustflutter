@@ -164,6 +164,13 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**animated_size(2026-08-18)。** `RenderAnimatedSize` 落地:四态状态机
+(Start→Stable;Stable 中子变尺寸→Changed 重启动画;Changed 中再变→Unstable
+追踪;Unstable 稳住→stop 回 Stable——逐符号照抄)、tight 即快照并停、
+tween=lerp(begin,end,controller.value)、溢出时硬边裁剪。Controller 无
+default 构造(显式 200ms 缺省),tick 由外部喂——同 crate 所有动画的驱动
+形态。
+
 **custom_layout 三类(2026-08-18)。** `MultiChildLayoutDelegate` trait
 (getSize 缺省+performLayout(Size, &mut Context)+shouldRelayout+kind_id)、
 `MultiChildLayoutContext`(hasChild/layoutChild/positionChild 按 id;一次性纪律
