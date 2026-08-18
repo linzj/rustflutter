@@ -26,6 +26,7 @@ mod engine_test_stubs;
 pub mod actions;
 pub mod animation;
 pub mod app;
+pub mod r#async;
 pub mod borders;
 pub mod components;
 pub mod controls;
@@ -68,6 +69,7 @@ pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
+pub use r#async::{AsyncSnapshot, ConnectionState, async_builder};
 pub use borders::{
     BeveledRectangleBorder, Border, BorderDirectional, BorderRadius, BorderRadiusDirectional,
     BorderRadiusGeometry, BorderSide, BorderStyle, BoxBorder, BoxShape, CircleBorder,

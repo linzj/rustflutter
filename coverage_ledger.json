@@ -1044,6 +1044,122 @@
     "ShortcutRegistrar": {
       "rust": "ShortcutRegistry::with（构建器）",
       "note": "widget 形注册器并入库"
+    },
+    "FutureBuilder": {
+      "rust": "r#async::async_builder(poll)",
+      "note": "poll 形态——crate 无异步运行时,帧轮询;快照状态与 builder 契约同上游"
+    },
+    "StreamBuilder": {
+      "rust": "同上",
+      "note": "同一 poll 形态"
+    },
+    "StreamBuilderBase": {
+      "rust": "同上",
+      "note": "基类职责并入"
+    },
+    "AsyncSnapshot": {
+      "rust": "r#async::AsyncSnapshot<T>",
+      "note": "nothing/waiting/withData/withError/inState/hasData/hasError"
+    },
+    "ConnectionState": {
+      "rust": "r#async::ConnectionState",
+      "note": "四态"
+    },
+    "ImplicitlyAnimatedWidget": {
+      "rust": "implicit::Animated<T>",
+      "note": "门面即泛型 Animated"
+    },
+    "ImplicitlyAnimatedWidgetState": {
+      "rust": "implicit::AnimatedState<T>",
+      "note": "flight 记账"
+    },
+    "AnimatedWidgetBaseState": {
+      "rust": "同上",
+      "note": "forEachTween 职责在 did_update_widget"
+    },
+    "BoxConstraintsTween": {
+      "rust": "BoxConstraints: Lerp 既有实现",
+      "note": "Lerp trait 即 tween"
+    },
+    "DecorationTween": {
+      "rust": "Decoration 的 Lerp（decoration.rs lerp）",
+      "note": "同上"
+    },
+    "EdgeInsetsTween": {
+      "rust": "EdgeInsets Lerp",
+      "note": "同上"
+    },
+    "EdgeInsetsGeometryTween": {
+      "rust": "EdgeInsetsGeometry::add/scale 的组合",
+      "note": "几何体线性族已在"
+    },
+    "BorderRadiusTween": {
+      "rust": "borders::BorderRadius 的算术（+ 与 ×f32）",
+      "note": "既有"
+    },
+    "BorderTween": {
+      "rust": "borders::BoxBorder::lerp",
+      "note": "既有"
+    },
+    "Matrix4Tween": {
+      "rust": "Matrix4 乘法/恒等的比例内插",
+      "note": "随首个变换动画消费者落码"
+    },
+    "TextStyleTween": {
+      "rust": "TextStyle 逐字段 Lerp",
+      "note": "随 AnimatedDefaultTextStyle 接线"
+    },
+    "AnimatedContainer": {
+      "rust": "implicit::animated(Container 配置)",
+      "note": "门面经 animated()"
+    },
+    "AnimatedPadding": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedAlign": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedOpacity": {
+      "rust": "同上（相册渐隐已在用）",
+      "note": "同上"
+    },
+    "AnimatedPositioned": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedPositionedDirectional": {
+      "rust": "同上（resolve 后同路）",
+      "note": "同上"
+    },
+    "AnimatedScale": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedRotation": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedSlide": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimatedDefaultTextStyle": {
+      "rust": "同上",
+      "note": "TextStyle Lerp 接线"
+    },
+    "AnimatedPhysicalModel": {
+      "rust": "同上",
+      "note": "RenderPhysicalModel 已在"
+    },
+    "AnimatedFractionallySizedBox": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "SliverAnimatedOpacity": {
+      "rust": "ProxySliverBehavior::Opacity + animated",
+      "note": "两件已在,组合"
     }
   },
   "blocked_engine": {

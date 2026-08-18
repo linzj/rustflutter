@@ -164,6 +164,15 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:async + implicit_animations(2026-08-18)。** `async.rs`:`ConnectionState`
+四态、`AsyncSnapshot<T>`(nothing/waiting/withData/withError/inState/
+hasData/hasError)、`async_builder`(poll 形态——crate 无异步运行时,future 的
+驱动方持有所有权,帧轮询;快照与 builder 契约同上游,分歧记录)。async.dart
+4/4。implicit_animations.dart 24/24 入账:基类三件≙`Animated<T>`/
+`AnimatedState<T>` 门面,tween 十件≙各类型的 Lerp/算术(BoxBorder::lerp、
+BorderRadius ±×、EdgeInsetsGeometry add/scale 均既有),具体十三件≙
+`animated()` 门面(相册渐隐已是此路)。
+
 **P4:shortcuts 体系(2026-08-18)。** `shortcuts.rs` 落地:`LogicalKeySet`
 (无序集)、`ShortcutActivator` 枚举三式(KeySet——事件键在集内+全集按住+无
 他键;Single——一键+四修饰键精确;Character——字符+control+单修饰)、
