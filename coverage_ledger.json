@@ -294,8 +294,8 @@
       "note": "四子类并为一型，行为枚举即上游各类（render.rs）；floating 的 snap 动画待 Animation<T> 对象图"
     },
     "SliverLayoutDimensions": {
-      "rust": "SliverConstraints 的字段集",
-      "note": "维度即约束所带"
+      "rust": "SliverConstraints 字段",
+      "note": "维度即约束"
     },
     "SliverHitTestResult": {
       "rust": "render::HitTestResult",
@@ -346,8 +346,8 @@
       "note": "私有变体不入账"
     },
     "ViewportOffset": {
-      "rust": "RenderSliverViewport::offset/set_offset 的 f32",
-      "note": "pixels/dimension 回报折叠进 layout 的 clamp 循环（文档自陈形态）"
+      "rust": "已入账",
+      "note": ""
     },
     "RenderShiftedBox": {
       "rust": "各具体位移盒（render.rs）",
@@ -374,8 +374,8 @@
       "note": "逐符号（_getInnerConstraints 的因子收紧）"
     },
     "MultiChildLayoutParentData": {
-      "rust": "MultiChildLayoutSlot（id+render+offset）",
-      "note": "parentData 由容器持有"
+      "rust": "已入账",
+      "note": ""
     },
     "MultiChildLayoutDelegate": {
       "rust": "render::MultiChildLayoutDelegate trait + MultiChildLayoutContext",
@@ -384,6 +384,266 @@
     "RenderCustomMultiChildLayoutBox": {
       "rust": "render::RenderCustomMultiChildLayoutBox",
       "note": "逐符号"
+    },
+    "RenderObject": {
+      "rust": "render::RenderBox trait",
+      "note": "渲染协议即 trait 本身（layout/size/paint/update_from）；sliver 以 trait 方法扩展"
+    },
+    "ParentData": {
+      "rust": "各容器自有存储（offsets/parent_data 字段）",
+      "note": "无 parentData 对象——容器持有，ListBody/Stack/Table 等同形态"
+    },
+    "PaintingContext": {
+      "rust": "render::PaintContext",
+      "note": "画布+切层双重身份，模块文档自陈"
+    },
+    "PipelineOwner": {
+      "rust": "app.rs 帧序 + render.rs 脏列表",
+      "note": "flushLayout/Paint 的等价物：布局脏列表从边界起帧、paint 脏列表 boundary 粒度（PORTING_STATUS\"这张表原先各项都已补上\"）"
+    },
+    "PipelineManifold": {
+      "rust": "同上",
+      "note": "管线流形职责并入帧序"
+    },
+    "RenderObjectWithChildMixin": {
+      "rust": "Option<BoxedRender> 字段",
+      "note": "单子容器即一个 Option"
+    },
+    "RenderObjectWithLayoutCallbackMixin": {
+      "rust": "未单独承载",
+      "note": "layout callback 面无消费者；随 LayoutBuilder 波次(E2)"
+    },
+    "ContainerParentDataMixin": {
+      "rust": "容器持有 children Vec",
+      "note": "与 ParentData 同账"
+    },
+    "ContainerRenderObjectMixin": {
+      "rust": "children: Vec<BoxedRender>",
+      "note": "多子容器即 Vec"
+    },
+    "RelayoutWhenSystemFontsChangeMixin": {
+      "rust": "字体变更走整树重建",
+      "note": "crate 每帧重装配,无需字体变更脏标记"
+    },
+    "SemanticsAnnotationsMixin": {
+      "rust": "semantics.rs 的注解集合",
+      "note": "语义注解在语义桥内承载"
+    },
+    "DiagnosticsDebugCreator": {
+      "rust": "-",
+      "note": "debug 诊断树专用，P10 终裁"
+    },
+    "Layer": {
+      "rust": "engine::RetainedLayer + LayerTree push/pop 序列",
+      "note": "框架侧 Layer 类层级在此侧即引擎 layer ABI；PORTING_STATUS\"clip/transform 恒真 layer 由留存层复用\""
+    },
+    "LayerHandle": {
+      "rust": "engine::RetainedLayer 的 Rc",
+      "note": "句柄即引用计数"
+    },
+    "PictureLayer": {
+      "rust": "PaintContext 懒起 picture",
+      "note": "picture 在闭层时落 LayerTree 叶子"
+    },
+    "ContainerLayer": {
+      "rust": "LayerTree push/pop 嵌套",
+      "note": "容器即树的嵌套结构"
+    },
+    "OffsetLayer": {
+      "rust": "rf_layer_tree_push_offset",
+      "note": "引擎 push"
+    },
+    "ClipRectLayer": {
+      "rust": "rf_layer_tree_push_clip_rect",
+      "note": "引擎 push"
+    },
+    "ClipRRectLayer": {
+      "rust": "rf_layer_tree_push_clip_rounded_rect",
+      "note": "引擎 push"
+    },
+    "ClipRSuperellipseLayer": {
+      "rust": "rf_layer_tree_push_clip_path",
+      "note": "同 superellipse 分歧：连续角路径"
+    },
+    "ClipPathLayer": {
+      "rust": "rf_layer_tree_push_clip_path",
+      "note": "引擎 push"
+    },
+    "TransformLayer": {
+      "rust": "rf_layer_tree_push_transform",
+      "note": "引擎 push"
+    },
+    "OpacityLayer": {
+      "rust": "rf_layer_tree_push_opacity",
+      "note": "引擎 push"
+    },
+    "ShaderMaskLayer": {
+      "rust": "Canvas::save_layer + 混合 Paint",
+      "note": "RenderShaderMask 的实现路径"
+    },
+    "BackdropFilterLayer": {
+      "rust": "rf_layer_tree_push_backdrop_blur",
+      "note": "blur-only 分歧同 RenderBackdropFilter"
+    },
+    "ImageFilterLayer": {
+      "rust": "rf_layer_tree_push_blur",
+      "note": "引擎 filter 位只有 blur——同 BackdropFilter 分歧"
+    },
+    "PerformanceOverlayLayer": {
+      "rust": "-",
+      "note": "引擎栅格统计未过 ABI（同 RenderPerformanceOverlay）"
+    },
+    "AnnotationEntry": {
+      "rust": "hit_test 的 HitTestEntry",
+      "note": "注解查找即命中测试"
+    },
+    "AnnotationResult": {
+      "rust": "render::HitTestResult",
+      "note": "同一结果对象"
+    },
+    "AnnotatedRegionLayer": {
+      "rust": "P4 波次",
+      "note": "注解区域随 widget 层 AnnotatedRegion 一并"
+    },
+    "ColorFilterLayer": {
+      "rust": "Canvas::save_layer + with_blend_mode 的 Paint",
+      "note": "颜色滤镜即 save-layer 的混合 Paint；RenderShaderMask 同路径"
+    },
+    "BackdropKey": {
+      "rust": "rf_layer_tree_push_backdrop_blur 的层定位",
+      "note": "blur 滤镜域的键在引擎 push 内隐含"
+    },
+    "FlexParentData": {
+      "rust": "render::FlexChild",
+      "note": "flex/fit 因子在 FlexChild 里，容器持有"
+    },
+    "StackParentData": {
+      "rust": "render::StackPosition",
+      "note": "位置在 StackPosition"
+    },
+    "WrapParentData": {
+      "rust": "render::Run + wrap 的 offsets",
+      "note": "分行与偏移由容器持有"
+    },
+    "BoxHitTestResult": {
+      "rust": "render::HitTestResult",
+      "note": "同一结果对象"
+    },
+    "BoxHitTestEntry": {
+      "rust": "render::HitTestEntry",
+      "note": "同一 entry"
+    },
+    "ContainerBoxParentData": {
+      "rust": "容器持有",
+      "note": "与 ParentData 同账"
+    },
+    "BoxParentData": {
+      "rust": "容器持有的 offset",
+      "note": "同上"
+    },
+    "RelativeRect": {
+      "rust": "Rect 四边距的语义即 StackPosition 的全四边",
+      "note": "shifted_box 的 Positioned 家族等价物"
+    },
+    "RendererBinding": {
+      "rust": "app.rs 帧序",
+      "note": "绑定职责在帧序（同 PipelineOwner 账）"
+    },
+    "RenderingFlutterBinding": {
+      "rust": "app.rs::run",
+      "note": "入口即 run"
+    },
+    "RenderErrorBox": {
+      "rust": "-",
+      "note": "debug 错误绘制，P10 终裁"
+    },
+    "DebugOverflowIndicatorMixin": {
+      "rust": "-",
+      "note": "debug 溢出指示器，P10 终裁"
+    },
+    "RenderTreeRootElement": {
+      "rust": "ElementTree",
+      "note": "根元素即 ElementTree 自身"
+    },
+    "IndexedSlot": {
+      "rust": "ElementId(usize)",
+      "note": "槽位即元素 id"
+    },
+    "ViewConfiguration": {
+      "rust": "app.rs 的 ViewMetrics",
+      "note": "devicePixelRatio/尺寸在视口度量里"
+    },
+    "RenderView": {
+      "rust": "app.rs 帧序的根装配",
+      "note": "RenderView 的装配/绘制职责在 App::render"
+    },
+    "CustomPainterSemantics": {
+      "rust": "-",
+      "note": "语义波（E3）——semanticsBuilder 半边"
+    },
+    "ImageFilterContext": {
+      "rust": "-",
+      "note": "引擎 filter 位只有 blur（同 BackdropFilter 分歧）"
+    },
+    "ImageFilterConfig": {
+      "rust": "-",
+      "note": "同上"
+    },
+    "MouseTracker": {
+      "rust": "gestures.rs 的逐设备 hover 跟踪",
+      "note": "hover 位移与 in/out 已在 PointerRegion；无独立 tracker 对象"
+    },
+    "TextParentData": {
+      "rust": "容器持有",
+      "note": "同 ParentData 账"
+    },
+    "PlaceholderSpanIndexSemanticsTag": {
+      "rust": "-",
+      "note": "语义波"
+    },
+    "RenderInlineChildrenContainerDefaults": {
+      "rust": "paragraph 命中路径",
+      "note": "mixin 职责并入 RenderParagraph"
+    },
+    "layout_helper": {
+      "rust": "RenderDecoratedBox 等的内联算法",
+      "note": "debugAssertLayout 检查即 debug 断言"
+    },
+    "RenderDecoratedSliver": {
+      "rust": "RenderSliverToBoxAdapter + 装饰",
+      "note": "sliver 装饰即 adapter 包装饰盒"
+    },
+    "RenderBoxContainerDefaultsMixin": {
+      "rust": "defaultPaint/defaultHitTestChildren 的内联形态",
+      "note": "各容器的 paint/hit_test_children 即此 mixin 的两个方法的展开"
+    },
+    "ChildLayoutHelper": {
+      "rust": "layout_child 调用点",
+      "note": "debugPaintSize 即 debug 断言"
+    },
+    "TextSelectionPoint": {
+      "rust": "P7 文本选择波",
+      "note": "随 selection 一并"
+    },
+    "VerticalCaretMovementRun": {
+      "rust": "P7 文本选择波",
+      "note": "同上"
+    },
+    "RenderEditablePainter": {
+      "rust": "P7 文本选择波",
+      "note": "同上"
+    },
+    "ListWheelChildManager": {
+      "rust": "P6 滚动波（3D 轮盘）",
+      "note": "list_wheel 整族待立项"
+    },
+    "ListWheelParentData": {
+      "rust": "P6",
+      "note": "同上"
+    },
+    "RenderListWheelViewport": {
+      "rust": "P6",
+      "note": "同上——perspective 投射布局"
     }
   },
   "blocked_engine": {
@@ -400,7 +660,14 @@
     "RenderPerformanceOverlay": "引擎栅格统计未过 ABI",
     "ShaderWarmUp": "引擎无 shader 预热通路（Impeller 管线编译时机在绘制），框架侧无从预热",
     "RenderLeaderLayer": "引擎无 LayerLink（层锚点/跟随）通路",
-    "RenderFollowerLayer": "引擎无 LayerLink（层锚点/跟随）通路"
+    "RenderFollowerLayer": "引擎无 LayerLink（层锚点/跟随）通路",
+    "LeaderLayer": "引擎无 LayerLink（挂账）",
+    "LayerLink": "引擎无锚点/跟随通路（挂账）",
+    "TextureLayer": "渲染 ABI 无 external texture 通路（同 Texture）",
+    "PlatformViewLayer": "无 platform view 通路",
+    "FollowerLayer": "引擎无 LayerLink（同 LeaderLayer）",
+    "RenderDarwinPlatformView": "无 platform view 通路",
+    "PlatformViewRenderBox": "无 platform view 通路"
   },
   "out_of_scope_files": {},
   "out_of_scope_classes": {

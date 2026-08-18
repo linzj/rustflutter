@@ -164,6 +164,19 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**rendering 层收账(2026-08-18):211/243 入账。** 本轮判定入账的大块:
+`object.dart` 协议族 12 类(RenderObject≙RenderBox trait、ParentData 三件≙容器
+持有、PaintingContext≙PaintContext、PipelineOwner/Manifold≙帧序+脏列表——
+即此前"这张表原先各项都已补上"的等价物)、`layer.dart` 24 类(引擎 layer
+push ABI+offset/clip/transform/opacity/blur 逐类映射,留存层 Rc≙LayerHandle;
+Texture/PlatformView/Follower 三件挂引擎账;PerformanceOverlay 同前)、
+`binding.dart` 二件≙app.rs 帧序、`box.dart` 命中双件+ParentData 混入、
+`flex/stack/wrap` 的 ParentData 三件、`view.dart` 二件、`mouse_tracker` ≙
+gestures 逐设备 hover、`tweens` 三件(painting 的 Alignment lerp 已在)、
+`decorated_sliver` ≙ adapter 包装饰。**余 32 类全是计划内波次**:selection 17
+(P7)+语义七件(E3)+list_wheel 三件(P6)+editable 三件(P7)+tree 三件+debug
+二件(P10)+RevealedOffset(P4)。
+
 **animated_size(2026-08-18)。** `RenderAnimatedSize` 落地:四态状态机
 (Start→Stable;Stable 中子变尺寸→Changed 重启动画;Changed 中再变→Unstable
 追踪;Unstable 稳住→stop 回 Stable——逐符号照抄)、tight 即快照并停、
