@@ -328,6 +328,26 @@
     "RenderSliverEdgeInsetsPadding": {
       "rust": "RenderSliverPadding",
       "note": "directional 变体与基类一体（resolve 后同一路径）"
+    },
+    "RenderShrinkWrappingViewport": {
+      "rust": "RenderSliverViewport::with_shrink_wrap()",
+      "note": "同一布局循环的收缩包裹拼写——flag 而非第二类型；shrink_wrap_extent 即 _shrinkWrapExtent"
+    },
+    "RenderViewportBase": {
+      "rust": "RenderSliverViewport 与 RenderViewport 的共享算法",
+      "note": "基类职责在两个具体形间共用（layout_child_sequence/attempt_layout）"
+    },
+    "ScrollCacheExtent": {
+      "rust": "scrolling::DEFAULT_CACHE_EXTENT 常量",
+      "note": "枚举在此侧为常量"
+    },
+    "_PixelScrollCacheExtent/_ViewportScrollCacheExtent": {
+      "rust": "同上",
+      "note": "私有变体不入账"
+    },
+    "ViewportOffset": {
+      "rust": "RenderSliverViewport::offset/set_offset 的 f32",
+      "note": "pixels/dimension 回报折叠进 layout 的 clamp 循环（文档自陈形态）"
     }
   },
   "blocked_engine": {

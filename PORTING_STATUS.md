@@ -164,6 +164,14 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**viewport 收缩包裹(2026-08-18)。** `RenderSliverViewport::with_shrink_wrap`
+即上游 `RenderShrinkWrappingViewport`:同一 attempt/correct 循环,尺寸取
+`_shrinkWrapExtent`(slivers 绘制实际到达处)而非约束;先给临时 biggest 尺寸
+再收缩(slivers 的 main_axis_extent 读它)。顺带补了三处 geometry 生产端的
+`layoutExtent = paintExtent` 缺省(FillRemaining/FillViewport/Grid——上游构造
+器的缺省语义;persistent header 显式设值不受影响)。`RenderViewportBase`/
+`ViewportOffset`/`ScrollCacheExtent` 记 mapped。
+
 **P3 sliver:除 sliver_tree 外全部入账(2026-08-18)。** 协议族
 (`sliver.dart` 的 RenderSliver/HitTest 双件/ParentData 双件/Helpers、
 `sliver_padding` 的 directional 变体、`RenderSliverSingleBoxAdapter`)记

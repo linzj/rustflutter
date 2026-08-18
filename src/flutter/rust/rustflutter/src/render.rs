@@ -9094,6 +9094,13 @@ struct SliverChild {
 pub struct RenderSliverViewport {
     axis_direction: AxisDirection,
     cross_axis_direction: AxisDirection,
+    /// Whether this viewport sizes itself to what its slivers painted rather
+    /// than to its constraints -- upstream `RenderShrinkWrappingViewport`
+    /// against `RenderViewport`, one flag rather than a second type.
+    shrink_wrap: bool,
+    /// How far the slivers' painting reached on the last layout, upstream's
+    /// `_shrinkWrapExtent`.
+    shrink_wrap_extent: f32,
     /// How far into the content the view is, driven from outside and clamped
     /// here during layout, upstream's `ViewportOffset.pixels` as this port
     /// takes it (see [`RenderViewport::offset`]).
@@ -9119,6 +9126,8 @@ impl RenderSliverViewport {
         RenderSliverViewport {
             cross_axis_direction: default_cross_axis_direction(axis_direction),
             axis_direction,
+            shrink_wrap: false,
+            shrink_wrap_extent: 0.0,
             offset: 0.0,
             user_scroll_direction: crate::scrolling::ScrollDirection::Idle,
             cache_extent: crate::scrolling::DEFAULT_CACHE_EXTENT,
@@ -9143,6 +9152,13 @@ impl RenderSliverViewport {
     /// the next layout.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// The shrink-wrapping spelling, upstream `RenderShrinkWrappingViewport`:
+    /// the viewport takes only what its slivers painted.
+    pub fn with_shrink_wrap(mut self) -> Self {
+        self.shrink_wrap = true;
         self
     }
 
@@ -9225,6 +9241,9 @@ impl RenderSliverViewport {
         let mut cache_origin = cache_origin;
         let mut max_paint_offset = layout_offset + overlap;
         let mut preceding_scroll_extent = 0.0;
+        // Upstream's `_shrinkWrapExtent`: how far the slivers' painting
+        // actually reached, what a shrink-wrapping viewport sizes to.
+        self.shrink_wrap_extent = 0.0;
 
         for child in &mut self.children {
             // If the scroll offset is too small, ask from zero: it makes no
@@ -9290,9 +9309,73 @@ impl RenderSliverViewport {
             // total the offset is clamped against, and whether anything asked
             // to be clipped.
             self.content_scroll_extent += geometry.scroll_extent;
+            self.shrink_wrap_extent = self
+                .shrink_wrap_extent
+                .max(max_paint_offset - initial_layout_offset);
             self.has_visual_overflow |= geometry.has_visual_overflow;
         }
         None
+    }
+
+    /// Upstream `RenderShrinkWrappingViewport.performLayout`: the same
+    /// attempt-and-correct loop, sized at the end to what the slivers
+    /// painted rather than to the incoming constraints.
+    fn layout_shrink_wrapping(&mut self, constraints: BoxConstraints) -> Size {
+        // A provisional biggest size first: the slivers lay out against
+        // `main_axis_extent`, which reads this, and the shrunk answer
+        // replaces it below.
+        self.size = constraints.biggest();
+        if self.children.is_empty() {
+            self.size = match self.axis() {
+                Axis::Vertical => Size::new(constraints.max_width, constraints.min_height),
+                Axis::Horizontal => Size::new(constraints.min_width, constraints.max_height),
+            };
+            self.content_scroll_extent = 0.0;
+            self.shrink_wrap_extent = 0.0;
+            self.has_visual_overflow = false;
+            self.offset = self.offset.clamp(0.0, 0.0);
+            return self.size;
+        }
+        let max_layout_cycles = MAX_LAYOUT_CYCLES_PER_CHILD * self.children.len();
+        let mut count = 0;
+        loop {
+            let correction = self.attempt_layout(self.offset);
+            if let Some(correction) = correction {
+                self.offset += correction;
+            } else {
+                // effectiveExtent: the painted extent, constrained.
+                let effective_extent = match self.axis() {
+                    Axis::Vertical => {
+                        constraints
+                            .constrain(Size::new(0.0, self.shrink_wrap_extent))
+                            .height
+                    }
+                    Axis::Horizontal => {
+                        constraints
+                            .constrain(Size::new(self.shrink_wrap_extent, 0.0))
+                            .width
+                    }
+                };
+                let clamped = self.offset.clamp(
+                    0.0,
+                    (self.content_scroll_extent - effective_extent).max(0.0),
+                );
+                if clamped == self.offset {
+                    // constrainDimensions(crossAxisExtent, effectiveExtent).
+                    self.size = match self.axis() {
+                        Axis::Vertical => Size::new(self.cross_axis_extent(), effective_extent),
+                        Axis::Horizontal => Size::new(effective_extent, self.cross_axis_extent()),
+                    };
+                    break;
+                }
+                self.offset = clamped;
+            }
+            count += 1;
+            if count >= max_layout_cycles {
+                break;
+            }
+        }
+        self.size
     }
 
     /// One attempt at laying the whole viewport out at `corrected_offset`,
@@ -9430,6 +9513,9 @@ impl RenderBox for RenderSliverViewport {
     /// correction is the clamp, because the offset is a number this object
     /// owns rather than a `ViewportOffset` object to negotiate with.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        if self.shrink_wrap {
+            return self.layout_shrink_wrapping(constraints);
+        }
         self.size = constraints.biggest();
         if self.children.is_empty() {
             self.content_scroll_extent = 0.0;
@@ -17088,6 +17174,7 @@ impl RenderSliverFillRemaining {
             scroll_extent,
             paint_extent: painted,
             max_paint_extent: painted,
+            layout_extent: painted,
             has_visual_overflow: extent > self.constraints.remaining_paint_extent
                 || self.constraints.scroll_offset > 0.0,
             ..SliverGeometry::ZERO
@@ -17820,6 +17907,7 @@ impl RenderBox for RenderSliverFillViewport {
             scroll_extent,
             paint_extent,
             max_paint_extent: paint_extent,
+            layout_extent: paint_extent,
             visible: paint_extent > 0.0,
             cross_axis_extent: Some(constraints.cross_axis_extent),
             ..SliverGeometry::ZERO
@@ -18199,6 +18287,7 @@ impl RenderBox for RenderSliverGrid {
             scroll_extent,
             paint_extent,
             max_paint_extent: paint_extent,
+            layout_extent: paint_extent,
             visible: paint_extent > 0.0,
             cross_axis_extent: Some(constraints.cross_axis_extent),
             ..SliverGeometry::ZERO
@@ -19956,5 +20045,93 @@ mod persistent_header_tests {
         fn children_size(&self) -> Option<Size> {
             self.child.as_ref().map(|child| child.size())
         }
+    }
+}
+
+#[cfg(test)]
+mod shrink_wrap_viewport_tests {
+    use super::*;
+
+    /// A sliver of a fixed extent, for filling a viewport.
+    struct FixedSliver {
+        scroll_extent: f32,
+    }
+    impl RenderBox for FixedSliver {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+            Size::ZERO
+        }
+        fn size(&self) -> Size {
+            Size::ZERO
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+            let paint = constraints.remaining_paint_extent.min(self.scroll_extent);
+            SliverGeometry {
+                scroll_extent: self.scroll_extent,
+                paint_extent: paint,
+                layout_extent: paint,
+                max_paint_extent: paint,
+                visible: paint > 0.0,
+                cross_axis_extent: Some(constraints.cross_axis_extent),
+                ..SliverGeometry::ZERO
+            }
+        }
+    }
+
+    #[test]
+    fn a_shrink_wrapping_viewport_takes_only_what_was_painted() {
+        // Two slivers, 100 and 250 tall: the viewport shrinks to 350, not
+        // the 800 it was offered.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_shrink_wrap()
+            .with_sliver(FixedSliver {
+                scroll_extent: 100.0,
+            })
+            .with_sliver(FixedSliver {
+                scroll_extent: 250.0,
+            });
+        viewport.layout(BoxConstraints::loose(800.0, 800.0));
+        assert_eq!(viewport.size(), Size::new(800.0, 350.0));
+
+        // A plain viewport takes everything it is offered.
+        let mut plain = RenderSliverViewport::new(AxisDirection::Down)
+            .with_sliver(FixedSliver {
+                scroll_extent: 100.0,
+            })
+            .with_sliver(FixedSliver {
+                scroll_extent: 250.0,
+            });
+        plain.layout(BoxConstraints::tight(800.0, 800.0));
+        assert_eq!(plain.size(), Size::new(800.0, 800.0));
+    }
+
+    #[test]
+    fn a_childless_shrink_wrapper_takes_the_cross_axis_only() {
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down).with_shrink_wrap();
+        viewport.layout(BoxConstraints::new(300.0, 300.0, 0.0, 800.0));
+        // maxWidth down the cross axis, minHeight up the main axis.
+        assert_eq!(viewport.size(), Size::new(300.0, 0.0));
+    }
+
+    #[test]
+    fn a_shrink_wrapper_clamps_its_offset_to_the_shrunk_content() {
+        // Content 350 tall in a wrapper that shrinks to 350: there is
+        // nothing to scroll to, and an incoming offset past the end is
+        // clamped back.
+        let mut viewport = RenderSliverViewport::new(AxisDirection::Down)
+            .with_shrink_wrap()
+            .with_offset(1000.0)
+            .with_sliver(FixedSliver {
+                scroll_extent: 100.0,
+            })
+            .with_sliver(FixedSliver {
+                scroll_extent: 250.0,
+            });
+        viewport.layout(BoxConstraints::new(300.0, 300.0, 0.0, 800.0));
+        // The offset is clamped to max(0, content - extent) = 0.
+        assert_eq!(viewport.offset(), 0.0);
     }
 }
