@@ -23,6 +23,7 @@
 #[cfg(any(test, rustflutter_stubs))]
 mod engine_test_stubs;
 
+pub mod actions;
 pub mod animation;
 pub mod app;
 pub mod borders;
@@ -52,6 +53,7 @@ pub mod semantics;
 pub mod services;
 pub mod widgets;
 
+pub use actions::{Action, ActionDispatcher, Intent};
 pub use animation::{
     AlwaysStoppedAnimation, Animatable, Animation, AnimationListener, AnimationMax, AnimationMean,
     AnimationMin, AnimationStatus, AnimationStyle, Animations, ConstantTween, Controller,

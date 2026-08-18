@@ -164,6 +164,18 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4 开工:intent/action 体系(2026-08-18)。** `actions.rs` 落地:`Intent`
+封闭枚举(上游具体 intent 即变体,含 Prioritized{intents})、`Action`
+(on_invoke/is_enabled/consumes_key 三位,toKeyEventResult 的 consumesKey 分
+支)、`ActionDispatcher`(invoke_action/maybe_invoke;first_enabled 对
+Prioritized 逐个试到启用;禁用动作跳过、无启用则键继续传播)。
+actions.dart 22 类全入账(ActionListener/FocusableActionDetector 记 P4 余量
+——action 生命周期监听与 focus+hover 合成检测器,首个消费者出现时落码)。
+element 族(framework.dart 22 类)同轮判定入账:三 widget 基类≙三 trait、
+element 子类≙ElementTree 的 WidgetKind 分支与装配路径(MultiChild 的六步
+即既有回归线)、BuildOwner/BuildScope≙整树重装配形态、ErrorWidget≙
+ErrorPlaceholder。
+
 **animation 层清零(47/47,2026-08-18)。** curves 族收尾:命名曲线≙`Curve`
 枚举变体(Ease=Eubic、Elastic*、Bounce*、Decelerate),`FlippedCurve`≙
 `flipped()`,`ParametricCurve`≙`transform`,`Interval`≙权重段的局部 t 映射,

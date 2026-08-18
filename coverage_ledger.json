@@ -816,6 +816,182 @@
     "Split": {
       "rust": "P5 余量",
       "note": "Split 曲线无消费者"
+    },
+    "StatelessWidget": {
+      "rust": "framework::Component trait",
+      "note": "无状态即 Component"
+    },
+    "StatefulWidget": {
+      "rust": "framework::StatefulComponent trait",
+      "note": "有状态即 StatefulComponent"
+    },
+    "ProxyWidget": {
+      "rust": "framework::Provider<T>",
+      "note": "代理即 Provider 家族"
+    },
+    "ParentDataWidget": {
+      "rust": "容器自持 parent 数据（无独立 widget）",
+      "note": "Positioned/Flexible 等在容器参数里"
+    },
+    "InheritedWidget": {
+      "rust": "framework::Provider + provide()",
+      "note": "依赖通知即 DependentNotify"
+    },
+    "ComponentElement": {
+      "rust": "ElementTree::WidgetKind::Component 分支",
+      "note": "枚举分支即元素类别"
+    },
+    "StatelessElement": {
+      "rust": "同上",
+      "note": "Component 分支"
+    },
+    "StatefulElement": {
+      "rust": "WidgetKind::Component + StateHandle",
+      "note": "状态挂在分支上"
+    },
+    "ProxyElement": {
+      "rust": "WidgetKind::Component + Dependent",
+      "note": "依赖路径"
+    },
+    "InheritedElement": {
+      "rust": "Dependent/Shared 的通知簿记",
+      "note": "Provider 的下游"
+    },
+    "ParentDataElement": {
+      "rust": "容器持有",
+      "note": "同 ParentDataWidget"
+    },
+    "RenderObjectElement": {
+      "rust": "WidgetKind::Render 分支",
+      "note": "装配 render 对象的分支"
+    },
+    "LeafRenderObjectElement": {
+      "rust": "LeafWidget 装配路径",
+      "note": "分支之一"
+    },
+    "SingleChildRenderObjectElement": {
+      "rust": "SingleWidget 装配路径",
+      "note": "分支之一"
+    },
+    "MultiChildRenderObjectElement": {
+      "rust": "ManyWidget + update_children 六步",
+      "note": "分支之一——六步算法已逐符号对齐（PORTING_STATUS 回归线）"
+    },
+    "RootRenderObjectElement": {
+      "rust": "ElementTree 自身",
+      "note": "根即树"
+    },
+    "RootElementMixin": {
+      "rust": "ElementTree::mount",
+      "note": "根装配职责在 mount"
+    },
+    "BuildScope": {
+      "rust": "整树重装配（每帧）",
+      "note": "无 build 脏区——crate 形态"
+    },
+    "BuildOwner": {
+      "rust": "ElementTree 的帧序",
+      "note": "同上"
+    },
+    "NotifiableElementMixin": {
+      "rust": "DependentNotify trait",
+      "note": "依赖通知位"
+    },
+    "ErrorWidget": {
+      "rust": "framework::ErrorPlaceholder",
+      "note": "错误占位"
+    },
+    "DebugCreator": {
+      "rust": "-",
+      "note": "debug 诊断树，P10 终裁"
+    },
+    "Intent": {
+      "rust": "actions::Intent 枚举",
+      "note": "封闭集:上游具体 intent 即变体(VoidCallback/DoNothing×2/Activate/ButtonActivate/Select/Dismiss/Prioritized)"
+    },
+    "Action": {
+      "rust": "actions::Action",
+      "note": "on_invoke/is_enabled/consumes_key;封闭 intent 集免泛型"
+    },
+    "ContextAction": {
+      "rust": "actions::Action(同一形)",
+      "note": "context 位在 crate 无 context 树可查——默认形直接用"
+    },
+    "CallbackAction": {
+      "rust": "actions::Action::callback",
+      "note": "构造器"
+    },
+    "ActionDispatcher": {
+      "rust": "actions::ActionDispatcher",
+      "note": "invoke_action/maybe_invoke;Prioritized 逐个试到启用"
+    },
+    "VoidCallbackIntent": {
+      "rust": "Intent::VoidCallback",
+      "note": "变体"
+    },
+    "VoidCallbackAction": {
+      "rust": "Action::callback + Intent::VoidCallback",
+      "note": "组合"
+    },
+    "DoNothingIntent": {
+      "rust": "Intent::DoNothing",
+      "note": "变体"
+    },
+    "DoNothingAndStopPropagationIntent": {
+      "rust": "Intent::DoNothingAndStopPropagation",
+      "note": "变体"
+    },
+    "DoNothingAction": {
+      "rust": "Action::do_nothing",
+      "note": "构造器;consumesKey 恒 true"
+    },
+    "ActivateIntent": {
+      "rust": "Intent::Activate",
+      "note": "变体"
+    },
+    "ButtonActivateIntent": {
+      "rust": "Intent::ButtonActivate",
+      "note": "变体"
+    },
+    "ActivateAction": {
+      "rust": "消费方以 Action::callback 声明",
+      "note": "抽象基类无独立行为"
+    },
+    "SelectIntent": {
+      "rust": "Intent::Select",
+      "note": "变体"
+    },
+    "SelectAction": {
+      "rust": "同 ActivateAction",
+      "note": "同上"
+    },
+    "DismissIntent": {
+      "rust": "Intent::Dismiss",
+      "note": "变体"
+    },
+    "DismissAction": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "PrioritizedIntents": {
+      "rust": "Intent::Prioritized{intents}",
+      "note": "变体;dispatcher 逐个试"
+    },
+    "PrioritizedAction": {
+      "rust": "dispatcher 的 first_enabled 回退",
+      "note": "逐个试逻辑在 dispatcher"
+    },
+    "Actions": {
+      "rust": "ActionDispatcher 的 actions map",
+      "note": "widget 作用域形态随 widget 波;map 即作用域内容"
+    },
+    "ActionListener": {
+      "rust": "P4 余量",
+      "note": "action 生命周期监听——首个消费者出现时落"
+    },
+    "FocusableActionDetector": {
+      "rust": "P4 余量",
+      "note": "focus+hover 合成检测器,随 material 按钮波"
     }
   },
   "blocked_engine": {
