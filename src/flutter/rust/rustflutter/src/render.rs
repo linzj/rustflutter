@@ -21255,3 +21255,83 @@ mod animated_size_tests {
         assert!(animated.size().width < 100.0);
     }
 }
+
+#[cfg(test)]
+mod layout_flush_tests {
+    use super::*;
+
+    /// A dirty relayout boundary is laid out by [`flush_layout`], and a walk
+    /// from the root is no substitute for it.
+    ///
+    /// `mark_needs_layout` stops at the enclosing boundary and deliberately
+    /// leaves every ancestor clean, so a descent from the root early returns at
+    /// the first clean object it meets and never arrives -- that is the whole
+    /// point of a boundary. The frame in [`crate::app`] therefore flushes every
+    /// frame and lets the resize test only *add* the root walk. Written the
+    /// other way round -- `resized || !flush_layout()` -- `||` short circuits
+    /// and the flush never runs on a frame that resized, which leaves the
+    /// boundary queued and its subtree unlaid-out. Whatever was rebuilt under
+    /// it then reaches paint with no size and no child offsets, and a container
+    /// that zips its children against offsets it never computed draws nothing:
+    /// a blank frame between two good ones.
+    #[test]
+    fn a_walk_from_the_root_does_not_lay_out_a_dirty_boundary() {
+        struct Counting {
+            laid_out: std::rc::Rc<std::cell::Cell<u32>>,
+            size: Size,
+        }
+
+        impl RenderBox for Counting {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                self.laid_out.set(self.laid_out.get() + 1);
+                self.size = constraints.constrain(Size::new(50.0, 50.0));
+                self.size
+            }
+            fn size(&self) -> Size {
+                self.size
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        }
+
+        let laid_out = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let child = RenderRef::new(Counting {
+            laid_out: std::rc::Rc::clone(&laid_out),
+            size: Size::ZERO,
+        });
+        // A sized parent hands its child tight constraints, which is what makes
+        // the child a relayout boundary -- the node a mark stops at.
+        let inner = RenderRef::new(
+            crate::widgets::Container::new()
+                .with_size(50.0, 50.0)
+                .with_child(child.clone()),
+        );
+        let constraints = BoxConstraints::tight(200.0, 200.0);
+        let mut root = RenderRef::new(crate::widgets::Container::new().with_child(inner.clone()));
+        root.layout(constraints);
+        let first = laid_out.get();
+        assert!(first > 0, "the first frame lays the child out");
+
+        // Something under the boundary changed. `inner` and the root stay clean.
+        child.mark_needs_layout();
+
+        // This frame replaced the root object, so the handle the frame holds
+        // remembers no constraints and the resize test answers yes -- exactly
+        // the frame on which the short-circuiting order skipped the flush.
+        let mut rebuilt_root =
+            RenderRef::new(crate::widgets::Container::new().with_child(inner.clone()));
+        let resized = rebuilt_root.was_last_laid_out_against_other(constraints);
+        assert!(resized, "a replaced root remembers no constraints");
+
+        let flushed = flush_layout();
+        if resized || !flushed {
+            rebuilt_root.layout(constraints);
+        }
+        assert_eq!(
+            laid_out.get(),
+            first + 1,
+            "the queued boundary has to be laid out on this frame: the root \
+             walk skips `inner`, which is clean and already answered these \
+             constraints"
+        );
+    }
+}

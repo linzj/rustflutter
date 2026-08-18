@@ -812,8 +812,20 @@ impl AppInstance {
         // from outside the tree, so no boundary's remembered ones can carry
         // them, and the descent is where every object is re-asked.
         let view_constraints = BoxConstraints::tight(context.size.width, context.size.height);
-        if root.was_last_laid_out_against_other(view_constraints) || !crate::render::flush_layout()
-        {
+        let resized = root.was_last_laid_out_against_other(view_constraints);
+        // `flush_layout` runs every frame, before the resize test rather than
+        // as its alternative. The two are not interchangeable: it lays out the
+        // relayout boundaries `mark_needs_layout` enqueued, and a boundary is
+        // precisely the node the mark stopped at, leaving every ancestor clean.
+        // A descent from the root therefore *cannot* reach one -- it early
+        // returns at the first clean ancestor it meets -- so a frame that took
+        // the root walk instead of the flush left those boundaries queued, and
+        // whatever had just been rebuilt under one of them went to paint having
+        // never been laid out. A container that zips its children against
+        // offsets it has not computed draws nothing at all, which is a blank
+        // frame between two good ones.
+        let flushed = crate::render::flush_layout();
+        if resized || !flushed {
             root.layout(view_constraints);
         }
         let laid_out = FrameTimings::now();
