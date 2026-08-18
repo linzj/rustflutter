@@ -51,6 +51,7 @@ pub mod scrollbar;
 pub mod scrolling;
 pub mod semantics;
 pub mod services;
+pub mod shortcuts;
 pub mod widgets;
 
 pub use actions::{Action, ActionDispatcher, Intent};
@@ -126,6 +127,7 @@ pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
 };
+pub use shortcuts::{CallbackShortcuts, LogicalKeySet, ShortcutActivator, ShortcutRegistry};
 pub use widgets::{
     Baseline, BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox,
     FractionallySizedBox, IndexedStack, LimitedBox, Offset, OverflowBox, Size, SizedOverflowBox,

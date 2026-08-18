@@ -164,6 +164,15 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:shortcuts 体系(2026-08-18)。** `shortcuts.rs` 落地:`LogicalKeySet`
+(无序集)、`ShortcutActivator` 枚举三式(KeySet——事件键在集内+全集按住+无
+他键;Single——一键+四修饰键精确;Character——字符+control+单修饰)、
+`ShortcutRegistry`(registry+manager 并一,插入序首中;`dispatch` 直连
+ActionDispatcher)、`CallbackShortcuts`(最小拼写)。测试抓到并修正一处真
+错:KeySet 匹配缺"事件自身的键在集内"半边——未注册键按住已注册集时会误
+中。shortcuts.dart 12/12 入账。`Keyboard::record` 提为 pub(测试按真实
+路径按 key)。
+
 **P4 开工:intent/action 体系(2026-08-18)。** `actions.rs` 落地:`Intent`
 封闭枚举(上游具体 intent 即变体,含 Prioritized{intents})、`Action`
 (on_invoke/is_enabled/consumes_key 三位,toKeyEventResult 的 consumesKey 分

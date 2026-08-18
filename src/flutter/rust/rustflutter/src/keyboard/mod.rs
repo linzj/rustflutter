@@ -169,7 +169,7 @@ impl Keyboard {
 
     /// Folds an event into the pressed set, correcting the logical key of a
     /// release to whatever the press reported.
-    pub(crate) fn record(&mut self, event: &mut KeyEvent) {
+    pub fn record(&mut self, event: &mut KeyEvent) {
         match event.change {
             KeyChange::Down => {
                 self.pressed.insert(event.physical, event.logical);

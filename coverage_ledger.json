@@ -992,6 +992,58 @@
     "FocusableActionDetector": {
       "rust": "P4 余量",
       "note": "focus+hover 合成检测器,随 material 按钮波"
+    },
+    "KeySet": {
+      "rust": "shortcuts::LogicalKeySet",
+      "note": "无序集合,排序去重"
+    },
+    "LogicalKeySet": {
+      "rust": "shortcuts::LogicalKeySet",
+      "note": "同一类型"
+    },
+    "ShortcutActivator": {
+      "rust": "shortcuts::ShortcutActivator 枚举",
+      "note": "封闭集:KeySet/Single/Character 三激活器"
+    },
+    "SingleActivator": {
+      "rust": "ShortcutActivator::Single",
+      "note": "一键+四修饰键精确要求"
+    },
+    "CharacterActivator": {
+      "rust": "ShortcutActivator::Character",
+      "note": "字符+control+单修饰键"
+    },
+    "ShortcutManager": {
+      "rust": "shortcuts::ShortcutRegistry",
+      "note": "registry+manager 并一:插入序匹配首中"
+    },
+    "ShortcutRegistry": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "ShortcutRegistryEntry": {
+      "rust": "ShortcutRegistry 的 entries 项",
+      "note": "同上"
+    },
+    "Shortcuts": {
+      "rust": "ShortcutRegistry 为值+Focus::with_on_key 的挂点",
+      "note": "widget 作用域形态记录为分歧;registry 即内容"
+    },
+    "CallbackShortcuts": {
+      "rust": "shortcuts::CallbackShortcuts",
+      "note": "最小拼写:激活器→回调"
+    },
+    "ShortcutMapProperty": {
+      "rust": "-",
+      "note": "诊断树专用,P10"
+    },
+    "MenuSerializableShortcut": {
+      "rust": "-",
+      "note": "菜单序列化接口,随 menu 波"
+    },
+    "ShortcutRegistrar": {
+      "rust": "ShortcutRegistry::with（构建器）",
+      "note": "widget 形注册器并入库"
     }
   },
   "blocked_engine": {
