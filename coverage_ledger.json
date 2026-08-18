@@ -1,0 +1,307 @@
+{
+  "_comment": "coverage.py 的判定台账。equivalent: 已核实的改名/合并/功能等价（锚点见 PORTING_STATUS.md）；blocked_engine: 依赖引擎能力，挂账待引擎侧立项；out_of_scope_files/_classes: web-only/无宿主/debug-only 裁剪。只登记核实过的条目，宁缺勿滥。",
+  "equivalent": {
+    "RenderPositionedBox": {
+      "rust": "RenderAlign",
+      "note": "shrinkWrap 判据与上游一致（PORTING_STATUS 回归线）"
+    },
+    "RenderConstrainedOverflowBox": {
+      "rust": "RenderOverflowBox"
+    },
+    "RenderPointerListener": {
+      "rust": "RenderPointerRegion",
+      "note": "与 RenderMouseRegion 合并为一个类型"
+    },
+    "RenderMouseRegion": {
+      "rust": "RenderPointerRegion",
+      "note": "与 RenderPointerListener 合并为一个类型"
+    },
+    "LeafRenderObjectWidget": {
+      "rust": "LeafWidget"
+    },
+    "SingleChildRenderObjectWidget": {
+      "rust": "SingleWidget"
+    },
+    "MultiChildRenderObjectWidget": {
+      "rust": "ManyWidget"
+    },
+    "OutlinedBorder": {
+      "rust": "ShapeBorder",
+      "note": "并入 ShapeBorder 枚举的 outlined 变体族（borders.rs）"
+    },
+    "CircularNotchedRectangle": {
+      "rust": "NotchedShape::Circular",
+      "note": "borders.rs"
+    },
+    "AutomaticNotchedShape": {
+      "rust": "NotchedShape::Automatic",
+      "note": "borders.rs；path difference 挂账见 PORTING_STATUS"
+    },
+    "BoxPainter": {
+      "rust": "Decoration::paint",
+      "note": "无 painter 对象——直接绘制（decoration.rs），缓存位由引擎留存层承担"
+    },
+    "FractionalOffset": {
+      "rust": "render::Alignment",
+      "note": "上游 FractionalOffset extends Alignment，同一坐标系；render.rs Alignment 即其本体"
+    },
+    "GradientRotation": {
+      "rust": "painting::GradientTransform::Rotation",
+      "note": "GradientTransform 抽象基类与唯一实现并为一个枚举（painting.rs）"
+    },
+    "AssetBundleImageKey": {
+      "rust": "image::ResolvedImageKey",
+      "note": "image.rs"
+    },
+    "AssetBundleImageProvider": {
+      "rust": "ImageProvider::Asset",
+      "note": "上游子类族并为枚举（image.rs）"
+    },
+    "ResizeImageKey": {
+      "rust": "ResolvedImageKey（resize 后缀）",
+      "note": "image.rs cache_key"
+    },
+    "ResizeImage": {
+      "rust": "ImageProvider::Resize",
+      "note": "目标尺寸携带；引擎 decode 无 resize 位——分歧见 PORTING_STATUS"
+    },
+    "NetworkImage": {
+      "rust": "ImageProvider::Network",
+      "note": "bytes 由调用方 fetch 回调供（crate 无 HTTP 栈）"
+    },
+    "FileImage": {
+      "rust": "ImageProvider::File",
+      "note": "std::fs 同步读"
+    },
+    "MemoryImage": {
+      "rust": "ImageProvider::Memory",
+      "note": "image.rs"
+    },
+    "ExactAssetImage": {
+      "rust": "ImageProvider::Asset",
+      "note": "scale 直取不作分辨率调整"
+    },
+    "AssetImage": {
+      "rust": "ImageProvider::Asset",
+      "note": "image.rs；AssetBundle trait 是 E4 的种子"
+    },
+    "OneFrameImageStreamCompleter": {
+      "rust": "ImageStreamCompleter::one_frame",
+      "note": "单帧/多帧合并——引擎只出一帧"
+    },
+    "MultiFrameImageStreamCompleter": {
+      "rust": "ImageStreamCompleter::pending",
+      "note": "动画图暂持首帧——分歧见 PORTING_STATUS"
+    },
+    "InlineSpan": {
+      "rust": "widgets::TextSpan + painting::shape_rich",
+      "note": "上游 span 树在此侧拍平为 run 序列（TextSpan 文档自陈）"
+    },
+    "PlaceholderSpan": {
+      "rust": "painting::PlaceholderDimensions",
+      "note": "占位数据已立，嵌入富文本待引擎 shaper 位——分歧见 PORTING_STATUS"
+    },
+    "PaintingBinding": {
+      "rust": "线程本地惰性初始化",
+      "note": "IMAGES/SHAPED 缓存与字体注册按需起，无显式 binding 单例"
+    },
+    "ValueKey": {
+      "rust": "Option<u64>（foundation::keys::value）",
+      "note": "crate 的 Key 即按值比较的 u64"
+    },
+    "ObjectKey": {
+      "rust": "foundation::keys::object",
+      "note": "地址即身份"
+    },
+    "UniqueKey": {
+      "rust": "foundation::keys::unique",
+      "note": "原子计数器，高位独立段"
+    },
+    "LabeledGlobalKey": {
+      "rust": "framework::GlobalKey",
+      "note": "debug 标签仅诊断用，crate 的 GlobalKey 按数即可"
+    },
+    "GlobalObjectKey": {
+      "rust": "framework::GlobalKey + keys::object",
+      "note": "对象身份的全局键"
+    },
+    "ValueListenable": {
+      "rust": "foundation::ValueNotifier（读侧即 value()）",
+      "note": "读接口与持有者合一"
+    },
+    "LocalKey": {
+      "rust": "Option<u64>",
+      "note": "局部键基类——crate 的 Key 类型即其本体"
+    },
+    "ListBodyParentData": {
+      "rust": "RenderListBody 的 offsets: Vec<Offset>",
+      "note": "crate 无 parentData 对象——子位置由容器持有（同 Stack/Wrap 的既有形态）"
+    },
+    "RenderProxyBox": {
+      "rust": "各具体代理盒（render.rs）",
+      "note": "crate 无代理基类——每个代理盒自带 child/size；RenderRef 即协议"
+    },
+    "RenderProxyBoxMixin": {
+      "rust": "同上",
+      "note": "基类机械件与基类一体"
+    },
+    "RenderProxyBoxWithHitTestBehavior": {
+      "rust": "RenderPointerRegion 的 behavior 参数",
+      "note": "hit-test behavior 已是 PointerRegion 的字段"
+    },
+    "RenderIgnoreBaseline": {
+      "rust": "代理盒默认基线路径（返回 None 的变体无消费者）",
+      "note": "需要时按 child 基线置 None 一行可加"
+    },
+    "RenderAnimatedOpacity": {
+      "rust": "RenderOpacity + implicit::Animated",
+      "note": "动画侧由 Animated<T> 驱动 opacity，fade 已走此路"
+    },
+    "RenderAnimatedOpacityMixin": {
+      "rust": "同上",
+      "note": "mixin 与类一体"
+    },
+    "TableCellParentData": {
+      "rust": "RenderTable 的 cell_offsets/cell_alignments",
+      "note": "无 parentData 对象——容器持有（同 ListBody/Stack 形态）"
+    },
+    "IntrinsicColumnWidth": {
+      "rust": "TableColumnWidth::Intrinsic",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "FixedColumnWidth": {
+      "rust": "TableColumnWidth::Fixed",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "FractionColumnWidth": {
+      "rust": "TableColumnWidth::Fraction",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "FlexColumnWidth": {
+      "rust": "TableColumnWidth::Flex",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "MaxColumnWidth": {
+      "rust": "TableColumnWidth::Max",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "MinColumnWidth": {
+      "rust": "TableColumnWidth::Min",
+      "note": "上游子类族并为一个枚举（render.rs），算式逐条对齐"
+    },
+    "FlowParentData": {
+      "rust": "RenderFlow 的 transforms: Vec<Option<Matrix4>>",
+      "note": "变换由容器持有（同上游 private 化）"
+    },
+    "RenderSliverFillRemainingWithScrollable": {
+      "rust": "RenderSliverFillRemaining::new(Scrollable, …)",
+      "note": "三式并一型,模式枚举即上游三类（render.rs）"
+    },
+    "RenderSliverFillRemaining": {
+      "rust": "RenderSliverFillRemaining::new(Fill, …)",
+      "note": "同上"
+    },
+    "RenderSliverFillRemainingAndOverscroll": {
+      "rust": "RenderSliverFillRemaining::new(AndOverscroll, …)",
+      "note": "同上"
+    },
+    "RenderSliverFixedExtentBoxAdaptor": {
+      "rust": "RenderSliverList::with_item_extent",
+      "note": "定长窗口算术已在列表内(item_extent+估位重播种即 getMinChildIndexForScrollOffset)"
+    },
+    "RenderSliverVariedExtentList": {
+      "rust": "RenderSliverList(逐子实长)",
+      "note": "无定长时即逐子实长形态"
+    },
+    "KeepAliveParentDataMixin": {
+      "rust": "无 keepAlive——离窗即弃",
+      "note": "PORTING_STATUS sliver 侧自陈的记录在案分歧"
+    },
+    "RenderSliverWithKeepAliveMixin": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "RenderSliverBoxChildManager": {
+      "rust": "child_count+build_child 闭包",
+      "note": "管理器即计数与构建器（RenderSliverList 文档自陈）"
+    },
+    "RenderSliverFixedExtentList": {
+      "rust": "RenderSliverList::with_item_extent",
+      "note": "widgets 层拼写到渲染层定长模式的同一路径"
+    },
+    "SliverMultiBoxAdaptorParentData": {
+      "rust": "SliverListItem.layout_offset",
+      "note": "索引与偏移由容器持有"
+    },
+    "RenderSliverMultiBoxAdaptor": {
+      "rust": "RenderSliverList 的窗口机制",
+      "note": "惰性物化+GC+校正协议即该基类职责，文档自陈"
+    },
+    "RenderProxySliver": {
+      "rust": "RenderProxySliver::new(PassThrough, …)",
+      "note": "基类+子类并为一型,行为枚举即上游各类（render.rs）"
+    },
+    "RenderSliverOpacity": {
+      "rust": "ProxySliverBehavior::Opacity",
+      "note": "save-layer 组子,零透明不绘不命中"
+    },
+    "RenderSliverIgnorePointer": {
+      "rust": "ProxySliverBehavior::IgnorePointer",
+      "note": "布局绘制照旧,命中恒否"
+    },
+    "RenderSliverOffstage": {
+      "rust": "ProxySliverBehavior::Offstage",
+      "note": "布局照旧,不绘不命中"
+    },
+    "RenderSliverAnimatedOpacity": {
+      "rust": "ProxySliverBehavior::Opacity",
+      "note": "动画侧由驱动方喂 opacity,与 RenderOpacity/Animated 同形态"
+    },
+    "RenderSliverConstrainedCrossAxis": {
+      "rust": "ProxySliverBehavior::ConstrainedCrossAxis",
+      "note": "子取 min(maxExtent, incoming),geometry 同报"
+    },
+    "SliverGridParentData": {
+      "rust": "geometry_for_child_index 的逐子现算",
+      "note": "无 parentData 对象——tile 几何按索引推导"
+    },
+    "SliverGridLayout": {
+      "rust": "SliverGridRegularTileLayout",
+      "note": "抽象基类与唯一实现并为一个类型（delegates 只产这一种）"
+    },
+    "SliverGridDelegateWithFixedCrossAxisCount": {
+      "rust": "SliverGridDelegate::FixedCrossAxisCount",
+      "note": "两个 delegate 并为一个枚举，getLayout 算式逐条对齐（render.rs）"
+    },
+    "SliverGridDelegateWithMaxCrossAxisExtent": {
+      "rust": "SliverGridDelegate::MaxCrossAxisExtent",
+      "note": "同上"
+    }
+  },
+  "blocked_engine": {
+    "Texture": "渲染 ABI 无 external texture 通路",
+    "TextureBox": "渲染 ABI 无 external texture 通路",
+    "AndroidView": "无 platform view 通路",
+    "UiKitView": "无 platform view 通路",
+    "AppKitView": "无 platform view 通路",
+    "PlatformViewLink": "无 platform view 通路",
+    "PlatformViewSurface": "无 platform view 通路",
+    "RenderAndroidView": "无 platform view 通路",
+    "RenderUiKitView": "无 platform view 通路",
+    "RenderAppKitView": "无 platform view 通路",
+    "RenderPerformanceOverlay": "引擎栅格统计未过 ABI",
+    "ShaderWarmUp": "引擎无 shader 预热通路（Impeller 管线编译时机在绘制），框架侧无从预热",
+    "RenderLeaderLayer": "引擎无 LayerLink（层锚点/跟随）通路",
+    "RenderFollowerLayer": "引擎无 LayerLink（层锚点/跟随）通路"
+  },
+  "out_of_scope_files": {},
+  "out_of_scope_classes": {
+    "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",
+    "TransformProperty": "同上，诊断树专用",
+    "ClipContext": "debug 绘制辅助（painting/clip.dart 仅 debug 断言用）",
+    "ImageSizeInfo": "debug 图片尺寸上报（painting/debug.dart）"
+  },
+  "equivalent_extra": {
+    "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"
+  }
+}
