@@ -756,6 +756,66 @@
     "AnimationController": {
       "rust": "animation::Controller",
       "note": "既有——value/tick/forward/reverse/stop"
+    },
+    "Curves": {
+      "rust": "animation::Curve 枚举的变体",
+      "note": "命名曲线即枚举：Linear/Ease(Cubic)/Elastic*/Bounce*/Decelerate 一一对应"
+    },
+    "FlippedCurve": {
+      "rust": "animation::Curve::flipped()",
+      "note": "既有方法"
+    },
+    "ElasticInCurve": {
+      "rust": "Curve::ElasticIn",
+      "note": "枚举变体"
+    },
+    "ElasticOutCurve": {
+      "rust": "Curve::ElasticOut",
+      "note": "枚举变体"
+    },
+    "ElasticInOutCurve": {
+      "rust": "Curve::ElasticInOut",
+      "note": "枚举变体"
+    },
+    "ParametricCurve": {
+      "rust": "Curve::transform(t)",
+      "note": "参数曲线即 transform"
+    },
+    "Interval": {
+      "rust": "P5 余量：TweenSequenceItem 的权重段即其等价",
+      "note": "局部 t 映射同 _evaluate；待 AnimatedBuilder 波次接 widget 面"
+    },
+    "Threshold": {
+      "rust": "StepTween 的 0/1 特例",
+      "note": "t<t?0:1 即 StepTween(begin:0,end:1) 的两步"
+    },
+    "SawTooth": {
+      "rust": "Repeat::Loop + value 取模",
+      "note": "锯齿即重复取余；widget 面待接"
+    },
+    "ThreePointCubic": {
+      "rust": "Curve::Cubic(四点)的一个端点固定",
+      "note": "控制点固定的三次即枚举可表"
+    },
+    "Curve2D": {
+      "rust": "P5 余量",
+      "note": "2D 路径曲线（CatmullRom 一族）——无消费者，留待首个使用"
+    },
+    "Curve2DSample": {
+      "rust": "P5 余量",
+      "note": "同上"
+    },
+    "CatmullRomSpline": {
+      "rust": "P5 余量",
+      "note": "同上"
+    },
+    "CatmullRomCurve": {
+      "rust": "P5 余量",
+      "note": "同上"
+    },
+    "Split": {
+      "rust": "P5 余量",
+      "note": "Split 曲线无消费者"
     }
   },
   "blocked_engine": {

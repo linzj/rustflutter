@@ -164,6 +164,12 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**animation 层清零(47/47,2026-08-18)。** curves 族收尾:命名曲线≙`Curve`
+枚举变体(Ease=Eubic、Elastic*、Bounce*、Decelerate),`FlippedCurve`≙
+`flipped()`,`ParametricCurve`≙`transform`,`Interval`≙权重段的局部 t 映射,
+`Threshold`≙StepTween 两步,`SawTooth`≙Repeat 取余;CatmullRom/2D/Split 五件
+无消费者,记 P5 余量(首个使用者出现时落码)。
+
 **P5 动画对象图(2026-08-18)。** `Animation` trait(value/status/listener 四
 面)+`AnimationStatus` 四态与 isDismissed/isCompleted/isAnimating、
 `AnimationListeners` 共用簿记(懒/急/本地值/本地状态四个 mixin 并一)、
