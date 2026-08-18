@@ -101,14 +101,18 @@ if (enable_unittests) {
 
     sources = [
       "rustflutter/src/app.rs",
+      "rustflutter/src/borders.rs",
       "rustflutter/src/engine.rs",
       "rustflutter/src/engine_test_stubs.rs",
       "rustflutter/src/animation.rs",
       "rustflutter/src/components.rs",
       "rustflutter/src/controls.rs",
+      "rustflutter/src/decoration.rs",
       "rustflutter/src/editable.rs",
       "rustflutter/src/focus.rs",
+      "rustflutter/src/foundation.rs",
       "rustflutter/src/framework.rs",
+      "rustflutter/src/image.rs",
       "rustflutter/src/gestures.rs",
       "rustflutter/src/implicit.rs",
       "rustflutter/src/ink.rs",

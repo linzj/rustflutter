@@ -25,14 +25,18 @@ mod engine_test_stubs;
 
 pub mod animation;
 pub mod app;
+pub mod borders;
 pub mod components;
 pub mod controls;
+pub mod decoration;
 pub mod direction;
 pub mod editable;
 pub mod engine;
 pub mod focus;
+pub mod foundation;
 pub mod framework;
 pub mod gestures;
+pub mod image;
 pub mod implicit;
 pub mod ink;
 pub mod keyboard;
@@ -57,6 +61,14 @@ pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
+pub use borders::{
+    BeveledRectangleBorder, Border, BorderDirectional, BorderRadius, BorderRadiusDirectional,
+    BorderRadiusGeometry, BorderSide, BorderStyle, BoxBorder, BoxShape, CircleBorder,
+    ContinuousRectangleBorder, EdgeInsetsGeometry, LinearBorder, LinearBorderEdge, NotchedShape,
+    OvalBorder, Radius, RoundedRectangleBorder, RoundedSuperellipseBorder, STROKE_ALIGN_CENTER,
+    STROKE_ALIGN_INSIDE, STROKE_ALIGN_OUTSIDE, ShapeBorder, ShapeDecoration, StadiumBorder,
+    StarBorder, TableBorder,
+};
 pub use components::{
     AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
@@ -65,6 +77,7 @@ pub use controls::{
     Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
     Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
 };
+pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
 pub use direction::{TextDirection, current_direction, direction_of, directionality};
 pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use engine::{
@@ -72,10 +85,18 @@ pub use engine::{
     TextStyle,
 };
 pub use focus::{Focus, KeyResult, focusable};
+pub use foundation::{
+    ChangeNotifier, Listenable, ListenableMerge, ValueNotifier, keys as foundation_keys,
+};
 pub use framework::{
     AnyWidget, Component, ElementTree, GlobalKey, Key, RenderWidget, StateHandle,
     StatefulComponent, component, keyed_leaf, keyed_many, keyed_single, leaf, many, provide,
     single, stateful, with_global_key,
+};
+pub use image::{
+    AssetBundle, ImageChunkEvent, ImageConfiguration, ImageInfo, ImageProvider, ImageStream,
+    ImageStreamCompleter, ImageStreamListener, NetworkImageLoadException, ResizeImagePolicy,
+    set_root_bundle,
 };
 pub use implicit::{Animated, Lerp, animated};
 pub use ink::{Ink, ink};
@@ -87,8 +108,11 @@ pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
 pub use painting::{
-    BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap, StrokeJoin,
-    TileMode,
+    Accumulator, Affine, BlendMode, ClipBehavior, ClipOp, ColorSwatch, DecorationImage, FillType,
+    Gradient, GradientTransform, HSLColor, HSVColor, Image, InlineSpanSemanticsInformation,
+    LinearGradient, Matrix4, PlaceholderAlignment, PlaceholderDimensions, RadialGradient,
+    RenderPath, ShaderGradient, StrokeCap, StrokeJoin, StrutStyle, SweepGradient, TextBaseline,
+    TextPainter, TextScaler, TileMode, WordBoundary, matrix_utils,
 };
 pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};

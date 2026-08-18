@@ -177,6 +177,12 @@ enum Layer {
 pub struct Container {
     fill: Option<Fill>,
     corner_radius: f32,
+    /// Per-corner rounding when the caller wants more than one radius;
+    /// upstream `BoxDecoration.borderRadius`.
+    border_radius: Option<crate::borders::BorderRadius>,
+    /// A whole decoration, upstream `Container.decoration`; when set it
+    /// replaces the fill/radius/border fields and drives the padding.
+    decoration: Option<crate::decoration::Decoration>,
     border_width: f32,
     border_color: Color,
     shadows: Vec<crate::painting::BoxShadow>,
@@ -197,6 +203,8 @@ impl Container {
         Container {
             fill: None,
             corner_radius: 0.0,
+            border_radius: None,
+            decoration: None,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             shadows: Vec::new(),
@@ -232,6 +240,19 @@ impl Container {
 
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
+        self
+    }
+
+    /// Per-corner rounding, upstream `BoxDecoration.borderRadius`. Takes
+    /// precedence over [`Container::with_corner_radius`].
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.border_radius = Some(radius);
+        self
+    }
+
+    /// A whole decoration, upstream `Container(decoration:)`.
+    pub fn with_decoration(mut self, decoration: crate::decoration::Decoration) -> Self {
+        self.decoration = Some(decoration);
         self
     }
 
@@ -304,10 +325,22 @@ impl Container {
         // decoration carrying a border: a border insets the content, and the
         // container says so with a padding wrapper rather than by making the
         // decoration one.
-        if self.padding != EdgeInsets::ZERO || self.border_width > 0.0 {
+        if self.padding != EdgeInsets::ZERO
+            || self.border_width > 0.0
+            || self.decoration.as_ref().is_some_and(|decoration| {
+                decoration
+                    .padding()
+                    .resolve(crate::direction::current_direction())
+                    != EdgeInsets::ZERO
+            })
+        {
             shape.push(Layer::Padding);
         }
-        if self.fill.is_some() || self.border_width > 0.0 || !self.shadows.is_empty() {
+        if self.decoration.is_some()
+            || self.fill.is_some()
+            || self.border_width > 0.0
+            || !self.shadows.is_empty()
+        {
             shape.push(Layer::Decoration);
         }
         if self.width.is_some() || self.height.is_some() {
@@ -325,7 +358,16 @@ impl Container {
     /// border's widths as insets, so that what the border frames is the
     /// content and not the middle of the stroke.
     fn padding_including_decoration(&self) -> EdgeInsets {
-        self.padding.add(EdgeInsets::all(self.border_width))
+        match &self.decoration {
+            // Upstream's `_paddingIncludingDecoration` over
+            // `decoration.padding` -- the border's widths as insets.
+            Some(decoration) => self.padding.add(
+                decoration
+                    .padding()
+                    .resolve(crate::direction::current_direction()),
+            ),
+            None => self.padding.add(EdgeInsets::all(self.border_width)),
+        }
     }
 
     /// Builds one wrapper around `inner`, as this container is configured now.
@@ -346,13 +388,22 @@ impl Container {
                 ))
             }
             Layer::Decoration => {
-                let mut decorated = RenderDecoratedBox::new()
-                    .with_corner_radius(self.corner_radius)
-                    .with_shadows(self.shadows.clone())
-                    .with_border(self.border_width, self.border_color);
-                if let Some(fill) = self.fill.clone() {
-                    decorated = decorated.with_fill(fill);
-                }
+                let mut decorated = match self.decoration.clone() {
+                    Some(decoration) => RenderDecoratedBox::new().with_decoration(decoration),
+                    None => {
+                        let mut decorated = RenderDecoratedBox::new()
+                            .with_corner_radius(self.corner_radius)
+                            .with_shadows(self.shadows.clone())
+                            .with_border(self.border_width, self.border_color);
+                        if let Some(radius) = self.border_radius {
+                            decorated = decorated.with_border_radius(radius);
+                        }
+                        if let Some(fill) = self.fill.clone() {
+                            decorated = decorated.with_fill(fill);
+                        }
+                        decorated
+                    }
+                };
                 if let Some(inner) = inner {
                     decorated = decorated.with_child(inner);
                 }
@@ -1582,6 +1633,27 @@ impl ClipRRect {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(radius: f32, child: impl RenderBox + 'static) -> RenderClipRect {
         RenderClipRect::new(child).with_corner_radius(radius)
+    }
+
+    /// Per-corner rounding, upstream `ClipRRect(borderRadius:)`.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn rounded(
+        radius: crate::borders::BorderRadius,
+        child: impl RenderBox + 'static,
+    ) -> RenderClipRect {
+        RenderClipRect::new(child).with_border_radius(radius)
+    }
+
+    /// `ClipRRect(borderRadius: BorderRadiusDirectional(...))`: resolved
+    /// against the ambient direction here, since the render tree carries
+    /// physical corners only.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn directional(
+        radius: crate::borders::BorderRadiusDirectional,
+        child: impl RenderBox + 'static,
+    ) -> RenderClipRect {
+        RenderClipRect::new(child)
+            .with_border_radius(radius.resolve(crate::direction::current_direction()))
     }
 }
 

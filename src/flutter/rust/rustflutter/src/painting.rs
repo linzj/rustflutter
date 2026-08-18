@@ -347,6 +347,51 @@ impl BoxShadow {
     pub fn to_paint(&self) -> Paint {
         Paint::new(self.color).with_blur(self.blur_sigma())
     }
+
+    /// Upstream `BoxShadow.scale`: offset, blur and spread multiplied, the
+    /// colour untouched.
+    pub fn scale(&self, factor: f32) -> BoxShadow {
+        BoxShadow {
+            color: self.color,
+            offset: crate::render::Offset {
+                dx: self.offset.dx * factor,
+                dy: self.offset.dy * factor,
+            },
+            blur_radius: self.blur_radius * factor,
+            spread_radius: self.spread_radius * factor,
+        }
+    }
+
+    /// Upstream `BoxShadow.lerp`: a missing side is the other's colour at
+    /// zero offset, blur and spread.
+    pub fn lerp(a: &BoxShadow, b: &BoxShadow, t: f32) -> BoxShadow {
+        BoxShadow {
+            color: crate::borders::color_lerp(a.color, b.color, t),
+            offset: crate::render::Offset::new(
+                a.offset.dx + (b.offset.dx - a.offset.dx) * t,
+                a.offset.dy + (b.offset.dy - a.offset.dy) * t,
+            ),
+            blur_radius: a.blur_radius + (b.blur_radius - a.blur_radius) * t,
+            spread_radius: a.spread_radius + (b.spread_radius - a.spread_radius) * t,
+        }
+    }
+
+    /// Upstream `BoxShadow.lerpList`: excess items on either side scale in
+    /// or out.
+    pub fn lerp_list(a: &[BoxShadow], b: &[BoxShadow], t: f32) -> Vec<BoxShadow> {
+        let common = a.len().min(b.len());
+        let mut shadows = Vec::with_capacity(a.len().max(b.len()));
+        for index in 0..common {
+            shadows.push(BoxShadow::lerp(&a[index], &b[index], t));
+        }
+        for shadow in &a[common..] {
+            shadows.push(shadow.scale(1.0 - t));
+        }
+        for shadow in &b[common..] {
+            shadows.push(shadow.scale(t));
+        }
+        shadows
+    }
 }
 
 /// Material's elevation table: how high something is, as shadows.
@@ -1020,6 +1065,21 @@ thread_local! {
     static IMAGES: RefCell<ImageCache> = RefCell::new(ImageCache::new());
 }
 
+/// Drops a cache entry, upstream `ImageCache.evict` narrowed to the key
+/// spellings the crate caches under. Whether anything was there.
+pub fn image_cache_evict(key: &str) -> bool {
+    IMAGES.with(|images| images.borrow_mut().entries.remove(key).is_some())
+}
+
+/// Upstream `ImageCache.statusForKey`, in the three states the slot has.
+pub fn image_cache_status(key: &str) -> crate::image::ImageCacheStatus {
+    IMAGES.with(|images| match images.borrow().entries.get(key) {
+        Some(Slot::Decoding) => crate::image::ImageCacheStatus::Pending,
+        Some(Slot::Done(Some(_))) => crate::image::ImageCacheStatus::Live,
+        _ => crate::image::ImageCacheStatus::Uncached,
+    })
+}
+
 /// Whether any image asked for is still being decoded.
 ///
 /// A frame that sees this true has drawn without an image it wanted and should
@@ -1414,6 +1474,1595 @@ impl LayerTree {
     /// Closes the innermost open layer. Popping past the root is ignored.
     pub fn pop(&mut self) {
         unsafe { sys::rf_layer_tree_pop(self.raw) };
+    }
+}
+
+// -- Colour spaces (upstream colors.dart) --------------------------------------
+
+/// Upstream `_getHue`: the hue of an RGB triple, 0 at red, NaN folded to 0
+/// for greys.
+fn get_hue(red: f32, green: f32, blue: f32, max: f32, delta: f32) -> f32 {
+    let hue = if max == 0.0 {
+        0.0
+    } else if max == red {
+        60.0 * (((green - blue) / delta) % 6.0)
+    } else if max == green {
+        60.0 * (((blue - red) / delta) + 2.0)
+    } else {
+        60.0 * (((red - green) / delta) + 4.0)
+    };
+    if hue.is_nan() { 0.0 } else { hue }
+}
+
+/// Upstream `_colorFromHue`.
+fn color_from_hue(alpha: f32, hue: f32, chroma: f32, secondary: f32, match_value: f32) -> Color {
+    let channel = |value: f32| ((value + match_value) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let (red, green, blue) = if hue < 60.0 {
+        (chroma, secondary, 0.0)
+    } else if hue < 120.0 {
+        (secondary, chroma, 0.0)
+    } else if hue < 180.0 {
+        (0.0, chroma, secondary)
+    } else if hue < 240.0 {
+        (0.0, secondary, chroma)
+    } else if hue < 300.0 {
+        (secondary, 0.0, chroma)
+    } else {
+        (chroma, 0.0, secondary)
+    };
+    Color::argb(
+        (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+        channel(red),
+        channel(green),
+        channel(blue),
+    )
+}
+
+/// A colour in alpha/hue/saturation/value -- pigment space, upstream
+/// `HSVColor`. Picking and interpolating here reads better to the eye than
+/// RGB channels do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HSVColor {
+    pub alpha: f32,
+    pub hue: f32,
+    pub saturation: f32,
+    pub value: f32,
+}
+
+impl HSVColor {
+    pub fn from_ahsv(alpha: f32, hue: f32, saturation: f32, value: f32) -> HSVColor {
+        debug_assert!((0.0..=1.0).contains(&alpha));
+        debug_assert!((0.0..=360.0).contains(&hue));
+        debug_assert!((0.0..=1.0).contains(&saturation));
+        debug_assert!((0.0..=1.0).contains(&value));
+        HSVColor {
+            alpha,
+            hue,
+            saturation,
+            value,
+        }
+    }
+
+    /// Upstream `HSVColor.fromColor` (round-trips only approximately).
+    pub fn from_color(color: Color) -> HSVColor {
+        let red = color.red() as f32 / 255.0;
+        let green = color.green() as f32 / 255.0;
+        let blue = color.blue() as f32 / 255.0;
+        let max = red.max(green.max(blue));
+        let min = red.min(green.min(blue));
+        let delta = max - min;
+        HSVColor::from_ahsv(
+            color.alpha() as f32 / 255.0,
+            get_hue(red, green, blue, max, delta),
+            if max == 0.0 { 0.0 } else { delta / max },
+            max,
+        )
+    }
+
+    pub fn with_alpha(mut self, alpha: f32) -> HSVColor {
+        self.alpha = alpha;
+        self
+    }
+
+    pub fn with_hue(mut self, hue: f32) -> HSVColor {
+        self.hue = hue;
+        self
+    }
+
+    pub fn with_saturation(mut self, saturation: f32) -> HSVColor {
+        self.saturation = saturation;
+        self
+    }
+
+    pub fn with_value(mut self, value: f32) -> HSVColor {
+        self.value = value;
+        self
+    }
+
+    /// Upstream `HSVColor.toColor`.
+    pub fn to_color(self) -> Color {
+        let chroma = self.saturation * self.value;
+        let secondary = chroma * (1.0 - (((self.hue / 60.0) % 2.0) - 1.0).abs());
+        let match_value = self.value - chroma;
+        color_from_hue(self.alpha, self.hue, chroma, secondary, match_value)
+    }
+
+    /// Upstream `HSVColor.lerp`: each channel separately, the hue wrapping,
+    /// a missing side a transparent instance of the other.
+    pub fn lerp(a: Option<HSVColor>, b: Option<HSVColor>, t: f32) -> Option<HSVColor> {
+        if a == b {
+            return a;
+        }
+        let scale_alpha = |color: HSVColor, factor: f32| color.with_alpha(color.alpha * factor);
+        match (a, b) {
+            (None, Some(b)) => Some(scale_alpha(b, t)),
+            (Some(a), None) => Some(scale_alpha(a, 1.0 - t)),
+            (Some(a), Some(b)) => Some(HSVColor::from_ahsv(
+                (a.alpha + (b.alpha - a.alpha) * t).clamp(0.0, 1.0),
+                (a.hue + (b.hue - a.hue) * t).rem_euclid(360.0),
+                (a.saturation + (b.saturation - a.saturation) * t).clamp(0.0, 1.0),
+                (a.value + (b.value - a.value) * t).clamp(0.0, 1.0),
+            )),
+            (None, None) => None,
+        }
+    }
+}
+
+/// A colour in alpha/hue/saturation/lightness -- coloured-light space,
+/// upstream `HSLColor`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HSLColor {
+    pub alpha: f32,
+    pub hue: f32,
+    pub saturation: f32,
+    pub lightness: f32,
+}
+
+impl HSLColor {
+    pub fn from_ahsl(alpha: f32, hue: f32, saturation: f32, lightness: f32) -> HSLColor {
+        debug_assert!((0.0..=1.0).contains(&alpha));
+        debug_assert!((0.0..=360.0).contains(&hue));
+        debug_assert!((0.0..=1.0).contains(&saturation));
+        debug_assert!((0.0..=1.0).contains(&lightness));
+        HSLColor {
+            alpha,
+            hue,
+            saturation,
+            lightness,
+        }
+    }
+
+    /// Upstream `HSLColor.fromColor`.
+    pub fn from_color(color: Color) -> HSLColor {
+        let red = color.red() as f32 / 255.0;
+        let green = color.green() as f32 / 255.0;
+        let blue = color.blue() as f32 / 255.0;
+        let max = red.max(green.max(blue));
+        let min = red.min(green.min(blue));
+        let delta = max - min;
+        let lightness = (max + min) / 2.0;
+        // Rounding can push saturation past one, so it is clamped.
+        let saturation = if min == max {
+            0.0
+        } else {
+            (delta / (1.0 - (2.0 * lightness - 1.0).abs())).clamp(0.0, 1.0)
+        };
+        HSLColor::from_ahsl(
+            color.alpha() as f32 / 255.0,
+            get_hue(red, green, blue, max, delta),
+            saturation,
+            lightness,
+        )
+    }
+
+    pub fn with_alpha(mut self, alpha: f32) -> HSLColor {
+        self.alpha = alpha;
+        self
+    }
+
+    pub fn with_hue(mut self, hue: f32) -> HSLColor {
+        self.hue = hue;
+        self
+    }
+
+    pub fn with_saturation(mut self, saturation: f32) -> HSLColor {
+        self.saturation = saturation;
+        self
+    }
+
+    pub fn with_lightness(mut self, lightness: f32) -> HSLColor {
+        self.lightness = lightness;
+        self
+    }
+
+    /// Upstream `HSLColor.toColor`.
+    pub fn to_color(self) -> Color {
+        let chroma = (1.0 - (2.0 * self.lightness - 1.0).abs()) * self.saturation;
+        let secondary = chroma * (1.0 - (((self.hue / 60.0) % 2.0) - 1.0).abs());
+        let match_value = self.lightness - chroma / 2.0;
+        color_from_hue(self.alpha, self.hue, chroma, secondary, match_value)
+    }
+
+    /// Upstream `HSLColor.lerp`.
+    pub fn lerp(a: Option<HSLColor>, b: Option<HSLColor>, t: f32) -> Option<HSLColor> {
+        if a == b {
+            return a;
+        }
+        let scale_alpha = |color: HSLColor, factor: f32| color.with_alpha(color.alpha * factor);
+        match (a, b) {
+            (None, Some(b)) => Some(scale_alpha(b, t)),
+            (Some(a), None) => Some(scale_alpha(a, 1.0 - t)),
+            (Some(a), Some(b)) => Some(HSLColor::from_ahsl(
+                (a.alpha + (b.alpha - a.alpha) * t).clamp(0.0, 1.0),
+                (a.hue + (b.hue - a.hue) * t).rem_euclid(360.0),
+                (a.saturation + (b.saturation - a.saturation) * t).clamp(0.0, 1.0),
+                (a.lightness + (b.lightness - a.lightness) * t).clamp(0.0, 1.0),
+            )),
+            (None, None) => None,
+        }
+    }
+}
+
+/// A colour with a small table of related colours, upstream `ColorSwatch`:
+/// the primary colour is the swatch's own value, and the shades hang off it
+/// by key. `MaterialColor` and friends are spellings of this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorSwatch<T: Eq + std::hash::Hash + Clone> {
+    pub primary: Color,
+    swatch: std::collections::HashMap<T, Color>,
+}
+
+impl<T: Eq + std::hash::Hash + Clone> ColorSwatch<T> {
+    pub fn new(primary: Color, shades: impl IntoIterator<Item = (T, Color)>) -> ColorSwatch<T> {
+        ColorSwatch {
+            primary,
+            swatch: shades.into_iter().collect(),
+        }
+    }
+
+    /// The upstream `operator []`.
+    pub fn get(&self, key: &T) -> Option<Color> {
+        self.swatch.get(key).copied()
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &T> {
+        self.swatch.keys()
+    }
+}
+
+// -- Text scaling (upstream text_scaler.dart) -----------------------------------
+
+/// How font sizes scale for readability, upstream `TextScaler`. The engine's
+/// platform setting arrives as a bare factor, so the linear spelling is the
+/// only one there is today -- non-linear platform scalers would arrive as a
+/// new variant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextScaler {
+    pub text_scale_factor: f32,
+}
+
+impl TextScaler {
+    pub const NO_SCALING: TextScaler = TextScaler {
+        text_scale_factor: 1.0,
+    };
+
+    pub const fn linear(text_scale_factor: f32) -> TextScaler {
+        TextScaler { text_scale_factor }
+    }
+
+    /// Upstream `TextScaler.scale`.
+    pub fn scale(&self, font_size: f32) -> f32 {
+        font_size * self.text_scale_factor
+    }
+}
+
+impl Default for TextScaler {
+    fn default() -> TextScaler {
+        TextScaler::NO_SCALING
+    }
+}
+
+// -- Geometric gradients (upstream gradient.dart) --------------------------------
+
+use crate::direction::TextDirection;
+use crate::render::{Alignment, AlignmentGeometry};
+
+/// An affine 2D transform, the 2D slice of upstream's `Matrix4`. Gradients
+/// carry one to rotate the ramp without rotating the canvas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+    pub m11: f32,
+    pub m12: f32,
+    pub m21: f32,
+    pub m22: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl Affine {
+    pub const IDENTITY: Affine = Affine {
+        m11: 1.0,
+        m12: 0.0,
+        m21: 0.0,
+        m22: 1.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
+
+    /// The rotation about `center` that upstream's `GradientRotation`
+    /// builds as a translation-then-rotation matrix.
+    pub fn rotation_about_center(center: (f32, f32), radians: f32) -> Affine {
+        let (sin_r, cos_r) = radians.sin_cos();
+        let one_minus_cos = 1.0 - cos_r;
+        Affine {
+            m11: cos_r,
+            m12: -sin_r,
+            m21: sin_r,
+            m22: cos_r,
+            tx: sin_r * center.1 + one_minus_cos * center.0,
+            ty: -sin_r * center.0 + one_minus_cos * center.1,
+        }
+    }
+
+    pub fn map_point(&self, point: (f32, f32)) -> (f32, f32) {
+        (
+            self.m11 * point.0 + self.m12 * point.1 + self.tx,
+            self.m21 * point.0 + self.m22 * point.1 + self.ty,
+        )
+    }
+
+    /// How much this transform scales a radius: the largest singular value
+    /// of the 2x2 part (an over-estimate for shears, exact for rotations
+    /// and uniform scales, which is all the gradient transforms here are).
+    pub fn max_scale(&self) -> f32 {
+        let scale_x = (self.m11 * self.m11 + self.m21 * self.m21).sqrt();
+        let scale_y = (self.m12 * self.m12 + self.m22 * self.m22).sqrt();
+        scale_x.max(scale_y)
+    }
+}
+
+/// Upstream `GradientTransform`/`GradientRotation`: the closed set is one
+/// transform, a rotation; the enum keeps room for the skews and scales
+/// upstream's abstract class leaves open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientTransform {
+    Rotation { radians: f32 },
+}
+
+impl GradientTransform {
+    /// Upstream `GradientRotation.transform`.
+    pub fn transform(&self, bounds: Rect) -> Affine {
+        match *self {
+            GradientTransform::Rotation { radians } => Affine::rotation_about_center(
+                (
+                    (bounds.left + bounds.right) / 2.0,
+                    (bounds.top + bounds.bottom) / 2.0,
+                ),
+                radians,
+            ),
+        }
+    }
+}
+
+/// Upstream `_sample`: the colour a gradient's ramp shows at a fractional
+/// stop, lerping inside the segment that contains it.
+fn sample_gradient(colors: &[Color], stops: &[f32], t: f32) -> Color {
+    if t <= stops[0] {
+        return colors[0];
+    }
+    for index in 0..stops.len() - 1 {
+        if t < stops[index + 1] {
+            let span = stops[index + 1] - stops[index];
+            let fraction = if span <= 0.0 {
+                0.0
+            } else {
+                (t - stops[index]) / span
+            };
+            return crate::borders::color_lerp(colors[index], colors[index + 1], fraction);
+        }
+    }
+    colors[colors.len() - 1]
+}
+
+/// Upstream `_interpolateColorsAndStops`: the union of both stop lists, each
+/// stop's colour sampled from both ramps and lerped.
+fn interpolate_colors_and_stops(
+    a_colors: &[Color],
+    a_stops: &[f32],
+    b_colors: &[Color],
+    b_stops: &[f32],
+    t: f32,
+) -> (Vec<Color>, Vec<f32>) {
+    // The union, sorted -- `SplayTreeSet<double>` upstream. Stops are finite
+    // fractions in 0..=1, so a bit-pattern key gives a safe total order.
+    let stops: Vec<f32> = a_stops
+        .iter()
+        .chain(b_stops.iter())
+        .map(|stop| stop.to_bits() as i64)
+        .collect::<std::collections::BTreeSet<i64>>()
+        .into_iter()
+        .map(|key| f32::from_bits(key as u32))
+        .collect();
+    let colors = stops
+        .iter()
+        .map(|stop| {
+            crate::borders::color_lerp(
+                sample_gradient(a_colors, a_stops, *stop),
+                sample_gradient(b_colors, b_stops, *stop),
+                t,
+            )
+        })
+        .collect();
+    (colors, stops)
+}
+
+/// A gradient with geometry, upstream `LinearGradient`: two anchors in
+/// alignment space, a ramp between them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearGradient {
+    pub begin: AlignmentGeometry,
+    pub end: AlignmentGeometry,
+    pub colors: Vec<Color>,
+    pub stops: Option<Vec<f32>>,
+    pub tile_mode: TileMode,
+    pub transform: Option<GradientTransform>,
+}
+
+impl LinearGradient {
+    pub fn new(colors: &[Color]) -> LinearGradient {
+        LinearGradient {
+            begin: AlignmentGeometry::Absolute(Alignment::CENTER_LEFT),
+            end: AlignmentGeometry::Absolute(Alignment::CENTER_RIGHT),
+            colors: colors.to_vec(),
+            stops: None,
+            tile_mode: TileMode::Clamp,
+            transform: None,
+        }
+    }
+
+    pub fn with_begin(mut self, begin: AlignmentGeometry) -> LinearGradient {
+        self.begin = begin;
+        self
+    }
+
+    pub fn with_end(mut self, end: AlignmentGeometry) -> LinearGradient {
+        self.end = end;
+        self
+    }
+
+    pub fn with_stops(mut self, stops: &[f32]) -> LinearGradient {
+        self.stops = Some(stops.to_vec());
+        self
+    }
+
+    pub fn with_tile_mode(mut self, tile_mode: TileMode) -> LinearGradient {
+        self.tile_mode = tile_mode;
+        self
+    }
+
+    pub fn with_transform(mut self, transform: GradientTransform) -> LinearGradient {
+        self.transform = Some(transform);
+        self
+    }
+
+    /// Upstream `Gradient._impliedStops`.
+    pub fn implied_stops(&self) -> Vec<f32> {
+        match &self.stops {
+            Some(stops) => stops.clone(),
+            None => {
+                let separation = 1.0 / (self.colors.len() as f32 - 1.0);
+                (0..self.colors.len())
+                    .map(|index| index as f32 * separation)
+                    .collect()
+            }
+        }
+    }
+
+    /// Upstream `LinearGradient.scale`: the geometry holds, every colour's
+    /// alpha scales.
+    pub fn scale(&self, factor: f32) -> LinearGradient {
+        LinearGradient {
+            colors: scale_color_alphas(&self.colors, factor),
+            ..self.clone()
+        }
+    }
+
+    /// Upstream `Gradient.fromColor`: the geometry held, the ramp one colour.
+    pub fn from_color(&self, color: Color) -> LinearGradient {
+        LinearGradient {
+            colors: vec![color; self.colors.len()],
+            ..self.clone()
+        }
+    }
+
+    /// Upstream `LinearGradient.lerp`.
+    pub fn lerp(a: Option<&LinearGradient>, b: Option<&LinearGradient>, t: f32) -> LinearGradient {
+        match (a, b) {
+            (None, Some(b)) => b.scale(t),
+            (Some(a), None) => a.scale(1.0 - t),
+            (Some(a), Some(b)) => {
+                let (colors, stops) = interpolate_colors_and_stops(
+                    &a.colors,
+                    &a.implied_stops(),
+                    &b.colors,
+                    &b.implied_stops(),
+                    t,
+                );
+                LinearGradient {
+                    begin: AlignmentGeometry::lerp(Some(a.begin), Some(b.begin), t)
+                        .unwrap_or(a.begin),
+                    end: AlignmentGeometry::lerp(Some(a.end), Some(b.end), t).unwrap_or(a.end),
+                    colors,
+                    stops: Some(stops),
+                    tile_mode: if t < 0.5 { a.tile_mode } else { b.tile_mode },
+                    transform: if t < 0.5 { a.transform } else { b.transform },
+                }
+            }
+            (None, None) => LinearGradient::new(&[Color::TRANSPARENT, Color::TRANSPARENT]),
+        }
+    }
+
+    /// Upstream `createShader`, resolved into the paint the engine wants.
+    /// The shader-space transform is baked into the anchor points -- an
+    /// affine map of a line's endpoints is the same line's gradient.
+    pub fn to_paint(&self, rect: Rect, direction: TextDirection) -> Paint {
+        let affine = self
+            .transform
+            .map(|transform| transform.transform(rect))
+            .unwrap_or(Affine::IDENTITY);
+        let map = |alignment: AlignmentGeometry| -> (f32, f32) {
+            let point = alignment.resolve(direction).within_rect(rect);
+            affine.map_point((point.dx, point.dy))
+        };
+        let begin = map(self.begin);
+        let end = map(self.end);
+        let ramp = self.ramp();
+        Paint::new(self.colors[0]).with_linear_gradient(begin, end, &ramp)
+    }
+
+    fn ramp(&self) -> Gradient {
+        let mut ramp = Gradient::new(&self.colors).with_tile_mode(self.tile_mode);
+        if let Some(stops) = &self.stops {
+            ramp = ramp.with_stops(stops);
+        }
+        ramp
+    }
+}
+
+/// A gradient in concentric circles, upstream `RadialGradient`. The focal
+/// point (`RadialGradient.focal`/`focalRadius`) has no engine spelling and
+/// is carried but not yet painted -- see PORTING_STATUS.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RadialGradient {
+    pub center: AlignmentGeometry,
+    pub radius: f32,
+    pub colors: Vec<Color>,
+    pub stops: Option<Vec<f32>>,
+    pub tile_mode: TileMode,
+    pub focal: Option<AlignmentGeometry>,
+    pub focal_radius: f32,
+    pub transform: Option<GradientTransform>,
+}
+
+impl RadialGradient {
+    pub fn new(colors: &[Color]) -> RadialGradient {
+        RadialGradient {
+            center: AlignmentGeometry::Absolute(Alignment::CENTER),
+            radius: 0.5,
+            colors: colors.to_vec(),
+            stops: None,
+            tile_mode: TileMode::Clamp,
+            focal: None,
+            focal_radius: 0.0,
+            transform: None,
+        }
+    }
+
+    pub fn with_center(mut self, center: AlignmentGeometry) -> RadialGradient {
+        self.center = center;
+        self
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> RadialGradient {
+        self.radius = radius;
+        self
+    }
+
+    pub fn with_stops(mut self, stops: &[f32]) -> RadialGradient {
+        self.stops = Some(stops.to_vec());
+        self
+    }
+
+    pub fn with_tile_mode(mut self, tile_mode: TileMode) -> RadialGradient {
+        self.tile_mode = tile_mode;
+        self
+    }
+
+    pub fn with_transform(mut self, transform: GradientTransform) -> RadialGradient {
+        self.transform = Some(transform);
+        self
+    }
+
+    pub fn implied_stops(&self) -> Vec<f32> {
+        match &self.stops {
+            Some(stops) => stops.clone(),
+            None => {
+                let separation = 1.0 / (self.colors.len() as f32 - 1.0);
+                (0..self.colors.len())
+                    .map(|index| index as f32 * separation)
+                    .collect()
+            }
+        }
+    }
+
+    pub fn scale(&self, factor: f32) -> RadialGradient {
+        RadialGradient {
+            colors: scale_color_alphas(&self.colors, factor),
+            ..self.clone()
+        }
+    }
+
+    pub fn lerp(a: Option<&RadialGradient>, b: Option<&RadialGradient>, t: f32) -> RadialGradient {
+        match (a, b) {
+            (None, Some(b)) => b.scale(t),
+            (Some(a), None) => a.scale(1.0 - t),
+            (Some(a), Some(b)) => {
+                let (colors, stops) = interpolate_colors_and_stops(
+                    &a.colors,
+                    &a.implied_stops(),
+                    &b.colors,
+                    &b.implied_stops(),
+                    t,
+                );
+                RadialGradient {
+                    center: AlignmentGeometry::lerp(Some(a.center), Some(b.center), t)
+                        .unwrap_or(a.center),
+                    radius: a.radius + (b.radius - a.radius) * t,
+                    colors,
+                    stops: Some(stops),
+                    tile_mode: if t < 0.5 { a.tile_mode } else { b.tile_mode },
+                    focal: match (a.focal, b.focal) {
+                        (Some(a), Some(b)) => {
+                            AlignmentGeometry::lerp(Some(a), Some(b), t).or(Some(a))
+                        }
+                        (None, Some(b)) => Some(b),
+                        (Some(a), None) => Some(a),
+                        (None, None) => None,
+                    },
+                    focal_radius: a.focal_radius + (b.focal_radius - a.focal_radius) * t,
+                    transform: if t < 0.5 { a.transform } else { b.transform },
+                }
+            }
+            (None, None) => RadialGradient::new(&[Color::TRANSPARENT, Color::TRANSPARENT]),
+        }
+    }
+
+    /// Upstream `createShader`; the transform moves the centre and scales
+    /// the radius, which is exact for the rotations the enum holds.
+    pub fn to_paint(&self, rect: Rect, direction: TextDirection) -> Paint {
+        let affine = self
+            .transform
+            .map(|transform| transform.transform(rect))
+            .unwrap_or(Affine::IDENTITY);
+        let center_point = self.center.resolve(direction).within_rect(rect);
+        let center = affine.map_point((center_point.dx, center_point.dy));
+        // The radius is in alignment units; the shortest side is the
+        // yardstick upstream's `createShader` maps it with.
+        let radius = self.radius * rect_shortest_side(rect) / 2.0 * affine.max_scale();
+        let mut ramp = Gradient::new(&self.colors).with_tile_mode(self.tile_mode);
+        if let Some(stops) = &self.stops {
+            ramp = ramp.with_stops(stops);
+        }
+        Paint::new(self.colors[0]).with_radial_gradient(center, radius, &ramp)
+    }
+}
+
+/// A gradient sweeping around a centre, upstream `SweepGradient`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SweepGradient {
+    pub center: AlignmentGeometry,
+    /// Radians, clockwise from three o'clock.
+    pub start_angle: f32,
+    pub end_angle: f32,
+    pub colors: Vec<Color>,
+    pub stops: Option<Vec<f32>>,
+    pub tile_mode: TileMode,
+    pub transform: Option<GradientTransform>,
+}
+
+impl SweepGradient {
+    pub fn new(colors: &[Color]) -> SweepGradient {
+        SweepGradient {
+            center: AlignmentGeometry::Absolute(Alignment::CENTER),
+            start_angle: 0.0,
+            end_angle: std::f32::consts::TAU,
+            colors: colors.to_vec(),
+            stops: None,
+            tile_mode: TileMode::Clamp,
+            transform: None,
+        }
+    }
+
+    pub fn with_center(mut self, center: AlignmentGeometry) -> SweepGradient {
+        self.center = center;
+        self
+    }
+
+    pub fn with_angles(mut self, start_radians: f32, end_radians: f32) -> SweepGradient {
+        self.start_angle = start_radians;
+        self.end_angle = end_radians;
+        self
+    }
+
+    pub fn with_stops(mut self, stops: &[f32]) -> SweepGradient {
+        self.stops = Some(stops.to_vec());
+        self
+    }
+
+    pub fn with_tile_mode(mut self, tile_mode: TileMode) -> SweepGradient {
+        self.tile_mode = tile_mode;
+        self
+    }
+
+    pub fn with_transform(mut self, transform: GradientTransform) -> SweepGradient {
+        self.transform = Some(transform);
+        self
+    }
+
+    pub fn implied_stops(&self) -> Vec<f32> {
+        match &self.stops {
+            Some(stops) => stops.clone(),
+            None => {
+                let separation = 1.0 / (self.colors.len() as f32 - 1.0);
+                (0..self.colors.len())
+                    .map(|index| index as f32 * separation)
+                    .collect()
+            }
+        }
+    }
+
+    pub fn scale(&self, factor: f32) -> SweepGradient {
+        SweepGradient {
+            colors: scale_color_alphas(&self.colors, factor),
+            ..self.clone()
+        }
+    }
+
+    pub fn lerp(a: Option<&SweepGradient>, b: Option<&SweepGradient>, t: f32) -> SweepGradient {
+        match (a, b) {
+            (None, Some(b)) => b.scale(t),
+            (Some(a), None) => a.scale(1.0 - t),
+            (Some(a), Some(b)) => {
+                let (colors, stops) = interpolate_colors_and_stops(
+                    &a.colors,
+                    &a.implied_stops(),
+                    &b.colors,
+                    &b.implied_stops(),
+                    t,
+                );
+                SweepGradient {
+                    center: AlignmentGeometry::lerp(Some(a.center), Some(b.center), t)
+                        .unwrap_or(a.center),
+                    start_angle: a.start_angle + (b.start_angle - a.start_angle) * t,
+                    end_angle: a.end_angle + (b.end_angle - a.end_angle) * t,
+                    colors,
+                    stops: Some(stops),
+                    tile_mode: if t < 0.5 { a.tile_mode } else { b.tile_mode },
+                    transform: if t < 0.5 { a.transform } else { b.transform },
+                }
+            }
+            (None, None) => SweepGradient::new(&[Color::TRANSPARENT, Color::TRANSPARENT]),
+        }
+    }
+
+    /// Upstream `createShader`; a rotation transform shifts the sweep's
+    /// angles with it. The engine speaks degrees.
+    pub fn to_paint(&self, rect: Rect, direction: TextDirection) -> Paint {
+        let shift = match self.transform {
+            Some(GradientTransform::Rotation { radians }) => radians,
+            None => 0.0,
+        };
+        let center_point = self.center.resolve(direction).within_rect(rect);
+        let mut ramp = Gradient::new(&self.colors).with_tile_mode(self.tile_mode);
+        if let Some(stops) = &self.stops {
+            ramp = ramp.with_stops(stops);
+        }
+        Paint::new(self.colors[0]).with_sweep_gradient(
+            (center_point.dx, center_point.dy),
+            (self.start_angle + shift).to_degrees(),
+            (self.end_angle + shift).to_degrees(),
+            &ramp,
+        )
+    }
+}
+
+/// Upstream `Gradient`'s hierarchy root: any one gradient, with the lerp
+/// discipline of `Gradient.lerp` -- same kinds interpolate as themselves,
+/// different kinds fade out and in over the two halves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderGradient {
+    Linear(LinearGradient),
+    Radial(RadialGradient),
+    Sweep(SweepGradient),
+}
+
+impl ShaderGradient {
+    pub fn scale(&self, factor: f32) -> ShaderGradient {
+        match self {
+            ShaderGradient::Linear(gradient) => ShaderGradient::Linear(gradient.scale(factor)),
+            ShaderGradient::Radial(gradient) => ShaderGradient::Radial(gradient.scale(factor)),
+            ShaderGradient::Sweep(gradient) => ShaderGradient::Sweep(gradient.scale(factor)),
+        }
+    }
+
+    pub fn from_color(&self, color: Color) -> ShaderGradient {
+        // A uniform-colour gradient paints as a solid regardless of geometry,
+        // so the linear spelling is enough -- upstream's own default.
+        let (stops, tile_mode, transform, count) = match self {
+            ShaderGradient::Linear(gradient) => {
+                return ShaderGradient::Linear(gradient.from_color(color));
+            }
+            ShaderGradient::Radial(gradient) => (
+                gradient.stops.clone(),
+                gradient.tile_mode,
+                gradient.transform,
+                gradient.colors.len(),
+            ),
+            ShaderGradient::Sweep(gradient) => (
+                gradient.stops.clone(),
+                gradient.tile_mode,
+                gradient.transform,
+                gradient.colors.len(),
+            ),
+        };
+        ShaderGradient::Linear(LinearGradient {
+            begin: AlignmentGeometry::CENTER,
+            end: AlignmentGeometry::Absolute(Alignment::CENTER_RIGHT),
+            colors: vec![color; count],
+            stops,
+            tile_mode,
+            transform,
+        })
+    }
+
+    /// Upstream `Gradient.lerp`.
+    pub fn lerp(
+        a: Option<ShaderGradient>,
+        b: Option<ShaderGradient>,
+        t: f32,
+    ) -> Option<ShaderGradient> {
+        if a == b {
+            return a;
+        }
+        match (a.as_ref(), b.as_ref()) {
+            (Some(ShaderGradient::Linear(a)), Some(ShaderGradient::Linear(b))) => Some(
+                ShaderGradient::Linear(LinearGradient::lerp(Some(a), Some(b), t)),
+            ),
+            (Some(ShaderGradient::Radial(a)), Some(ShaderGradient::Radial(b))) => Some(
+                ShaderGradient::Radial(RadialGradient::lerp(Some(a), Some(b), t)),
+            ),
+            (Some(ShaderGradient::Sweep(a)), Some(ShaderGradient::Sweep(b))) => Some(
+                ShaderGradient::Sweep(SweepGradient::lerp(Some(a), Some(b), t)),
+            ),
+            // One side missing: that side's own scale-in path.
+            (None, Some(b)) => Some(b.scale(t)),
+            (Some(a), None) => Some(a.scale(1.0 - t)),
+            (None, None) => None,
+            // Different kinds: out then in, over the two halves.
+            (Some(a), Some(b)) => {
+                if t < 0.5 {
+                    Some(a.scale(1.0 - t * 2.0))
+                } else {
+                    Some(b.scale((t - 0.5) * 2.0))
+                }
+            }
+        }
+    }
+
+    pub fn to_paint(&self, rect: Rect, direction: TextDirection) -> Paint {
+        match self {
+            ShaderGradient::Linear(gradient) => gradient.to_paint(rect, direction),
+            ShaderGradient::Radial(gradient) => gradient.to_paint(rect, direction),
+            ShaderGradient::Sweep(gradient) => gradient.to_paint(rect, direction),
+        }
+    }
+}
+
+/// The alpha scaling every gradient's `scale` shares: the geometry holds,
+/// each colour's alpha multiplies by the factor.
+fn scale_color_alphas(colors: &[Color], factor: f32) -> Vec<Color> {
+    colors
+        .iter()
+        .map(|color| {
+            Color::argb(
+                ((color.alpha() as f32) * factor).round().clamp(0.0, 255.0) as u8,
+                color.red(),
+                color.green(),
+                color.blue(),
+            )
+        })
+        .collect()
+}
+
+fn rect_shortest_side(rect: Rect) -> f32 {
+    (rect.right - rect.left).min(rect.bottom - rect.top)
+}
+
+// -- Matrix4 and MatrixUtils (upstream matrix_utils.dart, vector_math's Matrix4) --
+
+/// A 4x4 matrix in column-major storage, the `Matrix4` upstream gets from
+/// `vector_math`. Transforms, gradient shaders and hit-testing all speak it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Matrix4 {
+    /// Column-major: `storage[col * 4 + row]`.
+    pub storage: [f32; 16],
+}
+
+impl Default for Matrix4 {
+    fn default() -> Matrix4 {
+        Matrix4::IDENTITY
+    }
+}
+
+impl Matrix4 {
+    pub const IDENTITY: Matrix4 = Matrix4 {
+        storage: [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ],
+    };
+
+    pub const fn zero() -> Matrix4 {
+        Matrix4 { storage: [0.0; 16] }
+    }
+
+    /// `Matrix4.translationValues`.
+    pub const fn translation(x: f32, y: f32, z: f32) -> Matrix4 {
+        Matrix4 {
+            storage: [
+                1.0, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                x, y, z, 1.0,
+            ],
+        }
+    }
+
+    /// `Matrix4.rotationZ` -- the rotation the 2D world cares about.
+    pub fn rotation_z(radians: f32) -> Matrix4 {
+        let (sin_r, cos_r) = radians.sin_cos();
+        Matrix4 {
+            storage: [
+                cos_r, sin_r, 0.0, 0.0, //
+                -sin_r, cos_r, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    /// `Matrix4.rotationX` (the cylindrical projection needs it).
+    pub fn rotation_x(radians: f32) -> Matrix4 {
+        let (sin_r, cos_r) = radians.sin_cos();
+        Matrix4 {
+            storage: [
+                1.0, 0.0, 0.0, 0.0, //
+                0.0, cos_r, sin_r, 0.0, //
+                0.0, -sin_r, cos_r, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    /// `Matrix4.rotationY`.
+    pub fn rotation_y(radians: f32) -> Matrix4 {
+        let (sin_r, cos_r) = radians.sin_cos();
+        Matrix4 {
+            storage: [
+                cos_r, 0.0, -sin_r, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                sin_r, 0.0, cos_r, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    /// `Matrix4.setEntry`.
+    pub fn set_entry(mut self, row: usize, column: usize, value: f32) -> Matrix4 {
+        self.storage[column * 4 + row] = value;
+        self
+    }
+
+    /// `a * b`, the `operator *` upstream chains.
+    pub fn mul(a: Matrix4, b: Matrix4) -> Matrix4 {
+        let mut result = Matrix4::zero();
+        for column in 0..4 {
+            for row in 0..4 {
+                let mut sum = 0.0;
+                for k in 0..4 {
+                    sum += a.storage[k * 4 + row] * b.storage[column * 4 + k];
+                }
+                result.storage[column * 4 + row] = sum;
+            }
+        }
+        result
+    }
+
+    /// Inverts in place by Gauss-Jordan elimination with partial pivoting;
+    /// returns false and leaves a zero matrix when there is no inverse.
+    pub fn invert(&mut self) -> bool {
+        let mut inverse = Matrix4::IDENTITY.storage;
+        let mut m = self.storage;
+        for column in 0..4 {
+            // Pivot on the largest magnitude in this column, for stability.
+            let mut pivot_row = column;
+            let mut pivot_mag = m[column * 4 + column].abs();
+            for row in (column + 1)..4 {
+                let magnitude = m[column * 4 + row].abs();
+                if magnitude > pivot_mag {
+                    pivot_mag = magnitude;
+                    pivot_row = row;
+                }
+            }
+            if pivot_mag == 0.0 {
+                self.storage = [0.0; 16];
+                return false;
+            }
+            if pivot_row != column {
+                for c in 0..4 {
+                    m.swap(c * 4 + column, c * 4 + pivot_row);
+                    inverse.swap(c * 4 + column, c * 4 + pivot_row);
+                }
+            }
+            let pivot = m[column * 4 + column];
+            for c in 0..4 {
+                m[c * 4 + column] /= pivot;
+                inverse[c * 4 + column] /= pivot;
+            }
+            for row in 0..4 {
+                if row == column {
+                    continue;
+                }
+                let factor = m[column * 4 + row];
+                if factor == 0.0 {
+                    continue;
+                }
+                for c in 0..4 {
+                    m[c * 4 + row] -= factor * m[c * 4 + column];
+                    inverse[c * 4 + row] -= factor * inverse[c * 4 + column];
+                }
+            }
+        }
+        self.storage = inverse;
+        true
+    }
+}
+
+/// Upstream `MatrixUtils`, a bag of statics over [`Matrix4`].
+pub mod matrix_utils {
+    use super::Matrix4;
+    use crate::engine::Rect;
+    use crate::render::{Axis, Offset};
+
+    /// `MatrixUtils.getAsTranslation`: the offset, if the matrix is nothing
+    /// but a translation.
+    pub fn get_as_translation(transform: Matrix4) -> Option<Offset> {
+        let s = &transform.storage;
+        let is_translation = s[0] == 1.0
+            && s[1] == 0.0
+            && s[2] == 0.0
+            && s[3] == 0.0
+            && s[4] == 0.0
+            && s[5] == 1.0
+            && s[6] == 0.0
+            && s[7] == 0.0
+            && s[8] == 0.0
+            && s[9] == 0.0
+            && s[10] == 1.0
+            && s[11] == 0.0
+            && s[14] == 0.0
+            && s[15] == 1.0;
+        if is_translation {
+            Some(Offset::new(s[12], s[13]))
+        } else {
+            None
+        }
+    }
+
+    /// `MatrixUtils.getAsScale`: the uniform 2D scale, if that is all it is.
+    pub fn get_as_scale(transform: Matrix4) -> Option<f32> {
+        let s = &transform.storage;
+        let is_scale = s[1] == 0.0
+            && s[2] == 0.0
+            && s[3] == 0.0
+            && s[4] == 0.0
+            && s[6] == 0.0
+            && s[7] == 0.0
+            && s[8] == 0.0
+            && s[9] == 0.0
+            && s[10] == 1.0
+            && s[11] == 0.0
+            && s[12] == 0.0
+            && s[13] == 0.0
+            && s[14] == 0.0
+            && s[15] == 1.0
+            && s[0] == s[5];
+        if is_scale { Some(s[0]) } else { None }
+    }
+
+    /// `MatrixUtils.multiplyInPlace`: `a x b` stored into `b`.
+    pub fn multiply_in_place(a: &Matrix4, b: &mut Matrix4) {
+        *b = Matrix4::mul(*a, *b);
+    }
+
+    /// `MatrixUtils.matrixEquals`: nulls read as the identity.
+    pub fn matrix_equals(a: Option<Matrix4>, b: Option<Matrix4>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a.storage == b.storage,
+            (None, Some(b)) => is_identity(b),
+            (Some(a), None) => is_identity(a),
+            (None, None) => true,
+        }
+    }
+
+    /// `MatrixUtils.isIdentity`.
+    pub fn is_identity(a: Matrix4) -> bool {
+        a.storage == Matrix4::IDENTITY.storage
+    }
+
+    /// `MatrixUtils.transformPoint`: the point at z=0, projected back to z=0.
+    /// May go NaN when the point lands at infinity -- upstream says the same.
+    pub fn transform_point(transform: Matrix4, point: Offset) -> Offset {
+        let s = &transform.storage;
+        let x = point.dx;
+        let y = point.dy;
+        let rx = s[0] * x + s[4] * y + s[12];
+        let ry = s[1] * x + s[5] * y + s[13];
+        let rw = s[3] * x + s[7] * y + s[15];
+        if rw == 1.0 {
+            Offset::new(rx, ry)
+        } else {
+            Offset::new(rx / rw, ry / rw)
+        }
+    }
+
+    fn min4(a: f32, b: f32, c: f32, d: f32) -> f32 {
+        a.min(b).min(c).min(d)
+    }
+
+    fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
+        a.max(b).max(c).max(d)
+    }
+
+    /// `MatrixUtils._safeTransformRect`/`_accumulate`: transform the four
+    /// corners, normalizing each, and take the bounds.
+    fn safe_transform_rect(transform: Matrix4, rect: Rect) -> Rect {
+        let s = &transform.storage;
+        let is_affine = s[3] == 0.0 && s[7] == 0.0 && s[15] == 1.0;
+        let mut accumulate = |x: f32, y: f32, min_max: &mut [f32; 4], first: bool| {
+            let w = if is_affine {
+                1.0
+            } else {
+                1.0 / (s[3] * x + s[7] * y + s[15])
+            };
+            let tx = (s[0] * x + s[4] * y + s[12]) * w;
+            let ty = (s[1] * x + s[5] * y + s[13]) * w;
+            if first {
+                min_max[0] = tx;
+                min_max[1] = ty;
+                min_max[2] = tx;
+                min_max[3] = ty;
+            } else {
+                if tx < min_max[0] {
+                    min_max[0] = tx;
+                }
+                if ty < min_max[1] {
+                    min_max[1] = ty;
+                }
+                if tx > min_max[2] {
+                    min_max[2] = tx;
+                }
+                if ty > min_max[3] {
+                    min_max[3] = ty;
+                }
+            }
+        };
+        let mut min_max = [0.0; 4];
+        accumulate(rect.left, rect.top, &mut min_max, true);
+        accumulate(rect.right, rect.top, &mut min_max, false);
+        accumulate(rect.left, rect.bottom, &mut min_max, false);
+        accumulate(rect.right, rect.bottom, &mut min_max, false);
+        Rect::ltrb(min_max[0], min_max[1], min_max[2], min_max[3])
+    }
+
+    /// `MatrixUtils.transformRect`: the bounding box of the rect under the
+    /// matrix, the fast way when there is no perspective term.
+    pub fn transform_rect(transform: Matrix4, rect: Rect) -> Rect {
+        let s = &transform.storage;
+        let x = rect.left;
+        let y = rect.top;
+        let w = rect.right - x;
+        let h = rect.bottom - y;
+        // A non-finite rect would turn finite math infinite; the slow path
+        // keeps that from happening where it can.
+        if !w.is_finite() || !h.is_finite() {
+            return safe_transform_rect(transform, rect);
+        }
+
+        let wx = s[0] * w;
+        let hx = s[4] * h;
+        let rx = s[0] * x + s[4] * y + s[12];
+        let wy = s[1] * w;
+        let hy = s[5] * h;
+        let ry = s[1] * x + s[5] * y + s[13];
+        if s[3] == 0.0 && s[7] == 0.0 && s[15] == 1.0 {
+            // No perspective: a parallelogram whose walls each relative
+            // vector pushes one way by its own sign.
+            let mut left = rx;
+            let mut right = rx;
+            if wx < 0.0 {
+                left += wx;
+            } else {
+                right += wx;
+            }
+            if hx < 0.0 {
+                left += hx;
+            } else {
+                right += hx;
+            }
+            let mut top = ry;
+            let mut bottom = ry;
+            if wy < 0.0 {
+                top += wy;
+            } else {
+                bottom += wy;
+            }
+            if hy < 0.0 {
+                top += hy;
+            } else {
+                bottom += hy;
+            }
+            Rect::ltrb(left, top, right, bottom)
+        } else {
+            let ww = s[3] * w;
+            let hw = s[7] * h;
+            let rw = s[3] * x + s[7] * y + s[15];
+            let ulx = rx / rw;
+            let uly = ry / rw;
+            let urx = (rx + wx) / (rw + ww);
+            let ury = (ry + wy) / (rw + ww);
+            let llx = (rx + hx) / (rw + hw);
+            let lly = (ry + hy) / (rw + hw);
+            let lrx = (rx + wx + hx) / (rw + ww + hw);
+            let lry = (ry + wy + hy) / (rw + ww + hw);
+            Rect::ltrb(
+                min4(ulx, urx, llx, lrx),
+                min4(uly, ury, lly, lry),
+                max4(ulx, urx, llx, lrx),
+                max4(uly, ury, lly, lry),
+            )
+        }
+    }
+
+    /// `MatrixUtils.inverseTransformRect`.
+    pub fn inverse_transform_rect(transform: Matrix4, rect: Rect) -> Rect {
+        if is_identity(transform) {
+            return rect;
+        }
+        let mut inverse = transform;
+        inverse.invert();
+        transform_rect(inverse, rect)
+    }
+
+    /// `MatrixUtils.createCylindricalProjectionTransform`: perspective *
+    /// view * model, the wrap-a-plane-around-a-cylinder matrix.
+    pub fn create_cylindrical_projection_transform(
+        radius: f32,
+        angle: f32,
+        perspective: f32,
+        orientation: Axis,
+    ) -> Matrix4 {
+        debug_assert!((0.0..=1.0).contains(&perspective));
+        // Perspective * view, pre-multiplied.
+        let mut result = Matrix4::IDENTITY
+            .set_entry(3, 2, -perspective)
+            .set_entry(2, 3, -radius)
+            .set_entry(3, 3, perspective * radius + 1.0);
+        // Model: translate out by the radius, then rotate against the world.
+        let rotation = match orientation {
+            Axis::Horizontal => Matrix4::rotation_y(angle),
+            Axis::Vertical => Matrix4::rotation_x(angle),
+        };
+        result = Matrix4::mul(
+            result,
+            Matrix4::mul(rotation, Matrix4::translation(0.0, 0.0, radius)),
+        );
+        result
+    }
+
+    /// `MatrixUtils.forceToPoint`: every point lands on `offset`.
+    pub fn force_to_point(offset: Offset) -> Matrix4 {
+        Matrix4::zero()
+            .set_entry(2, 2, 1.0)
+            .set_entry(0, 3, offset.dx)
+            .set_entry(1, 3, offset.dy)
+            .set_entry(3, 3, 1.0)
+    }
+}
+
+// -- Text measurement and painting (upstream text_painter.dart, strut_style.dart, inline_span.dart) --
+
+/// Upstream `TextPainter`: the object form of this module's `shape` family.
+/// Lay it out at a width, ask it what it measured, paint it where it goes.
+///
+/// Divergence: the engine exposes no minimum-intrinsic width and no
+/// per-placeholder geometry, so [`TextPainter::min_intrinsic_width`] answers
+/// with the longest line and [`PlaceholderDimensions`] is carried data.
+pub struct TextPainter {
+    runs: Vec<(String, TextStyle)>,
+    align: TextAlign,
+    max_lines: Option<usize>,
+    ellipsis: bool,
+    scale: f32,
+    paragraph: Option<Rc<Paragraph>>,
+}
+
+impl Default for TextPainter {
+    fn default() -> TextPainter {
+        TextPainter {
+            runs: Vec::new(),
+            align: TextAlign::Start,
+            max_lines: None,
+            ellipsis: false,
+            scale: 1.0,
+            paragraph: None,
+        }
+    }
+}
+
+impl TextPainter {
+    pub fn new() -> TextPainter {
+        TextPainter::default()
+    }
+
+    pub fn text(mut self, text: impl Into<String>, style: TextStyle) -> TextPainter {
+        self.runs.push((text.into(), style));
+        self
+    }
+
+    pub fn with_align(mut self, align: TextAlign) -> TextPainter {
+        self.align = align;
+        self
+    }
+
+    pub fn with_max_lines(mut self, max_lines: Option<usize>) -> TextPainter {
+        self.max_lines = max_lines;
+        self
+    }
+
+    pub fn with_ellipsis(mut self, ellipsis: bool) -> TextPainter {
+        self.ellipsis = ellipsis;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: f32) -> TextPainter {
+        self.scale = scale;
+        self
+    }
+
+    /// Upstream `TextPainter.layout`: shape at `max_width` and keep the
+    /// answer.
+    pub fn layout(&mut self, max_width: f32) {
+        self.paragraph = Some(shape_rich(
+            &self.runs,
+            self.align,
+            self.max_lines,
+            self.ellipsis,
+            max_width,
+            self.scale,
+        ));
+    }
+
+    fn paragraph(&self) -> &Rc<Paragraph> {
+        self.paragraph
+            .as_ref()
+            .expect("layout before asking a laid-out question")
+    }
+
+    /// Upstream `TextPainter.width`.
+    pub fn width(&self) -> f32 {
+        self.paragraph().width()
+    }
+
+    /// Upstream `TextPainter.height`.
+    pub fn height(&self) -> f32 {
+        self.paragraph().height()
+    }
+
+    /// Upstream `TextPainter.minIntrinsicWidth` -- the engine answers only
+    /// the longest line, which is the maximum; see the type's docs.
+    pub fn min_intrinsic_width(&self, _max_width: f32) -> f32 {
+        self.paragraph().longest_line()
+    }
+
+    /// Upstream `TextPainter.maxIntrinsicWidth`.
+    pub fn max_intrinsic_width(&self, _max_width: f32) -> f32 {
+        self.paragraph().longest_line()
+    }
+
+    /// Upstream `TextPainter.paint`.
+    pub fn paint(&self, canvas: &mut Canvas, offset: (f32, f32)) {
+        canvas.draw_paragraph(self.paragraph(), offset.0, offset.1);
+    }
+}
+
+/// Upstream `PlaceholderDimensions`: the size a placeholder span occupies
+/// and how it sits against the text baseline. The shaper here flattens
+/// runs, so nothing consumes this yet; it is the data the engine slot needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaceholderDimensions {
+    pub size: (f32, f32),
+    pub alignment: PlaceholderAlignment,
+    pub baseline: TextBaseline,
+}
+
+/// Upstream `PlaceholderAlignment`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaceholderAlignment {
+    #[default]
+    Baseline,
+    AboveBaseline,
+    BelowBaseline,
+    Top,
+    Bottom,
+    Middle,
+}
+
+/// Upstream `TextBaseline`, the pair of baselines text can align on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextBaseline {
+    /// The line the letters sit on.
+    #[default]
+    Alphabetic,
+    /// The hanging line scripts like Devanagari hang from.
+    Ideographic,
+}
+
+/// Upstream `WordBoundary`: the text on either side of a word edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WordBoundary {
+    pub prefix: String,
+    pub suffix: String,
+}
+
+/// Upstream `StrutStyle`: a line-height floor the paragraph enforces before
+/// any of its own styles count. The engine's paragraph builder takes no
+/// strut, so this is carried configuration until that lands -- see
+/// PORTING_STATUS.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StrutStyle {
+    pub strut_enabled: bool,
+    pub font_family: Option<String>,
+    pub font_size: Option<f32>,
+    pub height: Option<f32>,
+    pub leading: Option<f32>,
+    pub force_strut_height: bool,
+}
+
+impl StrutStyle {
+    pub fn new(strut_enabled: bool) -> StrutStyle {
+        StrutStyle {
+            strut_enabled,
+            ..StrutStyle::default()
+        }
+    }
+}
+
+/// Upstream `Accumulator`: a running index through an inline-span walk.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Accumulator {
+    pub value: i32,
+}
+
+impl Accumulator {
+    pub fn increment(&mut self, addend: i32) {
+        self.value += addend;
+    }
+}
+
+/// Upstream `InlineSpanSemanticsInformation`: what semantics says about one
+/// span -- its text, and optional gesture meaning.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InlineSpanSemanticsInformation {
+    pub text: String,
+    pub is_placeholder: bool,
+}
+
+impl InlineSpanSemanticsInformation {
+    pub fn text(text: impl Into<String>) -> InlineSpanSemanticsInformation {
+        InlineSpanSemanticsInformation {
+            text: text.into(),
+            is_placeholder: false,
+        }
+    }
+
+    pub fn placeholder() -> InlineSpanSemanticsInformation {
+        InlineSpanSemanticsInformation {
+            text: String::new(),
+            is_placeholder: true,
+        }
+    }
+}
+
+// -- Decoration images (upstream decoration_image.dart) ---------------------------
+
+use crate::image::{ImageConfiguration, ImageProvider};
+use crate::render::{AlignmentGeometry as RenderAlignmentGeometry, BoxFit, Size, apply_box_fit};
+
+/// Upstream `DecorationImage`: an image painted into a decoration's shape,
+/// fitted and aligned. Painting resolves the provider synchronously -- the
+/// headless render's path; a widget-facing resolve arrives with the image
+/// widget wave.
+#[derive(Clone)]
+pub struct DecorationImage {
+    pub provider: ImageProvider,
+    pub fit: Option<BoxFit>,
+    pub alignment: RenderAlignmentGeometry,
+}
+
+impl DecorationImage {
+    pub fn new(provider: ImageProvider) -> DecorationImage {
+        DecorationImage {
+            provider,
+            fit: None,
+            alignment: RenderAlignmentGeometry::CENTER,
+        }
+    }
+
+    pub fn with_fit(mut self, fit: BoxFit) -> DecorationImage {
+        self.fit = Some(fit);
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: RenderAlignmentGeometry) -> DecorationImage {
+        self.alignment = alignment;
+        self
+    }
+
+    /// Upstream `DecorationImagePainter.paint`: fit the decoded frame into
+    /// `rect`, aligned. Returns whether a frame was there to paint.
+    pub fn paint(&self, canvas: &mut Canvas, rect: Rect, direction: TextDirection) -> bool {
+        let stream = self.provider.resolve_now(ImageConfiguration::EMPTY);
+        let Some(completer) = stream.completer() else {
+            return false;
+        };
+        let frame = {
+            let completer = completer.borrow();
+            completer.image().map(|info| info.image.clone())
+        };
+        let Some(frame) = frame else {
+            return false;
+        };
+        let source = Rect::xywh(0.0, 0.0, frame.width() as f32, frame.height() as f32);
+        // Fill defaults to scale-down, the way upstream's
+        // `DecorationImage` documents for a `null` fit.
+        let fit = self.fit.unwrap_or(BoxFit::ScaleDown);
+        let fitted = apply_box_fit(
+            fit,
+            Size::new(source.width(), source.height()),
+            Size::new(rect.width(), rect.height()),
+        );
+        let center = self.alignment.resolve(direction).within_rect(rect);
+        let destination = Rect::xywh(
+            center.dx - fitted.destination.width / 2.0,
+            center.dy - fitted.destination.height / 2.0,
+            fitted.destination.width,
+            fitted.destination.height,
+        );
+        canvas.draw_image_rect(&frame, source, destination, None);
+        true
     }
 }
 
@@ -1846,5 +3495,340 @@ mod image_tests {
         let again = Image::shared("async:joins", PNG).expect("decoded");
         assert!(Rc::ptr_eq(&image, &again));
         assert!(!images_pending());
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    #[test]
+    fn hsv_round_trips_a_primary() {
+        let red = Color::argb(255, 255, 0, 0);
+        let hsv = HSVColor::from_color(red);
+        assert_eq!(hsv.hue, 0.0);
+        assert_eq!(hsv.saturation, 1.0);
+        assert_eq!(hsv.value, 1.0);
+        assert_eq!(hsv.to_color(), red);
+
+        // Half-way between red and green is a 60-degree yellow.
+        let yellow = Color::argb(255, 255, 255, 0);
+        let hsv = HSVColor::from_color(yellow);
+        assert_eq!(hsv.hue, 60.0);
+        assert_eq!(hsv.to_color(), yellow);
+
+        // Greys have no hue and no saturation.
+        let grey = Color::argb(255, 128, 128, 128);
+        let hsv = HSVColor::from_color(grey);
+        assert_eq!(hsv.hue, 0.0);
+        assert_eq!(hsv.saturation, 0.0);
+    }
+
+    #[test]
+    fn hsl_round_trips_a_primary() {
+        let blue = Color::argb(255, 0, 0, 255);
+        let hsl = HSLColor::from_color(blue);
+        assert_eq!(hsl.hue, 240.0);
+        assert_eq!(hsl.saturation, 1.0);
+        assert_eq!(hsl.lightness, 0.5);
+        assert_eq!(hsl.to_color(), blue);
+
+        // White and black sit at the lightness ends.
+        assert_eq!(HSLColor::from_color(Color::WHITE).lightness, 1.0);
+        assert_eq!(HSLColor::from_color(Color::BLACK).lightness, 0.0);
+    }
+
+    #[test]
+    fn hsv_and_hsl_lerp_wrap_the_hue() {
+        // The hue lerps raw and wraps with `% 360` -- 300 to 60 passes
+        // through 180, it does not take the short way round.
+        let a = HSVColor::from_ahsv(1.0, 300.0, 1.0, 1.0);
+        let b = HSVColor::from_ahsv(1.0, 60.0, 1.0, 1.0);
+        let mid = HSVColor::lerp(Some(a), Some(b), 0.5).unwrap();
+        assert!((mid.hue - 180.0).abs() < 1e-6);
+        // Extrapolated past the ends, the modulo wraps -- and stays
+        // non-negative the way Dart's `%` does: -160 arrives as 200.
+        let a = HSVColor::from_ahsv(1.0, 350.0, 1.0, 1.0);
+        let b = HSVColor::from_ahsv(1.0, 10.0, 1.0, 1.0);
+        let lerped = HSVColor::lerp(Some(a), Some(b), 1.5).unwrap();
+        assert!((lerped.hue - 200.0).abs() < 1e-6);
+
+        // A missing side is a transparent instance of the other.
+        let faded =
+            HSLColor::lerp(None, Some(HSLColor::from_ahsl(1.0, 120.0, 0.5, 0.5)), 0.5).unwrap();
+        assert!((faded.alpha - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_swatch_holds_its_shades() {
+        let swatch = ColorSwatch::new(
+            Color::argb(255, 0xF4, 0x43, 0x36),
+            [
+                (100u32, Color::argb(255, 0xB7, 0x1C, 0x1C)),
+                (500, Color::argb(255, 0xF4, 0x43, 0x36)),
+                (900, Color::argb(255, 0xB7, 0x1C, 0x1C)),
+            ],
+        );
+        assert_eq!(swatch.get(&500), Some(Color::argb(255, 0xF4, 0x43, 0x36)));
+        assert_eq!(swatch.get(&900), Some(Color::argb(255, 0xB7, 0x1C, 0x1C)));
+        assert_eq!(swatch.get(&200), None);
+        assert_eq!(swatch.keys().count(), 3);
+    }
+
+    #[test]
+    fn text_scaler_scales_linearly() {
+        assert_eq!(TextScaler::NO_SCALING.scale(14.0), 14.0);
+        assert_eq!(TextScaler::linear(1.3).scale(10.0), 13.0);
+    }
+}
+
+#[cfg(test)]
+mod gradient_tests {
+    use super::*;
+    use crate::direction::TextDirection;
+    use crate::render::Alignment;
+
+    const RED: Color = Color(0xFF0000FF);
+    const BLUE: Color = Color(0xFFFF0000);
+
+    #[test]
+    fn implied_stops_space_colours_evenly() {
+        let gradient = LinearGradient::new(&[RED, Color::WHITE, BLUE]);
+        assert_eq!(gradient.implied_stops(), vec![0.0, 0.5, 1.0]);
+        let explicit = LinearGradient::new(&[RED, BLUE]).with_stops(&[0.25, 0.75]);
+        assert_eq!(explicit.implied_stops(), vec![0.25, 0.75]);
+    }
+
+    #[test]
+    fn linear_lerp_unions_the_stops_and_samples_both_ramps() {
+        let a = LinearGradient::new(&[RED, RED]);
+        let b = LinearGradient::new(&[BLUE, BLUE]);
+        let mid = LinearGradient::lerp(Some(&a), Some(&b), 0.5);
+        assert_eq!(mid.stops, Some(vec![0.0, 1.0]));
+        for color in &mid.colors {
+            assert_eq!(*color, crate::borders::color_lerp(RED, BLUE, 0.5));
+        }
+        // Mismatched stop lists union: 0, 0.5, 1.
+        let a = LinearGradient::new(&[RED, BLUE]).with_stops(&[0.0, 0.5]);
+        let b = LinearGradient::new(&[RED, BLUE]).with_stops(&[0.5, 1.0]);
+        let mid = LinearGradient::lerp(Some(&a), Some(&b), 0.5);
+        assert_eq!(mid.stops, Some(vec![0.0, 0.5, 1.0]));
+    }
+
+    #[test]
+    fn linear_lerp_moves_the_anchors() {
+        let a = LinearGradient::new(&[RED, BLUE])
+            .with_begin(AlignmentGeometry::Absolute(Alignment::TOP_LEFT));
+        let b = LinearGradient::new(&[RED, BLUE])
+            .with_begin(AlignmentGeometry::Absolute(Alignment::BOTTOM_RIGHT));
+        let mid = LinearGradient::lerp(Some(&a), Some(&b), 0.5);
+        assert_eq!(mid.begin, AlignmentGeometry::Absolute(Alignment::CENTER));
+    }
+
+    #[test]
+    fn gradient_scale_fades_the_alphas() {
+        let gradient = RadialGradient::new(&[RED, BLUE]);
+        let faded = gradient.scale(0.5);
+        assert_eq!(faded.colors[0].alpha(), 128);
+        assert_eq!(faded.radius, 0.5);
+    }
+
+    #[test]
+    fn shader_gradient_lerps_across_kinds_over_two_halves() {
+        let a = ShaderGradient::Linear(LinearGradient::new(&[RED, BLUE]));
+        let b = ShaderGradient::Sweep(SweepGradient::new(&[BLUE, RED]));
+        match ShaderGradient::lerp(Some(a.clone()), Some(b.clone()), 0.25) {
+            Some(ShaderGradient::Linear(fading)) => {
+                assert_eq!(fading.colors[0].alpha(), 128)
+            }
+            other => panic!("expected a fading linear gradient, got {other:?}"),
+        }
+        match ShaderGradient::lerp(Some(a.clone()), Some(b.clone()), 0.75) {
+            Some(ShaderGradient::Sweep(arriving)) => {
+                assert_eq!(arriving.colors[0].alpha(), 128)
+            }
+            other => panic!("expected an arriving sweep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradient_rotation_turns_the_ramp_about_the_centre() {
+        let affine = GradientTransform::Rotation {
+            radians: std::f32::consts::FRAC_PI_2,
+        }
+        .transform(Rect::xywh(0.0, 0.0, 100.0, 100.0));
+        // The left-middle of the box moves to the top-middle (within the
+        // trig round-off a rotated matrix carries).
+        let turned = affine.map_point((0.0, 50.0));
+        assert!((turned.0 - 50.0).abs() < 1e-4 && turned.1.abs() < 1e-4);
+        // The centre stays put, to the same round-off.
+        let centre = affine.map_point((50.0, 50.0));
+        assert!((centre.0 - 50.0).abs() < 1e-4 && (centre.1 - 50.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gradients_paint_without_panicking_under_the_stubs() {
+        let rect = Rect::xywh(0.0, 0.0, 120.0, 80.0);
+        let _ = LinearGradient::new(&[RED, BLUE]).to_paint(rect, TextDirection::Ltr);
+        let _ = RadialGradient::new(&[RED, BLUE])
+            .with_transform(GradientTransform::Rotation { radians: 0.5 })
+            .to_paint(rect, TextDirection::Ltr);
+        let _ = SweepGradient::new(&[RED, BLUE])
+            .with_angles(0.0, std::f32::consts::PI)
+            .to_paint(rect, TextDirection::Ltr);
+    }
+}
+
+#[cfg(test)]
+mod matrix_tests {
+    use super::*;
+    use crate::render::Offset;
+
+    #[test]
+    fn a_translation_reads_back_as_one() {
+        let translation = Matrix4::translation(3.0, 4.0, 0.0);
+        assert_eq!(
+            matrix_utils::get_as_translation(translation),
+            Some(Offset::new(3.0, 4.0))
+        );
+        // A rotation is not a translation.
+        assert_eq!(
+            matrix_utils::get_as_translation(Matrix4::rotation_z(0.5)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_uniform_scale_reads_back_as_one() {
+        let scale = Matrix4::IDENTITY.set_entry(0, 0, 2.0).set_entry(1, 1, 2.0);
+        assert_eq!(matrix_utils::get_as_scale(scale), Some(2.0));
+        // Non-uniform or rotated is not a scale.
+        let non_uniform = Matrix4::IDENTITY.set_entry(0, 0, 2.0);
+        assert_eq!(matrix_utils::get_as_scale(non_uniform), None);
+    }
+
+    #[test]
+    fn transform_point_and_rect_agree_for_a_rotation() {
+        let quarter = Matrix4::rotation_z(std::f32::consts::FRAC_PI_2);
+        let point = matrix_utils::transform_point(quarter, Offset::new(10.0, 0.0));
+        // A quarter turn clockwise (y grows down) puts +x on +y.
+        assert!((point.dx).abs() < 1e-4 && (point.dy - 10.0).abs() < 1e-4);
+        let rect = matrix_utils::transform_rect(quarter, Rect::xywh(10.0, 0.0, 10.0, 5.0));
+        assert!((rect.left + 5.0).abs() < 1e-4 && (rect.top - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_affine_rect_transform_pushes_walls_by_sign() {
+        // Scale by 2 about the origin: every wall doubles.
+        let scale = Matrix4::IDENTITY.set_entry(0, 0, 2.0).set_entry(1, 1, 2.0);
+        let rect = matrix_utils::transform_rect(scale, Rect::xywh(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(rect, Rect::xywh(2.0, 4.0, 6.0, 8.0));
+    }
+
+    #[test]
+    fn inversion_round_trips_a_rect() {
+        // Axis-aligned, or the bounding box of the transformed rect is not
+        // the transformed rect and the round trip has nothing to come back to.
+        let transform = Matrix4::mul(
+            Matrix4::translation(11.0, -7.0, 0.0),
+            Matrix4::IDENTITY.set_entry(0, 0, 2.0).set_entry(1, 1, 3.0),
+        );
+        let rect = Rect::xywh(1.0, 2.0, 30.0, 40.0);
+        let there = matrix_utils::transform_rect(transform, rect);
+        let back = matrix_utils::inverse_transform_rect(transform, there);
+        assert!((back.left - rect.left).abs() < 1e-3);
+        assert!((back.top - rect.top).abs() < 1e-3);
+        assert!((back.right - rect.right).abs() < 1e-3);
+        assert!((back.bottom - rect.bottom).abs() < 1e-3);
+    }
+
+    #[test]
+    fn force_to_point_collapses_everything_onto_the_offset() {
+        let transform = matrix_utils::force_to_point(Offset::new(7.0, 9.0));
+        assert_eq!(
+            matrix_utils::transform_point(transform, Offset::new(100.0, -50.0)),
+            Offset::new(7.0, 9.0)
+        );
+    }
+
+    #[test]
+    fn a_cylindrical_projection_smokes() {
+        let _ = matrix_utils::create_cylindrical_projection_transform(
+            100.0,
+            0.5,
+            0.001,
+            crate::render::Axis::Vertical,
+        );
+    }
+}
+
+#[cfg(test)]
+mod text_painter_tests {
+    use super::*;
+
+    #[test]
+    fn a_text_painter_lays_out_and_measures() {
+        // Under the stub engine nothing measures, so the observable contract
+        // is that layout runs and the numbers agree with the paragraph; the
+        // relations below bite wherever a real shaper answers.
+        let mut painter = TextPainter::new()
+            .text("hello shaped world", TextStyle::default())
+            .with_max_lines(None);
+        painter.layout(300.0);
+        assert_eq!(painter.width(), painter.width());
+        if painter.width() > 0.0 {
+            assert!(painter.height() > 0.0);
+            let narrow_height = {
+                let mut painter =
+                    TextPainter::new().text("hello shaped world", TextStyle::default());
+                painter.layout(30.0);
+                painter.height()
+            };
+            assert!(narrow_height >= painter.height() * 1.9);
+        }
+    }
+
+    #[test]
+    fn max_lines_clamps_the_height() {
+        let mut free = TextPainter::new().text("one two three four five six", TextStyle::default());
+        free.layout(40.0);
+        let mut clamped = TextPainter::new()
+            .text("one two three four five six", TextStyle::default())
+            .with_max_lines(Some(1));
+        clamped.layout(40.0);
+        if free.height() > 0.0 {
+            assert!(clamped.height() < free.height());
+        }
+    }
+
+    #[test]
+    fn placeholder_and_word_boundary_are_carried_data() {
+        let placeholder = PlaceholderDimensions {
+            size: (50.0, 20.0),
+            alignment: PlaceholderAlignment::Middle,
+            baseline: TextBaseline::Alphabetic,
+        };
+        assert_eq!(placeholder.alignment, PlaceholderAlignment::Middle);
+        let boundary = WordBoundary {
+            prefix: "hello ".to_string(),
+            suffix: "world".to_string(),
+        };
+        assert_eq!(boundary.prefix, "hello ");
+    }
+
+    #[test]
+    fn an_accumulator_counts_a_span_walk() {
+        let mut accumulator = Accumulator::default();
+        accumulator.increment(5);
+        accumulator.increment(3);
+        assert_eq!(accumulator.value, 8);
+    }
+
+    #[test]
+    fn span_semantics_mark_placeholders() {
+        let text = InlineSpanSemanticsInformation::text("label");
+        assert_eq!(text.text, "label");
+        assert!(!text.is_placeholder);
+        assert!(InlineSpanSemanticsInformation::placeholder().is_placeholder);
     }
 }

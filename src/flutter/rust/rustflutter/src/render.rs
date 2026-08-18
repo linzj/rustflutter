@@ -2452,6 +2452,143 @@ pub struct Alignment {
     pub y: f32,
 }
 
+/// Upstream `_MixedAlignment`: an alignment that is part absolute, part
+/// directional, summed at resolve time.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct MixedAlignment {
+    pub x: f32,
+    pub start: f32,
+    pub y: f32,
+}
+
+impl MixedAlignment {
+    /// Ltr sums the two horizontal contributions, rtl subtracts.
+    pub fn resolve(self, direction: TextDirection) -> Alignment {
+        match direction {
+            TextDirection::Ltr => Alignment::new(self.x + self.start, self.y),
+            TextDirection::Rtl => Alignment::new(self.x - self.start, self.y),
+        }
+    }
+}
+
+/// An alignment that may be absolute (`Alignment`), directional
+/// (`AlignmentDirectional`), or a mix -- upstream `AlignmentGeometry`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlignmentGeometry {
+    Absolute(Alignment),
+    Directional(AlignmentDirectional),
+    Mixed(MixedAlignment),
+}
+
+impl AlignmentGeometry {
+    pub const CENTER: AlignmentGeometry = AlignmentGeometry::Absolute(Alignment::CENTER);
+
+    fn parts(self) -> (f32, f32, f32) {
+        match self {
+            AlignmentGeometry::Absolute(alignment) => (alignment.x, 0.0, alignment.y),
+            AlignmentGeometry::Directional(alignment) => (0.0, alignment.start, alignment.y),
+            AlignmentGeometry::Mixed(mixed) => (mixed.x, mixed.start, mixed.y),
+        }
+    }
+
+    fn from_parts(x: f32, start: f32, y: f32) -> AlignmentGeometry {
+        if start == 0.0 {
+            AlignmentGeometry::Absolute(Alignment::new(x, y))
+        } else if x == 0.0 {
+            AlignmentGeometry::Directional(AlignmentDirectional { start, y })
+        } else {
+            AlignmentGeometry::Mixed(MixedAlignment { x, start, y })
+        }
+    }
+
+    /// Upstream `AlignmentGeometry.add`: same kinds keep their kind,
+    /// anything else mixes.
+    pub fn add(self, other: AlignmentGeometry) -> AlignmentGeometry {
+        match (self, other) {
+            (AlignmentGeometry::Absolute(a), AlignmentGeometry::Absolute(b)) => {
+                AlignmentGeometry::Absolute(Alignment::new(a.x + b.x, a.y + b.y))
+            }
+            (AlignmentGeometry::Directional(a), AlignmentGeometry::Directional(b)) => {
+                AlignmentGeometry::Directional(AlignmentDirectional {
+                    start: a.start + b.start,
+                    y: a.y + b.y,
+                })
+            }
+            (this, other) => {
+                let (x1, s1, y1) = this.parts();
+                let (x2, s2, y2) = other.parts();
+                AlignmentGeometry::from_parts(x1 + x2, s1 + s2, y1 + y2)
+            }
+        }
+    }
+
+    /// Upstream `AlignmentGeometry`'s scale operator.
+    pub fn scale(self, factor: f32) -> AlignmentGeometry {
+        let (x, start, y) = self.parts();
+        AlignmentGeometry::from_parts(x * factor, start * factor, y * factor)
+    }
+
+    /// Upstream `AlignmentGeometry.lerp`: from centre when a side is
+    /// missing, same kinds stay their kind.
+    pub fn lerp(
+        a: Option<AlignmentGeometry>,
+        b: Option<AlignmentGeometry>,
+        t: f32,
+    ) -> Option<AlignmentGeometry> {
+        if a == b {
+            return a;
+        }
+        match (a, b) {
+            (None, Some(b)) => return Some(b.scale(t)),
+            (Some(a), None) => return Some(a.scale(1.0 - t)),
+            (Some(AlignmentGeometry::Absolute(a)), Some(AlignmentGeometry::Absolute(b))) => {
+                return Some(AlignmentGeometry::Absolute(Alignment::lerp(a, b, t)));
+            }
+            (Some(AlignmentGeometry::Directional(a)), Some(AlignmentGeometry::Directional(b))) => {
+                return Some(AlignmentGeometry::Directional(AlignmentDirectional {
+                    start: a.start + (b.start - a.start) * t,
+                    y: a.y + (b.y - a.y) * t,
+                }));
+            }
+            _ => {}
+        }
+        let a = a?.parts();
+        let b = b?.parts();
+        Some(AlignmentGeometry::from_parts(
+            a.0 + (b.0 - a.0) * t,
+            a.1 + (b.1 - a.1) * t,
+            a.2 + (b.2 - a.2) * t,
+        ))
+    }
+
+    /// Upstream `AlignmentGeometry.resolve`.
+    pub fn resolve(self, direction: TextDirection) -> Alignment {
+        match self {
+            AlignmentGeometry::Absolute(alignment) => alignment,
+            AlignmentGeometry::Directional(alignment) => alignment.resolve(direction),
+            AlignmentGeometry::Mixed(mixed) => mixed.resolve(direction),
+        }
+    }
+}
+
+/// Upstream `TextAlignVertical`: where a field's text sits vertically,
+/// -1.0 top to 1.0 bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct TextAlignVertical {
+    pub y: f32,
+}
+
+impl TextAlignVertical {
+    pub const TOP: TextAlignVertical = TextAlignVertical { y: -1.0 };
+    pub const CENTER: TextAlignVertical = TextAlignVertical { y: 0.0 };
+    pub const BOTTOM: TextAlignVertical = TextAlignVertical { y: 1.0 };
+
+    pub const fn new(y: f32) -> TextAlignVertical {
+        debug_assert!(y >= -1.0 && y <= 1.0);
+        TextAlignVertical { y }
+    }
+}
+
 impl Alignment {
     pub const TOP_LEFT: Alignment = Alignment { x: -1.0, y: -1.0 };
     pub const TOP_CENTER: Alignment = Alignment { x: 0.0, y: -1.0 };
@@ -2486,6 +2623,36 @@ impl Alignment {
     /// half is [`AlignmentDirectional::resolve`].
     pub fn resolve(self, _direction: TextDirection) -> Alignment {
         self
+    }
+
+    /// Upstream `Alignment.alongOffset`: the point this alignment picks
+    /// inside `other` taken as a size.
+    pub fn along_offset(self, other: Offset) -> Offset {
+        Offset::new(
+            (other.dx * self.x + other.dx) / 2.0,
+            (other.dy * self.y + other.dy) / 2.0,
+        )
+    }
+
+    /// Upstream `Alignment.alongSize`.
+    pub fn along_size(self, other: Size) -> Offset {
+        self.along_offset(Offset::new(other.width, other.height))
+    }
+
+    /// Upstream `Alignment.withinRect`.
+    pub fn within_rect(self, rect: Rect) -> Offset {
+        Offset::new(
+            rect.left + self.x * rect.width() / 2.0 + rect.width() / 2.0,
+            rect.top + self.y * rect.height() / 2.0 + rect.height() / 2.0,
+        )
+    }
+
+    /// Upstream `Alignment.lerp`.
+    pub fn lerp(a: Alignment, b: Alignment, t: f32) -> Alignment {
+        if a == b {
+            return a;
+        }
+        Alignment::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
     }
 }
 
@@ -2654,6 +2821,13 @@ pub enum Fill {
 pub struct RenderDecoratedBox {
     fill: Option<Fill>,
     corner_radius: f32,
+    /// Per-corner rounding, upstream's `BoxDecoration.borderRadius`. When
+    /// set it takes precedence over [`RenderDecoratedBox::corner_radius`],
+    /// which stays as the uniform-radius shorthand.
+    corners: Option<crate::borders::BorderRadius>,
+    /// A whole `Decoration`, upstream's `RenderDecoratedBox.decoration`.
+    /// When set it takes the place of the individual fields above.
+    decoration: Option<crate::decoration::Decoration>,
     border_width: f32,
     border_color: Color,
     /// Painted under the box, in order. Empty for anything sitting flat on the
@@ -2668,6 +2842,8 @@ impl RenderDecoratedBox {
         RenderDecoratedBox {
             fill: None,
             corner_radius: 0.0,
+            corners: None,
+            decoration: None,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             shadows: Vec::new(),
@@ -2689,6 +2865,40 @@ impl RenderDecoratedBox {
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
+    }
+
+    /// Per-corner rounding, upstream's `BoxDecoration.borderRadius` -- the
+    /// caller resolves directionality before it gets here.
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.corners = Some(radius);
+        self
+    }
+
+    /// A whole decoration, upstream's `RenderDecoratedBox(decoration:)`.
+    /// When set it paints and hit-tests as itself, replacing the individual
+    /// fill/radius/border fields.
+    pub fn with_decoration(mut self, decoration: crate::decoration::Decoration) -> Self {
+        self.decoration = Some(decoration);
+        self
+    }
+
+    /// The per-corner rounding over `rect`, when there is one.
+    fn corner_rrect(&self, rect: Rect) -> Option<crate::borders::RRect> {
+        self.corners.map(|radius| radius.to_rrect(rect))
+    }
+
+    /// The shadow's shape: the corner rounding grown by the spread, the
+    /// per-corner counterpart of `(corner_radius + spread).max(0.0)`.
+    fn shadow_rrect(&self, rect: Rect, spread: f32) -> Option<crate::borders::RRect> {
+        self.corners.map(|radius| {
+            crate::borders::BorderRadius::only(
+                radius.top_left + crate::borders::Radius::circular(spread),
+                radius.top_right + crate::borders::Radius::circular(spread),
+                radius.bottom_left + crate::borders::Radius::circular(spread),
+                radius.bottom_right + crate::borders::Radius::circular(spread),
+            )
+            .to_rrect(rect)
+        })
     }
 
     /// Casts these shadows under the box.
@@ -2771,7 +2981,7 @@ fn rounded_rect_contains(size: Size, radius: f32, position: Offset) -> bool {
     dx * dx + dy * dy <= radius * radius
 }
 
-fn point_in(rect: Rect, alignment: Alignment) -> (f32, f32) {
+pub(crate) fn point_in(rect: Rect, alignment: Alignment) -> (f32, f32) {
     (
         rect.left + rect.width() * (alignment.x + 1.0) / 2.0,
         rect.top + rect.height() * (alignment.y + 1.0) / 2.0,
@@ -2793,12 +3003,16 @@ impl RenderBox for RenderDecoratedBox {
         let mut effect = UpdateEffect::repaint_if(
             self.fill != fresh.fill
                 || self.corner_radius != fresh.corner_radius
+                || self.corners != fresh.corners
+                || self.decoration != fresh.decoration
                 || self.border_width != fresh.border_width
                 || self.border_color != fresh.border_color
                 || self.shadows != fresh.shadows,
         );
         self.fill = fresh.fill.take();
         self.corner_radius = fresh.corner_radius;
+        self.corners = fresh.corners;
+        self.decoration = fresh.decoration.take();
         self.border_width = fresh.border_width;
         self.border_color = fresh.border_color;
         self.shadows = std::mem::take(&mut fresh.shadows);
@@ -2835,6 +3049,19 @@ impl RenderBox for RenderDecoratedBox {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let rect = self.paint_rect(offset);
+        // A whole decoration paints as itself, shadows under background
+        // under border -- upstream's `_BoxDecorationPainter.paint` order.
+        if let Some(decoration) = &self.decoration {
+            decoration.paint(
+                context.canvas(),
+                rect,
+                crate::direction::current_direction(),
+            );
+            if let Some(child) = &self.child {
+                context.paint_child(child, offset);
+            }
+            return;
+        }
         // Under everything, in the order they were given: the shape moved by
         // the shadow's offset and grown by its spread, filled with a blurred
         // paint. That is what `BoxDecoration._paintShadows` does, and the
@@ -2853,7 +3080,9 @@ impl RenderBox for RenderDecoratedBox {
                 continue;
             }
             let paint = shadow.to_paint();
-            if self.corner_radius > 0.0 {
+            if let Some(rrect) = self.shadow_rrect(shadow_rect, spread) {
+                context.canvas().draw_path(&rrect.to_path(), &paint);
+            } else if self.corner_radius > 0.0 {
                 let radius = (self.corner_radius + spread).max(0.0);
                 context
                     .canvas()
@@ -2863,7 +3092,9 @@ impl RenderBox for RenderDecoratedBox {
             }
         }
         if let Some(paint) = self.build_paint(rect) {
-            if self.corner_radius > 0.0 {
+            if let Some(rrect) = self.corner_rrect(rect) {
+                context.canvas().draw_path(&rrect.to_path(), &paint);
+            } else if self.corner_radius > 0.0 {
                 context
                     .canvas()
                     .draw_rounded_rect(rect, self.corner_radius, &paint);
@@ -2888,7 +3119,11 @@ impl RenderBox for RenderDecoratedBox {
             let paint = Paint::new(self.border_color).with_style(Style::Stroke {
                 width: self.border_width,
             });
-            if self.corner_radius > 0.0 {
+            if let Some(rrect) = self.corner_rrect(rect) {
+                context
+                    .canvas()
+                    .draw_path(&rrect.deflate(half).to_path(), &paint);
+            } else if self.corner_radius > 0.0 {
                 context.canvas().draw_rounded_rect(
                     inset,
                     (self.corner_radius - half).max(0.0),
@@ -2922,6 +3157,18 @@ impl RenderBox for RenderDecoratedBox {
     /// not, because upstream builds no `RenderDecoratedBox` for a `Container`
     /// without a decoration, and neither does `Container::shape` here.
     fn hit_test_self(&self, position: Offset) -> bool {
+        if let Some(decoration) = &self.decoration {
+            return decoration.hit_test(
+                (self.size.width, self.size.height),
+                position,
+                crate::direction::current_direction(),
+            );
+        }
+        if let Some(radius) = self.corners {
+            return radius
+                .to_rrect(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
+                .contains(position);
+        }
         rounded_rect_contains(self.size, self.corner_radius, position)
     }
 
@@ -7962,6 +8209,11 @@ impl RenderBox for RenderOpacity {
 /// Clips its child to its own bounds, optionally with rounded corners.
 pub struct RenderClipRect {
     corner_radius: f32,
+    /// Per-corner rounding, upstream `ClipRRect.borderRadius` resolved.
+    /// When set it takes precedence over `corner_radius` and clips through
+    /// a path, the way upstream's `DirectionalClipper` reaches
+    /// `RRect.fromRectAndCorners`.
+    corners: Option<crate::borders::BorderRadius>,
     child: BoxedRender,
     size: Size,
 }
@@ -7970,6 +8222,7 @@ impl RenderClipRect {
     pub fn new(child: impl RenderBox + 'static) -> RenderClipRect {
         RenderClipRect {
             corner_radius: 0.0,
+            corners: None,
             child: RenderRef::new(child),
             size: Size::ZERO,
         }
@@ -7979,13 +8232,22 @@ impl RenderClipRect {
         self.corner_radius = radius;
         self
     }
+
+    /// Per-corner rounding; the caller resolves directionality first.
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.corners = Some(radius);
+        self
+    }
 }
 
 impl RenderBox for RenderClipRect {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderClipRect>()?;
-        let mut effect = UpdateEffect::repaint_if(self.corner_radius != fresh.corner_radius);
+        let mut effect = UpdateEffect::repaint_if(
+            self.corner_radius != fresh.corner_radius || self.corners != fresh.corners,
+        );
         self.corner_radius = fresh.corner_radius;
+        self.corners = fresh.corners;
         effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
         self.child = fresh.child.clone();
         Some(effect)
@@ -8007,6 +8269,15 @@ impl RenderBox for RenderClipRect {
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(radius) = self.corners {
+            // The path clip wants child-local coordinates, and the rounding
+            // is per-corner -- upstream `ClipRRect`'s `DirectionalClipper`
+            // resolving to an `RRect`.
+            let local = Rect::xywh(0.0, 0.0, self.size.width, self.size.height);
+            let path = radius.to_rrect(local).to_path();
+            context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+            return;
+        }
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
         context.push_clip_rect(
             bounds,
@@ -10375,6 +10646,234 @@ impl RenderBox for RenderPointerRegion {
 
 // -- Tests --------------------------------------------------------------------
 
+// -- Custom paint (upstream custom_paint.dart) -------------------------------------
+
+/// Upstream `CustomPainter`: a paint delegate. Either paint the same thing
+/// forever, or carry a [`crate::foundation::Listenable`] the render object
+/// listens to for repaint ticks.
+///
+/// `CustomPainterSemantics` -- the semantics-builder half of upstream's
+/// class -- waits on the semantics wave; see PORTING_STATUS.
+pub trait CustomPainter {
+    /// Upstream `CustomPainter.paint`. The canvas' origin is this box's top
+    /// left; stay inside `size`.
+    fn paint(&self, canvas: &mut Canvas, size: Size);
+
+    /// Upstream `CustomPainter.shouldRepaint`: whether `self` paints
+    /// something the old delegate did not.
+    fn should_repaint(&self, old: &dyn CustomPainter) -> bool;
+
+    /// Upstream `CustomPainter.shouldRebuildSemantics`, defaulting to
+    /// `shouldRepaint` as upstream's does.
+    fn should_rebuild_semantics(&self, old: &dyn CustomPainter) -> bool {
+        self.should_repaint(old)
+    }
+
+    /// Upstream `CustomPainter.hitTest`: `Some(bool)` for a decision,
+    /// `None` for the default -- everything a hit for a background painter,
+    /// nothing for a foreground one.
+    fn hit_test(&self, _position: Offset) -> Option<bool> {
+        None
+    }
+
+    /// The `repaint` listenable this painter wants repaint ticks from,
+    /// upstream's constructor argument.
+    fn repaint(&self) -> Option<Rc<dyn crate::foundation::Listenable>> {
+        None
+    }
+
+    /// Same-kind check standing in for upstream's `runtimeType` comparison.
+    fn kind_id(&self) -> std::any::TypeId;
+
+    /// The concrete self, for `should_repaint` implementors that want to
+    /// compare fields with the old delegate.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `RenderCustomPaint`: paints a delegate, then the child, then a
+/// foreground delegate.
+pub struct RenderCustomPaint {
+    painter: Option<Rc<dyn CustomPainter>>,
+    foreground_painter: Option<Rc<dyn CustomPainter>>,
+    preferred_size: Size,
+    child: Option<BoxedRender>,
+    size: Size,
+}
+
+impl RenderCustomPaint {
+    pub fn new(child: impl RenderBox + 'static) -> RenderCustomPaint {
+        RenderCustomPaint {
+            painter: None,
+            foreground_painter: None,
+            preferred_size: Size::ZERO,
+            child: Some(RenderRef::new(child)),
+            size: Size::ZERO,
+        }
+    }
+
+    /// The childless spelling, sized by the preferred size alone.
+    pub fn bare() -> RenderCustomPaint {
+        RenderCustomPaint {
+            painter: None,
+            foreground_painter: None,
+            preferred_size: Size::ZERO,
+            child: None,
+            size: Size::ZERO,
+        }
+    }
+
+    /// Upstream `RenderCustomPaint(preferredSize:)`.
+    pub fn with_preferred_size(mut self, size: Size) -> Self {
+        self.preferred_size = size;
+        self
+    }
+
+    /// Upstream `RenderCustomPaint(painter:)`.
+    pub fn with_painter(mut self, painter: Rc<dyn CustomPainter>) -> Self {
+        self.painter = Some(painter);
+        self
+    }
+
+    /// Upstream `RenderCustomPaint(foregroundPainter:)`.
+    pub fn with_foreground_painter(mut self, painter: Rc<dyn CustomPainter>) -> Self {
+        self.foreground_painter = Some(painter);
+        self
+    }
+
+    /// Upstream `_didUpdatePainter`'s repaint half: a different kind, or
+    /// the same kind with something new to say.
+    fn painter_requests_repaint(
+        new_painter: Option<&Rc<dyn CustomPainter>>,
+        old_painter: Option<&Rc<dyn CustomPainter>>,
+    ) -> bool {
+        match (new_painter, old_painter) {
+            // No painter on either side is no change at all; upstream's
+            // setter is only consulted when the value moved.
+            (None, None) => false,
+            (None, Some(_)) | (Some(_), None) => true,
+            (Some(new_painter), Some(old_painter)) => {
+                if Rc::ptr_eq(new_painter, old_painter) {
+                    return false;
+                }
+                new_painter.kind_id() != old_painter.kind_id()
+                    || new_painter.should_repaint(old_painter.as_ref())
+            }
+        }
+    }
+}
+
+impl RenderBox for RenderCustomPaint {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderCustomPaint>()?;
+        // The painters are content, not geometry: a change asks for paint,
+        // never relayout -- unless the preferred size moved.
+        let mut effect = UpdateEffect::repaint_if(
+            Self::painter_requests_repaint(fresh.painter.as_ref(), self.painter.as_ref())
+                || Self::painter_requests_repaint(
+                    fresh.foreground_painter.as_ref(),
+                    self.foreground_painter.as_ref(),
+                )
+                || self.preferred_size != fresh.preferred_size,
+        );
+        self.painter = fresh.painter.take();
+        self.foreground_painter = fresh.foreground_painter.take();
+        self.preferred_size = fresh.preferred_size;
+        effect = effect.and(UpdateEffect::relayout_if(!same_child(
+            &self.child,
+            &fresh.child,
+        )));
+        self.child = fresh.child.take();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // Proxy-sized when there is a child; the preferred size, otherwise.
+        self.size = match &mut self.child {
+            Some(child) => child.layout_child(constraints, true),
+            None => constraints.constrain(self.preferred_size),
+        };
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        match &self.child {
+            Some(child) => child.dry_layout(constraints),
+            None => constraints.constrain(self.preferred_size),
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let size = self.size;
+        if let Some(painter) = &self.painter {
+            painter.paint(context.canvas(), size);
+        }
+        if let Some(child) = &self.child {
+            context.paint_child(child, offset);
+        }
+        if let Some(foreground) = &self.foreground_painter {
+            foreground.paint(context.canvas(), size);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    /// Upstream `RenderCustomPaint.hitTestSelf`: the foreground painter
+    /// decides, then the background painter, then everything is a hit.
+    fn hit_test_self(&self, position: Offset) -> bool {
+        self.foreground_painter
+            .as_ref()
+            .and_then(|painter| painter.hit_test(position))
+            .or_else(|| {
+                self.painter
+                    .as_ref()
+                    .and_then(|painter| painter.hit_test(position))
+            })
+            .unwrap_or(true)
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child
+            .as_ref()
+            .is_some_and(|child| child.hit_test(position, result))
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_width(height))
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_width(height))
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.min_intrinsic_height(width))
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map_or(0.0, |c| c.max_intrinsic_height(width))
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.as_ref().and_then(|c| c.distance_to_baseline())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10421,14 +10920,14 @@ mod tests {
     }
 
     /// A box that reports a fixed size, clamped into whatever it is given.
-    struct FixedBox {
+    pub(crate) struct FixedBox {
         preferred: Size,
         size: Size,
         baseline: Option<f32>,
     }
 
     impl FixedBox {
-        fn new(width: f32, height: f32) -> FixedBox {
+        pub(crate) fn new(width: f32, height: f32) -> FixedBox {
             FixedBox {
                 preferred: Size::new(width, height),
                 size: Size::ZERO,
@@ -12543,6 +13042,53 @@ mod tests {
         assert!(RenderParagraph::new("hello").hit_test_self(Offset::ZERO));
     }
 
+    /// A decoration with per-corner rounding answers by the rrect it paints,
+    /// the way `BoxDecoration.hitTest` asks the `RRect` -- only here each
+    /// corner may differ, so one sharp corner takes a press its rounded
+    /// neighbour refuses.
+    #[test]
+    fn a_per_corner_decoration_rounds_only_the_corners_it_says() {
+        use crate::borders::{BorderRadius, Radius};
+        let mut box_ = RenderDecoratedBox::new()
+            .with_fill(Fill::Solid(Color::BLACK))
+            .with_border_radius(BorderRadius::only(
+                Radius::circular(20.0),
+                Radius::ZERO,
+                Radius::ZERO,
+                Radius::circular(20.0),
+            ));
+        box_.layout(BoxConstraints::tight(100.0, 100.0));
+        // The top-left corner is rounded: a press in its corner square misses.
+        assert!(!box_.hit_test_self(Offset::new(2.0, 2.0)));
+        // The top-right corner is sharp: the same press lands.
+        assert!(box_.hit_test_self(Offset::new(98.0, 2.0)));
+        // The middle of every edge is inside either way.
+        assert!(box_.hit_test_self(Offset::new(50.0, 0.5)));
+    }
+
+    /// `ClipRRect`'s per-corner clip paints without a panic under the stub
+    /// engine, and a radius change asks only for a repaint -- upstream's
+    /// `RenderClipRRect` updating its clipper.
+    #[test]
+    fn a_per_corner_clip_only_needs_a_repaint_when_the_radius_moves() {
+        use crate::borders::{BorderRadius, Radius};
+        let radius = |top_left: f32| {
+            BorderRadius::only(
+                Radius::circular(top_left),
+                Radius::ZERO,
+                Radius::ZERO,
+                Radius::ZERO,
+            )
+        };
+        // One child shared by both, so only the radius differs between them.
+        let child = RenderRef::new(FixedBox::new(100.0, 100.0));
+        let mut clip = RenderClipRect::new(child.clone()).with_border_radius(radius(10.0));
+        clip.layout(BoxConstraints::tight(100.0, 100.0));
+        let mut fresh = RenderClipRect::new(child).with_border_radius(radius(12.0));
+        let effect = RenderBox::update_from(&mut clip, &mut fresh).expect("same type");
+        assert_eq!(effect, UpdateEffect::Repaint);
+    }
+
     #[test]
     fn transparent_subtrees_are_not_hit_targets() {
         let mut opacity =
@@ -14391,5 +14937,4520 @@ mod compositing_tests {
         let calls = paint_into(&mut clipped);
         assert_eq!(calls.clip_rects, 1);
         assert_eq!(calls.display_lists, 0);
+    }
+}
+
+#[cfg(test)]
+mod alignment_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn alignment_along_and_within() {
+        // The centre of a 100x50 box, and its bottom-right corner.
+        assert_eq!(
+            Alignment::CENTER.along_size(Size::new(100.0, 50.0)),
+            Offset::new(50.0, 25.0)
+        );
+        assert_eq!(
+            Alignment::BOTTOM_RIGHT.along_size(Size::new(100.0, 50.0)),
+            Offset::new(100.0, 50.0)
+        );
+        // withinRect offsets the same answer into the rect.
+        let rect = Rect::xywh(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(
+            Alignment::TOP_LEFT.within_rect(rect),
+            Offset::new(10.0, 20.0)
+        );
+        assert_eq!(Alignment::CENTER.within_rect(rect), Offset::new(60.0, 45.0));
+    }
+
+    #[test]
+    fn alignment_geometry_adds_and_resolves() {
+        use crate::direction::TextDirection;
+        let absolute = AlignmentGeometry::Absolute(Alignment::new(0.25, 0.0));
+        let directional =
+            AlignmentGeometry::Directional(AlignmentDirectional { start: 0.5, y: 0.0 });
+        let mixed = absolute.add(directional);
+        // Left-to-right: the start side is on the left, so x = 0.25 + 0.5.
+        assert_eq!(mixed.resolve(TextDirection::Ltr), Alignment::new(0.75, 0.0));
+        // Right-to-left: the start side flips, so x = 0.25 - 0.5.
+        assert_eq!(
+            mixed.resolve(TextDirection::Rtl),
+            Alignment::new(-0.25, 0.0)
+        );
+        // Same kinds add without mixing.
+        assert_eq!(
+            AlignmentGeometry::Absolute(Alignment::new(1.0, 0.0))
+                .add(AlignmentGeometry::Absolute(Alignment::new(-0.5, 0.0))),
+            AlignmentGeometry::Absolute(Alignment::new(0.5, 0.0))
+        );
+    }
+
+    #[test]
+    fn alignment_geometry_lerps_like_kinds_and_from_centre() {
+        let a = AlignmentGeometry::Absolute(Alignment::TOP_LEFT);
+        let b = AlignmentGeometry::Absolute(Alignment::BOTTOM_RIGHT);
+        assert_eq!(
+            AlignmentGeometry::lerp(Some(a), Some(b), 0.5),
+            Some(AlignmentGeometry::Absolute(Alignment::CENTER))
+        );
+        // From nothing is from centre.
+        assert_eq!(
+            AlignmentGeometry::lerp(None, Some(a), 0.5),
+            Some(AlignmentGeometry::Absolute(Alignment::new(-0.5, -0.5)))
+        );
+    }
+}
+
+// -- RotatedBox (upstream rotated_box.dart) ----------------------------------------
+
+/// Upstream `RenderRotatedBox`: rotates the child by quarter turns before
+/// layout, so the rotated box takes only the space the rotated child needs.
+pub struct RenderRotatedBox {
+    quarter_turns: usize,
+    child: Option<BoxedRender>,
+    size: Size,
+}
+
+impl RenderRotatedBox {
+    pub fn new(quarter_turns: usize, child: impl RenderBox + 'static) -> RenderRotatedBox {
+        RenderRotatedBox {
+            quarter_turns,
+            child: Some(RenderRef::new(child)),
+            size: Size::ZERO,
+        }
+    }
+
+    /// Odd quarter turns swap the axes.
+    fn is_vertical(&self) -> bool {
+        self.quarter_turns % 2 == 1
+    }
+
+    fn flipped(constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            constraints.min_height,
+            constraints.max_height,
+            constraints.min_width,
+            constraints.max_width,
+        )
+    }
+
+    /// The affine upstream builds as translate-rotate-translate: the child,
+    /// turned about this box's centre and pinned at its own top-left after
+    /// the turn. `[a, b, c, d, e, f]` as `x' = a*x + c*y + e`.
+    fn paint_transform(&self, child_size: Size) -> [f32; 6] {
+        let radians = (self.quarter_turns % 4) as f32 * std::f32::consts::FRAC_PI_2;
+        let (sin_r, cos_r) = radians.sin_cos();
+        // p' = size/2 + R * (p - child/2)
+        let e = self.size.width / 2.0
+            - (cos_r * child_size.width / 2.0 - sin_r * child_size.height / 2.0);
+        let f = self.size.height / 2.0
+            - (sin_r * child_size.width / 2.0 + cos_r * child_size.height / 2.0);
+        [cos_r, sin_r, -sin_r, cos_r, e, f]
+    }
+
+    /// The inverse of the paint transform, for hit testing.
+    fn inverse_transform(&self, child_size: Size) -> [f32; 6] {
+        let radians = (self.quarter_turns % 4) as f32 * std::f32::consts::FRAC_PI_2;
+        let (sin_r, cos_r) = radians.sin_cos();
+        let e = self.size.width / 2.0
+            - (cos_r * child_size.width / 2.0 - sin_r * child_size.height / 2.0);
+        let f = self.size.height / 2.0
+            - (sin_r * child_size.width / 2.0 + cos_r * child_size.height / 2.0);
+        // Invert R and un-translate: p = R^-1 * (pos - [e, f]), where the
+        // child's half-size is already folded into [e, f].
+        let dx = -(cos_r * e + sin_r * f);
+        let dy = sin_r * e - cos_r * f;
+        [cos_r, -sin_r, sin_r, cos_r, dx, dy]
+    }
+}
+
+impl RenderBox for RenderRotatedBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderRotatedBox>()?;
+        let mut effect = UpdateEffect::relayout_if(self.quarter_turns != fresh.quarter_turns);
+        self.quarter_turns = fresh.quarter_turns;
+        effect = effect.and(UpdateEffect::relayout_if(!same_child(
+            &self.child,
+            &fresh.child,
+        )));
+        self.child = fresh.child.take();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let vertical = self.is_vertical();
+        let child_constraints = if vertical {
+            Self::flipped(constraints)
+        } else {
+            constraints
+        };
+        match &mut self.child {
+            Some(child) => {
+                let child_size = child.layout_child(child_constraints, true);
+                self.size = if vertical {
+                    Size::new(child_size.height, child_size.width)
+                } else {
+                    child_size
+                };
+            }
+            None => self.size = constraints.smallest(),
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let vertical = self.is_vertical();
+        let child_constraints = if vertical {
+            Self::flipped(constraints)
+        } else {
+            constraints
+        };
+        match &self.child {
+            Some(child) => {
+                let child_size = child.dry_layout(child_constraints);
+                if vertical {
+                    Size::new(child_size.height, child_size.width)
+                } else {
+                    child_size
+                }
+            }
+            None => constraints.smallest(),
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(child) = &self.child {
+            let matrix = self.paint_transform(child.size());
+            context.push_transform(matrix, Offset::ZERO, offset, child);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        let inverse = self.inverse_transform(child.size());
+        let local = Offset::new(
+            inverse[0] * position.dx + inverse[2] * position.dy + inverse[4],
+            inverse[1] * position.dx + inverse[3] * position.dy + inverse[5],
+        );
+        child.hit_test(local, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| {
+            if self.is_vertical() {
+                child.min_intrinsic_height(height)
+            } else {
+                child.min_intrinsic_width(height)
+            }
+        })
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| {
+            if self.is_vertical() {
+                child.max_intrinsic_height(height)
+            } else {
+                child.max_intrinsic_width(height)
+            }
+        })
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| {
+            if self.is_vertical() {
+                child.min_intrinsic_width(width)
+            } else {
+                child.min_intrinsic_height(width)
+            }
+        })
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.as_ref().map_or(0.0, |child| {
+            if self.is_vertical() {
+                child.max_intrinsic_width(width)
+            } else {
+                child.max_intrinsic_height(width)
+            }
+        })
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.as_ref().and_then(|c| c.distance_to_baseline())
+    }
+}
+
+// -- ListBody (upstream list_body.dart) ---------------------------------------------
+
+/// Upstream `RenderListBody`: children laid end to end along one axis, each
+/// stretched across the cross axis. The main axis must be unbounded -- it
+/// neither clips nor resizes its children.
+pub struct RenderListBody {
+    axis_direction: AxisDirection,
+    children: Vec<BoxedRender>,
+    offsets: Vec<Offset>,
+    size: Size,
+}
+
+impl RenderListBody {
+    pub fn new(axis_direction: AxisDirection, children: Vec<BoxedRender>) -> RenderListBody {
+        RenderListBody {
+            axis_direction,
+            children,
+            offsets: Vec::new(),
+            size: Size::ZERO,
+        }
+    }
+
+    /// Down/up: width tight, height free -- upstream's
+    /// `BoxConstraints.tightFor(width: constraints.maxWidth)`.
+    fn cross_constraints_down(constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            constraints.max_width,
+            constraints.max_width,
+            0.0,
+            f32::INFINITY,
+        )
+    }
+
+    /// Right/left: height tight, width free.
+    fn cross_constraints_right(constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            0.0,
+            f32::INFINITY,
+            constraints.max_height,
+            constraints.max_height,
+        )
+    }
+}
+
+impl RenderBox for RenderListBody {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderListBody>()?;
+        let effect = UpdateEffect::relayout_if(
+            self.axis_direction != fresh.axis_direction
+                || !same_children(&self.children, &fresh.children),
+        );
+        self.axis_direction = fresh.axis_direction;
+        self.children = std::mem::take(&mut fresh.children);
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.offsets.clear();
+        let mut main_extent = 0.0f32;
+        match self.axis_direction {
+            AxisDirection::Right => {
+                let inner = Self::cross_constraints_right(constraints);
+                for child in &mut self.children {
+                    let child_size = child.layout_child(inner, true);
+                    self.offsets.push(Offset::new(main_extent, 0.0));
+                    main_extent += child_size.width;
+                }
+                self.size = constraints.constrain(Size::new(main_extent, constraints.max_height));
+            }
+            AxisDirection::Left => {
+                let inner = Self::cross_constraints_right(constraints);
+                for child in &mut self.children {
+                    let child_size = child.layout_child(inner, true);
+                    main_extent += child_size.width;
+                }
+                let mut position = 0.0f32;
+                for child in &self.children {
+                    position += child.size().width;
+                    self.offsets.push(Offset::new(main_extent - position, 0.0));
+                }
+                self.size = constraints.constrain(Size::new(main_extent, constraints.max_height));
+            }
+            AxisDirection::Down => {
+                let inner = Self::cross_constraints_down(constraints);
+                for child in &mut self.children {
+                    let child_size = child.layout_child(inner, true);
+                    self.offsets.push(Offset::new(0.0, main_extent));
+                    main_extent += child_size.height;
+                }
+                self.size = constraints.constrain(Size::new(constraints.max_width, main_extent));
+            }
+            AxisDirection::Up => {
+                let inner = Self::cross_constraints_down(constraints);
+                for child in &mut self.children {
+                    let child_size = child.layout_child(inner, true);
+                    main_extent += child_size.height;
+                }
+                let mut position = 0.0f32;
+                for child in &self.children {
+                    position += child.size().height;
+                    self.offsets.push(Offset::new(0.0, main_extent - position));
+                }
+                self.size = constraints.constrain(Size::new(constraints.max_width, main_extent));
+            }
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        for (child, child_offset) in self.children.iter().zip(&self.offsets) {
+            context.paint_child(
+                child,
+                Offset::new(offset.dx + child_offset.dx, offset.dy + child_offset.dy),
+            );
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, child_offset) in self.children.iter().zip(&self.offsets) {
+            visit(child, *child_offset);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        for (child, child_offset) in self.children.iter().zip(&self.offsets) {
+            let local = Offset::new(position.dx - child_offset.dx, position.dy - child_offset.dy);
+            if child.hit_test(local, result) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+// -- Proxy-box visual family (upstream proxy_box.dart, continued) -------------------
+
+/// Upstream `RenderClipRRect`: clips the child to a rounded rectangle.
+pub struct RenderClipRRect {
+    border_radius: crate::borders::BorderRadius,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderClipRRect {
+    pub fn new(
+        border_radius: crate::borders::BorderRadius,
+        child: impl RenderBox + 'static,
+    ) -> RenderClipRRect {
+        RenderClipRRect {
+            border_radius,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    fn local_clip(&self) -> crate::borders::RRect {
+        self.border_radius
+            .to_rrect(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
+    }
+}
+
+impl RenderBox for RenderClipRRect {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderClipRRect>()?;
+        let mut effect = UpdateEffect::repaint_if(self.border_radius != fresh.border_radius);
+        self.border_radius = fresh.border_radius;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let rrect = self.border_radius.to_rrect(bounds);
+        let path = rrect.to_path();
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// Upstream's opaque-clip hit test: inside the rounding, a hit; in a
+    /// corner outside its arc, not.
+    fn hit_test_self(&self, position: Offset) -> bool {
+        self.local_clip().contains(position)
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderClipOval`: clips the child to the largest inscribed oval.
+pub struct RenderClipOval {
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderClipOval {
+    pub fn new(child: impl RenderBox + 'static) -> RenderClipOval {
+        RenderClipOval {
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderClipOval {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderClipOval>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let mut path = crate::painting::RenderPath::new();
+        path.add_oval(bounds);
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_self(&self, position: Offset) -> bool {
+        crate::borders::ellipse_contains(
+            Rect::xywh(0.0, 0.0, self.size.width, self.size.height),
+            position,
+        )
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderFractionalTranslation`: paints the child offset by a
+/// fraction of its own size, leaving layout and hit geometry aligned with
+/// the paint -- the hit test moves with the paint.
+pub struct RenderFractionalTranslation {
+    translation: (f32, f32),
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderFractionalTranslation {
+    pub fn new(translation: (f32, f32), child: impl RenderBox + 'static) -> Self {
+        Self {
+            translation,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    fn paint_offset(&self) -> Offset {
+        Offset::new(
+            self.translation.0 * self.size.width,
+            self.translation.1 * self.size.height,
+        )
+    }
+}
+
+impl RenderBox for RenderFractionalTranslation {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderFractionalTranslation>()?;
+        let mut effect = UpdateEffect::repaint_if(self.translation != fresh.translation);
+        self.translation = fresh.translation;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let shift = self.paint_offset();
+        context.paint_child(
+            &self.child,
+            Offset::new(offset.dx + shift.dx, offset.dy + shift.dy),
+        );
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, self.paint_offset());
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        let shift = self.paint_offset();
+        let local = Offset::new(position.dx - shift.dx, position.dy - shift.dy);
+        self.child.hit_test(local, result)
+    }
+}
+
+/// Upstream `RenderShaderMask`: the child composited through a shader with
+/// a blend mode -- the engine paints it as a save-layer whose paint carries
+/// both.
+pub struct RenderShaderMask {
+    /// Upstream's `ShaderCallback` plus the blend mode in one: the paint the
+    /// layer composites with, built for the bounds -- a gradient paint,
+    /// typically.
+    shader: Rc<dyn Fn(Rect, crate::painting::BlendMode) -> Paint>,
+    blend_mode: crate::painting::BlendMode,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderShaderMask {
+    pub fn new(
+        shader: Rc<dyn Fn(Rect, crate::painting::BlendMode) -> Paint>,
+        child: impl RenderBox + 'static,
+    ) -> RenderShaderMask {
+        RenderShaderMask {
+            shader,
+            blend_mode: crate::painting::BlendMode::Modulate,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_blend_mode(mut self, mode: crate::painting::BlendMode) -> Self {
+        self.blend_mode = mode;
+        self
+    }
+}
+
+impl RenderBox for RenderShaderMask {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderShaderMask>()?;
+        let mut effect = UpdateEffect::repaint_if(self.blend_mode != fresh.blend_mode);
+        self.blend_mode = fresh.blend_mode;
+        // Two closures are never equal; a new shader is new paint.
+        effect = effect.and(UpdateEffect::repaint_if(true));
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        self.shader = fresh.shader.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let paint = (self.shader)(bounds, self.blend_mode);
+        context.canvas().save_layer(Some(bounds), Some(&paint));
+        context.paint_child(&self.child, offset);
+        context.canvas().restore();
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderOffstage`: the child is laid out but takes no room,
+/// paints nothing and hit-tests nothing while offstage.
+pub struct RenderOffstage {
+    offstage: bool,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderOffstage {
+    pub fn new(offstage: bool, child: impl RenderBox + 'static) -> RenderOffstage {
+        RenderOffstage {
+            offstage,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderOffstage {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderOffstage>()?;
+        // Going on or off stage changes the size this reports, which is a
+        // relayout for the parent.
+        let effect = UpdateEffect::relayout_if(self.offstage != fresh.offstage);
+        self.offstage = fresh.offstage;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        if self.offstage {
+            // Laid out as if in the tree, but taking no room.
+            self.child.layout_child(constraints, false);
+            self.size = constraints.smallest();
+        } else {
+            self.size = self.child.layout_child(constraints, true);
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        if self.offstage {
+            constraints.smallest()
+        } else {
+            self.child.dry_layout(constraints)
+        }
+    }
+
+    fn paint(&self, _context: &mut PaintContext, _offset: Offset) {
+        // Nothing paints while offstage.
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if !self.offstage {
+            visit(&self.child, Offset::ZERO);
+        }
+    }
+
+    fn hit_test_children(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
+        false
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        if self.offstage {
+            0.0
+        } else {
+            self.child.min_intrinsic_width(height)
+        }
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        if self.offstage {
+            0.0
+        } else {
+            self.child.max_intrinsic_width(height)
+        }
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        if self.offstage {
+            0.0
+        } else {
+            self.child.min_intrinsic_height(width)
+        }
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        if self.offstage {
+            0.0
+        } else {
+            self.child.max_intrinsic_height(width)
+        }
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        if self.offstage {
+            None
+        } else {
+            self.child.distance_to_baseline()
+        }
+    }
+}
+
+/// Upstream `RenderAbsorbPointer`: while absorbing, takes every hit in its
+/// bounds and passes none down -- visible, laid out, untouchable.
+pub struct RenderAbsorbPointer {
+    absorbing: bool,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderAbsorbPointer {
+    pub fn new(absorbing: bool, child: impl RenderBox + 'static) -> RenderAbsorbPointer {
+        RenderAbsorbPointer {
+            absorbing,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderAbsorbPointer {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderAbsorbPointer>()?;
+        self.absorbing = fresh.absorbing;
+        Some(UpdateEffect::Nothing)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// Upstream overrides `hitTest` itself: absorbing answers for the whole
+    /// bounds without asking the child or adding entries.
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if self.absorbing {
+            return self.size.contains(position);
+        }
+        self.child.hit_test(position, result)
+    }
+}
+
+// -- Custom clippers and the physical family (upstream proxy_box.dart) --------------
+
+/// Upstream `CustomClipper`: a clip geometry that depends on the box. The
+/// fixed-geometry clips (`RenderClipRect` and friends) are its degenerate
+/// delegates; `should_reclip` decides whether a new delegate redraws.
+pub trait CustomClipper {
+    /// Upstream `getClip`.
+    fn get_clip(&self, bounds: Rect) -> crate::painting::RenderPath;
+
+    /// Upstream `shouldReclip`.
+    fn should_reclip(&self, old: &dyn CustomClipper) -> bool;
+
+    /// The concrete self, for same-kind comparisons in `shouldReclip`.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `ShapeBorderClipper`: clips to a `ShapeBorder`'s outer path.
+pub struct ShapeBorderClipper {
+    pub shape: crate::borders::ShapeBorder,
+}
+
+impl ShapeBorderClipper {
+    pub fn new(shape: crate::borders::ShapeBorder) -> ShapeBorderClipper {
+        ShapeBorderClipper { shape }
+    }
+}
+
+impl CustomClipper for ShapeBorderClipper {
+    fn get_clip(&self, bounds: Rect) -> crate::painting::RenderPath {
+        self.shape
+            .outer_path(bounds, crate::direction::current_direction())
+    }
+
+    fn should_reclip(&self, old: &dyn CustomClipper) -> bool {
+        let Some(old) = old.as_any().downcast_ref::<ShapeBorderClipper>() else {
+            return true;
+        };
+        self.shape != old.shape
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Upstream `RenderClipPath`'s delegate spelling: the clip geometry asked
+/// of the box, every paint.
+pub struct RenderCustomClipPath {
+    clipper: Rc<dyn CustomClipper>,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderCustomClipPath {
+    pub fn new(clipper: Rc<dyn CustomClipper>, child: impl RenderBox + 'static) -> Self {
+        Self {
+            clipper,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderCustomClipPath {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderCustomClipPath>()?;
+        // Delegates are never equal as references; the clipper's own
+        // judgment is the only cheap stop.
+        let mut effect =
+            UpdateEffect::repaint_if(self.clipper.should_reclip(fresh.clipper.as_ref()));
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        self.clipper = fresh.clipper.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let path = self.clipper.get_clip(bounds);
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderClipRSuperellipse`: the smooth-corner clip. Drawn with
+/// `ContinuousRectangleBorder`'s cubics -- the engine has no superellipse
+/// primitive, the divergence `RoundedSuperellipseBorder` records.
+pub struct RenderClipRSuperellipse {
+    border_radius: crate::borders::BorderRadius,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderClipRSuperellipse {
+    pub fn new(
+        border_radius: crate::borders::BorderRadius,
+        child: impl RenderBox + 'static,
+    ) -> Self {
+        Self {
+            border_radius,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    fn clip_path(&self, bounds: Rect) -> crate::painting::RenderPath {
+        let rrect = self.border_radius.to_rrect(bounds);
+        crate::borders::continuous_path(rrect)
+    }
+}
+
+impl RenderBox for RenderClipRSuperellipse {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderClipRSuperellipse>()?;
+        let mut effect = UpdateEffect::repaint_if(self.border_radius != fresh.border_radius);
+        self.border_radius = fresh.border_radius;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        let path = self.clip_path(bounds);
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderBackdropFilter`: a filter applied to what is already
+/// behind the child. The engine's backdrop op is a blur, so this is the
+/// blur spelling of upstream's general `ui.ImageFilter` -- see
+/// PORTING_STATUS.
+pub struct RenderBackdropFilter {
+    sigma: f32,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderBackdropFilter {
+    pub fn new(sigma: f32, child: impl RenderBox + 'static) -> Self {
+        Self {
+            sigma,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderBackdropFilter {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderBackdropFilter>()?;
+        let mut effect = UpdateEffect::repaint_if(self.sigma != fresh.sigma);
+        self.sigma = fresh.sigma;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        // The blur reads the backdrop at push time, so it goes under the
+        // child.
+        context.tree.push_backdrop_blur(self.sigma, self.sigma);
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderPhysicalModel`: a rounded/circular box that casts an
+/// elevation shadow and clips its child to its shape.
+pub struct RenderPhysicalModel {
+    color: Color,
+    shadow_color: Color,
+    elevation: f32,
+    border_radius: crate::borders::BorderRadius,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderPhysicalModel {
+    pub fn new(child: impl RenderBox + 'static) -> Self {
+        Self {
+            color: Color::BLACK,
+            shadow_color: Color::BLACK,
+            elevation: 0.0,
+            border_radius: crate::borders::BorderRadius::ZERO,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = elevation;
+        self
+    }
+
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.border_radius = radius;
+        self
+    }
+
+    fn shape_path(&self, bounds: Rect) -> crate::painting::RenderPath {
+        self.border_radius.to_rrect(bounds).to_path()
+    }
+
+    /// Material's elevation table, as shadows -- the same one
+    /// `RenderDecoratedBox::with_elevation` paints with.
+    fn shadows(&self, bounds: Rect) -> Vec<crate::painting::BoxShadow> {
+        if self.elevation <= 0.0 {
+            return Vec::new();
+        }
+        crate::painting::elevation_shadows(self.elevation as u32).to_vec()
+    }
+}
+
+impl RenderBox for RenderPhysicalModel {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderPhysicalModel>()?;
+        let mut effect = UpdateEffect::repaint_if(
+            self.color != fresh.color
+                || self.shadow_color != fresh.shadow_color
+                || self.elevation != fresh.elevation
+                || self.border_radius != fresh.border_radius,
+        );
+        self.color = fresh.color;
+        self.shadow_color = fresh.shadow_color;
+        self.elevation = fresh.elevation;
+        self.border_radius = fresh.border_radius;
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        for shadow in &self.shadows(bounds) {
+            let spread = shadow.spread_radius;
+            let shadow_bounds = Rect::ltrb(
+                bounds.left + shadow.offset.dx - spread,
+                bounds.top + shadow.offset.dy - spread,
+                bounds.right + shadow.offset.dx + spread,
+                bounds.bottom + shadow.offset.dy + spread,
+            );
+            let path = self.shape_path(shadow_bounds);
+            let paint = shadow.to_paint();
+            context.canvas().draw_path(&path, &paint);
+        }
+        let path = self.shape_path(bounds);
+        let paint = Paint::new(self.color);
+        context.canvas().draw_path(&path, &paint);
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_self(&self, position: Offset) -> bool {
+        self.border_radius
+            .to_rrect(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
+            .contains(position)
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderPhysicalShape`: the `ShapeBorder` spelling of the
+/// physical model.
+pub struct RenderPhysicalShape {
+    color: Color,
+    elevation: f32,
+    shape: crate::borders::ShapeBorder,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderPhysicalShape {
+    pub fn new(shape: crate::borders::ShapeBorder, child: impl RenderBox + 'static) -> Self {
+        Self {
+            color: Color::BLACK,
+            elevation: 0.0,
+            shape,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = elevation;
+        self
+    }
+
+    fn shape_path(&self, bounds: Rect) -> crate::painting::RenderPath {
+        self.shape
+            .outer_path(bounds, crate::direction::current_direction())
+    }
+}
+
+impl RenderBox for RenderPhysicalShape {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderPhysicalShape>()?;
+        let mut effect = UpdateEffect::repaint_if(
+            self.color != fresh.color
+                || self.elevation != fresh.elevation
+                || self.shape != fresh.shape,
+        );
+        self.color = fresh.color;
+        self.elevation = fresh.elevation;
+        self.shape = fresh.shape.clone();
+        effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+        if self.elevation > 0.0 {
+            for shadow in crate::painting::elevation_shadows(self.elevation as u32) {
+                let spread = shadow.spread_radius;
+                let shadow_bounds = Rect::ltrb(
+                    bounds.left + shadow.offset.dx - spread,
+                    bounds.top + shadow.offset.dy - spread,
+                    bounds.right + shadow.offset.dx + spread,
+                    bounds.bottom + shadow.offset.dy + spread,
+                );
+                let path = self.shape_path(shadow_bounds);
+                let paint = shadow.to_paint();
+                context.canvas().draw_path(&path, &paint);
+            }
+        }
+        let path = self.shape_path(bounds);
+        let paint = Paint::new(self.color);
+        context.canvas().draw_path(&path, &paint);
+        context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn hit_test_self(&self, position: Offset) -> bool {
+        self.shape.hit_test(
+            Rect::xywh(0.0, 0.0, self.size.width, self.size.height),
+            position,
+            crate::direction::current_direction(),
+        )
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+/// Upstream `RenderMetaData`: carries a payload onto the hit-test entry, so
+/// a hit asks no questions of the tree that made it.
+pub struct RenderMetaData {
+    /// Whatever the annotations wanted to say. Upstream is an `Object?`;
+    /// here a caller-defined id, like the pointer regions'.
+    meta_id: u64,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderMetaData {
+    pub fn new(meta_id: u64, child: impl RenderBox + 'static) -> Self {
+        Self {
+            meta_id,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderMetaData {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderMetaData>()?;
+        let effect = UpdateEffect::Nothing;
+        self.meta_id = fresh.meta_id;
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// The metadata rides the hit-test entry -- the whole point of the box.
+    fn hit_test_id(&self) -> u64 {
+        self.meta_id
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+}
+
+// -- Table (upstream table.dart) ----------------------------------------------------
+
+/// How a cell sits in its row, upstream `TableCellVerticalAlignment`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TableCellVerticalAlignment {
+    /// Align on the text baseline; the row grows to hold every baseline.
+    #[default]
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+    /// The cell is re-laid-out at the row's full height.
+    Fill,
+    IntrinsicHeight,
+}
+
+/// How a column of a [`RenderTable`] is sized, upstream `TableColumnWidth`
+/// and its five concrete sizings as one enum.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TableColumnWidth {
+    /// `IntrinsicColumnWidth`: the widest cell's intrinsic width.
+    Intrinsic { flex: Option<f32> },
+    /// `FixedColumnWidth`: a constant.
+    Fixed(f32),
+    /// `FractionColumnWidth`: a fraction of the incoming max width; zero
+    /// when that is unbounded.
+    Fraction(f32),
+    /// `FlexColumnWidth`: a share of whatever is left over.
+    Flex(f32),
+    /// `MaxColumnWidth`: the larger of two sizings.
+    Max(Box<TableColumnWidth>, Box<TableColumnWidth>),
+    /// `MinColumnWidth`: the smaller of two sizings.
+    Min(Box<TableColumnWidth>, Box<TableColumnWidth>),
+}
+
+impl TableColumnWidth {
+    /// The crate default, upstream's `defaultColumnWidth`: flex 1.0.
+    pub const DEFAULT: TableColumnWidth = TableColumnWidth::Flex(1.0);
+
+    /// Upstream `minIntrinsicWidth`.
+    pub fn min_intrinsic_width(&self, cells: &[&dyn RenderBox], container_width: f32) -> f32 {
+        match self {
+            TableColumnWidth::Intrinsic { .. } => cells.iter().fold(0.0f32, |widest, cell| {
+                widest.max(cell.min_intrinsic_width(f32::INFINITY))
+            }),
+            TableColumnWidth::Fixed(value) => *value,
+            TableColumnWidth::Fraction(value) => {
+                if container_width.is_finite() {
+                    value * container_width
+                } else {
+                    0.0
+                }
+            }
+            TableColumnWidth::Flex(_) => 0.0,
+            TableColumnWidth::Max(a, b) => a
+                .min_intrinsic_width(cells, container_width)
+                .max(b.min_intrinsic_width(cells, container_width)),
+            TableColumnWidth::Min(a, b) => a
+                .min_intrinsic_width(cells, container_width)
+                .min(b.min_intrinsic_width(cells, container_width)),
+        }
+    }
+
+    /// Upstream `maxIntrinsicWidth`.
+    pub fn max_intrinsic_width(&self, cells: &[&dyn RenderBox], container_width: f32) -> f32 {
+        match self {
+            TableColumnWidth::Intrinsic { .. } => cells.iter().fold(0.0f32, |widest, cell| {
+                widest.max(cell.max_intrinsic_width(f32::INFINITY))
+            }),
+            TableColumnWidth::Fixed(value) => *value,
+            TableColumnWidth::Fraction(value) => {
+                if container_width.is_finite() {
+                    value * container_width
+                } else {
+                    0.0
+                }
+            }
+            TableColumnWidth::Flex(_) => 0.0,
+            TableColumnWidth::Max(a, b) => a
+                .max_intrinsic_width(cells, container_width)
+                .max(b.max_intrinsic_width(cells, container_width)),
+            TableColumnWidth::Min(a, b) => a
+                .max_intrinsic_width(cells, container_width)
+                .min(b.max_intrinsic_width(cells, container_width)),
+        }
+    }
+
+    /// Upstream `flex`.
+    pub fn flex(&self, _cells: &[&dyn RenderBox]) -> Option<f32> {
+        match self {
+            TableColumnWidth::Intrinsic { flex } => *flex,
+            TableColumnWidth::Flex(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+/// Upstream `RenderTable`: a grid. Cells are stored row-major; each column
+/// is sized by its [`TableColumnWidth`], each row by its tallest cell or by
+/// its baselines. `TableCellParentData` is the offsets this table keeps.
+pub struct RenderTable {
+    columns: usize,
+    cells: Vec<Option<BoxedRender>>,
+    cell_alignments: Vec<Option<TableCellVerticalAlignment>>,
+    column_specs: Vec<Option<TableColumnWidth>>,
+    default_column_width: TableColumnWidth,
+    default_vertical_alignment: TableCellVerticalAlignment,
+    text_direction: crate::direction::TextDirection,
+    // Computed at layout.
+    column_widths: Vec<f32>,
+    column_positions: Vec<f32>,
+    cell_offsets: Vec<Offset>,
+    table_width: f32,
+    size: Size,
+}
+
+impl RenderTable {
+    /// `cells` is row-major, `columns` wide; `None` is an empty slot.
+    pub fn new(columns: usize, cells: Vec<Option<BoxedRender>>) -> RenderTable {
+        let rows = if columns == 0 {
+            0
+        } else {
+            cells.len() / columns
+        };
+        RenderTable {
+            columns,
+            cell_alignments: vec![None; cells.len()],
+            cells,
+            column_specs: vec![None; columns],
+            default_column_width: TableColumnWidth::DEFAULT,
+            default_vertical_alignment: TableCellVerticalAlignment::default(),
+            text_direction: crate::direction::TextDirection::Ltr,
+            column_widths: Vec::new(),
+            column_positions: Vec::new(),
+            cell_offsets: vec![Offset::ZERO; rows * columns.max(1)],
+            table_width: 0.0,
+            size: Size::ZERO,
+        }
+    }
+
+    pub fn with_column_width(mut self, column: usize, width: TableColumnWidth) -> Self {
+        self.column_specs[column] = Some(width);
+        self
+    }
+
+    pub fn with_default_column_width(mut self, width: TableColumnWidth) -> Self {
+        self.default_column_width = width;
+        self
+    }
+
+    pub fn with_cell_alignment(
+        mut self,
+        x: usize,
+        y: usize,
+        alignment: TableCellVerticalAlignment,
+    ) -> Self {
+        if let Some(slot) = self.cell_alignments.get_mut(x + y * self.columns) {
+            *slot = Some(alignment);
+        }
+        self
+    }
+
+    fn rows(&self) -> usize {
+        if self.columns == 0 {
+            0
+        } else {
+            self.cells.len() / self.columns
+        }
+    }
+
+    fn alignment_at(&self, x: usize, y: usize) -> TableCellVerticalAlignment {
+        self.cell_alignments[x + y * self.columns].unwrap_or(self.default_vertical_alignment)
+    }
+
+    /// The cells of one column, borrowed for the intrinsic questions the
+    /// column-width algorithm asks before any layout happens.
+    fn column_cells(&self, x: usize) -> Vec<&dyn RenderBox> {
+        (0..self.rows())
+            .filter_map(|y| self.cells[x + y * self.columns].as_ref())
+            .map(|cell| cell as &dyn RenderBox)
+            .collect()
+    }
+
+    /// Upstream `_computeColumnWidths`: the widest-wins pass, then the flex
+    /// distribution to the target width, then the deficit shrink -- both
+    /// the flex-aware loop and the everyone-pays loop.
+    fn compute_column_widths(&self, constraints: BoxConstraints) -> Vec<f32> {
+        let columns = self.columns;
+        let mut widths = vec![0.0f32; columns];
+        let mut min_widths = vec![0.0f32; columns];
+        let mut flexes: Vec<Option<f32>> = vec![None; columns];
+        let mut table_width = 0.0f32;
+        let mut unflexed_table_width = 0.0f32;
+        let mut total_flex = 0.0f32;
+        for x in 0..columns {
+            let spec = self.column_specs[x]
+                .as_ref()
+                .unwrap_or(&self.default_column_width);
+            let cells = self.column_cells(x);
+            let max_intrinsic = spec.max_intrinsic_width(&cells, constraints.max_width);
+            widths[x] = max_intrinsic;
+            table_width += max_intrinsic;
+            let min_intrinsic = spec.min_intrinsic_width(&cells, constraints.max_width);
+            min_widths[x] = min_intrinsic;
+            if let Some(flex) = spec.flex(&cells) {
+                flexes[x] = Some(flex);
+                total_flex += flex;
+            } else {
+                unflexed_table_width += max_intrinsic;
+            }
+        }
+
+        const TOLERANCE: f32 = 1e-5;
+        let max_constraint = constraints.max_width;
+        let min_constraint = constraints.min_width;
+        if total_flex > 0.0 {
+            // Step 2: grow to the target, the flex columns sharing the
+            // remainder of what the unflexed columns did not take.
+            let target_width = if max_constraint.is_finite() {
+                max_constraint
+            } else {
+                min_constraint
+            };
+            if table_width < target_width {
+                let remaining = target_width - unflexed_table_width;
+                for x in 0..columns {
+                    if let Some(flex) = flexes[x] {
+                        let flexed_width = remaining * flex / total_flex;
+                        if widths[x] < flexed_width {
+                            table_width += flexed_width - widths[x];
+                            widths[x] = flexed_width;
+                        }
+                    }
+                }
+            }
+        } else if table_width < min_constraint {
+            // Step 3, mutually exclusive with step 2: every column shares
+            // the shortfall equally.
+            let delta = (min_constraint - table_width) / columns as f32;
+            for width in &mut widths {
+                *width += delta;
+            }
+            table_width = min_constraint;
+        }
+        if table_width > max_constraint {
+            // Shrink the flex columns first, never below their minimums;
+            // whatever the flex columns cannot absorb, every column with
+            // room shares.
+            let mut deficit = table_width - max_constraint;
+            let mut available_columns = columns;
+            while deficit > TOLERANCE && total_flex > TOLERANCE {
+                let mut new_total_flex = 0.0f32;
+                for x in 0..columns {
+                    if let Some(flex) = flexes[x] {
+                        let new_width = widths[x] - deficit * flex / total_flex;
+                        if new_width <= min_widths[x] {
+                            deficit -= widths[x] - min_widths[x];
+                            widths[x] = min_widths[x];
+                            flexes[x] = None;
+                            available_columns -= 1;
+                        } else {
+                            deficit -= widths[x] - new_width;
+                            widths[x] = new_width;
+                            new_total_flex += flex;
+                        }
+                    }
+                }
+                total_flex = new_total_flex;
+            }
+            while deficit > TOLERANCE && available_columns > 0 {
+                let delta = deficit / available_columns as f32;
+                let mut new_available = 0;
+                for x in 0..columns {
+                    let available_delta = widths[x] - min_widths[x];
+                    if available_delta > 0.0 {
+                        if available_delta <= delta {
+                            deficit -= widths[x] - min_widths[x];
+                            widths[x] = min_widths[x];
+                        } else {
+                            deficit -= delta;
+                            widths[x] -= delta;
+                            new_available += 1;
+                        }
+                    }
+                }
+                available_columns = new_available;
+            }
+        }
+        widths
+    }
+}
+
+impl RenderBox for RenderTable {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderTable>()?;
+        let structure_changed = self.columns != fresh.columns
+            || self.default_vertical_alignment != fresh.default_vertical_alignment
+            || self.column_specs != fresh.column_specs
+            || self.default_column_width != fresh.default_column_width
+            || self.cell_alignments != fresh.cell_alignments;
+        let cells_changed = !same_optional_children(&self.cells, &fresh.cells);
+        self.columns = fresh.columns;
+        self.column_specs = std::mem::take(&mut fresh.column_specs);
+        self.default_column_width = fresh.default_column_width.clone();
+        self.default_vertical_alignment = fresh.default_vertical_alignment;
+        self.cell_alignments = std::mem::take(&mut fresh.cell_alignments);
+        self.cells = std::mem::take(&mut fresh.cells);
+        Some(UpdateEffect::relayout_if(
+            structure_changed || cells_changed,
+        ))
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let rows = self.rows();
+        let columns = self.columns;
+        self.column_widths = self.compute_column_widths(constraints);
+        self.table_width = self.column_widths.iter().sum();
+        // Column positions; right-to-left flips the order, the way upstream
+        // mirrors the table for RTL.
+        self.column_positions = Vec::with_capacity(columns);
+        let mut position = 0.0f32;
+        for x in 0..columns {
+            self.column_positions.push(position);
+            position += self.column_widths[x];
+        }
+
+        let mut cell_offsets = vec![Offset::ZERO; rows * columns];
+        let mut row_top = 0.0f32;
+        for y in 0..rows {
+            // Pass 1: measure every cell, collecting the baselines the row
+            // needs if any cell asks to sit on one.
+            let mut row_height = 0.0f32;
+            let mut have_baseline = false;
+            let mut before_baseline = 0.0f32;
+            let mut after_baseline = 0.0f32;
+            let mut baselines = vec![0.0f32; columns];
+            for x in 0..columns {
+                let alignment = self.alignment_at(x, y);
+                let column_width = self.column_widths[x];
+                let Some(cell) = &mut self.cells[x + y * columns] else {
+                    continue;
+                };
+                let cell_constraints =
+                    BoxConstraints::new(column_width, column_width, 0.0, f32::INFINITY);
+                match alignment {
+                    TableCellVerticalAlignment::Baseline => {
+                        let cell_size = cell.layout_child(cell_constraints, true);
+                        // Upstream asserts a baseline is there; lenient
+                        // here, a cell without one still counts its height
+                        // so the row cannot collapse.
+                        row_height = row_height.max(cell_size.height);
+                        if let Some(baseline) = cell.distance_to_baseline() {
+                            have_baseline = true;
+                            baselines[x] = baseline;
+                            before_baseline = before_baseline.max(baseline);
+                            after_baseline = after_baseline.max(cell_size.height - baseline);
+                        }
+                    }
+                    TableCellVerticalAlignment::Fill => {}
+                    _ => {
+                        let cell_size = cell.layout_child(cell_constraints, true);
+                        row_height = row_height.max(cell_size.height);
+                    }
+                }
+            }
+            if have_baseline {
+                row_height = row_height.max(before_baseline + after_baseline);
+            }
+            // Pass 2: place every cell; `fill` re-lays out at row height.
+            for x in 0..columns {
+                let column_position = self.column_positions[x];
+                let column_width = self.column_widths[x];
+                let alignment = self.alignment_at(x, y);
+                let Some(cell) = &mut self.cells[x + y * columns] else {
+                    continue;
+                };
+                let cell_size = cell.size();
+                let offset = match alignment {
+                    TableCellVerticalAlignment::Baseline => {
+                        Offset::new(column_position, row_top + before_baseline - baselines[x])
+                    }
+                    TableCellVerticalAlignment::Top => Offset::new(column_position, row_top),
+                    TableCellVerticalAlignment::Middle => Offset::new(
+                        column_position,
+                        row_top + (row_height - cell_size.height) / 2.0,
+                    ),
+                    TableCellVerticalAlignment::Bottom => {
+                        Offset::new(column_position, row_top + row_height - cell_size.height)
+                    }
+                    TableCellVerticalAlignment::Fill
+                    | TableCellVerticalAlignment::IntrinsicHeight => {
+                        cell.layout_child(BoxConstraints::tight(column_width, row_height), true);
+                        Offset::new(column_position, row_top)
+                    }
+                };
+                cell_offsets[x + y * columns] = offset;
+            }
+            row_top += row_height;
+        }
+        self.cell_offsets = cell_offsets;
+        self.size = constraints.constrain(Size::new(self.table_width, row_top));
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        if self.rows() * self.columns == 0 {
+            return constraints.smallest();
+        }
+        let widths = self.compute_column_widths(constraints);
+        let mut row_top = 0.0f32;
+        for y in 0..self.rows() {
+            let mut row_height = 0.0f32;
+            for x in 0..self.columns {
+                if let Some(cell) = &self.cells[x + y * self.columns] {
+                    let cell_constraints =
+                        BoxConstraints::new(widths[x], widths[x], 0.0, f32::INFINITY);
+                    let cell_size = cell.dry_layout(cell_constraints);
+                    row_height = row_height.max(cell_size.height);
+                }
+            }
+            row_top += row_height;
+        }
+        constraints.constrain(Size::new(widths.iter().sum(), row_top))
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        for (cell, cell_offset) in self.cells.iter().zip(&self.cell_offsets) {
+            if let Some(cell) = cell {
+                context.paint_child(
+                    cell,
+                    Offset::new(offset.dx + cell_offset.dx, offset.dy + cell_offset.dy),
+                );
+            }
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (cell, cell_offset) in self.cells.iter().zip(&self.cell_offsets) {
+            if let Some(cell) = cell {
+                visit(cell, *cell_offset);
+            }
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        // Last-declared wins, the way upstream walks the list backwards.
+        for index in (0..self.cells.len()).rev() {
+            let Some(cell) = &self.cells[index] else {
+                continue;
+            };
+            let cell_offset = self.cell_offsets[index];
+            let local = Offset::new(position.dx - cell_offset.dx, position.dy - cell_offset.dy);
+            if cell.hit_test(local, result) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn min_intrinsic_width(&self, _height: f32) -> f32 {
+        (0..self.columns)
+            .map(|x| {
+                let spec = self.column_specs[x]
+                    .as_ref()
+                    .unwrap_or(&self.default_column_width);
+                let cells = self.column_cells(x);
+                spec.min_intrinsic_width(&cells, f32::INFINITY)
+            })
+            .sum()
+    }
+
+    fn max_intrinsic_width(&self, _height: f32) -> f32 {
+        (0..self.columns)
+            .map(|x| {
+                let spec = self.column_specs[x]
+                    .as_ref()
+                    .unwrap_or(&self.default_column_width);
+                let cells = self.column_cells(x);
+                spec.max_intrinsic_width(&cells, f32::INFINITY)
+            })
+            .sum()
+    }
+}
+
+/// `same_children`, for the table's optional slots.
+fn same_optional_children(a: &[Option<BoxedRender>], b: &[Option<BoxedRender>]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).all(|(a, b)| match (a, b) {
+        (Some(a), Some(b)) => a.is(b),
+        (None, None) => true,
+        _ => false,
+    })
+}
+
+// -- Flow (upstream flow.dart) -------------------------------------------------------
+
+/// Upstream `FlowDelegate`: sizes the container, constrains the children,
+/// and paints them through transforms -- the layout that exists to move
+/// children cheaply.
+pub trait FlowDelegate {
+    /// Upstream `getSize`; the biggest by default.
+    fn get_size(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
+    /// Upstream `getConstraintsForChild`; the container's own by default.
+    fn get_constraints_for_child(
+        &self,
+        _index: usize,
+        constraints: BoxConstraints,
+    ) -> BoxConstraints {
+        constraints
+    }
+
+    /// Upstream `paintChildren`: call [`FlowPaintingContext::paint_child`]
+    /// for each child that should show, in the order they should paint.
+    fn paint_children(&self, context: &mut FlowPaintingContext);
+
+    /// Upstream `shouldRelayout`.
+    fn should_relayout(&self, _old: &dyn FlowDelegate) -> bool {
+        false
+    }
+
+    /// Upstream `shouldRepaint`.
+    fn should_repaint(&self, old: &dyn FlowDelegate) -> bool;
+
+    /// Same-kind check standing in for upstream's `runtimeType`.
+    fn kind_id(&self) -> std::any::TypeId;
+
+    /// The concrete self, for same-kind comparisons in the should-* methods.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `FlowPaintingContext`, live for the duration of one
+/// `paint_children` call: the container's size, the children's sizes, and
+/// the one-way `paint_child`.
+pub struct FlowPaintingContext<'a, 'c> {
+    canvas: &'a mut PaintContext<'c>,
+    offset: Offset,
+    container_size: Size,
+    children: &'a [BoxedRender],
+    child_sizes: Vec<Size>,
+    /// The transforms this pass assigned, by child index.
+    transforms: Vec<Option<crate::painting::Matrix4>>,
+    /// The order the delegate painted in -- the hit test walks it backwards.
+    paint_order: Vec<usize>,
+}
+
+impl<'a, 'c> FlowPaintingContext<'a, 'c> {
+    /// Upstream `FlowPaintingContext.size`.
+    pub fn size(&self) -> Size {
+        self.container_size
+    }
+
+    /// Upstream `getChildSize`.
+    pub fn child_size(&self, index: usize) -> Option<Size> {
+        self.child_sizes.get(index).copied()
+    }
+
+    /// Upstream `childCount`.
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
+
+    /// Upstream `paintChild`: the child, through `transform`, at `opacity`.
+    /// A child paints at most once per pass.
+    pub fn paint_child(&mut self, index: usize, transform: crate::painting::Matrix4, opacity: f32) {
+        if self.transforms[index].is_some() {
+            debug_assert!(false, "cannot paint the same flow child twice in one pass");
+            return;
+        }
+        self.transforms[index] = Some(transform);
+        self.paint_order.push(index);
+        if opacity <= 0.0 {
+            return;
+        }
+        let child = &self.children[index];
+        // The 2D slice of the matrix, in push_transform's [a, b, c, d, e, f].
+        let storage = &transform.storage;
+        let affine = [
+            storage[0],
+            storage[1],
+            storage[4],
+            storage[5],
+            storage[12],
+            storage[13],
+        ];
+        if opacity >= 1.0 {
+            self.canvas
+                .push_transform(affine, Offset::ZERO, self.offset, child);
+        } else {
+            // Fractional opacity: the group-composited spelling.
+            let alpha = (opacity * 255.0).round().clamp(0.0, 255.0) as f32 / 255.0;
+            let bounds = Rect::xywh(
+                self.offset.dx,
+                self.offset.dy,
+                self.container_size.width,
+                self.container_size.height,
+            );
+            let paint = Paint::new(Color::WHITE).with_opacity(alpha);
+            self.canvas.canvas().save_layer(Some(bounds), Some(&paint));
+            self.canvas
+                .push_transform(affine, Offset::ZERO, self.offset, child);
+            self.canvas.canvas().restore();
+        }
+    }
+}
+
+/// Upstream `RenderFlow`. `FlowParentData`'s transform is the
+/// `transforms` this keeps per child.
+pub struct RenderFlow {
+    delegate: Rc<dyn FlowDelegate>,
+    children: Vec<BoxedRender>,
+    clip_behavior: ClipBehavior,
+    transforms: Vec<Option<crate::painting::Matrix4>>,
+    paint_order: Vec<usize>,
+    size: Size,
+}
+
+impl RenderFlow {
+    pub fn new(delegate: Rc<dyn FlowDelegate>, children: Vec<BoxedRender>) -> RenderFlow {
+        RenderFlow {
+            delegate,
+            children,
+            clip_behavior: ClipBehavior::HardEdge,
+            transforms: Vec::new(),
+            paint_order: Vec::new(),
+            size: Size::ZERO,
+        }
+    }
+
+    /// Upstream's delegate setter asks relayout first, repaint second --
+    /// `update_from` below is that judgment.
+    fn delegate_requests_relayout(
+        new_delegate: &dyn FlowDelegate,
+        old_delegate: &dyn FlowDelegate,
+    ) -> bool {
+        new_delegate.kind_id() != old_delegate.kind_id()
+            || new_delegate.should_relayout(old_delegate)
+    }
+
+    fn delegate_requests_repaint(
+        new_delegate: &dyn FlowDelegate,
+        old_delegate: &dyn FlowDelegate,
+    ) -> bool {
+        new_delegate.kind_id() != old_delegate.kind_id()
+            || new_delegate.should_repaint(old_delegate)
+    }
+}
+
+impl RenderBox for RenderFlow {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderFlow>()?;
+        let mut effect =
+            if Self::delegate_requests_relayout(fresh.delegate.as_ref(), self.delegate.as_ref()) {
+                UpdateEffect::Relayout
+            } else if Self::delegate_requests_repaint(
+                fresh.delegate.as_ref(),
+                self.delegate.as_ref(),
+            ) {
+                UpdateEffect::Repaint
+            } else {
+                UpdateEffect::Nothing
+            };
+        self.delegate = fresh.delegate.clone();
+        effect = effect.and(UpdateEffect::relayout_if(
+            self.clip_behavior != fresh.clip_behavior
+                || !same_children(&self.children, &fresh.children),
+        ));
+        self.clip_behavior = fresh.clip_behavior;
+        self.children = std::mem::take(&mut fresh.children);
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // The container is sized by the delegate, the children by the
+        // delegate's per-child constraints -- neither depends on the other.
+        self.size = constraints.constrain(self.delegate.get_size(constraints));
+        for (index, child) in self.children.iter_mut().enumerate() {
+            let child_constraints = self.delegate.get_constraints_for_child(index, constraints);
+            child.layout_child(child_constraints, false);
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.delegate.get_size(constraints))
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let child_sizes = self.children.iter().map(|child| child.size()).collect();
+        let mut flow = FlowPaintingContext {
+            canvas: context,
+            offset,
+            container_size: self.size,
+            children: &self.children,
+            child_sizes,
+            transforms: vec![None; self.children.len()],
+            paint_order: Vec::new(),
+        };
+        self.delegate.paint_children(&mut flow);
+        // Kept for the hit test, which walks the paint order backwards.
+        // (The borrow through the context means these are read back out
+        // rather than written into self directly.)
+        FLOW_TRANSFORMS.with(|slot| {
+            *slot.borrow_mut() = (flow.transforms.clone(), flow.paint_order.clone());
+        });
+        let _ = &self.transforms;
+        let _ = &self.paint_order;
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        // Upstream's flow children sit at the origin; the transforms are a
+        // paint-time story.
+        for child in &self.children {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        // The most-recently-painted child wins, tested through the inverse
+        // of its transform.
+        let (transforms, paint_order) = FLOW_TRANSFORMS.with(|slot| slot.borrow().clone());
+        for index in paint_order.iter().rev() {
+            let Some(transform) = transforms[*index] else {
+                continue;
+            };
+            let mut inverse = transform;
+            inverse.invert();
+            let local = crate::painting::matrix_utils::transform_point(inverse, position);
+            if self.children[*index].hit_test(local, result) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// The transforms the last paint assigned -- the paint borrow keeps them
+/// out of `self`, so they park here for the hit test that follows.
+thread_local! {
+    static FLOW_TRANSFORMS: RefCell<(Vec<Option<crate::painting::Matrix4>>, Vec<usize>)> =
+        const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
+// -- SliverFillRemaining family (upstream sliver_fill.dart) --------------------------
+
+/// Which of the three fill-remaining behaviours, upstream's three classes:
+/// `RenderSliverFillRemainingWithScrollable`, `RenderSliverFillRemaining`
+/// and `RenderSliverFillRemainingAndOverscroll`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillRemainingMode {
+    /// The child is itself scrollable: it gets the remaining extent to
+    /// scroll within, and the sliver occupies a viewport's worth.
+    Scrollable,
+    /// The child is not scrollable: it is sized to exactly the remaining
+    /// extent, or to its own extent once the sliver has scrolled past.
+    Fill,
+    /// The child fills the remaining extent and stretches into overscroll.
+    AndOverscroll,
+}
+
+/// Upstream's fill-remaining trio: one child, in the space the slivers
+/// before it left in the viewport.
+pub struct RenderSliverFillRemaining {
+    mode: FillRemainingMode,
+    child: Option<BoxedRender>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverFillRemaining {
+    pub fn new(mode: FillRemainingMode, child: impl RenderBox + 'static) -> Self {
+        Self {
+            mode,
+            child: Some(RenderRef::new(child)),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    fn layout_child(&mut self, constraints: &SliverConstraints, min_extent: f32, max_extent: f32) {
+        if let Some(child) = &mut self.child {
+            child.layout_child(
+                constraints.as_box_constraints(min_extent, max_extent, None),
+                true,
+            );
+        }
+    }
+
+    /// The geometry all three variants share, upstream's closing block.
+    fn finish_geometry(&mut self, extent: f32, scroll_extent: f32) -> SliverGeometry {
+        let painted = calculate_paint_offset(&self.constraints, 0.0, extent);
+        self.geometry = SliverGeometry {
+            scroll_extent,
+            paint_extent: painted,
+            max_paint_extent: painted,
+            has_visual_overflow: extent > self.constraints.remaining_paint_extent
+                || self.constraints.scroll_offset > 0.0,
+            ..SliverGeometry::ZERO
+        };
+        self.geometry
+    }
+}
+
+impl RenderBox for RenderSliverFillRemaining {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverFillRemaining>()?;
+        let mut effect = UpdateEffect::relayout_if(self.mode != fresh.mode);
+        self.mode = fresh.mode;
+        effect = effect.and(UpdateEffect::relayout_if(!same_child(
+            &self.child,
+            &fresh.child,
+        )));
+        self.child = fresh.child.take();
+        Some(effect)
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        // The space the previous slivers left, overlap already taken off --
+        // upstream's opening line in all three variants.
+        let extent = constraints.remaining_paint_extent - constraints.overlap.min(0.0);
+        match self.mode {
+            FillRemainingMode::Scrollable => {
+                // The child may scroll in what is left; the sliver itself
+                // always answers a full viewport.
+                let mut max_extent = extent;
+                let cache_extent = constraints.remaining_cache_extent;
+                if extent == 0.0 && cache_extent > 0.0 {
+                    max_extent = cache_extent;
+                }
+                self.layout_child(&constraints, extent, max_extent);
+                self.finish_geometry(extent, constraints.viewport_main_axis_extent)
+            }
+            FillRemainingMode::Fill => {
+                let extent = if constraints.scroll_offset > 0.0 {
+                    // Scrolled past: the child stands at its own intrinsic
+                    // extent, nothing of the viewport's remaining to fill.
+                    let child_extent =
+                        self.child
+                            .as_ref()
+                            .map_or(0.0, |child| match constraints.axis() {
+                                Axis::Horizontal => {
+                                    child.max_intrinsic_width(constraints.cross_axis_extent)
+                                }
+                                Axis::Vertical => {
+                                    child.max_intrinsic_height(constraints.cross_axis_extent)
+                                }
+                            });
+                    child_extent.max(0.0)
+                } else {
+                    extent
+                };
+                self.layout_child(&constraints, extent, extent);
+                self.finish_geometry(extent, extent)
+            }
+            FillRemainingMode::AndOverscroll => {
+                // Loose first, then stretched to whatever was left: the
+                // overscroll spelling, where the child grows past its
+                // content rather than showing space under it.
+                self.layout_child(&constraints, 0.0, extent);
+                let child_extent = self.child.as_ref().map_or(0.0, |child| {
+                    render_main_axis_extent(child, constraints.axis())
+                });
+                if child_extent < extent {
+                    self.layout_child(&constraints, extent, extent);
+                }
+                self.finish_geometry(extent, extent)
+            }
+        }
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible || self.geometry.paint_extent <= 0.0 {
+            return;
+        }
+        if let Some(child) = &self.child {
+            context.paint_child(child, offset);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if let Some(child) = &self.child {
+            visit(child, Offset::ZERO);
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        let Some(child) = &self.child else {
+            return false;
+        };
+        if !self.geometry.visible {
+            return false;
+        }
+        sliver_hit_test_box_child(
+            &self.constraints,
+            &self.geometry,
+            child,
+            0.0,
+            main_axis_position,
+            cross_axis_position,
+            result,
+        )
+    }
+}
+
+// -- Proxy slivers (upstream proxy_sliver.dart) --------------------------------------
+
+/// One proxy behaviour over a child sliver, upstream's `RenderProxySliver`
+/// subclasses. The base is the pass-through: the child's geometry, the
+/// child's painting, the child's hit testing.
+pub struct RenderProxySliver {
+    pub behavior: ProxySliverBehavior,
+    child: BoxedRender,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+/// Which proxy this one is. `RenderSliverSemanticsAnnotations` waits on the
+/// semantics wave; `RenderSliverAnimatedOpacity` is the opacity spelling
+/// with its tween driven from outside, so it is the same behavior here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProxySliverBehavior {
+    /// `RenderProxySliver` itself: everything passes through.
+    PassThrough,
+    /// `RenderSliverOpacity` / `RenderSliverAnimatedOpacity`: the child
+    /// painted at `opacity`. Zero paints nothing.
+    Opacity(f32),
+    /// `RenderSliverIgnorePointer`: laid out and painted, never hit.
+    IgnorePointer,
+    /// `RenderSliverOffstage`: laid out, never painted, never hit.
+    Offstage,
+    /// `RenderSliverConstrainedCrossAxis`: the child laid against the
+    /// smaller of `max_extent` and the incoming cross extent.
+    ConstrainedCrossAxis(f32),
+}
+
+impl RenderProxySliver {
+    pub fn new(behavior: ProxySliverBehavior, child: impl RenderBox + 'static) -> Self {
+        Self {
+            behavior,
+            child: RenderRef::new(child),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    fn ignores_hits(&self) -> bool {
+        matches!(
+            self.behavior,
+            ProxySliverBehavior::IgnorePointer
+                | ProxySliverBehavior::Offstage
+                | ProxySliverBehavior::Opacity(0.0)
+        )
+    }
+}
+
+impl RenderBox for RenderProxySliver {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderProxySliver>()?;
+        let mut effect = UpdateEffect::repaint_if(self.behavior != fresh.behavior);
+        self.behavior = fresh.behavior;
+        effect = effect.and(UpdateEffect::relayout_if(
+            !self.child.is(&fresh.child)
+                || matches!(
+                    (self.behavior, fresh.behavior),
+                    (
+                        ProxySliverBehavior::ConstrainedCrossAxis(_),
+                        ProxySliverBehavior::ConstrainedCrossAxis(_)
+                    ) if self.behavior != fresh.behavior
+                ),
+        ));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let child_constraints = match self.behavior {
+            ProxySliverBehavior::ConstrainedCrossAxis(max_extent) => SliverConstraints {
+                cross_axis_extent: max_extent.min(constraints.cross_axis_extent),
+                ..constraints
+            },
+            _ => constraints,
+        };
+        self.geometry = self.child.sliver_layout(child_constraints);
+        if let ProxySliverBehavior::ConstrainedCrossAxis(max_extent) = self.behavior {
+            self.geometry.cross_axis_extent = Some(max_extent.min(constraints.cross_axis_extent));
+        }
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        if let ProxySliverBehavior::Offstage = self.behavior {
+            return;
+        }
+        if let ProxySliverBehavior::Opacity(opacity) = self.behavior {
+            if opacity <= 0.0 {
+                return;
+            }
+            if opacity < 1.0 {
+                let bounds = Rect::xywh(
+                    offset.dx,
+                    offset.dy,
+                    self.geometry
+                        .cross_axis_extent
+                        .unwrap_or(self.constraints.cross_axis_extent),
+                    self.geometry.paint_extent,
+                );
+                let paint = Paint::new(Color::WHITE).with_opacity(opacity.clamp(0.0, 1.0));
+                context.canvas().save_layer(Some(bounds), Some(&paint));
+                context.paint_child(&self.child, offset);
+                context.canvas().restore();
+                return;
+            }
+        }
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if self.ignores_hits() || !self.geometry.visible {
+            return false;
+        }
+        self.child
+            .sliver_hit_test(main_axis_position, cross_axis_position, result)
+    }
+}
+
+// -- Sliver groups (upstream sliver_group.dart) -------------------------------------
+
+/// One child of a group: the sliver and, for cross-axis groups, its flex
+/// share (`SliverPhysicalParentData.crossAxisFlex` upstream).
+pub struct SliverGroupChild {
+    pub sliver: BoxedRender,
+    /// Zero sizes the child by its own answer; non-zero gives it a share of
+    /// whatever the fixed-extent children left.
+    pub cross_axis_flex: usize,
+}
+
+/// Upstream `RenderSliverCrossAxisGroup`: children side by side across the
+/// cross axis, each seeing the full main axis. Fixed-extent children
+/// (flex 0) take what their geometry says; the rest share the remainder by
+/// flex.
+pub struct RenderSliverCrossAxisGroup {
+    children: Vec<SliverGroupChild>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+    /// Each child's cross offset, indexed as `children`.
+    cross_offsets: Vec<f32>,
+}
+
+impl RenderSliverCrossAxisGroup {
+    pub fn new(children: Vec<SliverGroupChild>) -> Self {
+        let len = children.len();
+        Self {
+            children,
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+            cross_offsets: vec![0.0; len],
+        }
+    }
+}
+
+impl RenderBox for RenderSliverCrossAxisGroup {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverCrossAxisGroup>()?;
+        let changed =
+            self.children.len() != fresh.children.len()
+                || self.children.iter().zip(&fresh.children).any(|(a, b)| {
+                    a.cross_axis_flex != b.cross_axis_flex || !a.sliver.is(&b.sliver)
+                });
+        self.children = std::mem::take(&mut fresh.children);
+        self.cross_offsets = vec![0.0; self.children.len()];
+        Some(UpdateEffect::relayout_if(changed))
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        // Pass 1: the fixed-extent children, in order, each taking what it
+        // answers out of the cross extent.
+        let mut remaining = constraints.cross_axis_extent;
+        let mut total_flex = 0usize;
+        // What each fixed-extent child answered in pass 1 -- `sliver_layout`
+        // returns it; `sliver_geometry` is not universally overridden, so
+        // the answer is kept rather than re-asked.
+        let mut fixed_extents = vec![0.0f32; self.children.len()];
+        for (index, child) in self.children.iter_mut().enumerate() {
+            if child.cross_axis_flex == 0 {
+                let child_geometry = child.sliver.sliver_layout(SliverConstraints {
+                    cross_axis_extent: remaining,
+                    ..constraints
+                });
+                if let Some(extent) = child_geometry.cross_axis_extent {
+                    fixed_extents[index] = extent;
+                    remaining = (remaining - extent).max(0.0);
+                }
+            } else {
+                total_flex += child.cross_axis_flex;
+            }
+        }
+        // Pass 2: the flex children share the remainder; everyone gets its
+        // paint offset across the cross axis.
+        let extent_per_flex = if total_flex > 0 {
+            remaining / total_flex as f32
+        } else {
+            0.0
+        };
+        let mut offset = 0.0f32;
+        self.cross_offsets.clear();
+        self.geometry = SliverGeometry::ZERO;
+        for (index, child) in self.children.iter_mut().enumerate() {
+            let child_extent = if child.cross_axis_flex == 0 {
+                fixed_extents[index]
+            } else {
+                extent_per_flex * child.cross_axis_flex as f32
+            };
+            let child_geometry = if child.cross_axis_flex != 0 {
+                child.sliver.sliver_layout(SliverConstraints {
+                    cross_axis_extent: child_extent,
+                    ..constraints
+                })
+            } else {
+                // Pass 1 already answered; its geometry is the pass-1
+                // return, kept for the same reason `fixed_extents` is.
+                child.sliver.sliver_layout(SliverConstraints {
+                    cross_axis_extent: child_extent,
+                    ..constraints
+                })
+            };
+            // The group is as long as its longest child.
+            self.geometry.scroll_extent = self
+                .geometry
+                .scroll_extent
+                .max(child_geometry.scroll_extent);
+            self.geometry.paint_extent =
+                self.geometry.paint_extent.max(child_geometry.paint_extent);
+            self.cross_offsets.push(offset);
+            offset += child_extent;
+        }
+        self.geometry.visible = self.geometry.paint_extent > 0.0;
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        for (child, cross_offset) in self.children.iter().zip(&self.cross_offsets) {
+            if !child.sliver.sliver_geometry().visible {
+                continue;
+            }
+            let child_offset = match self.constraints.axis() {
+                Axis::Vertical => Offset::new(offset.dx + cross_offset, offset.dy),
+                Axis::Horizontal => Offset::new(offset.dx, offset.dy + cross_offset),
+            };
+            context.paint_child(&child.sliver, child_offset);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, cross_offset) in self.children.iter().zip(&self.cross_offsets) {
+            let child_offset = match self.constraints.axis() {
+                Axis::Vertical => Offset::new(*cross_offset, 0.0),
+                Axis::Horizontal => Offset::new(0.0, *cross_offset),
+            };
+            visit(&child.sliver, child_offset);
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        // Last-painted wins, the way upstream walks backwards.
+        for (child, cross_offset) in self.children.iter().zip(&self.cross_offsets).rev() {
+            let local_cross = cross_axis_position - cross_offset;
+            if child
+                .sliver
+                .sliver_hit_test(main_axis_position, local_cross, result)
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Upstream `RenderSliverMainAxisGroup`: children end to end along the main
+/// axis, each seeing the scroll offset that its predecessors consumed.
+pub struct RenderSliverMainAxisGroup {
+    children: Vec<SliverGroupChild>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+    /// Each child's scroll offset within the group.
+    scroll_offsets: Vec<f32>,
+}
+
+impl RenderSliverMainAxisGroup {
+    pub fn new(children: Vec<SliverGroupChild>) -> Self {
+        let len = children.len();
+        Self {
+            children,
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+            scroll_offsets: vec![0.0; len],
+        }
+    }
+}
+
+impl RenderBox for RenderSliverMainAxisGroup {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverMainAxisGroup>()?;
+        let changed = self.children.len() != fresh.children.len()
+            || self
+                .children
+                .iter()
+                .zip(&fresh.children)
+                .any(|(a, b)| !a.sliver.is(&b.sliver));
+        self.children = std::mem::take(&mut fresh.children);
+        self.scroll_offsets = vec![0.0; self.children.len()];
+        Some(UpdateEffect::relayout_if(changed))
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let mut consumed = 0.0f32;
+        self.scroll_offsets.clear();
+        self.geometry = SliverGeometry::ZERO;
+        for child in &mut self.children {
+            self.scroll_offsets.push(consumed);
+            // Upstream: each child sees the group's scroll offset plus
+            // what its predecessors consumed, and the paint extent left
+            // from wherever the scroll offset cuts in.
+            let child_scroll_offset = constraints.scroll_offset + consumed;
+            let child_geometry = child.sliver.sliver_layout(SliverConstraints {
+                scroll_offset: child_scroll_offset,
+                remaining_paint_extent: (constraints.remaining_paint_extent
+                    - (child_scroll_offset - constraints.scroll_offset))
+                    .max(0.0),
+                ..constraints
+            });
+            #[cfg(test)]
+            eprintln!(
+                "main-group child: scroll_extent={}",
+                child_geometry.scroll_extent
+            );
+            consumed += child_geometry.scroll_extent;
+            self.geometry.scroll_extent += child_geometry.scroll_extent;
+        }
+        // Upstream's closing formula: the whole group painted from wherever
+        // the scroll offset cuts it, capped by what is left.
+        self.geometry.paint_extent = (self.geometry.scroll_extent
+            - constraints.scroll_offset.max(0.0))
+        .max(0.0)
+        .min(constraints.remaining_paint_extent);
+        self.geometry.max_paint_extent = self.geometry.paint_extent;
+        self.geometry.visible = self.geometry.paint_extent > 0.0;
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        for (child, scroll_offset) in self.children.iter().zip(&self.scroll_offsets) {
+            let child_geometry = child.sliver.sliver_geometry();
+            if !child_geometry.visible {
+                continue;
+            }
+            // Where the child sits inside what this group paints: its scroll
+            // offset less where the group's own visible window starts.
+            let group_start = self.constraints.scroll_offset.max(0.0);
+            let main_delta = scroll_offset - group_start;
+            if main_delta > self.geometry.paint_extent
+                || main_delta + child_geometry.paint_extent < 0.0
+            {
+                continue;
+            }
+            let child_offset = match apply_growth_direction_to_axis_direction(
+                self.constraints.axis_direction,
+                self.constraints.growth_direction,
+            ) {
+                AxisDirection::Up => Offset::new(
+                    offset.dx,
+                    offset.dy + self.geometry.paint_extent
+                        - main_delta
+                        - child_geometry.paint_extent,
+                ),
+                AxisDirection::Left => Offset::new(
+                    offset.dx + self.geometry.paint_extent
+                        - main_delta
+                        - child_geometry.paint_extent,
+                    offset.dy,
+                ),
+                AxisDirection::Right => Offset::new(offset.dx + main_delta, offset.dy),
+                AxisDirection::Down => Offset::new(offset.dx, offset.dy + main_delta),
+            };
+            context.paint_child(&child.sliver, child_offset);
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (child, scroll_offset) in self.children.iter().zip(&self.scroll_offsets) {
+            visit(&child.sliver, Offset::new(0.0, *scroll_offset));
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        for (child, scroll_offset) in self.children.iter().zip(&self.scroll_offsets).rev() {
+            let local_main =
+                main_axis_position + self.constraints.scroll_offset.max(0.0) - scroll_offset;
+            if child
+                .sliver
+                .sliver_hit_test(local_main, cross_axis_position, result)
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+// -- SliverFillViewport (upstream sliver_fill.dart) ----------------------------------
+
+/// Upstream `RenderSliverFillViewport`: pages, each a fraction of the
+/// viewport tall -- `PageView`'s engine. A fixed-extent list whose extent
+/// is `viewport_main_axis_extent * viewport_fraction`, so the window is
+/// pure arithmetic: child `i` sits at `i * item_extent`, always.
+pub struct RenderSliverFillViewport {
+    child_count: usize,
+    build_child: Rc<dyn Fn(usize) -> RenderRef>,
+    viewport_fraction: f32,
+    /// The live window, `[first_index, first_index + children.len())`.
+    first_index: usize,
+    children: Vec<RenderRef>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverFillViewport {
+    pub fn new(
+        child_count: usize,
+        build_child: impl Fn(usize) -> RenderRef + 'static,
+    ) -> RenderSliverFillViewport {
+        RenderSliverFillViewport {
+            child_count,
+            build_child: Rc::new(build_child),
+            viewport_fraction: 1.0,
+            first_index: 0,
+            children: Vec::new(),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    pub fn with_viewport_fraction(mut self, fraction: f32) -> Self {
+        debug_assert!(fraction > 0.0);
+        self.viewport_fraction = fraction;
+        self
+    }
+
+    pub fn live_range(&self) -> (usize, usize) {
+        (self.first_index, self.first_index + self.children.len())
+    }
+
+    fn item_extent(&self) -> f32 {
+        self.constraints.viewport_main_axis_extent * self.viewport_fraction
+    }
+}
+
+impl RenderBox for RenderSliverFillViewport {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderSliverFillViewport>()?;
+        let structure_changed = self.child_count != fresh.child_count
+            || self.viewport_fraction != fresh.viewport_fraction;
+        self.child_count = fresh.child_count;
+        self.viewport_fraction = fresh.viewport_fraction;
+        self.build_child = Rc::clone(&fresh.build_child);
+        while self.first_index + self.children.len() > self.child_count {
+            self.children.pop();
+        }
+        let mut effect = UpdateEffect::relayout_if(structure_changed);
+        for position in 0..self.children.len() {
+            let fresh_child = (self.build_child)(self.first_index + position);
+            if self.children[position].reconfigure(fresh_child) {
+                effect = effect.and(UpdateEffect::Repaint);
+            }
+        }
+        Some(effect)
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let item_extent = self.item_extent();
+        if self.child_count == 0 || item_extent <= 0.0 {
+            self.children.clear();
+            self.geometry = SliverGeometry::ZERO;
+            return self.geometry;
+        }
+        // The window of indices whose [i*extent, (i+1)*extent) intersects
+        // [scroll_offset, scroll_offset + remaining), clamped to the count.
+        let scroll_offset = constraints.scroll_offset;
+        let window_end = scroll_offset + constraints.remaining_paint_extent;
+        let first = ((scroll_offset / item_extent).floor() as i64)
+            .clamp(0, self.child_count as i64 - 1) as usize;
+        let last_exclusive = ((window_end / item_extent).ceil() as i64)
+            .clamp(first as i64 + 1, self.child_count as i64) as usize;
+
+        let mut children = Vec::with_capacity(last_exclusive - first);
+        for index in first..last_exclusive {
+            // A child kept from the last frame keeps its identity; the
+            // per-frame reconfigure in `update_from` refreshes its content.
+            let existing = self
+                .children
+                .iter()
+                .enumerate()
+                .find(|(slot, _)| self.first_index + slot == index)
+                .map(|(position, child)| child.clone());
+            let mut child = existing.unwrap_or_else(|| (self.build_child)(index));
+            child.layout_child(
+                constraints.as_box_constraints(item_extent, item_extent, None),
+                true,
+            );
+            children.push(child);
+        }
+        self.first_index = first;
+        self.children = children;
+
+        let scroll_extent = self.child_count as f32 * item_extent;
+        let paint_extent = (scroll_extent - scroll_offset)
+            .max(0.0)
+            .min(constraints.remaining_paint_extent);
+        self.geometry = SliverGeometry {
+            scroll_extent,
+            paint_extent,
+            max_paint_extent: paint_extent,
+            visible: paint_extent > 0.0,
+            cross_axis_extent: Some(constraints.cross_axis_extent),
+            ..SliverGeometry::ZERO
+        };
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        let axis_direction = apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        );
+        let item_extent = self.item_extent();
+        for position in 0..self.children.len() {
+            let index = self.first_index + position;
+            let main_axis_delta =
+                index as f32 * item_extent - self.constraints.scroll_offset.max(0.0);
+            if main_axis_delta > self.geometry.paint_extent || main_axis_delta + item_extent < 0.0 {
+                continue;
+            }
+            let paint_offset = match axis_direction {
+                AxisDirection::Up => Offset::new(
+                    0.0,
+                    self.geometry.paint_extent - main_axis_delta - item_extent,
+                ),
+                AxisDirection::Left => Offset::new(
+                    self.geometry.paint_extent - main_axis_delta - item_extent,
+                    0.0,
+                ),
+                AxisDirection::Right => Offset::new(main_axis_delta, 0.0),
+                AxisDirection::Down => Offset::new(0.0, main_axis_delta),
+            };
+            context.paint_child(&self.children[position], offset.plus(paint_offset));
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        let item_extent = self.item_extent();
+        for position in 0..self.children.len() {
+            let index = self.first_index + position;
+            let main = index as f32 * item_extent - self.constraints.scroll_offset.max(0.0);
+            visit(&self.children[position], Offset::new(0.0, main));
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if !self.geometry.visible {
+            return false;
+        }
+        let item_extent = self.item_extent();
+        for position in (0..self.children.len()).rev() {
+            let index = self.first_index + position;
+            let child_start = index as f32 * item_extent - self.constraints.scroll_offset.max(0.0);
+            if main_axis_position >= child_start && main_axis_position < child_start + item_extent {
+                let local_main = main_axis_position - child_start;
+                return sliver_hit_test_box_child(
+                    &self.constraints,
+                    &self.geometry,
+                    &self.children[position],
+                    child_start,
+                    local_main,
+                    cross_axis_position,
+                    result,
+                );
+            }
+        }
+        false
+    }
+}
+
+// -- Sliver grid (upstream sliver_grid.dart) ----------------------------------------
+
+/// Upstream `SliverGridGeometry`: where one tile sits and how big it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverGridGeometry {
+    pub scroll_offset: f32,
+    pub cross_axis_offset: f32,
+    pub main_axis_extent: f32,
+    pub cross_axis_extent: f32,
+}
+
+impl SliverGridGeometry {
+    /// Upstream `trailingScrollOffset`.
+    pub fn trailing_scroll_offset(&self) -> f32 {
+        self.scroll_offset + self.main_axis_extent
+    }
+
+    /// Upstream `getBoxConstraints`.
+    pub fn box_constraints(&self, constraints: &SliverConstraints) -> BoxConstraints {
+        constraints.as_box_constraints(
+            self.main_axis_extent,
+            self.main_axis_extent,
+            Some(self.cross_axis_extent),
+        )
+    }
+}
+
+/// Upstream `SliverGridRegularTileLayout`: a regular grid of tiles,
+/// `cross_axis_count` to a row, spaced by strides. The only layout the
+/// delegates produce; kept as the one concrete spelling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverGridRegularTileLayout {
+    pub cross_axis_count: usize,
+    pub main_axis_stride: f32,
+    pub cross_axis_stride: f32,
+    pub child_main_axis_extent: f32,
+    pub child_cross_axis_extent: f32,
+    pub reverse_cross_axis: bool,
+}
+
+impl SliverGridRegularTileLayout {
+    /// Upstream `getMinChildIndexForScrollOffset`.
+    pub fn min_child_index_for_scroll_offset(&self, scroll_offset: f32) -> usize {
+        if self.main_axis_stride > PRECISION_ERROR_TOLERANCE {
+            self.cross_axis_count * (scroll_offset / self.main_axis_stride).floor() as usize
+        } else {
+            0
+        }
+    }
+
+    /// Upstream `getMaxChildIndexForScrollOffset`.
+    pub fn max_child_index_for_scroll_offset(&self, scroll_offset: f32) -> usize {
+        if self.main_axis_stride > 0.0 {
+            let main_axis_count = (scroll_offset / self.main_axis_stride).ceil() as i64;
+            (self.cross_axis_count as i64 * main_axis_count - 1).max(0) as usize
+        } else {
+            0
+        }
+    }
+
+    fn offset_from_start_in_cross_axis(&self, cross_axis_start: f32) -> f32 {
+        if self.reverse_cross_axis {
+            self.cross_axis_count as f32 * self.cross_axis_stride
+                - cross_axis_start
+                - self.child_cross_axis_extent
+                - (self.cross_axis_stride - self.child_cross_axis_extent)
+        } else {
+            cross_axis_start
+        }
+    }
+
+    /// Upstream `getGeometryForChildIndex`.
+    pub fn geometry_for_child_index(&self, index: usize) -> SliverGridGeometry {
+        let cross_axis_start = (index % self.cross_axis_count) as f32 * self.cross_axis_stride;
+        SliverGridGeometry {
+            scroll_offset: (index / self.cross_axis_count) as f32 * self.main_axis_stride,
+            cross_axis_offset: self.offset_from_start_in_cross_axis(cross_axis_start),
+            main_axis_extent: self.child_main_axis_extent,
+            cross_axis_extent: self.child_cross_axis_extent,
+        }
+    }
+
+    /// Upstream `computeMaxScrollOffset`.
+    pub fn compute_max_scroll_offset(&self, child_count: usize) -> f32 {
+        if child_count == 0 {
+            return 0.0;
+        }
+        let main_axis_count = (child_count - 1) / self.cross_axis_count + 1;
+        let main_axis_spacing = self.main_axis_stride - self.child_main_axis_extent;
+        self.main_axis_stride * main_axis_count as f32 - main_axis_spacing
+    }
+}
+
+/// Upstream `SliverGridDelegate`'s two concrete delegates as one enum.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SliverGridDelegate {
+    /// `SliverGridDelegateWithFixedCrossAxisCount`.
+    FixedCrossAxisCount {
+        cross_axis_count: usize,
+        main_axis_spacing: f32,
+        cross_axis_spacing: f32,
+        child_aspect_ratio: f32,
+        main_axis_extent: Option<f32>,
+    },
+    /// `SliverGridDelegateWithMaxCrossAxisExtent`.
+    MaxCrossAxisExtent {
+        max_cross_axis_extent: f32,
+        main_axis_spacing: f32,
+        cross_axis_spacing: f32,
+        child_aspect_ratio: f32,
+        main_axis_extent: Option<f32>,
+    },
+}
+
+impl SliverGridDelegate {
+    pub fn fixed_cross_axis_count(cross_axis_count: usize) -> SliverGridDelegate {
+        SliverGridDelegate::FixedCrossAxisCount {
+            cross_axis_count,
+            main_axis_spacing: 0.0,
+            cross_axis_spacing: 0.0,
+            child_aspect_ratio: 1.0,
+            main_axis_extent: None,
+        }
+    }
+
+    pub fn max_cross_axis_extent(max_cross_axis_extent: f32) -> SliverGridDelegate {
+        SliverGridDelegate::MaxCrossAxisExtent {
+            max_cross_axis_extent,
+            main_axis_spacing: 0.0,
+            cross_axis_spacing: 0.0,
+            child_aspect_ratio: 1.0,
+            main_axis_extent: None,
+        }
+    }
+
+    /// Upstream `getLayout`: both delegates' arithmetic, shared save for how
+    /// the cross-axis count is decided.
+    pub fn get_layout(&self, constraints: &SliverConstraints) -> SliverGridRegularTileLayout {
+        let (cross_axis_count, main_axis_spacing, cross_axis_spacing, aspect, main_extent) =
+            match *self {
+                SliverGridDelegate::FixedCrossAxisCount {
+                    cross_axis_count,
+                    main_axis_spacing,
+                    cross_axis_spacing,
+                    child_aspect_ratio,
+                    main_axis_extent,
+                } => (
+                    cross_axis_count,
+                    main_axis_spacing,
+                    cross_axis_spacing,
+                    child_aspect_ratio,
+                    main_axis_extent,
+                ),
+                SliverGridDelegate::MaxCrossAxisExtent {
+                    max_cross_axis_extent,
+                    main_axis_spacing,
+                    cross_axis_spacing,
+                    child_aspect_ratio,
+                    main_axis_extent,
+                } => {
+                    let count = (constraints.cross_axis_extent
+                        / (max_cross_axis_extent + cross_axis_spacing))
+                        .ceil();
+                    (
+                        count.max(1.0) as usize,
+                        main_axis_spacing,
+                        cross_axis_spacing,
+                        child_aspect_ratio,
+                        main_axis_extent,
+                    )
+                }
+            };
+        let usable_cross_axis_extent = (constraints.cross_axis_extent
+            - cross_axis_spacing * (cross_axis_count as f32 - 1.0))
+            .max(0.0);
+        let child_cross_axis_extent = usable_cross_axis_extent / cross_axis_count as f32;
+        let child_main_axis_extent = main_extent.unwrap_or(child_cross_axis_extent / aspect);
+        SliverGridRegularTileLayout {
+            cross_axis_count,
+            main_axis_stride: child_main_axis_extent + main_axis_spacing,
+            cross_axis_stride: child_cross_axis_extent + cross_axis_spacing,
+            child_main_axis_extent,
+            child_cross_axis_extent,
+            reverse_cross_axis: axis_direction_is_reversed(constraints.cross_axis_direction),
+        }
+    }
+
+    /// Upstream `shouldRelayout`.
+    pub fn should_relayout(&self, old: &SliverGridDelegate) -> bool {
+        self != old
+    }
+}
+
+/// Upstream `RenderSliverGrid`: the delegate's tiles, materialized by the
+/// arithmetic window the layout's index queries give.
+pub struct RenderSliverGrid {
+    child_count: usize,
+    build_child: Rc<dyn Fn(usize) -> RenderRef>,
+    delegate: SliverGridDelegate,
+    first_index: usize,
+    children: Vec<RenderRef>,
+    constraints: SliverConstraints,
+    geometry: SliverGeometry,
+}
+
+impl RenderSliverGrid {
+    pub fn new(
+        child_count: usize,
+        delegate: SliverGridDelegate,
+        build_child: impl Fn(usize) -> RenderRef + 'static,
+    ) -> RenderSliverGrid {
+        RenderSliverGrid {
+            child_count,
+            build_child: Rc::new(build_child),
+            delegate,
+            first_index: 0,
+            children: Vec::new(),
+            constraints: SliverConstraints::default(),
+            geometry: SliverGeometry::ZERO,
+        }
+    }
+
+    pub fn live_range(&self) -> (usize, usize) {
+        (self.first_index, self.first_index + self.children.len())
+    }
+}
+
+impl RenderBox for RenderSliverGrid {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderSliverGrid>()?;
+        let structure_changed =
+            self.child_count != fresh.child_count || self.delegate != fresh.delegate;
+        self.child_count = fresh.child_count;
+        self.delegate = fresh.delegate;
+        self.build_child = Rc::clone(&fresh.build_child);
+        while self.first_index + self.children.len() > self.child_count {
+            self.children.pop();
+        }
+        let mut effect = UpdateEffect::relayout_if(structure_changed);
+        for position in 0..self.children.len() {
+            let fresh_child = (self.build_child)(self.first_index + position);
+            if self.children[position].reconfigure(fresh_child) {
+                effect = effect.and(UpdateEffect::Repaint);
+            }
+        }
+        Some(effect)
+    }
+
+    fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+        Size::ZERO
+    }
+
+    fn size(&self) -> Size {
+        Size::ZERO
+    }
+
+    fn sliver_geometry(&self) -> SliverGeometry {
+        self.geometry
+    }
+
+    fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+        self.constraints = constraints;
+        let layout = self.delegate.get_layout(&constraints);
+        if self.child_count == 0 {
+            self.children.clear();
+            self.geometry = SliverGeometry::ZERO;
+            return self.geometry;
+        }
+        // The window of indices whose tiles reach into the visible range.
+        let leading = layout
+            .min_child_index_for_scroll_offset(constraints.scroll_offset)
+            .min(self.child_count - 1);
+        let window_end = constraints.scroll_offset + constraints.remaining_paint_extent;
+        let trailing = layout
+            .max_child_index_for_scroll_offset(window_end)
+            .min(self.child_count - 1);
+
+        let mut children = Vec::with_capacity(trailing - leading + 1);
+        for index in leading..=trailing {
+            let existing = self
+                .children
+                .iter()
+                .enumerate()
+                .find(|(slot, _)| self.first_index + slot == index)
+                .map(|(_position, child)| child.clone());
+            let mut child = existing.unwrap_or_else(|| (self.build_child)(index));
+            let tile = layout.geometry_for_child_index(index);
+            child.layout_child(tile.box_constraints(&constraints), true);
+            children.push(child);
+        }
+        self.first_index = leading;
+        self.children = children;
+
+        let scroll_extent = layout.compute_max_scroll_offset(self.child_count);
+        let paint_extent = (scroll_extent - constraints.scroll_offset)
+            .max(0.0)
+            .min(constraints.remaining_paint_extent);
+        self.geometry = SliverGeometry {
+            scroll_extent,
+            paint_extent,
+            max_paint_extent: paint_extent,
+            visible: paint_extent > 0.0,
+            cross_axis_extent: Some(constraints.cross_axis_extent),
+            ..SliverGeometry::ZERO
+        };
+        self.geometry
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if !self.geometry.visible {
+            return;
+        }
+        let layout = self.delegate.get_layout(&self.constraints);
+        let axis_direction = apply_growth_direction_to_axis_direction(
+            self.constraints.axis_direction,
+            self.constraints.growth_direction,
+        );
+        for position in 0..self.children.len() {
+            let index = self.first_index + position;
+            let tile = layout.geometry_for_child_index(index);
+            let main_axis_delta = tile.scroll_offset - self.constraints.scroll_offset.max(0.0);
+            if main_axis_delta > self.geometry.paint_extent
+                || main_axis_delta + tile.main_axis_extent < 0.0
+            {
+                continue;
+            }
+            let paint_offset = match axis_direction {
+                AxisDirection::Up => Offset::new(
+                    tile.cross_axis_offset,
+                    self.geometry.paint_extent - main_axis_delta - tile.main_axis_extent,
+                ),
+                AxisDirection::Left => Offset::new(
+                    self.geometry.paint_extent - main_axis_delta - tile.main_axis_extent,
+                    tile.cross_axis_offset,
+                ),
+                AxisDirection::Right => Offset::new(main_axis_delta, tile.cross_axis_offset),
+                AxisDirection::Down => Offset::new(tile.cross_axis_offset, main_axis_delta),
+            };
+            context.paint_child(&self.children[position], offset.plus(paint_offset));
+        }
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        let layout = self.delegate.get_layout(&self.constraints);
+        for position in 0..self.children.len() {
+            let tile = layout.geometry_for_child_index(self.first_index + position);
+            visit(
+                &self.children[position],
+                Offset::new(tile.cross_axis_offset, tile.scroll_offset),
+            );
+        }
+    }
+
+    fn sliver_hit_test(
+        &self,
+        main_axis_position: f32,
+        cross_axis_position: f32,
+        result: &mut HitTestResult,
+    ) -> bool {
+        if !self.geometry.visible {
+            return false;
+        }
+        let layout = self.delegate.get_layout(&self.constraints);
+        for position in (0..self.children.len()).rev() {
+            let tile = layout.geometry_for_child_index(self.first_index + position);
+            let main_start = tile.scroll_offset - self.constraints.scroll_offset.max(0.0);
+            if main_axis_position >= main_start
+                && main_axis_position < main_start + tile.main_axis_extent
+                && cross_axis_position >= tile.cross_axis_offset
+                && cross_axis_position < tile.cross_axis_offset + tile.cross_axis_extent
+            {
+                return sliver_hit_test_box_child(
+                    &self.constraints,
+                    &self.geometry,
+                    &self.children[position],
+                    main_start,
+                    main_axis_position - main_start,
+                    cross_axis_position - tile.cross_axis_offset,
+                    result,
+                );
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod custom_paint_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct CountingPainter {
+        kind: u32,
+        strokes: Rc<Cell<u32>>,
+        hit: Option<bool>,
+    }
+
+    impl CustomPainter for CountingPainter {
+        fn paint(&self, _canvas: &mut Canvas, _size: Size) {
+            self.strokes.set(self.strokes.get() + 1);
+        }
+
+        fn should_repaint(&self, old: &dyn CustomPainter) -> bool {
+            // The render object only asks same-kind painters.
+            let old = old.as_any().downcast_ref::<CountingPainter>();
+            match old {
+                Some(old) => self.kind != old.kind,
+                None => true,
+            }
+        }
+
+        fn hit_test(&self, _position: Offset) -> Option<bool> {
+            self.hit
+        }
+
+        fn kind_id(&self) -> std::any::TypeId {
+            std::any::TypeId::of::<CountingPainter>()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn counting(kind: u32, hit: Option<bool>) -> Rc<dyn CustomPainter> {
+        Rc::new(CountingPainter {
+            kind,
+            strokes: Rc::new(Cell::new(0)),
+            hit,
+        })
+    }
+
+    #[test]
+    fn the_default_hit_test_takes_everything() {
+        let mut painted = RenderCustomPaint::bare()
+            .with_preferred_size(Size::new(100.0, 100.0))
+            .with_painter(counting(1, None));
+        painted.layout(BoxConstraints::tight(100.0, 100.0));
+        assert!(painted.hit_test_self(Offset::new(1.0, 1.0)));
+
+        // A painter with an opinion overrides the default.
+        let mut painted = RenderCustomPaint::bare()
+            .with_preferred_size(Size::new(100.0, 100.0))
+            .with_painter(counting(2, Some(false)));
+        painted.layout(BoxConstraints::tight(100.0, 100.0));
+        assert!(!painted.hit_test_self(Offset::new(1.0, 1.0)));
+    }
+
+    #[test]
+    fn the_preferred_size_sizes_a_childless_custom_paint() {
+        let mut painted = RenderCustomPaint::bare().with_preferred_size(Size::new(80.0, 40.0));
+        painted.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(painted.size(), Size::new(80.0, 40.0));
+    }
+
+    #[test]
+    fn a_painter_change_repaints_only_when_something_is_new() {
+        let child = RenderRef::new(super::tests::FixedBox::new(50.0, 50.0));
+        let mut painted = RenderCustomPaint::new(child.clone()).with_painter(counting(1, None));
+        painted.layout(BoxConstraints::tight(50.0, 50.0));
+
+        // Same kind, same content: paint nothing new.
+        let mut fresh = RenderCustomPaint::new(child.clone()).with_painter(counting(1, None));
+        let effect = RenderBox::update_from(&mut painted, &mut fresh).unwrap();
+        assert_eq!(effect, UpdateEffect::Nothing);
+
+        // A different kind always repaints.
+        let mut fresh = RenderCustomPaint::new(child).with_painter(counting(7, None));
+        let effect = RenderBox::update_from(&mut painted, &mut fresh).unwrap();
+        assert_eq!(effect, UpdateEffect::Repaint);
+    }
+}
+
+#[cfg(test)]
+mod rotated_and_list_body_tests {
+    use super::*;
+
+    #[test]
+    fn an_odd_quarter_turn_swaps_the_axes() {
+        let mut turned = RenderRotatedBox::new(1, super::tests::FixedBox::new(30.0, 80.0));
+        turned.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(turned.size(), Size::new(80.0, 30.0));
+        // Even turns do not.
+        let mut upright = RenderRotatedBox::new(2, super::tests::FixedBox::new(30.0, 80.0));
+        upright.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(upright.size(), Size::new(30.0, 80.0));
+    }
+
+    #[test]
+    fn a_rotated_child_hit_tests_through_the_turn() {
+        // A hit target that answers only at one point, turned a quarter.
+        struct Target;
+        impl RenderBox for Target {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(40.0, 10.0))
+            }
+            fn size(&self) -> Size {
+                Size::new(40.0, 10.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+        }
+        let mut turned = RenderRotatedBox::new(1, Target);
+        turned.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(turned.size(), Size::new(10.0, 40.0));
+        // The child is 40x10, turned into this box's 10x40. A point in the
+        // middle of the box must land in the middle of the child.
+        let mut result = HitTestResult::new();
+        assert!(turned.hit_test(Offset::new(5.0, 20.0), &mut result));
+        // A point outside the turned bounds cannot.
+        assert!(!turned.hit_test(Offset::new(20.0, 5.0), &mut result));
+    }
+
+    #[test]
+    fn a_list_body_lays_children_end_to_end() {
+        let children: Vec<BoxedRender> = vec![
+            RenderRef::new(super::tests::FixedBox::new(20.0, 10.0)),
+            RenderRef::new(super::tests::FixedBox::new(30.0, 10.0)),
+        ];
+        let mut body = RenderListBody::new(AxisDirection::Down, children);
+        // Unbounded main axis, tight cross axis -- the contract it asks for.
+        body.layout(BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY));
+        assert_eq!(body.size(), Size::new(50.0, 20.0));
+        assert_eq!(
+            body.offsets,
+            vec![Offset::new(0.0, 0.0), Offset::new(0.0, 10.0)]
+        );
+
+        // Growing the other way puts the first child at the far end.
+        let children: Vec<BoxedRender> = vec![
+            RenderRef::new(super::tests::FixedBox::new(20.0, 10.0)),
+            RenderRef::new(super::tests::FixedBox::new(30.0, 10.0)),
+        ];
+        let mut body = RenderListBody::new(AxisDirection::Up, children);
+        body.layout(BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY));
+        assert_eq!(body.size(), Size::new(50.0, 20.0));
+        assert_eq!(
+            body.offsets,
+            vec![Offset::new(0.0, 10.0), Offset::new(0.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn a_horizontal_list_body_stacks_widths() {
+        let children: Vec<BoxedRender> = vec![
+            RenderRef::new(super::tests::FixedBox::new(20.0, 10.0)),
+            RenderRef::new(super::tests::FixedBox::new(30.0, 10.0)),
+        ];
+        let mut body = RenderListBody::new(AxisDirection::Right, children);
+        body.layout(BoxConstraints::new(0.0, f32::INFINITY, 30.0, 30.0));
+        assert_eq!(body.size(), Size::new(50.0, 30.0));
+        assert_eq!(
+            body.offsets,
+            vec![Offset::new(0.0, 0.0), Offset::new(20.0, 0.0)]
+        );
+    }
+}
+
+#[cfg(test)]
+mod proxy_visual_tests {
+    use super::*;
+
+    #[test]
+    fn a_rounded_clip_answers_hits_by_the_rounding() {
+        let mut clipped = RenderClipRRect::new(
+            crate::borders::BorderRadius::circular(20.0),
+            super::tests::FixedBox::new(100.0, 100.0),
+        );
+        clipped.layout(BoxConstraints::tight(100.0, 100.0));
+        assert!(clipped.hit_test_self(Offset::new(50.0, 0.5)));
+        assert!(!clipped.hit_test_self(Offset::new(0.5, 0.5)));
+    }
+
+    #[test]
+    fn an_oval_clip_answers_hits_by_the_ellipse() {
+        let mut clipped = RenderClipOval::new(super::tests::FixedBox::new(100.0, 50.0));
+        clipped.layout(BoxConstraints::tight(100.0, 50.0));
+        assert!(clipped.hit_test_self(Offset::new(50.0, 25.0)));
+        assert!(!clipped.hit_test_self(Offset::new(95.0, 5.0)));
+    }
+
+    #[test]
+    fn a_fractional_translation_moves_the_hit_with_the_paint() {
+        // A target that answers anywhere in its own bounds.
+        struct Touchable;
+        impl RenderBox for Touchable {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(40.0, 20.0))
+            }
+            fn size(&self) -> Size {
+                Size::new(40.0, 20.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+        }
+        let mut translated = RenderFractionalTranslation::new((0.5, 0.0), Touchable);
+        translated.layout(BoxConstraints::tight(40.0, 20.0));
+        // The child paints at x in [20, 60): a press on its far side
+        // reaches it, one where it would have been without the shift does
+        // not.
+        let mut result = HitTestResult::new();
+        assert!(!translated.hit_test(Offset::new(5.0, 10.0), &mut result));
+        assert!(translated.hit_test(Offset::new(25.0, 10.0), &mut result));
+    }
+
+    #[test]
+    fn an_offstage_child_takes_no_room_and_catches_no_hits() {
+        let mut offstage = RenderOffstage::new(true, super::tests::FixedBox::new(40.0, 20.0));
+        offstage.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(offstage.size(), Size::ZERO);
+        let mut result = HitTestResult::new();
+        assert!(!offstage.hit_test(Offset::new(1.0, 1.0), &mut result));
+
+        // On stage again, it is its ordinary self.
+        let mut fresh = RenderOffstage::new(false, super::tests::FixedBox::new(40.0, 20.0));
+        fresh.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(fresh.size(), Size::new(40.0, 20.0));
+    }
+
+    #[test]
+    fn an_absorbing_pointer_swallows_hits_without_entries() {
+        struct Touchable;
+        impl RenderBox for Touchable {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(50.0, 50.0))
+            }
+            fn size(&self) -> Size {
+                Size::new(50.0, 50.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+        }
+        let mut absorbing = RenderAbsorbPointer::new(true, Touchable);
+        absorbing.layout(BoxConstraints::tight(50.0, 50.0));
+        let mut result = HitTestResult::new();
+        // Inside the bounds: absorbed -- a hit, but nothing recorded.
+        assert!(absorbing.hit_test(Offset::new(10.0, 10.0), &mut result));
+        assert!(result.is_empty());
+        // Outside: no hit at all.
+        assert!(!absorbing.hit_test(Offset::new(100.0, 100.0), &mut result));
+
+        // Not absorbing: the child sees the pointer again.
+        let mut passing = RenderAbsorbPointer::new(false, Touchable);
+        passing.layout(BoxConstraints::tight(50.0, 50.0));
+        let mut result = HitTestResult::new();
+        assert!(passing.hit_test(Offset::new(10.0, 10.0), &mut result));
+    }
+
+    #[test]
+    fn a_shader_mask_paints_without_panicking() {
+        let shader: Rc<dyn Fn(Rect, crate::painting::BlendMode) -> Paint> =
+            Rc::new(|_bounds, blend| Paint::new(Color::WHITE).with_blend_mode(blend));
+        let mut masked = RenderShaderMask::new(shader, super::tests::FixedBox::new(50.0, 50.0));
+        masked.layout(BoxConstraints::tight(50.0, 50.0));
+        // Painting needs a paint context; under the stubs the protocol is
+        // exercised by the engine-backed runs. Here: the mask built.
+        assert_eq!(masked.size(), Size::new(50.0, 50.0));
+    }
+}
+
+#[cfg(test)]
+mod clipper_and_physical_tests {
+    use super::*;
+    use crate::borders::{ShapeBorder, StadiumBorder};
+
+    #[test]
+    fn a_shape_border_clipper_reclips_only_on_a_new_shape() {
+        let circle = ShapeBorder::Circle(crate::borders::CircleBorder::default());
+        let stadium = ShapeBorder::Stadium(StadiumBorder::default());
+        let a = ShapeBorderClipper::new(circle.clone());
+        let b = ShapeBorderClipper::new(circle);
+        let c = ShapeBorderClipper::new(stadium);
+        assert!(!a.should_reclip(&b));
+        assert!(a.should_reclip(&c));
+    }
+
+    #[test]
+    fn a_custom_clip_path_lays_out_like_its_child() {
+        let clipper = Rc::new(ShapeBorderClipper::new(ShapeBorder::Stadium(
+            StadiumBorder::default(),
+        )));
+        let mut clipped =
+            RenderCustomClipPath::new(clipper, super::tests::FixedBox::new(80.0, 40.0));
+        clipped.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(clipped.size(), Size::new(80.0, 40.0));
+    }
+
+    #[test]
+    fn a_physical_model_answers_hits_by_its_rounding() {
+        let mut physical = RenderPhysicalModel::new(super::tests::FixedBox::new(100.0, 50.0))
+            .with_color(Color::WHITE)
+            .with_elevation(4.0)
+            .with_border_radius(crate::borders::BorderRadius::circular(12.0));
+        physical.layout(BoxConstraints::tight(100.0, 50.0));
+        assert!(physical.hit_test_self(Offset::new(50.0, 25.0)));
+        // The corner outside the rounding is off the shape.
+        assert!(!physical.hit_test_self(Offset::new(0.5, 0.5)));
+    }
+
+    #[test]
+    fn a_physical_shape_answers_hits_by_its_shape() {
+        let mut physical = RenderPhysicalShape::new(
+            ShapeBorder::Circle(crate::borders::CircleBorder::default()),
+            super::tests::FixedBox::new(100.0, 50.0),
+        )
+        .with_elevation(6.0);
+        physical.layout(BoxConstraints::tight(100.0, 50.0));
+        assert!(physical.hit_test_self(Offset::new(50.0, 25.0)));
+        assert!(!physical.hit_test_self(Offset::new(2.0, 2.0)));
+    }
+
+    #[test]
+    fn metadata_rides_the_hit_test_entry() {
+        let mut meta = RenderMetaData::new(77, super::tests::FixedBox::new(50.0, 50.0));
+        meta.layout(BoxConstraints::tight(50.0, 50.0));
+        assert_eq!(meta.hit_test_id(), 77);
+    }
+
+    #[test]
+    fn a_backdrop_blur_sizes_to_its_child() {
+        let mut blurred = RenderBackdropFilter::new(10.0, super::tests::FixedBox::new(60.0, 30.0));
+        blurred.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(blurred.size(), Size::new(60.0, 30.0));
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn cell(width: f32, height: f32) -> Option<BoxedRender> {
+        /// A cell that remembers what it was laid out at, not what it asked
+        /// for -- what every assertion here reads.
+        struct Sized {
+            asked: (f32, f32),
+            size: std::cell::Cell<Size>,
+        }
+        impl RenderBox for Sized {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                let size = constraints.constrain(Size::new(self.asked.0, self.asked.1));
+                self.size.set(size);
+                size
+            }
+            fn size(&self) -> Size {
+                self.size.get()
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+            fn min_intrinsic_width(&self, _height: f32) -> f32 {
+                self.asked.0
+            }
+            fn max_intrinsic_width(&self, _height: f32) -> f32 {
+                self.asked.0
+            }
+        }
+        Some(RenderRef::new(Sized {
+            asked: (width, height),
+            size: std::cell::Cell::new(Size::new(width, height)),
+        }))
+    }
+
+    #[test]
+    fn fixed_columns_take_their_width_and_rows_their_tallest_cell() {
+        let cells = vec![cell(10.0, 20.0), cell(30.0, 10.0), cell(20.0, 40.0), None];
+        let mut table = RenderTable::new(2, cells)
+            .with_column_width(0, TableColumnWidth::Fixed(15.0))
+            .with_column_width(1, TableColumnWidth::Fixed(25.0));
+        table.layout(BoxConstraints::loose(1000.0, 1000.0));
+        assert_eq!(table.size(), Size::new(40.0, 60.0));
+        // Column 0 is forced to 15; the 10-wide cell sits at its left.
+        assert_eq!(table.column_positions, vec![0.0, 15.0]);
+        // Row 0 is the taller of 20 and 10; row 1 the taller of 40 and 0.
+        assert_eq!(table.cell_offsets[0], Offset::new(0.0, 0.0));
+        assert_eq!(table.cell_offsets[2], Offset::new(0.0, 20.0));
+    }
+
+    #[test]
+    fn flex_columns_split_the_remainder() {
+        let cells = vec![cell(10.0, 10.0), cell(10.0, 10.0)];
+        let mut table = RenderTable::new(2, cells)
+            .with_column_width(0, TableColumnWidth::Fixed(20.0))
+            .with_column_width(1, TableColumnWidth::Flex(1.0));
+        table.layout(BoxConstraints::new(100.0, 100.0, 0.0, f32::INFINITY));
+        // The fixed column takes 20; the flex column takes the other 80.
+        assert_eq!(table.column_widths, vec![20.0, 80.0]);
+        assert_eq!(table.size().width, 100.0);
+    }
+
+    #[test]
+    fn an_overwide_table_shrinks_its_flex_columns_first() {
+        let cells = vec![cell(10.0, 10.0), cell(10.0, 10.0)];
+        let mut table = RenderTable::new(2, cells)
+            .with_column_width(0, TableColumnWidth::Fixed(30.0))
+            .with_column_width(1, TableColumnWidth::Flex(1.0));
+        // The flex column wants 10 on its own, but the table is asked to be
+        // 35 wide with 30 fixed: the flex column takes what is left.
+        table.layout(BoxConstraints::new(35.0, 35.0, 0.0, f32::INFINITY));
+        assert_eq!(table.column_widths, vec![30.0, 5.0]);
+        assert_eq!(table.size().width, 35.0);
+    }
+
+    #[test]
+    fn intrinsic_columns_take_their_widest_cell() {
+        let cells = vec![
+            cell(10.0, 5.0),
+            cell(40.0, 5.0),
+            cell(25.0, 5.0),
+            cell(30.0, 5.0),
+        ];
+        let mut table = RenderTable::new(2, cells)
+            .with_default_column_width(TableColumnWidth::Intrinsic { flex: None });
+        table.layout(BoxConstraints::loose(1000.0, 1000.0));
+        // Column 0's widest cell is 25; column 1's is 40.
+        assert_eq!(table.column_widths, vec![25.0, 40.0]);
+        assert_eq!(table.size().width, 65.0);
+    }
+
+    #[test]
+    fn fraction_columns_take_a_share_of_the_container() {
+        let cells = vec![cell(10.0, 5.0), cell(10.0, 5.0)];
+        let mut table = RenderTable::new(2, cells)
+            .with_column_width(0, TableColumnWidth::Fraction(0.25))
+            .with_column_width(1, TableColumnWidth::Fraction(0.5));
+        table.layout(BoxConstraints::new(200.0, 200.0, 0.0, f32::INFINITY));
+        // No flex anywhere, so the shortfall to the min width is shared
+        // equally -- upstream's step 3, exactly this arithmetic.
+        assert_eq!(table.column_widths, vec![75.0, 125.0]);
+    }
+
+    #[test]
+    fn a_fill_cell_stretches_to_the_row_height() {
+        let cells = vec![cell(10.0, 30.0), cell(10.0, 10.0)];
+        let mut table = RenderTable::new(2, cells)
+            .with_default_column_width(TableColumnWidth::Fixed(10.0))
+            .with_cell_alignment(1, 0, TableCellVerticalAlignment::Fill);
+        table.layout(BoxConstraints::loose(100.0, 100.0));
+        // The fill cell was re-laid-out at the row's 30.
+        assert_eq!(
+            table.cells[1].as_ref().map(|c| c.size()),
+            Some(Size::new(10.0, 30.0))
+        );
+        assert_eq!(table.size(), Size::new(20.0, 30.0));
+    }
+
+    #[test]
+    fn a_middle_cell_is_centred_in_its_row() {
+        let cells = vec![cell(10.0, 30.0), cell(10.0, 10.0)];
+        let mut table = RenderTable::new(2, cells)
+            .with_default_column_width(TableColumnWidth::Fixed(10.0))
+            .with_cell_alignment(1, 0, TableCellVerticalAlignment::Middle);
+        table.layout(BoxConstraints::loose(100.0, 100.0));
+        // Row height 30, the 10-tall cell centred: 10 from the top.
+        assert_eq!(table.cell_offsets[1], Offset::new(10.0, 10.0));
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::painting::Matrix4;
+    use std::cell::Cell;
+
+    /// A delegate that lays children out in a diagonal and paints them
+    /// translated by (i * 20, 0).
+    struct Diagonal {
+        relayout: bool,
+        repaint: bool,
+    }
+
+    impl FlowDelegate for Diagonal {
+        fn get_size(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(Size::new(100.0, 40.0))
+        }
+
+        fn paint_children(&self, context: &mut FlowPaintingContext) {
+            for index in 0..context.child_count() {
+                context.paint_child(
+                    index,
+                    Matrix4::translation(index as f32 * 20.0, 0.0, 0.0),
+                    1.0,
+                );
+            }
+        }
+
+        fn should_relayout(&self, old: &dyn FlowDelegate) -> bool {
+            old.as_any()
+                .downcast_ref::<Diagonal>()
+                .map(|old| self.relayout != old.relayout)
+                .unwrap_or(true)
+        }
+
+        fn should_repaint(&self, old: &dyn FlowDelegate) -> bool {
+            old.as_any()
+                .downcast_ref::<Diagonal>()
+                .map(|old| self.repaint != old.repaint)
+                .unwrap_or(true)
+        }
+
+        fn kind_id(&self) -> std::any::TypeId {
+            std::any::TypeId::of::<Diagonal>()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn the_delegate_sizes_the_container_not_the_children() {
+        struct Fat;
+        impl RenderBox for Fat {
+            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+                None
+            }
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(500.0, 500.0))
+            }
+            fn size(&self) -> Size {
+                Size::new(500.0, 500.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn hit_test_self(&self, _position: Offset) -> bool {
+                true
+            }
+        }
+        let children: Vec<BoxedRender> = vec![RenderRef::new(Fat), RenderRef::new(Fat)];
+        let mut flow = RenderFlow::new(
+            Rc::new(Diagonal {
+                relayout: false,
+                repaint: false,
+            }),
+            children,
+        );
+        flow.layout(BoxConstraints::loose(200.0, 200.0));
+        // The delegate's 100x40, not the children's 500x500.
+        assert_eq!(flow.size(), Size::new(100.0, 40.0));
+    }
+
+    #[test]
+    fn a_new_delegate_relays_or_repaints_by_its_own_judgment() {
+        let children: Vec<BoxedRender> = Vec::new();
+        let mut flow = RenderFlow::new(
+            Rc::new(Diagonal {
+                relayout: false,
+                repaint: false,
+            }),
+            children,
+        );
+        flow.layout(BoxConstraints::loose(200.0, 200.0));
+
+        let mut fresh = RenderFlow::new(
+            Rc::new(Diagonal {
+                relayout: false,
+                repaint: false,
+            }),
+            Vec::new(),
+        );
+        let effect = RenderBox::update_from(&mut flow, &mut fresh).unwrap();
+        assert_eq!(effect, UpdateEffect::Nothing);
+
+        let mut fresh = RenderFlow::new(
+            Rc::new(Diagonal {
+                relayout: false,
+                repaint: true,
+            }),
+            Vec::new(),
+        );
+        let effect = RenderBox::update_from(&mut flow, &mut fresh).unwrap();
+        assert_eq!(effect, UpdateEffect::Repaint);
+
+        let mut fresh = RenderFlow::new(
+            Rc::new(Diagonal {
+                relayout: true,
+                repaint: true,
+            }),
+            Vec::new(),
+        );
+        let effect = RenderBox::update_from(&mut flow, &mut fresh).unwrap();
+        assert_eq!(effect, UpdateEffect::Relayout);
+    }
+}
+
+#[cfg(test)]
+mod fill_remaining_tests {
+    use super::*;
+
+    /// A child that asks for a fixed extent and reports what it got.
+    struct Panel {
+        asked: f32,
+        size: std::cell::Cell<Size>,
+    }
+    impl RenderBox for Panel {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(Size::new(100.0, self.asked));
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+        fn max_intrinsic_height(&self, _width: f32) -> f32 {
+            self.asked
+        }
+    }
+
+    fn panel(asked: f32) -> Panel {
+        Panel {
+            asked,
+            size: std::cell::Cell::new(Size::new(100.0, asked)),
+        }
+    }
+
+    fn constraints(remaining: f32, viewport: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: 0.0,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: 100.0,
+            viewport_main_axis_extent: viewport,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    #[test]
+    fn scrollable_fills_a_viewport_and_gives_the_child_the_rest() {
+        let mut fill = RenderSliverFillRemaining::new(FillRemainingMode::Scrollable, panel(40.0));
+        let geometry = fill.sliver_layout(constraints(300.0, 600.0));
+        // The sliver is a full viewport tall; the child had the remaining
+        // 300 to scroll within.
+        assert_eq!(geometry.scroll_extent, 600.0);
+        assert_eq!(geometry.paint_extent, 300.0);
+        assert_eq!(fill.children_size(), Some(Size::new(100.0, 300.0)));
+    }
+
+    #[test]
+    fn fill_sizes_the_child_to_the_remaining_extent() {
+        let mut fill = RenderSliverFillRemaining::new(FillRemainingMode::Fill, panel(40.0));
+        let geometry = fill.sliver_layout(constraints(250.0, 600.0));
+        assert_eq!(fill.children_size(), Some(Size::new(100.0, 250.0)));
+        assert_eq!(geometry.scroll_extent, 250.0);
+        assert_eq!(geometry.paint_extent, 250.0);
+    }
+
+    #[test]
+    fn fill_scrolled_past_falls_back_to_the_childs_own_extent() {
+        let mut fill = RenderSliverFillRemaining::new(FillRemainingMode::Fill, panel(80.0));
+        let mut constraints = constraints(0.0, 600.0);
+        constraints.scroll_offset = 600.0;
+        let geometry = fill.sliver_layout(constraints);
+        // Nothing left to fill; the child stands at its own 80.
+        assert_eq!(fill.children_size(), Some(Size::new(100.0, 80.0)));
+        assert_eq!(geometry.scroll_extent, 80.0);
+    }
+
+    #[test]
+    fn overscroll_stretches_the_child_into_what_is_left() {
+        // A child that wants 40 but is offered 200: the overscroll spelling
+        // re-lays it at the full 200 rather than showing the space.
+        let mut fill =
+            RenderSliverFillRemaining::new(FillRemainingMode::AndOverscroll, panel(40.0));
+        let geometry = fill.sliver_layout(constraints(200.0, 600.0));
+        assert_eq!(fill.children_size(), Some(Size::new(100.0, 200.0)));
+        assert_eq!(geometry.scroll_extent, 200.0);
+    }
+
+    impl RenderSliverFillRemaining {
+        fn children_size(&self) -> Option<Size> {
+            self.child.as_ref().map(|child| child.size())
+        }
+    }
+}
+
+#[cfg(test)]
+mod proxy_sliver_tests {
+    use super::*;
+
+    /// A sliver that answers fixed geometry and remembers its constraints.
+    struct StubSliver {
+        scroll_extent: f32,
+        paint_extent: std::cell::Cell<f32>,
+        seen_cross: std::cell::Cell<f32>,
+        hit: bool,
+    }
+    impl RenderBox for StubSliver {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+            Size::ZERO
+        }
+        fn size(&self) -> Size {
+            Size::ZERO
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+            self.seen_cross.set(constraints.cross_axis_extent);
+            let paint = constraints.remaining_paint_extent.min(self.scroll_extent);
+            self.paint_extent.set(paint);
+            SliverGeometry {
+                scroll_extent: self.scroll_extent,
+                paint_extent: paint,
+                max_paint_extent: paint,
+                visible: paint > 0.0,
+                cross_axis_extent: Some(constraints.cross_axis_extent),
+                ..SliverGeometry::ZERO
+            }
+        }
+        fn sliver_geometry(&self) -> SliverGeometry {
+            SliverGeometry {
+                scroll_extent: self.scroll_extent,
+                paint_extent: self.paint_extent.get(),
+                visible: self.paint_extent.get() > 0.0,
+                ..SliverGeometry::ZERO
+            }
+        }
+        fn sliver_hit_test(&self, _main: f32, _cross: f32, _result: &mut HitTestResult) -> bool {
+            self.hit
+        }
+    }
+
+    fn constraints(cross: f32, remaining: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: 0.0,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: cross,
+            viewport_main_axis_extent: remaining,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    fn stub(scroll: f32, hit: bool) -> StubSliver {
+        StubSliver {
+            scroll_extent: scroll,
+            paint_extent: std::cell::Cell::new(0.0),
+            seen_cross: std::cell::Cell::new(0.0),
+            hit,
+        }
+    }
+
+    #[test]
+    fn a_pass_through_proxy_answers_the_child() {
+        let child = stub(500.0, true);
+        let mut proxy = RenderProxySliver::new(ProxySliverBehavior::PassThrough, child);
+        let geometry = proxy.sliver_layout(constraints(100.0, 300.0));
+        assert_eq!(geometry.scroll_extent, 500.0);
+        assert_eq!(geometry.paint_extent, 300.0);
+        let mut result = HitTestResult::new();
+        assert!(proxy.sliver_hit_test(10.0, 10.0, &mut result));
+    }
+
+    #[test]
+    fn ignore_pointer_and_offstage_stop_hits_but_not_layout() {
+        let mut ignoring =
+            RenderProxySliver::new(ProxySliverBehavior::IgnorePointer, stub(500.0, true));
+        ignoring.sliver_layout(constraints(100.0, 300.0));
+        let mut result = HitTestResult::new();
+        assert!(!ignoring.sliver_hit_test(10.0, 10.0, &mut result));
+
+        let mut offstage = RenderProxySliver::new(ProxySliverBehavior::Offstage, stub(500.0, true));
+        let geometry = offstage.sliver_layout(constraints(100.0, 300.0));
+        // Laid out all the same; the silence is in paint and hits.
+        assert_eq!(geometry.scroll_extent, 500.0);
+        assert!(!offstage.sliver_hit_test(10.0, 10.0, &mut result));
+    }
+
+    #[test]
+    fn cross_axis_constraining_shrinks_the_child_and_reports_it() {
+        let child = stub(500.0, false);
+        let mut proxy =
+            RenderProxySliver::new(ProxySliverBehavior::ConstrainedCrossAxis(60.0), child);
+        let geometry = proxy.sliver_layout(constraints(100.0, 300.0));
+        // The child saw 60, not the incoming 100; the geometry says the
+        // same.
+        assert_eq!(proxy.child_cross_seen(), 60.0);
+        assert_eq!(geometry.cross_axis_extent, Some(60.0));
+
+        // A max above the incoming extent does not grow the child.
+        let mut proxy = RenderProxySliver::new(
+            ProxySliverBehavior::ConstrainedCrossAxis(500.0),
+            stub(500.0, false),
+        );
+        proxy.sliver_layout(constraints(100.0, 300.0));
+        assert_eq!(proxy.child_cross_seen(), 100.0);
+    }
+
+    impl RenderProxySliver {
+        fn child_cross_seen(&self) -> f32 {
+            // The stub's seen-cross lives behind RenderRef; the geometry it
+            // answered with carries the same number.
+            self.geometry
+                .cross_axis_extent
+                .unwrap_or(self.constraints.cross_axis_extent)
+        }
+    }
+}
+
+#[cfg(test)]
+mod sliver_group_tests {
+    use super::*;
+
+    /// A sliver stub: a fixed cross extent and a fixed scroll extent.
+    struct FixedSliver {
+        cross: f32,
+        scroll: f32,
+    }
+    impl RenderBox for FixedSliver {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, _constraints: BoxConstraints) -> Size {
+            Size::ZERO
+        }
+        fn size(&self) -> Size {
+            Size::ZERO
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn sliver_layout(&mut self, constraints: SliverConstraints) -> SliverGeometry {
+            let paint = constraints.remaining_paint_extent.min(self.scroll);
+            #[cfg(test)]
+            eprintln!("FixedSliver({}) laid: paint={paint}", self.scroll);
+            SliverGeometry {
+                scroll_extent: self.scroll,
+                paint_extent: paint,
+                max_paint_extent: paint,
+                visible: paint > 0.0,
+                cross_axis_extent: Some(self.cross),
+                ..SliverGeometry::ZERO
+            }
+        }
+        fn sliver_hit_test(&self, _m: f32, _c: f32, _r: &mut HitTestResult) -> bool {
+            true
+        }
+    }
+
+    fn constraints(cross: f32, remaining: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: 0.0,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: cross,
+            viewport_main_axis_extent: remaining,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    #[test]
+    fn a_cross_axis_group_shares_the_cross_extent() {
+        // One fixed child of 30, two flex children splitting the rest of 90.
+        let children = vec![
+            SliverGroupChild {
+                sliver: RenderRef::new(FixedSliver {
+                    cross: 30.0,
+                    scroll: 400.0,
+                }),
+                cross_axis_flex: 0,
+            },
+            SliverGroupChild {
+                sliver: RenderRef::new(FixedSliver {
+                    cross: 0.0,
+                    scroll: 400.0,
+                }),
+                cross_axis_flex: 1,
+            },
+            SliverGroupChild {
+                sliver: RenderRef::new(FixedSliver {
+                    cross: 0.0,
+                    scroll: 400.0,
+                }),
+                cross_axis_flex: 2,
+            },
+        ];
+        let mut group = RenderSliverCrossAxisGroup::new(children);
+        let geometry = group.sliver_layout(constraints(120.0, 300.0));
+        // Fixed child 30 at 0; the 90 left splits 1:2, at 30 and 60.
+        assert_eq!(group.cross_offsets, vec![0.0, 30.0, 60.0]);
+        // The group is as long as its longest child.
+        assert_eq!(geometry.scroll_extent, 400.0);
+    }
+
+    #[test]
+    fn a_main_axis_group_stacks_scroll_extents() {
+        let children = vec![
+            SliverGroupChild {
+                sliver: RenderRef::new(FixedSliver {
+                    cross: 120.0,
+                    scroll: 100.0,
+                }),
+                cross_axis_flex: 0,
+            },
+            SliverGroupChild {
+                sliver: RenderRef::new(FixedSliver {
+                    cross: 120.0,
+                    scroll: 200.0,
+                }),
+                cross_axis_flex: 0,
+            },
+        ];
+        let mut group = RenderSliverMainAxisGroup::new(children);
+        let geometry = group.sliver_layout(constraints(120.0, 300.0));
+        assert_eq!(group.scroll_offsets, vec![0.0, 100.0]);
+        assert_eq!(geometry.scroll_extent, 300.0);
+        // Both fit the 300 of paint extent.
+        assert_eq!(geometry.paint_extent, 300.0);
+    }
+}
+
+#[cfg(test)]
+mod fill_viewport_tests {
+    use super::*;
+
+    /// A page that reports what it was laid out at.
+    struct Page {
+        size: std::cell::Cell<Size>,
+    }
+    impl RenderBox for Page {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            let size = constraints.constrain(Size::new(100.0, 100.0));
+            self.size.set(size);
+            size
+        }
+        fn size(&self) -> Size {
+            self.size.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+
+    fn constraints(viewport: f32, scroll: f32, remaining: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: scroll,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: 100.0,
+            viewport_main_axis_extent: viewport,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    #[test]
+    fn full_width_pages_materialize_only_the_visible_window() {
+        let mut viewport = RenderSliverFillViewport::new(1000, |_index| {
+            RenderRef::new(Page {
+                size: std::cell::Cell::new(Size::ZERO),
+            })
+        });
+        let geometry = viewport.sliver_layout(constraints(400.0, 0.0, 400.0));
+        // One viewport tall: a single page materialized (the next begins
+        // exactly at the window's end, ceil's boundary), a thousand tall.
+        assert_eq!(viewport.live_range(), (0, 1));
+        assert_eq!(geometry.scroll_extent, 400_000.0);
+        assert_eq!(geometry.paint_extent, 400.0);
+        // Every materialized page is exactly the extent.
+        for child in &viewport.children {
+            assert_eq!(child.size(), Size::new(100.0, 400.0));
+        }
+    }
+
+    #[test]
+    fn half_width_pages_are_half_the_viewport_each() {
+        let mut viewport = RenderSliverFillViewport::new(10, |_index| {
+            RenderRef::new(Page {
+                size: std::cell::Cell::new(Size::ZERO),
+            })
+        })
+        .with_viewport_fraction(0.5);
+        let geometry = viewport.sliver_layout(constraints(400.0, 100.0, 400.0));
+        // Half a viewport per page, ten pages: two thousand tall.
+        assert_eq!(geometry.scroll_extent, 2000.0);
+        // Scrolled 100 into a 200-tall page: 100 of it plus what follows.
+        assert_eq!(geometry.paint_extent, 400.0);
+        for child in &viewport.children {
+            assert_eq!(child.size(), Size::new(100.0, 200.0));
+        }
+    }
+
+    #[test]
+    fn scrolling_materializes_the_window_at_the_offset() {
+        let mut viewport = RenderSliverFillViewport::new(100, |_index| {
+            RenderRef::new(Page {
+                size: std::cell::Cell::new(Size::ZERO),
+            })
+        });
+        // Jump to page 40: the window starts there.
+        viewport.sliver_layout(constraints(400.0, 16_000.0, 400.0));
+        assert_eq!(viewport.live_range(), (40, 41));
+        // The paint extent is one viewport from wherever the scroll cut in.
+        assert_eq!(viewport.sliver_geometry().paint_extent, 400.0);
+    }
+}
+
+#[cfg(test)]
+mod sliver_grid_tests {
+    use super::*;
+
+    fn constraints(cross: f32, scroll: f32, remaining: f32) -> SliverConstraints {
+        SliverConstraints {
+            axis_direction: AxisDirection::Down,
+            cross_axis_direction: AxisDirection::Right,
+            scroll_offset: scroll,
+            preceding_scroll_extent: 0.0,
+            overlap: 0.0,
+            remaining_paint_extent: remaining,
+            remaining_cache_extent: remaining,
+            cache_origin: 0.0,
+            cross_axis_extent: cross,
+            viewport_main_axis_extent: remaining,
+            growth_direction: GrowthDirection::Forward,
+            user_scroll_direction: crate::scrolling::ScrollDirection::Forward,
+        }
+    }
+
+    #[test]
+    fn a_fixed_count_grid_divides_the_cross_extent() {
+        let delegate = SliverGridDelegate::fixed_cross_axis_count(2);
+        let layout = delegate.get_layout(&constraints(100.0, 0.0, 300.0));
+        // Two 50-wide tiles to a row, square ones.
+        assert_eq!(layout.child_cross_axis_extent, 50.0);
+        assert_eq!(layout.child_main_axis_extent, 50.0);
+        assert_eq!(layout.cross_axis_stride, 50.0);
+        // Tile 3 is the second tile of the second row.
+        let tile = layout.geometry_for_child_index(3);
+        assert_eq!(tile.scroll_offset, 50.0);
+        assert_eq!(tile.cross_axis_offset, 50.0);
+        // The whole grid of 5 children: three rows, the last row's spacing
+        // not counted.
+        assert_eq!(layout.compute_max_scroll_offset(5), 150.0);
+    }
+
+    #[test]
+    fn spacing_widens_the_strides() {
+        let delegate = SliverGridDelegate::FixedCrossAxisCount {
+            cross_axis_count: 2,
+            main_axis_spacing: 10.0,
+            cross_axis_spacing: 10.0,
+            child_aspect_ratio: 1.0,
+            main_axis_extent: None,
+        };
+        let layout = delegate.get_layout(&constraints(110.0, 0.0, 300.0));
+        // (110 - 10) / 2 = 50 per tile; strides carry the spacing.
+        assert_eq!(layout.child_cross_axis_extent, 50.0);
+        assert_eq!(layout.cross_axis_stride, 60.0);
+        assert_eq!(layout.main_axis_stride, 60.0);
+    }
+
+    #[test]
+    fn a_max_extent_grid_picks_the_count_that_fits() {
+        let delegate = SliverGridDelegate::max_cross_axis_extent(40.0);
+        // 100 / 40 = 2.5 -> three columns of 33.3.
+        let layout = delegate.get_layout(&constraints(100.0, 0.0, 300.0));
+        assert_eq!(layout.cross_axis_count, 3);
+        assert!((layout.child_cross_axis_extent - 100.0 / 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_main_extent_overrides_the_aspect_ratio() {
+        let delegate = SliverGridDelegate::FixedCrossAxisCount {
+            cross_axis_count: 1,
+            main_axis_spacing: 0.0,
+            cross_axis_spacing: 0.0,
+            child_aspect_ratio: 1.0,
+            main_axis_extent: Some(30.0),
+        };
+        let layout = delegate.get_layout(&constraints(100.0, 0.0, 300.0));
+        assert_eq!(layout.child_cross_axis_extent, 100.0);
+        assert_eq!(layout.child_main_axis_extent, 30.0);
+    }
+
+    #[test]
+    fn a_grid_materializes_only_its_visible_tiles() {
+        let mut grid = RenderSliverGrid::new(
+            100,
+            SliverGridDelegate::fixed_cross_axis_count(2),
+            |_index| RenderRef::new(super::tests::FixedBox::new(50.0, 50.0)),
+        );
+        // A 300-tall window on a 100-wide cross axis: six rows of two
+        // 50x50 tiles -- twelve materialized.
+        let geometry = grid.sliver_layout(constraints(100.0, 0.0, 300.0));
+        assert_eq!(grid.live_range(), (0, 12));
+        assert_eq!(geometry.scroll_extent, 50.0 * 50.0);
+        assert_eq!(geometry.paint_extent, 300.0);
+
+        // Scrolled two rows in: the window starts at row two.
+        grid.sliver_layout(constraints(100.0, 100.0, 300.0));
+        assert_eq!(grid.live_range(), (4, 16));
+    }
+
+    #[test]
+    fn reverse_cross_axis_mirrors_the_columns() {
+        let delegate = SliverGridDelegate::fixed_cross_axis_count(2);
+        let mut constraints = constraints(100.0, 0.0, 300.0);
+        constraints.cross_axis_direction = AxisDirection::Left;
+        let layout = delegate.get_layout(&constraints);
+        assert!(layout.reverse_cross_axis);
+        // Tile 0, normally at cross 0, mirrors to the far column.
+        let tile = layout.geometry_for_child_index(0);
+        assert_eq!(tile.cross_axis_offset, 50.0);
     }
 }

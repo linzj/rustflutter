@@ -55,7 +55,11 @@
 **控件/外观(`widgets.rs`/`components.rs`/`controls.rs`)**
 - **`Container` 的 `constraints` 参数**(上游 `Container.constraints`);顺带
   `foregroundDecoration`/`transform`/`clipBehavior`。
-- **`ClipRRect` 的逐角圆角**(上游 `BorderRadius`);现为统一 `f32`。
+- ~~**`ClipRRect` 的逐角圆角**(上游 `BorderRadius`);现为统一 `f32`。~~ 已完成:
+  `borders.rs` 落地 `BorderRadius`/`BorderRadiusDirectional` 后,
+  `RenderDecoratedBox::with_border_radius`(逐角绘制+命中走 rrect)、
+  `RenderClipRect::with_border_radius`(逐角走路径裁剪)、`Container::with_border_radius`、
+  `ClipRRect::rounded`/`directional` 全部接上;统一 `f32` 保留为简写。
 - **`AppBar` actionsPadding**:上游有效缺省 `EdgeInsets.zero`,这里起头内缩
   16——代码里已自陈为故意,若按上游归零需过一遍相册。
 
@@ -155,6 +159,190 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 真实压力数据再谈。
 - **`computeDryBaseline`。** dry 路径用缓存的湿基线顶替(`render.rs` 自陈),常见场景
 比上游的 dry 重算更准;真要 dry 重算得给 dry 协议加基线位。
+
+---
+
+## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
+
+**P3 sliver 开工(2026-08-18)。** `sliver_grid.dart` 八类已入账:
+`SliverGridGeometry`(trailing/getBoxConstraints)、`SliverGridRegularTileLayout`
+(min/maxChildIndexForScrollOffset 的整除算式、reverseCrossAxis 的镜像、
+computeMaxScrollOffset 去尾行 spacing)、`SliverGridDelegate` 枚举两式
+(FixedCrossAxisCount 的 usable/count 均分与 MaxCrossAxisExtent 的
+ceil 取列,childAspectRatio 或显式 mainAxisExtent)、`RenderSliverGrid`
+(窗口=layout 的两 index 查询,子按 tile 的 tight cross/main 约束,跨帧保身份)
++2 mapped(抽象基类与 parentData)。
+
+ `RenderSliverFillViewport` 已落地(PageView 的
+引擎):itemExtent=viewport×fraction 的纯算术窗口(ceil 边界——恰在窗口末端
+起头的下一页不物化),子按 tight extent 布置、存活窗口跨帧保身份由
+update_from 重配置,scroll_extent=count×extent,paint=min(total−scrollOffset,
+remaining)。`sliver_fill.dart` 至此四类全入账。
+
+ `sliver_group.dart` 两类已落地:
+`RenderSliverCrossAxisGroup`(两遍式:定宽子先按自答扣减 cross 余量,flex 子
+按份分余,逐子横移 paint offset,组取最长子;子答一律取 sliver_layout 返回
+值留存——sliver_geometry 未被普遍覆写)与 `RenderSliverMainAxisGroup`
+(逐子 scroll_offset=组偏移+前行占量、余量按切入差钳;收尾
+paint=min(scroll_extent−scrollOffset, remaining) 的上游闭式)。
+
+ `proxy_sliver.dart` 六类已落地
+(`RenderProxySliver{behavior}`:PassThrough 透传几何/绘制/命中;
+Opacity 的 save-layer 组子与零透明不绘不命中;IgnorePointer/Offstage 的
+"布局照旧、静默命中/绘制";ConstrainedCrossAxis 的子取
+min(maxExtent, incoming) 且 geometry 同报)。`RenderSliverSemanticsAnnotations`
+随语义波。
+
+ `sliver_fill.dart` 的 FillRemaining 三式并
+作 `RenderSliverFillRemaining{mode}`(Scrollable:子得余量可滚、sliver 占整视口;
+Fill:余量定尺寸,滚过后退回子自身固有量;AndOverscroll:先松后紧拉伸进过冲)
+——逐 variant 对齐 `performLayout`;`sliver_fixed_extent_list`/`multi_box_adaptor`
+族记 mapped(定长窗口算术已在 `RenderSliverList::with_item_extent`,管理器即
+count+builder,keepAlive 维持离窗即弃的记录分歧)。`RenderSliverFillViewport`
+(PageView 的引擎)待补。
+
+**P2 rendering 盒族开工(2026-08-18)。** TableBorder 已落地(`borders.rs`):
+六边(isUniform 含内外全部六边、dimensions 取外四边)、`_paintTableBorder`
+三式(均匀圆角走双 rrect、单色多宽圆角走逐边 inset/outset 双 rrect、其余
+paintBorder 四梯形)、`paint` 的内网格先行(行线/列线各自 stroke)、scale/
+lerp 逐边。DataTable 的地基齐了。
+
+ Flow 已落地:`FlowDelegate` trait
+(getSize/getConstraintsForChild 的缺省、paintChildren、shouldRelayout/
+shouldRepaint、kind_id+as_any 顶 runtimeType)+`FlowPaintingContext`
+(容器尺寸/逐子尺寸/paintChild 的单次约束与变换+不透明度——分数不透明度走
+save-layer)+`RenderFlow`(容器由 delegate 定尺寸而子由逐子约束定、
+update_from 即上游 setter 的 relayout-else-repaint 判断、命中按绘制序倒走
+并以逆变换映射;变换经 thread-local 交接——paint 借用期进不了 self)。
+
+ Table 已落地:`TableColumnWidth` 枚举
+(Intrinsic/Fixed/Fraction/Flex/Max/Min 的 min/maxIntrinsic 与 flex 逐条照抄)+
+`RenderTable`(`_computeColumnWidths` 全算法:逐列 min/max、flex 列按余量分配到
+目标宽、无 flex 时的等分补差、超宽时先收缩 flex 列至其最小值再全员均摊的
+双循环;行两遍:量高/收基线(无基线格子按内容高兜底——上游在 debug 断言处较
+真,此处记宽和)、再摆位,fill 格子按行高重排;RTL 列序镜像;命中从后声明
+优先)。`TableCellParentData` 记 mapped(容器持有 offsets)。`TableBorder` 待
+borders 后续补(六边绘制)。
+
+ proxy_box 视觉族已落地:
+`RenderClipRRect`/`RenderClipOval`(不透明裁剪命中按 rrect/椭圆)、
+`RenderCustomClipPath`+`CustomClipper` trait+`ShapeBorderClipper`(
+shouldReclip 同形状判)、`RenderClipRSuperellipse`(连续角路径,同
+superellipse 分歧)、`RenderShaderMask`(shader 回调产 Paint,save-layer
+合成)、`RenderBackdropFilter`(引擎 backdrop 位只有 blur——分歧)、
+`RenderOffstage`(布局不占位/不绘/不命中,固有量与基线全归零)、
+`RenderAbsorbPointer`(吸收态整框命中且不留 entry)、
+`RenderFractionalTranslation`(绘制位移与命中同移)、
+`RenderPhysicalModel`/`RenderPhysicalShape`(elevation 阴影表+形裁剪+命中
+按形)、`RenderMetaData`(payload 随 hit entry 走)。RenderProxyBox 基类族/
+AnimatedOpacity 记 mapped;Leader/FollowerLayer 挂引擎账(LayerLink);
+semantics 五件与 AnnotatedRegion 留给语义波。 已落地:`CustomPainter` trait
+(paint/shouldRepaint/shouldRebuildSemantics 默认走 shouldRepaint/hitTest 的
+Option<bool> 三态/repaint listenable 位;`as_any` 顶 runtimeType 比较)+
+`RenderCustomPaint`(painter→child→foregroundPainer 绘制序、preferredSize
+无子定尺寸、`_didUpdatePainter` 的换画判断——None/None 非变更;
+`CustomPainterSemantics` 待语义波)。`RenderRotatedBox`(奇数转轴互换、
+constraints.flipped、绘制变换与命中逆变换)。`RenderListBody`(四方向端到端
+排布、cross 轴 tightFor、up/left 的从尾回填)。
+
+**foundation 响应式地基已落地(E8):`foundation.rs`。**
+`Listenable`/`ListenableMerge`(merge 的监听转发全子)/`ChangeNotifier`
+(notify 的重入保持、通知中增删监听的次序稳定)/`ValueNotifier`(同值不
+告知)/键族构造器(`keys::value/object/unique`——crate 的 `Key` 即
+`Option<u64>`,三种语义各给一段数;`LocalKey`/`ValueListenable`/
+`LabeledGlobalKey`/`GlobalObjectKey` 记 mapped)。E8 至此除 DiagnosticsNode
+族(P10 终裁)外完成。
+
+**painting 层清零(87/87 入账,2026-08-18)。** 收尾簇:`TextPainter`
+(`shape_rich` 的对象形态:layout/width/height/longest_line/paint;
+minIntrinsicWidth 引擎只有 longest_line 可答——分歧)、`StrutStyle`(携带
+配置,引擎 paragraph 无 strut 位)、`PlaceholderDimensions`/
+`PlaceholderAlignment`/`TextBaseline`/`WordBoundary`/`Accumulator`/
+`InlineSpanSemanticsInformation`、`DecorationImage`(fit+alignment 绘制,
+fit 缺省 ScaleDown 同上游)、`Matrix4`+`matrix_utils`(translation/
+scale 提取、transformPoint/transformRect 的快慢双路、inverseTransformRect、
+圆柱投影、forceToPoint)、`FlutterLogoDecoration`(三式样,mark 的 SVG
+坐标照抄,45° 方块与缩放烘焙进点坐标;label 用段落宽度替代
+getBoxesForSelection——引擎不回读字形框)。`ShaderWarmUp` 挂引擎账。
+
+**图片管线簇已落地:`image.rs`。** `image_provider.dart`/
+`image_stream.dart`/`image_cache.dart`/`image_resolution.dart`:
+`ImageProvider` 枚举(Memory/Asset/File/Network/Resize,上游子类族并为
+一枚举)、`ImageStream`/`ImageStreamCompleter`(先听后告知、后听即得;
+error 路径)、`ImageInfo`/`ImageConfiguration`/`ImageStreamListener`/
+`ImageChunkEvent`、`ImageCache::evict/statusForKey` 的 `image_cache_evict`/
+`image_cache_status`、`AssetBundle` trait + root bundle(E4 的种子)、
+`NetworkImageLoadException`。resolve 走 worker 池、resolve_now 同步解码
+(无头渲染/金测试路径)。分歧:引擎只出一帧(单/多帧 completer 合并,动画
+图持首帧);decode ABI 无 resize 位(`ResizeImage` 携带目标不生效);
+`NetworkImage` 的 bytes 由调用方 fetch 回调供(crate 无 HTTP 栈)。
+
+**渐变簇已落地:`painting.rs`。** `gradient.dart` 的
+`LinearGradient`/`RadialGradient`/`SweepGradient`(implied stops、scale 的 alpha
+缩放、lerp 的 stops 并集+双坡采样 `_interpolateColorsAndStops` 全套)与
+`GradientTransform`/`GradientRotation`(枚举并一个;`Affine` 2D 仿射,旋转平移式照
+抄)。shader 变换烘进几何:线性映射端点(仿射下精确)、径向平移圆心+缩放半径、扫角
+加角度。**此前"gradient lerp 只在半程切换"的分歧就此关闭**——新 `ShaderGradient`
+家族逐 stop 插值;旧 `Fill` 路径维持原样待 material 波次统一。分歧余账:
+`RadialGradient.focal/focalRadius` 引擎无对应图元,携带未画。
+
+**对齐簇已落地:`render.rs`。** `alignment.dart` 补齐:`Alignment` 的
+`alongOffset`/`alongSize`/`withinRect`/`lerp`、`AlignmentGeometry`(枚举
+Absolute/Directional/Mixed,add 同类保类、lerp 缺侧从 centre、resolve 的
+ltr 加/rtl 减)、`TextAlignVertical`(top/center/bottom)。
+
+**色彩/文本缩放簇已落地:`painting.rs`。** `colors.dart` 的 `HSVColor`/`HSLColor`
+(`fromColor`/`toColor` 的 `_getHue`/`_colorFromHue` 全套、lerp 的逐通道+hue 取模——
+Dart 的 `%` 恒非负,Rust 侧用 `rem_euclid` 对齐)与 `ColorSwatch`(泛型色表,
+`MaterialColor` 族的地基);`text_scaler.dart` 的 `TextScaler`(linear/noScaling,
+平台非线性缩放器将来作新变体)。`fractional_offset.dart` 的 `FractionalOffset` 记
+mapped——上游它就是 `Alignment` 的别名,`render::Alignment` 即本体。
+
+**decoration 簇已落地:`decoration.rs`(`BoxDecoration`+`Decoration` 枚举)。** 上游
+`decoration.dart`/`box_decoration.dart` 逐符号对齐:padding(边框宽度作内缩)/
+isComplex/getClipPath(circle→内切椭圆、radius→rrect)/scale(颜色 alpha 缩放、
+边框/radius/阴影从零生长)/lerp(shape 半程切换,逐字段插值)/hitTest(circle 用
+距离平方比较)/绘制序(shadows→background→border,`_BoxDecorationPainter` 同序);
+`BoxShadow` 补 `scale`/`lerp`/`lerpList`(`painting.rs`);`ShapeDecoration` 补
+`fromBoxDecoration`(circle→`CircleBorder`、radius→`RoundedRectangleBorder`);
+`Decoration.lerp` 的四方尝试与"经 null 半程"缺省。`RenderDecoratedBox::with_decoration`
+与 `Container::with_decoration` 接上(装饰在场时绘制与命中走它,padding 走
+`decoration.padding()`)。上游开放基类在此侧是封闭枚举
+`Decoration{Box,Shape}`;`BoxPainter` 无对应物——直接绘制,记 mapped。
+
+**borders 簇已落地:`borders.rs`(约 5,300 行,56 个测试)。** 上游
+`border_radius.dart`、`borders.dart`、`box_border.dart`、`circle_border.dart`、
+`oval_border.dart`、`stadium_border.dart`、`rounded_rectangle_border.dart`、
+`beveled_rectangle_border.dart`、`continuous_rectangle_border.dart`、
+`shape_decoration.dart`、`notched_shapes.dart`、`linear_border.dart`、
+`star_border.dart` 十三个文件,逐符号对齐:
+`Radius`/`RRect`(含 Skia 比例收缩)/`BorderRadius`±`Directional`+`Mixed`(resolve
+的 ltr/rtl 镜像与逐角相加)/`BorderSide`(strokeInset/outset/offset 三式、lerp 的
+宽度变负→none 与样式错配走零透明度色)/`Border`+`BorderDirectional`+`BoxBorder`
+(含跨型 lerp 的 t<0.5 侧边交接)/`paintBorder` 四梯形/七个具体形状与三个私有过渡形
+(`_StadiumToCircleBorder` 等,lerp 的 circularity/rectilinearity 算式照抄)/
+`_CompoundBorder` 的 add(边缘合并)与 lerp(逐槽、来者在去者前)/`ShapeDecoration`
+(shadows→interior→border 的绘制序)/`LinearBorder`+`LinearBorderEdge`(零到四条
+线,alignment/size 的几何与 lerp 的缺失侧取在场对齐)/`StarBorder`(星形/多边形,
+`_StarGenerator` 的逐点生成、valley/point rounding、fractional points 的收尾短臂,
+以及 lerp 的 circle 双分支与 `_twoPhaseLerp` 的 stadium/circle 三段走位)。上游类层级
+在此侧是封闭枚举 `ShapeBorder`,私有过渡类是枚举变体——形态不同,算式逐条对上。
+
+**记录在案的分歧(随本簇新增)**:
+
+- `RoundedSuperellipseBorder` 用 `ContinuousRectangleBorder` 的三次曲线画角——
+  引擎没有 `RSuperellipse` 图元。
+- `AutomaticNotchedShape` 需要 `Path.combine(PathOperation.difference)`;引擎 ABI
+  没有路径布尔运算,先画 host 形,引擎补上再改。`CircularNotchedRectangle`
+  (BottomAppBar 常用那个)完整:`arcToPoint` 用 kappa 三次逼近。
+- `ShapeDecoration` 无 `image` 字段(`DecorationImage` 是后面的波次);lerp 的
+  gradient↔gradient 只在半程切换,不像上游逐 stop 插值。
+- `StarBorder` 的两处引擎位差:conic(`path.conicTo`)用 w/3 三次逼近——这里权重
+  落在 0..=1,误差一根头发丝;squash/rotation 矩阵不再变换成型的 path,而是烘进
+  生成点(仿射移动贝塞尔控制点是精确的)。命中测试用未取整的星形多边形近似
+  `Path.contains`(引擎不从 path 读回点)。
+- 逐角 `BorderRadius` 已接进 `RenderDecoratedBox`(绘制与命中)、`RenderClipRect`
+  (路径裁剪)、`Container` 与 `ClipRRect::rounded/directional`(见上"已完成"条)。
 
 ---
 
