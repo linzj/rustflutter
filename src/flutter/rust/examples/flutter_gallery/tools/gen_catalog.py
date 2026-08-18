@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Writes catalog.rs from the JSON pulled out of upstream.
+"""Writes src/data/demos.rs from the JSON pulled out of upstream.
 
 Generated rather than hand-written because it is 47 entries of upstream's own
 wording, and anything retyped drifts from the thing it is a port of.
+
+This script never touches the upstream repo directly: the data reaches it as
+`upstream_catalog.json` / `upstream_icons.json`, written next to this script by
+extract_catalog.py (which takes --upstream / $GALLERY_UPSTREAM). Run that first
+when the upstream pin moves. The example's own location is derived from this
+script's path, so the repo can live anywhere.
 """
 
 import json
+import os
 
-CATALOG = json.load(open('K:/rustflutter/upstream_catalog.json', encoding='utf-8'))
-ICONS = json.load(open('K:/rustflutter/upstream_icons.json', encoding='utf-8'))
+HERE = os.path.dirname(os.path.abspath(__file__))
+EXAMPLE = os.path.dirname(HERE)
+
+CATALOG = json.load(open(os.path.join(HERE, 'upstream_catalog.json'), encoding='utf-8'))
+ICONS = json.load(open(os.path.join(HERE, 'upstream_icons.json'), encoding='utf-8'))
 
 # Four entries in upstream's icon table point at Material's own icon font
 # rather than at GalleryIcons, so they need the other family.
@@ -19,7 +29,7 @@ MATERIAL_ICONS = {
     'search': 0xE567,          # Icons.search
 }
 
-OUT = ('K:/rustflutter/src/flutter/rust/examples/flutter_gallery/src/catalog.rs')
+OUT = os.path.join(EXAMPLE, 'src', 'data', 'demos.rs')
 
 CATEGORY = {'material': 'Material', 'cupertino': 'Cupertino', 'other': 'Reference'}
 
@@ -80,19 +90,25 @@ def main():
   add('')
   add('//! What the gallery contains.')
   add('//!')
-  add('//! Generated from upstream `new_gallery/lib/data/demos.dart` and its English')
-  add('//! localisation by `tools/gen_catalog.py`. The titles, subtitles and')
+  add('//! Maps to upstream `lib/data/demos.dart` (flutter/gallery @ d12640d).')
+  add('//! Generated from that file and its English localisation by')
+  add('//! `tools/gen_catalog.py`; do not edit by hand. The titles, subtitles and')
   add('//! descriptions are upstream\'s own words rather than retyped ones, because')
   add('//! forty-seven retyped entries drift from the thing they are a port of.')
   add('//!')
-  add('//! Do not edit by hand. The localisation machinery itself is not ported --')
-  add('//! there is no message catalogue and no locale plumbing -- so the English')
-  add('//! strings are baked in here.')
+  add('//! The localisation catalogue is ported (`l10n/gallery_localizations.rs`)')
+  add('//! but English-backed only, so the strings here resolve to en and are')
+  add('//! baked in rather than looked up.')
   add('')
   add('use rustflutter::engine::Color;')
   add('')
   add('/// Which section of the gallery an entry belongs to.')
   add('#[derive(Clone, Copy, Debug, PartialEq, Eq)]')
+  add('// `Study` is never constructed: the studies are their own list, and the')
+  add('// category exists so that the enum matches upstream\'s, which')
+  add('// `the_catalogue_matches_upstream` checks. Deleting it to quiet the warning')
+  add('// would make this catalogue disagree with the one it is a port of.')
+  add('#[allow(dead_code)]')
   add('pub enum Category {')
   add('    /// The full-screen sample apps, shown as the home page carousel.')
   add('    Study,')
@@ -119,9 +135,9 @@ def main():
   add('    pub fn icon(self) -> Option<&\'static [u8]> {')
   add('        match self {')
   add('            Category::Study => None,')
-  add('            Category::Material => Some(include_bytes!("../assets/icons/material.png")),')
-  add('            Category::Cupertino => Some(include_bytes!("../assets/icons/cupertino.png")),')
-  add('            Category::Reference => Some(include_bytes!("../assets/icons/reference.png")),')
+  add('            Category::Material => Some(include_bytes!("../../assets/icons/material.png")),')
+  add('            Category::Cupertino => Some(include_bytes!("../../assets/icons/cupertino.png")),')
+  add('            Category::Reference => Some(include_bytes!("../../assets/icons/reference.png")),')
   add('        }')
   add('    }')
   add('}')
@@ -140,8 +156,13 @@ def main():
   add('    /// in `icon_family` -- which is all an icon is.')
   add('    pub icon: &\'static str,')
   add('    pub icon_family: &\'static str,')
+  add('    /// The tint the deleted description card used. Nothing reads it since')
+  add('    /// the demo page\'s info section replaced that card; kept so the')
+  add('    /// catalogue keeps carrying the palette (see PORTING.md).')
+  add('    #[allow(dead_code)]')
   add('    pub accent: Color,')
   add('}')
+  add('')
   add('')
   add('/// One study: a whole sample app, with the card the home page shows for it.')
   add('#[derive(Clone, Copy, Debug)]')
@@ -165,9 +186,9 @@ def main():
   add('/// family falls back to a system face, which has nothing at a private-use')
   add('/// codepoint and draws a blank rather than complaining.')
   add('pub const GALLERY_ICON_FONT: &[u8] =')
-  add('    include_bytes!("../assets/fonts/GalleryIcons.ttf");')
+  add('    include_bytes!("../../assets/fonts/GalleryIcons.ttf");')
   add('pub const MATERIAL_ICON_FONT: &[u8] =')
-  add('    include_bytes!("../assets/fonts/MaterialIcons-Regular.otf");')
+  add('    include_bytes!("../../assets/fonts/MaterialIcons-Regular.otf");')
   add('pub const GALLERY_ICONS: &str = "GalleryIcons";')
   add('pub const MATERIAL_ICONS: &str = "MaterialIcons";')
   add('')
@@ -185,7 +206,7 @@ def main():
                        ('MONTSERRAT', 'Montserrat-Bold'),
                        ('OSWALD', 'Oswald-Medium'),
                        ('OSWALD', 'Oswald-SemiBold')]:
-    add('    (%s, include_bytes!("../assets/fonts/%s.ttf")),' % (family, face))
+    add('    (%s, include_bytes!("../../assets/fonts/%s.ttf")),' % (family, face))
   add('];')
   add('pub const MONTSERRAT: &str = "Montserrat";')
   add('pub const OSWALD: &str = "Oswald";')
@@ -213,13 +234,22 @@ def main():
                      ('ARROW_UP', 'e356'), ('PLAY', 'e4cd'), ('SEARCH', 'e567'),
                      ('MENU', 'e3dc'), ('MORE', 'e404'), ('CHECK', 'e156'),
                      ('ADD', 'e047'), ('REMOVE', 'e516'), ('FAVORITE', 'e25b'),
-                     ('STAR', 'e5f9'), ('INFO', 'e33c')]:
+                     ('STAR', 'e5f9'), ('INFO', 'e33c'),
+                     # The pages batch (M-C) added these: the settings panel's
+                     # chevron and link icons, and the demo page's app bar.
+                     ('ARROW_DROP_DOWN', 'e098'), ('INFO_OUTLINE', 'e33d'),
+                     ('FEEDBACK', 'e260'), ('TUNE', 'e683'), ('CODE', 'e176'),
+                     ('LIBRARY_BOOKS', 'e377'), ('FULLSCREEN', 'e2cb'),
+                     ('ARROW_BACK_IOS', 'e093'), ('ARROW_FORWARD_IOS', 'e09c')]:
     add('    pub const %s: &str = "\\u{%s}";' % (name, code))
   add('}')
   add('')
   add('const BLUE: Color = Color::rgb(0x54, 0xC5, 0xF8);')
   add('const GREEN: Color = Color::rgb(0x7B, 0xD3, 0x89);')
   add('const AMBER: Color = Color::rgb(0xF2, 0xB1, 0x4F);')
+  add('// Upstream\'s fifth accent. Nothing here uses it yet; kept so the palette is')
+  add('// the whole palette rather than the part that happens to be referenced.')
+  add('#[allow(dead_code)]')
   add('const TEAL: Color = Color::rgb(0x4F, 0xC8, 0xB0);')
   add('')
 
@@ -238,8 +268,8 @@ def main():
     add('        slug: "%s",' % slug)
     add('        title: %s,' % rust_string(titles[slug]))
     add('        subtitle: %s,' % rust_string(study['subtitle']))
-    add('        card: include_bytes!("../assets/studies/%s_card.png"),' % asset)
-    add('        card_dark: include_bytes!("../assets/studies/%s_card_dark.png"),' % asset)
+    add('        card: include_bytes!("../../assets/studies/%s_card.png"),' % asset)
+    add('        card_dark: include_bytes!("../../assets/studies/%s_card_dark.png"),' % asset)
     add('        fill: Color(0x%08X),' % fill)
     add('        fill_dark: Color(0x%08X),' % fill_dark)
     add('        text: Color(0x%08X),' % text)
@@ -291,6 +321,7 @@ def main():
   add('}')
   add('')
   add('/// How many demos a category holds.')
+  add('#[cfg(test)]')
   add('pub fn count(category: Category) -> usize {')
   add('    in_category(category).count()')
   add('}')

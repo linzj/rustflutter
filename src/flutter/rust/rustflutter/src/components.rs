@@ -39,7 +39,7 @@ use crate::render::{
     Alignment, BoxConstraints, BoxedRender, CrossAxisAlignment, EdgeInsets, EdgeInsetsDirectional,
     HitTestResult, MainAxisAlignment, MainAxisSize, Offset, PaintContext, RenderBox,
     RenderClipRect, RenderConstrainedBox, RenderFlex, RenderPadding, RenderRef, RenderStack, Size,
-    StackPosition, TextOverflow, UpdateEffect,
+    StackFit, StackPosition, TextOverflow, UpdateEffect,
 };
 use crate::widgets::{
     Align, Center, Column, Container, Empty, K_MIDDLE_SPACING, Pointer, RenderNavigationToolbar,
@@ -1204,6 +1204,11 @@ impl Component for AppBar {
 pub struct Scaffold {
     app_bar: std::cell::RefCell<Option<AnyWidget>>,
     body: std::cell::RefCell<Option<AnyWidget>>,
+    drawer: std::cell::RefCell<Option<AnyWidget>>,
+    drawer_open: bool,
+    drawer_alignment: crate::drawer::DrawerAlignment,
+    drawer_scrim_id: Option<u64>,
+    drawer_handlers: PointerHandlers,
 }
 
 impl Scaffold {
@@ -1211,11 +1216,63 @@ impl Scaffold {
         Scaffold {
             app_bar: std::cell::RefCell::new(None),
             body: std::cell::RefCell::new(Some(body)),
+            drawer: std::cell::RefCell::new(None),
+            drawer_open: false,
+            drawer_alignment: crate::drawer::DrawerAlignment::default(),
+            drawer_scrim_id: None,
+            drawer_handlers: PointerHandlers::new(),
         }
     }
 
     pub fn with_app_bar(self, app_bar: AnyWidget) -> Self {
         *self.app_bar.borrow_mut() = Some(app_bar);
+        self
+    }
+
+    /// Upstream's `Scaffold.drawer` (`material/scaffold.dart`): the panel the
+    /// scaffold shows over the body, behind a scrim, while it is open.
+    ///
+    /// Upstream the scaffold owns the drawer's opening -- `ScaffoldState.
+    /// openDrawer`, the edge swipe, the back button -- through a
+    /// `DrawerController` with an animation controller. None of that machinery
+    /// is portable (see [`crate::drawer`]'s module docs), so whether the
+    /// drawer is open is the application's state, handed over with
+    /// [`Scaffold::with_drawer_open`].
+    pub fn with_drawer(self, drawer: AnyWidget) -> Self {
+        *self.drawer.borrow_mut() = Some(drawer);
+        self
+    }
+
+    /// Whether the drawer is currently shown. Upstream this is the
+    /// `DrawerController`'s animation being at either end; here it is simply
+    /// the application's state.
+    pub fn with_drawer_open(mut self, open: bool) -> Self {
+        self.drawer_open = open;
+        self
+    }
+
+    /// Which edge the drawer is pinned to. Upstream's drawers are `start` by
+    /// default, with an `endDrawer` slot for the other side; one slot with an
+    /// alignment says the same thing. Upstream's `DrawerAlignment`.
+    pub fn with_drawer_alignment(mut self, alignment: crate::drawer::DrawerAlignment) -> Self {
+        self.drawer_alignment = alignment;
+        self
+    }
+
+    /// Runs `close` when the scrim behind the open drawer is tapped.
+    ///
+    /// Upstream this is the barrier of `DrawerController._buildDrawer`, whose
+    /// `onTap` is `close` because `drawerBarrierDismissible` defaults to true.
+    pub fn wired_drawer<S: 'static>(
+        mut self,
+        id: u64,
+        handle: StateHandle<S>,
+        close: fn(&mut S),
+    ) -> Self {
+        self.drawer_scrim_id = Some(id);
+        self.drawer_handlers = PointerHandlers::new().with_tap(move |_| {
+            handle.set_state(move |state| close(state));
+        });
         self
     }
 }
@@ -1230,6 +1287,15 @@ impl Component for Scaffold {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| leaf(|| Empty));
+        let drawer = self.drawer.borrow_mut().take();
+        // A drawer nobody opened is nothing at all: upstream's closed
+        // `DrawerController` builds a `SizedBox.shrink` on desktop (the
+        // edge-drag strip it would install on mobile is not ported; see
+        // crate::drawer's module docs).
+        let drawer_open = self.drawer_open && drawer.is_some();
+        let drawer_alignment = self.drawer_alignment;
+        let scrim_id = self.drawer_scrim_id;
+        let scrim_handlers = self.drawer_handlers.clone();
 
         let has_app_bar = app_bar.is_some();
         // A bar has already moved the page down past the status bar, so the
@@ -1247,6 +1313,21 @@ impl Component for Scaffold {
             children.push(app_bar);
         }
         children.push(body);
+        if drawer_open {
+            // The two overlay layers, in paint order: the scrim over the page,
+            // the drawer over the scrim. Upstream's `Stack` in
+            // `DrawerController._buildDrawer` is exactly these two.
+            let handlers = scrim_handlers.clone();
+            children.push(leaf(move || {
+                // `Colors.black54`, the drawer barrier's default color.
+                Pointer::new(
+                    scrim_id.unwrap_or(0),
+                    Container::new().with_color(crate::drawer::DRAWER_SCRIM),
+                )
+                .with_handlers(handlers.clone())
+            }));
+            children.push(drawer.expect("checked above"));
+        }
 
         many(children, move |rendered| {
             let mut column = RenderFlex::column()
@@ -1262,7 +1343,41 @@ impl Component for Scaffold {
                 // The body takes everything the bar left.
                 column = column.push_flex(crate::render::FlexChild::expanded(body, 1));
             }
-            Box::new(Container::new().with_color(background).with_child(column))
+            if !drawer_open {
+                return RenderRef::new(Container::new().with_color(background).with_child(column));
+            }
+            let scrim = rendered.next();
+            let drawer = rendered.next();
+
+            // The page is the stack's unpositioned child and fills it; the
+            // scrim fills it by position; the drawer is pinned to its edge and
+            // stretched top to bottom, which is the `Align` of
+            // `_drawerOuterAlignment` plus the `widthFactor: 1.0` of a fully
+            // open drawer.
+            let mut stack = RenderStack::new()
+                .with_fit(StackFit::Expand)
+                .push(Container::new().with_color(background).with_child(column));
+            if let Some(scrim) = scrim {
+                stack = stack.push_positioned(scrim, StackPosition::fill());
+            }
+            if let Some(drawer) = drawer {
+                // Which physical edge `start` is depends on the reading
+                // direction, resolved now -- the same moment upstream's build
+                // reads `Directionality.of(context)`.
+                let on_left = crate::drawer::drawer_on_left(
+                    drawer_alignment,
+                    crate::direction::current_direction(),
+                );
+                let position = StackPosition {
+                    left: on_left.then_some(0.0),
+                    right: (!on_left).then_some(0.0),
+                    top: Some(0.0),
+                    bottom: Some(0.0),
+                    ..Default::default()
+                };
+                stack = stack.push_positioned(drawer, position);
+            }
+            RenderRef::new(stack)
         })
     }
 }
@@ -1698,5 +1813,45 @@ mod tests {
         assert_eq!(Slider::new(1, 5.0).value, 1.0);
         assert_eq!(Slider::new(1, -2.0).value, 0.0);
         assert_eq!(ProgressBar::new(0.5).value, 0.5);
+    }
+
+    /// An open drawer is hit at its own edge; everything else on the page is
+    /// behind the scrim, and a closed drawer is not there at all.
+    #[test]
+    fn an_open_drawer_covers_the_page_behind_a_scrim() {
+        const SCRIM: u64 = 41;
+        const DRAWER_ITEM: u64 = 42;
+
+        fn close(_: &mut ()) {}
+
+        fn hits_at(open: bool, position: crate::render::Offset) -> Vec<u64> {
+            let drawer = component(crate::drawer::Drawer::new(crate::framework::leaf(|| {
+                crate::widgets::Pointer::new(DRAWER_ITEM, Container::new().with_color(Color::WHITE))
+            })));
+            let scaffold = Scaffold::new(crate::framework::leaf(|| Empty))
+                .with_drawer(drawer)
+                .with_drawer_open(open)
+                .wired_drawer(SCRIM, StateHandle::<()>::detached(), close);
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(Theme::dark(), component(scaffold)));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::tight(800.0, 600.0));
+            let mut result = crate::render::HitTestResult::new();
+            root.hit_test(position, &mut result);
+            result.path.iter().map(|entry| entry.target).collect()
+        }
+
+        // Closed: neither the drawer nor its scrim is in the tree.
+        let hits = hits_at(false, crate::render::Offset::new(20.0, 20.0));
+        assert!(!hits.contains(&DRAWER_ITEM), "{hits:?}");
+        assert!(!hits.contains(&SCRIM), "{hits:?}");
+
+        // Open: the drawer's own edge hits the drawer...
+        let hits = hits_at(true, crate::render::Offset::new(20.0, 20.0));
+        assert!(hits.contains(&DRAWER_ITEM), "{hits:?}");
+        // ...and a point past the drawer hits the scrim instead of the page.
+        let hits = hits_at(true, crate::render::Offset::new(500.0, 300.0));
+        assert!(hits.contains(&SCRIM), "{hits:?}");
+        assert!(!hits.contains(&DRAWER_ITEM), "{hits:?}");
     }
 }

@@ -4,21 +4,24 @@
 
 //! The gallery's state, its router, and the page frame every screen sits in.
 //!
-//! Everything the gallery remembers lives in one [`GalleryState`], and every
-//! interactive control mutates it through a [`StateHandle`]. That is not a
-//! stylistic choice: a widget is rebuilt every frame, so a control cannot hold
-//! its own state, and the handle is what lets a tap that happens between frames
-//! reach something that outlives them.
+//! Maps to `lib/main.dart` (the `GalleryApp` wiring): everything the gallery
+//! remembers lives in one [`GalleryState`], and every interactive control
+//! mutates it through a [`StateHandle`]. That is not a stylistic choice: a
+//! widget is rebuilt every frame, so a control cannot hold its own state, and
+//! the handle is what lets a tap that happens between frames reach something
+//! that outlives them.
 
 use std::time::Duration;
 
+use rustflutter::animation::Controller;
 use rustflutter::components::Theme;
-use rustflutter::framework::{AnyWidget, BuildContext, StateHandle, component, leaf, many, provide};
+use rustflutter::framework::{
+    component, leaf, many, provide, AnyWidget, BuildContext, StateHandle,
+};
+use rustflutter::media_query::{media_query_of, MediaQuery};
 use rustflutter::navigation::{Navigator, Route, RouteArgs, Transition};
 use rustflutter::prelude::*;
-use rustflutter::render::{
-    CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex, StackPosition,
-};
+use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex, StackPosition};
 // The offset a page is scrolled to, the extent it is measured against, and the
 // fling that keeps it moving after the finger lifts -- all three in the
 // framework, because the album needs the same thing and neither of them should
@@ -27,12 +30,16 @@ pub use rustflutter::scrolling::Scroll;
 use rustflutter::services::system;
 use rustflutter::widgets::{Container, Empty, ListView, Stack};
 
-use crate::catalog;
-use crate::demos;
-use crate::home;
-use crate::settings;
+use rustflutter::platform::Brightness;
+
+use crate::constants;
+use crate::data::demos as catalog;
+use crate::data::gallery_options::{GalleryOptions, ThemeMode};
+use crate::demos::material as demos;
+use crate::demos::reference::MotionValue;
+use crate::pages::{self, adaptive_layout, backdrop, demo as demo_page, splash};
 use crate::studies;
-use crate::theme::Scheme;
+use crate::themes::gallery_theme_data::Scheme;
 
 /// Hit-test identities.
 ///
@@ -44,8 +51,6 @@ pub mod ids {
     pub const BACK: u64 = 1;
     /// The settings button.
     pub const SETTINGS: u64 = 2;
-    /// The theme switch.
-    pub const THEME: u64 = 3;
     /// The scrim under a modal.
     pub const SCRIM: u64 = 4;
     /// Home page category headers, one per category.
@@ -57,16 +62,27 @@ pub mod ids {
     pub const PAGE_SCROLL: u64 = 300;
     pub const CAROUSEL_SCROLL: u64 = 301;
     pub const SCREEN_SCROLL: u64 = 302;
+    /// The desktop carousel's page buttons, and the home page's splash strip.
+    pub const CAROUSEL_PREV: u64 = 303;
+    pub const CAROUSEL_NEXT: u64 = 304;
+    pub const SPLASH_STRIP: u64 = 305;
+    /// The splash page's own layers.
+    pub const SPLASH_FRONT: u64 = 306;
+    pub const SPLASH_BACK: u64 = 307;
+    /// The desktop home page's category column lists, offset by index.
+    pub const CATEGORY_COLUMN_SCROLL: u64 = 320;
     /// Home page demo rows, one per demo, offset by index.
     pub const DEMO: u64 = 1_000;
     /// Everything a demo page puts on screen.
     pub const DEMO_LOCAL: u64 = 10_000;
     /// Study screens.
     pub const STUDY_LOCAL: u64 = 20_000;
-    /// The settings page. Reserved so a control added there cannot collide
+    /// The settings panel. Reserved so a control added there cannot collide
     /// with a demo's.
-    #[allow(dead_code)]
     pub const SETTINGS_LOCAL: u64 = 30_000;
+    /// The demo page's own chrome: the section icons and the content tap that
+    /// dismisses a section.
+    pub const DEMO_CHROME: u64 = 40_000;
 }
 
 /// Route names. Kept as constants because a typo in a string route is a screen
@@ -81,9 +97,35 @@ pub mod routes {
 /// Everything the gallery remembers.
 pub struct GalleryState {
     pub navigator: Navigator,
-    pub light: bool,
-    /// Which category sections are open on the home page.
-    pub expanded: Vec<catalog::Category>,
+    /// Upstream's `GalleryOptions`, carried by a `ModelBinding` at the root
+    /// there and by this state here: theme mode, text scale, direction,
+    /// locale, time dilation, platform override.
+    pub options: GalleryOptions,
+    /// One controller per home page category: 0 is closed, 1 is open, and the
+    /// expansion animates between them (upstream's `_expansionAnimations`,
+    /// `lib/pages/home.dart`).
+    pub category_expand: Vec<Controller>,
+    /// Whether the settings panel is open. The panel is not a route: upstream
+    /// slides it over the home page as the backdrop's front layer
+    /// (`lib/pages/backdrop.dart`), and these controllers drive that.
+    pub settings_open: bool,
+    pub backdrop_panel: Controller,
+    /// The settings icon's gear-to-close morph.
+    pub icon: Controller,
+    /// The splash layer's pull-down reveal (`lib/pages/splash.dart`).
+    pub splash: Controller,
+    /// The home page's entrance stagger. Upstream sets it to 1.0 at initState
+    /// when the splash is already finished, which is always, so it never
+    /// visibly plays here either.
+    pub entrance: Controller,
+    /// One per expandable settings row (`pages/settings.rs`).
+    pub setting_expand: Vec<Controller>,
+    /// Which settings row is open, if any. Upstream's `_expandedSettingIndex`.
+    pub expanded_setting: Option<usize>,
+    /// Whether the about dialog is showing.
+    pub about_open: bool,
+    /// Which section the demo page is showing (`pages/demo.rs`).
+    pub demo_section: demo_page::DemoSection,
     /// The state each demo page needs, all in one place so a demo can be a
     /// plain function rather than a component with a life cycle.
     pub demo: demos::DemoState,
@@ -96,25 +138,63 @@ pub struct GalleryState {
     /// The home page's vertical scroll, and the carousel's horizontal one.
     pub page: Scroll,
     pub carousel: Scroll,
+    /// The desktop home page's per-category column scrolls, one per category.
+    pub category_columns: Vec<Scroll>,
     /// Whatever screen is on top of the navigator.
     pub screen: Scroll,
 }
 
 impl Default for GalleryState {
     fn default() -> GalleryState {
+        let mut category_expand: Vec<Controller> = catalog::CATEGORIES
+            .iter()
+            .map(|_| Controller::new(pages::category_list_item::EXPAND_DURATION))
+            .collect();
+        // Material is open to begin with, so the first screen shows
+        // something to tap rather than three closed headers.
+        category_expand[0].set_value(1.0);
+        let mut entrance = Controller::new(Duration::from_millis(800));
+        // Upstream sets the entrance controller to 1.0 at initState whenever
+        // the splash is already finished -- which it always is at d12640d, so
+        // the stagger never visibly plays there or here.
+        entrance.set_value(1.0);
         GalleryState {
             navigator: Navigator::new(Route::new(routes::HOME))
                 .with_duration(Duration::from_millis(280)),
-            light: false,
-            // Material is open to begin with, so the first screen shows
-            // something to tap rather than three closed headers.
-            expanded: vec![catalog::Category::Material],
+            // Dark by default, as the gallery has always opened here. Upstream
+            // defaults to `ThemeMode.system`; the headless and test platforms
+            // report light, so following the system would change what every
+            // screenshot shows. See PORTING.md.
+            options: GalleryOptions::default().with_theme_mode(ThemeMode::Dark),
+            category_expand,
+            settings_open: false,
+            // Upstream reads `isDesktop ? mobile : desktop` for this duration
+            // (flutter/gallery @ d12640d, `lib/pages/backdrop.dart`) -- the
+            // branches are inverted upstream, and this mirrors them as
+            // written. The state is constructed before any MediaQuery exists,
+            // so the port cannot switch per breakpoint and uses the desktop
+            // constant.
+            backdrop_panel: Controller::new(constants::SETTINGS_PANEL_DESKTOP_ANIMATION_DURATION),
+            icon: Controller::new(Duration::from_millis(500)),
+            splash: Controller::new(constants::SPLASH_PAGE_ANIMATION_DURATION),
+            entrance,
+            setting_expand: pages::settings::EXPANDABLE_SETTINGS
+                .iter()
+                .map(|_| Controller::new(pages::settings::EXPAND_DURATION))
+                .collect(),
+            expanded_setting: None,
+            about_open: false,
+            demo_section: demo_page::DemoSection::default(),
             demo: demos::DemoState::default(),
             study: studies::StudyState::default(),
             pressed: None,
             last_frame_micros: None,
             page: Scroll::default(),
             carousel: Scroll::default(),
+            category_columns: catalog::CATEGORIES
+                .iter()
+                .map(|_| Scroll::default())
+                .collect(),
             screen: Scroll::default(),
         }
     }
@@ -125,24 +205,56 @@ impl GalleryState {
     /// library has no name for, so the scheme is what gets passed around and
     /// the framework's `Theme` is derived from it.
     pub fn scheme(&self) -> Scheme {
-        if self.light { Scheme::light() } else { Scheme::dark() }
+        match self.options.resolved_brightness() {
+            Brightness::Light => Scheme::light(),
+            Brightness::Dark => Scheme::dark(),
+        }
     }
 
     pub fn theme(&self) -> Theme {
         self.scheme().theme()
     }
 
-    pub fn is_expanded(&self, category: catalog::Category) -> bool {
-        self.expanded.contains(&category)
+    /// Upstream's `_shouldOpenList`: a closed, settled list opens; anything
+    /// else -- open or mid-animation -- closes.
+    pub fn toggle_category(&mut self, category: catalog::Category) {
+        let Some(index) = category_index(category) else {
+            return;
+        };
+        let controller = &mut self.category_expand[index];
+        if controller.value() == 0.0 && !controller.is_running() {
+            controller.forward();
+        } else {
+            controller.reverse();
+        }
     }
 
-    pub fn toggle_category(&mut self, category: catalog::Category) {
-        match self.expanded.iter().position(|c| *c == category) {
-            Some(index) => {
-                self.expanded.remove(index);
-            }
-            None => self.expanded.push(category),
+    /// Opens or closes the settings panel, upstream's `_toggleSettings`.
+    pub fn toggle_settings(&mut self) {
+        self.settings_open = !self.settings_open;
+        if self.settings_open {
+            self.backdrop_panel.forward();
+            self.icon.forward();
+        } else {
+            self.backdrop_panel.reverse();
+            self.icon.reverse();
+            // The expanded row is reset in `advance` once the panel has
+            // fully closed.
         }
+    }
+
+    /// Expands a settings row, collapsing whichever one was open (upstream's
+    /// `_toggleSetting` in `lib/pages/settings.dart`).
+    pub fn toggle_setting(&mut self, index: usize) {
+        let opening = self.expanded_setting != Some(index);
+        for (i, controller) in self.setting_expand.iter_mut().enumerate() {
+            if i == index && opening {
+                controller.forward();
+            } else if controller.value() > 0.0 || controller.is_running() {
+                controller.reverse();
+            }
+        }
+        self.expanded_setting = if opening { Some(index) } else { None };
     }
 
     /// Opens a demo page.
@@ -169,16 +281,12 @@ impl GalleryState {
         // Reset whatever the last visit left behind, so a screen always opens
         // in the state its description describes.
         self.demo = demos::DemoState::default();
+        self.demo_section = demo_page::DemoSection::default();
         self.study = studies::StudyState::default();
         self.navigator.push(
             Route::new(route).with_args(RouteArgs::new().with("slug", slug)),
             Transition::SlideFromRight,
         );
-    }
-
-    pub fn open_settings(&mut self) {
-        self.navigator
-            .push(Route::new(routes::SETTINGS), Transition::SlideFromBottom);
     }
 
     pub fn back(&mut self) {
@@ -196,7 +304,9 @@ impl GalleryState {
         if route.name != routes::DEMO {
             return false;
         }
-        route.arg("slug").is_some_and(|slug| ANIMATED_DEMOS.contains(&slug))
+        route
+            .arg("slug")
+            .is_some_and(|slug| ANIMATED_DEMOS.contains(&slug))
     }
 }
 
@@ -207,6 +317,13 @@ impl GalleryState {
 /// happened when these were brought into line with upstream and this list was
 /// not.
 pub const ANIMATED_DEMOS: &[&str] = &["progress-indicator", "motion"];
+
+/// Where a category sits in `catalog::CATEGORIES`, and so in the
+/// per-category controller and scroll lists. Studies are the carousel, not a
+/// list, so they have no index.
+fn category_index(category: catalog::Category) -> Option<usize> {
+    catalog::CATEGORIES.iter().position(|c| *c == category)
+}
 
 /// The longest a single frame is allowed to advance an animation by, roughly
 /// three frames at sixty a second. See the clamp in [`Gallery::advance`].
@@ -284,30 +401,76 @@ impl StatefulComponent for Gallery {
             _ => Duration::ZERO,
         };
         state.last_frame_micros = Some(frame_time_micros);
+
+        // Slow motion (`GalleryOptions.time_dilation`): everything the frame
+        // advances sees dilated time, which is what the settings toggle is
+        // for. Guarded against zero so a zeroed option cannot divide by it.
+        let elapsed = elapsed.div_f64(state.options.time_dilation.max(0.01));
         let transitioning = state.navigator.tick(elapsed);
 
-        // Every scrollable, not only the one on screen: which of the three is
+        // The backdrop, splash, home and settings controllers. Written out
+        // rather than folded with `||`, which would stop at the first one
+        // that says yes and leave the others frozen.
+        let mut animating = state.backdrop_panel.tick(elapsed);
+        animating |= state.icon.tick(elapsed);
+        animating |= state.splash.tick(elapsed);
+        animating |= state.entrance.tick(elapsed);
+        for controller in &mut state.category_expand {
+            animating |= controller.tick(elapsed);
+        }
+        for controller in &mut state.setting_expand {
+            animating |= controller.tick(elapsed);
+        }
+
+        // Once the settings panel has fully closed, forget which row was
+        // expanded: the next opening starts from all-collapsed, as upstream's
+        // does when `_settingsPageController` finishes.
+        if !state.settings_open
+            && state.backdrop_panel.is_settled()
+            && state.backdrop_panel.value() == 0.0
+            && state.expanded_setting.is_some()
+        {
+            state.expanded_setting = None;
+            for controller in &mut state.setting_expand {
+                controller.set_value(0.0);
+            }
+        }
+
+        // Every scrollable, not only the one on screen: which of them is
         // visible depends on the route, the flung one may be underneath a page
         // that is still sliding in, and a fling that is not advanced is a
         // fling that never stops. They cost nothing when nothing is moving.
-        //
-        // Written out rather than folded with `||`, which would stop at the
-        // first one that says yes and leave the others frozen.
         let mut flinging = state.page.advance(frame_time_micros);
         flinging |= state.carousel.advance(frame_time_micros);
         flinging |= state.screen.advance(frame_time_micros);
+        for column in &mut state.category_columns {
+            flinging |= column.advance(frame_time_micros);
+        }
 
         // Only ask for another frame when something is actually moving. A
         // gallery that always asked would hold a core at sixty frames a second
         // to draw a page that has not changed since the last one.
-        transitioning || flinging || state.current_screen_animates()
+        transitioning || animating || flinging || state.current_screen_animates()
     }
 
     fn initial_state(&self) -> GalleryState {
         let mut state = GalleryState::default();
-        state.light = self.light;
+        // The launch flag is an explicit choice, not `ThemeMode::System`: a
+        // headless platform reports light, and `--light` is how a screenshot
+        // says which it wants.
+        state.options.theme_mode = if self.light {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
         match self.route {
-            routes::SETTINGS => state.open_settings(),
+            // Settings is the backdrop's front layer, not a route: land on
+            // home with the panel already open.
+            routes::SETTINGS => {
+                state.settings_open = true;
+                state.backdrop_panel.set_value(1.0);
+                state.icon.set_value(1.0);
+            }
             routes::DEMO => {
                 if let Some(demo) = self.slug.as_deref().and_then(catalog::find) {
                     state.open(demo.slug);
@@ -343,13 +506,27 @@ impl StatefulComponent for Gallery {
         let spinner = cycle(now, SPINNER_PERIOD_MICROS);
         let motion = ping_pong(now, MOTION_PERIOD_MICROS);
 
+        // The breakpoint decides between the mobile and desktop layouts of
+        // the home, settings, demo and splash pages.
+        let is_desktop = adaptive_layout::is_display_desktop(context);
+
+        // The settings page's text-scaling option is a MediaQuery override
+        // republished over the whole tree, as upstream's `GalleryOptions`
+        // does in `lib/main.dart`. `false` resolves the "system" sentinel to
+        // whatever the platform reports.
+        let media =
+            media_query_of(context).with_text_scale(state.options.text_scale_factor(false) as f32);
+
         // The theme is published once at the root; every component below reads
         // it rather than being handed colours.
         provide(
             state.theme(),
             provide(
                 demos::SpinnerValue(spinner),
-                provide(demos::MotionValue(motion), page_stack(state, handle)),
+                provide(
+                    MotionValue(motion),
+                    MediaQuery::new(media, page_stack(state, handle, is_desktop)),
+                ),
             ),
         )
     }
@@ -366,7 +543,11 @@ pub fn cycle(now_micros: i64, period_micros: i64) -> f32 {
 /// 0 to 1 and back, once per `period`.
 pub fn ping_pong(now_micros: i64, period_micros: i64) -> f32 {
     let t = cycle(now_micros, period_micros);
-    if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 }
+    if t <= 0.5 {
+        t * 2.0
+    } else {
+        (1.0 - t) * 2.0
+    }
 }
 
 /// Builds the current screen, and the outgoing one if a transition is running.
@@ -374,18 +555,22 @@ pub fn ping_pong(now_micros: i64, period_micros: i64) -> f32 {
 /// The two are stacked with the incoming one on top, which is also the order
 /// hit testing walks, so a tap during a transition goes to the screen that is
 /// arriving rather than the one that is leaving.
-fn page_stack(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
+fn page_stack(
+    state: &GalleryState,
+    handle: StateHandle<GalleryState>,
+    is_desktop: bool,
+) -> AnyWidget {
     let presentation = state.navigator.presentation();
     let offsets = presentation.offsets();
 
-    let current = screen(presentation.current, state, handle.clone());
+    let current = screen(presentation.current, state, handle.clone(), is_desktop);
     if !presentation.is_transitioning() {
         return current;
     }
 
     let previous = presentation
         .previous
-        .map(|route| screen(route, state, handle))
+        .map(|route| screen(route, state, handle, is_desktop))
         .unwrap_or_else(|| leaf(|| Empty));
     let transition = presentation.transition;
 
@@ -545,18 +730,26 @@ fn screen(
     route: &Route,
     state: &GalleryState,
     handle: StateHandle<GalleryState>,
+    is_desktop: bool,
 ) -> AnyWidget {
     match route.name.as_str() {
-        routes::SETTINGS => settings::page(state, handle),
         routes::DEMO => match route.arg("slug").and_then(catalog::find) {
-            Some(demo) => demos::page(demo, state, handle),
+            Some(demo) => demo_page::page(demo, state, handle, is_desktop),
             None => missing(route),
         },
         routes::STUDY => match route.arg("slug").and_then(catalog::find_study) {
             Some(study) => studies::page(study, state, handle),
             None => missing(route),
         },
-        _ => home::page(state, handle),
+        // Home and settings are one screen: the settings panel is the
+        // backdrop's front layer, and the splash's pull-down layer covers
+        // both.
+        _ => splash::page(
+            state,
+            handle.clone(),
+            is_desktop,
+            backdrop::page(state, handle, is_desktop),
+        ),
     }
 }
 
@@ -567,20 +760,18 @@ fn screen(
 fn missing(route: &Route) -> AnyWidget {
     let name = route.name.clone();
     let slug = route.arg("slug").unwrap_or("(none)").to_string();
-    component(Scaffold::new(
-        leaf(move || {
-            Center::new(
-                // Min, so the `Center` has a content-sized column to centre;
-                // the upstream default (max) would fill the screen and leave
-                // the message at the top.
-                Column::new()
-                    .with_main_axis_size(MainAxisSize::Min)
-                    .with_spacing(8.0)
-                    .push(Text::new("No such screen").with_size(20.0).with_weight(700))
-                    .push(Text::new(format!("route {name}, slug {slug}")).with_size(13.0)),
-            )
-        }),
-    ))
+    component(Scaffold::new(leaf(move || {
+        Center::new(
+            // Min, so the `Center` has a content-sized column to centre;
+            // the upstream default (max) would fill the screen and leave
+            // the message at the top.
+            Column::new()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(8.0)
+                .push(Text::new("No such screen").with_size(20.0).with_weight(700))
+                .push(Text::new(format!("route {name}, slug {slug}")).with_size(13.0)),
+        )
+    })))
 }
 
 // -- The frame every screen sits in -------------------------------------------
@@ -599,94 +790,37 @@ pub fn scaffold(
     body: AnyWidget,
 ) -> AnyWidget {
     let can_pop = state.navigator.can_pop();
-    let back_handle = handle.clone();
-    let settings_handle = handle;
 
     let mut bar = AppBar::new(title.to_string());
     if let Some(subtitle) = subtitle {
         bar = bar.with_subtitle(subtitle.to_string());
     }
 
-    let trailing = if can_pop {
-        // Deeper screens get a back control; the home screen gets settings.
-        component(
+    // Deeper screens get a back control. The home screen no longer goes
+    // through here: its settings control is the backdrop's settings icon.
+    if can_pop {
+        bar = bar.with_trailing(component(
             Button::new(ids::BACK, "Back")
                 .with_style(ButtonStyle::Outlined)
                 .with_pressed(state.pressed == Some(ids::BACK))
-                .wired(back_handle, |s| &mut s.pressed, |s| s.back()),
-        )
-    } else {
-        component(
-            Button::new(ids::SETTINGS, "Settings")
-                .with_style(ButtonStyle::Outlined)
-                .with_pressed(state.pressed == Some(ids::SETTINGS))
-                .wired(settings_handle, |s| &mut s.pressed, |s| s.open_settings()),
-        )
-    };
+                .wired(handle, |s| &mut s.pressed, |s| s.back()),
+        ));
+    }
 
-    component(Scaffold::new(body).with_app_bar(component(bar.with_trailing(trailing))))
+    component(Scaffold::new(body).with_app_bar(component(bar)))
 }
 
-/// A page with no bar: just the background, the body, and the settings control
-/// floating over the top right.
+/// A page with no bar: just the background and the body.
 ///
 /// This is the home page's frame. Upstream's home has no app bar either -- the
-/// header is part of the scrolling list, so that it scrolls away, and settings
-/// is a button over the whole thing rather than a bar item.
+/// header is part of the scrolling list, so that it scrolls away, and the
+/// settings control is the backdrop's settings icon rather than a bar item.
 pub fn bare_page(
-    state: &GalleryState,
-    handle: StateHandle<GalleryState>,
+    _state: &GalleryState,
+    _handle: StateHandle<GalleryState>,
     body: AnyWidget,
 ) -> AnyWidget {
-    let scheme = state.scheme();
-    let held = state.pressed == Some(ids::SETTINGS);
-    let settings_handlers = rustflutter::gestures::PointerHandlers::new()
-        .with_tap({
-            let handle = handle.clone();
-            move |_| {
-                handle.set_state(|state| state.open_settings());
-            }
-        })
-        .with_press_change(move |down| {
-            handle.set_state(move |state| {
-                state.pressed = if down { Some(ids::SETTINGS) } else { None };
-            });
-        });
-
-    let button = leaf(move || {
-        rustflutter::widgets::Pointer::new(
-            ids::SETTINGS,
-            Container::new()
-                .with_size(44.0, 44.0)
-                .with_corner_radius(22.0)
-                .with_color(if held {
-                    scheme.on_surface.with_alpha(0x24)
-                } else {
-                    scheme.on_background
-                })
-                .with_child(rustflutter::widgets::Align::new(
-                    rustflutter::render::Alignment::CENTER,
-                    Text::new(catalog::icon::SETTINGS)
-                        .with_font_family(catalog::MATERIAL_ICONS)
-                        .with_size(22.0)
-                        .with_color(scheme.on_surface),
-                )),
-        )
-        .with_handlers(settings_handlers.clone())
-    });
-
-    let stacked = many(vec![body, button], move |mut rendered| {
-        let button = rendered.pop().expect("two children");
-        let body = rendered.pop().expect("two children");
-        Box::new(
-            rustflutter::render::RenderStack::new().push(body).push_positioned(
-                button,
-                StackPosition { top: Some(16.0), right: Some(16.0), ..StackPosition::default() },
-            ),
-        )
-    });
-
-    component(Scaffold::new(stacked))
+    component(Scaffold::new(body))
 }
 
 /// The handlers a scrollable needs: touch it, drag it, throw it, or turn the
@@ -697,7 +831,7 @@ pub fn bare_page(
 /// reader wants to go.
 pub fn scroll_handlers(
     handle: StateHandle<GalleryState>,
-    pick: fn(&mut GalleryState) -> &mut Scroll,
+    pick: impl Fn(&mut GalleryState) -> &mut Scroll + Copy + 'static,
     axis: rustflutter::render::Axis,
 ) -> rustflutter::gestures::PointerHandlers {
     use rustflutter::render::Axis;
@@ -747,7 +881,11 @@ pub fn scrolling_body(
 ) -> AnyWidget {
     let offset = state.screen.offset;
     let extent = state.screen.extent.clone();
-    let handlers = scroll_handlers(handle, |s| &mut s.screen, rustflutter::render::Axis::Vertical);
+    let handlers = scroll_handlers(
+        handle,
+        |s| &mut s.screen,
+        rustflutter::render::Axis::Vertical,
+    );
 
     many(children, move |rendered| {
         // Stretch, so every card on a page is the same width. Safe here
@@ -767,7 +905,9 @@ pub fn scrolling_body(
         Box::new(
             rustflutter::widgets::Pointer::new(
                 ids::SCREEN_SCROLL,
-                Container::new().with_padding(EdgeInsets::all(padding)).with_child(list),
+                Container::new()
+                    .with_padding(EdgeInsets::all(padding))
+                    .with_child(list),
             )
             .with_handlers(handlers.clone()),
         )
@@ -782,34 +922,18 @@ pub fn with_overlay(page: AnyWidget, overlay: Option<AnyWidget>) -> AnyWidget {
         Some(overlay) => many(vec![page, overlay], |mut rendered| {
             let overlay = rendered.pop().unwrap_or_else(|| boxed(Empty));
             let page = rendered.pop().unwrap_or_else(|| boxed(Empty));
-            Box::new(
-                Stack::new()
-                    .push(page)
-                    .push_positioned(overlay, StackPosition {
-                        left: Some(0.0),
-                        top: Some(0.0),
-                        right: Some(0.0),
-                        bottom: Some(0.0),
-                        ..Default::default()
-                    }),
-            )
+            Box::new(Stack::new().push(page).push_positioned(
+                overlay,
+                StackPosition {
+                    left: Some(0.0),
+                    top: Some(0.0),
+                    right: Some(0.0),
+                    bottom: Some(0.0),
+                    ..Default::default()
+                },
+            ))
         }),
     }
-}
-
-/// A row that puts `trailing` at the far edge of whatever width it gets.
-pub fn spread(leading: AnyWidget, trailing: AnyWidget) -> AnyWidget {
-    many(vec![leading, trailing], |mut rendered| {
-        let trailing = rendered.pop().unwrap_or_else(|| boxed(Empty));
-        let leading = rendered.pop().unwrap_or_else(|| boxed(Empty));
-        Box::new(
-            RenderFlex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .push_flex(FlexChild::expanded(leading, 1))
-                .push(trailing),
-        )
-    })
 }
 
 #[cfg(test)]
@@ -817,7 +941,11 @@ mod tests {
     use super::*;
 
     fn gallery() -> Gallery {
-        Gallery { light: false, route: routes::HOME, slug: None }
+        Gallery {
+            light: false,
+            route: routes::HOME,
+            slug: None,
+        }
     }
 
     #[test]
@@ -834,7 +962,10 @@ mod tests {
         let mut state = GalleryState::default();
         assert!(!state.current_screen_animates(), "home is still");
         state.open(ANIMATED_DEMOS[0]);
-        assert!(state.current_screen_animates(), "the spinner has to keep spinning");
+        assert!(
+            state.current_screen_animates(),
+            "the spinner has to keep spinning"
+        );
         state.back();
         state.navigator.tick(Duration::from_secs(5));
         assert!(!state.current_screen_animates(), "and stop when it is left");
@@ -935,8 +1066,14 @@ mod tests {
         gallery.advance(&mut state, 33_334);
         let two = state.navigator.presentation().progress;
 
-        assert!(one > 0.0 && two > one, "progress should climb: {one} then {two}");
+        assert!(
+            one > 0.0 && two > one,
+            "progress should climb: {one} then {two}"
+        );
         // Two 16.7ms frames of a transition, not two clamped 50ms ones.
-        assert!(two < 0.5, "16ms frames should not advance like 50ms ones: {two}");
+        assert!(
+            two < 0.5,
+            "16ms frames should not advance like 50ms ones: {two}"
+        );
     }
 }

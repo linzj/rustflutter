@@ -10,6 +10,7 @@ rust_library("rustflutter") {
 
   sources = [
     "src/engine.rs",
+    "src/interactive_viewer.rs",
     "src/keyboard/keys.rs",
     "src/keyboard/mod.rs",
     "src/lib.rs",

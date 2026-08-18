@@ -52,12 +52,59 @@ pub const TIME_TO_FADE_MICROS: i64 = 600_000;
 /// How long it takes to go.
 pub const FADE_MICROS: i64 = 300_000;
 
+/// The measurements a scrollbar is drawn and faded with.
+///
+/// Material's values are the default -- the constants above; Cupertino's
+/// `CupertinoScrollbar` (cupertino/scrollbar.dart) is the same widget with a
+/// different set, which is why they are parameters rather than constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollbarMetrics {
+    /// How thick the thumb is. Material's [`THICKNESS`].
+    pub thickness: f32,
+    /// The rounding of the thumb's corners. Material's [`RADIUS`].
+    pub radius: f32,
+    /// The shortest a thumb may be drawn, however long the list is.
+    /// Material's [`MIN_THUMB_LENGTH`].
+    pub min_thumb_length: f32,
+    /// How far the thumb sits in from the edge of the scrollable.
+    pub cross_axis_margin: f32,
+    /// How long after the last scroll the thumb starts to go.
+    /// Material's [`TIME_TO_FADE_MICROS`].
+    pub time_to_fade_micros: i64,
+    /// How long the fade itself takes. Material's [`FADE_MICROS`].
+    pub fade_micros: i64,
+}
+
+impl Default for ScrollbarMetrics {
+    fn default() -> ScrollbarMetrics {
+        ScrollbarMetrics {
+            thickness: THICKNESS,
+            radius: RADIUS,
+            min_thumb_length: MIN_THUMB_LENGTH,
+            cross_axis_margin: 2.0,
+            time_to_fade_micros: TIME_TO_FADE_MICROS,
+            fade_micros: FADE_MICROS,
+        }
+    }
+}
+
 /// Where the thumb goes and how big it is.
 ///
 /// `viewport` is what is visible, `content` is the whole thing, `offset` is how
 /// far down. Returns `None` when there is nothing to scroll -- upstream hides
 /// the scrollbar in exactly that case rather than drawing a full-length thumb.
 pub fn thumb(viewport: f32, content: f32, offset: f32) -> Option<(f32, f32)> {
+    thumb_within(viewport, content, offset, MIN_THUMB_LENGTH)
+}
+
+/// [`thumb`] with the minimum length as a parameter: Cupertino's
+/// `_kScrollbarMinLength` is 36, not Material's 48.
+pub fn thumb_within(
+    viewport: f32,
+    content: f32,
+    offset: f32,
+    min_thumb_length: f32,
+) -> Option<(f32, f32)> {
     if viewport <= 0.0 || content <= viewport {
         return None;
     }
@@ -65,7 +112,7 @@ pub fn thumb(viewport: f32, content: f32, offset: f32) -> Option<(f32, f32)> {
     // be grabbed. Upstream's ScrollbarPainter does the same in
     // `_thumbExtent`.
     let proportional = viewport / content * viewport;
-    let length = proportional.max(MIN_THUMB_LENGTH).min(viewport);
+    let length = proportional.max(min_thumb_length).min(viewport);
     let max_offset = content - viewport;
     let fraction = (offset / max_offset).clamp(0.0, 1.0);
     // The thumb travels the track *minus its own length*, which is why this is
@@ -147,6 +194,7 @@ impl ScrollbarState {
 pub struct Scrollbar {
     axis: Axis,
     color: Option<Color>,
+    metrics: ScrollbarMetrics,
     /// The child, as a builder: stateful widgets are rebuilt from the same
     /// widget instance, so a child held by value would be consumed by the
     /// first build and missing from the second.
@@ -158,6 +206,7 @@ impl Scrollbar {
         Scrollbar {
             axis: Axis::Vertical,
             color: None,
+            metrics: ScrollbarMetrics::default(),
             build_child: Rc::new(build_child),
         }
     }
@@ -169,6 +218,13 @@ impl Scrollbar {
 
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
+        self
+    }
+
+    /// Measurements other than Material's defaults -- Cupertino's
+    /// `CupertinoScrollbar` is this widget with its own set.
+    pub fn with_metrics(mut self, metrics: ScrollbarMetrics) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -184,10 +240,10 @@ impl StatefulComponent for Scrollbar {
             // timer and runs the controller forward.
             state.observed = state.moved;
             state.fading_out = false;
-            state.fadeout_at_micros = Some(frame_time_micros + TIME_TO_FADE_MICROS);
+            state.fadeout_at_micros = Some(frame_time_micros + self.metrics.time_to_fade_micros);
         }
         let step = state.last_frame_micros.map_or(0.0, |previous| {
-            (frame_time_micros - previous).max(0) as f32 / FADE_MICROS as f32
+            (frame_time_micros - previous).max(0) as f32 / self.metrics.fade_micros as f32
         });
         state.last_frame_micros = Some(frame_time_micros);
         if state.fadeout_at_micros.is_some() {
@@ -225,8 +281,14 @@ impl StatefulComponent for Scrollbar {
         // this port's nearest on-surface.
         let color = self.color.unwrap_or(theme.text_muted);
         let opacity = state.opacity();
-        let thumb = thumb(state.viewport, state.content, state.offset);
+        let thumb = thumb_within(
+            state.viewport,
+            state.content,
+            state.offset,
+            self.metrics.min_thumb_length,
+        );
         let axis = self.axis;
+        let metrics = self.metrics;
 
         // The listener upstream puts between the scrollable and everything
         // above it. Every kind of scroll notification carries where the
@@ -272,21 +334,21 @@ impl StatefulComponent for Scrollbar {
                 if let (Some((start, length)), true) = (thumb, opacity > 0.0) {
                     let bar = crate::widgets::Container::new()
                         .with_color(color.with_alpha((0x4D as f32 * opacity) as u8))
-                        .with_corner_radius(RADIUS);
+                        .with_corner_radius(metrics.radius);
                     let (bar, position) = match axis {
                         Axis::Vertical => (
-                            bar.with_size(THICKNESS, length),
+                            bar.with_size(metrics.thickness, length),
                             StackPosition {
                                 top: Some(start),
-                                right: Some(2.0),
+                                right: Some(metrics.cross_axis_margin),
                                 ..Default::default()
                             },
                         ),
                         Axis::Horizontal => (
-                            bar.with_size(length, THICKNESS),
+                            bar.with_size(length, metrics.thickness),
                             StackPosition {
                                 left: Some(start),
-                                bottom: Some(2.0),
+                                bottom: Some(metrics.cross_axis_margin),
                                 ..Default::default()
                             },
                         ),

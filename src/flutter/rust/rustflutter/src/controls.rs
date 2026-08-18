@@ -18,10 +18,11 @@
 //! and every callback here has a `StateHandle` instead.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::components::theme_of;
 use crate::engine::{Color, TextStyle};
-use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, leaf, many};
+use crate::framework::{AnyWidget, BuildContext, Component, StateHandle, leaf, many, single};
 use crate::gestures::PointerHandlers;
 use crate::render::{
     Alignment, CrossAxisAlignment, EdgeInsets, FlexChild, MainAxisAlignment, MainAxisSize,
@@ -1247,8 +1248,10 @@ impl Component for DataTable {
     }
 }
 
-/// A label shown while a region is pressed. There is no hover yet, so this is
-/// press-driven rather than hover-driven; the shape is the same.
+/// The label bubble of a tooltip: a dark pill with the message. This is the
+/// surface half of upstream's `Tooltip` (`material/tooltip.dart`); the trigger
+/// half -- what shows and hides it -- is [`TooltipTrigger`], and composing the
+/// two is the application's `Stack`, as with every overlay here.
 pub struct Tooltip {
     message: String,
 }
@@ -1277,6 +1280,126 @@ impl Component for Tooltip {
                         .with_size(11.0)
                         .with_color(foreground),
                 )
+        })
+    }
+}
+
+/// How touch events should trigger a tooltip. Upstream's `TooltipTriggerMode`
+/// (`widgets/raw_tooltip.dart`).
+///
+/// Whatever the mode, a hovering mouse always shows the tooltip -- upstream's
+/// `RawTooltip.triggerMode` docs say so outright ("This property does not
+/// affect mouse devices").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TooltipTriggerMode {
+    /// Not triggered by touch; hover still works. Upstream's `manual`.
+    Manual,
+    /// Shown after a long press. Upstream's `longPress`, the default
+    /// (`_defaultTriggerMode`).
+    #[default]
+    LongPress,
+    /// Shown after a single tap. Upstream's `tap`.
+    Tap,
+}
+
+/// The trigger half of a tooltip: wraps a child and reports when the bubble
+/// should be visible. The bubble is [`Tooltip`]; putting the bubble over the
+/// child is the application's `Stack`, as with every overlay here.
+///
+/// Ported from the trigger semantics of `material/tooltip.dart`'s `Tooltip`
+/// and `widgets/raw_tooltip.dart`'s `RawTooltipState`: hovering in shows and
+/// hovering out hides (`_handleMouseEnter`/`_handleMouseExit`), a long press
+/// shows (`_handleLongPress`), and a tap shows in tap mode (`_handleTap`).
+///
+/// The timers upstream runs on top of those events are not ported, because
+/// the frame scheduler has no delayed callback:
+///
+/// - `waitDuration`/`hoverDelay` defaults to zero upstream, so showing on
+///   hover *immediately* is the default behavior, ported as is;
+/// - `dismissDelay` (100ms from hover-exit to hide) has no clock to run on,
+///   so a hover-exit hides at once;
+/// - `touchDelay`/`showDuration` (the 1500ms a touch-shown tooltip lingers)
+///   likewise: a touch-shown tooltip stays until the application hides it,
+///   which its next tap handler is the usual place to do.
+///
+/// The exclusivity upstream gets from `_ExclusiveMouseRegion` and the
+/// `_openedTooltips` list -- one hovered tooltip at a time -- is likewise the
+/// application's: the state these callbacks write holds at most one visible
+/// tooltip if the application writes it that way.
+pub struct TooltipTrigger {
+    id: u64,
+    child: RefCell<Option<AnyWidget>>,
+    trigger_mode: TooltipTriggerMode,
+    on_show: Option<Rc<dyn Fn(bool)>>,
+}
+
+impl TooltipTrigger {
+    pub fn new(id: u64, child: AnyWidget) -> TooltipTrigger {
+        TooltipTrigger {
+            id,
+            child: RefCell::new(Some(child)),
+            trigger_mode: TooltipTriggerMode::default(),
+            on_show: None,
+        }
+    }
+
+    /// Upstream's `Tooltip.triggerMode`.
+    pub fn with_trigger_mode(mut self, mode: TooltipTriggerMode) -> Self {
+        self.trigger_mode = mode;
+        self
+    }
+
+    /// Runs `show(state, visible)` when the tooltip should appear or
+    /// disappear. The application shows a [`Tooltip`] while the state says
+    /// visible.
+    pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, show: fn(&mut S, bool)) -> Self {
+        self.on_show = Some(Rc::new(move |visible| {
+            handle.set_state(move |state| show(state, visible));
+        }));
+        self
+    }
+
+    /// The region's handlers for the current trigger mode. Built at build
+    /// time rather than in `wired` so that `with_trigger_mode` may come
+    /// after it in the chain.
+    fn handlers(&self) -> PointerHandlers {
+        let Some(on_show) = &self.on_show else {
+            return PointerHandlers::new();
+        };
+        let hover = on_show.clone();
+        // Hover shows and hides regardless of the trigger mode; upstream's
+        // `hoverDelay` is zero by default, so there is nothing to wait for.
+        let mut handlers =
+            PointerHandlers::new().with_hover_change(move |hovering| hover(hovering));
+        match self.trigger_mode {
+            TooltipTriggerMode::LongPress => {
+                let show = on_show.clone();
+                handlers = handlers.with_long_press(move |_| show(true));
+            }
+            TooltipTriggerMode::Tap => {
+                let show = on_show.clone();
+                handlers = handlers.with_tap(move |_| show(true));
+            }
+            TooltipTriggerMode::Manual => {}
+        }
+        handlers
+    }
+}
+
+impl Component for TooltipTrigger {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        let id = self.id;
+        let handlers = self.handlers();
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
+        // Upstream wraps the child in a `_ExclusiveMouseRegion` around a
+        // `Listener(onPointerDown:)`; the trigger gestures here arrive through
+        // the region's own handlers, so the wrapper is the region.
+        single(child, move |inner| {
+            Pointer::new(id, inner).with_handlers(handlers.clone())
         })
     }
 }
@@ -1536,5 +1659,59 @@ mod tests {
             400.0,
         );
         assert!(wide.width > narrow.width);
+    }
+
+    #[test]
+    fn a_tooltip_trigger_passes_its_childs_size_through() {
+        let trigger = TooltipTrigger::new(1, leaf(|| crate::widgets::SizedBox::new(30.0, 20.0)));
+        let size = lay_out(component(trigger), 200.0, 200.0);
+        assert_eq!(size, Size::new(30.0, 20.0));
+    }
+
+    #[test]
+    fn hovering_shows_and_unhovering_hides() {
+        let shown = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let record = shown.clone();
+        let mut trigger = TooltipTrigger::new(1, leaf(|| Empty));
+        trigger.on_show = Some(std::rc::Rc::new(move |visible| {
+            record.borrow_mut().push(visible)
+        }));
+        let handlers = trigger.handlers();
+        let on_hover = handlers
+            .on_hover_change
+            .clone()
+            .expect("hover is always wired");
+        on_hover(true);
+        on_hover(false);
+        assert_eq!(*shown.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn the_trigger_mode_picks_the_touch_gesture() {
+        let mut trigger = TooltipTrigger::new(1, leaf(|| Empty));
+        trigger.on_show = Some(std::rc::Rc::new(|_| {}));
+        // Upstream's default, `_defaultTriggerMode`, is longPress.
+        let handlers = trigger.handlers();
+        assert!(handlers.on_long_press.is_some());
+        assert!(handlers.on_tap.is_none());
+
+        let trigger = trigger.with_trigger_mode(TooltipTriggerMode::Tap);
+        let handlers = trigger.handlers();
+        assert!(handlers.on_tap.is_some());
+        assert!(handlers.on_long_press.is_none());
+
+        // Manual wires no touch gesture, but hover is wired either way --
+        // upstream's triggerMode "does not affect mouse devices".
+        let trigger = trigger.with_trigger_mode(TooltipTriggerMode::Manual);
+        let handlers = trigger.handlers();
+        assert!(handlers.on_tap.is_none());
+        assert!(handlers.on_long_press.is_none());
+        assert!(handlers.on_hover_change.is_some());
+    }
+
+    #[test]
+    fn an_unwired_trigger_has_no_handlers() {
+        let trigger = TooltipTrigger::new(1, leaf(|| Empty));
+        assert!(trigger.handlers().is_empty());
     }
 }

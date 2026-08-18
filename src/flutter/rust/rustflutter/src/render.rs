@@ -8780,10 +8780,13 @@ fn default_cross_axis_direction(axis_direction: AxisDirection) -> AxisDirection 
 /// sliver's painted area, is under the given sliver coordinates.
 ///
 /// Upstream's `RenderSliverHelpers.hitTestBoxChild`, shared by every sliver
-/// that has box children -- the adapter, the list. The sliver coordinates are
-/// turned into the child's Cartesian ones, which for the reversed axis
-/// directions means measuring the child from its far edge -- the same flip
-/// [`RenderSliverToBoxAdapter::set_child_parent_data`] makes to paint it.
+/// that has box children -- the adapter, the list, the grid. The sliver
+/// coordinates are turned into the child's Cartesian ones, which for the
+/// reversed axis directions means measuring the child from its far edge -- the
+/// same flip [`RenderSliverToBoxAdapter::set_child_parent_data`] makes to
+/// paint it. Both coordinates arrive relative to the child, so a sliver whose
+/// children sit at a cross-axis offset -- the grid -- subtracts the tile's
+/// offset before it calls.
 pub(crate) fn sliver_hit_test_box_child(
     constraints: &SliverConstraints,
     geometry: &SliverGeometry,
@@ -18121,6 +18124,66 @@ impl SliverGridDelegate {
         }
     }
 
+    /// The gap between tiles along the main axis.
+    pub fn with_main_axis_spacing(mut self, spacing: f32) -> Self {
+        assert!(spacing >= 0.0, "upstream asserts mainAxisSpacing >= 0");
+        match &mut self {
+            SliverGridDelegate::FixedCrossAxisCount {
+                main_axis_spacing, ..
+            }
+            | SliverGridDelegate::MaxCrossAxisExtent {
+                main_axis_spacing, ..
+            } => *main_axis_spacing = spacing,
+        }
+        self
+    }
+
+    /// The gap between tiles along the cross axis.
+    pub fn with_cross_axis_spacing(mut self, spacing: f32) -> Self {
+        assert!(spacing >= 0.0, "upstream asserts crossAxisSpacing >= 0");
+        match &mut self {
+            SliverGridDelegate::FixedCrossAxisCount {
+                cross_axis_spacing, ..
+            }
+            | SliverGridDelegate::MaxCrossAxisExtent {
+                cross_axis_spacing, ..
+            } => *cross_axis_spacing = spacing,
+        }
+        self
+    }
+
+    /// The ratio of each tile's cross-axis to main-axis extent.
+    pub fn with_child_aspect_ratio(mut self, ratio: f32) -> Self {
+        assert!(ratio > 0.0, "upstream asserts childAspectRatio > 0");
+        match &mut self {
+            SliverGridDelegate::FixedCrossAxisCount {
+                child_aspect_ratio, ..
+            }
+            | SliverGridDelegate::MaxCrossAxisExtent {
+                child_aspect_ratio, ..
+            } => *child_aspect_ratio = ratio,
+        }
+        self
+    }
+
+    /// A fixed main-axis extent for every tile, instead of deriving one from
+    /// the aspect ratio.
+    pub fn with_main_axis_extent(mut self, extent: f32) -> Self {
+        assert!(
+            extent >= 0.0,
+            "upstream asserts mainAxisExtent == null || >= 0"
+        );
+        match &mut self {
+            SliverGridDelegate::FixedCrossAxisCount {
+                main_axis_extent, ..
+            }
+            | SliverGridDelegate::MaxCrossAxisExtent {
+                main_axis_extent, ..
+            } => *main_axis_extent = Some(extent),
+        }
+        self
+    }
+
     /// Upstream `getLayout`: both delegates' arithmetic, shared save for how
     /// the cross-axis count is decided.
     pub fn get_layout(&self, constraints: &SliverConstraints) -> SliverGridRegularTileLayout {
@@ -18254,13 +18317,20 @@ impl RenderBox for RenderSliverGrid {
             self.geometry = SliverGeometry::ZERO;
             return self.geometry;
         }
-        // The window of indices whose tiles reach into the visible range.
+        // The window of indices whose tiles reach into the cache band -- the
+        // painted range plus whatever the viewport asked to be kept warm on
+        // either side of it. Upstream's `performLayout` opens on exactly this
+        // pair (`scrollOffset + cacheOrigin`, `remainingCacheExtent`), and it
+        // is the same window [`RenderSliverList`] walks; measuring against
+        // `remaining_paint_extent` instead would build only what is on the
+        // glass and drop the band the viewport paid for.
+        let scroll_offset = constraints.scroll_offset + constraints.cache_origin;
+        let target_end_scroll_offset = scroll_offset + constraints.remaining_cache_extent;
         let leading = layout
-            .min_child_index_for_scroll_offset(constraints.scroll_offset)
+            .min_child_index_for_scroll_offset(scroll_offset)
             .min(self.child_count - 1);
-        let window_end = constraints.scroll_offset + constraints.remaining_paint_extent;
         let trailing = layout
-            .max_child_index_for_scroll_offset(window_end)
+            .max_child_index_for_scroll_offset(target_end_scroll_offset)
             .min(self.child_count - 1);
 
         let mut children = Vec::with_capacity(trailing - leading + 1);

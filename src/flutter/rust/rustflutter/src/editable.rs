@@ -863,6 +863,19 @@ impl TextFieldState {
     pub fn text(&self) -> &str {
         &self.value.text
     }
+
+    /// Empties the field -- upstream's `TextEditingController.clear()`, which
+    /// a search field's clear button is wired to. The platform is told as
+    /// well: the IME holds its own copy of the text and would hand it back on
+    /// the next keystroke.
+    pub fn clear(&mut self) {
+        self.value = TextEditingValue::default();
+        if let Some(connection) = &self.connection {
+            if connection.is_attached() {
+                connection.set_editing_state(&self.value);
+            }
+        }
+    }
 }
 
 /// The framework's end of an editing session.
@@ -956,6 +969,11 @@ pub struct TextField {
     max_lines: MaxLines,
     on_changed: Option<TextCallback>,
     on_submitted: Option<TextCallback>,
+    /// Somewhere to publish this field's [`StateHandle`], so a widget composed
+    /// around the field -- a search field's clear button -- can reach the
+    /// field's text. Upstream's equivalent is handing both the field and the
+    /// button the same `TextEditingController`.
+    state_sink: Option<Rc<RefCell<Option<StateHandle<TextFieldState>>>>>,
 }
 
 impl TextField {
@@ -972,6 +990,7 @@ impl TextField {
             max_lines: MaxLines::Single,
             on_changed: None,
             on_submitted: None,
+            state_sink: None,
         }
     }
 
@@ -1026,6 +1045,18 @@ impl TextField {
     /// Called when the reader presses Enter on a single-line field.
     pub fn with_on_submitted(mut self, submitted: impl Fn(&str) + 'static) -> Self {
         self.on_submitted = Some(Rc::new(submitted));
+        self
+    }
+
+    /// Publishes this field's [`StateHandle`] into `sink` on every build, so
+    /// something composed around the field can reach its text -- the way a
+    /// shared `TextEditingController` lets a sibling button clear the field
+    /// upstream.
+    pub fn with_state_sink(
+        mut self,
+        sink: Rc<RefCell<Option<StateHandle<TextFieldState>>>>,
+    ) -> Self {
+        self.state_sink = Some(sink);
         self
     }
 }
@@ -1115,6 +1146,9 @@ impl StatefulComponent for TextField {
         // does in its focus listener. The client id makes it exclusive as
         // well -- attaching one field detaches the last -- but that is the
         // platform's exclusivity, not this framework's.
+        if let Some(sink) = &self.state_sink {
+            *sink.borrow_mut() = Some(handle.clone());
+        }
         let tap_handle = handle.clone();
         let field_handle = handle;
         let on_changed = self.on_changed.clone();

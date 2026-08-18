@@ -4,16 +4,18 @@
 
 //! Flutter Gallery, ported to rustflutter.
 //!
-//! Upstream is `dev/integration_tests/new_gallery`: a home page of studies and
+//! Upstream is flutter/gallery @ d12640d; this file maps to `lib/main.dart`.
+//! Upstream's own home is a home page of studies and
 //! categories, a demo page per component, and a settings panel. This is the
 //! same structure over the Rust framework, drawn by the Flutter engine through
 //! Impeller.
 //!
 //! What is ported: the shape, the demo list with upstream's own titles and
-//! subtitles, and one screen from each of three studies. What is not: the
-//! localisations, the asset-backed carousel, the code viewer, and the demos
-//! that need text input. Each absence is stated where it would otherwise look
-//! like an oversight -- see `settings.rs` and the catalogue's descriptions.
+//! subtitles, the backdrop with its settings panel, the splash layer, and one
+//! screen from each of three studies. What is not: the localisations beyond
+//! English, the code viewer, and the demos that need text input. Each absence
+//! is stated where it would otherwise look like an oversight -- see
+//! `pages/settings.rs`, `pages/demo.rs` and the catalogue's descriptions.
 //!
 //! ```text
 //!   --png <path>        render one frame headlessly
@@ -21,20 +23,22 @@
 //!   --slug <slug>       which demo or study, for --route demo|study
 //!   --light             start in the light theme
 //!   --dpr <scale>       render as a display at that scale would, e.g. 2.0
+//!   --width <px>        window or screenshot width, default 460
+//!   --height <px>       window or screenshot height, default 820
 //! ```
 
 mod app;
-mod catalog;
+mod constants;
+mod data;
 mod demos;
-mod home;
-mod settings;
-mod shrine_data;
+mod l10n;
+mod pages;
 mod studies;
-mod theme;
+mod themes;
 
 use std::os::raw::{c_char, c_int};
 
-use rustflutter::framework::{AnyWidget, ElementTree, component, stateful};
+use rustflutter::framework::{component, stateful, AnyWidget, ElementTree};
 use rustflutter::prelude::*;
 use rustflutter::render::{BoxConstraints, Offset, RenderBox, Size};
 
@@ -52,7 +56,11 @@ struct GalleryApp {
 
 impl WidgetApplication for GalleryApp {
     fn background(&self) -> Color {
-        if self.light { Theme::light().background } else { Theme::dark().background }
+        if self.light {
+            Theme::light().background
+        } else {
+            Theme::dark().background
+        }
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
@@ -73,7 +81,7 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
     let args = collect_args(argc, argv);
     // Before anything is built: an unregistered family draws a blank where an
     // icon should be, and every screen has icons on it.
-    catalog::register_fonts();
+    data::demos::register_fonts();
     let light = args.iter().any(|a| a == "--light");
     let route = static_route(named(&args, "--route").as_deref().unwrap_or("home"));
     let slug = named(&args, "--slug");
@@ -86,8 +94,21 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
         .filter(|dpr| *dpr > 0.0)
         .unwrap_or(1.0);
 
+    // The size the app lays itself out at. The default is a phone; the
+    // desktop layouts of the home, settings and demo pages only appear above
+    // the 1024px breakpoint, so a desktop screenshot is taken by asking for
+    // one.
+    let width = named(&args, "--width")
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|width| *width > 0)
+        .unwrap_or(WIDTH);
+    let height = named(&args, "--height")
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|height| *height > 0)
+        .unwrap_or(HEIGHT);
+
     if let Some(path) = named(&args, "--png") {
-        return render_png(&path, route, slug.as_deref(), light, dpr);
+        return render_png(&path, route, slug.as_deref(), light, dpr, width, height);
     }
 
     register_application(move || {
@@ -98,8 +119,8 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
         }))
     });
     let options = RunOptions {
-        width: WIDTH,
-        height: HEIGHT,
+        width,
+        height,
         title: String::from("rustflutter Gallery"),
         ..RunOptions::default()
     };
@@ -135,16 +156,28 @@ fn render_png(
     slug: Option<&str>,
     light: bool,
     dpr: f64,
+    width: i32,
+    height: i32,
 ) -> c_int {
     rustflutter::engine::initialize();
-    catalog::register_fonts();
+    data::demos::register_fonts();
 
     let screen = || {
-        stateful(Gallery {
-            light,
-            route,
-            slug: slug.map(str::to_string),
-        })
+        // There is no shell above the tree here, so the MediaQuery the shell
+        // would have published is given directly -- the adaptive layouts read
+        // the breakpoint from it.
+        rustflutter::media_query::MediaQuery::new(
+            rustflutter::media_query::MediaQueryData {
+                size: Size::new(width as f32, height as f32),
+                device_pixel_ratio: dpr as f32,
+                ..rustflutter::media_query::MediaQueryData::default()
+            },
+            stateful(Gallery {
+                light,
+                route,
+                slug: slug.map(str::to_string),
+            }),
+        )
     };
 
     let mut tree = ElementTree::new();
@@ -161,17 +194,21 @@ fn render_png(
     }
 
     let mut root = tree.build_render_tree().expect("the tree has a root");
-    root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));
+    root.layout(BoxConstraints::tight(width as f32, height as f32));
 
-    let background = if light { Theme::light().background } else { Theme::dark().background };
+    let background = if light {
+        Theme::light().background
+    } else {
+        Theme::dark().background
+    };
     // Through the same composition the windowed path uses, so a screenshot is a
     // picture of the frame the shell would have rasterized rather than of one
     // assembled a second way.
     let mut layer_tree = rustflutter::app::compose_frame(
-        (WIDTH as f64 * dpr).round() as i32,
-        (HEIGHT as f64 * dpr).round() as i32,
+        (width as f64 * dpr).round() as i32,
+        (height as f64 * dpr).round() as i32,
         dpr,
-        Size::new(WIDTH as f32, HEIGHT as f32),
+        Size::new(width as f32, height as f32),
         background,
         |context| root.paint(context, Offset::ZERO),
     );
@@ -209,7 +246,10 @@ fn collect_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
             if ptr.is_null() {
                 None
             } else {
-                std::ffi::CStr::from_ptr(ptr).to_str().ok().map(str::to_string)
+                std::ffi::CStr::from_ptr(ptr)
+                    .to_str()
+                    .ok()
+                    .map(str::to_string)
             }
         })
         .collect()

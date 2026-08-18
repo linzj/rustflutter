@@ -7,9 +7,11 @@ same pictures rather than stand-ins.
 |---|---|
 | `studies/*_card*.png` | `flutter_gallery_assets` 1.0.2, `lib/assets/studies/` |
 | `icons/{material,cupertino,reference}.png` | `flutter_gallery_assets` 1.0.2, `lib/assets/icons/` |
+| `logo/flutter_logo{,_color}.png` | `flutter_gallery_assets` 1.0.2, `lib/assets/logo/` |
 | `fonts/GalleryIcons.ttf` | `flutter_gallery_assets` 1.0.2, `lib/fonts/` |
 | `fonts/MaterialIcons-Regular.otf` | the Flutter SDK, `bin/cache/artifacts/material_fonts/` |
 | `shrine/*.jpg` (38 photographs) | `shrine_images` 2.0.2, from pub.dev |
+| `places/*.png` (12 photographs) | `flutter_gallery_assets` 1.0.2, `lib/assets/places/` |
 
 `flutter_gallery_assets` is BSD-licensed, the same terms as Flutter itself.
 Material Icons and `shrine_images` are both Apache 2.0 -- a different license

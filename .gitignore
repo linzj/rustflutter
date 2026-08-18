@@ -46,3 +46,6 @@ try_*.log
 .gclient*
 .port_batch_*/
 .probe_*
+
+# gclient sync 产物（真实 sync 而非 junction 时出现在仓库根）
+/third_party/

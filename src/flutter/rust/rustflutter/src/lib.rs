@@ -30,22 +30,28 @@ pub mod r#async;
 pub mod borders;
 pub mod components;
 pub mod controls;
+pub mod cupertino;
 pub mod decoration;
 pub mod direction;
+pub mod drawer;
 pub mod editable;
 pub mod engine;
 pub mod focus;
 pub mod foundation;
 pub mod framework;
 pub mod gestures;
+pub mod grid;
 pub mod image;
 pub mod implicit;
 pub mod ink;
+pub mod interactive_viewer;
 pub mod keyboard;
 pub mod media_query;
+pub mod menu;
 pub mod navigation;
 pub mod painting;
 pub mod physics;
+pub mod pickers;
 pub mod platform;
 pub mod render;
 pub mod scrollbar;
@@ -85,9 +91,19 @@ pub use components::{
 pub use controls::{
     Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
     Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
+    TooltipTrigger, TooltipTriggerMode,
+};
+pub use cupertino::{
+    CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
+    CupertinoButtonSize, CupertinoColors, CupertinoContextMenu, CupertinoContextMenuAction,
+    CupertinoContextMenuSheet, CupertinoDynamicColor, CupertinoNavigationBar,
+    CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar, CupertinoSearchTextField,
+    CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar, CupertinoTabItem,
+    CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
 };
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
 pub use direction::{TextDirection, current_direction, direction_of, directionality};
+pub use drawer::{Drawer, DrawerAlignment};
 pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
@@ -102,6 +118,9 @@ pub use framework::{
     StatefulComponent, component, keyed_leaf, keyed_many, keyed_single, leaf, many, provide,
     single, stateful, with_global_key,
 };
+pub use grid::{
+    GridView, RenderSliverGrid, SliverGridDelegate, SliverGridGeometry, SliverGridRegularTileLayout,
+};
 pub use image::{
     AssetBundle, ImageChunkEvent, ImageConfiguration, ImageInfo, ImageProvider, ImageStream,
     ImageStreamCompleter, ImageStreamListener, NetworkImageLoadException, ResizeImagePolicy,
@@ -109,9 +128,17 @@ pub use image::{
 };
 pub use implicit::{Animated, Lerp, animated};
 pub use ink::{Ink, ink};
+pub use interactive_viewer::{
+    Affine2D, InteractiveViewer, InteractiveViewerState, PanAxis, TransformationController,
+    interactive_viewer,
+};
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
 pub use media_query::{
     MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
+};
+pub use menu::{
+    CheckedPopupMenuItem, PopupMenu, PopupMenuButton, PopupMenuDivider, PopupMenuEntry,
+    PopupMenuItem, PopupMenuPosition, popup_menu_offset,
 };
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
@@ -122,6 +149,16 @@ pub use painting::{
     LinearGradient, Matrix4, PlaceholderAlignment, PlaceholderDimensions, RadialGradient,
     RenderPath, ShaderGradient, StrokeCap, StrokeJoin, StrutStyle, SweepGradient, TextBaseline,
     TextPainter, TextScaler, TileMode, WordBoundary, matrix_utils,
+};
+pub use pickers::{
+    CalendarDatePicker, CalendarDatePickerState, Date, DatePickerDialog, DatePickerDialogState,
+    DatePickerEntryMode, DatePickerMode, DateRangePickerDialog, DateRangePickerDialogState,
+    DateTimeRange, DayPeriod, InputDatePickerFormField, InputDatePickerState, Orientation,
+    SelectableDayForRangePredicate, SelectableDayPredicate, TimeOfDay, TimePickerDialog,
+    TimePickerDialogState, TimePickerEntryMode, YearPicker, YearPickerState, add_days_to_date,
+    add_months_to_month_date, days_in_month, first_day_offset, format_compact_date,
+    format_full_date, format_medium_date, format_month_year, is_same_day, is_same_month,
+    month_delta, parse_compact_date, show_date_picker, show_date_range_picker, show_time_picker,
 };
 pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};
@@ -154,9 +191,18 @@ pub mod prelude {
     pub use crate::controls::{
         Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
         Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
-        Tooltip,
+        Tooltip, TooltipTrigger, TooltipTriggerMode,
+    };
+    pub use crate::cupertino::{
+        CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
+        CupertinoButtonSize, CupertinoColors, CupertinoContextMenu, CupertinoContextMenuAction,
+        CupertinoContextMenuSheet, CupertinoDynamicColor, CupertinoNavigationBar,
+        CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar, CupertinoSearchTextField,
+        CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar,
+        CupertinoTabItem, CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
     };
     pub use crate::direction::{TextDirection, current_direction, directionality};
+    pub use crate::drawer::{Drawer, DrawerAlignment};
     pub use crate::editable::{TextField, TextFieldState};
     pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
     pub use crate::focus::{Focus, KeyResult, focusable};
@@ -164,16 +210,30 @@ pub mod prelude {
         AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, component, keyed_leaf,
         keyed_many, keyed_single, leaf, many, provide, single, stateful, with_global_key,
     };
+    pub use crate::grid::{GridView, SliverGridDelegate};
     pub use crate::implicit::{Animated, animated};
     pub use crate::ink::{Ink, ink};
+    pub use crate::interactive_viewer::{
+        InteractiveViewer, PanAxis, TransformationController, interactive_viewer,
+    };
     pub use crate::keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
     pub use crate::media_query::{
         MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
+    };
+    pub use crate::menu::{
+        CheckedPopupMenuItem, PopupMenu, PopupMenuButton, PopupMenuDivider, PopupMenuEntry,
+        PopupMenuItem, PopupMenuPosition, popup_menu_offset,
     };
     pub use crate::navigation::{Navigator, Route, RouteArgs, Transition};
     pub use crate::painting::{
         BlendMode, ClipBehavior, ClipOp, FillType, Gradient, Image, RenderPath, StrokeCap,
         StrokeJoin, TileMode,
+    };
+    pub use crate::pickers::{
+        CalendarDatePicker, Date, DatePickerDialog, DatePickerEntryMode, DatePickerMode,
+        DateRangePickerDialog, DateTimeRange, DayPeriod, InputDatePickerFormField, Orientation,
+        TimeOfDay, TimePickerDialog, TimePickerEntryMode, YearPicker, show_date_picker,
+        show_date_range_picker, show_time_picker,
     };
     pub use crate::platform::{Brightness, Locale, UserSettings};
     pub use crate::scrollbar::{Scrollbar, scrollbar};
