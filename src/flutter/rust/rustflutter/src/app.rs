@@ -787,7 +787,7 @@ impl AppInstance {
         let background = application.background();
 
         let started = FrameTimings::now();
-        let mut root = application.build(&context);
+        let root = application.build(&context);
         let built = FrameTimings::now();
 
         // Something asked for an image that a worker is still decoding, and
@@ -802,32 +802,24 @@ impl AppInstance {
         // Constraints down, sizes up -- the RenderBox protocol. The root is
         // forced to the view size, which is what RenderView does upstream.
         //
-        // Upstream's frame opens with `flushLayout`: the relayout boundaries
-        // `mark_needs_layout` stopped at, each laid out from itself against
-        // the constraints its parent last handed it, so that a change under a
-        // boundary costs that subtree and not the whole screen. Two things
-        // keep the walk from the root as well: nothing dirty (the list is
-        // empty, and the walk is the cheap early-return descent it has always
-        // been), and the view having changed size -- the constraints come
-        // from outside the tree, so no boundary's remembered ones can carry
-        // them, and the descent is where every object is re-asked.
+        // The whole of a frame's layout is the flush, as it is upstream:
+        // `RendererBinding.drawFrame` opens with `flushLayout` and has no walk
+        // from the root at all. It lays out the relayout boundaries
+        // `mark_needs_layout` enqueued, each from itself against the
+        // constraints it remembers, so a change under a boundary costs that
+        // subtree and not the whole screen.
+        //
+        // There is no walk to fall back on because a walk could not do the
+        // job: a mark stops at a boundary and leaves every ancestor clean, so
+        // a descent from the root early returns at the first clean object it
+        // meets and never arrives. Everything a walk was here for is a mark
+        // instead -- upstream says a resized view by calling `markNeedsLayout`
+        // from `RenderView`'s `configuration` setter, and says a root that has
+        // never been laid out by `scheduleInitialLayout`. Both are
+        // `schedule_root_layout`, and both land in the queue the flush drains.
         let view_constraints = BoxConstraints::tight(context.size.width, context.size.height);
-        let resized = root.was_last_laid_out_against_other(view_constraints);
-        // `flush_layout` runs every frame, before the resize test rather than
-        // as its alternative. The two are not interchangeable: it lays out the
-        // relayout boundaries `mark_needs_layout` enqueued, and a boundary is
-        // precisely the node the mark stopped at, leaving every ancestor clean.
-        // A descent from the root therefore *cannot* reach one -- it early
-        // returns at the first clean ancestor it meets -- so a frame that took
-        // the root walk instead of the flush left those boundaries queued, and
-        // whatever had just been rebuilt under one of them went to paint having
-        // never been laid out. A container that zips its children against
-        // offsets it has not computed draws nothing at all, which is a blank
-        // frame between two good ones.
-        let flushed = crate::render::flush_layout();
-        if resized || !flushed {
-            root.layout(view_constraints);
-        }
+        crate::render::schedule_root_layout(&root, view_constraints);
+        crate::render::flush_layout();
         let laid_out = FrameTimings::now();
 
         let tree = compose_frame(

@@ -1758,8 +1758,15 @@ pub(crate) fn flush_paint(context: &mut PaintContext) {
 /// skips `performResize`; there is no split between resize and layout here, so
 /// the same statement reads "runs the object's own layout at the remembered
 /// constraints". The remembered constraints are the whole legality of it, and
-/// a frame whose view changed size does not go through here at all -- it takes
-/// the walk from the root, where the new constraints land.
+/// the root is a boundary like any other -- [`schedule_root_layout`] writes
+/// the view's down before the frame gets here, which is the one set of
+/// constraints in the tree that comes from outside rather than from a parent.
+///
+/// This is the whole of a frame's layout, as `flushLayout` is the whole of
+/// upstream's: there is no walk from the root anywhere in
+/// `RendererBinding.drawFrame`, and there cannot usefully be one, because a
+/// mark stops at a boundary and leaves every ancestor clean -- so a descent
+/// early returns at the first clean object it meets and never arrives.
 ///
 /// The tail of `_layoutWithoutResize` is here too: a subtree that was just
 /// re-measured may have moved inside a repaint boundary that was never laid
@@ -1767,8 +1774,7 @@ pub(crate) fn flush_paint(context: &mut PaintContext) {
 /// here is what says that boundary's kept layer is stale. Without it the
 /// boundary composites last frame's picture of this subtree for another frame.
 ///
-/// Returns whether anything was laid out, which is what tells the frame there
-/// is no need to fall back to the walk from the root.
+/// Returns whether anything was laid out.
 pub(crate) fn flush_layout() -> bool {
     let mut did_layout = false;
     loop {
@@ -1808,6 +1814,45 @@ pub(crate) fn flush_layout() -> bool {
         }
     }
     did_layout
+}
+
+/// Puts the frame's root where [`flush_layout`] will find it.
+///
+/// Upstream reaches this place along two paths and this is both of them. A
+/// root has no parent to lay it out, so `RenderObject.scheduleInitialLayout`
+/// adds it to `_nodesNeedingLayout` by hand and states outright what nothing
+/// above it can, there being nothing above it: it is a relayout boundary, and
+/// its depth is zero. And the view's constraints are the one set in the tree
+/// that arrives from outside rather than from a parent, so a change in them is
+/// announced rather than descended into -- `RenderView`'s `configuration`
+/// setter compares the new view against the old and calls `markNeedsLayout`.
+///
+/// The constraints are written down as well as announced because the flush
+/// lays a boundary out against the constraints it remembers, where upstream's
+/// `RenderView.performLayout` reads them live off the `ViewConfiguration`.
+/// Same value either way, kept where this pipeline looks for it.
+///
+/// A rebuild that replaces the root object hands the frame a fresh handle,
+/// which remembers no constraints and so is dirty by this test -- which is
+/// right, and is the case a walk from the root used to be kept around for.
+pub(crate) fn schedule_root_layout(root: &RenderRef, constraints: BoxConstraints) {
+    let state = &root.state;
+    *state.parent.borrow_mut() = Weak::new();
+    state.depth.set(0);
+    state.relayout_boundary.set(true);
+
+    if state.constraints.get() != Some(constraints) {
+        state.constraints.set(Some(constraints));
+        state.needs_layout.set(true);
+    }
+    if !state.needs_layout.get() {
+        return;
+    }
+    // A root already dirty from below was queued by `mark_needs_layout` as it
+    // was marked, so this can list it twice. The flush clears the flag as it
+    // acts on it and skips the second sighting -- the same tolerance that lets
+    // a boundary laid out by a shallower one's descent stay listed.
+    DIRTY_RELAYOUTS.with(|dirty| dirty.borrow_mut().push(Rc::clone(state)));
 }
 
 /// Keeps the stack right even if a layout panics.
@@ -2075,21 +2120,6 @@ impl RenderRef {
         size
     }
 
-    /// Whether the constraints a layout from the root would hand this object
-    /// are the ones it was last laid out at.
-    ///
-    /// The frame's resize test. The view's constraints are the one set in the
-    /// tree that comes from outside rather than from a parent, so a change
-    /// there cannot ride in on a dirty boundary -- [`flush_layout`] lays a
-    /// boundary out against what it was *last* given -- and the frame takes
-    /// the walk from the root instead, which is where the new constraints
-    /// land. Nothing below the root needs the test: a parent whose own
-    /// constraints changed was marked dirty with the change, and the descent
-    /// from its boundary re-asks it.
-    pub fn was_last_laid_out_against_other(&self, constraints: BoxConstraints) -> bool {
-        self.state.constraints.get() != Some(constraints)
-    }
-
     /// The size this object would choose for `constraints`, without choosing
     /// it. Upstream's `getDryLayout`, and the two things that make it cheap to
     /// call twice are the same two upstream has: the answer is remembered next
@@ -2226,6 +2256,17 @@ impl RenderBox for RenderRef {
         self.render.borrow().size()
     }
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        // Upstream's `_paintWithContext` opens with this test, and its comment
+        // gives the reason: an object that still needs layout is one the
+        // layout phase skipped, so there is nothing of it to draw -- and the
+        // parent about to draw it may not know that yet, since the tree paints
+        // in the order it paints in. The test belongs here rather than in each
+        // container because without it every container improvises, and one
+        // that zips its children against offsets it never computed draws none
+        // of them and says nothing: a blank frame rather than a gap.
+        if self.state.needs_layout.get() {
+            return;
+        }
         let render = self.render.borrow();
         // The near end of `mark_needs_paint`. Cleared as it is acted on, so a
         // frame that draws is a frame that answered the question.
@@ -21260,22 +21301,20 @@ mod animated_size_tests {
 mod layout_flush_tests {
     use super::*;
 
-    /// A dirty relayout boundary is laid out by [`flush_layout`], and a walk
-    /// from the root is no substitute for it.
+    /// A frame that replaces its root still lays out a boundary that was
+    /// marked under the part of the tree it kept.
     ///
     /// `mark_needs_layout` stops at the enclosing boundary and deliberately
     /// leaves every ancestor clean, so a descent from the root early returns at
     /// the first clean object it meets and never arrives -- that is the whole
-    /// point of a boundary. The frame in [`crate::app`] therefore flushes every
-    /// frame and lets the resize test only *add* the root walk. Written the
-    /// other way round -- `resized || !flush_layout()` -- `||` short circuits
-    /// and the flush never runs on a frame that resized, which leaves the
-    /// boundary queued and its subtree unlaid-out. Whatever was rebuilt under
-    /// it then reaches paint with no size and no child offsets, and a container
-    /// that zips its children against offsets it never computed draws nothing:
-    /// a blank frame between two good ones.
+    /// point of a boundary. A frame written as `resized || !flush_layout()`
+    /// short circuits past the flush on exactly the frame that replaced its
+    /// root, leaving the boundary queued and its subtree unlaid-out. Whatever
+    /// was rebuilt under it then reaches paint with no size and no child
+    /// offsets. The frame is the flush and nothing else, and the root joins the
+    /// same queue by [`schedule_root_layout`].
     #[test]
-    fn a_walk_from_the_root_does_not_lay_out_a_dirty_boundary() {
+    fn a_frame_that_replaces_its_root_lays_out_a_dirty_boundary() {
         struct Counting {
             laid_out: std::rc::Rc<std::cell::Cell<u32>>,
             size: Size,
@@ -21306,32 +21345,91 @@ mod layout_flush_tests {
                 .with_child(child.clone()),
         );
         let constraints = BoxConstraints::tight(200.0, 200.0);
-        let mut root = RenderRef::new(crate::widgets::Container::new().with_child(inner.clone()));
-        root.layout(constraints);
+        let root = RenderRef::new(crate::widgets::Container::new().with_child(inner.clone()));
+        // The first frame: a root nothing has laid out, which is upstream's
+        // `scheduleInitialLayout` case.
+        schedule_root_layout(&root, constraints);
+        assert!(flush_layout(), "the first frame lays the root out");
         let first = laid_out.get();
-        assert!(first > 0, "the first frame lays the child out");
+        assert!(first > 0, "and the child with it");
 
         // Something under the boundary changed. `inner` and the root stay clean.
         child.mark_needs_layout();
 
         // This frame replaced the root object, so the handle the frame holds
-        // remembers no constraints and the resize test answers yes -- exactly
-        // the frame on which the short-circuiting order skipped the flush.
-        let mut rebuilt_root =
+        // remembers no constraints -- exactly the frame on which the
+        // short-circuiting order skipped the flush.
+        let rebuilt_root =
             RenderRef::new(crate::widgets::Container::new().with_child(inner.clone()));
-        let resized = rebuilt_root.was_last_laid_out_against_other(constraints);
-        assert!(resized, "a replaced root remembers no constraints");
+        schedule_root_layout(&rebuilt_root, constraints);
+        assert!(flush_layout());
 
-        let flushed = flush_layout();
-        if resized || !flushed {
-            rebuilt_root.layout(constraints);
-        }
         assert_eq!(
             laid_out.get(),
             first + 1,
-            "the queued boundary has to be laid out on this frame: the root \
-             walk skips `inner`, which is clean and already answered these \
-             constraints"
+            "the queued boundary has to be laid out on this frame: a descent \
+             from the new root skips `inner`, which is clean and already \
+             answered these constraints"
         );
+        assert_eq!(
+            rebuilt_root.size(),
+            Size::new(200.0, 200.0),
+            "and the new root itself was laid out, against the view's \
+             constraints rather than any it remembered"
+        );
+    }
+
+    /// An object that still needs layout draws nothing, and draws again once
+    /// it has been laid out.
+    ///
+    /// Upstream's `_paintWithContext` opens with this test, and its comment
+    /// says why: an object that needs layout is one the layout phase skipped,
+    /// so there is nothing of it to draw, and the parent about to draw it has
+    /// no way of knowing that. Left to each container, the answer varies and
+    /// the bad ones are silent -- a container that zips its children against
+    /// offsets it never computed paints none of them and reports nothing.
+    #[test]
+    fn an_object_that_still_needs_layout_paints_nothing() {
+        use crate::engine::LayerTree;
+
+        struct Counting {
+            painted: std::rc::Rc<std::cell::Cell<u32>>,
+        }
+
+        impl RenderBox for Counting {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(10.0, 10.0))
+            }
+            fn size(&self) -> Size {
+                Size::new(10.0, 10.0)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {
+                self.painted.set(self.painted.get() + 1);
+            }
+        }
+
+        let painted = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let mut object = RenderRef::new(Counting {
+            painted: std::rc::Rc::clone(&painted),
+        });
+
+        let mut layers = LayerTree::new(100, 100);
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 100.0));
+            object.paint(&mut context, Offset::ZERO);
+        }
+        assert_eq!(
+            painted.get(),
+            0,
+            "a fresh object has never been laid out, so there is nothing of it \
+             to draw"
+        );
+
+        object.layout(BoxConstraints::loose(100.0, 100.0));
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 100.0));
+            object.paint(&mut context, Offset::ZERO);
+        }
+        assert_eq!(painted.get(), 1, "and once laid out it draws");
     }
 }
