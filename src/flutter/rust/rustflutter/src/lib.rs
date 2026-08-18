@@ -53,7 +53,11 @@ pub mod services;
 pub mod widgets;
 
 pub use animation::{
-    Animations, ColorTween, Controller, Curve, Direction, FloatTween, OffsetTween, Repeat, Tween,
+    AlwaysStoppedAnimation, Animatable, Animation, AnimationListener, AnimationMax, AnimationMean,
+    AnimationMin, AnimationStatus, AnimationStyle, Animations, ConstantTween, Controller,
+    CurveTween, CurvedAnimation, Direction, FlippedTweenSequence, FloatTween, IntTween,
+    OffsetTween, ProxyAnimation, RectTween, Repeat, ReverseAnimation, ReverseTween, SizeTween,
+    StepTween, Tween, TweenSequence, TweenSequenceItem,
 };
 #[cfg(not(test))]
 pub use app::run;

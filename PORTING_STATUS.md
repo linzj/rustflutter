@@ -164,6 +164,20 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P5 动画对象图(2026-08-18)。** `Animation` trait(value/status/listener 四
+面)+`AnimationStatus` 四态与 isDismissed/isCompleted/isAnimating、
+`AnimationListeners` 共用簿记(懒/急/本地值/本地状态四个 mixin 并一)、
+`ProxyAnimation`(set_parent 跨换公告状态)、`ReverseAnimation`(1-t+状态对翻)、
+`CurvedAnimation`(端点 clamp+reverseCurve)、`AnimationMean/Max/Min`、
+`AlwaysStoppedAnimation`;`Animatable` trait+`ChainedAnimatable::evaluate`
+(inner→outer);`CurveTween/ReverseTween/StepTween/IntTween/SizeTween/
+RectTween/ConstantTween`;`TweenSequence`(权重分段+局部 t)/
+`FlippedTweenSequence`/`TweenSequenceItem`(tween/gap);`AnimationStyle`
+(at_most 字段回退)。`Controller` 即 AnimationController 的既有形态。
+TrainHoppingAnimation 留待首个消费者(曲线可经 ProxyAnimation 直换)。
+**persistent header 的 snap 与渐变 lerp 两个记录分歧自此有对象图可关**——
+改挂账为待接线。
+
 **rendering 层收账(2026-08-18):211/243 入账。** 本轮判定入账的大块:
 `object.dart` 协议族 12 类(RenderObject≙RenderBox trait、ParentData 三件≙容器
 持有、PaintingContext≙PaintContext、PipelineOwner/Manifold≙帧序+脏列表——

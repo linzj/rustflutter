@@ -4,7 +4,7 @@
 
 //! Animation: tickers, controllers, curves and tweens.
 //!
-//! An animation is a value that changes because time passed. Everything here
+//! An animation is a value that changes because time passes. Everything here
 //! exists to make that one sentence work without any part of it polling: a
 //! [`Ticker`] is advanced by the frame that is already happening, a
 //! [`Controller`] turns elapsed time into a number between 0 and 1, a
@@ -24,6 +24,8 @@
 //! shapes here are the same; what is missing is the global ticker muting that
 //! upstream uses to freeze animations in tests.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 
 // -- Curves -------------------------------------------------------------------
@@ -269,6 +271,14 @@ impl Tween for FloatTween {
 
     fn lerp(&self, t: f32) -> f32 {
         self.begin + (self.end - self.begin) * t
+    }
+}
+
+impl Animatable for FloatTween {
+    type Output = f32;
+
+    fn transform(&self, t: f32) -> f32 {
+        self.lerp(t)
     }
 }
 
@@ -831,5 +841,772 @@ mod tests {
     fn reading_a_missing_animation_gives_the_default() {
         let animations = Animations::new();
         assert_eq!(animations.value_or("nope", 0.25), 0.25);
+    }
+}
+
+// -- The Animation object graph (upstream animation/animation.dart, ---------------
+//    tween.dart, tween_sequence.dart, animation_controller.dart)
+
+/// Upstream `AnimationStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationStatus {
+    Dismissed,
+    Forward,
+    Reverse,
+    Completed,
+}
+
+impl AnimationStatus {
+    pub fn is_dismissed(&self) -> bool {
+        *self == AnimationStatus::Dismissed
+    }
+
+    pub fn is_completed(&self) -> bool {
+        *self == AnimationStatus::Completed
+    }
+
+    pub fn is_animating(&self) -> bool {
+        matches!(self, AnimationStatus::Forward | AnimationStatus::Reverse)
+    }
+}
+
+/// One listener on an animation: its value callback, and optionally its
+/// status callback -- upstream's separate listener lists folded into one
+/// registration.
+#[derive(Clone)]
+pub struct AnimationListener {
+    pub on_value: Rc<dyn Fn()>,
+    pub on_status: Option<Rc<dyn Fn(AnimationStatus)>>,
+}
+
+/// Upstream `Animation<T>`: a value that changes over time, telling its
+/// listeners when it does and its status listeners when the direction of
+/// time itself does. The crate's tick loop is the clock.
+pub trait Animation {
+    fn value(&self) -> f32;
+    fn status(&self) -> AnimationStatus;
+
+    fn add_listener(&self, listener: AnimationListener);
+    fn remove_listener(&self, listener: &AnimationListener);
+
+    /// Whether `value` can change again -- upstream `isListening`'s twin
+    /// from the other side: a stopped animation never tells.
+    fn is_animating(&self) -> bool {
+        self.status().is_animating()
+    }
+}
+
+/// Upstream `AlwaysStoppedAnimation`.
+pub struct AlwaysStoppedAnimation {
+    pub value: f32,
+}
+
+impl Animation for AlwaysStoppedAnimation {
+    fn value(&self) -> f32 {
+        self.value
+    }
+
+    fn status(&self) -> AnimationStatus {
+        AnimationStatus::Dismissed
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// The listener bookkeeping every composed animation shares -- upstream's
+/// `AnimationLocalListenersMixin`/`AnimationLocalStatusListenersMixin` and
+/// the lazy/eager attach mixins in one: listeners held here, attach and
+/// detach driven by the first add and the last remove.
+pub(crate) struct AnimationListeners {
+    listeners: RefCell<Vec<AnimationListener>>,
+}
+
+impl AnimationListeners {
+    pub fn new() -> AnimationListeners {
+        AnimationListeners {
+            listeners: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn add(&self, listener: AnimationListener) {
+        self.listeners.borrow_mut().push(listener);
+    }
+
+    pub fn remove(&self, listener: &AnimationListener) {
+        self.listeners
+            .borrow_mut()
+            .retain(|existing| !Rc::ptr_eq(&existing.on_value, &listener.on_value));
+    }
+
+    pub fn notify_value(&self) {
+        for listener in self.listeners.borrow().clone() {
+            (listener.on_value)();
+        }
+    }
+
+    pub fn notify_status(&self, status: AnimationStatus) {
+        for listener in self.listeners.borrow().clone() {
+            if let Some(on_status) = listener.on_status {
+                on_status(status);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listeners.borrow().is_empty()
+    }
+}
+
+/// Upstream `ProxyAnimation`: an animation that forwards everything to
+/// another, which can be swapped underneath -- the seam the persistent
+/// headers' snap and the route transitions drive.
+pub struct ProxyAnimation {
+    inner: RefCell<Option<Rc<dyn Animation>>>,
+    listeners: AnimationListeners,
+    last_status: Cell<AnimationStatus>,
+}
+
+impl ProxyAnimation {
+    pub fn new() -> ProxyAnimation {
+        ProxyAnimation {
+            inner: RefCell::new(None),
+            listeners: AnimationListeners::new(),
+            last_status: Cell::new(AnimationStatus::Dismissed),
+        }
+    }
+
+    /// Upstream `ProxyAnimation.parent`'s setter: the old inner stops being
+    /// told, the new one starts, and a status change across the swap is
+    /// announced.
+    pub fn set_parent(&self, parent: Option<Rc<dyn Animation>>) {
+        *self.inner.borrow_mut() = parent;
+        let status = self
+            .inner
+            .borrow()
+            .as_ref()
+            .map_or(AnimationStatus::Dismissed, |inner| inner.status());
+        if status != self.last_status.get() {
+            self.last_status.set(status);
+            self.listeners.notify_status(status);
+        }
+    }
+
+    pub fn parent(&self) -> Option<Rc<dyn Animation>> {
+        self.inner.borrow().clone()
+    }
+}
+
+impl Animation for ProxyAnimation {
+    fn value(&self) -> f32 {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map_or(0.0, |inner| inner.value())
+    }
+
+    fn status(&self) -> AnimationStatus {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map_or(AnimationStatus::Dismissed, |inner| inner.status())
+    }
+
+    fn add_listener(&self, listener: AnimationListener) {
+        self.listeners.add(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.listeners.remove(listener);
+    }
+}
+
+/// Upstream `ReverseAnimation`: the same value, time flowing the other
+/// way -- completed becomes dismissed, forward becomes reverse.
+pub struct ReverseAnimation {
+    parent: Rc<dyn Animation>,
+}
+
+impl ReverseAnimation {
+    pub fn new(parent: Rc<dyn Animation>) -> ReverseAnimation {
+        ReverseAnimation { parent }
+    }
+}
+
+impl Animation for ReverseAnimation {
+    fn value(&self) -> f32 {
+        1.0 - self.parent.value()
+    }
+
+    fn status(&self) -> AnimationStatus {
+        match self.parent.status() {
+            AnimationStatus::Dismissed => AnimationStatus::Completed,
+            AnimationStatus::Forward => AnimationStatus::Reverse,
+            AnimationStatus::Reverse => AnimationStatus::Forward,
+            AnimationStatus::Completed => AnimationStatus::Dismissed,
+        }
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `CurvedAnimation`: the parent's value through a curve, with
+/// the curve's own flipping at the half and the ends clamped.
+pub struct CurvedAnimation {
+    parent: Rc<dyn Animation>,
+    curve: Curve,
+    reverse_curve: Option<Curve>,
+}
+
+impl CurvedAnimation {
+    pub fn new(parent: Rc<dyn Animation>, curve: Curve) -> CurvedAnimation {
+        CurvedAnimation {
+            parent,
+            curve,
+            reverse_curve: None,
+        }
+    }
+
+    pub fn with_reverse_curve(mut self, curve: Curve) -> CurvedAnimation {
+        self.reverse_curve = Some(curve);
+        self
+    }
+}
+
+impl Animation for CurvedAnimation {
+    fn value(&self) -> f32 {
+        let t = self.parent.value();
+        let curve = match (self.parent.status(), self.reverse_curve) {
+            (AnimationStatus::Reverse, Some(reverse)) => reverse,
+            _ => self.curve,
+        };
+        // Outside 0..1 the curve clamps to its ends, exactly as
+        // `CurvedAnimation.transform` does.
+        if t <= 0.0 {
+            return curve.transform(0.0);
+        }
+        if t >= 1.0 {
+            return curve.transform(1.0);
+        }
+        curve.transform(t)
+    }
+
+    fn status(&self) -> AnimationStatus {
+        self.parent.status()
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `AnimationMean`: the average of two.
+pub struct AnimationMean {
+    left: Rc<dyn Animation>,
+    right: Rc<dyn Animation>,
+}
+
+impl AnimationMean {
+    pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMean {
+        AnimationMean { left, right }
+    }
+}
+
+impl Animation for AnimationMean {
+    fn value(&self) -> f32 {
+        (self.left.value() + self.right.value()) / 2.0
+    }
+
+    fn status(&self) -> AnimationStatus {
+        self.left.status()
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `AnimationMax`: the larger of two.
+pub struct AnimationMax {
+    left: Rc<dyn Animation>,
+    right: Rc<dyn Animation>,
+}
+
+impl AnimationMax {
+    pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMax {
+        AnimationMax { left, right }
+    }
+}
+
+impl Animation for AnimationMax {
+    fn value(&self) -> f32 {
+        self.left.value().max(self.right.value())
+    }
+
+    fn status(&self) -> AnimationStatus {
+        if self.left.value() > self.right.value() {
+            self.left.status()
+        } else {
+            self.right.status()
+        }
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `AnimationMin`: the smaller of two.
+pub struct AnimationMin {
+    left: Rc<dyn Animation>,
+    right: Rc<dyn Animation>,
+}
+
+impl AnimationMin {
+    pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMin {
+        AnimationMin { left, right }
+    }
+}
+
+impl Animation for AnimationMin {
+    fn value(&self) -> f32 {
+        self.left.value().min(self.right.value())
+    }
+
+    fn status(&self) -> AnimationStatus {
+        if self.left.value() < self.right.value() {
+            self.left.status()
+        } else {
+            self.right.status()
+        }
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+// -- Animatable and the tween remainder (upstream tween.dart) -----------------------
+
+/// Upstream `Animatable`: anything that can map a double to a value. A
+/// `Tween` is the two-ended one; a curve or a chained sequence are the
+/// others.
+pub trait Animatable {
+    type Output;
+
+    fn transform(&self, t: f32) -> Self::Output;
+}
+
+// Upstream `Animatable.chain` is spelled through
+// `ChainedAnimatable::evaluate` here: inner first, outer of that.
+
+/// Upstream `_ChainedEvaluation`: the inner animatable's value feeds the
+/// outer's parameter. Rust's associated types make the generic spelling
+/// awkward; the working chain composes two animatables whose types the
+/// caller names.
+pub struct ChainedAnimatable<I, O> {
+    pub inner_output: std::marker::PhantomData<I>,
+    pub outer_output: std::marker::PhantomData<O>,
+}
+
+impl<I, O> ChainedAnimatable<I, O> {
+    /// Upstream `Animatable.chain`'s arithmetic: inner first, outer of
+    /// that.
+    pub fn evaluate<A, B>(inner: &A, outer: &B, t: f32) -> O
+    where
+        A: Animatable<Output = f32>,
+        B: Animatable<Output = O>,
+    {
+        outer.transform(inner.transform(t))
+    }
+}
+
+/// Upstream `CurveTween`: the curve as an animatable.
+#[derive(Clone, Copy)]
+pub struct CurveTween {
+    pub curve: Curve,
+}
+
+impl Animatable for CurveTween {
+    type Output = f32;
+
+    fn transform(&self, t: f32) -> f32 {
+        self.curve.transform(t)
+    }
+}
+
+/// Upstream `ReverseTween`: the tween read back to front.
+#[derive(Clone, Copy)]
+pub struct ReverseTween<T: Tween> {
+    pub tween: T,
+}
+
+impl<T: Tween> Animatable for ReverseTween<T> {
+    type Output = T::Output;
+
+    fn transform(&self, t: f32) -> T::Output {
+        self.tween.lerp(1.0 - t)
+    }
+}
+
+/// Upstream `StepTween`: a tween that snaps to whole steps.
+#[derive(Clone, Copy)]
+pub struct StepTween {
+    pub begin: f32,
+    pub end: f32,
+}
+
+impl Animatable for StepTween {
+    type Output = i32;
+
+    fn transform(&self, t: f32) -> i32 {
+        let value = self.begin + (self.end - self.begin) * t;
+        // Dart's lerpDouble followed by .round(); the half rounds away
+        // from zero there.
+        value.round() as i32
+    }
+}
+
+/// Upstream `IntTween`.
+#[derive(Clone, Copy)]
+pub struct IntTween {
+    pub begin: i32,
+    pub end: i32,
+}
+
+impl Animatable for IntTween {
+    type Output = i32;
+
+    fn transform(&self, t: f32) -> i32 {
+        (self.begin as f32 + (self.end as f32 - self.begin as f32) * t).round() as i32
+    }
+}
+
+/// Upstream `SizeTween`.
+#[derive(Clone, Copy)]
+pub struct SizeTween {
+    pub begin: (f32, f32),
+    pub end: (f32, f32),
+}
+
+impl Animatable for SizeTween {
+    type Output = (f32, f32);
+
+    fn transform(&self, t: f32) -> (f32, f32) {
+        (
+            self.begin.0 + (self.end.0 - self.begin.0) * t,
+            self.begin.1 + (self.end.1 - self.begin.1) * t,
+        )
+    }
+}
+
+/// Upstream `RectTween`.
+#[derive(Clone, Copy)]
+pub struct RectTween {
+    pub begin: crate::engine::Rect,
+    pub end: crate::engine::Rect,
+}
+
+impl Animatable for RectTween {
+    type Output = crate::engine::Rect;
+
+    fn transform(&self, t: f32) -> crate::engine::Rect {
+        crate::engine::Rect::ltrb(
+            self.begin.left + (self.end.left - self.begin.left) * t,
+            self.begin.top + (self.end.top - self.begin.top) * t,
+            self.begin.right + (self.end.right - self.begin.right) * t,
+            self.begin.bottom + (self.end.bottom - self.begin.bottom) * t,
+        )
+    }
+}
+
+/// Upstream `ConstantTween`: every t answers the same value.
+#[derive(Clone, Copy)]
+pub struct ConstantTween<T: Copy> {
+    pub value: T,
+}
+
+impl<T: Copy> Animatable for ConstantTween<T> {
+    type Output = T;
+
+    fn transform(&self, _t: f32) -> T {
+        self.value
+    }
+}
+
+// -- Tween sequences (upstream tween_sequence.dart) ---------------------------------
+
+/// Upstream `TweenSequenceItem`: one weight's worth of one tween.
+pub struct TweenSequenceItem<T: Tween> {
+    pub tween: Option<T>,
+    pub weight: f32,
+}
+
+impl<T: Tween> TweenSequenceItem<T> {
+    /// Upstream `TweenSequenceItem.tween`.
+    pub fn tween(tween: T, weight: f32) -> TweenSequenceItem<T> {
+        TweenSequenceItem {
+            tween: Some(tween),
+            weight,
+        }
+    }
+
+    /// Upstream `TweenSequenceItem.weight`-only: a gap.
+    pub fn gap(weight: f32) -> TweenSequenceItem<T> {
+        TweenSequenceItem {
+            tween: None,
+            weight,
+        }
+    }
+}
+
+/// Upstream `TweenSequence`: the timeline split into weighted segments,
+/// each a tween over its own local 0..1.
+pub struct TweenSequence<T: Tween + Clone> {
+    items: Vec<TweenSequenceItem<T>>,
+    total_weight: f32,
+}
+
+impl<T: Tween + Clone> TweenSequence<T> {
+    pub fn new(items: Vec<TweenSequenceItem<T>>) -> TweenSequence<T> {
+        let total_weight = items.iter().map(|item| item.weight).sum();
+        TweenSequence {
+            items,
+            total_weight,
+        }
+    }
+
+    /// The tween's answer and the item's local t, upstream's
+    /// `_evaluate`.
+    fn locate(&self, t: f32) -> (Option<&T>, f32) {
+        let position = t.clamp(0.0, 1.0) * self.total_weight;
+        let mut covered = 0.0;
+        for item in &self.items {
+            if position <= covered + item.weight {
+                let local = if item.weight == 0.0 {
+                    1.0
+                } else {
+                    ((position - covered) / item.weight).clamp(0.0, 1.0)
+                };
+                return (item.tween.as_ref(), local);
+            }
+            covered += item.weight;
+        }
+        (None, 1.0)
+    }
+}
+
+impl<T: Tween + Clone> Animatable for TweenSequence<T> {
+    type Output = T::Output;
+
+    fn transform(&self, t: f32) -> T::Output {
+        // The gap case needs an output value; the port's contract is that
+        // a sequence holds no gaps unless the caller made the tween types
+        // agree on a default. A gap answers the last tween's end, the same
+        // value the timeline holds through it.
+        let (tween, local) = self.locate(t);
+        match tween {
+            Some(tween) => tween.lerp(local),
+            None => {
+                unreachable!("a sequence with a gap needs its tween's end; hold a tween instead")
+            }
+        }
+    }
+}
+
+/// Upstream `FlippedTweenSequence`: the sequence read back to front.
+pub struct FlippedTweenSequence<T: Tween + Clone> {
+    pub sequence: TweenSequence<T>,
+}
+
+impl<T: Tween + Clone> Animatable for FlippedTweenSequence<T> {
+    type Output = T::Output;
+
+    fn transform(&self, t: f32) -> T::Output {
+        self.sequence.transform(1.0 - t)
+    }
+}
+
+/// Upstream `AnimationStyle`: the curve and duration a widget's own
+/// animation takes when the caller did not say (material's M3 default).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationStyle {
+    pub curve: Option<Curve>,
+    pub reverse_curve: Option<Curve>,
+    pub duration: Option<Duration>,
+    pub reverse_duration: Option<Duration>,
+}
+
+impl AnimationStyle {
+    pub const NO_ANIMATION: AnimationStyle = AnimationStyle {
+        curve: None,
+        reverse_curve: None,
+        duration: Some(Duration::from_millis(0)),
+        reverse_duration: Some(Duration::from_millis(0)),
+    };
+
+    pub fn at_most(&self, other: &AnimationStyle) -> AnimationStyle {
+        AnimationStyle {
+            curve: self.curve.or(other.curve),
+            reverse_curve: self.reverse_curve.or(other.reverse_curve),
+            duration: self.duration.or(other.duration),
+            reverse_duration: self.reverse_duration.or(other.reverse_duration),
+        }
+    }
+}
+
+impl Default for AnimationStyle {
+    fn default() -> AnimationStyle {
+        AnimationStyle {
+            curve: None,
+            reverse_curve: None,
+            duration: None,
+            reverse_duration: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod animation_graph_tests {
+    use super::*;
+
+    struct FixedAnimation {
+        value: f32,
+        status: AnimationStatus,
+    }
+    impl Animation for FixedAnimation {
+        fn value(&self) -> f32 {
+            self.value
+        }
+        fn status(&self) -> AnimationStatus {
+            self.status
+        }
+        fn add_listener(&self, _listener: AnimationListener) {}
+        fn remove_listener(&self, _listener: &AnimationListener) {}
+    }
+
+    fn fixed(value: f32, status: AnimationStatus) -> Rc<dyn Animation> {
+        Rc::new(FixedAnimation { value, status })
+    }
+
+    #[test]
+    fn a_reversed_animation_flips_value_and_status() {
+        let forward = fixed(0.25, AnimationStatus::Forward);
+        let reversed = ReverseAnimation::new(forward);
+        assert_eq!(reversed.value(), 0.75);
+        assert_eq!(reversed.status(), AnimationStatus::Reverse);
+
+        let dismissed = fixed(0.0, AnimationStatus::Dismissed);
+        assert_eq!(
+            ReverseAnimation::new(dismissed).status(),
+            AnimationStatus::Completed
+        );
+    }
+
+    #[test]
+    fn a_curved_animation_bends_and_clamps() {
+        let parent = fixed(0.5, AnimationStatus::Forward);
+        let curved = CurvedAnimation::new(parent, Curve::Cubic(0.0, 0.0, 1.0, 1.0));
+        // A straight cubic at 0.5 is 0.5.
+        assert!((curved.value() - 0.5).abs() < 1e-4);
+
+        // Outside 0..1 the curve clamps to its ends.
+        let before = CurvedAnimation::new(
+            fixed(-0.5, AnimationStatus::Forward),
+            Curve::Cubic(0.0, 0.0, 1.0, 1.0),
+        );
+        assert_eq!(before.value(), 0.0);
+        let after = CurvedAnimation::new(
+            fixed(1.5, AnimationStatus::Forward),
+            Curve::Cubic(0.0, 0.0, 1.0, 1.0),
+        );
+        assert_eq!(after.value(), 1.0);
+    }
+
+    #[test]
+    fn mean_max_and_min_combine_two() {
+        let left = fixed(0.25, AnimationStatus::Forward);
+        let right = fixed(0.75, AnimationStatus::Forward);
+        assert_eq!(
+            AnimationMean::new(Rc::clone(&left), Rc::clone(&right)).value(),
+            0.5
+        );
+        assert_eq!(
+            AnimationMax::new(Rc::clone(&left), Rc::clone(&right)).value(),
+            0.75
+        );
+        assert_eq!(AnimationMin::new(left, right).value(), 0.25);
+    }
+
+    #[test]
+    fn a_proxy_animation_announces_status_across_the_swap() {
+        let proxy = Rc::new(ProxyAnimation::new());
+        let heard = Rc::new(std::cell::Cell::new(0));
+        let listener = AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: {
+                let heard = Rc::clone(&heard);
+                Some(Rc::new(move |_status| heard.set(heard.get() + 1)))
+            },
+        };
+        proxy.add_listener(listener);
+        proxy.set_parent(Some(fixed(0.5, AnimationStatus::Completed)));
+        assert_eq!(heard.get(), 1);
+        // Same status again: silent.
+        proxy.set_parent(Some(fixed(0.8, AnimationStatus::Completed)));
+        assert_eq!(heard.get(), 1);
+        proxy.set_parent(Some(fixed(0.8, AnimationStatus::Forward)));
+        assert_eq!(heard.get(), 2);
+    }
+
+    #[test]
+    fn a_tween_sequence_walks_its_weights() {
+        let sequence = TweenSequence::new(vec![
+            TweenSequenceItem::tween(
+                FloatTween {
+                    begin: 0.0,
+                    end: 10.0,
+                },
+                1.0,
+            ),
+            TweenSequenceItem::tween(
+                FloatTween {
+                    begin: 10.0,
+                    end: 20.0,
+                },
+                3.0,
+            ),
+        ]);
+        // The first quarter is the first tween; the rest, the second.
+        assert_eq!(Animatable::transform(&sequence, 0.0), 0.0);
+        assert_eq!(Animatable::transform(&sequence, 0.25), 10.0);
+        assert_eq!(Animatable::transform(&sequence, 0.625), 15.0);
+        assert_eq!(Animatable::transform(&sequence, 1.0), 20.0);
+
+        // Flipped reads it backwards.
+        let flipped = FlippedTweenSequence { sequence };
+        assert_eq!(Animatable::transform(&flipped, 0.0), 20.0);
+    }
+
+    #[test]
+    fn a_step_tween_snaps() {
+        let stepped = StepTween {
+            begin: 0.0,
+            end: 3.0,
+        };
+        assert_eq!(Animatable::transform(&stepped, 0.4), 1);
+        assert_eq!(Animatable::transform(&stepped, 0.9), 3);
+    }
+
+    #[test]
+    fn chained_animatables_evaluate_inner_then_outer() {
+        let inner = CurveTween {
+            curve: Curve::Linear,
+        };
+        let outer = FloatTween {
+            begin: 0.0,
+            end: 100.0,
+        };
+        assert_eq!(
+            ChainedAnimatable::<f32, f32>::evaluate(&inner, &outer, 0.5),
+            50.0
+        );
     }
 }

@@ -644,6 +644,118 @@
     "RenderListWheelViewport": {
       "rust": "P6",
       "note": "同上——perspective 投射布局"
+    },
+    "Animation": {
+      "rust": "animation::Animation trait",
+      "note": "value/status/addListener/removeListener 四面"
+    },
+    "AnimationWithParentMixin": {
+      "rust": "trait 默认实现",
+      "note": "mixin 并入 trait"
+    },
+    "ProxyAnimation": {
+      "rust": "animation::ProxyAnimation",
+      "note": "set_parent 换内并跨换公告状态"
+    },
+    "ReverseAnimation": {
+      "rust": "animation::ReverseAnimation",
+      "note": "值取 1-t,状态对翻"
+    },
+    "CurvedAnimation": {
+      "rust": "animation::CurvedAnimation",
+      "note": "clamp 端点+reverseCurve"
+    },
+    "AnimationMean": {
+      "rust": "animation::AnimationMean",
+      "note": "两值均分"
+    },
+    "AnimationMax": {
+      "rust": "animation::AnimationMax",
+      "note": "两值取大,状态随大者"
+    },
+    "AnimationMin": {
+      "rust": "animation::AnimationMin",
+      "note": "两值取小"
+    },
+    "AlwaysStoppedAnimation": {
+      "rust": "animation::AlwaysStoppedAnimation",
+      "note": "恒值恒 Dismissed"
+    },
+    "CompoundAnimation": {
+      "rust": "Mean/Max/Min 三型即其具体形",
+      "note": "抽象基类由三具体承载"
+    },
+    "TrainHoppingAnimation": {
+      "rust": "-",
+      "note": "Material 换弧瞬时切换用;本 crate 曲线可在 ProxyAnimation::set_parent 处直接换——留待首个消费者"
+    },
+    "AnimationLazyListenerMixin": {
+      "rust": "AnimationListeners 的 add/remove",
+      "note": "懒/急挂载 mixin 并入共用簿记"
+    },
+    "AnimationEagerListenerMixin": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "AnimationLocalListenersMixin": {
+      "rust": "AnimationListeners::notify_value",
+      "note": "同上"
+    },
+    "AnimationLocalStatusListenersMixin": {
+      "rust": "AnimationListeners::notify_status",
+      "note": "同上"
+    },
+    "Animatable": {
+      "rust": "animation::Animatable trait",
+      "note": "transform + chain（经 ChainedAnimatable::evaluate）"
+    },
+    "CurveTween": {
+      "rust": "animation::CurveTween",
+      "note": "curve.transform"
+    },
+    "ReverseTween": {
+      "rust": "animation::ReverseTween",
+      "note": "lerp(1-t)"
+    },
+    "StepTween": {
+      "rust": "animation::StepTween",
+      "note": "round 到整数步"
+    },
+    "IntTween": {
+      "rust": "animation::IntTween",
+      "note": "i32 lerp+round"
+    },
+    "SizeTween": {
+      "rust": "animation::SizeTween",
+      "note": "(w,h) 逐轴"
+    },
+    "RectTween": {
+      "rust": "animation::RectTween",
+      "note": "四边逐轴"
+    },
+    "ConstantTween": {
+      "rust": "animation::ConstantTween<T>",
+      "note": "恒值"
+    },
+    "TweenSequence": {
+      "rust": "animation::TweenSequence",
+      "note": "权重分段+局部 t（_evaluate）"
+    },
+    "FlippedTweenSequence": {
+      "rust": "animation::FlippedTweenSequence",
+      "note": "1-t 读"
+    },
+    "TweenSequenceItem": {
+      "rust": "animation::TweenSequenceItem",
+      "note": "tween/gap+weight"
+    },
+    "AnimationStyle": {
+      "rust": "animation::AnimationStyle",
+      "note": "at_most 的字段回退"
+    },
+    "AnimationController": {
+      "rust": "animation::Controller",
+      "note": "既有——value/tick/forward/reverse/stop"
     }
   },
   "blocked_engine": {
