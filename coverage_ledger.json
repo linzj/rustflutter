@@ -1160,6 +1160,166 @@
     "SliverAnimatedOpacity": {
       "rust": "ProxySliverBehavior::Opacity + animated",
       "note": "两件已在,组合"
+    },
+    "AnimatedWidget": {
+      "rust": "implicit::animated()（每帧重建即其 rebuild）",
+      "note": "listen-and-rebuild 职责在帧序"
+    },
+    "AnimatedBuilder": {
+      "rust": "animated(target, …, build)",
+      "note": "同上"
+    },
+    "TransitionBuilder": {
+      "rust": "build 闭包类型",
+      "note": "类型别名"
+    },
+    "ListenableBuilder": {
+      "rust": "animated + ChangeNotifier 的 tick",
+      "note": "listen 面经帧序"
+    },
+    "ValueListenableBuilder": {
+      "rust": "animated + ValueNotifier",
+      "note": "同上"
+    },
+    "TweenAnimationBuilder": {
+      "rust": "implicit::animated",
+      "note": "即泛型门面"
+    },
+    "RepeatingAnimationBuilder": {
+      "rust": "Controller::with_repeat + animated",
+      "note": "Repeat 既有"
+    },
+    "StatusTransitionBuilder": {
+      "rust": "animated + AnimationListener.on_status",
+      "note": "状态回调已在对象图"
+    },
+    "DecoratedBox": {
+      "rust": "RenderDecoratedBox + framework::leaf",
+      "note": "渲染对象已在,门面经 leaf"
+    },
+    "DecoratedSliver": {
+      "rust": "RenderSliverToBoxAdapter 包装饰盒",
+      "note": "rendering 侧已入账"
+    },
+    "ColorFiltered": {
+      "rust": "save_layer + with_blend_mode 的 Paint",
+      "note": "ColorFilterLayer 同账"
+    },
+    "BannerPainter": {
+      "rust": "controls.rs Banner 的绘制",
+      "note": "Material banner 已画"
+    },
+    "Banner": {
+      "rust": "controls::Banner",
+      "note": "既有"
+    },
+    "Feedback": {
+      "rust": "services::system 的触感/声效门面",
+      "note": "HapticFeedback/SystemSound 已在"
+    },
+    "FlutterLogo": {
+      "rust": "FlutterLogoDecoration",
+      "note": "decoration.rs 已入账"
+    },
+    "DefaultTextStyle": {
+      "rust": "Provider<TextStyle> + shape() 读环境",
+      "note": "环境经 Provider"
+    },
+    "DefaultTextStyleTransition": {
+      "rust": "TextStyle Lerp + animated",
+      "note": "同上"
+    },
+    "DefaultSelectionStyle": {
+      "rust": "P7 文本选择波",
+      "note": "随 selection"
+    },
+    "DefaultTextEditingShortcuts": {
+      "rust": "shortcuts::default_traversal_registry",
+      "note": "Tab/Shift-Tab 已在;文本编辑系快捷键随 editable 扩展"
+    },
+    "DoNothingAndStopPropagationTextIntent": {
+      "rust": "P7 editable 波",
+      "note": "文本编辑 intent 族"
+    },
+    "DesktopTextSelectionToolbarLayoutDelegate": {
+      "rust": "P7",
+      "note": "同上"
+    },
+    "DisposableBuildContext": {
+      "rust": "整树重装配——无挂卸生命周期",
+      "note": "crate 形态"
+    },
+    "Form": {
+      "rust": "FormState(editable.rs) 的表单聚合",
+      "note": "既有"
+    },
+    "FormField": {
+      "rust": "editable.rs 的字段族",
+      "note": "随 TextField 已有底子"
+    },
+    "FocusAttachment": {
+      "rust": "focus.rs 的 Focus/focusable",
+      "note": "既有"
+    },
+    "FocusTraversalPolicy": {
+      "rust": "focus.rs 遍历策略（NextFocusIntent 解析处）",
+      "note": "既有"
+    },
+    "WidgetOrderTraversalPolicy": {
+      "rust": "focus.rs 顺序遍历",
+      "note": "next()/previous() 即其实现"
+    },
+    "ReadingOrderTraversalPolicy": {
+      "rust": "同上（顺序即读序）",
+      "note": "同上"
+    },
+    "NextFocusIntent": {
+      "rust": "focus::next()",
+      "note": "既有"
+    },
+    "PreviousFocusIntent": {
+      "rust": "focus::previous()",
+      "note": "既有"
+    },
+    "ExcludeFocus": {
+      "rust": "focusable 的可聚焦开关",
+      "note": "Focus 字段"
+    },
+    "AutofillGroup": {
+      "rust": "P7（引擎通道位）",
+      "note": "随 editable"
+    },
+    "AutomaticKeepAlive": {
+      "rust": "离窗即弃（记录在案分歧）",
+      "note": "sliver 侧自陈"
+    },
+    "AnnotatedRegion": {
+      "rust": "P4 余量：注解区域查找",
+      "note": "随 AnnotatedRegionLayer"
+    },
+    "AbstractLayoutBuilder": {
+      "rust": "RenderSizeReporter（记录在案替身）",
+      "note": "PORTING_STATUS 形态差异条"
+    },
+    "LayoutBuilder": {
+      "rust": "同上",
+      "note": "同上"
+    },
+    "SliverLayoutBuilder": {
+      "rust": "同上（sliver 面）",
+      "note": "同上"
+    },
+    "Builder": {
+      "rust": "framework::component(闭包)",
+      "note": "component 即其本体"
+    },
+    "AppLifecycleListener": {
+      "rust": "platform.rs 的 lifecycle 回调",
+      "note": "AppLifecycleState 已在 services"
+    },
+    "AccessibilityInspector": {
+      "rust": "-",
+      "note": "debug 工具,P10"
     }
   },
   "blocked_engine": {

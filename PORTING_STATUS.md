@@ -164,6 +164,13 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:widgets 基座台账(2026-08-18)。** ~40 类判定入账:builder 族
+(component/animated 即本体)、DecoratedBox/Banner/Feedback/FlutterLogo 等门面
+(渲染对象与系统服务已在)、focus 遍历与 intent(focus.rs 既有)、
+DefaultTextStyle(Provider 环境)、LayoutBuilder 家族(RenderSizeReporter
+记录在案替身)、DisposableBuildContext(整树重装配无挂卸)、
+AutomaticKeepAlive(离窗即弃记录分歧)。widgets 层 198/722。
+
 **P4:async + implicit_animations(2026-08-18)。** `async.rs`:`ConnectionState`
 四态、`AsyncSnapshot<T>`(nothing/waiting/withData/withError/inState/
 hasData/hasError)、`async_builder`(poll 形态——crate 无异步运行时,future 的
