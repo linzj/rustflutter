@@ -164,6 +164,44 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 两个只说自己尺寸的 widget(2026-08-19)
+
+`preferred_size.rs`(新),四个上游类:`PreferredSizeWidget`、`PreferredSize`
+(`widgets/preferred_size.dart`),`SizeChangedLayoutNotification`、
+`SizeChangedLayoutNotifier`(`widgets/size_changed_layout_notifier.dart`)。两个都
+不画任何东西:一个在被量之前回答自己想要多大,另一个在被量之后说尺寸变了。
+
+**为什么会有「被量之前回答」这种事。** scaffold 要先给 app bar 定尺寸,而那时 bar
+还没布局——那一刻谁也量不了它,所以只能问它。这也是答案是一个 `Size` 而不是两个数
+的原因:任一维可以是无穷,读作「这根轴上没有意见」,app bar 就是有高度诉求、对宽度
+没意见。
+
+**记账的边界:** 上游的 `PreferredSizeWidget` 是一个 widget 类实现的接口,调用方拿
+到的是「一个恰好也是它的 Widget」。这个 crate 的 widget 全部擦除成 `AnyWidget`,没
+有位置再挂第二个接口,所以 `PreferredSize` 是一对东西——尺寸和 widget——而
+`PreferredSizeWidget` 是「能给出这么一对」的那个 trait。
+
+**回归行盯的地方:**
+
+* **首选尺寸不约束孩子。** 上游明说它不强制:孩子拿到的是实际传下来的约束,首选尺
+  寸只是父级在决定留多少地方时被告知的那个数。孩子随后要得更多就会溢出,和没有这个
+  widget 时一模一样。这条用「50×50 的 PreferredSize 里放一个 200×30 的孩子,量出来
+  是 200×30」钉住。
+* **第一次布局不算变化。** 上游自己的注释说了后果:那样就是「SizeObserver 重演」
+  ——树里每一个 notifier 都在第一帧触发,而那时什么都还没变。
+* **同一尺寸的第二次布局也不算变化。** 什么都没改的重布局不该叫醒任何人;这个通知
+  是给「跟着某个尺寸重绘」用的,白重绘一次正是这道判据省下的成本。
+* 尺寸真的变了才回调一次,停在那儿不再回调,**变回去又算一次**。
+
+`SizeChangedLayoutNotification` 对应上游的 `LayoutChangedNotification` 家族,而那
+一家的要点写在文档里:它在**布局过程中**到达,所以监听方自己不能再触发布局——响应它
+去改尺寸会死循环。它是给重绘用的。
+
+验证:`cargo test --lib` 1254 绿,GN `rustflutter_unittests` 1254 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1172 accounted / 701 MISSING。
+
+
 ### 识别器递给回调的那九样东西(2026-08-19)
 
 `gesture_details.rs`(新),九个数据类加一个接口:`TapDrag{Down,Up,Start,Update,End}Details`
