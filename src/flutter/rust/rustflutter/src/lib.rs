@@ -43,6 +43,7 @@ pub mod dual_transition_builder;
 pub mod editable;
 pub mod elevation_overlay;
 pub mod engine;
+pub mod fab_location;
 pub mod focus;
 pub mod foundation;
 pub mod framework;
