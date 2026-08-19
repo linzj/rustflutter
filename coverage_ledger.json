@@ -1841,6 +1841,10 @@
     "ButtonBar": {
       "rust": "overflow_bar::OverflowBar",
       "note": "上游自己把它标了 @Deprecated(\"Use OverflowBar instead\")，并且它的 build 就是把子项交给一个会溢出成列的行——这里的对应物就是 OverflowBar 本身，不是另写一个已被弃用的壳。"
+    },
+    "DateUtils": {
+      "rust": "pickers::{days_in_month, first_day_offset, month_delta, add_months_to_month_date, add_days_to_date, is_same_day, is_same_month} + Date::first_of_month",
+      "note": "上游那是一个 `abstract final class` —— Dart 里的「一袋静态函数，不许实例化」；Rust 的对应物就是一个模块里的自由函数，而 pickers.rs 正是那个模块。每个函数的文档都点了它对应的 DateUtils 静态方法。与 MatrixUtils 同一处理。"
     }
   },
   "blocked_engine": {

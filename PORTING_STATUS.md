@@ -164,6 +164,52 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 让日历可以换一本(2026-08-20)
+
+`CalendarDelegate` 和 `GregorianCalendarDelegate`(上游 `material/date.dart`)进
+`pickers.rs`;`DateUtils` 记账。`date.dart` 4/4。
+
+**这个 trait 是一道接缝。** 日期选择器关于日期的每一个问题都从这里走——这个月有几天、网
+格前面空几格、一个月之后是哪天——好让一本非公历的日历(回历、日本年号)给出不同的答案,
+而选择器不必知道答案不止一种。上游发的那一本 `GregorianCalendarDelegate` 就是默认那本,
+而它的实现体是**转发**:每个方法转给对应的 `DateUtils` 静态函数,这里则转给同模块里的自
+由函数。这个形状值得保留——**那些算术不需要 delegate 也能用,delegate 存在是为了让它可以
+被替换,不是为了拥有它。**
+
+**`date_only` 在这里是恒等,而它仍然留在 trait 上。** 上游要把时间剥掉,因为它的日期带时
+间,而差几个小时的两个 `DateTime` 在日历上是同一格。这个 crate 的 `Date` **本身就是**那
+个只有日期的类型,没有东西可剥。留着,是因为一本日期带时间的日历需要它,也因为写
+`delegate.date_only(d)` 的调用方不该去关心自己手上是哪一种。
+
+**回归行盯的地方:**
+
+* delegate 答出来的和自由函数一样(两者不能走散),包括 1900 不是闰年、2000 是。
+* **两个「没有日期」算同一天。** 上游是在 optional 上逐字段比,所以「没有」等于「没
+  有」——一个在问自己选中项有没有变的选择器就靠这条。
+* **给月份日期加月份会落在 1 号。** 上游写的是 `DateTime(year, month + n)`,**一个 day
+  都不给**,Dart 读作 1 号。没有这条,一个从 1 月 31 日往后翻页的选择器会落到 3 月 3
+  日。往回翻也一样。
+* **网格前面空几格跟着 locale 的一周起始日走。** 那是上游从 `MaterialLocalizations` 上读
+  的唯一一个数,这里直接传进来。2024 年 6 月 1 日是周六:周日起始空 6 格,周一起始空 5
+  格,周六起始不空。
+* **一个自定 delegate 真的能答出不同的东西**——用一本十三个月、每月二十八天的日历钉住这
+  条;而且它**白拿那些 provided 方法**,这正是做成 trait 而不是九个回调值得的地方。
+
+**没有照搬的一半,点名而不是打桩。** 上游另外十二个方法是格式化和解析
+(`formatMonthYear`、`formatYear`、`formatMediumDate`、`formatShortMonthDay`、
+`formatShortDate`、`formatFullDate`、`formatCompactDate`、`parseCompactDate`、
+`dateHelpText`),每一个都收 `MaterialLocalizations`,而这个 crate 还没有它(本地化那
+波)。在 trait 文档里逐个点名,这样将来补上是**新增**而不是**修正**。
+
+**`DateUtils` 记账而不是另写。** 上游那是一个 `abstract final class`——Dart 里的「一袋静
+态函数,不许实例化」;Rust 的对应物就是一个模块里的自由函数,而 `pickers.rs` 正是那个模
+块,每个函数的文档早就点了它对应的哪个 `DateUtils` 静态方法。和 `MatrixUtils` 同一处理,
+账本里有先例。
+
+验证:`cargo test --lib` 1432 绿,GN `rustflutter_unittests` 1432 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1227 accounted / 646 MISSING。
+
 ### 走弧线的点和矩形,以及那张动效表(2026-08-20)
 
 两个新模块:`arc.rs`(上游 `material/arc.dart`,3 个全到)和 `motion.rs`

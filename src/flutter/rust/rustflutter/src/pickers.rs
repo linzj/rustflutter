@@ -4628,6 +4628,134 @@ pub fn show_date_range_picker(dialog: DateRangePickerDialog) -> AnyWidget {
 // Tests.
 // ---------------------------------------------------------------------------
 
+// -- The calendar behind a picker ---------------------------------------------
+
+/// Upstream `CalendarDelegate` (`material/date.dart`): the seam that lets a
+/// date picker show a calendar that is not the Gregorian one.
+///
+/// Every question a picker asks about dates goes through here -- how many days
+/// are in this month, how many blanks lead the grid, what comes a month later
+/// -- so that a Hijri or Japanese-era calendar can answer differently without
+/// the picker knowing there is more than one answer. [`GregorianCalendarDelegate`]
+/// is the one upstream ships and the one the crate defaults to.
+///
+/// # What is here and what is waiting
+///
+/// The arithmetic half is here, which is the whole of what a picker's *layout*
+/// needs. Upstream's other twelve methods are formatting and parsing --
+/// `formatMonthYear`, `formatYear`, `formatMediumDate`, `formatShortMonthDay`,
+/// `formatShortDate`, `formatFullDate`, `formatCompactDate`,
+/// `parseCompactDate`, `dateHelpText` -- and every one of them takes a
+/// `MaterialLocalizations`, which this crate does not have yet (the
+/// localization wave). They are named here rather than stubbed, so that adding
+/// them later is an addition and not a correction.
+///
+/// # `date_only` is the identity here
+///
+/// Upstream's `dateOnly` strips the time from a `DateTime`, because upstream's
+/// dates carry one and two dates that differ only by a few hours are the same
+/// square on a calendar. This crate's [`Date`] has no time at all -- it *is*
+/// the date-only type -- so the method is an identity. It stays in the trait
+/// because a delegate for a calendar whose dates do carry time would need it,
+/// and because a caller writing `delegate.date_only(d)` should not have to
+/// know which kind it has.
+pub trait CalendarDelegate {
+    /// Upstream's `now()`.
+    fn now(&self) -> Date;
+
+    /// Upstream's `dateOnly`. See the trait docs: an identity for [`Date`].
+    fn date_only(&self, date: Date) -> Date {
+        date
+    }
+
+    /// Upstream's `datesOnly`, which is `dateOnly` on both ends.
+    fn dates_only(&self, range: DateTimeRange) -> DateTimeRange {
+        DateTimeRange::new(self.date_only(range.start), self.date_only(range.end))
+    }
+
+    /// Upstream's `isSameDay`, which answers **true for two nulls** -- the
+    /// comparison is field by field on optionals, so "no date" equals "no
+    /// date". A picker asking whether the selection changed relies on that.
+    fn is_same_day(&self, a: Option<Date>, b: Option<Date>) -> bool {
+        is_same_day(a, b)
+    }
+
+    /// Upstream's `isSameMonth`, with the same rule about two nulls.
+    fn is_same_month(&self, a: Option<Date>, b: Option<Date>) -> bool {
+        is_same_month(a, b)
+    }
+
+    /// Upstream's `monthDelta`: how many months apart two dates are, which is
+    /// how a picker turns a scroll offset into a page.
+    fn month_delta(&self, start: Date, end: Date) -> i32;
+
+    /// Upstream's `addMonthsToMonthDate`.
+    fn add_months_to_month_date(&self, month_date: Date, months_to_add: i32) -> Date;
+
+    /// Upstream's `addDaysToDate`.
+    fn add_days_to_date(&self, date: Date, days: i32) -> Date;
+
+    /// Upstream's `firstDayOffset`: how many blanks lead the calendar grid.
+    ///
+    /// Upstream takes a `MaterialLocalizations` and reads
+    /// `firstDayOfWeekIndex` off it; here the index is passed directly, since
+    /// that one number is all the method ever wanted from it.
+    fn first_day_offset(&self, year: i32, month: u32, first_day_of_week_index: u32) -> u32;
+
+    /// Upstream's `getDaysInMonth`.
+    fn days_in_month(&self, year: i32, month: u32) -> u32;
+
+    /// Upstream's `getMonth`: the first of that month.
+    fn get_month(&self, year: i32, month: u32) -> Date;
+
+    /// Upstream's `getDay`.
+    fn get_day(&self, year: i32, month: u32, day: u32) -> Date;
+}
+
+/// Upstream `GregorianCalendarDelegate`: the calendar everything defaults to.
+///
+/// Upstream's body is delegation -- every method forwards to the matching
+/// `DateUtils` static -- and so is this one, to the free functions in this
+/// module. That is the shape worth keeping: the arithmetic is usable without
+/// a delegate at all, and the delegate exists to make it *replaceable*, not to
+/// own it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct GregorianCalendarDelegate;
+
+impl CalendarDelegate for GregorianCalendarDelegate {
+    fn now(&self) -> Date {
+        Date::today()
+    }
+
+    fn month_delta(&self, start: Date, end: Date) -> i32 {
+        month_delta(start, end)
+    }
+
+    fn add_months_to_month_date(&self, month_date: Date, months_to_add: i32) -> Date {
+        add_months_to_month_date(month_date, months_to_add)
+    }
+
+    fn add_days_to_date(&self, date: Date, days: i32) -> Date {
+        add_days_to_date(date, days)
+    }
+
+    fn first_day_offset(&self, year: i32, month: u32, first_day_of_week_index: u32) -> u32 {
+        first_day_offset(year, month, first_day_of_week_index)
+    }
+
+    fn days_in_month(&self, year: i32, month: u32) -> u32 {
+        days_in_month(year, month)
+    }
+
+    fn get_month(&self, year: i32, month: u32) -> Date {
+        Date::new(year, month as i32, 1)
+    }
+
+    fn get_day(&self, year: i32, month: u32, day: u32) -> Date {
+        Date::new(year, month as i32, day as i32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5035,5 +5163,144 @@ mod tests {
             700.0,
         );
         assert_eq!(size, Size::new(800.0, 700.0));
+    }
+
+    #[test]
+    fn the_gregorian_delegate_answers_what_the_free_functions_do() {
+        // Upstream's body is delegation to `DateUtils`, and so is this one.
+        // The point of the class is that the arithmetic is *replaceable*, not
+        // that it owns it -- so the two must not be able to drift.
+        let calendar = GregorianCalendarDelegate;
+        assert_eq!(calendar.days_in_month(2024, 2), days_in_month(2024, 2));
+        assert_eq!(calendar.days_in_month(1900, 2), 28, "not a leap year");
+        assert_eq!(calendar.days_in_month(2000, 2), 29, "but this one is");
+        let start = Date::new(2024, 1, 31);
+        assert_eq!(
+            calendar.month_delta(start, Date::new(2025, 3, 1)),
+            month_delta(start, Date::new(2025, 3, 1))
+        );
+        assert_eq!(
+            calendar.add_days_to_date(start, 1),
+            Date::new(2024, 2, 1),
+            "the end of January is followed by February"
+        );
+    }
+
+    #[test]
+    fn date_only_is_the_identity_because_a_date_here_carries_no_time() {
+        // Upstream strips the time, because two `DateTime`s a few hours apart
+        // are the same square on a calendar. This crate's `Date` *is* the
+        // date-only type, so the method has nothing to strip -- and it stays
+        // on the trait so a caller never has to know which kind it has.
+        let calendar = GregorianCalendarDelegate;
+        let date = Date::new(2024, 6, 15);
+        assert_eq!(calendar.date_only(date), date);
+        let range = DateTimeRange::new(Date::new(2024, 1, 1), Date::new(2024, 12, 31));
+        assert_eq!(calendar.dates_only(range), range);
+    }
+
+    #[test]
+    fn two_missing_dates_are_the_same_day() {
+        // Upstream compares field by field on optionals, so "no date" equals
+        // "no date" -- which is what a picker asking whether its selection
+        // changed relies on.
+        let calendar = GregorianCalendarDelegate;
+        assert!(calendar.is_same_day(None, None));
+        assert!(calendar.is_same_month(None, None));
+        assert!(!calendar.is_same_day(Some(Date::new(2024, 6, 15)), None));
+        assert!(calendar.is_same_month(Some(Date::new(2024, 6, 1)), Some(Date::new(2024, 6, 30))));
+        assert!(!calendar.is_same_day(Some(Date::new(2024, 6, 1)), Some(Date::new(2024, 6, 30))));
+    }
+
+    #[test]
+    fn adding_months_to_a_month_date_lands_on_the_first() {
+        // Upstream's `DateTime(monthDate.year, monthDate.month + monthsToAdd)`
+        // with no day at all, which Dart reads as the first. Without that, a
+        // picker paging from the 31st of January would land on the 3rd of
+        // March.
+        let calendar = GregorianCalendarDelegate;
+        let january_31 = Date::new(2024, 1, 31);
+        assert_eq!(
+            calendar.add_months_to_month_date(january_31, 1),
+            Date::new(2024, 2, 1)
+        );
+        assert_eq!(
+            calendar.add_months_to_month_date(january_31, 13),
+            Date::new(2025, 2, 1),
+            "and rolls the year over"
+        );
+        // Backwards too, which is how a picker pages up.
+        assert_eq!(
+            calendar.add_months_to_month_date(january_31, -1),
+            Date::new(2023, 12, 1)
+        );
+    }
+
+    #[test]
+    fn the_grids_leading_blanks_follow_the_locales_first_day_of_the_week() {
+        // The one number upstream reads off `MaterialLocalizations`, passed
+        // directly here. The 1st of June 2024 was a Saturday.
+        let calendar = GregorianCalendarDelegate;
+        assert_eq!(Date::new(2024, 6, 1).weekday(), 6, "Saturday");
+        // Sunday-first (en_US): Saturday is the seventh column, so six blanks.
+        assert_eq!(calendar.first_day_offset(2024, 6, 0), 6);
+        // Monday-first: Saturday is the sixth, so five.
+        assert_eq!(calendar.first_day_offset(2024, 6, 1), 5);
+        // Saturday-first: no blanks at all.
+        assert_eq!(calendar.first_day_offset(2024, 6, 6), 0);
+    }
+
+    #[test]
+    fn get_month_and_get_day_build_the_dates_a_grid_is_made_of() {
+        let calendar = GregorianCalendarDelegate;
+        assert_eq!(calendar.get_month(2024, 6), Date::new(2024, 6, 1));
+        assert_eq!(calendar.get_day(2024, 6, 15), Date::new(2024, 6, 15));
+    }
+
+    #[test]
+    fn a_delegate_can_answer_differently_which_is_the_point_of_the_seam() {
+        // The whole reason the picker asks a delegate rather than the free
+        // functions: a calendar that is not the Gregorian one plugs in here.
+        // A thirteen-month calendar of twenty-eight days each stands in.
+        struct ThirteenMonths;
+        impl CalendarDelegate for ThirteenMonths {
+            fn now(&self) -> Date {
+                Date::new(2024, 1, 1)
+            }
+            fn month_delta(&self, start: Date, end: Date) -> i32 {
+                (end.year - start.year) * 13 + end.month as i32 - start.month as i32
+            }
+            fn add_months_to_month_date(&self, month_date: Date, months_to_add: i32) -> Date {
+                Date::new(month_date.year, month_date.month as i32 + months_to_add, 1)
+            }
+            fn add_days_to_date(&self, date: Date, days: i32) -> Date {
+                add_days_to_date(date, days)
+            }
+            fn first_day_offset(&self, _year: i32, _month: u32, _index: u32) -> u32 {
+                0
+            }
+            fn days_in_month(&self, _year: i32, _month: u32) -> u32 {
+                28
+            }
+            fn get_month(&self, year: i32, month: u32) -> Date {
+                Date::new(year, month as i32, 1)
+            }
+            fn get_day(&self, year: i32, month: u32, day: u32) -> Date {
+                Date::new(year, month as i32, day as i32)
+            }
+        }
+        let calendar = ThirteenMonths;
+        assert_eq!(calendar.days_in_month(2024, 2), 28);
+        assert_eq!(
+            calendar.month_delta(Date::new(2024, 1, 1), Date::new(2025, 1, 1)),
+            13
+        );
+        // And it still gets the provided methods for free, which is what
+        // makes the trait worth having rather than nine separate callbacks.
+        assert!(calendar.is_same_day(None, None));
+        assert_eq!(
+            calendar.date_only(Date::new(2024, 6, 15)),
+            Date::new(2024, 6, 15)
+        );
     }
 }
