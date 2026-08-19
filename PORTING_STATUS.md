@@ -164,6 +164,12 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:time picker(2026-08-19)。** `TimePickerTheme(Data)`(23/25)。
+上游这个类的字段名脱开语境很难读,照抄不改:一个时间选择器有**表盘**(带指针)、
+上方的**时分**一对字段、以及 AM/PM 的**日段**开关,三样各自设主题——它们是三个
+不同的东西,只是恰好同处一个对话框。缺 `inputDecorationTheme`
+(`InputDecorationThemeData`,随文本框簇来)。
+
 **P8-M1:search 一对(2026-08-19)。** `SearchBarTheme(Data)`(12/12,连带补
 `TextCapitalization`)、`SearchViewTheme(Data)`(13/13)。
 

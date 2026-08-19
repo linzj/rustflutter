@@ -3931,6 +3931,157 @@ impl SearchViewTheme {
     }
 }
 
+// -- Time picker (upstream `time_picker_theme.dart`) --------------------------
+
+/// Upstream `TimePickerThemeData`.
+///
+/// The names read oddly out of context and are upstream's: a time picker has
+/// a *dial* with a hand on it, an *hour-minute* pair of fields above it, and
+/// a *day period* toggle for AM and PM, and each of those three is themed
+/// separately because they are three different things that happen to sit in
+/// one dialog.
+///
+/// `inputDecorationTheme` is not here: it is an `InputDecorationThemeData`,
+/// which arrives with the text field cluster.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TimePickerThemeData {
+    pub background_color: Option<Color>,
+    pub cancel_button_style: Option<ButtonStyle>,
+    pub confirm_button_style: Option<ButtonStyle>,
+    pub day_period_border_side: Option<BorderSide>,
+    /// The AM/PM toggle's fill. Upstream keeps it private behind a getter
+    /// because a null there means "the scheme's", not "transparent".
+    pub day_period_color: Option<Color>,
+    pub day_period_shape: Option<ShapeBorder>,
+    pub day_period_text_color: Option<Color>,
+    pub day_period_text_style: Option<TextStyle>,
+    pub dial_background_color: Option<Color>,
+    pub dial_hand_color: Option<Color>,
+    pub dial_text_color: Option<Color>,
+    pub dial_text_style: Option<TextStyle>,
+    pub elevation: Option<f32>,
+    pub entry_mode_icon_color: Option<Color>,
+    pub help_text_style: Option<TextStyle>,
+    pub hour_minute_color: Option<Color>,
+    pub hour_minute_shape: Option<ShapeBorder>,
+    pub hour_minute_text_color: Option<Color>,
+    pub hour_minute_text_style: Option<TextStyle>,
+    pub padding: Option<EdgeInsetsGeometry>,
+    pub shape: Option<ShapeBorder>,
+    /// The colon between the hour and the minute, by state.
+    pub time_selector_separator_color: Option<StateProperty<Option<Color>>>,
+    pub time_selector_separator_text_style: Option<StateProperty<Option<TextStyle>>>,
+}
+
+impl TimePickerThemeData {
+    pub fn new() -> TimePickerThemeData {
+        TimePickerThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_dial_colors(mut self, background: Color, hand: Color) -> Self {
+        self.dial_background_color = Some(background);
+        self.dial_hand_color = Some(hand);
+        self
+    }
+
+    pub fn with_hour_minute_color(mut self, color: Color) -> Self {
+        self.hour_minute_color = Some(color);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    /// Upstream `TimePickerThemeData.lerp`.
+    pub fn lerp(a: &TimePickerThemeData, b: &TimePickerThemeData, t: f32) -> TimePickerThemeData {
+        TimePickerThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            cancel_button_style: lerp_button_style(
+                &a.cancel_button_style,
+                &b.cancel_button_style,
+                t,
+            ),
+            confirm_button_style: lerp_button_style(
+                &a.confirm_button_style,
+                &b.confirm_button_style,
+                t,
+            ),
+            day_period_border_side: match (a.day_period_border_side, b.day_period_border_side) {
+                (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            day_period_color: lerp_color(a.day_period_color, b.day_period_color, t),
+            day_period_shape: lerp_nearer(&a.day_period_shape, &b.day_period_shape, t),
+            day_period_text_color: lerp_color(a.day_period_text_color, b.day_period_text_color, t),
+            day_period_text_style: lerp_nearer(
+                &a.day_period_text_style,
+                &b.day_period_text_style,
+                t,
+            ),
+            dial_background_color: lerp_color(a.dial_background_color, b.dial_background_color, t),
+            dial_hand_color: lerp_color(a.dial_hand_color, b.dial_hand_color, t),
+            dial_text_color: lerp_color(a.dial_text_color, b.dial_text_color, t),
+            dial_text_style: lerp_nearer(&a.dial_text_style, &b.dial_text_style, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            entry_mode_icon_color: lerp_color(a.entry_mode_icon_color, b.entry_mode_icon_color, t),
+            help_text_style: lerp_nearer(&a.help_text_style, &b.help_text_style, t),
+            hour_minute_color: lerp_color(a.hour_minute_color, b.hour_minute_color, t),
+            hour_minute_shape: lerp_nearer(&a.hour_minute_shape, &b.hour_minute_shape, t),
+            hour_minute_text_color: lerp_color(
+                a.hour_minute_text_color,
+                b.hour_minute_text_color,
+                t,
+            ),
+            hour_minute_text_style: lerp_nearer(
+                &a.hour_minute_text_style,
+                &b.hour_minute_text_style,
+                t,
+            ),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            time_selector_separator_color: lerp_state_color(
+                a.time_selector_separator_color.as_ref(),
+                b.time_selector_separator_color.as_ref(),
+                t,
+            ),
+            time_selector_separator_text_style: lerp_nearer(
+                &a.time_selector_separator_text_style,
+                &b.time_selector_separator_text_style,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `TimePickerTheme`.
+pub struct TimePickerTheme;
+
+impl TimePickerTheme {
+    pub fn new(data: TimePickerThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> TimePickerThemeData {
+        context
+            .inherited::<TimePickerThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).time_picker_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -5010,5 +5161,33 @@ mod tests {
         assert_eq!(view.header_height, Some(72.0));
         assert_eq!(view.shrink_wrap, Some(true));
         assert_eq!(view.divider_color, None);
+    }
+
+    #[test]
+    fn a_time_picker_themes_its_three_parts_apart() {
+        let themed = read_in(
+            |child| {
+                TimePickerTheme::new(
+                    TimePickerThemeData::new()
+                        .with_background_color(Color::argb(255, 1, 1, 1))
+                        .with_dial_colors(Color::argb(255, 2, 2, 2), Color::argb(255, 3, 3, 3))
+                        .with_hour_minute_color(Color::argb(255, 4, 4, 4)),
+                    child,
+                )
+            },
+            TimePickerTheme::of,
+        );
+        // The dialog, the dial and the hour-minute fields are three separate
+        // things that happen to share a box; upstream themes each of them on
+        // its own and so does this.
+        assert_eq!(themed.background_color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(
+            themed.dial_background_color,
+            Some(Color::argb(255, 2, 2, 2))
+        );
+        assert_eq!(themed.dial_hand_color, Some(Color::argb(255, 3, 3, 3)));
+        assert_eq!(themed.hour_minute_color, Some(Color::argb(255, 4, 4, 4)));
+        // And the AM/PM toggle is a fourth, still unset here.
+        assert_eq!(themed.day_period_color, None);
     }
 }

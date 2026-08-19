@@ -53,7 +53,8 @@ use crate::component_themes::{
     MenuButtonThemeData, MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
     ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
     SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TextButtonThemeData, ToggleButtonsThemeData, TooltipThemeData,
+    TabBarThemeData, TextButtonThemeData, TimePickerThemeData, ToggleButtonsThemeData,
+    TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -238,6 +239,7 @@ pub struct ThemeData {
     pub toggle_buttons_theme: ToggleButtonsThemeData,
     pub search_bar_theme: SearchBarThemeData,
     pub search_view_theme: SearchViewThemeData,
+    pub time_picker_theme: TimePickerThemeData,
 }
 
 impl ThemeData {
@@ -356,6 +358,7 @@ impl ThemeData {
             toggle_buttons_theme: ToggleButtonsThemeData::new(),
             search_bar_theme: SearchBarThemeData::new(),
             search_view_theme: SearchViewThemeData::new(),
+            time_picker_theme: TimePickerThemeData::new(),
         }
     }
 
@@ -675,6 +678,11 @@ impl ThemeData {
             search_view_theme: SearchViewThemeData::lerp(
                 &a.search_view_theme,
                 &b.search_view_theme,
+                t,
+            ),
+            time_picker_theme: TimePickerThemeData::lerp(
+                &a.time_picker_theme,
+                &b.time_picker_theme,
                 t,
             ),
         }
