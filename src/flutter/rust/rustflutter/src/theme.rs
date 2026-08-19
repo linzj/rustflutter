@@ -44,6 +44,9 @@
 use crate::animation::{Animatable, ColorTween, Tween};
 use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
+use crate::component_themes::{
+    BadgeThemeData, CardThemeData, DividerThemeData, ProgressIndicatorThemeData, TooltipThemeData,
+};
 use crate::components::Theme;
 use crate::engine::Color;
 use crate::framework::{AnyWidget, BuildContext, provide};
@@ -151,8 +154,9 @@ impl Default for VisualDensity {
     }
 }
 
-/// Upstream `ThemeData`, general half.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Upstream `ThemeData`: the general half, plus the component themes whose
+/// controls are here.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ThemeData {
     pub brightness: Brightness,
     pub color_scheme: ColorScheme,
@@ -182,6 +186,17 @@ pub struct ThemeData {
     /// Upstream `applyElevationOverlayColor`: whether a raised surface in a
     /// dark theme is tinted by its elevation rather than only shadowed.
     pub apply_elevation_overlay_color: bool,
+
+    // -- Component themes -------------------------------------------------
+    //
+    // One per control family, and the fallback every `*Theme::of` lands on
+    // when nobody installed a nearer one. They start empty: an unset field
+    // means "whatever the control's own default is".
+    pub divider_theme: DividerThemeData,
+    pub card_theme: CardThemeData,
+    pub badge_theme: BadgeThemeData,
+    pub tooltip_theme: TooltipThemeData,
+    pub progress_indicator_theme: ProgressIndicatorThemeData,
 }
 
 impl ThemeData {
@@ -264,6 +279,11 @@ impl ThemeData {
             },
             // Upstream: `applyElevationOverlayColor ??= brightness == dark`.
             apply_elevation_overlay_color: is_dark,
+            divider_theme: DividerThemeData::new(),
+            card_theme: CardThemeData::new(),
+            badge_theme: BadgeThemeData::new(),
+            tooltip_theme: TooltipThemeData::new(),
+            progress_indicator_theme: ProgressIndicatorThemeData::new(),
         }
     }
 
@@ -313,6 +333,34 @@ impl ThemeData {
         self
     }
 
+    pub fn with_divider_theme(mut self, divider_theme: DividerThemeData) -> ThemeData {
+        self.divider_theme = divider_theme;
+        self
+    }
+
+    pub fn with_card_theme(mut self, card_theme: CardThemeData) -> ThemeData {
+        self.card_theme = card_theme;
+        self
+    }
+
+    pub fn with_badge_theme(mut self, badge_theme: BadgeThemeData) -> ThemeData {
+        self.badge_theme = badge_theme;
+        self
+    }
+
+    pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
+        self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_progress_indicator_theme(
+        mut self,
+        progress_indicator_theme: ProgressIndicatorThemeData,
+    ) -> ThemeData {
+        self.progress_indicator_theme = progress_indicator_theme;
+        self
+    }
+
     /// Upstream `ThemeData.lerp`: every colour interpolated, the scheme with
     /// them, and the flags taken from whichever end is nearer.
     pub fn lerp(a: &ThemeData, b: &ThemeData, t: f32) -> ThemeData {
@@ -348,6 +396,15 @@ impl ThemeData {
             hint_color: mix(a.hint_color, b.hint_color),
             unselected_widget_color: mix(a.unselected_widget_color, b.unselected_widget_color),
             apply_elevation_overlay_color: nearer.apply_elevation_overlay_color,
+            divider_theme: DividerThemeData::lerp(&a.divider_theme, &b.divider_theme, t),
+            card_theme: CardThemeData::lerp(&a.card_theme, &b.card_theme, t),
+            badge_theme: BadgeThemeData::lerp(&a.badge_theme, &b.badge_theme, t),
+            tooltip_theme: TooltipThemeData::lerp(&a.tooltip_theme, &b.tooltip_theme, t),
+            progress_indicator_theme: ProgressIndicatorThemeData::lerp(
+                &a.progress_indicator_theme,
+                &b.progress_indicator_theme,
+                t,
+            ),
         }
     }
 
@@ -384,7 +441,7 @@ impl ThemeData {
     pub fn of(context: &mut BuildContext) -> ThemeData {
         context
             .inherited::<ThemeData>()
-            .map(|data| *data)
+            .map(|data| (*data).clone())
             .unwrap_or_else(ThemeData::fallback)
     }
 }
@@ -405,12 +462,13 @@ pub struct MaterialTheme;
 impl MaterialTheme {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(data: ThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, provide(data.to_component_theme(), child))
+        let component_theme = data.to_component_theme();
+        provide(data, provide(component_theme, child))
     }
 }
 
 /// Upstream `ThemeDataTween`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ThemeDataTween {
     pub begin: ThemeData,
     pub end: ThemeData,
@@ -435,29 +493,114 @@ impl Animatable for ThemeDataTween {
 /// Upstream `AnimatedTheme`: a theme that moves to its new value rather than
 /// snapping to it.
 ///
-/// Upstream is an `ImplicitlyAnimatedWidget`; here it is the crate's own
-/// implicit animation ([`crate::implicit::animated`]) over the same tween,
-/// which is the same "target changed, walk there" rule.
-pub struct AnimatedTheme;
+/// Upstream is an `ImplicitlyAnimatedWidget` over a [`ThemeDataTween`], and
+/// so is this: a target that changes mid-flight restarts the walk *from where
+/// it is now* rather than from the old target, which is the rule that keeps
+/// two theme changes in quick succession from jumping backwards. The crate's
+/// general implicit animation ([`crate::implicit::animated`]) wants a `Copy`
+/// value and a `ThemeData` is not one, so the same rule is written out here.
+pub struct AnimatedTheme<F> {
+    data: ThemeData,
+    duration: std::time::Duration,
+    build: F,
+}
 
-impl AnimatedTheme {
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new<F>(data: ThemeData, duration: std::time::Duration, child: F) -> AnyWidget
-    where
-        F: Fn(ThemeData) -> AnyWidget + 'static,
-    {
-        crate::implicit::animated(
-            data,
-            duration,
-            crate::animation::Curve::Linear,
-            move |current| child(current),
-        )
+/// What an [`AnimatedTheme`] is part-way through.
+#[derive(Default)]
+pub struct AnimatedThemeState {
+    from: Option<ThemeData>,
+    to: Option<ThemeData>,
+    started_micros: Option<i64>,
+    now_micros: i64,
+    restart_pending: bool,
+}
+
+impl AnimatedThemeState {
+    /// How far along the walk is.
+    fn progress(&self, duration: std::time::Duration) -> f32 {
+        let Some(started) = self.started_micros else {
+            return 1.0;
+        };
+        let total = duration.as_micros() as f32;
+        if total <= 0.0 {
+            return 1.0;
+        }
+        (((self.now_micros - started) as f32) / total).clamp(0.0, 1.0)
+    }
+
+    fn value(&self, duration: std::time::Duration) -> Option<ThemeData> {
+        let from = self.from.as_ref()?;
+        let to = self.to.as_ref()?;
+        Some(ThemeData::lerp(from, to, self.progress(duration)))
     }
 }
 
-impl crate::implicit::Lerp for ThemeData {
-    fn lerp(from: ThemeData, to: ThemeData, t: f32) -> ThemeData {
-        ThemeData::lerp(&from, &to, t)
+impl<F> AnimatedTheme<F>
+where
+    F: Fn(ThemeData) -> AnyWidget + 'static,
+{
+    pub fn new(data: ThemeData, duration: std::time::Duration, build: F) -> AnimatedTheme<F> {
+        AnimatedTheme {
+            data,
+            duration,
+            build,
+        }
+    }
+
+    pub fn into_widget(self) -> AnyWidget {
+        crate::framework::stateful(self)
+    }
+}
+
+impl<F> crate::framework::StatefulComponent for AnimatedTheme<F>
+where
+    F: Fn(ThemeData) -> AnyWidget + 'static,
+{
+    type State = AnimatedThemeState;
+
+    fn did_update_widget(&self, _old: &Self, state: &mut Self::State) {
+        state.restart_pending = state.to.as_ref().is_some_and(|to| *to != self.data);
+    }
+
+    fn advance(&self, state: &mut Self::State, frame_time_micros: i64) -> bool {
+        if state.to.is_none() {
+            // First frame: sitting on the target. An implicit animation does
+            // not animate its way in from nowhere.
+            state.from = Some(self.data.clone());
+            state.to = Some(self.data.clone());
+            state.now_micros = frame_time_micros;
+            return false;
+        }
+        if state.restart_pending {
+            state.restart_pending = false;
+            let current = state
+                .value(self.duration)
+                .unwrap_or_else(|| self.data.clone());
+            state.from = Some(current);
+            state.to = Some(self.data.clone());
+            state.started_micros = Some(frame_time_micros);
+        }
+        state.now_micros = frame_time_micros;
+        let was_walking = state.started_micros.is_some();
+        let walking = was_walking && state.progress(self.duration) < 1.0;
+        if was_walking && !walking {
+            // The frame that lands is the frame that shows the target.
+            state.started_micros = None;
+            return true;
+        }
+        walking
+    }
+
+    fn build(
+        &self,
+        state: &Self::State,
+        _handle: crate::framework::StateHandle<Self::State>,
+        _context: &mut BuildContext,
+    ) -> AnyWidget {
+        let current = state
+            .value(self.duration)
+            .unwrap_or_else(|| self.data.clone());
+        (self.build)(current)
     }
 }
 

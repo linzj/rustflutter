@@ -110,6 +110,7 @@ if (enable_unittests) {
       "rustflutter/src/animation.rs",
       "rustflutter/src/color_scheme.rs",
       "rustflutter/src/colors.rs",
+      "rustflutter/src/component_themes.rs",
       "rustflutter/src/components.rs",
       "rustflutter/src/controls.rs",
       "rustflutter/src/decoration.rs",

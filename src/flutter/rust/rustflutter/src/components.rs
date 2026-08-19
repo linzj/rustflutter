@@ -647,9 +647,18 @@ impl Component for Card {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| leaf(|| Empty));
-        let surface = theme.surface;
+        // Upstream `Card.build`: `color`, `elevation` and `shape` come off
+        // `CardTheme.of(context)` before the control's own defaults.
+        let card = crate::component_themes::CardTheme::of(context);
+        let surface = card.color.unwrap_or(theme.surface);
         let outline = theme.outline;
         let radius = theme.radius;
+        // Material 3's elevated card sits one step off the page; a theme that
+        // says otherwise says it in whole elevation steps, as the crate's
+        // shadow table is indexed by them.
+        let elevation = card
+            .elevation
+            .map_or(1, |elevation| elevation.round().max(0.0) as u32);
         crate::framework::single(child, move |inner| {
             // Full width, so a column of cards has one left edge and one right
             // edge rather than one pair per card.
@@ -657,8 +666,7 @@ impl Component for Card {
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(radius)
-                    // Material 3's elevated card sits one step off the page.
-                    .with_elevation(1)
+                    .with_elevation(elevation)
                     .with_border(1.0, outline)
                     .with_padding(padding)
                     .with_child(inner),
@@ -1532,12 +1540,27 @@ pub struct Divider;
 
 impl Component for Divider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
-        let color = theme.outline;
+        // Upstream's `Divider.build`: the space, the thickness, the colour
+        // and the two indents each come off `DividerTheme.of(context)` and
+        // fall back to `ThemeData` and then to upstream's own defaults --
+        // `ResolvedDivider` is those three steps.
+        let divider = crate::component_themes::ResolvedDivider::of(context);
+        let color = divider.color;
+        let space = divider.space;
+        let thickness = divider.line_thickness();
+        let insets = crate::render::EdgeInsets {
+            left: divider.indent,
+            right: divider.end_indent,
+            top: 0.0,
+            bottom: 0.0,
+        };
         leaf(move || {
-            Container::new().with_height(16.0).with_child(Align::new(
+            Container::new().with_height(space).with_child(Align::new(
                 Alignment::CENTER,
-                Container::new().with_height(1.0).with_color(color),
+                Container::new()
+                    .with_height(thickness)
+                    .with_color(color)
+                    .with_margin(insets),
             ))
         })
     }
@@ -1853,5 +1876,40 @@ mod tests {
         let hits = hits_at(true, crate::render::Offset::new(500.0, 300.0));
         assert!(hits.contains(&SCRIM), "{hits:?}");
         assert!(!hits.contains(&DRAWER_ITEM), "{hits:?}");
+    }
+
+    #[test]
+    fn a_divider_takes_its_space_from_its_theme() {
+        use crate::component_themes::{DividerTheme, DividerThemeData};
+        use crate::framework::ElementTree;
+
+        fn height_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(200.0, 200.0)).height
+        }
+
+        // Upstream's defaults, where no theme said otherwise: sixteen of
+        // space with a hairline in the middle of it.
+        assert_eq!(height_of(component(Divider)), 16.0);
+
+        // The nearest installed theme moves it -- the three-step fallback
+        // reaching a control's geometry, which is the whole point of it.
+        assert_eq!(
+            height_of(DividerTheme::new(
+                DividerThemeData::new().with_space(40.0),
+                component(Divider),
+            )),
+            40.0
+        );
+
+        // And so does the field on ThemeData, one step further out.
+        let themed = crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light()
+                .with_divider_theme(DividerThemeData::new().with_space(24.0)),
+            component(Divider),
+        );
+        assert_eq!(height_of(themed), 24.0);
     }
 }

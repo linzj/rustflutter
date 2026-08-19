@@ -164,6 +164,32 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:组件主题的三步回退接通了(2026-08-19)。** `component_themes.rs`,
+头五对:`DividerTheme(Data)`/`CardTheme(Data)`/`BadgeTheme(Data)`/
+`TooltipTheme(Data)`/`ProgressIndicatorTheme(Data)`——**每一对的字段都按上游
+逐条列全**(divider 六个、card 六个、badge 八个、tooltip 十五个、progress
+十四个),各带 `lerp`。
+
+**机制是三步回退**,与上游一字不差:`XTheme::of(context)` 先找最近装上的
+`XThemeData`,没有就取 `ThemeData` 上的同名字段,字段仍未设则落到控件自己的
+默认(通常是 `ColorScheme` 上的某个角色)。`ResolvedDivider::of` 把这三步写
+出来一次,因为每个控件做的都是同一件事。**未设的字段不是偷懒**——"未设"的
+意思就是"听主题的",只有设了的才覆盖。
+
+`ThemeData` 因此收了五个组件主题字段,并从 `Copy` 变成 `Clone`(tooltip 与
+badge 带 `TextStyle`/`Decoration`,不是 `Copy`)。`AnimatedTheme` 随之不再走
+`implicit::animated`(它要 `Copy`),改成自带状态的隐式动画——中途换目标从
+**当前值**重新起步的那条规则原样写出。
+
+**两个控件接上了**:`Divider` 现在按 space/thickness/color/indent 画
+(此前是写死的 16 高、1 像素、`theme.outline`);`Card` 的底色与高度取
+`CardTheme.of`。回归线:没有主题时 divider 高 16(上游默认),装上
+`DividerTheme(space: 40)` 变 40,只在 `ThemeData` 上设则是 24——三步都走到了
+控件的几何上。
+
+**记录在案的分歧**:`clipBehavior` 不建模(dart:ui 的 `Clip`;此侧裁剪是
+做裁剪的那个渲染对象的属性,不是主题往下传的值)。
+
 **P8-M1:`ThemeData` 立起来了(2026-08-19)。** `theme.rs`:
 
 - **`ColorScheme::light_m3()`/`dark_m3()`**——上游 `_colorSchemeLightM3`/
