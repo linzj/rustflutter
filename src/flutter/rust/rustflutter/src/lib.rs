@@ -110,6 +110,7 @@ pub mod snack_bar;
 pub mod stack_frame;
 pub mod tap_and_drag;
 pub mod tap_region;
+pub mod text_editing_intents;
 pub mod text_selection_controls;
 pub mod theme;
 pub mod ticker;
