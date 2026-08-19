@@ -119,6 +119,7 @@ if (enable_unittests) {
       "rustflutter/src/components.rs",
       "rustflutter/src/controls.rs",
       "rustflutter/src/decoration.rs",
+      "rustflutter/src/diagnostics.rs",
       "rustflutter/src/direction.rs",
       "rustflutter/src/display_feature.rs",
       "rustflutter/src/drag_boundary.rs",

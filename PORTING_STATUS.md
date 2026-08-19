@@ -164,6 +164,58 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### `{:.1}` 和 `toStringAsFixed(1)` 的舍入方向不一样(2026-08-20)
+
+新模块 `diagnostics.rs`,`foundation/diagnostics.dart` 二十二个里的十三个:两个枚举、
+`DiagnosticsNode`、`DiagnosticsProperty`,以及 `MessageProperty`、`StringProperty`、
+`DoubleProperty`、`IntProperty`、`PercentProperty`、`FlagProperty`、`ObjectFlagProperty`、
+`EnumProperty`、`IterableProperty`、`FlagsSummary`、`DiagnosticPropertiesBuilder`。
+
+**两个想法贯穿整个文件:**
+
+**一、一个处在默认值上的属性,不是被丢掉,而是被降级。** 它掉到 `Fine`,普通打印器藏起来,而
+一个要求「全都给我」的调用方仍然看得见。**一个会悄悄省略东西的转储不可信,而一个列出一百个默
+认值的转储没法读**;等级让这两件事同时成立。这也是为什么 `DiagnosticLevel` 的**顺序**就是它的
+全部含义:`Off` 排在 `Error` 之上,所以没有任何东西能越过它;`Hidden` 排在 `Fine` 之下,所以
+一个属性可以在场却永远不会被误打出来。
+
+**二、一个对自己当前状态无话可说的标志,改为显示自己的名字。** `FlagProperty` 和
+`ObjectFlagProperty` 都这么干,而且**两者在同一种情形下同时降为 hidden**——于是那个名字是留给
+「我要看隐藏属性」的调用方的后备,而不是普通转储里会出现的东西。否则那一行会是一个光秃秃的
+`true`,读者根本不知道它在说什么。
+
+**自查:抓到一处我自己写进去的、静悄悄的偏离。** `format_double` 我第一版直接写了
+`format!("{value:.1}")`——可上游是 `toStringAsFixed(1)`,**两者的舍入方向不同**:Dart 是「逢半
+远离零」,`0.25` → `0.3`;Rust 的 `{:.1}` 是「逢半取偶」,`0.25` → `0.2`。而我最初那条测试还把
+错的行为**钉住了**。改成先用 `f64::round`(它就是逢半远离零)缩放再格式化,`PercentProperty`
+也走同一条路径;测试改成钉正确答案,并在实现文档里点名这个陷阱。**写那个显而易见的 `format!`
+会让一整类转储和上游差最后一位,而且没人会想到去查。**
+
+**回归行盯的其余地方:**
+
+* 「默认值是 null」和「没有默认值」是两回事,而 null 说不了两件事——所以哨兵是一个独立的变体。
+* 等级规则**按上游的顺序**试:`Hidden` 的默认直接胜出(说了「永远别显示」就是永远,连错误也不
+  例外);然后是异常(算不出来的属性是这一行上最重要的事);然后是「声明了缺失」的 null;最后
+  才轮到「在默认值上」把它降级。
+* 双精度**永远一位小数**;`DoubleProperty` 的单位**不加空格**(`16.0px`),而 `PercentProperty`
+  的**加空格**——百分号后面直接跟单位会读成一个词。
+* 百分比**先夹再乘**:一个略微过冲的动画应当读作 100%——读者被告知的是「走了多远」,而没有比走
+  完还远这回事。
+* **加了引号之后,空字符串看起来就不空了**(上游原话),所以 `ifEmpty` 是在**引号分支里面**判
+  的:`""` 读作一个值,`<none>` 读作一处缺席。
+* 父节点要把所有属性挤成一行时,换行符**转义**而不是打出来,否则那一行会变成好几行。
+* **空列表不是缺失的列表**,两者给不同的文本;空列表默认不有趣,**除非**调用方给了 `ifEmpty`
+  ——那是调用方在说「空本身值得报告」。
+* 回调读作 **`has onTap`** 而不是 `true`,而**不存在的回调不值一行**。
+
+**剩下的九个**(`TextTreeConfiguration`、`TextTreeRenderer`、四个 `Diagnosticable`、
+`DiagnosticsBlock`、`DiagnosticsSerializationDelegate`)是画树的表格和挂在真实对象上的那些
+mixin,留到下一轮。
+
+验证:`cargo test --lib` 1977 绿,GN `rustflutter_unittests` 1977 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1457 accounted / 431 MISSING。
+
 ### 过滤器不删帧,它在旁边写一条理由(2026-08-20)
 
 新模块 `stack_frame.rs`:`foundation/stack_frame.dart` 的 `StackFrame` 全到,加上

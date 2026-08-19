@@ -39,6 +39,7 @@ pub mod components;
 pub mod controls;
 pub mod cupertino;
 pub mod decoration;
+pub mod diagnostics;
 pub mod direction;
 pub mod display_feature;
 pub mod drag_boundary;
