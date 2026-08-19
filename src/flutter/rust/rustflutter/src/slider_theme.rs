@@ -917,7 +917,11 @@ fn track_paints(theme: &SliderThemeData, geometry: &TrackPaintGeometry) -> Optio
 
 /// Upstream's `ColorTween(begin: disabled, end: enabled).evaluate(animation)`,
 /// with the null ends that upstream asserts away handled rather than asserted.
-fn enabled_color(disabled: Option<Color>, enabled: Option<Color>, t: f32) -> Option<Color> {
+pub(crate) fn enabled_color(
+    disabled: Option<Color>,
+    enabled: Option<Color>,
+    t: f32,
+) -> Option<Color> {
     match (disabled, enabled) {
         (Some(disabled), Some(enabled)) => Some(ColorTween::new(disabled, enabled).lerp(t)),
         (first, second) => second.or(first),
@@ -927,7 +931,7 @@ fn enabled_color(disabled: Option<Color>, enabled: Option<Color>, t: f32) -> Opt
 /// Fills a rounded rectangle whose corners are not all the same, which the
 /// binding has no single call for -- the same hand-walked path
 /// [`OutlineInputBorder`](crate::borders::OutlineInputBorder) draws.
-fn fill_rrect(canvas: &mut Canvas, rect: Rect, radius: BorderRadius, color: Color) {
+pub(crate) fn fill_rrect(canvas: &mut Canvas, rect: Rect, radius: BorderRadius, color: Color) {
     if rect.width() <= 0.0 {
         return;
     }
@@ -971,10 +975,18 @@ pub struct SliderThemeData {
     pub thumb_shape: Option<SliderComponentShape>,
     pub track_shape: Option<SliderTrackShape>,
     pub value_indicator_shape: Option<SliderComponentShape>,
+    pub range_tick_mark_shape: Option<crate::range_slider_parts::RangeSliderTickMarkShape>,
+    pub range_thumb_shape: Option<crate::range_slider_parts::RangeSliderThumbShape>,
+    pub range_track_shape: Option<crate::range_slider_parts::RangeSliderTrackShape>,
+    pub range_value_indicator_shape: Option<RangeSliderValueIndicatorShape>,
     pub show_value_indicator: Option<ShowValueIndicator>,
     pub value_indicator_text_style: Option<TextStyle>,
     /// How close a range slider's two thumbs may come.
     pub min_thumb_separation: Option<f32>,
+    /// Which thumb a tap moves. Upstream's default keeps the two from
+    /// crossing; an application that wants them to cross replaces it,
+    /// which is why this is a function and not a rule.
+    pub thumb_selector: Option<crate::range_slider_parts::RangeThumbSelector>,
     pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
     pub allowed_interaction: Option<SliderInteraction>,
     pub padding: Option<EdgeInsetsGeometry>,
@@ -1034,8 +1046,22 @@ impl SliderThemeData {
             value_indicator_shape: Some(SliderComponentShape::PaddleIndicator(
                 PaddleSliderValueIndicatorShape::new(),
             )),
-            // Upstream also sets the four range shapes here; they wait for
-            // `range_slider_parts.dart`, as the module comment records.
+            range_tick_mark_shape: Some(
+                crate::range_slider_parts::RangeSliderTickMarkShape::Round(
+                    crate::range_slider_parts::RoundRangeSliderTickMarkShape::new(),
+                ),
+            ),
+            range_thumb_shape: Some(crate::range_slider_parts::RangeSliderThumbShape::Round(
+                crate::range_slider_parts::RoundRangeSliderThumbShape::new(),
+            )),
+            range_track_shape: Some(
+                crate::range_slider_parts::RangeSliderTrackShape::RoundedRect(
+                    crate::range_slider_parts::RoundedRectRangeSliderTrackShape::new(),
+                ),
+            ),
+            range_value_indicator_shape: Some(RangeSliderValueIndicatorShape::Paddle(
+                PaddleRangeSliderValueIndicatorShape::new(),
+            )),
             value_indicator_text_style: Some(value_indicator_text_style),
             show_value_indicator: Some(ShowValueIndicator::OnlyForDiscrete),
             ..SliderThemeData::default()
@@ -1142,12 +1168,26 @@ impl SliderThemeData {
                 t,
             ),
             show_value_indicator: lerp_nearer(&a.show_value_indicator, &b.show_value_indicator, t),
+            range_tick_mark_shape: lerp_nearer(
+                &a.range_tick_mark_shape,
+                &b.range_tick_mark_shape,
+                t,
+            ),
+            range_thumb_shape: lerp_nearer(&a.range_thumb_shape, &b.range_thumb_shape, t),
+            range_track_shape: lerp_nearer(&a.range_track_shape, &b.range_track_shape, t),
+            range_value_indicator_shape: lerp_nearer(
+                &a.range_value_indicator_shape,
+                &b.range_value_indicator_shape,
+                t,
+            ),
+
             value_indicator_text_style: lerp_nearer(
                 &a.value_indicator_text_style,
                 &b.value_indicator_text_style,
                 t,
             ),
             min_thumb_separation: lerp_f32(a.min_thumb_separation, b.min_thumb_separation, t),
+            thumb_selector: lerp_nearer(&a.thumb_selector, &b.thumb_selector, t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             allowed_interaction: lerp_nearer(&a.allowed_interaction, &b.allowed_interaction, t),
             padding: lerp_nearer(&a.padding, &b.padding, t),
@@ -1230,7 +1270,10 @@ impl IndicatorPaintGeometry {
 /// end of the slider. A negative answer moves it left, a positive one right.
 /// When the bubble is wider than the whole slider it cannot be kept inside,
 /// and upstream then pins whichever edge is overflowing further instead.
-fn indicator_horizontal_shift(rectangle_width: f32, geometry: &IndicatorPaintGeometry) -> f32 {
+pub(crate) fn indicator_horizontal_shift(
+    rectangle_width: f32,
+    geometry: &IndicatorPaintGeometry,
+) -> f32 {
     const EDGE_PADDING: f32 = 8.0;
     let global_x = geometry.global_center.dx;
     let overflow_left = (rectangle_width / 2.0 - global_x + EDGE_PADDING).max(0.0);
@@ -1248,35 +1291,35 @@ fn indicator_horizontal_shift(rectangle_width: f32, geometry: &IndicatorPaintGeo
 }
 
 /// The one-pixel outline upstream draws when the theme names a stroke colour.
-fn indicator_stroke(color: Color) -> Paint {
+pub(crate) fn indicator_stroke(color: Color) -> Paint {
     Paint::new(color).with_style(Style::Stroke { width: 1.0 })
 }
 
 /// Upstream's `_RectangularSliderValueIndicatorPathPainter`.
-struct RectangularIndicatorPainter;
+pub(crate) struct RectangularIndicatorPainter;
 
 impl RectangularIndicatorPainter {
-    const TRIANGLE_HEIGHT: f32 = 8.0;
-    const LABEL_PADDING: f32 = 16.0;
-    const PREFERRED_HEIGHT: f32 = 32.0;
-    const MIN_LABEL_WIDTH: f32 = 16.0;
-    const BOTTOM_TIP_Y_OFFSET: f32 = 14.0;
-    const UPPER_RECT_RADIUS: f32 = 4.0;
+    pub(crate) const TRIANGLE_HEIGHT: f32 = 8.0;
+    pub(crate) const LABEL_PADDING: f32 = 16.0;
+    pub(crate) const PREFERRED_HEIGHT: f32 = 32.0;
+    pub(crate) const MIN_LABEL_WIDTH: f32 = 16.0;
+    pub(crate) const BOTTOM_TIP_Y_OFFSET: f32 = 14.0;
+    pub(crate) const UPPER_RECT_RADIUS: f32 = 4.0;
 
-    fn upper_rectangle_width(label_width: f32, scale: f32, text_scale: f32) -> f32 {
+    pub(crate) fn upper_rectangle_width(label_width: f32, scale: f32, text_scale: f32) -> f32 {
         let unscaled =
             (Self::MIN_LABEL_WIDTH * text_scale).max(label_width) + Self::LABEL_PADDING * 2.0;
         unscaled * scale
     }
 
-    fn preferred_size(label_width: f32, label_height: f32, text_scale: f32) -> Size {
+    pub(crate) fn preferred_size(label_width: f32, label_height: f32, text_scale: f32) -> Size {
         Size::new(
             Self::upper_rectangle_width(label_width, 1.0, text_scale),
             label_height + Self::LABEL_PADDING,
         )
     }
 
-    fn paint(
+    pub(crate) fn paint(
         canvas: &mut Canvas,
         geometry: &IndicatorPaintGeometry,
         label: &TextPainter,
@@ -1331,27 +1374,27 @@ impl RectangularIndicatorPainter {
 }
 
 /// Upstream's `_RoundedRectSliderValueIndicatorPathPainter`.
-struct RoundedRectIndicatorPainter;
+pub(crate) struct RoundedRectIndicatorPainter;
 
 impl RoundedRectIndicatorPainter {
-    const LABEL_PADDING: f32 = 10.0;
-    const PREFERRED_HEIGHT: f32 = 32.0;
-    const MIN_LABEL_WIDTH: f32 = 16.0;
-    const RECT_Y_OFFSET: f32 = 10.0;
-    const BOTTOM_TIP_Y_OFFSET: f32 = 16.0;
+    pub(crate) const LABEL_PADDING: f32 = 10.0;
+    pub(crate) const PREFERRED_HEIGHT: f32 = 32.0;
+    pub(crate) const MIN_LABEL_WIDTH: f32 = 16.0;
+    pub(crate) const RECT_Y_OFFSET: f32 = 10.0;
+    pub(crate) const BOTTOM_TIP_Y_OFFSET: f32 = 16.0;
 
-    fn upper_rectangle_width(label_width: f32, scale: f32) -> f32 {
+    pub(crate) fn upper_rectangle_width(label_width: f32, scale: f32) -> f32 {
         (Self::MIN_LABEL_WIDTH.max(label_width) + Self::LABEL_PADDING * 2.0) * scale
     }
 
-    fn preferred_size(label_width: f32, text_scale: f32) -> Size {
+    pub(crate) fn preferred_size(label_width: f32, text_scale: f32) -> Size {
         Size::new(
             Self::MIN_LABEL_WIDTH.max(label_width) + Self::LABEL_PADDING * 2.0 * text_scale,
             Self::PREFERRED_HEIGHT * text_scale,
         )
     }
 
-    fn paint(
+    pub(crate) fn paint(
         canvas: &mut Canvas,
         geometry: &IndicatorPaintGeometry,
         label: &TextPainter,
@@ -1395,23 +1438,23 @@ impl RoundedRectIndicatorPainter {
 }
 
 /// Upstream's `_DropSliderValueIndicatorPathPainter`.
-struct DropIndicatorPainter;
+pub(crate) struct DropIndicatorPainter;
 
 impl DropIndicatorPainter {
-    const TRIANGLE_HEIGHT: f32 = 10.0;
-    const LABEL_PADDING: f32 = 8.0;
-    const PREFERRED_HEIGHT: f32 = 32.0;
-    const MIN_LABEL_WIDTH: f32 = 20.0;
-    const MIN_RECT_HEIGHT: f32 = 28.0;
-    const RECT_Y_OFFSET: f32 = 6.0;
-    const BOTTOM_TIP_Y_OFFSET: f32 = 16.0;
-    const UPPER_RECT_RADIUS: f32 = 4.0;
+    pub(crate) const TRIANGLE_HEIGHT: f32 = 10.0;
+    pub(crate) const LABEL_PADDING: f32 = 8.0;
+    pub(crate) const PREFERRED_HEIGHT: f32 = 32.0;
+    pub(crate) const MIN_LABEL_WIDTH: f32 = 20.0;
+    pub(crate) const MIN_RECT_HEIGHT: f32 = 28.0;
+    pub(crate) const RECT_Y_OFFSET: f32 = 6.0;
+    pub(crate) const BOTTOM_TIP_Y_OFFSET: f32 = 16.0;
+    pub(crate) const UPPER_RECT_RADIUS: f32 = 4.0;
 
-    fn upper_rectangle_width(label_width: f32, scale: f32) -> f32 {
+    pub(crate) fn upper_rectangle_width(label_width: f32, scale: f32) -> f32 {
         (Self::MIN_LABEL_WIDTH.max(label_width) + Self::LABEL_PADDING) * scale
     }
 
-    fn preferred_size(label_width: f32, text_scale: f32) -> Size {
+    pub(crate) fn preferred_size(label_width: f32, text_scale: f32) -> Size {
         Size::new(
             Self::MIN_LABEL_WIDTH.max(label_width) + Self::LABEL_PADDING * 2.0 * text_scale,
             Self::PREFERRED_HEIGHT * text_scale,
@@ -1422,7 +1465,7 @@ impl DropIndicatorPainter {
     /// fully round one at `1.0 - rectness` where `rectness` is the constant
     /// zero -- so it is always the round end. It is kept as upstream wrote it
     /// because the constant is where upstream left the knob.
-    fn adjusted_border_radius(rect: Rect) -> BorderRadius {
+    pub(crate) fn adjusted_border_radius(rect: Rect) -> BorderRadius {
         const RECTNESS: f32 = 0.0;
         BorderRadius::lerp(
             BorderRadius::circular(Self::UPPER_RECT_RADIUS),
@@ -1431,7 +1474,7 @@ impl DropIndicatorPainter {
         )
     }
 
-    fn paint(
+    pub(crate) fn paint(
         canvas: &mut Canvas,
         geometry: &IndicatorPaintGeometry,
         label: &TextPainter,
@@ -1487,29 +1530,30 @@ impl DropIndicatorPainter {
 /// text grows, and the arcs on the neck move down to keep meeting it
 /// smoothly. That is why it is arcs rather than a rounded rectangle, and why
 /// the arithmetic below is trigonometry rather than a table.
-struct PaddleIndicatorPainter;
+pub(crate) struct PaddleIndicatorPainter;
 
 impl PaddleIndicatorPainter {
-    const TOP_LOBE_RADIUS: f32 = 16.0;
-    const MIN_LABEL_WIDTH: f32 = 16.0;
-    const BOTTOM_LOBE_RADIUS: f32 = 10.0;
-    const LABEL_PADDING: f32 = 8.0;
-    const DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS: f32 = 40.0;
-    const MIDDLE_NECK_WIDTH: f32 = 3.0;
-    const BOTTOM_NECK_RADIUS: f32 = 4.5;
-    const TOP_NECK_RADIUS: f32 = 13.0;
+    pub(crate) const TOP_LOBE_RADIUS: f32 = 16.0;
+    pub(crate) const MIN_LABEL_WIDTH: f32 = 16.0;
+    pub(crate) const BOTTOM_LOBE_RADIUS: f32 = 10.0;
+    pub(crate) const LABEL_PADDING: f32 = 8.0;
+    pub(crate) const DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS: f32 = 40.0;
+    pub(crate) const MIDDLE_NECK_WIDTH: f32 = 3.0;
+    pub(crate) const BOTTOM_NECK_RADIUS: f32 = 4.5;
+    pub(crate) const TOP_NECK_RADIUS: f32 = 13.0;
     /// The base of the triangle between the top lobe's centre and the two top
     /// neck arcs' centres.
-    const NECK_TRIANGLE_BASE: f32 = Self::TOP_NECK_RADIUS + Self::MIDDLE_NECK_WIDTH / 2.0;
-    const RIGHT_BOTTOM_NECK_CENTER_X: f32 =
+    pub(crate) const NECK_TRIANGLE_BASE: f32 =
+        Self::TOP_NECK_RADIUS + Self::MIDDLE_NECK_WIDTH / 2.0;
+    pub(crate) const RIGHT_BOTTOM_NECK_CENTER_X: f32 =
         Self::MIDDLE_NECK_WIDTH / 2.0 + Self::BOTTOM_NECK_RADIUS;
-    const NECK_TRIANGLE_HYPOTENUSE: f32 = Self::TOP_LOBE_RADIUS + Self::TOP_NECK_RADIUS;
-    const PREFERRED_HEIGHT: f32 = Self::DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS
+    pub(crate) const NECK_TRIANGLE_HYPOTENUSE: f32 = Self::TOP_LOBE_RADIUS + Self::TOP_NECK_RADIUS;
+    pub(crate) const PREFERRED_HEIGHT: f32 = Self::DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS
         + Self::TOP_LOBE_RADIUS
         + Self::BOTTOM_LOBE_RADIUS;
-    const TOP_LOBE_CENTER_Y: f32 = -Self::DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS;
+    pub(crate) const TOP_LOBE_CENTER_Y: f32 = -Self::DISTANCE_BETWEEN_TOP_BOTTOM_CENTERS;
 
-    fn preferred_size(label_width: f32, text_scale: f32) -> Size {
+    pub(crate) fn preferred_size(label_width: f32, text_scale: f32) -> Size {
         Size::new(
             (Self::MIN_LABEL_WIDTH * text_scale).max(label_width)
                 + Self::LABEL_PADDING * 2.0 * text_scale,
@@ -1517,14 +1561,14 @@ impl PaddleIndicatorPainter {
         )
     }
 
-    fn arc(path: &mut RenderPath, cx: f32, cy: f32, radius: f32, start: f32, end: f32) {
+    pub(crate) fn arc(path: &mut RenderPath, cx: f32, cy: f32, radius: f32, start: f32, end: f32) {
         path.arc_to(Rect::from_circle(cx, cy, radius), start, end - start, false);
     }
 
     /// Upstream's `_getIdealOffset`: how far sideways the bubble would like
     /// to move to stay on the slider, bounded by how far the paddle can
     /// stretch without tearing.
-    fn ideal_offset(
+    pub(crate) fn ideal_offset(
         half_width_needed: f32,
         scale: f32,
         center: Offset,
@@ -1552,7 +1596,7 @@ impl PaddleIndicatorPainter {
         }
     }
 
-    fn horizontal_shift(label: &TextPainter, geometry: &IndicatorPaintGeometry) -> f32 {
+    pub(crate) fn horizontal_shift(label: &TextPainter, geometry: &IndicatorPaintGeometry) -> f32 {
         let text_scale = geometry.text_scale_factor;
         let inverse_text_scale = if text_scale != 0.0 {
             1.0 / text_scale
@@ -1571,7 +1615,7 @@ impl PaddleIndicatorPainter {
         shift * text_scale
     }
 
-    fn paint(
+    pub(crate) fn paint(
         canvas: &mut Canvas,
         geometry: &IndicatorPaintGeometry,
         label: &TextPainter,
@@ -1878,6 +1922,8 @@ impl PaddleSliderValueIndicatorShape {
 pub enum RangeSliderValueIndicatorShape {
     Rectangular(RectangularRangeSliderValueIndicatorShape),
     Paddle(PaddleRangeSliderValueIndicatorShape),
+    RoundedRect(crate::range_slider_parts::RoundedRectRangeSliderValueIndicatorShape),
+    Drop(crate::range_slider_parts::DropRangeSliderValueIndicatorShape),
 }
 
 /// Upstream `RectangularRangeSliderValueIndicatorShape`.
@@ -1973,6 +2019,10 @@ impl RangeSliderValueIndicatorShape {
             RangeSliderValueIndicatorShape::Paddle(shape) => {
                 shape.preferred_size(label, text_scale)
             }
+            RangeSliderValueIndicatorShape::RoundedRect(shape) => {
+                shape.preferred_size(label, text_scale)
+            }
+            RangeSliderValueIndicatorShape::Drop(shape) => shape.preferred_size(label, text_scale),
         }
     }
 
@@ -1985,6 +2035,10 @@ impl RangeSliderValueIndicatorShape {
             RangeSliderValueIndicatorShape::Paddle(shape) => {
                 shape.horizontal_shift(label, geometry)
             }
+            RangeSliderValueIndicatorShape::RoundedRect(shape) => {
+                shape.horizontal_shift(label, geometry)
+            }
+            RangeSliderValueIndicatorShape::Drop(shape) => shape.horizontal_shift(label, geometry),
         }
     }
 
@@ -2007,6 +2061,12 @@ impl RangeSliderValueIndicatorShape {
                 shape.paint(canvas, geometry, theme, label)
             }
             RangeSliderValueIndicatorShape::Paddle(shape) => {
+                shape.paint(canvas, geometry, theme, label)
+            }
+            RangeSliderValueIndicatorShape::RoundedRect(shape) => {
+                shape.paint(canvas, geometry, theme, label)
+            }
+            RangeSliderValueIndicatorShape::Drop(shape) => {
                 shape.paint(canvas, geometry, theme, label)
             }
         }

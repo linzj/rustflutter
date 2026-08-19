@@ -164,6 +164,55 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 区间滑块的部件,与尺子上的三个假阳性(2026-08-19)
+
+`range_slider_parts.rs`(新),上游 `range_slider_parts.dart` 的 15 个类全覆盖:
+`RangeSliderThumbShape`/`RangeSliderTickMarkShape`/`RangeSliderTrackShape`/
+`BaseRangeSliderTrackShape` 四个基类,`RoundRangeSliderThumbShape`、
+`HandleRangeSliderThumbShape`、`RoundRangeSliderTickMarkShape`、
+`RectangularRangeSliderTrackShape`、`RoundedRectRangeSliderTrackShape`、
+`GappedRangeSliderTrackShape` 六个具体形状,
+`RoundedRectRangeSliderValueIndicatorShape`、
+`DropRangeSliderValueIndicatorShape` 两个气泡,以及 `RangeValues`、
+`RangeLabels`。`SliderThemeData` 的四个 `range*Shape` 字段与 `thumbSelector`
+一并补齐——36/36。
+
+区间版**多数**只是单值版加了第二个滑块头,真正分岔的地方写成了回归行:
+
+* `BaseRangeSliderTrackShape` 在主题带 `padding` 时**仍留半个滑块头**,单值版
+  一点都不留。区间滑块的两个头都要走到行程尽头,外侧那半个永远省不掉。没有
+  `padding` 时两者算出来一模一样——分岔只在那一个分支里。
+* 区间轨道的两段颜色**不随文字方向对调**。单值轨道要对调,是因为「滑块头之前」
+  换了一边;区间轨道的活动段在两个头之间,怎么摆都是那一段,变的只是哪个头在
+  左边。
+* 刻度问的是「在不在两个头之间」,不是「在不在那一个头之前」。这两个问题对第二
+  个头之后的每一个刻度都给出不同答案。
+* 轨道**有间隙时**才丢掉正压在滑块头下面的刻度——那个位置本该是空的。没有间隙时
+  照画,滑块头盖住就是了。两种情况都丢,M2 的每条滑块都会少一个刻度。
+* 两个滑块头共用一条 activation 动画。单值版无条件读它,区间版只在自己被按住时
+  读,否则拖一个头两个都会抬起来。
+* `RangeThumbSelector` 上游是个 typedef,这里是具名类型:裸 `dyn Fn` 既没有
+  `Debug` 也没有 `PartialEq`,而带着它的主题两个都要。相等按闭包身份算,和
+  `StateProperty` 同规则同理由。
+
+上游在这个文件里又抄了一份 `_RoundedRectSliderValueIndicatorPathPainter` 和
+`_DropSliderValueIndicatorPathPainter`,常数一位不差,所以这里的两个区间气泡直接
+调 `slider_theme` 里的画笔,没有抄第二份。
+
+**尺子上的三个假阳性。** 新模块本来叫 `range_slider.rs`,而尺子把声明的标识符按
+蛇形折成驼峰再比对,于是 `mod range_slider` 冒充了上游的 `RangeSlider` 控件。改名
+`range_slider_parts.rs`(也正是上游的文件名)去掉了它。顺手把根因也修了:
+`tools/coverage.py` 的声明正则里去掉了 `mod`——模块是文件,不是类型。这又还回来两
+个:`mod matrix_utils` 一直在冒充 `MatrixUtils`,`mod text_input` 一直在冒充
+`TextInput`,两个类型都没人写过。三个都是尺子在替我们说谎,现在不说了。
+
+验证:`cargo test --lib` 1079 绿,GN `rustflutter_unittests` 1079 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1082 accounted / 791 MISSING——比上一簇多 12,是
+15 个新类减去还回来的 3 个假阳性。滑块一族到此只剩 `Slider` 与 `RangeSlider`
+两个控件本体。
+
+
 ### 滑块的数值气泡(2026-08-19)
 
 `slider_theme.rs`。滑块拖动时浮在滑块头上方的那个气泡,上游有四种画法,加上

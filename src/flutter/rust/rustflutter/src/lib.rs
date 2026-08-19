@@ -56,6 +56,7 @@ pub mod painting;
 pub mod physics;
 pub mod pickers;
 pub mod platform;
+pub mod range_slider_parts;
 pub mod render;
 pub mod scrollbar;
 pub mod scrolling;

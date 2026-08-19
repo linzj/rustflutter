@@ -61,10 +61,15 @@ def strip_rust_comments(text):
 
 
 def rust_identifiers():
-    """Declared symbols only (types, fns, aliases, mods, impl targets) --
-    locals named `element` must not count as covering upstream `Element`."""
+    """Declared symbols only (types, fns, aliases, impl targets) --
+    locals named `element` must not count as covering upstream `Element`.
+
+    `mod` is deliberately not in the list. A module is a file, not a type,
+    and the snake-case fold that lets `text_theme` answer for `TextTheme`
+    also let `mod actions` answer for upstream's `Actions` widget, which
+    nothing in the crate implements."""
     decl = re.compile(
-        r'\b(?:struct|enum|union|trait|fn|type|mod|const|static|macro_rules!)\s+([A-Za-z_][A-Za-z0-9_]*)'
+        r'\b(?:struct|enum|union|trait|fn|type|const|static|macro_rules!)\s+([A-Za-z_][A-Za-z0-9_]*)'
         r'|\bimpl(?:\s*<[^{;]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*([A-Za-z_][A-Za-z0-9_]*)'
     )
     ids = set()
