@@ -74,9 +74,11 @@
 //! immediately with "nobody handled it". Platform messages are a UI-thread
 //! affair upstream too, but there it is enforced and here it is a convention.
 
+pub mod asset_manifest;
 pub mod channel;
 pub mod codec;
 pub mod keyboard_inserted_content;
+pub mod process_text;
 pub mod spell_check;
 pub mod system;
 pub mod text_boundary;
