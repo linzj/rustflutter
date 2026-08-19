@@ -50,6 +50,11 @@ pub enum Curve {
     ElasticIn(f32),
     ElasticOut(f32),
     ElasticInOut(f32),
+    /// Two cubics joined at a midpoint. Upstream's `ThreePointCubic`, which
+    /// is a separate class rather than a curve you could approximate with one
+    /// cubic: iOS's page transition is one, and its whole character is the
+    /// join.
+    ThreePointCubic(ThreePointCubic),
     /// Bounces, like something dropped.
     BounceIn,
     BounceOut,
@@ -74,6 +79,25 @@ impl Curve {
     /// Material's standard easing: quick to leave, slow to arrive.
     pub const FAST_OUT_SLOW_IN: Curve = Curve::Cubic(0.4, 0.0, 0.2, 1.0);
     pub const SLOW_MIDDLE: Curve = Curve::Cubic(0.15, 0.85, 0.85, 0.15);
+
+    /// Starts at the linear rate and eases out. iOS's choice for a page that
+    /// is being covered.
+    pub const LINEAR_TO_EASE_OUT: Curve = Curve::Cubic(0.35, 0.91, 0.33, 0.97);
+    /// [`Curve::LINEAR_TO_EASE_OUT`] run the other way, and **not** its
+    /// `flipped`: upstream spells both out, because the pair is a design
+    /// decision and a reversal that merely looked right would read as one.
+    pub const EASE_IN_TO_LINEAR: Curve = Curve::Cubic(0.67, 0.03, 0.65, 0.09);
+
+    /// The iOS page transition, and the reason [`ThreePointCubic`] exists: a
+    /// quick ease in, then a long slow ease out, joined at a point neither
+    /// cubic alone can put there.
+    pub const FAST_EASE_IN_TO_SLOW_EASE_OUT: Curve = Curve::ThreePointCubic(ThreePointCubic::new(
+        (0.056, 0.024),
+        (0.108, 0.3085),
+        (0.198, 0.541),
+        (0.3655, 1.0),
+        (0.5465, 0.989),
+    ));
 
     pub const EASE_IN_SINE: Curve = Curve::Cubic(0.47, 0.0, 0.745, 0.715);
     pub const EASE_IN_QUAD: Curve = Curve::Cubic(0.55, 0.085, 0.68, 0.53);
@@ -140,6 +164,7 @@ impl Curve {
                 1.0 - inverted * inverted
             }
             Curve::Cubic(a, b, c, d) => cubic(a, b, c, d, t),
+            Curve::ThreePointCubic(shape) => shape.transform(t),
             Curve::ElasticIn(period) => {
                 let s = period / 4.0;
                 let t = t - 1.0;
@@ -180,6 +205,7 @@ impl Curve {
     pub fn flipped(self) -> Curve {
         match self {
             Curve::Cubic(a, b, c, d) => Curve::Cubic(1.0 - c, 1.0 - d, 1.0 - a, 1.0 - b),
+            Curve::ThreePointCubic(shape) => Curve::ThreePointCubic(shape.flipped()),
             Curve::BounceIn => Curve::BounceOut,
             Curve::BounceOut => Curve::BounceIn,
             Curve::ElasticIn(period) => Curve::ElasticOut(period),
@@ -196,6 +222,104 @@ impl Curve {
 /// parameter that puts the curve at time `t` has to be found first. Upstream
 /// bisects, and so does this, to the same error bound -- which is loose
 /// because a curve is being sampled for a pixel position, not solved.
+/// Upstream `ThreePointCubic`: two cubic Beziers joined at a midpoint.
+///
+/// Each segment is an ordinary cubic through its own two endpoints, and the
+/// midpoint is where the first hands over to the second. It is a separate
+/// shape rather than a cubic with cleverer control points because a single
+/// cubic through (0,0) and (1,1) cannot both leave quickly and arrive slowly
+/// to the degree iOS asks for -- the join is the whole point.
+///
+/// Points are `(x, y)` pairs rather than `Offset`s, which keeps this file
+/// free of a dependency on the engine's geometry for the sake of ten numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThreePointCubic {
+    /// The first control point of the first curve.
+    pub a1: (f32, f32),
+    /// The second control point of the first curve. The line through this and
+    /// the midpoint is tangent to the curve arriving at the midpoint.
+    pub b1: (f32, f32),
+    /// Where the first curve ends and the second begins.
+    pub midpoint: (f32, f32),
+    /// The first control point of the second curve.
+    pub a2: (f32, f32),
+    /// The second control point of the second curve.
+    pub b2: (f32, f32),
+}
+
+impl ThreePointCubic {
+    pub const fn new(
+        a1: (f32, f32),
+        b1: (f32, f32),
+        midpoint: (f32, f32),
+        a2: (f32, f32),
+        b2: (f32, f32),
+    ) -> ThreePointCubic {
+        ThreePointCubic {
+            a1,
+            b1,
+            midpoint,
+            a2,
+            b2,
+        }
+    }
+
+    /// Where the curve is at `t`.
+    ///
+    /// Each half is evaluated as an ordinary cubic in its **own** unit square
+    /// and then scaled back out. That is why the control points are divided by
+    /// the segment's extent: a cubic only knows how to run from (0,0) to
+    /// (1,1), so the segment is normalised, solved, and put back.
+    pub fn transform(self, t: f32) -> f32 {
+        let first = t < self.midpoint.0;
+        let scale_x = if first {
+            self.midpoint.0
+        } else {
+            1.0 - self.midpoint.0
+        };
+        let scale_y = if first {
+            self.midpoint.1
+        } else {
+            1.0 - self.midpoint.1
+        };
+        let scaled_t = (t - if first { 0.0 } else { self.midpoint.0 }) / scale_x;
+        if first {
+            cubic(
+                self.a1.0 / scale_x,
+                self.a1.1 / scale_y,
+                self.b1.0 / scale_x,
+                self.b1.1 / scale_y,
+                scaled_t,
+            ) * scale_y
+        } else {
+            cubic(
+                (self.a2.0 - self.midpoint.0) / scale_x,
+                (self.a2.1 - self.midpoint.1) / scale_y,
+                (self.b2.0 - self.midpoint.0) / scale_x,
+                (self.b2.1 - self.midpoint.1) / scale_y,
+                scaled_t,
+            ) * scale_y
+                + self.midpoint.1
+        }
+    }
+
+    /// The shape run backwards.
+    ///
+    /// Exact, for the same reason a cubic's is: mirroring every point through
+    /// (0.5, 0.5) and reversing their order gives `1 - curve(1 - t)`. The two
+    /// segments swap, so the second curve's control points become the first's.
+    pub fn flipped(self) -> ThreePointCubic {
+        let mirror = |point: (f32, f32)| (1.0 - point.0, 1.0 - point.1);
+        ThreePointCubic {
+            a1: mirror(self.b2),
+            b1: mirror(self.a2),
+            midpoint: mirror(self.midpoint),
+            a2: mirror(self.b1),
+            b2: mirror(self.a1),
+        }
+    }
+}
+
 fn cubic(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
     const ERROR_BOUND: f32 = 0.001;
     fn evaluate(a: f32, b: f32, m: f32) -> f32 {
@@ -628,6 +752,75 @@ impl Animations {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_three_point_cubic_passes_exactly_through_its_join() {
+        // Which is the only reason the shape exists: a single cubic through
+        // (0,0) and (1,1) cannot be made to pass through an arbitrary interior
+        // point with prescribed tangents on both sides of it.
+        let shape = match Curve::FAST_EASE_IN_TO_SLOW_EASE_OUT {
+            Curve::ThreePointCubic(shape) => shape,
+            other => panic!("expected a three-point cubic, got {other:?}"),
+        };
+        let (mid_x, mid_y) = shape.midpoint;
+        assert!(
+            (shape.transform(mid_x) - mid_y).abs() < 1e-3,
+            "at {mid_x} the curve is {} rather than {mid_y}",
+            shape.transform(mid_x)
+        );
+        assert_eq!(shape.transform(0.0), 0.0);
+        assert!((shape.transform(1.0) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_ios_page_curve_is_most_of_the_way_there_by_a_fifth_of_the_time() {
+        // Fast in, slow out: 54% of the distance in 20% of the duration. That
+        // is what makes an iOS page feel like it has already arrived while it
+        // is still settling, and it is not a shape a plain ease-out reaches.
+        let curve = Curve::FAST_EASE_IN_TO_SLOW_EASE_OUT;
+        assert!(curve.transform(0.198) > 0.5);
+        assert!(
+            Curve::EASE_OUT.transform(0.198) < 0.5,
+            "where the nearest single cubic is not even halfway"
+        );
+        assert!(curve.transform(0.6) > 0.95, "and then it crawls home");
+    }
+
+    #[test]
+    fn flipping_a_three_point_cubic_is_exact_rather_than_approximate() {
+        // Mirroring every control point through (0.5, 0.5) and reversing their
+        // order gives 1 - curve(1 - t), which is what a reversing animation
+        // wants. The two segments swap places, so the claim is not obvious.
+        let curve = Curve::FAST_EASE_IN_TO_SLOW_EASE_OUT;
+        let flipped = curve.flipped();
+        for step in 1..20 {
+            let t = step as f32 / 20.0;
+            let expected = 1.0 - curve.transform(1.0 - t);
+            assert!(
+                (flipped.transform(t) - expected).abs() < 2e-3,
+                "at {t}: {} against {expected}",
+                flipped.transform(t)
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_ios_linear_curves_are_spelled_out_and_are_not_each_others_flip() {
+        // Upstream declares both rather than deriving one, and the numbers say
+        // why: a reversal that merely looked right would read as one.
+        assert_ne!(
+            Curve::LINEAR_TO_EASE_OUT.flipped(),
+            Curve::EASE_IN_TO_LINEAR
+        );
+        assert_eq!(
+            Curve::LINEAR_TO_EASE_OUT,
+            Curve::Cubic(0.35, 0.91, 0.33, 0.97)
+        );
+        assert_eq!(
+            Curve::EASE_IN_TO_LINEAR,
+            Curve::Cubic(0.67, 0.03, 0.65, 0.09)
+        );
+    }
+
     use super::*;
     use crate::engine::Color;
 

@@ -39,6 +39,7 @@ pub mod component_themes;
 pub mod components;
 pub mod controls;
 pub mod cupertino;
+pub mod cupertino_route;
 pub mod decoration;
 pub mod diagnostics;
 pub mod direction;

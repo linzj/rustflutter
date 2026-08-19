@@ -164,6 +164,77 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 视差就是那三分之一,而尺子上那条"约等于"在替我说谎(2026-08-20)
+
+新模块 `cupertino_route.rs`,`cupertino/route.dart` 八个全到:
+`CupertinoRouteTransitionMixin`、`CupertinoPageRoute`、`CupertinoPage`、
+`CupertinoPageTransition`、`CupertinoFullscreenDialogTransition`、
+`CupertinoModalPopupRoute`、`CupertinoDialogRoute`、`CupertinoPageTransitionsBuilder`。
+覆盖率 1540/1888(81.6%)。
+
+**iOS 的页面转场,全部内容就是一个不匹配:** 进来的页面滑**一整个**屏宽,被盖住的那页只滑**三分
+之一**。差值就是视差。两页滑同样的距离,读起来是传送带上的两页,而不是一页压在另一页下面。
+
+**台账自查,这轮最该写下来的一条:** `fastEaseInToSlowEaseOut` 是 `ThreePointCubic`——两段三次贝
+塞尔在一个中点接起来。而尺子的台账里记着 `ThreePointCubic ≈ Curve::Cubic(近似)`。**那条"约等
+于"在替我说谎:** 一条穿过 (0,0) 和 (1,1) 的单段三次曲线,做不到在 t=0.198 处就走完 54% 的距离
+——那正是这条曲线的全部性格,而接点就是做到它的手段。于是补上真的 `ThreePointCubic`(带
+`transform` 与精确的 `flipped`),把台账那条删掉,`animation/curves.dart` 从 covered:1 变成
+covered:2。**当尺子夸我的时候去查它**——这是第三次了,前两次是 `IOSScrollViewFlingVelocityTracker`
+和宏体盲区。
+
+**手指在的时候,曲线要让路。** `linearTransition` 恰好在返回滑动进行时为真:页面必须待在手指底
+下。加了缓动的页面会先落后于自己的拖动、再追上来,读起来像是页面粘在玻璃上而不是粘在手指上。但
+**全屏对话框不是这样**——它的主曲线**照用不误**,因为全屏对话框根本没有边缘返回手势,没有手指要
+跟。回归行把这个不对称钉住了。
+
+**松手之后往哪走,是三段判断,而第一段最要紧:**
+
+1. **路由已经不是当前的了,就只看它还在不在栈里**——不看速度,不看拖了多远。上游为此引了
+   flutter/flutter#141268:一个刚被拖回来几个像素、同时收到程序化 pop 的路由,**仍然应该离开**,
+   因为它已经被弹掉了。这时候还去问手指,会把一个半消失的、已经没人拥有的页面放回屏幕上。
+2. **甩了一下就只看方向**,不管拖到了哪里。
+3. **慢慢松手才回到"过半就留下"。**
+
+还有 **`userGestureInProgress` 要留到归位动画结束**,而不是手指离开时。转场读这个标志决定要不要
+走线性,提前放掉会让曲线在归位途中换掉——页面滑回家的半路上出现一个看得见的折点。
+
+**上游那些"目测"出来的数,原样抄:** 页面 500ms(上游写的是「a relatively rigorous eyeball
+estimation」)、掉落回弹曲线「rigorously eyeballing native iOS animations」、对话框初始缩放
+1.3「mostly eyeballed from iOS」。**一个"差不多对"的转场,比一个明显不同的转场更容易被看出错。**
+
+**边缘阴影是这轮最好的一条性能注解:** 它不是 `LinearGradient`,而是一叠 1 像素宽的矩形,一条一条
+lerp 出来。上游 2021-02-08 在 iPhone XR 上量过:编译那个渐变着色器,让一个刚装好的应用做一次页面
+转场的最坏帧从 **~95ms** 掉到 **~30ms**。**看起来更笨的代码就是更快的那份,因为开销从来不在绘制
+上。** 阴影本身是 `0x04000000`——1.6% 的黑,几乎不算阴影,正是要点:要读出深度,又不能读成一条
+线。
+
+**其余判断:**
+
+* **弹簧是临界阻尼的**:`damping = 2*sqrt(522.35) = 45.7099552`。iOS 的表单不会回弹,差一点点就
+  会让每张操作表都带上一次看得见的弹跳。回归行同时钉了阻尼比和「六十步内不越过 1.0」。
+* **速度容差是被放宽而不是收紧的**(0.03,默认是 1e-3)。iOS 自己的弹簧在宣布结束时速度还有约
+  0.02——**说明 iOS 判断结束时根本没看速度**,用默认值反而会一直动到 iOS 早就停下的位置之后。
+* **用弹簧而不是曲线**:曲线有固定时长,半路被抓住的表单只能重新开始;弹簧带着它已经在的位置走。
+* **告警对话框是"落回原位"而不是"长大到位"**(1.3→1.0);而**退场时完全没有缩放**,只有淡出——一
+  边淡出一边涨回 1.3,看起来像它一边离开一边朝读者走来。
+* **全屏对话框没有遮罩底色**:它整个盖住屏幕,身后已经没有需要区分的东西了。
+* **表单可以点外面关掉,但默认不进语义树**(`semanticsDismissible` 为 false,而
+  `barrierDismissible` 为 true):读者用表单自己的控件离开,一个全屏的「Dismiss」目标只会挡在它
+  们前面。
+* **手势条取安全区内边距和 20 的较大者**:在系统本来就留了宽边距的设备上,20 逻辑像素会把整条手势
+  区推到硬件底下。
+* `canTransitionTo` 的两条都是「能不能同步」:全屏对话框底下的页面动了也是白动;而只有对方也是
+  Cupertino、或者交回了一个可对齐的 delegated transition,这页才值得播退场。
+
+**顺手修掉一个"摆设字段":** `draggable_sheet.rs` 的 `SnappingSimulation::tolerance` 存了却从不读
+(编译器一直在提醒)。上游 `Simulation` 基类确实带着它,由驱动方读——所以补一个 `tolerance()`
+读取器,而不是把字段删掉。
+
+验证:`cargo test --lib` 2132 绿,GN `rustflutter_unittests` 2132 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1540 accounted / 348 MISSING(81.6%)。
+
 ### 一次返回先撕掉一层,页面留到最后一层没了才走(2026-08-20)
 
 新模块 `routes.rs`,`widgets/routes.dart` 十二个全到:`OverlayRoute`、`TransitionRoute`、

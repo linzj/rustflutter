@@ -280,6 +280,13 @@ impl SnappingSimulation {
         }
     }
 
+    /// Upstream's `Simulation.tolerance`, which every simulation carries even
+    /// when its own `isDone` does not consult it -- the driver reads it to
+    /// decide when to stop ticking.
+    pub fn tolerance(&self) -> Tolerance {
+        self.tolerance
+    }
+
     /// Where this simulation is heading.
     pub fn snap_position(&self) -> f32 {
         self.snap_position

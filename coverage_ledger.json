@@ -809,10 +809,6 @@
       "rust": "Repeat::Loop + value 取模",
       "note": "锯齿即重复取余；widget 面待接"
     },
-    "ThreePointCubic": {
-      "rust": "Curve::Cubic(四点)的一个端点固定",
-      "note": "控制点固定的三次即枚举可表"
-    },
     "Curve2D": {
       "rust": "P5 余量",
       "note": "2D 路径曲线（CatmullRom 一族）——无消费者，留待首个使用"
