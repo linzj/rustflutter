@@ -124,6 +124,7 @@ if (enable_unittests) {
       "rustflutter/src/editable.rs",
       "rustflutter/src/expansion_panel.rs",
       "rustflutter/src/fab_location.rs",
+      "rustflutter/src/flexible_space_bar.rs",
       "rustflutter/src/focus.rs",
       "rustflutter/src/foundation.rs",
       "rustflutter/src/framework.rs",

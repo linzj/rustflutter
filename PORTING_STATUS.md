@@ -164,6 +164,44 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个数就够了:那条会塌下去的头(2026-08-20)
+
+新模块 `flexible_space_bar.rs`,上游 `material/flexible_space_bar.dart` 两个全到:
+`FlexibleSpaceBar` 和 `FlexibleSpaceBarSettings`(连同 `CollapseMode`、`StretchMode`)。
+
+**这个 widget 里所有东西都是一个数 `t` 的函数**:0 是完全展开,1 是塌成工具栏。背景的不透
+明度、标题的缩放、背景摆在哪儿,全部由它推出来。**这条 bar 自己在帧与帧之间什么都不
+记**——正因如此它才能被一个说跳就跳的滚动位置驱动。
+
+**几处非显然的规则,各钉一条:**
+
+* **`t` 要钳位**:把列表往下拽过头时 current extent 会大于 max,不钳就变成负数,而每一个
+  读它的地方都会读反。
+* **塌不下去的 bar 读作「完全展开、完全不透明」。** min == max 是一次除以零。上游是在**每
+  一个**用到它的地方各特判一次 `maxExtent == minExtent`;这里在 `t` 里**一次**说清,而
+  `background_opacity` 也照上游那句原话("the app bar cannot collapse and the content
+  should be visible")直接答 1。
+* **没说的 extent 意思是「这条 bar 不在塌」而不是零。** 上游 `createSettings` 把 min/max
+  默认成**当前**的那个值——这才让一条上面没有 sliver 的 bar 表现得像条普通 bar,而不是像条
+  已经完全塌了的。
+* **视差是四分之一。** 这个数正是让背景读起来「比页面更远」的东西:在你身后的东西看起来比
+  在你身边的东西动得少。pin 则**正好抵消**这次塌陷(背景一动不动),none 让它按 bar 自己
+  的速度走。
+* **背景先撑住、再在最后一个工具栏高度里淡掉**,不是整段塌陷都在淡:一张读者一滚就开始淡
+  的照片看着像 bug,而一张先撑住、到工具栏合拢时才走的,读起来是「工具栏来了」。塌陷本身
+  比一个工具栏还浅时,`fadeStart` 落到零,整段都在淡。
+* **标题的前导内边距只在真有返回键时才让位**;没说时按「有」算(标题压在按钮底下,比标题
+  白白缩进要糟);而**居中的标题不让**——它坐的那一侧没有按钮要躲。
+* **拉伸只在列表被拽过顶时发生**,那是唯一有多余空间的时候。三个 stretch mode 是**能叠加
+  的三个独立决定**(缩放背景、模糊背景、淡出标题),各管一个部位——所以是个列表而不是一个
+  选择;只开模糊时背景就不缩放。
+* **标题跟着工具栏自己的不透明度淡**,和背景那份是分开的——因为背景淡出的同时工具栏正在淡
+  入。
+
+验证:`cargo test --lib` 1508 绿,GN `rustflutter_unittests` 1508 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1260 accounted / 628 MISSING。
+
 ### 字大了,留白反而要收(2026-08-20)
 
 `SimpleDialogOption`、`SimpleDialog`、`AlertDialog`(上游 `material/dialog.dart`)进
