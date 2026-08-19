@@ -53,6 +53,7 @@ pub mod icon_data;
 pub mod image;
 pub mod implicit;
 pub mod ink;
+pub mod ink_well;
 pub mod interactive_viewer;
 pub mod keyboard;
 pub mod licenses;

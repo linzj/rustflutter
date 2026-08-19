@@ -778,6 +778,28 @@ impl InteractiveInkFeature {
         self.settle(at_micros, InkSettlement::Cancelled);
     }
 
+    /// Upstream `InkHighlight.activate()`: the pointer came back.
+    ///
+    /// The fade runs *forward from where it had got to*, not from nothing --
+    /// upstream calls `forward()` on the controller it had been reversing, so
+    /// a highlight caught half way out brightens from half. Only a highlight
+    /// has this; a splash that settled is on its way out for good.
+    pub fn activate(&mut self, at_micros: i64) {
+        if self.phase.settled.is_none() {
+            return;
+        }
+        self.highlight_from = self.opacity();
+        self.phase.settled = None;
+        self.phase.started_micros = at_micros;
+        self.phase.now_micros = self.phase.now_micros.max(at_micros);
+    }
+
+    /// Upstream `InkHighlight.active`: whether it is on its way in rather
+    /// than out.
+    pub fn active(&self) -> bool {
+        self.phase.settled.is_none()
+    }
+
     fn settle(&mut self, at_micros: i64, how: InkSettlement) {
         if self.phase.settled.is_some() {
             return;
@@ -801,7 +823,7 @@ impl InteractiveInkFeature {
                 None => highlight.opacity(
                     (self.phase.now_micros - self.phase.started_micros).max(0),
                     true,
-                    0.0,
+                    self.highlight_from,
                 ),
                 Some((at, _)) => highlight.opacity(
                     (self.phase.now_micros - at).max(0),

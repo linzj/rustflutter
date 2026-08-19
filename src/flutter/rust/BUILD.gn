@@ -131,6 +131,7 @@ if (enable_unittests) {
       "rustflutter/src/grid.rs",
       "rustflutter/src/implicit.rs",
       "rustflutter/src/ink.rs",
+      "rustflutter/src/ink_well.rs",
       "rustflutter/src/interactive_viewer.rs",
       "rustflutter/src/keyboard/keys.rs",
       "rustflutter/src/keyboard/mod.rs",
