@@ -76,6 +76,8 @@
 
 pub mod channel;
 pub mod codec;
+pub mod keyboard_inserted_content;
+pub mod spell_check;
 pub mod system;
 pub mod text_boundary;
 pub mod text_editing_delta;

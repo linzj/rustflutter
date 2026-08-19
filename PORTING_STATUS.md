@@ -164,6 +164,48 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 拼写检查,与平台塞进输入框的两样东西(2026-08-19)
+
+两个新文件,六个上游类:
+
+**`services/spell_check.rs`**——`SuggestionSpan`、`SpellCheckResults`、
+`SpellCheckService`、`DefaultSpellCheckService`。框架不会拼写;每个平台都自带词
+典和检查器,这是通往它的那条通道:递一个 locale 和一个字符串,拿回看着不对的那些
+范围和替换建议。上游的 `Future` 在这里是回调,和这个 crate 里其他所有
+`MethodChannel` 调用同形。
+
+**`services/keyboard_inserted_content.rs`**——`KeyboardInsertedContent` 与
+`PredictiveBackEvent`(含 `SwipeEdge`)。两样各自太小、放不满一个文件的东西:
+Android 键盘往输入框里塞的 GIF 或贴纸,和一次已经开始、还没松手的返回手势。
+
+**照抄了上游一处名实不符的地方,并且写下来。** `DefaultSpellCheckService` 合并新
+旧结果的条件,上游写作 `spansHaveChanged = listEquals(...)`——名字说「变了」,值算
+的是「相等」,而合并跑在**相等**那条分支上。两个相等的列表合并出来还是原来那个,
+所以照这么写,这次合并根本不可能改变任何东西。这里照原样移植,并在
+`reconcile` 的文档里说明原委:一个悄悄改掉它的移植,会和它所移植的框架给出不同的
+答案。回归行把两条分支都钉住了,哪天上游修了它,这里会失败而不是无声漂移。
+
+**回归行盯的其余地方:**
+
+* 合并按 span 起点顺序走两个列表;两边起点相同时**保留旧的那条建议**。这是上游的
+  选择而不是巧合:读者可能已经看到过旧的那一组,菜单开着的时候把列表换掉,会改变
+  点下去的后果。
+* 一端走完之后,另一端剩下的全都跟上。
+* 结果只对**它被问的那个字符串**有效——一次按键之后那些偏移量指的就是别的东西了,
+  这也是为什么 `SpellCheckResults` 要把文本一起带着。
+* 有偏移量没有建议的 span 是合法的:平台不喜欢这个词,但没有更好的可给。
+* `hasData` 上「不存在」和「空」是同一个答案——零长度的附件怎么说都没东西可插。
+* 返回**按钮**会当作一次没动过的手势传来,而且有两种传法:完全没有触点是一种;
+  触点在原点、进度为零也是一种——Android 文档说按钮按下时坐标是 NaN,实机上传的
+  是零。文档和设备不一致,所以检查按设备来。
+* 平台不可能发出的 `swipeEdge` 被拒绝而不是 panic(上游是拿它去索引枚举值)。
+
+验证:`cargo test --lib` 1136 绿,GN `rustflutter_unittests` 1136 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1107 accounted / 766 MISSING;services 层 102/141,
+只剩 39。
+
+
 ### 键盘改了什么,而不是文本现在是什么(2026-08-19)
 
 `services/text_editing_delta.rs`(新),上游 `services/text_editing_delta.dart`
