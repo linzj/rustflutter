@@ -49,6 +49,7 @@ pub mod implicit;
 pub mod ink;
 pub mod interactive_viewer;
 pub mod keyboard;
+pub mod licenses;
 pub mod media_query;
 pub mod menu;
 pub mod navigation;
