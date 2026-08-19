@@ -94,6 +94,7 @@ pub mod recognizers;
 pub mod render;
 pub mod reorderable_list;
 pub mod resampler;
+pub mod router;
 pub mod scaffold_messenger;
 pub mod scrollable_helpers;
 pub mod scrollbar;
