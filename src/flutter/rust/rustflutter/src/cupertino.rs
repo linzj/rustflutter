@@ -3766,6 +3766,272 @@ impl CupertinoActionSheetAction {
     }
 }
 
+// -- iOS grouped lists --------------------------------------------------------
+
+/// Upstream `CupertinoListSectionType` (`cupertino/list_section.dart`): the two
+/// shapes an iOS grouped list comes in.
+///
+/// **Every constant in this family comes in a pair, one per variant**, and
+/// that is the design rather than an accident: a *base* section runs edge to
+/// edge with square corners, while an *inset grouped* one is a rounded card
+/// held in from the sides. The two are different enough that sharing a number
+/// between them would be wrong somewhere, so upstream shares none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CupertinoListSectionType {
+    /// Edge to edge, square corners. iOS's older grouped table.
+    #[default]
+    Base,
+    /// A rounded card inset from the screen's sides. The iOS 13 look.
+    InsetGrouped,
+}
+
+/// Upstream `CupertinoListTile`: one row of such a list.
+///
+/// Upstream has two constructors -- the plain one and `.notched`, the iOS 13
+/// look -- and they differ in every measurement rather than in a flag or two.
+/// Hence [`CupertinoListTileStyle`] rather than a `bool`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CupertinoListTileStyle {
+    #[default]
+    Plain,
+    /// Upstream's `CupertinoListTile.notched`.
+    Notched,
+}
+
+/// Upstream `CupertinoListTile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoListTile {
+    pub style: CupertinoListTileStyle,
+    pub has_leading: bool,
+    pub has_subtitle: bool,
+}
+
+impl CupertinoListTile {
+    /// Upstream's `_kLeadingSize`.
+    pub const LEADING_SIZE: f32 = 28.0;
+    /// Upstream's `_kNotchedLeadingSize`.
+    pub const NOTCHED_LEADING_SIZE: f32 = 30.0;
+    /// Upstream's `_kLeadingToTitle`.
+    pub const LEADING_TO_TITLE: f32 = 16.0;
+    /// Upstream's `_kNotchedLeadingToTitle`. Tighter, because a notched row's
+    /// leading is larger -- the gap and the glyph together are what the eye
+    /// reads as the indent, so the one gives way as the other grows.
+    pub const NOTCHED_LEADING_TO_TITLE: f32 = 12.0;
+    pub const NOTCHED_TITLE_TO_SUBTITLE: f32 = 3.0;
+    pub const ADDITIONAL_INFO_TO_TRAILING: f32 = 6.0;
+    pub const SUBTITLE_FONT_SIZE: f32 = 12.0;
+    pub const NOTCHED_SUBTITLE_FONT_SIZE: f32 = 14.0;
+
+    pub fn new() -> CupertinoListTile {
+        CupertinoListTile::default()
+    }
+
+    pub fn notched() -> CupertinoListTile {
+        CupertinoListTile {
+            style: CupertinoListTileStyle::Notched,
+            ..CupertinoListTile::default()
+        }
+    }
+
+    pub fn with_leading(mut self) -> Self {
+        self.has_leading = true;
+        self
+    }
+
+    pub fn with_subtitle(mut self) -> Self {
+        self.has_subtitle = true;
+        self
+    }
+
+    /// How big the leading glyph's box is.
+    pub fn leading_size(&self) -> f32 {
+        match self.style {
+            CupertinoListTileStyle::Plain => CupertinoListTile::LEADING_SIZE,
+            CupertinoListTileStyle::Notched => CupertinoListTile::NOTCHED_LEADING_SIZE,
+        }
+    }
+
+    /// Upstream's four minimum heights, each written as
+    /// `leadingSize + 2 * padding` rather than as a number.
+    ///
+    /// The arithmetic is the statement: **a row is its leading glyph plus
+    /// symmetric breathing room**, so the glyph's size is what sets the row's
+    /// and the padding is what is left to choose. A hand-written 44 would say
+    /// nothing about why it is 44, and would not follow the glyph if that
+    /// changed.
+    ///
+    /// A subtitle makes the padding *grow* -- 10 instead of 8 -- so a two-line
+    /// row is taller by more than the extra line. That is deliberate: two
+    /// lines packed to the same margins as one would read as crowded even
+    /// though nothing overlaps.
+    pub fn min_height(&self) -> f32 {
+        match (self.style, self.has_subtitle, self.has_leading) {
+            (CupertinoListTileStyle::Plain, false, _) => {
+                CupertinoListTile::LEADING_SIZE + 2.0 * 8.0
+            }
+            (CupertinoListTileStyle::Plain, true, _) => {
+                CupertinoListTile::LEADING_SIZE + 2.0 * 10.0
+            }
+            (CupertinoListTileStyle::Notched, _, true) => {
+                CupertinoListTile::NOTCHED_LEADING_SIZE + 2.0 * 12.0
+            }
+            // Upstream's `_kNotchedMinHeightWithoutLeading`: with no glyph to
+            // clear, the row closes up a little.
+            (CupertinoListTileStyle::Notched, _, false) => {
+                CupertinoListTile::NOTCHED_LEADING_SIZE + 2.0 * 10.0
+            }
+        }
+    }
+
+    /// The gap between the leading glyph and the title.
+    pub fn leading_to_title(&self) -> f32 {
+        match self.style {
+            CupertinoListTileStyle::Plain => CupertinoListTile::LEADING_TO_TITLE,
+            CupertinoListTileStyle::Notched => CupertinoListTile::NOTCHED_LEADING_TO_TITLE,
+        }
+    }
+
+    /// Upstream's `_kPadding` and friends.
+    ///
+    /// The plain row's `start: 20, end: 14` is **not symmetric**, and the
+    /// reason is what sits at each end: the start is a text margin the eye
+    /// lines up down the whole list, while the end holds a chevron that
+    /// already carries its own optical space.
+    pub fn padding(&self) -> EdgeInsets {
+        match (self.style, self.has_subtitle, self.has_leading) {
+            // Upstream's `_kPadding` and `_kPaddingWithSubtitle` are the same
+            // two numbers. Kept as two arms rather than collapsed, because
+            // upstream keeps them as two constants -- so a change to one does
+            // not silently move the other, which is the only reason to write
+            // the same value twice.
+            (CupertinoListTileStyle::Plain, false, _) => EdgeInsets::only(20.0, 0.0, 14.0, 0.0),
+            (CupertinoListTileStyle::Plain, true, _) => EdgeInsets::only(20.0, 0.0, 14.0, 0.0),
+            (CupertinoListTileStyle::Notched, _, true) => EdgeInsets::symmetric(14.0, 0.0),
+            // The only one with vertical padding of its own: with no leading
+            // glyph to set the row's height, the padding has to.
+            (CupertinoListTileStyle::Notched, _, false) => EdgeInsets::only(28.0, 10.0, 14.0, 10.0),
+        }
+    }
+
+    pub fn subtitle_font_size(&self) -> f32 {
+        match self.style {
+            CupertinoListTileStyle::Plain => CupertinoListTile::SUBTITLE_FONT_SIZE,
+            CupertinoListTileStyle::Notched => CupertinoListTile::NOTCHED_SUBTITLE_FONT_SIZE,
+        }
+    }
+}
+
+/// Upstream `CupertinoListTileChevron`: the grey angle bracket at the end of a
+/// row that leads somewhere.
+///
+/// Its whole body is an icon whose **size is the theme's body font size** --
+/// not a constant. So the chevron grows with the reader's text and keeps
+/// looking like punctuation on the row rather than a fixed ornament that would
+/// shrink beside large text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoListTileChevron;
+
+impl CupertinoListTileChevron {
+    /// The size the chevron is drawn at, given the body text size.
+    pub fn size(body_font_size: f32) -> f32 {
+        body_font_size
+    }
+}
+
+/// Upstream `CupertinoListSection`: a run of rows under a header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoListSection {
+    pub section_type: CupertinoListSectionType,
+    pub has_header: bool,
+}
+
+impl CupertinoListSection {
+    /// Upstream's `_kMarginTop`.
+    pub const MARGIN_TOP: f32 = 22.0;
+
+    pub fn new() -> CupertinoListSection {
+        CupertinoListSection::default()
+    }
+
+    pub fn inset_grouped() -> CupertinoListSection {
+        CupertinoListSection {
+            section_type: CupertinoListSectionType::InsetGrouped,
+            ..CupertinoListSection::default()
+        }
+    }
+
+    pub fn with_header(mut self) -> Self {
+        self.has_header = true;
+        self
+    }
+
+    /// Upstream's header margins.
+    ///
+    /// The inset-grouped one has a **16 top inset where the base has none**,
+    /// because an inset section is a card and its header floats above the
+    /// card; a base section runs edge to edge and its header is part of the
+    /// same run.
+    pub fn header_margin(&self) -> EdgeInsets {
+        match self.section_type {
+            CupertinoListSectionType::Base => EdgeInsets::only(20.0, 0.0, 20.0, 6.0),
+            CupertinoListSectionType::InsetGrouped => EdgeInsets::only(20.0, 16.0, 20.0, 6.0),
+        }
+    }
+
+    pub fn footer_margin(&self) -> EdgeInsets {
+        match self.section_type {
+            CupertinoListSectionType::Base => EdgeInsets::only(20.0, 0.0, 20.0, 0.0),
+            CupertinoListSectionType::InsetGrouped => EdgeInsets::only(20.0, 0.0, 20.0, 10.0),
+        }
+    }
+
+    /// Upstream's rows margins, and the one that depends on the header.
+    ///
+    /// An inset-grouped section with a header drops its **top** margin to
+    /// zero: the header's own bottom margin has already made that gap, and
+    /// keeping both would open a hole between the label and the card it
+    /// labels.
+    pub fn rows_margin(&self) -> EdgeInsets {
+        match (self.section_type, self.has_header) {
+            (CupertinoListSectionType::Base, _) => EdgeInsets::only(0.0, 0.0, 0.0, 8.0),
+            (CupertinoListSectionType::InsetGrouped, false) => {
+                EdgeInsets::only(20.0, 20.0, 20.0, 10.0)
+            }
+            (CupertinoListSectionType::InsetGrouped, true) => {
+                EdgeInsets::only(20.0, 0.0, 20.0, 10.0)
+            }
+        }
+    }
+}
+
+/// Upstream `CupertinoFormRow`: one labelled field of a form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoFormRow;
+
+impl CupertinoFormRow {
+    /// Upstream's `_kDefaultPadding`, `fromSTEB(20, 6, 6, 6)`.
+    ///
+    /// **The start inset is more than three times the end one**, and that is
+    /// the shape of a form row: the label sits against a margin the eye reads
+    /// down the column, while the field itself runs out to near the edge, so
+    /// there is little to reserve at that end.
+    pub const PADDING: EdgeInsets = EdgeInsets::only(20.0, 6.0, 6.0, 6.0);
+}
+
+/// Upstream `CupertinoFormSection`: a run of form rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoFormSection;
+
+impl CupertinoFormSection {
+    /// Upstream's `_kFormDefaultInsetGroupedRowsMargin`, with its comment:
+    /// determined from SwiftUI's Forms in the iOS 14.2 SDK.
+    ///
+    /// A **zero top margin**, unlike a list section's 20, because a form's
+    /// rows follow a header that has already spaced them -- a form is always
+    /// the inset-grouped shape and always has something above it.
+    pub const INSET_GROUPED_ROWS_MARGIN: EdgeInsets = EdgeInsets::only(20.0, 0.0, 20.0, 10.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4294,5 +4560,130 @@ mod tests {
         assert!(destructive.is_destructive_action && !destructive.is_default_action);
         let plain = CupertinoDialogAction::new();
         assert!(!plain.is_default_action && !plain.is_destructive_action);
+    }
+
+    #[test]
+    fn a_rows_height_is_its_leading_glyph_plus_breathing_room() {
+        // Upstream writes each minimum as `leadingSize + 2 * padding` rather
+        // than as a number, and the arithmetic is the statement: the glyph's
+        // size sets the row's, and the padding is what is left to choose.
+        assert_eq!(CupertinoListTile::new().min_height(), 28.0 + 16.0);
+        assert_eq!(
+            CupertinoListTile::notched().with_leading().min_height(),
+            30.0 + 24.0
+        );
+    }
+
+    #[test]
+    fn a_subtitle_makes_the_padding_grow_not_only_the_line_count() {
+        // Two lines packed to the same margins as one would read as crowded
+        // even though nothing overlaps, so the row is taller by more than the
+        // extra line.
+        let one_line = CupertinoListTile::new();
+        let two_lines = CupertinoListTile::new().with_subtitle();
+        assert_eq!(one_line.min_height(), 44.0);
+        assert_eq!(two_lines.min_height(), 48.0);
+        assert!(two_lines.min_height() > one_line.min_height());
+    }
+
+    #[test]
+    fn a_notched_row_without_a_leading_glyph_closes_up_and_pads_itself() {
+        // With no glyph to set the row's height, the padding has to -- which
+        // is why it is the one variant whose padding has a vertical part.
+        let with_glyph = CupertinoListTile::notched().with_leading();
+        let without = CupertinoListTile::notched();
+        assert!(without.min_height() < with_glyph.min_height());
+
+        assert_eq!(with_glyph.padding().top, 0.0);
+        assert_eq!(without.padding().top, 10.0);
+        assert_eq!(without.padding().bottom, 10.0);
+    }
+
+    #[test]
+    fn the_gap_before_the_title_shrinks_as_the_glyph_grows() {
+        // The gap and the glyph together are what the eye reads as the indent,
+        // so the one gives way as the other grows.
+        let plain = CupertinoListTile::new();
+        let notched = CupertinoListTile::notched();
+        assert!(notched.leading_size() > plain.leading_size());
+        assert!(notched.leading_to_title() < plain.leading_to_title());
+    }
+
+    #[test]
+    fn a_rows_two_ends_are_not_padded_alike() {
+        // The start is a text margin the eye lines up down the whole list; the
+        // end holds a chevron that already carries its own optical space.
+        let padding = CupertinoListTile::new().padding();
+        assert_eq!(padding.left, 20.0);
+        assert_eq!(padding.right, 14.0);
+        assert!(padding.left > padding.right);
+    }
+
+    #[test]
+    fn the_chevron_is_sized_by_the_readers_text_not_by_a_constant() {
+        // So it keeps looking like punctuation on the row rather than a fixed
+        // ornament that would shrink beside large text.
+        assert_eq!(CupertinoListTileChevron::size(17.0), 17.0);
+        assert_eq!(CupertinoListTileChevron::size(34.0), 34.0);
+    }
+
+    #[test]
+    fn an_inset_sections_header_floats_above_its_card() {
+        // A base section runs edge to edge and its header is part of the same
+        // run, so it has no top inset; an inset one is a card, and its header
+        // sits above the card.
+        assert_eq!(CupertinoListSection::new().header_margin().top, 0.0);
+        assert_eq!(
+            CupertinoListSection::inset_grouped().header_margin().top,
+            16.0
+        );
+    }
+
+    #[test]
+    fn a_header_takes_over_the_gap_above_the_rows() {
+        // Keeping both the header's bottom margin and the rows' top margin
+        // would open a hole between the label and the card it labels.
+        let without = CupertinoListSection::inset_grouped();
+        let with_header = CupertinoListSection::inset_grouped().with_header();
+        assert_eq!(without.rows_margin().top, 20.0);
+        assert_eq!(with_header.rows_margin().top, 0.0);
+        // The other three sides are unchanged -- only the disputed one moves.
+        assert_eq!(without.rows_margin().left, with_header.rows_margin().left);
+        assert_eq!(
+            without.rows_margin().bottom,
+            with_header.rows_margin().bottom
+        );
+    }
+
+    #[test]
+    fn a_base_section_has_no_side_margins_and_an_inset_one_does() {
+        // Which is the whole difference between the two shapes: edge to edge
+        // against a card held in from the sides.
+        assert_eq!(CupertinoListSection::new().rows_margin().left, 0.0);
+        assert_eq!(
+            CupertinoListSection::inset_grouped().rows_margin().left,
+            20.0
+        );
+    }
+
+    #[test]
+    fn a_form_rows_label_margin_is_far_wider_than_its_field_one() {
+        // The label sits against a margin the eye reads down the column; the
+        // field runs out to near the edge, so there is little to reserve there.
+        let padding = CupertinoFormRow::PADDING;
+        assert_eq!(padding.left, 20.0);
+        assert_eq!(padding.right, 6.0);
+        assert!(padding.left > padding.right * 3.0);
+    }
+
+    #[test]
+    fn a_form_section_starts_flush_where_a_list_section_does_not() {
+        // A form is always the inset-grouped shape and always has something
+        // above it, so its rows need no top margin of their own.
+        assert_eq!(CupertinoFormSection::INSET_GROUPED_ROWS_MARGIN.top, 0.0);
+        assert_eq!(
+            CupertinoListSection::inset_grouped().rows_margin().top,
+            20.0
+        );
     }
 }
