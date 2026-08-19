@@ -29,6 +29,7 @@ pub mod animation;
 pub mod app;
 pub mod arc;
 pub mod r#async;
+pub mod autocomplete;
 pub mod borders;
 pub mod color_scheme;
 pub mod colors;
