@@ -1861,6 +1861,10 @@
     "MaterialStateMixin": {
       "rust": "widget_state::WidgetStatesController",
       "note": "上游那个 mixin 是给 State 子类混入一套 WidgetState 的增删查；它整份文档现在指向 WidgetStatesController，而这个 crate 有后者。Rust 没有把状态混进别人 State 的办法，而持有一个 controller 正是上游现在推荐的写法。"
+    },
+    "DecorationImagePainter": {
+      "rust": "painting::DecorationImage::paint",
+      "note": "上游它是 createPainter(onChanged) 造出来的一个对象，存在的理由是给「一条已解析的 image stream」一个生命周期落脚点——所以它有 dispose。这个 crate 的 DecorationImage::paint 每次绘制自己 resolve，没有要持有的流、也就没有要 dispose 的东西；那两个方法里真正做事的那个就在它身上，文档也早点了名。差别是解析时机，不是这个类少了。"
     }
   },
   "blocked_engine": {

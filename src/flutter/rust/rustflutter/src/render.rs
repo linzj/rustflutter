@@ -11235,6 +11235,150 @@ impl RenderBox for RenderCustomPaint {
     }
 }
 
+// -- Scrolling something into view --------------------------------------------
+
+/// Upstream `RevealedOffset` (`rendering/viewport.dart`): a scroll offset that
+/// would reveal something, and where that something would then be.
+///
+/// Two fields rather than one because a caller usually wants both: the offset
+/// to scroll to, and the rectangle the target will occupy once it is there --
+/// which is what a caller animating a highlight, or deciding whether the
+/// target still fits, has to know before the scroll happens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RevealedOffset {
+    /// The scroll offset that reveals the target.
+    pub offset: f32,
+    /// Where the target sits, in the viewport's coordinates, at that offset.
+    pub rect: Rect,
+}
+
+impl RevealedOffset {
+    pub fn new(offset: f32, rect: Rect) -> RevealedOffset {
+        RevealedOffset { offset, rect }
+    }
+
+    /// Upstream's `clampOffset`: the smallest scroll that brings the target
+    /// fully into view, or **`None` if it is already there**.
+    ///
+    /// That `None` is the point of the method. Given the offset that puts the
+    /// target against the leading edge and the one that puts it against the
+    /// trailing edge, anything between the two shows the whole target -- so a
+    /// target already visible must not be scrolled at all. A viewport that
+    /// helpfully moved to "centre" something the reader could already see
+    /// would yank the page under them for nothing.
+    ///
+    /// The two edge offsets are sorted rather than assumed, because which is
+    /// larger depends on the axis direction: in an upward or leftward
+    /// viewport the leading edge is the *higher* offset. Upstream calls that
+    /// case `inverted` and sorts for the same reason.
+    pub fn clamp_offset(
+        leading_edge_offset: RevealedOffset,
+        trailing_edge_offset: RevealedOffset,
+        current_offset: f32,
+    ) -> Option<RevealedOffset> {
+        let inverted = leading_edge_offset.offset < trailing_edge_offset.offset;
+        let (smaller, larger) = if inverted {
+            (leading_edge_offset, trailing_edge_offset)
+        } else {
+            (trailing_edge_offset, leading_edge_offset)
+        };
+        if current_offset > larger.offset {
+            Some(larger)
+        } else if current_offset < smaller.offset {
+            Some(smaller)
+        } else {
+            None
+        }
+    }
+}
+
+/// Upstream `RenderAbstractViewport`: the interface a viewport answers "how
+/// far would I have to scroll to show this?" through.
+///
+/// Upstream it is an interface on `RenderObject` so that anything wanting to
+/// reveal a descendant -- focus traversal, `Scrollable.ensureVisible`, a text
+/// field keeping the caret on screen -- can walk up to the nearest viewport
+/// without knowing which kind it found.
+///
+/// # What this port takes, and why it is a rect
+///
+/// Upstream's `getOffsetToReveal(RenderObject target, ...)` starts by walking
+/// the transforms from `target` up to the viewport to work out where the
+/// target *is*. This crate has no such walk exposed, so the rect is passed in
+/// -- in the scrolled child's coordinates, which is the frame a caller who
+/// knows where its own item sits already has. What is left is the arithmetic,
+/// which is the whole of what the method decides.
+///
+/// Upstream's `maybeOf`/`of` static ancestor lookups are absent for the same
+/// reason: they walk `RenderObject.parent`, and reaching a viewport here is
+/// something the caller does by holding it.
+pub trait RenderAbstractViewport {
+    /// Upstream's `defaultCacheExtent`. The value lives in
+    /// [`crate::scrolling::DEFAULT_CACHE_EXTENT`], beside the scrolling that
+    /// reads it; it is named here too because upstream names it here.
+    const DEFAULT_CACHE_EXTENT: f32 = crate::scrolling::DEFAULT_CACHE_EXTENT;
+
+    /// Upstream's `getOffsetToReveal`.
+    ///
+    /// `alignment` is 0 for the target against the leading edge, 1 for the
+    /// trailing edge, and anything between for a proportion of the way --
+    /// 0.5 centres it. Values outside 0..1 are not clamped, and upstream does
+    /// not clamp them either: they scroll the target *past* the edge, which
+    /// is how a caller leaves a margin.
+    fn get_offset_to_reveal(&self, target: Rect, alignment: f32) -> RevealedOffset;
+}
+
+impl RenderAbstractViewport for RenderViewport {
+    fn get_offset_to_reveal(&self, target: Rect, alignment: f32) -> RevealedOffset {
+        let axis = axis_direction_to_axis(self.axis_direction);
+        let (viewport_extent, target_start, target_extent, child_extent) = match axis {
+            Axis::Vertical => (
+                self.size.height,
+                target.top,
+                target.height(),
+                self.child_size.height,
+            ),
+            Axis::Horizontal => (
+                self.size.width,
+                target.left,
+                target.width(),
+                self.child_size.width,
+            ),
+        };
+
+        // The distance from where the scroll offset is measured *from* to the
+        // target's leading edge. For a downward or rightward viewport that is
+        // the target's own start; for an upward or leftward one the offset is
+        // measured from the far end, so it is what lies beyond the target.
+        let leading_scroll_offset = match self.axis_direction {
+            AxisDirection::Down | AxisDirection::Right => target_start,
+            AxisDirection::Up | AxisDirection::Left => {
+                child_extent - (target_start + target_extent)
+            }
+        };
+
+        // Upstream's line: `leadingScrollOffset - (mainAxisExtent -
+        // targetMainAxisExtent) * alignment`. At alignment 0 the subtracted
+        // term vanishes and the target's edge lands on the viewport's; at 1
+        // the whole slack is taken and the far edges meet. A target *bigger*
+        // than the viewport makes the slack negative, and the formula still
+        // means something: alignment then chooses which part of the target to
+        // show, rather than where to put it.
+        let offset = leading_scroll_offset - (viewport_extent - target_extent) * alignment;
+
+        // Where the target ends up, in the viewport's coordinates, once the
+        // scroll has happened.
+        let placed = (viewport_extent - target_extent) * alignment;
+        let rect = match axis {
+            Axis::Vertical => Rect::ltrb(target.left, placed, target.right, placed + target_extent),
+            Axis::Horizontal => {
+                Rect::ltrb(placed, target.top, placed + target_extent, target.bottom)
+            }
+        };
+        RevealedOffset::new(offset, rect)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14510,6 +14654,161 @@ mod tests {
             (walk_steady_n.get(), walk_changed_n.get()),
             (1, 2),
             "the walk from the root skipped the clean leaf too -- the saving is not here"
+        );
+    }
+
+    /// A 100-tall window onto a 1000-tall child.
+    fn scroller(direction: AxisDirection) -> RenderViewport {
+        let mut viewport = RenderViewport::new(
+            axis_direction_to_axis(direction),
+            RenderConstrainedBox::tight(100.0, 1000.0),
+        )
+        .with_axis_direction(direction);
+        viewport.layout(BoxConstraints::tight(100.0, 100.0));
+        viewport
+    }
+
+    #[test]
+    fn alignment_zero_puts_the_target_against_the_leading_edge() {
+        let viewport = scroller(AxisDirection::Down);
+        let target = Rect::ltrb(0.0, 400.0, 100.0, 450.0);
+        let revealed = viewport.get_offset_to_reveal(target, 0.0);
+        assert_eq!(revealed.offset, 400.0, "scroll the target's top to the top");
+        assert_eq!(revealed.rect, Rect::ltrb(0.0, 0.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn alignment_one_puts_it_against_the_trailing_edge() {
+        let viewport = scroller(AxisDirection::Down);
+        let target = Rect::ltrb(0.0, 400.0, 100.0, 450.0);
+        let revealed = viewport.get_offset_to_reveal(target, 1.0);
+        // 400 - (100 - 50) = 350: the target's bottom lands on the window's.
+        assert_eq!(revealed.offset, 350.0);
+        assert_eq!(revealed.rect, Rect::ltrb(0.0, 50.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn alignment_half_centres_it() {
+        let viewport = scroller(AxisDirection::Down);
+        let target = Rect::ltrb(0.0, 400.0, 100.0, 450.0);
+        let revealed = viewport.get_offset_to_reveal(target, 0.5);
+        assert_eq!(revealed.offset, 375.0);
+        assert_eq!(revealed.rect, Rect::ltrb(0.0, 25.0, 100.0, 75.0));
+    }
+
+    #[test]
+    fn an_alignment_outside_zero_to_one_is_not_clamped() {
+        // Upstream does not clamp it either: values past the ends scroll the
+        // target *beyond* the edge, which is how a caller leaves a margin.
+        let viewport = scroller(AxisDirection::Down);
+        let target = Rect::ltrb(0.0, 400.0, 100.0, 450.0);
+        let past = viewport.get_offset_to_reveal(target, 1.5);
+        assert_eq!(past.offset, 325.0, "a quarter of the window further on");
+    }
+
+    #[test]
+    fn a_target_bigger_than_the_window_still_answers_something_useful() {
+        // The slack goes negative and the formula still means something:
+        // alignment then chooses which part of the target to show rather than
+        // where to put it. Zero shows its top, one shows its bottom.
+        let viewport = scroller(AxisDirection::Down);
+        let tall = Rect::ltrb(0.0, 200.0, 100.0, 600.0);
+        assert_eq!(viewport.get_offset_to_reveal(tall, 0.0).offset, 200.0);
+        assert_eq!(
+            viewport.get_offset_to_reveal(tall, 1.0).offset,
+            500.0,
+            "200 - (100 - 400)"
+        );
+    }
+
+    #[test]
+    fn an_upward_viewport_measures_its_offset_from_the_far_end() {
+        // The offset of an `up` viewport starts at the bottom of the content,
+        // so what lies *beyond* the target is how far it has been scrolled --
+        // not the target's own top. Getting this backwards would send a
+        // reveal in an upward list to the mirror image of where it wanted.
+        let viewport = scroller(AxisDirection::Up);
+        let target = Rect::ltrb(0.0, 400.0, 100.0, 450.0);
+        // 1000 - 450 = 550 beyond it.
+        assert_eq!(viewport.get_offset_to_reveal(target, 0.0).offset, 550.0);
+    }
+
+    #[test]
+    fn a_horizontal_viewport_measures_across() {
+        let viewport =
+            RenderViewport::new(Axis::Horizontal, RenderConstrainedBox::tight(1000.0, 100.0))
+                .with_axis_direction(AxisDirection::Right);
+        let mut viewport = viewport;
+        viewport.layout(BoxConstraints::tight(100.0, 100.0));
+        let target = Rect::ltrb(400.0, 0.0, 450.0, 100.0);
+        let revealed = viewport.get_offset_to_reveal(target, 0.0);
+        assert_eq!(revealed.offset, 400.0);
+        assert_eq!(revealed.rect, Rect::ltrb(0.0, 0.0, 50.0, 100.0));
+    }
+
+    #[test]
+    fn a_target_already_visible_is_not_scrolled_to_at_all() {
+        // The whole point of `clamp_offset`. A viewport that helpfully moved
+        // to centre something the reader could already see would yank the
+        // page under them for nothing.
+        let leading = RevealedOffset::new(400.0, Rect::ltrb(0.0, 0.0, 100.0, 50.0));
+        let trailing = RevealedOffset::new(350.0, Rect::ltrb(0.0, 50.0, 100.0, 100.0));
+        assert_eq!(
+            RevealedOffset::clamp_offset(leading, trailing, 375.0),
+            None,
+            "between the two edges: already wholly visible"
+        );
+        // And at either boundary exactly, still nothing to do.
+        assert_eq!(RevealedOffset::clamp_offset(leading, trailing, 350.0), None);
+        assert_eq!(RevealedOffset::clamp_offset(leading, trailing, 400.0), None);
+    }
+
+    #[test]
+    fn a_target_out_of_view_scrolls_only_as_far_as_the_nearer_edge() {
+        let leading = RevealedOffset::new(400.0, Rect::ltrb(0.0, 0.0, 100.0, 50.0));
+        let trailing = RevealedOffset::new(350.0, Rect::ltrb(0.0, 50.0, 100.0, 100.0));
+        // Scrolled past it: come back to the larger of the two.
+        assert_eq!(
+            RevealedOffset::clamp_offset(leading, trailing, 900.0),
+            Some(leading)
+        );
+        // Not yet there: go forward to the smaller.
+        assert_eq!(
+            RevealedOffset::clamp_offset(leading, trailing, 0.0),
+            Some(trailing)
+        );
+    }
+
+    #[test]
+    fn the_two_edges_are_sorted_rather_than_assumed() {
+        // Which of the two is larger depends on the axis direction -- in an
+        // upward viewport the leading edge is the higher offset. Upstream
+        // calls that `inverted` and sorts; a port that assumed an order would
+        // scroll the wrong way in half the directions.
+        let rect = Rect::ltrb(0.0, 0.0, 10.0, 10.0);
+        let low = RevealedOffset::new(100.0, rect);
+        let high = RevealedOffset::new(200.0, rect);
+
+        // Leading below trailing, and the other way round: both must answer
+        // the same about a position between them, and the same about being
+        // past the top.
+        assert_eq!(RevealedOffset::clamp_offset(low, high, 150.0), None);
+        assert_eq!(RevealedOffset::clamp_offset(high, low, 150.0), None);
+        assert_eq!(RevealedOffset::clamp_offset(low, high, 300.0), Some(high));
+        assert_eq!(RevealedOffset::clamp_offset(high, low, 300.0), Some(high));
+    }
+
+    #[test]
+    fn the_default_cache_extent_is_the_one_the_scrolling_uses() {
+        // Named on the interface because upstream names it there, but it must
+        // be the same number the viewports actually read.
+        assert_eq!(
+            <RenderViewport as RenderAbstractViewport>::DEFAULT_CACHE_EXTENT,
+            crate::scrolling::DEFAULT_CACHE_EXTENT
+        );
+        assert_eq!(
+            <RenderViewport as RenderAbstractViewport>::DEFAULT_CACHE_EXTENT,
+            250.0
         );
     }
 }
