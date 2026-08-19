@@ -37,7 +37,7 @@ use crate::controls::TooltipTriggerMode;
 use crate::engine::{Color, TextAlign, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::painting::StrokeCap;
-use crate::render::{AlignmentGeometry, BoxConstraints, Offset, Size};
+use crate::render::{AlignmentGeometry, BoxConstraints, EdgeInsets, Offset, Size};
 use crate::services::system::SystemMouseCursor;
 use crate::theme::{ThemeData, VisualDensity};
 use crate::widget_state::{
@@ -1187,6 +1187,326 @@ impl SnackBarTheme {
     }
 }
 
+// -- List tile (upstream `list_tile_theme.dart`, and the enums it needs) ------
+
+/// Upstream `ListTileStyle`: which of the two shapes a tile is drawn in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ListTileStyle {
+    /// A tile in a list.
+    #[default]
+    List,
+    /// A tile in a navigation drawer, which is denser and reads as a
+    /// destination rather than a row.
+    Drawer,
+}
+
+/// Upstream `ListTileControlAffinity`: which end a tile's control sits at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ListTileControlAffinity {
+    Leading,
+    Trailing,
+    /// Whatever the platform does -- upstream resolves this per target.
+    #[default]
+    Platform,
+}
+
+/// Upstream `ListTileTitleAlignment`: where the leading and trailing widgets
+/// sit against the title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ListTileTitleAlignment {
+    /// Top for a three-line tile, centred otherwise -- upstream's default.
+    #[default]
+    ThreeLine,
+    /// Centred on the title's own first line.
+    TitleHeight,
+    Top,
+    Center,
+    Bottom,
+}
+
+/// Upstream `ListTileThemeData`.
+///
+/// `mouseCursor` is a `WidgetStateProperty<MouseCursor?>` here as upstream;
+/// `visualDensity` is [`VisualDensity`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ListTileThemeData {
+    /// Whether the tile is packed tighter -- upstream's `dense`.
+    pub dense: Option<bool>,
+    pub shape: Option<ShapeBorder>,
+    pub style: Option<ListTileStyle>,
+    /// What a selected tile's text and icons are drawn in.
+    pub selected_color: Option<Color>,
+    pub icon_color: Option<Color>,
+    pub text_color: Option<Color>,
+    pub title_text_style: Option<TextStyle>,
+    pub subtitle_text_style: Option<TextStyle>,
+    pub leading_and_trailing_text_style: Option<TextStyle>,
+    pub content_padding: Option<EdgeInsetsGeometry>,
+    pub tile_color: Option<Color>,
+    pub selected_tile_color: Option<Color>,
+    /// The gap between the leading widget and the title.
+    pub horizontal_title_gap: Option<f32>,
+    pub min_vertical_padding: Option<f32>,
+    pub min_leading_width: Option<f32>,
+    pub min_tile_height: Option<f32>,
+    pub enable_feedback: Option<bool>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub visual_density: Option<VisualDensity>,
+    pub title_alignment: Option<ListTileTitleAlignment>,
+    pub control_affinity: Option<ListTileControlAffinity>,
+    pub is_three_line: Option<bool>,
+}
+
+impl ListTileThemeData {
+    pub fn new() -> ListTileThemeData {
+        ListTileThemeData::default()
+    }
+
+    pub fn with_dense(mut self, dense: bool) -> Self {
+        self.dense = Some(dense);
+        self
+    }
+
+    pub fn with_content_padding(mut self, padding: EdgeInsetsGeometry) -> Self {
+        self.content_padding = Some(padding);
+        self
+    }
+
+    pub fn with_tile_color(mut self, color: Color) -> Self {
+        self.tile_color = Some(color);
+        self
+    }
+
+    pub fn with_selected_tile_color(mut self, color: Color) -> Self {
+        self.selected_tile_color = Some(color);
+        self
+    }
+
+    pub fn with_text_color(mut self, color: Color) -> Self {
+        self.text_color = Some(color);
+        self
+    }
+
+    pub fn with_min_tile_height(mut self, height: f32) -> Self {
+        self.min_tile_height = Some(height);
+        self
+    }
+
+    pub fn with_horizontal_title_gap(mut self, gap: f32) -> Self {
+        self.horizontal_title_gap = Some(gap);
+        self
+    }
+
+    /// Upstream `ListTileThemeData.lerp`.
+    pub fn lerp(a: &ListTileThemeData, b: &ListTileThemeData, t: f32) -> ListTileThemeData {
+        ListTileThemeData {
+            dense: lerp_nearer(&a.dense, &b.dense, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            style: lerp_nearer(&a.style, &b.style, t),
+            selected_color: lerp_color(a.selected_color, b.selected_color, t),
+            icon_color: lerp_color(a.icon_color, b.icon_color, t),
+            text_color: lerp_color(a.text_color, b.text_color, t),
+            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
+            subtitle_text_style: lerp_nearer(&a.subtitle_text_style, &b.subtitle_text_style, t),
+            leading_and_trailing_text_style: lerp_nearer(
+                &a.leading_and_trailing_text_style,
+                &b.leading_and_trailing_text_style,
+                t,
+            ),
+            content_padding: lerp_nearer(&a.content_padding, &b.content_padding, t),
+            tile_color: lerp_color(a.tile_color, b.tile_color, t),
+            selected_tile_color: lerp_color(a.selected_tile_color, b.selected_tile_color, t),
+            horizontal_title_gap: lerp_f32(a.horizontal_title_gap, b.horizontal_title_gap, t),
+            min_vertical_padding: lerp_f32(a.min_vertical_padding, b.min_vertical_padding, t),
+            min_leading_width: lerp_f32(a.min_leading_width, b.min_leading_width, t),
+            min_tile_height: lerp_f32(a.min_tile_height, b.min_tile_height, t),
+            enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            visual_density: match (a.visual_density, b.visual_density) {
+                (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            title_alignment: lerp_nearer(&a.title_alignment, &b.title_alignment, t),
+            control_affinity: lerp_nearer(&a.control_affinity, &b.control_affinity, t),
+            is_three_line: lerp_nearer(&a.is_three_line, &b.is_three_line, t),
+        }
+    }
+}
+
+/// Upstream `ListTileTheme`.
+pub struct ListTileTheme;
+
+impl ListTileTheme {
+    pub fn new(data: ListTileThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ListTileThemeData {
+        context
+            .inherited::<ListTileThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).list_tile_theme)
+    }
+}
+
+/// What a list tile lays itself out with, once the three steps have run.
+///
+/// Upstream's `ListTile.build`: the padding, the gap and the minimum height
+/// come off `ListTileTheme.of(context)` and then off upstream's own
+/// constants, which differ for a dense tile.
+pub struct ResolvedListTile {
+    pub content_padding: EdgeInsets,
+    pub horizontal_title_gap: f32,
+    pub min_vertical_padding: f32,
+    pub min_leading_width: f32,
+    pub min_tile_height: f32,
+    pub tile_color: Option<Color>,
+    pub text_color: Color,
+    pub dense: bool,
+}
+
+impl ResolvedListTile {
+    /// Upstream's `_kMinTileHeight`-ish constants, which the Material 3
+    /// defaults spell as 56 for a one-line tile and 48 when dense.
+    pub const MIN_TILE_HEIGHT: f32 = 56.0;
+    pub const DENSE_MIN_TILE_HEIGHT: f32 = 48.0;
+    /// Upstream's default `horizontalTitleGap`.
+    pub const HORIZONTAL_TITLE_GAP: f32 = 16.0;
+    /// Upstream's default `minVerticalPadding`.
+    pub const MIN_VERTICAL_PADDING: f32 = 4.0;
+    /// Upstream's default `minLeadingWidth`.
+    pub const MIN_LEADING_WIDTH: f32 = 40.0;
+
+    pub fn of(context: &mut BuildContext, selected: bool) -> ResolvedListTile {
+        let data = ListTileTheme::of(context);
+        let theme = ThemeData::of(context);
+        let dense = data.dense.unwrap_or(false);
+        let text_color = if selected {
+            data.selected_color.unwrap_or(theme.color_scheme.primary)
+        } else {
+            data.text_color.unwrap_or(theme.color_scheme.on_surface)
+        };
+        ResolvedListTile {
+            content_padding: data
+                .content_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(16.0, 0.0)),
+            horizontal_title_gap: data
+                .horizontal_title_gap
+                .unwrap_or(ResolvedListTile::HORIZONTAL_TITLE_GAP),
+            min_vertical_padding: data
+                .min_vertical_padding
+                .unwrap_or(ResolvedListTile::MIN_VERTICAL_PADDING),
+            min_leading_width: data
+                .min_leading_width
+                .unwrap_or(ResolvedListTile::MIN_LEADING_WIDTH),
+            min_tile_height: data.min_tile_height.unwrap_or(if dense {
+                ResolvedListTile::DENSE_MIN_TILE_HEIGHT
+            } else {
+                ResolvedListTile::MIN_TILE_HEIGHT
+            }),
+            tile_color: if selected {
+                data.selected_tile_color
+            } else {
+                data.tile_color
+            },
+            text_color,
+            dense,
+        }
+    }
+}
+
+// -- Dialog (upstream `dialog_theme.dart`) ------------------------------------
+
+/// Upstream `DialogThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DialogThemeData {
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+    /// Where the dialog sits in the screen -- upstream's `alignment`, which
+    /// is centre where nobody said.
+    pub alignment: Option<AlignmentGeometry>,
+    pub title_text_style: Option<TextStyle>,
+    pub content_text_style: Option<TextStyle>,
+    pub actions_padding: Option<EdgeInsetsGeometry>,
+    pub icon_color: Option<Color>,
+    /// What the screen behind the dialog is dimmed with.
+    pub barrier_color: Option<Color>,
+    /// How far the dialog stays from the edges of the screen.
+    pub inset_padding: Option<EdgeInsets>,
+    pub constraints: Option<BoxConstraints>,
+}
+
+impl DialogThemeData {
+    pub fn new() -> DialogThemeData {
+        DialogThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_barrier_color(mut self, color: Color) -> Self {
+        self.barrier_color = Some(color);
+        self
+    }
+
+    pub fn with_inset_padding(mut self, padding: EdgeInsets) -> Self {
+        self.inset_padding = Some(padding);
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: AlignmentGeometry) -> Self {
+        self.alignment = Some(alignment);
+        self
+    }
+
+    /// Upstream `DialogThemeData.lerp`.
+    pub fn lerp(a: &DialogThemeData, b: &DialogThemeData, t: f32) -> DialogThemeData {
+        DialogThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            alignment: lerp_nearer(&a.alignment, &b.alignment, t),
+            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
+            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
+            actions_padding: lerp_nearer(&a.actions_padding, &b.actions_padding, t),
+            icon_color: lerp_color(a.icon_color, b.icon_color, t),
+            barrier_color: lerp_color(a.barrier_color, b.barrier_color, t),
+            inset_padding: lerp_nearer(&a.inset_padding, &b.inset_padding, t),
+            constraints: lerp_nearer(&a.constraints, &b.constraints, t),
+        }
+    }
+}
+
+/// Upstream `DialogTheme`.
+pub struct DialogTheme;
+
+impl DialogTheme {
+    pub fn new(data: DialogThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> DialogThemeData {
+        context
+            .inherited::<DialogThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).dialog_theme)
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -1519,5 +1839,94 @@ mod tests {
             60.0 - 56.0,
             "and it replaces the height a subtitle would have asked for"
         );
+    }
+
+    #[test]
+    fn a_list_tile_resolves_its_padding_gap_and_minimum_height() {
+        let plain = read_in(
+            |child| child,
+            |context| ResolvedListTile::of(context, false),
+        );
+        assert_eq!(plain.min_tile_height, 56.0);
+        assert_eq!(plain.horizontal_title_gap, 16.0);
+        assert_eq!(plain.min_leading_width, 40.0);
+        assert_eq!(
+            plain.tile_color, None,
+            "no fill unless a theme asked for one"
+        );
+        assert_eq!(
+            plain.text_color,
+            ThemeData::fallback().color_scheme.on_surface
+        );
+
+        // Dense drops the minimum height, as upstream's defaults do.
+        let dense = read_in(
+            |child| ListTileTheme::new(ListTileThemeData::new().with_dense(true), child),
+            |context| ResolvedListTile::of(context, false),
+        );
+        assert_eq!(dense.min_tile_height, 48.0);
+
+        // Selected reads a different pair of colours -- upstream keeps two
+        // and picks by the flag rather than blending.
+        let selected = read_in(
+            |child| {
+                ListTileTheme::new(
+                    ListTileThemeData::new()
+                        .with_tile_color(Color::argb(255, 1, 1, 1))
+                        .with_selected_tile_color(Color::argb(255, 2, 2, 2)),
+                    child,
+                )
+            },
+            |context| ResolvedListTile::of(context, true),
+        );
+        assert_eq!(selected.tile_color, Some(Color::argb(255, 2, 2, 2)));
+        assert_eq!(
+            selected.text_color,
+            ThemeData::fallback().color_scheme.primary,
+            "a selected tile's text is the selected colour, which defaults to the primary"
+        );
+    }
+
+    #[test]
+    fn a_list_tile_is_at_least_as_tall_as_its_theme_says() {
+        use crate::components::ListTile;
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderBox};
+
+        fn height_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 400.0)).height
+        }
+
+        let plain = height_of(component(ListTile::new("Title")));
+        assert!(plain >= 56.0, "upstream's minimum, {plain}");
+
+        let taller = height_of(ListTileTheme::new(
+            ListTileThemeData::new().with_min_tile_height(96.0),
+            component(ListTile::new("Title")),
+        ));
+        assert_eq!(taller, 96.0);
+    }
+
+    #[test]
+    fn a_dialog_theme_carries_the_barrier_and_the_inset() {
+        let plain = read_in(|child| child, DialogTheme::of);
+        assert_eq!(plain, DialogThemeData::new());
+
+        let themed = read_in(
+            |child| {
+                DialogTheme::new(
+                    DialogThemeData::new()
+                        .with_barrier_color(Color::argb(128, 0, 0, 0))
+                        .with_inset_padding(EdgeInsets::all(40.0)),
+                    child,
+                )
+            },
+            DialogTheme::of,
+        );
+        assert_eq!(themed.barrier_color, Some(Color::argb(128, 0, 0, 0)));
+        assert_eq!(themed.inset_padding, Some(EdgeInsets::all(40.0)));
     }
 }

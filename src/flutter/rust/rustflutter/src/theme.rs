@@ -46,8 +46,8 @@ use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomSheetThemeData, CardThemeData, CheckboxThemeData,
-    DividerThemeData, ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData,
-    SwitchThemeData, TooltipThemeData,
+    DialogThemeData, DividerThemeData, ListTileThemeData, ProgressIndicatorThemeData,
+    RadioThemeData, SnackBarThemeData, SwitchThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -205,6 +205,8 @@ pub struct ThemeData {
     pub app_bar_theme: AppBarThemeData,
     pub bottom_sheet_theme: BottomSheetThemeData,
     pub snack_bar_theme: SnackBarThemeData,
+    pub list_tile_theme: ListTileThemeData,
+    pub dialog_theme: DialogThemeData,
 }
 
 impl ThemeData {
@@ -298,6 +300,8 @@ impl ThemeData {
             app_bar_theme: AppBarThemeData::new(),
             bottom_sheet_theme: BottomSheetThemeData::new(),
             snack_bar_theme: SnackBarThemeData::new(),
+            list_tile_theme: ListTileThemeData::new(),
+            dialog_theme: DialogThemeData::new(),
         }
     }
 
@@ -364,6 +368,16 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_list_tile_theme(mut self, list_tile_theme: ListTileThemeData) -> ThemeData {
+        self.list_tile_theme = list_tile_theme;
+        self
+    }
+
+    pub fn with_dialog_theme(mut self, dialog_theme: DialogThemeData) -> ThemeData {
+        self.dialog_theme = dialog_theme;
         self
     }
 
@@ -462,6 +476,8 @@ impl ThemeData {
                 t,
             ),
             snack_bar_theme: SnackBarThemeData::lerp(&a.snack_bar_theme, &b.snack_bar_theme, t),
+            list_tile_theme: ListTileThemeData::lerp(&a.list_tile_theme, &b.list_tile_theme, t),
+            dialog_theme: DialogThemeData::lerp(&a.dialog_theme, &b.dialog_theme, t),
         }
     }
 

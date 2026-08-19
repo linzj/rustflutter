@@ -164,6 +164,23 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:list tile 与 dialog 两对(2026-08-19)。**
+`ListTileTheme(Data)`(22/22,连带补上 `ListTileStyle`/`ListTileControlAffinity`/
+`ListTileTitleAlignment` 三个上游枚举)、`DialogTheme(Data)`(13/14,缺
+`clipBehavior`,同前)。
+
+**`ListTile` 接上了**:content padding、标题与尾件之间的间距、**最小高度**、
+以及选中/未选中两套底色与文字色,全走 `ListTileTheme.of` 再落到上游默认
+(56,dense 时 48;间距 16;`minLeadingWidth` 40)。此前 padding 是
+`spacing*1.5` 的两倍、间距是常量 `HORIZONTAL_TITLE_GAP`、根本没有最小高度。
+最小高度用 `RenderConstrainedBox` 包一层实现——`Container` 没有约束面。
+
+**选中态是取另一套值而不是混色**,与上游一致:`selectedTileColor` 与
+`selectedColor` 各自独立,`ResolvedListTile::of(context, selected)` 按标志挑,
+回归线两条都验了。
+
+**测试破千**:1000 通过 / 0 失败。
+
 **P8-M1:结构件三对组件主题(2026-08-19)。**
 `AppBarTheme(Data)`(14/17)、`BottomSheetTheme(Data)`(12/13)、
 `SnackBarTheme(Data)`(14/15,含 `SnackBarBehavior` 两式)。

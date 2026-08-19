@@ -1455,6 +1455,15 @@ impl Component for ListTile {
         let muted = theme.muted();
         let spacing = theme.spacing;
         let radius = theme.radius;
+        // Upstream's `ListTile.build`: the content padding, the gap between
+        // the title and whatever follows it, the minimum height and the tile's
+        // own colour all come off `ListTileTheme.of(context)` before the
+        // control's defaults.
+        let tile = crate::component_themes::ResolvedListTile::of(context, false);
+        let content_padding = tile.content_padding;
+        let title_gap = tile.horizontal_title_gap;
+        let min_tile_height = tile.min_tile_height;
+        let tile_color = tile.tile_color;
 
         let has_trailing = trailing.is_some();
         let mut children = vec![leaf(move || {
@@ -1491,11 +1500,7 @@ impl Component for ListTile {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(if has_trailing {
-                    HORIZONTAL_TITLE_GAP
-                } else {
-                    0.0
-                });
+                .with_spacing(if has_trailing { title_gap } else { 0.0 });
             if has_trailing {
                 // The trailing is inflexible, so pass one gives it its width
                 // and the title takes what is left rather than shouldering the
@@ -1526,10 +1531,22 @@ impl Component for ListTile {
                 row = row.push(leading);
             }
 
-            let padded = Container::new()
-                .with_padding(EdgeInsets::symmetric(spacing * 1.5, spacing * 1.5))
+            let mut padded = Container::new()
+                .with_padding(content_padding)
                 .with_corner_radius(radius)
                 .with_child(row);
+            if let Some(color) = tile_color {
+                padded = padded.with_color(color);
+            }
+            // Upstream's `minTileHeight`: a tile is at least this tall
+            // however short its content is.
+            let padded = crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                min_width: 0.0,
+                max_width: f32::INFINITY,
+                min_height: min_tile_height,
+                max_height: f32::INFINITY,
+            })
+            .with_child(padded);
             match id {
                 Some(id) => crate::render::RenderRef::new(
                     Pointer::new(id, padded).with_handlers(handlers.clone()),
