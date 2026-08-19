@@ -146,6 +146,7 @@ if (enable_unittests) {
       "rustflutter/src/services/codec.rs",
       "rustflutter/src/services/mod.rs",
       "rustflutter/src/services/system.rs",
+      "rustflutter/src/services/text_boundary.rs",
       "rustflutter/src/services/text_input.rs",
       "rustflutter/src/shortcuts.rs",
       "rustflutter/src/slider_theme.rs",

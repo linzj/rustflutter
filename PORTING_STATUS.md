@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一段文字在哪里断开(2026-08-19)
+
+`services/text_boundary.rs`(新),上游 `services/text_boundary.dart` 五个类全覆
+盖:`TextBoundary`、`CharacterBoundary`、`LineBoundary`、`ParagraphBoundary`、
+`DocumentBoundary`,外加它们要用的 `TextRange`(上游在 `dart:ui`,这里是第一个需
+要它的地方)。
+
+Ctrl-左、Shift-下、双击、读屏器一段一段地读——都是同一个问题换了个单位在问,这个
+trait 就是那个问法。一个边界回答关于某个位置的两件事:它所在的那个单位从哪开始,
+到哪结束。其余的一切都是从这两件事推出来的。上游那三个默认实现互相递归,正是因为
+实现方**覆盖哪一半都够**:知道整段的覆盖 `getTextBoundaryAt`,从位置往外走的覆盖
+两端——也因此,三个都不覆盖会死循环,这一点写在 trait 的文档里。
+
+**偏移量是字节。** 上游数 UTF-16 码元,因为 Dart 字符串是 UTF-16;这里数 UTF-8
+字节,因为 Rust 字符串是,而且这个 crate 内部本来就用字节——平台通道在边界上转换
+(`text_input` 里的 `utf16_to_byte`)。两套约定在 ASCII 上一致、在别处都不一致,
+边界类不是留第二套约定的地方。
+
+**记账的边界:** `CharacterBoundary` 走的是 Unicode 标量值,不是扩展字素簇。上游
+用 `characters` 包,这个 crate 和 `std` 都没有字素分段器。代价是组合记号、和用零
+宽连接符拼起来的 emoji——那些这里会切开而上游不会。对于「一个码点就是一个字符」的
+情况(光标通常遇到的)单位是对的。
+
+**两处第一版写错、被回归行抓住的地方:**
+
+* `CharacterBoundary` 的后向边界。上游问的是「`position + 1` 处的那个范围的末
+  端」,也就是**大于等于 `position + 1` 的第一个边界**;我第一版写成了「`position`
+  所在字符的下一个字符」。两者在正常位置上一样,在 `position = -1` 上不一样:上游
+  钳到 0,而 0 处的范围是空的,所以答案是 0 而不是 1。起点之前没有字符可以跨过。
+* `ParagraphBoundary` 的前向边界跨 CRLF。上游是 `index -= 2`,落在**这对字符之前
+  的那个字符**上;我第一版落在了 CR 自己身上,于是紧接着的循环立刻在 CR 上认出一个
+  终止符,把段首报成了 LF 的位置。回归行问的是 "one\r\ntwo" 里位置 4 的段首,应该
+  是 0。
+
+**其余回归行盯的地方:** 字节偏移下永远不停在字符中间(否则下一个退格会把字符劈
+一半);`-1` 是「那个方向没有边界」,是光标走不出文本的原因;**CRLF 是一个终止符不
+是两个**(否则每份来自 Windows 的文件里都会多出一个幽灵空段);上游的
+`isLineTerminator` 列了七个字符,只认 `\n` 的话会直接穿过换页符和段落分隔符;软换
+行是行边界而**不是**段边界——这正是两个边界各自存在的理由。
+
+验证:`cargo test --lib` 1109 绿,GN `rustflutter_unittests` 1109 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1096 accounted / 777 MISSING。
+
+
 ### 滚动的三样零件(2026-08-19)
 
 `scrollable_helpers.rs`(新),上游 `widgets/scrollable_helpers.dart` 五个类全覆
