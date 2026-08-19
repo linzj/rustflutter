@@ -1907,7 +1907,8 @@
     "RestorableEnumN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
     "RestorableEnum": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
     "RestorationManager": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
-    "RestorationBucket": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）"
+    "RestorationBucket": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "InkSparkle": "要 dart:ui 的 FragmentProgram/FragmentShader（`ui.FragmentProgram.fromAsset(\"shaders/ink_sparkle.frag\")`），整个效果就是那支片元着色器；渲染 ABI 没有着色器通路"
   },
   "out_of_scope_files": {
     "raw_keyboard.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
