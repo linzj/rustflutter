@@ -155,6 +155,7 @@ if (enable_unittests) {
       "rustflutter/src/services/system_channels.rs",
       "rustflutter/src/services/text_boundary.rs",
       "rustflutter/src/services/text_editing_delta.rs",
+      "rustflutter/src/services/text_formatter.rs",
       "rustflutter/src/services/text_input.rs",
       "rustflutter/src/shortcuts.rs",
       "rustflutter/src/slider_theme.rs",
