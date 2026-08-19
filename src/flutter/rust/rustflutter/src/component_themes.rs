@@ -4775,6 +4775,231 @@ impl TextSelectionTheme {
     }
 }
 
+// -- Popup menu (upstream `popup_menu_theme.dart`) ----------------------------
+
+/// Upstream `PopupMenuPosition`: whether the menu covers the button that
+/// opened it or hangs below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PopupMenuPosition {
+    #[default]
+    Over,
+    Under,
+}
+
+/// Upstream `PopupMenuThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PopupMenuThemeData {
+    pub color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+    pub menu_padding: Option<EdgeInsetsGeometry>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    /// The style of an entry, for the entries that take a plain one.
+    pub text_style: Option<TextStyle>,
+    /// The style of an entry by state, which supersedes
+    /// [`PopupMenuThemeData::text_style`] where both are set.
+    pub label_text_style: Option<StateProperty<Option<TextStyle>>>,
+    pub enable_feedback: Option<bool>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub position: Option<PopupMenuPosition>,
+    pub icon_color: Option<Color>,
+    pub icon_size: Option<f32>,
+}
+
+impl PopupMenuThemeData {
+    pub fn new() -> PopupMenuThemeData {
+        PopupMenuThemeData::default()
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn with_position(mut self, position: PopupMenuPosition) -> Self {
+        self.position = Some(position);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    /// Upstream `PopupMenuThemeData.lerp`.
+    pub fn lerp(a: &PopupMenuThemeData, b: &PopupMenuThemeData, t: f32) -> PopupMenuThemeData {
+        PopupMenuThemeData {
+            color: lerp_color(a.color, b.color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            menu_padding: lerp_nearer(&a.menu_padding, &b.menu_padding, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
+            enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            position: lerp_nearer(&a.position, &b.position, t),
+            icon_color: lerp_color(a.icon_color, b.icon_color, t),
+            icon_size: lerp_f32(a.icon_size, b.icon_size, t),
+        }
+    }
+}
+
+/// Upstream `PopupMenuTheme`.
+pub struct PopupMenuTheme;
+
+impl PopupMenuTheme {
+    pub fn new(data: PopupMenuThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> PopupMenuThemeData {
+        context
+            .inherited::<PopupMenuThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).popup_menu_theme.clone())
+    }
+}
+
+// -- Dropdown menu (upstream `dropdown_menu_theme.dart`) ----------------------
+
+/// Upstream `DropdownMenuThemeData`.
+///
+/// Three of a kind: the field's text, the field's decoration, and the menu
+/// that drops out of it -- which is a [`MenuStyle`], the same one a
+/// [`MenuTheme`] carries.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DropdownMenuThemeData {
+    pub text_style: Option<TextStyle>,
+    pub input_decoration_theme: Option<InputDecorationThemeData>,
+    pub menu_style: Option<MenuStyle>,
+    pub disabled_color: Option<Color>,
+}
+
+impl DropdownMenuThemeData {
+    pub fn new() -> DropdownMenuThemeData {
+        DropdownMenuThemeData::default()
+    }
+
+    pub fn with_menu_style(mut self, menu_style: MenuStyle) -> Self {
+        self.menu_style = Some(menu_style);
+        self
+    }
+
+    pub fn with_input_decoration_theme(mut self, theme: InputDecorationThemeData) -> Self {
+        self.input_decoration_theme = Some(theme);
+        self
+    }
+
+    /// Upstream `DropdownMenuThemeData.lerp`.
+    pub fn lerp(
+        a: &DropdownMenuThemeData,
+        b: &DropdownMenuThemeData,
+        t: f32,
+    ) -> DropdownMenuThemeData {
+        DropdownMenuThemeData {
+            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            // Upstream takes the decoration from the nearer end too: it has
+            // no `lerp` of its own, for the reason given on that class.
+            input_decoration_theme: lerp_nearer(
+                &a.input_decoration_theme,
+                &b.input_decoration_theme,
+                t,
+            ),
+            menu_style: lerp_menu_style(&a.menu_style, &b.menu_style, t),
+            disabled_color: lerp_color(a.disabled_color, b.disabled_color, t),
+        }
+    }
+}
+
+/// Upstream `DropdownMenuTheme`.
+pub struct DropdownMenuTheme;
+
+impl DropdownMenuTheme {
+    pub fn new(data: DropdownMenuThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> DropdownMenuThemeData {
+        context
+            .inherited::<DropdownMenuThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).dropdown_menu_theme.clone())
+    }
+}
+
+// -- Bottom app bar (upstream `bottom_app_bar_theme.dart`) --------------------
+
+/// Upstream `BottomAppBarThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BottomAppBarThemeData {
+    pub color: Option<Color>,
+    pub elevation: Option<f32>,
+    /// The notch a floating action button sits in -- the one place a theme
+    /// carries a [`NotchedShape`](crate::borders::NotchedShape).
+    pub shape: Option<crate::borders::NotchedShape>,
+    pub height: Option<f32>,
+    pub surface_tint_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub padding: Option<EdgeInsetsGeometry>,
+}
+
+impl BottomAppBarThemeData {
+    pub fn new() -> BottomAppBarThemeData {
+        BottomAppBarThemeData::default()
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
+    pub fn with_shape(mut self, shape: crate::borders::NotchedShape) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    /// Upstream `BottomAppBarThemeData.lerp`.
+    pub fn lerp(
+        a: &BottomAppBarThemeData,
+        b: &BottomAppBarThemeData,
+        t: f32,
+    ) -> BottomAppBarThemeData {
+        BottomAppBarThemeData {
+            color: lerp_color(a.color, b.color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            height: lerp_f32(a.height, b.height, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+        }
+    }
+}
+
+/// Upstream `BottomAppBarTheme`.
+pub struct BottomAppBarTheme;
+
+impl BottomAppBarTheme {
+    pub fn new(data: BottomAppBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> BottomAppBarThemeData {
+        context
+            .inherited::<BottomAppBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).bottom_app_bar_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -6046,5 +6271,69 @@ mod tests {
         assert_eq!(themed.cursor_color, Some(Color::argb(255, 1, 1, 1)));
         assert_eq!(themed.selection_color, Some(Color::argb(255, 2, 2, 2)));
         assert_eq!(themed.selection_handle_color, None);
+    }
+
+    #[test]
+    fn a_dropdown_menu_theme_carries_all_three_of_its_parts() {
+        use crate::widget_state::StateProperty;
+
+        let themed = read_in(
+            |child| {
+                DropdownMenuTheme::new(
+                    DropdownMenuThemeData::new()
+                        .with_menu_style(MenuStyle::new().with_background_color(
+                            StateProperty::all(Some(Color::argb(255, 1, 1, 1))),
+                        ))
+                        .with_input_decoration_theme(
+                            InputDecorationThemeData::new().with_dense(true),
+                        ),
+                    child,
+                )
+            },
+            DropdownMenuTheme::of,
+        );
+        // A dropdown is a field and a menu, and upstream themes each with the
+        // type that already exists for it rather than inventing a third.
+        assert!(themed.menu_style.is_some());
+        assert!(themed.input_decoration_theme.expect("set").is_dense);
+        assert_eq!(themed.disabled_color, None);
+    }
+
+    #[test]
+    fn a_popup_menu_position_defaults_to_covering_its_button() {
+        assert_eq!(PopupMenuPosition::default(), PopupMenuPosition::Over);
+
+        let themed = read_in(
+            |child| {
+                PopupMenuTheme::new(
+                    PopupMenuThemeData::new()
+                        .with_position(PopupMenuPosition::Under)
+                        .with_elevation(8.0),
+                    child,
+                )
+            },
+            PopupMenuTheme::of,
+        );
+        assert_eq!(themed.position, Some(PopupMenuPosition::Under));
+        assert_eq!(themed.elevation, Some(8.0));
+    }
+
+    #[test]
+    fn a_bottom_app_bar_theme_is_the_one_that_carries_a_notch() {
+        use crate::borders::NotchedShape;
+
+        let themed = read_in(
+            |child| {
+                BottomAppBarTheme::new(
+                    BottomAppBarThemeData::new()
+                        .with_height(80.0)
+                        .with_shape(NotchedShape::Circular { inverted: false }),
+                    child,
+                )
+            },
+            BottomAppBarTheme::of,
+        );
+        assert_eq!(themed.height, Some(80.0));
+        assert!(matches!(themed.shape, Some(NotchedShape::Circular { .. })));
     }
 }

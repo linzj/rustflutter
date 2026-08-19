@@ -164,6 +164,18 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:popup / dropdown / bottom app bar 三对(2026-08-19)。**
+`PopupMenuTheme(Data)`(13/13,连带 `PopupMenuPosition`)、
+`DropdownMenuTheme(Data)`(4/4)、`BottomAppBarTheme(Data)`(7/7)。
+
+`DropdownMenuThemeData` 的三个零件各自复用**已有的类型**:字段的装饰是
+`InputDecorationThemeData`、掉下来的菜单是 `MenuStyle`——上游没有为下拉框另造
+第三种,此侧照做。`BottomAppBarThemeData` 是唯一带 `NotchedShape` 的组件主题
+(浮动按钮坐进去的那个缺口)。
+
+`PopupMenuThemeData` 同时有 `textStyle` 与 `labelTextStyle`:后者按状态、且在
+两者都设时压过前者——上游为兼容旧代码留着前者。
+
 **P8-M1:icon theme 与 text selection(2026-08-19)。**
 `IconTheme(Data)`(9/9)、`TextSelectionTheme(Data)`(3/3)。
 
