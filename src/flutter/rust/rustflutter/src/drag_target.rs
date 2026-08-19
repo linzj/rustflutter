@@ -297,6 +297,186 @@ impl<T> Default for DragTarget<T> {
     }
 }
 
+// -- Swiping a thing away -----------------------------------------------------
+
+/// Upstream `DismissDirection` (`widgets/dismissible.dart`): which way an item
+/// may be swiped away.
+///
+/// Two of these are *pairs* -- `Horizontal` and `Vertical` allow either way
+/// along their axis -- and four are single directions. `None` is a real
+/// member rather than an absence, so a list can turn dismissal off per item
+/// without changing which widget it builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DismissDirection {
+    Vertical,
+    #[default]
+    Horizontal,
+    /// Towards the reading direction's end -- right in a left-to-right
+    /// subtree.
+    EndToStart,
+    StartToEnd,
+    Up,
+    Down,
+    None,
+}
+
+impl DismissDirection {
+    /// Whether this direction runs along the horizontal axis, which decides
+    /// which velocity component the fling test reads.
+    pub fn is_horizontal(self) -> bool {
+        matches!(
+            self,
+            DismissDirection::Horizontal
+                | DismissDirection::EndToStart
+                | DismissDirection::StartToEnd
+        )
+    }
+}
+
+/// Upstream's `_FlingGestureKind`: what a flick at the end of a drag meant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlingGestureKind {
+    /// Not a fling -- too slow, too diagonal, or from a standstill. The drag's
+    /// *position* decides instead.
+    None,
+    /// A flick the same way the item was already dragged: dismiss it.
+    Forward,
+    /// A flick back the other way: put it back, however far it had been
+    /// dragged.
+    Reverse,
+}
+
+/// Upstream `DismissUpdateDetails`: what a drag reports as it crosses the
+/// line.
+///
+/// **Both the current and the previous answer**, which is the point:
+/// upstream's own documentation says the pair is there "to catch the moment"
+/// the threshold is crossed. A caller wanting to buzz the phone exactly once
+/// as the item commits needs the edge, not the level, and computing the edge
+/// from a stream of levels is the caller writing state the widget already had.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DismissUpdateDetails {
+    pub direction: DismissDirection,
+    pub reached: bool,
+    pub previous_reached: bool,
+    pub progress: f32,
+}
+
+impl DismissUpdateDetails {
+    pub fn new(direction: DismissDirection, progress: f32) -> DismissUpdateDetails {
+        DismissUpdateDetails {
+            direction,
+            reached: false,
+            previous_reached: false,
+            progress,
+        }
+    }
+
+    pub fn with_reached(mut self, reached: bool, previous_reached: bool) -> Self {
+        self.reached = reached;
+        self.previous_reached = previous_reached;
+        self
+    }
+
+    /// The moment the threshold is crossed on the way in -- what a caller
+    /// wanting one buzz per commit listens for.
+    pub fn just_reached(&self) -> bool {
+        self.reached && !self.previous_reached
+    }
+}
+
+/// Upstream `Dismissible`: an item a swipe removes.
+pub struct Dismissible {
+    pub direction: DismissDirection,
+    /// Upstream's `dismissThresholds`, defaulting to
+    /// [`Dismissible::DISMISS_THRESHOLD`] per direction.
+    pub threshold: f32,
+}
+
+impl Dismissible {
+    /// Upstream's `_kDismissThreshold`: **0.4, not a half**.
+    ///
+    /// The item commits before it is halfway gone, because by the halfway
+    /// point the reader can no longer see enough of it to be sure what they
+    /// are removing. Forty percent is far enough to be deliberate and near
+    /// enough to still be looking at the thing.
+    pub const DISMISS_THRESHOLD: f32 = 0.4;
+    /// Upstream's `_kMinFlingVelocity`, in logical pixels per second.
+    pub const MIN_FLING_VELOCITY: f32 = 700.0;
+    /// Upstream's `_kMinFlingVelocityDelta`: how far the flick has to be
+    /// *predominantly* along the axis.
+    ///
+    /// The second condition, and the one that matters in a list. A diagonal
+    /// flick fast enough to pass the first test is usually a reader scrolling
+    /// who drifted sideways; requiring the axis component to beat the other by
+    /// 400 is what keeps their scroll from deleting a row.
+    pub const MIN_FLING_VELOCITY_DELTA: f32 = 400.0;
+    /// Upstream's `_kFlingVelocityScale`.
+    pub const FLING_VELOCITY_SCALE: f32 = 1.0 / 300.0;
+
+    pub fn new(direction: DismissDirection) -> Dismissible {
+        Dismissible {
+            direction,
+            threshold: Dismissible::DISMISS_THRESHOLD,
+        }
+    }
+
+    pub fn with_threshold(mut self, threshold: f32) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    /// Upstream's `_describeFlingGesture`.
+    ///
+    /// `drag_extent` is how far and which way the item has been dragged;
+    /// `velocity` is the pointer's at release.
+    ///
+    /// **A fling from a standstill is not a fling.** Upstream's comment is
+    /// worth keeping whole: released at the exact middle, "we assume that the
+    /// user meant to fling it back to the center, as opposed to having wanted
+    /// to drag it out one way, then fling it past the center and into and out
+    /// the other side."
+    pub fn describe_fling(&self, drag_extent: f32, velocity: Offset) -> FlingGestureKind {
+        if drag_extent == 0.0 {
+            return FlingGestureKind::None;
+        }
+        let (along, across) = if self.direction.is_horizontal() {
+            (velocity.dx, velocity.dy)
+        } else {
+            (velocity.dy, velocity.dx)
+        };
+        // Both conditions, and in upstream's order: predominantly along the
+        // axis, *and* fast enough.
+        if along.abs() - across.abs() < Dismissible::MIN_FLING_VELOCITY_DELTA
+            || along.abs() < Dismissible::MIN_FLING_VELOCITY
+        {
+            return FlingGestureKind::None;
+        }
+        // A flick the same way the item was already going carries it off; the
+        // other way puts it back, however far it had been dragged.
+        if along.signum() == drag_extent.signum() {
+            FlingGestureKind::Forward
+        } else {
+            FlingGestureKind::Reverse
+        }
+    }
+
+    /// Whether the item goes, given where the drag ended and what the flick
+    /// said.
+    ///
+    /// A fling decides outright either way; only in its absence does the
+    /// *position* matter. So a slow drag past the threshold dismisses, and a
+    /// hard flick back from past the threshold does not -- the reader's last
+    /// word wins over where their finger happened to stop.
+    pub fn should_dismiss(&self, progress: f32, fling: FlingGestureKind) -> bool {
+        match fling {
+            FlingGestureKind::Forward => true,
+            FlingGestureKind::Reverse => false,
+            FlingGestureKind::None => progress.abs() > self.threshold,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +612,122 @@ mod tests {
         let details = DragTargetDetails::new("a photo", Offset::new(180.0, 240.0));
         assert_eq!(details.offset, Offset::new(180.0, 240.0));
         assert_eq!(details.data, "a photo");
+    }
+
+    #[test]
+    fn a_fling_from_a_standstill_is_not_a_fling() {
+        // Upstream's comment, worth keeping whole: released at the exact
+        // middle, "we assume that the user meant to fling it back to the
+        // center, as opposed to having wanted to drag it out one way, then
+        // fling it past the center and into and out the other side."
+        let item = Dismissible::new(DismissDirection::Horizontal);
+        assert_eq!(
+            item.describe_fling(0.0, Offset::new(2000.0, 0.0)),
+            FlingGestureKind::None
+        );
+    }
+
+    #[test]
+    fn a_flick_must_be_fast_enough_and_predominantly_along_the_axis() {
+        // The second condition is the one that matters in a list: a diagonal
+        // flick fast enough to pass the first is usually a reader scrolling
+        // who drifted sideways, and requiring the axis component to beat the
+        // other by 400 keeps their scroll from deleting a row.
+        let item = Dismissible::new(DismissDirection::Horizontal);
+
+        // Fast and straight: a fling.
+        assert_eq!(
+            item.describe_fling(50.0, Offset::new(1200.0, 100.0)),
+            FlingGestureKind::Forward
+        );
+        // Fast but diagonal: not one.
+        assert_eq!(
+            item.describe_fling(50.0, Offset::new(1200.0, 1100.0)),
+            FlingGestureKind::None,
+            "the reader was scrolling"
+        );
+        // Straight but slow: not one either.
+        assert_eq!(
+            item.describe_fling(50.0, Offset::new(500.0, 0.0)),
+            FlingGestureKind::None
+        );
+    }
+
+    #[test]
+    fn a_flick_back_the_other_way_puts_the_item_back() {
+        // However far it had been dragged -- the reader's last word wins over
+        // where their finger happened to stop.
+        let item = Dismissible::new(DismissDirection::Horizontal);
+        let dragged_right_flicked_left = item.describe_fling(80.0, Offset::new(-1200.0, 0.0));
+        assert_eq!(dragged_right_flicked_left, FlingGestureKind::Reverse);
+        assert!(
+            !item.should_dismiss(0.9, dragged_right_flicked_left),
+            "nine tenths of the way out and it still comes back"
+        );
+    }
+
+    #[test]
+    fn without_a_fling_it_is_the_position_that_decides() {
+        let item = Dismissible::new(DismissDirection::Horizontal);
+        assert!(!item.should_dismiss(0.3, FlingGestureKind::None));
+        assert!(item.should_dismiss(0.5, FlingGestureKind::None));
+        // Either way along the axis.
+        assert!(item.should_dismiss(-0.5, FlingGestureKind::None));
+    }
+
+    #[test]
+    fn the_threshold_is_less_than_half() {
+        // The item commits before it is halfway gone, because by the halfway
+        // point the reader can no longer see enough of it to be sure what they
+        // are removing.
+        assert_eq!(Dismissible::DISMISS_THRESHOLD, 0.4);
+        assert!(Dismissible::DISMISS_THRESHOLD < 0.5);
+        // And a caller may move it.
+        let strict = Dismissible::new(DismissDirection::Horizontal).with_threshold(0.8);
+        assert!(!strict.should_dismiss(0.5, FlingGestureKind::None));
+    }
+
+    #[test]
+    fn a_vertical_dismissible_reads_the_other_velocity_component() {
+        // The same two conditions, about the other axis.
+        let item = Dismissible::new(DismissDirection::Vertical);
+        assert_eq!(
+            item.describe_fling(50.0, Offset::new(100.0, 1200.0)),
+            FlingGestureKind::Forward
+        );
+        assert_eq!(
+            item.describe_fling(50.0, Offset::new(1200.0, 100.0)),
+            FlingGestureKind::None,
+            "a sideways flick does not dismiss a vertical item"
+        );
+    }
+
+    #[test]
+    fn which_directions_run_along_which_axis() {
+        assert!(DismissDirection::Horizontal.is_horizontal());
+        assert!(DismissDirection::StartToEnd.is_horizontal());
+        assert!(DismissDirection::EndToStart.is_horizontal());
+        assert!(!DismissDirection::Vertical.is_horizontal());
+        assert!(!DismissDirection::Up.is_horizontal());
+        assert!(!DismissDirection::Down.is_horizontal());
+    }
+
+    #[test]
+    fn the_update_details_carry_the_edge_and_not_only_the_level() {
+        // Upstream's own documentation says the pair is there "to catch the
+        // moment" the threshold is crossed. A caller wanting to buzz the phone
+        // once as the item commits needs the edge, and computing it from a
+        // stream of levels is the caller keeping state the widget already had.
+        let crossing =
+            DismissUpdateDetails::new(DismissDirection::Horizontal, 0.45).with_reached(true, false);
+        assert!(crossing.just_reached());
+
+        let still_past =
+            DismissUpdateDetails::new(DismissDirection::Horizontal, 0.6).with_reached(true, true);
+        assert!(!still_past.just_reached(), "already buzzed");
+
+        let coming_back =
+            DismissUpdateDetails::new(DismissDirection::Horizontal, 0.3).with_reached(false, true);
+        assert!(!coming_back.just_reached());
     }
 }
