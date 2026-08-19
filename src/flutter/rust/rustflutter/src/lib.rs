@@ -62,6 +62,7 @@ pub mod licenses;
 pub mod material;
 pub mod media_query;
 pub mod menu;
+pub mod mergeable_material;
 pub mod motion;
 pub mod navigation;
 pub mod overflow_bar;
