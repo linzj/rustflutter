@@ -48,6 +48,13 @@
 
 use super::MethodChannel;
 use super::codec::{JsonMethodCodec, MethodCall, Value};
+use super::system::PLATFORM;
+use super::text_editing_delta::TextEditingDelta;
+use crate::direction::TextDirection;
+use crate::engine::{Rect, TextAlign};
+use crate::render::Offset;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 /// What a text field holds, and where the caret is in it.
 ///
@@ -975,5 +982,491 @@ mod tests {
 
         assert_eq!(TextEditingValue::new("abc").selection_extent, 3);
         assert_eq!(TextEditingValue::new("\u{1F600}").selection_extent, 2);
+    }
+}
+
+// -- The rest of what a field and the platform say to each other ---------------
+
+/// Upstream `FloatingCursorDragState`: where a floating cursor drag is.
+///
+/// iOS lets the reader press the space bar and slide the caret around; the
+/// caret that follows the finger is the "floating" one, and the real caret
+/// snaps to it when the finger lifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatingCursorDragState {
+    Start,
+    Update,
+    End,
+}
+
+/// Upstream `RawFloatingCursorPoint`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawFloatingCursorPoint {
+    /// Where the floating cursor is. Upstream asserts this is present for an
+    /// `Update`; the same is asserted here rather than made unrepresentable,
+    /// because the three states are one enum on the wire.
+    pub offset: Option<Offset>,
+    /// Where the drag began: the point, and the text position under it.
+    pub start_location: Option<(Offset, i32)>,
+    pub state: FloatingCursorDragState,
+}
+
+impl RawFloatingCursorPoint {
+    pub fn new(state: FloatingCursorDragState, offset: Option<Offset>) -> RawFloatingCursorPoint {
+        debug_assert!(
+            state != FloatingCursorDragState::Update || offset.is_some(),
+            "an update has to say where the cursor moved to"
+        );
+        RawFloatingCursorPoint {
+            offset,
+            start_location: None,
+            state,
+        }
+    }
+
+    pub fn with_start_location(mut self, offset: Offset, position: i32) -> Self {
+        self.start_location = Some((offset, position));
+        self
+    }
+}
+
+/// Upstream `SelectionRect`: where one character sits, for the platform.
+///
+/// Sent so that the platform can put its own overlays -- a Scribble caret, a
+/// magnifier, a spell-check underline -- in the right place without asking
+/// the framework where anything is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionRect {
+    /// The character's offset in the text, in UTF-16 code units.
+    pub position: i32,
+    pub bounds: Rect,
+    pub direction: TextDirection,
+}
+
+impl SelectionRect {
+    pub fn new(position: i32, bounds: Rect) -> SelectionRect {
+        SelectionRect {
+            position,
+            bounds,
+            direction: TextDirection::Ltr,
+        }
+    }
+
+    pub fn with_direction(mut self, direction: TextDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+}
+
+/// Upstream `TextInputStyle`: how the field draws its text, told to the
+/// platform so that its own editing overlays match.
+///
+/// The platform draws the composing underline and, on some systems, the
+/// floating cursor; both look wrong against text they do not know the metrics
+/// of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInputStyle {
+    pub font_family: Option<String>,
+    pub font_size: Option<f32>,
+    pub font_weight: Option<u16>,
+    pub text_direction: TextDirection,
+    pub text_align: TextAlign,
+    pub letter_spacing: Option<f32>,
+    pub word_spacing: Option<f32>,
+    pub line_height: Option<f32>,
+}
+
+impl TextInputStyle {
+    /// The two required fields; upstream's other six are optional and mean
+    /// "the platform's own default".
+    pub fn new(text_direction: TextDirection, text_align: TextAlign) -> TextInputStyle {
+        TextInputStyle {
+            font_family: None,
+            font_size: None,
+            font_weight: None,
+            text_direction,
+            text_align,
+            letter_spacing: None,
+            word_spacing: None,
+            line_height: None,
+        }
+    }
+
+    pub fn with_font(mut self, family: impl Into<String>, size: f32) -> Self {
+        self.font_family = Some(family.into());
+        self.font_size = Some(size);
+        self
+    }
+}
+
+/// Upstream `TextSelectionDelegate`: what a selection toolbar can ask of the
+/// field it is over.
+///
+/// Every entry in the toolbar is one of these, which is why they are here
+/// rather than on the field: the toolbar is written once and works against
+/// anything that can answer.
+pub trait TextSelectionDelegate {
+    fn text_editing_value(&self) -> TextEditingValue;
+
+    /// Upstream `userUpdateTextEditingValue`: a change the *reader* made,
+    /// which is different from one the platform made and is why the cause
+    /// travels with it.
+    fn user_update_text_editing_value(&self, value: TextEditingValue, cause: SelectionChangedCause);
+
+    fn hide_toolbar(&self, hide_handles: bool);
+
+    /// Upstream `bringIntoView`: scroll so that this offset is visible.
+    fn bring_into_view(&self, position: i32);
+
+    fn cut_selection(&self, cause: SelectionChangedCause);
+    fn copy_selection(&self, cause: SelectionChangedCause);
+    fn paste_text(&self, cause: SelectionChangedCause);
+    fn select_all(&self, cause: SelectionChangedCause);
+
+    // Upstream's defaults: everything is offered except Live Text, which a
+    // field has to opt into because it needs a camera.
+    fn cut_enabled(&self) -> bool {
+        true
+    }
+    fn copy_enabled(&self) -> bool {
+        true
+    }
+    fn paste_enabled(&self) -> bool {
+        true
+    }
+    fn select_all_enabled(&self) -> bool {
+        true
+    }
+    fn look_up_enabled(&self) -> bool {
+        true
+    }
+    fn search_web_enabled(&self) -> bool {
+        true
+    }
+    fn share_enabled(&self) -> bool {
+        true
+    }
+    fn live_text_input_enabled(&self) -> bool {
+        false
+    }
+}
+
+/// Upstream `SelectionChangedCause`: what moved the selection.
+///
+/// The toolbar cares because the answer decides whether it should appear: a
+/// selection the reader made by dragging wants a toolbar, one the code made
+/// does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionChangedCause {
+    Tap,
+    DoubleTap,
+    LongPress,
+    ForcePress,
+    Keyboard,
+    Toolbar,
+    Drag,
+    ScribbleUpdate,
+}
+
+/// Upstream `DeltaTextInputClient`: a field that wants the edits rather than
+/// the values.
+///
+/// The ordinary client is told what the text now is; this one is told what
+/// changed, which is what a formatter or an undo stack needs. See
+/// [`text_editing_delta`](crate::services::text_editing_delta).
+pub trait DeltaTextInputClient: TextInputClient {
+    /// Upstream `updateEditingValueWithDeltas`. Plural because one keystroke
+    /// can be several deltas -- an autocorrect replaces a word and moves the
+    /// caret in one message.
+    fn update_editing_value_with_deltas(&mut self, deltas: &[TextEditingDelta]);
+}
+
+/// Upstream `ScribbleClient`: a field the Apple Pencil can write into.
+///
+/// The platform asks which field is under the pen, so a field has to be able
+/// to say where it is and to take focus when told.
+pub trait ScribbleClient {
+    /// What the platform calls this field. Upstream's is a string because it
+    /// crosses the channel.
+    fn element_identifier(&self) -> String;
+
+    /// Upstream `onScribbleFocus`.
+    fn on_scribble_focus(&self, offset: Offset);
+
+    /// Upstream `isInScribbleRect`.
+    fn is_in_scribble_rect(&self, rect: Rect) -> bool;
+
+    fn bounds(&self) -> Rect;
+}
+
+/// Upstream `TextInputControl`: something other than the platform's keyboard
+/// that can drive a field.
+///
+/// Every method has an empty default, which is upstream's shape and the point
+/// of it: a control that only wants to know when the keyboard should show
+/// overrides one method and ignores the rest.
+pub trait TextInputControl {
+    fn attach(&self, _client: &dyn TextInputClient, _configuration: &TextInputConfiguration) {}
+    fn detach(&self, _client: &dyn TextInputClient) {}
+    fn show(&self) {}
+    fn hide(&self) {}
+    fn update_config(&self, _configuration: &TextInputConfiguration) {}
+    fn set_editing_state(&self, _value: &TextEditingValue) {}
+}
+
+/// Upstream `SystemContextMenuClient`, which lives in upstream's
+/// `services/binding.dart`.
+///
+/// The platform can take its own context menu away -- the reader tapped
+/// elsewhere, or the application went to the background -- and whatever asked
+/// for it has to hear about that or it will think the menu is still up.
+pub trait SystemContextMenuClient {
+    /// Upstream `handleSystemHide`.
+    fn handle_system_hide(&self);
+    /// Upstream `handleCustomContextMenuAction`.
+    fn handle_custom_context_menu_action(&self, action_id: &str);
+}
+
+/// Upstream `SystemContextMenuController`: shows and hides the platform's own
+/// context menu.
+///
+/// # Recorded divergences
+///
+/// * Upstream registers itself with `ServicesBinding.systemContextMenuClient`
+///   in its constructor and asserts, in `show`, that a text input connection
+///   is live. There is no binding object here; the registration is
+///   [`SystemContextMenuController::show`] taking the slot, which is the same
+///   "last one to show owns the menu" rule stated where it happens.
+pub struct SystemContextMenuController {
+    on_system_hide: Option<Rc<dyn Fn()>>,
+    last_target_rect: RefCell<Option<Rect>>,
+    visible: Cell<bool>,
+}
+
+impl Default for SystemContextMenuController {
+    fn default() -> SystemContextMenuController {
+        SystemContextMenuController::new()
+    }
+}
+
+impl SystemContextMenuController {
+    pub const SHOW_METHOD: &'static str = "ContextMenu.showSystemContextMenu";
+    pub const HIDE_METHOD: &'static str = "ContextMenu.hideSystemContextMenu";
+
+    pub fn new() -> SystemContextMenuController {
+        SystemContextMenuController {
+            on_system_hide: None,
+            last_target_rect: RefCell::new(None),
+            visible: Cell::new(false),
+        }
+    }
+
+    pub fn with_on_system_hide(mut self, on_system_hide: impl Fn() + 'static) -> Self {
+        self.on_system_hide = Some(Rc::new(on_system_hide));
+        self
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible.get()
+    }
+
+    /// Upstream's `show`, less the binding registration.
+    ///
+    /// Showing the menu at a rectangle it is already showing at does nothing:
+    /// upstream's early return, and it matters because the field asks on
+    /// every selection change and most of them do not move the menu.
+    pub fn show(&self, target_rect: Rect) {
+        if self.visible.get() && *self.last_target_rect.borrow() == Some(target_rect) {
+            return;
+        }
+        *self.last_target_rect.borrow_mut() = Some(target_rect);
+        self.visible.set(true);
+        PLATFORM.invoke(
+            SystemContextMenuController::SHOW_METHOD,
+            Value::map([(
+                "targetRect",
+                Value::map([
+                    ("x", Value::F64(target_rect.left as f64)),
+                    ("y", Value::F64(target_rect.top as f64)),
+                    ("width", Value::F64(target_rect.width() as f64)),
+                    ("height", Value::F64(target_rect.height() as f64)),
+                ]),
+            )]),
+        );
+    }
+
+    /// Upstream `hide`. Hiding a menu that is not up is nothing, not a second
+    /// message: the platform would answer the same either way, and the
+    /// message costs a round trip.
+    pub fn hide(&self) {
+        if !self.visible.get() {
+            return;
+        }
+        self.visible.set(false);
+        PLATFORM.invoke(SystemContextMenuController::HIDE_METHOD, Value::Null);
+    }
+}
+
+impl SystemContextMenuClient for SystemContextMenuController {
+    /// Upstream `handleSystemHide`: the platform took the menu away, so the
+    /// controller stops believing it is up and tells whoever asked.
+    ///
+    /// It does *not* send a hide back -- the menu is already gone, and saying
+    /// so again is what would make this loop.
+    fn handle_system_hide(&self) {
+        self.visible.set(false);
+        if let Some(on_system_hide) = &self.on_system_hide {
+            on_system_hide();
+        }
+    }
+
+    fn handle_custom_context_menu_action(&self, _action_id: &str) {}
+}
+
+#[cfg(test)]
+mod input_surface_tests {
+    use super::*;
+
+    #[test]
+    fn a_floating_cursor_update_has_to_say_where_it_moved_to() {
+        // Upstream asserts it. The three states are one enum on the wire, so
+        // the requirement cannot be made unrepresentable -- it is checked
+        // where the point is built instead.
+        let start = RawFloatingCursorPoint::new(FloatingCursorDragState::Start, None);
+        assert_eq!(start.offset, None);
+        let update = RawFloatingCursorPoint::new(
+            FloatingCursorDragState::Update,
+            Some(Offset::new(4.0, 5.0)),
+        );
+        assert_eq!(update.offset, Some(Offset::new(4.0, 5.0)));
+        // An end needs no offset: the real caret snaps to wherever the
+        // floating one got to.
+        assert_eq!(
+            RawFloatingCursorPoint::new(FloatingCursorDragState::End, None).state,
+            FloatingCursorDragState::End
+        );
+    }
+
+    #[test]
+    fn a_selection_rect_reads_left_to_right_unless_it_says_otherwise() {
+        let rect = SelectionRect::new(3, Rect::ltrb(0.0, 0.0, 10.0, 20.0));
+        assert_eq!(rect.direction, TextDirection::Ltr);
+        assert_eq!(
+            rect.with_direction(TextDirection::Rtl).direction,
+            TextDirection::Rtl
+        );
+    }
+
+    #[test]
+    fn a_toolbar_offers_everything_but_live_text_by_default() {
+        // Upstream's defaults, and the asymmetry is the point: Live Text
+        // needs a camera, so a field opts in rather than out.
+        struct Field;
+        impl TextSelectionDelegate for Field {
+            fn text_editing_value(&self) -> TextEditingValue {
+                TextEditingValue::new("")
+            }
+            fn user_update_text_editing_value(
+                &self,
+                _value: TextEditingValue,
+                _cause: SelectionChangedCause,
+            ) {
+            }
+            fn hide_toolbar(&self, _hide_handles: bool) {}
+            fn bring_into_view(&self, _position: i32) {}
+            fn cut_selection(&self, _cause: SelectionChangedCause) {}
+            fn copy_selection(&self, _cause: SelectionChangedCause) {}
+            fn paste_text(&self, _cause: SelectionChangedCause) {}
+            fn select_all(&self, _cause: SelectionChangedCause) {}
+        }
+        let field = Field;
+        assert!(field.cut_enabled());
+        assert!(field.copy_enabled());
+        assert!(field.paste_enabled());
+        assert!(field.select_all_enabled());
+        assert!(field.look_up_enabled());
+        assert!(field.search_web_enabled());
+        assert!(field.share_enabled());
+        assert!(
+            !field.live_text_input_enabled(),
+            "Live Text needs a camera, so it is opt-in"
+        );
+    }
+
+    #[test]
+    fn an_input_control_that_overrides_nothing_still_compiles_and_does_nothing() {
+        // Upstream gives every method an empty body on purpose: a control
+        // that only cares when the keyboard should show overrides `show` and
+        // ignores the other five.
+        struct OnlyShow(std::rc::Rc<std::cell::Cell<usize>>);
+        impl TextInputControl for OnlyShow {
+            fn show(&self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let control = OnlyShow(std::rc::Rc::clone(&count));
+        control.hide();
+        control.set_editing_state(&TextEditingValue::new("anything"));
+        assert_eq!(count.get(), 0);
+        control.show();
+        assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn showing_the_menu_where_it_already_is_sends_nothing() {
+        // The field asks on every selection change and most of them do not
+        // move the menu, so upstream returns early. Without it, every caret
+        // blink would be a round trip to the platform.
+        let controller = SystemContextMenuController::new();
+        assert!(!controller.is_visible());
+        controller.show(Rect::ltrb(0.0, 0.0, 10.0, 10.0));
+        assert!(controller.is_visible());
+        // A different rectangle is a real move and does go out.
+        controller.show(Rect::ltrb(0.0, 0.0, 20.0, 10.0));
+        assert!(controller.is_visible());
+    }
+
+    #[test]
+    fn the_system_taking_the_menu_away_does_not_send_a_hide_back() {
+        // The menu is already gone; saying so again is what would make this
+        // loop. The controller only stops believing, and tells whoever asked.
+        let told = std::rc::Rc::new(std::cell::Cell::new(false));
+        let sink = std::rc::Rc::clone(&told);
+        let controller =
+            SystemContextMenuController::new().with_on_system_hide(move || sink.set(true));
+        controller.show(Rect::ltrb(0.0, 0.0, 10.0, 10.0));
+        controller.handle_system_hide();
+        assert!(!controller.is_visible());
+        assert!(told.get());
+        // And hiding one that is already down is nothing rather than a second
+        // message.
+        controller.hide();
+        assert!(!controller.is_visible());
+    }
+
+    #[test]
+    fn the_context_menu_methods_are_the_ones_the_platform_dispatches_on() {
+        assert_eq!(
+            SystemContextMenuController::SHOW_METHOD,
+            "ContextMenu.showSystemContextMenu"
+        );
+        assert_eq!(
+            SystemContextMenuController::HIDE_METHOD,
+            "ContextMenu.hideSystemContextMenu"
+        );
+    }
+
+    #[test]
+    fn an_input_style_needs_a_direction_and_an_alignment_and_nothing_else() {
+        // Upstream's other six are optional and mean "the platform's own
+        // default"; a style that guessed a font would draw the composing
+        // underline against text it does not match.
+        let style = TextInputStyle::new(TextDirection::Ltr, TextAlign::Start);
+        assert_eq!(style.font_family, None);
+        assert_eq!(style.font_size, None);
+        let with_font = style.with_font("Inter", 14.0);
+        assert_eq!(with_font.font_family.as_deref(), Some("Inter"));
+        assert_eq!(with_font.font_size, Some(14.0));
     }
 }

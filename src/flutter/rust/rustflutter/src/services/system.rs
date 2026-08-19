@@ -34,7 +34,7 @@ use super::codec::{
 };
 use crate::engine::Color;
 use crate::platform::Brightness;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // -- The channels -------------------------------------------------------------
@@ -1560,5 +1560,230 @@ mod chrome_tests {
                 .cursor,
             Some(SystemMouseCursor::Click)
         );
+    }
+}
+
+// -- Keeping the cursor right (upstream `services/mouse_cursor.dart`) ---------
+
+/// Upstream `MouseCursorSession`: one cursor, active on one pointing device.
+///
+/// A session rather than a call because a cursor may need holding: upstream's
+/// own only sends a message, but the type exists so that a cursor backed by
+/// something with state -- an animation, a custom bitmap -- has somewhere to
+/// keep it, and a defined moment to let go.
+pub struct MouseCursorSession {
+    pub cursor: SystemMouseCursor,
+    pub device: i64,
+    activated: Cell<bool>,
+    disposed: Cell<bool>,
+}
+
+impl MouseCursorSession {
+    pub fn new(cursor: SystemMouseCursor, device: i64) -> MouseCursorSession {
+        MouseCursorSession {
+            cursor,
+            device,
+            activated: Cell::new(false),
+            disposed: Cell::new(false),
+        }
+    }
+
+    /// Upstream `activate`: tell the platform this is the cursor now.
+    pub fn activate(&self) {
+        self.activated.set(true);
+        self.cursor.activate(self.device);
+    }
+
+    /// Upstream `dispose`. The platform is not told anything: the session
+    /// that replaces this one has already told it, and a message here would
+    /// undo that.
+    pub fn dispose(&self) {
+        self.disposed.set(true);
+    }
+
+    pub fn is_activated(&self) -> bool {
+        self.activated.get()
+    }
+
+    pub fn is_disposed(&self) -> bool {
+        self.disposed.get()
+    }
+}
+
+/// Upstream `MouseCursorManager`: which cursor each device is showing.
+///
+/// The rule it exists for: several regions under the pointer each name a
+/// cursor, the innermost one that names a real cursor wins, and the platform
+/// hears about it only when the answer changed. Without the last part every
+/// mouse move is a message.
+pub struct MouseCursorManager {
+    /// Upstream's `fallbackMouseCursor`, used when nothing under the pointer
+    /// named one. Upstream asserts it is not `defer`, since deferring to
+    /// nothing is not an answer.
+    pub fallback_mouse_cursor: SystemMouseCursor,
+    last_session: RefCell<Vec<(i64, MouseCursorSession)>>,
+}
+
+impl MouseCursorManager {
+    pub fn new(fallback_mouse_cursor: SystemMouseCursor) -> MouseCursorManager {
+        MouseCursorManager {
+            fallback_mouse_cursor,
+            last_session: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Upstream `debugDeviceActiveCursor`: what this device is showing.
+    pub fn device_active_cursor(&self, device: i64) -> Option<SystemMouseCursor> {
+        self.last_session
+            .borrow()
+            .iter()
+            .find(|(at, _)| *at == device)
+            .map(|(_, session)| session.cursor)
+    }
+
+    /// Upstream `handleDeviceCursorUpdate`.
+    ///
+    /// `candidates` is the cursors named by what is under the pointer,
+    /// innermost first; `None` in the list is upstream's `MouseCursor.defer`,
+    /// which is a region saying "whatever is behind me". `removed` is
+    /// upstream's `PointerRemovedEvent` -- the device is gone, so the session
+    /// goes with it rather than being replaced.
+    pub fn handle_device_cursor_update(
+        &self,
+        device: i64,
+        removed: bool,
+        candidates: &[Option<SystemMouseCursor>],
+    ) {
+        if removed {
+            self.last_session
+                .borrow_mut()
+                .retain(|(at, _)| *at != device);
+            return;
+        }
+        // The first candidate that is not deferring; nothing at all falls to
+        // the fallback.
+        let next = candidates
+            .iter()
+            .find_map(|candidate| *candidate)
+            .unwrap_or(self.fallback_mouse_cursor);
+        if self.device_active_cursor(device) == Some(next) {
+            // Upstream's early return, and the reason the manager exists: the
+            // platform hears only about changes.
+            return;
+        }
+        let session = MouseCursorSession::new(next, device);
+        let mut sessions = self.last_session.borrow_mut();
+        // Upstream replaces the entry first, then disposes the old session
+        // and activates the new one -- in that order, so that a dispose that
+        // asked what the current session is sees the new one.
+        let previous = match sessions.iter().position(|(at, _)| *at == device) {
+            Some(index) => Some(std::mem::replace(&mut sessions[index], (device, session))),
+            None => {
+                sessions.push((device, session));
+                None
+            }
+        };
+        drop(sessions);
+        if let Some((_, previous)) = previous {
+            previous.dispose();
+        }
+        let sessions = self.last_session.borrow();
+        if let Some((_, session)) = sessions.iter().find(|(at, _)| *at == device) {
+            session.activate();
+        }
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn the_innermost_region_that_names_a_cursor_wins() {
+        // `None` in the list is upstream's `MouseCursor.defer`: a region
+        // saying "whatever is behind me". A port that took the first entry
+        // outright would give every region under a deferring one an arrow.
+        let manager = MouseCursorManager::new(SystemMouseCursor::Basic);
+        manager.handle_device_cursor_update(
+            1,
+            false,
+            &[
+                None,
+                Some(SystemMouseCursor::Text),
+                Some(SystemMouseCursor::Click),
+            ],
+        );
+        assert_eq!(
+            manager.device_active_cursor(1),
+            Some(SystemMouseCursor::Text)
+        );
+    }
+
+    #[test]
+    fn nothing_under_the_pointer_falls_back() {
+        // Deferring all the way down is still not an answer, so the fallback
+        // is what the platform is told.
+        let manager = MouseCursorManager::new(SystemMouseCursor::Basic);
+        manager.handle_device_cursor_update(1, false, &[None, None]);
+        assert_eq!(
+            manager.device_active_cursor(1),
+            Some(SystemMouseCursor::Basic)
+        );
+        // And an empty list is the same case.
+        manager.handle_device_cursor_update(2, false, &[]);
+        assert_eq!(
+            manager.device_active_cursor(2),
+            Some(SystemMouseCursor::Basic)
+        );
+    }
+
+    #[test]
+    fn the_platform_hears_only_about_changes() {
+        // The reason the manager exists. Without the early return, every
+        // mouse move over a region is a message to the platform.
+        let manager = MouseCursorManager::new(SystemMouseCursor::Basic);
+        manager.handle_device_cursor_update(1, false, &[Some(SystemMouseCursor::Text)]);
+        let first = manager.device_active_cursor(1);
+        manager.handle_device_cursor_update(1, false, &[Some(SystemMouseCursor::Text)]);
+        assert_eq!(manager.device_active_cursor(1), first);
+    }
+
+    #[test]
+    fn each_device_keeps_its_own_cursor() {
+        // A tablet and a mouse on the same screen are two devices, and the
+        // pen hovering a link should not change what the mouse is showing.
+        let manager = MouseCursorManager::new(SystemMouseCursor::Basic);
+        manager.handle_device_cursor_update(1, false, &[Some(SystemMouseCursor::Text)]);
+        manager.handle_device_cursor_update(2, false, &[Some(SystemMouseCursor::Click)]);
+        assert_eq!(
+            manager.device_active_cursor(1),
+            Some(SystemMouseCursor::Text)
+        );
+        assert_eq!(
+            manager.device_active_cursor(2),
+            Some(SystemMouseCursor::Click)
+        );
+    }
+
+    #[test]
+    fn a_device_that_went_away_takes_its_session_with_it() {
+        // Upstream's `PointerRemovedEvent` branch: the session is dropped
+        // rather than replaced, so a device that comes back starts fresh
+        // instead of inheriting a cursor from before it was unplugged.
+        let manager = MouseCursorManager::new(SystemMouseCursor::Basic);
+        manager.handle_device_cursor_update(1, false, &[Some(SystemMouseCursor::Text)]);
+        manager.handle_device_cursor_update(1, true, &[]);
+        assert_eq!(manager.device_active_cursor(1), None);
+    }
+
+    #[test]
+    fn a_session_is_activated_when_it_takes_over_and_the_old_one_disposed() {
+        let session = MouseCursorSession::new(SystemMouseCursor::Text, 1);
+        assert!(!session.is_activated());
+        assert!(!session.is_disposed());
+        session.activate();
+        assert!(session.is_activated());
+        session.dispose();
+        assert!(session.is_disposed());
     }
 }

@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### services 层收尾:141/141(2026-08-19)
+
+十一个上游类,`services` 层归零。这是继 painting 和 animation 之后**第三个完全覆
+盖的层**。
+
+`text_input.dart` 余下的八个,加上 `binding.dart` 的 `SystemContextMenuClient` 和
+`mouse_cursor.dart` 的两个:
+
+* `RawFloatingCursorPoint`(与 `FloatingCursorDragState`)、`SelectionRect`、
+  `TextInputStyle`、`TextSelectionDelegate`(与 `SelectionChangedCause`)、
+  `DeltaTextInputClient`、`ScribbleClient`、`TextInputControl`、
+  `SystemContextMenuController` + `SystemContextMenuClient`——都进
+  `services/text_input.rs`。
+* `MouseCursorSession`、`MouseCursorManager`——进 `services/system.rs`,
+  `SystemMouseCursor` 已经在那里。
+
+**回归行盯的地方:**
+
+* 浮动光标的 `Update` **必须**说自己移到了哪里(上游用 assert 挡)。三个状态在线上
+  是一个枚举,所以这个要求做不成「不可表达」,只能在造点的时候检查。而 `End` 不需
+  要偏移量:真光标会吸附到浮动光标最后停的地方。
+* 工具条默认提供除 Live Text 以外的一切。这个不对称正是重点:Live Text 需要相机,
+  所以字段是**选进**而不是选出。
+* **一个什么都不覆盖的 `TextInputControl` 也能编译、而且什么都不做。** 上游给每个
+  方法一个空实现是有意的:只关心键盘何时该弹出的控件,覆盖 `show` 一个,其余五个不
+  管。
+* **在菜单已经在的位置再 show 一次,什么都不发。** 字段每次选区变化都会问,而多数
+  变化并不移动菜单;没有这个提前返回,每一次光标闪烁都是一个来回。
+* **系统把菜单收走时不回发一个 hide。** 菜单已经没了,再说一遍正是会让它循环的那
+  一步;控制器只是不再认为它在,并通知问过的人。
+* 鼠标光标:**候选列表里第一个不「让位」的赢**。`None` 是上游的
+  `MouseCursor.defer`——一个区域说「听我背后的」。直接取第一项的移植,会让每个位于
+  让位区域之下的区域都变成箭头。一路让到底仍然不是答案,那时用 fallback。
+* **平台只被告知变化。** 这是这个 manager 存在的全部理由;没有那个提前返回,鼠标
+  在一个区域上每移动一次都是一条消息。
+* **每个设备各留各的光标。** 同一块屏上的手写笔和鼠标是两个设备,笔悬停在链接上不
+  该改变鼠标正在显示的东西。设备移除时会话是**丢掉**而不是替换,所以重新插上的设备
+  从头开始,不会继承拔掉之前的光标。
+
+验证:`cargo test --lib` 1208 绿,GN `rustflutter_unittests` 1208 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1146 accounted / 727 MISSING;**services 层
+141/141,0 MISSING**。
+
+
 ### 状态栏、平台的撤销、鼠标标注、以及一份手写的空白字符表(2026-08-19)
 
 六个上游类,分别落在已有的模块里而不是新开四个文件——它们各自都只有一两个类,而且
