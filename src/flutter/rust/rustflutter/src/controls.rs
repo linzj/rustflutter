@@ -1025,10 +1025,17 @@ impl Component for Banner {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let message = self.message.clone();
-        let surface = theme.surface_variant;
-        let outline = theme.outline;
+        // Upstream's `MaterialBanner.build`: the fill, the rule under it and
+        // the padding come off `MaterialBannerTheme.of(context)` first.
+        let banner = crate::component_themes::MaterialBannerTheme::of(context);
+        let surface = banner.background_color.unwrap_or(theme.surface_variant);
+        let outline = banner.divider_color.unwrap_or(theme.outline);
         let body = theme.body();
         let spacing = theme.spacing;
+        let padding = banner
+            .padding
+            .map(|padding| padding.resolve(crate::direction::current_direction()))
+            .unwrap_or(EdgeInsets::symmetric(spacing * 2.0, spacing * 1.5));
 
         let actions = std::mem::take(&mut *self.actions.borrow_mut());
         let has_actions = !actions.is_empty();
@@ -1057,7 +1064,7 @@ impl Component for Banner {
                 Container::new()
                     .with_color(surface)
                     .with_border(1.0, outline)
-                    .with_padding(EdgeInsets::symmetric(spacing * 2.0, spacing * 1.5))
+                    .with_padding(padding)
                     .with_child(row),
             )
         })

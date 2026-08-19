@@ -46,9 +46,10 @@ use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomNavigationBarThemeData, BottomSheetThemeData,
-    CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData, DialogThemeData,
-    DividerThemeData, DrawerThemeData, ElevatedButtonThemeData, FilledButtonThemeData,
-    IconButtonThemeData, ListTileThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
+    ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
+    DialogThemeData, DividerThemeData, DrawerThemeData, ElevatedButtonThemeData,
+    ExpansionTileThemeData, FilledButtonThemeData, IconButtonThemeData, ListTileThemeData,
+    MaterialBannerThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
     ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData, SwitchThemeData,
     TabBarThemeData, TextButtonThemeData, TooltipThemeData,
 };
@@ -221,6 +222,11 @@ pub struct ThemeData {
     pub text_button_theme: TextButtonThemeData,
     pub outlined_button_theme: OutlinedButtonThemeData,
     pub icon_button_theme: IconButtonThemeData,
+    pub banner_theme: MaterialBannerThemeData,
+    pub expansion_tile_theme: ExpansionTileThemeData,
+    /// The Material 2 button theme, which is a different set of questions
+    /// from the five `*ButtonThemeData` above.
+    pub button_theme: ButtonThemeData,
 }
 
 impl ThemeData {
@@ -327,6 +333,9 @@ impl ThemeData {
             text_button_theme: TextButtonThemeData::new(),
             outlined_button_theme: OutlinedButtonThemeData::new(),
             icon_button_theme: IconButtonThemeData::new(),
+            banner_theme: MaterialBannerThemeData::new(),
+            expansion_tile_theme: ExpansionTileThemeData::new(),
+            button_theme: ButtonThemeData::new(),
         }
     }
 
@@ -599,6 +608,16 @@ impl ThemeData {
                 &b.icon_button_theme,
                 t,
             ),
+            banner_theme: MaterialBannerThemeData::lerp(&a.banner_theme, &b.banner_theme, t),
+            expansion_tile_theme: ExpansionTileThemeData::lerp(
+                &a.expansion_tile_theme,
+                &b.expansion_tile_theme,
+                t,
+            ),
+            // Upstream's `ButtonThemeData` has no `lerp`: its fields are
+            // metrics rather than paint, and a button bar does not animate
+            // between two widths.
+            button_theme: nearer.button_theme.clone(),
         }
     }
 

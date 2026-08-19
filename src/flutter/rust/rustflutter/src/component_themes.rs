@@ -2768,6 +2768,296 @@ impl ResolvedButton {
     }
 }
 
+// -- Material banner (upstream `banner_theme.dart`) ---------------------------
+
+/// Upstream `MaterialBannerThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialBannerThemeData {
+    pub background_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    /// The rule the banner draws under itself.
+    pub divider_color: Option<Color>,
+    pub content_text_style: Option<TextStyle>,
+    pub elevation: Option<f32>,
+    pub padding: Option<EdgeInsetsGeometry>,
+    /// The space around the leading widget, when there is one.
+    pub leading_padding: Option<EdgeInsetsGeometry>,
+}
+
+impl MaterialBannerThemeData {
+    pub fn new() -> MaterialBannerThemeData {
+        MaterialBannerThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_divider_color(mut self, color: Color) -> Self {
+        self.divider_color = Some(color);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: EdgeInsetsGeometry) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    /// Upstream `MaterialBannerThemeData.lerp`.
+    pub fn lerp(
+        a: &MaterialBannerThemeData,
+        b: &MaterialBannerThemeData,
+        t: f32,
+    ) -> MaterialBannerThemeData {
+        MaterialBannerThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            divider_color: lerp_color(a.divider_color, b.divider_color, t),
+            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            leading_padding: lerp_nearer(&a.leading_padding, &b.leading_padding, t),
+        }
+    }
+}
+
+/// Upstream `MaterialBannerTheme`.
+pub struct MaterialBannerTheme;
+
+impl MaterialBannerTheme {
+    pub fn new(data: MaterialBannerThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> MaterialBannerThemeData {
+        context
+            .inherited::<MaterialBannerThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).banner_theme.clone())
+    }
+}
+
+// -- Expansion tile (upstream `expansion_tile_theme.dart`) --------------------
+
+/// Upstream `ExpansionTileThemeData`.
+///
+/// Nearly every field comes in a pair -- one for the expanded tile and one
+/// for the collapsed one -- because the two are different enough that
+/// interpolating between them is not what a theme wants to say.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExpansionTileThemeData {
+    pub background_color: Option<Color>,
+    pub collapsed_background_color: Option<Color>,
+    pub tile_padding: Option<EdgeInsetsGeometry>,
+    /// Where the expanded children sit inside the tile.
+    pub expanded_alignment: Option<AlignmentGeometry>,
+    pub children_padding: Option<EdgeInsetsGeometry>,
+    pub icon_color: Option<Color>,
+    pub collapsed_icon_color: Option<Color>,
+    pub text_color: Option<Color>,
+    pub collapsed_text_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+    pub collapsed_shape: Option<ShapeBorder>,
+    /// How the tile opens and closes.
+    pub expansion_animation_style: Option<crate::animation::AnimationStyle>,
+}
+
+impl ExpansionTileThemeData {
+    pub fn new() -> ExpansionTileThemeData {
+        ExpansionTileThemeData::default()
+    }
+
+    pub fn with_background_colors(mut self, expanded: Color, collapsed: Color) -> Self {
+        self.background_color = Some(expanded);
+        self.collapsed_background_color = Some(collapsed);
+        self
+    }
+
+    pub fn with_text_colors(mut self, expanded: Color, collapsed: Color) -> Self {
+        self.text_color = Some(expanded);
+        self.collapsed_text_color = Some(collapsed);
+        self
+    }
+
+    pub fn with_tile_padding(mut self, padding: EdgeInsetsGeometry) -> Self {
+        self.tile_padding = Some(padding);
+        self
+    }
+
+    /// Upstream `ExpansionTileThemeData.lerp`.
+    pub fn lerp(
+        a: &ExpansionTileThemeData,
+        b: &ExpansionTileThemeData,
+        t: f32,
+    ) -> ExpansionTileThemeData {
+        ExpansionTileThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            collapsed_background_color: lerp_color(
+                a.collapsed_background_color,
+                b.collapsed_background_color,
+                t,
+            ),
+            tile_padding: lerp_nearer(&a.tile_padding, &b.tile_padding, t),
+            expanded_alignment: lerp_nearer(&a.expanded_alignment, &b.expanded_alignment, t),
+            children_padding: lerp_nearer(&a.children_padding, &b.children_padding, t),
+            icon_color: lerp_color(a.icon_color, b.icon_color, t),
+            collapsed_icon_color: lerp_color(a.collapsed_icon_color, b.collapsed_icon_color, t),
+            text_color: lerp_color(a.text_color, b.text_color, t),
+            collapsed_text_color: lerp_color(a.collapsed_text_color, b.collapsed_text_color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            collapsed_shape: lerp_nearer(&a.collapsed_shape, &b.collapsed_shape, t),
+            expansion_animation_style: lerp_nearer(
+                &a.expansion_animation_style,
+                &b.expansion_animation_style,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `ExpansionTileTheme`.
+pub struct ExpansionTileTheme;
+
+impl ExpansionTileTheme {
+    pub fn new(data: ExpansionTileThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ExpansionTileThemeData {
+        context
+            .inherited::<ExpansionTileThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).expansion_tile_theme.clone())
+    }
+}
+
+// -- The Material 2 button theme (upstream `button_theme.dart`) ---------------
+
+/// Upstream `ButtonTextTheme`: which colour a Material 2 button's label
+/// takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ButtonTextTheme {
+    /// Black or white, by the theme's brightness.
+    #[default]
+    Normal,
+    /// The scheme's secondary.
+    Accent,
+    /// The scheme's primary, with the fill following it.
+    Primary,
+}
+
+/// Upstream `ButtonBarLayoutBehavior`: whether a bar of buttons is padded out
+/// to the minimum touch height or takes only what it needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ButtonBarLayoutBehavior {
+    /// Constrained to `kMinInteractiveDimension`.
+    #[default]
+    Padded,
+    Constrained,
+}
+
+/// Upstream `ButtonThemeData`: the Material 2 button theme.
+///
+/// Not to be confused with [`ButtonStyle`] and the five `*ButtonThemeData`
+/// classes, which are the Material 3 way. Upstream keeps this one for the
+/// widgets that predate them, and so does this -- it is a different set of
+/// questions (a minimum width and a height, rather than a property per
+/// state).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ButtonThemeData {
+    pub min_width: f32,
+    pub height: f32,
+    pub text_theme: ButtonTextTheme,
+    pub layout_behavior: ButtonBarLayoutBehavior,
+    pub padding: Option<EdgeInsetsGeometry>,
+    pub shape: Option<ShapeBorder>,
+    /// Whether a dropdown's menu lines up with the button that opened it.
+    pub aligned_dropdown: bool,
+    pub button_color: Option<Color>,
+    pub disabled_color: Option<Color>,
+    pub focus_color: Option<Color>,
+    pub hover_color: Option<Color>,
+    pub highlight_color: Option<Color>,
+    pub splash_color: Option<Color>,
+    pub color_scheme: Option<ColorScheme>,
+    pub material_tap_target_size: Option<MaterialTapTargetSize>,
+}
+
+impl Default for ButtonThemeData {
+    fn default() -> ButtonThemeData {
+        ButtonThemeData::new()
+    }
+}
+
+impl ButtonThemeData {
+    /// Upstream's defaults: `minWidth: 88`, `height: 36`.
+    pub fn new() -> ButtonThemeData {
+        ButtonThemeData {
+            min_width: 88.0,
+            height: 36.0,
+            text_theme: ButtonTextTheme::Normal,
+            layout_behavior: ButtonBarLayoutBehavior::Padded,
+            padding: None,
+            shape: None,
+            aligned_dropdown: false,
+            button_color: None,
+            disabled_color: None,
+            focus_color: None,
+            hover_color: None,
+            highlight_color: None,
+            splash_color: None,
+            color_scheme: None,
+            material_tap_target_size: None,
+        }
+    }
+
+    pub fn with_min_width(mut self, min_width: f32) -> Self {
+        self.min_width = min_width;
+        self
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.height = height;
+        self
+    }
+
+    pub fn with_text_theme(mut self, text_theme: ButtonTextTheme) -> Self {
+        self.text_theme = text_theme;
+        self
+    }
+
+    /// Upstream `ButtonThemeData.padding`, whose fallback depends on the text
+    /// theme: a primary button is padded wider than a plain one.
+    pub fn padding(&self) -> EdgeInsets {
+        if let Some(padding) = self.padding {
+            return padding.resolve(crate::direction::current_direction());
+        }
+        match self.text_theme {
+            ButtonTextTheme::Normal | ButtonTextTheme::Accent => EdgeInsets::symmetric(16.0, 0.0),
+            ButtonTextTheme::Primary => EdgeInsets::symmetric(24.0, 0.0),
+        }
+    }
+}
+
+/// Upstream `ButtonTheme`.
+pub struct ButtonTheme;
+
+impl ButtonTheme {
+    pub fn new(data: ButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ButtonThemeData {
+        context
+            .inherited::<ButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).button_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -3561,5 +3851,82 @@ mod tests {
             component(Button::new(1, "Go").with_style(ButtonVariant::Filled)),
         ));
         assert_eq!(taller, 56.0);
+    }
+
+    #[test]
+    fn a_banner_takes_its_fill_and_its_rule_from_its_theme() {
+        use crate::controls::Banner;
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, EdgeInsets, RenderBox};
+
+        fn height_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 400.0)).height
+        }
+
+        let plain = height_of(component(Banner::new("Something happened")));
+        // A themed padding changes the banner's height by twice the change,
+        // which is the observable half of the wiring.
+        let padded = height_of(MaterialBannerTheme::new(
+            MaterialBannerThemeData::new().with_padding(EdgeInsetsGeometry::Absolute(
+                EdgeInsets::symmetric(0.0, 40.0),
+            )),
+            component(Banner::new("Something happened")),
+        ));
+        assert!(padded > plain, "{padded} should exceed {plain}");
+        assert_eq!(padded - plain, 80.0 - 2.0 * 12.0);
+    }
+
+    #[test]
+    fn the_material_two_button_theme_pads_by_its_text_theme() {
+        // Upstream's `ButtonThemeData.padding` falls back differently for a
+        // primary button than for a plain one -- twenty-four against sixteen.
+        assert_eq!(
+            ButtonThemeData::new().padding(),
+            EdgeInsets::symmetric(16.0, 0.0)
+        );
+        assert_eq!(
+            ButtonThemeData::new()
+                .with_text_theme(ButtonTextTheme::Primary)
+                .padding(),
+            EdgeInsets::symmetric(24.0, 0.0)
+        );
+        // And a padding given outright wins over both.
+        let mut given = ButtonThemeData::new().with_text_theme(ButtonTextTheme::Primary);
+        given.padding = Some(EdgeInsetsGeometry::Absolute(EdgeInsets::all(4.0)));
+        assert_eq!(given.padding(), EdgeInsets::all(4.0));
+
+        // Upstream's defaults for the two metrics.
+        assert_eq!(ButtonThemeData::new().min_width, 88.0);
+        assert_eq!(ButtonThemeData::new().height, 36.0);
+    }
+
+    #[test]
+    fn an_expansion_tile_theme_keeps_its_two_states_apart() {
+        let themed = read_in(
+            |child| {
+                ExpansionTileTheme::new(
+                    ExpansionTileThemeData::new()
+                        .with_background_colors(
+                            Color::argb(255, 1, 1, 1),
+                            Color::argb(255, 2, 2, 2),
+                        )
+                        .with_text_colors(Color::argb(255, 3, 3, 3), Color::argb(255, 4, 4, 4)),
+                    child,
+                )
+            },
+            ExpansionTileTheme::of,
+        );
+        // Expanded and collapsed are separate fields, not two ends of an
+        // interpolation: a tile that is open is a different tile.
+        assert_eq!(themed.background_color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(
+            themed.collapsed_background_color,
+            Some(Color::argb(255, 2, 2, 2))
+        );
+        assert_eq!(themed.text_color, Some(Color::argb(255, 3, 3, 3)));
+        assert_eq!(themed.collapsed_text_color, Some(Color::argb(255, 4, 4, 4)));
     }
 }

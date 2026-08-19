@@ -164,6 +164,24 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:banner / expansion tile / M2 按钮主题(2026-08-19)。**
+`MaterialBannerTheme(Data)`(8/8)、`ExpansionTileTheme(Data)`(12/13,缺
+`clipBehavior`)、`ButtonTheme(ButtonThemeData)`(15/15,连带补
+`ButtonTextTheme`/`ButtonBarLayoutBehavior`)。
+
+**`ButtonThemeData` 与前一轮那五对不是一回事**:它是上游 M2 那套按钮的主题
+——问的是"最小宽度、高度、文字主题",而不是"每个状态一个属性"。上游两套并存,
+此侧也并存,`ThemeData` 上两个字段各占各的。它的 `padding` 回退按 `textTheme`
+分叉(primary 24、其余 16),这条单独上了回归线。上游 `ButtonThemeData` **没有
+`lerp`**——字段是尺寸不是颜料,按钮条不会在两个宽度之间做动画——所以
+`ThemeData::lerp` 里它按近端取,这一点在代码里写明了。
+
+**`Banner` 接上了**:底色、下方那条规则线、内距都走
+`MaterialBannerTheme.of`。回归线用"改内距后高度的变化量"验,避开绝对值。
+
+**`ExpansionTileThemeData` 的两态是两个字段而不是一次插值**——展开与收起的
+底色/文字色各自独立,回归线点明了这一点。
+
 **P8-M1:按钮一族,以及两处尺子的假阳性(2026-08-19)。**
 
 **先是个真错:crate 的 `ButtonStyle` 不是上游的 `ButtonStyle`。** 此侧那个是
