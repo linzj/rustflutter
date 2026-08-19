@@ -164,6 +164,22 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:input decoration(2026-08-19)。** `InputDecorationTheme(Data)`
+(37/37)+`FloatingLabelBehavior`/`FloatingLabelAlignment`。这是继 date picker
+之后第二长的一个,长的道理也一样:一个带装饰的输入框是一叠零件——会浮的标签、
+它底下的提示、下方的帮助与错误、两侧的前后缀、末尾的计数器,再加**五种状态各
+一个边框**——每个零件各自设主题。
+
+**五个边框是五个字段而不是一个状态属性**,这是上游的形态且有原因:
+`InputBorder` 是 `ShapeBorder`,没法从状态集解析出来,所以"状态"体现为**读哪个
+字段**。`resolve_border` 照抄上游 `_getFallbackBorder` 的顺序:disabled →
+focused+error → error → focused → enabled,都没设才落到 `border`。回归线专门
+验了两处会猜错的:**focused 且 error 但 focusedErrorBorder 未设时,落到 `border`
+而不是落到 focused 或 error 那两个**;以及 disabled 压过 error。
+
+上游此类**没有 `lerp`**(边框是形状、开关是开关,输入框不在两者之间做动画),
+`ThemeData::lerp` 按近端取并写明原因。
+
 **P8-M1:输入边框(2026-08-19)。** `UnderlineInputBorder`/
 `OutlineInputBorder` 落进 `borders.rs`,并作为 `ShapeBorder` 的两个新变体接进
 全部九处 match(dimensions/side/outer_path/inner_path/scale/hit/paint/两处

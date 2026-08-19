@@ -49,12 +49,12 @@ use crate::component_themes::{
     ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
     DatePickerThemeData, DialogThemeData, DividerThemeData, DrawerThemeData,
     ElevatedButtonThemeData, ExpansionTileThemeData, FilledButtonThemeData,
-    FloatingActionButtonThemeData, IconButtonThemeData, ListTileThemeData, MaterialBannerThemeData,
-    MenuBarThemeData, MenuButtonThemeData, MenuThemeData, NavigationRailThemeData,
-    OutlinedButtonThemeData, ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData,
-    SearchBarThemeData, SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData,
-    SwitchThemeData, TabBarThemeData, TextButtonThemeData, TimePickerThemeData,
-    ToggleButtonsThemeData, TooltipThemeData,
+    FloatingActionButtonThemeData, IconButtonThemeData, InputDecorationThemeData,
+    ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData,
+    MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData, ProgressIndicatorThemeData,
+    RadioThemeData, ScrollbarThemeData, SearchBarThemeData, SearchViewThemeData,
+    SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData, TabBarThemeData,
+    TextButtonThemeData, TimePickerThemeData, ToggleButtonsThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -241,6 +241,7 @@ pub struct ThemeData {
     pub search_view_theme: SearchViewThemeData,
     pub time_picker_theme: TimePickerThemeData,
     pub date_picker_theme: DatePickerThemeData,
+    pub input_decoration_theme: InputDecorationThemeData,
 }
 
 impl ThemeData {
@@ -361,6 +362,7 @@ impl ThemeData {
             search_view_theme: SearchViewThemeData::new(),
             time_picker_theme: TimePickerThemeData::new(),
             date_picker_theme: DatePickerThemeData::new(),
+            input_decoration_theme: InputDecorationThemeData::new(),
         }
     }
 
@@ -692,6 +694,10 @@ impl ThemeData {
                 &b.date_picker_theme,
                 t,
             ),
+            // Upstream's `InputDecorationThemeData` has no `lerp`: its
+            // borders are shapes and its flags are flags, and a field does
+            // not animate between two of them.
+            input_decoration_theme: nearer.input_decoration_theme.clone(),
         }
     }
 

@@ -4346,6 +4346,232 @@ impl DatePickerTheme {
     }
 }
 
+// -- Input decoration (upstream `input_decorator.dart`) -----------------------
+
+/// Upstream `FloatingLabelBehavior`: when a field's label floats above it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FloatingLabelBehavior {
+    /// Never -- the label is the hint, and it goes when text is typed.
+    Never,
+    /// When the field has focus or content.
+    #[default]
+    Auto,
+    /// Always, so the field is never without one.
+    Always,
+}
+
+/// Upstream `FloatingLabelAlignment`: where along the top edge the floated
+/// label sits.
+///
+/// Upstream is a value class over a private `_x` in -1..1 with two named
+/// constants; there are only the two, and a third would need the private
+/// constructor, so this is those two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FloatingLabelAlignment {
+    /// The reading edge -- upstream's `-1.0`.
+    #[default]
+    Start,
+    /// The middle -- upstream's `0.0`.
+    Center,
+}
+
+impl FloatingLabelAlignment {
+    /// The position upstream stores, in -1..1.
+    pub fn x(self) -> f32 {
+        match self {
+            FloatingLabelAlignment::Start => -1.0,
+            FloatingLabelAlignment::Center => 0.0,
+        }
+    }
+}
+
+/// Upstream `InputDecorationThemeData`.
+///
+/// The longest single class in the material wave after the date picker, and
+/// the reason is the same: a decorated field is a stack of parts -- a label
+/// that floats, a hint under it, a helper and an error below, a prefix and a
+/// suffix beside, a counter at the end, and five borders for the five states
+/// it can be in -- and each part is themed on its own.
+///
+/// The five borders are five fields rather than one state property because
+/// that is upstream's shape: an `InputBorder` is a `ShapeBorder` and cannot
+/// be resolved from a state set, so the state is which field you read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputDecorationThemeData {
+    pub label_style: Option<TextStyle>,
+    pub floating_label_style: Option<TextStyle>,
+    pub helper_style: Option<TextStyle>,
+    pub helper_max_lines: Option<i32>,
+    pub hint_style: Option<TextStyle>,
+    pub hint_fade_duration: Option<std::time::Duration>,
+    pub hint_max_lines: Option<i32>,
+    pub error_style: Option<TextStyle>,
+    pub error_max_lines: Option<i32>,
+    pub floating_label_behavior: FloatingLabelBehavior,
+    pub floating_label_alignment: FloatingLabelAlignment,
+    /// Whether the field is packed tighter.
+    pub is_dense: bool,
+    pub content_padding: Option<EdgeInsetsGeometry>,
+    /// Whether the field has no vertical padding at all, so it can sit in a
+    /// row of its own height.
+    pub is_collapsed: bool,
+    pub icon_color: Option<Color>,
+    pub prefix_style: Option<TextStyle>,
+    pub prefix_icon_color: Option<Color>,
+    pub prefix_icon_constraints: Option<BoxConstraints>,
+    pub suffix_style: Option<TextStyle>,
+    pub suffix_icon_color: Option<Color>,
+    pub suffix_icon_constraints: Option<BoxConstraints>,
+    pub counter_style: Option<TextStyle>,
+    /// Whether the field is filled behind its text.
+    pub filled: bool,
+    pub fill_color: Option<Color>,
+    /// The outline a Material 3 field draws when it is not focused.
+    pub outline_border: Option<BorderSide>,
+    /// The rule under a filled field.
+    pub active_indicator_border: Option<BorderSide>,
+    pub focus_color: Option<Color>,
+    pub hover_color: Option<Color>,
+    pub error_border: Option<ShapeBorder>,
+    pub focused_border: Option<ShapeBorder>,
+    pub focused_error_border: Option<ShapeBorder>,
+    pub disabled_border: Option<ShapeBorder>,
+    pub enabled_border: Option<ShapeBorder>,
+    pub border: Option<ShapeBorder>,
+    /// Whether the label lines up with the hint rather than with the top of
+    /// the field, which is what a multi-line field wants.
+    pub align_label_with_hint: bool,
+    pub constraints: Option<BoxConstraints>,
+    pub visual_density: Option<VisualDensity>,
+}
+
+impl Default for InputDecorationThemeData {
+    fn default() -> InputDecorationThemeData {
+        InputDecorationThemeData::new()
+    }
+}
+
+impl InputDecorationThemeData {
+    /// Upstream's defaults: auto-floating label at the start, not dense, not
+    /// collapsed, not filled, label not aligned with the hint.
+    pub fn new() -> InputDecorationThemeData {
+        InputDecorationThemeData {
+            label_style: None,
+            floating_label_style: None,
+            helper_style: None,
+            helper_max_lines: None,
+            hint_style: None,
+            hint_fade_duration: None,
+            hint_max_lines: None,
+            error_style: None,
+            error_max_lines: None,
+            floating_label_behavior: FloatingLabelBehavior::Auto,
+            floating_label_alignment: FloatingLabelAlignment::Start,
+            is_dense: false,
+            content_padding: None,
+            is_collapsed: false,
+            icon_color: None,
+            prefix_style: None,
+            prefix_icon_color: None,
+            prefix_icon_constraints: None,
+            suffix_style: None,
+            suffix_icon_color: None,
+            suffix_icon_constraints: None,
+            counter_style: None,
+            filled: false,
+            fill_color: None,
+            outline_border: None,
+            active_indicator_border: None,
+            focus_color: None,
+            hover_color: None,
+            error_border: None,
+            focused_border: None,
+            focused_error_border: None,
+            disabled_border: None,
+            enabled_border: None,
+            border: None,
+            align_label_with_hint: false,
+            constraints: None,
+            visual_density: None,
+        }
+    }
+
+    pub fn with_filled(mut self, filled: bool, fill_color: Color) -> Self {
+        self.filled = filled;
+        self.fill_color = Some(fill_color);
+        self
+    }
+
+    pub fn with_border(mut self, border: ShapeBorder) -> Self {
+        self.border = Some(border);
+        self
+    }
+
+    pub fn with_focused_border(mut self, border: ShapeBorder) -> Self {
+        self.focused_border = Some(border);
+        self
+    }
+
+    pub fn with_error_border(mut self, border: ShapeBorder) -> Self {
+        self.error_border = Some(border);
+        self
+    }
+
+    pub fn with_floating_label_behavior(mut self, behavior: FloatingLabelBehavior) -> Self {
+        self.floating_label_behavior = behavior;
+        self
+    }
+
+    pub fn with_content_padding(mut self, padding: EdgeInsetsGeometry) -> Self {
+        self.content_padding = Some(padding);
+        self
+    }
+
+    pub fn with_dense(mut self, is_dense: bool) -> Self {
+        self.is_dense = is_dense;
+        self
+    }
+
+    /// Upstream `InputDecoration.border`'s resolution: which of the five
+    /// borders a field in these states draws.
+    ///
+    /// Upstream's `_getFallbackBorder` reads them in exactly this order, and
+    /// the order is the whole of it -- a disabled field with an error shows
+    /// the disabled border, and a focused one with an error shows the
+    /// focused-error border rather than either of its parents.
+    pub fn resolve_border(&self, states: WidgetStates) -> Option<ShapeBorder> {
+        let has_error = states.contains(WidgetState::Error);
+        let picked = if states.contains(WidgetState::Disabled) {
+            self.disabled_border.clone()
+        } else if has_error && states.contains(WidgetState::Focused) {
+            self.focused_error_border.clone()
+        } else if has_error {
+            self.error_border.clone()
+        } else if states.contains(WidgetState::Focused) {
+            self.focused_border.clone()
+        } else {
+            self.enabled_border.clone()
+        };
+        picked.or_else(|| self.border.clone())
+    }
+}
+
+/// Upstream `InputDecorationTheme`.
+pub struct InputDecorationTheme;
+
+impl InputDecorationTheme {
+    pub fn new(data: InputDecorationThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> InputDecorationThemeData {
+        context
+            .inherited::<InputDecorationThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).input_decoration_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -5479,5 +5705,74 @@ mod tests {
             themed.range_picker_header_background_color, None,
             "the dialog's header colour does not reach the range picker's"
         );
+    }
+
+    #[test]
+    fn an_input_decoration_picks_one_of_its_five_borders_in_upstreams_order() {
+        use crate::borders::{BorderSide, OutlineInputBorder, ShapeBorder, UnderlineInputBorder};
+        use crate::widget_state::{WidgetState, WidgetStates};
+
+        let side = |width: f32| BorderSide {
+            color: Color::BLACK,
+            width,
+            ..BorderSide::NONE
+        };
+        let data = InputDecorationThemeData::new()
+            .with_border(ShapeBorder::Underline(UnderlineInputBorder::new(side(1.0))))
+            .with_focused_border(ShapeBorder::Outline(OutlineInputBorder::new(side(2.0))))
+            .with_error_border(ShapeBorder::Outline(OutlineInputBorder::new(side(3.0))));
+
+        let width_of =
+            |border: Option<ShapeBorder>| border.and_then(|b| b.outlined_side()).map(|s| s.width);
+
+        // Nothing set for the enabled state, so it falls through to `border`.
+        assert_eq!(width_of(data.resolve_border(WidgetStates::NONE)), Some(1.0));
+        assert_eq!(
+            width_of(data.resolve_border(WidgetStates::NONE.with(WidgetState::Focused))),
+            Some(2.0)
+        );
+        assert_eq!(
+            width_of(data.resolve_border(WidgetStates::NONE.with(WidgetState::Error))),
+            Some(3.0)
+        );
+
+        // Focused *and* in error asks for the focused-error border, which is
+        // unset here -- so it falls to `border` rather than to either parent.
+        // That is upstream's order, and the case a reader guesses wrong.
+        assert_eq!(
+            width_of(
+                data.resolve_border(
+                    WidgetStates::NONE
+                        .with(WidgetState::Error)
+                        .with(WidgetState::Focused)
+                )
+            ),
+            Some(1.0)
+        );
+
+        // Disabled wins over everything, error included.
+        assert_eq!(
+            width_of(
+                data.resolve_border(
+                    WidgetStates::NONE
+                        .with(WidgetState::Disabled)
+                        .with(WidgetState::Error)
+                )
+            ),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn the_floating_label_defaults_are_upstreams() {
+        let data = InputDecorationThemeData::new();
+        assert_eq!(data.floating_label_behavior, FloatingLabelBehavior::Auto);
+        assert_eq!(data.floating_label_alignment, FloatingLabelAlignment::Start);
+        assert_eq!(FloatingLabelAlignment::Start.x(), -1.0);
+        assert_eq!(FloatingLabelAlignment::Center.x(), 0.0);
+        assert!(!data.filled);
+        assert!(!data.is_dense);
+        assert!(!data.is_collapsed);
+        assert!(!data.align_label_with_hint);
     }
 }
