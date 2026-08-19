@@ -34,7 +34,7 @@
 
 use std::rc::Rc;
 
-use crate::render::{HitTestResult, Offset, RenderBox};
+use crate::render::{HitTestEntry, HitTestResult, Offset, RenderBox};
 
 /// How far a touch has to travel before the framework is confident that it is
 /// a scroll, or inversely the maximum distance it can travel before the
@@ -2412,6 +2412,118 @@ impl Default for GestureRouter {
     }
 }
 
+// -- The three roles a hit test has ------------------------------------------
+
+/// Upstream `HitTestTarget` (`gestures/hit_test.dart`): something that can be
+/// handed a pointer event because the hit test found it.
+///
+/// Upstream every render object is one, and so is every gesture recogniser;
+/// the entry the hit test recorded carries the target, and the dispatcher
+/// calls `handleEvent` on each in turn. Here the entry carries a
+/// [`PointerHandlers`] instead of a target object, because this crate's
+/// regions are handlers rather than objects -- so the handlers are what
+/// implements this.
+///
+/// **The three raw changes are all that come through here.** Everything else
+/// a region can be told -- a tap, a drag, a long press -- is a *recognised*
+/// gesture, decided by [`GestureRouter`] from a sequence of these, and
+/// delivered by it rather than by this method. That split is upstream's too:
+/// `handleEvent` is the raw channel, and the recognisers sit above it.
+pub trait HitTestTarget {
+    /// Upstream's `handleEvent`.
+    fn handle_event(&self, event: &PointerEvent, entry: &HitTestEntry);
+}
+
+impl HitTestTarget for PointerHandlers {
+    fn handle_event(&self, event: &PointerEvent, _entry: &HitTestEntry) {
+        let handler = match event.change {
+            PointerChange::Down => self.on_pointer_down.as_ref(),
+            PointerChange::Move => self.on_pointer_move.as_ref(),
+            PointerChange::Up => self.on_pointer_up.as_ref(),
+            // A cancel is not an up: nothing was completed, so anything
+            // showing progress unwinds rather than finishes. See the field.
+            PointerChange::Cancel => self.on_pointer_cancel.as_ref(),
+            _ => None,
+        };
+        if let Some(handler) = handler {
+            handler(event);
+        }
+    }
+}
+
+/// Upstream `HitTestDispatcher`: whatever takes a finished hit-test result and
+/// delivers the event along it.
+///
+/// One method, and the interface exists so that the thing doing the
+/// delivering can be replaced -- upstream's `GestureBinding` is the only
+/// implementation it ships, and a test harness is the other.
+pub trait HitTestDispatcher {
+    /// Upstream's `dispatchEvent`.
+    fn dispatch_event(&mut self, event: &PointerEvent, result: &HitTestResult);
+}
+
+impl HitTestDispatcher for GestureRouter {
+    /// Delivers `event` to every target on the path, innermost first.
+    ///
+    /// **Innermost first, and to every one of them, not only the first.**
+    /// Upstream walks the whole path for the same reason: a button inside a
+    /// card is inside both, and a listener on the card that only heard about
+    /// presses which missed its button would be a listener that could not
+    /// count them. Stopping at the first target is what a *gesture arena* is
+    /// for, and that is a different mechanism -- see [`GestureRouter`].
+    fn dispatch_event(&mut self, event: &PointerEvent, result: &HitTestResult) {
+        for entry in &result.path {
+            if let Some(handlers) = &entry.handlers {
+                handlers.handle_event(event, entry);
+            }
+        }
+    }
+}
+
+/// Upstream `HitTestable`: something a position can be hit-tested against.
+///
+/// Upstream this is the binding, which forwards to the render view for the
+/// view the event arrived on. Here it is the render tree itself, because that
+/// is what a hit test descends.
+///
+/// # The two methods, and why both
+///
+/// Upstream is mid-migration: `hitTest(result, position)` is deprecated in
+/// favour of `hitTestInView(result, position, viewId)`, because an
+/// application may now have several views and an event carries the one it
+/// came from. Both are here, with the deprecated one *provided* in terms of
+/// the other -- which is the shape of the migration rather than a copy of its
+/// current state.
+///
+/// This crate has one view. [`HitTestable::MAIN_VIEW_ID`] is its id, and a
+/// hit test for any other view finds nothing rather than silently searching
+/// the wrong tree: answering the main view's contents to a question about a
+/// second view would be a wrong answer, where an empty path is merely an
+/// unhelpful one.
+pub trait HitTestable {
+    /// The id of the only view this crate has. Upstream's
+    /// `FlutterView.viewId` for the implicit view.
+    const MAIN_VIEW_ID: u64 = 0;
+
+    /// Upstream's `hitTestInView`.
+    fn hit_test_in_view(&self, result: &mut HitTestResult, position: Offset, view_id: u64);
+
+    /// Upstream's deprecated `hitTest`, which is the same question about the
+    /// only view there used to be.
+    fn hit_test_at(&self, result: &mut HitTestResult, position: Offset) {
+        self.hit_test_in_view(result, position, Self::MAIN_VIEW_ID);
+    }
+}
+
+impl<T: RenderBox + ?Sized> HitTestable for T {
+    fn hit_test_in_view(&self, result: &mut HitTestResult, position: Offset, view_id: u64) {
+        if view_id != Self::MAIN_VIEW_ID {
+            return;
+        }
+        self.hit_test(position, result);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3713,5 +3825,161 @@ mod tests {
         let mut router = GestureRouter::new();
         router.dispatch(&root, &event(PointerChange::Down, 20.0, 20.0, 0.0, 0.0));
         router.dispatch(&root, &event(PointerChange::Up, 20.0, 20.0, 0.0, 0.0));
+    }
+
+    /// A box of a fixed size that records itself under `id`.
+    fn region(id: u64, handlers: PointerHandlers) -> crate::render::RenderPointerRegion {
+        crate::render::RenderPointerRegion::new(
+            id,
+            crate::render::RenderConstrainedBox::tight(100.0, 100.0),
+        )
+        .with_handlers(handlers)
+    }
+
+    fn event_at(change: PointerChange, x: f32, y: f32) -> PointerEvent {
+        event(change, x, y, 0.0, 0.0)
+    }
+
+    #[test]
+    fn only_the_raw_changes_reach_a_targets_handle_event() {
+        // Everything else a region can be told -- a tap, a drag, a long press
+        // -- is a *recognised* gesture the router decides from a sequence of
+        // these. `handle_event` is the raw channel, as upstream's is.
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let make = |label: &'static str,
+                    sink: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>| {
+            move |_: &PointerEvent| sink.borrow_mut().push(label)
+        };
+        let handlers = PointerHandlers::new()
+            .with_pointer_down(make("down", seen.clone()))
+            .with_pointer_move(make("move", seen.clone()))
+            .with_pointer_up(make("up", seen.clone()))
+            .with_pointer_cancel(make("cancel", seen.clone()));
+        let entry = HitTestEntry {
+            target: 1,
+            local_position: Offset::ZERO,
+            handlers: None,
+        };
+
+        for change in [
+            PointerChange::Down,
+            PointerChange::Move,
+            PointerChange::Up,
+            PointerChange::Cancel,
+        ] {
+            handlers.handle_event(&event_at(change, 0.0, 0.0), &entry);
+        }
+        assert_eq!(*seen.borrow(), vec!["down", "move", "up", "cancel"]);
+
+        // And a hover or an add is not one of them: those are the router's,
+        // which tracks which regions the mouse is inside.
+        seen.borrow_mut().clear();
+        for change in [
+            PointerChange::Hover,
+            PointerChange::Add,
+            PointerChange::Remove,
+            PointerChange::PanZoomStart,
+        ] {
+            handlers.handle_event(&event_at(change, 0.0, 0.0), &entry);
+        }
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    }
+
+    #[test]
+    fn a_cancel_is_not_an_up() {
+        // Nothing was completed, so anything showing progress unwinds rather
+        // than finishes -- which is why the two are separate callbacks and a
+        // target that only listens for one hears nothing of the other.
+        let ups = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = ups.clone();
+        let handlers =
+            PointerHandlers::new().with_pointer_up(move |_| counter.set(counter.get() + 1));
+        let entry = HitTestEntry {
+            target: 1,
+            local_position: Offset::ZERO,
+            handlers: None,
+        };
+        handlers.handle_event(&event_at(PointerChange::Cancel, 0.0, 0.0), &entry);
+        assert_eq!(ups.get(), 0);
+        handlers.handle_event(&event_at(PointerChange::Up, 0.0, 0.0), &entry);
+        assert_eq!(ups.get(), 1);
+    }
+
+    #[test]
+    fn a_dispatch_reaches_every_target_on_the_path_not_only_the_first() {
+        // A button inside a card is inside both, and a listener on the card
+        // that only heard about presses which missed its button would be one
+        // that could not count them. Stopping at the first is what a gesture
+        // *arena* is for, which is a different mechanism.
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let outer_sink = heard.clone();
+        let inner_sink = heard.clone();
+        let outer = std::rc::Rc::new(
+            PointerHandlers::new().with_pointer_down(move |_| outer_sink.borrow_mut().push("card")),
+        );
+        let inner = std::rc::Rc::new(
+            PointerHandlers::new()
+                .with_pointer_down(move |_| inner_sink.borrow_mut().push("button")),
+        );
+
+        let mut result = HitTestResult::new();
+        // Innermost first, which is the order a hit test records in.
+        result.add_with_handlers(2, Offset::ZERO, Some(inner));
+        result.add_with_handlers(1, Offset::ZERO, Some(outer));
+
+        let mut router = GestureRouter::new();
+        router.dispatch_event(&event_at(PointerChange::Down, 0.0, 0.0), &result);
+        assert_eq!(*heard.borrow(), vec!["button", "card"]);
+    }
+
+    #[test]
+    fn a_hit_test_for_another_view_finds_nothing_rather_than_the_wrong_tree() {
+        // This crate has one view. Answering its contents to a question about
+        // a second view would be a wrong answer, where an empty path is only
+        // an unhelpful one.
+        let tree = region(7, PointerHandlers::new().with_pointer_down(|_| {}));
+        let mut tree = crate::render::RenderRef::new(tree);
+        tree.layout(crate::render::BoxConstraints::tight(100.0, 100.0));
+
+        let mut main = HitTestResult::new();
+        tree.hit_test_in_view(
+            &mut main,
+            Offset::new(50.0, 50.0),
+            <crate::render::RenderRef as HitTestable>::MAIN_VIEW_ID,
+        );
+        assert!(!main.path.is_empty(), "the only view finds its own tree");
+
+        let mut second = HitTestResult::new();
+        tree.hit_test_in_view(&mut second, Offset::new(50.0, 50.0), 1);
+        assert!(second.path.is_empty(), "and no other view finds anything");
+    }
+
+    #[test]
+    fn the_deprecated_hit_test_is_the_same_question_about_the_only_view() {
+        // Upstream is mid-migration and provides one in terms of the other;
+        // this pins that the provided method really does route to the main
+        // view rather than being a second implementation that could drift.
+        let tree = region(7, PointerHandlers::new().with_pointer_down(|_| {}));
+        let mut tree = crate::render::RenderRef::new(tree);
+        tree.layout(crate::render::BoxConstraints::tight(100.0, 100.0));
+
+        let mut old = HitTestResult::new();
+        tree.hit_test_at(&mut old, Offset::new(50.0, 50.0));
+        let mut new = HitTestResult::new();
+        tree.hit_test_in_view(
+            &mut new,
+            Offset::new(50.0, 50.0),
+            <crate::render::RenderRef as HitTestable>::MAIN_VIEW_ID,
+        );
+        assert_eq!(
+            old.path
+                .iter()
+                .map(|entry| entry.target)
+                .collect::<Vec<_>>(),
+            new.path
+                .iter()
+                .map(|entry| entry.target)
+                .collect::<Vec<_>>()
+        );
     }
 }

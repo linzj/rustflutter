@@ -164,6 +164,45 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一次命中测试里的三个角色(2026-08-20)
+
+`HitTestable`、`HitTestDispatcher`、`HitTestTarget`(上游 `gestures/hit_test.dart`)进
+`gestures.rs`——正是上一轮修好尺子之后露出来的那三个。`hit_test.dart` 现在 5 covered /
+1 blocked。
+
+这三个接口把一次命中测试拆成三个角色:**谁能被测**、**谁负责把事件送下去**、**谁能收**。
+上游每个 render object 和每个手势识别器都是 `HitTestTarget`;这里命中项带的是一份
+`PointerHandlers` 而不是一个目标对象,因为这个 crate 的区域本来就是处理函数而不是对象,
+所以实现这个 trait 的是 `PointerHandlers`。
+
+**回归行盯的地方:**
+
+* **只有三种原始变化会走到 `handle_event`**(down/move/up,加上 cancel)。区域能被告知的
+  其它一切——点击、拖拽、长按——都是**被识别出来的**手势,由 `GestureRouter` 从一串原始事
+  件里判出来、也由它送达。这个分工是上游的:`handleEvent` 是原始通道,识别器坐在它上
+  面。hover 和 add 也不走这里,那是 router 追踪鼠标在哪些区域里面的事。
+* **cancel 不是 up。** 什么都没完成,所以正在显示进度的东西要**倒回去**而不是**收尾**;
+  两者是分开的回调,只听其中一个的目标听不到另一个。
+* **一次派发会到达路径上的每一个目标,不只是第一个。** 卡片里的按钮同时在两者里面,而一
+  个只在按压**没打中**按钮时才听得到的卡片监听器,是个数不清按压次数的监听器。停在第一
+  个是**手势竞技场**要做的事,那是另一套机制。
+* **问另一个 view 会得到「什么都没有」而不是错的那棵树。** 这个 crate 只有一个 view;把
+  主 view 的内容答给一个关于第二个 view 的提问是**错的答案**,而空路径只是**没用的答
+  案**。
+* **那个被弃用的 `hit_test` 就是「关于唯一那个 view 的同一个问题」。** 上游正在从
+  `hitTest(result, position)` 迁到 `hitTestInView(result, position, viewId)`,因为一个应
+  用现在可以有多个 view、而事件带着自己来自哪一个。两个都在,**弃用的那个是用另一个供出
+  来的**——照的是这次迁移的形状,而不是它此刻的状态。这条回归行盯的就是它真的路由到主
+  view,而不是一份会走散的第二实现。
+
+同文件的 `NativeHitTestTarget` 早先就记在引擎受阻里(不是这一轮加的):它是个空 mixin,
+存在只为了标记「这个 render object 是一块平台视图,命中测试要交给原生那边」,而这个
+crate 没有平台视图。
+
+验证:`cargo test --lib` 1437 绿,GN `rustflutter_unittests` 1437 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1235 accounted / 653 MISSING。
+
 ### 尺子看不见的那 15 个类(2026-08-20)
 
 第三次审计这把尺子,这次找到的是**盲点而不是虚报**——比虚报更糟的那一种。
