@@ -59,6 +59,7 @@ pub mod pickers;
 pub mod platform;
 pub mod range_slider_parts;
 pub mod render;
+pub mod resampler;
 pub mod scrollable_helpers;
 pub mod scrollbar;
 pub mod scrolling;
