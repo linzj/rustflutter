@@ -4082,6 +4082,270 @@ impl TimePickerTheme {
     }
 }
 
+// -- Date picker (upstream `date_picker_theme.dart`) --------------------------
+
+/// Upstream `DatePickerThemeData`.
+///
+/// The longest of the component themes, and it is long for a reason: a date
+/// picker is four surfaces, not one. There is the dialog, the grid of days
+/// inside it, the grid of years behind that, and the *range* picker, which
+/// upstream themes with its own copy of every dialog field (`rangePicker*`)
+/// because a range picker is a full-screen page rather than a dialog and does
+/// not want the dialog's paint.
+///
+/// `inputDecorationTheme` and `locale` are not here: the first arrives with
+/// the text field cluster, and the second with localisation (`E4`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DatePickerThemeData {
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+
+    pub header_background_color: Option<Color>,
+    pub header_foreground_color: Option<Color>,
+    pub header_headline_style: Option<TextStyle>,
+    pub header_help_style: Option<TextStyle>,
+
+    /// The row of weekday initials above the grid.
+    pub weekday_style: Option<TextStyle>,
+    pub day_style: Option<TextStyle>,
+    pub day_foreground_color: Option<StateProperty<Option<Color>>>,
+    pub day_background_color: Option<StateProperty<Option<Color>>>,
+    pub day_overlay_color: Option<StateProperty<Option<Color>>>,
+    pub day_shape: Option<StateProperty<Option<ShapeBorder>>>,
+
+    pub today_foreground_color: Option<StateProperty<Option<Color>>>,
+    pub today_background_color: Option<StateProperty<Option<Color>>>,
+    pub today_border: Option<BorderSide>,
+
+    pub year_style: Option<TextStyle>,
+    pub year_foreground_color: Option<StateProperty<Option<Color>>>,
+    pub year_background_color: Option<StateProperty<Option<Color>>>,
+    pub year_overlay_color: Option<StateProperty<Option<Color>>>,
+    pub year_shape: Option<StateProperty<Option<ShapeBorder>>>,
+
+    pub range_picker_background_color: Option<Color>,
+    pub range_picker_elevation: Option<f32>,
+    pub range_picker_shadow_color: Option<Color>,
+    pub range_picker_surface_tint_color: Option<Color>,
+    pub range_picker_shape: Option<ShapeBorder>,
+    pub range_picker_header_background_color: Option<Color>,
+    pub range_picker_header_foreground_color: Option<Color>,
+    pub range_picker_header_headline_style: Option<TextStyle>,
+    pub range_picker_header_help_style: Option<TextStyle>,
+    /// What the days between the two ends of a range are washed with.
+    pub range_selection_background_color: Option<Color>,
+    pub range_selection_overlay_color: Option<StateProperty<Option<Color>>>,
+
+    pub divider_color: Option<Color>,
+    pub cancel_button_style: Option<ButtonStyle>,
+    pub confirm_button_style: Option<ButtonStyle>,
+    /// The button that swaps the calendar for the text field.
+    pub toggle_button_text_style: Option<TextStyle>,
+    pub sub_header_foreground_color: Option<Color>,
+}
+
+impl DatePickerThemeData {
+    pub fn new() -> DatePickerThemeData {
+        DatePickerThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_header_colors(mut self, background: Color, foreground: Color) -> Self {
+        self.header_background_color = Some(background);
+        self.header_foreground_color = Some(foreground);
+        self
+    }
+
+    pub fn with_day_foreground_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.day_foreground_color = Some(color);
+        self
+    }
+
+    pub fn with_range_selection_background_color(mut self, color: Color) -> Self {
+        self.range_selection_background_color = Some(color);
+        self
+    }
+
+    pub fn with_today_border(mut self, border: BorderSide) -> Self {
+        self.today_border = Some(border);
+        self
+    }
+
+    /// Upstream `DatePickerThemeData.lerp`.
+    pub fn lerp(a: &DatePickerThemeData, b: &DatePickerThemeData, t: f32) -> DatePickerThemeData {
+        let side = |first: Option<BorderSide>, second: Option<BorderSide>| match (first, second) {
+            (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+            (first, second) => {
+                if t < 0.5 {
+                    first
+                } else {
+                    second
+                }
+            }
+        };
+        DatePickerThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            header_background_color: lerp_color(
+                a.header_background_color,
+                b.header_background_color,
+                t,
+            ),
+            header_foreground_color: lerp_color(
+                a.header_foreground_color,
+                b.header_foreground_color,
+                t,
+            ),
+            header_headline_style: lerp_nearer(
+                &a.header_headline_style,
+                &b.header_headline_style,
+                t,
+            ),
+            header_help_style: lerp_nearer(&a.header_help_style, &b.header_help_style, t),
+            weekday_style: lerp_nearer(&a.weekday_style, &b.weekday_style, t),
+            day_style: lerp_nearer(&a.day_style, &b.day_style, t),
+            day_foreground_color: lerp_state_color(
+                a.day_foreground_color.as_ref(),
+                b.day_foreground_color.as_ref(),
+                t,
+            ),
+            day_background_color: lerp_state_color(
+                a.day_background_color.as_ref(),
+                b.day_background_color.as_ref(),
+                t,
+            ),
+            day_overlay_color: lerp_state_color(
+                a.day_overlay_color.as_ref(),
+                b.day_overlay_color.as_ref(),
+                t,
+            ),
+            day_shape: lerp_nearer(&a.day_shape, &b.day_shape, t),
+            today_foreground_color: lerp_state_color(
+                a.today_foreground_color.as_ref(),
+                b.today_foreground_color.as_ref(),
+                t,
+            ),
+            today_background_color: lerp_state_color(
+                a.today_background_color.as_ref(),
+                b.today_background_color.as_ref(),
+                t,
+            ),
+            today_border: side(a.today_border, b.today_border),
+            year_style: lerp_nearer(&a.year_style, &b.year_style, t),
+            year_foreground_color: lerp_state_color(
+                a.year_foreground_color.as_ref(),
+                b.year_foreground_color.as_ref(),
+                t,
+            ),
+            year_background_color: lerp_state_color(
+                a.year_background_color.as_ref(),
+                b.year_background_color.as_ref(),
+                t,
+            ),
+            year_overlay_color: lerp_state_color(
+                a.year_overlay_color.as_ref(),
+                b.year_overlay_color.as_ref(),
+                t,
+            ),
+            year_shape: lerp_nearer(&a.year_shape, &b.year_shape, t),
+            range_picker_background_color: lerp_color(
+                a.range_picker_background_color,
+                b.range_picker_background_color,
+                t,
+            ),
+            range_picker_elevation: lerp_f32(a.range_picker_elevation, b.range_picker_elevation, t),
+            range_picker_shadow_color: lerp_color(
+                a.range_picker_shadow_color,
+                b.range_picker_shadow_color,
+                t,
+            ),
+            range_picker_surface_tint_color: lerp_color(
+                a.range_picker_surface_tint_color,
+                b.range_picker_surface_tint_color,
+                t,
+            ),
+            range_picker_shape: lerp_nearer(&a.range_picker_shape, &b.range_picker_shape, t),
+            range_picker_header_background_color: lerp_color(
+                a.range_picker_header_background_color,
+                b.range_picker_header_background_color,
+                t,
+            ),
+            range_picker_header_foreground_color: lerp_color(
+                a.range_picker_header_foreground_color,
+                b.range_picker_header_foreground_color,
+                t,
+            ),
+            range_picker_header_headline_style: lerp_nearer(
+                &a.range_picker_header_headline_style,
+                &b.range_picker_header_headline_style,
+                t,
+            ),
+            range_picker_header_help_style: lerp_nearer(
+                &a.range_picker_header_help_style,
+                &b.range_picker_header_help_style,
+                t,
+            ),
+            range_selection_background_color: lerp_color(
+                a.range_selection_background_color,
+                b.range_selection_background_color,
+                t,
+            ),
+            range_selection_overlay_color: lerp_state_color(
+                a.range_selection_overlay_color.as_ref(),
+                b.range_selection_overlay_color.as_ref(),
+                t,
+            ),
+            divider_color: lerp_color(a.divider_color, b.divider_color, t),
+            cancel_button_style: lerp_button_style(
+                &a.cancel_button_style,
+                &b.cancel_button_style,
+                t,
+            ),
+            confirm_button_style: lerp_button_style(
+                &a.confirm_button_style,
+                &b.confirm_button_style,
+                t,
+            ),
+            toggle_button_text_style: lerp_nearer(
+                &a.toggle_button_text_style,
+                &b.toggle_button_text_style,
+                t,
+            ),
+            sub_header_foreground_color: lerp_color(
+                a.sub_header_foreground_color,
+                b.sub_header_foreground_color,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `DatePickerTheme`.
+pub struct DatePickerTheme;
+
+impl DatePickerTheme {
+    pub fn new(data: DatePickerThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> DatePickerThemeData {
+        context
+            .inherited::<DatePickerThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).date_picker_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -5189,5 +5453,31 @@ mod tests {
         assert_eq!(themed.hour_minute_color, Some(Color::argb(255, 4, 4, 4)));
         // And the AM/PM toggle is a fourth, still unset here.
         assert_eq!(themed.day_period_color, None);
+    }
+
+    #[test]
+    fn a_date_picker_themes_the_range_picker_separately_from_the_dialog() {
+        let mut data = DatePickerThemeData::new()
+            .with_background_color(Color::argb(255, 1, 1, 1))
+            .with_header_colors(Color::argb(255, 2, 2, 2), Color::argb(255, 3, 3, 3));
+        data.range_picker_background_color = Some(Color::argb(255, 4, 4, 4));
+
+        let themed = read_in(
+            move |child| DatePickerTheme::new(data.clone(), child),
+            DatePickerTheme::of,
+        );
+        // Upstream keeps a second copy of every dialog field for the range
+        // picker, because a range picker is a full-screen page rather than a
+        // dialog and does not want the dialog's paint. Setting one leaves the
+        // other alone.
+        assert_eq!(themed.background_color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(
+            themed.range_picker_background_color,
+            Some(Color::argb(255, 4, 4, 4))
+        );
+        assert_eq!(
+            themed.range_picker_header_background_color, None,
+            "the dialog's header colour does not reach the range picker's"
+        );
     }
 }

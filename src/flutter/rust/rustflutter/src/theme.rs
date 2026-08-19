@@ -47,14 +47,14 @@ use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomNavigationBarThemeData, BottomSheetThemeData,
     ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
-    DialogThemeData, DividerThemeData, DrawerThemeData, ElevatedButtonThemeData,
-    ExpansionTileThemeData, FilledButtonThemeData, FloatingActionButtonThemeData,
-    IconButtonThemeData, ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData,
-    MenuButtonThemeData, MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
-    ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
-    SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TextButtonThemeData, TimePickerThemeData, ToggleButtonsThemeData,
-    TooltipThemeData,
+    DatePickerThemeData, DialogThemeData, DividerThemeData, DrawerThemeData,
+    ElevatedButtonThemeData, ExpansionTileThemeData, FilledButtonThemeData,
+    FloatingActionButtonThemeData, IconButtonThemeData, ListTileThemeData, MaterialBannerThemeData,
+    MenuBarThemeData, MenuButtonThemeData, MenuThemeData, NavigationRailThemeData,
+    OutlinedButtonThemeData, ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData,
+    SearchBarThemeData, SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData,
+    SwitchThemeData, TabBarThemeData, TextButtonThemeData, TimePickerThemeData,
+    ToggleButtonsThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -240,6 +240,7 @@ pub struct ThemeData {
     pub search_bar_theme: SearchBarThemeData,
     pub search_view_theme: SearchViewThemeData,
     pub time_picker_theme: TimePickerThemeData,
+    pub date_picker_theme: DatePickerThemeData,
 }
 
 impl ThemeData {
@@ -359,6 +360,7 @@ impl ThemeData {
             search_bar_theme: SearchBarThemeData::new(),
             search_view_theme: SearchViewThemeData::new(),
             time_picker_theme: TimePickerThemeData::new(),
+            date_picker_theme: DatePickerThemeData::new(),
         }
     }
 
@@ -683,6 +685,11 @@ impl ThemeData {
             time_picker_theme: TimePickerThemeData::lerp(
                 &a.time_picker_theme,
                 &b.time_picker_theme,
+                t,
+            ),
+            date_picker_theme: DatePickerThemeData::lerp(
+                &a.date_picker_theme,
+                &b.date_picker_theme,
                 t,
             ),
         }
