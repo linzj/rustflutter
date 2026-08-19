@@ -163,6 +163,7 @@ if (enable_unittests) {
       "rustflutter/src/preferred_size.rs",
       "rustflutter/src/recognizers.rs",
       "rustflutter/src/render.rs",
+      "rustflutter/src/reorderable_list.rs",
       "rustflutter/src/resampler.rs",
       "rustflutter/src/scrollable_helpers.rs",
       "rustflutter/src/scrollbar.rs",

@@ -83,6 +83,7 @@ pub mod preferred_size;
 pub mod range_slider_parts;
 pub mod recognizers;
 pub mod render;
+pub mod reorderable_list;
 pub mod resampler;
 pub mod scrollable_helpers;
 pub mod scrollbar;
