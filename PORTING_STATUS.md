@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 三处放导航目的地的地方(2026-08-20)
+
+新模块 `navigation_destinations.rs`:`NavigationDestination`、`NavigationIndicator`
+(`navigation_bar.dart`)、`NavigationDrawer`、`NavigationDrawerDestination`
+(`navigation_drawer.dart`)、`NavigationRailDestination`(`navigation_rail.dart`)。
+`navigation_drawer.dart` 和 `navigation_rail.dart` 都收口了。
+
+**上游把这三个「目的地」摊在三个文件里,各自挨着装它的那个面。这里放在一起,是因为关于它
+们值得知道的正是它们**怎么不一样**,而这只有并排摆着才看得见:**
+
+* **bar** 的 label 是 `String`,另外两个收 widget——bar 的标签永远是图标底下一个短词,上游
+  就按这个类型写。
+* **rail** 的 `selectedIcon` 默认回落到 `icon`,另外两个留空。rail 又窄又一直在屏幕上,所
+  以被选中的目的地**总得画点什么**;bar 和 drawer 有地方让标签和药丸来担这件事。
+* **drawer** 的目的地是整行、带自己的背景色——drawer 的目的地是一个列表,而列表的一行可以
+  被染色;bar 的不行。
+
+**最要紧的一条规则:只有目的地被编号。** `selectedIndex` 数的是**目的地**,不是子项;上游
+遍历子项时只在遇到 `NavigationDrawerDestination` 时才 `destinationIndex++`,别的原样穿
+过。所以夹在两个目的地之间的分割线或小标题**不会挪动高亮的是哪一个**——这才让调用方可以把
+目的地归到几个小标题底下而不用重新编号。
+
+**回归行盯的地方:**
+
+* 上面那条(`[None, Some(0), Some(1), None, Some(2)]`),以及选中项要**越过小标题**去找它
+  真正的子项。
+* **选中值超出末尾时找不到东西,而不是回落到最后一个。** 钳位会悄悄高亮一个调用方没点名的
+  目的地,那比不高亮更糟:它看起来像是抽屉工作正常。
+* **抽屉默认高亮第一个目的地**(上游默认 `selectedIndex` 是 0 而不是 null)——一个什么都没
+  选中的导航面不说明读者在哪儿;而调用方仍然可以显式说「一个都不选」。
+* **只有 rail 默认给目的地一个选中图标**,上游只在 rail 的构造器里写了 `selectedIcon ??
+  icon`。
+* **bar 的 tooltip 从一个可空字符串里读出三种状态**:没设 = 用标签,空串 = 完全不要
+  tooltip,别的 = 它自己。移植时用一个光秃秃的 `Option` 会把第三种弄丢。
+* **rail 那个标志位是反着拼的**:上游在 rail 上叫 `disabled`,另外两个叫 `enabled`。照上
+  游拼写保留,好让对着两个文件读的人不用猜哪个是哪个——并且钉住,因为一个悄悄「统一」了它
+  们的移植会把其中一个的默认值弄反。
+* **指示药丸默认是个 stadium**:64×32、半径 16——半径**正好是高的一半**,所以两头是半圆。
+  上游写的是 16 而不是点名 stadium,两者只靠手工保持相等;所以给了一条 `is_stadium`,一个
+  改了高度却忘了半径的调用方会看到它变 false。
+
+验证:`cargo test --lib` 1516 绿,GN `rustflutter_unittests` 1516 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1265 accounted / 623 MISSING。
+
 ### 一个数就够了:那条会塌下去的头(2026-08-20)
 
 新模块 `flexible_space_bar.rs`,上游 `material/flexible_space_bar.dart` 两个全到:

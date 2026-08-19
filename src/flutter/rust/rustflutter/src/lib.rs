@@ -67,6 +67,7 @@ pub mod menu;
 pub mod mergeable_material;
 pub mod motion;
 pub mod navigation;
+pub mod navigation_destinations;
 pub mod overflow_bar;
 pub mod page_storage;
 pub mod painting;

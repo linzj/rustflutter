@@ -147,6 +147,7 @@ if (enable_unittests) {
       "rustflutter/src/mergeable_material.rs",
       "rustflutter/src/motion.rs",
       "rustflutter/src/navigation.rs",
+      "rustflutter/src/navigation_destinations.rs",
       "rustflutter/src/overflow_bar.rs",
       "rustflutter/src/page_storage.rs",
       "rustflutter/src/painting.rs",
