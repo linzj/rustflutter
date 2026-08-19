@@ -546,6 +546,51 @@ impl RenderPath {
         self
     }
 
+    /// Upstream `Path.arcTo`: the piece of the ellipse inscribed in `rect`
+    /// between two angles, appended to the path.
+    ///
+    /// Angles are in radians, clockwise from three o'clock, which is what
+    /// upstream's `Path.arcTo` takes -- the neighbouring
+    /// [`Canvas::draw_arc`](crate::painting::Canvas::draw_arc) takes degrees
+    /// only because the binding underneath it does.
+    ///
+    /// `force_move_to` starts a new subpath at the arc's first point rather
+    /// than joining it to whatever came before with a line.
+    ///
+    /// The binding has no `arcTo`, so the arc is written as cubic Béziers:
+    /// the sweep is cut into pieces of at most a quarter turn, and each piece
+    /// gets the curve whose control points are `4/3 * tan(delta/4)` of the
+    /// tangent away from its ends. That is the standard approximation, and it
+    /// is exact at the two ends and within a fraction of a pixel between them
+    /// at any radius a slider draws at.
+    pub fn arc_to(
+        &mut self,
+        rect: Rect,
+        start_radians: f32,
+        sweep_radians: f32,
+        force_move_to: bool,
+    ) -> &mut RenderPath {
+        let (cx, cy) = rect.center();
+        let rx = rect.width() / 2.0;
+        let ry = rect.height() / 2.0;
+        let point_at = |angle: f32| (cx + rx * angle.cos(), cy + ry * angle.sin());
+
+        let start = point_at(start_radians);
+        if force_move_to {
+            self.move_to(start.0, start.1);
+        } else {
+            self.line_to(start.0, start.1);
+        }
+        if sweep_radians == 0.0 {
+            return self;
+        }
+
+        for [(cx1, cy1), (cx2, cy2), (x, y)] in arc_cubics(rect, start_radians, sweep_radians) {
+            self.cubic_to(cx1, cy1, cx2, cy2, x, y);
+        }
+        self
+    }
+
     pub fn add_rounded_rect(
         &mut self,
         rect: Rect,
@@ -567,6 +612,48 @@ impl RenderPath {
     }
 }
 
+/// The cubic segments an elliptical arc is written as: two control points
+/// and an end point each, in the order [`RenderPath::cubic_to`] wants them.
+///
+/// Split out from [`RenderPath::arc_to`] so that the approximation can be
+/// checked against the ellipse it is standing in for.
+pub(crate) fn arc_cubics(
+    rect: Rect,
+    start_radians: f32,
+    sweep_radians: f32,
+) -> Vec<[(f32, f32); 3]> {
+    if sweep_radians == 0.0 {
+        return Vec::new();
+    }
+    let (cx, cy) = rect.center();
+    let rx = rect.width() / 2.0;
+    let ry = rect.height() / 2.0;
+    let point_at = |angle: f32| (cx + rx * angle.cos(), cy + ry * angle.sin());
+    // The tangent at an angle, scaled by the radii.
+    let tangent_at = |angle: f32| (-rx * angle.sin(), ry * angle.cos());
+
+    let pieces = (sweep_radians.abs() / std::f32::consts::FRAC_PI_2)
+        .ceil()
+        .max(1.0) as usize;
+    let delta = sweep_radians / pieces as f32;
+    let k = 4.0 / 3.0 * (delta / 4.0).tan();
+    let mut segments = Vec::with_capacity(pieces);
+    let mut angle = start_radians;
+    for _ in 0..pieces {
+        let next = angle + delta;
+        let (x0, y0) = point_at(angle);
+        let (x1, y1) = point_at(next);
+        let (tx0, ty0) = tangent_at(angle);
+        let (tx1, ty1) = tangent_at(next);
+        segments.push([
+            (x0 + k * tx0, y0 + k * ty0),
+            (x1 - k * tx1, y1 - k * ty1),
+            (x1, y1),
+        ]);
+        angle = next;
+    }
+    segments
+}
 impl Default for RenderPath {
     fn default() -> RenderPath {
         RenderPath::new()
@@ -3591,6 +3678,65 @@ mod color_tests {
     fn text_scaler_scales_linearly() {
         assert_eq!(TextScaler::NO_SCALING.scale(14.0), 14.0);
         assert_eq!(TextScaler::linear(1.3).scale(10.0), 13.0);
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn an_arc_is_written_as_cubics_that_stay_on_the_ellipse() {
+        // The approximation is exact at the two ends of each piece; between
+        // them it must not wander. A sign slip in the tangent is the way to
+        // get this wrong, and it draws a curve that bulges the wrong way
+        // without ever leaving the end points -- which is why the midpoint is
+        // what this checks.
+        let rect = Rect::ltrb(-30.0, -20.0, 30.0, 20.0);
+        let (cx, cy) = rect.center();
+        let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+        let start = 0.4;
+        let sweep = std::f32::consts::PI * 1.3;
+        let segments = arc_cubics(rect, start, sweep);
+        // A sweep over a quarter turn is cut into pieces.
+        assert_eq!(segments.len(), 3);
+
+        let mut from = (cx + rx * start.cos(), cy + ry * start.sin());
+        let delta = sweep / segments.len() as f32;
+        for (index, [c1, c2, end]) in segments.iter().enumerate() {
+            let angle = start + delta * (index as f32 + 1.0);
+            let expected = (cx + rx * angle.cos(), cy + ry * angle.sin());
+            assert!(
+                (end.0 - expected.0).abs() < 1e-3 && (end.1 - expected.1).abs() < 1e-3,
+                "segment {index} ends at {end:?}, not on the ellipse at {expected:?}"
+            );
+            // The curve at its midpoint, which is where a bad approximation
+            // shows up.
+            let mid = |a: f32, b: f32, c: f32, d: f32| (a + 3.0 * b + 3.0 * c + d) / 8.0;
+            let point = (
+                mid(from.0, c1.0, c2.0, end.0),
+                mid(from.1, c1.1, c2.1, end.1),
+            );
+            let on_ellipse = ((point.0 - cx) / rx).powi(2) + ((point.1 - cy) / ry).powi(2);
+            assert!(
+                (on_ellipse - 1.0).abs() < 1e-3,
+                "segment {index} bulges off the ellipse at its midpoint ({on_ellipse})"
+            );
+            from = *end;
+        }
+    }
+
+    #[test]
+    fn an_arc_of_no_sweep_contributes_no_curve() {
+        assert!(arc_cubics(Rect::ltrb(0.0, 0.0, 10.0, 10.0), 0.0, 0.0).is_empty());
+        // And a sweep the other way round walks backwards rather than the
+        // long way round.
+        let back = arc_cubics(Rect::ltrb(0.0, 0.0, 10.0, 10.0), 0.0, -1.0);
+        assert_eq!(back.len(), 1);
+        assert!(
+            back[0][2].1 < 5.0,
+            "a negative sweep should go up, not down"
+        );
     }
 }
 

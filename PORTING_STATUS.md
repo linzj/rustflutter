@@ -164,6 +164,60 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 滑块的数值气泡(2026-08-19)
+
+`slider_theme.rs`。滑块拖动时浮在滑块头上方的那个气泡,上游有四种画法,加上
+range 版的两个,共 7 个公开类落地:
+
+* `RectangularSliderValueIndicatorShape`——圆角矩形加一个小三角。
+* `RoundedRectSliderValueIndicatorShape`——M3 的,一个胶囊,没有尾巴。
+* `DropSliderValueIndicatorShape`——尾巴更宽的三角,整体读作一滴水。
+* `PaddleSliderValueIndicatorShape`——M2 的桨形:两个圆用一段收腰的颈连起来,
+  标签变宽时上圆横向摊开、颈上的弧往下走以保持相切。这一个是三角函数,不是
+  查表。
+* `RangeSliderValueIndicatorShape`(枚举,抽象基类在上游
+  `range_slider_parts.dart`)+ `RectangularRangeSliderValueIndicatorShape`、
+  `PaddleRangeSliderValueIndicatorShape`。
+
+上游那四个私有 `_...PathPainter` 在这里是四个私有 struct。它们改成收
+`label_width`/`label_height` 两个数而不是收 `TextPainter`——单元测试里没有引擎去
+排版文字,`rf_paragraph_width` 桩固定返回 0,收数字才检验得了那套算术。公开的
+`preferred_size` 仍然收 `TextPainter`,和上游一样。
+
+**`RenderPath::arc_to`(`painting.rs`,新)。** 桨形要往路径上接弧,绑定层没有
+`arcTo`。这里用三次贝塞尔逼近:扫角切成不超过四分之一圈的段,每段的控制点取
+切线方向的 `4/3 * tan(Δ/4)`。两端精确,中间的误差在滑块画的任何半径下都不到
+一个像素。切出来的段由 `arc_cubics` 返回,单独可测——回归行检查每段中点确实落
+在椭圆上,因为切线符号写反的时候两端仍然对,只有中间会往反方向鼓出去。
+
+**几处容易读错、已经写成回归行的地方:**
+
+* 气泡靠边时往里推,但**推不动的时候上游不再居中**:气泡比整条滑块还宽时,它
+  改为把溢出更多的那一边钉在 8px 边距上。以为第一个分支到处适用,气泡两头都会
+  露出去。
+* drop 形状的圆角看着是从 4px 插值到全圆,但 `rectness` 常数是 0,所以永远是全
+  圆那一端。上游把旋钮留在了那里。
+* 桨形的高度是常数 66(两心距 40 + 上圆 16 + 下圆 10),标签只让它变宽,不让它
+  变高。
+* 桨形横移的上限是标签本身撑开的那点余量——滑块贴到框边时要得更多,拿到的是
+  夹断后的值。
+* `scale` 为 0 时直接返回。上游写明了原因:再往下算会把 NaN 送进引擎。
+* range 版的两个形状都不读传进来的 `Thumb`。上游照传,这里也照传,但指望起点和
+  终点的气泡长得不一样是读了不存在的东西。
+* 装成数值气泡的形状用 `paint_indicator`,两参数的 `preferred_size` 对气泡答不
+  出来——上游那个重载是靠可选具名参数加上标签的,这里是
+  `preferred_size_for_label`。
+
+`SliderThemeData::from_primary_colors` 补上了 `value_indicator_shape`
+(`PaddleSliderValueIndicatorShape`),上一簇因为类型还没有而空着。
+
+验证:`cargo test --lib` 1069 绿,GN `rustflutter_unittests` 1069 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1070 accounted / 803 MISSING。`slider_parts.dart`、
+`slider_theme.dart`、`slider_value_indicator_shape.dart` 三个文件已全覆盖;
+`range_slider_parts.dart` 余 14 个,是下一簇。
+
+
 ### 滑块的部件与主题(2026-08-19)
 
 `slider_theme.rs`(新)。上游把滑块拆成五个可换的部件——轨道、刻度、滑块头、
