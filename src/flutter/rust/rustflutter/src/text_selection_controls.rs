@@ -36,7 +36,8 @@
 //! anchors, and the four `can*` rules. Those are the answers the rest is built
 //! on, and they are the half that is testable without an overlay.
 
-use crate::render::{Offset, Size};
+use crate::engine::Rect;
+use crate::render::{EdgeInsets, Offset, Size};
 
 /// Upstream `TextSelectionHandleType` (`rendering/selection.dart`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +313,203 @@ impl DesktopTextSelectionToolbarButton {
     pub const LETTER_SPACING: f32 = -0.15;
 }
 
+// -- Where the selection toolbar goes -----------------------------------------
+
+/// Upstream `TextSelectionToolbarAnchors` (`widgets/text_selection_toolbar_anchors.dart`):
+/// the two places a selection toolbar may point at.
+///
+/// **Two anchors rather than one, because the toolbar has two homes.** It goes
+/// above the selection when there is room and below it when there is not, and
+/// which of those happens is decided at layout by whoever draws it -- so the
+/// anchors have to carry both possibilities rather than a choice already made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSelectionToolbarAnchors {
+    /// Above the selection: horizontally centred on it, at its top.
+    pub primary_anchor: Offset,
+    /// Below it. `None` for a selection with no rectangle at all, where there
+    /// is nothing to be below.
+    pub secondary_anchor: Option<Offset>,
+}
+
+impl TextSelectionToolbarAnchors {
+    pub fn new(primary_anchor: Offset) -> TextSelectionToolbarAnchors {
+        TextSelectionToolbarAnchors {
+            primary_anchor,
+            secondary_anchor: None,
+        }
+    }
+
+    /// Upstream's `TextSelectionToolbarAnchors.fromSelection`.
+    ///
+    /// Both anchors are **clamped into the editing region**, and that is the
+    /// part worth keeping: a selection scrolled half out of a field would
+    /// otherwise put the toolbar somewhere the field is not, pointing at text
+    /// the reader cannot see. Clamped, the toolbar stays against the field's
+    /// edge and keeps pointing into it.
+    ///
+    /// An empty selection rectangle answers a zero anchor and no secondary,
+    /// which is upstream's early return -- there is nothing to point at, so
+    /// there is nothing to be above or below.
+    pub fn from_selection(
+        selection_rect: Rect,
+        editing_region: Rect,
+    ) -> TextSelectionToolbarAnchors {
+        if selection_rect == Rect::ltrb(0.0, 0.0, 0.0, 0.0) {
+            return TextSelectionToolbarAnchors::new(Offset::ZERO);
+        }
+        let centre_x = selection_rect.left + selection_rect.width() / 2.0;
+        TextSelectionToolbarAnchors {
+            primary_anchor: Offset::new(
+                centre_x,
+                selection_rect
+                    .top
+                    .clamp(editing_region.top, editing_region.bottom),
+            ),
+            secondary_anchor: Some(Offset::new(
+                centre_x,
+                selection_rect
+                    .bottom
+                    .clamp(editing_region.top, editing_region.bottom),
+            )),
+        }
+    }
+}
+
+/// Upstream `TextSelectionToolbar` (`material/text_selection_toolbar.dart`):
+/// the Android-style selection menu, and the geometry that decides where it
+/// sits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSelectionToolbar {
+    pub anchor_above: Offset,
+    pub anchor_below: Offset,
+}
+
+impl TextSelectionToolbar {
+    /// Upstream's `_kToolbarHeight`.
+    pub const TOOLBAR_HEIGHT: f32 = 44.0;
+    /// Upstream's `_kToolbarContentDistance`: the gap between the toolbar and
+    /// the text it is about, when it sits *above*.
+    pub const CONTENT_DISTANCE: f32 = 8.0;
+    /// Upstream's `kHandleSize`.
+    pub const HANDLE_SIZE: f32 = 22.0;
+    /// Upstream's `kToolbarContentDistanceBelow`, written as
+    /// `kHandleSize - 2` rather than as 20.
+    ///
+    /// The arithmetic is the point: below the selection there is a *drag
+    /// handle* in the way, so the gap has to clear it rather than being the
+    /// same 8 used above. Written as the subtraction so that a change to the
+    /// handle's size carries.
+    pub const CONTENT_DISTANCE_BELOW: f32 = TextSelectionToolbar::HANDLE_SIZE - 2.0;
+    /// Upstream reads this from `CupertinoTextSelectionToolbar`, which is the
+    /// same 8 both platforms keep from the screen's edge.
+    pub const SCREEN_PADDING: f32 = 8.0;
+
+    pub fn new(anchor_above: Offset, anchor_below: Offset) -> TextSelectionToolbar {
+        TextSelectionToolbar {
+            anchor_above,
+            anchor_below,
+        }
+    }
+
+    /// The upper anchor moved *up* by the content distance, so the toolbar
+    /// does not sit against the text.
+    pub fn padded_anchor_above(&self) -> Offset {
+        Offset::new(
+            self.anchor_above.dx,
+            self.anchor_above.dy - TextSelectionToolbar::CONTENT_DISTANCE,
+        )
+    }
+
+    /// The lower anchor moved *down* past the drag handle. See
+    /// [`TextSelectionToolbar::CONTENT_DISTANCE_BELOW`].
+    pub fn padded_anchor_below(&self) -> Offset {
+        Offset::new(
+            self.anchor_below.dx,
+            self.anchor_below.dy + TextSelectionToolbar::CONTENT_DISTANCE_BELOW,
+        )
+    }
+
+    /// Upstream's `fitsAbove`: whether there is room for the toolbar between
+    /// the top of the selection and the top of the screen.
+    ///
+    /// The content distance is subtracted **twice** -- once in the padded
+    /// anchor and once here. That is upstream's arithmetic, and it is not a
+    /// slip: the first is the gap the toolbar leaves above the text, the
+    /// second is the gap it leaves below the status bar, and a toolbar that
+    /// touched either would look wrong.
+    pub fn fits_above(&self, system_padding_top: f32) -> bool {
+        let padding_above = system_padding_top + TextSelectionToolbar::SCREEN_PADDING;
+        let available =
+            self.padded_anchor_above().dy - TextSelectionToolbar::CONTENT_DISTANCE - padding_above;
+        TextSelectionToolbar::TOOLBAR_HEIGHT <= available
+    }
+}
+
+/// Where a button sits in the toolbar's row, which decides its padding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextSelectionToolbarItemPosition {
+    First,
+    Middle,
+    Last,
+    /// The only button there is, which takes the *end* padding on both sides
+    /// -- it is simultaneously the first and the last.
+    Only,
+}
+
+/// Upstream `TextSelectionToolbarTextButton`
+/// (`material/text_selection_toolbar_text_button.dart`): one command in that
+/// menu.
+pub struct TextSelectionToolbarTextButton;
+
+impl TextSelectionToolbarTextButton {
+    /// Upstream's `_kMiddlePadding`, with its comment kept: eyeballed to match
+    /// the native menu on a Pixel 2 running Android 10.
+    pub const MIDDLE_PADDING: f32 = 9.5;
+    /// Upstream's `_kEndPadding`.
+    pub const END_PADDING: f32 = 14.5;
+
+    /// Upstream's `_getPosition`.
+    pub fn position(index: usize, total: usize) -> TextSelectionToolbarItemPosition {
+        debug_assert!(total > 0 && index < total);
+        if index == 0 {
+            return if total == 1 {
+                TextSelectionToolbarItemPosition::Only
+            } else {
+                TextSelectionToolbarItemPosition::First
+            };
+        }
+        if index + 1 == total {
+            return TextSelectionToolbarItemPosition::Last;
+        }
+        TextSelectionToolbarItemPosition::Middle
+    }
+
+    /// Upstream's `getPadding`: wider at the menu's two ends than between its
+    /// buttons.
+    ///
+    /// The reason the two differ: **the gap between two buttons is shared**,
+    /// so half from each gives the 19 that reads right, while the gap at an
+    /// end is one button's alone and has to be the whole 14.5 by itself.
+    /// Splitting the middle evenly is also what keeps the buttons' hit areas
+    /// touching, with no dead strip between them.
+    pub fn padding(index: usize, total: usize) -> EdgeInsets {
+        let position = TextSelectionToolbarTextButton::position(index, total);
+        let start = match position {
+            TextSelectionToolbarItemPosition::First | TextSelectionToolbarItemPosition::Only => {
+                TextSelectionToolbarTextButton::END_PADDING
+            }
+            _ => TextSelectionToolbarTextButton::MIDDLE_PADDING,
+        };
+        let end = match position {
+            TextSelectionToolbarItemPosition::Last | TextSelectionToolbarItemPosition::Only => {
+                TextSelectionToolbarTextButton::END_PADDING
+            }
+            _ => TextSelectionToolbarTextButton::MIDDLE_PADDING,
+        };
+        EdgeInsets::only(start, 0.0, end, 0.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +669,140 @@ mod tests {
         assert_eq!((padding.left, padding.right), (20.0, 20.0));
         // And the labels are tightened, because the width is fixed.
         assert!(DesktopTextSelectionToolbarButton::LETTER_SPACING < 0.0);
+    }
+
+    #[test]
+    fn the_anchors_are_centred_on_the_selection_at_its_top_and_bottom() {
+        // Two anchors rather than one, because the toolbar has two homes: it
+        // goes above the selection when there is room and below it when there
+        // is not, and which happens is decided at layout.
+        let selection = Rect::ltrb(100.0, 200.0, 300.0, 220.0);
+        let field = Rect::ltrb(0.0, 0.0, 400.0, 800.0);
+        let anchors = TextSelectionToolbarAnchors::from_selection(selection, field);
+        assert_eq!(anchors.primary_anchor, Offset::new(200.0, 200.0));
+        assert_eq!(anchors.secondary_anchor, Some(Offset::new(200.0, 220.0)));
+    }
+
+    #[test]
+    fn both_anchors_are_clamped_into_the_field() {
+        // A selection scrolled half out of a field would otherwise put the
+        // toolbar somewhere the field is not, pointing at text the reader
+        // cannot see. Clamped, it stays against the field's edge and keeps
+        // pointing into it.
+        let field = Rect::ltrb(0.0, 100.0, 400.0, 300.0);
+
+        let scrolled_off_the_top = Rect::ltrb(100.0, -50.0, 300.0, 20.0);
+        let above = TextSelectionToolbarAnchors::from_selection(scrolled_off_the_top, field);
+        assert_eq!(above.primary_anchor.dy, 100.0, "clamped to the field's top");
+        assert_eq!(above.secondary_anchor.unwrap().dy, 100.0);
+
+        let scrolled_off_the_bottom = Rect::ltrb(100.0, 500.0, 300.0, 560.0);
+        let below = TextSelectionToolbarAnchors::from_selection(scrolled_off_the_bottom, field);
+        assert_eq!(below.primary_anchor.dy, 300.0, "and to its bottom");
+    }
+
+    #[test]
+    fn an_empty_selection_has_nothing_to_be_above_or_below() {
+        // Upstream's early return. There is no rectangle to point at, so there
+        // is no second anchor either.
+        let anchors = TextSelectionToolbarAnchors::from_selection(
+            Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            Rect::ltrb(0.0, 0.0, 400.0, 800.0),
+        );
+        assert_eq!(anchors.primary_anchor, Offset::ZERO);
+        assert_eq!(anchors.secondary_anchor, None);
+    }
+
+    #[test]
+    fn the_gap_below_clears_the_drag_handle_and_the_gap_above_does_not_have_to() {
+        // Upstream writes the lower distance as `kHandleSize - 2` rather than
+        // as 20, because below the selection there is a handle in the way.
+        // Above, there is only text, so 8 is enough.
+        assert_eq!(TextSelectionToolbar::CONTENT_DISTANCE, 8.0);
+        assert_eq!(TextSelectionToolbar::CONTENT_DISTANCE_BELOW, 20.0);
+        assert_eq!(
+            TextSelectionToolbar::CONTENT_DISTANCE_BELOW,
+            TextSelectionToolbar::HANDLE_SIZE - 2.0,
+            "written as the arithmetic so a change to the handle carries"
+        );
+
+        let toolbar = TextSelectionToolbar::new(Offset::new(50.0, 200.0), Offset::new(50.0, 220.0));
+        assert_eq!(toolbar.padded_anchor_above(), Offset::new(50.0, 192.0));
+        assert_eq!(toolbar.padded_anchor_below(), Offset::new(50.0, 240.0));
+    }
+
+    #[test]
+    fn a_selection_near_the_top_of_the_screen_puts_the_toolbar_below_it() {
+        // Which is the whole reason there are two anchors.
+        let low = TextSelectionToolbar::new(Offset::new(50.0, 400.0), Offset::new(50.0, 420.0));
+        assert!(low.fits_above(0.0), "plenty of room");
+
+        let high = TextSelectionToolbar::new(Offset::new(50.0, 30.0), Offset::new(50.0, 50.0));
+        assert!(!high.fits_above(0.0), "no room above");
+    }
+
+    #[test]
+    fn the_status_bar_eats_into_the_room_above() {
+        // A selection that fits above on a screen with no notch may not on one
+        // with a tall status bar, and the toolbar has to know before it picks
+        // an anchor.
+        let toolbar = TextSelectionToolbar::new(Offset::new(50.0, 80.0), Offset::new(50.0, 100.0));
+        assert!(toolbar.fits_above(0.0));
+        assert!(!toolbar.fits_above(44.0), "the notch took the room");
+    }
+
+    #[test]
+    fn a_lone_toolbar_button_is_both_the_first_and_the_last() {
+        assert_eq!(
+            TextSelectionToolbarTextButton::position(0, 1),
+            TextSelectionToolbarItemPosition::Only
+        );
+        assert_eq!(
+            TextSelectionToolbarTextButton::position(0, 3),
+            TextSelectionToolbarItemPosition::First
+        );
+        assert_eq!(
+            TextSelectionToolbarTextButton::position(1, 3),
+            TextSelectionToolbarItemPosition::Middle
+        );
+        assert_eq!(
+            TextSelectionToolbarTextButton::position(2, 3),
+            TextSelectionToolbarItemPosition::Last
+        );
+    }
+
+    #[test]
+    fn the_padding_between_two_buttons_is_shared_and_the_padding_at_an_end_is_not() {
+        // Half from each button gives the gap that reads right between them,
+        // while the gap at an end is one button's alone and has to be the
+        // whole thing by itself.
+        let end = TextSelectionToolbarTextButton::END_PADDING;
+        let middle = TextSelectionToolbarTextButton::MIDDLE_PADDING;
+
+        let first = TextSelectionToolbarTextButton::padding(0, 3);
+        assert_eq!((first.left, first.right), (end, middle));
+        let inner = TextSelectionToolbarTextButton::padding(1, 3);
+        assert_eq!((inner.left, inner.right), (middle, middle));
+        let last = TextSelectionToolbarTextButton::padding(2, 3);
+        assert_eq!((last.left, last.right), (middle, end));
+
+        // A lone button takes the end padding on both sides.
+        let only = TextSelectionToolbarTextButton::padding(0, 1);
+        assert_eq!((only.left, only.right), (end, end));
+
+        // And the shared gap comes to more than one end's, which is what
+        // makes the row read as evenly spaced rather than crowded in the
+        // middle.
+        assert!(middle * 2.0 > end);
+    }
+
+    #[test]
+    fn the_buttons_hit_areas_touch_with_no_dead_strip_between_them() {
+        // Splitting the middle gap evenly is what does it: the right padding
+        // of one button and the left padding of the next are the same number,
+        // so there is no pixel belonging to neither.
+        let left = TextSelectionToolbarTextButton::padding(0, 3);
+        let right = TextSelectionToolbarTextButton::padding(1, 3);
+        assert_eq!(left.right, right.left);
     }
 }
