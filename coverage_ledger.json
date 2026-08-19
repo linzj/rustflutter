@@ -1324,6 +1324,26 @@
     "TickerProviderStateMixin": {
       "rust": "ticker::Tickers",
       "note": "同上，Vec<Ticker>；tick() 在持有方 advance 里调，返回值即 advance 的返回值"
+    },
+    "SliverWithKeepAliveWidget": {
+      "rust": "无基类——keepAlive 即\"离窗即弃\"记录在案分歧",
+      "note": "同 KeepAliveParentDataMixin/AutomaticKeepAlive 账；E6 立项时一并落"
+    },
+    "SliverMultiBoxAdaptorWidget": {
+      "rust": "RenderSliverList / RenderSliverGrid 直接收 builder",
+      "note": "上游此基类的全部内容是 widget↔element↔render 的 child-manager 关系；此侧管理器即渲染对象本身"
+    },
+    "SliverMultiBoxAdaptorElement": {
+      "rust": "RenderSliverList 的窗口机制（同 RenderSliverMultiBoxAdaptor 账）",
+      "note": "createChild/removeChild/estimateMaxScrollOffset 即窗口物化与估算，文档自陈"
+    },
+    "SliverVariedExtentList": {
+      "rust": "sliver::SliverList（逐子量测路径）",
+      "note": "上游此件是\"不量测也知道 extent\"的优化；此侧量测在窗口内、窗口外按估算——与 RenderSliverList 既有的估算分歧同源"
+    },
+    "KeepAlive": {
+      "rust": "离窗即弃（记录在案分歧）",
+      "note": "同 AutomaticKeepAlive 账"
     }
   },
   "blocked_engine": {

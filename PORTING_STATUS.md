@@ -164,6 +164,28 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:sliver widget 层(2026-08-19)。** `sliver.rs`,widgets/sliver.dart 15/16
+——P3 落的那批 sliver 渲染对象的 widget 侧名字:`SliverList`(含
+`SliverList.list`)/`SliverFixedExtentList`/`SliverGrid`(含 `.count`/`.extent`)/
+`SliverOpacity`/`SliverIgnorePointer`/`SliverOffstage`/
+`SliverConstrainedCrossAxis`/`SliverCrossAxisExpanded`/`SliverCrossAxisGroup`/
+`SliverMainAxisGroup`。
+
+**抓到一个真错:`RenderSliverOffstage` 此前不归零 geometry。** P3 那轮把
+Offstage 记成"布局照旧、静默绘制与命中",但上游 `performLayout` 是
+`child.layout(...)` 之后 `geometry = SliverGeometry.zero`——offstage 的
+sliver **不占滚动距离**,它后面的 slivers 要顶上来。原样透传子几何的话,
+一个看不见的 sliver 仍把兄弟往下推,正是盒版 `RenderOffstage` 会犯而没犯的
+那个错。已改,render.rs 的对应测试同步改期望。
+
+**入账判定**:`SliverWithKeepAliveWidget`/`KeepAlive`≙"离窗即弃"(同
+`AutomaticKeepAlive`/`KeepAliveParentDataMixin` 既有账,E6 立项时一并落);
+`SliverMultiBoxAdaptorWidget`/`SliverMultiBoxAdaptorElement`≙渲染对象直接收
+builder——上游这两件的全部内容是 widget↔element↔render 的 child-manager 关系,
+此侧管理器就是渲染对象本身;`SliverVariedExtentList`≙`SliverList` 的逐子量测
+路径(上游那件是"不量测也知道 extent"的优化,此侧窗口内量测、窗口外估算,
+与 `RenderSliverList` 既有的估算分歧同源)。余 `SliverEnsureSemantics` 属 E3。
+
 **P4:widget_state 体系(2026-08-19)。** `widget_state.rs`,widget_state.dart
 10/10:`WidgetState` 八态、`WidgetStates`(上游 `Set<WidgetState>`,此侧一个
 u8 位集——`Copy` 且可比,控件"上帧状态 vs 本帧状态"的重绘判据要的正是这个)、

@@ -17675,6 +17675,15 @@ impl RenderBox for RenderProxySliver {
         if let ProxySliverBehavior::ConstrainedCrossAxis(max_extent) = self.behavior {
             self.geometry.cross_axis_extent = Some(max_extent.min(constraints.cross_axis_extent));
         }
+        if let ProxySliverBehavior::Offstage = self.behavior {
+            // Upstream's `RenderSliverOffstage.performLayout`: the child is
+            // laid out and the geometry reported is `SliverGeometry.zero`.
+            // Passing the child's through instead leaves an invisible sliver
+            // taking up scroll extent and pushing its siblings down the
+            // viewport, which is the box `RenderOffstage`'s bug in sliver
+            // form.
+            self.geometry = SliverGeometry::ZERO;
+        }
         self.geometry
     }
 
@@ -20694,8 +20703,12 @@ mod proxy_sliver_tests {
 
         let mut offstage = RenderProxySliver::new(ProxySliverBehavior::Offstage, stub(500.0, true));
         let geometry = offstage.sliver_layout(constraints(100.0, 300.0));
-        // Laid out all the same; the silence is in paint and hits.
-        assert_eq!(geometry.scroll_extent, 500.0);
+        // The child is still laid out -- upstream lays it out too, which is
+        // what lets it be shown again without a reflow -- and the geometry
+        // reported is zero: an offstage sliver takes no scroll extent, so
+        // the slivers after it move up into where it was.
+        assert_eq!(geometry.scroll_extent, 0.0);
+        assert_eq!(geometry.paint_extent, 0.0);
         assert!(!offstage.sliver_hit_test(10.0, 10.0, &mut result));
     }
 
