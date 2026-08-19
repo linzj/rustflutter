@@ -49,12 +49,13 @@ use crate::component_themes::{
     ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
     DatePickerThemeData, DialogThemeData, DividerThemeData, DrawerThemeData,
     ElevatedButtonThemeData, ExpansionTileThemeData, FilledButtonThemeData,
-    FloatingActionButtonThemeData, IconButtonThemeData, InputDecorationThemeData,
+    FloatingActionButtonThemeData, IconButtonThemeData, IconThemeData, InputDecorationThemeData,
     ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData,
     MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData, ProgressIndicatorThemeData,
     RadioThemeData, ScrollbarThemeData, SearchBarThemeData, SearchViewThemeData,
     SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData, TabBarThemeData,
-    TextButtonThemeData, TimePickerThemeData, ToggleButtonsThemeData, TooltipThemeData,
+    TextButtonThemeData, TextSelectionThemeData, TimePickerThemeData, ToggleButtonsThemeData,
+    TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -242,6 +243,11 @@ pub struct ThemeData {
     pub time_picker_theme: TimePickerThemeData,
     pub date_picker_theme: DatePickerThemeData,
     pub input_decoration_theme: InputDecorationThemeData,
+    /// Upstream's `iconTheme`, which is the general one every icon under the
+    /// theme starts from -- the component themes' own icon themes merge over
+    /// it.
+    pub icon_theme: IconThemeData,
+    pub text_selection_theme: TextSelectionThemeData,
 }
 
 impl ThemeData {
@@ -363,6 +369,8 @@ impl ThemeData {
             time_picker_theme: TimePickerThemeData::new(),
             date_picker_theme: DatePickerThemeData::new(),
             input_decoration_theme: InputDecorationThemeData::new(),
+            icon_theme: IconThemeData::new(),
+            text_selection_theme: TextSelectionThemeData::new(),
         }
     }
 
@@ -698,6 +706,12 @@ impl ThemeData {
             // borders are shapes and its flags are flags, and a field does
             // not animate between two of them.
             input_decoration_theme: nearer.input_decoration_theme.clone(),
+            icon_theme: IconThemeData::lerp(&a.icon_theme, &b.icon_theme, t),
+            text_selection_theme: TextSelectionThemeData::lerp(
+                &a.text_selection_theme,
+                &b.text_selection_theme,
+                t,
+            ),
         }
     }
 

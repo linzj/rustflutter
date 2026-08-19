@@ -164,6 +164,19 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:icon theme 与 text selection(2026-08-19)。**
+`IconTheme(Data)`(9/9)、`TextSelectionTheme(Data)`(3/3)。
+
+**`IconThemeData` 早就该做了**:前面四个组件主题(app bar 两个、chip、
+navigation rail 两个、bottom navigation 两个)一共**七个字段**因为"框架无图标
+体系(E5)"被记账推掉——但 `IconThemeData` 只是个数据类,画图标才需要 `Icon`
+widget。这轮把它补上,那七个字段一并填回,记账里对应的话也删了。**"依赖某物"
+和"依赖某物的某一部分"是两件事,当初记账时没分清。**
+
+`opacity` 照上游的做法:存进去时不动,取出来时钳到 0..1——所以 merge 与 lerp
+看到的是原值,画笔看到的是钳过的。上游 `Shadow` 此侧用 `BoxShadow`(同样的三个
+字段多一个 spread,留零)。
+
 **P8-M1:input decoration(2026-08-19)。** `InputDecorationTheme(Data)`
 (37/37)+`FloatingLabelBehavior`/`FloatingLabelAlignment`。这是继 date picker
 之后第二长的一个,长的道理也一样:一个带装饰的输入框是一叠零件——会浮的标签、

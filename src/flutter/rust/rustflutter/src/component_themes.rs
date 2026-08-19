@@ -90,6 +90,24 @@ fn lerp_state_color(
     })
 }
 
+/// Two optional icon themes interpolated.
+fn lerp_icon_theme(
+    a: &Option<IconThemeData>,
+    b: &Option<IconThemeData>,
+    t: f32,
+) -> Option<IconThemeData> {
+    match (a, b) {
+        (Some(first), Some(second)) => Some(IconThemeData::lerp(first, second, t)),
+        (first, second) => {
+            if t < 0.5 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        }
+    }
+}
+
 /// Anything else: taken from whichever end is nearer, which is what
 /// upstream's `lerp` does for the fields it cannot interpolate.
 fn lerp_nearer<T: Clone>(a: &Option<T>, b: &Option<T>, t: f32) -> Option<T> {
@@ -865,9 +883,7 @@ impl ResolvedCheckbox {
 
 /// Upstream `AppBarThemeData`.
 ///
-/// `iconTheme`, `actionsIconTheme` and `systemOverlayStyle` are not here:
-/// the first two are an `IconThemeData` and the framework has no icon system
-/// yet (`E5`), and the third is a `SystemUiOverlayStyle`, which is the
+/// `systemOverlayStyle` is not here: it is a `SystemUiOverlayStyle`, the
 /// services-side status-bar description this port has not reached.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppBarThemeData {
@@ -881,6 +897,11 @@ pub struct AppBarThemeData {
     pub shadow_color: Option<Color>,
     pub surface_tint_color: Option<Color>,
     pub shape: Option<ShapeBorder>,
+    /// How the leading icon is drawn.
+    pub icon_theme: Option<IconThemeData>,
+    /// How the trailing action icons are drawn, which upstream keeps apart
+    /// from the leading one.
+    pub actions_icon_theme: Option<IconThemeData>,
     pub center_title: Option<bool>,
     pub title_spacing: Option<f32>,
     pub leading_width: Option<f32>,
@@ -934,6 +955,8 @@ impl AppBarThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
+            icon_theme: lerp_icon_theme(&a.icon_theme, &b.icon_theme, t),
+            actions_icon_theme: lerp_icon_theme(&a.actions_icon_theme, &b.actions_icon_theme, t),
             center_title: lerp_nearer(&a.center_title, &b.center_title, t),
             title_spacing: lerp_f32(a.title_spacing, b.title_spacing, t),
             leading_width: lerp_f32(a.leading_width, b.leading_width, t),
@@ -1511,9 +1534,6 @@ impl DialogTheme {
 // -- Chip (upstream `chip_theme.dart`) ----------------------------------------
 
 /// Upstream `ChipThemeData`.
-///
-/// `iconTheme` is not here: it is an `IconThemeData`, and the framework has
-/// no icon system yet (`E5`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChipThemeData {
     /// The whole fill, by state -- Material 3's way in, which supersedes the
@@ -1538,6 +1558,7 @@ pub struct ChipThemeData {
     pub label_style: Option<TextStyle>,
     pub secondary_label_style: Option<TextStyle>,
     pub brightness: Option<Brightness>,
+    pub icon_theme: Option<IconThemeData>,
     pub elevation: Option<f32>,
     pub press_elevation: Option<f32>,
     pub avatar_box_constraints: Option<BoxConstraints>,
@@ -1617,6 +1638,7 @@ impl ChipThemeData {
                 t,
             ),
             brightness: lerp_nearer(&a.brightness, &b.brightness, t),
+            icon_theme: lerp_icon_theme(&a.icon_theme, &b.icon_theme, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             press_elevation: lerp_f32(a.press_elevation, b.press_elevation, t),
             avatar_box_constraints: lerp_nearer(
@@ -1983,15 +2005,14 @@ pub enum NavigationRailLabelType {
 }
 
 /// Upstream `NavigationRailThemeData`.
-///
-/// The two `IconThemeData` fields are not here: the framework has no icon
-/// system yet (`E5`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavigationRailThemeData {
     pub background_color: Option<Color>,
     pub elevation: Option<f32>,
     pub unselected_label_text_style: Option<TextStyle>,
     pub selected_label_text_style: Option<TextStyle>,
+    pub unselected_icon_theme: Option<IconThemeData>,
+    pub selected_icon_theme: Option<IconThemeData>,
     /// Where the destinations sit along the rail: -1 top, 0 centre, 1 bottom.
     pub group_alignment: Option<f32>,
     pub label_type: Option<NavigationRailLabelType>,
@@ -2049,6 +2070,12 @@ impl NavigationRailThemeData {
                 &b.selected_label_text_style,
                 t,
             ),
+            unselected_icon_theme: lerp_icon_theme(
+                &a.unselected_icon_theme,
+                &b.unselected_icon_theme,
+                t,
+            ),
+            selected_icon_theme: lerp_icon_theme(&a.selected_icon_theme, &b.selected_icon_theme, t),
             group_alignment: lerp_f32(a.group_alignment, b.group_alignment, t),
             label_type: lerp_nearer(&a.label_type, &b.label_type, t),
             use_indicator: lerp_nearer(&a.use_indicator, &b.use_indicator, t),
@@ -2100,12 +2127,12 @@ pub enum BottomNavigationBarLandscapeLayout {
 }
 
 /// Upstream `BottomNavigationBarThemeData`.
-///
-/// The two `IconThemeData` fields are not here (`E5`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BottomNavigationBarThemeData {
     pub background_color: Option<Color>,
     pub elevation: Option<f32>,
+    pub selected_icon_theme: Option<IconThemeData>,
+    pub unselected_icon_theme: Option<IconThemeData>,
     pub selected_item_color: Option<Color>,
     pub unselected_item_color: Option<Color>,
     pub selected_label_style: Option<TextStyle>,
@@ -2149,6 +2176,12 @@ impl BottomNavigationBarThemeData {
         BottomNavigationBarThemeData {
             background_color: lerp_color(a.background_color, b.background_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
+            selected_icon_theme: lerp_icon_theme(&a.selected_icon_theme, &b.selected_icon_theme, t),
+            unselected_icon_theme: lerp_icon_theme(
+                &a.unselected_icon_theme,
+                &b.unselected_icon_theme,
+                t,
+            ),
             selected_item_color: lerp_color(a.selected_item_color, b.selected_item_color, t),
             unselected_item_color: lerp_color(a.unselected_item_color, b.unselected_item_color, t),
             selected_label_style: lerp_nearer(&a.selected_label_style, &b.selected_label_style, t),
@@ -4572,6 +4605,176 @@ impl InputDecorationTheme {
     }
 }
 
+// -- Icon theme (upstream `widgets/icon_theme_data.dart`) ---------------------
+
+/// Upstream `IconThemeData`: how the icons under it are drawn.
+///
+/// A data class only -- the framework has no `Icon` widget yet (`E5` in the
+/// plan) -- and it is here because four of the component themes above carry
+/// one and had to leave the field out until it existed. Upstream's `Shadow`
+/// is this crate's [`BoxShadow`](crate::painting::BoxShadow) with its spread
+/// left at zero; upstream's `Shadow` has no spread, and `BoxShadow` is the
+/// same three fields plus one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconThemeData {
+    pub size: Option<f32>,
+    /// The Material Symbols axes: how filled, how heavy, how much optical
+    /// correction. Upstream passes these straight to the font's variable
+    /// axes.
+    pub fill: Option<f32>,
+    pub weight: Option<f32>,
+    pub grade: Option<f32>,
+    pub optical_size: Option<f32>,
+    pub color: Option<Color>,
+    /// Upstream keeps this private behind a getter that clamps to 0..1; the
+    /// clamp is in [`IconThemeData::opacity`].
+    opacity: Option<f32>,
+    pub shadows: Option<Vec<crate::painting::BoxShadow>>,
+    /// Whether the size follows the reader's text scale.
+    pub apply_text_scaling: Option<bool>,
+}
+
+impl IconThemeData {
+    pub fn new() -> IconThemeData {
+        IconThemeData::default()
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Upstream's `opacity` setter, which stores whatever it is given; the
+    /// clamp happens on the way out.
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = Some(opacity);
+        self
+    }
+
+    /// Upstream's `opacity` getter: `_opacity?.clamp(0.0, 1.0)`.
+    pub fn opacity(&self) -> Option<f32> {
+        self.opacity.map(|opacity| opacity.clamp(0.0, 1.0))
+    }
+
+    /// Upstream `IconThemeData.lerp`.
+    pub fn lerp(a: &IconThemeData, b: &IconThemeData, t: f32) -> IconThemeData {
+        IconThemeData {
+            size: lerp_f32(a.size, b.size, t),
+            fill: lerp_f32(a.fill, b.fill, t),
+            weight: lerp_f32(a.weight, b.weight, t),
+            grade: lerp_f32(a.grade, b.grade, t),
+            optical_size: lerp_f32(a.optical_size, b.optical_size, t),
+            color: lerp_color(a.color, b.color, t),
+            opacity: lerp_f32(a.opacity(), b.opacity(), t),
+            shadows: lerp_nearer(&a.shadows, &b.shadows, t),
+            apply_text_scaling: lerp_nearer(&a.apply_text_scaling, &b.apply_text_scaling, t),
+        }
+    }
+
+    /// Upstream `merge`: this one's fields where it has them, the other's
+    /// where it does not.
+    pub fn merge(&self, other: &IconThemeData) -> IconThemeData {
+        IconThemeData {
+            size: self.size.or(other.size),
+            fill: self.fill.or(other.fill),
+            weight: self.weight.or(other.weight),
+            grade: self.grade.or(other.grade),
+            optical_size: self.optical_size.or(other.optical_size),
+            color: self.color.or(other.color),
+            opacity: self.opacity.or(other.opacity),
+            shadows: self.shadows.clone().or_else(|| other.shadows.clone()),
+            apply_text_scaling: self.apply_text_scaling.or(other.apply_text_scaling),
+        }
+    }
+}
+
+/// Upstream `IconTheme`.
+pub struct IconTheme;
+
+impl IconTheme {
+    pub fn new(data: IconThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> IconThemeData {
+        context
+            .inherited::<IconThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).icon_theme.clone())
+    }
+}
+
+// -- Text selection (upstream `text_selection_theme.dart`) --------------------
+
+/// Upstream `TextSelectionThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextSelectionThemeData {
+    pub cursor_color: Option<Color>,
+    /// What selected text is highlighted with.
+    pub selection_color: Option<Color>,
+    /// The draggable dots at each end of a selection on a touch screen.
+    pub selection_handle_color: Option<Color>,
+}
+
+impl TextSelectionThemeData {
+    pub fn new() -> TextSelectionThemeData {
+        TextSelectionThemeData::default()
+    }
+
+    pub fn with_cursor_color(mut self, color: Color) -> Self {
+        self.cursor_color = Some(color);
+        self
+    }
+
+    pub fn with_selection_color(mut self, color: Color) -> Self {
+        self.selection_color = Some(color);
+        self
+    }
+
+    pub fn with_selection_handle_color(mut self, color: Color) -> Self {
+        self.selection_handle_color = Some(color);
+        self
+    }
+
+    /// Upstream `TextSelectionThemeData.lerp`.
+    pub fn lerp(
+        a: &TextSelectionThemeData,
+        b: &TextSelectionThemeData,
+        t: f32,
+    ) -> TextSelectionThemeData {
+        TextSelectionThemeData {
+            cursor_color: lerp_color(a.cursor_color, b.cursor_color, t),
+            selection_color: lerp_color(a.selection_color, b.selection_color, t),
+            selection_handle_color: lerp_color(
+                a.selection_handle_color,
+                b.selection_handle_color,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `TextSelectionTheme`.
+pub struct TextSelectionTheme;
+
+impl TextSelectionTheme {
+    pub fn new(data: TextSelectionThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> TextSelectionThemeData {
+        context
+            .inherited::<TextSelectionThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).text_selection_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -5774,5 +5977,74 @@ mod tests {
         assert!(!data.is_dense);
         assert!(!data.is_collapsed);
         assert!(!data.align_label_with_hint);
+    }
+
+    #[test]
+    fn an_icon_theme_clamps_the_opacity_on_the_way_out_not_in() {
+        // Upstream stores whatever it was given and clamps in the getter, so
+        // a merge or a lerp sees the stored value and a painter sees 0..1.
+        let over = IconThemeData::new().with_opacity(1.7);
+        assert_eq!(over.opacity(), Some(1.0));
+        let under = IconThemeData::new().with_opacity(-0.2);
+        assert_eq!(under.opacity(), Some(0.0));
+        assert_eq!(IconThemeData::new().opacity(), None);
+    }
+
+    #[test]
+    fn an_icon_theme_merges_the_receivers_fields_first() {
+        let mine = IconThemeData::new().with_size(24.0);
+        let theirs = IconThemeData::new()
+            .with_size(48.0)
+            .with_color(Color::argb(255, 1, 1, 1));
+        let merged = mine.merge(&theirs);
+        assert_eq!(merged.size, Some(24.0));
+        assert_eq!(merged.color, Some(Color::argb(255, 1, 1, 1)));
+    }
+
+    #[test]
+    fn the_component_themes_that_were_waiting_on_an_icon_theme_have_one_now() {
+        // Four component themes had these fields left out because the type
+        // did not exist. They carry them now, and the leading and trailing
+        // ones stay apart -- upstream keeps two because an app bar's back
+        // arrow and its actions are often different weights.
+        let bar = read_in(
+            |child| {
+                AppBarTheme::new(
+                    AppBarThemeData {
+                        icon_theme: Some(IconThemeData::new().with_size(20.0)),
+                        ..AppBarThemeData::new()
+                    },
+                    child,
+                )
+            },
+            AppBarTheme::of,
+        );
+        assert_eq!(bar.icon_theme.and_then(|theme| theme.size), Some(20.0));
+        assert_eq!(bar.actions_icon_theme, None);
+
+        assert_eq!(ChipThemeData::new().icon_theme, None);
+        assert_eq!(NavigationRailThemeData::new().selected_icon_theme, None);
+        assert_eq!(
+            BottomNavigationBarThemeData::new().unselected_icon_theme,
+            None
+        );
+    }
+
+    #[test]
+    fn a_text_selection_theme_carries_its_three_colours() {
+        let themed = read_in(
+            |child| {
+                TextSelectionTheme::new(
+                    TextSelectionThemeData::new()
+                        .with_cursor_color(Color::argb(255, 1, 1, 1))
+                        .with_selection_color(Color::argb(255, 2, 2, 2)),
+                    child,
+                )
+            },
+            TextSelectionTheme::of,
+        );
+        assert_eq!(themed.cursor_color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(themed.selection_color, Some(Color::argb(255, 2, 2, 2)));
+        assert_eq!(themed.selection_handle_color, None);
     }
 }
