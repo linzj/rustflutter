@@ -68,6 +68,123 @@ struct FocusEntry {
     /// is focused -- a row that highlights itself -- is not a stop on the way.
     traversable: bool,
     on_focus_change: Option<Rc<dyn Fn(bool)>>,
+    /// The explicit traversal order this node was given, if any --
+    /// upstream's `FocusTraversalOrder` read off the node's context.
+    order: Option<FocusOrder>,
+    /// The innermost [`FocusTraversalGroup`] this node is inside, if any --
+    /// its *enclosing* group, so that a group node itself sits among its
+    /// parent's members and stands in for its whole subtree there.
+    group: Option<u64>,
+    /// Whether this node is a [`FocusTraversalGroup`] boundary.
+    is_group: bool,
+}
+
+/// Upstream `FocusOrder`: where a node goes in an explicit traversal order.
+///
+/// Upstream this is an abstract class with two subclasses, and comparing two
+/// of different subclasses is an assertion failure -- there is no meaning to
+/// "is 3.0 before or after \"b\"". Here they are two variants, and the
+/// comparison of a mixed pair falls back to numeric-before-lexical rather
+/// than failing: an assertion that fires in debug and orders arbitrarily in
+/// release is worse than one rule that always holds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FocusOrder {
+    /// Upstream `NumericFocusOrder`.
+    Numeric(f32),
+    /// Upstream `LexicalFocusOrder`.
+    Lexical(String),
+}
+
+impl FocusOrder {
+    /// Upstream `FocusOrder.compareTo`, which is `doCompare` on the subclass.
+    fn compare(&self, other: &FocusOrder) -> std::cmp::Ordering {
+        match (self, other) {
+            (FocusOrder::Numeric(a), FocusOrder::Numeric(b)) => {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (FocusOrder::Lexical(a), FocusOrder::Lexical(b)) => a.cmp(b),
+            // Mixed: upstream asserts. See the type's own note.
+            (FocusOrder::Numeric(_), FocusOrder::Lexical(_)) => std::cmp::Ordering::Less,
+            (FocusOrder::Lexical(_), FocusOrder::Numeric(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+/// Upstream `NumericFocusOrder`.
+pub struct NumericFocusOrder;
+
+impl NumericFocusOrder {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(order: f32) -> FocusOrder {
+        FocusOrder::Numeric(order)
+    }
+}
+
+/// Upstream `LexicalFocusOrder`.
+pub struct LexicalFocusOrder;
+
+impl LexicalFocusOrder {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(order: impl Into<String>) -> FocusOrder {
+        FocusOrder::Lexical(order.into())
+    }
+}
+
+/// Upstream `FocusTraversalOrder`: gives the focus nodes below it an
+/// explicit place in the traversal order.
+///
+/// Upstream it is an `InheritedNotifier` the policy reads off each node's
+/// context; here it is published the same way, and the [`Focus`] below picks
+/// it up in its own build.
+pub struct FocusTraversalOrder;
+
+impl FocusTraversalOrder {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(order: FocusOrder, child: AnyWidget) -> AnyWidget {
+        crate::framework::provide(order, child)
+    }
+}
+
+/// Upstream `FocusTraversalGroup`: the nodes inside it are traversed
+/// together, before traversal moves on to whatever is outside.
+///
+/// Upstream a group also carries the policy its descendants are sorted by.
+/// The policies here are not objects (see the ledger: `WidgetOrder` is the
+/// registration order and `Ordered` is [`OrderedTraversalPolicy`], which is
+/// always in force), so a group is the grouping and nothing else.
+pub struct FocusTraversalGroup;
+
+impl FocusTraversalGroup {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(id: u64, child: AnyWidget) -> AnyWidget {
+        component(Focus::new(id, child).with_traversable(false).as_group())
+    }
+}
+
+/// Upstream `OrderedTraversalPolicy`: nodes with an explicit
+/// [`FocusOrder`] first, in that order, then the rest in the order they
+/// registered.
+///
+/// Upstream you choose this policy; here it is always the rule, because with
+/// no orders anywhere it is exactly the registration order --
+/// `WidgetOrderTraversalPolicy`, which is what this always was.
+pub struct OrderedTraversalPolicy;
+
+impl OrderedTraversalPolicy {
+    /// Upstream `sortDescendants`'s comparison: the ordered ones first, in
+    /// their order, and the unordered ones after them.
+    ///
+    /// Equal for two unordered nodes, so a stable sort leaves them in the
+    /// order they registered -- which is `WidgetOrderTraversalPolicy`, the
+    /// secondary policy this falls back to.
+    fn compare(first: &Option<FocusOrder>, second: &Option<FocusOrder>) -> std::cmp::Ordering {
+        match (first, second) {
+            (Some(first), Some(second)) => first.compare(second),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    }
 }
 
 /// The chain of focus nodes a subtree is inside, outermost first.
@@ -231,15 +348,56 @@ pub fn previous() -> bool {
     step(-1)
 }
 
+/// The innermost group on an ancestor chain, if the chain runs through one.
+fn enclosing_group(ancestors: &[u64]) -> Option<u64> {
+    MANAGER.with(|manager| {
+        let manager = manager.borrow();
+        ancestors.iter().rev().copied().find(|id| {
+            manager
+                .entries
+                .iter()
+                .any(|entry| entry.id == *id && entry.is_group)
+        })
+    })
+}
+
+/// The traversal order: every stop, in the order Tab visits them.
+///
+/// Upstream's `FocusTraversalPolicy._sortAllDescendants`, in the shape this
+/// registry has. Each group's members are sorted among themselves by
+/// [`OrderedTraversalPolicy`], and a group node stands in its parent's list
+/// for its whole subtree -- which is what keeps a group's stops together and
+/// keeps an order inside one group from jumping a node past another group's.
+fn traversal_order(manager: &FocusManager) -> Vec<u64> {
+    fn expand(manager: &FocusManager, group: Option<u64>, out: &mut Vec<u64>) {
+        let mut members: Vec<(usize, &FocusEntry)> = manager
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.group == group && (entry.traversable || entry.is_group))
+            .collect();
+        // Ordered first, in their order; the rest keep the order they
+        // registered in, which `sort_by` preserves because it is stable.
+        members.sort_by(|a, b| OrderedTraversalPolicy::compare(&a.1.order, &b.1.order));
+        for (_, entry) in members {
+            if entry.is_group {
+                expand(manager, Some(entry.id), out);
+            }
+            if entry.traversable {
+                out.push(entry.id);
+            }
+        }
+    }
+
+    let mut order = Vec::new();
+    expand(manager, None, &mut order);
+    order
+}
+
 fn step(direction: isize) -> bool {
     let target = MANAGER.with(|manager| {
         let manager = manager.borrow();
-        let stops: Vec<u64> = manager
-            .entries
-            .iter()
-            .filter(|e| e.traversable)
-            .map(|e| e.id)
-            .collect();
+        let stops = traversal_order(&manager);
         if stops.is_empty() {
             return None;
         }
@@ -338,6 +496,8 @@ pub struct Focus {
     /// Whether tapping this region focuses it. On by default, because a
     /// reader who taps something expects to be typing into it.
     focus_on_tap: bool,
+    /// Whether this node is a [`FocusTraversalGroup`] boundary.
+    group: bool,
 }
 
 impl Focus {
@@ -349,7 +509,15 @@ impl Focus {
             on_focus_change: None,
             traversable: true,
             focus_on_tap: true,
+            group: false,
         }
+    }
+
+    /// Marks this node as a traversal group boundary -- what
+    /// [`FocusTraversalGroup`] builds.
+    fn as_group(mut self) -> Self {
+        self.group = true;
+        self
     }
 
     pub fn with_on_key(mut self, handler: impl Fn(&KeyEvent) -> KeyResult + 'static) -> Self {
@@ -405,6 +573,13 @@ impl Component for Focus {
         // (`_FocusState.initState` and `didUpdateWidget`). It survives the
         // frames this widget does not rebuild, because the registry is not
         // rebuilt per frame -- see `prune`.
+        // The explicit order, if an enclosing `FocusTraversalOrder` published
+        // one, and the innermost enclosing group. Both are read here because
+        // this is where the ancestor chain is still in hand.
+        let order = context
+            .inherited::<FocusOrder>()
+            .map(|order| (*order).clone());
+        let group = enclosing_group(&scope);
         register(FocusEntry {
             id: self.id,
             element: context.element_ref(),
@@ -412,6 +587,9 @@ impl Component for Focus {
             on_key: self.on_key.clone(),
             traversable: self.traversable,
             on_focus_change: self.on_focus_change.clone(),
+            order,
+            group,
+            is_group: self.group,
         });
 
         let id = self.id;
@@ -725,5 +903,161 @@ mod tests {
         assert_eq!(focused(), None, "a disposed node cannot hold the keyboard");
         assert!(!dispatch_key(&key(LogicalKey::ENTER)));
         assert!(!next(), "and nowhere for Tab to go");
+    }
+
+    // -- Explicit order and groups (upstream `focus_traversal.dart`) ----------
+
+    /// Mounts `children` as a column and builds the render tree, so that
+    /// every focus node in it has registered.
+    fn mounted(children: Vec<AnyWidget>) -> ElementTree {
+        reset();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(children, |built| {
+            let mut column = Column::new();
+            for child in built {
+                column = column.push(child);
+            }
+            Box::new(column)
+        }));
+        let _ = tree.build_render_tree();
+        tree
+    }
+
+    fn field(id: u64) -> AnyWidget {
+        focusable(id, leaf(|| SizedBox::new(10.0, 10.0)))
+    }
+
+    #[test]
+    fn an_explicit_order_beats_the_order_things_were_built_in() {
+        // Built 1, 2, 3; ordered 3, 1, 2.
+        let _tree = mounted(vec![
+            FocusTraversalOrder::new(NumericFocusOrder::new(2.0), field(1)),
+            FocusTraversalOrder::new(NumericFocusOrder::new(3.0), field(2)),
+            FocusTraversalOrder::new(NumericFocusOrder::new(1.0), field(3)),
+        ]);
+        assert!(next());
+        assert_eq!(focused(), Some(3));
+        assert!(next());
+        assert_eq!(focused(), Some(1));
+        assert!(next());
+        assert_eq!(focused(), Some(2));
+        assert!(next());
+        assert_eq!(focused(), Some(3), "and it wraps");
+    }
+
+    #[test]
+    fn a_lexical_order_sorts_by_the_string() {
+        let _tree = mounted(vec![
+            FocusTraversalOrder::new(LexicalFocusOrder::new("b"), field(1)),
+            FocusTraversalOrder::new(LexicalFocusOrder::new("a"), field(2)),
+        ]);
+        assert!(next());
+        assert_eq!(focused(), Some(2));
+        assert!(next());
+        assert_eq!(focused(), Some(1));
+    }
+
+    #[test]
+    fn nodes_with_no_order_follow_the_ordered_ones() {
+        // Upstream's `sortDescendants`: the ordered ones first, then the
+        // rest as they came.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalOrder::new(NumericFocusOrder::new(1.0), field(2)),
+            field(3),
+        ]);
+        assert!(next());
+        assert_eq!(focused(), Some(2), "the only ordered node leads");
+        assert!(next());
+        assert_eq!(focused(), Some(1));
+        assert!(next());
+        assert_eq!(focused(), Some(3));
+    }
+
+    #[test]
+    fn a_traversal_group_keeps_its_members_together() {
+        // A group holding 20 and 21, built between 1 and 2. Tab should walk
+        // 1, then the group's two, then 2 -- and it would do that here from
+        // build order alone, so the interesting case is the one below.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::new(
+                100,
+                crate::framework::many(vec![field(20), field(21)], |built| {
+                    let mut column = Column::new();
+                    for child in built {
+                        column = column.push(child);
+                    }
+                    Box::new(column)
+                }),
+            ),
+            field(2),
+        ]);
+        let mut walk = Vec::new();
+        for _ in 0..4 {
+            next();
+            walk.push(focused());
+        }
+        assert_eq!(walk, vec![Some(1), Some(20), Some(21), Some(2)]);
+    }
+
+    #[test]
+    fn an_order_inside_a_group_does_not_reach_outside_it() {
+        // 1 has no order and is outside the group; 20 and 21 are inside it
+        // and ordered backwards. The group's members stay together and sort
+        // among themselves -- an order in one group cannot jump a node past
+        // the nodes of another, which is the whole point of grouping.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::new(
+                100,
+                crate::framework::many(
+                    vec![
+                        FocusTraversalOrder::new(NumericFocusOrder::new(2.0), field(20)),
+                        FocusTraversalOrder::new(NumericFocusOrder::new(1.0), field(21)),
+                    ],
+                    |built| {
+                        let mut column = Column::new();
+                        for child in built {
+                            column = column.push(child);
+                        }
+                        Box::new(column)
+                    },
+                ),
+            ),
+        ]);
+        let mut walk = Vec::new();
+        for _ in 0..3 {
+            next();
+            walk.push(focused());
+        }
+        assert_eq!(walk, vec![Some(1), Some(21), Some(20)]);
+    }
+
+    #[test]
+    fn the_focus_actions_move_the_keyboard() {
+        use crate::actions::{
+            ActionDispatcher, Intent, NextFocusAction, PreviousFocusAction, RequestFocusAction,
+        };
+
+        let _tree = mounted(vec![field(1), field(2), field(3)]);
+        let dispatcher = ActionDispatcher::new()
+            .with_action("RequestFocus", RequestFocusAction::new())
+            .with_action("NextFocus", NextFocusAction::new())
+            .with_action("PreviousFocus", PreviousFocusAction::new());
+
+        dispatcher.invoke_action(&Intent::RequestFocus { id: 2 });
+        assert_eq!(focused(), Some(2));
+        dispatcher.invoke_action(&Intent::NextFocus);
+        assert_eq!(focused(), Some(3));
+        dispatcher.invoke_action(&Intent::PreviousFocus);
+        assert_eq!(focused(), Some(2));
+
+        // Upstream's next/previous actions do not consume the key: with
+        // nowhere left to go the shell should get its chance at it.
+        assert_eq!(
+            dispatcher.maybe_invoke(&Intent::NextFocus, &key(LogicalKey::TAB)),
+            KeyResult::Ignored
+        );
     }
 }

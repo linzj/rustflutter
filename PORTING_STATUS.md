@@ -164,6 +164,31 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:focus 遍历完整化(2026-08-19)。** focus_traversal.dart 16/19:
+`FocusOrder`(Numeric/Lexical 两式)、`NumericFocusOrder`/`LexicalFocusOrder`、
+`FocusTraversalOrder`(经 provide 发布,下面的 `Focus` 在自己的 build 里取——
+与上游 `InheritedNotifier` 同一机制)、`OrderedTraversalPolicy`(有序者在前、
+其余保持注册序;稳定排序使"其余"恰是 `WidgetOrderTraversalPolicy`,即它的
+secondary)、`FocusTraversalGroup`;actions.rs 补 `Intent::RequestFocus/
+NextFocus/PreviousFocus` 与 `RequestFocusAction`/`NextFocusAction`/
+`PreviousFocusAction`(后两者 `consumesKey` 为假——无处可去时该把键让给宿主,
+同上游)。
+
+**遍历序改成分组递归**,即上游 `_sortAllDescendants` 在此侧注册表上的形态:
+每个组内部各自排序,组节点在父组的名单里**代表它的整个子树**站位。这是关键
+——第一版按"组成员在注册表里的位置"分桶,而组件是惰性构建的,深处的组成员
+注册在浅处的兄弟之后,于是分桶把组甩到了最后。改成递归展开后,
+`1 / [组:20,21] / 2` 走出来就是 1、20、21、2,与上游一致。
+
+`ExcludeFocusTraversal`≙`Focus::with_traversable(false)` 入账(子树不再是 Tab
+落点,仍可点击聚焦——同上游)。
+
+**余 3 类是方向遍历一族**(`DirectionalFocusTraversalPolicyMixin`/
+`DirectionalFocusIntent`/`DirectionalFocusAction`),**缺的是几何**:上游按
+`node.rect` 在方向上找最近的候选,而此侧焦点登记表只有 id、祖先链与顺序,
+不含布局后的矩形。要它得让 `FocusEntry` 持有渲染对象并在布局后读取——单独
+立项,不在本簇里猜。
+
 **scroll 家族入账轮(2026-08-19)。** 同样是纯判定,逐条对着 `scrolling.rs` /
 `physics.rs` 核实:
 

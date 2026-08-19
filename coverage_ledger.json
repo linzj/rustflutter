@@ -1254,12 +1254,10 @@
       "note": "同上"
     },
     "NextFocusIntent": {
-      "rust": "focus::next()",
-      "note": "既有"
+      "rust": "actions::Intent::NextFocus"
     },
     "PreviousFocusIntent": {
-      "rust": "focus::previous()",
-      "note": "既有"
+      "rust": "actions::Intent::PreviousFocus"
     },
     "ExcludeFocus": {
       "rust": "focusable 的可聚焦开关",
@@ -1642,6 +1640,14 @@
     },
     "SliverChildListDelegate": {
       "rust": "sliver::SliverList::list"
+    },
+    "RequestFocusIntent": {
+      "rust": "actions::Intent::RequestFocus { id }",
+      "note": "上游携 FocusNode，此侧节点即其 id"
+    },
+    "ExcludeFocusTraversal": {
+      "rust": "focus::Focus::with_traversable(false)",
+      "note": "子树不再是 Tab 的落点，但仍能被点击聚焦——同上游"
     }
   },
   "blocked_engine": {

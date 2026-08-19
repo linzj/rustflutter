@@ -40,6 +40,14 @@ pub enum Intent {
     Dismiss,
     /// `PrioritizedIntents`: try these in order until one is enabled.
     Prioritized { intents: Vec<Intent> },
+    /// `RequestFocusIntent`: give the keyboard to a particular node.
+    ///
+    /// Upstream carries the `FocusNode`; a node here is its id.
+    RequestFocus { id: u64 },
+    /// `NextFocusIntent`: move the keyboard on to the next node.
+    NextFocus,
+    /// `PreviousFocusIntent`.
+    PreviousFocus,
 }
 
 /// Upstream `Action<T>`: knows how to serve one kind of intent. The closed
@@ -67,6 +75,13 @@ impl Action {
             is_enabled: Rc::new(|_| true),
             consumes_key: true,
         }
+    }
+
+    /// Upstream `consumesKey`, as a builder: an action that answers false
+    /// lets the key reach whatever would have seen it next.
+    pub fn with_consumes_key(mut self, consumes_key: bool) -> Action {
+        self.consumes_key = consumes_key;
+        self
     }
 
     /// Upstream `DoNothingAction`.
@@ -166,7 +181,63 @@ impl Intent {
             Intent::Select => "Select",
             Intent::Dismiss => "Dismiss",
             Intent::Prioritized { .. } => "Prioritized",
+            Intent::RequestFocus { .. } => "RequestFocus",
+            Intent::NextFocus => "NextFocus",
+            Intent::PreviousFocus => "PreviousFocus",
         }
+    }
+}
+
+// -- The focus actions (upstream `widgets/focus_traversal.dart`) --------------
+
+/// Upstream `RequestFocusAction`: gives the keyboard to the intent's node.
+///
+/// Upstream's is the one action that does not merely call a policy -- it
+/// requests focus directly, and its documentation says so, because focusing
+/// a node that is not a traversal stop is a thing a caller may legitimately
+/// want.
+pub struct RequestFocusAction;
+
+impl RequestFocusAction {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Action {
+        Action::callback(|intent| {
+            if let Intent::RequestFocus { id } = intent {
+                crate::focus::focus(*id);
+            }
+            None
+        })
+    }
+}
+
+/// Upstream `NextFocusAction`.
+pub struct NextFocusAction;
+
+impl NextFocusAction {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Action {
+        // Upstream's `consumesKey` is false here: if there was nowhere to go,
+        // the key should reach the platform so the browser or the shell can
+        // move focus out of the application.
+        Action::callback(|_| {
+            crate::focus::next();
+            None
+        })
+        .with_consumes_key(false)
+    }
+}
+
+/// Upstream `PreviousFocusAction`.
+pub struct PreviousFocusAction;
+
+impl PreviousFocusAction {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Action {
+        Action::callback(|_| {
+            crate::focus::previous();
+            None
+        })
+        .with_consumes_key(false)
     }
 }
 
