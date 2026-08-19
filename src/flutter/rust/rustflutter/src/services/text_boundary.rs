@@ -359,9 +359,95 @@ impl TextBoundary for DocumentBoundary<'_> {
     }
 }
 
+/// Upstream `TextLayoutMetrics`: what a laid-out paragraph can be asked about
+/// its own shape.
+///
+/// [`LineBoundary`] is the one thing here that needs it, and it takes the
+/// line ranges directly -- so what is left of upstream's interface is the two
+/// static predicates every caller of it actually uses, which are about
+/// characters and not about layout at all.
+pub struct TextLayoutMetrics;
+
+impl TextLayoutMetrics {
+    /// Upstream `TextLayoutMetrics.isWhitespace`.
+    ///
+    /// Upstream's own comment says this is standing in for ICU information it
+    /// does not expose yet, and lists the sixteen code points by hand. The
+    /// list is upstream's, not Rust's `char::is_whitespace`: the two differ
+    /// -- upstream counts the four ASCII separators `0x1C`-`0x1F`, which Rust
+    /// does not, and Rust counts `0x0085` and `0x2028`-`0x2029`, which
+    /// upstream leaves out because they are line terminators and it handles
+    /// those separately.
+    pub fn is_whitespace(character: char) -> bool {
+        matches!(
+            character,
+            '\u{0009}' // horizontal tab
+                | '\u{000A}' // line feed
+                | '\u{000B}' // vertical tab
+                | '\u{000C}' // form feed
+                | '\u{000D}' // carriage return
+                | '\u{001C}' // file separator
+                | '\u{001D}' // group separator
+                | '\u{001E}' // record separator
+                | '\u{001F}' // unit separator
+                | '\u{0020}' // space
+                | '\u{00A0}' // no-break space
+                | '\u{1680}' // ogham space mark
+                | '\u{2000}'
+                ..='\u{200A}' // en quad through hair space
+                | '\u{202F}' // narrow no-break space
+                | '\u{205F}' // medium mathematical space
+                | '\u{3000}' // ideographic space
+        )
+    }
+
+    /// Upstream `TextLayoutMetrics.isLineTerminator`, which is
+    /// [`is_line_terminator`] -- the same function, reachable from the name
+    /// upstream puts it under.
+    pub fn is_line_terminator(character: char) -> bool {
+        is_line_terminator(character)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstreams_whitespace_list_is_not_rusts() {
+        // Upstream's own comment says the list stands in for ICU information
+        // it does not expose, and it is hand-written -- so it is not the same
+        // set `char::is_whitespace` gives, and taking Rust's would change
+        // where a ctrl-left stops.
+        //
+        // Upstream counts the four ASCII separators; Rust does not.
+        for separator in ['\u{001C}', '\u{001D}', '\u{001E}', '\u{001F}'] {
+            assert!(TextLayoutMetrics::is_whitespace(separator));
+            assert!(!separator.is_whitespace(), "{separator:?}");
+        }
+        // Rust counts the next line and the two separators; upstream leaves
+        // them out, because it treats them as line terminators instead.
+        for terminator in ['\u{0085}', '\u{2028}', '\u{2029}'] {
+            assert!(!TextLayoutMetrics::is_whitespace(terminator));
+            assert!(terminator.is_whitespace(), "{terminator:?}");
+            assert!(TextLayoutMetrics::is_line_terminator(terminator));
+        }
+    }
+
+    #[test]
+    fn the_ordinary_spaces_are_all_whitespace() {
+        for space in [
+            ' ', '\t', '\n', '\u{000B}', '\u{000C}', '\r', '\u{00A0}', '\u{1680}', '\u{2000}',
+            '\u{2005}', '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}',
+        ] {
+            assert!(TextLayoutMetrics::is_whitespace(space), "{space:?}");
+        }
+        assert!(!TextLayoutMetrics::is_whitespace('a'));
+        // Zero-width space is not whitespace to upstream: it is a line-break
+        // opportunity, not a gap, and treating it as one would let a word
+        // selection stop in the middle of a word.
+        assert!(!TextLayoutMetrics::is_whitespace('\u{200B}'));
+    }
 
     #[test]
     fn a_character_boundary_walks_whole_code_points_not_bytes() {

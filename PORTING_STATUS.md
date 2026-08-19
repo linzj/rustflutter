@@ -164,6 +164,48 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 状态栏、平台的撤销、鼠标标注、以及一份手写的空白字符表(2026-08-19)
+
+六个上游类,分别落在已有的模块里而不是新开四个文件——它们各自都只有一两个类,而且
+各自属于某个已经在那里的东西:
+
+* `services/system.rs`(已有 `SystemChrome`):`ApplicationSwitcherDescription`、
+  `SystemUiOverlayStyle`,加上 `services/undo_manager.dart` 的 `UndoManager`/
+  `UndoManagerClient`(与 `UndoDirection`),以及
+  `services/mouse_tracking.dart` 的 `MouseTrackerAnnotation`。
+* `services/text_boundary.rs`(已有 `LineBoundary`):`TextLayoutMetrics`——
+  `LineBoundary` 本来就是问它要行范围的,这是它该在的地方。
+
+**回归行盯的地方:**
+
+* **`SystemUiOverlayStyle.light` 说的是图标是浅色的,不是应用是浅色的。** 把名字
+  当成应用自己的明暗,挑到的正是让状态栏看不清的那一个。而 `statusBarBrightness`
+  是里面的异类——iOS 的,描述的是状态栏**背后**的东西,所以在两个常量里它都和旁边的
+  图标明暗相反。
+* **没设的字段发出去是 null,意思是「别动它」。** 那些栏归平台管;发一个默认值过
+  去,等于接管了一条应用从没问过的栏。
+* 明暗值在线上是 `Brightness.light` 这样的**字符串**——Dart 的 `toString` 就是这么
+  写的,各家 embedder 也正是这么匹配的。发 `light` 或 `0`,对面认不出来。
+* 颜色在线上是**有符号整数**。JSON 没有无符号整数,对面读的是 Dart int,所以不透明
+  的黑在线上是负数。按无符号发,对面解析会溢出。
+* 平台给了一个本框架没听说过的撤销方向,就**丢掉**。上游那里抛 `FlutterError`;平
+  台说了句新话,不是崩掉应用的理由。
+* **没有 cursor 的鼠标标注是「让给底下的」而不是箭头。** 上游默认的
+  `MouseCursor.defer` 不是一种光标,是拒绝指定一种;这里用「不存在」表示。默认成
+  `Basic` 会让每个区域都变箭头,把底下输入框的文本光标盖掉。
+* **上游那份空白字符表不是 Rust 的 `char::is_whitespace`。** 上游自己注释说它是在
+  替还没暴露的 ICU 信息占位、是手写的,两者确实不一样:上游算上 `0x1C`-`0x1F` 四个
+  ASCII 分隔符(Rust 不算),Rust 算上 `0x0085` 和 `0x2028`-`0x2029`(上游不算——它
+  把那三个当行终止符另行处理)。照搬 Rust 的会改变 ctrl-左停在哪里,所以两边的差
+  异都写成了断言。另外零宽空格**不是**空白:它是一个可断行的位置而不是一个空隙,
+  当成空白会让按词选择停在词中间。
+
+验证:`cargo test --lib` 1194 绿,GN `rustflutter_unittests` 1194 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1135 accounted / 738 MISSING;**services 层 130/141,
+只剩 11**,其中 8 个是 `text_input.dart` 的余项。
+
+
 ### 输入框说不的地方(2026-08-19)
 
 `services/text_formatter.rs`(新),上游 `services/text_formatter.dart` 三个类全覆

@@ -32,6 +32,10 @@ use super::codec::{
     JsonMessageCodec, JsonMethodCodec, StandardMessageCodec, StandardMethodCodec, StringCodec,
     Value,
 };
+use crate::engine::Color;
+use crate::platform::Brightness;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // -- The channels -------------------------------------------------------------
 
@@ -1051,5 +1055,510 @@ mod tests {
         // Not a cancel. The platform never said it, and inventing one would
         // tell the application its exit was refused when it was never heard.
         assert_eq!(*answer.borrow(), Some(None));
+    }
+}
+
+/// Upstream `ApplicationSwitcherDescription`: what the platform's task
+/// switcher shows for this application.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApplicationSwitcherDescription {
+    pub label: Option<String>,
+    /// Upstream's is a bare `int` and not a `Color`, because it is what the
+    /// platform wants: 0xAARRGGBB, the encoding everything here uses.
+    pub primary_color: Option<u32>,
+}
+
+impl ApplicationSwitcherDescription {
+    pub fn new() -> ApplicationSwitcherDescription {
+        ApplicationSwitcherDescription::default()
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_primary_color(mut self, primary_color: u32) -> Self {
+        self.primary_color = Some(primary_color);
+        self
+    }
+
+    pub(crate) fn to_value(&self) -> Value {
+        Value::map([
+            (
+                "label",
+                match &self.label {
+                    Some(label) => Value::from(label.as_str()),
+                    None => Value::Null,
+                },
+            ),
+            // Signed because JSON has no unsigned integers and the far end
+            // reads it as a Dart int. The bit pattern is what matters.
+            (
+                "primaryColor",
+                match self.primary_color {
+                    Some(color) => Value::I64(color as i32 as i64),
+                    None => Value::Null,
+                },
+            ),
+        ])
+    }
+}
+
+/// Upstream `SystemUiOverlayStyle`: how the status bar and the navigation bar
+/// should be painted over this application.
+///
+/// Every field is optional and an unset one means "leave it as it is" -- the
+/// bars belong to the platform, and an application only says what it needs
+/// changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemUiOverlayStyle {
+    pub system_navigation_bar_color: Option<Color>,
+    pub system_navigation_bar_divider_color: Option<Color>,
+    /// The brightness of the *icons* on the navigation bar, which is the
+    /// opposite of the bar's own: light icons go on a dark bar.
+    pub system_navigation_bar_icon_brightness: Option<Brightness>,
+    pub system_navigation_bar_contrast_enforced: Option<bool>,
+    pub status_bar_color: Option<Color>,
+    /// iOS only, and the odd one out: this is the brightness of what is
+    /// *behind* the status bar, which is why the two constants below set it
+    /// to the opposite of the icon brightness beside it.
+    pub status_bar_brightness: Option<Brightness>,
+    pub status_bar_icon_brightness: Option<Brightness>,
+    pub system_status_bar_contrast_enforced: Option<bool>,
+}
+
+impl SystemUiOverlayStyle {
+    /// Upstream `SystemUiOverlayStyle.light`: light icons, for a dark
+    /// application. The name is the *icons*, not the application.
+    pub const LIGHT: SystemUiOverlayStyle = SystemUiOverlayStyle {
+        system_navigation_bar_color: Some(Color(0xFF00_0000)),
+        system_navigation_bar_divider_color: None,
+        system_navigation_bar_icon_brightness: Some(Brightness::Light),
+        system_navigation_bar_contrast_enforced: None,
+        status_bar_color: None,
+        status_bar_brightness: Some(Brightness::Dark),
+        status_bar_icon_brightness: Some(Brightness::Light),
+        system_status_bar_contrast_enforced: None,
+    };
+
+    /// Upstream `SystemUiOverlayStyle.dark`: dark icons, for a light
+    /// application.
+    pub const DARK: SystemUiOverlayStyle = SystemUiOverlayStyle {
+        system_navigation_bar_color: Some(Color(0xFF00_0000)),
+        system_navigation_bar_divider_color: None,
+        system_navigation_bar_icon_brightness: Some(Brightness::Light),
+        system_navigation_bar_contrast_enforced: None,
+        status_bar_color: None,
+        status_bar_brightness: Some(Brightness::Light),
+        status_bar_icon_brightness: Some(Brightness::Dark),
+        system_status_bar_contrast_enforced: None,
+    };
+
+    /// Upstream `copyWith`.
+    pub fn copy_with(&self, other: &SystemUiOverlayStyle) -> SystemUiOverlayStyle {
+        SystemUiOverlayStyle {
+            system_navigation_bar_color: other
+                .system_navigation_bar_color
+                .or(self.system_navigation_bar_color),
+            system_navigation_bar_divider_color: other
+                .system_navigation_bar_divider_color
+                .or(self.system_navigation_bar_divider_color),
+            system_navigation_bar_icon_brightness: other
+                .system_navigation_bar_icon_brightness
+                .or(self.system_navigation_bar_icon_brightness),
+            system_navigation_bar_contrast_enforced: other
+                .system_navigation_bar_contrast_enforced
+                .or(self.system_navigation_bar_contrast_enforced),
+            status_bar_color: other.status_bar_color.or(self.status_bar_color),
+            status_bar_brightness: other.status_bar_brightness.or(self.status_bar_brightness),
+            status_bar_icon_brightness: other
+                .status_bar_icon_brightness
+                .or(self.status_bar_icon_brightness),
+            system_status_bar_contrast_enforced: other
+                .system_status_bar_contrast_enforced
+                .or(self.system_status_bar_contrast_enforced),
+        }
+    }
+
+    /// Upstream's `_toMap`. The brightnesses go over as the strings Dart's
+    /// `toString` makes of them, which is what the embedders parse.
+    pub(crate) fn to_value(&self) -> Value {
+        let color = |color: Option<Color>| match color {
+            Some(color) => Value::I64(color.0 as i32 as i64),
+            None => Value::Null,
+        };
+        let brightness = |brightness: Option<Brightness>| match brightness {
+            Some(Brightness::Light) => Value::from("Brightness.light"),
+            Some(Brightness::Dark) => Value::from("Brightness.dark"),
+            None => Value::Null,
+        };
+        let flag = |flag: Option<bool>| match flag {
+            Some(flag) => Value::Bool(flag),
+            None => Value::Null,
+        };
+        Value::map([
+            (
+                "systemNavigationBarColor",
+                color(self.system_navigation_bar_color),
+            ),
+            (
+                "systemNavigationBarDividerColor",
+                color(self.system_navigation_bar_divider_color),
+            ),
+            (
+                "systemStatusBarContrastEnforced",
+                flag(self.system_status_bar_contrast_enforced),
+            ),
+            ("statusBarColor", color(self.status_bar_color)),
+            (
+                "statusBarBrightness",
+                brightness(self.status_bar_brightness),
+            ),
+            (
+                "statusBarIconBrightness",
+                brightness(self.status_bar_icon_brightness),
+            ),
+            (
+                "systemNavigationBarIconBrightness",
+                brightness(self.system_navigation_bar_icon_brightness),
+            ),
+            (
+                "systemNavigationBarContrastEnforced",
+                flag(self.system_navigation_bar_contrast_enforced),
+            ),
+        ])
+    }
+}
+
+// -- Undo and redo from the platform (upstream `services/undo_manager.dart`) --
+
+/// Upstream `UndoDirection`: which way the platform asked to go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndoDirection {
+    Undo,
+    Redo,
+}
+
+/// Upstream `UndoManagerClient`: what a field has to be able to do for the
+/// platform's undo to reach it.
+///
+/// The platform owns the undo gesture -- a three-finger swipe on iOS, a shake,
+/// a menu item -- and the field owns the history. This is the join.
+pub trait UndoManagerClient {
+    /// Upstream `handlePlatformUndo`: the platform asked.
+    fn handle_platform_undo(&self, direction: UndoDirection);
+    fn undo(&self);
+    fn redo(&self);
+    fn can_undo(&self) -> bool;
+    fn can_redo(&self) -> bool;
+}
+
+/// Upstream `UndoManager`: the one channel the platform's undo arrives on.
+pub struct UndoManager;
+
+impl UndoManager {
+    pub const HANDLE_UNDO_METHOD: &'static str = "UndoManagerClient.handleUndo";
+    pub const SET_UNDO_STATE_METHOD: &'static str = "UndoManager.setUndoState";
+
+    /// Upstream's `UndoManager.client` setter. There is one, because there is
+    /// one platform gesture and it goes to whatever has the keyboard.
+    pub fn set_client(client: Option<Rc<dyn UndoManagerClient>>) {
+        UNDO_CLIENT.with(|slot| *slot.borrow_mut() = client);
+        UndoManager::install_handler();
+    }
+
+    pub fn client() -> Option<Rc<dyn UndoManagerClient>> {
+        UNDO_CLIENT.with(|slot| slot.borrow().clone())
+    }
+
+    /// Upstream `setUndoState`: tells the platform whether its undo and redo
+    /// affordances should be enabled.
+    ///
+    /// Upstream reports an error rather than throwing when the send fails,
+    /// with the note that this is an event and nobody is waiting on it. Here
+    /// the send is fire-and-forget for the same reason.
+    pub fn set_undo_state(can_undo: bool, can_redo: bool) {
+        undo_channel().invoke(
+            UndoManager::SET_UNDO_STATE_METHOD,
+            Value::map([
+                ("canUndo", Value::Bool(can_undo)),
+                ("canRedo", Value::Bool(can_redo)),
+            ]),
+        );
+    }
+
+    /// Upstream's `_toUndoDirection`, which throws for anything else. Here it
+    /// is nothing, and the call is dropped: a direction this framework does
+    /// not know is a platform saying something new, not a bug to crash on.
+    pub fn direction_from(name: &str) -> Option<UndoDirection> {
+        match name {
+            "undo" => Some(UndoDirection::Undo),
+            "redo" => Some(UndoDirection::Redo),
+            _ => None,
+        }
+    }
+
+    fn install_handler() {
+        UNDO_HANDLER_INSTALLED.with(|installed| {
+            if installed.get() {
+                return;
+            }
+            installed.set(true);
+            undo_channel().set_handler(move |call, respond| {
+                if call.method == UndoManager::HANDLE_UNDO_METHOD {
+                    if let Value::List(arguments) = &call.arguments {
+                        if let Some(Value::String(name)) = arguments.first() {
+                            if let (Some(direction), Some(client)) =
+                                (UndoManager::direction_from(name), UndoManager::client())
+                            {
+                                client.handle_platform_undo(direction);
+                            }
+                        }
+                    }
+                    respond.success(Value::Null);
+                    return;
+                }
+                // Upstream throws `MissingPluginException` for anything else,
+                // which on the wire is an empty reply.
+                respond.not_implemented();
+            });
+        });
+    }
+}
+
+fn undo_channel() -> MethodChannel<JsonMethodCodec> {
+    MethodChannel::named(
+        crate::services::system_channels::SystemChannels::UNDO_MANAGER,
+        JsonMethodCodec,
+    )
+}
+
+thread_local! {
+    static UNDO_CLIENT: RefCell<Option<Rc<dyn UndoManagerClient>>> =
+        const { RefCell::new(None) };
+    static UNDO_HANDLER_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// -- Mouse tracking (upstream `services/mouse_tracking.dart`) ------------------
+
+/// Upstream `MouseTrackerAnnotation`: what a region wants from a mouse.
+///
+/// Upstream's is the thing a `RenderMouseRegion` hands to the tracker. This
+/// crate routes hover through [`PointerHandlers`](crate::gestures::PointerHandlers)
+/// instead, so this is the data class rather than the plumbing -- what a
+/// region asks for, in one place, which is what a caller building one needs.
+#[derive(Clone)]
+pub struct MouseTrackerAnnotation {
+    pub on_enter: Option<Rc<dyn Fn()>>,
+    pub on_exit: Option<Rc<dyn Fn()>>,
+    /// Upstream's default is `MouseCursor.defer`, which means "whatever the
+    /// region behind me says". Absent is that here.
+    pub cursor: Option<SystemMouseCursor>,
+    /// Upstream's `validForMouseTracker`: false while the region is in a
+    /// state where it should be ignored, which is how a hidden region stops
+    /// answering without being taken out of the tree.
+    pub valid_for_mouse_tracker: bool,
+}
+
+impl Default for MouseTrackerAnnotation {
+    fn default() -> MouseTrackerAnnotation {
+        MouseTrackerAnnotation {
+            on_enter: None,
+            on_exit: None,
+            cursor: None,
+            valid_for_mouse_tracker: true,
+        }
+    }
+}
+
+impl MouseTrackerAnnotation {
+    pub fn new() -> MouseTrackerAnnotation {
+        MouseTrackerAnnotation::default()
+    }
+
+    pub fn with_on_enter(mut self, on_enter: impl Fn() + 'static) -> Self {
+        self.on_enter = Some(Rc::new(on_enter));
+        self
+    }
+
+    pub fn with_on_exit(mut self, on_exit: impl Fn() + 'static) -> Self {
+        self.on_exit = Some(Rc::new(on_exit));
+        self
+    }
+
+    pub fn with_cursor(mut self, cursor: SystemMouseCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    pub fn with_valid_for_mouse_tracker(mut self, valid: bool) -> Self {
+        self.valid_for_mouse_tracker = valid;
+        self
+    }
+}
+
+impl std::fmt::Debug for MouseTrackerAnnotation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MouseTrackerAnnotation")
+            .field("enter", &self.on_enter.is_some())
+            .field("exit", &self.on_exit.is_some())
+            .field("cursor", &self.cursor)
+            .field("validForMouseTracker", &self.valid_for_mouse_tracker)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    fn key<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+        let Value::Map(pairs) = value else {
+            return None;
+        };
+        pairs
+            .iter()
+            .find(|(field, _)| matches!(field, Value::String(field) if field == name))
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn the_two_overlay_styles_are_named_for_their_icons_not_their_apps() {
+        // `light` means light *icons*, which go on a dark application. A
+        // reader who takes the name for the app's own brightness picks the
+        // one that makes the status bar unreadable.
+        assert_eq!(
+            SystemUiOverlayStyle::LIGHT.status_bar_icon_brightness,
+            Some(Brightness::Light)
+        );
+        assert_eq!(
+            SystemUiOverlayStyle::DARK.status_bar_icon_brightness,
+            Some(Brightness::Dark)
+        );
+        // And `statusBarBrightness` is the odd one out -- iOS's, describing
+        // what is *behind* the bar, so it is the opposite of the icons in
+        // both constants.
+        assert_eq!(
+            SystemUiOverlayStyle::LIGHT.status_bar_brightness,
+            Some(Brightness::Dark)
+        );
+        assert_eq!(
+            SystemUiOverlayStyle::DARK.status_bar_brightness,
+            Some(Brightness::Light)
+        );
+    }
+
+    #[test]
+    fn an_unset_field_goes_over_as_null_and_means_leave_it_alone() {
+        // The bars belong to the platform; an application says only what it
+        // needs changed. Sending a default instead of a null would take over
+        // a bar the application never asked about.
+        let value = SystemUiOverlayStyle::default().to_value();
+        assert_eq!(key(&value, "statusBarColor"), Some(&Value::Null));
+        assert_eq!(key(&value, "statusBarBrightness"), Some(&Value::Null));
+        assert_eq!(
+            key(&value, "systemNavigationBarContrastEnforced"),
+            Some(&Value::Null)
+        );
+    }
+
+    #[test]
+    fn a_brightness_goes_over_as_the_string_the_embedders_parse() {
+        // Dart sends `Brightness.light` because that is what `toString` makes
+        // of it, and the embedders match on exactly that. Sending `light` or
+        // `0` reaches an embedder that does not recognise it.
+        let value = SystemUiOverlayStyle::LIGHT.to_value();
+        assert_eq!(
+            key(&value, "statusBarIconBrightness"),
+            Some(&Value::from("Brightness.light"))
+        );
+        assert_eq!(
+            key(&value, "statusBarBrightness"),
+            Some(&Value::from("Brightness.dark"))
+        );
+    }
+
+    #[test]
+    fn a_colour_goes_over_as_a_signed_integer() {
+        // JSON has no unsigned integers and the far end reads a Dart int, so
+        // an opaque black is negative on the wire. The bit pattern is what
+        // matters, and sending it unsigned overflows the far end's parse.
+        let style = SystemUiOverlayStyle {
+            status_bar_color: Some(Color(0xFF00_0000)),
+            ..SystemUiOverlayStyle::default()
+        };
+        assert_eq!(
+            key(&style.to_value(), "statusBarColor"),
+            Some(&Value::I64(0xFF00_0000u32 as i32 as i64))
+        );
+    }
+
+    #[test]
+    fn copy_with_takes_what_the_other_said_and_keeps_the_rest() {
+        let based = SystemUiOverlayStyle::LIGHT.copy_with(&SystemUiOverlayStyle {
+            status_bar_color: Some(Color(0xFF00_00FF)),
+            ..SystemUiOverlayStyle::default()
+        });
+        assert_eq!(based.status_bar_color, Some(Color(0xFF00_00FF)));
+        assert_eq!(
+            based.status_bar_icon_brightness,
+            SystemUiOverlayStyle::LIGHT.status_bar_icon_brightness
+        );
+    }
+
+    #[test]
+    fn a_switcher_description_may_say_only_one_of_its_two_things() {
+        let labelled = ApplicationSwitcherDescription::new().with_label("Inbox");
+        let value = labelled.to_value();
+        assert_eq!(key(&value, "label"), Some(&Value::from("Inbox")));
+        assert_eq!(key(&value, "primaryColor"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn an_undo_direction_the_framework_has_never_heard_of_is_dropped() {
+        // Upstream throws a `FlutterError` for an unknown direction. A
+        // platform saying something new is not a reason to crash the
+        // application, so it is nothing here and the call is ignored.
+        assert_eq!(
+            UndoManager::direction_from("undo"),
+            Some(UndoDirection::Undo)
+        );
+        assert_eq!(
+            UndoManager::direction_from("redo"),
+            Some(UndoDirection::Redo)
+        );
+        assert_eq!(UndoManager::direction_from("Undo"), None);
+        assert_eq!(UndoManager::direction_from(""), None);
+    }
+
+    #[test]
+    fn the_undo_methods_are_the_ones_the_platform_dispatches_on() {
+        assert_eq!(
+            UndoManager::HANDLE_UNDO_METHOD,
+            "UndoManagerClient.handleUndo"
+        );
+        assert_eq!(
+            UndoManager::SET_UNDO_STATE_METHOD,
+            "UndoManager.setUndoState"
+        );
+    }
+
+    #[test]
+    fn an_annotation_with_no_cursor_defers_to_whatever_is_behind_it() {
+        // Upstream's default is `MouseCursor.defer`, which is not a cursor
+        // but a refusal to name one. Absent is that here; a default of
+        // `Basic` would make every region an arrow and hide the text cursor
+        // of the field underneath.
+        let annotation = MouseTrackerAnnotation::new();
+        assert_eq!(annotation.cursor, None);
+        assert!(annotation.valid_for_mouse_tracker);
+        assert_eq!(
+            MouseTrackerAnnotation::new()
+                .with_cursor(SystemMouseCursor::Click)
+                .cursor,
+            Some(SystemMouseCursor::Click)
+        );
     }
 }
