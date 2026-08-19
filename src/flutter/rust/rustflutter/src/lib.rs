@@ -61,6 +61,7 @@ pub mod ink_well;
 pub mod interactive_viewer;
 pub mod keyboard;
 pub mod licenses;
+pub mod magnifier;
 pub mod material;
 pub mod media_query;
 pub mod menu;
