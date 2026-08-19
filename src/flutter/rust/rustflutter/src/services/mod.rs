@@ -74,6 +74,7 @@
 //! immediately with "nobody handled it". Platform messages are a UI-thread
 //! affair upstream too, but there it is enforced and here it is a convention.
 
+pub mod asset_bundle;
 pub mod asset_manifest;
 pub mod autofill;
 pub mod channel;

@@ -164,6 +164,48 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 资源包、字体、以及构建盖的那几个章(2026-08-19)
+
+`services/asset_bundle.rs`(新),五个上游类:`CachingAssetBundle`、
+`PlatformAssetBundle`、`FontLoader`、`FlutterVersion`,外加把
+`NetworkAssetBundle` 记进台账的裁剪。三个上游文件合成一个,因为后两个各自只有一个
+类。
+
+**同步与异步的那道缝,在这里是明写出来的。** 上游每一次加载都是 `Future`;这个
+crate 的 `AssetBundle::load` 是同步的,因为 `AssetImage` 是在 build 里读它、没法
+等。所以 `PlatformAssetBundle` 把上游用 Future 焊在一起的两半拆开:`prefetch` 去问
+平台并把答案填进缓存,`load` 从缓存里答。**没被 prefetch 过的 key 是 miss,不是
+等待**——这条写成了回归行,免得它读起来像个 bug。
+
+**`NetworkAssetBundle` 记为超出范围。** 它就是上游的 `dart:io HttpClient` 套在
+`AssetBundle` 接口后面;这个 crate 没有 HTTP 客户端,而写一个不属于「移植框架」这
+件事。同一个文件里另外两个包都覆盖了,所以这不是绕过困难,是这一个类恰好在范围外。
+
+**回归行盯的地方:**
+
+* 缓存包对底下那个只问一次。
+* **miss 也进缓存。** 上游缓存的是 future,而一个以错误完成的 future 仍然是完成
+  了的——所以找不到的 key 也不会被再问一遍。只缓存命中的移植,会让每个缺失的资源在
+  每一帧都去查一次。
+* `evict` 之后下一次加载会重新问。上游给的理由是热重载:磁盘上改过的资源还在缓存
+  里,而除此之外没有任何东西会再去问它。
+* **资源路径发出去之前要 percent 编码。** 带空格的路径是真的会发生、而且会静默失
+  败的那种:引擎会去找一个名字里真带空格的文件,找不到。路径本身的分隔符保持原样
+  ——把斜杠也编码掉,就成了在要一个名字里带斜杠的文件。
+* 字体加载器只能加载一次,加载之后再 `add_font` 是错误。两者上游都抛 `StateError`;
+  悄悄忽略任何一个,得到的是一个永远不出现的字体和无从解释的原因。
+* 单元测试跑的引擎桩**拒绝一切字体**,所以这两条测的是:拒绝被**报上来**而不是被
+  吞掉;以及无论如何 loader 都算已加载——这是上游的顺序,`_loaded = true` 在交出第
+  一个字面之前。
+* `FlutterVersion` 的常量在构建没定义时是**不存在**而不是空串。上游用
+  `bool.hasEnvironment` 问,这里是 `option_env!`,同一个问题在编译期问一遍。
+
+验证:`cargo test --lib` 1162 绿,GN `rustflutter_unittests` 1162 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1122 accounted / 751 MISSING;services 层 117/141,
+只剩 24。
+
+
 ### 告诉系统这个输入框是干什么用的(2026-08-19)
 
 `services/autofill.rs`(新),上游 `services/autofill.dart` 五个类全覆盖:

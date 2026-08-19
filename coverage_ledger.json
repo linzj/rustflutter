@@ -1917,6 +1917,7 @@
     "system_context_menu.dart": "整文件 iOS 专属（`isSupported` 即 `defaultTargetPlatform == iOS`），宿主集合为 Windows/Android/macOS"
   },
   "out_of_scope_classes": {
+    "NetworkAssetBundle": "上游是 dart:io HttpClient 套在 AssetBundle 接口后面；这个 crate 没有 HTTP 客户端，写一个不属于移植框架的范围（CachingAssetBundle/PlatformAssetBundle 已覆盖）",
     "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",
     "TransformProperty": "同上，诊断树专用",
     "ClipContext": "debug 绘制辅助（painting/clip.dart 仅 debug 断言用）",
