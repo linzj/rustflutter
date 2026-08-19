@@ -164,6 +164,19 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:排版(2026-08-19)。** `TextTheme`(15/15)+`Typography`(3 个几何),
+表由脚本解析上游 `_M3Typography` 生成。`ThemeData` 补上 `textTheme` 与
+`primaryTextTheme`——后者是"在 `primaryColor` 上读得清"的那一套(暗色主题的 bar
+取 surface,所以它用 `onSurface` 而不是 `onPrimary`)。
+
+**测试抓到一件事,而且它是对的**:我原本写了一条"三个几何应当彼此不同"的回归
+线,它挂了。查上游才知道——**M3 的三套几何数字完全相同**,只差
+`textBaseline`(dense 是 ideographic,`englishLike` 与 `tall` 逐字段相同)。
+M2 那三套确实差字号与行高,M3 不再。此侧 `TextStyle` 不带 baseline(引擎文本
+ABI 没这一项),于是三个函数目前答同一张表。**三个函数仍保留**:这个区分是
+上游的,baseline 能带的那天就回来了,合并成一个等于把限制焊进 API。回归线改成
+断言"三者数字相同"并写明缘由,免得下一个人以为是漏抄。
+
 **P8-M1:navigation bar / drawer / carousel 三对(2026-08-19)。**
 `NavigationBarTheme(Data)`(12/12,连带 `NavigationDestinationLabelBehavior`)、
 `NavigationDrawerTheme(Data)`(10/10)、`CarouselViewTheme(Data)`(5/6,缺

@@ -55,8 +55,8 @@ use crate::component_themes::{
     NavigationRailThemeData, OutlinedButtonThemeData, PopupMenuThemeData,
     ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
     SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TextButtonThemeData, TextSelectionThemeData, TimePickerThemeData,
-    ToggleButtonsThemeData, TooltipThemeData,
+    TabBarThemeData, TextButtonThemeData, TextSelectionThemeData, TextTheme, TimePickerThemeData,
+    ToggleButtonsThemeData, TooltipThemeData, Typography,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -255,6 +255,12 @@ pub struct ThemeData {
     pub navigation_bar_theme: NavigationBarThemeData,
     pub navigation_drawer_theme: NavigationDrawerThemeData,
     pub carousel_view_theme: CarouselViewThemeData,
+    /// Upstream's `textTheme`, which every control's text style falls back
+    /// to.
+    pub text_theme: TextTheme,
+    /// Upstream's `primaryTextTheme`: the same fifteen styles in the colour
+    /// that is legible on `primaryColor`, for the widgets that sit on it.
+    pub primary_text_theme: TextTheme,
 }
 
 impl ThemeData {
@@ -384,6 +390,15 @@ impl ThemeData {
             navigation_bar_theme: NavigationBarThemeData::new(),
             navigation_drawer_theme: NavigationDrawerThemeData::new(),
             carousel_view_theme: CarouselViewThemeData::new(),
+            // Upstream's `ThemeData` builds these from `Typography` and the
+            // scheme: the body colour on a light theme is black, and the
+            // primary text theme is what reads on `primaryColor`.
+            text_theme: Typography::english_like().apply_color(color_scheme.on_surface),
+            primary_text_theme: Typography::english_like().apply_color(if is_dark {
+                color_scheme.on_surface
+            } else {
+                color_scheme.on_primary
+            }),
         }
     }
 
@@ -751,6 +766,8 @@ impl ThemeData {
                 &b.carousel_view_theme,
                 t,
             ),
+            text_theme: TextTheme::lerp(&a.text_theme, &b.text_theme, t),
+            primary_text_theme: TextTheme::lerp(&a.primary_text_theme, &b.primary_text_theme, t),
         }
     }
 

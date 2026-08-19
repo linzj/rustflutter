@@ -5242,6 +5242,515 @@ impl CarouselViewTheme {
     }
 }
 
+// -- Typography (upstream `material/text_theme.dart`, `typography.dart`) ------
+
+/// Upstream `TextTheme`: the fifteen named styles a Material theme carries.
+///
+/// Material 3's names are a grid: three sizes each of display, headline,
+/// title, body and label. A control asks for the role rather than for a size
+/// -- a button's label is `labelLarge` wherever it is -- which is what lets
+/// one typography swap resize an application coherently.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextTheme {
+    pub display_large: Option<TextStyle>,
+    pub display_medium: Option<TextStyle>,
+    pub display_small: Option<TextStyle>,
+    pub headline_large: Option<TextStyle>,
+    pub headline_medium: Option<TextStyle>,
+    pub headline_small: Option<TextStyle>,
+    pub title_large: Option<TextStyle>,
+    pub title_medium: Option<TextStyle>,
+    pub title_small: Option<TextStyle>,
+    pub body_large: Option<TextStyle>,
+    pub body_medium: Option<TextStyle>,
+    pub body_small: Option<TextStyle>,
+    pub label_large: Option<TextStyle>,
+    pub label_medium: Option<TextStyle>,
+    pub label_small: Option<TextStyle>,
+}
+
+impl TextTheme {
+    pub fn new() -> TextTheme {
+        TextTheme::default()
+    }
+
+    /// Upstream `TextTheme.merge`: this theme's styles where it has them,
+    /// the other's where it does not.
+    pub fn merge(&self, other: &TextTheme) -> TextTheme {
+        TextTheme {
+            display_large: self
+                .display_large
+                .clone()
+                .or_else(|| other.display_large.clone()),
+            display_medium: self
+                .display_medium
+                .clone()
+                .or_else(|| other.display_medium.clone()),
+            display_small: self
+                .display_small
+                .clone()
+                .or_else(|| other.display_small.clone()),
+            headline_large: self
+                .headline_large
+                .clone()
+                .or_else(|| other.headline_large.clone()),
+            headline_medium: self
+                .headline_medium
+                .clone()
+                .or_else(|| other.headline_medium.clone()),
+            headline_small: self
+                .headline_small
+                .clone()
+                .or_else(|| other.headline_small.clone()),
+            title_large: self
+                .title_large
+                .clone()
+                .or_else(|| other.title_large.clone()),
+            title_medium: self
+                .title_medium
+                .clone()
+                .or_else(|| other.title_medium.clone()),
+            title_small: self
+                .title_small
+                .clone()
+                .or_else(|| other.title_small.clone()),
+            body_large: self.body_large.clone().or_else(|| other.body_large.clone()),
+            body_medium: self
+                .body_medium
+                .clone()
+                .or_else(|| other.body_medium.clone()),
+            body_small: self.body_small.clone().or_else(|| other.body_small.clone()),
+            label_large: self
+                .label_large
+                .clone()
+                .or_else(|| other.label_large.clone()),
+            label_medium: self
+                .label_medium
+                .clone()
+                .or_else(|| other.label_medium.clone()),
+            label_small: self
+                .label_small
+                .clone()
+                .or_else(|| other.label_small.clone()),
+        }
+    }
+
+    /// Upstream `TextTheme.apply`, narrowed to the colour: every style that
+    /// is set takes it.
+    pub fn apply_color(&self, color: Color) -> TextTheme {
+        let recolour = |style: &Option<TextStyle>| {
+            style.as_ref().map(|style| TextStyle {
+                color,
+                ..style.clone()
+            })
+        };
+        TextTheme {
+            display_large: recolour(&self.display_large),
+            display_medium: recolour(&self.display_medium),
+            display_small: recolour(&self.display_small),
+            headline_large: recolour(&self.headline_large),
+            headline_medium: recolour(&self.headline_medium),
+            headline_small: recolour(&self.headline_small),
+            title_large: recolour(&self.title_large),
+            title_medium: recolour(&self.title_medium),
+            title_small: recolour(&self.title_small),
+            body_large: recolour(&self.body_large),
+            body_medium: recolour(&self.body_medium),
+            body_small: recolour(&self.body_small),
+            label_large: recolour(&self.label_large),
+            label_medium: recolour(&self.label_medium),
+            label_small: recolour(&self.label_small),
+        }
+    }
+
+    /// Upstream `TextTheme.lerp`.
+    pub fn lerp(a: &TextTheme, b: &TextTheme, t: f32) -> TextTheme {
+        TextTheme {
+            display_large: lerp_nearer(&a.display_large, &b.display_large, t),
+            display_medium: lerp_nearer(&a.display_medium, &b.display_medium, t),
+            display_small: lerp_nearer(&a.display_small, &b.display_small, t),
+            headline_large: lerp_nearer(&a.headline_large, &b.headline_large, t),
+            headline_medium: lerp_nearer(&a.headline_medium, &b.headline_medium, t),
+            headline_small: lerp_nearer(&a.headline_small, &b.headline_small, t),
+            title_large: lerp_nearer(&a.title_large, &b.title_large, t),
+            title_medium: lerp_nearer(&a.title_medium, &b.title_medium, t),
+            title_small: lerp_nearer(&a.title_small, &b.title_small, t),
+            body_large: lerp_nearer(&a.body_large, &b.body_large, t),
+            body_medium: lerp_nearer(&a.body_medium, &b.body_medium, t),
+            body_small: lerp_nearer(&a.body_small, &b.body_small, t),
+            label_large: lerp_nearer(&a.label_large, &b.label_large, t),
+            label_medium: lerp_nearer(&a.label_medium, &b.label_medium, t),
+            label_small: lerp_nearer(&a.label_small, &b.label_small, t),
+        }
+    }
+}
+
+/// Upstream `Typography`: the geometries a `TextTheme` is built from.
+///
+/// Three of them, because a script's metrics are not the Latin alphabet's:
+/// `english_like` for scripts with the Latin alphabet's proportions, `dense`
+/// for Chinese, Japanese and Korean, and `tall` for scripts that need more
+/// room above and below. Upstream picks by locale; this exposes the three
+/// and leaves the picking to the localisation wave (`E4`).
+///
+/// The tables are the Material 3 ones (`_M3Typography`), generated by
+/// parsing upstream rather than copied: forty-five rows of four numbers is
+/// not something to transcribe by hand.
+///
+/// # In Material 3 the three tables carry the same numbers
+///
+/// This surprises, and it is upstream's doing rather than this port's.
+/// Material 2's geometries really did differ in size and line height;
+/// Material 3's differ in **one field only** -- `dense` sets
+/// `textBaseline: ideographic` where the other two set `alphabetic`, and
+/// `english_like` and `tall` are identical throughout. The regression line
+/// below asserts that, so that a reader who expects three different tables
+/// finds out why there are not.
+///
+/// **Recorded divergence:** this crate's [`TextStyle`](crate::engine::TextStyle)
+/// carries no baseline -- the engine's text ABI takes none -- so the one
+/// field that distinguishes `dense` is dropped, and all three functions
+/// currently answer the same numbers. They stay three functions because the
+/// distinction is upstream's and returns the moment the baseline can be
+/// carried; collapsing them into one would bake the limitation into the
+/// API.
+pub struct Typography;
+
+impl Typography {
+    /// Upstream `Typography.englishLike2021`.
+    pub fn english_like() -> TextTheme {
+        TextTheme {
+            display_large: Some(TextStyle {
+                font_size: 57.0,
+                font_weight: 400,
+                letter_spacing: Some(-0.25),
+                height: Some(1.12),
+                ..TextStyle::default()
+            }),
+            display_medium: Some(TextStyle {
+                font_size: 45.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.16),
+                ..TextStyle::default()
+            }),
+            display_small: Some(TextStyle {
+                font_size: 36.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.22),
+                ..TextStyle::default()
+            }),
+            headline_large: Some(TextStyle {
+                font_size: 32.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.25),
+                ..TextStyle::default()
+            }),
+            headline_medium: Some(TextStyle {
+                font_size: 28.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.29),
+                ..TextStyle::default()
+            }),
+            headline_small: Some(TextStyle {
+                font_size: 24.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            title_large: Some(TextStyle {
+                font_size: 22.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.27),
+                ..TextStyle::default()
+            }),
+            title_medium: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 500,
+                letter_spacing: Some(0.15),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            title_small: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_large: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 400,
+                letter_spacing: Some(0.50),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            body_medium: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 400,
+                letter_spacing: Some(0.25),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_small: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 400,
+                letter_spacing: Some(0.40),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_large: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            label_medium: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_small: Some(TextStyle {
+                font_size: 11.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.45),
+                ..TextStyle::default()
+            }),
+        }
+    }
+
+    /// Upstream `Typography.dense2021`.
+    pub fn dense() -> TextTheme {
+        TextTheme {
+            display_large: Some(TextStyle {
+                font_size: 57.0,
+                font_weight: 400,
+                letter_spacing: Some(-0.25),
+                height: Some(1.12),
+                ..TextStyle::default()
+            }),
+            display_medium: Some(TextStyle {
+                font_size: 45.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.16),
+                ..TextStyle::default()
+            }),
+            display_small: Some(TextStyle {
+                font_size: 36.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.22),
+                ..TextStyle::default()
+            }),
+            headline_large: Some(TextStyle {
+                font_size: 32.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.25),
+                ..TextStyle::default()
+            }),
+            headline_medium: Some(TextStyle {
+                font_size: 28.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.29),
+                ..TextStyle::default()
+            }),
+            headline_small: Some(TextStyle {
+                font_size: 24.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            title_large: Some(TextStyle {
+                font_size: 22.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.27),
+                ..TextStyle::default()
+            }),
+            title_medium: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 500,
+                letter_spacing: Some(0.15),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            title_small: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_large: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 400,
+                letter_spacing: Some(0.50),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            body_medium: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 400,
+                letter_spacing: Some(0.25),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_small: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 400,
+                letter_spacing: Some(0.40),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_large: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            label_medium: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_small: Some(TextStyle {
+                font_size: 11.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.45),
+                ..TextStyle::default()
+            }),
+        }
+    }
+
+    /// Upstream `Typography.tall2021`.
+    pub fn tall() -> TextTheme {
+        TextTheme {
+            display_large: Some(TextStyle {
+                font_size: 57.0,
+                font_weight: 400,
+                letter_spacing: Some(-0.25),
+                height: Some(1.12),
+                ..TextStyle::default()
+            }),
+            display_medium: Some(TextStyle {
+                font_size: 45.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.16),
+                ..TextStyle::default()
+            }),
+            display_small: Some(TextStyle {
+                font_size: 36.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.22),
+                ..TextStyle::default()
+            }),
+            headline_large: Some(TextStyle {
+                font_size: 32.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.25),
+                ..TextStyle::default()
+            }),
+            headline_medium: Some(TextStyle {
+                font_size: 28.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.29),
+                ..TextStyle::default()
+            }),
+            headline_small: Some(TextStyle {
+                font_size: 24.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            title_large: Some(TextStyle {
+                font_size: 22.0,
+                font_weight: 400,
+                letter_spacing: Some(0.00),
+                height: Some(1.27),
+                ..TextStyle::default()
+            }),
+            title_medium: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 500,
+                letter_spacing: Some(0.15),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            title_small: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_large: Some(TextStyle {
+                font_size: 16.0,
+                font_weight: 400,
+                letter_spacing: Some(0.50),
+                height: Some(1.50),
+                ..TextStyle::default()
+            }),
+            body_medium: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 400,
+                letter_spacing: Some(0.25),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            body_small: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 400,
+                letter_spacing: Some(0.40),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_large: Some(TextStyle {
+                font_size: 14.0,
+                font_weight: 500,
+                letter_spacing: Some(0.10),
+                height: Some(1.43),
+                ..TextStyle::default()
+            }),
+            label_medium: Some(TextStyle {
+                font_size: 12.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.33),
+                ..TextStyle::default()
+            }),
+            label_small: Some(TextStyle {
+                font_size: 11.0,
+                font_weight: 500,
+                letter_spacing: Some(0.50),
+                height: Some(1.45),
+                ..TextStyle::default()
+            }),
+        }
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -6670,5 +7179,103 @@ mod tests {
         );
         assert_eq!(themed.padding, Some(EdgeInsets::all(8.0)));
         assert_eq!(themed.background_color, Some(Color::argb(255, 5, 5, 5)));
+    }
+
+    #[test]
+    fn the_material_three_type_scale_is_upstreams() {
+        let english = Typography::english_like();
+        // Spot-checks against `_M3Typography.englishLike`, one per family,
+        // because the generator is only as trustworthy as a value read back
+        // from the other side.
+        let display = english.display_large.expect("set");
+        assert_eq!(display.font_size, 57.0);
+        assert_eq!(display.font_weight, 400);
+        assert_eq!(display.letter_spacing, Some(-0.25));
+
+        let title = english.title_medium.expect("set");
+        assert_eq!(title.font_size, 16.0);
+        assert_eq!(title.font_weight, 500);
+
+        let label = english.label_small.expect("set");
+        assert_eq!(label.font_size, 11.0);
+        assert_eq!(label.height, Some(1.45));
+
+        // Every one of the fifteen is filled in, in all three geometries.
+        for theme in [
+            Typography::english_like(),
+            Typography::dense(),
+            Typography::tall(),
+        ] {
+            assert!(theme.display_large.is_some());
+            assert!(theme.body_medium.is_some());
+            assert!(theme.label_small.is_some());
+        }
+    }
+
+    #[test]
+    fn the_material_three_geometries_carry_the_same_numbers() {
+        // This is upstream's doing and worth pinning. Material 2's three
+        // geometries differed in size and line height; Material 3's differ in
+        // `textBaseline` alone -- `dense` is ideographic, the other two are
+        // alphabetic -- and `englishLike` and `tall` are identical
+        // throughout. This port's `TextStyle` carries no baseline, so all
+        // three answer the same table; the line is here so that a reader who
+        // expects three different tables learns why there is one.
+        let english = Typography::english_like();
+        let dense = Typography::dense();
+        let tall = Typography::tall();
+        assert_eq!(english.body_medium, dense.body_medium);
+        assert_eq!(english.body_medium, tall.body_medium);
+        assert_eq!(english.display_large, tall.display_large);
+    }
+
+    #[test]
+    fn a_text_theme_merges_and_recolours() {
+        use crate::engine::TextStyle;
+
+        let mine = TextTheme {
+            body_medium: Some(TextStyle {
+                font_size: 99.0,
+                ..TextStyle::default()
+            }),
+            ..TextTheme::new()
+        };
+        let merged = mine.merge(&Typography::english_like());
+        assert_eq!(merged.body_medium.expect("set").font_size, 99.0);
+        assert_eq!(
+            merged.display_large.expect("from the other").font_size,
+            57.0
+        );
+
+        // `apply_color` reaches every style that is set and leaves the unset
+        // ones unset -- a theme with three styles does not gain twelve.
+        let recoloured = mine.apply_color(Color::argb(255, 1, 2, 3));
+        assert_eq!(
+            recoloured.body_medium.expect("set").color,
+            Color::argb(255, 1, 2, 3)
+        );
+        assert!(recoloured.display_large.is_none());
+    }
+
+    #[test]
+    fn a_theme_data_builds_its_two_text_themes_from_the_scheme() {
+        let light = ThemeData::light();
+        assert_eq!(
+            light.text_theme.body_medium.expect("built").color,
+            light.color_scheme.on_surface
+        );
+        // The primary text theme is what reads on `primaryColor`, which in a
+        // light theme is the primary itself.
+        assert_eq!(
+            light.primary_text_theme.body_medium.expect("built").color,
+            light.color_scheme.on_primary
+        );
+        // And in a dark theme the bars take the surface, so the text on them
+        // is `onSurface` rather than `onPrimary`.
+        let dark = ThemeData::dark();
+        assert_eq!(
+            dark.primary_text_theme.body_medium.expect("built").color,
+            dark.color_scheme.on_surface
+        );
     }
 }
