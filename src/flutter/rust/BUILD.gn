@@ -170,6 +170,7 @@ if (enable_unittests) {
       "rustflutter/src/reorderable_list.rs",
       "rustflutter/src/resampler.rs",
       "rustflutter/src/scrollable_helpers.rs",
+      "rustflutter/src/scaffold_messenger.rs",
       "rustflutter/src/scrollbar.rs",
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/semantics.rs",
