@@ -1764,6 +1764,23 @@
     "BitField": {
       "rust": "按需的具体位集（widget_state::WidgetStates 等）",
       "note": "上游是泛型位域工具；此侧需要位集的地方各自成型，需要具名字段的地方是 bool 结构体（semantics::SemanticsFlags）"
+    },
+    "GestureDetector": {
+      "rust": "render::RenderPointerRegion + gestures::PointerHandlers",
+      "note": "此侧手势探测器就是\"带 handlers 的命中区域\"；识别器不是对象，装配也就不需要 widget 包一层"
+    },
+    "RawGestureDetector": {
+      "rust": "同 GestureDetector",
+      "note": "上游 raw 版的区别是自带识别器工厂，此侧识别器由 handlers 里有哪些回调决定"
+    },
+    "RawGestureDetectorState": {
+      "rust": "同 GestureDetector"
+    },
+    "GestureRecognizerFactory": {
+      "rust": "gestures::PointerHandlers 的 with_* 构造链"
+    },
+    "GestureRecognizerFactoryWithHandlers": {
+      "rust": "同 GestureRecognizerFactory"
     }
   },
   "blocked_engine": {
@@ -1805,7 +1822,32 @@
     "DarwinPlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
     "UiKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
     "AppKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
-    "PlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）"
+    "PlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "RestorationScope": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "UnmanagedRestorationScope": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RootRestorationScope": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableProperty": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorationMixin": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableValue": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableNum": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableDouble": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableInt": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableString": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableBool": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableBoolN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableNumN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableDoubleN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableIntN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableStringN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableDateTime": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableDateTimeN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableListenable": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableChangeNotifier": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableTextEditingController": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableEnumN": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorableEnum": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorationManager": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）",
+    "RestorationBucket": "restoration 全家：引擎与框架两侧皆零（PORTING_PLAN 门控表）"
   },
   "out_of_scope_files": {
     "raw_keyboard.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
@@ -1815,7 +1857,8 @@
     "raw_keyboard_linux.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
     "raw_keyboard_macos.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
     "raw_keyboard_web.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
-    "raw_keyboard_windows.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路"
+    "raw_keyboard_windows.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "system_context_menu.dart": "整文件 iOS 专属（`isSupported` 即 `defaultTargetPlatform == iOS`），宿主集合为 Windows/Android/macOS"
   },
   "out_of_scope_classes": {
     "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",

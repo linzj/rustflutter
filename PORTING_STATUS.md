@@ -164,6 +164,24 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**widgets 层入账轮:restoration 与手势探测器(2026-08-19)。**
+
+- **restoration 全家 25 类挂引擎账**——PORTING_PLAN 门控表早已判过
+  ("引擎与框架两侧皆零"),但那 25 个类一直躺在工作队列里冒充待办:
+  `RestorationScope`/`RestorationMixin`/`RestorableProperty` 与十八个
+  `Restorable*` 值类型,加 services 侧的 `RestorationManager`/`RestorationBucket`。
+  按门控表归位。
+- **gesture_detector.dart 5 类**——`GestureDetector`/`RawGestureDetector`/
+  `RawGestureDetectorState`≙`RenderPointerRegion`+`PointerHandlers`
+  (此侧手势探测器就是"带 handlers 的命中区域");
+  `GestureRecognizerFactory`(及 WithHandlers)≙`PointerHandlers` 的 `with_*`
+  构造链——识别器不是对象,装配也就不需要工厂。余 `SemanticsGestureDelegate` 属 E3。
+- **system_context_menu.dart 整文件出范围**——`SystemContextMenu.isSupported`
+  就是 `defaultTargetPlatform == iOS`,十一个类全是 iOS 系统菜单项
+  (services 侧的对应十件上一轮已出范围)。
+
+**全量过半:934/1873(50%)。**
+
 **P8-M1 起步:颜色地基(2026-08-19)。** material 层的第一块:
 
 - **`color_scheme.rs`**——`ColorScheme` 全角色。只有九个角色是"直接给的"
