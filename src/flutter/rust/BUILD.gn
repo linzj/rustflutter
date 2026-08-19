@@ -105,6 +105,7 @@ if (enable_unittests) {
       "rustflutter/src/async.rs",
       "rustflutter/src/borders.rs",
       "rustflutter/src/cupertino.rs",
+      "rustflutter/src/elevation_overlay.rs",
       "rustflutter/src/engine.rs",
       "rustflutter/src/engine_test_stubs.rs",
       "rustflutter/src/animation.rs",
