@@ -2229,6 +2229,258 @@ impl RoundedToCircleBorder {
 
 /// Upstream `ShapeBorder` and every concrete subclass, as one enum -- plus
 /// `_CompoundBorder` as a variant and the private transition shapes as
+// -- Input borders (upstream `material/input_border.dart`) --------------------
+
+/// Upstream `UnderlineInputBorder`: a rule under a text field, with the top
+/// two corners rounded so the filled shape above it reads as one box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnderlineInputBorder {
+    pub side: BorderSide,
+    pub border_radius: BorderRadius,
+}
+
+impl UnderlineInputBorder {
+    /// Upstream's default: four at the top, square at the bottom, so the rule
+    /// meets the fill's edges flush.
+    pub fn new(side: BorderSide) -> UnderlineInputBorder {
+        UnderlineInputBorder {
+            side,
+            border_radius: BorderRadius::only(
+                Radius::circular(4.0),
+                Radius::circular(4.0),
+                Radius::ZERO,
+                Radius::ZERO,
+            ),
+        }
+    }
+
+    pub fn with_border_radius(mut self, border_radius: BorderRadius) -> Self {
+        self.border_radius = border_radius;
+        self
+    }
+
+    /// Upstream `getOuterPath`: the whole rounded box, not the rule -- the
+    /// path is what the field is clipped and filled to.
+    pub fn outer_path(&self, rect: Rect) -> RenderPath {
+        self.border_radius.to_rrect(rect).to_path()
+    }
+
+    /// Upstream `getInnerPath`: the box less the rule's width, which is what
+    /// the fill stops at.
+    pub fn inner_rect(&self, rect: Rect) -> Rect {
+        Rect::ltrb(
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.top + (rect.height() - self.side.width).max(0.0),
+        )
+    }
+
+    /// Upstream `paint`: the rule alone, along the bottom edge.
+    ///
+    /// Upstream clamps the two bottom radii to half the height before
+    /// drawing, "to prevent the border from leaking the color due to
+    /// anti-aliasing rounding errors"; the same clamp is here.
+    pub fn paint(&self, canvas: &mut Canvas, rect: Rect) {
+        if self.side.style == BorderStyle::None {
+            return;
+        }
+        let half_height = Radius::circular(rect.height() / 2.0);
+        let bottom_left = clamp_radius(self.border_radius.bottom_left, half_height);
+        let bottom_right = clamp_radius(self.border_radius.bottom_right, half_height);
+        if bottom_left != Radius::ZERO || bottom_right != Radius::ZERO {
+            // A rounded rule is the bottom of a rounded rect, so it is drawn
+            // as the stroke of one whose top corners are square.
+            let rounded = BorderRadius::only(Radius::ZERO, Radius::ZERO, bottom_left, bottom_right);
+            let inset = self.side.width / 2.0;
+            let stroked = Rect::ltrb(
+                rect.left + inset,
+                rect.top,
+                rect.right - inset,
+                rect.bottom - inset,
+            );
+            canvas.draw_path(&rounded.to_rrect(stroked).to_path(), &self.side.to_paint());
+            return;
+        }
+        let y = rect.bottom - self.side.width / 2.0;
+        let mut path = RenderPath::new();
+        path.move_to(rect.left, y);
+        path.line_to(rect.right, y);
+        canvas.draw_path(&path, &self.side.to_paint());
+    }
+
+    /// Upstream `scale`.
+    pub fn scale(&self, t: f32) -> UnderlineInputBorder {
+        UnderlineInputBorder {
+            side: self.side.scale(t),
+            border_radius: scale_border_radius(self.border_radius, t),
+        }
+    }
+
+    /// Upstream `lerpFrom` / `lerpTo` between two of these.
+    pub fn lerp(
+        a: &UnderlineInputBorder,
+        b: &UnderlineInputBorder,
+        t: f32,
+    ) -> UnderlineInputBorder {
+        UnderlineInputBorder {
+            side: BorderSide::lerp(a.side, b.side, t),
+            border_radius: BorderRadius::lerp(a.border_radius, b.border_radius, t),
+        }
+    }
+}
+
+/// Upstream `OutlineInputBorder`: a rounded rectangle around the field, with
+/// a gap in its top edge for the floating label to sit in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineInputBorder {
+    pub side: BorderSide,
+    pub border_radius: BorderRadius,
+    /// How much clear space the gap leaves on each side of the label.
+    pub gap_padding: f32,
+}
+
+impl OutlineInputBorder {
+    pub fn new(side: BorderSide) -> OutlineInputBorder {
+        OutlineInputBorder {
+            side,
+            // Upstream's default: four all round.
+            border_radius: BorderRadius::circular(4.0),
+            gap_padding: 4.0,
+        }
+    }
+
+    pub fn with_border_radius(mut self, border_radius: BorderRadius) -> Self {
+        self.border_radius = border_radius;
+        self
+    }
+
+    pub fn with_gap_padding(mut self, gap_padding: f32) -> Self {
+        debug_assert!(gap_padding >= 0.0, "a gap's padding is not negative");
+        self.gap_padding = gap_padding;
+        self
+    }
+
+    /// Upstream `getOuterPath`.
+    pub fn outer_path(&self, rect: Rect) -> RenderPath {
+        self.border_radius.to_rrect(rect).to_path()
+    }
+
+    /// Upstream `paint`, with the gap the floating label sits in.
+    ///
+    /// `gap_start` is where the label begins along the top edge and
+    /// `gap_extent` how wide it is; `gap_percentage` is how far the label has
+    /// floated up, so that the gap opens as the label rises rather than
+    /// appearing all at once. No gap at all is the plain rounded rectangle.
+    pub fn paint_with_gap(
+        &self,
+        canvas: &mut Canvas,
+        rect: Rect,
+        gap_start: Option<f32>,
+        gap_extent: f32,
+        gap_percentage: f32,
+    ) {
+        debug_assert!((0.0..=1.0).contains(&gap_percentage));
+        let paint = self.side.to_paint();
+        // Upstream deflates by half the stroke, so the border is drawn on the
+        // rectangle rather than half outside it.
+        let deflated = rect_inflate(rect, -self.side.width / 2.0);
+        let Some(gap_start) = gap_start else {
+            canvas.draw_path(&self.border_radius.to_rrect(deflated).to_path(), &paint);
+            return;
+        };
+        if gap_extent <= 0.0 || gap_percentage == 0.0 {
+            canvas.draw_path(&self.border_radius.to_rrect(deflated).to_path(), &paint);
+            return;
+        }
+        let extent = (gap_extent + self.gap_padding * 2.0) * gap_percentage;
+        let start = (gap_start - self.gap_padding).max(0.0);
+        canvas.draw_path(&self.gap_path(deflated, start, extent), &paint);
+    }
+
+    /// Upstream `_gapBorderPath`: the rounded rectangle walked as an open
+    /// path, from the far side of the gap round to the near side of it.
+    fn gap_path(&self, rect: Rect, start: f32, extent: f32) -> RenderPath {
+        let radius = self.border_radius.to_rrect(rect);
+        let mut path = RenderPath::new();
+        // The top edge, right of the gap, to the top-right corner.
+        let gap_end = (start + extent).min(rect.right - rect.left);
+        path.move_to(rect.left + gap_end, rect.top);
+        path.line_to(rect.right - radius.top_right.x, rect.top);
+        path.quadratic_to(
+            rect.right,
+            rect.top,
+            rect.right,
+            rect.top + radius.top_right.y,
+        );
+        // Down the right side, along the bottom, up the left side.
+        path.line_to(rect.right, rect.bottom - radius.bottom_right.y);
+        path.quadratic_to(
+            rect.right,
+            rect.bottom,
+            rect.right - radius.bottom_right.x,
+            rect.bottom,
+        );
+        path.line_to(rect.left + radius.bottom_left.x, rect.bottom);
+        path.quadratic_to(
+            rect.left,
+            rect.bottom,
+            rect.left,
+            rect.bottom - radius.bottom_left.y,
+        );
+        path.line_to(rect.left, rect.top + radius.top_left.y);
+        path.quadratic_to(rect.left, rect.top, rect.left + radius.top_left.x, rect.top);
+        // And back along the top edge to where the gap starts.
+        path.line_to(rect.left + start, rect.top);
+        path
+    }
+
+    /// Upstream `scale`.
+    pub fn scale(&self, t: f32) -> OutlineInputBorder {
+        OutlineInputBorder {
+            side: self.side.scale(t),
+            border_radius: scale_border_radius(self.border_radius, t),
+            gap_padding: self.gap_padding,
+        }
+    }
+
+    /// Upstream `lerpFrom` / `lerpTo` between two of these.
+    ///
+    /// `gapPadding` is not interpolated: upstream asserts the two are equal
+    /// and keeps `a`'s, because a gap that changed width mid-animation would
+    /// slide the label's clearance out from under it.
+    pub fn lerp(a: &OutlineInputBorder, b: &OutlineInputBorder, t: f32) -> OutlineInputBorder {
+        OutlineInputBorder {
+            side: BorderSide::lerp(a.side, b.side, t),
+            border_radius: BorderRadius::lerp(a.border_radius, b.border_radius, t),
+            gap_padding: a.gap_padding,
+        }
+    }
+}
+
+/// A radius set scaled -- upstream's `BorderRadius * t`.
+fn scale_border_radius(radius: BorderRadius, t: f32) -> BorderRadius {
+    let scale = |r: Radius| Radius {
+        x: r.x * t,
+        y: r.y * t,
+    };
+    BorderRadius::only(
+        scale(radius.top_left),
+        scale(radius.top_right),
+        scale(radius.bottom_left),
+        scale(radius.bottom_right),
+    )
+}
+
+/// A radius clamped to a maximum on both axes -- upstream's
+/// `Radius.clamp(maximum:)`.
+fn clamp_radius(radius: Radius, maximum: Radius) -> Radius {
+    Radius {
+        x: radius.x.min(maximum.x),
+        y: radius.y.min(maximum.y),
+    }
+}
+
 /// variants, so `lerp` keeps upstream's exact morph arithmetic.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShapeBorder {
@@ -2247,6 +2499,10 @@ pub enum ShapeBorder {
     Linear(LinearBorder),
     /// `StarBorder`, stars and polygons.
     Star(StarBorder),
+    /// `UnderlineInputBorder`: a rule under a text field.
+    Underline(UnderlineInputBorder),
+    /// `OutlineInputBorder`: a box round one, with a gap for the label.
+    Outline(OutlineInputBorder),
     /// `_StadiumToCircleBorder`.
     StadiumToCircle(StadiumToCircleBorder),
     /// `_StadiumToRoundedRectangleBorder`.
@@ -2273,6 +2529,15 @@ impl ShapeBorder {
             ShapeBorder::Oval(shape) => outlined(&shape.side),
             ShapeBorder::Stadium(shape) => outlined(&shape.side),
             ShapeBorder::Linear(shape) => shape.dimensions(),
+            // Upstream `InputBorder.dimensions`: the rule insets the bottom
+            // alone, the outline insets all four.
+            ShapeBorder::Underline(shape) => EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: shape.side.width,
+            }),
+            ShapeBorder::Outline(shape) => outlined(&shape.side),
             ShapeBorder::Star(shape) => outlined(&shape.side),
             ShapeBorder::Beveled(shape) => outlined(&shape.side),
             // Upstream `ContinuousRectangleBorder.dimensions`.
@@ -2299,6 +2564,8 @@ impl ShapeBorder {
             ShapeBorder::Oval(shape) => Some(shape.side),
             ShapeBorder::Stadium(shape) => Some(shape.side),
             ShapeBorder::Linear(shape) => Some(shape.side),
+            ShapeBorder::Underline(shape) => Some(shape.side),
+            ShapeBorder::Outline(shape) => Some(shape.side),
             ShapeBorder::Star(shape) => Some(shape.side),
             ShapeBorder::Beveled(shape) => Some(shape.side),
             ShapeBorder::Continuous(shape) => Some(shape.side),
@@ -2355,6 +2622,8 @@ impl ShapeBorder {
                     rrect.to_path()
                 }
             }
+            ShapeBorder::Underline(shape) => shape.outer_path(rect),
+            ShapeBorder::Outline(shape) => shape.outer_path(rect),
             ShapeBorder::Compound(borders) => borders[0].outer_path(rect, direction),
         }
     }
@@ -2429,6 +2698,18 @@ impl ShapeBorder {
                     .to_rrect(rect)
                     .deflate(shape.side.width),
             ),
+            // Upstream `UnderlineInputBorder.getInnerPath` is the box less
+            // the rule's width; the outline's is the box deflated all round.
+            ShapeBorder::Underline(shape) => {
+                let mut path = RenderPath::new();
+                path.add_rect(shape.inner_rect(rect));
+                path
+            }
+            ShapeBorder::Outline(shape) => shape
+                .border_radius
+                .to_rrect(rect)
+                .deflate(shape.side.width)
+                .to_path(),
             ShapeBorder::StadiumToCircle(shape) => shape
                 .rrect(rect)
                 .deflate(shape.side.stroke_inset())
@@ -2478,6 +2759,11 @@ impl ShapeBorder {
             ShapeBorder::Stadium(_) => stadium_rrect(rect).contains(position),
             // The outer path is the whole rectangle.
             ShapeBorder::Linear(_) => rect_contains(rect, position),
+            // Both input borders are the field's own rectangle as far as a
+            // finger is concerned: upstream's `getOuterPath` for each is the
+            // rounded box, not the rule.
+            ShapeBorder::Underline(shape) => shape.border_radius.to_rrect(rect).contains(position),
+            ShapeBorder::Outline(shape) => shape.border_radius.to_rrect(rect).contains(position),
             ShapeBorder::Star(shape) => polygon_contains(&star_hit_vertices(shape, rect), position),
             ShapeBorder::Beveled(shape) => polygon_contains(
                 &beveled_vertices(shape.border_radius.resolve(direction).to_rrect(rect)),
@@ -2534,6 +2820,8 @@ impl ShapeBorder {
                 ShapeBorder::Stadium(StadiumBorder::new(shape.side.scale(t)))
             }
             ShapeBorder::Linear(shape) => ShapeBorder::Linear(shape.scale(t)),
+            ShapeBorder::Underline(shape) => ShapeBorder::Underline(shape.scale(t)),
+            ShapeBorder::Outline(shape) => ShapeBorder::Outline(shape.scale(t)),
             ShapeBorder::Star(shape) => ShapeBorder::Star(shape.scale(t)),
             ShapeBorder::Beveled(shape) => ShapeBorder::Beveled(BeveledRectangleBorder::new(
                 shape.side.scale(t),
@@ -2727,6 +3015,12 @@ impl ShapeBorder {
             )),
             (ShapeBorder::Linear(a), ShapeBorder::Linear(b)) => {
                 Some(ShapeBorder::Linear(LinearBorder::lerp(a, b, t)))
+            }
+            (ShapeBorder::Underline(a), ShapeBorder::Underline(b)) => {
+                Some(ShapeBorder::Underline(UnderlineInputBorder::lerp(a, b, t)))
+            }
+            (ShapeBorder::Outline(a), ShapeBorder::Outline(b)) => {
+                Some(ShapeBorder::Outline(OutlineInputBorder::lerp(a, b, t)))
             }
             (ShapeBorder::Star(a), ShapeBorder::Star(b)) => {
                 Some(ShapeBorder::Star(StarBorder::lerp_star(a, b, t)))
@@ -2986,6 +3280,12 @@ impl ShapeBorder {
             }
             (ShapeBorder::Linear(a), ShapeBorder::Linear(b)) => {
                 Some(ShapeBorder::Linear(LinearBorder::lerp(a, b, t)))
+            }
+            (ShapeBorder::Underline(a), ShapeBorder::Underline(b)) => {
+                Some(ShapeBorder::Underline(UnderlineInputBorder::lerp(a, b, t)))
+            }
+            (ShapeBorder::Outline(a), ShapeBorder::Outline(b)) => {
+                Some(ShapeBorder::Outline(OutlineInputBorder::lerp(a, b, t)))
             }
             (ShapeBorder::Star(a), ShapeBorder::Star(b)) => {
                 Some(ShapeBorder::Star(StarBorder::lerp_star(a, b, t)))
@@ -3255,6 +3555,10 @@ impl ShapeBorder {
                 canvas.draw_path(&border_rect.to_path(), &shape.side.to_paint());
             }
             ShapeBorder::Linear(shape) => shape.paint(canvas, rect, direction),
+            ShapeBorder::Underline(shape) => shape.paint(canvas, rect),
+            // A shape border has no gap to be told about; a text field that
+            // wants one calls `paint_with_gap` itself.
+            ShapeBorder::Outline(shape) => shape.paint_with_gap(canvas, rect, None, 0.0, 0.0),
             ShapeBorder::Star(shape) => {
                 if shape.side.style == BorderStyle::None {
                     return;
@@ -5651,5 +5955,79 @@ mod table_border_tests {
             ..border
         };
         rounded.paint(&mut canvas, Rect::xywh(0.0, 0.0, 200.0, 100.0), &[], &[]);
+    }
+
+    #[test]
+    fn an_underline_border_insets_only_its_bottom() {
+        let side = BorderSide {
+            color: Color::BLACK,
+            width: 2.0,
+            ..BorderSide::NONE
+        };
+        let shape = ShapeBorder::Underline(UnderlineInputBorder::new(side));
+        let insets = shape
+            .dimensions()
+            .resolve(crate::direction::TextDirection::Ltr);
+        assert_eq!(insets.bottom, 2.0);
+        assert_eq!(insets.top, 0.0);
+        assert_eq!(insets.left, 0.0);
+
+        // The inner path is the box less the rule, which is where the fill
+        // stops -- upstream's `getInnerPath`.
+        let border = UnderlineInputBorder::new(side);
+        let inner = border.inner_rect(Rect::ltrb(0.0, 0.0, 100.0, 40.0));
+        assert_eq!(inner.bottom, 38.0);
+        assert_eq!(inner.right, 100.0);
+    }
+
+    #[test]
+    fn an_outline_border_insets_all_four_and_keeps_its_gap_padding_across_a_lerp() {
+        let thin = OutlineInputBorder::new(BorderSide {
+            color: Color::BLACK,
+            width: 1.0,
+            ..BorderSide::NONE
+        })
+        .with_gap_padding(6.0);
+        let thick = OutlineInputBorder::new(BorderSide {
+            color: Color::BLACK,
+            width: 5.0,
+            ..BorderSide::NONE
+        })
+        .with_gap_padding(6.0);
+
+        let half = OutlineInputBorder::lerp(&thin, &thick, 0.5);
+        assert_eq!(half.side.width, 3.0);
+        // Upstream asserts the two paddings are equal and keeps the first:
+        // a gap that changed width mid-animation would slide the label's
+        // clearance out from under it.
+        assert_eq!(half.gap_padding, 6.0);
+
+        let shape = ShapeBorder::Outline(thin);
+        let insets = shape
+            .dimensions()
+            .resolve(crate::direction::TextDirection::Ltr);
+        assert_eq!(insets.top, insets.bottom);
+        assert_eq!(insets.left, insets.right);
+    }
+
+    #[test]
+    fn a_gapped_outline_is_an_open_path_and_a_gapless_one_is_closed() {
+        let border = OutlineInputBorder::new(BorderSide {
+            color: Color::BLACK,
+            width: 1.0,
+            ..BorderSide::NONE
+        });
+        let rect = Rect::ltrb(0.0, 0.0, 200.0, 56.0);
+        let mut canvas = Canvas::new(200.0, 100.0);
+
+        // No gap: the plain rounded rectangle.
+        border.paint_with_gap(&mut canvas, rect, None, 0.0, 0.0);
+        // A gap that has not opened yet is the same.
+        border.paint_with_gap(&mut canvas, rect, Some(40.0), 60.0, 0.0);
+        // And an open one draws the walked path instead. Both reach the
+        // canvas without panicking, which is what a geometry with a
+        // percentage in it has to be checked for at the ends of its range.
+        border.paint_with_gap(&mut canvas, rect, Some(40.0), 60.0, 1.0);
+        border.paint_with_gap(&mut canvas, rect, Some(40.0), 60.0, 0.5);
     }
 }

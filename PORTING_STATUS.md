@@ -164,6 +164,22 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:输入边框(2026-08-19)。** `UnderlineInputBorder`/
+`OutlineInputBorder` 落进 `borders.rs`,并作为 `ShapeBorder` 的两个新变体接进
+全部九处 match(dimensions/side/outer_path/inner_path/scale/hit/paint/两处
+lerp)。`InputBorder` 抽象基类入账为"这两个变体"。
+
+**`OutlineInputBorder` 的缺口是它的全部要点**:上边框要为浮起的标签让开一段,
+而且是随标签升起**逐渐张开**的(`gapPercentage`)。`gap_path` 照抄上游
+`_gapBorderPath` 的走法——从缺口右端起,顺时针绕完三边,回到缺口左端,是一条
+**开放**路径。回归线在 percentage 的 0、0.5、1 三点都画一遍:带百分比的几何
+就得在区间两端各验一次。
+
+`UnderlineInputBorder` 画圆角规则线时,上游先把两个下角半径**钳到高度的一半**
+("防止抗锯齿的舍入让颜色漏出来"),此侧照做。
+
+余 `ShapedInputBorder`(上游较新的一件,用任意 ShapeBorder 作输入边框)未做。
+
 **P8-M1:date picker(2026-08-19)。** `DatePickerTheme(Data)`(42/44),
 组件主题里最长的一个,长得有道理:一个日期选择器是**四个面**——对话框本身、
 里面的日期网格、后面的年份网格,以及**范围选择器**。上游给范围选择器**另存

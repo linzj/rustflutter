@@ -1806,6 +1806,10 @@
     "ButtonStyleButton": {
       "rust": "components::Button",
       "note": "上游四个按钮的公共基类，此侧就是那一个 Button"
+    },
+    "InputBorder": {
+      "rust": "borders::ShapeBorder 的 Underline / Outline 两变体",
+      "note": "上游是 ShapeBorder 的抽象子类；此侧 ShapeBorder 是封闭枚举，两个具体输入边框各占一个变体，isOutline 即变体本身"
     }
   },
   "blocked_engine": {
