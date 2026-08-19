@@ -45,7 +45,8 @@ use crate::animation::{Animatable, ColorTween, Tween};
 use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
-    BadgeThemeData, CardThemeData, DividerThemeData, ProgressIndicatorThemeData, TooltipThemeData,
+    BadgeThemeData, CardThemeData, CheckboxThemeData, DividerThemeData, ProgressIndicatorThemeData,
+    RadioThemeData, SwitchThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -197,6 +198,9 @@ pub struct ThemeData {
     pub badge_theme: BadgeThemeData,
     pub tooltip_theme: TooltipThemeData,
     pub progress_indicator_theme: ProgressIndicatorThemeData,
+    pub checkbox_theme: CheckboxThemeData,
+    pub radio_theme: RadioThemeData,
+    pub switch_theme: SwitchThemeData,
 }
 
 impl ThemeData {
@@ -284,6 +288,9 @@ impl ThemeData {
             badge_theme: BadgeThemeData::new(),
             tooltip_theme: TooltipThemeData::new(),
             progress_indicator_theme: ProgressIndicatorThemeData::new(),
+            checkbox_theme: CheckboxThemeData::new(),
+            radio_theme: RadioThemeData::new(),
+            switch_theme: SwitchThemeData::new(),
         }
     }
 
@@ -353,6 +360,21 @@ impl ThemeData {
         self
     }
 
+    pub fn with_checkbox_theme(mut self, checkbox_theme: CheckboxThemeData) -> ThemeData {
+        self.checkbox_theme = checkbox_theme;
+        self
+    }
+
+    pub fn with_radio_theme(mut self, radio_theme: RadioThemeData) -> ThemeData {
+        self.radio_theme = radio_theme;
+        self
+    }
+
+    pub fn with_switch_theme(mut self, switch_theme: SwitchThemeData) -> ThemeData {
+        self.switch_theme = switch_theme;
+        self
+    }
+
     pub fn with_progress_indicator_theme(
         mut self,
         progress_indicator_theme: ProgressIndicatorThemeData,
@@ -405,6 +427,9 @@ impl ThemeData {
                 &b.progress_indicator_theme,
                 t,
             ),
+            checkbox_theme: CheckboxThemeData::lerp(&a.checkbox_theme, &b.checkbox_theme, t),
+            radio_theme: RadioThemeData::lerp(&a.radio_theme, &b.radio_theme, t),
+            switch_theme: SwitchThemeData::lerp(&a.switch_theme, &b.switch_theme, t),
         }
     }
 

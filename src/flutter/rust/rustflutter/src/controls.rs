@@ -81,19 +81,21 @@ impl Component for Checkbox {
         let handlers = self.handlers.clone();
         let label = self.label.clone();
         let body = theme.body();
-        let fill = if !enabled {
-            theme.outline
-        } else if checked {
-            theme.primary
-        } else {
-            Color::TRANSPARENT
-        };
-        let border = if enabled {
-            theme.primary
-        } else {
-            theme.outline
-        };
-        let tick = theme.on_primary;
+        // Upstream's `Checkbox.build`: the fill, the tick and the side each
+        // come off `CheckboxTheme.of(context)` resolved against the states
+        // this checkbox is in, and fall back to the scheme.
+        let mut states = crate::widget_state::WidgetStates::NONE;
+        if checked {
+            states = states.with(crate::widget_state::WidgetState::Selected);
+        }
+        if !enabled {
+            states = states.with(crate::widget_state::WidgetState::Disabled);
+        }
+        let resolved = crate::component_themes::ResolvedCheckbox::of(context, states);
+        let fill = resolved.fill;
+        let border = resolved.side.color;
+        let border_width = resolved.side.width;
+        let tick = resolved.check;
         let spacing = theme.spacing;
 
         leaf(move || {
@@ -113,7 +115,7 @@ impl Component for Checkbox {
                 .with_size(18.0, 18.0)
                 .with_color(fill)
                 .with_corner_radius(2.0)
-                .with_border(2.0, border)
+                .with_border(border_width, border)
                 .with_child(Center::new(mark));
 
             let content: crate::widgets::BoxedWidget = match &label {

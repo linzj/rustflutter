@@ -31,14 +31,18 @@
 //!   diagnostics tree is not ported (P10).
 
 use crate::animation::Tween;
-use crate::borders::{BorderRadiusGeometry, EdgeInsetsGeometry, ShapeBorder};
+use crate::borders::{BorderRadiusGeometry, BorderSide, EdgeInsetsGeometry, ShapeBorder};
 use crate::color_scheme::ColorScheme;
 use crate::controls::TooltipTriggerMode;
 use crate::engine::{Color, TextAlign, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::painting::StrokeCap;
 use crate::render::{AlignmentGeometry, BoxConstraints, Offset};
-use crate::theme::ThemeData;
+use crate::services::system::SystemMouseCursor;
+use crate::theme::{ThemeData, VisualDensity};
+use crate::widget_state::{
+    MaterialTapTargetSize, StateProperty, WidgetState, WidgetStates, lerp_state_property,
+};
 
 /// Interpolates two optional colours, as every `*ThemeData.lerp` upstream
 /// does through `Color.lerp`: a null end is a null answer before the halfway
@@ -70,6 +74,19 @@ fn lerp_f32(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
             }
         }
     }
+}
+
+/// A colour property, both ends resolved against the same states and then
+/// blended -- upstream's
+/// `WidgetStateProperty.lerp<Color?>(a, b, t, Color.lerp)`.
+fn lerp_state_color(
+    a: Option<&StateProperty<Option<Color>>>,
+    b: Option<&StateProperty<Option<Color>>>,
+    t: f32,
+) -> Option<StateProperty<Option<Color>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        lerp_color(first.flatten(), second.flatten(), t)
+    })
 }
 
 /// Anything else: taken from whichever end is nearer, which is what
@@ -526,6 +543,323 @@ impl ProgressIndicatorTheme {
     }
 }
 
+// -- Checkbox (upstream `checkbox_theme.dart`) --------------------------------
+
+/// Upstream `CheckboxThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CheckboxThemeData {
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    /// The box's fill, by state -- unset means the scheme's primary when
+    /// checked and nothing when not.
+    pub fill_color: Option<StateProperty<Option<Color>>>,
+    /// The tick.
+    pub check_color: Option<StateProperty<Option<Color>>>,
+    /// The ink under the pointer.
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub splash_radius: Option<f32>,
+    pub material_tap_target_size: Option<MaterialTapTargetSize>,
+    pub visual_density: Option<VisualDensity>,
+    pub shape: Option<ShapeBorder>,
+    pub side: Option<BorderSide>,
+}
+
+impl CheckboxThemeData {
+    pub fn new() -> CheckboxThemeData {
+        CheckboxThemeData::default()
+    }
+
+    pub fn with_fill_color(mut self, fill: StateProperty<Option<Color>>) -> Self {
+        self.fill_color = Some(fill);
+        self
+    }
+
+    pub fn with_check_color(mut self, check: StateProperty<Option<Color>>) -> Self {
+        self.check_color = Some(check);
+        self
+    }
+
+    pub fn with_side(mut self, side: BorderSide) -> Self {
+        self.side = Some(side);
+        self
+    }
+
+    pub fn with_material_tap_target_size(mut self, size: MaterialTapTargetSize) -> Self {
+        self.material_tap_target_size = Some(size);
+        self
+    }
+
+    /// Upstream `CheckboxThemeData.lerp`.
+    pub fn lerp(a: &CheckboxThemeData, b: &CheckboxThemeData, t: f32) -> CheckboxThemeData {
+        CheckboxThemeData {
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            fill_color: lerp_state_color(a.fill_color.as_ref(), b.fill_color.as_ref(), t),
+            check_color: lerp_state_color(a.check_color.as_ref(), b.check_color.as_ref(), t),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            splash_radius: lerp_f32(a.splash_radius, b.splash_radius, t),
+            material_tap_target_size: lerp_nearer(
+                &a.material_tap_target_size,
+                &b.material_tap_target_size,
+                t,
+            ),
+            visual_density: match (a.visual_density, b.visual_density) {
+                (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            side: match (a.side, b.side) {
+                (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Upstream `CheckboxTheme`.
+pub struct CheckboxTheme;
+
+impl CheckboxTheme {
+    pub fn new(data: CheckboxThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> CheckboxThemeData {
+        context
+            .inherited::<CheckboxThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).checkbox_theme)
+    }
+}
+
+// -- Radio (upstream `radio_theme.dart`) --------------------------------------
+
+/// Upstream `RadioThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RadioThemeData {
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub fill_color: Option<StateProperty<Option<Color>>>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub splash_radius: Option<f32>,
+    pub material_tap_target_size: Option<MaterialTapTargetSize>,
+    pub visual_density: Option<VisualDensity>,
+    pub background_color: Option<StateProperty<Option<Color>>>,
+    pub side: Option<BorderSide>,
+    /// The filled dot's radius, by state.
+    pub inner_radius: Option<StateProperty<Option<f32>>>,
+}
+
+impl RadioThemeData {
+    pub fn new() -> RadioThemeData {
+        RadioThemeData::default()
+    }
+
+    pub fn with_fill_color(mut self, fill: StateProperty<Option<Color>>) -> Self {
+        self.fill_color = Some(fill);
+        self
+    }
+
+    pub fn with_inner_radius(mut self, radius: StateProperty<Option<f32>>) -> Self {
+        self.inner_radius = Some(radius);
+        self
+    }
+
+    /// Upstream `RadioThemeData.lerp`.
+    pub fn lerp(a: &RadioThemeData, b: &RadioThemeData, t: f32) -> RadioThemeData {
+        RadioThemeData {
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            fill_color: lerp_state_color(a.fill_color.as_ref(), b.fill_color.as_ref(), t),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            splash_radius: lerp_f32(a.splash_radius, b.splash_radius, t),
+            material_tap_target_size: lerp_nearer(
+                &a.material_tap_target_size,
+                &b.material_tap_target_size,
+                t,
+            ),
+            visual_density: match (a.visual_density, b.visual_density) {
+                (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            background_color: lerp_state_color(
+                a.background_color.as_ref(),
+                b.background_color.as_ref(),
+                t,
+            ),
+            side: match (a.side, b.side) {
+                (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            inner_radius: lerp_nearer(&a.inner_radius, &b.inner_radius, t),
+        }
+    }
+}
+
+/// Upstream `RadioTheme`.
+pub struct RadioTheme;
+
+impl RadioTheme {
+    pub fn new(data: RadioThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> RadioThemeData {
+        context
+            .inherited::<RadioThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).radio_theme)
+    }
+}
+
+// -- Switch (upstream `switch_theme.dart`) ------------------------------------
+
+/// Upstream `SwitchThemeData`.
+///
+/// `thumbIcon` is not here: it is a `WidgetStateProperty<Icon?>`, and the
+/// framework has no icon system yet (`E5` in the plan).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SwitchThemeData {
+    pub thumb_color: Option<StateProperty<Option<Color>>>,
+    pub track_color: Option<StateProperty<Option<Color>>>,
+    pub track_outline_color: Option<StateProperty<Option<Color>>>,
+    pub track_outline_width: Option<StateProperty<Option<f32>>>,
+    pub material_tap_target_size: Option<MaterialTapTargetSize>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub splash_radius: Option<f32>,
+    pub padding: Option<EdgeInsetsGeometry>,
+}
+
+impl SwitchThemeData {
+    pub fn new() -> SwitchThemeData {
+        SwitchThemeData::default()
+    }
+
+    pub fn with_thumb_color(mut self, thumb: StateProperty<Option<Color>>) -> Self {
+        self.thumb_color = Some(thumb);
+        self
+    }
+
+    pub fn with_track_color(mut self, track: StateProperty<Option<Color>>) -> Self {
+        self.track_color = Some(track);
+        self
+    }
+
+    /// Upstream `SwitchThemeData.lerp`.
+    pub fn lerp(a: &SwitchThemeData, b: &SwitchThemeData, t: f32) -> SwitchThemeData {
+        SwitchThemeData {
+            thumb_color: lerp_state_color(a.thumb_color.as_ref(), b.thumb_color.as_ref(), t),
+            track_color: lerp_state_color(a.track_color.as_ref(), b.track_color.as_ref(), t),
+            track_outline_color: lerp_state_color(
+                a.track_outline_color.as_ref(),
+                b.track_outline_color.as_ref(),
+                t,
+            ),
+            track_outline_width: lerp_nearer(&a.track_outline_width, &b.track_outline_width, t),
+            material_tap_target_size: lerp_nearer(
+                &a.material_tap_target_size,
+                &b.material_tap_target_size,
+                t,
+            ),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            splash_radius: lerp_f32(a.splash_radius, b.splash_radius, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+        }
+    }
+}
+
+/// Upstream `SwitchTheme`.
+pub struct SwitchTheme;
+
+impl SwitchTheme {
+    pub fn new(data: SwitchThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> SwitchThemeData {
+        context
+            .inherited::<SwitchThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).switch_theme)
+    }
+}
+
+/// What a checkbox draws with, once the three steps have run -- upstream's
+/// `Checkbox.build` reading `CheckboxTheme.of` and then its own defaults.
+pub struct ResolvedCheckbox {
+    pub fill: Color,
+    pub check: Color,
+    pub side: BorderSide,
+    pub tap_target_size: MaterialTapTargetSize,
+}
+
+impl ResolvedCheckbox {
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedCheckbox {
+        let data = CheckboxTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let selected = states.contains(WidgetState::Selected);
+        let disabled = states.contains(WidgetState::Disabled);
+        // Upstream's `_defaultFillColor`: the primary when checked, nothing
+        // when not, and the disabled colour over both.
+        let default_fill = if disabled {
+            if selected {
+                scheme.on_surface.with_alpha(0x61)
+            } else {
+                Color::TRANSPARENT
+            }
+        } else if selected {
+            scheme.primary
+        } else {
+            Color::TRANSPARENT
+        };
+        ResolvedCheckbox {
+            fill: data
+                .fill_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(default_fill),
+            check: data
+                .check_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(scheme.on_primary),
+            side: data.side.unwrap_or(BorderSide {
+                color: if disabled {
+                    scheme.on_surface.with_alpha(0x61)
+                } else {
+                    scheme.on_surface_variant()
+                },
+                width: 2.0,
+                ..BorderSide::NONE
+            }),
+            tap_target_size: data.material_tap_target_size.unwrap_or_default(),
+        }
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -576,16 +910,17 @@ mod tests {
     use std::rc::Rc;
 
     /// Builds `read` inside `tree` and hands back what it saw.
-    fn read_in<T: 'static, F>(wrap: F, read: fn(&mut BuildContext) -> T) -> T
+    fn read_in<T: 'static, F, R>(wrap: F, read: R) -> T
     where
         F: FnOnce(AnyWidget) -> AnyWidget,
+        R: Fn(&mut BuildContext) -> T + 'static,
     {
-        struct Reader<T> {
+        struct Reader<T, R> {
             seen: Rc<RefCell<Option<T>>>,
-            read: fn(&mut BuildContext) -> T,
+            read: R,
         }
 
-        impl<T: 'static> Component for Reader<T> {
+        impl<T: 'static, R: Fn(&mut BuildContext) -> T + 'static> Component for Reader<T, R> {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
                 *self.seen.borrow_mut() = Some((self.read)(context));
                 leaf(|| SizedBox::new(1.0, 1.0))
@@ -698,5 +1033,95 @@ mod tests {
         );
         assert_eq!(theme.badge_theme, BadgeThemeData::new());
         assert_eq!(theme.tooltip_theme, TooltipThemeData::new());
+    }
+
+    #[test]
+    fn a_state_property_on_a_theme_resolves_against_the_control_s_states() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let checked = WidgetStates::NONE.with(WidgetState::Selected);
+        let disabled = WidgetStates::NONE.with(WidgetState::Disabled);
+
+        // Upstream's own default shape for a fill: the primary when checked,
+        // nothing when not.
+        let plain = read_in(
+            |child| child,
+            move |context| ResolvedCheckbox::of(context, checked).fill,
+        );
+        assert_eq!(plain, ThemeData::fallback().color_scheme.primary);
+
+        let unchecked = read_in(
+            |child| child,
+            move |context| ResolvedCheckbox::of(context, WidgetStates::NONE).fill,
+        );
+        assert_eq!(unchecked, Color::TRANSPARENT);
+
+        // A disabled, checked box is the disabled colour rather than the
+        // primary -- the states reach the default, not only the override.
+        let off = read_in(
+            |child| child,
+            move |context| ResolvedCheckbox::of(context, checked.with(WidgetState::Disabled)).fill,
+        );
+        assert_ne!(off, ThemeData::fallback().color_scheme.primary);
+        assert_eq!(off.alpha(), 0x61);
+
+        // And an installed theme's property wins, resolved against the same
+        // states.
+        let themed = read_in(
+            move |child| {
+                CheckboxTheme::new(
+                    CheckboxThemeData::new().with_fill_color(StateProperty::resolve_with(
+                        |states: WidgetStates| {
+                            if states.contains(WidgetState::Disabled) {
+                                Some(Color::argb(255, 1, 1, 1))
+                            } else {
+                                Some(Color::argb(255, 2, 2, 2))
+                            }
+                        },
+                    )),
+                    child,
+                )
+            },
+            move |context| ResolvedCheckbox::of(context, disabled).fill,
+        );
+        assert_eq!(themed, Color::argb(255, 1, 1, 1));
+    }
+
+    #[test]
+    fn two_theme_datas_carrying_the_same_property_object_are_equal() {
+        use crate::widget_state::StateProperty;
+
+        // A theme is compared to decide whether its dependants rebuild, so a
+        // property field has to have an equality. It is identity: the same
+        // object is the same property.
+        let property = StateProperty::all(Some(Color::argb(255, 5, 5, 5)));
+        let first = CheckboxThemeData::new().with_fill_color(property.clone());
+        let second = CheckboxThemeData::new().with_fill_color(property);
+        assert_eq!(first, second);
+
+        let rebuilt = CheckboxThemeData::new()
+            .with_fill_color(StateProperty::all(Some(Color::argb(255, 5, 5, 5))));
+        assert_ne!(
+            first, rebuilt,
+            "a freshly built resolver counts as changed, which is the safe way              round: a resolver may close over anything"
+        );
+    }
+
+    #[test]
+    fn a_tap_target_size_pads_a_control_out_to_the_minimum() {
+        use crate::render::Size;
+        use crate::widget_state::MaterialTapTargetSize;
+
+        let drawn = Size::new(18.0, 18.0);
+        assert_eq!(
+            MaterialTapTargetSize::Padded.minimum_size(drawn),
+            Size::new(48.0, 48.0)
+        );
+        assert_eq!(MaterialTapTargetSize::ShrinkWrap.minimum_size(drawn), drawn);
+        assert_eq!(
+            MaterialTapTargetSize::default(),
+            MaterialTapTargetSize::Padded,
+            "upstream's default is the accessible one"
+        );
     }
 }

@@ -272,6 +272,112 @@ impl<T> WidgetStateProperty<T> for WidgetStatePropertyWith<T> {
     }
 }
 
+/// A [`WidgetStateProperty`] held in a theme.
+///
+/// Upstream a theme field is `WidgetStateProperty<T>?` and two themes compare
+/// with `==`, which for a `WidgetStatePropertyAll` is value equality and for
+/// a `resolveWith` callback is identity. Every property here is behind an
+/// `Rc`, so this compares by identity throughout: the same property object is
+/// the same property, and a theme rebuilt with a freshly built resolver
+/// counts as changed -- which is the safe direction, since a resolver may
+/// close over anything.
+pub struct StateProperty<T>(Rc<dyn WidgetStateProperty<T>>);
+
+impl<T> StateProperty<T> {
+    pub fn new(property: Rc<dyn WidgetStateProperty<T>>) -> StateProperty<T> {
+        StateProperty(property)
+    }
+
+    pub fn resolve(&self, states: WidgetStates) -> T {
+        self.0.resolve(states)
+    }
+}
+
+impl<T: 'static> StateProperty<T> {
+    /// Upstream `WidgetStateProperty.resolveWith`.
+    pub fn resolve_with(resolver: impl Fn(WidgetStates) -> T + 'static) -> StateProperty<T> {
+        StateProperty(Rc::new(WidgetStatePropertyWith::new(Rc::new(resolver))))
+    }
+}
+
+impl<T: Clone + 'static> StateProperty<T> {
+    /// Upstream `WidgetStatePropertyAll`.
+    pub fn all(value: T) -> StateProperty<T> {
+        StateProperty(Rc::new(WidgetStatePropertyAll(value)))
+    }
+}
+
+impl<T> Clone for StateProperty<T> {
+    fn clone(&self) -> StateProperty<T> {
+        StateProperty(Rc::clone(&self.0))
+    }
+}
+
+impl<T> PartialEq for StateProperty<T> {
+    fn eq(&self, other: &StateProperty<T>) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T> std::fmt::Debug for StateProperty<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The property is a callback; there is nothing to print but that it
+        // is there.
+        formatter.write_str("StateProperty(..)")
+    }
+}
+
+/// Upstream `WidgetStateProperty.lerp`, as a theme field: both ends resolved
+/// against the same states and then blended.
+pub fn lerp_state_property<T: Clone + 'static>(
+    a: Option<&StateProperty<T>>,
+    b: Option<&StateProperty<T>>,
+    t: f32,
+    lerp: impl Fn(Option<T>, Option<T>, f32) -> T + 'static,
+) -> Option<StateProperty<T>> {
+    if a.is_none() && b.is_none() {
+        return None;
+    }
+    let (a, b) = (a.cloned(), b.cloned());
+    Some(StateProperty::resolve_with(move |states| {
+        let first = a.as_ref().map(|property| property.resolve(states));
+        let second = b.as_ref().map(|property| property.resolve(states));
+        lerp(first, second, t)
+    }))
+}
+
+/// Upstream `MaterialTapTargetSize`: whether a control pads itself out to the
+/// minimum touch target or takes only the room it draws in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MaterialTapTargetSize {
+    /// Padded to the 48-by-48 minimum -- upstream's default on a touch
+    /// platform, and what an accessible touch target needs.
+    #[default]
+    Padded,
+    /// No padding: the control is as big as it draws.
+    ShrinkWrap,
+}
+
+impl MaterialTapTargetSize {
+    /// Upstream's `kMinInteractiveDimension`.
+    pub const MIN_INTERACTIVE_DIMENSION: f32 = 48.0;
+
+    /// The smallest box a control at this size may occupy.
+    pub fn minimum_size(self, drawn: crate::render::Size) -> crate::render::Size {
+        match self {
+            MaterialTapTargetSize::Padded => crate::render::Size::new(
+                drawn
+                    .width
+                    .max(MaterialTapTargetSize::MIN_INTERACTIVE_DIMENSION),
+                drawn
+                    .height
+                    .max(MaterialTapTargetSize::MIN_INTERACTIVE_DIMENSION),
+            ),
+            MaterialTapTargetSize::ShrinkWrap => drawn,
+        }
+    }
+}
+
 /// Upstream `WidgetStatePropertyAll<T>`: the same value whatever the states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WidgetStatePropertyAll<T>(pub T);

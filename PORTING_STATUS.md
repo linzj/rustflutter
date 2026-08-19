@@ -164,6 +164,30 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:选择控件三对组件主题(2026-08-19)。**
+`CheckboxTheme(Data)`/`RadioTheme(Data)`/`SwitchTheme(Data)` 落地,字段按上游
+列全(9/9/9)。这三对与前五对的区别是它们的字段大半是
+`WidgetStateProperty<Color?>`,于是先补了两件地基:
+
+- **`StateProperty<T>`**(widget_state.rs)——主题里放 `WidgetStateProperty`
+  的槽。上游用 `==` 比两份主题,而 `WidgetStatePropertyAll` 按值比、
+  `resolveWith` 的回调按身份比;此侧属性一律在 `Rc` 后面,所以**相等即身份**:
+  同一个属性对象才算同一个属性,重建出来的解析器算"变了"。这是安全的那一边
+  ——解析器可以闭包住任何东西。`lerp_state_property` 是上游
+  `WidgetStateProperty.lerp(a, b, t, Color.lerp)`:两端各自按同一组 states
+  解析后再插值。
+- **`MaterialTapTargetSize`**——Padded/ShrinkWrap 两式 +
+  `kMinInteractiveDimension`(48)。
+
+**`Checkbox` 接上了**:按 checked/enabled 组出 `WidgetStates`,
+`ResolvedCheckbox::of` 走三步回退——fill 取主题属性、否则上游默认
+(选中取 primary、未选中透明、禁用时 onSurface 的 0x61 alpha),side 取主题、
+否则 `onSurfaceVariant` 两像素。此前是 `theme.primary`/`theme.outline` 的
+三行条件。
+
+**记录在案的分歧**:`SwitchThemeData.thumbIcon` 未做——它是
+`WidgetStateProperty<Icon?>`,框架侧还没有图标体系(E5)。
+
 **P8-M1:组件主题的三步回退接通了(2026-08-19)。** `component_themes.rs`,
 头五对:`DividerTheme(Data)`/`CardTheme(Data)`/`BadgeTheme(Data)`/
 `TooltipTheme(Data)`/`ProgressIndicatorTheme(Data)`——**每一对的字段都按上游
