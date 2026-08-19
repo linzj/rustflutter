@@ -71,6 +71,7 @@ pub mod magnifier;
 pub mod material;
 pub mod media_query;
 pub mod menu;
+pub mod menu_anchor;
 pub mod mergeable_material;
 pub mod motion;
 pub mod multidrag;

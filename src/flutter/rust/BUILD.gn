@@ -151,6 +151,7 @@ if (enable_unittests) {
       "rustflutter/src/material.rs",
       "rustflutter/src/media_query.rs",
       "rustflutter/src/menu.rs",
+      "rustflutter/src/menu_anchor.rs",
       "rustflutter/src/mergeable_material.rs",
       "rustflutter/src/motion.rs",
       "rustflutter/src/multidrag.rs",
