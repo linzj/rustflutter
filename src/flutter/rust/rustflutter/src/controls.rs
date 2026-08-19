@@ -294,7 +294,16 @@ impl Component for Chip {
         let label = self.label.clone();
         let id = self.id;
         let handlers = self.handlers.clone();
-        let (fill, text_color, border) = match self.style {
+        // Upstream's `RawChip.build` resolves the fill through
+        // `ChipTheme.of(context)`: the Material 3 `color` state property
+        // first, then the flag-specific colours, then the plain background.
+        // The crate's three styles are the states that pick between them.
+        let states = match self.style {
+            ChipStyle::Selected => crate::widget_state::WidgetStates::NONE
+                .with(crate::widget_state::WidgetState::Selected),
+            _ => crate::widget_state::WidgetStates::NONE,
+        };
+        let (default_fill, text_color, border) = match self.style {
             ChipStyle::Filter => (Color::TRANSPARENT, theme.text, Some(theme.outline)),
             ChipStyle::Selected => (
                 theme.primary.with_alpha(0x33),
@@ -302,6 +311,14 @@ impl Component for Chip {
                 Some(theme.primary),
             ),
             ChipStyle::Action => (theme.surface_variant, theme.text, None),
+        };
+        // The crate's three styles are this control's own defaults, which is
+        // upstream's last fallback: a theme that says nothing leaves them be.
+        let chip = crate::component_themes::ResolvedChip::of(context, states, default_fill);
+        let fill = chip.fill;
+        let border = match chip.side {
+            Some(side) => Some((side.width, side.color)),
+            None => border.map(|color| (1.0, color)),
         };
         let size = theme.body_size - 1.0;
 
@@ -318,8 +335,8 @@ impl Component for Chip {
                         .with_weight(600)
                         .with_color(text_color),
                 ));
-            if let Some(border) = border {
-                container = container.with_border(1.0, border);
+            if let Some((width, color)) = border {
+                container = container.with_border(width, color);
             }
             Pointer::new(id, container).with_handlers(handlers.clone())
         })

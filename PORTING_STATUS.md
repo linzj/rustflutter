@@ -164,6 +164,23 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:chip / tab bar / data table 三对(2026-08-19)。**
+`ChipTheme(Data)`(22/23,缺 `iconTheme`——E5)、`TabBarTheme(Data)`(15/16,
+缺 `splashFactory`,连带补 `TabBarIndicatorSize`/`TabAlignment`/
+`TabIndicatorAnimation` 三个上游枚举)、`DataTableTheme(Data)`(15/15)。
+
+**`Chip` 接上了**,并且这一簇把三步回退的**最后一步**写对了:上游的顺序是
+M3 的 `color` 状态属性 → 按标志的 `selectedColor`/`disabledColor` →
+`backgroundColor` → **控件自己的默认**。第一版把最后一步写成"主题整体等于空
+就用旧默认",那是个对着整份数据比相等的将就;改成
+`ResolvedChip::of(context, states, default_fill)` ——控件把自己的默认传进来,
+正是上游 `?? 控件默认` 那一环。crate 的 Filter/Selected/Action 三式就是这个
+默认,所以没有主题时外观一如既往。四步顺序四条回归线。
+
+**记录在案的分歧**:`TabBarThemeData.splashFactory`
+(`InteractiveInkFeatureFactory`)不做——此侧的墨水是画它的那个控件的属性
+(ink.rs),不是主题往下传的工厂。
+
 **P8-M1:list tile 与 dialog 两对(2026-08-19)。**
 `ListTileTheme(Data)`(22/22,连带补上 `ListTileStyle`/`ListTileControlAffinity`/
 `ListTileTitleAlignment` 三个上游枚举)、`DialogTheme(Data)`(13/14,缺

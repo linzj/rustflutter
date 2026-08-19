@@ -37,6 +37,7 @@ use crate::controls::TooltipTriggerMode;
 use crate::engine::{Color, TextAlign, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::painting::StrokeCap;
+use crate::platform::Brightness;
 use crate::render::{AlignmentGeometry, BoxConstraints, EdgeInsets, Offset, Size};
 use crate::services::system::SystemMouseCursor;
 use crate::theme::{ThemeData, VisualDensity};
@@ -1507,6 +1508,467 @@ impl DialogTheme {
     }
 }
 
+// -- Chip (upstream `chip_theme.dart`) ----------------------------------------
+
+/// Upstream `ChipThemeData`.
+///
+/// `iconTheme` is not here: it is an `IconThemeData`, and the framework has
+/// no icon system yet (`E5`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChipThemeData {
+    /// The whole fill, by state -- Material 3's way in, which supersedes the
+    /// four separate colours below when it is set.
+    pub color: Option<StateProperty<Option<Color>>>,
+    pub background_color: Option<Color>,
+    pub delete_icon_color: Option<Color>,
+    pub disabled_color: Option<Color>,
+    pub selected_color: Option<Color>,
+    /// The fill of a chip that is selected *and* is the secondary one in its
+    /// group -- upstream's `secondarySelectedColor`.
+    pub secondary_selected_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub selected_shadow_color: Option<Color>,
+    pub show_checkmark: Option<bool>,
+    pub checkmark_color: Option<Color>,
+    pub label_padding: Option<EdgeInsetsGeometry>,
+    pub padding: Option<EdgeInsetsGeometry>,
+    pub side: Option<BorderSide>,
+    pub shape: Option<ShapeBorder>,
+    pub label_style: Option<TextStyle>,
+    pub secondary_label_style: Option<TextStyle>,
+    pub brightness: Option<Brightness>,
+    pub elevation: Option<f32>,
+    pub press_elevation: Option<f32>,
+    pub avatar_box_constraints: Option<BoxConstraints>,
+    pub delete_icon_box_constraints: Option<BoxConstraints>,
+}
+
+impl ChipThemeData {
+    pub fn new() -> ChipThemeData {
+        ChipThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_selected_color(mut self, color: Color) -> Self {
+        self.selected_color = Some(color);
+        self
+    }
+
+    pub fn with_disabled_color(mut self, color: Color) -> Self {
+        self.disabled_color = Some(color);
+        self
+    }
+
+    pub fn with_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn with_side(mut self, side: BorderSide) -> Self {
+        self.side = Some(side);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: EdgeInsetsGeometry) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    /// Upstream `ChipThemeData.lerp`.
+    pub fn lerp(a: &ChipThemeData, b: &ChipThemeData, t: f32) -> ChipThemeData {
+        ChipThemeData {
+            color: lerp_state_color(a.color.as_ref(), b.color.as_ref(), t),
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            delete_icon_color: lerp_color(a.delete_icon_color, b.delete_icon_color, t),
+            disabled_color: lerp_color(a.disabled_color, b.disabled_color, t),
+            selected_color: lerp_color(a.selected_color, b.selected_color, t),
+            secondary_selected_color: lerp_color(
+                a.secondary_selected_color,
+                b.secondary_selected_color,
+                t,
+            ),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            selected_shadow_color: lerp_color(a.selected_shadow_color, b.selected_shadow_color, t),
+            show_checkmark: lerp_nearer(&a.show_checkmark, &b.show_checkmark, t),
+            checkmark_color: lerp_color(a.checkmark_color, b.checkmark_color, t),
+            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            side: match (a.side, b.side) {
+                (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            label_style: lerp_nearer(&a.label_style, &b.label_style, t),
+            secondary_label_style: lerp_nearer(
+                &a.secondary_label_style,
+                &b.secondary_label_style,
+                t,
+            ),
+            brightness: lerp_nearer(&a.brightness, &b.brightness, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            press_elevation: lerp_f32(a.press_elevation, b.press_elevation, t),
+            avatar_box_constraints: lerp_nearer(
+                &a.avatar_box_constraints,
+                &b.avatar_box_constraints,
+                t,
+            ),
+            delete_icon_box_constraints: lerp_nearer(
+                &a.delete_icon_box_constraints,
+                &b.delete_icon_box_constraints,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `ChipTheme`.
+pub struct ChipTheme;
+
+impl ChipTheme {
+    pub fn new(data: ChipThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ChipThemeData {
+        context
+            .inherited::<ChipThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).chip_theme)
+    }
+}
+
+/// What a chip draws with, once the three steps have run.
+///
+/// Upstream's `RawChip.build` resolves the fill through `color` first --
+/// Material 3's state property, which supersedes the four separate colours --
+/// then `selectedColor` or `disabledColor` by the flags, then
+/// `backgroundColor`, and finally the control's own default. That last step
+/// is the `default_fill` argument: the control knows what it looks like when
+/// nobody has themed it, and here that is one of the three chip styles the
+/// crate draws.
+pub struct ResolvedChip {
+    pub fill: Color,
+    pub side: Option<BorderSide>,
+    pub padding: EdgeInsets,
+}
+
+impl ResolvedChip {
+    /// Upstream's default chip padding.
+    pub const PADDING: f32 = 4.0;
+
+    pub fn of(
+        context: &mut BuildContext,
+        states: WidgetStates,
+        default_fill: Color,
+    ) -> ResolvedChip {
+        let data = ChipTheme::of(context);
+        let selected = states.contains(WidgetState::Selected);
+        let disabled = states.contains(WidgetState::Disabled);
+        let fill = data
+            .color
+            .as_ref()
+            .and_then(|property| property.resolve(states))
+            .or(if disabled {
+                data.disabled_color
+            } else if selected {
+                data.selected_color
+            } else {
+                None
+            })
+            .or(data.background_color)
+            .unwrap_or(default_fill);
+        ResolvedChip {
+            fill,
+            side: data.side,
+            padding: data
+                .padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::all(ResolvedChip::PADDING)),
+        }
+    }
+}
+
+// -- Tab bar (upstream `tab_bar_theme.dart`, and the enums it needs) ----------
+
+/// Upstream `TabBarIndicatorSize`: whether the indicator is as wide as the
+/// tab or as wide as the label in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabBarIndicatorSize {
+    Tab,
+    Label,
+}
+
+/// Upstream `TabAlignment`: where the tabs sit in a bar wider than they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabAlignment {
+    Start,
+    /// Start, with the leading offset Material's spec asks for.
+    StartOffset,
+    /// Stretched to fill the bar.
+    Fill,
+    Center,
+}
+
+/// Upstream `TabIndicatorAnimation`: how the indicator travels between tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabIndicatorAnimation {
+    Linear,
+    /// Material 3's: the indicator stretches as it goes and settles.
+    Elastic,
+}
+
+/// Upstream `TabBarThemeData`.
+///
+/// `splashFactory` is not here: it is an `InteractiveInkFeatureFactory`, and
+/// this crate's ink is a property of the control that draws it rather than a
+/// factory a theme passes down (`ink.rs`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TabBarThemeData {
+    /// The whole indicator as a decoration, which supersedes
+    /// [`TabBarThemeData::indicator_color`].
+    pub indicator: Option<crate::decoration::Decoration>,
+    pub indicator_color: Option<Color>,
+    pub indicator_size: Option<TabBarIndicatorSize>,
+    pub divider_color: Option<Color>,
+    pub divider_height: Option<f32>,
+    pub label_color: Option<Color>,
+    pub label_padding: Option<EdgeInsetsGeometry>,
+    pub label_style: Option<TextStyle>,
+    pub unselected_label_color: Option<Color>,
+    pub unselected_label_style: Option<TextStyle>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub tab_alignment: Option<TabAlignment>,
+    pub text_scaler: Option<crate::painting::TextScaler>,
+    pub indicator_animation: Option<TabIndicatorAnimation>,
+}
+
+impl TabBarThemeData {
+    pub fn new() -> TabBarThemeData {
+        TabBarThemeData::default()
+    }
+
+    pub fn with_indicator_color(mut self, color: Color) -> Self {
+        self.indicator_color = Some(color);
+        self
+    }
+
+    pub fn with_indicator_size(mut self, size: TabBarIndicatorSize) -> Self {
+        self.indicator_size = Some(size);
+        self
+    }
+
+    pub fn with_label_color(mut self, color: Color) -> Self {
+        self.label_color = Some(color);
+        self
+    }
+
+    pub fn with_unselected_label_color(mut self, color: Color) -> Self {
+        self.unselected_label_color = Some(color);
+        self
+    }
+
+    pub fn with_tab_alignment(mut self, alignment: TabAlignment) -> Self {
+        self.tab_alignment = Some(alignment);
+        self
+    }
+
+    /// Upstream `TabBarThemeData.lerp`.
+    pub fn lerp(a: &TabBarThemeData, b: &TabBarThemeData, t: f32) -> TabBarThemeData {
+        TabBarThemeData {
+            indicator: lerp_nearer(&a.indicator, &b.indicator, t),
+            indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
+            indicator_size: lerp_nearer(&a.indicator_size, &b.indicator_size, t),
+            divider_color: lerp_color(a.divider_color, b.divider_color, t),
+            divider_height: lerp_f32(a.divider_height, b.divider_height, t),
+            label_color: lerp_color(a.label_color, b.label_color, t),
+            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
+            label_style: lerp_nearer(&a.label_style, &b.label_style, t),
+            unselected_label_color: lerp_color(
+                a.unselected_label_color,
+                b.unselected_label_color,
+                t,
+            ),
+            unselected_label_style: lerp_nearer(
+                &a.unselected_label_style,
+                &b.unselected_label_style,
+                t,
+            ),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            tab_alignment: lerp_nearer(&a.tab_alignment, &b.tab_alignment, t),
+            text_scaler: lerp_nearer(&a.text_scaler, &b.text_scaler, t),
+            indicator_animation: lerp_nearer(&a.indicator_animation, &b.indicator_animation, t),
+        }
+    }
+}
+
+/// Upstream `TabBarTheme`.
+pub struct TabBarTheme;
+
+impl TabBarTheme {
+    pub fn new(data: TabBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> TabBarThemeData {
+        context
+            .inherited::<TabBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).tab_bar_theme)
+    }
+}
+
+/// What a tab bar draws with, once the three steps have run.
+pub struct ResolvedTabBar {
+    pub indicator_color: Color,
+    pub label_color: Color,
+    pub unselected_label_color: Color,
+    pub divider_color: Color,
+    pub divider_height: f32,
+    pub indicator_size: TabBarIndicatorSize,
+}
+
+impl ResolvedTabBar {
+    /// Upstream's Material 3 default indicator thickness.
+    pub const INDICATOR_WEIGHT: f32 = 3.0;
+    /// Upstream's default divider height.
+    pub const DIVIDER_HEIGHT: f32 = 1.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedTabBar {
+        let data = TabBarTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedTabBar {
+            indicator_color: data.indicator_color.unwrap_or(scheme.primary),
+            label_color: data.label_color.unwrap_or(scheme.primary),
+            unselected_label_color: data
+                .unselected_label_color
+                .unwrap_or(scheme.on_surface_variant()),
+            divider_color: data.divider_color.unwrap_or(scheme.outline_variant()),
+            divider_height: data
+                .divider_height
+                .unwrap_or(ResolvedTabBar::DIVIDER_HEIGHT),
+            // Upstream's Material 3 default is `TabBarIndicatorSize.tab`.
+            indicator_size: data.indicator_size.unwrap_or(TabBarIndicatorSize::Tab),
+        }
+    }
+}
+
+// -- Data table (upstream `data_table_theme.dart`) ----------------------------
+
+/// Upstream `DataTableThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DataTableThemeData {
+    pub decoration: Option<crate::decoration::Decoration>,
+    pub data_row_color: Option<StateProperty<Option<Color>>>,
+    pub data_row_min_height: Option<f32>,
+    pub data_row_max_height: Option<f32>,
+    pub data_text_style: Option<TextStyle>,
+    pub heading_row_color: Option<StateProperty<Option<Color>>>,
+    pub heading_row_height: Option<f32>,
+    pub heading_text_style: Option<TextStyle>,
+    /// The space before the first column and after the last.
+    pub horizontal_margin: Option<f32>,
+    pub column_spacing: Option<f32>,
+    pub divider_thickness: Option<f32>,
+    pub checkbox_horizontal_margin: Option<f32>,
+    pub heading_cell_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub data_row_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub heading_row_alignment: Option<crate::render::MainAxisAlignment>,
+}
+
+impl DataTableThemeData {
+    pub fn new() -> DataTableThemeData {
+        DataTableThemeData::default()
+    }
+
+    pub fn with_column_spacing(mut self, spacing: f32) -> Self {
+        self.column_spacing = Some(spacing);
+        self
+    }
+
+    pub fn with_horizontal_margin(mut self, margin: f32) -> Self {
+        self.horizontal_margin = Some(margin);
+        self
+    }
+
+    pub fn with_heading_row_height(mut self, height: f32) -> Self {
+        self.heading_row_height = Some(height);
+        self
+    }
+
+    pub fn with_data_row_heights(mut self, min: f32, max: f32) -> Self {
+        self.data_row_min_height = Some(min);
+        self.data_row_max_height = Some(max);
+        self
+    }
+
+    /// Upstream `DataTableThemeData.lerp`.
+    pub fn lerp(a: &DataTableThemeData, b: &DataTableThemeData, t: f32) -> DataTableThemeData {
+        DataTableThemeData {
+            decoration: lerp_nearer(&a.decoration, &b.decoration, t),
+            data_row_color: lerp_state_color(
+                a.data_row_color.as_ref(),
+                b.data_row_color.as_ref(),
+                t,
+            ),
+            data_row_min_height: lerp_f32(a.data_row_min_height, b.data_row_min_height, t),
+            data_row_max_height: lerp_f32(a.data_row_max_height, b.data_row_max_height, t),
+            data_text_style: lerp_nearer(&a.data_text_style, &b.data_text_style, t),
+            heading_row_color: lerp_state_color(
+                a.heading_row_color.as_ref(),
+                b.heading_row_color.as_ref(),
+                t,
+            ),
+            heading_row_height: lerp_f32(a.heading_row_height, b.heading_row_height, t),
+            heading_text_style: lerp_nearer(&a.heading_text_style, &b.heading_text_style, t),
+            horizontal_margin: lerp_f32(a.horizontal_margin, b.horizontal_margin, t),
+            column_spacing: lerp_f32(a.column_spacing, b.column_spacing, t),
+            divider_thickness: lerp_f32(a.divider_thickness, b.divider_thickness, t),
+            checkbox_horizontal_margin: lerp_f32(
+                a.checkbox_horizontal_margin,
+                b.checkbox_horizontal_margin,
+                t,
+            ),
+            heading_cell_cursor: lerp_nearer(&a.heading_cell_cursor, &b.heading_cell_cursor, t),
+            data_row_cursor: lerp_nearer(&a.data_row_cursor, &b.data_row_cursor, t),
+            heading_row_alignment: lerp_nearer(
+                &a.heading_row_alignment,
+                &b.heading_row_alignment,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `DataTableTheme`.
+pub struct DataTableTheme;
+
+impl DataTableTheme {
+    pub fn new(data: DataTableThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> DataTableThemeData {
+        context
+            .inherited::<DataTableThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).data_table_theme)
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -1928,5 +2390,112 @@ mod tests {
         );
         assert_eq!(themed.barrier_color, Some(Color::argb(128, 0, 0, 0)));
         assert_eq!(themed.inset_padding, Some(EdgeInsets::all(40.0)));
+    }
+
+    #[test]
+    fn a_chip_resolves_its_fill_in_upstreams_order() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        let default_fill = Color::argb(255, 9, 9, 9);
+
+        // Nothing themed: the control's own default, which is the last step.
+        let plain = read_in(
+            |child| child,
+            move |context| ResolvedChip::of(context, WidgetStates::NONE, default_fill).fill,
+        );
+        assert_eq!(plain, default_fill);
+
+        // `backgroundColor` beats the control's default.
+        let background = read_in(
+            |child| {
+                ChipTheme::new(
+                    ChipThemeData::new().with_background_color(Color::argb(255, 1, 1, 1)),
+                    child,
+                )
+            },
+            move |context| ResolvedChip::of(context, WidgetStates::NONE, default_fill).fill,
+        );
+        assert_eq!(background, Color::argb(255, 1, 1, 1));
+
+        // `selectedColor` beats `backgroundColor` when the chip is selected.
+        let picked = read_in(
+            |child| {
+                ChipTheme::new(
+                    ChipThemeData::new()
+                        .with_background_color(Color::argb(255, 1, 1, 1))
+                        .with_selected_color(Color::argb(255, 2, 2, 2)),
+                    child,
+                )
+            },
+            move |context| ResolvedChip::of(context, selected, default_fill).fill,
+        );
+        assert_eq!(picked, Color::argb(255, 2, 2, 2));
+
+        // And `color` -- Material 3's state property -- beats all of them.
+        let m3 = read_in(
+            |child| {
+                ChipTheme::new(
+                    ChipThemeData::new()
+                        .with_background_color(Color::argb(255, 1, 1, 1))
+                        .with_selected_color(Color::argb(255, 2, 2, 2))
+                        .with_color(StateProperty::all(Some(Color::argb(255, 3, 3, 3)))),
+                    child,
+                )
+            },
+            move |context| ResolvedChip::of(context, selected, default_fill).fill,
+        );
+        assert_eq!(m3, Color::argb(255, 3, 3, 3));
+    }
+
+    #[test]
+    fn a_tab_bar_falls_through_to_the_scheme_role_by_role() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let plain = read_in(|child| child, ResolvedTabBar::of);
+        assert_eq!(plain.indicator_color, scheme.primary);
+        assert_eq!(plain.label_color, scheme.primary);
+        assert_eq!(plain.unselected_label_color, scheme.on_surface_variant());
+        assert_eq!(plain.divider_color, scheme.outline_variant());
+        assert_eq!(plain.divider_height, 1.0);
+        assert_eq!(plain.indicator_size, TabBarIndicatorSize::Tab);
+
+        let themed = read_in(
+            |child| {
+                TabBarTheme::new(
+                    TabBarThemeData::new()
+                        .with_indicator_color(Color::argb(255, 7, 7, 7))
+                        .with_indicator_size(TabBarIndicatorSize::Label),
+                    child,
+                )
+            },
+            ResolvedTabBar::of,
+        );
+        assert_eq!(themed.indicator_color, Color::argb(255, 7, 7, 7));
+        assert_eq!(themed.indicator_size, TabBarIndicatorSize::Label);
+        assert_eq!(
+            themed.label_color, scheme.primary,
+            "an unset role still falls through"
+        );
+    }
+
+    #[test]
+    fn a_data_table_theme_carries_its_metrics() {
+        let themed = read_in(
+            |child| {
+                DataTableTheme::new(
+                    DataTableThemeData::new()
+                        .with_column_spacing(48.0)
+                        .with_horizontal_margin(12.0)
+                        .with_data_row_heights(40.0, 60.0),
+                    child,
+                )
+            },
+            DataTableTheme::of,
+        );
+        assert_eq!(themed.column_spacing, Some(48.0));
+        assert_eq!(themed.horizontal_margin, Some(12.0));
+        assert_eq!(themed.data_row_min_height, Some(40.0));
+        assert_eq!(themed.data_row_max_height, Some(60.0));
+        assert_eq!(themed.heading_row_height, None);
     }
 }

@@ -46,8 +46,9 @@ use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomSheetThemeData, CardThemeData, CheckboxThemeData,
-    DialogThemeData, DividerThemeData, ListTileThemeData, ProgressIndicatorThemeData,
-    RadioThemeData, SnackBarThemeData, SwitchThemeData, TooltipThemeData,
+    ChipThemeData, DataTableThemeData, DialogThemeData, DividerThemeData, ListTileThemeData,
+    ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData, SwitchThemeData,
+    TabBarThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -207,6 +208,9 @@ pub struct ThemeData {
     pub snack_bar_theme: SnackBarThemeData,
     pub list_tile_theme: ListTileThemeData,
     pub dialog_theme: DialogThemeData,
+    pub chip_theme: ChipThemeData,
+    pub tab_bar_theme: TabBarThemeData,
+    pub data_table_theme: DataTableThemeData,
 }
 
 impl ThemeData {
@@ -302,6 +306,9 @@ impl ThemeData {
             snack_bar_theme: SnackBarThemeData::new(),
             list_tile_theme: ListTileThemeData::new(),
             dialog_theme: DialogThemeData::new(),
+            chip_theme: ChipThemeData::new(),
+            tab_bar_theme: TabBarThemeData::new(),
+            data_table_theme: DataTableThemeData::new(),
         }
     }
 
@@ -368,6 +375,21 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_chip_theme(mut self, chip_theme: ChipThemeData) -> ThemeData {
+        self.chip_theme = chip_theme;
+        self
+    }
+
+    pub fn with_tab_bar_theme(mut self, tab_bar_theme: TabBarThemeData) -> ThemeData {
+        self.tab_bar_theme = tab_bar_theme;
+        self
+    }
+
+    pub fn with_data_table_theme(mut self, data_table_theme: DataTableThemeData) -> ThemeData {
+        self.data_table_theme = data_table_theme;
         self
     }
 
@@ -478,6 +500,9 @@ impl ThemeData {
             snack_bar_theme: SnackBarThemeData::lerp(&a.snack_bar_theme, &b.snack_bar_theme, t),
             list_tile_theme: ListTileThemeData::lerp(&a.list_tile_theme, &b.list_tile_theme, t),
             dialog_theme: DialogThemeData::lerp(&a.dialog_theme, &b.dialog_theme, t),
+            chip_theme: ChipThemeData::lerp(&a.chip_theme, &b.chip_theme, t),
+            tab_bar_theme: TabBarThemeData::lerp(&a.tab_bar_theme, &b.tab_bar_theme, t),
+            data_table_theme: DataTableThemeData::lerp(&a.data_table_theme, &b.data_table_theme, t),
         }
     }
 
