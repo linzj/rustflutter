@@ -1721,6 +1721,49 @@
     "TextSelection": {
       "rust": "services::text_input::TextEditingValue 的 selection_base/extent",
       "note": "此侧选区不是独立类型，是编辑值里的两个 UTF-16 下标"
+    },
+    "BindingBase": {
+      "rust": "app.rs 的应用实例",
+      "note": "同 RendererBinding/ServicesBinding/GestureBinding 各账——此侧没有 binding 基类，帧序与各面直接在 app.rs 装配"
+    },
+    "AbstractNode": {
+      "rust": "无基类——各渲染对象自持 child/size",
+      "note": "同 RenderObject 账；深度/attach/detach 的簿记在 ElementTree 与 RenderRef 两侧"
+    },
+    "ObserverList": {
+      "rust": "ChangeNotifier 的 Vec<Rc<dyn Fn()>>",
+      "note": "上游为\"多次 remove 也快\"而做的表；此侧列表短，retain 即可"
+    },
+    "HashedObserverList": {
+      "rust": "同 ObserverList"
+    },
+    "WriteBuffer": {
+      "rust": "services::codec 的 Vec<u8> + write_value/write_size/write_alignment",
+      "note": "上游把缓冲包成对象；此侧直接写进 Vec，8 字节对齐的填充规则一致"
+    },
+    "ReadBuffer": {
+      "rust": "services::codec 的解码游标",
+      "note": "同上，读侧按偏移量前进并同样处理对齐"
+    },
+    "Factory": {
+      "rust": "Rust 闭包 / fn 指针",
+      "note": "上游为绕开 Dart 泛型构造器限制而设；Rust 不需要"
+    },
+    "CachingIterable": {
+      "rust": "Vec 物化",
+      "note": "上游缓存惰性序列的结果；此侧要复用就 collect 一次"
+    },
+    "SynchronousFuture": {
+      "rust": "r#async::AsyncSnapshot::with_data",
+      "note": "已经有值的\"future\"，此侧就是快照的 hasData 态（crate 无异步运行时，见 async.rs 账）"
+    },
+    "PersistentHashMap": {
+      "rust": "framework::Shared 的 provided 表",
+      "note": "上游为 InheritedWidget 查找做的不可变映射；此侧一张 HashMap，重建时整表更新"
+    },
+    "BitField": {
+      "rust": "按需的具体位集（widget_state::WidgetStates 等）",
+      "note": "上游是泛型位域工具；此侧需要位集的地方各自成型，需要具名字段的地方是 bool 结构体（semantics::SemanticsFlags）"
     }
   },
   "blocked_engine": {
@@ -1791,7 +1834,14 @@
     "IOSSystemContextMenuItemDataShare": "iOS 专属，宿主集合为 Windows/Android/macOS",
     "IOSSystemContextMenuItemDataLiveText": "iOS 专属，宿主集合为 Windows/Android/macOS",
     "IOSSystemContextMenuItemDataCustom": "iOS 专属，宿主集合为 Windows/Android/macOS",
-    "LiveText": "iOS 专属（Live Text 取词）"
+    "LiveText": "iOS 专属（Live Text 取词）",
+    "ObjectEvent": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
+    "ObjectCreated": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
+    "ObjectDisposed": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
+    "FlutterMemoryAllocations": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
+    "Category": "文档生成用的注解，无运行期行为",
+    "DocumentationIcon": "文档生成用的注解，无运行期行为",
+    "Summary": "文档生成用的注解，无运行期行为"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"

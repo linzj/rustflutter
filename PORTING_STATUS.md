@@ -164,6 +164,33 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1 起步:颜色地基(2026-08-19)。** material 层的第一块:
+
+- **`color_scheme.rs`**——`ColorScheme` 全角色。只有九个角色是"直接给的"
+  (brightness 加 primary/secondary/error/surface 四对及其 on 色),其余四十
+  个都各有回退,回退表逐条照抄上游的 getter:`tertiary`→`secondary`、
+  每个 surface container→`surface`、`outline`→`onBackground`(而它自己
+  →`onSurface`)、`shadow`/`scrim`→黑、`surfaceTint`→`primary`。
+  **回退角色存 `Option` 而不是一次算死**,因为上游 `copyWith` 把未设的透传:
+  改了 primary 而从没设过 primaryContainer 的方案,容器要跟着新的 primary 走。
+  `light()`/`dark()` 是上游的 M2 基线两式,`lerp` 先解析两端再逐角色插值
+  (与上游一致)。
+- **`colors.rs`**——`MaterialColor`/`MaterialAccentColor`/`Colors`,
+  35 个色板 + 17 个纯色常量,**由脚本解析上游 colors.dart 生成**而非手抄
+  (两千行常量手抄必有一位数字是错的)。`grey` 有 12 档(多出 350 与 850,
+  上游注明是"浅色主题下 raised button 按下时"用的),其余十档,accent 四档。
+
+**记录在案的分歧**:
+
+- `ColorScheme.fromSeed`/`fromImageProvider` 未做——两者都要跑 M3 的色调
+  调色板算法(HCT/CAM16,上游 vendored 的 `material_color_utilities`),
+  自成一摊工作;在它落地前,配色方案逐角色写出来,即 `light()`/`dark()` 的做法。
+- `background`/`onBackground`/`surfaceVariant` 上游已弃用(让位给 `surface`/
+  `onSurface`/`surfaceContainerHighest`),此侧保留——上游也保留,且 `outline`
+  的回退仍要穿过 `onBackground`。
+- 上游色板是 `ColorSwatch<int>` 且可 `[]` 索引,此侧 `shade(weight)` 收权重
+  答 `Option`,把"没这一档"放进类型里。
+
 **services 层入账轮(2026-08-19)。** 24/141 → 85/141,逐条对着 `services/`
 五个文件核实:
 

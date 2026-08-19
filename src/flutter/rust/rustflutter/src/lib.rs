@@ -28,6 +28,8 @@ pub mod animation;
 pub mod app;
 pub mod r#async;
 pub mod borders;
+pub mod color_scheme;
+pub mod colors;
 pub mod components;
 pub mod controls;
 pub mod cupertino;
