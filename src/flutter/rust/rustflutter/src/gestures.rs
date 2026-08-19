@@ -306,6 +306,15 @@ pub struct HoverEvent {
 /// How long a press has to be held before it is a long press.
 pub const LONG_PRESS_TIMEOUT_MICROS: i64 = 500_000;
 
+/// Upstream's `kPressTimeout` (`constants.dart`): how long a finger has to
+/// rest before a recogniser may act on the press without knowing yet whether
+/// it will become something else.
+///
+/// A fifth of the long-press timeout. Long enough that a tap that is really a
+/// flick does not trigger it, short enough that a finger deliberately held
+/// feels answered.
+pub const PRESS_TIMEOUT_MICROS: i64 = 100_000;
+
 /// The longest a tap waits to be the first of a double tap: measured from its
 /// own lift to the second tap's press, which is where upstream starts the
 /// clock -- `_registerFirstTap` calls `_startDoubleTapTimer` on the first up.
