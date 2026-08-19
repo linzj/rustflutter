@@ -37,6 +37,7 @@ pub mod cupertino;
 pub mod decoration;
 pub mod direction;
 pub mod drawer;
+pub mod dual_transition_builder;
 pub mod editable;
 pub mod engine;
 pub mod focus;
