@@ -57,6 +57,7 @@ pub mod ink_well;
 pub mod interactive_viewer;
 pub mod keyboard;
 pub mod licenses;
+pub mod material;
 pub mod media_query;
 pub mod menu;
 pub mod navigation;

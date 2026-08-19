@@ -137,6 +137,7 @@ if (enable_unittests) {
       "rustflutter/src/keyboard/mod.rs",
       "rustflutter/src/lib.rs",
       "rustflutter/src/licenses.rs",
+      "rustflutter/src/material.rs",
       "rustflutter/src/media_query.rs",
       "rustflutter/src/menu.rs",
       "rustflutter/src/navigation.rs",
