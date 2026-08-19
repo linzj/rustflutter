@@ -3580,6 +3580,192 @@ impl Component for CupertinoContextMenu {
     }
 }
 
+// -- Cupertino's dialogs and action sheets ------------------------------------
+
+/// Upstream's `_isInAccessibilityMode` (`cupertino/dialog.dart`).
+///
+/// **iOS has no "accessibility mode" to query, so the text scale stands in for
+/// one.** A default 14-point font scaled past 1.4× means the reader has turned
+/// text up far enough that the dialog should change shape, not merely reflow.
+/// Written as `scaled > default * factor` rather than as a comparison of
+/// scales, which is upstream's spelling and the one that survives a text
+/// scaler that is not a simple multiplier.
+pub fn is_in_accessibility_mode(text_scale: f32) -> bool {
+    const DEFAULT_FONT_SIZE: f32 = 14.0;
+    /// Upstream's `_kMaxRegularTextScaleFactor`.
+    const MAX_REGULAR_TEXT_SCALE_FACTOR: f32 = 1.4;
+    DEFAULT_FONT_SIZE * text_scale > DEFAULT_FONT_SIZE * MAX_REGULAR_TEXT_SCALE_FACTOR
+}
+
+/// Upstream `CupertinoPopupSurface`: the blurred, translucent panel a
+/// Cupertino dialog or action sheet is drawn on.
+///
+/// The blur is the whole of it -- an iOS dialog is not an opaque card but a
+/// frosted pane, so what is behind it stays faintly legible and the dialog
+/// reads as *over* the page rather than as a new page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoPopupSurface {
+    pub blur_sigma: f32,
+    /// Upstream's `isSurfacePainted`. Off, the surface blurs and clips but
+    /// paints no colour of its own -- which is what an action sheet's
+    /// *cancel* button wants, since it supplies its own fill and would
+    /// otherwise be tinted twice.
+    pub is_surface_painted: bool,
+}
+
+impl CupertinoPopupSurface {
+    /// Upstream's `defaultBlurSigma`.
+    pub const DEFAULT_BLUR_SIGMA: f32 = 30.0;
+    /// Upstream's `_clipper` radius.
+    pub const CORNER_RADIUS: f32 = 13.0;
+    /// Upstream's light-mode saturation, derived to resemble the iOS 17
+    /// simulator. Paired with the blur for the reason
+    /// [`CupertinoDesktopTextSelectionToolbar::SATURATION_BOOST`] gives: a
+    /// blur averages colours and washes them out.
+    pub const LIGHT_SATURATION: f32 = 2.0;
+
+    pub fn new() -> CupertinoPopupSurface {
+        CupertinoPopupSurface {
+            blur_sigma: CupertinoPopupSurface::DEFAULT_BLUR_SIGMA,
+            is_surface_painted: true,
+        }
+    }
+
+    /// Upstream asserts a non-negative sigma outright, since a negative blur
+    /// is not a sharpen -- it is nothing the engine can do.
+    pub fn with_blur_sigma(mut self, sigma: f32) -> Self {
+        debug_assert!(sigma >= 0.0, "a blur sigma is not negative");
+        self.blur_sigma = sigma;
+        self
+    }
+
+    pub fn with_surface_painted(mut self, painted: bool) -> Self {
+        self.is_surface_painted = painted;
+        self
+    }
+}
+
+impl Default for CupertinoPopupSurface {
+    fn default() -> CupertinoPopupSurface {
+        CupertinoPopupSurface::new()
+    }
+}
+
+/// Upstream `CupertinoDialogAction`: one button of a [`CupertinoAlertDialog`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoDialogAction {
+    /// Upstream's `isDefaultAction`, which makes the label bold. At most one
+    /// per dialog, since "the one you probably want" cannot be two things.
+    pub is_default_action: bool,
+    /// Upstream's `isDestructiveAction`, which makes it red.
+    pub is_destructive_action: bool,
+}
+
+impl CupertinoDialogAction {
+    /// Upstream's `_kCupertinoDialogWidth`.
+    pub const DIALOG_WIDTH: f32 = 270.0;
+    /// Upstream's `_kAccessibilityCupertinoDialogWidth`.
+    ///
+    /// **Wider, not narrower.** Where a Material dialog keeps its width and
+    /// gives up its whitespace as text grows (see
+    /// [`crate::controls::scale_dialog_padding`]), a Cupertino one takes more
+    /// of the screen. Two designs answering the same question in opposite
+    /// ways, and both are ported as their own platform has them.
+    pub const ACCESSIBILITY_DIALOG_WIDTH: f32 = 310.0;
+    /// Upstream's `_kDialogEdgePadding`.
+    pub const EDGE_PADDING: f32 = 20.0;
+    /// Upstream's `_kDialogMinButtonHeight`.
+    pub const MIN_BUTTON_HEIGHT: f32 = 45.0;
+    /// Upstream's `_kDialogMinButtonFontSize`: however far a reader scales
+    /// text *down*, a button's label stops here. Below it the word stops being
+    /// a target and becomes decoration.
+    pub const MIN_BUTTON_FONT_SIZE: f32 = 10.0;
+    /// Upstream's `_kDialogActionsSectionMinHeight`, derived by comparing on
+    /// iOS 17 simulators -- which is why it is 67.8 and not a round number.
+    pub const ACTIONS_SECTION_MIN_HEIGHT: f32 = 67.8;
+    pub const CORNER_RADIUS: f32 = 14.0;
+
+    pub fn new() -> CupertinoDialogAction {
+        CupertinoDialogAction::default()
+    }
+
+    pub fn default_action() -> CupertinoDialogAction {
+        CupertinoDialogAction {
+            is_default_action: true,
+            ..CupertinoDialogAction::default()
+        }
+    }
+
+    pub fn destructive() -> CupertinoDialogAction {
+        CupertinoDialogAction {
+            is_destructive_action: true,
+            ..CupertinoDialogAction::default()
+        }
+    }
+
+    /// How wide the dialog is at a given text scale.
+    pub fn dialog_width(text_scale: f32) -> f32 {
+        if is_in_accessibility_mode(text_scale) {
+            CupertinoDialogAction::ACCESSIBILITY_DIALOG_WIDTH
+        } else {
+            CupertinoDialogAction::DIALOG_WIDTH
+        }
+    }
+}
+
+/// Upstream `CupertinoActionSheet`: the sheet of choices that slides up from
+/// the bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoActionSheet;
+
+impl CupertinoActionSheet {
+    /// Upstream's `_kActionSheetEdgePadding`. Much tighter than a dialog's 20:
+    /// a sheet is meant to reach nearly the full width of the screen, where a
+    /// dialog floats in the middle of it.
+    pub const EDGE_PADDING: f32 = 8.0;
+    /// Upstream's `_kActionSheetCancelButtonPadding`: the gap between the
+    /// sheet and its cancel button, which is a *separate* panel -- that gap is
+    /// what says "this one is not one of the choices".
+    pub const CANCEL_BUTTON_PADDING: f32 = 8.0;
+    pub const CONTENT_HORIZONTAL_PADDING: f32 = 16.0;
+    pub const CONTENT_VERTICAL_PADDING: f32 = 13.5;
+    pub const ACTIONS_SECTION_MIN_HEIGHT: f32 = 84.0;
+}
+
+/// Upstream `CupertinoActionSheetAction`: one choice on that sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoActionSheetAction {
+    pub is_default_action: bool,
+    pub is_destructive_action: bool,
+}
+
+impl CupertinoActionSheetAction {
+    pub const HORIZONTAL_PADDING: f32 = 10.0;
+    /// Upstream's `_kActionSheetButtonMinHeight`, from the simulator.
+    pub const MIN_HEIGHT: f32 = 57.17;
+    /// Upstream's `_kActionSheetButtonVerticalPaddingFactor`.
+    pub const VERTICAL_PADDING_FACTOR: f32 = 0.4;
+    /// Upstream's `_kActionSheetButtonVerticalPaddingBase`.
+    pub const VERTICAL_PADDING_BASE: f32 = 1.8;
+
+    pub fn new() -> CupertinoActionSheetAction {
+        CupertinoActionSheetAction::default()
+    }
+
+    /// Upstream's `base + fontSize * factor`, with its comment: "according to
+    /// experimenting on the simulator, the height of action sheet buttons is
+    /// proportional to the font size down to a minimal height".
+    ///
+    /// A line rather than a constant, because a sheet's rows have to grow with
+    /// their text -- a reader who scaled text up and got the same 57-pixel row
+    /// would have the words touching its edges. The **base** is the part that
+    /// does not scale, so even a tiny font keeps a hairline of breathing room.
+    pub fn vertical_padding(font_size: f32) -> f32 {
+        CupertinoActionSheetAction::VERTICAL_PADDING_BASE
+            + font_size * CupertinoActionSheetAction::VERTICAL_PADDING_FACTOR
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4002,5 +4188,111 @@ mod tests {
             .with_child(leaf(|| Container::new().with_size(60.0, 60.0)));
         let size = lay_out(component(trigger), 300.0, 300.0);
         assert_eq!(size, Size::new(60.0, 60.0));
+    }
+
+    #[test]
+    fn accessibility_mode_is_inferred_from_the_text_scale() {
+        // iOS has no such mode to query, so the text scale stands in for one:
+        // a default 14-point font scaled past 1.4x means the reader has turned
+        // text up far enough that the dialog should change shape rather than
+        // merely reflow.
+        assert!(!is_in_accessibility_mode(1.0));
+        assert!(
+            !is_in_accessibility_mode(1.4),
+            "exactly at the line is not past it"
+        );
+        assert!(is_in_accessibility_mode(1.5));
+        assert!(is_in_accessibility_mode(3.0));
+    }
+
+    #[test]
+    fn a_cupertino_dialog_gets_wider_where_a_material_one_gives_up_whitespace() {
+        // The two platforms answer the same question in opposite ways, and
+        // both are ported as their own has them: Material keeps its width and
+        // shrinks its padding, Cupertino takes more of the screen.
+        assert_eq!(CupertinoDialogAction::dialog_width(1.0), 270.0);
+        assert_eq!(CupertinoDialogAction::dialog_width(2.0), 310.0);
+        assert!(
+            CupertinoDialogAction::ACCESSIBILITY_DIALOG_WIDTH > CupertinoDialogAction::DIALOG_WIDTH
+        );
+        // Where the Material rule shrinks.
+        assert!(crate::controls::scale_dialog_padding(2.0) < 1.0);
+    }
+
+    #[test]
+    fn an_action_sheet_reaches_wider_than_a_dialog_does() {
+        // A sheet is meant to reach nearly the full width of the screen; a
+        // dialog floats in the middle of it.
+        assert!(CupertinoActionSheet::EDGE_PADDING < CupertinoDialogAction::EDGE_PADDING);
+        assert_eq!(CupertinoActionSheet::EDGE_PADDING, 8.0);
+        assert_eq!(CupertinoDialogAction::EDGE_PADDING, 20.0);
+    }
+
+    #[test]
+    fn a_sheets_row_grows_with_its_text_but_never_to_nothing() {
+        // Upstream's `base + fontSize * factor`, from experimenting on the
+        // simulator. A row that did not grow would have the words touching its
+        // edges at a large text size; the *base* is what keeps a hairline of
+        // breathing room even at a tiny one.
+        let small = CupertinoActionSheetAction::vertical_padding(10.0);
+        let large = CupertinoActionSheetAction::vertical_padding(30.0);
+        assert!(large > small);
+        assert_eq!(
+            CupertinoActionSheetAction::vertical_padding(0.0),
+            CupertinoActionSheetAction::VERTICAL_PADDING_BASE,
+            "the base does not scale away"
+        );
+        assert!(CupertinoActionSheetAction::VERTICAL_PADDING_BASE > 0.0);
+    }
+
+    #[test]
+    fn a_button_label_stops_shrinking_at_ten_points() {
+        // However far a reader scales text down. Below it the word stops being
+        // a target and becomes decoration.
+        assert_eq!(CupertinoDialogAction::MIN_BUTTON_FONT_SIZE, 10.0);
+        assert!(
+            CupertinoDialogAction::MIN_BUTTON_HEIGHT > CupertinoDialogAction::MIN_BUTTON_FONT_SIZE
+        );
+    }
+
+    #[test]
+    fn a_popup_surface_may_blur_without_painting_itself() {
+        // Which is what an action sheet's cancel button wants: it supplies its
+        // own fill and would otherwise be tinted twice.
+        let plain = CupertinoPopupSurface::new();
+        assert!(plain.is_surface_painted);
+        assert_eq!(plain.blur_sigma, 30.0);
+
+        let unpainted = CupertinoPopupSurface::new().with_surface_painted(false);
+        assert!(!unpainted.is_surface_painted);
+        assert_eq!(unpainted.blur_sigma, 30.0, "it still blurs");
+    }
+
+    #[test]
+    fn the_surfaces_blur_comes_with_a_saturation_boost_as_the_desktop_one_does() {
+        // Same pairing, same reason: a blur averages colours and washes them
+        // out, so the saturation is pushed back to keep what shows through
+        // recognisable.
+        assert!(CupertinoPopupSurface::DEFAULT_BLUR_SIGMA > 0.0);
+        assert!(CupertinoPopupSurface::LIGHT_SATURATION > 1.0);
+    }
+
+    #[test]
+    fn a_cancel_button_is_a_separate_panel_with_a_gap_before_it() {
+        // That gap is what says "this one is not one of the choices" -- a
+        // cancel flush against the sheet would read as the last item on it.
+        assert!(CupertinoActionSheet::CANCEL_BUTTON_PADDING > 0.0);
+    }
+
+    #[test]
+    fn a_default_action_and_a_destructive_one_are_different_things() {
+        // One is "the one you probably want" and the other is "the one that
+        // cannot be undone"; a button is at most one of them.
+        let default = CupertinoDialogAction::default_action();
+        assert!(default.is_default_action && !default.is_destructive_action);
+        let destructive = CupertinoDialogAction::destructive();
+        assert!(destructive.is_destructive_action && !destructive.is_default_action);
+        let plain = CupertinoDialogAction::new();
+        assert!(!plain.is_default_action && !plain.is_destructive_action);
     }
 }

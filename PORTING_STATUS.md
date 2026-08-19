@@ -164,6 +164,46 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 字大了就把对话框加宽——和 Material 恰好相反(2026-08-20)
+
+`CupertinoPopupSurface`、`CupertinoActionSheet`、`CupertinoActionSheetAction`、
+`CupertinoDialogAction`(上游 `cupertino/dialog.dart`),进 `cupertino.rs`。
+`cupertino/dialog.dart` 5/5 收口。
+
+**iOS 没有「无障碍模式」这个东西可查,于是文字缩放替它当了这个开关。** 上游的
+`_isInAccessibilityMode` 是「14 点的默认字号被放大到超过 14 × 1.4」——读者把字调到这个程度
+时,对话框该**换个形状**,而不只是重新排一遍。这里照上游那样写成「缩放后的字号 > 默认 ×
+系数」,而不是直接比较缩放值,因为那才是在一个非简单倍数的 text scaler 下还成立的写法。
+
+**而它换形状的方式,和 Material 恰好相反:** Material 保持宽度、把留白让出来(见上一批的
+`scale_dialog_padding`);Cupertino **把对话框加宽**(270 → 310)。两个设计对同一个问题给
+出相反的答案,而两边都按各自平台原样移植。这条回归行把两者并排断言了一次。
+
+**回归行盯的地方:**
+
+* 无障碍模式的判定,以及**正好在 1.4 上不算越过**。
+* 上面那条相反的对照。
+* **action sheet 比对话框铺得更宽**(边距 8 对 20):sheet 是要几乎顶满屏幕宽的,而对话框是
+  浮在屏幕中间的。
+* **sheet 的行随文字长高,但基座不会缩没**:上游 `base + fontSize * factor`,是在模拟器上
+  试出来的。不长高的话,大字号下词会贴到行的边上;而那个**不随字号缩放的 base**,保证再小
+  的字也留着一丝呼吸。
+* **按钮标签缩到 10 点就不再缩**——再往下这个词就不是一个可点目标而是装饰了。
+* **popup surface 可以只模糊、不给自己上色**:这正是 action sheet 那个取消按钮要的——它自
+  带填充,否则会被染两次。
+* **模糊照旧配着饱和度提升**(和上一轮 desktop 工具栏同一条理由)。
+* **取消按钮是块独立的板,前面有道缝**:那道缝就是在说「这一个不是那些选项之一」;贴着
+  sheet 的取消会读成它上面的最后一项。
+* **「默认动作」和「破坏性动作」是两回事**:一个是「你多半想要的那个」,一个是「撤不回来
+  的那个」,一个按钮至多是其中之一。
+
+那几个不圆整的数(67.8、57.17)照抄不动,上游注释写着是「在 iOS 17 模拟器上比出来的」——凑
+整会让它和它要配的那个系统差一点点,而那一点点正是这类数存在的理由。
+
+验证:`cargo test --lib` 1562 绿,GN `rustflutter_unittests` 1562 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1292 accounted / 596 MISSING。
+
 ### 棒棒糖,不是方块(2026-08-20)
 
 Cupertino 这一侧的同一道接缝:`CupertinoTextSelectionControls`、
