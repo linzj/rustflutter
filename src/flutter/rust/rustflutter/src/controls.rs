@@ -1837,6 +1837,371 @@ impl DisabledChipAttributes for Chip {
     }
 }
 
+// -- The two shaped dialogs ---------------------------------------------------
+
+/// Upstream's `_scalePadding`: how much of its padding a dialog keeps at a
+/// given text scale.
+///
+/// **The padding shrinks as the reader's text grows** -- to a third of itself
+/// by the time text is at 2×, and no further. That looks backwards until the
+/// alternative is considered: a dialog is a fixed, small box, and padding that
+/// stayed put while the text doubled would push the content off the bottom.
+/// The room has to come from somewhere, and whitespace is the part a reader
+/// who asked for larger text was not asking for.
+///
+/// Clamped at both ends: below 1× nothing grows (a reader with *smaller* text
+/// does not get a roomier dialog than the design), and past 2× nothing shrinks
+/// further (a third is as tight as it may get before the text touches the
+/// edges).
+pub fn scale_dialog_padding(text_scale: f32) -> f32 {
+    let clamped = text_scale.clamp(1.0, 2.0);
+    1.0 + (1.0 / 3.0 - 1.0) * (clamped - 1.0)
+}
+
+/// Upstream `SimpleDialogOption`: one choice in a [`SimpleDialog`].
+///
+/// It is an ink well with padding and nothing else, and the padding is the
+/// point: 24 across and 8 down, so the options run edge to edge of the dialog
+/// and the splash does too. An option inset from the dialog's sides would read
+/// as a button in a list rather than as a row of the list.
+pub struct SimpleDialogOption {
+    id: u64,
+    /// A *builder* rather than a widget, for the reason [`crate::ink::Ink`]
+    /// gives: the ink well rebuilds from the same widget instance whenever its
+    /// own state changes, so a child handed over once would be gone on the
+    /// second build.
+    build_child: Box<dyn Fn() -> AnyWidget>,
+    padding: Option<EdgeInsets>,
+    on_pressed: Option<Rc<dyn Fn()>>,
+}
+
+impl SimpleDialogOption {
+    /// Upstream's default padding.
+    pub const DEFAULT_PADDING: EdgeInsets = EdgeInsets::symmetric(24.0, 8.0);
+
+    pub fn new(id: u64, build_child: impl Fn() -> AnyWidget + 'static) -> SimpleDialogOption {
+        SimpleDialogOption {
+            id,
+            build_child: Box::new(build_child),
+            padding: None,
+            on_pressed: None,
+        }
+    }
+
+    pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    pub fn with_on_pressed(mut self, on_pressed: impl Fn() + 'static) -> Self {
+        self.on_pressed = Some(Rc::new(on_pressed));
+        self
+    }
+
+    pub fn padding(&self) -> EdgeInsets {
+        self.padding.unwrap_or(SimpleDialogOption::DEFAULT_PADDING)
+    }
+}
+
+impl Component for SimpleDialogOption {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        let padding = self.padding();
+        let child = (self.build_child)();
+        // The padding is *inside* the well, so the splash covers the padded
+        // row rather than only the label -- an option is a row of the list,
+        // and a splash that stopped at the text would read as a button.
+        let padded = crate::framework::single(child, move |inner| {
+            Box::new(Container::new().with_padding(padding).with_child(inner))
+        });
+        let padded = RefCell::new(Some(padded));
+        let mut well = crate::ink_well::InkWell::new(self.id, move || {
+            padded
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| leaf(|| crate::widgets::Empty))
+        });
+        if let Some(on_pressed) = self.on_pressed.clone() {
+            well = well.with_on_tap(move || on_pressed());
+        }
+        crate::framework::stateful(well)
+    }
+}
+
+/// Upstream `SimpleDialog`: a title and a list of choices.
+///
+/// The difference from [`AlertDialog`] is what the reader is being asked. An
+/// alert states something and offers actions at the bottom; a simple dialog
+/// *is* its choices, so they fill the body and there is no action row at all.
+pub struct SimpleDialog {
+    title: Option<String>,
+    children: RefCell<Vec<AnyWidget>>,
+    background_color: Option<Color>,
+}
+
+impl SimpleDialog {
+    /// Upstream's `titlePadding`, `EdgeInsets.fromLTRB(24, 24, 24, 0)`. No
+    /// bottom inset when there are children: the first option supplies its own
+    /// top padding, and two would read as a gap.
+    pub const TITLE_PADDING: EdgeInsets = EdgeInsets::only(24.0, 24.0, 24.0, 0.0);
+    /// Upstream's `contentPadding`, `EdgeInsets.fromLTRB(0, 12, 0, 16)` --
+    /// nothing at the sides, because the options run edge to edge.
+    pub const CONTENT_PADDING: EdgeInsets = EdgeInsets::only(0.0, 12.0, 0.0, 16.0);
+
+    pub fn new() -> SimpleDialog {
+        SimpleDialog {
+            title: None,
+            children: RefCell::new(Vec::new()),
+            background_color: None,
+        }
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn with_child(self, child: AnyWidget) -> Self {
+        self.children.borrow_mut().push(child);
+        self
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    /// Upstream's title padding, scaled -- and with the bottom inset kept
+    /// unscaled when there are children, which is upstream's one asymmetry
+    /// here: that inset is the gap to the first option, and a gap that shrank
+    /// with the text would close up exactly when the text needed separating.
+    pub fn title_padding(&self, text_scale: f32) -> EdgeInsets {
+        let scale = scale_dialog_padding(text_scale);
+        let base = SimpleDialog::TITLE_PADDING;
+        let has_children = !self.children.borrow().is_empty();
+        EdgeInsets {
+            left: base.left * scale,
+            right: base.right * scale,
+            top: base.top * scale,
+            bottom: if has_children {
+                base.bottom
+            } else {
+                base.bottom * scale
+            },
+        }
+    }
+}
+
+impl Default for SimpleDialog {
+    fn default() -> SimpleDialog {
+        SimpleDialog::new()
+    }
+}
+
+impl Component for SimpleDialog {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let theme = theme_of(context);
+        let scale = crate::media_query::current_text_scale();
+        let title_padding = self.title_padding(scale);
+        let content_padding = SimpleDialog::CONTENT_PADDING;
+        let title = self.title.clone();
+        let title_style = theme.title();
+        let background = self.background_color.unwrap_or(theme.surface);
+        let children = std::mem::take(&mut *self.children.borrow_mut());
+
+        many(children, move |boxed| {
+            let mut column = Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Start);
+            if let Some(title) = &title {
+                column = column.push(
+                    Container::new()
+                        .with_padding(title_padding)
+                        .with_child(Text::new(title.clone()).with_style(title_style.clone())),
+                );
+            }
+            let mut body = Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            for child in boxed {
+                body = body.push(child);
+            }
+            column = column.push(
+                Container::new()
+                    .with_padding(content_padding)
+                    .with_child(body),
+            );
+            Container::new()
+                .with_color(background)
+                .with_corner_radius(28.0)
+                .with_child(column)
+        })
+    }
+}
+
+/// Upstream `AlertDialog`: something to say, and what to do about it.
+///
+/// The shape is upstream's four optional bands -- icon, title, content,
+/// actions -- and the ordering rule worth stating is what the *icon* does to
+/// the alignment: an alert with an icon centres its title, because the icon is
+/// above it and a left-aligned title under a centred icon reads as a mistake.
+pub struct AlertDialog {
+    title: Option<String>,
+    content: Option<String>,
+    actions: RefCell<Vec<AnyWidget>>,
+    icon: RefCell<Option<AnyWidget>>,
+    background_color: Option<Color>,
+}
+
+impl AlertDialog {
+    /// Upstream's default `titlePadding` when there is no icon.
+    pub const TITLE_PADDING: EdgeInsets = EdgeInsets::only(24.0, 24.0, 24.0, 0.0);
+    /// Upstream's default `contentPadding` for Material 3.
+    pub const CONTENT_PADDING: EdgeInsets = EdgeInsets::only(24.0, 16.0, 24.0, 24.0);
+    /// Upstream's default `actionsPadding` for Material 3.
+    pub const ACTIONS_PADDING: EdgeInsets = EdgeInsets::only(24.0, 0.0, 24.0, 24.0);
+
+    pub fn new() -> AlertDialog {
+        AlertDialog {
+            title: None,
+            content: None,
+            actions: RefCell::new(Vec::new()),
+            icon: RefCell::new(None),
+            background_color: None,
+        }
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn with_content(mut self, content: impl Into<String>) -> Self {
+        self.content = Some(content.into());
+        self
+    }
+
+    pub fn with_action(self, action: AnyWidget) -> Self {
+        self.actions.borrow_mut().push(action);
+        self
+    }
+
+    pub fn with_icon(self, icon: AnyWidget) -> Self {
+        *self.icon.borrow_mut() = Some(icon);
+        self
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    /// Whether the title is centred, which upstream ties to having an icon.
+    pub fn centres_title(&self) -> bool {
+        self.icon.borrow().is_some()
+    }
+
+    /// Any of upstream's paddings at the reader's text scale.
+    pub fn scaled(padding: EdgeInsets, text_scale: f32) -> EdgeInsets {
+        let scale = scale_dialog_padding(text_scale);
+        EdgeInsets {
+            left: padding.left * scale,
+            right: padding.right * scale,
+            top: padding.top * scale,
+            bottom: padding.bottom * scale,
+        }
+    }
+}
+
+impl Default for AlertDialog {
+    fn default() -> AlertDialog {
+        AlertDialog::new()
+    }
+}
+
+impl Component for AlertDialog {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let theme = theme_of(context);
+        let scale = crate::media_query::current_text_scale();
+        let title = self.title.clone();
+        let content = self.content.clone();
+        let title_style = theme.title();
+        let body_style = theme.body();
+        let background = self.background_color.unwrap_or(theme.surface);
+        let centred = self.centres_title();
+        let title_padding = AlertDialog::scaled(AlertDialog::TITLE_PADDING, scale);
+        let content_padding = AlertDialog::scaled(AlertDialog::CONTENT_PADDING, scale);
+        let actions_padding = AlertDialog::scaled(AlertDialog::ACTIONS_PADDING, scale);
+
+        let icon = self.icon.borrow_mut().take();
+        let has_icon = icon.is_some();
+        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let action_count = actions.len();
+        let mut children = Vec::new();
+        children.extend(icon);
+        children.extend(actions);
+
+        many(children, move |mut boxed| {
+            let mut boxed = boxed.drain(..);
+            let icon = if has_icon { boxed.next() } else { None };
+            let actions: Vec<_> = boxed.take(action_count).collect();
+
+            let mut column = Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(if centred {
+                    CrossAxisAlignment::Center
+                } else {
+                    CrossAxisAlignment::Start
+                });
+            if let Some(icon) = icon {
+                column = column.push(
+                    Container::new()
+                        .with_padding(EdgeInsets::only(24.0, 24.0, 24.0, 16.0))
+                        .with_child(icon),
+                );
+            }
+            if let Some(title) = &title {
+                column = column.push(
+                    Container::new()
+                        .with_padding(if has_icon {
+                            EdgeInsets::only(24.0, 0.0, 24.0, 0.0)
+                        } else {
+                            title_padding
+                        })
+                        .with_child(Text::new(title.clone()).with_style(title_style.clone())),
+                );
+            }
+            if let Some(content) = &content {
+                column = column.push(
+                    Container::new()
+                        .with_padding(content_padding)
+                        .with_child(Text::new(content.clone()).with_style(body_style.clone())),
+                );
+            }
+            if !actions.is_empty() {
+                // Upstream lays the actions out in an `OverflowBar` so that a
+                // pair of long labels stacks rather than overflowing the
+                // dialog -- which is precisely the case a small fixed box
+                // runs into.
+                let mut bar = crate::overflow_bar::OverflowBar::new()
+                    .with_spacing(8.0)
+                    .with_alignment(crate::render::MainAxisAlignment::End);
+                for action in actions {
+                    bar = bar.push_boxed(action);
+                }
+                column = column.push(
+                    Container::new()
+                        .with_padding(actions_padding)
+                        .with_child(bar),
+                );
+            }
+            Container::new()
+                .with_color(background)
+                .with_corner_radius(28.0)
+                .with_child(column)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2143,5 +2508,132 @@ mod tests {
         assert!(style.enable_animation.is_none());
         assert!(style.avatar_drawer_animation.is_none());
         assert!(style.delete_drawer_animation.is_none());
+    }
+
+    #[test]
+    fn a_dialogs_padding_shrinks_as_the_readers_text_grows() {
+        // Backwards until the alternative is considered: a dialog is a fixed,
+        // small box, and padding that stayed put while the text doubled would
+        // push the content off the bottom. The room has to come from
+        // somewhere, and whitespace is the part a reader who asked for larger
+        // text was not asking for.
+        assert_eq!(scale_dialog_padding(1.0), 1.0, "the design's own padding");
+        assert!((scale_dialog_padding(2.0) - 1.0 / 3.0).abs() < 0.001);
+        assert!(
+            scale_dialog_padding(1.5) < scale_dialog_padding(1.0),
+            "and it only ever shrinks"
+        );
+    }
+
+    #[test]
+    fn the_padding_scale_is_clamped_at_both_ends() {
+        // Below 1x nothing grows -- a reader with *smaller* text does not get
+        // a roomier dialog than the design. Past 2x nothing shrinks further,
+        // because a third is as tight as it may get before the text touches
+        // the edges.
+        assert_eq!(scale_dialog_padding(0.5), 1.0);
+        assert_eq!(scale_dialog_padding(0.0), 1.0);
+        assert_eq!(scale_dialog_padding(3.0), scale_dialog_padding(2.0));
+        assert_eq!(scale_dialog_padding(100.0), scale_dialog_padding(2.0));
+    }
+
+    #[test]
+    fn a_simple_dialogs_title_keeps_its_gap_to_the_first_option() {
+        // Upstream's one asymmetry here: the bottom inset is the gap to the
+        // first option, and a gap that shrank with the text would close up
+        // exactly when the text needed separating. So it is *not* scaled --
+        // but only when there is something below it to separate from.
+        let with_options = SimpleDialog::new()
+            .with_title("Pick one")
+            .with_child(leaf(|| crate::widgets::Empty));
+        let scaled = with_options.title_padding(2.0);
+        assert!(
+            scaled.top < SimpleDialog::TITLE_PADDING.top,
+            "the top shrank"
+        );
+        assert_eq!(
+            scaled.bottom,
+            SimpleDialog::TITLE_PADDING.bottom,
+            "the gap below did not"
+        );
+
+        // With nothing below, the bottom is scaled like the rest -- there is
+        // no gap to protect.
+        let bare = SimpleDialog::new().with_title("Nothing here");
+        let bare_scaled = bare.title_padding(2.0);
+        assert!(
+            (bare_scaled.bottom - SimpleDialog::TITLE_PADDING.bottom * scale_dialog_padding(2.0))
+                .abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn a_simple_dialogs_options_run_edge_to_edge() {
+        // Its content padding has nothing at the sides, and the option
+        // supplies its own 24 -- so the splash reaches the dialog's edges. An
+        // option inset from the sides would read as a button in a list rather
+        // than as a row of it.
+        assert_eq!(SimpleDialog::CONTENT_PADDING.left, 0.0);
+        assert_eq!(SimpleDialog::CONTENT_PADDING.right, 0.0);
+        assert_eq!(SimpleDialogOption::DEFAULT_PADDING.left, 24.0);
+        assert_eq!(SimpleDialogOption::DEFAULT_PADDING.right, 24.0);
+    }
+
+    #[test]
+    fn an_icon_is_what_centres_an_alert_dialogs_title() {
+        // A left-aligned title under a centred icon reads as a mistake, so
+        // upstream ties the two together rather than offering the alignment
+        // separately.
+        assert!(!AlertDialog::new().with_title("Delete?").centres_title());
+        assert!(
+            AlertDialog::new()
+                .with_title("Delete?")
+                .with_icon(leaf(|| crate::widgets::Empty))
+                .centres_title()
+        );
+    }
+
+    #[test]
+    fn every_alert_padding_scales_the_same_way() {
+        // One rule over all of them, so a dialog does not go lopsided at a
+        // large text size.
+        for base in [
+            AlertDialog::TITLE_PADDING,
+            AlertDialog::CONTENT_PADDING,
+            AlertDialog::ACTIONS_PADDING,
+        ] {
+            let scaled = AlertDialog::scaled(base, 2.0);
+            let factor = scale_dialog_padding(2.0);
+            assert!((scaled.left - base.left * factor).abs() < 0.001);
+            assert!((scaled.top - base.top * factor).abs() < 0.001);
+            assert!((scaled.right - base.right * factor).abs() < 0.001);
+            assert!((scaled.bottom - base.bottom * factor).abs() < 0.001);
+        }
+        // And at the default scale nothing moves at all.
+        assert_eq!(
+            AlertDialog::scaled(AlertDialog::CONTENT_PADDING, 1.0),
+            AlertDialog::CONTENT_PADDING
+        );
+    }
+
+    #[test]
+    fn a_simple_dialog_option_builds_its_child_through_the_builder() {
+        // The ink well rebuilds from the same widget instance whenever its own
+        // state changes -- a splash is state -- so a child handed over once
+        // would be gone on the second build. Mounting it proves the builder is
+        // what the child comes through.
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = std::rc::Rc::clone(&built);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::provide(
+            Theme::dark(),
+            component(SimpleDialogOption::new(1, move || {
+                counter.set(counter.get() + 1);
+                leaf(|| Container::new().with_size(100.0, 20.0))
+            })),
+        ));
+        assert!(built.get() >= 1, "the builder ran");
+        assert!(tree.build_render_tree().is_some(), "and produced a tree");
     }
 }
