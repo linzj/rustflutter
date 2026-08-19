@@ -46,12 +46,13 @@ use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomAppBarThemeData, BottomNavigationBarThemeData,
-    BottomSheetThemeData, ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData,
-    DataTableThemeData, DatePickerThemeData, DialogThemeData, DividerThemeData, DrawerThemeData,
-    DropdownMenuThemeData, ElevatedButtonThemeData, ExpansionTileThemeData, FilledButtonThemeData,
-    FloatingActionButtonThemeData, IconButtonThemeData, IconThemeData, InputDecorationThemeData,
-    ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData,
-    MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData, PopupMenuThemeData,
+    BottomSheetThemeData, ButtonThemeData, CardThemeData, CarouselViewThemeData, CheckboxThemeData,
+    ChipThemeData, DataTableThemeData, DatePickerThemeData, DialogThemeData, DividerThemeData,
+    DrawerThemeData, DropdownMenuThemeData, ElevatedButtonThemeData, ExpansionTileThemeData,
+    FilledButtonThemeData, FloatingActionButtonThemeData, IconButtonThemeData, IconThemeData,
+    InputDecorationThemeData, ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData,
+    MenuButtonThemeData, MenuThemeData, NavigationBarThemeData, NavigationDrawerThemeData,
+    NavigationRailThemeData, OutlinedButtonThemeData, PopupMenuThemeData,
     ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
     SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
     TabBarThemeData, TextButtonThemeData, TextSelectionThemeData, TimePickerThemeData,
@@ -251,6 +252,9 @@ pub struct ThemeData {
     pub popup_menu_theme: PopupMenuThemeData,
     pub dropdown_menu_theme: DropdownMenuThemeData,
     pub bottom_app_bar_theme: BottomAppBarThemeData,
+    pub navigation_bar_theme: NavigationBarThemeData,
+    pub navigation_drawer_theme: NavigationDrawerThemeData,
+    pub carousel_view_theme: CarouselViewThemeData,
 }
 
 impl ThemeData {
@@ -377,6 +381,9 @@ impl ThemeData {
             popup_menu_theme: PopupMenuThemeData::new(),
             dropdown_menu_theme: DropdownMenuThemeData::new(),
             bottom_app_bar_theme: BottomAppBarThemeData::new(),
+            navigation_bar_theme: NavigationBarThemeData::new(),
+            navigation_drawer_theme: NavigationDrawerThemeData::new(),
+            carousel_view_theme: CarouselViewThemeData::new(),
         }
     }
 
@@ -727,6 +734,21 @@ impl ThemeData {
             bottom_app_bar_theme: BottomAppBarThemeData::lerp(
                 &a.bottom_app_bar_theme,
                 &b.bottom_app_bar_theme,
+                t,
+            ),
+            navigation_bar_theme: NavigationBarThemeData::lerp(
+                &a.navigation_bar_theme,
+                &b.navigation_bar_theme,
+                t,
+            ),
+            navigation_drawer_theme: NavigationDrawerThemeData::lerp(
+                &a.navigation_drawer_theme,
+                &b.navigation_drawer_theme,
+                t,
+            ),
+            carousel_view_theme: CarouselViewThemeData::lerp(
+                &a.carousel_view_theme,
+                &b.carousel_view_theme,
                 t,
             ),
         }

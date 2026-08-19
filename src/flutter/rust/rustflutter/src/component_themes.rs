@@ -5000,6 +5000,248 @@ impl BottomAppBarTheme {
     }
 }
 
+// -- Navigation bar and drawer (upstream `navigation_bar_theme.dart`,
+//    `navigation_drawer_theme.dart`) -----------------------------------------
+
+/// Upstream `NavigationDestinationLabelBehavior`: which of a navigation
+/// bar's labels are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NavigationDestinationLabelBehavior {
+    #[default]
+    AlwaysShow,
+    AlwaysHide,
+    /// Only under the destination the reader is on.
+    OnlyShowSelected,
+}
+
+/// Upstream `NavigationBarThemeData`: Material 3's bottom bar, which is a
+/// different widget from the Material 2 [`BottomNavigationBarThemeData`] and
+/// keeps its own theme.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavigationBarThemeData {
+    pub height: Option<f32>,
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    /// The pill behind the selected destination's icon.
+    pub indicator_color: Option<Color>,
+    pub indicator_shape: Option<ShapeBorder>,
+    pub label_text_style: Option<StateProperty<Option<TextStyle>>>,
+    /// The icon theme by state -- one property rather than the Material 2
+    /// bar's two fields, which is the newer widget's shape.
+    pub icon_theme: Option<StateProperty<Option<IconThemeData>>>,
+    pub label_behavior: Option<NavigationDestinationLabelBehavior>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub label_padding: Option<EdgeInsetsGeometry>,
+}
+
+impl NavigationBarThemeData {
+    pub fn new() -> NavigationBarThemeData {
+        NavigationBarThemeData::default()
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
+    pub fn with_indicator_color(mut self, color: Color) -> Self {
+        self.indicator_color = Some(color);
+        self
+    }
+
+    pub fn with_label_behavior(mut self, behavior: NavigationDestinationLabelBehavior) -> Self {
+        self.label_behavior = Some(behavior);
+        self
+    }
+
+    /// Upstream `NavigationBarThemeData.lerp`.
+    pub fn lerp(
+        a: &NavigationBarThemeData,
+        b: &NavigationBarThemeData,
+        t: f32,
+    ) -> NavigationBarThemeData {
+        NavigationBarThemeData {
+            height: lerp_f32(a.height, b.height, t),
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
+            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
+            icon_theme: lerp_nearer(&a.icon_theme, &b.icon_theme, t),
+            label_behavior: lerp_nearer(&a.label_behavior, &b.label_behavior, t),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
+        }
+    }
+}
+
+/// Upstream `NavigationBarTheme`.
+pub struct NavigationBarTheme;
+
+impl NavigationBarTheme {
+    pub fn new(data: NavigationBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> NavigationBarThemeData {
+        context
+            .inherited::<NavigationBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).navigation_bar_theme.clone())
+    }
+}
+
+/// Upstream `NavigationDrawerThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavigationDrawerThemeData {
+    /// How tall one destination is.
+    pub tile_height: Option<f32>,
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub indicator_color: Option<Color>,
+    pub indicator_shape: Option<ShapeBorder>,
+    pub indicator_size: Option<Size>,
+    pub label_text_style: Option<StateProperty<Option<TextStyle>>>,
+    pub icon_theme: Option<StateProperty<Option<IconThemeData>>>,
+}
+
+impl NavigationDrawerThemeData {
+    pub fn new() -> NavigationDrawerThemeData {
+        NavigationDrawerThemeData::default()
+    }
+
+    pub fn with_tile_height(mut self, height: f32) -> Self {
+        self.tile_height = Some(height);
+        self
+    }
+
+    pub fn with_indicator_color(mut self, color: Color) -> Self {
+        self.indicator_color = Some(color);
+        self
+    }
+
+    pub fn with_indicator_size(mut self, size: Size) -> Self {
+        self.indicator_size = Some(size);
+        self
+    }
+
+    /// Upstream `NavigationDrawerThemeData.lerp`.
+    pub fn lerp(
+        a: &NavigationDrawerThemeData,
+        b: &NavigationDrawerThemeData,
+        t: f32,
+    ) -> NavigationDrawerThemeData {
+        NavigationDrawerThemeData {
+            tile_height: lerp_f32(a.tile_height, b.tile_height, t),
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
+            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            indicator_size: match (a.indicator_size, b.indicator_size) {
+                (Some(first), Some(second)) => Some(Size::new(
+                    first.width + (second.width - first.width) * t,
+                    first.height + (second.height - first.height) * t,
+                )),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
+            icon_theme: lerp_nearer(&a.icon_theme, &b.icon_theme, t),
+        }
+    }
+}
+
+/// Upstream `NavigationDrawerTheme`.
+pub struct NavigationDrawerTheme;
+
+impl NavigationDrawerTheme {
+    pub fn new(data: NavigationDrawerThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> NavigationDrawerThemeData {
+        context
+            .inherited::<NavigationDrawerThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).navigation_drawer_theme.clone())
+    }
+}
+
+// -- Carousel (upstream `carousel_theme.dart`) --------------------------------
+
+/// Upstream `CarouselViewThemeData`.
+///
+/// `itemClipBehavior` is not modelled, for the reason `clipBehavior` is not
+/// modelled anywhere else here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CarouselViewThemeData {
+    pub padding: Option<EdgeInsets>,
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shape: Option<ShapeBorder>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+}
+
+impl CarouselViewThemeData {
+    pub fn new() -> CarouselViewThemeData {
+        CarouselViewThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    /// Upstream `CarouselViewThemeData.lerp`.
+    pub fn lerp(
+        a: &CarouselViewThemeData,
+        b: &CarouselViewThemeData,
+        t: f32,
+    ) -> CarouselViewThemeData {
+        CarouselViewThemeData {
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+        }
+    }
+}
+
+/// Upstream `CarouselViewTheme`.
+pub struct CarouselViewTheme;
+
+impl CarouselViewTheme {
+    pub fn new(data: CarouselViewThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> CarouselViewThemeData {
+        context
+            .inherited::<CarouselViewThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).carousel_view_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -6335,5 +6577,98 @@ mod tests {
         );
         assert_eq!(themed.height, Some(80.0));
         assert!(matches!(themed.shape, Some(NotchedShape::Circular { .. })));
+    }
+
+    #[test]
+    fn the_two_bottom_bars_have_two_themes_and_two_shapes() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        // Material 2's bar keeps two icon-theme fields, one per state;
+        // Material 3's keeps one property resolved against the states. They
+        // are different widgets and upstream themes them apart, so setting
+        // one says nothing about the other.
+        let m3 = read_in(
+            |child| {
+                NavigationBarTheme::new(
+                    NavigationBarThemeData {
+                        icon_theme: Some(StateProperty::resolve_with(|states: WidgetStates| {
+                            Some(IconThemeData::new().with_size(
+                                if states.contains(WidgetState::Selected) {
+                                    28.0
+                                } else {
+                                    24.0
+                                },
+                            ))
+                        })),
+                        ..NavigationBarThemeData::new().with_height(72.0)
+                    },
+                    child,
+                )
+            },
+            NavigationBarTheme::of,
+        );
+        assert_eq!(m3.height, Some(72.0));
+        let property = m3.icon_theme.expect("set");
+        assert_eq!(
+            property
+                .resolve(WidgetStates::NONE.with(WidgetState::Selected))
+                .and_then(|theme| theme.size),
+            Some(28.0)
+        );
+        assert_eq!(
+            property.resolve(WidgetStates::NONE).and_then(|t| t.size),
+            Some(24.0)
+        );
+
+        // And the Material 2 bar's theme is untouched by it.
+        let m2 = read_in(
+            |child| NavigationBarTheme::new(NavigationBarThemeData::new().with_height(72.0), child),
+            BottomNavigationBarTheme::of,
+        );
+        assert_eq!(m2, BottomNavigationBarThemeData::new());
+    }
+
+    #[test]
+    fn a_navigation_drawers_indicator_has_a_size_of_its_own() {
+        use crate::render::Size;
+
+        let themed = read_in(
+            |child| {
+                NavigationDrawerTheme::new(
+                    NavigationDrawerThemeData::new()
+                        .with_tile_height(56.0)
+                        .with_indicator_size(Size::new(336.0, 56.0)),
+                    child,
+                )
+            },
+            NavigationDrawerTheme::of,
+        );
+        assert_eq!(themed.tile_height, Some(56.0));
+        assert_eq!(themed.indicator_size, Some(Size::new(336.0, 56.0)));
+
+        // Halfway between two sizes is the size halfway between them, which
+        // is the one field here that interpolates rather than switching over.
+        let wider = NavigationDrawerThemeData::new().with_indicator_size(Size::new(436.0, 56.0));
+        let half = NavigationDrawerThemeData::lerp(&themed, &wider, 0.5);
+        assert_eq!(half.indicator_size, Some(Size::new(386.0, 56.0)));
+    }
+
+    #[test]
+    fn a_carousel_theme_carries_its_padding_and_its_fill() {
+        use crate::render::EdgeInsets;
+
+        let themed = read_in(
+            |child| {
+                CarouselViewTheme::new(
+                    CarouselViewThemeData::new()
+                        .with_padding(EdgeInsets::all(8.0))
+                        .with_background_color(Color::argb(255, 5, 5, 5)),
+                    child,
+                )
+            },
+            CarouselViewTheme::of,
+        );
+        assert_eq!(themed.padding, Some(EdgeInsets::all(8.0)));
+        assert_eq!(themed.background_color, Some(Color::argb(255, 5, 5, 5)));
     }
 }

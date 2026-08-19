@@ -164,6 +164,19 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:navigation bar / drawer / carousel 三对(2026-08-19)。**
+`NavigationBarTheme(Data)`(12/12,连带 `NavigationDestinationLabelBehavior`)、
+`NavigationDrawerTheme(Data)`(10/10)、`CarouselViewTheme(Data)`(5/6,缺
+`itemClipBehavior`)。
+
+**底部有两个 bar,两套主题**:M2 的 `BottomNavigationBar` 与 M3 的
+`NavigationBar` 是**不同的 widget**,上游各给一套主题,连图标主题的形态都不同
+——M2 是选中/未选中两个字段,M3 是一个按状态解析的属性。此侧照搬,回归线点明
+"设了 M3 那套,M2 那套仍是空的"。
+
+`NavigationDrawerThemeData.indicator_size` 是这几对里唯一真插值的字段
+(两端都有 Size 时取中间),其余按近端切换。
+
 **P8-M1:popup / dropdown / bottom app bar 三对(2026-08-19)。**
 `PopupMenuTheme(Data)`(13/13,连带 `PopupMenuPosition`)、
 `DropdownMenuTheme(Data)`(4/4)、`BottomAppBarTheme(Data)`(7/7)。
