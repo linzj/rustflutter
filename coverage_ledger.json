@@ -1304,6 +1304,18 @@
     "FractionalOffsetTween": {
       "rust": "transitions::AlignmentTween",
       "note": "FractionalOffset≙Alignment（同坐标系，已入账），其 tween 即 AlignmentTween"
+    },
+    "IgnoreBaseline": {
+      "rust": "代理盒默认基线路径",
+      "note": "同 RenderIgnoreBaseline 账——无消费者的返回 None 变体，需要时一行可加"
+    },
+    "DefaultAssetBundle": {
+      "rust": "image::root_bundle()",
+      "note": "crate 的 bundle 是全局根而非环境覆写；Localizations 波（E4）再谈按子树换 bundle"
+    },
+    "WidgetToRenderBoxAdapter": {
+      "rust": "widgets::boxed() / framework::leaf()",
+      "note": "此侧 widget 本就产出 render object，适配器即恒等"
     }
   },
   "blocked_engine": {
@@ -1327,7 +1339,10 @@
     "PlatformViewLayer": "无 platform view 通路",
     "FollowerLayer": "引擎无 LayerLink（同 LeaderLayer）",
     "RenderDarwinPlatformView": "无 platform view 通路",
-    "PlatformViewRenderBox": "无 platform view 通路"
+    "PlatformViewRenderBox": "无 platform view 通路",
+    "BackdropGroup": "引擎无 BackdropKey——背景滤镜无法跨兄弟共享一次采样",
+    "CompositedTransformTarget": "引擎无 LayerLink（同 LeaderLayer）",
+    "CompositedTransformFollower": "引擎无 LayerLink（同 FollowerLayer）"
   },
   "out_of_scope_files": {},
   "out_of_scope_classes": {

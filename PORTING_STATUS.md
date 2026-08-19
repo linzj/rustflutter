@@ -164,6 +164,47 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:basic.dart 余量(2026-08-19)。** widgets 层最大的单个缺口:72 类里 40
+未记账,大半是 P2 已经落地的渲染对象没有 widget 侧名字。补上 29 个门面
+(widgets.rs,上游顺序):`ShaderMask`/`BackdropFilter`/`CustomPaint`/
+`ClipOval`/`ClipRSuperellipse`/`PhysicalModel`/`PhysicalShape`/
+`FractionalTranslation`/`RotatedBox`/`CustomSingleChildLayout`/`LayoutId`/
+`CustomMultiChildLayout`/`ConstrainedBox`/`ConstraintsTransformBox`/
+`UnconstrainedBox`/`Offstage`/`SliverToBoxAdapter`/`SliverPadding`/
+`ListBody`/`Flow`/`RichText`/`RawImage`/`Listener`/`MouseRegion`/
+`AbsorbPointer`/`MetaData`/`ColoredBox`,以及 framework.rs 的
+`KeyedSubtree`(`keyed_subtree` + `ensure_unique_keys_for_list`)与
+`StatefulBuilder`(`stateful_builder`)。basic.dart 67/72。
+
+**抓到一个真错:`ConstraintsTransform` 的三个变体不是上游的东西。**
+既有实现是 `WidthCapture`(子的 max 宽变成 min)/`HeightCapture`/
+`Unconstrained`(只清 minima);上游 `ConstraintsTransformBox` 的静态变换有
+七个,没有一个是"max 变 min",而 `unconstrained` 是 `const BoxConstraints()`
+——**minima 与 maxima 全清**。只清 minima 的话 `UnconstrainedBox` 恰好不
+unconstrain,而那是它唯一的职责。改为上游七式:`unmodified`/`unconstrained`/
+`widthUnconstrained`(=`heightConstraints()`)/`heightUnconstrained`/
+`maxWidthUnconstrained`/`maxHeightUnconstrained`/`maxUnconstrained`,
+`UnconstrainedBox::along(axis)` 即上游 `constrainedAxis` 的 `_axisToTransform`
+三分支。原 `width_capture_tightens_the_child` 测试随之改写为两条:
+unconstrained 让子溢出父(且溢出不等于可命中——`hit_test` 从自身边界起,
+上游同理)、widthUnconstrained 保住高度的上下界。
+
+`ListBody` 的轴按上游 `_getDirection`
+(`getAxisDirectionFromAxisReverseAndDirectionality`)算:竖直向下、水平按
+阅读序,`reverse` 再翻——rtl 的水平 body 从右端排起。
+
+**入账判定(basic.dart 余下 11 类)**:`IgnoreBaseline`≙代理盒默认基线路径
+(同 `RenderIgnoreBaseline` 既有账)、`DefaultAssetBundle`≙`image::root_bundle()`
+(此侧 bundle 是全局根,按子树换 bundle 待 E4)、`WidgetToRenderBoxAdapter`≙
+`boxed()`/`leaf()`(此侧 widget 本就产出 render object,适配器即恒等);
+`BackdropGroup`(引擎无 `BackdropKey`)、`CompositedTransformTarget/Follower`
+(引擎无 `LayerLink`,同 Leader/FollowerLayer 既有挂账)记 blocked-engine。
+
+**余 5 类不入账,是波次边界不是漏译**:`MergeSemantics`/`BlockSemantics`/
+`ExcludeSemantics`/`IndexedSemantics`/`SliverSemantics` 属 E3 语义 ABI 波
+(rendering 侧的语义七件同样在等它),那一波把 `yields_to_a_label` 的常见
+情形展开成上游的合并/屏蔽/排除/索引四种标注。
+
 **P4:transitions 全家(2026-08-19)。** `transitions.rs` 落地,
 transitions.dart 16/16 入账(唯 `DefaultTextStyleTransition` 仍记 mapped
 ——框架侧无 `DefaultTextStyle` 组件,随 P7 文本波接线):

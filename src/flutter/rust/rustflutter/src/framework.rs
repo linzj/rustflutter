@@ -410,6 +410,92 @@ pub fn render_widget<W: RenderWidget>(widget: W) -> AnyWidget {
     }
 }
 
+/// Upstream `KeyedSubtree`: an already-built widget given a [`Key`].
+///
+/// A key is normally set by the widget that has one (`Component::key`), which
+/// works when the widget is yours. This is for when it is not -- a list of
+/// children built by somebody else, each of which has to keep its element
+/// across a reorder. Upstream's is a widget that wraps; here the key is
+/// written onto the widget itself, since an `AnyWidget` carries its own.
+pub fn keyed_subtree(key: u64, mut child: AnyWidget) -> AnyWidget {
+    child.key = Some(key);
+    child
+}
+
+/// Upstream `KeyedSubtree.ensureUniqueKeysForList`: every item keyed by its
+/// own key if it has one and by its position if it does not, so that a list
+/// built from unkeyed children still reorders by identity.
+///
+/// Upstream wraps each item in a `KeyedSubtree` whose key is
+/// `ValueKey(child.key ?? index)`; a key here is a number, so the item's own
+/// key is already that value and the index stands in when there is none.
+pub fn ensure_unique_keys_for_list(items: Vec<AnyWidget>, base_index: u64) -> Vec<AnyWidget> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let key = item.key.unwrap_or(base_index + index as u64);
+            keyed_subtree(key, item)
+        })
+        .collect()
+}
+
+/// The state a [`stateful_builder`] holds: none of its own.
+///
+/// Upstream's `StatefulBuilder` holds no state either -- the point of it is
+/// the `setState` it hands to the builder, which belongs to an element the
+/// caller did not have to declare a widget for.
+#[derive(Default)]
+pub struct StatefulBuilderState;
+
+/// Upstream `StatefulBuilder`: a builder given a way to rebuild itself.
+pub struct StatefulBuilder<F> {
+    builder: F,
+    key: Key,
+}
+
+impl<F> StatefulBuilder<F>
+where
+    F: Fn(StateHandle<StatefulBuilderState>) -> AnyWidget + 'static,
+{
+    pub fn new(builder: F) -> StatefulBuilder<F> {
+        StatefulBuilder { builder, key: None }
+    }
+
+    pub fn with_key(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
+}
+
+impl<F> StatefulComponent for StatefulBuilder<F>
+where
+    F: Fn(StateHandle<StatefulBuilderState>) -> AnyWidget + 'static,
+{
+    type State = StatefulBuilderState;
+
+    fn key(&self) -> Key {
+        self.key
+    }
+
+    fn build(
+        &self,
+        _state: &Self::State,
+        handle: StateHandle<Self::State>,
+        _context: &mut BuildContext,
+    ) -> AnyWidget {
+        (self.builder)(handle)
+    }
+}
+
+/// [`StatefulBuilder`] as a widget.
+pub fn stateful_builder<F>(builder: F) -> AnyWidget
+where
+    F: Fn(StateHandle<StatefulBuilderState>) -> AnyWidget + 'static,
+{
+    stateful(StatefulBuilder::new(builder))
+}
+
 /// Gives an already-built widget a [`GlobalKey`].
 ///
 /// The key is not a [`Key`]: it does not take part in

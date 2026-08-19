@@ -1707,6 +1707,462 @@ impl Pointer {
     }
 }
 
+// -- The rest of `basic.dart` -------------------------------------------------
+//
+// One name apiece over a render object that is already here, in upstream's
+// order. Each is upstream's constructor with upstream's defaults; where a
+// parameter has nowhere to go it says so.
+
+/// Composites its child through a shader -- upstream `ShaderMask`.
+///
+/// Upstream's `shaderCallback` is given the bounds and answers a `Shader`;
+/// here it answers the whole `Paint` the layer composites with, because the
+/// engine ABI takes a paint and not a bare shader.
+pub struct ShaderMask;
+
+impl ShaderMask {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        shader: std::rc::Rc<
+            dyn Fn(crate::engine::Rect, crate::painting::BlendMode) -> crate::engine::Paint,
+        >,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderShaderMask {
+        crate::render::RenderShaderMask::new(shader, child)
+    }
+}
+
+/// Blurs whatever is already painted behind its child -- upstream
+/// `BackdropFilter`.
+///
+/// Upstream takes an `ImageFilter` and a blend mode. The engine's backdrop
+/// ABI takes a blur sigma and nothing else, so that is what this takes; the
+/// divergence is recorded with `RenderBackdropFilter`.
+pub struct BackdropFilter;
+
+impl BackdropFilter {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(sigma: f32, child: impl RenderBox + 'static) -> crate::render::RenderBackdropFilter {
+        crate::render::RenderBackdropFilter::new(sigma, child)
+    }
+}
+
+/// Draws with a painter, under and over its child -- upstream `CustomPaint`.
+pub struct CustomPaint;
+
+impl CustomPaint {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> crate::render::RenderCustomPaint {
+        crate::render::RenderCustomPaint::new(child)
+    }
+
+    /// Upstream's `CustomPaint(size:)` with no child: the painter decides the
+    /// size, so there is nothing to measure.
+    pub fn sized(
+        size: Size,
+        painter: std::rc::Rc<dyn crate::render::CustomPainter>,
+    ) -> crate::render::RenderCustomPaint {
+        crate::render::RenderCustomPaint::bare()
+            .with_preferred_size(size)
+            .with_painter(painter)
+    }
+}
+
+/// Clips its child to an oval inscribed in its box -- upstream `ClipOval`.
+pub struct ClipOval;
+
+impl ClipOval {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> crate::render::RenderClipOval {
+        crate::render::RenderClipOval::new(child)
+    }
+}
+
+/// Clips its child to a rounded superellipse -- upstream
+/// `ClipRSuperellipse`, drawn with continuous corners here (the engine has
+/// no superellipse primitive; the divergence is recorded).
+pub struct ClipRSuperellipse;
+
+impl ClipRSuperellipse {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        radius: crate::borders::BorderRadius,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderClipRSuperellipse {
+        crate::render::RenderClipRSuperellipse::new(radius, child)
+    }
+}
+
+/// A box that casts a shadow and clips its child to its own shape --
+/// upstream `PhysicalModel`.
+pub struct PhysicalModel;
+
+impl PhysicalModel {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        color: Color,
+        elevation: f32,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderPhysicalModel {
+        crate::render::RenderPhysicalModel::new(child)
+            .with_color(color)
+            .with_elevation(elevation)
+    }
+}
+
+/// [`PhysicalModel`] for an arbitrary shape -- upstream `PhysicalShape`,
+/// whose `clipper` is a `ShapeBorder` here.
+pub struct PhysicalShape;
+
+impl PhysicalShape {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        shape: crate::borders::ShapeBorder,
+        color: Color,
+        elevation: f32,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderPhysicalShape {
+        crate::render::RenderPhysicalShape::new(shape, child)
+            .with_color(color)
+            .with_elevation(elevation)
+    }
+}
+
+/// Moves its child by a fraction of its own size, after layout -- upstream
+/// `FractionalTranslation`.
+pub struct FractionalTranslation;
+
+impl FractionalTranslation {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        translation: Offset,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderFractionalTranslation {
+        crate::render::RenderFractionalTranslation::new((translation.dx, translation.dy), child)
+    }
+}
+
+/// Rotates its child by whole quarter turns, layout included -- upstream
+/// `RotatedBox`, which unlike [`Transform`] does change what the child is
+/// measured against.
+pub struct RotatedBox;
+
+impl RotatedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        quarter_turns: usize,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderRotatedBox {
+        crate::render::RenderRotatedBox::new(quarter_turns, child)
+    }
+}
+
+/// Sizes and places one child by a delegate -- upstream
+/// `CustomSingleChildLayout`.
+pub struct CustomSingleChildLayout;
+
+impl CustomSingleChildLayout {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        delegate: std::rc::Rc<dyn crate::render::SingleChildLayoutDelegate>,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderCustomSingleChildLayoutBox {
+        crate::render::RenderCustomSingleChildLayoutBox::new(delegate, child)
+    }
+}
+
+/// Places several identified children by a delegate -- upstream
+/// `CustomMultiChildLayout`.
+///
+/// Upstream identifies each child with a `LayoutId` wrapper, which is a
+/// `ParentDataWidget`; this crate's parents take their children's parent data
+/// directly, so the identifier is passed alongside the child. [`LayoutId`] is
+/// the pairing.
+pub struct CustomMultiChildLayout;
+
+impl CustomMultiChildLayout {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        delegate: std::rc::Rc<dyn crate::render::MultiChildLayoutDelegate>,
+        children: Vec<(u64, BoxedRender)>,
+    ) -> crate::render::RenderCustomMultiChildLayoutBox {
+        crate::render::RenderCustomMultiChildLayoutBox::new(delegate, children)
+    }
+}
+
+/// A child with the identifier its layout delegate knows it by -- upstream
+/// `LayoutId`.
+pub struct LayoutId;
+
+impl LayoutId {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(id: u64, child: impl RenderBox + 'static) -> (u64, BoxedRender) {
+        (id, RenderRef::new(child))
+    }
+}
+
+/// Imposes extra constraints on its child -- upstream `ConstrainedBox`.
+pub struct ConstrainedBox;
+
+impl ConstrainedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        constraints: BoxConstraints,
+        child: impl RenderBox + 'static,
+    ) -> RenderConstrainedBox {
+        RenderConstrainedBox::new(constraints).with_child(child)
+    }
+}
+
+/// Lays its child out against transformed constraints and aligns the result
+/// -- upstream `ConstraintsTransformBox`.
+pub struct ConstraintsTransformBox;
+
+impl ConstraintsTransformBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        transform: crate::render::ConstraintsTransform,
+        alignment: Alignment,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderConstraintsTransformBox {
+        crate::render::RenderConstraintsTransformBox::new(transform, alignment, child)
+    }
+}
+
+/// [`ConstraintsTransformBox`] with the constraints cleared -- upstream
+/// `UnconstrainedBox`, which is that one specialisation of it: the child
+/// renders at its natural size and overflows if it does not fit.
+pub struct UnconstrainedBox;
+
+impl UnconstrainedBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        alignment: Alignment,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderConstraintsTransformBox {
+        crate::render::RenderConstraintsTransformBox::new(
+            crate::render::ConstraintsTransform::Unconstrained,
+            alignment,
+            child,
+        )
+    }
+
+    /// Upstream's `constrainedAxis`: the named axis keeps the constraints it
+    /// was given and the other is freed -- `_axisToTransform`'s switch.
+    pub fn along(
+        constrained_axis: Axis,
+        alignment: Alignment,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderConstraintsTransformBox {
+        crate::render::RenderConstraintsTransformBox::new(
+            match constrained_axis {
+                Axis::Horizontal => crate::render::ConstraintsTransform::HeightUnconstrained,
+                Axis::Vertical => crate::render::ConstraintsTransform::WidthUnconstrained,
+            },
+            alignment,
+            child,
+        )
+    }
+}
+
+/// Lays its child out and then draws nothing, takes no space and is never
+/// hit -- upstream `Offstage`, whose default is to be offstage.
+pub struct Offstage;
+
+impl Offstage {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(offstage: bool, child: impl RenderBox + 'static) -> crate::render::RenderOffstage {
+        crate::render::RenderOffstage::new(offstage, child)
+    }
+}
+
+/// A box inside a scroll view -- upstream `SliverToBoxAdapter`.
+///
+/// The sliver protocol here is a method on the box protocol rather than a
+/// second one (see `RenderSliverSingleBoxAdapter`'s ledger entry), so a box in
+/// a viewport is the box itself and the adapter is the identity. It exists as
+/// a name because reading `SliverToBoxAdapter` at the call site is what says
+/// the child is a box and its parent is a sliver.
+pub struct SliverToBoxAdapter;
+
+impl SliverToBoxAdapter {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(child: impl RenderBox + 'static) -> BoxedRender {
+        RenderRef::new(child)
+    }
+}
+
+/// Insets a sliver -- upstream `SliverPadding`.
+pub struct SliverPadding;
+
+impl SliverPadding {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        padding: EdgeInsets,
+        sliver: impl RenderBox + 'static,
+    ) -> crate::render::RenderSliverPadding {
+        crate::render::RenderSliverPadding::new(padding, sliver)
+    }
+}
+
+/// Stacks its children along an axis, each at its own size, with no
+/// scrolling of its own -- upstream `ListBody`.
+pub struct ListBody;
+
+impl ListBody {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(axis: Axis, children: Vec<BoxedRender>) -> crate::render::RenderListBody {
+        crate::render::RenderListBody::new(ListBody::direction(axis, false), children)
+    }
+
+    /// Upstream's `reverse: true`: the same axis, filled from the far end.
+    pub fn reversed(axis: Axis, children: Vec<BoxedRender>) -> crate::render::RenderListBody {
+        crate::render::RenderListBody::new(ListBody::direction(axis, true), children)
+    }
+
+    /// Upstream's `_getDirection`, which is
+    /// `getAxisDirectionFromAxisReverseAndDirectionality`: a vertical body
+    /// runs down unless reversed, and a horizontal one runs in reading order
+    /// unless reversed. The ambient direction is read here, at build, for the
+    /// reason every other directional widget in this file reads it here.
+    fn direction(axis: Axis, reverse: bool) -> AxisDirection {
+        let forward = match axis {
+            Axis::Vertical => AxisDirection::Down,
+            Axis::Horizontal => match crate::direction::current_direction() {
+                crate::direction::TextDirection::Ltr => AxisDirection::Right,
+                crate::direction::TextDirection::Rtl => AxisDirection::Left,
+            },
+        };
+        if reverse {
+            crate::render::flip_axis_direction(forward)
+        } else {
+            forward
+        }
+    }
+}
+
+/// Places its children by a delegate at paint time -- upstream `Flow`, which
+/// is the one layout that can move its children without laying them out
+/// again.
+pub struct Flow;
+
+impl Flow {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        delegate: std::rc::Rc<dyn crate::render::FlowDelegate>,
+        children: Vec<BoxedRender>,
+    ) -> crate::render::RenderFlow {
+        crate::render::RenderFlow::new(delegate, children)
+    }
+}
+
+/// A paragraph of differently styled runs -- upstream `RichText`.
+pub struct RichText;
+
+impl RichText {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(spans: Vec<TextSpan>) -> RenderParagraph {
+        RenderParagraph::rich_spans(spans)
+    }
+}
+
+/// A decoded image, drawn -- upstream `RawImage`, which is what `Image`
+/// builds once it has pixels.
+pub struct RawImage;
+
+impl RawImage {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(image: std::rc::Rc<Image>) -> RenderImage {
+        RenderImage::new(image)
+    }
+}
+
+/// Hears pointers passing through it without changing what they hit --
+/// upstream `Listener`.
+pub struct Listener;
+
+impl Listener {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        id: u64,
+        handlers: crate::gestures::PointerHandlers,
+        child: impl RenderBox + 'static,
+    ) -> RenderPointerRegion {
+        RenderPointerRegion::new(id, child).with_handlers(handlers)
+    }
+}
+
+/// Hears a mouse entering, moving inside and leaving -- upstream
+/// `MouseRegion`, which is the same render object as [`Listener`] here (the
+/// two are merged; see `RenderPointerRegion`'s ledger entry).
+pub struct MouseRegion;
+
+impl MouseRegion {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        id: u64,
+        handlers: crate::gestures::PointerHandlers,
+        child: impl RenderBox + 'static,
+    ) -> RenderPointerRegion {
+        RenderPointerRegion::new(id, child).with_handlers(handlers)
+    }
+
+    /// Upstream's `opaque: false`: the region hears what passes over it but
+    /// does not become a target itself.
+    pub fn transparent(
+        id: u64,
+        handlers: crate::gestures::PointerHandlers,
+        child: impl RenderBox + 'static,
+    ) -> RenderPointerRegion {
+        RenderPointerRegion::new(id, child)
+            .with_handlers(handlers)
+            .with_behavior(crate::render::HitTestBehavior::Translucent)
+    }
+}
+
+/// Takes the hit its child would have taken -- upstream `AbsorbPointer`,
+/// whose default is to absorb.
+pub struct AbsorbPointer;
+
+impl AbsorbPointer {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        absorbing: bool,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderAbsorbPointer {
+        crate::render::RenderAbsorbPointer::new(absorbing, child)
+    }
+}
+
+/// Carries a payload out on whatever hit test finds it -- upstream
+/// `MetaData`.
+pub struct MetaData;
+
+impl MetaData {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(meta_id: u64, child: impl RenderBox + 'static) -> crate::render::RenderMetaData {
+        crate::render::RenderMetaData::new(meta_id, child)
+    }
+}
+
+/// A box filled with one colour and nothing else -- upstream `ColoredBox`,
+/// the cheap `Container(color:)`.
+pub struct ColoredBox;
+
+impl ColoredBox {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(color: Color, child: impl RenderBox + 'static) -> RenderDecoratedBox {
+        RenderDecoratedBox::new()
+            .with_color(color)
+            .with_child(child)
+    }
+
+    /// Upstream's childless `ColoredBox`, which fills whatever it is given.
+    pub fn filled(color: Color) -> RenderDecoratedBox {
+        RenderDecoratedBox::new().with_color(color)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2343,5 +2799,202 @@ mod tests {
         }
         wrap.layout(BoxConstraints::tight(100.0, 100.0));
         assert_eq!(wrap.child_offsets()[0].dy, 0.0);
+    }
+
+    // -- The rest of `basic.dart` ---------------------------------------------
+
+    /// Where a laid-out box put its children, in paint order.
+    fn offsets_of(render: &dyn RenderBox) -> Vec<Offset> {
+        let mut seen = Vec::new();
+        render.visit_children(&mut |_, offset| seen.push(offset));
+        seen
+    }
+
+    #[test]
+    fn a_list_body_runs_down_by_default_and_up_when_reversed() {
+        let children = || -> Vec<BoxedRender> {
+            vec![
+                RenderRef::new(FixedBox::new(20.0, 10.0)),
+                RenderRef::new(FixedBox::new(30.0, 10.0)),
+            ]
+        };
+        // A list body wants an unbounded main axis and a tight cross one.
+        let contract = BoxConstraints::new(50.0, 50.0, 0.0, f32::INFINITY);
+
+        let mut body = ListBody::new(Axis::Vertical, children());
+        body.layout(contract);
+        assert_eq!(
+            offsets_of(&body),
+            vec![Offset::ZERO, Offset::new(0.0, 10.0)]
+        );
+
+        // Reversed is an axis direction, not a reordering: the first child is
+        // laid at the far end.
+        let mut reversed = ListBody::reversed(Axis::Vertical, children());
+        reversed.layout(contract);
+        assert_eq!(
+            offsets_of(&reversed),
+            vec![Offset::new(0.0, 10.0), Offset::ZERO]
+        );
+    }
+
+    #[test]
+    fn a_horizontal_list_body_in_rtl_runs_leftwards() {
+        use crate::direction::{TextDirection, with_direction};
+        let mut body = with_direction(TextDirection::Rtl, || {
+            ListBody::new(
+                Axis::Horizontal,
+                vec![
+                    RenderRef::new(FixedBox::new(20.0, 10.0)),
+                    RenderRef::new(FixedBox::new(30.0, 10.0)),
+                ],
+            )
+        });
+        body.layout(BoxConstraints::new(0.0, f32::INFINITY, 30.0, 30.0));
+        assert_eq!(body.size(), Size::new(50.0, 30.0));
+        // Reading order: the first child sits at the right end of the 50 wide
+        // body, the second to its left.
+        assert_eq!(
+            offsets_of(&body),
+            vec![Offset::new(30.0, 0.0), Offset::ZERO]
+        );
+    }
+
+    #[test]
+    fn an_unconstrained_box_measures_its_child_without_the_constraints() {
+        // Tight 50x50 would otherwise force the child to 50x50.
+        let mut boxed = UnconstrainedBox::new(Alignment::CENTER, FixedBox::new(80.0, 20.0));
+        let size = boxed.layout(BoxConstraints::tight_for(Size::new(50.0, 50.0)));
+        assert_eq!(size, Size::new(50.0, 50.0), "the box itself is still tight");
+        // Centred inside a box smaller than it is, so the offset is negative
+        // on the axis it overflows.
+        assert_eq!(offsets_of(&boxed), vec![Offset::new(-15.0, 15.0)]);
+    }
+
+    #[test]
+    fn a_constrained_box_adds_its_own_constraints_to_the_incoming_ones() {
+        let mut boxed = ConstrainedBox::new(
+            BoxConstraints {
+                min_width: 60.0,
+                ..BoxConstraints::loose(200.0, 200.0)
+            },
+            FixedBox::new(10.0, 10.0),
+        );
+        assert_eq!(
+            boxed.layout(BoxConstraints::loose(200.0, 200.0)),
+            Size::new(60.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn a_coloured_box_fills_what_it_is_given_when_it_has_no_child() {
+        let mut filled = ColoredBox::filled(Color::WHITE);
+        assert_eq!(
+            filled.layout(BoxConstraints::tight_for(Size::new(80.0, 40.0))),
+            Size::new(80.0, 40.0)
+        );
+
+        let mut around = ColoredBox::new(Color::WHITE, FixedBox::new(20.0, 10.0));
+        assert_eq!(
+            around.layout(BoxConstraints::loose(80.0, 40.0)),
+            Size::new(20.0, 10.0),
+            "with a child it takes the child's size"
+        );
+    }
+
+    #[test]
+    fn an_offstage_child_is_laid_out_and_takes_no_space() {
+        let mut offstage = Offstage::new(true, FixedBox::new(20.0, 10.0));
+        assert_eq!(
+            offstage.layout(BoxConstraints::loose(80.0, 40.0)),
+            Size::ZERO,
+            "offstage takes no space"
+        );
+
+        let mut onstage = Offstage::new(false, FixedBox::new(20.0, 10.0));
+        assert_eq!(
+            onstage.layout(BoxConstraints::loose(80.0, 40.0)),
+            Size::new(20.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn a_rotated_box_swaps_the_axes_on_an_odd_turn() {
+        let mut turned = RotatedBox::new(1, FixedBox::new(40.0, 10.0));
+        assert_eq!(
+            turned.layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(10.0, 40.0)
+        );
+
+        let mut twice = RotatedBox::new(2, FixedBox::new(40.0, 10.0));
+        assert_eq!(
+            twice.layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(40.0, 10.0),
+            "an even turn keeps the axes"
+        );
+    }
+
+    #[test]
+    fn a_fractional_translation_moves_by_a_fraction_of_its_own_size() {
+        let mut moved =
+            FractionalTranslation::new(Offset::new(0.5, 0.0), FixedBox::new(40.0, 10.0));
+        moved.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(offsets_of(&moved), vec![Offset::new(20.0, 0.0)]);
+    }
+
+    #[test]
+    fn a_keyed_subtree_writes_the_key_onto_the_widget_itself() {
+        use crate::framework::{ensure_unique_keys_for_list, keyed_subtree, leaf};
+
+        // An unkeyed item takes its index; a keyed one keeps its own key.
+        let items = ensure_unique_keys_for_list(
+            vec![
+                leaf(|| SizedBox::new(10.0, 10.0)),
+                keyed_subtree(7, leaf(|| SizedBox::new(10.0, 10.0))),
+            ],
+            0,
+        );
+        assert_eq!(items[0].key(), Some(0));
+        assert_eq!(items[1].key(), Some(7));
+
+        // And a base index shifts the ones that had none.
+        let shifted = ensure_unique_keys_for_list(vec![leaf(|| SizedBox::new(1.0, 1.0))], 100);
+        assert_eq!(shifted[0].key(), Some(100));
+    }
+
+    #[test]
+    fn a_stateful_builder_rebuilds_from_the_handle_it_was_given() {
+        use crate::framework::{
+            ElementTree, StateHandle, StatefulBuilderState, leaf, stateful_builder,
+        };
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let width = Rc::new(Cell::new(10.0_f32));
+        let builds = Rc::new(Cell::new(0));
+        let held: Rc<RefCell<Option<StateHandle<StatefulBuilderState>>>> =
+            Rc::new(RefCell::new(None));
+
+        let (w, b, h) = (Rc::clone(&width), Rc::clone(&builds), Rc::clone(&held));
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful_builder(move |handle| {
+            b.set(b.get() + 1);
+            // The handle is the `setState` upstream hands the builder.
+            *h.borrow_mut() = Some(handle);
+            let width = w.get();
+            leaf(move || SizedBox::new(width, 10.0))
+        }));
+        assert_eq!(builds.get(), 1);
+
+        width.set(20.0);
+        assert!(
+            held.borrow()
+                .as_ref()
+                .expect("built once")
+                .set_state(|_| {}),
+            "the handle is live"
+        );
+        tree.rebuild_dirty();
+        assert_eq!(builds.get(), 2, "the handle asked for the rebuild");
     }
 }

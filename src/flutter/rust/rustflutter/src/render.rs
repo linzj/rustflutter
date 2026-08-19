@@ -19210,29 +19210,58 @@ impl RenderBox for RenderCustomSingleChildLayoutBox {
 /// upstream's named transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConstraintsTransform {
-    /// `widthCapture`: the child's max width becomes its min.
-    WidthCapture,
-    /// `heightCapture`: the child's max height becomes its min.
-    HeightCapture,
-    /// `unconstrained`: minima cleared.
+    /// `unmodified`: the constraints as they came.
+    Unmodified,
+    /// `unconstrained`: `const BoxConstraints()` -- nothing required and
+    /// nothing forbidden, so the child renders at its natural size. What
+    /// [`UnconstrainedBox`](crate::widgets::UnconstrainedBox) is.
     Unconstrained,
+    /// `widthUnconstrained`: `constraints.heightConstraints()` -- the height
+    /// as it came, the width free.
+    WidthUnconstrained,
+    /// `heightUnconstrained`: `constraints.widthConstraints()`.
+    HeightUnconstrained,
+    /// `maxWidthUnconstrained`: the minima kept, the maximum width lifted.
+    MaxWidthUnconstrained,
+    /// `maxHeightUnconstrained`.
+    MaxHeightUnconstrained,
+    /// `maxUnconstrained`: both maxima lifted, both minima kept -- the child
+    /// renders naturally and still grows to a minimum that asks it to.
+    MaxUnconstrained,
 }
 
 impl ConstraintsTransform {
-    /// Upstream's `BoxConstraintsTransform` functions.
+    /// Upstream's `BoxConstraintsTransform` functions, one per variant.
     pub fn apply(&self, constraints: BoxConstraints) -> BoxConstraints {
         match self {
-            ConstraintsTransform::WidthCapture => BoxConstraints {
-                min_width: constraints.max_width,
-                ..constraints
-            },
-            ConstraintsTransform::HeightCapture => BoxConstraints {
-                min_height: constraints.max_height,
-                ..constraints
-            },
+            ConstraintsTransform::Unmodified => constraints,
             ConstraintsTransform::Unconstrained => BoxConstraints {
                 min_width: 0.0,
+                max_width: f32::INFINITY,
                 min_height: 0.0,
+                max_height: f32::INFINITY,
+            },
+            ConstraintsTransform::WidthUnconstrained => BoxConstraints {
+                min_width: 0.0,
+                max_width: f32::INFINITY,
+                ..constraints
+            },
+            ConstraintsTransform::HeightUnconstrained => BoxConstraints {
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+                ..constraints
+            },
+            ConstraintsTransform::MaxWidthUnconstrained => BoxConstraints {
+                max_width: f32::INFINITY,
+                ..constraints
+            },
+            ConstraintsTransform::MaxHeightUnconstrained => BoxConstraints {
+                max_height: f32::INFINITY,
+                ..constraints
+            },
+            ConstraintsTransform::MaxUnconstrained => BoxConstraints {
+                max_width: f32::INFINITY,
+                max_height: f32::INFINITY,
                 ..constraints
             },
         }
@@ -21321,17 +21350,39 @@ mod shifted_box_tests {
     }
 
     #[test]
-    fn width_capture_tightens_the_child() {
+    fn an_unconstrained_transform_lets_the_child_overflow_its_parent() {
         let mut transformed = RenderConstraintsTransformBox::new(
-            ConstraintsTransform::WidthCapture,
+            ConstraintsTransform::Unconstrained,
             Alignment::TOP_LEFT,
-            asker(30.0, 20.0),
+            asker(140.0, 20.0),
         );
+        // The box itself is bounded at 100; the child, unconstrained, is 140
+        // wide and hangs out of it. Upstream's `unconstrained` is
+        // `const BoxConstraints()` -- everything cleared, not just the minima.
         transformed.layout(BoxConstraints::new(0.0, 100.0, 0.0, 80.0));
-        // Untransformed the child would be 30 wide; captured, the min is
-        // 100 and the child stretches to it.
+        let mut child_size = Size::ZERO;
+        transformed.visit_children(&mut |child, _| child_size = child.size());
+        assert_eq!(child_size, Size::new(140.0, 20.0));
+        // Overflowing is not being hittable: `RenderBox::hit_test` starts at
+        // its own bounds, upstream's included.
         let mut result = HitTestResult::new();
         assert!(transformed.hit_test(Offset::new(90.0, 5.0), &mut result));
+    }
+
+    #[test]
+    fn a_width_unconstrained_transform_keeps_the_height_it_was_given() {
+        let mut transformed = RenderConstraintsTransformBox::new(
+            ConstraintsTransform::WidthUnconstrained,
+            Alignment::TOP_LEFT,
+            asker(140.0, 20.0),
+        );
+        // Height still bounded, and its minimum still binding, so the child
+        // is stretched to 60 tall while its width goes where it likes:
+        // `constraints.heightConstraints()`.
+        transformed.layout(BoxConstraints::new(0.0, 100.0, 60.0, 80.0));
+        let mut child_size = Size::ZERO;
+        transformed.visit_children(&mut |child, _| child_size = child.size());
+        assert_eq!(child_size, Size::new(140.0, 60.0));
     }
 
     #[test]
