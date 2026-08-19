@@ -1755,6 +1755,275 @@ pub fn stack_row(children: Vec<AnyWidget>, spacing: f32) -> AnyWidget {
     })
 }
 
+// -- MaterialBanner -----------------------------------------------------------
+
+/// Why a [`MaterialBanner`] went away. Upstream's `MaterialBannerClosedReason`.
+///
+/// The distinctions are the ones a caller acts on: a banner the reader
+/// dismissed is one they have seen, and a banner replaced by the next in the
+/// queue is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialBannerClosedReason {
+    /// The reader used the accessibility dismiss action.
+    Dismiss,
+    /// The reader swiped it away.
+    Swipe,
+    /// The application called for it to be hidden -- it animates out.
+    Hide,
+    /// The application called for it to be removed -- it goes at once.
+    Remove,
+}
+
+/// An important, succinct message across the top of the page, with one or two
+/// actions on it. Upstream's `MaterialBanner`.
+///
+/// Unlike a snack bar it does not time out: a banner stays until it is acted
+/// on or dismissed, which is why it carries actions rather than an optional
+/// one.
+///
+/// # The single-row rule
+///
+/// Exactly one action, and not forced below, puts the actions *on the
+/// content's row*; anything else puts them on their own row underneath. Two
+/// actions never share the row -- upstream's condition is
+/// `actions.length == 1 && !forceActionsBelow`, not "the actions fit". The
+/// padding differs between the two cases for a reason worth keeping: on one
+/// row the 52-tall action bar is what holds the banner open, so the content
+/// needs almost no top inset; stacked, nothing else holds the text off the
+/// top edge, so the banner does it itself.
+///
+/// # What is not ported
+///
+/// Upstream's banner is a `StatefulWidget` because of the `animation` a
+/// `ScaffoldMessenger` hands it -- the height factor it slides in under, the
+/// `onVisible` callback fired when that animation completes, the `Hero` it
+/// flies as, and `withAnimation`/`createAnimationController`, which exist for
+/// `ScaffoldMessengerState.showMaterialBanner` to call. There is no
+/// `ScaffoldMessenger` here (see [`crate::components::Scaffold`]), so what is
+/// ported is upstream's own null-animation path -- the one it introduces as
+/// "this provides a static banner". Whoever shows the banner owns whether it
+/// is on screen, as everything overlay-like in this crate does.
+pub struct MaterialBanner {
+    content: std::cell::RefCell<Option<AnyWidget>>,
+    leading: std::cell::RefCell<Option<AnyWidget>>,
+    actions: std::cell::RefCell<Vec<AnyWidget>>,
+    elevation: Option<f32>,
+    background_color: Option<Color>,
+    divider_color: Option<Color>,
+    padding: Option<crate::borders::EdgeInsetsGeometry>,
+    margin: Option<EdgeInsets>,
+    leading_padding: Option<crate::borders::EdgeInsetsGeometry>,
+    force_actions_below: bool,
+    overflow_alignment: crate::overflow_bar::OverflowBarAlignment,
+    min_action_bar_height: f32,
+}
+
+impl MaterialBanner {
+    pub fn new(content: AnyWidget, actions: Vec<AnyWidget>) -> MaterialBanner {
+        MaterialBanner {
+            content: std::cell::RefCell::new(Some(content)),
+            leading: std::cell::RefCell::new(None),
+            actions: std::cell::RefCell::new(actions),
+            elevation: None,
+            background_color: None,
+            divider_color: None,
+            padding: None,
+            margin: None,
+            leading_padding: None,
+            force_actions_below: false,
+            // Upstream's default: once the actions have their own row they
+            // sit at its far end, where the eye ends up after the text.
+            overflow_alignment: crate::overflow_bar::OverflowBarAlignment::End,
+            min_action_bar_height:
+                crate::component_themes::ResolvedMaterialBanner::MIN_ACTION_BAR_HEIGHT,
+        }
+    }
+
+    /// An icon before the content, typically the one that says what kind of
+    /// message this is.
+    pub fn with_leading(self, leading: AnyWidget) -> Self {
+        *self.leading.borrow_mut() = Some(leading);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_divider_color(mut self, color: Color) -> Self {
+        self.divider_color = Some(color);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: crate::borders::EdgeInsetsGeometry) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    pub fn with_margin(mut self, margin: EdgeInsets) -> Self {
+        self.margin = Some(margin);
+        self
+    }
+
+    pub fn with_leading_padding(mut self, padding: crate::borders::EdgeInsetsGeometry) -> Self {
+        self.leading_padding = Some(padding);
+        self
+    }
+
+    /// Puts the actions on their own row even when there is only one of them.
+    /// Upstream's `forceActionsBelow`, for an action whose label is long
+    /// enough that sharing the row would crowd the text.
+    pub fn with_force_actions_below(mut self, force: bool) -> Self {
+        self.force_actions_below = force;
+        self
+    }
+
+    pub fn with_overflow_alignment(
+        mut self,
+        alignment: crate::overflow_bar::OverflowBarAlignment,
+    ) -> Self {
+        self.overflow_alignment = alignment;
+        self
+    }
+
+    pub fn with_min_action_bar_height(mut self, height: f32) -> Self {
+        self.min_action_bar_height = height;
+        self
+    }
+
+    /// Upstream's `isSingleRow`: exactly one action, and not forced below.
+    ///
+    /// Note it is the *count*, not whether they fit -- two short actions still
+    /// take their own row.
+    pub fn is_single_row(&self) -> bool {
+        self.actions.borrow().len() == 1 && !self.force_actions_below
+    }
+}
+
+impl Component for MaterialBanner {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let banner = crate::component_themes::ResolvedMaterialBanner::of(context);
+        let direction = crate::direction::current_direction();
+        let is_single_row = self.is_single_row();
+
+        let elevation = self.elevation.unwrap_or(banner.elevation);
+        let background = self.background_color.unwrap_or(banner.background_color);
+        let divider_color = self.divider_color.unwrap_or(banner.divider_color);
+        let margin = self.margin.unwrap_or_else(|| {
+            // The resolver's default reads the *ambient* elevation; a widget
+            // that set its own has to be the one asked about the shadow it
+            // will actually cast.
+            EdgeInsets::only(0.0, 0.0, 0.0, if elevation > 0.0 { 10.0 } else { 0.0 })
+        });
+        let padding = self
+            .padding
+            .unwrap_or_else(|| banner.content_padding(is_single_row))
+            .resolve(direction);
+        let leading_padding = self
+            .leading_padding
+            .unwrap_or(banner.leading_padding)
+            .resolve(direction);
+        let overflow_alignment = self.overflow_alignment;
+        let min_action_bar_height = self.min_action_bar_height;
+
+        let content = self
+            .content
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
+        let leading = self.leading.borrow_mut().take();
+        let has_leading = leading.is_some();
+        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let action_count = actions.len();
+
+        let mut children = vec![content];
+        children.extend(leading);
+        children.extend(actions);
+
+        crate::framework::many(children, move |mut boxed| {
+            let mut boxed = boxed.drain(..);
+            let content = boxed.next().expect("the content is always pushed");
+            let leading = if has_leading { boxed.next() } else { None };
+            let actions: Vec<_> = boxed.take(action_count).collect();
+
+            // Upstream's `actionsBar`: a minimum height, 8 of horizontal
+            // padding, and the actions themselves in an `OverflowBar` that
+            // stacks them when the row will not do.
+            let mut bar = crate::overflow_bar::OverflowBar::new()
+                .with_spacing(8.0)
+                .with_overflow_alignment(overflow_alignment);
+            for action in actions {
+                bar = bar.push_boxed(action);
+            }
+            let actions_bar = crate::render::RenderConstrainedBox::new(BoxConstraints {
+                min_width: 0.0,
+                max_width: f32::INFINITY,
+                min_height: min_action_bar_height,
+                max_height: f32::INFINITY,
+            })
+            .with_child(
+                Container::new()
+                    .with_padding(EdgeInsets::symmetric(8.0, 0.0))
+                    .with_child(Align::new(Alignment::CENTER_RIGHT, bar)),
+            );
+
+            // The content row: the leading icon, the content taking the rest,
+            // and -- on a single-row banner -- the actions beside it.
+            let mut row = crate::widgets::Row::new();
+            if let Some(leading) = leading {
+                row = row.push(
+                    Container::new()
+                        .with_padding(leading_padding)
+                        .with_child(leading),
+                );
+            }
+            row = row.push_flex(crate::widgets::Expanded::new(content));
+            // The one bar goes to exactly one of the two places -- beside the
+            // content, or under it. There is never one of each.
+            let mut stacked_bar = None;
+            if is_single_row {
+                row = row.push(actions_bar);
+            } else {
+                stacked_bar = Some(actions_bar);
+            }
+
+            // `MainAxisSize.min`: a banner is as tall as its content, and a
+            // column that filled its parent would push the divider to the
+            // bottom of the page.
+            let mut column = crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Stretch)
+                .push(Container::new().with_padding(padding).with_child(row));
+            if let Some(bar) = stacked_bar {
+                column = column.push(bar);
+            }
+            if elevation == 0.0 {
+                // Upstream draws the rule only on a flat banner: with a
+                // shadow there is already an edge, and with both the edge
+                // reads twice.
+                //
+                // Upstream asks for `Divider(height: 0)`, which reserves no
+                // space and draws the hairline on the banner's own bottom
+                // edge. This renderer draws a line into the box it is given,
+                // so the rule takes its one pixel of height.
+                column = column.push(Container::new().with_height(1.0).with_color(divider_color));
+            }
+
+            Container::new()
+                .with_margin(margin)
+                .with_color(background)
+                .with_elevation(elevation.round().max(0.0) as u32)
+                .with_child(column)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2123,6 +2392,151 @@ mod tests {
             component(Divider),
         );
         assert_eq!(height_of(themed), 24.0);
+    }
+
+    /// A fixed box standing in for an action or a message: the engine stubs
+    /// these tests link report zero-sized text.
+    fn block(width: f32, height: f32) -> AnyWidget {
+        crate::framework::leaf(move || Container::new().with_size(width, height))
+    }
+
+    fn banner_of(actions: usize) -> MaterialBanner {
+        MaterialBanner::new(
+            block(100.0, 20.0),
+            (0..actions).map(|_| block(60.0, 20.0)).collect(),
+        )
+    }
+
+    #[test]
+    fn only_a_lone_action_shares_the_contents_row() {
+        // Upstream's condition is the action *count*, not whether they fit:
+        // two short actions still take their own row.
+        assert!(banner_of(1).is_single_row());
+        assert!(!banner_of(2).is_single_row());
+        assert!(!banner_of(0).is_single_row());
+        // And a caller may force even a lone action below, for a label long
+        // enough that sharing the row would crowd the text.
+        assert!(!banner_of(1).with_force_actions_below(true).is_single_row());
+    }
+
+    #[test]
+    fn the_banner_is_taller_once_its_actions_take_their_own_row() {
+        let height = |actions: usize| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(Theme::dark(), component(banner_of(actions))));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 600.0)).height
+        };
+        // One row: the 52-tall action bar is what holds the banner open.
+        // Stacked: that bar moves below the content, and the content's own
+        // top inset grows from 2 to 24 because nothing else is holding the
+        // text off the top edge.
+        assert!(
+            height(2) > height(1),
+            "one row {} should be shorter than two {}",
+            height(1),
+            height(2)
+        );
+    }
+
+    #[test]
+    fn a_banner_with_no_theme_sits_flat_rather_than_one_step_off_the_page() {
+        // Upstream's expression is `widget.elevation ?? bannerTheme.elevation
+        // ?? 0.0` -- it never reaches `_BannerDefaultsM3`, whose elevation is
+        // 1.0. Written down because it looks like an oversight and the port
+        // would answer differently if it "fixed" it.
+        let mut tree = ElementTree::new();
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0.0f32));
+        let sink = std::rc::Rc::clone(&seen);
+        struct Reader(std::rc::Rc<std::cell::Cell<f32>>);
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                self.0
+                    .set(crate::component_themes::ResolvedMaterialBanner::of(context).elevation);
+                crate::framework::leaf(|| crate::widgets::Empty)
+            }
+        }
+        tree.rebuild(provide(Theme::dark(), component(Reader(sink))));
+        assert_eq!(seen.get(), 0.0);
+    }
+
+    #[test]
+    fn a_raised_banner_leaves_room_under_itself_for_its_own_shadow() {
+        // Upstream's `EdgeInsets.only(bottom: elevation > 0 ? 10.0 : 0.0)`.
+        // A flat banner has no shadow to leave room for.
+        let margin_at = |elevation: f32| {
+            crate::component_themes::ResolvedMaterialBanner {
+                background_color: Color::WHITE,
+                surface_tint_color: None,
+                shadow_color: None,
+                divider_color: Color::BLACK,
+                elevation,
+                padding: None,
+                leading_padding: crate::borders::EdgeInsetsGeometry::Zero,
+            }
+            .default_margin()
+            .bottom
+        };
+        assert_eq!(margin_at(0.0), 0.0);
+        assert_eq!(margin_at(1.0), 10.0);
+    }
+
+    #[test]
+    fn the_content_inset_depends_on_where_the_actions_went() {
+        // On one row the 52-tall action bar supplies the height, so the
+        // content needs almost no top inset; stacked, the banner has to hold
+        // the text off its own top edge.
+        let banner = crate::component_themes::ResolvedMaterialBanner {
+            background_color: Color::WHITE,
+            surface_tint_color: None,
+            shadow_color: None,
+            divider_color: Color::BLACK,
+            elevation: 0.0,
+            padding: None,
+            leading_padding: crate::borders::EdgeInsetsGeometry::Zero,
+        };
+        let single = banner
+            .content_padding(true)
+            .resolve(crate::direction::TextDirection::Ltr);
+        let stacked = banner
+            .content_padding(false)
+            .resolve(crate::direction::TextDirection::Ltr);
+        assert_eq!((single.top, single.bottom), (2.0, 0.0));
+        assert_eq!((stacked.top, stacked.bottom), (24.0, 4.0));
+        // Both start 16 in from the reading edge, and both mirror.
+        assert_eq!(single.left, 16.0);
+        assert_eq!(
+            banner
+                .content_padding(true)
+                .resolve(crate::direction::TextDirection::Rtl)
+                .right,
+            16.0
+        );
+    }
+
+    #[test]
+    fn a_themed_padding_wins_over_both_defaults() {
+        // And it wins over *both*, so a theme that set one padding does not
+        // get the single-row default back when the actions stack.
+        let banner = crate::component_themes::ResolvedMaterialBanner {
+            background_color: Color::WHITE,
+            surface_tint_color: None,
+            shadow_color: None,
+            divider_color: Color::BLACK,
+            elevation: 0.0,
+            padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(
+                EdgeInsets::all(7.0),
+            )),
+            leading_padding: crate::borders::EdgeInsetsGeometry::Zero,
+        };
+        for single in [true, false] {
+            assert_eq!(
+                banner
+                    .content_padding(single)
+                    .resolve(crate::direction::TextDirection::Ltr),
+                EdgeInsets::all(7.0)
+            );
+        }
     }
 }
 

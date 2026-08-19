@@ -164,6 +164,54 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一条横幅,以及被上游自己弃用掉的那条按钮栏(2026-08-19)
+
+`MaterialBanner`(进 `components.rs`)和它的三步回退
+`ResolvedMaterialBanner`(进 `component_themes.rs`),用的正是上一轮刚落地的
+`OverflowBar`;另外把 `ButtonBar` 记到账上,对应物就是 `OverflowBar`。
+
+**单行规则值得写下来:动作只有一个、且没有被强制下移**,动作就排在**内容那一行**上;
+别的情况都自己占一行。上游的条件是 `actions.length == 1 && !forceActionsBelow`——是
+**个数**,不是「放不放得下」,两个短动作照样自己占一行。两种情形的 padding 不同也有理
+由:同一行时,那条 52 高的动作栏本身撑开了横幅,内容几乎不需要自己的上内边距;而堆下去
+以后没有别的东西把文字顶离上边缘,横幅只好自己来(上 24 下 4)。
+
+**记下一处看着像疏漏而不是疏漏的地方:** 上游算高度的表达式是
+`widget.elevation ?? bannerTheme.elevation ?? 0.0`——它**根本没走到** `defaults`,而
+`_BannerDefaultsM3.elevation` 是 1.0。所以一条没有主题的横幅是**平贴在页面上**的,不是
+抬起一级。照抄了,并且用一条回归行钉住——一个「顺手修好」的移植会给出和它所移植的框架
+不同的答案。
+
+**回归行盯的地方:**
+
+* 只有一个动作才和内容共用一行;两个不行,零个不行,一个但被强制下移也不行。
+* 动作**自己占一行以后横幅更高**——动作栏挪到内容下面,同时内容的上内边距从 2 长到
+  24。
+* 没有主题时抬升是 **0 而不是 1**(上面那处)。
+* **抬起的横幅在自己下面留出 10 给自己的阴影**,平的不留——没有阴影就没有要留的地方。
+* 内容内边距**跟着动作去了哪儿变**,而且两种都从阅读边起 16、都会镜像。
+* **主题给的 padding 压过两个默认值**,不是只压过其中一个——否则一个设了 padding 的主
+  题会在动作堆起来时把单行默认值又拿回来。
+
+**没有照搬的:** 上游的 banner 是 `StatefulWidget`,是因为 `ScaffoldMessenger` 递给它的
+那个 `animation`——滑入用的高度因子、动画走完时触发的 `onVisible`、它作为 `Hero` 飞的那
+段、以及专供 `showMaterialBanner` 调用的
+`withAnimation`/`createAnimationController`。这里没有 `ScaffoldMessenger`,所以移植的是
+上游自己那条 animation 为空的路径——它在源码里的原话是「this provides a static
+banner」。谁把横幅摆上去,谁就拥有它在不在屏幕上,和这个 crate 里每一个浮层一样。
+
+另一处:上游写的是 `Divider(height: 0)`,不占空间、把发丝线画在横幅自己的下边缘上;这
+个渲染器是把线画进给它的盒子里的,所以那条规则占掉了它那一个像素。
+
+**`ButtonBar` 记账而不是另写。** 上游自己给它标了
+`@Deprecated("Use OverflowBar instead")`,而它的 build 就是把子项交给一个会溢出成列的
+行。对应物就是 `OverflowBar` 本身——再写一个已经被弃用的壳,是在移植一个上游正在删的东
+西。
+
+验证:`cargo test --lib` 1343 绿,GN `rustflutter_unittests` 1343 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1194 accounted / 679 MISSING。
+
 ### 一行放不下就整列站好,以及三个小外框(2026-08-19)
 
 `overflow_bar.rs`(新),上游 `widgets/overflow_bar.dart` 的 `OverflowBar` 和它的

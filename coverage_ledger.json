@@ -1837,6 +1837,10 @@
     },
     "ActionIconTheme": {
       "rust": "同 ActionIconThemeData"
+    },
+    "ButtonBar": {
+      "rust": "overflow_bar::OverflowBar",
+      "note": "上游自己把它标了 @Deprecated(\"Use OverflowBar instead\")，并且它的 build 就是把子项交给一个会溢出成列的行——这里的对应物就是 OverflowBar 本身，不是另写一个已被弃用的壳。"
     }
   },
   "blocked_engine": {

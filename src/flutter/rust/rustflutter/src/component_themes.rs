@@ -5941,6 +5941,95 @@ impl std::fmt::Debug for ThemeExtensions {
     }
 }
 
+/// The three-step fallback a [`crate::components::MaterialBanner`] reads:
+/// the widget's own field, then [`MaterialBannerThemeData`], then upstream's
+/// `_BannerDefaultsM3`.
+///
+/// The widget's own fields are not here -- a resolver reads the ambient, and
+/// the widget applies its own on top -- with one exception noted below.
+pub struct ResolvedMaterialBanner {
+    pub background_color: Color,
+    pub surface_tint_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub divider_color: Color,
+    pub elevation: f32,
+    /// Left as the ambient's raw answer because the default depends on
+    /// something only the widget knows -- whether its actions fit on the
+    /// content's row. See [`ResolvedMaterialBanner::content_padding`].
+    pub padding: Option<EdgeInsetsGeometry>,
+    pub leading_padding: EdgeInsetsGeometry,
+}
+
+impl ResolvedMaterialBanner {
+    /// Upstream's `minActionBarHeight` default: a bar of actions is at least
+    /// this tall whatever is in it, so a banner with one short button does
+    /// not read as a thinner banner.
+    pub const MIN_ACTION_BAR_HEIGHT: f32 = 52.0;
+    /// Upstream's `_kMaxContentTextScaleFactor`, which the banner clamps its
+    /// content and its actions to "to keep the visual hierarchy the same even
+    /// with larger font sizes".
+    pub const MAX_CONTENT_TEXT_SCALE_FACTOR: f32 = 1.5;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedMaterialBanner {
+        let data = MaterialBannerTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedMaterialBanner {
+            // `_BannerDefaultsM3.backgroundColor`.
+            background_color: data
+                .background_color
+                .unwrap_or_else(|| scheme.surface_container_low()),
+            // `_BannerDefaultsM3.surfaceTintColor` is transparent, which is
+            // M3 saying "no tint" -- the tint is M2's way of showing
+            // elevation and M3 does not use it here.
+            surface_tint_color: data.surface_tint_color,
+            // No default: upstream's `defaults` has no `shadowColor`, so an
+            // unset one means the `Material`'s own.
+            shadow_color: data.shadow_color,
+            // `_BannerDefaultsM3.dividerColor`.
+            divider_color: data
+                .divider_color
+                .unwrap_or_else(|| scheme.outline_variant()),
+            // Upstream's expression is `widget.elevation ?? bannerTheme
+            // .elevation ?? 0.0` -- it never reaches `defaults`, whose M3
+            // value is 1.0. So a banner with no theme sits flat on the page,
+            // not one step off it. Ported as written; see the regression line.
+            elevation: data.elevation.unwrap_or(0.0),
+            padding: data.padding,
+            leading_padding: data
+                .leading_padding
+                .unwrap_or(EdgeInsetsGeometry::Directional(
+                    crate::render::EdgeInsetsDirectional::only(0.0, 0.0, 16.0, 0.0),
+                )),
+        }
+    }
+
+    /// Upstream's padding default, which is two different insets depending on
+    /// whether the actions share the content's row.
+    ///
+    /// The reason they differ: on one row the actions sit beside the text and
+    /// their own 52-tall bar supplies the height, so the banner needs almost
+    /// no top inset of its own. Stacked, nothing else is holding the text off
+    /// the top edge, so the banner does it: 24 above and 4 below.
+    pub fn content_padding(&self, is_single_row: bool) -> EdgeInsetsGeometry {
+        self.padding.unwrap_or(if is_single_row {
+            EdgeInsetsGeometry::Directional(crate::render::EdgeInsetsDirectional::only(
+                16.0, 2.0, 0.0, 0.0,
+            ))
+        } else {
+            EdgeInsetsGeometry::Directional(crate::render::EdgeInsetsDirectional::only(
+                16.0, 24.0, 16.0, 4.0,
+            ))
+        })
+    }
+
+    /// Upstream's `widget.margin ?? EdgeInsets.only(bottom: elevation > 0 ?
+    /// 10.0 : 0.0)`: a raised banner leaves room under itself for its own
+    /// shadow, and a flat one has no shadow to leave room for.
+    pub fn default_margin(&self) -> EdgeInsets {
+        EdgeInsets::only(0.0, 0.0, 0.0, if self.elevation > 0.0 { 10.0 } else { 0.0 })
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
