@@ -164,6 +164,50 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 溅在整行上而不是那一格上(2026-08-20)
+
+`DataColumn`、`DataCell`、`TableRowInkWell`(上游 `material/data_table.dart`)进
+`components.rs`。`data_table.dart` 5/5 收口。
+
+**`TableRowInkWell` 存在的理由就是一件事:按在一格里,溅开要铺满整行。** 上游重写
+`getRectCallback`,往上走到外层 `RenderTable` 拿这一格所在行的 `getRowBox`。没有这一步,
+按在一格里的溅开会在那一格里铺开、停在格子边上——那是在说**这一格**被按了,而读者按的是这
+一行。
+
+为了做这件事,这一轮开了两个口子,两个都是上游本来就有的东西:
+
+* **`RenderTable::row_box(row)`**(上游 `getRowBox`):布局时把每行的顶和高记下来。
+  **单靠格子的偏移答不出这个问题**——一行的高是它**最高**那一格的高,而一个矮格子的偏移对
+  此什么都没说。行框是**整张表宽**的,这正是让一格里的溅开覆盖整行的东西。
+* **`InkResponse` 上的 `rect` 钩子**(上游 `getRectCallback`):墨迹据以丈量的矩形,替掉
+  区域自己的边界。落指点也一并搬进那个矩形的坐标系——不然圆会从错的地方长起来。
+
+和 `RenderAbstractViewport` 那轮一样,行矩形是**传进来**的:这个 crate 没有从 render
+object 往祖先走的路子,而正在填这一行的调用方本来就知道它是哪一行。
+
+**回归行盯的地方:**
+
+* **一列「能不能交互」恰好等于「能不能按它排序」**(上游 `_debugInteractive` 就是
+  `onSort != null`):没有回调的列不显示排序箭头,而不是显示一个按不动的。
+* **`numeric` 是个对齐决定,不是格式决定**:表把数字列右对齐,因为数字是靠同一位上的数码
+  比较来读的,左对齐会让个位在每一行落在不同的地方。
+* **空格子是「在场且空白」而不是「不在场」**:一张表每行格子数相同,某列没内容的行仍然需
+  要一个格子占位,否则它后面每一列都会左移。
+* 一个格子只要**任意一个**手势接了线就算可交互。
+* **placeholder 说的是「我是占位」,多淡由表决定**——所以它是个标志位而不是一个颜色。
+* **行的溅开比格子的远得多**(600×40 的行对 80×40 的格子,半径差三倍以上)。
+* `TableRowInkWell` 是**裹住 + 矩形高亮**的,两个配对出现:行高亮铺满行,所以必须裁到行
+  上。
+* 行框**比一格宽**、**和最高那格一样高**、**行与行紧挨着没有缝**,而**不存在的行答「没
+  有」**。
+
+顺带把 `InkResponse` 的 `contained_ink_well` 和 `highlight_shape` 改成 `pub`——上游这两个
+本来就是公开的 final 字段,而这一轮的测试要从别的模块读它们。
+
+验证:`cargo test --lib` 1487 绿,GN `rustflutter_unittests` 1487 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1255 accounted / 633 MISSING。
+
 ### 从那张卡片里撕出来的面板(2026-08-20)
 
 新模块 `expansion_panel.rs`,上游 `material/expansion_panel.dart` 三个全到:

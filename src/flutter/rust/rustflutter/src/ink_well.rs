@@ -282,8 +282,8 @@ pub struct InkResponse {
     /// `onFocusChange`.
     on_highlight_changed: Option<Rc<dyn Fn(bool)>>,
     on_hover: Option<Rc<dyn Fn(bool)>>,
-    contained_ink_well: bool,
-    highlight_shape: InkHighlightShape,
+    pub contained_ink_well: bool,
+    pub highlight_shape: InkHighlightShape,
     radius: Option<f32>,
     splash_color: Option<Color>,
     highlight_color: Option<Color>,
@@ -292,6 +292,19 @@ pub struct InkResponse {
     splash_factory: Option<InteractiveInkFeatureFactory>,
     hover_micros: Option<i64>,
     enabled: bool,
+    /// Upstream's `getRectCallback`: the rectangle the ink is measured
+    /// against, instead of the region's own bounds.
+    ///
+    /// It exists for exactly one thing upstream, and that thing explains it:
+    /// [`crate::components::TableRowInkWell`] hands back the *row*, so a
+    /// press in one cell splashes across the whole row. Without the hook a
+    /// splash would fill the cell and stop at its edge, which would say the
+    /// cell was pressed when the row was.
+    ///
+    /// Given the size the region was actually laid out at, and answering a
+    /// rectangle in the region's own coordinates.
+    #[allow(clippy::type_complexity)]
+    rect_callback: Option<Rc<dyn Fn(Size) -> crate::engine::Rect>>,
 }
 
 impl InkResponse {
@@ -315,7 +328,14 @@ impl InkResponse {
             splash_factory: None,
             hover_micros: None,
             enabled: true,
+            rect_callback: None,
         }
+    }
+
+    /// See [`InkResponse::rect_callback`].
+    pub fn with_rect(mut self, rect: impl Fn(Size) -> crate::engine::Rect + 'static) -> Self {
+        self.rect_callback = Some(Rc::new(rect));
+        self
     }
 
     pub fn with_on_tap(mut self, on_tap: impl Fn() + 'static) -> Self {
@@ -478,6 +498,7 @@ impl StatefulComponent for InkResponse {
         let handlers = {
             let down_handle = handle.clone();
             let down_sink = Rc::clone(&size_sink);
+            let down_rect = self.rect_callback.clone();
             let down_changed = on_highlight_changed.clone();
             let up_handle = handle.clone();
             let cancel_handle = handle.clone();
@@ -490,7 +511,22 @@ impl StatefulComponent for InkResponse {
                     }
                     let at = event.local_position;
                     let now = event.time_stamp_micros;
-                    let size = down_sink.get();
+                    // Upstream measures the splash against
+                    // `getRectCallback`'s answer when there is one, so a table
+                    // row's splash reaches the row rather than the cell -- and
+                    // the touch point moves into that rectangle's frame with
+                    // it, or the circle would grow from the wrong place.
+                    let laid_out = down_sink.get();
+                    let (size, at) = match &down_rect {
+                        Some(rect) => {
+                            let rect = rect(laid_out);
+                            (
+                                Size::new(rect.width(), rect.height()),
+                                Offset::new(at.dx - rect.left, at.dy - rect.top),
+                            )
+                        }
+                        None => (laid_out, at),
+                    };
                     let changed = down_changed.clone();
                     down_handle.set_state(move |state| {
                         state.start_splash(factory.create(size, at, splash_color, contained, now));

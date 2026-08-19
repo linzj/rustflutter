@@ -17075,6 +17075,13 @@ pub struct RenderTable {
     column_widths: Vec<f32>,
     column_positions: Vec<f32>,
     cell_offsets: Vec<Offset>,
+    /// The top and height of each row, filled in at layout.
+    ///
+    /// Kept because a caller sometimes wants the *row* rather than a cell --
+    /// upstream's `getRowBox`, which is what a `TableRowInkWell` splashes
+    /// across. The cell offsets alone cannot answer it: a row's height is the
+    /// tallest cell's, and a short cell's offset says nothing about it.
+    row_boxes: Vec<(f32, f32)>,
     table_width: f32,
     size: Size,
 }
@@ -17098,9 +17105,22 @@ impl RenderTable {
             column_widths: Vec::new(),
             column_positions: Vec::new(),
             cell_offsets: vec![Offset::ZERO; rows * columns.max(1)],
+            row_boxes: Vec::new(),
             table_width: 0.0,
             size: Size::ZERO,
         }
+    }
+
+    /// Upstream `RenderTable.getRowBox`: the rectangle row `y` occupies, in
+    /// the table's own coordinates.
+    ///
+    /// Full width by design -- a row is the whole width of the table however
+    /// narrow its cells are, which is what makes a splash started in one cell
+    /// cover the row rather than the cell. `None` before layout, or for a row
+    /// that is not there.
+    pub fn row_box(&self, row: usize) -> Option<Rect> {
+        let (top, height) = *self.row_boxes.get(row)?;
+        Some(Rect::ltrb(0.0, top, self.table_width, top + height))
     }
 
     pub fn with_column_width(mut self, column: usize, width: TableColumnWidth) -> Self {
@@ -17290,6 +17310,7 @@ impl RenderBox for RenderTable {
         }
 
         let mut cell_offsets = vec![Offset::ZERO; rows * columns];
+        let mut row_boxes = Vec::with_capacity(rows);
         let mut row_top = 0.0f32;
         for y in 0..rows {
             // Pass 1: measure every cell, collecting the baselines the row
@@ -17360,9 +17381,11 @@ impl RenderBox for RenderTable {
                 };
                 cell_offsets[x + y * columns] = offset;
             }
+            row_boxes.push((row_top, row_height));
             row_top += row_height;
         }
         self.cell_offsets = cell_offsets;
+        self.row_boxes = row_boxes;
         self.size = constraints.constrain(Size::new(self.table_width, row_top));
         self.size
     }

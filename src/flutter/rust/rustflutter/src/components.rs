@@ -2024,6 +2024,157 @@ impl Component for MaterialBanner {
     }
 }
 
+/// Upstream `DataColumn`: one heading of a data table.
+///
+/// The field worth naming is `numeric`. It is not a formatting hint -- the
+/// table uses it to align the whole column's cells to the *right*, because a
+/// column of numbers is read by comparing digits in the same place, and
+/// left-aligned numbers put the units column somewhere different in every
+/// row.
+pub struct DataColumn {
+    pub label: std::cell::RefCell<Option<AnyWidget>>,
+    pub tooltip: Option<String>,
+    pub numeric: bool,
+    /// Upstream's `onSort`, handed the column's index and whether the sort is
+    /// ascending. Its presence is also what makes the heading interactive:
+    /// upstream's `_debugInteractive` is exactly `onSort != null`, so a
+    /// column with no callback shows no sort arrow rather than a dead one.
+    #[allow(clippy::type_complexity)]
+    pub on_sort: Option<Rc<dyn Fn(usize, bool)>>,
+}
+
+impl DataColumn {
+    pub fn new(label: AnyWidget) -> DataColumn {
+        DataColumn {
+            label: std::cell::RefCell::new(Some(label)),
+            tooltip: None,
+            numeric: false,
+            on_sort: None,
+        }
+    }
+
+    pub fn numeric(mut self) -> Self {
+        self.numeric = true;
+        self
+    }
+
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub fn with_on_sort(mut self, on_sort: impl Fn(usize, bool) + 'static) -> Self {
+        self.on_sort = Some(Rc::new(on_sort));
+        self
+    }
+
+    /// Upstream's `_debugInteractive`: a column is interactive exactly when
+    /// it can be sorted by.
+    pub fn is_interactive(&self) -> bool {
+        self.on_sort.is_some()
+    }
+}
+
+/// Upstream `DataCell`: one cell of a data table.
+pub struct DataCell {
+    pub child: std::cell::RefCell<Option<AnyWidget>>,
+    /// Upstream's `placeholder`: this cell has no value yet, so its content
+    /// is drawn faded. A separate flag rather than a colour, because the
+    /// table decides *how* faint a placeholder is and the cell only says that
+    /// it is one.
+    pub placeholder: bool,
+    pub show_edit_icon: bool,
+    pub on_tap: Option<Rc<dyn Fn()>>,
+    pub on_long_press: Option<Rc<dyn Fn()>>,
+    pub on_double_tap: Option<Rc<dyn Fn()>>,
+}
+
+impl DataCell {
+    pub fn new(child: AnyWidget) -> DataCell {
+        DataCell {
+            child: std::cell::RefCell::new(Some(child)),
+            placeholder: false,
+            show_edit_icon: false,
+            on_tap: None,
+            on_long_press: None,
+            on_double_tap: None,
+        }
+    }
+
+    /// Upstream's `DataCell.empty`, which is a `SizedBox.shrink` -- a cell
+    /// that is present and blank.
+    ///
+    /// Present matters: a table's rows all have the same number of cells, so
+    /// a row with nothing in one column still needs a cell there or every
+    /// column after it would shift left.
+    pub fn empty() -> DataCell {
+        DataCell::new(crate::framework::leaf(|| crate::widgets::Empty))
+    }
+
+    pub fn placeholder(mut self) -> Self {
+        self.placeholder = true;
+        self
+    }
+
+    pub fn with_edit_icon(mut self) -> Self {
+        self.show_edit_icon = true;
+        self
+    }
+
+    pub fn with_on_tap(mut self, on_tap: impl Fn() + 'static) -> Self {
+        self.on_tap = Some(Rc::new(on_tap));
+        self
+    }
+
+    pub fn with_on_long_press(mut self, on_long_press: impl Fn() + 'static) -> Self {
+        self.on_long_press = Some(Rc::new(on_long_press));
+        self
+    }
+
+    pub fn with_on_double_tap(mut self, on_double_tap: impl Fn() + 'static) -> Self {
+        self.on_double_tap = Some(Rc::new(on_double_tap));
+        self
+    }
+
+    /// Upstream's `_debugInteractive`: any one of the gesture callbacks.
+    pub fn is_interactive(&self) -> bool {
+        self.on_tap.is_some() || self.on_long_press.is_some() || self.on_double_tap.is_some()
+    }
+}
+
+/// Upstream `TableRowInkWell`: an ink well whose splash covers the whole
+/// table row, not the cell that was pressed.
+///
+/// That is the entire reason the class exists. Upstream overrides
+/// `getRectCallback` to walk up to the enclosing `RenderTable` and hand back
+/// `getRowBox` for this cell's row. Without it, a press in one cell would
+/// splash inside that cell and stop at its edge -- which would say *the cell*
+/// was pressed, when what the reader pressed was the row.
+///
+/// Here the row rectangle is given to [`crate::render::RenderTable::row_box`]
+/// by whoever builds the table, which is the same choice
+/// [`crate::render::RenderAbstractViewport`] makes: this crate has no walk
+/// from a render object up to its ancestors, and the caller building the
+/// table already knows which row it is filling.
+pub struct TableRowInkWell;
+
+impl TableRowInkWell {
+    /// Builds the ink well. `row` is the row's rectangle in this cell's own
+    /// coordinates -- negative `top` for a cell that is not at the row's top,
+    /// which is what shifting the table's row box by the cell's offset gives.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(
+        id: u64,
+        row: crate::engine::Rect,
+        build_child: impl Fn() -> AnyWidget + 'static,
+    ) -> crate::ink_well::InkResponse {
+        // Contained and rectangular, exactly as upstream's constructor passes
+        // to `super` -- a row highlight fills the row, so it has to be
+        // clipped to it.
+        crate::ink_well::InkWell::new(id, build_child).with_rect(move |_| row)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2537,6 +2688,132 @@ mod tests {
                 EdgeInsets::all(7.0)
             );
         }
+    }
+
+    #[test]
+    fn a_column_is_interactive_exactly_when_it_can_be_sorted_by() {
+        // Upstream's `_debugInteractive` is `onSort != null`, so a column
+        // with no callback shows no sort arrow rather than a dead one.
+        assert!(
+            !DataColumn::new(crate::framework::leaf(|| crate::widgets::Empty)).is_interactive()
+        );
+        assert!(
+            DataColumn::new(crate::framework::leaf(|| crate::widgets::Empty))
+                .with_on_sort(|_, _| {})
+                .is_interactive()
+        );
+    }
+
+    #[test]
+    fn numeric_is_an_alignment_decision_not_a_formatting_one() {
+        // The table right-aligns a numeric column, because numbers are read
+        // by comparing digits in the same place and left alignment puts the
+        // units column somewhere different in every row.
+        let plain = DataColumn::new(crate::framework::leaf(|| crate::widgets::Empty));
+        assert!(!plain.numeric);
+        let numbers = DataColumn::new(crate::framework::leaf(|| crate::widgets::Empty)).numeric();
+        assert!(numbers.numeric);
+    }
+
+    #[test]
+    fn an_empty_cell_is_present_and_blank_rather_than_absent() {
+        // A table's rows all have the same number of cells, so a row with
+        // nothing in one column still needs a cell there -- otherwise every
+        // column after it shifts left.
+        let empty = DataCell::empty();
+        assert!(
+            empty.child.borrow().is_some(),
+            "there is a child, and it is blank"
+        );
+        assert!(!empty.is_interactive());
+        assert!(!empty.placeholder);
+    }
+
+    #[test]
+    fn a_cell_is_interactive_if_any_one_of_its_gestures_is_wired() {
+        assert!(!DataCell::empty().is_interactive());
+        assert!(DataCell::empty().with_on_tap(|| {}).is_interactive());
+        assert!(DataCell::empty().with_on_long_press(|| {}).is_interactive());
+        assert!(DataCell::empty().with_on_double_tap(|| {}).is_interactive());
+    }
+
+    #[test]
+    fn a_placeholder_says_it_is_one_and_lets_the_table_decide_how_faint() {
+        // A flag rather than a colour: the table owns how faint a placeholder
+        // is, and the cell only says that it is one.
+        assert!(DataCell::empty().placeholder().placeholder);
+        assert!(!DataCell::empty().placeholder);
+    }
+
+    #[test]
+    fn a_table_row_ink_well_splashes_across_the_row_not_the_cell() {
+        // The entire reason the class exists. A press in a narrow cell has to
+        // reach the far end of the row, so the splash's target radius is
+        // measured against the row's rectangle rather than the cell's.
+        use crate::ink::InkRipple;
+        use crate::render::Size;
+
+        let cell = Size::new(80.0, 40.0);
+        let row = Size::new(600.0, 40.0);
+        let cell_splash = InkRipple::target_radius(cell);
+        let row_splash = InkRipple::target_radius(row);
+        assert!(
+            row_splash > cell_splash * 3.0,
+            "a row's splash reaches much further: {row_splash} vs {cell_splash}"
+        );
+    }
+
+    #[test]
+    fn a_table_row_ink_well_is_contained_and_rectangular() {
+        // Upstream's constructor passes both to `super`, and they go together
+        // -- a row highlight fills the row, so it has to be clipped to it.
+        let well =
+            TableRowInkWell::new(1, crate::engine::Rect::ltrb(0.0, 0.0, 600.0, 40.0), || {
+                crate::framework::leaf(|| crate::widgets::Empty)
+            });
+        assert!(well.contained_ink_well);
+        assert_eq!(
+            well.highlight_shape,
+            crate::ink::InkHighlightShape::Rectangle
+        );
+    }
+
+    #[test]
+    fn a_row_box_is_the_full_width_of_the_table() {
+        // Which is what makes a splash started in one cell cover the row: a
+        // row is the whole width however narrow its cells are.
+        use crate::render::{BoxConstraints, RenderBox, RenderConstrainedBox, RenderTable};
+        let mut table = RenderTable::new(
+            2,
+            vec![
+                Some(crate::render::RenderRef::new(RenderConstrainedBox::tight(
+                    40.0, 20.0,
+                ))),
+                Some(crate::render::RenderRef::new(RenderConstrainedBox::tight(
+                    40.0, 30.0,
+                ))),
+                Some(crate::render::RenderRef::new(RenderConstrainedBox::tight(
+                    40.0, 10.0,
+                ))),
+                Some(crate::render::RenderRef::new(RenderConstrainedBox::tight(
+                    40.0, 10.0,
+                ))),
+            ],
+        );
+        table.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+
+        let first = table.row_box(0).expect("a first row");
+        assert_eq!(first.left, 0.0);
+        assert!(first.right > 40.0, "wider than one cell: {}", first.right);
+        // The row is as tall as its *tallest* cell, which is why the cell
+        // offsets alone cannot answer this.
+        assert_eq!(first.height(), 30.0);
+
+        let second = table.row_box(1).expect("a second row");
+        assert_eq!(second.top, first.bottom, "rows stack with no gap");
+        assert_eq!(second.height(), 10.0);
+
+        assert_eq!(table.row_box(2), None, "and no third row exists");
     }
 }
 
