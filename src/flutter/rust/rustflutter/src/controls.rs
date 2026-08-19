@@ -2202,6 +2202,392 @@ impl Component for AlertDialog {
     }
 }
 
+// -- The four chip variants ---------------------------------------------------
+
+/// The fields every chip variant carries, so the four below differ only in
+/// what they *implement* rather than in what they store.
+///
+/// Upstream repeats the whole field list in each of the four files, because a
+/// Dart class implementing an interface has to declare every member of it.
+/// The interfaces are the shared vocabulary and this is the shared storage;
+/// keeping them apart is what makes the four variants readable as four
+/// *combinations* rather than four near-copies.
+#[derive(Default)]
+pub struct ChipParts {
+    pub label: String,
+    pub selected: bool,
+    pub enabled: bool,
+    pub show_checkmark: Option<bool>,
+    pub background_color: Option<Color>,
+    pub selected_color: Option<Color>,
+    pub disabled_color: Option<Color>,
+    pub tooltip: Option<String>,
+    pub press_elevation: Option<f32>,
+    pub on_pressed: Option<Rc<dyn Fn()>>,
+    pub on_selected: Option<Rc<dyn Fn(bool)>>,
+    pub on_deleted: Option<Rc<dyn Fn()>>,
+    /// Upstream's `.elevated` constructors, which are a *shape* rather than a
+    /// number: an elevated chip sits on its own surface instead of being an
+    /// outline on the page. The four variants each have one.
+    pub elevated: bool,
+}
+
+impl ChipParts {
+    fn new(label: impl Into<String>) -> ChipParts {
+        ChipParts {
+            label: label.into(),
+            enabled: true,
+            ..ChipParts::default()
+        }
+    }
+}
+
+/// Upstream `ActionChip` (`material/action_chip.dart`): a chip that *does*
+/// something.
+///
+/// Implements [`ChipAttributes`], [`TappableChipAttributes`] and
+/// [`DisabledChipAttributes`] -- and notably **not**
+/// [`SelectableChipAttributes`]. That is the distinction the taxonomy exists
+/// to make: an action chip has no state to be in. Pressing it starts
+/// something and it looks the same afterwards, so a lit-up action chip would
+/// be claiming a state it does not have.
+pub struct ActionChip(pub ChipParts);
+
+impl ActionChip {
+    pub fn new(label: impl Into<String>) -> ActionChip {
+        ActionChip(ChipParts::new(label))
+    }
+
+    /// Upstream's `ActionChip.elevated`.
+    pub fn elevated(label: impl Into<String>) -> ActionChip {
+        ActionChip(ChipParts {
+            elevated: true,
+            ..ChipParts::new(label)
+        })
+    }
+
+    pub fn with_on_pressed(mut self, on_pressed: impl Fn() + 'static) -> Self {
+        self.0.on_pressed = Some(Rc::new(on_pressed));
+        self
+    }
+
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.0.tooltip = Some(tooltip.into());
+        self
+    }
+}
+
+impl ChipAttributes for ActionChip {
+    fn label(&self) -> String {
+        self.0.label.clone()
+    }
+
+    fn background_color(&self) -> Option<Color> {
+        self.0.background_color
+    }
+}
+
+impl TappableChipAttributes for ActionChip {
+    fn on_pressed(&self) -> Option<Rc<dyn Fn()>> {
+        self.0.on_pressed.clone()
+    }
+
+    fn press_elevation(&self) -> Option<f32> {
+        self.0.press_elevation
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        self.0.tooltip.clone()
+    }
+}
+
+impl DisabledChipAttributes for ActionChip {
+    /// Upstream derives this from `onPressed != null`, so an action chip with
+    /// nothing to do is disabled whatever anyone said.
+    fn is_enabled(&self) -> bool {
+        self.0.enabled && self.0.on_pressed.is_some()
+    }
+
+    fn disabled_color(&self) -> Option<Color> {
+        self.0.disabled_color
+    }
+}
+
+/// Upstream `ChoiceChip` (`material/choice_chip.dart`): one of a set, of which
+/// the reader picks exactly one.
+///
+/// Selectable and checkmarkable but **not deletable**: a choice is one of a
+/// fixed set, so there is nothing to remove -- picking another is how you stop
+/// picking this one.
+pub struct ChoiceChip(pub ChipParts);
+
+impl ChoiceChip {
+    pub fn new(label: impl Into<String>) -> ChoiceChip {
+        ChoiceChip(ChipParts::new(label))
+    }
+
+    pub fn elevated(label: impl Into<String>) -> ChoiceChip {
+        ChoiceChip(ChipParts {
+            elevated: true,
+            ..ChipParts::new(label)
+        })
+    }
+
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.0.selected = selected;
+        self
+    }
+
+    pub fn with_on_selected(mut self, on_selected: impl Fn(bool) + 'static) -> Self {
+        self.0.on_selected = Some(Rc::new(on_selected));
+        self
+    }
+}
+
+impl ChipAttributes for ChoiceChip {
+    fn label(&self) -> String {
+        self.0.label.clone()
+    }
+
+    fn background_color(&self) -> Option<Color> {
+        self.0.background_color
+    }
+}
+
+impl SelectableChipAttributes for ChoiceChip {
+    fn selected(&self) -> bool {
+        self.0.selected
+    }
+
+    fn on_selected(&self) -> Option<Rc<dyn Fn(bool)>> {
+        self.0.on_selected.clone()
+    }
+
+    fn selected_color(&self) -> Option<Color> {
+        self.0.selected_color
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        self.0.tooltip.clone()
+    }
+}
+
+impl CheckmarkableChipAttributes for ChoiceChip {
+    /// Upstream's default for a choice chip is **no tick**, unlike a filter
+    /// chip's: one choice out of a set is already told apart by its colour,
+    /// and a tick on the single chosen one is a second way of saying the same
+    /// thing.
+    fn show_checkmark(&self) -> Option<bool> {
+        self.0.show_checkmark.or(Some(false))
+    }
+}
+
+impl DisabledChipAttributes for ChoiceChip {
+    fn is_enabled(&self) -> bool {
+        self.0.enabled && self.0.on_selected.is_some()
+    }
+
+    fn disabled_color(&self) -> Option<Color> {
+        self.0.disabled_color
+    }
+}
+
+/// Upstream `FilterChip` (`material/filter_chip.dart`): one of a set, of which
+/// the reader picks any number.
+///
+/// The same traits as a [`ChoiceChip`] plus [`DeletableChipAttributes`]. The
+/// difference from a choice chip is not the widget but the *set*: several
+/// filters can be on at once, so the reader has to be able to read which at a
+/// glance -- which is why the tick is on by default here and off there.
+pub struct FilterChip(pub ChipParts);
+
+impl FilterChip {
+    pub fn new(label: impl Into<String>) -> FilterChip {
+        FilterChip(ChipParts::new(label))
+    }
+
+    pub fn elevated(label: impl Into<String>) -> FilterChip {
+        FilterChip(ChipParts {
+            elevated: true,
+            ..ChipParts::new(label)
+        })
+    }
+
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.0.selected = selected;
+        self
+    }
+
+    pub fn with_on_selected(mut self, on_selected: impl Fn(bool) + 'static) -> Self {
+        self.0.on_selected = Some(Rc::new(on_selected));
+        self
+    }
+
+    pub fn with_on_deleted(mut self, on_deleted: impl Fn() + 'static) -> Self {
+        self.0.on_deleted = Some(Rc::new(on_deleted));
+        self
+    }
+}
+
+impl ChipAttributes for FilterChip {
+    fn label(&self) -> String {
+        self.0.label.clone()
+    }
+
+    fn background_color(&self) -> Option<Color> {
+        self.0.background_color
+    }
+}
+
+impl SelectableChipAttributes for FilterChip {
+    fn selected(&self) -> bool {
+        self.0.selected
+    }
+
+    fn on_selected(&self) -> Option<Rc<dyn Fn(bool)>> {
+        self.0.on_selected.clone()
+    }
+
+    fn selected_color(&self) -> Option<Color> {
+        self.0.selected_color
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        self.0.tooltip.clone()
+    }
+}
+
+impl CheckmarkableChipAttributes for FilterChip {
+    /// Unset here means the theme decides, which for Material 3 means a tick.
+    /// Several filters can be on at once, so the set has to be readable at a
+    /// glance and colour alone is not enough.
+    fn show_checkmark(&self) -> Option<bool> {
+        self.0.show_checkmark
+    }
+}
+
+impl DeletableChipAttributes for FilterChip {
+    fn on_deleted(&self) -> Option<Rc<dyn Fn()>> {
+        self.0.on_deleted.clone()
+    }
+}
+
+impl DisabledChipAttributes for FilterChip {
+    fn is_enabled(&self) -> bool {
+        self.0.enabled && self.0.on_selected.is_some()
+    }
+
+    fn disabled_color(&self) -> Option<Color> {
+        self.0.disabled_color
+    }
+}
+
+/// Upstream `InputChip` (`material/input_chip.dart`): something the reader
+/// themselves put there.
+///
+/// The only variant implementing **all six** interfaces, and that is the
+/// point: an input chip is a piece of the reader's own input -- a recipient on
+/// an email, a tag they typed -- so it can be pressed, chosen, ticked, deleted
+/// and disabled. The other three are each a *subset* of it, which is why the
+/// taxonomy is worth having rather than one chip with every field.
+pub struct InputChip(pub ChipParts);
+
+impl InputChip {
+    pub fn new(label: impl Into<String>) -> InputChip {
+        InputChip(ChipParts::new(label))
+    }
+
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.0.selected = selected;
+        self
+    }
+
+    pub fn with_on_pressed(mut self, on_pressed: impl Fn() + 'static) -> Self {
+        self.0.on_pressed = Some(Rc::new(on_pressed));
+        self
+    }
+
+    pub fn with_on_selected(mut self, on_selected: impl Fn(bool) + 'static) -> Self {
+        self.0.on_selected = Some(Rc::new(on_selected));
+        self
+    }
+
+    pub fn with_on_deleted(mut self, on_deleted: impl Fn() + 'static) -> Self {
+        self.0.on_deleted = Some(Rc::new(on_deleted));
+        self
+    }
+
+    /// Upstream's `isEnabled`, which an input chip carries outright rather
+    /// than deriving -- it is the one variant that can be meaningfully
+    /// present and inert, because it is showing something the reader typed
+    /// whether or not it can still be acted on.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.0.enabled = enabled;
+        self
+    }
+}
+
+impl ChipAttributes for InputChip {
+    fn label(&self) -> String {
+        self.0.label.clone()
+    }
+
+    fn background_color(&self) -> Option<Color> {
+        self.0.background_color
+    }
+}
+
+impl SelectableChipAttributes for InputChip {
+    fn selected(&self) -> bool {
+        self.0.selected
+    }
+
+    fn on_selected(&self) -> Option<Rc<dyn Fn(bool)>> {
+        self.0.on_selected.clone()
+    }
+
+    fn selected_color(&self) -> Option<Color> {
+        self.0.selected_color
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        self.0.tooltip.clone()
+    }
+}
+
+impl CheckmarkableChipAttributes for InputChip {
+    fn show_checkmark(&self) -> Option<bool> {
+        self.0.show_checkmark
+    }
+}
+
+impl DeletableChipAttributes for InputChip {
+    fn on_deleted(&self) -> Option<Rc<dyn Fn()>> {
+        self.0.on_deleted.clone()
+    }
+}
+
+impl TappableChipAttributes for InputChip {
+    fn on_pressed(&self) -> Option<Rc<dyn Fn()>> {
+        self.0.on_pressed.clone()
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        self.0.tooltip.clone()
+    }
+}
+
+impl DisabledChipAttributes for InputChip {
+    /// Carried, not derived -- see [`InputChip::with_enabled`].
+    fn is_enabled(&self) -> bool {
+        self.0.enabled
+    }
+
+    fn disabled_color(&self) -> Option<Color> {
+        self.0.disabled_color
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2635,5 +3021,142 @@ mod tests {
         ));
         assert!(built.get() >= 1, "the builder ran");
         assert!(tree.build_render_tree().is_some(), "and produced a tree");
+    }
+
+    #[test]
+    fn an_action_chip_has_no_state_to_be_in() {
+        // The distinction the taxonomy exists to make. Pressing an action chip
+        // starts something and it looks the same afterwards, so it implements
+        // `TappableChipAttributes` and *not* `SelectableChipAttributes` -- a
+        // lit-up action chip would be claiming a state it does not have.
+        //
+        // Written as a compile-time check: a function that only accepts
+        // selectable chips would not take this one, and adding the trait to
+        // `ActionChip` later would make this test's *absence* of a call the
+        // only thing that noticed.
+        fn only_selectable<T: SelectableChipAttributes>(chip: &T) -> bool {
+            chip.selected()
+        }
+        assert!(!only_selectable(&ChoiceChip::new("A").with_selected(false)));
+        assert!(!only_selectable(&FilterChip::new("B")));
+        assert!(!only_selectable(&InputChip::new("C")));
+        // And the action chip is tappable, which the other question is about.
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&pressed);
+        let action = ActionChip::new("Do it").with_on_pressed(move || flag.set(true));
+        action.on_pressed().expect("a callback")();
+        assert!(pressed.get());
+    }
+
+    #[test]
+    fn an_input_chip_is_the_only_one_that_is_all_six() {
+        // Which is the point: an input chip is a piece of the reader's own
+        // input, so it can be pressed, chosen, ticked, deleted and disabled.
+        // The other three are each a subset of it.
+        fn needs_all_six<T>(_: &T)
+        where
+            T: ChipAttributes
+                + DeletableChipAttributes
+                + SelectableChipAttributes
+                + CheckmarkableChipAttributes
+                + DisabledChipAttributes
+                + TappableChipAttributes,
+        {
+        }
+        needs_all_six(&InputChip::new("someone@example.com"));
+    }
+
+    #[test]
+    fn a_choice_chip_shows_no_tick_and_a_filter_chip_leaves_it_to_the_theme() {
+        // The difference is not the widget but the *set*. One choice out of a
+        // set is already told apart by its colour, so a tick on the single
+        // chosen one says the same thing twice; several filters can be on at
+        // once, so the set has to be readable at a glance and colour alone is
+        // not enough.
+        assert_eq!(ChoiceChip::new("Small").show_checkmark(), Some(false));
+        assert_eq!(FilterChip::new("Vegan").show_checkmark(), None);
+        assert_eq!(InputChip::new("tag").show_checkmark(), None);
+    }
+
+    #[test]
+    fn a_choice_or_filter_chip_with_no_callback_is_disabled_but_an_input_chip_is_not() {
+        // The three derive `isEnabled` from having something to do; an input
+        // chip carries it, because it is showing something the reader typed
+        // whether or not it can still be acted on.
+        assert!(!ChoiceChip::new("A").is_enabled());
+        assert!(ChoiceChip::new("A").with_on_selected(|_| {}).is_enabled());
+        assert!(!FilterChip::new("B").is_enabled());
+        assert!(!ActionChip::new("C").is_enabled());
+        assert!(ActionChip::new("C").with_on_pressed(|| {}).is_enabled());
+
+        assert!(
+            InputChip::new("D").is_enabled(),
+            "present and inert is a state"
+        );
+        assert!(!InputChip::new("D").with_enabled(false).is_enabled());
+    }
+
+    #[test]
+    fn only_the_two_set_chips_can_be_deleted() {
+        // A choice is one of a fixed set, so there is nothing to remove --
+        // picking another is how you stop picking this one. An action chip
+        // has nothing to remove either.
+        assert!(!FilterChip::new("A").is_deletable());
+        assert!(FilterChip::new("A").with_on_deleted(|| {}).is_deletable());
+        assert!(InputChip::new("B").with_on_deleted(|| {}).is_deletable());
+    }
+
+    #[test]
+    fn every_variant_has_an_elevated_form() {
+        // Upstream's `.elevated` constructors, which are a shape rather than a
+        // number: an elevated chip sits on its own surface instead of being an
+        // outline on the page.
+        assert!(!ActionChip::new("A").0.elevated);
+        assert!(ActionChip::elevated("A").0.elevated);
+        assert!(ChoiceChip::elevated("B").0.elevated);
+        assert!(FilterChip::elevated("C").0.elevated);
+    }
+
+    #[test]
+    fn a_no_splash_feature_presses_without_painting() {
+        // It exists rather than being expressed as "no feature" because the
+        // *gesture* still has to happen: a control whose theme asks for no
+        // splash still presses and still fires its callback.
+        use crate::ink::{InkFeatureKind, InteractiveInkFeatureFactory};
+        use crate::render::{Offset, Size};
+
+        let mut feature = InteractiveInkFeatureFactory::NoSplash.create(
+            Size::new(100.0, 40.0),
+            Offset::new(10.0, 10.0),
+            Color::argb(0xFF, 0, 0, 0),
+            true,
+            0,
+        );
+        assert!(matches!(feature.kind, InkFeatureKind::None(_)));
+        assert_eq!(feature.opacity(), 0.0, "nothing to paint, ever");
+        assert_eq!(feature.ink_circle(Size::new(100.0, 40.0)), None);
+        assert_eq!(feature.paint_color().alpha(), 0);
+
+        // Alive while the finger is down -- the press is happening -- and gone
+        // the moment it settles, because upstream's confirm and cancel both
+        // dispose outright rather than fading.
+        assert!(feature.alive());
+        feature.confirm(1_000);
+        assert!(!feature.alive());
+    }
+
+    #[test]
+    fn the_no_splash_factory_is_a_third_choice_beside_the_other_two() {
+        // A theme swaps every splash in an application at once, and "none" is
+        // one of the things it can swap to.
+        use crate::ink::InteractiveInkFeatureFactory;
+        assert_ne!(
+            InteractiveInkFeatureFactory::NoSplash,
+            InteractiveInkFeatureFactory::default()
+        );
+        assert_ne!(
+            InteractiveInkFeatureFactory::NoSplash,
+            InteractiveInkFeatureFactory::Splash
+        );
     }
 }

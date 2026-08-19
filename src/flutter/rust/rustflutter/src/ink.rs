@@ -714,7 +714,24 @@ pub enum InkFeatureKind {
     Splash(InkSplash),
     Ripple(InkRipple),
     Highlight(InkHighlight),
+    /// Upstream `NoSplash` (`material/no_splash.dart`): a feature that paints
+    /// nothing at all.
+    ///
+    /// It exists rather than being expressed as "no feature" because the
+    /// *gesture* still has to happen: a control whose theme asks for no splash
+    /// still presses, still highlights, still fires its callback. Upstream's
+    /// `paintFeature` is an empty body and its `confirm`/`cancel` dispose
+    /// immediately, which is this variant reporting nothing to paint and dying
+    /// the moment the gesture settles.
+    None(NoSplash),
 }
+
+/// Upstream `NoSplash`: the ink feature that draws nothing.
+///
+/// A unit type rather than an absence, for the reason [`InkFeatureKind::None`]
+/// gives: the press still happens, and only the drawing is skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct NoSplash;
 
 /// Upstream `InteractiveInkFeature` (`material/ink_well.dart`): what the three
 /// features have in common -- a colour, an optional border to clip against,
@@ -816,6 +833,8 @@ impl InteractiveInkFeature {
         match self.kind {
             InkFeatureKind::Splash(splash) => splash.opacity(self.phase),
             InkFeatureKind::Ripple(ripple) => ripple.opacity(self.phase),
+            // Nothing to paint, ever.
+            InkFeatureKind::None(_) => 0.0,
             InkFeatureKind::Highlight(highlight) => match self.phase.settled {
                 // A highlight has no confirm and no cancel of its own --
                 // upstream gives it `activate`/`deactivate` instead, and a
@@ -849,6 +868,9 @@ impl InteractiveInkFeature {
         match self.kind {
             InkFeatureKind::Splash(splash) => splash.alive(self.phase),
             InkFeatureKind::Ripple(ripple) => ripple.alive(self.phase),
+            // Upstream's `confirm`/`cancel` call `dispose()` outright, so it
+            // is gone the moment the gesture settles rather than fading.
+            InkFeatureKind::None(_) => self.phase.settled.is_none(),
             InkFeatureKind::Highlight(highlight) => {
                 highlight.alive(self.opacity(), self.phase.settled.is_none())
             }
@@ -869,6 +891,7 @@ impl InteractiveInkFeature {
             InkFeatureKind::Ripple(ripple) => {
                 Some((ripple.center(size, self.phase), ripple.radius(self.phase)))
             }
+            InkFeatureKind::None(_) => None,
             InkFeatureKind::Highlight(highlight) => highlight
                 .circle_radius()
                 .map(|radius| (Offset::new(size.width / 2.0, size.height / 2.0), radius)),
@@ -894,6 +917,8 @@ pub enum InteractiveInkFeatureFactory {
     /// Material 2 theme.
     #[default]
     Ripple,
+    /// Upstream `NoSplash.splashFactory`: presses, but paints nothing.
+    NoSplash,
 }
 
 impl InteractiveInkFeatureFactory {
@@ -920,6 +945,7 @@ impl InteractiveInkFeatureFactory {
             InteractiveInkFeatureFactory::Ripple => {
                 InkFeatureKind::Ripple(InkRipple::new(size, position))
             }
+            InteractiveInkFeatureFactory::NoSplash => InkFeatureKind::None(NoSplash),
         };
         InteractiveInkFeature::new(kind, color, started_micros)
     }

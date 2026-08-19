@@ -164,6 +164,45 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 四种 chip,和一个什么都不画的溅开(2026-08-20)
+
+`ActionChip`、`ChoiceChip`、`FilterChip`、`InputChip` 各自那个文件,加上
+`no_splash.dart` 的 `NoSplash`。五个文件一次收口。
+
+**这一轮是三轮前那六个属性接口开始还账。** 上游这四个 chip 各自 `implements` 一组不同的
+接口,而**它们的差别就在那组组合里**,不在字段表里(四个文件的字段表几乎一模一样,因为
+Dart 里实现接口就得把成员全声明一遍)。所以这里把**共有的存储**收进一个 `ChipParts`,让四
+个变体只在**实现了什么**上不同——这才让它们读起来是四个**组合**,而不是四份近似的复制。
+
+**回归行盯的地方(用编译期约束钉,而不只是断言):**
+
+* **action chip 没有状态可处。** 它实现 `TappableChipAttributes` 而**不**实现
+  `SelectableChipAttributes`——按下去启动一件事,之后长得还是那样;一个亮着的 action chip
+  是在宣称一个它并没有的状态。用一个「只收可选 chip」的泛型函数钉住:另外三个进得去,它进
+  不去。
+* **input chip 是唯一六个都实现的**,用一个要求六个 trait 全在的泛型函数钉住。另外三个各
+  是它的一个子集——这正是这套分类值得存在、而不是做成一个「什么字段都有的 chip」的理由。
+* **choice chip 默认不显示勾,filter chip 把这事留给主题。** 分别不在 widget 而在那个
+  **集合**:一组里只选一个,颜色本身已经把它区分开了,再打个勾是把同一件事说两遍;而多个
+  filter 可以同时开着,那一组必须一眼读得出来,光靠颜色不够。
+* **choice / filter / action 三个从「有没有事可做」推出 `isEnabled`,而 input chip 是自己
+  带着的**——它展示的是读者自己敲进去的东西,不管还能不能对它做什么,**「在场但不可操作」
+  对它是一个真实状态**。
+* **只有那两个「集合型」的能删。** 一个 choice 是固定集合里的一个,没有什么可移除的——换一
+  个才是「不再选它」的方式。
+* 四个各有一个 `.elevated` 形态,那是个**形状**而不是一个数:抬起的 chip 坐在自己的面上,
+  而不是页面上的一圈轮廓。
+
+**`NoSplash` 是「什么都不画」而不是「没有 feature」。** 这个分别是实打实的:一个主题要求
+不要溅开的控件,**照样按下、照样高亮、照样触发回调**——只是不画。上游的 `paintFeature` 是
+个空方法体,而它的 `confirm`/`cancel` 直接 `dispose()`;这里就是这个变体报「没有东西要
+画」,并且在手势落定的那一刻就死掉(而不是淡出)。工厂里也多了第三个选择——主题一次换掉全
+应用的溅开,而「不要」是它能换到的东西之一。
+
+验证:`cargo test --lib` 1524 绿,GN `rustflutter_unittests` 1524 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1270 accounted / 618 MISSING。
+
 ### 三处放导航目的地的地方(2026-08-20)
 
 新模块 `navigation_destinations.rs`:`NavigationDestination`、`NavigationIndicator`
