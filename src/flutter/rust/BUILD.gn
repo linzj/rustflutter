@@ -138,6 +138,7 @@ if (enable_unittests) {
       "rustflutter/src/platform.rs",
       "rustflutter/src/range_slider_parts.rs",
       "rustflutter/src/render.rs",
+      "rustflutter/src/scrollable_helpers.rs",
       "rustflutter/src/scrollbar.rs",
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/semantics.rs",

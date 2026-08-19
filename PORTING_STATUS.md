@@ -164,6 +164,52 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 滚动的三样零件(2026-08-19)
+
+`scrollable_helpers.rs`(新),上游 `widgets/scrollable_helpers.dart` 五个类全覆
+盖。上游把三件不相干的东西放在一个文件里,理由是各自都太小,这里同理:
+`ScrollableDetails`、`EdgeDraggingAutoScroller`、以及键盘滚动的
+`ScrollIntent`/`ScrollAction`/`ScrollIncrementDetails`。
+
+**三处结构上的分岔,各有各的理由:**
+
+* `ScrollableDetails` 上游有 `controller` 和 `physics` 两个字段;这里一个都没
+  有。台账里 `ScrollController`、`ScrollPosition`、`ScrollPhysics`、`Scrollable`
+  **四个上游类映射的都是同一个 `scrolling::Scroll`**——一个 details 对象拿两个句柄
+  指着同一个东西,那是在把这个 crate 的形状描述成上游的形状。留下的是真正各自独
+  立变化的两样:方向,和装饰裁剪。
+* `EdgeDraggingAutoScroller` 上游用 `async` 循环:等一次动画结束,再看一眼。这里
+  没有执行器,于是把循环翻过来——`step` 是它的一轮,由持有拖拽的那一方每帧调一
+  次,和这个 crate 里其他所有 `advance` 一个形状。
+* `ScrollAction` 上游是 `ContextAction`,从 context 找 scrollable。这里的
+  `Action` 是个没有 context 的回调,所以 scrollable 在**造 action 的时候**就点
+  名——和 `Slider::wired` 同一套接法。上游那条「退回 `PrimaryScrollController`」
+  的分支因此没有可退的地方。
+
+`Intent` 枚举加了 `Scroll { direction, increment_type }` 变体;`ScrollIntent` 是
+它的构造器而不是独立类型,和 `RequestFocusAction` 那一组同形。
+
+**回归行盯的地方:**
+
+* 反向滚动改的是**方向本身**不是一个 flag——反向的竖直列表是 `up`,不是「向下,
+  但倒着」。下游全都读方向;旁边再挂一个 reverse 标志,就得每个下游各自应用一
+  次,总有一个会忘。
+* 行增量固定 50、不随视口缩放;页增量是视口的**四分之三多一点(0.8)而不是全
+  部**,好留一条已读的内容对照。
+* 另一根轴上的按键滚动量是 0。竖直列表里的左箭头不是「一点点向上滚」,它是别人的
+  按键——返回 0 才让下一个处理器拿到它。
+* 反向列表里同一个按键往反方向滚:增量是对着**列表自己的方向**量的,不是屏幕的。
+* 拖拽越界的单步有上限(`overDragMax` 20),否则手指停在屏幕外会越滚越快;刚越过
+  一点点时,步长是那点越界量本身而不是上限。
+* 已经到头的列表不再往前滚,在顶端的也不往回滚。
+* **不足一个像素的一步不算一步**——上游最后那道闸。没有它,循环会一直要求一个它已
+  经到达的滚动位置,永不停止。
+
+验证:`cargo test --lib` 1099 绿,GN `rustflutter_unittests` 1099 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1091 accounted / 782 MISSING。
+
+
 ### 「点在别处」的那六个类(2026-08-19)
 
 `tap_region.rs`(新),上游 `widgets/tap_region.dart` 六个类全覆盖:

@@ -48,6 +48,12 @@ pub enum Intent {
     NextFocus,
     /// `PreviousFocusIntent`.
     PreviousFocus,
+    /// `ScrollIntent`: scroll the nearest scrollable that way, by a line or
+    /// a page.
+    Scroll {
+        direction: crate::render::AxisDirection,
+        increment_type: crate::scrollable_helpers::ScrollIncrementType,
+    },
 }
 
 /// Upstream `Action<T>`: knows how to serve one kind of intent. The closed
@@ -184,6 +190,7 @@ impl Intent {
             Intent::RequestFocus { .. } => "RequestFocus",
             Intent::NextFocus => "NextFocus",
             Intent::PreviousFocus => "PreviousFocus",
+            Intent::Scroll { .. } => "Scroll",
         }
     }
 }

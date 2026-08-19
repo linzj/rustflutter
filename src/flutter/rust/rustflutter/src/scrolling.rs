@@ -431,7 +431,7 @@ impl Scroll {
     // the reporting is three small helpers the movers call at the moments the
     // activity transitions would have.
 
-    fn metrics(&self) -> ScrollMetrics {
+    pub fn metrics(&self) -> ScrollMetrics {
         ScrollMetrics {
             pixels: self.offset,
             min_scroll_extent: 0.0,
