@@ -83,6 +83,7 @@ pub mod keyboard_inserted_content;
 pub mod process_text;
 pub mod spell_check;
 pub mod system;
+pub mod system_channels;
 pub mod text_boundary;
 pub mod text_editing_delta;
 pub mod text_input;

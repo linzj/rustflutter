@@ -164,6 +164,46 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 引擎在听的那些通道,和三个只是一次调用的服务(2026-08-19)
+
+`services/system_channels.rs`(新),四个上游类:`SystemChannels`、`Scribe`、
+`SensitiveContentService`、`DeferredComponent`。后三个各自只是在某条通道上打一个
+方法调用,所以和通道名表放在一起。
+
+**24 个通道名从上游解析生成**(`tools/gen_system_channels.py`)。理由和上一簇的自
+动填充提示一样:名字打错不会报错,那条通道**根本没人在听**,调用永远不到达。这类
+「靠沉默失败」的东西不手抄。
+
+**一处结构上的分岔:** 上游的 `SystemChannels` 存的是造好的通道对象,每个自带
+codec;这里存的是**名字**。在这个 crate 里造一条通道很便宜,而 codec 是在发起调用
+的地方选的——一张预造通道表,拿到手也得先知道每条各带什么 codec 才能用。真正必须
+分毫不差的是名字,所以生成的就是名字。
+
+**记账的边界:** `SensitiveContentService::is_supported` 上游在非 Android 上不问任
+何人直接答 false。这个 crate 里没有 `TargetPlatform` 可问,所以每次都去问平台——两
+种情形下平台的回答都是权威的那个,上游只是把它短路掉,并没有替换它。没有该方法处
+理器的平台什么也不答,在这里就是 false。
+
+**回归行盯的地方:**
+
+* 每条通道名都在引擎的前缀下,且**两两不同**——两个名字相同意味着其中一个抄错了。
+* **先前写的三个服务用的名字要和这张表对得上。** spell_check 和 process_text 是在
+  表存在之前写的;哪天两者不一致,就说明有一个错了,而这是它会露出来的地方。
+* `ContentSensitivity` 的**变体顺序是协议的一部分**,不是口味问题:平台收到的是一
+  个整数、按它自己那个枚举的下标去读。在这里重排一下,会悄没声地把一屏密码标成
+  「可以录屏」。
+* 本框架没听说过的模式返回**空**而不是猜一个最近的。上游那里是 `_unknown` 加一个
+  `UnsupportedError`;猜是唯一的错误答案——它可能把敏感屏标成不敏感。
+* 延迟组件的 `loadingUnitId` **永远是 -1**。上游自己的注释说了原因:Dart 侧看不到
+  loading unit id,所以改用组件名;字段留在消息里,是为了将来 API 能带上一个而不必
+  改协议。
+
+验证:`cargo test --lib` 1168 绿,GN `rustflutter_unittests` 1168 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1126 accounted / 747 MISSING;services 层 121/141,
+只剩 20。
+
+
 ### 资源包、字体、以及构建盖的那几个章(2026-08-19)
 
 `services/asset_bundle.rs`(新),五个上游类:`CachingAssetBundle`、
