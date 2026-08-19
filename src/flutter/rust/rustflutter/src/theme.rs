@@ -45,8 +45,9 @@ use crate::animation::{Animatable, ColorTween, Tween};
 use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
-    BadgeThemeData, CardThemeData, CheckboxThemeData, DividerThemeData, ProgressIndicatorThemeData,
-    RadioThemeData, SwitchThemeData, TooltipThemeData,
+    AppBarThemeData, BadgeThemeData, BottomSheetThemeData, CardThemeData, CheckboxThemeData,
+    DividerThemeData, ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData,
+    SwitchThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -201,6 +202,9 @@ pub struct ThemeData {
     pub checkbox_theme: CheckboxThemeData,
     pub radio_theme: RadioThemeData,
     pub switch_theme: SwitchThemeData,
+    pub app_bar_theme: AppBarThemeData,
+    pub bottom_sheet_theme: BottomSheetThemeData,
+    pub snack_bar_theme: SnackBarThemeData,
 }
 
 impl ThemeData {
@@ -291,6 +295,9 @@ impl ThemeData {
             checkbox_theme: CheckboxThemeData::new(),
             radio_theme: RadioThemeData::new(),
             switch_theme: SwitchThemeData::new(),
+            app_bar_theme: AppBarThemeData::new(),
+            bottom_sheet_theme: BottomSheetThemeData::new(),
+            snack_bar_theme: SnackBarThemeData::new(),
         }
     }
 
@@ -357,6 +364,24 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_app_bar_theme(mut self, app_bar_theme: AppBarThemeData) -> ThemeData {
+        self.app_bar_theme = app_bar_theme;
+        self
+    }
+
+    pub fn with_bottom_sheet_theme(
+        mut self,
+        bottom_sheet_theme: BottomSheetThemeData,
+    ) -> ThemeData {
+        self.bottom_sheet_theme = bottom_sheet_theme;
+        self
+    }
+
+    pub fn with_snack_bar_theme(mut self, snack_bar_theme: SnackBarThemeData) -> ThemeData {
+        self.snack_bar_theme = snack_bar_theme;
         self
     }
 
@@ -430,6 +455,13 @@ impl ThemeData {
             checkbox_theme: CheckboxThemeData::lerp(&a.checkbox_theme, &b.checkbox_theme, t),
             radio_theme: RadioThemeData::lerp(&a.radio_theme, &b.radio_theme, t),
             switch_theme: SwitchThemeData::lerp(&a.switch_theme, &b.switch_theme, t),
+            app_bar_theme: AppBarThemeData::lerp(&a.app_bar_theme, &b.app_bar_theme, t),
+            bottom_sheet_theme: BottomSheetThemeData::lerp(
+                &a.bottom_sheet_theme,
+                &b.bottom_sheet_theme,
+                t,
+            ),
+            snack_bar_theme: SnackBarThemeData::lerp(&a.snack_bar_theme, &b.snack_bar_theme, t),
         }
     }
 

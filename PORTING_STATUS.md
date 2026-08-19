@@ -164,6 +164,22 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:结构件三对组件主题(2026-08-19)。**
+`AppBarTheme(Data)`(14/17)、`BottomSheetTheme(Data)`(12/13)、
+`SnackBarTheme(Data)`(14/15,含 `SnackBarBehavior` 两式)。
+
+**`AppBar` 接上了**:背景取 `AppBarTheme.of` 否则 `scheme.surface`,前景取
+否则 `onSurface`,高度取否则 `kToolbarHeight`(56)。此前是 `theme.surface`
+与两个写死的常量。**主题给的高度压过"有副标题就用高的那个"**,回归线按两个
+不同主题高度的差值验证(bar 自身还画一条分隔线,直接比绝对值会把那条线算进去)。
+
+**未做的字段,逐条记账**:`AppBarThemeData` 的 `iconTheme`/`actionsIconTheme`
+(`IconThemeData`,框架无图标体系——E5)与 `systemOverlayStyle`
+(`SystemUiOverlayStyle`,services 侧未到);`BottomSheetThemeData` 与
+`SnackBarThemeData` 的 `clipBehavior`(同前:dart:ui 的 `Clip` 不建模);
+`SnackBarThemeData.dismissDirection`(`DismissDirection` 随 P6 的
+`Dismissible` 一起来)。
+
 **P8-M1:选择控件三对组件主题(2026-08-19)。**
 `CheckboxTheme(Data)`/`RadioTheme(Data)`/`SwitchTheme(Data)` 落地,字段按上游
 列全(9/9/9)。这三对与前五对的区别是它们的字段大半是

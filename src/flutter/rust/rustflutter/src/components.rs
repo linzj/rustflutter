@@ -1069,16 +1069,23 @@ impl Component for AppBar {
         // `SafeArea(bottom: false, child: appBar)` where `appBar` is already
         // the coloured `Material`.
         let system = crate::media_query::media_query_of(context).padding;
-        let surface = theme.surface;
+        // Upstream's `AppBar.build`: the background, the foreground and the
+        // toolbar height come off `AppBarTheme.of(context)` before the
+        // scheme and `kToolbarHeight`.
+        let bar = crate::component_themes::ResolvedAppBar::of(context);
+        let surface = bar.background;
         let outline = theme.outline;
         let title_style = theme.title();
         let muted = theme.muted();
 
         let has_subtitle = subtitle.is_some();
-        let toolbar_height = if has_subtitle {
-            TOOLBAR_HEIGHT_WITH_SUBTITLE
-        } else {
-            K_TOOLBAR_HEIGHT
+        // A themed height wins outright; without one, a bar with a subtitle
+        // is the taller of the two the crate draws.
+        let toolbar_height = match crate::component_themes::AppBarTheme::of(context).toolbar_height
+        {
+            Some(height) => height,
+            None if has_subtitle => TOOLBAR_HEIGHT_WITH_SUBTITLE,
+            None => bar.toolbar_height,
         };
 
         let mut children = vec![leaf(move || {

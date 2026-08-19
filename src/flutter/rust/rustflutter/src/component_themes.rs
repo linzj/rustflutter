@@ -37,7 +37,7 @@ use crate::controls::TooltipTriggerMode;
 use crate::engine::{Color, TextAlign, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::painting::StrokeCap;
-use crate::render::{AlignmentGeometry, BoxConstraints, Offset};
+use crate::render::{AlignmentGeometry, BoxConstraints, Offset, Size};
 use crate::services::system::SystemMouseCursor;
 use crate::theme::{ThemeData, VisualDensity};
 use crate::widget_state::{
@@ -860,6 +860,333 @@ impl ResolvedCheckbox {
     }
 }
 
+// -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
+
+/// Upstream `AppBarThemeData`.
+///
+/// `iconTheme`, `actionsIconTheme` and `systemOverlayStyle` are not here:
+/// the first two are an `IconThemeData` and the framework has no icon system
+/// yet (`E5`), and the third is a `SystemUiOverlayStyle`, which is the
+/// services-side status-bar description this port has not reached.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppBarThemeData {
+    pub background_color: Option<Color>,
+    /// What the title and the icons are drawn in.
+    pub foreground_color: Option<Color>,
+    pub elevation: Option<f32>,
+    /// The elevation once something has been scrolled under it -- Material 3
+    /// raises the bar rather than shadowing it.
+    pub scrolled_under_elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+    pub center_title: Option<bool>,
+    pub title_spacing: Option<f32>,
+    pub leading_width: Option<f32>,
+    pub toolbar_height: Option<f32>,
+    pub toolbar_text_style: Option<TextStyle>,
+    pub title_text_style: Option<TextStyle>,
+    pub actions_padding: Option<EdgeInsetsGeometry>,
+}
+
+impl AppBarThemeData {
+    pub fn new() -> AppBarThemeData {
+        AppBarThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_foreground_color(mut self, color: Color) -> Self {
+        self.foreground_color = Some(color);
+        self
+    }
+
+    pub fn with_toolbar_height(mut self, height: f32) -> Self {
+        self.toolbar_height = Some(height);
+        self
+    }
+
+    pub fn with_center_title(mut self, center: bool) -> Self {
+        self.center_title = Some(center);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    /// Upstream `AppBarThemeData.lerp`.
+    pub fn lerp(a: &AppBarThemeData, b: &AppBarThemeData, t: f32) -> AppBarThemeData {
+        AppBarThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            foreground_color: lerp_color(a.foreground_color, b.foreground_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            scrolled_under_elevation: lerp_f32(
+                a.scrolled_under_elevation,
+                b.scrolled_under_elevation,
+                t,
+            ),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            center_title: lerp_nearer(&a.center_title, &b.center_title, t),
+            title_spacing: lerp_f32(a.title_spacing, b.title_spacing, t),
+            leading_width: lerp_f32(a.leading_width, b.leading_width, t),
+            toolbar_height: lerp_f32(a.toolbar_height, b.toolbar_height, t),
+            toolbar_text_style: lerp_nearer(&a.toolbar_text_style, &b.toolbar_text_style, t),
+            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
+            actions_padding: lerp_nearer(&a.actions_padding, &b.actions_padding, t),
+        }
+    }
+}
+
+/// Upstream `AppBarTheme`.
+pub struct AppBarTheme;
+
+impl AppBarTheme {
+    pub fn new(data: AppBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> AppBarThemeData {
+        context
+            .inherited::<AppBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).app_bar_theme)
+    }
+}
+
+/// What an app bar draws with, once the three steps have run.
+///
+/// Upstream's `AppBar.build`: `backgroundColor` is the theme's, then the
+/// scheme's surface; `foregroundColor` is the theme's, then `onSurface`; the
+/// height is `kToolbarHeight` where nobody said.
+pub struct ResolvedAppBar {
+    pub background: Color,
+    pub foreground: Color,
+    pub toolbar_height: f32,
+    pub center_title: bool,
+    pub title_spacing: f32,
+}
+
+impl ResolvedAppBar {
+    /// Upstream's `kToolbarHeight`.
+    pub const TOOLBAR_HEIGHT: f32 = 56.0;
+    /// Upstream's `NavigationToolbar.kMiddleSpacing`.
+    pub const TITLE_SPACING: f32 = 16.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedAppBar {
+        let data = AppBarTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedAppBar {
+            background: data.background_color.unwrap_or(scheme.surface),
+            foreground: data.foreground_color.unwrap_or(scheme.on_surface),
+            toolbar_height: data
+                .toolbar_height
+                .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
+            center_title: data.center_title.unwrap_or(false),
+            title_spacing: data.title_spacing.unwrap_or(ResolvedAppBar::TITLE_SPACING),
+        }
+    }
+}
+
+// -- Bottom sheet (upstream `bottom_sheet_theme.dart`) ------------------------
+
+/// Upstream `BottomSheetThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BottomSheetThemeData {
+    pub background_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub elevation: Option<f32>,
+    /// The sheet's own colour when it is modal, which may differ.
+    pub modal_background_color: Option<Color>,
+    /// What the rest of the screen is dimmed with behind a modal sheet.
+    pub modal_barrier_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub modal_elevation: Option<f32>,
+    pub shape: Option<ShapeBorder>,
+    pub show_drag_handle: Option<bool>,
+    pub drag_handle_color: Option<Color>,
+    pub drag_handle_size: Option<Size>,
+    pub constraints: Option<BoxConstraints>,
+}
+
+impl BottomSheetThemeData {
+    pub fn new() -> BottomSheetThemeData {
+        BottomSheetThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_show_drag_handle(mut self, show: bool) -> Self {
+        self.show_drag_handle = Some(show);
+        self
+    }
+
+    /// Upstream `BottomSheetThemeData.lerp`.
+    pub fn lerp(
+        a: &BottomSheetThemeData,
+        b: &BottomSheetThemeData,
+        t: f32,
+    ) -> BottomSheetThemeData {
+        BottomSheetThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            modal_background_color: lerp_color(
+                a.modal_background_color,
+                b.modal_background_color,
+                t,
+            ),
+            modal_barrier_color: lerp_color(a.modal_barrier_color, b.modal_barrier_color, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            modal_elevation: lerp_f32(a.modal_elevation, b.modal_elevation, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            show_drag_handle: lerp_nearer(&a.show_drag_handle, &b.show_drag_handle, t),
+            drag_handle_color: lerp_color(a.drag_handle_color, b.drag_handle_color, t),
+            drag_handle_size: match (a.drag_handle_size, b.drag_handle_size) {
+                (Some(first), Some(second)) => Some(Size::new(
+                    first.width + (second.width - first.width) * t,
+                    first.height + (second.height - first.height) * t,
+                )),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            constraints: lerp_nearer(&a.constraints, &b.constraints, t),
+        }
+    }
+}
+
+/// Upstream `BottomSheetTheme`.
+pub struct BottomSheetTheme;
+
+impl BottomSheetTheme {
+    pub fn new(data: BottomSheetThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> BottomSheetThemeData {
+        context
+            .inherited::<BottomSheetThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).bottom_sheet_theme)
+    }
+}
+
+// -- Snack bar (upstream `snack_bar_theme.dart`) ------------------------------
+
+/// Upstream `SnackBarBehavior`: whether the bar is part of the scaffold's
+/// layout or floats over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnackBarBehavior {
+    /// The scaffold makes room for it, and a floating action button moves up.
+    Fixed,
+    /// It floats above the content, inset from the edges.
+    Floating,
+}
+
+/// Upstream `SnackBarThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnackBarThemeData {
+    pub background_color: Option<Color>,
+    pub action_text_color: Option<Color>,
+    pub disabled_action_text_color: Option<Color>,
+    pub content_text_style: Option<TextStyle>,
+    pub elevation: Option<f32>,
+    pub shape: Option<ShapeBorder>,
+    pub behavior: Option<SnackBarBehavior>,
+    /// A floating bar's width, when it should not stretch.
+    pub width: Option<f32>,
+    pub inset_padding: Option<EdgeInsetsGeometry>,
+    pub show_close_icon: Option<bool>,
+    pub close_icon_color: Option<Color>,
+    /// How much of the bar's width the action may take before the two go on
+    /// separate lines.
+    pub action_overflow_threshold: Option<f32>,
+    pub action_background_color: Option<Color>,
+    pub disabled_action_background_color: Option<Color>,
+}
+
+impl SnackBarThemeData {
+    pub fn new() -> SnackBarThemeData {
+        SnackBarThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_behavior(mut self, behavior: SnackBarBehavior) -> Self {
+        self.behavior = Some(behavior);
+        self
+    }
+
+    /// Upstream `SnackBarThemeData.lerp`.
+    pub fn lerp(a: &SnackBarThemeData, b: &SnackBarThemeData, t: f32) -> SnackBarThemeData {
+        SnackBarThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            action_text_color: lerp_color(a.action_text_color, b.action_text_color, t),
+            disabled_action_text_color: lerp_color(
+                a.disabled_action_text_color,
+                b.disabled_action_text_color,
+                t,
+            ),
+            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            behavior: lerp_nearer(&a.behavior, &b.behavior, t),
+            width: lerp_f32(a.width, b.width, t),
+            inset_padding: lerp_nearer(&a.inset_padding, &b.inset_padding, t),
+            show_close_icon: lerp_nearer(&a.show_close_icon, &b.show_close_icon, t),
+            close_icon_color: lerp_color(a.close_icon_color, b.close_icon_color, t),
+            action_overflow_threshold: lerp_f32(
+                a.action_overflow_threshold,
+                b.action_overflow_threshold,
+                t,
+            ),
+            action_background_color: lerp_color(
+                a.action_background_color,
+                b.action_background_color,
+                t,
+            ),
+            disabled_action_background_color: lerp_color(
+                a.disabled_action_background_color,
+                b.disabled_action_background_color,
+                t,
+            ),
+        }
+    }
+}
+
+/// Upstream `SnackBarTheme`.
+pub struct SnackBarTheme;
+
+impl SnackBarTheme {
+    pub fn new(data: SnackBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> SnackBarThemeData {
+        context
+            .inherited::<SnackBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).snack_bar_theme)
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -1122,6 +1449,75 @@ mod tests {
             MaterialTapTargetSize::default(),
             MaterialTapTargetSize::Padded,
             "upstream's default is the accessible one"
+        );
+    }
+
+    #[test]
+    fn an_app_bar_resolves_its_surface_and_its_height() {
+        // Nothing said: the scheme's surface, `onSurface` on top of it, and
+        // upstream's `kToolbarHeight`.
+        let plain = read_in(|child| child, ResolvedAppBar::of);
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(plain.background, scheme.surface);
+        assert_eq!(plain.foreground, scheme.on_surface);
+        assert_eq!(plain.toolbar_height, 56.0);
+        assert_eq!(plain.title_spacing, 16.0);
+        assert!(!plain.center_title);
+
+        let themed = read_in(
+            |child| {
+                AppBarTheme::new(
+                    AppBarThemeData::new()
+                        .with_background_color(Color::argb(255, 4, 4, 4))
+                        .with_toolbar_height(72.0)
+                        .with_center_title(true),
+                    child,
+                )
+            },
+            ResolvedAppBar::of,
+        );
+        assert_eq!(themed.background, Color::argb(255, 4, 4, 4));
+        assert_eq!(themed.toolbar_height, 72.0);
+        assert!(themed.center_title);
+        assert_eq!(
+            themed.foreground, scheme.on_surface,
+            "a field the theme did not set still falls through to the scheme"
+        );
+    }
+
+    #[test]
+    fn an_app_bar_takes_a_themed_height_over_the_one_a_subtitle_would_ask_for() {
+        use crate::components::AppBar;
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderBox};
+
+        fn height_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 400.0)).height
+        }
+
+        // A bar with a subtitle is the taller of the crate's two heights...
+        let with_subtitle = height_of(component(AppBar::new("Title").with_subtitle("Subtitle")));
+        let plain = height_of(component(AppBar::new("Title")));
+        assert!(with_subtitle > plain);
+
+        // ...until a theme names one, which wins over both. The bar draws a
+        // rule under itself, so the measured height is the toolbar plus that
+        // -- the toolbar's own contribution is the difference between two
+        // themed heights.
+        let themed = |height: f32| {
+            height_of(AppBarTheme::new(
+                AppBarThemeData::new().with_toolbar_height(height),
+                component(AppBar::new("Title").with_subtitle("Subtitle")),
+            ))
+        };
+        assert_eq!(themed(90.0) - themed(60.0), 30.0);
+        assert_eq!(
+            themed(60.0) - plain,
+            60.0 - 56.0,
+            "and it replaces the height a subtitle would have asked for"
         );
     }
 }
