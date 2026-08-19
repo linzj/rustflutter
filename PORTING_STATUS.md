@@ -164,6 +164,50 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 三种墨迹共用的那个底座,挑墨迹的工厂,以及画进材料里的装饰(2026-08-19)
+
+接着上一轮:`InteractiveInkFeature`、`InteractiveInkFeatureFactory`
+(`ink_well.dart`)和 `InkDecoration`(`ink_decoration.dart`),都进 `ink.rs`。
+
+**底座按这个 crate 的老办法做:抽象基类 + 三个子类 → 一个结构体拿共有的东西,加一个
+`InkFeatureKind` 枚举包住各自的结构体**——和 `ShapeBorder` 同一个形状,理由也同一个:这
+个集合是封闭的,而一个必须交代每个变体的 `match`,正是防着第四个变体被加了一半。
+
+**阶段(phase)放在底座上而不是变体里**,因为 `confirm` 和 `cancel` 写的就是它,而它也
+是三者都读的那一份状态。上游把它放在每个 feature 各自的 `AnimationController` 里;分别
+还是那条——这里的动画是逐帧算术,所以一个 feature 是一个由持有者推进的值。
+
+**回归行盯的地方:**
+
+* **工厂就是那条半径规则的选择器**:同一个盒子、同一次触摸,两者答出 500 和 255。这正是
+  一个主题一次换掉全应用溅开的意义。
+* 默认工厂是**涟漪**(上游 M2 主题的默认)。
+* **已经落定的 feature 不会再落定一次。** 上游那时控制器已经在跑,再 `forward()` 一次什
+  么都不做;这里若不挡,就会把淡出的起点往后挪——溅开会活得比它那次点击还久。
+* **绘制颜色是按 feature 自己的 alpha 缩放的**,不是一个固定 alpha:本来就半透明的覆盖
+  色,在「全不透明」时仍是那么半透明,再从那里淡下去。
+* **停用的高亮从它当时走到的地方淡回去**——这正是底座要在落定那一刻先把 alpha 存下来的
+  原因:半途被打断的高亮不能先跳到满值再淡,而「从头读淡出」就会那样。
+* **矩形高亮没有圆可画。** 上游用的是 `drawRect`/`drawRRect`,和 `paintInkCircle` 不是同
+  一个调用,所以「没有」才是老实的答案,而不是给一个和盒子一样大的圆。
+* **看不见的 `InkDecoration` 留着它的装饰、什么都不画。** 上游的 `isVisible` 是一个单独
+  的开关而不是把装饰清掉:widget 还在、尺寸还是那个,回来时也不用重建 painter。
+
+**`InkDecoration` 为什么不是一个 `Container`。** 一个夹在材料和内容之间的盒子画出来的装
+饰,会被它自己的孩子盖住、却盖不住任何东西——而溅开是材料画在它所有内容**之上**的,于是
+装饰会被溅开盖掉。把它当作一个 ink feature 来画,就把它放进了材料自己那张表里:在溅开之
+下、在材料底色之上,这正是一张可点表面上的背景图该在的地方。
+
+`InkSparkle` 没有进工厂枚举,因为它没有进这个 crate——整个效果是一支片元着色器,渲染 ABI
+没有着色器通路(见 `coverage_ledger.json`)。
+
+`ink_well.dart` 还剩 `InkResponse` 和 `InkWell` 两个,下一轮单独做:它们是手势 + 高亮状
+态机,而不是几何。
+
+验证:`cargo test --lib` 1366 绿,GN `rustflutter_unittests` 1366 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1201 accounted / 672 MISSING。
+
 ### 三种墨迹,以及它们之间那点最容易搞错的分别(2026-08-19)
 
 `ink.rs` 里添上上游的三个 ink feature:`InkSplash`(`ink_splash.dart`)、

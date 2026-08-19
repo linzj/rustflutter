@@ -700,6 +700,267 @@ impl Default for InkHighlight {
     }
 }
 
+// -- The base an ink feature shares, and the factory that picks one ----------
+
+/// Which of the three an [`InteractiveInkFeature`] is.
+///
+/// Upstream these are three subclasses of one abstract base; here they are an
+/// enum wrapping the per-variant structs, the same shape
+/// [`crate::borders::ShapeBorder`] takes for the same reason -- the set is
+/// closed, and a `match` that has to answer for every variant is what keeps a
+/// fourth one from being half-added.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InkFeatureKind {
+    Splash(InkSplash),
+    Ripple(InkRipple),
+    Highlight(InkHighlight),
+}
+
+/// Upstream `InteractiveInkFeature` (`material/ink_well.dart`): what the three
+/// features have in common -- a colour, an optional border to clip against,
+/// and the `confirm`/`cancel` pair the gesture calls when it settles.
+///
+/// The phase lives here rather than in the variants because that is what
+/// `confirm` and `cancel` write, and because it is the one piece of state all
+/// three read. Upstream keeps it in per-feature `AnimationController`s; the
+/// difference is the same one the module docs give -- animation here is
+/// per-frame arithmetic, so a feature is a value the caller advances.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InteractiveInkFeature {
+    pub kind: InkFeatureKind,
+    /// Upstream's `color`. A Material overlay is the colour of the thing that
+    /// was pressed at a low alpha, not a grey.
+    pub color: Color,
+    /// Upstream's `customBorder`: the shape the ink is clipped to, for a
+    /// surface that is not a rectangle.
+    pub custom_border: Option<crate::borders::ShapeBorder>,
+    pub phase: InkPhase,
+    /// Where a highlight's alpha had got to when it was deactivated, so the
+    /// fade out runs backwards from there. Unused by the other two, which
+    /// always fade from full.
+    highlight_from: f32,
+}
+
+impl InteractiveInkFeature {
+    pub fn new(kind: InkFeatureKind, color: Color, started_micros: i64) -> InteractiveInkFeature {
+        InteractiveInkFeature {
+            kind,
+            color,
+            custom_border: None,
+            phase: InkPhase::new(started_micros, started_micros),
+            highlight_from: 0.0,
+        }
+    }
+
+    pub fn with_custom_border(mut self, border: crate::borders::ShapeBorder) -> Self {
+        self.custom_border = Some(border);
+        self
+    }
+
+    /// The frame clock. Upstream's controllers tick themselves; here the
+    /// owner hands the time down, as [`Ink`] does in its `advance`.
+    pub fn advance(&mut self, now_micros: i64) {
+        self.phase.now_micros = now_micros;
+    }
+
+    /// Upstream's `confirm()`: the gesture was a tap.
+    ///
+    /// Ignored if the feature has already settled -- upstream's controllers
+    /// are already running by then, and a second `forward()` on a finished
+    /// one does nothing.
+    pub fn confirm(&mut self, at_micros: i64) {
+        self.settle(at_micros, InkSettlement::Confirmed);
+    }
+
+    /// Upstream's `cancel()`: the gesture turned into something else, so
+    /// nothing should be left acknowledging it.
+    pub fn cancel(&mut self, at_micros: i64) {
+        self.settle(at_micros, InkSettlement::Cancelled);
+    }
+
+    fn settle(&mut self, at_micros: i64, how: InkSettlement) {
+        if self.phase.settled.is_some() {
+            return;
+        }
+        // Captured *before* the phase changes, because a highlight fades back
+        // from wherever it had got to and the answer is about to move.
+        self.highlight_from = self.opacity();
+        self.phase.settled = Some((at_micros, how));
+    }
+
+    /// The alpha to paint at, as a fraction of [`InteractiveInkFeature::color`]'s
+    /// own.
+    pub fn opacity(&self) -> f32 {
+        match self.kind {
+            InkFeatureKind::Splash(splash) => splash.opacity(self.phase),
+            InkFeatureKind::Ripple(ripple) => ripple.opacity(self.phase),
+            InkFeatureKind::Highlight(highlight) => match self.phase.settled {
+                // A highlight has no confirm and no cancel of its own --
+                // upstream gives it `activate`/`deactivate` instead, and a
+                // settled phase is the deactivated one.
+                None => highlight.opacity(
+                    (self.phase.now_micros - self.phase.started_micros).max(0),
+                    true,
+                    0.0,
+                ),
+                Some((at, _)) => highlight.opacity(
+                    (self.phase.now_micros - at).max(0),
+                    false,
+                    self.highlight_from,
+                ),
+            },
+        }
+    }
+
+    /// The colour to paint with, alpha already applied.
+    pub fn paint_color(&self) -> Color {
+        let alpha = (self.color.alpha() as f32 * self.opacity())
+            .round()
+            .clamp(0.0, 255.0);
+        self.color.with_alpha(alpha as u8)
+    }
+
+    /// Whether the feature still has anything to draw. Upstream disposes on
+    /// the alpha animation completing; the same moment, asked rather than
+    /// announced.
+    pub fn alive(&self) -> bool {
+        match self.kind {
+            InkFeatureKind::Splash(splash) => splash.alive(self.phase),
+            InkFeatureKind::Ripple(ripple) => ripple.alive(self.phase),
+            InkFeatureKind::Highlight(highlight) => {
+                highlight.alive(self.opacity(), self.phase.settled.is_none())
+            }
+        }
+    }
+
+    /// The circle to draw, for the two features that draw one.
+    ///
+    /// A rectangular highlight has none: it fills its box, which is why this
+    /// is an `Option` rather than a circle of the box's size. Upstream draws
+    /// it with `drawRect`/`drawRRect` in `_paintHighlight`, a different call
+    /// from `paintInkCircle`.
+    pub fn ink_circle(&self, size: Size) -> Option<(Offset, f32)> {
+        match self.kind {
+            InkFeatureKind::Splash(splash) => {
+                Some((splash.center(size, self.phase), splash.radius(self.phase)))
+            }
+            InkFeatureKind::Ripple(ripple) => {
+                Some((ripple.center(size, self.phase), ripple.radius(self.phase)))
+            }
+            InkFeatureKind::Highlight(highlight) => highlight
+                .circle_radius()
+                .map(|radius| (Offset::new(size.width / 2.0, size.height / 2.0), radius)),
+        }
+    }
+}
+
+/// Upstream `InteractiveInkFeatureFactory`: which splash a control makes.
+///
+/// It exists so that a theme can change every splash in an application at
+/// once -- upstream's `ThemeData.splashFactory` -- without every control
+/// naming a class. An open interface there; a closed enum here, for the same
+/// reason [`InkFeatureKind`] is one.
+///
+/// [`InkSparkle`] is absent because it is absent from this crate: the whole
+/// effect is a fragment shader, and the render ABI has no shader path. See
+/// `coverage_ledger.json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InteractiveInkFeatureFactory {
+    /// Upstream `InkSplash.splashFactory`.
+    Splash,
+    /// Upstream `InkRipple.splashFactory`, and upstream's own default for a
+    /// Material 2 theme.
+    #[default]
+    Ripple,
+}
+
+impl InteractiveInkFeatureFactory {
+    /// Upstream's `create`, reduced to the arguments that decide the
+    /// geometry. The controller, the reference box and the removal callback
+    /// are upstream's plumbing for a feature that lives in the `Material`;
+    /// here the feature is a value its owner keeps, so the size is passed in
+    /// and there is nothing to unregister from.
+    pub fn create(
+        &self,
+        size: Size,
+        position: Offset,
+        color: Color,
+        contained: bool,
+        started_micros: i64,
+    ) -> InteractiveInkFeature {
+        let kind = match self {
+            InteractiveInkFeatureFactory::Splash => {
+                InkFeatureKind::Splash(InkSplash::new(size, position, contained))
+            }
+            // A ripple has no `contained`: its radius is half the box's
+            // diagonal either way. Upstream's `InkRipple` takes the argument
+            // and uses it only to decide the clip.
+            InteractiveInkFeatureFactory::Ripple => {
+                InkFeatureKind::Ripple(InkRipple::new(size, position))
+            }
+        };
+        InteractiveInkFeature::new(kind, color, started_micros)
+    }
+}
+
+/// Upstream `InkDecoration` (`material/ink_decoration.dart`): a decoration
+/// painted *into the material*, under whatever ink lands on it.
+///
+/// The point of it, and the reason it is not just a `Container`: a decoration
+/// drawn by a box between the material and the content would be painted over
+/// by that box's own child but *under* nothing, so a splash -- which the
+/// material paints on top of everything it holds -- would cover it. Painting
+/// it as an ink feature puts it in the material's own list, below the
+/// splashes and above the material's colour, which is where a background
+/// image on a tappable surface belongs.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct InkDecoration {
+    pub decoration: Option<crate::decoration::Decoration>,
+    /// Upstream's `isVisible`, which comes from `Visibility.of(context)`.
+    ///
+    /// A separate flag rather than clearing the decoration, because an
+    /// invisible `Ink` keeps its decoration: the widget is still there and
+    /// still the right size, and it comes back without rebuilding the
+    /// painter.
+    pub is_visible: bool,
+}
+
+impl InkDecoration {
+    pub fn new(decoration: crate::decoration::Decoration) -> InkDecoration {
+        InkDecoration {
+            decoration: Some(decoration),
+            is_visible: true,
+        }
+    }
+
+    pub fn with_visible(mut self, is_visible: bool) -> Self {
+        self.is_visible = is_visible;
+        self
+    }
+
+    /// Upstream's `paintFeature`, whose first line is the guard: no painter
+    /// or not visible, and nothing is drawn at all.
+    pub fn paint(
+        &self,
+        canvas: &mut crate::engine::Canvas,
+        rect: crate::engine::Rect,
+        direction: crate::direction::TextDirection,
+    ) {
+        if !self.is_visible {
+            return;
+        }
+        if let Some(decoration) = &self.decoration {
+            decoration.paint(canvas, rect, direction);
+        }
+    }
+
+    /// Whether a paint would draw anything, which is the guard above asked
+    /// rather than obeyed.
+    pub fn paints(&self) -> bool {
+        self.is_visible && self.decoration.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1304,151 @@ mod tests {
         assert!(highlight.alive(0.0, true), "still wanted");
         assert!(!highlight.alive(0.0, false), "gone and not wanted");
         assert!(highlight.alive(0.1, false), "still fading out");
+    }
+
+    const INK: Color = Color::argb(0x40, 0x33, 0x66, 0x99);
+
+    #[test]
+    fn the_factory_is_what_decides_which_radius_rule_applies() {
+        // The point of the factory: a theme swaps every splash in an
+        // application at once, and the two answer differently about the same
+        // box and the same touch.
+        let size = Size::new(300.0, 400.0);
+        let corner = Offset::ZERO;
+        let splash = InteractiveInkFeatureFactory::Splash.create(size, corner, INK, true, 0);
+        let ripple = InteractiveInkFeatureFactory::Ripple.create(size, corner, INK, true, 0);
+        assert!(matches!(splash.kind, InkFeatureKind::Splash(_)));
+        assert!(matches!(ripple.kind, InkFeatureKind::Ripple(_)));
+
+        let late = InkRipple::UNCONFIRMED_MICROS;
+        let mut splash = splash;
+        let mut ripple = ripple;
+        splash.advance(late);
+        ripple.advance(late);
+        let (_, splash_radius) = splash.ink_circle(size).expect("a circle");
+        let (_, ripple_radius) = ripple.ink_circle(size).expect("a circle");
+        assert!((splash_radius - 500.0).abs() < 0.01, "the furthest corner");
+        assert!(
+            (ripple_radius - 255.0).abs() < 0.01,
+            "half the diagonal, plus 5"
+        );
+    }
+
+    #[test]
+    fn the_default_factory_is_the_ripple() {
+        // Upstream's default for a Material 2 theme, and the one the module
+        // docs above say this crate's `Ink` region follows.
+        assert_eq!(
+            InteractiveInkFeatureFactory::default(),
+            InteractiveInkFeatureFactory::Ripple
+        );
+    }
+
+    #[test]
+    fn a_settled_feature_does_not_settle_again() {
+        // Upstream's controllers are already running by then, and a second
+        // `forward()` on a finished one does nothing. Here it would move the
+        // start of the fade, which would make a splash outlive its own tap.
+        let mut feature = InteractiveInkFeatureFactory::Ripple.create(
+            Size::new(100.0, 100.0),
+            Offset::ZERO,
+            INK,
+            true,
+            0,
+        );
+        feature.confirm(10 * 1_000);
+        feature.cancel(90 * 1_000);
+        assert_eq!(
+            feature.phase.settled,
+            Some((10 * 1_000, InkSettlement::Confirmed))
+        );
+    }
+
+    #[test]
+    fn the_paint_colour_scales_the_features_own_alpha() {
+        // Not a fixed alpha: an overlay colour that was already translucent
+        // stays that translucent at full opacity, and fades from there.
+        let mut feature = InteractiveInkFeatureFactory::Splash.create(
+            Size::new(100.0, 100.0),
+            Offset::ZERO,
+            INK,
+            true,
+            0,
+        );
+        assert_eq!(feature.paint_color().alpha(), 0x40, "held down, full");
+        feature.confirm(0);
+        feature.advance(InkSplash::FADE_MICROS / 2);
+        let half = feature.paint_color().alpha();
+        assert!(
+            (half as i32 - 0x20).abs() <= 1,
+            "half way out is half the alpha: {half:#x}"
+        );
+        feature.advance(InkSplash::FADE_MICROS);
+        assert_eq!(feature.paint_color().alpha(), 0);
+        assert!(!feature.alive());
+    }
+
+    #[test]
+    fn a_deactivated_highlight_fades_from_where_it_had_got_to() {
+        // The reason the base captures the alpha at the moment it settles: a
+        // highlight interrupted half way in must not jump to full before
+        // fading, which is what reading the fade-out from the start would do.
+        let mut highlight =
+            InteractiveInkFeature::new(InkFeatureKind::Highlight(InkHighlight::new()), INK, 0);
+        highlight.advance(InkHighlight::FADE_MICROS / 2);
+        let reached = highlight.opacity();
+        assert!((reached - 0.5).abs() < 0.01);
+
+        highlight.cancel(InkHighlight::FADE_MICROS / 2);
+        assert!(
+            (highlight.opacity() - reached).abs() < 0.01,
+            "the moment of deactivation does not change what is drawn"
+        );
+        highlight.advance(InkHighlight::FADE_MICROS);
+        assert!((highlight.opacity() - 0.25).abs() < 0.01, "half of a half");
+    }
+
+    #[test]
+    fn a_rectangular_highlight_has_no_circle_to_draw() {
+        // Upstream paints it with `drawRect`/`drawRRect`, a different call
+        // from `paintInkCircle` -- so "no circle" is the honest answer rather
+        // than a circle the size of the box.
+        let size = Size::new(200.0, 100.0);
+        let rect =
+            InteractiveInkFeature::new(InkFeatureKind::Highlight(InkHighlight::new()), INK, 0);
+        assert_eq!(rect.ink_circle(size), None);
+
+        let round = InteractiveInkFeature::new(
+            InkFeatureKind::Highlight(InkHighlight::circular(Some(12.0))),
+            INK,
+            0,
+        );
+        assert_eq!(
+            round.ink_circle(size),
+            Some((Offset::new(100.0, 50.0), 12.0)),
+            "centred in its box"
+        );
+    }
+
+    #[test]
+    fn an_invisible_ink_decoration_keeps_its_decoration_and_draws_nothing() {
+        // Upstream's `isVisible` is a separate flag rather than a cleared
+        // decoration: the widget is still there and still the right size, and
+        // it comes back without rebuilding the painter.
+        let decoration = crate::decoration::Decoration::Box(
+            crate::decoration::BoxDecoration::new()
+                .with_fill(crate::render::Fill::Solid(Color::WHITE)),
+        );
+        let ink = InkDecoration::new(decoration.clone());
+        assert!(ink.paints());
+
+        let hidden = ink.clone().with_visible(false);
+        assert!(!hidden.paints());
+        assert_eq!(hidden.decoration, Some(decoration), "kept, not cleared");
+    }
+
+    #[test]
+    fn an_ink_decoration_with_nothing_to_draw_draws_nothing() {
+        assert!(!InkDecoration::default().paints());
     }
 }
