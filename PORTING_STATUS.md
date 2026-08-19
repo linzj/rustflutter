@@ -164,6 +164,19 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:导航三对(2026-08-19)。**
+`NavigationRailTheme(Data)`(11/13,缺两个 `IconThemeData`——E5,连带补
+`NavigationRailLabelType`)、`BottomNavigationBarTheme(Data)`(12/14,同缺两个
+图标主题,连带补 `BottomNavigationBarType`/`BottomNavigationBarLandscapeLayout`)、
+`DrawerTheme(Data)`(8/9,缺 `clipBehavior`)。
+
+**`Drawer` 接上了,并且顺手修了一处语义**:`Drawer.width` 此前在构造器里就写
+死成 `DRAWER_WIDTH`,于是"没人指定"和"指定成 304"没法区分——主题永远插不进
+来。改成 `Option<f32>`(上游的 null),取值顺序回到上游的
+**widget 自己的字段 → `DrawerTheme.of` → `_kWidth`**,三档各一条回归线。
+背景色也从 `theme.surface` 改为 `_DrawerDefaultsM3.backgroundColor`
+(`colorScheme.surfaceContainerLow`),这是 `ColorScheme` 落地后才拿得到的角色。
+
 **P8-M1:chip / tab bar / data table 三对(2026-08-19)。**
 `ChipTheme(Data)`(22/23,缺 `iconTheme`——E5)、`TabBarTheme(Data)`(15/16,
 缺 `splashFactory`,连带补 `TabBarIndicatorSize`/`TabAlignment`/

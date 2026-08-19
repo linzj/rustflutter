@@ -45,8 +45,9 @@ use crate::animation::{Animatable, ColorTween, Tween};
 use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
-    AppBarThemeData, BadgeThemeData, BottomSheetThemeData, CardThemeData, CheckboxThemeData,
-    ChipThemeData, DataTableThemeData, DialogThemeData, DividerThemeData, ListTileThemeData,
+    AppBarThemeData, BadgeThemeData, BottomNavigationBarThemeData, BottomSheetThemeData,
+    CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData, DialogThemeData,
+    DividerThemeData, DrawerThemeData, ListTileThemeData, NavigationRailThemeData,
     ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData, SwitchThemeData,
     TabBarThemeData, TooltipThemeData,
 };
@@ -211,6 +212,9 @@ pub struct ThemeData {
     pub chip_theme: ChipThemeData,
     pub tab_bar_theme: TabBarThemeData,
     pub data_table_theme: DataTableThemeData,
+    pub navigation_rail_theme: NavigationRailThemeData,
+    pub bottom_navigation_bar_theme: BottomNavigationBarThemeData,
+    pub drawer_theme: DrawerThemeData,
 }
 
 impl ThemeData {
@@ -309,6 +313,9 @@ impl ThemeData {
             chip_theme: ChipThemeData::new(),
             tab_bar_theme: TabBarThemeData::new(),
             data_table_theme: DataTableThemeData::new(),
+            navigation_rail_theme: NavigationRailThemeData::new(),
+            bottom_navigation_bar_theme: BottomNavigationBarThemeData::new(),
+            drawer_theme: DrawerThemeData::new(),
         }
     }
 
@@ -375,6 +382,27 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_navigation_rail_theme(
+        mut self,
+        navigation_rail_theme: NavigationRailThemeData,
+    ) -> ThemeData {
+        self.navigation_rail_theme = navigation_rail_theme;
+        self
+    }
+
+    pub fn with_bottom_navigation_bar_theme(
+        mut self,
+        bottom_navigation_bar_theme: BottomNavigationBarThemeData,
+    ) -> ThemeData {
+        self.bottom_navigation_bar_theme = bottom_navigation_bar_theme;
+        self
+    }
+
+    pub fn with_drawer_theme(mut self, drawer_theme: DrawerThemeData) -> ThemeData {
+        self.drawer_theme = drawer_theme;
         self
     }
 
@@ -503,6 +531,17 @@ impl ThemeData {
             chip_theme: ChipThemeData::lerp(&a.chip_theme, &b.chip_theme, t),
             tab_bar_theme: TabBarThemeData::lerp(&a.tab_bar_theme, &b.tab_bar_theme, t),
             data_table_theme: DataTableThemeData::lerp(&a.data_table_theme, &b.data_table_theme, t),
+            navigation_rail_theme: NavigationRailThemeData::lerp(
+                &a.navigation_rail_theme,
+                &b.navigation_rail_theme,
+                t,
+            ),
+            bottom_navigation_bar_theme: BottomNavigationBarThemeData::lerp(
+                &a.bottom_navigation_bar_theme,
+                &b.bottom_navigation_bar_theme,
+                t,
+            ),
+            drawer_theme: DrawerThemeData::lerp(&a.drawer_theme, &b.drawer_theme, t),
         }
     }
 

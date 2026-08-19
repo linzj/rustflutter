@@ -1969,6 +1969,321 @@ impl DataTableTheme {
     }
 }
 
+// -- Navigation rail (upstream `navigation_rail_theme.dart`) ------------------
+
+/// Upstream `NavigationRailLabelType`: which of a rail's labels are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationRailLabelType {
+    /// Icons only.
+    None,
+    /// The selected destination's label, and no others.
+    Selected,
+    /// Every label.
+    All,
+}
+
+/// Upstream `NavigationRailThemeData`.
+///
+/// The two `IconThemeData` fields are not here: the framework has no icon
+/// system yet (`E5`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavigationRailThemeData {
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub unselected_label_text_style: Option<TextStyle>,
+    pub selected_label_text_style: Option<TextStyle>,
+    /// Where the destinations sit along the rail: -1 top, 0 centre, 1 bottom.
+    pub group_alignment: Option<f32>,
+    pub label_type: Option<NavigationRailLabelType>,
+    /// Whether the selected destination gets Material 3's pill behind it.
+    pub use_indicator: Option<bool>,
+    pub indicator_color: Option<Color>,
+    pub indicator_shape: Option<ShapeBorder>,
+    pub min_width: Option<f32>,
+    /// The width once the rail is extended to show its labels beside the
+    /// icons.
+    pub min_extended_width: Option<f32>,
+}
+
+impl NavigationRailThemeData {
+    pub fn new() -> NavigationRailThemeData {
+        NavigationRailThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_label_type(mut self, label_type: NavigationRailLabelType) -> Self {
+        self.label_type = Some(label_type);
+        self
+    }
+
+    pub fn with_indicator_color(mut self, color: Color) -> Self {
+        self.indicator_color = Some(color);
+        self
+    }
+
+    pub fn with_min_width(mut self, width: f32) -> Self {
+        self.min_width = Some(width);
+        self
+    }
+
+    /// Upstream `NavigationRailThemeData.lerp`.
+    pub fn lerp(
+        a: &NavigationRailThemeData,
+        b: &NavigationRailThemeData,
+        t: f32,
+    ) -> NavigationRailThemeData {
+        NavigationRailThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            unselected_label_text_style: lerp_nearer(
+                &a.unselected_label_text_style,
+                &b.unselected_label_text_style,
+                t,
+            ),
+            selected_label_text_style: lerp_nearer(
+                &a.selected_label_text_style,
+                &b.selected_label_text_style,
+                t,
+            ),
+            group_alignment: lerp_f32(a.group_alignment, b.group_alignment, t),
+            label_type: lerp_nearer(&a.label_type, &b.label_type, t),
+            use_indicator: lerp_nearer(&a.use_indicator, &b.use_indicator, t),
+            indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
+            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            min_width: lerp_f32(a.min_width, b.min_width, t),
+            min_extended_width: lerp_f32(a.min_extended_width, b.min_extended_width, t),
+        }
+    }
+}
+
+/// Upstream `NavigationRailTheme`.
+pub struct NavigationRailTheme;
+
+impl NavigationRailTheme {
+    pub fn new(data: NavigationRailThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> NavigationRailThemeData {
+        context
+            .inherited::<NavigationRailThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).navigation_rail_theme)
+    }
+}
+
+// -- Bottom navigation bar (upstream `bottom_navigation_bar_theme.dart`) ------
+
+/// Upstream `BottomNavigationBarType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BottomNavigationBarType {
+    /// Every destination the same width, all labels shown.
+    Fixed,
+    /// The selected destination grows and the others shrink.
+    Shifting,
+}
+
+/// Upstream `BottomNavigationBarLandscapeLayout`: how the destinations are
+/// arranged when the bar is wider than it is tall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BottomNavigationBarLandscapeLayout {
+    /// Spread across the whole bar.
+    Spread,
+    /// Grouped in the middle.
+    Centered,
+    /// Icon and label side by side rather than stacked.
+    Linear,
+}
+
+/// Upstream `BottomNavigationBarThemeData`.
+///
+/// The two `IconThemeData` fields are not here (`E5`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BottomNavigationBarThemeData {
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub selected_item_color: Option<Color>,
+    pub unselected_item_color: Option<Color>,
+    pub selected_label_style: Option<TextStyle>,
+    pub unselected_label_style: Option<TextStyle>,
+    pub show_selected_labels: Option<bool>,
+    pub show_unselected_labels: Option<bool>,
+    pub bar_type: Option<BottomNavigationBarType>,
+    pub enable_feedback: Option<bool>,
+    pub landscape_layout: Option<BottomNavigationBarLandscapeLayout>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+}
+
+impl BottomNavigationBarThemeData {
+    pub fn new() -> BottomNavigationBarThemeData {
+        BottomNavigationBarThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_item_colors(mut self, selected: Color, unselected: Color) -> Self {
+        self.selected_item_color = Some(selected);
+        self.unselected_item_color = Some(unselected);
+        self
+    }
+
+    pub fn with_show_labels(mut self, selected: bool, unselected: bool) -> Self {
+        self.show_selected_labels = Some(selected);
+        self.show_unselected_labels = Some(unselected);
+        self
+    }
+
+    /// Upstream `BottomNavigationBarThemeData.lerp`.
+    pub fn lerp(
+        a: &BottomNavigationBarThemeData,
+        b: &BottomNavigationBarThemeData,
+        t: f32,
+    ) -> BottomNavigationBarThemeData {
+        BottomNavigationBarThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            selected_item_color: lerp_color(a.selected_item_color, b.selected_item_color, t),
+            unselected_item_color: lerp_color(a.unselected_item_color, b.unselected_item_color, t),
+            selected_label_style: lerp_nearer(&a.selected_label_style, &b.selected_label_style, t),
+            unselected_label_style: lerp_nearer(
+                &a.unselected_label_style,
+                &b.unselected_label_style,
+                t,
+            ),
+            show_selected_labels: lerp_nearer(&a.show_selected_labels, &b.show_selected_labels, t),
+            show_unselected_labels: lerp_nearer(
+                &a.show_unselected_labels,
+                &b.show_unselected_labels,
+                t,
+            ),
+            bar_type: lerp_nearer(&a.bar_type, &b.bar_type, t),
+            enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
+            landscape_layout: lerp_nearer(&a.landscape_layout, &b.landscape_layout, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+        }
+    }
+}
+
+/// Upstream `BottomNavigationBarTheme`.
+pub struct BottomNavigationBarTheme;
+
+impl BottomNavigationBarTheme {
+    pub fn new(data: BottomNavigationBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> BottomNavigationBarThemeData {
+        context
+            .inherited::<BottomNavigationBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).bottom_navigation_bar_theme)
+    }
+}
+
+// -- Drawer (upstream `drawer_theme.dart`) ------------------------------------
+
+/// Upstream `DrawerThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DrawerThemeData {
+    pub background_color: Option<Color>,
+    /// What the rest of the screen is dimmed with while the drawer is open.
+    pub scrim_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    /// The shape of a drawer that opens from the reading edge.
+    pub shape: Option<ShapeBorder>,
+    /// The shape of one that opens from the other edge -- upstream's
+    /// `endShape`, which is a separate field because a drawer's rounded
+    /// corners are on the inner side and that side swaps.
+    pub end_shape: Option<ShapeBorder>,
+    pub width: Option<f32>,
+}
+
+impl DrawerThemeData {
+    pub fn new() -> DrawerThemeData {
+        DrawerThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_scrim_color(mut self, color: Color) -> Self {
+        self.scrim_color = Some(color);
+        self
+    }
+
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Upstream `DrawerThemeData.lerp`.
+    pub fn lerp(a: &DrawerThemeData, b: &DrawerThemeData, t: f32) -> DrawerThemeData {
+        DrawerThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            scrim_color: lerp_color(a.scrim_color, b.scrim_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            end_shape: lerp_nearer(&a.end_shape, &b.end_shape, t),
+            width: lerp_f32(a.width, b.width, t),
+        }
+    }
+}
+
+/// Upstream `DrawerTheme`.
+pub struct DrawerTheme;
+
+impl DrawerTheme {
+    pub fn new(data: DrawerThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> DrawerThemeData {
+        context
+            .inherited::<DrawerThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).drawer_theme)
+    }
+}
+
+/// What a drawer draws with, once the three steps have run.
+pub struct ResolvedDrawer {
+    pub background: Color,
+    pub scrim: Color,
+    pub width: f32,
+}
+
+impl ResolvedDrawer {
+    /// Upstream's `_kWidth`.
+    pub const WIDTH: f32 = 304.0;
+    /// Upstream's `_kScrimColor` -- black at 54 per cent.
+    pub const SCRIM: Color = Color(0x8a000000);
+
+    pub fn of(context: &mut BuildContext) -> ResolvedDrawer {
+        let data = DrawerTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedDrawer {
+            background: data
+                .background_color
+                .unwrap_or(scheme.surface_container_low()),
+            scrim: data.scrim_color.unwrap_or(ResolvedDrawer::SCRIM),
+            width: data.width.unwrap_or(ResolvedDrawer::WIDTH),
+        }
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -2497,5 +2812,100 @@ mod tests {
         assert_eq!(themed.data_row_min_height, Some(40.0));
         assert_eq!(themed.data_row_max_height, Some(60.0));
         assert_eq!(themed.heading_row_height, None);
+    }
+
+    #[test]
+    fn a_drawer_takes_its_width_and_its_surface_from_its_theme() {
+        let plain = read_in(|child| child, ResolvedDrawer::of);
+        assert_eq!(plain.width, 304.0, "upstream's `_kWidth`");
+        assert_eq!(plain.scrim, Color(0x8a000000), "black at 54 per cent");
+        assert_eq!(
+            plain.background,
+            ThemeData::fallback().color_scheme.surface_container_low(),
+            "`_DrawerDefaultsM3.backgroundColor`"
+        );
+
+        let themed = read_in(
+            |child| {
+                DrawerTheme::new(
+                    DrawerThemeData::new()
+                        .with_width(360.0)
+                        .with_background_color(Color::argb(255, 3, 3, 3)),
+                    child,
+                )
+            },
+            ResolvedDrawer::of,
+        );
+        assert_eq!(themed.width, 360.0);
+        assert_eq!(themed.background, Color::argb(255, 3, 3, 3));
+    }
+
+    #[test]
+    fn a_drawer_widget_is_as_wide_as_its_theme_says() {
+        use crate::drawer::Drawer;
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderBox};
+
+        fn width_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(1000.0, 600.0)).width
+        }
+
+        assert_eq!(
+            width_of(component(Drawer::new(leaf(|| SizedBox::new(1.0, 1.0))))),
+            304.0
+        );
+
+        assert_eq!(
+            width_of(DrawerTheme::new(
+                DrawerThemeData::new().with_width(360.0),
+                component(Drawer::new(leaf(|| SizedBox::new(1.0, 1.0)))),
+            )),
+            360.0
+        );
+
+        // A width given to the widget outright still beats the theme, which
+        // is upstream's order: the widget's own field is checked first.
+        assert_eq!(
+            width_of(DrawerTheme::new(
+                DrawerThemeData::new().with_width(360.0),
+                component(Drawer::new(leaf(|| SizedBox::new(1.0, 1.0))).with_width(200.0)),
+            )),
+            200.0
+        );
+    }
+
+    #[test]
+    fn the_navigation_themes_start_empty_and_carry_what_they_are_given() {
+        let rail = read_in(
+            |child| {
+                NavigationRailTheme::new(
+                    NavigationRailThemeData::new()
+                        .with_label_type(NavigationRailLabelType::All)
+                        .with_min_width(96.0),
+                    child,
+                )
+            },
+            NavigationRailTheme::of,
+        );
+        assert_eq!(rail.label_type, Some(NavigationRailLabelType::All));
+        assert_eq!(rail.min_width, Some(96.0));
+        assert_eq!(rail.elevation, None);
+
+        let bar = read_in(
+            |child| {
+                BottomNavigationBarTheme::new(
+                    BottomNavigationBarThemeData::new()
+                        .with_item_colors(Color::argb(255, 1, 1, 1), Color::argb(255, 2, 2, 2))
+                        .with_show_labels(true, false),
+                    child,
+                )
+            },
+            BottomNavigationBarTheme::of,
+        );
+        assert_eq!(bar.selected_item_color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(bar.show_unselected_labels, Some(false));
     }
 }

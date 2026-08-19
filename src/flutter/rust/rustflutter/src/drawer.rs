@@ -28,10 +28,9 @@
 
 use std::cell::RefCell;
 
-use crate::components::theme_of;
 use crate::direction::TextDirection;
 use crate::framework::{AnyWidget, BuildContext, Component, leaf, single};
-use crate::render::{BoxConstraints, RenderConstrainedBox, Size};
+use crate::render::{BoxConstraints, RenderConstrainedBox};
 use crate::widgets::Container;
 
 /// The possible alignments of a [`Drawer`]. Upstream's `DrawerAlignment`.
@@ -68,7 +67,9 @@ pub const DRAWER_WIDTH: f32 = 304.0;
 /// be and `width` across.
 pub struct Drawer {
     child: RefCell<Option<AnyWidget>>,
-    width: f32,
+    /// The width this drawer was given outright. `None` means "ask the
+    /// theme", which is upstream's null.
+    width: Option<f32>,
     elevation: u32,
 }
 
@@ -76,16 +77,16 @@ impl Drawer {
     pub fn new(child: AnyWidget) -> Drawer {
         Drawer {
             child: RefCell::new(Some(child)),
-            width: DRAWER_WIDTH,
+            width: None,
             // `_DrawerDefaultsM3.elevation`.
             elevation: 1,
         }
     }
 
-    /// Upstream's `Drawer.width`, falling back to `_kWidth` when null -- which
-    /// here is what the constructor already set.
+    /// Upstream's `Drawer.width`. Left unset, the width comes from
+    /// `DrawerTheme.of(context)` and then from `_kWidth`.
     pub fn with_width(mut self, width: f32) -> Self {
-        self.width = width;
+        self.width = Some(width);
         self
     }
 
@@ -98,18 +99,18 @@ impl Drawer {
 
 impl Component for Drawer {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
         let child = self
             .child
             .borrow_mut()
             .take()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
-        let width = self.width;
+        // Upstream's `Drawer.build`: the width and the background come off
+        // `DrawerTheme.of(context)` and then off `_DrawerDefaultsM3`, whose
+        // background is `colorScheme.surfaceContainerLow`.
+        let drawer = crate::component_themes::ResolvedDrawer::of(context);
+        let width = self.width.unwrap_or(drawer.width);
         let elevation = self.elevation;
-        // `_DrawerDefaultsM3.backgroundColor` is
-        // `colorScheme.surfaceContainerLow`; the crate's Theme has no
-        // container ramp, and `surface` is its lowest elevated surface.
-        let surface = theme.surface;
+        let surface = drawer.background;
 
         single(child, move |inner| {
             // `Drawer.build`: ConstrainedBox(BoxConstraints.expand(width: w))
@@ -152,6 +153,7 @@ mod tests {
     use crate::components::Theme;
     use crate::framework::{ElementTree, component, provide};
     use crate::render::RenderBox;
+    use crate::render::Size;
     use crate::widgets::Empty;
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
