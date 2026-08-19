@@ -41,6 +41,7 @@ use crate::render::{
     RenderClipRect, RenderConstrainedBox, RenderFlex, RenderPadding, RenderRef, RenderStack, Size,
     StackFit, StackPosition, TextOverflow, UpdateEffect,
 };
+use crate::slider_theme::ResolvedSlider;
 use crate::widgets::{
     Align, Center, Column, Container, Empty, K_MIDDLE_SPACING, Pointer, RenderNavigationToolbar,
     Row, SizedBox, Text,
@@ -1004,17 +1005,23 @@ impl Slider {
 
 impl Component for Slider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
+        let slider = ResolvedSlider::of(context);
         let value = self.value;
         let width = self.width;
         let id = self.id;
         let handlers = self.handlers.clone();
-        let track = theme.surface_variant;
-        let fill = theme.primary;
-        let knob = theme.text;
+        let track = slider.inactive_track_color;
+        let fill = slider.active_track_color;
+        let knob = slider.thumb_color;
+        let track_height = slider.track_height;
+        let thumb = slider.thumb_size;
 
         leaf(move || {
             let filled = (width * value).clamp(0.0, width);
+            // The hit area is the taller of the thumb and a finger's worth of
+            // slack over the track, so that a Material 3 bar thumb -- which
+            // is taller than the track -- is not clipped by it.
+            let hit_height = thumb.height.max(track_height + 16.0);
             // The hit region has to be exactly `width` wide: the value comes
             // from local_position.dx / width, so a region that a stretching
             // parent widened would reach 100% before the thumb did. Align
@@ -1024,29 +1031,29 @@ impl Component for Slider {
                 Pointer::new(
                     id,
                     Container::new()
-                        // A 32px tall hit area over an 8px track: the thing you can
-                        // hit should be bigger than the thing you can see.
-                        .with_size(width, 32.0)
+                        // The thing you can hit should be bigger than the
+                        // thing you can see.
+                        .with_size(width, hit_height)
                         .with_child(Center::new(
                             Container::new()
-                                .with_size(width, 8.0)
+                                .with_size(width, track_height)
                                 .with_color(track)
-                                .with_corner_radius(4.0)
+                                .with_corner_radius(track_height / 2.0)
                                 .with_child(
                                     RenderFlex::row()
                                         .with_main_axis_size(MainAxisSize::Max)
                                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                                         .push(
                                             Container::new()
-                                                .with_size(filled, 8.0)
+                                                .with_size(filled, track_height)
                                                 .with_color(fill)
-                                                .with_corner_radius(4.0),
+                                                .with_corner_radius(track_height / 2.0),
                                         )
                                         .push(
                                             Container::new()
-                                                .with_size(18.0, 18.0)
+                                                .with_size(thumb.width, thumb.height)
                                                 .with_color(knob)
-                                                .with_corner_radius(9.0),
+                                                .with_corner_radius(thumb.shortest_side() / 2.0),
                                         ),
                                 ),
                         )),

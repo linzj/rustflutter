@@ -63,6 +63,7 @@ use crate::components::Theme;
 use crate::engine::Color;
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::platform::Brightness;
+use crate::slider_theme::SliderThemeData;
 
 /// Upstream `VisualDensity`: how tightly a control packs itself.
 ///
@@ -205,6 +206,7 @@ pub struct ThemeData {
     // when nobody installed a nearer one. They start empty: an unset field
     // means "whatever the control's own default is".
     pub divider_theme: DividerThemeData,
+    pub slider_theme: SliderThemeData,
     pub card_theme: CardThemeData,
     pub badge_theme: BadgeThemeData,
     pub tooltip_theme: TooltipThemeData,
@@ -349,6 +351,7 @@ impl ThemeData {
             // Upstream: `applyElevationOverlayColor ??= brightness == dark`.
             apply_elevation_overlay_color: is_dark,
             divider_theme: DividerThemeData::new(),
+            slider_theme: SliderThemeData::new(),
             card_theme: CardThemeData::new(),
             badge_theme: BadgeThemeData::new(),
             tooltip_theme: TooltipThemeData::new(),
@@ -643,6 +646,7 @@ impl ThemeData {
             unselected_widget_color: mix(a.unselected_widget_color, b.unselected_widget_color),
             apply_elevation_overlay_color: nearer.apply_elevation_overlay_color,
             divider_theme: DividerThemeData::lerp(&a.divider_theme, &b.divider_theme, t),
+            slider_theme: SliderThemeData::lerp(&a.slider_theme, &b.slider_theme, t),
             card_theme: CardThemeData::lerp(&a.card_theme, &b.card_theme, t),
             badge_theme: BadgeThemeData::lerp(&a.badge_theme, &b.badge_theme, t),
             tooltip_theme: TooltipThemeData::lerp(&a.tooltip_theme, &b.tooltip_theme, t),

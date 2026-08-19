@@ -527,6 +527,35 @@ impl Rect {
     pub fn height(&self) -> f32 {
         self.bottom - self.top
     }
+
+    /// Upstream `Rect.fromCenter`.
+    pub fn from_center(center_x: f32, center_y: f32, width: f32, height: f32) -> Rect {
+        Rect {
+            left: center_x - width / 2.0,
+            top: center_y - height / 2.0,
+            right: center_x + width / 2.0,
+            bottom: center_y + height / 2.0,
+        }
+    }
+
+    /// Upstream `Rect.fromCircle`.
+    pub fn from_circle(center_x: f32, center_y: f32, radius: f32) -> Rect {
+        Rect::from_center(center_x, center_y, radius * 2.0, radius * 2.0)
+    }
+
+    /// Upstream `Rect.center`, as the pair rather than an `Offset` -- `Offset`
+    /// lives a module up from here.
+    pub fn center(&self) -> (f32, f32) {
+        (
+            self.left + self.width() / 2.0,
+            self.top + self.height() / 2.0,
+        )
+    }
+
+    /// Upstream `Rect.shortestSide`.
+    pub fn shortest_side(&self) -> f32 {
+        self.width().abs().min(self.height().abs())
+    }
 }
 
 /// How a shape is filled or outlined.

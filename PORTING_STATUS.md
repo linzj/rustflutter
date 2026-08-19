@@ -164,6 +164,70 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 滑块的部件与主题(2026-08-19)
+
+`slider_theme.rs`(新)。上游把滑块拆成五个可换的部件——轨道、刻度、滑块头、
+按压光晕、数值气泡——每个部件是一个抽象类带若干具体子类。这里沿用
+`ShapeBorder` 的做法:具体类各自是 `struct`,抽象基类是把它们收进去的 `enum`。
+集合是封闭的,画的时候要的是一个 `match`。
+
+本簇落地 13 个上游类:
+
+* `SliderComponentShape`(枚举)+ `RoundSliderThumbShape`、`HandleThumbShape`、
+  `RoundSliderOverlayShape`。三者上游同属一个类型,因为主题上那三个字段是可以
+  互换的——写成滑块头的形状可以装成光晕——这里保留了这一点,没有拆成三个枚举。
+* `SliderTickMarkShape`(枚举)+ `RoundSliderTickMarkShape`。
+* `SliderTrackShape`(枚举)+ `BaseSliderTrackShape`、
+  `RectangularSliderTrackShape`、`RoundedRectSliderTrackShape`、
+  `GappedSliderTrackShape`。上游的 `BaseSliderTrackShape` 是 mixin,这里是自由
+  函数:一段三个形状共用、谁都不覆盖的计算。
+* `SliderThemeData`(36 个字段里的 32 个)与 `SliderTheme`。
+
+顺带补上 `Size::from_radius`/`shortest_side` 与 `Rect::from_center`/
+`from_circle`/`center`/`shortest_side`——都是上游 `dart:ui` 上的真方法,滑块的
+几何是照着它们写的。`component_themes.rs` 的三个 `lerp_*` 助手改为
+`pub(crate)`。
+
+**控件接线。** `components.rs` 的 `Slider` 原先是硬写的 8px 轨道加 18px 圆头,
+颜色取自 `components::Theme`。现在走 `ResolvedSlider::of`,轨道高度、两段颜色、
+滑块头的颜色与尺寸都从主题下来。视觉上这是 M3 的样子:轨道 16px,滑块头是
+4×44 的竖条。gallery 的 `sliders_demo` 已经在用 `Slider`,因此这一簇的新东西
+是被现成的 demo 带着的——**Windows 与 Android 需要手验一眼**,因为轨道和滑块头
+的形状变了。
+
+**几处容易读错、已经写成回归行的地方:**
+
+* `getPreferredRect` 在两端留的是「滑块头与光晕里较宽的那个」的一半,主题带了
+  `padding` 时则一点都不留——上游那个 null 判断是二选一,不是相加。
+* 两段轨道颜色都透明时,只有高度塌成 0,宽度不变。上游的注释说了原因:让一条
+  看不见的轨道不至于把旁边的东西挪位置。
+* 父盒子比滑块窄时,右边会跑到左边的左侧;上游是把两个数对调,不是断言。
+* `HandleThumbShape::preferred_size` 是常数 4×44,但真正画出来的尺寸来自
+  `SliderThemeData::thumb_size`。两个数不一样,也不该一样——M3 的滑块头在拖动
+  时会变窄,所以那是个 state property。
+* 光晕的 preferred size 不随状态变。按下才画,但位置一直占着——否则轨道会在手
+  指底下跳。
+* `year_2023` 选的是一整张默认值表,不是单个字段。以为它只改轨道高度,形状就
+  全错了,连带滑块头也错。
+* 主题的 lerp 里颜色和数字插值,形状和枚举取近端:两个形状中间的形状不是形状。
+
+**记账的边界:**
+
+* 四个 `range*Shape` 字段与 `thumbSelector` 等 `range_slider_parts.dart`——它们
+  要指的类型还没有。
+* 数值气泡的六个形状(`RectangularSliderValueIndicatorShape`、
+  `PaddleSliderValueIndicatorShape` 及其 range 对应物、
+  `DropSliderValueIndicatorShape`、`RoundedRectSliderValueIndicatorShape`)是下
+  一簇。
+* 上游滑块头的高度用 `Canvas.drawShadow` 画。引擎绑定没有这个调用,这里改用
+  `elevation_shadows` 的那几个圆——`drawShadow` 查的就是同一张表。
+
+验证:`cargo test --lib` 1058 绿,GN `rustflutter_unittests` 1058 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1063 accounted / 810 MISSING(57%),material 层
+167 accounted / 219 MISSING(43%)。
+
+
 **P8-M1 收官:button bar 与 theme extension(2026-08-19)。**
 `ButtonBarTheme(Data)`(9/9)、`ThemeExtension` + `ThemeExtensions`。
 

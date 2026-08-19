@@ -48,7 +48,7 @@ use crate::widget_state::{
 /// Interpolates two optional colours, as every `*ThemeData.lerp` upstream
 /// does through `Color.lerp`: a null end is a null answer before the halfway
 /// point and the other end's colour after it.
-fn lerp_color(a: Option<Color>, b: Option<Color>, t: f32) -> Option<Color> {
+pub(crate) fn lerp_color(a: Option<Color>, b: Option<Color>, t: f32) -> Option<Color> {
     match (a, b) {
         (None, None) => None,
         (Some(a), Some(b)) => Some(crate::animation::ColorTween { begin: a, end: b }.lerp(t)),
@@ -63,7 +63,7 @@ fn lerp_color(a: Option<Color>, b: Option<Color>, t: f32) -> Option<Color> {
 }
 
 /// The same for a number.
-fn lerp_f32(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
+pub(crate) fn lerp_f32(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
     match (a, b) {
         (None, None) => None,
         (Some(a), Some(b)) => Some(a + (b - a) * t),
@@ -110,7 +110,7 @@ fn lerp_icon_theme(
 
 /// Anything else: taken from whichever end is nearer, which is what
 /// upstream's `lerp` does for the fields it cannot interpolate.
-fn lerp_nearer<T: Clone>(a: &Option<T>, b: &Option<T>, t: f32) -> Option<T> {
+pub(crate) fn lerp_nearer<T: Clone>(a: &Option<T>, b: &Option<T>, t: f32) -> Option<T> {
     if t < 0.5 { a.clone() } else { b.clone() }
 }
 

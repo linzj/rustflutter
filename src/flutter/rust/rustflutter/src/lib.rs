@@ -62,6 +62,7 @@ pub mod scrolling;
 pub mod semantics;
 pub mod services;
 pub mod shortcuts;
+pub mod slider_theme;
 pub mod sliver;
 pub mod theme;
 pub mod ticker;

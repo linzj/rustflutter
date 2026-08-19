@@ -77,6 +77,16 @@ impl Size {
         }
     }
 
+    /// Upstream `Size.fromRadius`: the square that circumscribes the circle.
+    pub const fn from_radius(radius: f32) -> Size {
+        Size::square(radius * 2.0)
+    }
+
+    /// Upstream `Size.shortestSide`.
+    pub fn shortest_side(&self) -> f32 {
+        self.width.abs().min(self.height.abs())
+    }
+
     pub fn contains(&self, point: Offset) -> bool {
         point.dx >= 0.0 && point.dy >= 0.0 && point.dx < self.width && point.dy < self.height
     }
