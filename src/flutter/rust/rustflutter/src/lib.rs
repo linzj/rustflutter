@@ -65,6 +65,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
+pub mod tap_region;
 pub mod theme;
 pub mod ticker;
 pub mod transitions;
