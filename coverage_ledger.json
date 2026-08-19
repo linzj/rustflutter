@@ -1845,6 +1845,22 @@
     "DateUtils": {
       "rust": "pickers::{days_in_month, first_day_offset, month_delta, add_months_to_month_date, add_days_to_date, is_same_day, is_same_month} + Date::first_of_month",
       "note": "上游那是一个 `abstract final class` —— Dart 里的「一袋静态函数，不许实例化」；Rust 的对应物就是一个模块里的自由函数，而 pickers.rs 正是那个模块。每个函数的文档都点了它对应的 DateUtils 静态方法。与 MatrixUtils 同一处理。"
+    },
+    "WidgetStateInputBorder": {
+      "rust": "widget_state::WidgetStateOutlinedBorder",
+      "note": "账本里 InputBorder 已经映射到 borders::ShapeBorder 的 Underline/Outline 两个变体——这个 crate 里「输入框边框」就是一个 ShapeBorder。于是「按状态解析出来的输入框边框」就是「按状态解析出来的 ShapeBorder」，也就是 WidgetStateOutlinedBorder；另立一个逐字段相同的类型只是给同一件事换个名字。"
+    },
+    "MaterialStateOutlineInputBorder": {
+      "rust": "widget_state::WidgetStateOutlinedBorder",
+      "note": "上游自己标了 @Deprecated(\"Use WidgetStateInputBorder instead. Renamed to match other WidgetStateProperty objects.\")；而 WidgetStateInputBorder 在这里就是 WidgetStateOutlinedBorder（见该条）。移植一个上游正在删的重命名壳没有意义。"
+    },
+    "MaterialStateUnderlineInputBorder": {
+      "rust": "widget_state::WidgetStateOutlinedBorder",
+      "note": "同 MaterialStateOutlineInputBorder：上游同一条弃用说明，只是形状是下划线而不是外框，而这个 crate 里两者都是 ShapeBorder 的变体。"
+    },
+    "MaterialStateMixin": {
+      "rust": "widget_state::WidgetStatesController",
+      "note": "上游那个 mixin 是给 State 子类混入一套 WidgetState 的增删查；它整份文档现在指向 WidgetStatesController，而这个 crate 有后者。Rust 没有把状态混进别人 State 的办法，而持有一个 controller 正是上游现在推荐的写法。"
     }
   },
   "blocked_engine": {

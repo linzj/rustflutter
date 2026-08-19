@@ -38,8 +38,14 @@ LAYERS = [
     'animation', 'scheduler', 'foundation', 'material', 'cupertino',
 ]
 
+# Dart's class modifiers, all of which may stack: `abstract interface class`,
+# `base mixin class`, `final class`. `interface` was missing here and cost the
+# ruler every `abstract interface class` in the tree -- a blind spot that hides
+# work rather than flattering it, which is the worse of the two failures: a
+# class the ruler cannot see can never be reported MISSING.
 CLASS_RE = re.compile(
-    r'^(?:abstract\s+|base\s+|final\s+|sealed\s+|mixin\s+)*(?:class|mixin)\s+([A-Za-z0-9_]+)',
+    r'^(?:abstract\s+|base\s+|final\s+|interface\s+|sealed\s+|mixin\s+)*'
+    r'(?:class|mixin)\s+([A-Za-z0-9_]+)',
     re.M,
 )
 

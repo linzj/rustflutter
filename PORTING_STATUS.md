@@ -164,6 +164,50 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 尺子看不见的那 15 个类(2026-08-20)
+
+第三次审计这把尺子,这次找到的是**盲点而不是虚报**——比虚报更糟的那一种。
+
+`tools/coverage.py` 认 Dart 的类修饰符时列了 `abstract`/`base`/`final`/`sealed`/
+`mixin`,**独独漏了 `interface`**。于是每一个 `abstract interface class` 都从它眼前消失
+了:不是被算成已覆盖,是根本没被数进去。**一个尺子看不见的类,永远不会被报成
+MISSING。** 前两次审计找的是「算作已覆盖但其实什么都没有」,那让数字虚高;这一次是让数
+字**看起来触手可及**——照原样下去,`0 MISSING` 是能在还有类没移植的情况下达成的。
+
+修完之后,上游的公开类从 1873 变成 **1888**,多出来的 15 个是:
+
+* `gestures/hit_test.dart` 的 `HitTestable`、`HitTestDispatcher`、`HitTestTarget`
+* `material/chip.dart` 的六个属性接口(`ChipAttributes`、`DeletableChipAttributes`、
+  `CheckmarkableChipAttributes`、`SelectableChipAttributes`、`DisabledChipAttributes`、
+  `TappableChipAttributes`)
+* `material/material_state.dart` 的 `WidgetStateInputBorder`
+* `painting/decoration_image.dart` 的 `DecorationImagePainter`
+* `rendering/viewport.dart` 的 `RenderAbstractViewport`
+* `cupertino/menu_anchor.dart` 的 `CupertinoMenuEntry`
+
+其中 `RenderAbstractViewport` 和 `DecorationImagePainter` 在 crate 里**只出现在注释
+里**——确实是缺的,尺子现在报得对。
+
+**顺带把这一批弃用重命名记了账**(四条,都有先例):
+
+* `WidgetStateInputBorder` → `WidgetStateOutlinedBorder`。账本里 `InputBorder` 早就映射
+  到了 `ShapeBorder` 的 `Underline`/`Outline` 两个变体——**这个 crate 里「输入框边框」就
+  是一个 `ShapeBorder`**。那么「按状态解析出来的输入框边框」就是「按状态解析出来的
+  `ShapeBorder`」;另立一个逐字段相同的类型只是给同一件事换个名字。
+* `MaterialStateOutlineInputBorder` / `MaterialStateUnderlineInputBorder` → 同上。上游自
+  己写着 `@Deprecated("Use WidgetStateInputBorder instead. Renamed to match other
+  WidgetStateProperty objects.")`——移植一个上游正在删的重命名壳没有意义(和
+  `ButtonBar` → `OverflowBar` 同一判断)。
+* `MaterialStateMixin` → `WidgetStatesController`。那个 mixin 是给 `State` 子类混入一套
+  状态增删查的,而它整份文档现在指向 `WidgetStatesController`,crate 有后者。Rust 没有把
+  状态混进别人 `State` 的办法,而**持有一个 controller 正是上游现在推荐的写法**。
+
+净结果:总数 1873 → 1888,accounted 1227 → 1232,MISSING 646 → 656。**数字往难看的方向
+走了十个**,这正是审计该有的方向:每一个现在报出来的缺口,都是真的缺口。
+
+验证:`cargo test --lib` 1432 绿(这一轮没动 Rust 代码),`cargo fmt` 干净。
+覆盖率 1232 accounted / 656 MISSING(65%)。
+
 ### 让日历可以换一本(2026-08-20)
 
 `CalendarDelegate` 和 `GregorianCalendarDelegate`(上游 `material/date.dart`)进
