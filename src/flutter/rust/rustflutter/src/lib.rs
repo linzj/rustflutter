@@ -61,6 +61,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod ticker;
 pub mod transitions;
+pub mod widget_state;
 pub mod widgets;
 
 pub use actions::{Action, ActionDispatcher, Intent};

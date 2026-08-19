@@ -164,6 +164,33 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:widget_state 体系(2026-08-19)。** `widget_state.rs`,widget_state.dart
+10/10:`WidgetState` 八态、`WidgetStates`(上游 `Set<WidgetState>`,此侧一个
+u8 位集——`Copy` 且可比,控件"上帧状态 vs 本帧状态"的重绘判据要的正是这个)、
+`WidgetStatesConstraint`(上游是 mixin 加 `&`/`|`/`~` 三个运算符,此侧是那
+三个运算符构出的封闭形状,叶子是 `WidgetState`,`ANY` 即 `_AnyWidgetStates`)、
+`WidgetStateProperty` trait + `WidgetStatePropertyWith`(resolveWith)/
+`WidgetStatePropertyAll`/`WidgetStateMapper`(首个满足的臂胜出——这正是上游
+每份主题都把 disabled 臂写在 hover 臂之上的原因)、`lerp_properties`
+(`_LerpProperties`)、五个类型化属性(`WidgetStateColor`/`WidgetStateMouseCursor`/
+`WidgetStateBorderSide`/`WidgetStateOutlinedBorder`/`WidgetStateTextStyle`)、
+`WidgetStatesController`。
+
+**这是 P8 material 的地基**:上游每个 Material 控件的颜色/边/文字样式/光标
+都从 `WidgetStateProperty` 里取,主题里存的也是它而不是裸值。
+
+**记录在案的分歧**:
+
+- 上游的类型化属性*既是*属性*也是*值类型(`WidgetStateColor extends Color`),
+  所以未解析的值能塞进任何收裸 `Color` 的地方,事后由 `resolveAs` 解析。
+  Rust 无继承,各自成型,由调用方在用处解析;`MaybeStateful<T>` + `resolve_as`
+  是"裸值或属性"那一档的显式写法。
+- `WidgetStateMapper` 无匹配臂时,上游对可空类型答 null、对非空类型抛;此侧
+  mapper 一律答 `Option<T>`,类型化属性各自带一个 fallback——上游在运行时报
+  的那个错,这里是类型系统提前问的一个问题。
+- `WidgetStateMouseCursor` 解析出 `SystemMouseCursor`(services/system.rs 既有);
+  上游的 `MouseCursor` 抽象基类无对应物,宿主侧应答仍按门控表挂账。
+
 **P5:tick 源(2026-08-19)。** `ticker.rs`,上游 `scheduler/ticker.dart`
 4 类全落地 + `widgets/ticker_provider.dart` 4 类(两个 mixin 记 mapped):
 `Ticker`(start/stop/muted/isActive/isTicking/absorbTicker;`_tick` 的
