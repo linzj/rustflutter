@@ -467,6 +467,64 @@ impl FrictionSimulation {
     pub fn final_x(&self) -> f32 {
         self.position - self.velocity / self.drag_log
     }
+
+    /// A friction simulation whose drag is chosen so that it passes through
+    /// `end_position` -- upstream's `FrictionSimulation.through`.
+    ///
+    /// Ordinary friction is given a drag and asked where it stops. This is
+    /// given where it must stop and asked for the drag, which is the same
+    /// equation solved the other way round. What it buys is a fling that both
+    /// feels like a fling and lands exactly somewhere -- on a whole item of a
+    /// wheel, in its one caller.
+    ///
+    /// Upstream's algebra, kept: with `v = v0 * D^t`, the time to fall from
+    /// `v0` to `v1` is `(ln(v1) - ln(v0)) / ln(D)`, and solving `x(that time)
+    /// = x1` for `D` gives `e^((v0 - v1) / (x0 - x1))`. Note the denominator
+    /// is start *minus* end, which with the sign rule below makes the exponent
+    /// negative and so the drag less than one.
+    ///
+    /// The three conditions upstream asserts are conditions on the caller, not
+    /// choices: the two velocities must not fight each other, the simulation
+    /// cannot end faster than it began, and it has to be travelling towards
+    /// the end it is meant to reach.
+    pub fn through(
+        start_position: f32,
+        end_position: f32,
+        start_velocity: f32,
+        end_velocity: f32,
+    ) -> FrictionSimulation {
+        debug_assert!(
+            start_velocity == 0.0
+                || end_velocity == 0.0
+                || start_velocity.signum() == end_velocity.signum()
+        );
+        debug_assert!(start_velocity.abs() >= end_velocity.abs());
+        debug_assert!((end_position - start_position).signum() == start_velocity.signum());
+        FrictionSimulation::with_tolerance(
+            FrictionSimulation::drag_for(
+                start_position,
+                end_position,
+                start_velocity,
+                end_velocity,
+            ),
+            start_position,
+            start_velocity,
+            Tolerance {
+                velocity: end_velocity.abs(),
+                ..Tolerance::DEFAULT
+            },
+        )
+    }
+
+    /// Upstream's `_dragFor`.
+    fn drag_for(
+        start_position: f32,
+        end_position: f32,
+        start_velocity: f32,
+        end_velocity: f32,
+    ) -> f32 {
+        std::f32::consts::E.powf((start_velocity - end_velocity) / (start_position - end_position))
+    }
 }
 
 impl Simulation for FrictionSimulation {

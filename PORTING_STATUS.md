@@ -164,6 +164,53 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### Dart 的取余和 Rust 的取余,差的是一整个「上一格」(2026-08-20)
+
+新模块 `list_wheel.rs`,上游 `widgets/list_wheel_scroll_view.dart` 十个里的七个:四个
+delegate、`FixedExtentMetrics`、`FixedExtentScrollController`、`FixedExtentScrollPhysics`。
+另加 `physics.rs` 里的 `FrictionSimulation::through`。剩下三个(`ListWheelScrollView`、
+`ListWheelElement`、`ListWheelViewport`)是轮子本身的柱面投影,下轮再说。
+
+**这里其实是两件可以和轮子几何分开的事:** 孩子从哪来(四个 delegate 回答,其中循环那个让
+轮子没有头尾),以及**一次甩动允许停在哪**(`FixedExtentScrollPhysics` 回答:永远不停在两
+项之间)。
+
+**Dart 的 `%` 和 Rust 的 `%` 不是同一个运算。** Dart 对负的被除数返回非负余数,Rust 保留被
+除数的符号——`-1 % 5` 在那边是 4,在这边是 -1。而一个从第一项往上拖的循环轮子,问的正是这些
+负下标。**两个运算符的差别,就是「显示最后一项」和「下标越界」的差别。** `rem_euclid` 才是
+Dart 的 `%`,回归行把 -1、-5、-6 三个都钉住了。
+
+**回归行盯的地方:**
+
+* 循环 delegate **没有数量**(上游用「未知」表示无穷),普通列表有——轮子据此知道自己没有
+  两头。
+* 空的循环列表什么都不给,而不是去除以零。
+* 无 count 的 builder **靠 builder 说「没有了」来收尾**;有 count 的**根本不会问范围外的
+  下标**——一个 builder 有权很贵。
+* **`_getItemFromOffset` 是先夹再除。** 一个被拖过头还按着的轮子报的是最后一项,不是它后面
+  那一项:读者眼睛盯着的就是最后一项。
+* **容差是按设备像素算的,不是逻辑像素。**「近到可以停了」应该意味着「近到读者看不出来」,
+  而读者看得出来的是物理像素,所以屏幕越密停得越准。
+* `jumpToItem` **不检查范围**,上游文档明说;这不是疏忽——轮子的可滚动范围要到布局才定下来,
+  布局才是把它拉回来的那一刻,回归行把这个先后顺序走了一遍。
+* 五个场景各一条:站着不动的给 `None`(否则就是每帧算一次「别动」);**太弱的甩动用弹簧滚
+  回本项**(得用弹簧,因为运动要反向,而摩擦只会顺着原来的方向跑);真正的甩动**恰好落在一
+  项上**;两头则**边界压过网格**——列表到头时,把读者放回列表里比对齐格子重要。
+
+**「恰好落在一项上」那条的阈值是量过的。** 同样这一下甩动,若用普通摩擦会停在 161.83,离第
+4 项差 1.83;把断言收到 0.5,这条线才真的在分辨「调过阻力的」和「没调的」,而不是走个形式。
+
+**补上了一处记在案的缺口的一半。** `CupertinoPicker` 的文档一直记着
+`FixedExtentScrollPhysics.createBallisticSimulation` 的场景 5(`FrictionSimulation.through`)
+没搬,拿一小段 ease-out 顶着。`through` 现在在 `physics.rs` 里了:普通摩擦是给定阻力问它停在
+哪,`through` 是给定停在哪反解阻力,同一个方程反过来解。**但 picker 本身还没改接过去**——它
+仍用 ease-out 走到同一个目标,落在同一项上,只是路径不同。文档已按实情改写,改接是这件事剩
+下的那一半。
+
+验证:`cargo test --lib` 1652 绿,GN `rustflutter_unittests` 1652 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1335 accounted / 553 MISSING。
+
 ### 同一把尺子,三个说「是」,一个说「不是」(2026-08-20)
 
 新模块 `multidrag.rs`,上游 `gestures/multidrag.dart` 六个全到:`MultiDragPointerState`、

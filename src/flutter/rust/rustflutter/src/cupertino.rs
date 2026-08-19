@@ -2422,9 +2422,12 @@ pub struct CupertinoPickerState {
 /// directly, a release flings it with `ClampingScrollSimulation`, and when
 /// the wheel comes to rest off an item boundary it is driven to the nearest
 /// item -- the landing choice of `FixedExtentScrollPhysics.
-/// createBallisticSimulation`, whose scenario-5 tuned friction
-/// (`FrictionSimulation.through`) is not ported (PORTING_STATUS.md), so the
-/// settle is a short ease-out drive to the same target instead.
+/// createBallisticSimulation`, whose five scenarios now live in
+/// [`crate::list_wheel::FixedExtentScrollPhysics`] along with the tuned
+/// friction (`FrictionSimulation.through`) that scenario 5 needs. This picker
+/// has not yet been rewired onto them: it drives the settle with a short
+/// ease-out to the same target, so it lands on the same item by a different
+/// path. Rewiring it is the remaining half of that work.
 ///
 /// ```ignore
 /// stateful(CupertinoPicker::new(ids.take(), 32.0, count, move |index| {
