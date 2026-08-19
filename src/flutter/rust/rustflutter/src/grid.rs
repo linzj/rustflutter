@@ -372,6 +372,304 @@ impl RenderBox for GridHost {
     }
 }
 
+// -- Tiles --------------------------------------------------------------------
+
+/// Upstream `GridTile` (`material/grid_tile.dart`): one cell of a grid, with
+/// something optionally banded across its top or its bottom.
+///
+/// The whole class is a [`crate::render::RenderStack`] with the child filling
+/// it and the header and footer pinned to three edges each. What is worth
+/// keeping from it is the early return: **with neither a header nor a footer
+/// the tile is the child itself**, not a stack of one. A photo grid builds one
+/// of these per cell, and a stack that exists to hold nothing is a layout pass
+/// and a paint layer per cell for no drawn difference.
+pub struct GridTile {
+    child: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+    header: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+    footer: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+}
+
+impl GridTile {
+    pub fn new(child: crate::framework::AnyWidget) -> GridTile {
+        GridTile {
+            child: std::cell::RefCell::new(Some(child)),
+            header: std::cell::RefCell::new(None),
+            footer: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Banded across the top, typically a [`GridTileBar`].
+    pub fn with_header(self, header: crate::framework::AnyWidget) -> Self {
+        *self.header.borrow_mut() = Some(header);
+        self
+    }
+
+    /// Banded across the bottom.
+    pub fn with_footer(self, footer: crate::framework::AnyWidget) -> Self {
+        *self.footer.borrow_mut() = Some(footer);
+        self
+    }
+}
+
+impl crate::framework::Component for GridTile {
+    fn build(&self, _context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
+        let header = self.header.borrow_mut().take();
+        let footer = self.footer.borrow_mut().take();
+        if header.is_none() && footer.is_none() {
+            // Upstream's early return, and see the type docs: a stack that
+            // holds one child is a layout pass per cell for nothing.
+            return child;
+        }
+
+        // The order matters and it is upstream's: the child first, so the
+        // bands paint over it. A band is meant to sit on top of the photo.
+        let has_header = header.is_some();
+        let mut children = vec![child];
+        children.extend(header);
+        children.extend(footer);
+        crate::framework::many(children, move |mut boxed| {
+            let mut stack = crate::render::RenderStack::new();
+            let mut boxed = boxed.drain(..);
+            // `Positioned.fill`: the child is exactly the tile, which is what
+            // makes the tile's size the grid delegate's business rather than
+            // the photo's.
+            stack = stack.push_positioned_boxed(
+                boxed.next().expect("the child is always pushed"),
+                crate::render::StackPosition::fill(),
+            );
+            if has_header {
+                stack = stack.push_positioned_boxed(
+                    boxed.next().expect("the header was counted"),
+                    crate::render::StackPosition {
+                        top: Some(0.0),
+                        left: Some(0.0),
+                        right: Some(0.0),
+                        ..Default::default()
+                    },
+                );
+            }
+            if let Some(footer) = boxed.next() {
+                stack = stack.push_positioned_boxed(
+                    footer,
+                    crate::render::StackPosition {
+                        bottom: Some(0.0),
+                        left: Some(0.0),
+                        right: Some(0.0),
+                        ..Default::default()
+                    },
+                );
+            }
+            stack
+        })
+    }
+}
+
+/// Upstream `GridTileBar` (`material/grid_tile_bar.dart`): the band a
+/// [`GridTile`] puts across its top or bottom.
+///
+/// Two things about it are worth stating, because both look arbitrary:
+///
+/// * **The bar is always dark.** Upstream wraps its content in
+///   `Theme(data: ThemeData.dark())` and an `IconTheme` of white, whatever
+///   the ambient theme is. The reason is what a bar sits on: a photograph,
+///   whose colours nobody chose. Dark text over an unknown image is
+///   unreadable in a way white text over one is not, so the bar does not ask
+///   the theme.
+/// * **The end padding depends on what is at that end.** 16 with nothing
+///   there, 8 with a leading or trailing widget -- because an icon carries its
+///   own visual padding inside its box and the full 16 next to it reads as a
+///   gap.
+pub struct GridTileBar {
+    title: Option<String>,
+    subtitle: Option<String>,
+    leading: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+    trailing: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+    background_color: Option<crate::engine::Color>,
+}
+
+impl GridTileBar {
+    /// Upstream's `_kOneLineHeight`, spelt out there rather than named: a bar
+    /// with both a title and a subtitle is 68 tall, and anything else 48.
+    pub const ONE_LINE_HEIGHT: f32 = 48.0;
+    pub const TWO_LINE_HEIGHT: f32 = 68.0;
+
+    pub fn new() -> GridTileBar {
+        GridTileBar {
+            title: None,
+            subtitle: None,
+            leading: std::cell::RefCell::new(None),
+            trailing: std::cell::RefCell::new(None),
+            background_color: None,
+        }
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    pub fn with_leading(self, leading: crate::framework::AnyWidget) -> Self {
+        *self.leading.borrow_mut() = Some(leading);
+        self
+    }
+
+    pub fn with_trailing(self, trailing: crate::framework::AnyWidget) -> Self {
+        *self.trailing.borrow_mut() = Some(trailing);
+        self
+    }
+
+    /// Upstream's `backgroundColor`, left unset by default: a bar over a
+    /// photograph is usually meant to be transparent, with the text alone
+    /// carrying it.
+    pub fn with_background_color(mut self, color: crate::engine::Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    /// Upstream's height expression. Both lines of text need the taller bar;
+    /// one line of either needs the shorter one, and so does a bar with no
+    /// text at all.
+    pub fn height(&self) -> f32 {
+        if self.title.is_some() && self.subtitle.is_some() {
+            GridTileBar::TWO_LINE_HEIGHT
+        } else {
+            GridTileBar::ONE_LINE_HEIGHT
+        }
+    }
+
+    /// Upstream's `EdgeInsetsDirectional.only(start:, end:)`: 8 next to a
+    /// leading or trailing widget, 16 next to nothing.
+    pub fn padding(&self) -> crate::render::EdgeInsets {
+        crate::render::EdgeInsets {
+            left: if self.leading.borrow().is_some() {
+                8.0
+            } else {
+                16.0
+            },
+            right: if self.trailing.borrow().is_some() {
+                8.0
+            } else {
+                16.0
+            },
+            top: 0.0,
+            bottom: 0.0,
+        }
+    }
+}
+
+impl Default for GridTileBar {
+    fn default() -> GridTileBar {
+        GridTileBar::new()
+    }
+}
+
+impl crate::framework::Component for GridTileBar {
+    fn build(&self, _context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        // Upstream's `ThemeData.dark()`, not the ambient theme -- see the type
+        // docs. The two styles are that theme's `titleMedium` and `bodySmall`.
+        let dark = crate::components::Theme::dark();
+        let title_style = dark.title();
+        let subtitle_style = dark.muted();
+        let height = self.height();
+        let padding = self.padding();
+        let background = self.background_color;
+        let title = self.title.clone();
+        let subtitle = self.subtitle.clone();
+
+        let leading = self.leading.borrow_mut().take();
+        let trailing = self.trailing.borrow_mut().take();
+        let has_leading = leading.is_some();
+        let mut children = Vec::new();
+        children.extend(leading);
+        children.extend(trailing);
+
+        crate::framework::many(children, move |mut boxed| {
+            let mut boxed = boxed.drain(..);
+            let leading = if has_leading { boxed.next() } else { None };
+            let trailing = boxed.next();
+
+            // One line each, elided: a bar is a fixed height, so a title that
+            // wrapped would only be clipped. Upstream says so with
+            // `DefaultTextStyle(softWrap: false, overflow: ellipsis)`.
+            let one_line = |text: &str, style: &crate::engine::TextStyle| {
+                crate::widgets::Text::new(text.to_string())
+                    .with_style(style.clone())
+                    .with_soft_wrap(false)
+                    .with_overflow(crate::render::TextOverflow::Ellipsis)
+                    .with_max_lines(1)
+            };
+
+            let mut row = crate::widgets::Row::new();
+            if let Some(leading) = leading {
+                row = row.push(
+                    crate::widgets::Container::new()
+                        .with_margin(crate::render::EdgeInsets {
+                            left: 0.0,
+                            right: 8.0,
+                            top: 0.0,
+                            bottom: 0.0,
+                        })
+                        .with_child(leading),
+                );
+            }
+            // Upstream stacks the two lines in a `Column` when both are there
+            // and shows whichever one is there otherwise -- in the *title's*
+            // style either way, so a bar carrying only a subtitle still reads
+            // as a title.
+            let text: Option<crate::render::RenderFlex> = match (&title, &subtitle) {
+                (Some(title), Some(subtitle)) => Some(
+                    crate::widgets::Column::new()
+                        .with_main_axis_size(crate::render::MainAxisSize::Min)
+                        .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Start)
+                        .push(one_line(title, &title_style))
+                        .push(one_line(subtitle, &subtitle_style)),
+                ),
+                (Some(text), None) | (None, Some(text)) => Some(
+                    crate::widgets::Column::new()
+                        .with_main_axis_size(crate::render::MainAxisSize::Min)
+                        .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Start)
+                        .push(one_line(text, &title_style)),
+                ),
+                (None, None) => None,
+            };
+            if let Some(text) = text {
+                row = row.push_flex(crate::widgets::Expanded::new(text));
+            }
+            if let Some(trailing) = trailing {
+                row = row.push(
+                    crate::widgets::Container::new()
+                        .with_margin(crate::render::EdgeInsets {
+                            left: 8.0,
+                            right: 0.0,
+                            top: 0.0,
+                            bottom: 0.0,
+                        })
+                        .with_child(trailing),
+                );
+            }
+
+            let mut container = crate::widgets::Container::new()
+                .with_height(height)
+                .with_padding(padding)
+                .with_child(row);
+            if let Some(background) = background {
+                container = container.with_color(background);
+            }
+            container
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +745,117 @@ mod tests {
         assert!(root.is(&again), "the host was reconfigured, not replaced");
         again.layout(BoxConstraints::tight(100.0, 500.0));
         assert!(counter.get() > 0);
+    }
+
+    /// Lays a widget out under a theme, the way the drawer's tests do.
+    fn tile_size(widget: crate::framework::AnyWidget, width: f32, height: f32) -> Size {
+        use crate::framework::{ElementTree, provide};
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(crate::components::Theme::dark(), widget));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(width, height))
+    }
+
+    fn coloured(width: f32, height: f32) -> crate::framework::AnyWidget {
+        crate::framework::leaf(move || render::RenderConstrainedBox::tight(width, height))
+    }
+
+    #[test]
+    fn a_tile_with_no_bands_is_the_child_itself() {
+        // Upstream's early return, and it is not a micro-optimisation: a photo
+        // grid builds one of these per cell, and a stack holding one child is
+        // a layout pass and a paint layer per cell for no drawn difference.
+        use crate::framework::component;
+        let size = tile_size(component(GridTile::new(coloured(80.0, 40.0))), 300.0, 300.0);
+        assert_eq!(size, Size::new(80.0, 40.0));
+    }
+
+    #[test]
+    fn a_tile_with_a_band_is_a_stack_the_child_fills() {
+        use crate::framework::component;
+        // The child is `Positioned.fill`, so it is the tile's size rather than
+        // its own -- and the stack, having only positioned children, takes
+        // everything it is offered.
+        let size = tile_size(
+            component(GridTile::new(coloured(80.0, 40.0)).with_header(coloured(10.0, 20.0))),
+            300.0,
+            300.0,
+        );
+        assert_eq!(size, Size::new(300.0, 300.0));
+    }
+
+    #[test]
+    fn the_header_sits_at_the_top_and_the_footer_at_the_bottom() {
+        use crate::framework::{ElementTree, component, provide};
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            component(
+                GridTile::new(coloured(10.0, 10.0))
+                    .with_header(coloured(10.0, 20.0))
+                    .with_footer(coloured(10.0, 30.0)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::tight(200.0, 100.0));
+        let mut offsets = Vec::new();
+        root.visit_children(&mut |_, offset| offsets.push(offset));
+        // The child first -- so the bands paint over it, which is the point of
+        // a band -- then the header at the top and the footer resting on the
+        // bottom edge.
+        assert_eq!(offsets[0], Offset::ZERO, "the child fills the tile");
+        assert_eq!(offsets[1], Offset::ZERO, "the header is at the top");
+        assert_eq!(offsets[2], Offset::new(0.0, 70.0), "100 less its 30");
+    }
+
+    #[test]
+    fn a_bar_is_taller_only_when_it_has_both_lines() {
+        // One line of either is the short bar, and so is a bar with no text at
+        // all -- upstream's condition is `title != null && subtitle != null`,
+        // not "has any text".
+        assert_eq!(GridTileBar::new().height(), 48.0);
+        assert_eq!(GridTileBar::new().with_title("A").height(), 48.0);
+        assert_eq!(GridTileBar::new().with_subtitle("B").height(), 48.0);
+        assert_eq!(
+            GridTileBar::new()
+                .with_title("A")
+                .with_subtitle("B")
+                .height(),
+            68.0
+        );
+    }
+
+    #[test]
+    fn the_padding_shrinks_at_whichever_end_has_a_widget() {
+        // An icon carries its own visual padding inside its box, so the full
+        // 16 next to it reads as a gap. The two ends are decided separately.
+        let plain = GridTileBar::new().padding();
+        assert_eq!((plain.left, plain.right), (16.0, 16.0));
+
+        let led = GridTileBar::new()
+            .with_leading(coloured(24.0, 24.0))
+            .padding();
+        assert_eq!((led.left, led.right), (8.0, 16.0));
+
+        let trailed = GridTileBar::new()
+            .with_trailing(coloured(24.0, 24.0))
+            .padding();
+        assert_eq!((trailed.left, trailed.right), (16.0, 8.0));
+    }
+
+    #[test]
+    fn a_bar_is_its_own_height_whatever_it_is_offered() {
+        use crate::framework::component;
+        // A band across a tile is a fixed height; the tile decides the width.
+        let size = tile_size(
+            component(
+                GridTileBar::new()
+                    .with_title("Sunset")
+                    .with_subtitle("2019"),
+            ),
+            300.0,
+            500.0,
+        );
+        assert_eq!(size.height, 68.0);
     }
 }

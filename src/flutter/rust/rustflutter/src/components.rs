@@ -1622,6 +1622,26 @@ impl Component for ListTile {
 /// renderer's hairline at unit scale.
 pub struct Divider;
 
+impl Divider {
+    /// Upstream's static `Divider.createBorderSide(context)`: the side a
+    /// caller draws when it wants *a divider's* edge rather than a divider --
+    /// a header's bottom rule, a card's outline. It reads the same theme the
+    /// widget does, which is the point: a theme that moves the divider moves
+    /// every edge that borrowed it.
+    ///
+    /// Upstream's `width` clamp is here too, in
+    /// [`crate::component_themes::ResolvedDivider::line_thickness`]: a zero
+    /// thickness means the thinnest line the device can draw, not no line.
+    pub fn create_border_side(context: &mut BuildContext) -> crate::borders::BorderSide {
+        let divider = crate::component_themes::ResolvedDivider::of(context);
+        crate::borders::BorderSide {
+            color: divider.color,
+            width: divider.line_thickness(),
+            ..crate::borders::BorderSide::default()
+        }
+    }
+}
+
 impl Component for Divider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         // Upstream's `Divider.build`: the space, the thickness, the colour

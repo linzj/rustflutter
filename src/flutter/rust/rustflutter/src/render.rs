@@ -5819,6 +5819,17 @@ impl RenderStack {
         self
     }
 
+    /// [`RenderStack::push_positioned`] for a caller that already has a boxed
+    /// child, as [`RenderStack::push_boxed`] is for [`RenderStack::push`].
+    pub fn push_positioned_boxed(mut self, child: BoxedRender, position: StackPosition) -> Self {
+        position.debug_assert_valid();
+        self.children.push(StackChild {
+            render: child,
+            position,
+        });
+        self
+    }
+
     pub fn child_offsets(&self) -> &[Offset] {
         &self.offsets
     }
