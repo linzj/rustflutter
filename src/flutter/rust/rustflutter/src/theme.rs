@@ -51,9 +51,9 @@ use crate::component_themes::{
     ExpansionTileThemeData, FilledButtonThemeData, FloatingActionButtonThemeData,
     IconButtonThemeData, ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData,
     MenuButtonThemeData, MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
-    ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SegmentedButtonThemeData,
-    SnackBarThemeData, SwitchThemeData, TabBarThemeData, TextButtonThemeData,
-    ToggleButtonsThemeData, TooltipThemeData,
+    ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
+    SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
+    TabBarThemeData, TextButtonThemeData, ToggleButtonsThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -236,6 +236,8 @@ pub struct ThemeData {
     pub segmented_button_theme: SegmentedButtonThemeData,
     pub floating_action_button_theme: FloatingActionButtonThemeData,
     pub toggle_buttons_theme: ToggleButtonsThemeData,
+    pub search_bar_theme: SearchBarThemeData,
+    pub search_view_theme: SearchViewThemeData,
 }
 
 impl ThemeData {
@@ -352,6 +354,8 @@ impl ThemeData {
             segmented_button_theme: SegmentedButtonThemeData::new(),
             floating_action_button_theme: FloatingActionButtonThemeData::new(),
             toggle_buttons_theme: ToggleButtonsThemeData::new(),
+            search_bar_theme: SearchBarThemeData::new(),
+            search_view_theme: SearchViewThemeData::new(),
         }
     }
 
@@ -665,6 +669,12 @@ impl ThemeData {
             toggle_buttons_theme: ToggleButtonsThemeData::lerp(
                 &a.toggle_buttons_theme,
                 &b.toggle_buttons_theme,
+                t,
+            ),
+            search_bar_theme: SearchBarThemeData::lerp(&a.search_bar_theme, &b.search_bar_theme, t),
+            search_view_theme: SearchViewThemeData::lerp(
+                &a.search_view_theme,
+                &b.search_view_theme,
                 t,
             ),
         }

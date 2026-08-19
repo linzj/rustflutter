@@ -164,6 +164,13 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:search 一对(2026-08-19)。** `SearchBarTheme(Data)`(12/12,连带补
+`TextCapitalization`)、`SearchViewTheme(Data)`(13/13)。
+
+**这一对的形状差别值得记**:bar 的字段全是状态属性、view 的全是裸值。上游
+如此,道理也直白——bar 是指针会碰的控件,view 是它打开出来的面板,面板要么开
+着要么不在,没有 hovered 一说。回归线两半都验了。
+
 **P8-M1:FAB 与 toggle buttons(2026-08-19)。**
 `FloatingActionButtonTheme(Data)`(21/21)、`ToggleButtonsTheme(Data)`(15/15)。
 

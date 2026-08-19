@@ -3740,6 +3740,197 @@ impl ToggleButtonsTheme {
     }
 }
 
+// -- Search (upstream `search_bar_theme.dart`, `search_view_theme.dart`) ------
+
+/// Upstream `TextCapitalization` (`services/text_input.dart`): what the
+/// keyboard capitalises for a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextCapitalization {
+    /// The first letter of every word.
+    Words,
+    /// The first letter of every sentence.
+    Sentences,
+    /// Every letter.
+    Characters,
+    /// Nothing.
+    #[default]
+    None,
+}
+
+/// Upstream `SearchBarThemeData`: the resting bar.
+///
+/// Every field here is a state property, which is the difference between
+/// this and [`SearchViewThemeData`] below -- the bar is a control a pointer
+/// touches, and the view it opens into is a surface.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchBarThemeData {
+    pub elevation: Option<StateProperty<Option<f32>>>,
+    pub background_color: Option<StateProperty<Option<Color>>>,
+    pub shadow_color: Option<StateProperty<Option<Color>>>,
+    pub surface_tint_color: Option<StateProperty<Option<Color>>>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub side: Option<StateProperty<Option<BorderSide>>>,
+    pub shape: Option<StateProperty<Option<ShapeBorder>>>,
+    pub padding: Option<StateProperty<Option<EdgeInsetsGeometry>>>,
+    pub text_style: Option<StateProperty<Option<TextStyle>>>,
+    pub hint_style: Option<StateProperty<Option<TextStyle>>>,
+    pub constraints: Option<BoxConstraints>,
+    pub text_capitalization: Option<TextCapitalization>,
+}
+
+impl SearchBarThemeData {
+    pub fn new() -> SearchBarThemeData {
+        SearchBarThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: StateProperty<Option<f32>>) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    pub fn with_constraints(mut self, constraints: BoxConstraints) -> Self {
+        self.constraints = Some(constraints);
+        self
+    }
+
+    /// Upstream `SearchBarThemeData.lerp`.
+    pub fn lerp(a: &SearchBarThemeData, b: &SearchBarThemeData, t: f32) -> SearchBarThemeData {
+        SearchBarThemeData {
+            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
+            background_color: lerp_state_color(
+                a.background_color.as_ref(),
+                b.background_color.as_ref(),
+                t,
+            ),
+            shadow_color: lerp_state_color(a.shadow_color.as_ref(), b.shadow_color.as_ref(), t),
+            surface_tint_color: lerp_state_color(
+                a.surface_tint_color.as_ref(),
+                b.surface_tint_color.as_ref(),
+                t,
+            ),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            side: lerp_nearer(&a.side, &b.side, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            hint_style: lerp_nearer(&a.hint_style, &b.hint_style, t),
+            constraints: lerp_nearer(&a.constraints, &b.constraints, t),
+            text_capitalization: lerp_nearer(&a.text_capitalization, &b.text_capitalization, t),
+        }
+    }
+}
+
+/// Upstream `SearchBarTheme`.
+pub struct SearchBarTheme;
+
+impl SearchBarTheme {
+    pub fn new(data: SearchBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> SearchBarThemeData {
+        context
+            .inherited::<SearchBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).search_bar_theme.clone())
+    }
+}
+
+/// Upstream `SearchViewThemeData`: the panel a search bar opens into.
+///
+/// Plain fields rather than state properties, because a view is not a thing
+/// with states -- it is open or it is not there.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchViewThemeData {
+    pub background_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub surface_tint_color: Option<Color>,
+    pub side: Option<BorderSide>,
+    pub shape: Option<ShapeBorder>,
+    pub header_height: Option<f32>,
+    pub header_text_style: Option<TextStyle>,
+    pub header_hint_style: Option<TextStyle>,
+    pub constraints: Option<BoxConstraints>,
+    pub padding: Option<EdgeInsetsGeometry>,
+    /// The padding of the bar inside the view's header, which is a different
+    /// bar from the one that opened it.
+    pub bar_padding: Option<EdgeInsetsGeometry>,
+    /// Whether the view is as tall as its results rather than as tall as it
+    /// is allowed to be.
+    pub shrink_wrap: Option<bool>,
+    pub divider_color: Option<Color>,
+}
+
+impl SearchViewThemeData {
+    pub fn new() -> SearchViewThemeData {
+        SearchViewThemeData::default()
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_header_height(mut self, height: f32) -> Self {
+        self.header_height = Some(height);
+        self
+    }
+
+    pub fn with_shrink_wrap(mut self, shrink_wrap: bool) -> Self {
+        self.shrink_wrap = Some(shrink_wrap);
+        self
+    }
+
+    /// Upstream `SearchViewThemeData.lerp`.
+    pub fn lerp(a: &SearchViewThemeData, b: &SearchViewThemeData, t: f32) -> SearchViewThemeData {
+        SearchViewThemeData {
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
+            side: match (a.side, b.side) {
+                (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            header_height: lerp_f32(a.header_height, b.header_height, t),
+            header_text_style: lerp_nearer(&a.header_text_style, &b.header_text_style, t),
+            header_hint_style: lerp_nearer(&a.header_hint_style, &b.header_hint_style, t),
+            constraints: lerp_nearer(&a.constraints, &b.constraints, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            bar_padding: lerp_nearer(&a.bar_padding, &b.bar_padding, t),
+            shrink_wrap: lerp_nearer(&a.shrink_wrap, &b.shrink_wrap, t),
+            divider_color: lerp_color(a.divider_color, b.divider_color, t),
+        }
+    }
+}
+
+/// Upstream `SearchViewTheme`.
+pub struct SearchViewTheme;
+
+impl SearchViewTheme {
+    pub fn new(data: SearchViewThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> SearchViewThemeData {
+        context
+            .inherited::<SearchViewThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).search_view_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -4766,5 +4957,58 @@ mod tests {
         assert_eq!(themed.selected_color, Some(Color::argb(255, 2, 2, 2)));
         assert_eq!(themed.disabled_color, None, "a third field, and unset");
         assert_eq!(themed.border_width, Some(2.0));
+    }
+
+    #[test]
+    fn the_search_bar_is_stateful_and_the_view_it_opens_is_not() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        // The bar's fields are state properties -- it is a control a pointer
+        // touches.
+        let bar = read_in(
+            |child| {
+                SearchBarTheme::new(
+                    SearchBarThemeData::new().with_background_color(StateProperty::resolve_with(
+                        |states: WidgetStates| {
+                            if states.contains(WidgetState::Hovered) {
+                                Some(Color::argb(255, 1, 1, 1))
+                            } else {
+                                Some(Color::argb(255, 2, 2, 2))
+                            }
+                        },
+                    )),
+                    child,
+                )
+            },
+            SearchBarTheme::of,
+        );
+        let property = bar.background_color.expect("set");
+        assert_eq!(
+            property.resolve(WidgetStates::NONE.with(WidgetState::Hovered)),
+            Some(Color::argb(255, 1, 1, 1))
+        );
+        assert_eq!(
+            property.resolve(WidgetStates::NONE),
+            Some(Color::argb(255, 2, 2, 2))
+        );
+
+        // The view's are plain values -- it is open or it is not there, and
+        // there is no hovered state for a panel.
+        let view = read_in(
+            |child| {
+                SearchViewTheme::new(
+                    SearchViewThemeData::new()
+                        .with_background_color(Color::argb(255, 3, 3, 3))
+                        .with_header_height(72.0)
+                        .with_shrink_wrap(true),
+                    child,
+                )
+            },
+            SearchViewTheme::of,
+        );
+        assert_eq!(view.background_color, Some(Color::argb(255, 3, 3, 3)));
+        assert_eq!(view.header_height, Some(72.0));
+        assert_eq!(view.shrink_wrap, Some(true));
+        assert_eq!(view.divider_color, None);
     }
 }
