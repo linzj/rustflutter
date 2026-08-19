@@ -42,6 +42,7 @@ pub mod engine;
 pub mod focus;
 pub mod foundation;
 pub mod framework;
+pub mod gesture_details;
 pub mod gestures;
 pub mod grid;
 pub mod image;

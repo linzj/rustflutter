@@ -164,6 +164,46 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 识别器递给回调的那九样东西(2026-08-19)
+
+`gesture_details.rs`(新),九个数据类加一个接口:`TapDrag{Down,Up,Start,Update,End}Details`
+(`tap_and_drag.dart`)、`SerialTap{Down,Cancel,Up}Details`(`multitap.dart`)、
+`ForcePressDetails`(`force_press.dart`),以及它们共同实现的
+`PositionedGestureDetails`。gestures 层从 32 降到 19。
+
+**为什么点击和拖拽合成一族。** 文本框两样都要,而且要从**同一个**识别器拿。两个分
+开的识别器会在竞技场里打架、点击输了——所以「双击选中一个词、再拖着扩展选区」这件
+事,是拼不出来的:它不能由一个点击识别器加一个拖拽识别器组成。上游的答案是
+`TapAndDrag`,而让它能用的那个字段是 `consecutive_tap_count`:每一个回调都带着「这
+是连续第几次点击」,处理方于是分得清「一次点击之后的拖拽」和「两次点击之后的拖
+拽」。
+
+**回归行盯的地方:**
+
+* **局部位置的初值是全局位置**,不是原点。这是上游的规则不是偷懒:在任何变换发生之
+  前,这两个就是同一个点;默认成原点会把每个未变换的手势都放到左上角。
+* 一次 update **同时**带着「这一步」和「总共」。这是两个不同的问题,处理方两个都要:
+  delta 说这一帧滚多少,offset_from_origin 说选区现在够到哪。由其中一个推另一个,意
+  味着处理方自己要维护一个累计值——而这正是上游替它省掉的事。
+* **pan 没有 primary_delta,单轴拖拽有。** primary 是「单轴识别器盯着的那一根轴上的
+  位移」;pan 没有那样一根轴,所以上游留空而不是随便挑一根。
+* **没有位置就结束的拖拽报告原点**,而这是有含义的:一个把指针丢了的识别器(被取
+  消、或者输给了竞技场)没有位置可报,原点就是它的回答。
+* start 可以说出**平台认为它发生的时刻**,这样从排队事件里起手的拖拽,按事件计时而
+  不是按读到它的那一帧。
+* **连续点击从 1 数起。** 上游用 assert 挡住:没有第 0 次点击,从 0 开始数会让第一
+  次点击看起来像是在取消一个不存在的东西。
+* **九个里只有 cancel 没有位置。** 上游是故意把它排除在那个接口之外的:cancel 说的
+  是「有一次点击要被收回」,它本来会在哪儿并不是谁会去用的信息。这一条是靠「把其余
+  八个都装进 `dyn PositionedGestureDetails`」来断言的。
+* **up 一定知道是什么碰了屏幕,down 未必。** 上游在 `TapDragUpDetails` 上要求
+  `kind`、在另外四个上留可选:一次点击都完成了,平台当然已经说过那是什么。
+
+验证:`cargo test --lib` 1248 绿,GN `rustflutter_unittests` 1248 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1168 accounted / 705 MISSING;gestures 层 71/90。
+
+
 ### 把手指的轨迹对到帧上(2026-08-19)
 
 `resampler.rs`(新),四个上游类:`PointerEventResampler`(`gestures/resampler.dart`)、
