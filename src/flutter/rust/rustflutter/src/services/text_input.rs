@@ -161,7 +161,7 @@ impl TextEditingValue {
         })
     }
 
-    fn to_state(&self) -> Value {
+    pub(crate) fn to_state(&self) -> Value {
         Value::map([
             ("text", Value::from(self.text.as_str())),
             ("selectionBase", Value::I64(self.selection_base as i64)),
@@ -313,17 +313,21 @@ impl TextInputAction {
 }
 
 /// How a field asks to be edited.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct TextInputConfiguration {
     pub input_type: TextInputType,
     pub action: TextInputAction,
     pub obscure_text: bool,
     pub autocorrect: bool,
+    /// What the platform may fill this field with, if anything. Disabled by
+    /// default: a field says what it holds, and one that has not said holds
+    /// nothing the platform should guess at.
+    pub autofill_configuration: crate::services::autofill::AutofillConfiguration,
 }
 
 impl TextInputConfiguration {
-    fn to_value(self) -> Value {
-        Value::map([
+    pub(crate) fn to_value(&self) -> Value {
+        let mut value = Value::map([
             (
                 "inputType",
                 Value::map([
@@ -338,7 +342,15 @@ impl TextInputConfiguration {
             ("enableSuggestions", Value::Bool(true)),
             ("enableDeltaModel", Value::Bool(false)),
             ("viewId", Value::I64(0)),
-        ])
+        ]);
+        // Upstream leaves the key out entirely for a disabled
+        // configuration rather than sending it switched off.
+        if let (Value::Map(pairs), Some(autofill)) =
+            (&mut value, self.autofill_configuration.to_value())
+        {
+            pairs.push((Value::String("autofill".to_string()), autofill));
+        }
+        value
     }
 }
 

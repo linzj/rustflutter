@@ -75,6 +75,7 @@
 //! affair upstream too, but there it is enforced and here it is a convention.
 
 pub mod asset_manifest;
+pub mod autofill;
 pub mod channel;
 pub mod codec;
 pub mod keyboard_inserted_content;

@@ -143,6 +143,7 @@ if (enable_unittests) {
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/semantics.rs",
       "rustflutter/src/services/asset_manifest.rs",
+      "rustflutter/src/services/autofill.rs",
       "rustflutter/src/services/channel.rs",
       "rustflutter/src/services/codec.rs",
       "rustflutter/src/services/mod.rs",

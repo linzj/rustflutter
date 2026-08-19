@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 告诉系统这个输入框是干什么用的(2026-08-19)
+
+`services/autofill.rs`(新),上游 `services/autofill.dart` 五个类全覆盖:
+`AutofillHints`、`AutofillConfiguration`、`AutofillClient`、`AutofillScope`、
+`AutofillScopeMixin`。
+
+一个记住了地址的操作系统,只能把它递给**说了自己想要地址**的那个输入框。自动填充
+的全部就是这句话:一个框说出自己装的是什么,给自己一个跨重启稳定的标识符,剩下的
+交给平台。
+
+**67 个提示常量是从上游解析生成的,不是抄的。** 每一个都是平台拿去匹配的字符串,
+拼错一个字母不会报错——那个框只是**再也不会被填**,offer 根本不出现。这类东西手抄
+的期望错误率不是零,所以走生成器(和 `colors.rs`、typography 同一个理由)。
+
+**顺带把 `TextInputConfiguration` 补上了 `autofill_configuration` 字段**——自动填
+充正是经由它抵达平台的。这让该结构体从 `Copy` 降为 `Clone`(`AutofillConfiguration`
+带 `String` 和 `Vec`),`editable.rs` 里那个 `Fn` 闭包因此要显式 clone 一次。
+
+**结构上的分岔:** 上游 `AutofillScopeMixin.attach` 把触发字段的配置包进一个私有的
+`_AutofillScopeTextInputConfiguration`(它给 JSON 加一个 `fields` 列表)。那个私有
+类不是上游的公开类,所以这里是 `AutofillScope::configuration_with_fields`,同样的
+JSON、另一条路。Dart 里「mixin 覆盖 interface 的一部分」在 Rust 里就是 blanket
+impl,`AutofillScopeMixin` 因此对每个 `AutofillScope` 自动成立——和上游每个 mix 进
+去的类拿到它,是同一件事。
+
+**回归行盯的地方:**
+
+* 禁用的配置在消息里是**整个不存在**,不是 `enabled: false`。上游 `toJson` 返回
+  null,字段随之从配置里消失。发一个「关掉了」的字段,等于在跟平台介绍一个不想被
+  介绍的框。而这正是默认值——没说过话的框什么也不说。
+* 没有 hintText 时那个键**不存在**,不是 null。上游 `'hintText': ?hintText` 丢掉整
+  个键;发 null 和不发是两条不同的消息,平台读法不同。
+* **scope 会把每一个字段都发出去,不只是被点的那个。** 这才是 scope 之所以是
+  scope:只发被点的那个,结果是那个框被填上、表单其余部分空着——而这正是整个类存在
+  要防的事。`fields` 是**加上去**的,触发字段自己的配置照旧在。
+* 表单里有一个字段关掉了自动填充,整个 scope 就不对了。上游在 `attach` 里用
+  assert 挡;它挡的事情是真的:平台保存的账号会填上其余的、跳过那一个,看起来像是
+  表单的 bug 而不是那个字段的。
+* 常量表里没有重复值——两个常量值相同,意味着其中一个抄错了。
+
+验证:`cargo test --lib` 1154 绿,GN `rustflutter_unittests` 1154 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1117 accounted / 756 MISSING;services 层只剩 29。
+
+
 ### 选中文字能拿去做什么,和资源清单(2026-08-19)
 
 两个新文件,五个上游类。

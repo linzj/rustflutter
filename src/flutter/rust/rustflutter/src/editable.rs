@@ -1158,6 +1158,7 @@ impl StatefulComponent for TextField {
             action: self.action,
             obscure_text: self.obscure,
             autocorrect: !self.obscure,
+            ..TextInputConfiguration::default()
         };
         let focus_handle = field_handle.clone();
         let max_lines = self.max_lines;
@@ -1186,7 +1187,7 @@ impl StatefulComponent for TextField {
                 multiline: !matches!(max_lines, MaxLines::Single),
                 last: TextEditingValue::default(),
             };
-            let opened = text_input::attach(Box::new(client), configuration);
+            let opened = text_input::attach(Box::new(client), configuration.clone());
             // The platform starts from whatever the field already holds, so a
             // field that was typed into, left, and come back to keeps its text.
             focus_handle.set_state(move |state| {
