@@ -164,6 +164,34 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P5:tick 源(2026-08-19)。** `ticker.rs`,上游 `scheduler/ticker.dart`
+4 类全落地 + `widgets/ticker_provider.dart` 4 类(两个 mixin 记 mapped):
+`Ticker`(start/stop/muted/isActive/isTicking/absorbTicker;`_tick` 的
+"首帧才定 `_startTime`",所以回调看到的 elapsed 从零起,不管这帧隔了多久
+才来)、`TickerFuture`+`TickerCanceled`、`TickerProvider` trait、
+`TickerMode`+`TickerModeData`、`SingleTicker`≙`SingleTickerProviderStateMixin`、
+`Tickers`≙`TickerProviderStateMixin`。
+
+**这补上了 `AnimationController` 的上一条账**:此前控制器要靠持有方手调
+`tick(delta)`。`with_vsync(provider)` 即上游 `AnimationController(vsync:)`
+——控制器自己造 ticker、`forward`/`reverse`/`restart` 起它、`stop` 停它,
+落地那帧回调里自停(`Controller::tick` 在落地帧返回 true——那正是要画终值
+的一帧——所以判据是 `is_running()` 而不是 tick 的返回值)。回调持弱引用回
+控制器,所以"控制器拥有 ticker、ticker 回调控制器"不成环。上游回调给的是
+自起始以来的累计时长,`Controller::tick` 收的是逐帧步长,差分在桥里做。
+
+**记录在案的分歧**:
+
+- `TickerFuture` 不是 future(crate 无异步运行时,同 `async.rs` 的账),
+  是它会落到的三态加回调;`whenCompleteOrCancel` 同名同义,`orCancel` 的
+  两种结局之分即回调收到的那个 bool。
+- `Ticker.forceFrames` 与 scheduler 的 phase 无处可去:此侧"要一帧"就是
+  `advance` 返回 true,不在帧里时也没有 phase 可言。scheduler 层的
+  `SchedulerBinding`/`Priority`/`PerformanceModeRequestHandle` 仍未入账
+  (帧序在 app.rs,终裁随 P10)。
+- 上游两个 mixin 的分工是"省一次分配 + 一条断言",此侧是 `Option<Ticker>`
+  与 `Vec<Ticker>` 的差别——同样的省法,断言长在类型里。
+
 **P4:basic.dart 余量(2026-08-19)。** widgets 层最大的单个缺口:72 类里 40
 未记账,大半是 P2 已经落地的渲染对象没有 widget 侧名字。补上 29 个门面
 (widgets.rs,上游顺序):`ShaderMask`/`BackdropFilter`/`CustomPaint`/

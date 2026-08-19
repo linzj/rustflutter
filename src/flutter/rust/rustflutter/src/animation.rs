@@ -993,6 +993,10 @@ pub struct AnimationController {
     controller: RefCell<Controller>,
     listeners: AnimationListeners,
     last_status: Cell<AnimationStatus>,
+    /// The ticker this controller drives itself from, when it was given a
+    /// provider -- upstream's `AnimationController(vsync:)`, which likewise
+    /// builds its ticker in the constructor and starts it on `forward`.
+    ticker: RefCell<Option<crate::ticker::Ticker>>,
 }
 
 impl AnimationController {
@@ -1001,7 +1005,54 @@ impl AnimationController {
             controller: RefCell::new(Controller::new(duration)),
             listeners: AnimationListeners::new(),
             last_status: Cell::new(AnimationStatus::Dismissed),
+            ticker: RefCell::new(None),
         })
+    }
+
+    /// Upstream `AnimationController(vsync:)`: the controller makes its
+    /// ticker from the provider and runs itself off it, so a caller who has
+    /// wired the provider into their `advance` never ticks this by hand.
+    ///
+    /// The ticker's callback holds a weak reference back, so the controller
+    /// owning its ticker and the ticker calling its controller is not a
+    /// cycle. Upstream's callback is given the elapsed time since the ticker
+    /// started; [`Controller::tick`] takes the step since the last frame, so
+    /// the difference is kept here.
+    pub fn with_vsync(
+        self: &Rc<Self>,
+        vsync: &dyn crate::ticker::TickerProvider,
+    ) -> crate::ticker::Ticker {
+        let weak = Rc::downgrade(self);
+        let last = Cell::new(Duration::ZERO);
+        let ticker = vsync.create_ticker(Rc::new(move |elapsed: Duration| {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let step = elapsed.saturating_sub(last.get());
+            last.set(elapsed);
+            controller.tick(step);
+            if !controller.is_running() {
+                // Landed. Upstream's `_tick` stops its ticker on the frame
+                // the simulation finishes, which is what takes the animation
+                // out of the frame schedule. `Controller::tick` answers true
+                // on that frame -- it is the frame that draws the end -- so
+                // the question to ask is whether it is still running, not
+                // what the tick said.
+                controller.stop();
+            }
+        }));
+        *self.ticker.borrow_mut() = Some(ticker.clone());
+        ticker
+    }
+
+    /// Starts this controller's ticker, if it has one and it is not already
+    /// running -- upstream's `_ticker!.start()` inside `_animateToInternal`.
+    fn start_ticker(&self) {
+        if let Some(ticker) = self.ticker.borrow().as_ref() {
+            if self.controller.borrow().is_running() && !ticker.is_active() {
+                ticker.start();
+            }
+        }
     }
 
     /// The same controller, curved. The curve is read on every `value`, so
@@ -1036,26 +1087,33 @@ impl AnimationController {
 
     pub fn forward(&self) {
         self.controller.borrow_mut().forward();
+        self.start_ticker();
         self.announce();
     }
 
     pub fn reverse(&self) {
         self.controller.borrow_mut().reverse();
+        self.start_ticker();
         self.announce();
     }
 
     pub fn toggle(&self) {
         self.controller.borrow_mut().toggle();
+        self.start_ticker();
         self.announce();
     }
 
     pub fn restart(&self) {
         self.controller.borrow_mut().restart();
+        self.start_ticker();
         self.announce();
     }
 
     pub fn stop(&self) {
         self.controller.borrow_mut().stop();
+        if let Some(ticker) = self.ticker.borrow().as_ref() {
+            ticker.stop(false);
+        }
         self.announce();
     }
 

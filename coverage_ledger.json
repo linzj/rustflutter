@@ -1316,6 +1316,14 @@
     "WidgetToRenderBoxAdapter": {
       "rust": "widgets::boxed() / framework::leaf()",
       "note": "此侧 widget 本就产出 render object，适配器即恒等"
+    },
+    "SingleTickerProviderStateMixin": {
+      "rust": "ticker::SingleTicker",
+      "note": "上游是 State mixin，此侧是嵌进 State 的字段；Option<Ticker> 即其\"只此一个\"的断言"
+    },
+    "TickerProviderStateMixin": {
+      "rust": "ticker::Tickers",
+      "note": "同上，Vec<Ticker>；tick() 在持有方 advance 里调，返回值即 advance 的返回值"
     }
   },
   "blocked_engine": {

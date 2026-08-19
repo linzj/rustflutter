@@ -1191,6 +1191,98 @@ mod tests {
     }
 
     #[test]
+    fn a_controller_given_a_vsync_runs_itself_off_the_frame_clock() {
+        use crate::ticker::{TickerProvider, Tickers};
+
+        let tickers = Tickers::new();
+        let controller = AnimationController::new(Duration::from_millis(100));
+        controller.with_vsync(&tickers);
+        assert!(!tickers.tick(0), "nothing started, nothing to tick");
+
+        controller.forward();
+        // The first tick sets the ticker's own zero, so it moves nothing.
+        assert!(tickers.tick(1_000_000));
+        assert_eq!(controller.raw_value(), 0.0);
+
+        // Fifty of a hundred milliseconds later, halfway.
+        assert!(tickers.tick(1_050_000));
+        assert!((controller.raw_value() - 0.5).abs() < 1e-6);
+
+        // The frame it lands on is the last one it asks for, and it stops
+        // its own ticker on the way out.
+        assert!(!tickers.tick(1_100_000));
+        assert_eq!(controller.raw_value(), 1.0);
+        assert_eq!(controller.status(), AnimationStatus::Completed);
+        assert!(!controller.is_animating());
+    }
+
+    #[test]
+    fn a_transition_driven_by_a_vsync_redraws_until_the_animation_lands() {
+        use crate::framework::StateHandle;
+        use crate::ticker::{TickerProvider, Tickers};
+
+        // The shape a real caller has: a state holding the tickers and the
+        // controller, an `advance` that ticks them, and a transition reading
+        // the controller.
+        struct FadeIn {
+            controller: Rc<AnimationController>,
+            tickers: Rc<Tickers>,
+        }
+
+        struct FadeState;
+
+        impl Default for FadeState {
+            fn default() -> FadeState {
+                FadeState
+            }
+        }
+
+        impl crate::framework::StatefulComponent for FadeIn {
+            type State = FadeState;
+
+            fn advance(&self, _state: &mut FadeState, frame_time_micros: i64) -> bool {
+                self.tickers.tick(frame_time_micros)
+            }
+
+            fn build(
+                &self,
+                _state: &FadeState,
+                _handle: StateHandle<FadeState>,
+                _context: &mut crate::framework::BuildContext,
+            ) -> AnyWidget {
+                FadeTransition::new(Rc::clone(&self.controller) as Rc<dyn Animation>, || {
+                    leaf(|| SizedBox::new(10.0, 10.0))
+                })
+                .into_widget()
+            }
+        }
+
+        let tickers = Rc::new(Tickers::new());
+        let controller = AnimationController::new(Duration::from_millis(100));
+        controller.with_vsync(&*tickers);
+        controller.forward();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(FadeIn {
+            controller: Rc::clone(&controller),
+            tickers: Rc::clone(&tickers),
+        }));
+
+        // Frames keep being asked for while it runs, and stop when it lands.
+        assert!(tree.advance_frame(1_000_000));
+        tree.rebuild_dirty();
+        assert!(tree.advance_frame(1_050_000));
+        tree.rebuild_dirty();
+        assert!(tree.advance_frame(1_100_000));
+        tree.rebuild_dirty();
+        assert_eq!(controller.value(), 1.0);
+        assert!(
+            !tree.advance_frame(1_116_000),
+            "landed, so nothing is asked"
+        );
+    }
+
+    #[test]
     fn a_controller_stopped_in_the_middle_keeps_the_way_it_was_going() {
         let controller = AnimationController::new(Duration::from_millis(100));
         controller.forward();
