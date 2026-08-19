@@ -150,6 +150,7 @@ if (enable_unittests) {
       "rustflutter/src/mergeable_material.rs",
       "rustflutter/src/motion.rs",
       "rustflutter/src/multidrag.rs",
+      "rustflutter/src/multitap.rs",
       "rustflutter/src/navigation.rs",
       "rustflutter/src/navigation_destinations.rs",
       "rustflutter/src/overflow_bar.rs",

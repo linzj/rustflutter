@@ -56,9 +56,8 @@ use crate::list_wheel::{
 use crate::platform::Brightness;
 use crate::render::{
     Alignment, BoxConstraints, BoxedRender, CrossAxisAlignment, EdgeInsets, FlexChild,
-    HitTestResult, MainAxisSize, Offset, PaintContext, RenderBox, RenderClipRect,
-    RenderConstrainedBox, RenderFlex, RenderOpacity, RenderRef, RenderStack, Size, StackPosition,
-    TextOverflow,
+    MainAxisSize, Offset, PaintContext, RenderBox, RenderClipRect, RenderConstrainedBox,
+    RenderFlex, RenderOpacity, RenderRef, RenderStack, Size, StackPosition, TextOverflow,
 };
 use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, Text};
 
@@ -4313,6 +4312,7 @@ impl CupertinoCheckbox {
 mod tests {
     use super::*;
     use crate::framework::{ElementTree, component, provide};
+    use crate::render::HitTestResult;
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
         let mut tree = ElementTree::new();

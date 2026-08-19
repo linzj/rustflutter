@@ -164,6 +164,57 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 文档说「立刻」,代码说「永不」(2026-08-20)
+
+新模块 `multitap.rs`,补上 `gestures/multitap.dart` 剩下的两个:
+`MultiTapGestureRecognizer` 和 `SerialTapGestureRecognizer`,连同上游私有的 `_TapTracker`
+和 `_TapGesture`。
+
+**两个都在数点击,而它们对「第二根手指是什么意思」的回答正相反**,这就是它们的全部区别:
+
+* `MultiTapGestureRecognizer` **每根手指各算一次点击**。上游自己的例子最清楚:down-1、
+  down-2、up-1、up-2 产生**两次**点击,一次在 up-1、一次在 up-2。钢琴键盘要的是这个。
+* `SerialTapGestureRecognizer` 数的是**一串**里的第几次,而中途来的第二根手指不是延长这一
+  串,是终结它。文本框「单击选词、双击选段」要的是这个。
+
+**上游的文档和上游的代码在这里对不上。** `longTapDelay` 的文档写着「默认是
+`Duration.zero`,意思是 `onLongTapDown` 在 `onTapDown` 之后立刻被调用」;而构造函数里那行
+是 `if (longTapDelay > Duration.zero) { _timer = Timer(...) }`——**默认值下根本不会建这个
+timer,`_dispatchLongTap` 永远到不了**。按代码搬,用一条回归行钉住;两者之中,代码才是所
+有现有调用方一直跑着的那个。
+
+**回归行盯的地方(MultiTap):**
+
+* 上游那个例子,一字不差。
+* **`onTapDown` 在按下时就发,不等仲裁场**——等仲裁场意味着琴键在手指已经离开之后才亮。
+* 一次点击要**赢下仲裁场**和**手指抬起**两件事,谁先谁后都测了:赢了不够(手指还按着),
+  抬起也不够(仲裁场没说话前,这一下仍可能属于某个拖拽)。
+* 一根走远的手指**只取消自己那一次**,别人的照样成立。
+* **长按报的是手指现在的位置,不是按下时的位置**;而且长按**不结束这次手势**,抬手时那次
+  普通点击照样发生。
+
+**回归行盯的地方(SerialTap):**
+
+* 连着三下数成 1、2、3。
+* **没有任何回调的识别器不参赛**(`isPointerAllowed`)——否则它会进每一个仲裁场,还可能赢
+  下来,把手势从真会处理它的那个识别器手里夺走。
+* 换个地方点、换个键点,都是新的一串。
+* **两下挨得太近是同一根手指在闪**:上游 `hasElapsedMinTime` 的注释说触摸屏常常断续地检测到
+  触摸,所以 40ms 以内的第二次按下是硬件噪声,不是读者点了两下。
+* **第二根手指终结这一串而不是延长它**——两根手指不是一次双击。
+* 一串会自己超时,然后从 1 重新数。
+* **被取消的第三下报的是「第三」。** 上游在 `_rejectPendingTap` 里专门标了语句顺序:取消要
+  在通知仲裁场**之前**发,因为通知仲裁场可能重入 `reset`,而那会把取消要报的那个计数清掉。
+* 一个被判负的指针**连带整串一起结束**,不只是它自己那一次。
+
+**顺带清掉的两条警告:** 上一轮搬家留下的 `RenderListWheel` 比 `ListWheelViewport::render`
+更私有(提为 `pub`——它本来就是一个搬过来的渲染对象),以及 `cupertino.rs` 里只剩测试在用的
+`HitTestResult` 导入(挪进测试模块)。
+
+验证:`cargo test --lib` 1682 绿,GN `rustflutter_unittests` 1682 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1340 accounted / 548 MISSING。
+
 ### 没有数量的轮子,也没有下界(2026-08-20)
 
 `ListWheelScrollView`、`ListWheelElement`、`ListWheelViewport` 三个补齐,

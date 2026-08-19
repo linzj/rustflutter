@@ -70,6 +70,7 @@ pub mod menu;
 pub mod mergeable_material;
 pub mod motion;
 pub mod multidrag;
+pub mod multitap;
 pub mod navigation;
 pub mod navigation_destinations;
 pub mod overflow_bar;

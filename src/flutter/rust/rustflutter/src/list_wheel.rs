@@ -1073,22 +1073,22 @@ pub(crate) fn inside_magnifier_band(
 /// The wheel's render object: fixed-extent children laid out flat and painted
 /// through the cylindrical projection. `RenderListWheelViewport`, reduced to
 /// a vertical, non-looping wheel.
-pub(crate) struct RenderListWheel {
-    pub(crate) children: Vec<BoxedRender>,
+pub struct RenderListWheel {
+    pub children: Vec<BoxedRender>,
     /// The index `children[0]` stands for.
-    pub(crate) first_index: usize,
-    pub(crate) item_extent: f32,
-    pub(crate) offset: f32,
-    pub(crate) diameter_ratio: f32,
-    pub(crate) squeeze: f32,
+    pub first_index: usize,
+    pub item_extent: f32,
+    pub offset: f32,
+    pub diameter_ratio: f32,
+    pub squeeze: f32,
     /// 1.0 when the magnifier is off.
-    pub(crate) magnification: f32,
+    pub magnification: f32,
     /// Upstream's `perspective`. Was the picker's constant while this lived in
     /// `cupertino.rs`; upstream's render object has always had it as a
     /// parameter, and now that two widgets share the object it has to be one.
-    pub(crate) perspective: f32,
-    pub(crate) viewport_sink: Rc<Cell<f32>>,
-    pub(crate) laid_out: Size,
+    pub perspective: f32,
+    pub viewport_sink: Rc<Cell<f32>>,
+    pub laid_out: Size,
 }
 
 impl RenderBox for RenderListWheel {
