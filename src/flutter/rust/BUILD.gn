@@ -175,6 +175,7 @@ if (enable_unittests) {
       "rustflutter/src/scrollbar.rs",
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/selection.rs",
+      "rustflutter/src/selection_container.rs",
       "rustflutter/src/semantics.rs",
       "rustflutter/src/services/asset_bundle.rs",
       "rustflutter/src/services/asset_manifest.rs",
