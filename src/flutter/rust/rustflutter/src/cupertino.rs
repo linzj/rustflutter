@@ -49,6 +49,10 @@ use crate::framework::{
     stateful,
 };
 use crate::gestures::PointerHandlers;
+use crate::list_wheel::{
+    RenderListWheel, angle_for, index_to_scroll_offset, inside_magnifier_band, max_visible_radian,
+    project_center, project_scale_y, scroll_offset_to_index,
+};
 use crate::platform::Brightness;
 use crate::render::{
     Alignment, BoxConstraints, BoxedRender, CrossAxisAlignment, EdgeInsets, FlexChild,
@@ -2320,79 +2324,6 @@ pub const PICKER_OFF_CENTER_OPACITY: f32 = 0.447;
 /// `_kCupertinoPickerTapToScrollCurve`.
 const PICKER_TAP_SCROLL_MICROS: i64 = 300_000;
 
-/// The largest |angle| an item at the edge of the visible cylinder reaches.
-/// `RenderListWheelViewport._maxVisibleRadian`.
-fn max_visible_radian(diameter_ratio: f32) -> f32 {
-    if diameter_ratio < 1.0 {
-        std::f32::consts::FRAC_PI_2
-    } else {
-        (1.0 / diameter_ratio).asin()
-    }
-}
-
-/// `RenderListWheelViewport.scrollOffsetToIndex` / `indexToScrollOffset`.
-pub fn scroll_offset_to_index(offset: f32, item_extent: f32) -> i32 {
-    (offset / item_extent).floor() as i32
-}
-
-pub fn index_to_scroll_offset(index: usize, item_extent: f32) -> f32 {
-    index as f32 * item_extent
-}
-
-/// The angle a child is at, given where its center falls in the viewport.
-/// `_paintTransformedChild`'s `angle` computation.
-fn angle_for(flat_center_y: f32, height: f32, diameter_ratio: f32, squeeze: f32) -> f32 {
-    let fractional_y = flat_center_y / height;
-    -(fractional_y - 0.5) * 2.0 * max_visible_radian(diameter_ratio) / squeeze
-}
-
-/// Projects a point on the wheel's flat axis onto the screen, and reports the
-/// child's horizontal scale there. This is
-/// `MatrixUtils.createCylindricalProjectionTransform` (vertical orientation)
-/// evaluated at the child's center: the model matrix translates z by the
-/// radius and rotates by `angle` about x, the view steps back by the radius,
-/// and the projection divides by `w = perspective * (radius - z) + 1`.
-///
-/// Returns `(screen_center_y, scale_x)`.
-fn project_center(
-    y_rel: f32,
-    angle: f32,
-    radius: f32,
-    height: f32,
-    perspective: f32,
-) -> (f32, f32) {
-    let (sin, cos) = angle.sin_cos();
-    let y1 = y_rel * cos - radius * sin;
-    let z1 = y_rel * sin + radius * cos;
-    let w = perspective * (radius - z1) + 1.0;
-    (height / 2.0 + y1 / w, 1.0 / w)
-}
-
-/// The vertical scale of a child at `y_rel`, sampled over a pixel rather than
-/// derived: the projected slope has no tidy closed form once the perspective
-/// divide is in, and the difference quotient is what the transform itself
-/// would do to the child's top and bottom edges.
-fn project_scale_y(y_rel: f32, angle: f32, radius: f32, height: f32, perspective: f32) -> f32 {
-    let above = project_center(y_rel - 0.5, angle, radius, height, perspective).0;
-    let below = project_center(y_rel + 0.5, angle, radius, height, perspective).0;
-    below - above
-}
-
-/// Whether a child is wholly inside the magnifier band: its projected band
-/// sits within `itemExtent * magnification / 2` of the viewport's center,
-/// which is the band `_paintChildWithMagnifier` clips to. Upstream paints a
-/// partially intersecting child twice -- once plain, once magnified and
-/// clipped to the band; here the child is magnified only when wholly inside,
-/// and dimmed otherwise, a stepwise version of the same ramp.
-fn inside_magnifier_band(
-    screen_center_y: f32,
-    height: f32,
-    item_extent: f32,
-    magnification: f32,
-) -> bool {
-    (screen_center_y - height / 2.0).abs() + item_extent / 2.0 <= item_extent * magnification / 2.0
-}
-
 /// What a [`CupertinoPicker`] remembers between frames.
 ///
 /// The `Default` derives with an empty scroll; [`CupertinoPicker`]'s
@@ -2776,6 +2707,7 @@ impl StatefulComponent for CupertinoPicker {
                 diameter_ratio,
                 squeeze,
                 magnification: if use_magnifier { magnification } else { 1.0 },
+                perspective: PICKER_PERSPECTIVE,
                 viewport_sink: viewport.clone(),
                 laid_out: Size::ZERO,
             };
@@ -2804,129 +2736,6 @@ impl StatefulComponent for CupertinoPicker {
             }
             Pointer::new(id, container).with_handlers(handlers.clone())
         })
-    }
-}
-
-/// The wheel's render object: fixed-extent children laid out flat and painted
-/// through the cylindrical projection. `RenderListWheelViewport`, reduced to
-/// a vertical, non-looping wheel.
-struct RenderListWheel {
-    children: Vec<BoxedRender>,
-    /// The index `children[0]` stands for.
-    first_index: usize,
-    item_extent: f32,
-    offset: f32,
-    diameter_ratio: f32,
-    squeeze: f32,
-    /// 1.0 when the magnifier is off.
-    magnification: f32,
-    viewport_sink: Rc<Cell<f32>>,
-    laid_out: Size,
-}
-
-impl RenderBox for RenderListWheel {
-    /// `sizedByParent`: the wheel is exactly what it is offered.
-    fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let width = if constraints.has_bounded_width() {
-            constraints.max_width
-        } else {
-            constraints.min_width
-        };
-        let height = if constraints.has_bounded_height() {
-            constraints.max_height
-        } else {
-            constraints.min_height
-        };
-        self.laid_out = Size::new(width, height);
-        self.viewport_sink.set(height);
-        for child in &mut self.children {
-            // `_layoutChild`: the item extent, tight; the cross axis loose.
-            child.layout_child(
-                BoxConstraints::new(0.0, width, self.item_extent, self.item_extent),
-                true,
-            );
-        }
-        self.laid_out
-    }
-
-    fn size(&self) -> Size {
-        self.laid_out
-    }
-
-    fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        let height = self.laid_out.height;
-        if height <= 0.0 {
-            return;
-        }
-        let radius = height * self.diameter_ratio / 2.0;
-        for (i, child) in self.children.iter().enumerate() {
-            let index = self.first_index + i;
-            let flat_center =
-                index as f32 * self.item_extent + self.item_extent / 2.0 - self.offset;
-            let angle = angle_for(flat_center, height, self.diameter_ratio, self.squeeze);
-            // The backside of the cylinder is not painted.
-            if angle.abs() > std::f32::consts::FRAC_PI_2 {
-                continue;
-            }
-            let y_rel = flat_center - height / 2.0;
-            let (screen_y, mut sx) =
-                project_center(y_rel, angle, radius, height, PICKER_PERSPECTIVE);
-            let mut sy = project_scale_y(y_rel, angle, radius, height, PICKER_PERSPECTIVE);
-            if self.magnification > 1.0
-                && inside_magnifier_band(screen_y, height, self.item_extent, self.magnification)
-            {
-                sx *= self.magnification;
-                sy *= self.magnification;
-            }
-            let child_size = child.size();
-            // Scale about the child's center, placed at its projected
-            // position: `push_transform`'s pivot form.
-            let pivot = Offset::new(child_size.width / 2.0, child_size.height / 2.0);
-            let at = Offset::new(
-                offset.dx + (self.laid_out.width - child_size.width) / 2.0,
-                offset.dy + screen_y - child_size.height / 2.0,
-            );
-            context.push_transform([sx, 0.0, 0.0, sy, 0.0, 0.0], pivot, at, child);
-        }
-    }
-
-    /// Hit testing works in flat coordinates: the cylindrical transform is a
-    /// paint-time projection (upstream's `hitTest` would invert it, which the
-    /// 2D affine bridge cannot), and the flat lookup is what the tap handler
-    /// above uses, so the two agree.
-    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        for (i, child) in self.children.iter().enumerate().rev() {
-            let index = self.first_index + i;
-            let child_offset = Offset::new(
-                (self.laid_out.width - child.size().width) / 2.0,
-                index as f32 * self.item_extent - self.offset,
-            );
-            let local = Offset::new(position.dx - child_offset.dx, position.dy - child_offset.dy);
-            if child.hit_test(local, result) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// The wheel itself is a target even between items: the drag region is
-    /// the whole viewport, as upstream's `ListWheelScrollView` is a
-    /// scrollable everywhere.
-    fn hit_test_self(&self, _position: Offset) -> bool {
-        true
-    }
-
-    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
-        for (i, child) in self.children.iter().enumerate() {
-            let index = self.first_index + i;
-            visit(
-                child,
-                Offset::new(
-                    (self.laid_out.width - child.size().width) / 2.0,
-                    index as f32 * self.item_extent - self.offset,
-                ),
-            );
-        }
     }
 }
 
@@ -4834,6 +4643,7 @@ mod tests {
             diameter_ratio: PICKER_DIAMETER_RATIO,
             squeeze: PICKER_SQUEEZE,
             magnification: 1.0,
+            perspective: PICKER_PERSPECTIVE,
             viewport_sink: Rc::new(Cell::new(0.0)),
             laid_out: Size::ZERO,
         };

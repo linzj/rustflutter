@@ -26,8 +26,13 @@ use crate::framework::AnyWidget;
 use crate::physics::{
     FrictionSimulation, Simulation, SpringDescription, SpringSimulation, Tolerance,
 };
-use crate::render::AxisDirection;
+use crate::render::{
+    AxisDirection, BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox,
+    Size,
+};
 use crate::scrolling::Scroll;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 /// Upstream `ChangeReportingBehavior`: when a wheel says which item is
@@ -509,6 +514,688 @@ impl FixedExtentScrollPhysics {
     }
 }
 
+/// Upstream's `RenderListWheelViewport.defaultDiameterRatio`.
+pub const DEFAULT_DIAMETER_RATIO: f32 = 2.0;
+
+/// Upstream's `RenderListWheelViewport.defaultPerspective`. An arbitrary but
+/// aesthetically reasonable value, in upstream's own words.
+pub const DEFAULT_PERSPECTIVE: f32 = 0.003;
+
+/// Upstream's `RenderListWheelViewport.diameterRatioZeroMessage`, kept because
+/// it says *why* zero is refused rather than merely that it is: a cylinder of
+/// zero diameter has nothing to draw on.
+pub const DIAMETER_RATIO_ZERO_MESSAGE: &str = "You can't set a diameterRatio of 0 or of a negative      number. It would imply a cylinder of 0 in diameter in which case nothing will be drawn.";
+
+/// Upstream's `RenderListWheelViewport.perspectiveTooHighMessage`.
+pub const PERSPECTIVE_TOO_HIGH_MESSAGE: &str = "A perspective too high will be clipped in the      z-axis and therefore not renderable. Value must be between 0 and 0.01.";
+
+/// Upstream's
+/// `RenderListWheelViewport.clipBehaviorAndRenderChildrenOutsideViewportConflict`.
+pub const CLIP_AND_RENDER_OUTSIDE_CONFLICT: &str = "Cannot renderChildrenOutsideViewport and clip since children rendered outside will be      clipped anyway.";
+
+// -- The three widgets --------------------------------------------------------
+
+/// Upstream `ListWheelElement`: the thing that decides which children exist and
+/// keeps the live ones contiguous.
+///
+/// Upstream this is an `Element` that also implements `ListWheelChildManager`,
+/// and the manager half is the part with rules in it. This crate has no
+/// elements, so what is ported is the manager: **a widget is built once per
+/// index and remembered, a rebuild forgets everything, and asking whether a
+/// child exists is answered by building it** -- which is how the end of an
+/// unbounded builder's run gets discovered during layout rather than declared
+/// in advance.
+pub struct ListWheelElement {
+    delegate: Rc<dyn ListWheelChildDelegate>,
+    /// Upstream's `_childWidgets`, split in two because `AnyWidget` cannot be
+    /// cloned: what a child *is* can only be handed out once, but **whether**
+    /// there is one at an index is the answer the render object asks for over
+    /// and over during layout, and that is what must not cost a rebuild each
+    /// time.
+    exists: RefCell<HashMap<i64, bool>>,
+    built: RefCell<HashMap<i64, AnyWidget>>,
+    /// Upstream's `_childElements`, a sorted map. Sorted because the invariant
+    /// below is about order.
+    active: RefCell<BTreeSet<i64>>,
+    /// How many times the delegate was actually asked. Upstream's cache exists
+    /// to keep this down; counting it is how the regression lines check that
+    /// it does.
+    builds: Cell<usize>,
+}
+
+impl ListWheelElement {
+    pub fn new(delegate: Rc<dyn ListWheelChildDelegate>) -> ListWheelElement {
+        ListWheelElement {
+            delegate,
+            exists: RefCell::new(HashMap::new()),
+            built: RefCell::new(HashMap::new()),
+            active: RefCell::new(BTreeSet::new()),
+            builds: Cell::new(0),
+        }
+    }
+
+    /// Upstream's `childCount`, straight from the delegate: `None` for a wheel
+    /// with no ends.
+    pub fn child_count(&self) -> Option<usize> {
+        self.delegate.estimated_child_count()
+    }
+
+    /// How many times the delegate has been asked to build since the last
+    /// [`Self::perform_rebuild`].
+    pub fn delegate_builds(&self) -> usize {
+        self.builds.get()
+    }
+
+    fn ensure(&self, index: i64) {
+        if self.exists.borrow().contains_key(&index) {
+            return;
+        }
+        self.builds.set(self.builds.get() + 1);
+        let child = self.delegate.build(index);
+        self.exists.borrow_mut().insert(index, child.is_some());
+        if let Some(child) = child {
+            self.built.borrow_mut().insert(index, child);
+        }
+    }
+
+    /// Upstream's `childExistsAt`, which is `retrieveWidget(index) != null`.
+    ///
+    /// The render object asks this while walking outwards from the centre, and
+    /// the first `false` is where the wheel stops. For a bounded delegate the
+    /// answer is arithmetic; for an unbounded builder it is the builder's own
+    /// verdict, which is why the answer has to come from building.
+    pub fn child_exists_at(&self, index: i64) -> bool {
+        self.ensure(index);
+        self.exists.borrow()[&index]
+    }
+
+    /// Upstream's `createChild`: bring index into the live set and hand back
+    /// its widget.
+    ///
+    /// `after` is the index this one follows, or `None` to insert first --
+    /// upstream asserts that the predecessor is already live, because the live
+    /// set is a contiguous run and inserting into a hole would break it.
+    pub fn create_child(&self, index: i64, after: Option<i64>) -> Option<AnyWidget> {
+        debug_assert!(
+            after.is_none_or(|after| self.active.borrow().contains(&after)),
+            "a child may only be created after one that is already live"
+        );
+        self.ensure(index);
+        match self.built.borrow_mut().remove(&index) {
+            Some(child) => {
+                self.active.borrow_mut().insert(index);
+                Some(child)
+            }
+            None => {
+                if self.exists.borrow()[&index] {
+                    // Handed out already and asked for again: build it afresh
+                    // rather than hand out nothing. Upstream returns the same
+                    // cached widget instance here; this crate's widgets are
+                    // not shareable, so an equal one is the closest thing.
+                    self.builds.set(self.builds.get() + 1);
+                    let child = self.delegate.build(index);
+                    if child.is_some() {
+                        self.active.borrow_mut().insert(index);
+                    }
+                    child
+                } else {
+                    self.active.borrow_mut().remove(&index);
+                    None
+                }
+            }
+        }
+    }
+
+    /// Upstream's `removeChild`.
+    pub fn remove_child(&self, index: i64) {
+        self.active.borrow_mut().remove(&index);
+    }
+
+    /// The live indices, in order.
+    pub fn active_indices(&self) -> Vec<i64> {
+        self.active.borrow().iter().copied().collect()
+    }
+
+    /// Upstream's `performRebuild`.
+    ///
+    /// The cache is cleared -- that is the whole point of a rebuild -- and then
+    /// the live run is walked from its first index to its last, dropping any
+    /// index whose child has stopped existing. Walking the *span* rather than
+    /// the set is upstream's own loop, and it is what makes a shrinking builder
+    /// let go of its tail.
+    pub fn perform_rebuild(&self) {
+        self.exists.borrow_mut().clear();
+        self.built.borrow_mut().clear();
+        self.builds.set(0);
+        let live = self.active_indices();
+        let (Some(&first), Some(&last)) = (live.first(), live.last()) else {
+            return;
+        };
+        for index in first..=last {
+            if self.child_exists_at(index) {
+                self.active.borrow_mut().insert(index);
+            } else {
+                self.active.borrow_mut().remove(&index);
+            }
+        }
+    }
+
+    /// Upstream's `moveRenderObjectChild`, which is an assertion that this
+    /// never happens, with its message kept.
+    ///
+    /// The live set is a contiguous increasing run and everything above relies
+    /// on it, so there is no such thing as moving one child within it.
+    pub fn move_child(&self, _old_index: i64, _new_index: i64) {
+        debug_assert!(
+            false,
+            "Currently we maintain the list in contiguous increasing order, so \
+             moving children around is not allowed."
+        );
+    }
+}
+
+/// Upstream `ListWheelViewport`: the wheel's parameters, and the render object
+/// they configure.
+///
+/// Upstream this is a `RenderObjectWidget` whose element is
+/// [`ListWheelElement`]. Here it carries the same parameters, validates them
+/// the same way, and builds the same render object.
+pub struct ListWheelViewport {
+    pub item_extent: f32,
+    pub diameter_ratio: f32,
+    pub perspective: f32,
+    pub magnification: f32,
+    pub use_magnifier: bool,
+    pub over_and_under_center_opacity: f32,
+    pub squeeze: f32,
+    pub render_children_outside_viewport: bool,
+    pub clip: bool,
+}
+
+impl ListWheelViewport {
+    pub fn new(item_extent: f32) -> ListWheelViewport {
+        ListWheelViewport {
+            item_extent,
+            diameter_ratio: DEFAULT_DIAMETER_RATIO,
+            perspective: DEFAULT_PERSPECTIVE,
+            magnification: 1.0,
+            use_magnifier: false,
+            over_and_under_center_opacity: 1.0,
+            squeeze: 1.0,
+            render_children_outside_viewport: false,
+            clip: true,
+        }
+    }
+
+    pub fn with_diameter_ratio(mut self, diameter_ratio: f32) -> Self {
+        self.diameter_ratio = diameter_ratio;
+        self
+    }
+
+    pub fn with_perspective(mut self, perspective: f32) -> Self {
+        self.perspective = perspective;
+        self
+    }
+
+    pub fn with_squeeze(mut self, squeeze: f32) -> Self {
+        self.squeeze = squeeze;
+        self
+    }
+
+    pub fn with_magnifier(mut self, magnification: f32) -> Self {
+        self.use_magnifier = true;
+        self.magnification = magnification;
+        self
+    }
+
+    pub fn with_over_and_under_center_opacity(mut self, opacity: f32) -> Self {
+        self.over_and_under_center_opacity = opacity;
+        self
+    }
+
+    pub fn with_children_outside_viewport(mut self, render_outside: bool) -> Self {
+        self.render_children_outside_viewport = render_outside;
+        self
+    }
+
+    pub fn with_clip(mut self, clip: bool) -> Self {
+        self.clip = clip;
+        self
+    }
+
+    /// Upstream's constructor assertions, gathered.
+    ///
+    /// Returns the message upstream would have asserted with, or `None` if the
+    /// parameters are usable. They are kept as *messages* rather than as bare
+    /// conditions because each one says why: a cylinder of zero diameter has
+    /// nothing to draw on, a perspective over a hundredth is clipped away in
+    /// z, and clipping a wheel that was asked to draw outside itself throws
+    /// away exactly what it was asked for.
+    pub fn validate(&self) -> Option<&'static str> {
+        if self.diameter_ratio <= 0.0 {
+            return Some(DIAMETER_RATIO_ZERO_MESSAGE);
+        }
+        if self.perspective <= 0.0 || self.perspective > 0.01 {
+            return Some(PERSPECTIVE_TOO_HIGH_MESSAGE);
+        }
+        if self.magnification <= 0.0 {
+            return Some("magnification must be positive");
+        }
+        if !(0.0..=1.0).contains(&self.over_and_under_center_opacity) {
+            return Some("overAndUnderCenterOpacity must be between 0 and 1");
+        }
+        if self.item_extent <= 0.0 {
+            return Some("itemExtent must be positive");
+        }
+        if self.squeeze <= 0.0 {
+            return Some("squeeze must be positive");
+        }
+        if self.render_children_outside_viewport && self.clip {
+            return Some(CLIP_AND_RENDER_OUTSIDE_CONFLICT);
+        }
+        None
+    }
+
+    /// How tall a slice of the wheel is live at a given viewport height:
+    /// upstream's `performLayout`, which multiplies by the squeeze because a
+    /// squeezed wheel packs more items into the same height.
+    pub fn visible_extent(&self, viewport_height: f32) -> f32 {
+        viewport_height * self.squeeze
+    }
+
+    /// The window of indices the wheel would lay out at this offset, before
+    /// the delegate is consulted about which of them exist.
+    pub fn visible_window(&self, offset: f32, viewport_height: f32) -> (i64, i64) {
+        let visible = self.visible_extent(viewport_height);
+        let half = self.item_extent / 2.0;
+        (
+            scroll_offset_to_index(offset + half - visible / 2.0, self.item_extent) as i64,
+            scroll_offset_to_index(offset + half + visible / 2.0, self.item_extent) as i64,
+        )
+    }
+
+    /// The render object this widget configures.
+    pub fn render(
+        &self,
+        children: Vec<BoxedRender>,
+        first_index: usize,
+        offset: f32,
+        viewport_sink: Rc<Cell<f32>>,
+    ) -> RenderListWheel {
+        RenderListWheel {
+            children,
+            first_index,
+            item_extent: self.item_extent,
+            offset,
+            diameter_ratio: self.diameter_ratio,
+            squeeze: self.squeeze,
+            magnification: if self.use_magnifier {
+                self.magnification
+            } else {
+                1.0
+            },
+            perspective: self.perspective,
+            viewport_sink,
+            laid_out: Size::ZERO,
+        }
+    }
+}
+
+/// Upstream `ListWheelScrollView`: the wheel, the scrolling and the reporting.
+///
+/// The reporting is the part with judgement in it, and it is ported here whole
+/// -- see [`Self::report_selected`]. The scrolling itself is this crate's
+/// [`Scroll`] driven by [`FixedExtentScrollPhysics`], and the drawing is
+/// [`ListWheelViewport`].
+pub struct ListWheelScrollView {
+    pub viewport: ListWheelViewport,
+    pub delegate: Rc<dyn ListWheelChildDelegate>,
+    pub controller: FixedExtentScrollController,
+    pub change_reporting_behavior: ChangeReportingBehavior,
+    on_selected_item_changed: Option<Rc<dyn Fn(i64)>>,
+}
+
+impl ListWheelScrollView {
+    pub fn new(
+        viewport: ListWheelViewport,
+        delegate: Rc<dyn ListWheelChildDelegate>,
+    ) -> ListWheelScrollView {
+        let item_extent = viewport.item_extent;
+        ListWheelScrollView {
+            viewport,
+            delegate,
+            controller: FixedExtentScrollController::new(item_extent),
+            // Upstream's default, which is not the enum's first member: a
+            // wheel that only spoke at the end of a scroll would leave a
+            // caller redrawing a label one gesture late.
+            change_reporting_behavior: ChangeReportingBehavior::OnScrollUpdate,
+            on_selected_item_changed: None,
+        }
+    }
+
+    pub fn with_controller(mut self, controller: FixedExtentScrollController) -> Self {
+        self.controller = controller;
+        self
+    }
+
+    pub fn with_change_reporting_behavior(mut self, behavior: ChangeReportingBehavior) -> Self {
+        self.change_reporting_behavior = behavior;
+        self
+    }
+
+    pub fn on_selected_item_changed(mut self, on_changed: impl Fn(i64) + 'static) -> Self {
+        self.on_selected_item_changed = Some(Rc::new(on_changed));
+        self
+    }
+
+    /// Where a fresh wheel starts, and what it will claim was already selected
+    /// -- upstream's `initState`, which seeds `_lastReportedItemIndex` from the
+    /// controller rather than from zero.
+    ///
+    /// Without that seeding a wheel opened on item seven would announce item
+    /// seven the moment it was built, and a caller listening for a *change*
+    /// would act on something the reader had not done.
+    pub fn initial_reported_item(&self) -> i64 {
+        self.controller.initial_item
+    }
+
+    /// Upstream's `_handleScrollNotification` and `_reportSelectedItemChanged`,
+    /// together.
+    ///
+    /// `last_reported` is updated in place, and the true index is returned when
+    /// there is something to report. Three rules, all upstream's:
+    ///
+    /// * the notification's kind has to match the configured behaviour -- an
+    ///   update for `OnScrollUpdate`, an end for `OnScrollEnd`;
+    /// * nothing is said unless the index actually changed;
+    /// * and what is reported is the **true** index, through the delegate. A
+    ///   looping wheel's scroll position counts upwards forever, so without
+    ///   this a reader spinning past the end would be told they had selected
+    ///   item 137 of a list of twelve.
+    pub fn report_selected(
+        &self,
+        metrics: &FixedExtentMetrics,
+        at_scroll_end: bool,
+        last_reported: &mut i64,
+    ) -> Option<i64> {
+        let wanted = match self.change_reporting_behavior {
+            ChangeReportingBehavior::OnScrollEnd => at_scroll_end,
+            ChangeReportingBehavior::OnScrollUpdate => !at_scroll_end,
+        };
+        if !wanted || self.on_selected_item_changed.is_none() {
+            return None;
+        }
+        if metrics.item_index == *last_reported {
+            return None;
+        }
+        *last_reported = metrics.item_index;
+        let true_index = self.delegate.true_index_of(metrics.item_index);
+        if let Some(on_changed) = &self.on_selected_item_changed {
+            on_changed(true_index);
+        }
+        Some(true_index)
+    }
+
+    /// The ballistic the wheel is given when a fling ends, from the physics
+    /// ported above rather than from an ease-out standing in for it.
+    pub fn ballistic(
+        &self,
+        metrics: &FixedExtentMetrics,
+        velocity: f32,
+    ) -> Option<Box<dyn Simulation>> {
+        FixedExtentScrollPhysics::new().create_ballistic_simulation(
+            metrics,
+            self.viewport.item_extent,
+            velocity,
+        )
+    }
+
+    /// The metrics for a given scroll offset, which is what the reporting and
+    /// the ballistic both read.
+    ///
+    /// **A wheel with no count has no floor either.** Upstream's
+    /// `RenderListWheelViewport._minEstimatedScrollExtent` returns negative
+    /// infinity when the child manager reports no count, and the maximum
+    /// returns positive infinity -- so a looping wheel is unbounded in *both*
+    /// directions. Giving it a floor of zero would stop it dead the first time
+    /// a reader spun it upwards past its first item, which is precisely the
+    /// thing a looping wheel exists to allow.
+    pub fn metrics(
+        &self,
+        offset: f32,
+        viewport_height: f32,
+        item_count: Option<usize>,
+    ) -> FixedExtentMetrics {
+        let (min, max) = match item_count {
+            Some(count) => (
+                0.0,
+                (count.saturating_sub(1)) as f32 * self.viewport.item_extent,
+            ),
+            None => (f32::NEG_INFINITY, f32::INFINITY),
+        };
+        FixedExtentMetrics::new(
+            min,
+            max,
+            offset,
+            viewport_height,
+            item_from_offset(offset, self.viewport.item_extent, min, max),
+        )
+    }
+}
+
+// -- The wheel's geometry -----------------------------------------------------
+//
+// Moved here from `cupertino.rs`, where it was private to `CupertinoPicker`.
+// Upstream it lives one layer below the widget that uses it, in
+// `rendering/list_wheel_viewport.dart` and `painting/matrix_utils.dart`, and
+// two widgets need it now rather than one -- upstream's `CupertinoPicker` is
+// itself built on `ListWheelScrollView`.
+
+/// The largest |angle| an item at the edge of the visible cylinder reaches.
+/// `RenderListWheelViewport._maxVisibleRadian`.
+pub(crate) fn max_visible_radian(diameter_ratio: f32) -> f32 {
+    if diameter_ratio < 1.0 {
+        std::f32::consts::FRAC_PI_2
+    } else {
+        (1.0 / diameter_ratio).asin()
+    }
+}
+
+/// `RenderListWheelViewport.scrollOffsetToIndex` / `indexToScrollOffset`.
+pub fn scroll_offset_to_index(offset: f32, item_extent: f32) -> i32 {
+    (offset / item_extent).floor() as i32
+}
+
+pub fn index_to_scroll_offset(index: usize, item_extent: f32) -> f32 {
+    index as f32 * item_extent
+}
+
+/// The angle a child is at, given where its center falls in the viewport.
+/// `_paintTransformedChild`'s `angle` computation.
+pub(crate) fn angle_for(flat_center_y: f32, height: f32, diameter_ratio: f32, squeeze: f32) -> f32 {
+    let fractional_y = flat_center_y / height;
+    -(fractional_y - 0.5) * 2.0 * max_visible_radian(diameter_ratio) / squeeze
+}
+
+/// Projects a point on the wheel's flat axis onto the screen, and reports the
+/// child's horizontal scale there. This is
+/// `MatrixUtils.createCylindricalProjectionTransform` (vertical orientation)
+/// evaluated at the child's center: the model matrix translates z by the
+/// radius and rotates by `angle` about x, the view steps back by the radius,
+/// and the projection divides by `w = perspective * (radius - z) + 1`.
+///
+/// Returns `(screen_center_y, scale_x)`.
+pub(crate) fn project_center(
+    y_rel: f32,
+    angle: f32,
+    radius: f32,
+    height: f32,
+    perspective: f32,
+) -> (f32, f32) {
+    let (sin, cos) = angle.sin_cos();
+    let y1 = y_rel * cos - radius * sin;
+    let z1 = y_rel * sin + radius * cos;
+    let w = perspective * (radius - z1) + 1.0;
+    (height / 2.0 + y1 / w, 1.0 / w)
+}
+
+/// The vertical scale of a child at `y_rel`, sampled over a pixel rather than
+/// derived: the projected slope has no tidy closed form once the perspective
+/// divide is in, and the difference quotient is what the transform itself
+/// would do to the child's top and bottom edges.
+pub(crate) fn project_scale_y(
+    y_rel: f32,
+    angle: f32,
+    radius: f32,
+    height: f32,
+    perspective: f32,
+) -> f32 {
+    let above = project_center(y_rel - 0.5, angle, radius, height, perspective).0;
+    let below = project_center(y_rel + 0.5, angle, radius, height, perspective).0;
+    below - above
+}
+
+/// Whether a child is wholly inside the magnifier band: its projected band
+/// sits within `itemExtent * magnification / 2` of the viewport's center,
+/// which is the band `_paintChildWithMagnifier` clips to. Upstream paints a
+/// partially intersecting child twice -- once plain, once magnified and
+/// clipped to the band; here the child is magnified only when wholly inside,
+/// and dimmed otherwise, a stepwise version of the same ramp.
+pub(crate) fn inside_magnifier_band(
+    screen_center_y: f32,
+    height: f32,
+    item_extent: f32,
+    magnification: f32,
+) -> bool {
+    (screen_center_y - height / 2.0).abs() + item_extent / 2.0 <= item_extent * magnification / 2.0
+}
+
+/// The wheel's render object: fixed-extent children laid out flat and painted
+/// through the cylindrical projection. `RenderListWheelViewport`, reduced to
+/// a vertical, non-looping wheel.
+pub(crate) struct RenderListWheel {
+    pub(crate) children: Vec<BoxedRender>,
+    /// The index `children[0]` stands for.
+    pub(crate) first_index: usize,
+    pub(crate) item_extent: f32,
+    pub(crate) offset: f32,
+    pub(crate) diameter_ratio: f32,
+    pub(crate) squeeze: f32,
+    /// 1.0 when the magnifier is off.
+    pub(crate) magnification: f32,
+    /// Upstream's `perspective`. Was the picker's constant while this lived in
+    /// `cupertino.rs`; upstream's render object has always had it as a
+    /// parameter, and now that two widgets share the object it has to be one.
+    pub(crate) perspective: f32,
+    pub(crate) viewport_sink: Rc<Cell<f32>>,
+    pub(crate) laid_out: Size,
+}
+
+impl RenderBox for RenderListWheel {
+    /// `sizedByParent`: the wheel is exactly what it is offered.
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let width = if constraints.has_bounded_width() {
+            constraints.max_width
+        } else {
+            constraints.min_width
+        };
+        let height = if constraints.has_bounded_height() {
+            constraints.max_height
+        } else {
+            constraints.min_height
+        };
+        self.laid_out = Size::new(width, height);
+        self.viewport_sink.set(height);
+        for child in &mut self.children {
+            // `_layoutChild`: the item extent, tight; the cross axis loose.
+            child.layout_child(
+                BoxConstraints::new(0.0, width, self.item_extent, self.item_extent),
+                true,
+            );
+        }
+        self.laid_out
+    }
+
+    fn size(&self) -> Size {
+        self.laid_out
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        let height = self.laid_out.height;
+        if height <= 0.0 {
+            return;
+        }
+        let radius = height * self.diameter_ratio / 2.0;
+        for (i, child) in self.children.iter().enumerate() {
+            let index = self.first_index + i;
+            let flat_center =
+                index as f32 * self.item_extent + self.item_extent / 2.0 - self.offset;
+            let angle = angle_for(flat_center, height, self.diameter_ratio, self.squeeze);
+            // The backside of the cylinder is not painted.
+            if angle.abs() > std::f32::consts::FRAC_PI_2 {
+                continue;
+            }
+            let y_rel = flat_center - height / 2.0;
+            let (screen_y, mut sx) = project_center(y_rel, angle, radius, height, self.perspective);
+            let mut sy = project_scale_y(y_rel, angle, radius, height, self.perspective);
+            if self.magnification > 1.0
+                && inside_magnifier_band(screen_y, height, self.item_extent, self.magnification)
+            {
+                sx *= self.magnification;
+                sy *= self.magnification;
+            }
+            let child_size = child.size();
+            // Scale about the child's center, placed at its projected
+            // position: `push_transform`'s pivot form.
+            let pivot = Offset::new(child_size.width / 2.0, child_size.height / 2.0);
+            let at = Offset::new(
+                offset.dx + (self.laid_out.width - child_size.width) / 2.0,
+                offset.dy + screen_y - child_size.height / 2.0,
+            );
+            context.push_transform([sx, 0.0, 0.0, sy, 0.0, 0.0], pivot, at, child);
+        }
+    }
+
+    /// Hit testing works in flat coordinates: the cylindrical transform is a
+    /// paint-time projection (upstream's `hitTest` would invert it, which the
+    /// 2D affine bridge cannot), and the flat lookup is what the tap handler
+    /// above uses, so the two agree.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        for (i, child) in self.children.iter().enumerate().rev() {
+            let index = self.first_index + i;
+            let child_offset = Offset::new(
+                (self.laid_out.width - child.size().width) / 2.0,
+                index as f32 * self.item_extent - self.offset,
+            );
+            let local = Offset::new(position.dx - child_offset.dx, position.dy - child_offset.dy);
+            if child.hit_test(local, result) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The wheel itself is a target even between items: the drag region is
+    /// the whole viewport, as upstream's `ListWheelScrollView` is a
+    /// scrollable everywhere.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        true
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for (i, child) in self.children.iter().enumerate() {
+            let index = self.first_index + i;
+            visit(
+                child,
+                Offset::new(
+                    (self.laid_out.width - child.size().width) / 2.0,
+                    index as f32 * self.item_extent - self.offset,
+                ),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,5 +1506,281 @@ mod tests {
         assert_eq!(moved.axis_direction, AxisDirection::Right);
         assert_eq!(moved.device_pixel_ratio, 2.0);
         assert_eq!(metrics.copy_with(None, None), metrics);
+    }
+
+    fn counting_builder(
+        count: Option<usize>,
+    ) -> (Rc<RefCell<Vec<i64>>>, Rc<dyn ListWheelChildDelegate>) {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let seen = asked.clone();
+        let mut delegate = ListWheelChildBuilderDelegate::new(Rc::new(move |index| {
+            seen.borrow_mut().push(index);
+            Some(crate::framework::leaf(|| Empty))
+        }));
+        if let Some(count) = count {
+            delegate = delegate.with_child_count(count);
+        }
+        (asked, Rc::new(delegate))
+    }
+
+    #[test]
+    fn asking_twice_whether_a_child_exists_builds_it_once() {
+        // What upstream's widget cache is for. The render object asks this
+        // while walking outwards from the centre, repeatedly, and a delegate
+        // is free to be expensive.
+        let (asked, delegate) = counting_builder(Some(10));
+        let element = ListWheelElement::new(delegate);
+        assert!(element.child_exists_at(3));
+        assert!(element.child_exists_at(3));
+        assert!(element.child_exists_at(3));
+        assert_eq!(*asked.borrow(), vec![3]);
+        assert_eq!(element.delegate_builds(), 1);
+    }
+
+    #[test]
+    fn the_end_of_an_unbounded_run_is_found_by_asking_rather_than_declared() {
+        // A builder delegate with no count says where it ends by returning
+        // nothing, and that is the answer the wheel stops at.
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildBuilderDelegate::new(Rc::new(|index| {
+                (0..4)
+                    .contains(&index)
+                    .then(|| crate::framework::leaf(|| Empty))
+            })));
+        let element = ListWheelElement::new(delegate);
+        assert_eq!(element.child_count(), None, "the count is not known");
+        assert!(element.child_exists_at(3));
+        assert!(!element.child_exists_at(4));
+    }
+
+    #[test]
+    fn a_looping_wheel_reports_no_count_at_all() {
+        let element =
+            ListWheelElement::new(Rc::new(ListWheelChildLoopingListDelegate::new(children(5))));
+        assert_eq!(element.child_count(), None);
+        assert!(element.child_exists_at(-40));
+        assert!(element.child_exists_at(40));
+    }
+
+    #[test]
+    fn a_rebuild_forgets_the_cache_and_lets_go_of_a_vanished_tail() {
+        // Upstream's performRebuild walks the live *span* rather than the live
+        // set, so an index whose child has stopped existing is dropped. A
+        // builder whose count shrinks is exactly that case.
+        let count = Rc::new(Cell::new(6usize));
+        let live = count.clone();
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildBuilderDelegate::new(Rc::new(move |index| {
+                (index >= 0 && (index as usize) < live.get())
+                    .then(|| crate::framework::leaf(|| Empty))
+            })));
+        let element = ListWheelElement::new(delegate);
+        for index in 0..6 {
+            assert!(
+                element
+                    .create_child(index, (index > 0).then_some(index - 1))
+                    .is_some()
+            );
+        }
+        assert_eq!(element.active_indices(), vec![0, 1, 2, 3, 4, 5]);
+
+        count.set(3);
+        // Without the rebuild the stale answers stand -- which is what the
+        // cache is for and why clearing it is the first thing a rebuild does.
+        assert!(element.child_exists_at(5));
+        element.perform_rebuild();
+        assert!(!element.child_exists_at(5));
+        assert_eq!(element.active_indices(), vec![0, 1, 2]);
+        assert_eq!(element.delegate_builds(), 6, "the whole span was rewalked");
+    }
+
+    #[test]
+    fn a_child_that_stops_existing_is_not_made_live() {
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildListDelegate::new(children(2)));
+        let element = ListWheelElement::new(delegate);
+        assert!(element.create_child(0, None).is_some());
+        assert!(element.create_child(1, Some(0)).is_some());
+        assert!(element.create_child(2, Some(1)).is_none());
+        assert_eq!(element.active_indices(), vec![0, 1]);
+        element.remove_child(1);
+        assert_eq!(element.active_indices(), vec![0]);
+    }
+
+    #[test]
+    fn the_viewport_refuses_the_parameters_upstream_refuses_and_says_why() {
+        let good = ListWheelViewport::new(40.0);
+        assert_eq!(good.validate(), None);
+
+        assert_eq!(
+            ListWheelViewport::new(40.0)
+                .with_diameter_ratio(0.0)
+                .validate(),
+            Some(DIAMETER_RATIO_ZERO_MESSAGE)
+        );
+        assert_eq!(
+            ListWheelViewport::new(40.0)
+                .with_perspective(0.02)
+                .validate(),
+            Some(PERSPECTIVE_TOO_HIGH_MESSAGE)
+        );
+        assert_eq!(
+            ListWheelViewport::new(0.0).validate(),
+            Some("itemExtent must be positive")
+        );
+        assert_eq!(
+            ListWheelViewport::new(40.0).with_squeeze(0.0).validate(),
+            Some("squeeze must be positive")
+        );
+        // Drawing outside the viewport and clipping to it are each reasonable
+        // and together are a contradiction: the clip throws away exactly what
+        // the other asked for.
+        assert_eq!(
+            ListWheelViewport::new(40.0)
+                .with_children_outside_viewport(true)
+                .validate(),
+            Some(CLIP_AND_RENDER_OUTSIDE_CONFLICT)
+        );
+        assert_eq!(
+            ListWheelViewport::new(40.0)
+                .with_children_outside_viewport(true)
+                .with_clip(false)
+                .validate(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_squeezed_wheel_keeps_more_items_alive_in_the_same_height() {
+        // Which is what the squeeze means: the same viewport shows more of the
+        // cylinder, so more indices have to be built.
+        let plain = ListWheelViewport::new(40.0);
+        let squeezed = ListWheelViewport::new(40.0).with_squeeze(1.45);
+        assert!(squeezed.visible_extent(200.0) > plain.visible_extent(200.0));
+
+        let (plain_first, plain_last) = plain.visible_window(0.0, 200.0);
+        let (tight_first, tight_last) = squeezed.visible_window(0.0, 200.0);
+        assert!(tight_first <= plain_first && tight_last >= plain_last);
+    }
+
+    #[test]
+    fn a_fresh_wheel_does_not_announce_the_item_it_opened_on() {
+        // Upstream seeds _lastReportedItemIndex from the controller. Without
+        // it a wheel opened on item seven would report item seven at once, and
+        // a caller listening for a change would act on something the reader
+        // had not done.
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildListDelegate::new(children(20)));
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let told = heard.clone();
+        let wheel = ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate)
+            .with_controller(FixedExtentScrollController::new(40.0).with_initial_item(7))
+            .on_selected_item_changed(move |index| told.borrow_mut().push(index));
+
+        let mut last = wheel.initial_reported_item();
+        assert_eq!(last, 7);
+        let metrics = wheel.metrics(280.0, 200.0, Some(20));
+        assert_eq!(metrics.item_index, 7);
+        assert_eq!(wheel.report_selected(&metrics, false, &mut last), None);
+        assert!(heard.borrow().is_empty());
+
+        // Move one item and it does speak.
+        let metrics = wheel.metrics(320.0, 200.0, Some(20));
+        assert_eq!(wheel.report_selected(&metrics, false, &mut last), Some(8));
+        assert_eq!(*heard.borrow(), vec![8]);
+    }
+
+    #[test]
+    fn a_looping_wheel_reports_the_item_and_not_how_far_it_has_spun() {
+        // The scroll position of a looping wheel counts upwards forever. What
+        // the reader picked is the item, so the report goes through the
+        // delegate's trueIndexOf -- otherwise a reader spinning past the end
+        // is told they selected item 137 of a list of twelve.
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildLoopingListDelegate::new(children(12)));
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let told = heard.clone();
+        let wheel = ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate)
+            .on_selected_item_changed(move |index| told.borrow_mut().push(index));
+
+        let mut last = 0;
+        let metrics = wheel.metrics(137.0 * 40.0, 200.0, None);
+        assert_eq!(metrics.item_index, 137);
+        assert_eq!(wheel.report_selected(&metrics, false, &mut last), Some(5));
+        assert_eq!(*heard.borrow(), vec![5], "137 mod 12");
+
+        // And backwards past the start, where Dart's remainder matters again.
+        let metrics = wheel.metrics(-1.0 * 40.0, 200.0, None);
+        assert_eq!(wheel.report_selected(&metrics, false, &mut last), Some(11));
+    }
+
+    #[test]
+    fn the_reporting_behavior_decides_which_moment_speaks() {
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildListDelegate::new(children(20)));
+        let build = |behavior| {
+            ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate.clone())
+                .with_change_reporting_behavior(behavior)
+                .on_selected_item_changed(|_| {})
+        };
+
+        let on_update = build(ChangeReportingBehavior::OnScrollUpdate);
+        let metrics = on_update.metrics(200.0, 200.0, Some(20));
+        let mut last = 0;
+        assert_eq!(on_update.report_selected(&metrics, true, &mut last), None);
+        assert_eq!(
+            on_update.report_selected(&metrics, false, &mut last),
+            Some(5)
+        );
+
+        let on_end = build(ChangeReportingBehavior::OnScrollEnd);
+        let mut last = 0;
+        assert_eq!(on_end.report_selected(&metrics, false, &mut last), None);
+        assert_eq!(on_end.report_selected(&metrics, true, &mut last), Some(5));
+
+        // Upstream's default is the talkative one.
+        assert_eq!(
+            ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate)
+                .change_reporting_behavior,
+            ChangeReportingBehavior::OnScrollUpdate
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_twice_for_the_same_item() {
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildListDelegate::new(children(20)));
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let told = heard.clone();
+        let wheel = ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate)
+            .on_selected_item_changed(move |index| told.borrow_mut().push(index));
+
+        let mut last = 0;
+        // Three offsets, all nearest item 5.
+        for offset in [195.0, 200.0, 205.0] {
+            let metrics = wheel.metrics(offset, 200.0, Some(20));
+            wheel.report_selected(&metrics, false, &mut last);
+        }
+        assert_eq!(*heard.borrow(), vec![5]);
+    }
+
+    #[test]
+    fn the_wheel_flings_on_the_physics_that_were_ported_for_it() {
+        // Not the ease-out CupertinoPicker still uses: this goes through
+        // FixedExtentScrollPhysics, so the landing is scenario 5's tuned
+        // friction.
+        let delegate: Rc<dyn ListWheelChildDelegate> =
+            Rc::new(ListWheelChildListDelegate::new(children(100)));
+        let wheel = ListWheelScrollView::new(ListWheelViewport::new(40.0), delegate);
+        let metrics = wheel.metrics(0.0, 200.0, Some(100));
+        let simulation = wheel
+            .ballistic(&metrics, 900.0)
+            .expect("a fling goes somewhere");
+        let stop = (0..20_000)
+            .map(|step| step as f32 / 1000.0)
+            .find(|time| simulation.is_done(*time))
+            .expect("it stops");
+        let landed = simulation.x(stop);
+        assert!((landed / 40.0 - (landed / 40.0).round()).abs() * 40.0 < 0.5);
     }
 }

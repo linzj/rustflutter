@@ -164,6 +164,55 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 没有数量的轮子,也没有下界(2026-08-20)
+
+`ListWheelScrollView`、`ListWheelElement`、`ListWheelViewport` 三个补齐,
+`widgets/list_wheel_scroll_view.dart` 十个全到。
+
+**先做了一次搬家。** 轮子的柱面几何(五个投影函数和 `RenderListWheel`)原先私藏在
+`cupertino.rs` 里、只归 `CupertinoPicker` 用;上游它在 `rendering/list_wheel_viewport.dart`
+和 `painting/matrix_utils.dart`,比用它的 widget 低一层,而**上游的 `CupertinoPicker` 本身
+就是搭在 `ListWheelScrollView` 上的**。现在两个 widget 都要用,它就该在下面那层。搬完
+`cargo test --lib` 1652 原样绿。
+
+搬家顺带修掉一处:`RenderListWheel` 原来把 `PICKER_PERSPECTIVE` 写死在里面。上游的
+`RenderListWheelViewport` 一直把 `perspective` 当参数,只是这个渲染对象过去只有一个调用方
+所以看不出来;共享之后它必须是参数。picker 传的仍是同一个值(它的常量本来就钉在
+`RenderListWheelViewport.defaultPerspective` 上)。
+
+**`ListWheelElement` 的实质是那份缓存的纪律。** 上游它是个 Element 兼 `ListWheelChildManager`,
+有规矩的是后半边:**一个下标只建一次并记住,一次 rebuild 忘光,而「这里有没有孩子」是靠建
+它来回答的**——无界 builder 的尽头就是这样在布局中被发现的,而不是事先声明的。本 crate 的
+`AnyWidget` 不能 clone,所以缓存拆成两半:**「是不是有」**要能被渲染对象反复问而不重建,
+**「它是什么」**只能交出去一次。
+
+**`_minEstimatedScrollExtent` 是我自己写错又被上游改回来的那一处。** 我第一版给循环轮子的
+metrics 配了 `min = 0.0`,只把上界放成无穷。跑出来 -40 的偏移被夹回 0,报第 0 项而不是第 11
+项。翻上游:**没有数量的轮子,负无穷和正无穷两头都是无界的**。给它配个 0 的地板,读者往上
+一转就被顶住了——而这恰恰是循环轮子存在的理由。实现改了,测试没改。
+
+**回归行盯的地方:**
+
+* 同一个下标问三遍「有没有」,delegate 只被叫一次。
+* 无界 builder 的尽头**靠问出来**;循环 delegate **根本没有数量**。
+* 一次 rebuild 先清缓存,再**沿着活着的那一段从头走到尾**,把已经不存在的尾巴松开——上游
+  走的是「区间」而不是「集合」,一个数量缩水的 builder 正是这个情形。
+* viewport 拒绝上游拒绝的每一组参数,**并且带着上游那句解释**:直径为零的柱面没有面可画;
+  透视高过百分之一会在 z 上被裁掉;而**「画到视口外面」和「裁到视口」是各自都合理、放一起
+  自相矛盾**的一对——裁剪扔掉的正是另一个要的东西。
+* 挤压(squeeze)让同样高度里活着的项更多。
+* **新开的轮子不会宣布自己开在哪一项上**:上游从 controller 的 `initialItem` 播种
+  `_lastReportedItemIndex`,否则一个开在第 7 项的轮子建好就报第 7 项,而听「变化」的调用方
+  会去处理一件读者根本没做的事。
+* **循环轮子报的是项,不是它转了多远**:走 delegate 的 `trueIndexOf`,不然读者转过头会被告
+  知选中了「十二项列表里的第 137 项」。反方向那条同时又把 Dart 取余那件事钉了一遍。
+* 报告时机由 `changeReportingBehavior` 决定,且上游的默认是话多的那个;同一项不会说两遍。
+* 甩动走的是上一轮刚搬来的 `FixedExtentScrollPhysics`,**不是** picker 至今仍用的 ease-out。
+
+验证:`cargo test --lib` 1664 绿,GN `rustflutter_unittests` 1664 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1338 accounted / 550 MISSING。
+
 ### Dart 的取余和 Rust 的取余,差的是一整个「上一格」(2026-08-20)
 
 新模块 `list_wheel.rs`,上游 `widgets/list_wheel_scroll_view.dart` 十个里的七个:四个
