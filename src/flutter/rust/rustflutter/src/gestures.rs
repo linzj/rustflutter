@@ -592,6 +592,195 @@ fn fit_quadratic(times: &[f32], values: &[f32]) -> Option<[f32; 3]> {
     Some(coefficients)
 }
 
+/// Upstream `IOSScrollViewFlingVelocityTracker`: a velocity that is a weighted
+/// average of recent ones rather than a curve fitted through positions.
+///
+/// [`VelocityTracker`] fits a least-squares quadratic through the samples,
+/// which is the right answer to "how fast is this pointer moving". This one
+/// answers a different question -- "how fast would the platform's own scroll
+/// view have flung" -- and matches it by taking three consecutive pairwise
+/// velocities and weighting them. The point is not accuracy but *agreement*:
+/// a list that flings differently from the platform's own lists is noticeable
+/// in a way that a list that flings slightly wrong is not.
+///
+/// This was in `coverage_ledger.json` as out of scope, on the grounds that iOS
+/// is not a host of this port. That was wrong in a way worth naming: macOS
+/// *is* a host, and [`MacOSScrollViewFlingVelocityTracker`] extends this one.
+/// A class the ledger had ruled irrelevant turned out to be the base of a
+/// class that is not.
+pub struct IOSScrollViewFlingVelocityTracker {
+    kind: PointerKind,
+    /// A ring of the last [`Self::SAMPLE_SIZE`] positions, newest at `index`.
+    ///
+    /// Upstream keeps twenty for a calculation that reads four. Its comment
+    /// says why: the extra samples are there so that `VelocityEstimate.offset`
+    /// grows big enough to pass the *distance* half of the fling test, which
+    /// `VerticalDragGestureRecognizer.isFlingGesture` applies. The offset and
+    /// the velocity are measured over different spans on purpose.
+    samples: Vec<Option<Sample>>,
+    index: usize,
+    last_sample_micros: Option<i64>,
+}
+
+impl IOSScrollViewFlingVelocityTracker {
+    /// Upstream's `_sampleSize`.
+    pub const SAMPLE_SIZE: usize = 20;
+
+    pub fn new(kind: PointerKind) -> IOSScrollViewFlingVelocityTracker {
+        IOSScrollViewFlingVelocityTracker {
+            kind,
+            samples: vec![None; Self::SAMPLE_SIZE],
+            index: 0,
+            last_sample_micros: None,
+        }
+    }
+
+    pub fn kind(&self) -> PointerKind {
+        self.kind
+    }
+
+    /// Upstream's `addPosition`.
+    pub fn add_position(&mut self, time_micros: i64, position: Offset) {
+        self.last_sample_micros = Some(time_micros);
+        self.index = (self.index + 1) % Self::SAMPLE_SIZE;
+        self.samples[self.index] = Some(Sample {
+            time_micros,
+            position,
+        });
+    }
+
+    /// Upstream's `_previousVelocityAt`: the velocity between two adjacent
+    /// samples, counting backwards from the newest at index zero.
+    pub fn previous_velocity_at(&self, index: i32) -> Offset {
+        let size = Self::SAMPLE_SIZE as i32;
+        let end_index = (self.index as i32 + index).rem_euclid(size) as usize;
+        let start_index = (self.index as i32 + index - 1).rem_euclid(size) as usize;
+        let (Some(end), Some(start)) = (self.samples[end_index], self.samples[start_index]) else {
+            return Offset::ZERO;
+        };
+        let dt = end.time_micros - start.time_micros;
+        if dt <= 0 {
+            return Offset::ZERO;
+        }
+        let seconds = dt as f32 / 1_000_000.0;
+        Offset::new(
+            (end.position.dx - start.position.dx) / seconds,
+            (end.position.dy - start.position.dy) / seconds,
+        )
+    }
+
+    /// The newest sample, and the oldest one still in the ring.
+    fn span(&self) -> Option<(Sample, Sample)> {
+        let newest = self.samples[self.index]?;
+        for step in 1..=Self::SAMPLE_SIZE {
+            if let Some(oldest) = self.samples[(self.index + step) % Self::SAMPLE_SIZE] {
+                return Some((newest, oldest));
+            }
+        }
+        None
+    }
+
+    fn stopped(&self, now_micros: i64) -> bool {
+        match self.last_sample_micros {
+            Some(last) => now_micros - last > VelocityTracker::ASSUME_STOPPED_MICROS,
+            None => true,
+        }
+    }
+
+    fn estimate_from(&self, velocity: Offset, now_micros: i64) -> VelocityEstimate {
+        if self.stopped(now_micros) {
+            return VelocityEstimate::default();
+        }
+        match self.span() {
+            Some((newest, oldest)) => VelocityEstimate {
+                pixels_per_second: velocity,
+                offset: Offset::new(
+                    newest.position.dx - oldest.position.dx,
+                    newest.position.dy - oldest.position.dy,
+                ),
+                duration_micros: newest.time_micros - oldest.time_micros,
+            },
+            None => VelocityEstimate::default(),
+        }
+    }
+
+    /// Upstream's `getVelocityEstimate`: three consecutive pairwise
+    /// velocities weighted 0.6, 0.35 and 0.05 from oldest to newest.
+    ///
+    /// **The freshest measurement is worth almost nothing** -- a twentieth of
+    /// the answer -- and the oldest of the three carries most of it. A finger
+    /// leaving the glass slows or twitches in its last milliseconds, so what it
+    /// was doing a moment earlier is the better description of what the reader
+    /// meant.
+    ///
+    /// Upstream's comment is careful about what this approximates: the scroll
+    /// velocity of an iOS scroll view at the moment of release, and *not* what
+    /// the pan recogniser on that scroll view would report, because the scroll
+    /// view slows down when the touch is released and the two therefore differ.
+    pub fn velocity_estimate(&self, now_micros: i64) -> VelocityEstimate {
+        let (a, b, c) = (
+            self.previous_velocity_at(-2),
+            self.previous_velocity_at(-1),
+            self.previous_velocity_at(0),
+        );
+        let velocity = Offset::new(
+            a.dx * 0.6 + b.dx * 0.35 + c.dx * 0.05,
+            a.dy * 0.6 + b.dy * 0.35 + c.dy * 0.05,
+        );
+        self.estimate_from(velocity, now_micros)
+    }
+}
+
+/// Upstream `MacOSScrollViewFlingVelocityTracker`: the same three samples,
+/// weighted differently.
+///
+/// Same three samples, differently weighted: 0.15, 0.65 and 0.2 from oldest to
+/// newest, where iOS uses 0.6, 0.35 and 0.05. The shapes disagree about which
+/// sample to trust -- iOS leans hardest on the oldest of the three, macOS on
+/// the **middle** one -- and both discount the freshest almost to nothing,
+/// because that one is the finger lifting rather than the reader flinging.
+/// Neither is more correct; each matches its own platform's scroll views, which
+/// is the only thing either is for.
+pub struct MacOSScrollViewFlingVelocityTracker {
+    base: IOSScrollViewFlingVelocityTracker,
+}
+
+impl MacOSScrollViewFlingVelocityTracker {
+    pub fn new(kind: PointerKind) -> MacOSScrollViewFlingVelocityTracker {
+        MacOSScrollViewFlingVelocityTracker {
+            base: IOSScrollViewFlingVelocityTracker::new(kind),
+        }
+    }
+
+    /// Upstream's `getVelocityEstimate`.
+    pub fn velocity_estimate(&self, now_micros: i64) -> VelocityEstimate {
+        let (a, b, c) = (
+            self.base.previous_velocity_at(-2),
+            self.base.previous_velocity_at(-1),
+            self.base.previous_velocity_at(0),
+        );
+        let velocity = Offset::new(
+            a.dx * 0.15 + b.dx * 0.65 + c.dx * 0.2,
+            a.dy * 0.15 + b.dy * 0.65 + c.dy * 0.2,
+        );
+        self.base.estimate_from(velocity, now_micros)
+    }
+}
+
+impl std::ops::Deref for MacOSScrollViewFlingVelocityTracker {
+    type Target = IOSScrollViewFlingVelocityTracker;
+
+    fn deref(&self) -> &IOSScrollViewFlingVelocityTracker {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for MacOSScrollViewFlingVelocityTracker {
+    fn deref_mut(&mut self) -> &mut IOSScrollViewFlingVelocityTracker {
+        &mut self.base
+    }
+}
+
 /// The callbacks a [`crate::render::RenderPointerRegion`] can carry.
 ///
 /// Every one is `Rc<dyn Fn>`: hit testing walks the tree behind a shared
@@ -3990,5 +4179,129 @@ mod tests {
                 .map(|entry| entry.target)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A finger moving at a steady speed, sampled every 10ms.
+    fn steady(speed_per_second: f32, samples: usize) -> Vec<(i64, Offset)> {
+        (0..samples)
+            .map(|step| {
+                let micros = step as i64 * 10_000;
+                (
+                    micros,
+                    Offset::new(0.0, speed_per_second * micros as f32 / 1_000_000.0),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_platform_fling_trackers_weight_the_freshest_sample_almost_to_nothing() {
+        // Both discount the last measurement heavily -- iOS to a twentieth,
+        // macOS to a fifth -- because that one is the finger lifting rather
+        // than the reader flinging. The two disagree about which of the other
+        // samples to trust, and neither is more correct: each matches its own
+        // platform's scroll views, which is all either is for.
+        let mut ios = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        let mut macos = MacOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        for (micros, position) in steady(1000.0, 6) {
+            ios.add_position(micros, position);
+            macos.add_position(micros, position);
+        }
+        let now = 50_000;
+        // At a steady speed every weighting agrees, which is the sanity check.
+        assert!((ios.velocity_estimate(now).pixels_per_second.dy - 1000.0).abs() < 1.0);
+        assert!((macos.velocity_estimate(now).pixels_per_second.dy - 1000.0).abs() < 1.0);
+
+        // Now stop dead on the very last sample. iOS barely notices; macOS
+        // notices more, but neither reports anything like a stop.
+        let mut ios = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        let mut macos = MacOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        for (micros, position) in steady(1000.0, 5) {
+            ios.add_position(micros, position);
+            macos.add_position(micros, position);
+        }
+        let last = Offset::new(0.0, 1000.0 * 40_000.0 / 1_000_000.0);
+        ios.add_position(50_000, last);
+        macos.add_position(50_000, last);
+
+        let ios_dy = ios.velocity_estimate(50_000).pixels_per_second.dy;
+        let macos_dy = macos.velocity_estimate(50_000).pixels_per_second.dy;
+        assert!(
+            (ios_dy - 950.0).abs() < 1.0,
+            "iOS kept 95% of the speed, got {ios_dy}"
+        );
+        assert!(
+            (macos_dy - 800.0).abs() < 1.0,
+            "macOS kept 80% of it, got {macos_dy}"
+        );
+        assert!(macos_dy < ios_dy, "macOS listens to the last sample more");
+    }
+
+    #[test]
+    fn a_pause_before_lifting_means_no_fling_at_all() {
+        // The same rule the fitted tracker uses, and for the same reason: a
+        // finger that stopped and rested is not throwing anything.
+        let mut ios = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        for (micros, position) in steady(1000.0, 5) {
+            ios.add_position(micros, position);
+        }
+        let resting = 40_000 + VelocityTracker::ASSUME_STOPPED_MICROS + 1;
+        assert_eq!(
+            ios.velocity_estimate(resting).pixels_per_second,
+            Offset::ZERO
+        );
+    }
+
+    #[test]
+    fn the_offset_is_measured_over_far_more_samples_than_the_velocity() {
+        // Upstream keeps twenty samples for a calculation that reads four, and
+        // its comment says why: the offset has to grow big enough to pass the
+        // *distance* half of the fling test. The two halves are deliberately
+        // measured over different spans.
+        let mut ios = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        for (micros, position) in steady(1000.0, 12) {
+            ios.add_position(micros, position);
+        }
+        let estimate = ios.velocity_estimate(110_000);
+        assert!(
+            estimate.offset.dy > 100.0,
+            "eleven intervals of travel, not three: {}",
+            estimate.offset.dy
+        );
+        assert_eq!(estimate.duration_micros, 110_000);
+    }
+
+    #[test]
+    fn a_tracker_with_nothing_in_it_reports_nothing_rather_than_dividing_by_zero() {
+        let empty = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        assert_eq!(empty.velocity_estimate(0).pixels_per_second, Offset::ZERO);
+        assert_eq!(empty.previous_velocity_at(0), Offset::ZERO);
+
+        // And one sample is still not two.
+        let mut one = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        one.add_position(0, Offset::ZERO);
+        assert_eq!(one.previous_velocity_at(0), Offset::ZERO);
+    }
+
+    #[test]
+    fn two_samples_at_the_same_instant_are_not_infinitely_fast() {
+        let mut ios = IOSScrollViewFlingVelocityTracker::new(PointerKind::Touch);
+        ios.add_position(0, Offset::ZERO);
+        ios.add_position(0, Offset::new(0.0, 50.0));
+        assert_eq!(ios.previous_velocity_at(0), Offset::ZERO);
+    }
+
+    #[test]
+    fn the_ring_wraps_and_the_macos_tracker_shares_it() {
+        // The macOS tracker is upstream's subclass of the iOS one, so it has
+        // the same ring and the same addPosition; only the weighting differs.
+        let mut macos = MacOSScrollViewFlingVelocityTracker::new(PointerKind::Mouse);
+        assert_eq!(macos.kind(), PointerKind::Mouse);
+        for (micros, position) in steady(500.0, IOSScrollViewFlingVelocityTracker::SAMPLE_SIZE + 5)
+        {
+            macos.add_position(micros, position);
+        }
+        let now = (IOSScrollViewFlingVelocityTracker::SAMPLE_SIZE as i64 + 4) * 10_000;
+        assert!((macos.velocity_estimate(now).pixels_per_second.dy - 500.0).abs() < 1.0);
     }
 }
