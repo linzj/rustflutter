@@ -164,6 +164,43 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 三段高亮要看着像一段(2026-08-20)
+
+五个小类,五个 cupertino 文件:`CupertinoUserInterfaceLevel`(+它的枚举)、
+`CupertinoIconThemeData`、`CupertinoFocusHalo`、
+`CupertinoPickerDefaultSelectionOverlay`、`CupertinoLinearActivityIndicator`。
+
+**`CupertinoPickerDefaultSelectionOverlay` 那两个 cap 是这一批里最好的一条。** 日期选择器
+是好几个 picker 并排,而中间那条高亮带必须读成**一条**。所以中间的列**两端都不封口**,第一
+列只封起始端,最后一列只封结束端——三块分开的 overlay 才看着是一条。每一列都两端封口的话,
+画出来是三颗中间带缝的药丸。而且**边距只跟着封口走**:没封口的那一边一点边距都不留,因为那
+正是这一列的带子和下一列接头的地方——在那儿留边距,恰好就是封口安排本来要避免的那道缝。
+
+**回归行盯的地方:**
+
+* 上面那条(第一列 / 中间列 / 末列 / 独一列四种),以及边距和圆角**只出现在封了口的那一
+  边**。
+* **没有变化的图标主题答的是它自己。** 上游写的是
+  `resolvedColor == color ? this : copyWith(...)`——这不是为省而省:每次 resolve 都答一个新
+  对象的话,它和上一帧那个就比不相等,于是它底下每一个图标每一帧都被标记重绘。
+* **焦点光环是往外长的,所以控件不会动。** 往里长的环会在控件拿到焦点的那一刻把它的内容挤
+  一下。
+* **两个界面层级是不同的,而 base 是默认。** 它存在是因为 **iOS 的系统颜色是两个颜色而不是
+  一个**:同一个 `systemBackground` 在页面上是一种灰、在盖上去的 sheet 上是更浅的一种,而
+  两个 widget 谁都不知道自己是哪一种——挑的就是这个层级。
+* **线性指示器按比例填充、不会超出**。它和同文件那个转圈的分别在于各自**知道什么**:转圈是
+  因为这场等待没有可度量的终点,而它收一个 `progress` 是因为有。给一场量不出终点的等待画一
+  根进度条,是在向读者许一个应用给不出的结局。
+* 高度默认 4.5,除非另说。
+
+`CupertinoUserInterfaceLevel::of` 在上游是**抛异常**的,`maybeOf` 才返回空。这里两个都保
+留,并且照这个 crate 一贯的做法:debug 断言 + release 回落到 base——发布出去的应用宁可画一
+种略微不对的灰,也不该停下来。
+
+验证:`cargo test --lib` 1580 绿,GN `rustflutter_unittests` 1580 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1302 accounted / 586 MISSING。
+
 ### 一行的高度是它那个图标加上呼吸(2026-08-20)
 
 `CupertinoListTile`、`CupertinoListTileChevron`、`CupertinoListSection`、

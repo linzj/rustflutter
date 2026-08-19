@@ -4032,6 +4032,263 @@ impl CupertinoFormSection {
     pub const INSET_GROUPED_ROWS_MARGIN: EdgeInsets = EdgeInsets::only(20.0, 0.0, 20.0, 10.0);
 }
 
+/// Upstream `CupertinoUserInterfaceLevelData` (`cupertino/interface_level.dart`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CupertinoUserInterfaceLevelData {
+    /// The page itself.
+    #[default]
+    Base,
+    /// Something laid over it -- a sheet, a popup, an alert.
+    Elevated,
+}
+
+/// Upstream `CupertinoUserInterfaceLevel`: which layer of the interface a
+/// subtree is on.
+///
+/// It exists because **iOS's system colours are two colours, not one**. A
+/// `CupertinoDynamicColor` carries an elevated variant alongside its base one,
+/// and what picks between them is this -- so the same
+/// `systemBackground` is one grey on the page and a lighter one on a sheet
+/// laid over it, without either widget knowing which it is.
+///
+/// Upstream's `of` **throws** where `maybeOf` returns null, and the two are
+/// kept apart here for the same reason: a widget that resolves an elevated
+/// colour without a level above it is not a widget with a sensible default,
+/// it is a widget outside any app.
+pub struct CupertinoUserInterfaceLevel;
+
+impl CupertinoUserInterfaceLevel {
+    /// Upstream's `maybeOf`.
+    pub fn maybe_of(context: &BuildContext) -> Option<CupertinoUserInterfaceLevelData> {
+        context
+            .inherited::<CupertinoUserInterfaceLevelData>()
+            .map(|level| *level)
+    }
+
+    /// Upstream's `of`, which throws when there is none. Here that is a
+    /// `panic` in debug and the base level in release -- the crate's rule for
+    /// a lookup that upstream asserts on, since a released application should
+    /// draw a slightly wrong grey rather than stop.
+    pub fn of(context: &BuildContext) -> CupertinoUserInterfaceLevelData {
+        match CupertinoUserInterfaceLevel::maybe_of(context) {
+            Some(level) => level,
+            None => {
+                debug_assert!(
+                    false,
+                    "CupertinoUserInterfaceLevel.of() with no level above it"
+                );
+                CupertinoUserInterfaceLevelData::Base
+            }
+        }
+    }
+
+    /// Puts a level over `child`, upstream's constructor.
+    pub fn new(data: CupertinoUserInterfaceLevelData, child: AnyWidget) -> AnyWidget {
+        crate::framework::provide(data, child)
+    }
+}
+
+/// Upstream `CupertinoIconThemeData` (`cupertino/icon_theme_data.dart`).
+///
+/// The whole of what it adds to a plain icon theme is one line of `resolve`:
+/// the colour is put through [`crate::cupertino::CupertinoDynamicColor`]
+/// against the ambient brightness and level. Everything else is inherited.
+///
+/// **And it returns `self` when the colour did not move.** That is upstream's
+/// `resolvedColor == color ? this : copyWith(...)`, and it is not an
+/// optimisation for its own sake: an icon theme that answered a fresh object
+/// every resolve would compare unequal to the one before it and mark every
+/// icon beneath it for repaint on every frame.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct CupertinoIconThemeData {
+    pub size: Option<f32>,
+    pub color: Option<Color>,
+    pub opacity: Option<f32>,
+}
+
+impl CupertinoIconThemeData {
+    pub fn new() -> CupertinoIconThemeData {
+        CupertinoIconThemeData::default()
+    }
+
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// Upstream's `resolve`, and its identity rule -- see the type docs.
+    pub fn resolve(&self, resolved_color: Option<Color>) -> CupertinoIconThemeData {
+        if resolved_color == self.color {
+            return *self;
+        }
+        CupertinoIconThemeData {
+            color: resolved_color,
+            ..*self
+        }
+    }
+}
+
+/// Upstream `CupertinoFocusHalo` (`cupertino/cupertino_focus_halo.dart`): the
+/// ring iOS draws around whatever the keyboard is on.
+///
+/// **Outside the control, not on it.** The halo is a border laid around the
+/// widget's own shape rather than painted into it, so a focused button is the
+/// same size and shape as an unfocused one -- a ring that grew inwards would
+/// make the control's contents shift the moment it took focus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoFocusHalo {
+    pub border_radius: f32,
+}
+
+impl CupertinoFocusHalo {
+    /// Upstream's stroke width. Wide for a focus ring -- and deliberately so,
+    /// since the one reader who needs it is navigating without a pointer and
+    /// has nothing else telling them where they are.
+    pub const STROKE_WIDTH: f32 = 3.5;
+
+    pub fn new(border_radius: f32) -> CupertinoFocusHalo {
+        CupertinoFocusHalo { border_radius }
+    }
+
+    /// The rectangle the halo occupies around a control of `size`, which is
+    /// larger than the control by the stroke on every side.
+    pub fn bounds(&self, size: Size) -> Rect {
+        let stroke = CupertinoFocusHalo::STROKE_WIDTH;
+        Rect::ltrb(-stroke, -stroke, size.width + stroke, size.height + stroke)
+    }
+}
+
+/// Upstream `CupertinoPickerDefaultSelectionOverlay` (`cupertino/picker.dart`):
+/// the tinted band across the middle of a picker showing which row is chosen.
+///
+/// # The two caps, and why they are separate
+///
+/// A date picker is several pickers side by side, and the band has to read as
+/// **one** band across the whole row. So a column in the middle caps neither
+/// edge, the first column caps only its start, and the last only its end --
+/// which is what makes three separate overlays look like one. Capping both on
+/// every column would draw three pills with gaps between them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoPickerDefaultSelectionOverlay {
+    pub cap_start_edge: bool,
+    pub cap_end_edge: bool,
+}
+
+impl CupertinoPickerDefaultSelectionOverlay {
+    /// Upstream's `_defaultSelectionOverlayHorizontalMargin`.
+    pub const HORIZONTAL_MARGIN: f32 = 9.0;
+    /// Upstream's `_defaultSelectionOverlayRadius`.
+    pub const RADIUS: f32 = 8.0;
+
+    pub fn new() -> CupertinoPickerDefaultSelectionOverlay {
+        CupertinoPickerDefaultSelectionOverlay {
+            cap_start_edge: true,
+            cap_end_edge: true,
+        }
+    }
+
+    /// The overlay for a column at `index` of `columns`, capped on the outside
+    /// edges of the row only.
+    pub fn for_column(index: usize, columns: usize) -> CupertinoPickerDefaultSelectionOverlay {
+        CupertinoPickerDefaultSelectionOverlay {
+            cap_start_edge: index == 0,
+            cap_end_edge: index + 1 == columns,
+        }
+    }
+
+    /// **The margin goes only where a cap does.** An uncapped edge takes no
+    /// margin at all, because that is where this column's band meets the next
+    /// one's -- a margin there would be exactly the gap the caps are arranged
+    /// to avoid.
+    pub fn margin(&self) -> EdgeInsets {
+        EdgeInsets::only(
+            if self.cap_start_edge {
+                CupertinoPickerDefaultSelectionOverlay::HORIZONTAL_MARGIN
+            } else {
+                0.0
+            },
+            0.0,
+            if self.cap_end_edge {
+                CupertinoPickerDefaultSelectionOverlay::HORIZONTAL_MARGIN
+            } else {
+                0.0
+            },
+            0.0,
+        )
+    }
+
+    /// The corner radii, in the same start/end order.
+    pub fn radii(&self) -> (f32, f32) {
+        (
+            if self.cap_start_edge {
+                CupertinoPickerDefaultSelectionOverlay::RADIUS
+            } else {
+                0.0
+            },
+            if self.cap_end_edge {
+                CupertinoPickerDefaultSelectionOverlay::RADIUS
+            } else {
+                0.0
+            },
+        )
+    }
+}
+
+impl Default for CupertinoPickerDefaultSelectionOverlay {
+    fn default() -> CupertinoPickerDefaultSelectionOverlay {
+        CupertinoPickerDefaultSelectionOverlay::new()
+    }
+}
+
+/// Upstream `CupertinoLinearActivityIndicator` (`cupertino/activity_indicator.dart`):
+/// the thin bar that fills as something finishes.
+///
+/// The sibling of the spinner in the same file, and the difference is what
+/// each *knows*: a spinner turns because the wait has no measurable end, while
+/// this takes a `progress` because it does. Showing a bar for an unmeasurable
+/// wait would promise the reader an ending the application cannot deliver.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoLinearActivityIndicator {
+    pub progress: f32,
+    pub height: f32,
+}
+
+impl CupertinoLinearActivityIndicator {
+    /// Upstream's default `height`.
+    pub const DEFAULT_HEIGHT: f32 = 4.5;
+
+    /// Upstream asserts both: a height above zero, and a progress inside
+    /// 0..1. The progress assert is the one that matters -- a bar told it is
+    /// 1.4 done would draw past its own end, and the caller who computed that
+    /// has a bug the assert is the fastest way to find.
+    pub fn new(progress: f32) -> CupertinoLinearActivityIndicator {
+        debug_assert!(
+            (0.0..=1.0).contains(&progress),
+            "progress is a fraction of the whole"
+        );
+        CupertinoLinearActivityIndicator {
+            progress,
+            height: CupertinoLinearActivityIndicator::DEFAULT_HEIGHT,
+        }
+    }
+
+    pub fn with_height(mut self, height: f32) -> Self {
+        debug_assert!(height > 0.0, "a bar with no height is not a bar");
+        self.height = height;
+        self
+    }
+
+    /// How wide the filled part is, in a bar of `width`.
+    pub fn filled_width(&self, width: f32) -> f32 {
+        width * self.progress.clamp(0.0, 1.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4684,6 +4941,122 @@ mod tests {
         assert_eq!(
             CupertinoListSection::inset_grouped().rows_margin().top,
             20.0
+        );
+    }
+
+    #[test]
+    fn a_middle_picker_column_caps_neither_edge() {
+        // A date picker is several pickers side by side and the band has to
+        // read as *one* band. Capping every column would draw three pills with
+        // gaps between them.
+        let first = CupertinoPickerDefaultSelectionOverlay::for_column(0, 3);
+        assert!(first.cap_start_edge && !first.cap_end_edge);
+
+        let middle = CupertinoPickerDefaultSelectionOverlay::for_column(1, 3);
+        assert!(!middle.cap_start_edge && !middle.cap_end_edge);
+
+        let last = CupertinoPickerDefaultSelectionOverlay::for_column(2, 3);
+        assert!(!last.cap_start_edge && last.cap_end_edge);
+
+        // A lone column caps both, being the whole band by itself.
+        let only = CupertinoPickerDefaultSelectionOverlay::for_column(0, 1);
+        assert!(only.cap_start_edge && only.cap_end_edge);
+    }
+
+    #[test]
+    fn the_margin_goes_only_where_a_cap_does() {
+        // An uncapped edge is where this column's band meets the next one's,
+        // and a margin there would be exactly the gap the caps are arranged to
+        // avoid.
+        let middle = CupertinoPickerDefaultSelectionOverlay::for_column(1, 3);
+        assert_eq!(middle.margin().left, 0.0);
+        assert_eq!(middle.margin().right, 0.0);
+        assert_eq!(middle.radii(), (0.0, 0.0));
+
+        let first = CupertinoPickerDefaultSelectionOverlay::for_column(0, 3);
+        assert_eq!(first.margin().left, 9.0);
+        assert_eq!(first.margin().right, 0.0, "the inner edge stays flush");
+        assert_eq!(first.radii(), (8.0, 0.0));
+    }
+
+    #[test]
+    fn an_icon_theme_that_did_not_move_answers_itself() {
+        // Upstream's `resolvedColor == color ? this : copyWith(...)`. Not an
+        // optimisation for its own sake: a theme that answered a fresh object
+        // every resolve would compare unequal to the one before and mark every
+        // icon beneath it for repaint on every frame.
+        let theme = CupertinoIconThemeData::new().with_color(Color::WHITE);
+        assert_eq!(theme.resolve(Some(Color::WHITE)), theme);
+
+        let moved = theme.resolve(Some(Color::BLACK));
+        assert_ne!(moved, theme);
+        assert_eq!(moved.color, Some(Color::BLACK));
+        // And nothing else moved with it.
+        assert_eq!(moved.size, theme.size);
+    }
+
+    #[test]
+    fn a_focus_halo_grows_outwards_so_the_control_does_not_move() {
+        // A ring that grew inwards would shift the control's contents the
+        // moment it took focus.
+        let halo = CupertinoFocusHalo::new(8.0);
+        let bounds = halo.bounds(Size::new(100.0, 40.0));
+        assert!(bounds.left < 0.0 && bounds.top < 0.0);
+        assert_eq!(
+            bounds.width(),
+            100.0 + CupertinoFocusHalo::STROKE_WIDTH * 2.0
+        );
+        assert_eq!(
+            bounds.height(),
+            40.0 + CupertinoFocusHalo::STROKE_WIDTH * 2.0
+        );
+    }
+
+    #[test]
+    fn the_two_interface_levels_are_distinct_and_base_is_the_default() {
+        // iOS's system colours are two colours, and this is what picks between
+        // them -- so the same background is one grey on the page and a lighter
+        // one on a sheet over it.
+        assert_ne!(
+            CupertinoUserInterfaceLevelData::Base,
+            CupertinoUserInterfaceLevelData::Elevated
+        );
+        assert_eq!(
+            CupertinoUserInterfaceLevelData::default(),
+            CupertinoUserInterfaceLevelData::Base
+        );
+    }
+
+    #[test]
+    fn a_linear_indicator_fills_in_proportion_and_no_further() {
+        // A bar promises an ending, which is the whole difference from the
+        // spinner in the same file: one is for a wait with a measurable end
+        // and the other for a wait without one.
+        assert_eq!(
+            CupertinoLinearActivityIndicator::new(0.0).filled_width(200.0),
+            0.0
+        );
+        assert_eq!(
+            CupertinoLinearActivityIndicator::new(0.25).filled_width(200.0),
+            50.0
+        );
+        assert_eq!(
+            CupertinoLinearActivityIndicator::new(1.0).filled_width(200.0),
+            200.0
+        );
+    }
+
+    #[test]
+    fn a_linear_indicator_keeps_its_default_height_unless_told() {
+        assert_eq!(
+            CupertinoLinearActivityIndicator::new(0.5).height,
+            CupertinoLinearActivityIndicator::DEFAULT_HEIGHT
+        );
+        assert_eq!(
+            CupertinoLinearActivityIndicator::new(0.5)
+                .with_height(10.0)
+                .height,
+            10.0
         );
     }
 }
