@@ -1648,6 +1648,79 @@
     "ExcludeFocusTraversal": {
       "rust": "focus::Focus::with_traversable(false)",
       "note": "子树不再是 Tab 的落点，但仍能被点击聚焦——同上游"
+    },
+    "BinaryMessenger": {
+      "rust": "services::{send, send_with_reply, set_handler, handle_platform_message}",
+      "note": "上游 messenger 是对象，此侧是模块函数——通道两端都只经它"
+    },
+    "ServicesBinding": {
+      "rust": "services/mod.rs + app.rs 的平台消息入口"
+    },
+    "PlatformException": {
+      "rust": "services::MethodError",
+      "note": "code/message/details 三件同名"
+    },
+    "MissingPluginException": {
+      "rust": "services::MethodResult::NotImplemented",
+      "note": "上游抛异常，此侧是结果的一个变体"
+    },
+    "JSONMessageCodec": {
+      "rust": "services::JsonMessageCodec",
+      "note": "仅大小写拼写不同"
+    },
+    "JSONMethodCodec": {
+      "rust": "services::JsonMethodCodec",
+      "note": "同上"
+    },
+    "OptionalMethodChannel": {
+      "rust": "services::MethodChannel",
+      "note": "此侧\"插件不在\"本就是 MethodResult::NotImplemented 而非异常，不需要第二种通道"
+    },
+    "KeyDownEvent": {
+      "rust": "keyboard::KeyEvent + KeyChange::Down",
+      "note": "同指针事件的做法：一个结构体加一个 change 枚举"
+    },
+    "KeyUpEvent": {
+      "rust": "keyboard::KeyEvent + KeyChange::Up"
+    },
+    "KeyRepeatEvent": {
+      "rust": "keyboard::KeyEvent + KeyChange::Repeat"
+    },
+    "HardwareKeyboard": {
+      "rust": "keyboard::Keyboard",
+      "note": "按下键集合与修饰键状态"
+    },
+    "KeyEventManager": {
+      "rust": "keyboard::Keyboard + focus::dispatch_key",
+      "note": "分发到焦点链的那一半在 focus.rs"
+    },
+    "KeyMessage": {
+      "rust": "keyboard::KeyEvent",
+      "note": "上游把同一次按键的 raw 与新式事件打包；此侧只有新式一路"
+    },
+    "KeyboardKey": {
+      "rust": "keyboard::{LogicalKey, PhysicalKey} 的共同形态"
+    },
+    "LogicalKeyboardKey": {
+      "rust": "keyboard::LogicalKey"
+    },
+    "PhysicalKeyboardKey": {
+      "rust": "keyboard::PhysicalKey"
+    },
+    "MouseCursor": {
+      "rust": "services::system::SystemMouseCursor",
+      "note": "上游的抽象基类；此侧只有系统光标一种"
+    },
+    "SystemMouseCursors": {
+      "rust": "services::system::SystemMouseCursor 的各变体"
+    },
+    "ClipboardData": {
+      "rust": "services::system::Clipboard 的 String 收发",
+      "note": "上游的包装只有 text 一个字段"
+    },
+    "TextSelection": {
+      "rust": "services::text_input::TextEditingValue 的 selection_base/extent",
+      "note": "此侧选区不是独立类型，是编辑值里的两个 UTF-16 下标"
     }
   },
   "blocked_engine": {
@@ -1675,15 +1748,50 @@
     "BackdropGroup": "引擎无 BackdropKey——背景滤镜无法跨兄弟共享一次采样",
     "CompositedTransformTarget": "引擎无 LayerLink（同 LeaderLayer）",
     "CompositedTransformFollower": "引擎无 LayerLink（同 FollowerLayer）",
-    "NativeHitTestTarget": "无 platform view 通路（同 PlatformViewSurface 账）"
+    "NativeHitTestTarget": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "PlatformViewsRegistry": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "PlatformViewsService": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "AndroidPointerProperties": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "AndroidPointerCoords": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "AndroidMotionEvent": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "AndroidViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "SurfaceAndroidViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "ExpensiveAndroidViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "HybridAndroidViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "TextureAndroidViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "DarwinPlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "UiKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "AppKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
+    "PlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）"
   },
-  "out_of_scope_files": {},
+  "out_of_scope_files": {
+    "raw_keyboard.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_android.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_fuchsia.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_ios.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_linux.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_macos.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_web.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
+    "raw_keyboard_windows.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路"
+  },
   "out_of_scope_classes": {
     "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",
     "TransformProperty": "同上，诊断树专用",
     "ClipContext": "debug 绘制辅助（painting/clip.dart 仅 debug 断言用）",
     "ImageSizeInfo": "debug 图片尺寸上报（painting/debug.dart）",
-    "IOSScrollViewFlingVelocityTracker": "iOS 专属，宿主集合为 Windows/Android/macOS"
+    "IOSScrollViewFlingVelocityTracker": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "BrowserContextMenu": "web-only",
+    "IOSSystemContextMenuItemData": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataCopy": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataCut": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataPaste": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataSelectAll": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataLookUp": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataSearchWeb": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataShare": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataLiveText": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "IOSSystemContextMenuItemDataCustom": "iOS 专属，宿主集合为 Windows/Android/macOS",
+    "LiveText": "iOS 专属（Live Text 取词）"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"

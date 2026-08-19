@@ -164,6 +164,37 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**services 层入账轮(2026-08-19)。** 24/141 → 85/141,逐条对着 `services/`
+五个文件核实:
+
+- **通道与编解码**——`BinaryMessenger`≙`services::{send, send_with_reply,
+  set_handler, handle_platform_message}`(上游 messenger 是对象,此侧是模块
+  函数,两端只经它)、`ServicesBinding`≙services/mod.rs + app.rs 的平台消息
+  入口、`PlatformException`≙`MethodError`、`MissingPluginException`≙
+  `MethodResult::NotImplemented`(上游抛异常,此侧是结果的一个变体)、
+  `JSONMessageCodec`/`JSONMethodCodec`≙`JsonMessageCodec`/`JsonMethodCodec`
+  (**仅大小写不同**,尺子按名字比对认不出)、`OptionalMethodChannel`≙
+  `MethodChannel`(此侧"插件不在"本就是一个结果而不是异常,不需要第二种通道)。
+- **键盘**——`KeyDownEvent`/`KeyUpEvent`/`KeyRepeatEvent`≙`KeyEvent`+
+  `KeyChange` 三变体(同指针事件的做法)、`HardwareKeyboard`≙`Keyboard`、
+  `KeyEventManager`≙`Keyboard`+`focus::dispatch_key`、
+  `KeyboardKey`/`LogicalKeyboardKey`/`PhysicalKeyboardKey`≙`LogicalKey`/
+  `PhysicalKey`。
+- **光标/剪贴板/选区**——`MouseCursor`/`SystemMouseCursors`≙
+  `SystemMouseCursor`、`ClipboardData`≙`Clipboard` 的 String 收发、
+  `TextSelection`≙`TextEditingValue` 的 selection_base/extent(此侧选区不是
+  独立类型,是编辑值里的两个 UTF-16 下标)。
+- **整族出范围**——`raw_keyboard*.dart` 八个文件(上游 v3.18 起整族
+  `@Deprecated`,被 HardwareKeyboard/KeyEvent 取代,此侧只移植新的一路)、
+  iOS 系统菜单十件与 `LiveText`(iOS 专属)、`BrowserContextMenu`(web-only)。
+- **platform_views 14 类**挂引擎账(同 `PlatformViewSurface` 既有账)。
+
+**余 56 类**多是各自成立的面:autofill 5、asset 5(含 `FontLoader`,属 E4)、
+spell_check 4、text_editing_delta 5、text_formatter 3、text_boundary 5、
+process_text 3、undo_manager 2、restoration 2(门控表挂账候选)、
+`MouseCursorManager`/`MouseCursorSession`(**光标应答的框架侧——通道已在
+`SystemMouseCursor::activate`,缺的是"指针下是谁的光标"的追踪层**,同门控表)。
+
 **P4:focus 遍历完整化(2026-08-19)。** focus_traversal.dart 16/19:
 `FocusOrder`(Numeric/Lexical 两式)、`NumericFocusOrder`/`LexicalFocusOrder`、
 `FocusTraversalOrder`(经 provide 发布,下面的 `Focus` 在自己的 build 里取——
