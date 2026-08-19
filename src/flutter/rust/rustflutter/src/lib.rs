@@ -85,6 +85,7 @@ pub mod painting;
 pub mod physics;
 pub mod pickers;
 pub mod platform;
+pub mod platform_menu_bar;
 pub mod preferred_size;
 pub mod range_slider_parts;
 pub mod recognizers;

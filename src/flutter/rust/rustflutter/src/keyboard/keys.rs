@@ -493,6 +493,16 @@ impl LogicalKey {
     pub const NUMPAD_EQUAL: LogicalKey = LogicalKey(0x20000023d);
     /// `shiftRight`
     pub const SHIFT_RIGHT: LogicalKey = LogicalKey(0x200000103);
+    /// `control`, the synonym that stands for either side. Upstream keeps the
+    /// sided keys and these four synonyms apart because a keyboard reports a
+    /// side and a *shortcut* usually does not care which.
+    pub const CONTROL: LogicalKey = LogicalKey(0x2000001f0);
+    /// `shift`
+    pub const SHIFT: LogicalKey = LogicalKey(0x2000001f2);
+    /// `alt`
+    pub const ALT: LogicalKey = LogicalKey(0x2000001f4);
+    /// `meta`
+    pub const META: LogicalKey = LogicalKey(0x2000001f6);
     /// `controlRight`
     pub const CONTROL_RIGHT: LogicalKey = LogicalKey(0x200000101);
     /// `altLeft`

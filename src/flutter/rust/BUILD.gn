@@ -166,6 +166,7 @@ if (enable_unittests) {
       "rustflutter/src/pickers.rs",
       "rustflutter/src/platform.rs",
       "rustflutter/src/range_slider_parts.rs",
+      "rustflutter/src/platform_menu_bar.rs",
       "rustflutter/src/preferred_size.rs",
       "rustflutter/src/recognizers.rs",
       "rustflutter/src/render.rs",
