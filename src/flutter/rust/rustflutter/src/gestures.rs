@@ -816,7 +816,7 @@ impl Target {
 /// Upstream's `GestureDisposition`: what a member is telling the arena, and
 /// what the arena tells a member when it hands out the verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Disposition {
+pub enum Disposition {
     Accepted,
     Rejected,
 }
