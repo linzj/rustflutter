@@ -1344,6 +1344,210 @@
     "KeepAlive": {
       "rust": "离窗即弃（记录在案分歧）",
       "note": "同 AutomaticKeepAlive 账"
+    },
+    "PointerAddedEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Add",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerRemovedEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Remove",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerHoverEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Hover",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerDownEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Down",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerMoveEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Move",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerUpEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Up",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerCancelEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Cancel",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerPanZoomStartEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::PanZoomStart",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerPanZoomUpdateEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::PanZoomUpdate",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerPanZoomEndEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::PanZoomEnd",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerSignalEvent": {
+      "rust": "gestures::PointerEvent + SignalKind 非 None 的 PointerEvent",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerScrollEvent": {
+      "rust": "gestures::PointerEvent + SignalKind::Scroll",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerScrollInertiaCancelEvent": {
+      "rust": "gestures::PointerEvent + SignalKind::ScrollInertiaCancel",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerScaleEvent": {
+      "rust": "gestures::PointerEvent + SignalKind::Scale",
+      "note": "上游的事件类层级在此侧是一个结构体加两个 code 枚举（PointerChange/SignalKind），变体与上游子类一一对应"
+    },
+    "PointerEnterEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Hover（经 on_hover_change 的进出判定）",
+      "note": "此侧不产独立的 enter/exit 事件：区域进出由 GestureRouter 比对上一帧的悬停目标算出，回调是 on_hover_change"
+    },
+    "PointerExitEvent": {
+      "rust": "gestures::PointerEvent + PointerChange::Hover（经 on_hover_change 的进出判定）",
+      "note": "同 PointerEnterEvent"
+    },
+    "GestureArenaMember": {
+      "rust": "gestures::Member（Recognizer + 区域索引）",
+      "note": "上游成员是识别器对象；此侧识别器是路由器的每类状态，成员即\"哪个识别器在哪个区域\""
+    },
+    "GestureArenaEntry": {
+      "rust": "gestures::Member 值本身",
+      "note": "无句柄对象：resolve 按成员值查找（arena_resolve），语义同 GestureArenaEntry.resolve"
+    },
+    "GestureArenaManager": {
+      "rust": "gestures::GestureArena（每指针一个，存在 GestureRouter 里）",
+      "note": "open/close/hold/sweep 与 eager winner 逐条对齐"
+    },
+    "GestureBinding": {
+      "rust": "gestures::GestureRouter + app.rs 的指针入口",
+      "note": "命中测试、事件分发、竞技场持有；帧序在 app.rs"
+    },
+    "PointerEventConverter": {
+      "rust": "app.rs 的 rf_dispatch_pointer 转换块",
+      "note": "physical→logical 按 view 的 devicePixelRatio 缩放，change/kind/signal 由 from_code 转枚举"
+    },
+    "DragDownDetails": {
+      "rust": "gestures::DragEvent",
+      "note": "上游每个回调一个 details 类；此侧一个事件结构体带 delta/位置"
+    },
+    "DragStartDetails": {
+      "rust": "gestures::DragEvent",
+      "note": "上游每个回调一个 details 类；此侧一个事件结构体带 delta/位置"
+    },
+    "DragUpdateDetails": {
+      "rust": "gestures::DragEvent",
+      "note": "上游每个回调一个 details 类；此侧一个事件结构体带 delta/位置"
+    },
+    "DragEndDetails": {
+      "rust": "gestures::DragEndEvent",
+      "note": "带释放速度"
+    },
+    "LongPressDownDetails": {
+      "rust": "gestures::TapEvent",
+      "note": "长按回调携带的位置即 TapEvent"
+    },
+    "LongPressStartDetails": {
+      "rust": "gestures::TapEvent",
+      "note": "长按回调携带的位置即 TapEvent"
+    },
+    "LongPressMoveUpdateDetails": {
+      "rust": "gestures::TapEvent",
+      "note": "长按回调携带的位置即 TapEvent"
+    },
+    "LongPressEndDetails": {
+      "rust": "gestures::TapEvent",
+      "note": "长按回调携带的位置即 TapEvent"
+    },
+    "LongPressGestureRecognizer": {
+      "rust": "gestures::Recognizer::LongPress + PointerHandlers::on_long_press",
+      "note": "超时线 LONG_PRESS_TIMEOUT_MICROS，长按后不再是 tap"
+    },
+    "ScaleStartDetails": {
+      "rust": "gestures::ScaleEvent",
+      "note": "分轴 scale 未建模（记录在案，见 ScaleEvent 文档）"
+    },
+    "ScaleUpdateDetails": {
+      "rust": "gestures::ScaleEvent",
+      "note": "分轴 scale 未建模（记录在案，见 ScaleEvent 文档）"
+    },
+    "ScaleEndDetails": {
+      "rust": "gestures::ScaleEvent",
+      "note": "分轴 scale 未建模（记录在案，见 ScaleEvent 文档）"
+    },
+    "ScaleGestureRecognizer": {
+      "rust": "gestures::Recognizer::Scale + on_scale_start/update/end",
+      "note": ""
+    },
+    "TapDownDetails": {
+      "rust": "gestures::TapEvent / PointerEvent",
+      "note": "按下与移动走 on_pointer_down/move 的 PointerEvent，完成的 tap 是 TapEvent"
+    },
+    "TapUpDetails": {
+      "rust": "gestures::TapEvent / PointerEvent",
+      "note": "按下与移动走 on_pointer_down/move 的 PointerEvent，完成的 tap 是 TapEvent"
+    },
+    "TapMoveDetails": {
+      "rust": "gestures::TapEvent / PointerEvent",
+      "note": "按下与移动走 on_pointer_down/move 的 PointerEvent，完成的 tap 是 TapEvent"
+    },
+    "BaseTapGestureRecognizer": {
+      "rust": "gestures::Recognizer::Tap",
+      "note": ""
+    },
+    "TapGestureRecognizer": {
+      "rust": "gestures::Recognizer::Tap + on_tap/on_secondary_tap",
+      "note": "按钮分派即 Tap/SecondaryTap 两个成员"
+    },
+    "DoubleTapGestureRecognizer": {
+      "rust": "gestures::Recognizer::DoubleTap + on_double_tap",
+      "note": "窗口内第二次按下；hold 住竞技场是它不让单击先结算的手段"
+    },
+    "GestureRecognizer": {
+      "rust": "gestures::Recognizer 枚举 + GestureRouter 的每类状态",
+      "note": "此侧识别器不是对象而是路由器状态机的一支"
+    },
+    "OneSequenceGestureRecognizer": {
+      "rust": "同 GestureRecognizer",
+      "note": "单指针序列即 ActivePointer 的生命周期"
+    },
+    "PrimaryPointerGestureRecognizer": {
+      "rust": "同 GestureRecognizer",
+      "note": "主指针即 ActivePointer；deadline 由 GestureRouter::tick 走"
+    },
+    "OffsetPair": {
+      "rust": "PointerEvent 的 position + local_position",
+      "note": "上游 OffsetPair 就是这一对全局/局部坐标"
+    },
+    "DragGestureRecognizer": {
+      "rust": "gestures::Recognizer::Drag + on_drag_start/update/end",
+      "note": ""
+    },
+    "PanGestureRecognizer": {
+      "rust": "gestures::Recognizer::Drag",
+      "note": "此侧的 Drag 就是无轴约束的 pan；上游按轴分出的 Vertical/Horizontal 两件未建模，留待 P6"
+    },
+    "PointerRouter": {
+      "rust": "gestures::GestureRouter 的 ActivePointer::listeners",
+      "note": "按下时记录命中路径上要原始事件的目标，之后的 move/up/cancel 按这条路径分发"
+    },
+    "LeastSquaresSolver": {
+      "rust": "gestures::fit_quadratic",
+      "note": "Gram-Schmidt 解 solve(2)；上游的 per-sample 权重其唯一调用方恒传 1，故省去"
+    },
+    "PolynomialFit": {
+      "rust": "fit_quadratic 的 [f32; 3] 系数",
+      "note": ""
+    },
+    "Velocity": {
+      "rust": "gestures::VelocityEstimate 的 pixels_per_second / DragEndEvent::velocity",
+      "note": ""
+    },
+    "DeviceGestureSettings": {
+      "rust": "gestures::compute_hit_slop / TOUCH_SLOP 等常量",
+      "note": "上游由 view 的 gestureSettings 提供平台 touchSlop；此侧用上游默认常量，宿主未上报（记录在案）"
     }
   },
   "blocked_engine": {
@@ -1370,14 +1574,16 @@
     "PlatformViewRenderBox": "无 platform view 通路",
     "BackdropGroup": "引擎无 BackdropKey——背景滤镜无法跨兄弟共享一次采样",
     "CompositedTransformTarget": "引擎无 LayerLink（同 LeaderLayer）",
-    "CompositedTransformFollower": "引擎无 LayerLink（同 FollowerLayer）"
+    "CompositedTransformFollower": "引擎无 LayerLink（同 FollowerLayer）",
+    "NativeHitTestTarget": "无 platform view 通路（同 PlatformViewSurface 账）"
   },
   "out_of_scope_files": {},
   "out_of_scope_classes": {
     "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",
     "TransformProperty": "同上，诊断树专用",
     "ClipContext": "debug 绘制辅助（painting/clip.dart 仅 debug 断言用）",
-    "ImageSizeInfo": "debug 图片尺寸上报（painting/debug.dart）"
+    "ImageSizeInfo": "debug 图片尺寸上报（painting/debug.dart）",
+    "IOSScrollViewFlingVelocityTracker": "iOS 专属，宿主集合为 Windows/Android/macOS"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"
