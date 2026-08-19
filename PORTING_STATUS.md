@@ -164,6 +164,37 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**scroll 家族入账轮(2026-08-19)。** 同样是纯判定,逐条对着 `scrolling.rs` /
+`physics.rs` 核实:
+
+- **活动族九件**——上游的 `ScrollActivity` 对象在此侧是 `Scroll` 自己的一个
+  字段:`Option<Activity>` 加 `Motion` 两式。`IdleScrollActivity`≙`None`、
+  `BallisticScrollActivity`≙`Motion::Ballistic`、`DrivenScrollActivity`≙
+  `Motion::Driven`(即上游 `_InterpolationSimulation`)、
+  `ScrollActivityDelegate`≙`Scroll` 自身(活动直接改它的 offset)、
+  `ScrollHoldController`/`HoldScrollActivity`≙`Scroll::stop()`(按下即停飞行;
+  停下这件事本身就是 hold,所以它报 end 而不是新活动——既有回归线里写着)、
+  `ScrollDragController`/`DragScrollActivity`≙手势的 `on_drag_update` 直连
+  `scroll_by`。
+- **controller/position 四件**——此侧一个 `Scroll` 即上游
+  controller+position+ 单 context 合一;`FixedScrollMetrics`≙`ScrollMetrics`
+  (本就是快照值类型)。
+- **通知六件**——五个具体通知≙`ScrollNotification` 五变体,
+  `ViewportNotificationMixin`≙各变体的 `depth` 字段。`ViewportElementMixin`
+  仍缺——它是给 depth **加一**的那一侧,此侧没有视口元素来加,字段现在恒零
+  (代码里已自陈是"待接的缝")。
+- **物理两件**——`ScrollPhysics`≙physics.rs 的 Simulation 族 + `Scroll` 的
+  边界钳制,`ClampingScrollPhysics`≙`ClampingScrollSimulation`;弹跳一族
+  (`BouncingScrollPhysics`/`BouncingScrollSimulation`/`RangeMaintaining`/
+  `AlwaysScrollable`/`NeverScrollable`)属 **E7**,未入账。
+- **委托三件**——`SliverChildDelegate`/`ChildBuilderDelegate`/`ChildListDelegate`
+  ≙`SliverList` 的 builder 闭包与 `SliverList::list`(上游委托对象的全部职责
+  就是"按索引造孩子")。
+
+**层进度(本轮末)**:painting 100%、animation 100%、rendering 88%、
+gestures 64%、scheduler 57%、widgets 41%、cupertino 21%、services 17%、
+foundation 11%、material 9%;**全量 795/1868(42%)**。
+
 **gestures 层入账轮(2026-08-19)。** 纯判定,不动码——逐类核实后
 5/90 → 58/90:
 

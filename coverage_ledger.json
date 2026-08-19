@@ -1548,6 +1548,100 @@
     "DeviceGestureSettings": {
       "rust": "gestures::compute_hit_slop / TOUCH_SLOP 等常量",
       "note": "上游由 view 的 gestureSettings 提供平台 touchSlop；此侧用上游默认常量，宿主未上报（记录在案）"
+    },
+    "ScrollActivity": {
+      "rust": "scrolling::Activity / Motion",
+      "note": "上游的活动对象在此侧是 Scroll 自身的一个字段：Option<Activity> 加 Motion 两式"
+    },
+    "ScrollActivityDelegate": {
+      "rust": "scrolling::Scroll 自身",
+      "note": "活动直接改它的 offset，没有第三方委托"
+    },
+    "IdleScrollActivity": {
+      "rust": "scrolling::Scroll::activity == None"
+    },
+    "BallisticScrollActivity": {
+      "rust": "scrolling::Motion::Ballistic(ClampingScrollSimulation)"
+    },
+    "DrivenScrollActivity": {
+      "rust": "scrolling::Motion::Driven",
+      "note": "animate_to 的定时插值，即上游的 _InterpolationSimulation"
+    },
+    "ScrollHoldController": {
+      "rust": "scrolling::Scroll::stop()",
+      "note": "按下即停飞行；无独立 hold 对象，停下这件事本身就是 hold"
+    },
+    "HoldScrollActivity": {
+      "rust": "scrolling::Scroll::stop() 后的 activity == None",
+      "note": "同上——hold 不构成滚动，所以它是 end 而不是新活动"
+    },
+    "ScrollDragController": {
+      "rust": "拖拽回调直连 Scroll::scroll_by",
+      "note": "手势侧的 on_drag_update 就是它，中间没有控制器对象"
+    },
+    "DragScrollActivity": {
+      "rust": "同 ScrollDragController"
+    },
+    "ScrollContext": {
+      "rust": "scrolling::Scroll + 持有它的组件",
+      "note": "上游 context 提供 vsync/通知分发/setCanDrag；此侧分别是帧序、NotificationSink 与手势 handlers"
+    },
+    "ScrollController": {
+      "rust": "scrolling::Scroll",
+      "note": "此侧一个 Scroll 即上游 controller+position 合一"
+    },
+    "ScrollPosition": {
+      "rust": "scrolling::Scroll",
+      "note": "pixels/minScrollExtent/maxScrollExtent/viewportDimension/activity 全在里面"
+    },
+    "ScrollPositionWithSingleContext": {
+      "rust": "scrolling::Scroll",
+      "note": "此侧一个 Scroll 只服务一个视口，单 context 是唯一形态"
+    },
+    "FixedScrollMetrics": {
+      "rust": "scrolling::ScrollMetrics",
+      "note": "此侧 metrics 本就是快照值类型"
+    },
+    "ViewportNotificationMixin": {
+      "rust": "ScrollNotification 各变体的 depth 字段"
+    },
+    "ScrollStartNotification": {
+      "rust": "scrolling::ScrollNotification::Start",
+      "note": "上游一类一件，此侧一个枚举五变体"
+    },
+    "ScrollUpdateNotification": {
+      "rust": "scrolling::ScrollNotification::Update",
+      "note": "上游一类一件，此侧一个枚举五变体"
+    },
+    "OverscrollNotification": {
+      "rust": "scrolling::ScrollNotification::Overscroll",
+      "note": "上游一类一件，此侧一个枚举五变体"
+    },
+    "ScrollEndNotification": {
+      "rust": "scrolling::ScrollNotification::End",
+      "note": "上游一类一件，此侧一个枚举五变体"
+    },
+    "UserScrollNotification": {
+      "rust": "scrolling::ScrollNotification::UserScroll",
+      "note": "上游一类一件，此侧一个枚举五变体"
+    },
+    "ScrollPhysics": {
+      "rust": "physics.rs 的 Simulation 族 + Scroll 的边界钳制",
+      "note": "上游按物理策略分类；此侧钳制是 Scroll 的固定行为，弹跳一族属 E7"
+    },
+    "ClampingScrollPhysics": {
+      "rust": "physics::ClampingScrollSimulation",
+      "note": "Android 式摩擦减速，撞界即停——此侧的默认也是唯一行为"
+    },
+    "SliverChildDelegate": {
+      "rust": "sliver::SliverList 的 builder 闭包",
+      "note": "上游委托对象的全部职责是\"按索引造孩子\"，此侧就是那个闭包"
+    },
+    "SliverChildBuilderDelegate": {
+      "rust": "sliver::SliverList::new 的 build_child"
+    },
+    "SliverChildListDelegate": {
+      "rust": "sliver::SliverList::list"
     }
   },
   "blocked_engine": {
