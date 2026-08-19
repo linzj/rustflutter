@@ -45,6 +45,7 @@ pub mod framework;
 pub mod gesture_details;
 pub mod gestures;
 pub mod grid;
+pub mod icon_data;
 pub mod image;
 pub mod implicit;
 pub mod ink;

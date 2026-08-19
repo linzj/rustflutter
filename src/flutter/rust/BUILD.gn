@@ -120,6 +120,7 @@ if (enable_unittests) {
       "rustflutter/src/focus.rs",
       "rustflutter/src/foundation.rs",
       "rustflutter/src/framework.rs",
+      "rustflutter/src/icon_data.rs",
       "rustflutter/src/image.rs",
       "rustflutter/src/gesture_details.rs",
       "rustflutter/src/gestures.rs",
