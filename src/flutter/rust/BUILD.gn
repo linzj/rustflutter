@@ -122,6 +122,7 @@ if (enable_unittests) {
       "rustflutter/src/drawer.rs",
       "rustflutter/src/dual_transition_builder.rs",
       "rustflutter/src/editable.rs",
+      "rustflutter/src/expansion_panel.rs",
       "rustflutter/src/fab_location.rs",
       "rustflutter/src/focus.rs",
       "rustflutter/src/foundation.rs",
