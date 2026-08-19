@@ -164,6 +164,35 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:`ThemeData` 立起来了(2026-08-19)。** `theme.rs`:
+
+- **`ColorScheme::light_m3()`/`dark_m3()`**——上游 `_colorSchemeLightM3`/
+  `_colorSchemeDarkM3` 两张常量表,同样由脚本从 theme_data.dart 解析生成。
+  这是 `ThemeData()` 在没人指定方案时用的两套,也就是一个 M3 应用真正跑的
+  配色——**不需要 fromSeed 也能拿到正经的 M3 默认值**。
+- **`ThemeData`(通用半边)**——`from_color_scheme` 就是上游构造器的推导表:
+  `primaryColor`=primarySurfaceColor(暗色取 surface、亮色取 primary)、
+  canvas/scaffold/card=surface、divider=outline,其余按亮暗取常量
+  (highlight `0x66BCBCBC`/`0x40CCCCCC`、unselected black54/white70、
+  focus 12%、hover 4% ……),`applyElevationOverlayColor` 恰为"是否暗色"。
+  `light()`/`dark()`/`lerp`/`of(context)` 齐。
+- **`VisualDensity`**——标准/舒适/紧凑三式、`baseSizeAdjustment`(每单位四像素)、
+  `effectiveConstraints`(只动 minima,且不越过 maxima、不低于零)、
+  `adaptivePlatformDensity`。
+- **`MaterialTheme`/`ThemeDataTween`/`AnimatedTheme`**——theme.dart 三件齐。
+
+**两个主题类型并存的接法(不是上游有的东西,是这一步的桥)**:
+`ThemeData::to_component_theme()` 逐角色派生出 crate 既有的
+`components::Theme`,`MaterialTheme::new` 一次 provide 两者。这样 controls
+可以一簇一簇地迁过来,而不是一笔提交动全部——`components::Theme` 十四个字段
+被 components/controls/cupertino/pickers 和整个相册读着。
+
+**记录在案的分歧**:`primarySwatch`/`ColorScheme.fromSwatch` 不做(M2 的入口,
+上游正在弃用,见 flutter#91772);`useMaterial3` 不设字段(上游用它在迁移期
+切两套默认值,此侧只有 M3 一套);`Typography`/`TextTheme`/`IconThemeData`
+随文本与图标簇(E5);**组件主题四十五件随各自的控件簇落地**——没有控件可配的
+组件主题是没人读的数据类。
+
 **widgets 层入账轮:restoration 与手势探测器(2026-08-19)。**
 
 - **restoration 全家 25 类挂引擎账**——PORTING_PLAN 门控表早已判过

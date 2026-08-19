@@ -794,6 +794,130 @@ impl ColorScheme {
     }
 }
 
+impl ColorScheme {
+    /// The Material 3 baseline light scheme.
+    ///
+    /// Upstream `_colorSchemeLightM3`, which is what `ThemeData()` uses when
+    /// nobody names a scheme -- so it is the scheme a Material 3
+    /// application actually runs on.
+    pub const fn light_m3() -> ColorScheme {
+        ColorScheme {
+            brightness: Brightness::Light,
+            primary: Color(0xff6750a4),
+            on_primary: Color(0xffffffff),
+            secondary: Color(0xff625b71),
+            on_secondary: Color(0xffffffff),
+            error: Color(0xffb3261e),
+            on_error: Color(0xffffffff),
+            surface: Color(0xfffef7ff),
+            on_surface: Color(0xff1d1b20),
+            primary_container: Some(Color(0xffeaddff)),
+            on_primary_container: Some(Color(0xff4f378b)),
+            primary_fixed: Some(Color(0xffeaddff)),
+            primary_fixed_dim: Some(Color(0xffd0bcff)),
+            on_primary_fixed: Some(Color(0xff21005d)),
+            on_primary_fixed_variant: Some(Color(0xff4f378b)),
+            secondary_container: Some(Color(0xffe8def8)),
+            on_secondary_container: Some(Color(0xff4a4458)),
+            secondary_fixed: Some(Color(0xffe8def8)),
+            secondary_fixed_dim: Some(Color(0xffccc2dc)),
+            on_secondary_fixed: Some(Color(0xff1d192b)),
+            on_secondary_fixed_variant: Some(Color(0xff4a4458)),
+            tertiary: Some(Color(0xff7d5260)),
+            on_tertiary: Some(Color(0xffffffff)),
+            tertiary_container: Some(Color(0xffffd8e4)),
+            on_tertiary_container: Some(Color(0xff633b48)),
+            tertiary_fixed: Some(Color(0xffffd8e4)),
+            tertiary_fixed_dim: Some(Color(0xffefb8c8)),
+            on_tertiary_fixed: Some(Color(0xff31111d)),
+            on_tertiary_fixed_variant: Some(Color(0xff633b48)),
+            error_container: Some(Color(0xfff9dedc)),
+            on_error_container: Some(Color(0xff8c1d18)),
+            background: Some(Color(0xfffef7ff)),
+            on_background: Some(Color(0xff1d1b20)),
+            surface_bright: Some(Color(0xfffef7ff)),
+            surface_container_lowest: Some(Color(0xffffffff)),
+            surface_container_low: Some(Color(0xfff7f2fa)),
+            surface_container: Some(Color(0xfff3edf7)),
+            surface_container_high: Some(Color(0xffece6f0)),
+            surface_container_highest: Some(Color(0xffe6e0e9)),
+            surface_dim: Some(Color(0xffded8e1)),
+            surface_variant: Some(Color(0xffe7e0ec)),
+            on_surface_variant: Some(Color(0xff49454f)),
+            outline: Some(Color(0xff79747e)),
+            outline_variant: Some(Color(0xffcac4d0)),
+            shadow: Some(Color(0xff000000)),
+            scrim: Some(Color(0xff000000)),
+            inverse_surface: Some(Color(0xff322f35)),
+            on_inverse_surface: Some(Color(0xfff5eff7)),
+            inverse_primary: Some(Color(0xffd0bcff)),
+            surface_tint: Some(Color(0xff6750a4)),
+            ..ColorScheme::UNSET
+        }
+    }
+
+    /// The Material 3 baseline dark scheme.
+    ///
+    /// Upstream `_colorSchemeDarkM3`, which is what `ThemeData()` uses when
+    /// nobody names a scheme -- so it is the scheme a Material 3
+    /// application actually runs on.
+    pub const fn dark_m3() -> ColorScheme {
+        ColorScheme {
+            brightness: Brightness::Dark,
+            primary: Color(0xffd0bcff),
+            on_primary: Color(0xff381e72),
+            secondary: Color(0xffccc2dc),
+            on_secondary: Color(0xff332d41),
+            error: Color(0xfff2b8b5),
+            on_error: Color(0xff601410),
+            surface: Color(0xff141218),
+            on_surface: Color(0xffe6e0e9),
+            primary_container: Some(Color(0xff4f378b)),
+            on_primary_container: Some(Color(0xffeaddff)),
+            primary_fixed: Some(Color(0xffeaddff)),
+            primary_fixed_dim: Some(Color(0xffd0bcff)),
+            on_primary_fixed: Some(Color(0xff21005d)),
+            on_primary_fixed_variant: Some(Color(0xff4f378b)),
+            secondary_container: Some(Color(0xff4a4458)),
+            on_secondary_container: Some(Color(0xffe8def8)),
+            secondary_fixed: Some(Color(0xffe8def8)),
+            secondary_fixed_dim: Some(Color(0xffccc2dc)),
+            on_secondary_fixed: Some(Color(0xff1d192b)),
+            on_secondary_fixed_variant: Some(Color(0xff4a4458)),
+            tertiary: Some(Color(0xffefb8c8)),
+            on_tertiary: Some(Color(0xff492532)),
+            tertiary_container: Some(Color(0xff633b48)),
+            on_tertiary_container: Some(Color(0xffffd8e4)),
+            tertiary_fixed: Some(Color(0xffffd8e4)),
+            tertiary_fixed_dim: Some(Color(0xffefb8c8)),
+            on_tertiary_fixed: Some(Color(0xff31111d)),
+            on_tertiary_fixed_variant: Some(Color(0xff633b48)),
+            error_container: Some(Color(0xff8c1d18)),
+            on_error_container: Some(Color(0xfff9dedc)),
+            background: Some(Color(0xff141218)),
+            on_background: Some(Color(0xffe6e0e9)),
+            surface_bright: Some(Color(0xff3b383e)),
+            surface_container_lowest: Some(Color(0xff0f0d13)),
+            surface_container_low: Some(Color(0xff1d1b20)),
+            surface_container: Some(Color(0xff211f26)),
+            surface_container_high: Some(Color(0xff2b2930)),
+            surface_container_highest: Some(Color(0xff36343b)),
+            surface_dim: Some(Color(0xff141218)),
+            surface_variant: Some(Color(0xff49454f)),
+            on_surface_variant: Some(Color(0xffcac4d0)),
+            outline: Some(Color(0xff938f99)),
+            outline_variant: Some(Color(0xff49454f)),
+            shadow: Some(Color(0xff000000)),
+            scrim: Some(Color(0xff000000)),
+            inverse_surface: Some(Color(0xffe6e0e9)),
+            on_inverse_surface: Some(Color(0xff322f35)),
+            inverse_primary: Some(Color(0xff6750a4)),
+            surface_tint: Some(Color(0xffd0bcff)),
+            ..ColorScheme::UNSET
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
