@@ -42,6 +42,7 @@ pub mod direction;
 pub mod display_feature;
 pub mod drag_boundary;
 pub mod drag_target;
+pub mod draggable_sheet;
 pub mod drawer;
 pub mod dual_transition_builder;
 pub mod editable;

@@ -122,6 +122,7 @@ if (enable_unittests) {
       "rustflutter/src/display_feature.rs",
       "rustflutter/src/drag_boundary.rs",
       "rustflutter/src/drag_target.rs",
+      "rustflutter/src/draggable_sheet.rs",
       "rustflutter/src/drawer.rs",
       "rustflutter/src/dual_transition_builder.rs",
       "rustflutter/src/editable.rs",
