@@ -102,6 +102,7 @@ if (enable_unittests) {
     sources = [
       "rustflutter/src/actions.rs",
       "rustflutter/src/app.rs",
+      "rustflutter/src/arc.rs",
       "rustflutter/src/async.rs",
       "rustflutter/src/borders.rs",
       "rustflutter/src/cupertino.rs",
@@ -141,6 +142,7 @@ if (enable_unittests) {
       "rustflutter/src/material.rs",
       "rustflutter/src/media_query.rs",
       "rustflutter/src/menu.rs",
+      "rustflutter/src/motion.rs",
       "rustflutter/src/navigation.rs",
       "rustflutter/src/overflow_bar.rs",
       "rustflutter/src/page_storage.rs",
