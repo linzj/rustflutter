@@ -59,6 +59,7 @@ pub mod scrolling;
 pub mod semantics;
 pub mod services;
 pub mod shortcuts;
+pub mod transitions;
 pub mod widgets;
 
 pub use actions::{Action, ActionDispatcher, Intent};

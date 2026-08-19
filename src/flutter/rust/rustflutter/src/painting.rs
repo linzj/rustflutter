@@ -2430,6 +2430,18 @@ impl Matrix4 {
         }
     }
 
+    /// `Matrix4.diagonal3Values` -- a scale, one factor per axis.
+    pub const fn diagonal3_values(x: f32, y: f32, z: f32) -> Matrix4 {
+        Matrix4 {
+            storage: [
+                x, 0.0, 0.0, 0.0, //
+                0.0, y, 0.0, 0.0, //
+                0.0, 0.0, z, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
     /// `Matrix4.rotationZ` -- the rotation the 2D world cares about.
     pub fn rotation_z(radians: f32) -> Matrix4 {
         let (sin_r, cos_r) = radians.sin_cos();

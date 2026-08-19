@@ -164,6 +164,61 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P4:transitions 全家(2026-08-19)。** `transitions.rs` 落地,
+transitions.dart 16/16 入账(唯 `DefaultTextStyleTransition` 仍记 mapped
+——框架侧无 `DefaultTextStyle` 组件,随 P7 文本波接线):
+
+- `AnimatedWidget`——上游是 `initState` 里 `addListener(_handleChange)` +
+  `setState`;此侧是 `advance` 每帧比对"动画现值/状态"与"上次画的那份",
+  不同即请求重建,运行中恒请求下一帧(上游控制器每 tick 都通知,同义)。
+- `ListenableBuilder`——`ChangeNotifier` 不是时钟,不能逐帧轮询,所以走真
+  订阅:首建时经 `StateHandle` 注册回调,回调即 `set_state(|_| {})`(标脏
+  +排帧),订阅句柄存在 state 里随元素消亡。`AnimatedBuilder` 取 `Animation`
+  一路(上游两者都收 `Listenable`,只有文档不同)。
+- 八个具体过渡:`SlideTransition`(rtl 翻 dx、`transformHitTests`)、
+  `MatrixTransition`+`ScaleTransition`(`diagonal3Values`)+`RotationTransition`
+  (`rotationZ(v·2π)`)、`SizeTransition`(`math.max(factor, 0)` 下限、
+  轴/`alignment`/废弃 `axisAlignment` 的 build 分支、`fixedCrossAxisSizeFactor`)、
+  `FadeTransition`/`SliverFadeTransition`、`DecoratedBoxTransition`、
+  `AlignTransition`。
+- 三个 tween:`RelativeRectTween`、`AlignmentTween`、`AlignmentGeometryTween`
+  (后两件是 rendering/tweens.dart 的,顺带清零该文件);`DecorationTween`
+  由 mapped 转真码。
+- 配套补上的地基:`RelativeRect`(rendering/stack.dart 全套——fromSize/
+  fromRect/fromDirectional/shift/inflate/intersect/toRect/toSize/lerp,
+  外加 `to_stack_position()` 即上游 `Positioned.fromRelativeRect`)、
+  `DecorationPosition`(RenderDecoratedBox 的前景/背景绘制序)、
+  `RenderFractionalTranslation.transformHitTests`(此前恒真)、
+  `Matrix4::diagonal3_values`、`AnimationController`。
+
+**`AnimationController`:对象图此前没有驱动源。** P5 立的 `Animation` 对象图
+里,`CurvedAnimation`/`ProxyAnimation`/`AnimationMean` 都收 `Rc<dyn Animation>`
+父,而能当父的只有 `AlwaysStoppedAnimation` 和测试桩——`Controller` 是纯值
+时钟,没有 listener 面也不能共享。`AnimationController` 是把它放进共享可变
++ 挂上 listener 的那一层:`value()` 取 curved 值、`status()` 由
+running/direction/value 现算(上游存 `_status`,由 `_checkStatusChanged` 写)、
+`is_animating()` 覆写为 ticker 活否(上游同样覆写,所以中途 stop 的控制器
+status 仍说 forward 而 isAnimating 为假)。tick 仍由持有方在自己的 `advance`
+里调——`Ticker`/`TickerProvider` 未移植(widgets/ticker_provider.dart,4 类)。
+
+**记录在案的分歧(随本簇新增)**:
+
+- **child 是闭包不是实例**。上游 `AnimatedWidget` 把拿到的 `child` 原样交回
+  每次重建(这正是"把 child 传给 builder 而不是在里面 build"的理由);
+  `AnyWidget` 不 `Clone`(内含闭包),所以此侧每帧重建 child 由元素树协调
+  ——效果同,省下的那笔省不到。
+- **`PositionedTransition`/`RelativePositionedTransition` 是位置,不是 widget**。
+  上游它们是 `Positioned`,而 `Positioned` 是外层 `Stack` 读取的
+  `ParentDataWidget`;此侧栈直接收孩子的位置(`RenderStack::push_positioned`),
+  子 widget 无从标注,所以过渡本身就是那个位置,由外层每次 build 问它要。
+  外层本就在逐帧重建(它才是 tick 控制器的那个),这侧不需要 listener。
+- `filterQuality` 丢弃(引擎 transform 层无 image filter quality);
+  `alwaysIncludeSemantics` 丢弃(`RenderOpacity` 恰在停画时退出语义,无标志可留);
+  `MatrixTransition` 的矩阵按 2D 仿射压平(z 行与透视列丢弃,同
+  `RenderTransform` 既有的限制——上游那个 Y 轴透视 dartpad 例子此侧画不出)。
+- `RelativeRect.lerp` 的上游 `b == null` 分支写的是 `b!.left * k`,唯一能走到
+  它的输入上必抛;此侧按对称的本意实现为 `a.left * k`,并在文档里点名。
+
 **P4:widgets 基座台账(2026-08-18)。** ~40 类判定入账:builder 族
 (component/animated 即本体)、DecoratedBox/Banner/Feedback/FlutterLogo 等门面
 (渲染对象与系统服务已在)、focus 遍历与 intent(focus.rs 既有)、

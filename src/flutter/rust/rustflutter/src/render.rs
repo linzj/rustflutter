@@ -2859,6 +2859,17 @@ pub enum Fill {
 /// Upstream this is `RenderDecoratedBox` with a `BoxDecoration`. Border radius,
 /// fill and a border are the parts that earn their place; shadows are a paint
 /// blur away and are left to the caller.
+/// Which side of the child a decoration is painted on -- upstream's
+/// `DecorationPosition` (`rendering/proxy_box.dart`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecorationPosition {
+    /// Painted before the child: the usual case, a background.
+    #[default]
+    Background,
+    /// Painted after the child, over it.
+    Foreground,
+}
+
 pub struct RenderDecoratedBox {
     fill: Option<Fill>,
     corner_radius: f32,
@@ -2869,6 +2880,9 @@ pub struct RenderDecoratedBox {
     /// A whole `Decoration`, upstream's `RenderDecoratedBox.decoration`.
     /// When set it takes the place of the individual fields above.
     decoration: Option<crate::decoration::Decoration>,
+    /// Upstream's `RenderDecoratedBox.position`: which side of the child the
+    /// whole decoration is painted on.
+    position: DecorationPosition,
     border_width: f32,
     border_color: Color,
     /// Painted under the box, in order. Empty for anything sitting flat on the
@@ -2885,6 +2899,7 @@ impl RenderDecoratedBox {
             corner_radius: 0.0,
             corners: None,
             decoration: None,
+            position: DecorationPosition::Background,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             shadows: Vec::new(),
@@ -2920,6 +2935,13 @@ impl RenderDecoratedBox {
     /// fill/radius/border fields.
     pub fn with_decoration(mut self, decoration: crate::decoration::Decoration) -> Self {
         self.decoration = Some(decoration);
+        self
+    }
+
+    /// Upstream `RenderDecoratedBox.position`: a foreground decoration paints
+    /// over the child rather than under it.
+    pub fn with_position(mut self, position: DecorationPosition) -> Self {
+        self.position = position;
         self
     }
 
@@ -3046,6 +3068,7 @@ impl RenderBox for RenderDecoratedBox {
                 || self.corner_radius != fresh.corner_radius
                 || self.corners != fresh.corners
                 || self.decoration != fresh.decoration
+                || self.position != fresh.position
                 || self.border_width != fresh.border_width
                 || self.border_color != fresh.border_color
                 || self.shadows != fresh.shadows,
@@ -3054,6 +3077,7 @@ impl RenderBox for RenderDecoratedBox {
         self.corner_radius = fresh.corner_radius;
         self.corners = fresh.corners;
         self.decoration = fresh.decoration.take();
+        self.position = fresh.position;
         self.border_width = fresh.border_width;
         self.border_color = fresh.border_color;
         self.shadows = std::mem::take(&mut fresh.shadows);
@@ -3093,13 +3117,21 @@ impl RenderBox for RenderDecoratedBox {
         // A whole decoration paints as itself, shadows under background
         // under border -- upstream's `_BoxDecorationPainter.paint` order.
         if let Some(decoration) = &self.decoration {
-            decoration.paint(
-                context.canvas(),
-                rect,
-                crate::direction::current_direction(),
-            );
+            let paint_decoration = |context: &mut PaintContext| {
+                decoration.paint(
+                    context.canvas(),
+                    rect,
+                    crate::direction::current_direction(),
+                );
+            };
+            if self.position == DecorationPosition::Background {
+                paint_decoration(context);
+            }
             if let Some(child) = &self.child {
                 context.paint_child(child, offset);
+            }
+            if self.position == DecorationPosition::Foreground {
+                paint_decoration(context);
             }
             return;
         }
@@ -5419,6 +5451,184 @@ impl StackFit {
             StackFit::Loose => constraints.loosen(),
             StackFit::Expand => BoxConstraints::tight_for(constraints.biggest()),
             StackFit::Passthrough => constraints,
+        }
+    }
+}
+
+/// A rectangle described by how far each of its edges is *inside* another
+/// rectangle's -- upstream `RelativeRect` (`rendering/stack.dart`).
+///
+/// The four numbers are insets, not coordinates: `right` is the distance from
+/// the container's right edge leftwards, so a rect that fills its container is
+/// zero on all four sides. That is what makes it interpolable across a
+/// container whose size is not yet known, which is the whole reason upstream
+/// animates positions in this form rather than in [`Rect`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RelativeRect {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl RelativeRect {
+    /// Upstream `RelativeRect.fromLTRB`.
+    pub const fn from_ltrb(left: f32, top: f32, right: f32, bottom: f32) -> RelativeRect {
+        RelativeRect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// Upstream `RelativeRect.fill`: flush with the container on every side.
+    pub const FILL: RelativeRect = RelativeRect::from_ltrb(0.0, 0.0, 0.0, 0.0);
+
+    /// Upstream `RelativeRect.fromSize`: `rect` read as insets into a
+    /// container of `container` size anchored at the origin.
+    pub fn from_size(rect: Rect, container: Size) -> RelativeRect {
+        RelativeRect::from_ltrb(
+            rect.left,
+            rect.top,
+            container.width - rect.right,
+            container.height - rect.bottom,
+        )
+    }
+
+    /// Upstream `RelativeRect.fromRect`: both rects in the same coordinate
+    /// space, the container not necessarily at the origin.
+    pub fn from_rect(rect: Rect, container: Rect) -> RelativeRect {
+        RelativeRect::from_ltrb(
+            rect.left - container.left,
+            rect.top - container.top,
+            container.right - rect.right,
+            container.bottom - rect.bottom,
+        )
+    }
+
+    /// Upstream `RelativeRect.fromDirectional`: `start` is whichever side the
+    /// given direction reads from.
+    pub fn from_directional(
+        text_direction: TextDirection,
+        start: f32,
+        top: f32,
+        end: f32,
+        bottom: f32,
+    ) -> RelativeRect {
+        let (left, right) = match text_direction {
+            TextDirection::Rtl => (end, start),
+            TextDirection::Ltr => (start, end),
+        };
+        RelativeRect::from_ltrb(left, top, right, bottom)
+    }
+
+    /// Upstream `hasInsets`: any edge held away from the container's.
+    pub fn has_insets(&self) -> bool {
+        self.left > 0.0 || self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0
+    }
+
+    /// Upstream `shift`: moved by an offset, which grows two insets and
+    /// shrinks the opposite two.
+    pub fn shift(&self, offset: Offset) -> RelativeRect {
+        RelativeRect::from_ltrb(
+            self.left + offset.dx,
+            self.top + offset.dy,
+            self.right - offset.dx,
+            self.bottom - offset.dy,
+        )
+    }
+
+    /// Upstream `inflate`: every edge `delta` further out.
+    pub fn inflate(&self, delta: f32) -> RelativeRect {
+        RelativeRect::from_ltrb(
+            self.left - delta,
+            self.top - delta,
+            self.right - delta,
+            self.bottom - delta,
+        )
+    }
+
+    /// Upstream `deflate`.
+    pub fn deflate(&self, delta: f32) -> RelativeRect {
+        self.inflate(-delta)
+    }
+
+    /// Upstream `intersect`: the larger inset on each side, which is the
+    /// overlap once both are resolved against the same container.
+    pub fn intersect(&self, other: RelativeRect) -> RelativeRect {
+        RelativeRect::from_ltrb(
+            self.left.max(other.left),
+            self.top.max(other.top),
+            self.right.max(other.right),
+            self.bottom.max(other.bottom),
+        )
+    }
+
+    /// Upstream `toRect`: resolved against a container, which supplies the
+    /// two edges the insets are measured from.
+    pub fn to_rect(&self, container: Rect) -> Rect {
+        Rect::ltrb(
+            self.left,
+            self.top,
+            container.width() - self.right,
+            container.height() - self.bottom,
+        )
+    }
+
+    /// Upstream `toSize`.
+    pub fn to_size(&self, container: Size) -> Size {
+        Size::new(
+            container.width - self.left - self.right,
+            container.height - self.top - self.bottom,
+        )
+    }
+
+    /// Upstream `RelativeRect.lerp`, with the missing side treated as the
+    /// container's own edges -- a null there means "flush", so the present
+    /// side scales towards or away from zero.
+    ///
+    /// Upstream's `b == null` branch reads `b!.left * k`, which throws on the
+    /// only input that can reach it; the intent, and what the `a == null`
+    /// branch does mirrored, is `a.left * k`. That is what this does.
+    pub fn lerp(a: Option<RelativeRect>, b: Option<RelativeRect>, t: f32) -> Option<RelativeRect> {
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(RelativeRect::from_ltrb(
+                b.left * t,
+                b.top * t,
+                b.right * t,
+                b.bottom * t,
+            )),
+            (Some(a), None) => {
+                let k = 1.0 - t;
+                Some(RelativeRect::from_ltrb(
+                    a.left * k,
+                    a.top * k,
+                    a.right * k,
+                    a.bottom * k,
+                ))
+            }
+            (Some(a), Some(b)) => Some(RelativeRect::from_ltrb(
+                a.left + (b.left - a.left) * t,
+                a.top + (b.top - a.top) * t,
+                a.right + (b.right - a.right) * t,
+                a.bottom + (b.bottom - a.bottom) * t,
+            )),
+        }
+    }
+
+    /// This rect as the stack's own spelling of a position: upstream's
+    /// `Positioned.fromRelativeRect`, which sets all four edges and no
+    /// extent.
+    pub fn to_stack_position(&self) -> StackPosition {
+        StackPosition {
+            left: Some(self.left),
+            top: Some(self.top),
+            right: Some(self.right),
+            bottom: Some(self.bottom),
+            width: None,
+            height: None,
         }
     }
 }
@@ -15597,6 +15807,11 @@ impl RenderBox for RenderClipOval {
 /// the paint -- the hit test moves with the paint.
 pub struct RenderFractionalTranslation {
     translation: (f32, f32),
+    /// Upstream's `transformHitTests`: whether the hit test is moved with
+    /// the paint. False leaves the child hittable where it was laid out,
+    /// which is what a fast slide wants -- the finger goes where the widget
+    /// is about to settle, not where it currently is on screen.
+    transform_hit_tests: bool,
     child: BoxedRender,
     size: Size,
 }
@@ -15605,9 +15820,16 @@ impl RenderFractionalTranslation {
     pub fn new(translation: (f32, f32), child: impl RenderBox + 'static) -> Self {
         Self {
             translation,
+            transform_hit_tests: true,
             child: RenderRef::new(child),
             size: Size::ZERO,
         }
+    }
+
+    /// Upstream `RenderFractionalTranslation.transformHitTests`.
+    pub fn with_transform_hit_tests(mut self, transform: bool) -> Self {
+        self.transform_hit_tests = transform;
+        self
     }
 
     fn paint_offset(&self) -> Offset {
@@ -15623,8 +15845,12 @@ impl RenderBox for RenderFractionalTranslation {
         let fresh = fresh
             .as_any_mut()
             .downcast_mut::<RenderFractionalTranslation>()?;
-        let mut effect = UpdateEffect::repaint_if(self.translation != fresh.translation);
+        let mut effect = UpdateEffect::repaint_if(
+            self.translation != fresh.translation
+                || self.transform_hit_tests != fresh.transform_hit_tests,
+        );
         self.translation = fresh.translation;
+        self.transform_hit_tests = fresh.transform_hit_tests;
         effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
         self.child = fresh.child.clone();
         Some(effect)
@@ -15656,7 +15882,13 @@ impl RenderBox for RenderFractionalTranslation {
     }
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        let shift = self.paint_offset();
+        // Upstream passes `offset: _transformHitTests ? ... : null` to
+        // `addWithPaintOffset`: a null offset is the untranslated position.
+        let shift = if self.transform_hit_tests {
+            self.paint_offset()
+        } else {
+            Offset::ZERO
+        };
         let local = Offset::new(position.dx - shift.dx, position.dy - shift.dy);
         self.child.hit_test(local, result)
     }

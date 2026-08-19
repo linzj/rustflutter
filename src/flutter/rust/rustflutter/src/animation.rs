@@ -314,6 +314,14 @@ impl Tween for ColorTween {
     }
 }
 
+impl Animatable for ColorTween {
+    type Output = crate::engine::Color;
+
+    fn transform(&self, t: f32) -> crate::engine::Color {
+        self.lerp(t)
+    }
+}
+
 /// Interpolates an offset.
 #[derive(Clone, Copy, Debug)]
 pub struct OffsetTween {
@@ -335,6 +343,14 @@ impl Tween for OffsetTween {
             self.begin.dx + (self.end.dx - self.begin.dx) * t,
             self.begin.dy + (self.end.dy - self.begin.dy) * t,
         )
+    }
+}
+
+impl Animatable for OffsetTween {
+    type Output = crate::render::Offset;
+
+    fn transform(&self, t: f32) -> crate::render::Offset {
+        self.lerp(t)
     }
 }
 
@@ -955,6 +971,163 @@ impl AnimationListeners {
 
     pub fn is_empty(&self) -> bool {
         self.listeners.borrow().is_empty()
+    }
+}
+
+/// Upstream `AnimationController`: the one animation nothing else drives.
+///
+/// [`Controller`] is the same clock as a plain value -- it is ticked, it
+/// answers a number, and whoever holds it reads that number in their own
+/// build. This is that controller behind shared ownership and with the
+/// listener half attached, which is what the rest of the object graph needs:
+/// a [`CurvedAnimation`], a [`ProxyAnimation`] and every transition take an
+/// `Rc<dyn Animation>` parent, and until this existed the only things that
+/// could be one were `AlwaysStoppedAnimation` and a test fixture.
+///
+/// The tick still comes from outside -- upstream's `Ticker`/`TickerProvider`
+/// pair is not ported (`widgets/ticker_provider.dart`), so the owning widget
+/// calls [`AnimationController::tick`] from its own
+/// [`advance`](crate::framework::StatefulComponent::advance), the same place
+/// every other animation in the crate is driven from.
+pub struct AnimationController {
+    controller: RefCell<Controller>,
+    listeners: AnimationListeners,
+    last_status: Cell<AnimationStatus>,
+}
+
+impl AnimationController {
+    pub fn new(duration: Duration) -> Rc<AnimationController> {
+        Rc::new(AnimationController {
+            controller: RefCell::new(Controller::new(duration)),
+            listeners: AnimationListeners::new(),
+            last_status: Cell::new(AnimationStatus::Dismissed),
+        })
+    }
+
+    /// The same controller, curved. The curve is read on every `value`, so
+    /// changing it mid-flight changes what is drawn from the next frame --
+    /// upstream reaches the same effect through a `CurvedAnimation` wrapper.
+    pub fn with_curve(self: Rc<Self>, curve: Curve) -> Rc<Self> {
+        let curved = self.controller.borrow().clone().with_curve(curve);
+        *self.controller.borrow_mut() = curved;
+        self
+    }
+
+    pub fn with_repeat(self: Rc<Self>, repeat: Repeat) -> Rc<Self> {
+        let repeating = self.controller.borrow().clone().with_repeat(repeat);
+        *self.controller.borrow_mut() = repeating;
+        self
+    }
+
+    /// The raw 0..1 value, before the curve -- upstream's
+    /// `AnimationController.value`, which no curve is applied to either.
+    pub fn raw_value(&self) -> f32 {
+        self.controller.borrow().value()
+    }
+
+    pub fn set_value(&self, value: f32) {
+        self.controller.borrow_mut().set_value(value);
+        self.announce();
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.controller.borrow().is_running()
+    }
+
+    pub fn forward(&self) {
+        self.controller.borrow_mut().forward();
+        self.announce();
+    }
+
+    pub fn reverse(&self) {
+        self.controller.borrow_mut().reverse();
+        self.announce();
+    }
+
+    pub fn toggle(&self) {
+        self.controller.borrow_mut().toggle();
+        self.announce();
+    }
+
+    pub fn restart(&self) {
+        self.controller.borrow_mut().restart();
+        self.announce();
+    }
+
+    pub fn stop(&self) {
+        self.controller.borrow_mut().stop();
+        self.announce();
+    }
+
+    /// Advances the clock and tells the listeners. Returns whether another
+    /// frame is wanted, exactly as [`Controller::tick`] does.
+    pub fn tick(&self, elapsed: Duration) -> bool {
+        let wants_frame = self.controller.borrow_mut().tick(elapsed);
+        if wants_frame {
+            self.listeners.notify_value();
+        }
+        self.announce();
+        wants_frame
+    }
+
+    /// The status this controller is in now, derived rather than stored:
+    /// running says which way, and a stopped controller is at one end or
+    /// parked between them.
+    ///
+    /// Upstream keeps `_status` as a field written by `_checkStatusChanged`,
+    /// so a controller stopped mid-flight keeps saying `forward`. Here the
+    /// same answer falls out of the direction it was last sent in, which is
+    /// what `Controller::direction` holds.
+    fn derived_status(&self) -> AnimationStatus {
+        let controller = self.controller.borrow();
+        if controller.is_running() {
+            return match controller.direction() {
+                Direction::Forward => AnimationStatus::Forward,
+                Direction::Reverse => AnimationStatus::Reverse,
+            };
+        }
+        match (controller.value(), controller.direction()) {
+            (value, _) if value >= 1.0 => AnimationStatus::Completed,
+            (value, _) if value <= 0.0 => AnimationStatus::Dismissed,
+            (_, Direction::Forward) => AnimationStatus::Forward,
+            (_, Direction::Reverse) => AnimationStatus::Reverse,
+        }
+    }
+
+    /// Tells the status listeners, if the status moved. Upstream's
+    /// `_checkStatusChanged`.
+    fn announce(&self) {
+        let status = self.derived_status();
+        if status != self.last_status.get() {
+            self.last_status.set(status);
+            self.listeners.notify_status(status);
+        }
+    }
+}
+
+impl Animation for AnimationController {
+    fn value(&self) -> f32 {
+        self.controller.borrow().curved()
+    }
+
+    fn status(&self) -> AnimationStatus {
+        self.derived_status()
+    }
+
+    fn add_listener(&self, listener: AnimationListener) {
+        self.listeners.add(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.listeners.remove(listener);
+    }
+
+    /// Upstream `AnimationController.isAnimating` overrides the status-derived
+    /// default with `_ticker.isActive`: a controller stopped in the middle is
+    /// not animating even though its status still says which way it was
+    /// going. This is that override.
+    fn is_animating(&self) -> bool {
+        self.controller.borrow().is_running()
     }
 }
 

@@ -100,8 +100,11 @@ if (enable_unittests) {
     script = "run_rust_tests.py"
 
     sources = [
+      "rustflutter/src/actions.rs",
       "rustflutter/src/app.rs",
+      "rustflutter/src/async.rs",
       "rustflutter/src/borders.rs",
+      "rustflutter/src/cupertino.rs",
       "rustflutter/src/engine.rs",
       "rustflutter/src/engine_test_stubs.rs",
       "rustflutter/src/animation.rs",
@@ -139,6 +142,8 @@ if (enable_unittests) {
       "rustflutter/src/services/mod.rs",
       "rustflutter/src/services/system.rs",
       "rustflutter/src/services/text_input.rs",
+      "rustflutter/src/shortcuts.rs",
+      "rustflutter/src/transitions.rs",
       "rustflutter/src/widgets.rs",
     ]
 

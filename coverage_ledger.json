@@ -541,10 +541,6 @@
       "rust": "容器持有的 offset",
       "note": "同上"
     },
-    "RelativeRect": {
-      "rust": "Rect 四边距的语义即 StackPosition 的全四边",
-      "note": "shifted_box 的 Positioned 家族等价物"
-    },
     "RendererBinding": {
       "rust": "app.rs 帧序",
       "note": "绑定职责在帧序（同 PipelineOwner 账）"
@@ -754,8 +750,8 @@
       "note": "at_most 的字段回退"
     },
     "AnimationController": {
-      "rust": "animation::Controller",
-      "note": "既有——value/tick/forward/reverse/stop"
+      "rust": "animation::AnimationController",
+      "note": "共享驱动 + listener；Controller 为其内的纯值时钟。Ticker/TickerProvider 未移植，tick 由持有方 advance 调用"
     },
     "Curves": {
       "rust": "animation::Curve 枚举的变体",
@@ -1081,10 +1077,6 @@
       "rust": "BoxConstraints: Lerp 既有实现",
       "note": "Lerp trait 即 tween"
     },
-    "DecorationTween": {
-      "rust": "Decoration 的 Lerp（decoration.rs lerp）",
-      "note": "同上"
-    },
     "EdgeInsetsTween": {
       "rust": "EdgeInsets Lerp",
       "note": "同上"
@@ -1161,21 +1153,9 @@
       "rust": "ProxySliverBehavior::Opacity + animated",
       "note": "两件已在,组合"
     },
-    "AnimatedWidget": {
-      "rust": "implicit::animated()（每帧重建即其 rebuild）",
-      "note": "listen-and-rebuild 职责在帧序"
-    },
-    "AnimatedBuilder": {
-      "rust": "animated(target, …, build)",
-      "note": "同上"
-    },
     "TransitionBuilder": {
       "rust": "build 闭包类型",
       "note": "类型别名"
-    },
-    "ListenableBuilder": {
-      "rust": "animated + ChangeNotifier 的 tick",
-      "note": "listen 面经帧序"
     },
     "ValueListenableBuilder": {
       "rust": "animated + ValueNotifier",
@@ -1320,6 +1300,10 @@
     "AccessibilityInspector": {
       "rust": "-",
       "note": "debug 工具,P10"
+    },
+    "FractionalOffsetTween": {
+      "rust": "transitions::AlignmentTween",
+      "note": "FractionalOffset≙Alignment（同坐标系，已入账），其 tween 即 AlignmentTween"
     }
   },
   "blocked_engine": {
