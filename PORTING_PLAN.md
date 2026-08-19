@@ -28,6 +28,10 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
+**进度（2026-08-19）：934 accounted / 939 MISSING（50%）。** 层别：painting
+100%、animation 100%、rendering 88%、gestures 64%、widgets 49%、scheduler
+57%、services 60%、foundation 38%、cupertino 21%、material 10%。
+
 口径三则（2026-08-17 定）：
 
 1. **范围**：framework 全层 + material + cupertino。
@@ -78,6 +82,15 @@ blocked 11 / MISSING 1,694（90%）。**
 | P6 | 滚动+手势：page_view、nested/single_child/list_wheel、reorderable、dismissible、draggable_scrollable_sheet、2D 滚动；scroll_controller 多位置、overscroll_indicator、ScrollBehavior 全量；multidrag、team、pointer_router、resampler、eager、tap_and_drag；force_press 按门控表 | ~90 类 |
 | P7 | 文本：TextPainter 对象化（现为自由函数 `shape()`+双代缓存）、strut、按字重/变体注册字体、RenderEditable 对齐、selection.dart 17 类、selectable_region、context menus、magnifier、undo_history、widget_span（富文本嵌 widget） | ~80 类 |
 | P8 | material 四波：M1 主题/基建 → M2 结构件（AppBar/Scaffold/导航件/GridView/RefreshIndicator） → M3 表单/复合（TextField/Dropdown/Chip/Date-Time pickers/Dialog 函数族/MenuAnchor/Stepper…） → M4 杂项终裁 | 386 类 |
+
+**M1 的第一步已落地**（`color_scheme.rs` 全角色 + `colors.rs` 全色板 +
+`widget_state.rs` 的 `WidgetStateProperty` 体系）。**M1 的下一步是
+`ThemeData`，它要单独立项**：此侧现有的 `components::Theme` 是十四个字段的
+简化版，components/controls/cupertino/pickers 与相册全在读它；上游 `ThemeData`
+是上百个字段加四十来对 `*Theme`/`*ThemeData` 组件主题，且每个组件主题的回退
+都穿过 `ThemeData`。做法是先立 `ThemeData`（持 `ColorScheme` + 组件主题表），
+让 `Theme` 成为它的门面，再逐组件把回退接上去——半路停下会让两个主题类型并存，
+比不做更糟。`ColorScheme.fromSeed` 需要 M3 色调调色板（HCT/CAM16），同样另立。
 | P9 | cupertino 两波：C-M1 基础件 → C-M2 复合件 | 82 类 |
 | P10 | 收尾：debug/inspector 类终裁、_window 家族按宿主、restoration 挂账核对、终验 0 MISSING | — |
 
