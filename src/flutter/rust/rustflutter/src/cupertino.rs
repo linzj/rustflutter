@@ -50,8 +50,8 @@ use crate::framework::{
 };
 use crate::gestures::PointerHandlers;
 use crate::list_wheel::{
-    RenderListWheel, angle_for, index_to_scroll_offset, inside_magnifier_band, max_visible_radian,
-    project_center, project_scale_y, scroll_offset_to_index,
+    RenderListWheel, angle_for, index_to_scroll_offset, inside_magnifier_band, project_center,
+    scroll_offset_to_index,
 };
 use crate::platform::Brightness;
 use crate::render::{
@@ -4312,6 +4312,7 @@ impl CupertinoCheckbox {
 mod tests {
     use super::*;
     use crate::framework::{ElementTree, component, provide};
+    use crate::list_wheel::max_visible_radian;
     use crate::render::HitTestResult;
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
