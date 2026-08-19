@@ -37,6 +37,7 @@ pub mod cupertino;
 pub mod decoration;
 pub mod direction;
 pub mod display_feature;
+pub mod drag_boundary;
 pub mod drawer;
 pub mod dual_transition_builder;
 pub mod editable;
