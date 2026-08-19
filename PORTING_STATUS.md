@@ -164,6 +164,54 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 谁来画选择手柄,以及谁一个都不画(2026-08-20)
+
+新模块 `text_selection_controls.rs`,八个类跨五个文件:`TextSelectionControls`、
+`EmptyTextSelectionControls`、`TextSelectionHandleControls`(`widgets/text_selection.dart`),
+`MaterialTextSelectionControls`、`MaterialTextSelectionHandleControls`
+(`material/text_selection.dart`),`DesktopTextSelectionControls`、
+`DesktopTextSelectionToolbar`、`DesktopTextSelectionToolbarButton`(desktop 那三个文
+件)。四个文件收口。
+
+**有意思的是那些「一个手柄都不画」的实现——而它们是三个类不是一个,因为理由各不相同:**
+
+* **desktop 不画,是因为桌面有鼠标。** 选区是用指针直接拖出来的,手柄是个没人需要的触摸供
+  给物,还多一样东西挡着挨误点。
+* **empty 不画,是因为那个**字段**不想要**(比如一个只读标签)。但它**每个问题照样答**——所
+  以字段可以拿着它而不用在每个调用点判空。**「没有手柄」和「没有 controls」是两回事。**
+* **handle controls 不画的是**工具栏**,手柄照留。** 这是上游的迁移接缝:工具栏搬去了
+  `contextMenuBuilder`,所以它对每个工具栏问题都答 false,而手柄原样交给它包着的那个类。
+  **这里的 false 意思是「别问我剪切,去问上下文菜单」,不是「没有东西可剪」。**
+
+**回归行盯的地方:**
+
+* **选区塌成一个光标时剪不了也拷不了**——没有东西可移除,也没有东西可放进剪贴板。
+* **粘贴只问那个标志位。** 粘贴会替换掉选中的东西,包括「什么都没选」——所以一个光标和一段
+  范围一样是合法目标。
+* **全选只在还什么都没选中的时候才给。** 这条最出人意料:上游要求选区**是**塌着的。读者已
+  经有一段范围之后再给全选,要么什么都不做(范围本来就是全部),要么把他们自己选的东西扔
+  掉——**一个塞满了会撤销读者自己劳动的命令的工具栏,比一个短工具栏更糟。**
+* **触摸手柄的锚点是不对称的**:左手柄锚在它的**右**边、右手柄锚在**左**边,好让每个手柄的
+  方角贴着文字、圆身子挂在选区**外面**,而不是压在正被选中的字上。塌缩手柄标的是一个点而不
+  是一条边,所以居中。
+* **handle controls 保留手柄、拒答全部命令**,并且锚点和它包着的那个类**逐一相同**。
+* **desktop 工具栏把锚点搬进那层内边距的坐标系**——锚点来的是屏幕坐标,而工具栏是在
+  padding 里面布局的;不搬的话它会朝每个方向偏 8 像素。
+* **desktop 工具栏是定宽的**(222,上游注释说是从 macOS 上 TextEdit 的截图量的):这样菜单
+  不会随着命令随选区来去而变形——而它们确实会来去,剪切和拷贝要有范围才出现。
+* **工具栏按钮的内边距是往下偏的**(底 3、顶 0):视觉居中,因为文字因升部而坐得比盒子中线
+  高;而字距是**负的**,因为宽度是定死的。
+
+**没有照搬的:** `buildHandle` 和 `buildToolbar` 要从 `TextSelectionDelegate`、
+`ClipboardStatusNotifier` 和一串 `TextSelectionPoint` 里造 widget——那是
+`widgets/text_selection.dart` 的浮层机器,这个 crate 没有。这里在的是决定**要不要**和**在
+哪儿**的那一半:手柄尺寸、锚点,和那四条 `can*` 规则。那是其余部分建在上面的答案,也是不
+需要浮层就能测的那一半。
+
+验证:`cargo test --lib` 1534 绿,GN `rustflutter_unittests` 1534 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1278 accounted / 610 MISSING。
+
 ### 四种 chip,和一个什么都不画的溅开(2026-08-20)
 
 `ActionChip`、`ChoiceChip`、`FilterChip`、`InputChip` 各自那个文件,加上

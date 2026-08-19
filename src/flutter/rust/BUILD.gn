@@ -182,6 +182,7 @@ if (enable_unittests) {
       "rustflutter/src/sliver.rs",
       "rustflutter/src/tap_region.rs",
       "rustflutter/src/tap_region.rs",
+      "rustflutter/src/text_selection_controls.rs",
       "rustflutter/src/theme.rs",
       "rustflutter/src/ticker.rs",
       "rustflutter/src/transitions.rs",

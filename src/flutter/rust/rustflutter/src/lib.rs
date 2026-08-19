@@ -87,6 +87,7 @@ pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
 pub mod tap_region;
+pub mod text_selection_controls;
 pub mod theme;
 pub mod ticker;
 pub mod transitions;

@@ -28,7 +28,7 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-19）：1270 accounted / 618 MISSING（67%，总数因尺子修正 1873→1888）。services 层已 141/141 全覆盖。** 层别：painting
+**进度（2026-08-19）：1278 accounted / 610 MISSING（68%，总数因尺子修正 1873→1888）。services 层已 141/141 全覆盖。** 层别：painting
 100%、animation 100%、rendering 87%、gestures 64%、widgets 46%、scheduler
 57%、services 44%、foundation 31%、cupertino 22%、material 43%。
 
