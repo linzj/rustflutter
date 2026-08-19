@@ -164,6 +164,28 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:scrollbar 与菜单一族(2026-08-19)。**
+`ScrollbarTheme(Data)`(11/11)、`MenuStyle`(13/13)、`MenuTheme(Data)`(1/2)、
+`MenuBarTheme(Data)`、`MenuButtonTheme(Data)`、`SegmentedButtonTheme(Data)`
+(1/2)。**覆盖过千:1008/1873。**
+
+`MenuStyle` 与 `ButtonStyle` 同形不同字段——一个是面板能被告知的事,一个是
+标签能被告知的事。`MenuBarThemeData` 上游是 `MenuThemeData` 的无字段子类
+(为了让菜单栏与挂在它上面的菜单分开设主题),此侧是两个同形的类型,回归线
+点明"装了一个不等于装了另一个"。
+
+**`Scrollbar` 接上了**:thickness/thumb color/radius/margins/minThumbLength
+走 `ScrollbarTheme.of`。这里有个**已有形态要保住**——`ScrollbarMetrics` 是
+参数而不是常量,正因为 `CupertinoScrollbar` 就是这个 widget 换一套度量。所以
+判据是"调用方没有覆写过 metrics 时才让主题说话",这与上游的链首(widget
+自己的字段)是同一件事。thumb 的默认按 states 分:拖动时是 outline 实色,
+闲置时 0x4d,回归线两条。
+
+**记录在案的分歧**:`MenuThemeData.submenuIcon` 与
+`SegmentedButtonThemeData.selectedIcon` 都是"主题里放 widget"
+(`WidgetStateProperty<Widget?>` / `Widget?`),与 `ButtonStyle` 的两个 builder
+同一类,此侧还没有这个形态的位置。
+
 **P8-M1:banner / expansion tile / M2 按钮主题(2026-08-19)。**
 `MaterialBannerTheme(Data)`(8/8)、`ExpansionTileTheme(Data)`(12/13,缺
 `clipBehavior`)、`ButtonTheme(ButtonThemeData)`(15/15,连带补

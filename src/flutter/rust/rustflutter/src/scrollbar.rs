@@ -276,19 +276,43 @@ impl StatefulComponent for Scrollbar {
         context: &mut BuildContext,
     ) -> AnyWidget {
         let theme = theme_of(context);
+        // Upstream's `RawScrollbar.build` reads `ScrollbarTheme.of(context)`
+        // for the thickness, the thumb's colour and the margins before its
+        // own defaults. A `Scrollbar` given metrics outright -- which is how
+        // `CupertinoScrollbar` is built from this one -- keeps them: the
+        // widget's own field is the first step of upstream's chain.
+        let scrollbar = crate::component_themes::ResolvedScrollbar::of(
+            context,
+            crate::widget_state::WidgetStates::NONE,
+        );
         // The idle thumb: upstream's `_thumbColor` with no state attached is
         // `onSurface.withOpacity(0.3)` in a dark scheme, and `text_muted` is
         // this port's nearest on-surface.
-        let color = self.color.unwrap_or(theme.text_muted);
+        let themed_thumb = crate::component_themes::ScrollbarTheme::of(context)
+            .thumb_color
+            .as_ref()
+            .and_then(|property| property.resolve(crate::widget_state::WidgetStates::NONE));
+        let color = self.color.or(themed_thumb).unwrap_or(theme.text_muted);
         let opacity = state.opacity();
+        let metrics = if self.metrics == ScrollbarMetrics::default() {
+            // Nobody overrode them, so the theme has its say.
+            ScrollbarMetrics {
+                thickness: scrollbar.thickness,
+                radius: scrollbar.radius.x,
+                min_thumb_length: scrollbar.min_thumb_length,
+                cross_axis_margin: scrollbar.cross_axis_margin.max(2.0),
+                ..self.metrics
+            }
+        } else {
+            self.metrics
+        };
         let thumb = thumb_within(
             state.viewport,
             state.content,
             state.offset,
-            self.metrics.min_thumb_length,
+            metrics.min_thumb_length,
         );
         let axis = self.axis;
-        let metrics = self.metrics;
 
         // The listener upstream puts between the scrollable and everything
         // above it. Every kind of scroll notification carries where the

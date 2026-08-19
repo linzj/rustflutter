@@ -49,8 +49,9 @@ use crate::component_themes::{
     ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
     DialogThemeData, DividerThemeData, DrawerThemeData, ElevatedButtonThemeData,
     ExpansionTileThemeData, FilledButtonThemeData, IconButtonThemeData, ListTileThemeData,
-    MaterialBannerThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
-    ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData, SwitchThemeData,
+    MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData, MenuThemeData,
+    NavigationRailThemeData, OutlinedButtonThemeData, ProgressIndicatorThemeData, RadioThemeData,
+    ScrollbarThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
     TabBarThemeData, TextButtonThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
@@ -227,6 +228,11 @@ pub struct ThemeData {
     /// The Material 2 button theme, which is a different set of questions
     /// from the five `*ButtonThemeData` above.
     pub button_theme: ButtonThemeData,
+    pub scrollbar_theme: ScrollbarThemeData,
+    pub menu_theme: MenuThemeData,
+    pub menu_bar_theme: MenuBarThemeData,
+    pub menu_button_theme: MenuButtonThemeData,
+    pub segmented_button_theme: SegmentedButtonThemeData,
 }
 
 impl ThemeData {
@@ -336,6 +342,11 @@ impl ThemeData {
             banner_theme: MaterialBannerThemeData::new(),
             expansion_tile_theme: ExpansionTileThemeData::new(),
             button_theme: ButtonThemeData::new(),
+            scrollbar_theme: ScrollbarThemeData::new(),
+            menu_theme: MenuThemeData::new(),
+            menu_bar_theme: MenuBarThemeData::new(),
+            menu_button_theme: MenuButtonThemeData::new(),
+            segmented_button_theme: SegmentedButtonThemeData::new(),
         }
     }
 
@@ -402,6 +413,16 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_scrollbar_theme(mut self, scrollbar_theme: ScrollbarThemeData) -> ThemeData {
+        self.scrollbar_theme = scrollbar_theme;
+        self
+    }
+
+    pub fn with_menu_theme(mut self, menu_theme: MenuThemeData) -> ThemeData {
+        self.menu_theme = menu_theme;
         self
     }
 
@@ -618,6 +639,19 @@ impl ThemeData {
             // metrics rather than paint, and a button bar does not animate
             // between two widths.
             button_theme: nearer.button_theme.clone(),
+            scrollbar_theme: ScrollbarThemeData::lerp(&a.scrollbar_theme, &b.scrollbar_theme, t),
+            menu_theme: MenuThemeData::lerp(&a.menu_theme, &b.menu_theme, t),
+            menu_bar_theme: MenuBarThemeData::lerp(&a.menu_bar_theme, &b.menu_bar_theme, t),
+            menu_button_theme: MenuButtonThemeData::lerp(
+                &a.menu_button_theme,
+                &b.menu_button_theme,
+                t,
+            ),
+            segmented_button_theme: SegmentedButtonThemeData::lerp(
+                &a.segmented_button_theme,
+                &b.segmented_button_theme,
+                t,
+            ),
         }
     }
 

@@ -3058,6 +3058,417 @@ impl ButtonTheme {
     }
 }
 
+// -- Scrollbar (upstream `scrollbar_theme.dart`) ------------------------------
+
+/// Upstream `ScrollbarThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScrollbarThemeData {
+    /// Whether the thumb is drawn at all -- by state, because a scrollbar
+    /// that appears while dragging and fades otherwise is the usual thing.
+    pub thumb_visibility: Option<StateProperty<Option<bool>>>,
+    pub thickness: Option<StateProperty<Option<f32>>>,
+    pub track_visibility: Option<StateProperty<Option<bool>>>,
+    /// Whether the thumb can be dragged, rather than only shown.
+    pub interactive: Option<bool>,
+    pub radius: Option<crate::borders::Radius>,
+    pub thumb_color: Option<StateProperty<Option<Color>>>,
+    pub track_color: Option<StateProperty<Option<Color>>>,
+    pub track_border_color: Option<StateProperty<Option<Color>>>,
+    /// The gap between the bar and the edge of the viewport.
+    pub cross_axis_margin: Option<f32>,
+    /// The gap at each end of the track.
+    pub main_axis_margin: Option<f32>,
+    /// How short the thumb may get on a very long list.
+    pub min_thumb_length: Option<f32>,
+}
+
+impl ScrollbarThemeData {
+    pub fn new() -> ScrollbarThemeData {
+        ScrollbarThemeData::default()
+    }
+
+    pub fn with_thickness(mut self, thickness: StateProperty<Option<f32>>) -> Self {
+        self.thickness = Some(thickness);
+        self
+    }
+
+    pub fn with_thumb_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.thumb_color = Some(color);
+        self
+    }
+
+    pub fn with_radius(mut self, radius: crate::borders::Radius) -> Self {
+        self.radius = Some(radius);
+        self
+    }
+
+    pub fn with_margins(mut self, cross_axis: f32, main_axis: f32) -> Self {
+        self.cross_axis_margin = Some(cross_axis);
+        self.main_axis_margin = Some(main_axis);
+        self
+    }
+
+    pub fn with_min_thumb_length(mut self, length: f32) -> Self {
+        self.min_thumb_length = Some(length);
+        self
+    }
+
+    /// Upstream `ScrollbarThemeData.lerp`.
+    pub fn lerp(a: &ScrollbarThemeData, b: &ScrollbarThemeData, t: f32) -> ScrollbarThemeData {
+        ScrollbarThemeData {
+            thumb_visibility: lerp_nearer(&a.thumb_visibility, &b.thumb_visibility, t),
+            thickness: lerp_nearer(&a.thickness, &b.thickness, t),
+            track_visibility: lerp_nearer(&a.track_visibility, &b.track_visibility, t),
+            interactive: lerp_nearer(&a.interactive, &b.interactive, t),
+            radius: lerp_nearer(&a.radius, &b.radius, t),
+            thumb_color: lerp_state_color(a.thumb_color.as_ref(), b.thumb_color.as_ref(), t),
+            track_color: lerp_state_color(a.track_color.as_ref(), b.track_color.as_ref(), t),
+            track_border_color: lerp_state_color(
+                a.track_border_color.as_ref(),
+                b.track_border_color.as_ref(),
+                t,
+            ),
+            cross_axis_margin: lerp_f32(a.cross_axis_margin, b.cross_axis_margin, t),
+            main_axis_margin: lerp_f32(a.main_axis_margin, b.main_axis_margin, t),
+            min_thumb_length: lerp_f32(a.min_thumb_length, b.min_thumb_length, t),
+        }
+    }
+}
+
+/// Upstream `ScrollbarTheme`.
+pub struct ScrollbarTheme;
+
+impl ScrollbarTheme {
+    pub fn new(data: ScrollbarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ScrollbarThemeData {
+        context
+            .inherited::<ScrollbarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).scrollbar_theme.clone())
+    }
+}
+
+/// What a scrollbar draws with, once the three steps have run.
+pub struct ResolvedScrollbar {
+    pub thickness: f32,
+    pub thumb_color: Color,
+    pub radius: crate::borders::Radius,
+    pub cross_axis_margin: f32,
+    pub main_axis_margin: f32,
+    pub min_thumb_length: f32,
+    pub interactive: bool,
+}
+
+impl ResolvedScrollbar {
+    /// Upstream's `_kScrollbarThickness`.
+    pub const THICKNESS: f32 = 8.0;
+    /// Upstream's `_kScrollbarMinLength`.
+    pub const MIN_THUMB_LENGTH: f32 = 48.0;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedScrollbar {
+        let data = ScrollbarTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedScrollbar {
+            thickness: data
+                .thickness
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(ResolvedScrollbar::THICKNESS),
+            thumb_color: data
+                .thumb_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                // Upstream's Material 3 default: the outline at three
+                // quarters when dragged, and rather fainter otherwise.
+                .unwrap_or(if states.contains(WidgetState::Dragged) {
+                    scheme.outline()
+                } else {
+                    scheme.outline().with_alpha(0x4d)
+                }),
+            radius: data.radius.unwrap_or(crate::borders::Radius::circular(
+                ResolvedScrollbar::THICKNESS / 2.0,
+            )),
+            cross_axis_margin: data.cross_axis_margin.unwrap_or(0.0),
+            main_axis_margin: data.main_axis_margin.unwrap_or(0.0),
+            min_thumb_length: data
+                .min_thumb_length
+                .unwrap_or(ResolvedScrollbar::MIN_THUMB_LENGTH),
+            interactive: data.interactive.unwrap_or(true),
+        }
+    }
+}
+
+// -- Menus (upstream `menu_style.dart`, `menu_theme.dart` and friends) --------
+
+/// Upstream `MenuStyle`: what a menu panel is told, state by state.
+///
+/// The same shape as [`ButtonStyle`] and for the same reason -- a menu is a
+/// surface that can be hovered and focused -- with the fields a panel has
+/// rather than the ones a label has.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuStyle {
+    pub background_color: Option<StateProperty<Option<Color>>>,
+    pub shadow_color: Option<StateProperty<Option<Color>>>,
+    pub surface_tint_color: Option<StateProperty<Option<Color>>>,
+    pub elevation: Option<StateProperty<Option<f32>>>,
+    pub padding: Option<StateProperty<Option<EdgeInsetsGeometry>>>,
+    pub minimum_size: Option<StateProperty<Option<Size>>>,
+    pub fixed_size: Option<StateProperty<Option<Size>>>,
+    pub maximum_size: Option<StateProperty<Option<Size>>>,
+    pub side: Option<StateProperty<Option<BorderSide>>>,
+    pub shape: Option<StateProperty<Option<ShapeBorder>>>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub visual_density: Option<VisualDensity>,
+    pub alignment: Option<AlignmentGeometry>,
+}
+
+impl MenuStyle {
+    pub fn new() -> MenuStyle {
+        MenuStyle::default()
+    }
+
+    pub fn with_background_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: StateProperty<Option<EdgeInsetsGeometry>>) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    pub fn with_alignment(mut self, alignment: AlignmentGeometry) -> Self {
+        self.alignment = Some(alignment);
+        self
+    }
+
+    /// Upstream `MenuStyle.lerp`.
+    pub fn lerp(a: &MenuStyle, b: &MenuStyle, t: f32) -> MenuStyle {
+        MenuStyle {
+            background_color: lerp_state_color(
+                a.background_color.as_ref(),
+                b.background_color.as_ref(),
+                t,
+            ),
+            shadow_color: lerp_state_color(a.shadow_color.as_ref(), b.shadow_color.as_ref(), t),
+            surface_tint_color: lerp_state_color(
+                a.surface_tint_color.as_ref(),
+                b.surface_tint_color.as_ref(),
+                t,
+            ),
+            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            minimum_size: lerp_nearer(&a.minimum_size, &b.minimum_size, t),
+            fixed_size: lerp_nearer(&a.fixed_size, &b.fixed_size, t),
+            maximum_size: lerp_nearer(&a.maximum_size, &b.maximum_size, t),
+            side: lerp_nearer(&a.side, &b.side, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            visual_density: match (a.visual_density, b.visual_density) {
+                (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            alignment: lerp_nearer(&a.alignment, &b.alignment, t),
+        }
+    }
+}
+
+/// Two optional menu styles interpolated.
+fn lerp_menu_style(a: &Option<MenuStyle>, b: &Option<MenuStyle>, t: f32) -> Option<MenuStyle> {
+    match (a, b) {
+        (Some(first), Some(second)) => Some(MenuStyle::lerp(first, second, t)),
+        (first, second) => {
+            if t < 0.5 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        }
+    }
+}
+
+/// Upstream `MenuThemeData`.
+///
+/// `submenuIcon` is not here: it is a `WidgetStateProperty<Widget?>`, a
+/// widget carried in a theme, which is a shape this port has no place for
+/// yet (the same reason `ButtonStyle`'s two builders are absent).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuThemeData {
+    pub style: Option<MenuStyle>,
+}
+
+impl MenuThemeData {
+    pub fn new() -> MenuThemeData {
+        MenuThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: MenuStyle) -> MenuThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream `MenuThemeData.lerp`.
+    pub fn lerp(a: &MenuThemeData, b: &MenuThemeData, t: f32) -> MenuThemeData {
+        MenuThemeData {
+            style: lerp_menu_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `MenuTheme`.
+pub struct MenuTheme;
+
+impl MenuTheme {
+    pub fn new(data: MenuThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> MenuThemeData {
+        context
+            .inherited::<MenuThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).menu_theme.clone())
+    }
+}
+
+/// Upstream `MenuBarThemeData`, which is a `MenuThemeData` under another
+/// name -- upstream declares it as a subclass with no fields of its own, so
+/// that a menu bar and the menus inside it can be themed apart.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuBarThemeData {
+    pub style: Option<MenuStyle>,
+}
+
+impl MenuBarThemeData {
+    pub fn new() -> MenuBarThemeData {
+        MenuBarThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: MenuStyle) -> MenuBarThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream `MenuBarThemeData.lerp`.
+    pub fn lerp(a: &MenuBarThemeData, b: &MenuBarThemeData, t: f32) -> MenuBarThemeData {
+        MenuBarThemeData {
+            style: lerp_menu_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `MenuBarTheme`.
+pub struct MenuBarTheme;
+
+impl MenuBarTheme {
+    pub fn new(data: MenuBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> MenuBarThemeData {
+        context
+            .inherited::<MenuBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).menu_bar_theme.clone())
+    }
+}
+
+/// Upstream `MenuButtonThemeData`: the style of the entries in a menu.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl MenuButtonThemeData {
+    pub fn new() -> MenuButtonThemeData {
+        MenuButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> MenuButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream `MenuButtonThemeData.lerp`.
+    pub fn lerp(a: &MenuButtonThemeData, b: &MenuButtonThemeData, t: f32) -> MenuButtonThemeData {
+        MenuButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `MenuButtonTheme`.
+pub struct MenuButtonTheme;
+
+impl MenuButtonTheme {
+    pub fn new(data: MenuButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> MenuButtonThemeData {
+        context
+            .inherited::<MenuButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).menu_button_theme.clone())
+    }
+}
+
+/// Upstream `SegmentedButtonThemeData`.
+///
+/// `selectedIcon` is not here, for the reason `MenuThemeData.submenuIcon` is
+/// not: it is a widget carried in a theme.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SegmentedButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl SegmentedButtonThemeData {
+    pub fn new() -> SegmentedButtonThemeData {
+        SegmentedButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> SegmentedButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream `SegmentedButtonThemeData.lerp`.
+    pub fn lerp(
+        a: &SegmentedButtonThemeData,
+        b: &SegmentedButtonThemeData,
+        t: f32,
+    ) -> SegmentedButtonThemeData {
+        SegmentedButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `SegmentedButtonTheme`.
+pub struct SegmentedButtonTheme;
+
+impl SegmentedButtonTheme {
+    pub fn new(data: SegmentedButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> SegmentedButtonThemeData {
+        context
+            .inherited::<SegmentedButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).segmented_button_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -3928,5 +4339,96 @@ mod tests {
         );
         assert_eq!(themed.text_color, Some(Color::argb(255, 3, 3, 3)));
         assert_eq!(themed.collapsed_text_color, Some(Color::argb(255, 4, 4, 4)));
+    }
+
+    #[test]
+    fn a_scrollbar_resolves_its_thickness_and_its_thumb() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let plain = read_in(
+            |child| child,
+            |context| ResolvedScrollbar::of(context, WidgetStates::NONE),
+        );
+        assert_eq!(plain.thickness, 8.0);
+        assert_eq!(plain.min_thumb_length, 48.0);
+        assert!(plain.interactive, "upstream's default is a draggable thumb");
+
+        // The idle thumb is fainter than the dragged one -- upstream's M3
+        // default, and the states reach it.
+        let dragged = read_in(
+            |child| child,
+            |context| ResolvedScrollbar::of(context, WidgetStates::NONE.with(WidgetState::Dragged)),
+        );
+        assert_eq!(dragged.thumb_color.alpha(), 255);
+        assert_eq!(plain.thumb_color.alpha(), 0x4d);
+
+        let themed = read_in(
+            |child| {
+                ScrollbarTheme::new(
+                    ScrollbarThemeData::new()
+                        .with_thickness(StateProperty::all(Some(14.0)))
+                        .with_min_thumb_length(20.0),
+                    child,
+                )
+            },
+            |context| ResolvedScrollbar::of(context, WidgetStates::NONE),
+        );
+        assert_eq!(themed.thickness, 14.0);
+        assert_eq!(themed.min_thumb_length, 20.0);
+    }
+
+    #[test]
+    fn a_menu_bar_theme_is_a_menu_theme_under_another_name() {
+        // Upstream declares `MenuBarThemeData` as a `MenuThemeData` subclass
+        // with no fields of its own, so that the bar and the menus hanging
+        // off it can be themed apart. Two types, one shape.
+        let style = MenuStyle::new().with_alignment(AlignmentGeometry::CENTER);
+        let bar = MenuBarThemeData::new().with_style(style.clone());
+        let menu = MenuThemeData::new().with_style(style);
+        assert_eq!(bar.style, menu.style);
+
+        let installed = read_in(
+            |child| {
+                MenuTheme::new(
+                    MenuThemeData::new()
+                        .with_style(MenuStyle::new().with_alignment(AlignmentGeometry::CENTER)),
+                    child,
+                )
+            },
+            MenuTheme::of,
+        );
+        assert!(installed.style.is_some());
+        // And installing one does not install the other.
+        let bar_of = read_in(
+            |child| MenuTheme::new(MenuThemeData::new().with_style(MenuStyle::new()), child),
+            MenuBarTheme::of,
+        );
+        assert_eq!(bar_of, MenuBarThemeData::new());
+    }
+
+    #[test]
+    fn the_style_only_themes_carry_a_button_style() {
+        use crate::widget_state::StateProperty;
+
+        let style = ButtonStyle::new()
+            .with_background_color(StateProperty::all(Some(Color::argb(255, 6, 6, 6))));
+        let segmented = read_in(
+            |child| {
+                SegmentedButtonTheme::new(
+                    SegmentedButtonThemeData::new().with_style(style.clone()),
+                    child,
+                )
+            },
+            SegmentedButtonTheme::of,
+        );
+        assert_eq!(segmented.style, Some(style.clone()));
+
+        let menu_button = read_in(
+            |child| {
+                MenuButtonTheme::new(MenuButtonThemeData::new().with_style(style.clone()), child)
+            },
+            MenuButtonTheme::of,
+        );
+        assert_eq!(menu_button.style, Some(style));
     }
 }
