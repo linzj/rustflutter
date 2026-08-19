@@ -1810,6 +1810,13 @@
     "InputBorder": {
       "rust": "borders::ShapeBorder 的 Underline / Outline 两变体",
       "note": "上游是 ShapeBorder 的抽象子类；此侧 ShapeBorder 是封闭枚举，两个具体输入边框各占一个变体，isOutline 即变体本身"
+    },
+    "ActionIconThemeData": {
+      "rust": "未做——四个字段全是 WidgetBuilder",
+      "note": "整个类由\"主题里放 widget 构建器\"组成，与 ButtonStyle 的两个 builder、MenuThemeData.submenuIcon 同一形态，此侧还没有这个位置。不是漏译，是同一条边界"
+    },
+    "ActionIconTheme": {
+      "rust": "同 ActionIconThemeData"
     }
   },
   "blocked_engine": {

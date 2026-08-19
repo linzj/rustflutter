@@ -164,6 +164,23 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1 收官:button bar 与 theme extension(2026-08-19)。**
+`ButtonBarTheme(Data)`(9/9)、`ThemeExtension` + `ThemeExtensions`。
+
+**`ThemeExtension` 是应用自带主题数据的口子**:上游按运行期类型作键,
+`Theme.of(context).extension<T>()` 取回;此侧键是 `TypeId`,取回是
+`ThemeData::extension::<T>()`。trait 特意保持对象安全(主题存一列它们、并不知道
+类型),所以 `lerp` 收发的是 trait 对象而非 `Self`——实现里 downcast,遇上不同类
+的就保留自己,这正是上游 `covariant` 参数在运行期的意思。**一端没有的扩展在插值
+里保留**:新主题没提到它不等于把它删了。
+
+`ThemeExtensions` 的相等按身份(Rc::ptr_eq),与 `StateProperty` 同一条理由。
+
+**`ActionIconThemeData` 入账为"未做",理由写清**:它四个字段全是
+`WidgetBuilder`,整个类由"主题里放 widget 构建器"组成——与 `ButtonStyle` 的两个
+builder、`MenuThemeData.submenuIcon`、`SegmentedButtonThemeData.selectedIcon`
+是**同一条边界**,不是各自的疏漏。
+
 **P8-M1:排版(2026-08-19)。** `TextTheme`(15/15)+`Typography`(3 个几何),
 表由脚本解析上游 `_M3Typography` 生成。`ThemeData` 补上 `textTheme` 与
 `primaryTextTheme`——后者是"在 `primaryColor` 上读得清"的那一套(暗色主题的 bar

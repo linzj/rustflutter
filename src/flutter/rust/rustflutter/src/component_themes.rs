@@ -5751,6 +5751,196 @@ impl Typography {
     }
 }
 
+// -- Button bar (upstream `button_bar_theme.dart`) ----------------------------
+
+/// Upstream `ButtonBarThemeData`: how a row of dialog buttons is arranged.
+///
+/// Material 2's, like [`ButtonThemeData`] which it echoes -- upstream keeps
+/// both for the widgets that predate the Material 3 button family.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ButtonBarThemeData {
+    pub alignment: Option<crate::render::MainAxisAlignment>,
+    pub main_axis_size: Option<crate::render::MainAxisSize>,
+    pub button_text_theme: Option<ButtonTextTheme>,
+    pub button_min_width: Option<f32>,
+    pub button_height: Option<f32>,
+    pub button_padding: Option<EdgeInsetsGeometry>,
+    pub button_aligned_dropdown: Option<bool>,
+    pub layout_behavior: Option<ButtonBarLayoutBehavior>,
+    /// Which way the buttons stack when they will not fit on one line.
+    pub overflow_direction: Option<crate::render::VerticalDirection>,
+}
+
+impl ButtonBarThemeData {
+    pub fn new() -> ButtonBarThemeData {
+        ButtonBarThemeData::default()
+    }
+
+    pub fn with_alignment(mut self, alignment: crate::render::MainAxisAlignment) -> Self {
+        self.alignment = Some(alignment);
+        self
+    }
+
+    pub fn with_button_metrics(mut self, min_width: f32, height: f32) -> Self {
+        self.button_min_width = Some(min_width);
+        self.button_height = Some(height);
+        self
+    }
+
+    pub fn with_overflow_direction(mut self, direction: crate::render::VerticalDirection) -> Self {
+        self.overflow_direction = Some(direction);
+        self
+    }
+
+    /// Upstream `ButtonBarThemeData.lerp`.
+    pub fn lerp(a: &ButtonBarThemeData, b: &ButtonBarThemeData, t: f32) -> ButtonBarThemeData {
+        ButtonBarThemeData {
+            alignment: lerp_nearer(&a.alignment, &b.alignment, t),
+            main_axis_size: lerp_nearer(&a.main_axis_size, &b.main_axis_size, t),
+            button_text_theme: lerp_nearer(&a.button_text_theme, &b.button_text_theme, t),
+            button_min_width: lerp_f32(a.button_min_width, b.button_min_width, t),
+            button_height: lerp_f32(a.button_height, b.button_height, t),
+            button_padding: lerp_nearer(&a.button_padding, &b.button_padding, t),
+            button_aligned_dropdown: lerp_nearer(
+                &a.button_aligned_dropdown,
+                &b.button_aligned_dropdown,
+                t,
+            ),
+            layout_behavior: lerp_nearer(&a.layout_behavior, &b.layout_behavior, t),
+            overflow_direction: lerp_nearer(&a.overflow_direction, &b.overflow_direction, t),
+        }
+    }
+}
+
+/// Upstream `ButtonBarTheme`.
+pub struct ButtonBarTheme;
+
+impl ButtonBarTheme {
+    pub fn new(data: ButtonBarThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ButtonBarThemeData {
+        context
+            .inherited::<ButtonBarThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).button_bar_theme.clone())
+    }
+}
+
+// -- Theme extensions (upstream `theme_data.dart`) ----------------------------
+
+/// Upstream `ThemeExtension<T>`: an application's own theme data, carried on
+/// [`ThemeData`] beside the ones the framework declares.
+///
+/// Upstream keys the extensions by their runtime type and finds one with
+/// `Theme.of(context).extension<MyExtension>()`; here the key is a
+/// [`TypeId`](std::any::TypeId) and the lookup is
+/// [`ThemeData::extension`](crate::theme::ThemeData::extension).
+///
+/// The trait is object-safe on purpose -- a theme holds a list of them and
+/// cannot know their types -- which is why `lerp` takes and returns a boxed
+/// one rather than `Self`.
+pub trait ThemeExtension: std::any::Any {
+    /// Upstream's `lerp`, with the other end as a trait object because the
+    /// list this is stored in is untyped. An implementation downcasts and
+    /// falls back to `self` where the other end is a different extension,
+    /// which is what upstream's `covariant` parameter means at runtime.
+    fn lerp(&self, other: &dyn ThemeExtension, t: f32) -> std::rc::Rc<dyn ThemeExtension>;
+
+    /// For the downcast in `lerp` and in
+    /// [`ThemeData::extension`](crate::theme::ThemeData::extension).
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// The extensions a [`ThemeData`] carries, keyed by type.
+///
+/// Two are equal when they hold the same objects, by identity: an extension
+/// is a trait object with no `PartialEq` to call, and a theme rebuilt with a
+/// freshly constructed extension counts as changed -- the same rule, and the
+/// same reason, as [`StateProperty`].
+#[derive(Clone, Default)]
+pub struct ThemeExtensions {
+    entries: Vec<(std::any::TypeId, std::rc::Rc<dyn ThemeExtension>)>,
+}
+
+impl ThemeExtensions {
+    pub fn new() -> ThemeExtensions {
+        ThemeExtensions::default()
+    }
+
+    /// Adds one, replacing whatever was stored for its type -- upstream's
+    /// map keyed by runtime type.
+    pub fn insert<T: ThemeExtension + 'static>(&mut self, extension: T) {
+        let key = std::any::TypeId::of::<T>();
+        let value: std::rc::Rc<dyn ThemeExtension> = std::rc::Rc::new(extension);
+        match self.entries.iter_mut().find(|(at, _)| *at == key) {
+            Some(entry) => entry.1 = value,
+            None => self.entries.push((key, value)),
+        }
+    }
+
+    /// Upstream `ThemeData.extension<T>()`.
+    pub fn get<T: ThemeExtension + 'static>(&self) -> Option<&T> {
+        self.entries
+            .iter()
+            .find(|(at, _)| *at == std::any::TypeId::of::<T>())
+            .and_then(|(_, extension)| extension.as_any().downcast_ref::<T>())
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Upstream's `_lerpThemeExtensions`: each extension interpolated with
+    /// the one of its own type on the other side, and an extension with no
+    /// counterpart taken from whichever end has it.
+    pub fn lerp(a: &ThemeExtensions, b: &ThemeExtensions, t: f32) -> ThemeExtensions {
+        let mut result = ThemeExtensions::new();
+        for (key, extension) in &a.entries {
+            match b.entries.iter().find(|(at, _)| at == key) {
+                Some((_, other)) => result
+                    .entries
+                    .push((*key, extension.lerp(other.as_ref(), t))),
+                // Upstream keeps `a`'s where `b` has none: an extension that
+                // the new theme does not mention is not thereby removed
+                // half-way through an animation.
+                None => result.entries.push((*key, std::rc::Rc::clone(extension))),
+            }
+        }
+        for (key, extension) in &b.entries {
+            if !a.entries.iter().any(|(at, _)| at == key) {
+                result.entries.push((*key, std::rc::Rc::clone(extension)));
+            }
+        }
+        result
+    }
+}
+
+impl PartialEq for ThemeExtensions {
+    fn eq(&self, other: &ThemeExtensions) -> bool {
+        self.entries.len() == other.entries.len()
+            && self.entries.iter().zip(other.entries.iter()).all(
+                |((mine, first), (theirs, second))| {
+                    mine == theirs && std::rc::Rc::ptr_eq(first, second)
+                },
+            )
+    }
+}
+
+impl std::fmt::Debug for ThemeExtensions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ThemeExtensions")
+            .field("len", &self.entries.len())
+            .finish()
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -7277,5 +7467,94 @@ mod tests {
             dark.primary_text_theme.body_medium.expect("built").color,
             dark.color_scheme.on_surface
         );
+    }
+
+    #[test]
+    fn a_theme_extension_is_found_by_its_type_and_lerped_with_its_own_kind() {
+        use std::rc::Rc;
+
+        #[derive(Clone, Debug, PartialEq)]
+        struct Brand {
+            accent: Color,
+        }
+
+        impl ThemeExtension for Brand {
+            fn lerp(&self, other: &dyn ThemeExtension, t: f32) -> Rc<dyn ThemeExtension> {
+                match other.as_any().downcast_ref::<Brand>() {
+                    Some(other) => Rc::new(Brand {
+                        accent: crate::animation::ColorTween {
+                            begin: self.accent,
+                            end: other.accent,
+                        }
+                        .lerp(t),
+                    }),
+                    // A different extension: keep this one, which is what
+                    // upstream's covariant parameter comes to at runtime.
+                    None => Rc::new(self.clone()),
+                }
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        struct Other;
+
+        impl ThemeExtension for Other {
+            fn lerp(&self, _other: &dyn ThemeExtension, _t: f32) -> Rc<dyn ThemeExtension> {
+                Rc::new(Other)
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let theme = ThemeData::light().with_extension(Brand {
+            accent: Color::argb(255, 0, 0, 0),
+        });
+        assert_eq!(
+            theme.extension::<Brand>().expect("stored").accent,
+            Color::argb(255, 0, 0, 0)
+        );
+        assert!(theme.extension::<Other>().is_none(), "keyed by type");
+
+        // Lerped with the extension of its own type on the other side.
+        let darker = ThemeData::light().with_extension(Brand {
+            accent: Color::argb(255, 255, 255, 255),
+        });
+        let half = ThemeData::lerp(&theme, &darker, 0.5);
+        assert_eq!(
+            half.extension::<Brand>().expect("kept").accent,
+            Color::argb(255, 128, 128, 128)
+        );
+
+        // An extension the other end does not carry survives the walk: a
+        // theme that does not mention it has not removed it.
+        let bare = ThemeData::light();
+        let still_there = ThemeData::lerp(&theme, &bare, 0.5);
+        assert!(still_there.extension::<Brand>().is_some());
+    }
+
+    #[test]
+    fn a_button_bar_theme_carries_the_material_two_metrics() {
+        use crate::render::{MainAxisAlignment, VerticalDirection};
+
+        let themed = read_in(
+            |child| {
+                ButtonBarTheme::new(
+                    ButtonBarThemeData::new()
+                        .with_alignment(MainAxisAlignment::End)
+                        .with_button_metrics(64.0, 36.0)
+                        .with_overflow_direction(VerticalDirection::Up),
+                    child,
+                )
+            },
+            ButtonBarTheme::of,
+        );
+        assert_eq!(themed.alignment, Some(MainAxisAlignment::End));
+        assert_eq!(themed.button_min_width, Some(64.0));
+        assert_eq!(themed.overflow_direction, Some(VerticalDirection::Up));
     }
 }

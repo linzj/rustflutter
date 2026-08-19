@@ -46,16 +46,17 @@ use crate::color_scheme::ColorScheme;
 use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomAppBarThemeData, BottomNavigationBarThemeData,
-    BottomSheetThemeData, ButtonThemeData, CardThemeData, CarouselViewThemeData, CheckboxThemeData,
-    ChipThemeData, DataTableThemeData, DatePickerThemeData, DialogThemeData, DividerThemeData,
-    DrawerThemeData, DropdownMenuThemeData, ElevatedButtonThemeData, ExpansionTileThemeData,
-    FilledButtonThemeData, FloatingActionButtonThemeData, IconButtonThemeData, IconThemeData,
-    InputDecorationThemeData, ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData,
-    MenuButtonThemeData, MenuThemeData, NavigationBarThemeData, NavigationDrawerThemeData,
-    NavigationRailThemeData, OutlinedButtonThemeData, PopupMenuThemeData,
-    ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SearchBarThemeData,
-    SearchViewThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TextButtonThemeData, TextSelectionThemeData, TextTheme, TimePickerThemeData,
+    BottomSheetThemeData, ButtonBarThemeData, ButtonThemeData, CardThemeData,
+    CarouselViewThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
+    DatePickerThemeData, DialogThemeData, DividerThemeData, DrawerThemeData, DropdownMenuThemeData,
+    ElevatedButtonThemeData, ExpansionTileThemeData, FilledButtonThemeData,
+    FloatingActionButtonThemeData, IconButtonThemeData, IconThemeData, InputDecorationThemeData,
+    ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData,
+    MenuThemeData, NavigationBarThemeData, NavigationDrawerThemeData, NavigationRailThemeData,
+    OutlinedButtonThemeData, PopupMenuThemeData, ProgressIndicatorThemeData, RadioThemeData,
+    ScrollbarThemeData, SearchBarThemeData, SearchViewThemeData, SegmentedButtonThemeData,
+    SnackBarThemeData, SwitchThemeData, TabBarThemeData, TextButtonThemeData,
+    TextSelectionThemeData, TextTheme, ThemeExtensions, TimePickerThemeData,
     ToggleButtonsThemeData, TooltipThemeData, Typography,
 };
 use crate::components::Theme;
@@ -261,6 +262,10 @@ pub struct ThemeData {
     /// Upstream's `primaryTextTheme`: the same fifteen styles in the colour
     /// that is legible on `primaryColor`, for the widgets that sit on it.
     pub primary_text_theme: TextTheme,
+    pub button_bar_theme: ButtonBarThemeData,
+    /// Upstream's `extensions`: an application's own theme data, carried
+    /// beside the framework's and found by type.
+    pub extensions: ThemeExtensions,
 }
 
 impl ThemeData {
@@ -399,6 +404,8 @@ impl ThemeData {
             } else {
                 color_scheme.on_primary
             }),
+            button_bar_theme: ButtonBarThemeData::new(),
+            extensions: ThemeExtensions::new(),
         }
     }
 
@@ -465,6 +472,20 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    /// Upstream `ThemeData.extension<T>()`.
+    pub fn extension<T: crate::component_themes::ThemeExtension + 'static>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
+    }
+
+    /// Upstream `ThemeData(extensions: ...)`, one at a time.
+    pub fn with_extension<T: crate::component_themes::ThemeExtension + 'static>(
+        mut self,
+        extension: T,
+    ) -> ThemeData {
+        self.extensions.insert(extension);
         self
     }
 
@@ -768,6 +789,8 @@ impl ThemeData {
             ),
             text_theme: TextTheme::lerp(&a.text_theme, &b.text_theme, t),
             primary_text_theme: TextTheme::lerp(&a.primary_text_theme, &b.primary_text_theme, t),
+            button_bar_theme: ButtonBarThemeData::lerp(&a.button_bar_theme, &b.button_bar_theme, t),
+            extensions: ThemeExtensions::lerp(&a.extensions, &b.extensions, t),
         }
     }
 
