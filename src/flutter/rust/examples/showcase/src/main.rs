@@ -146,7 +146,7 @@ impl Component for Body {
                         ),
                         component(
                             Button::new(ID_OUTLINED, "Outlined")
-                                .with_style(ButtonStyle::Outlined)
+                                .with_style(ButtonVariant::Outlined)
                                 .with_pressed(self.pressed == Some(ID_OUTLINED))
                                 .wired(handle.clone(), |s| &mut s.pressed, |s| s.taps += 1),
                         ),
@@ -157,19 +157,19 @@ impl Component for Body {
                     vec![
                         component(
                             Button::new(ID_TEXT, "Text")
-                                .with_style(ButtonStyle::Text)
+                                .with_style(ButtonVariant::Text)
                                 .with_pressed(self.pressed == Some(ID_TEXT))
                                 .wired(handle.clone(), |s| &mut s.pressed, |s| s.taps += 1),
                         ),
                         component(
                             Button::new(ID_DANGER, "Danger")
-                                .with_style(ButtonStyle::Danger)
+                                .with_style(ButtonVariant::Danger)
                                 .with_pressed(self.pressed == Some(ID_DANGER))
                                 .wired(handle.clone(), |s| &mut s.pressed, |s| s.taps = 0),
                         ),
                         component(
                             Button::new(ID_DISABLED, "Disabled")
-                                .with_style(ButtonStyle::Outlined)
+                                .with_style(ButtonVariant::Outlined)
                                 .with_enabled(false),
                         ),
                     ],

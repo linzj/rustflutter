@@ -419,13 +419,13 @@ fn destination_content(
                 vec![
                     component(
                         Button::new(SHARE_BUTTON, "Share")
-                            .with_style(ButtonStyle::Text)
+                            .with_style(ButtonVariant::Text)
                             .with_pressed(pressed == Some(SHARE_BUTTON))
                             .wired(handle.clone(), |s| &mut s.pressed, noop),
                     ),
                     component(
                         Button::new(EXPLORE_BUTTON, "Explore")
-                            .with_style(ButtonStyle::Text)
+                            .with_style(ButtonVariant::Text)
                             .with_pressed(pressed == Some(EXPLORE_BUTTON))
                             .wired(handle.clone(), |s| &mut s.pressed, noop),
                     ),

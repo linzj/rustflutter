@@ -82,7 +82,7 @@ pub(super) fn buttons(
         vec![
             caption("Text Button"),
             component(StandardButtonsDemo {
-                style: ButtonStyle::Text,
+                style: ButtonVariant::Text,
                 plain_id: TEXT_PLAIN,
                 icon_id: TEXT_ICON,
                 pressed,
@@ -91,7 +91,7 @@ pub(super) fn buttons(
             component(Divider),
             caption("Elevated Button"),
             component(StandardButtonsDemo {
-                style: ButtonStyle::Filled,
+                style: ButtonVariant::Filled,
                 plain_id: ELEVATED_PLAIN,
                 icon_id: ELEVATED_ICON,
                 pressed,
@@ -100,7 +100,7 @@ pub(super) fn buttons(
             component(Divider),
             caption("Outlined Button"),
             component(StandardButtonsDemo {
-                style: ButtonStyle::Outlined,
+                style: ButtonVariant::Outlined,
                 plain_id: OUTLINED_PLAIN,
                 icon_id: OUTLINED_ICON,
                 pressed,
@@ -127,7 +127,7 @@ fn noop(_state: &mut GalleryState) {}
 /// and `_OutlinedButtonDemo` are the same column with a different button
 /// class, so they are one component here keyed on the style.
 struct StandardButtonsDemo {
-    style: ButtonStyle,
+    style: ButtonVariant,
     plain_id: u64,
     icon_id: u64,
     pressed: Option<u64>,
@@ -197,11 +197,11 @@ impl Component for StandardButtonsDemo {
 /// private, so a short label is not held to 64 pixels (with an icon ahead of
 /// it, no label here comes under it), and the horizontal padding is the icon
 /// constructors' twelve pixels at unit text scale rather than
-/// `ButtonStyleButton.scaledPadding`'s curve.
+/// `ButtonVariantButton.scaledPadding`'s curve.
 struct IconDemoButton {
     id: u64,
     label: String,
-    style: ButtonStyle,
+    style: ButtonVariant,
     pressed: bool,
     enabled: bool,
     handlers: PointerHandlers,
@@ -212,14 +212,14 @@ impl IconDemoButton {
         IconDemoButton {
             id,
             label: label.into(),
-            style: ButtonStyle::default(),
+            style: ButtonVariant::default(),
             pressed: false,
             enabled: true,
             handlers: PointerHandlers::new(),
         }
     }
 
-    fn with_style(mut self, style: ButtonStyle) -> Self {
+    fn with_style(mut self, style: ButtonVariant) -> Self {
         self.style = style;
         self
     }
@@ -272,10 +272,10 @@ impl Component for IconDemoButton {
 
         // The colour table is `Button::build`'s, verbatim.
         let (mut fill, mut label_color, mut border) = match style {
-            ButtonStyle::Filled => (Some(theme.primary), theme.on_primary, None),
-            ButtonStyle::Danger => (Some(theme.danger), theme.on_primary, None),
-            ButtonStyle::Outlined => (None, theme.primary, Some(theme.outline)),
-            ButtonStyle::Text => (None, theme.primary, None),
+            ButtonVariant::Filled => (Some(theme.primary), theme.on_primary, None),
+            ButtonVariant::Danger => (Some(theme.danger), theme.on_primary, None),
+            ButtonVariant::Outlined => (None, theme.primary, Some(theme.outline)),
+            ButtonVariant::Text => (None, theme.primary, None),
         };
         if !enabled {
             if fill.is_some() || border.is_some() {
@@ -288,13 +288,13 @@ impl Component for IconDemoButton {
             label_color = theme.text.with_alpha(0x61);
         }
         let press_overlay = pressed.then(|| match style {
-            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x1A),
+            ButtonVariant::Filled | ButtonVariant::Danger => theme.on_primary.with_alpha(0x1A),
             _ => theme.primary.with_alpha(0x1A),
         });
         let radius = BUTTON_HEIGHT / 2.0;
         let body_size = theme.body_size;
         let splash_color = match style {
-            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x30),
+            ButtonVariant::Filled | ButtonVariant::Danger => theme.on_primary.with_alpha(0x30),
             _ => theme.primary.with_alpha(0x24),
         };
 

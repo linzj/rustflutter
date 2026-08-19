@@ -324,7 +324,7 @@ fn dialog(
     let discard_id = ID_BASE + 4;
     let cancel = component(
         Button::new(cancel_id, l10n.demo_fade_scale_alert_dialog_cancel_button())
-            .with_style(ButtonStyle::Text)
+            .with_style(ButtonVariant::Text)
             .with_pressed(state.pressed == Some(cancel_id))
             .wired(
                 handle.clone(),
@@ -337,7 +337,7 @@ fn dialog(
             discard_id,
             l10n.demo_fade_scale_alert_dialog_discard_button(),
         )
-        .with_style(ButtonStyle::Text)
+        .with_style(ButtonVariant::Text)
         .with_pressed(state.pressed == Some(discard_id))
         .wired(handle, |s| &mut s.pressed, |s| s.dialog_open = false),
     );

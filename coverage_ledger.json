@@ -1789,6 +1789,23 @@
     "Adaptation": {
       "rust": "ThemeData 的具体字段",
       "note": "上游用它按平台换某个组件主题的默认值；此侧平台判断在各构造器里（如 VisualDensity::adaptive_platform_density）"
+    },
+    "ElevatedButton": {
+      "rust": "components::Button + ButtonVariant::Filled",
+      "note": "此侧四个按钮 widget 合为一个带 variant 的 Button；crate 无 elevated 与 filled 之分（M3 里两者只差一层阴影），记录在案"
+    },
+    "FilledButton": {
+      "rust": "components::Button + ButtonVariant::Filled"
+    },
+    "OutlinedButton": {
+      "rust": "components::Button + ButtonVariant::Outlined"
+    },
+    "TextButton": {
+      "rust": "components::Button + ButtonVariant::Text"
+    },
+    "ButtonStyleButton": {
+      "rust": "components::Button",
+      "note": "上游四个按钮的公共基类，此侧就是那一个 Button"
     }
   },
   "blocked_engine": {

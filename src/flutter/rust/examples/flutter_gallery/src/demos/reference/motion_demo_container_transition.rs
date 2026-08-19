@@ -804,9 +804,9 @@ fn fade_mode_sheet(
     let fade = component(
         Button::new(ID_BASE + 91, l10n.demo_container_transform_type_fade())
             .with_style(if state.kind == TransitionKind::Fade {
-                ButtonStyle::Filled
+                ButtonVariant::Filled
             } else {
-                ButtonStyle::Outlined
+                ButtonVariant::Outlined
             })
             .with_pressed(state.pressed == Some(ID_BASE + 91))
             .wired(handle.clone(), |s| &mut s.pressed, pick_fade),
@@ -817,9 +817,9 @@ fn fade_mode_sheet(
             l10n.demo_container_transform_type_fade_through(),
         )
         .with_style(if state.kind == TransitionKind::FadeThrough {
-            ButtonStyle::Filled
+            ButtonVariant::Filled
         } else {
-            ButtonStyle::Outlined
+            ButtonVariant::Outlined
         })
         .with_pressed(state.pressed == Some(ID_BASE + 92))
         .wired(handle.clone(), |s| &mut s.pressed, pick_fade_through),

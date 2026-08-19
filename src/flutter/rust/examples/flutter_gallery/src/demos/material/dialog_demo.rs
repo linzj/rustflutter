@@ -217,7 +217,7 @@ fn dialog_button(
 ) -> AnyWidget {
     component(
         Button::new(id, text)
-            .with_style(ButtonStyle::Text)
+            .with_style(ButtonVariant::Text)
             .with_pressed(pressed == Some(id))
             .with_handlers(
                 rustflutter::gestures::PointerHandlers::new()
@@ -458,7 +458,7 @@ fn fullscreen_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) ->
     let l10n = GalleryLocalizations::en();
     let save = component(
         Button::new(ids::DEMO_LOCAL + 16, l10n.dialog_fullscreen_save())
-            .with_style(ButtonStyle::Text)
+            .with_style(ButtonVariant::Text)
             .with_pressed(pressed == Some(ids::DEMO_LOCAL + 16))
             .wired(
                 handle,

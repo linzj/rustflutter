@@ -188,8 +188,20 @@ impl Default for IdSource {
 // -- Button -------------------------------------------------------------------
 
 /// How a [`Button`] is drawn.
+///
+/// Upstream has no such enum: it has four widgets -- `FilledButton`,
+/// `OutlinedButton`, `TextButton` and `ElevatedButton` -- which are
+/// `ButtonStyleButton` subclasses differing only in their default
+/// [`ButtonStyle`](crate::component_themes::ButtonStyle). One widget with a
+/// variant is the same set said differently, and each variant reads the
+/// button theme upstream's matching widget reads.
+///
+/// This was called `ButtonStyle` until upstream's `ButtonStyle` was ported;
+/// the two are different things -- upstream's is a bag of twenty-five state
+/// properties -- and sharing the name made the coverage ruler count a class
+/// as ported that was not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ButtonStyle {
+pub enum ButtonVariant {
     /// Filled with the primary colour. For the one action a screen is about.
     #[default]
     Filled,
@@ -370,7 +382,7 @@ impl RenderBox for ButtonBounds {
 pub struct Button {
     id: u64,
     label: String,
-    style: ButtonStyle,
+    style: ButtonVariant,
     pressed: bool,
     enabled: bool,
     handlers: PointerHandlers,
@@ -382,7 +394,7 @@ impl Button {
         Button {
             id,
             label: label.into(),
-            style: ButtonStyle::default(),
+            style: ButtonVariant::default(),
             pressed: false,
             enabled: true,
             handlers: PointerHandlers::new(),
@@ -390,7 +402,7 @@ impl Button {
         }
     }
 
-    pub fn with_style(mut self, style: ButtonStyle) -> Self {
+    pub fn with_style(mut self, style: ButtonVariant) -> Self {
         self.style = style;
         self
     }
@@ -459,10 +471,10 @@ impl Component for Button {
         let min_width = self.min_width;
 
         let (mut fill, mut label_color, mut border) = match style {
-            ButtonStyle::Filled => (Some(theme.primary), theme.on_primary, None),
-            ButtonStyle::Danger => (Some(theme.danger), theme.on_primary, None),
-            ButtonStyle::Outlined => (None, theme.primary, Some(theme.outline)),
-            ButtonStyle::Text => (None, theme.primary, None),
+            ButtonVariant::Filled => (Some(theme.primary), theme.on_primary, None),
+            ButtonVariant::Danger => (Some(theme.danger), theme.on_primary, None),
+            ButtonVariant::Outlined => (None, theme.primary, Some(theme.outline)),
+            ButtonVariant::Text => (None, theme.primary, None),
         };
         if !enabled {
             // A disabled button is one rule rather than a palette per style,
@@ -479,22 +491,59 @@ impl Component for Button {
             }
             label_color = theme.text.with_alpha(0x61);
         }
+        // Upstream's `ButtonStyleButton.build` merges the caller's style, the
+        // theme's and the widget's own defaults, then resolves each field
+        // against the button's states. The three lines above are this
+        // control's defaults -- the last of the three -- and the theme, where
+        // there is one, is asked first.
+        let mut states = crate::widget_state::WidgetStates::NONE;
+        if !enabled {
+            states = states.with(crate::widget_state::WidgetState::Disabled);
+        }
+        if pressed {
+            states = states.with(crate::widget_state::WidgetState::Pressed);
+        }
+        let resolved = crate::component_themes::ResolvedButton::of(
+            context,
+            style,
+            states,
+            crate::component_themes::ResolvedButton {
+                background: fill,
+                foreground: label_color,
+                side: border.map(|color| crate::borders::BorderSide {
+                    color,
+                    width: 1.5,
+                    ..crate::borders::BorderSide::NONE
+                }),
+                padding: None,
+                minimum_size: None,
+            },
+        );
+        let fill = resolved.background;
+        let label_color = resolved.foreground;
+        let border = resolved.side;
+        let themed_padding = resolved.padding;
+        let themed_min_size = resolved.minimum_size;
         // Pressed keeps the fill opaque and layers translucence over it, the
         // way the splash does: upstream's state layer, over the button rather
         // than thinning the button. An unfilled button tints in its own
         // colour, which is all a press has to say there.
         let press_overlay = pressed.then(|| match style {
-            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x1A),
+            ButtonVariant::Filled | ButtonVariant::Danger => theme.on_primary.with_alpha(0x1A),
             _ => theme.primary.with_alpha(0x1A),
         });
         // As round as the button is tall: upstream's `StadiumBorder`.
-        let radius = BUTTON_HEIGHT / 2.0;
-        let padding = button_padding(crate::media_query::current_text_scale());
+        let height = themed_min_size.map_or(BUTTON_HEIGHT, |size| size.height);
+        let radius = height / 2.0;
+        let padding = themed_padding.map_or_else(
+            || button_padding(crate::media_query::current_text_scale()),
+            |insets| insets.left,
+        );
         let body_size = theme.body_size;
         // The splash is the button's own colour: a filled button splashes in
         // what it is written on, an outlined one in what it is outlined with.
         let splash_color = match style {
-            ButtonStyle::Filled | ButtonStyle::Danger => theme.on_primary.with_alpha(0x30),
+            ButtonVariant::Filled | ButtonVariant::Danger => theme.on_primary.with_alpha(0x30),
             _ => theme.primary.with_alpha(0x24),
         };
 
@@ -506,7 +555,7 @@ impl Component for Button {
             let handlers = handlers.clone();
             leaf(move || {
                 let mut container = Container::new()
-                    .with_height(BUTTON_HEIGHT)
+                    .with_height(height)
                     .with_corner_radius(radius)
                     .with_padding(EdgeInsets::symmetric(padding, 0.0))
                     .with_child(Align::new(
@@ -521,9 +570,13 @@ impl Component for Button {
                 if let Some(color) = fill {
                     container = container.with_color(color);
                 }
-                if let Some(color) = border {
-                    container = container
-                        .with_border(1.5, if pressed { theme_border(color) } else { color });
+                if let Some(side) = border {
+                    let color = if pressed {
+                        theme_border(side.color)
+                    } else {
+                        side.color
+                    };
+                    container = container.with_border(side.width, color);
                 }
                 // A press tints the whole button over its opaque fill, the way
                 // the splash does, rather than thinning the fill.
@@ -1843,7 +1896,7 @@ mod tests {
 
     #[test]
     fn button_padding_follows_the_readers_text_size() {
-        // Upstream `ButtonStyleButton.scaledPadding`: sixteen points of
+        // Upstream `ButtonVariantButton.scaledPadding`: sixteen points of
         // horizontal padding at the ordinary text size, eight at twice it and
         // four at three times, lerped in between and held at four after.
         assert_eq!(button_padding(0.5), 16.0);

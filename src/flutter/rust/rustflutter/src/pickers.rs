@@ -44,7 +44,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::components::{Button, ButtonStyle, theme_of};
+use crate::components::{Button, ButtonVariant, theme_of};
 use crate::direction::current_direction;
 use crate::editable::TextField;
 use crate::engine::{Color, Paint, Paragraph, Rect, Style, TextStyle};
@@ -2058,7 +2058,7 @@ impl StatefulComponent for DatePickerDialog {
                         .clone()
                         .unwrap_or_else(|| OK_BUTTON_LABEL.into()),
                 )
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     let error_format_text = error_format_text.clone();
                     let error_invalid_text = error_invalid_text.clone();
@@ -2088,7 +2088,7 @@ impl StatefulComponent for DatePickerDialog {
                         .clone()
                         .unwrap_or_else(|| CANCEL_BUTTON_LABEL.into()),
                 )
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     if let Some(cancel) = &on_cancel {
                         cancel();
@@ -3267,7 +3267,7 @@ impl StatefulComponent for TimePickerDialog {
                         .clone()
                         .unwrap_or_else(|| OK_BUTTON_LABEL.into()),
                 )
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     let on_confirm = on_confirm.clone();
                     ok_handle.set_state(move |state| match state.entry_mode {
@@ -3320,7 +3320,7 @@ impl StatefulComponent for TimePickerDialog {
                         .clone()
                         .unwrap_or_else(|| CANCEL_BUTTON_LABEL.into()),
                 )
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     if let Some(cancel) = &on_cancel {
                         cancel();
@@ -4310,7 +4310,7 @@ impl StatefulComponent for DateRangePickerDialog {
             };
             component(
                 Button::new(id * 10 + 5, label)
-                    .with_style(ButtonStyle::Text)
+                    .with_style(ButtonVariant::Text)
                     .with_handlers(PointerHandlers::new().with_tap(move |_| {
                         let on_confirm = on_confirm.clone();
                         let on_cancel = on_cancel.clone();
@@ -4375,7 +4375,7 @@ impl StatefulComponent for DateRangePickerDialog {
                         .clone()
                         .unwrap_or_else(|| CANCEL_BUTTON_LABEL.into()),
                 )
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     if let Some(cancel) = &on_cancel {
                         cancel();

@@ -628,7 +628,7 @@ impl StatefulComponent for DataTableDemo {
             let size = *size;
             page_size_buttons.push(component(
                 Button::new(id, format!("{size}"))
-                    .with_style(ButtonStyle::Text)
+                    .with_style(ButtonVariant::Text)
                     .with_pressed(state.pressed == Some(id) || state.rows_per_page == size)
                     .with_handlers(
                         PointerHandlers::new()

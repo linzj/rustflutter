@@ -93,7 +93,7 @@ pub use borders::{
     StarBorder, TableBorder,
 };
 pub use components::{
-    AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+    AppBar, Badge, Button, ButtonGroupState, ButtonVariant, Card, Divider, IdSource, Label,
     LabelStyle, ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, theme_of,
 };
 pub use controls::{
@@ -192,7 +192,7 @@ pub mod prelude {
         WidgetHost, register_application,
     };
     pub use crate::components::{
-        AppBar, Badge, Button, ButtonGroupState, ButtonStyle, Card, Divider, IdSource, Label,
+        AppBar, Badge, Button, ButtonGroupState, ButtonVariant, Card, Divider, IdSource, Label,
         ListTile, ProgressBar, Scaffold, Slider, Switch, Theme, gap, stack_column, stack_row,
         theme_of,
     };

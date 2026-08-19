@@ -200,7 +200,7 @@ fn material_banner(
     let sign_in_handle = handle.clone();
     let sign_in = component(
         Button::new(ids::DEMO_LOCAL + 5, "SIGN IN")
-            .with_style(ButtonStyle::Text)
+            .with_style(ButtonVariant::Text)
             .with_handlers(PointerHandlers::new().with_tap(move |_| {
                 sign_in_handle.set_state(|state| state.display_banner = false);
             })),
@@ -210,7 +210,7 @@ fn material_banner(
     if show_multiple_actions {
         children.push(component(
             Button::new(ids::DEMO_LOCAL + 6, "DISMISS")
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
                     handle.set_state(|state| state.display_banner = false);
                 })),

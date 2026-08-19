@@ -49,7 +49,7 @@ pub fn overlay(state: &GalleryState, handle: StateHandle<GalleryState>) -> Optio
                     .with_width(400.0)
                     .with_action(component(
                         Button::new(ids::SETTINGS_LOCAL + 700, "Close")
-                            .with_style(ButtonStyle::Text)
+                            .with_style(ButtonVariant::Text)
                             .wired(close_handle, |s| &mut s.pressed, |s| s.about_open = false),
                     )),
             ),

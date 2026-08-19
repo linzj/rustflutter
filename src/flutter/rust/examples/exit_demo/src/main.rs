@@ -123,7 +123,7 @@ impl StatefulComponent for Page {
                     tap(
                         BUTTON_POP,
                         "SystemNavigator.pop()",
-                        ButtonStyle::Outlined,
+                        ButtonVariant::Outlined,
                         state,
                         handle.clone(),
                         || SystemNavigator::pop(),
@@ -131,7 +131,7 @@ impl StatefulComponent for Page {
                     tap(
                         BUTTON_CANCELABLE,
                         "exit(cancelable, 0)",
-                        ButtonStyle::Outlined,
+                        ButtonVariant::Outlined,
                         state,
                         handle.clone(),
                         || system::exit_application(AppExitType::Cancelable, 0, |_| {}),
@@ -143,7 +143,7 @@ impl StatefulComponent for Page {
                     tap(
                         BUTTON_EXIT_0,
                         "exit(required, 0)",
-                        ButtonStyle::Filled,
+                        ButtonVariant::Filled,
                         state,
                         handle.clone(),
                         || system::exit_application(AppExitType::Required, 0, |_| {}),
@@ -151,7 +151,7 @@ impl StatefulComponent for Page {
                     tap(
                         BUTTON_EXIT_3,
                         "exit(required, 3)",
-                        ButtonStyle::Danger,
+                        ButtonVariant::Danger,
                         state,
                         handle.clone(),
                         || system::exit_application(AppExitType::Required, 3, |_| {}),
@@ -215,7 +215,7 @@ fn install_handler(handle: StateHandle<State>) {
 fn tap(
     id: u64,
     label: &str,
-    style: ButtonStyle,
+    style: ButtonVariant,
     state: &State,
     handle: StateHandle<State>,
     action: fn(),

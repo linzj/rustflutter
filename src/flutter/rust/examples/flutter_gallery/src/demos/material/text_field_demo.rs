@@ -494,7 +494,7 @@ impl StatefulComponent for TextFormFieldDemo {
         };
         let toggle = component(
             Button::new(base + 8, toggle_label)
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_pressed(state.pressed == Some(base + 8))
                 .wired(
                     handle.clone(),

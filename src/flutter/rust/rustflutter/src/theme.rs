@@ -47,9 +47,10 @@ use crate::colors::Colors;
 use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomNavigationBarThemeData, BottomSheetThemeData,
     CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData, DialogThemeData,
-    DividerThemeData, DrawerThemeData, ListTileThemeData, NavigationRailThemeData,
+    DividerThemeData, DrawerThemeData, ElevatedButtonThemeData, FilledButtonThemeData,
+    IconButtonThemeData, ListTileThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
     ProgressIndicatorThemeData, RadioThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TooltipThemeData,
+    TabBarThemeData, TextButtonThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -215,6 +216,11 @@ pub struct ThemeData {
     pub navigation_rail_theme: NavigationRailThemeData,
     pub bottom_navigation_bar_theme: BottomNavigationBarThemeData,
     pub drawer_theme: DrawerThemeData,
+    pub elevated_button_theme: ElevatedButtonThemeData,
+    pub filled_button_theme: FilledButtonThemeData,
+    pub text_button_theme: TextButtonThemeData,
+    pub outlined_button_theme: OutlinedButtonThemeData,
+    pub icon_button_theme: IconButtonThemeData,
 }
 
 impl ThemeData {
@@ -316,6 +322,11 @@ impl ThemeData {
             navigation_rail_theme: NavigationRailThemeData::new(),
             bottom_navigation_bar_theme: BottomNavigationBarThemeData::new(),
             drawer_theme: DrawerThemeData::new(),
+            elevated_button_theme: ElevatedButtonThemeData::new(),
+            filled_button_theme: FilledButtonThemeData::new(),
+            text_button_theme: TextButtonThemeData::new(),
+            outlined_button_theme: OutlinedButtonThemeData::new(),
+            icon_button_theme: IconButtonThemeData::new(),
         }
     }
 
@@ -382,6 +393,27 @@ impl ThemeData {
 
     pub fn with_tooltip_theme(mut self, tooltip_theme: TooltipThemeData) -> ThemeData {
         self.tooltip_theme = tooltip_theme;
+        self
+    }
+
+    pub fn with_filled_button_theme(
+        mut self,
+        filled_button_theme: FilledButtonThemeData,
+    ) -> ThemeData {
+        self.filled_button_theme = filled_button_theme;
+        self
+    }
+
+    pub fn with_text_button_theme(mut self, text_button_theme: TextButtonThemeData) -> ThemeData {
+        self.text_button_theme = text_button_theme;
+        self
+    }
+
+    pub fn with_outlined_button_theme(
+        mut self,
+        outlined_button_theme: OutlinedButtonThemeData,
+    ) -> ThemeData {
+        self.outlined_button_theme = outlined_button_theme;
         self
     }
 
@@ -542,6 +574,31 @@ impl ThemeData {
                 t,
             ),
             drawer_theme: DrawerThemeData::lerp(&a.drawer_theme, &b.drawer_theme, t),
+            elevated_button_theme: ElevatedButtonThemeData::lerp(
+                &a.elevated_button_theme,
+                &b.elevated_button_theme,
+                t,
+            ),
+            filled_button_theme: FilledButtonThemeData::lerp(
+                &a.filled_button_theme,
+                &b.filled_button_theme,
+                t,
+            ),
+            text_button_theme: TextButtonThemeData::lerp(
+                &a.text_button_theme,
+                &b.text_button_theme,
+                t,
+            ),
+            outlined_button_theme: OutlinedButtonThemeData::lerp(
+                &a.outlined_button_theme,
+                &b.outlined_button_theme,
+                t,
+            ),
+            icon_button_theme: IconButtonThemeData::lerp(
+                &a.icon_button_theme,
+                &b.icon_button_theme,
+                t,
+            ),
         }
     }
 

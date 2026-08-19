@@ -229,7 +229,7 @@ impl StatefulComponent for SharedXAxisTransitionDemo {
         // The bottom row: upstream's BACK/NEXT padding and arrangement.
         let back = component(
             Button::new(ID_BASE, l10n.demo_shared_x_axis_back_button_text())
-                .with_style(ButtonStyle::Text)
+                .with_style(ButtonVariant::Text)
                 .with_enabled(state.logged_in)
                 .with_pressed(state.pressed == Some(ID_BASE))
                 .wired(handle.clone(), |s| &mut s.pressed, toggle_login),
@@ -326,14 +326,14 @@ fn sign_in_page(
             id_base + 3,
             l10n.demo_shared_x_axis_forgot_email_button_text(),
         )
-        .with_style(ButtonStyle::Text),
+        .with_style(ButtonVariant::Text),
     );
     let create = component(
         Button::new(
             id_base + 4,
             l10n.demo_shared_x_axis_create_account_button_text(),
         )
-        .with_style(ButtonStyle::Text),
+        .with_style(ButtonVariant::Text),
     );
 
     let children: Vec<AnyWidget> = vec![

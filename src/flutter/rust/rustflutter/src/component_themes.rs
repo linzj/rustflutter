@@ -2284,6 +2284,490 @@ impl ResolvedDrawer {
     }
 }
 
+// -- Button style (upstream `button_style.dart`) ------------------------------
+
+/// Upstream `IconAlignment`: which side of a button's label its icon sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconAlignment {
+    Start,
+    End,
+}
+
+/// Upstream `ButtonStyle`: everything a `ButtonStyleButton` can be told,
+/// state by state.
+///
+/// Nearly every field is a [`StateProperty`], because a button looks
+/// different hovered, focused, pressed and disabled, and a theme that could
+/// only name one colour could not say so. The four button widgets upstream
+/// differ only in the style they default to, which is what
+/// [`ButtonVariant`](crate::components::ButtonVariant) is here.
+///
+/// `splashFactory`, `backgroundBuilder` and `foregroundBuilder` are not here:
+/// the first is an `InteractiveInkFeatureFactory` (ink belongs to the control
+/// that draws it in this crate), and the other two are builders that wrap the
+/// button's child in an arbitrary widget, which needs the widget-in-a-theme
+/// shape this port has no place for yet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ButtonStyle {
+    pub text_style: Option<StateProperty<Option<TextStyle>>>,
+    pub background_color: Option<StateProperty<Option<Color>>>,
+    pub foreground_color: Option<StateProperty<Option<Color>>>,
+    pub overlay_color: Option<StateProperty<Option<Color>>>,
+    pub shadow_color: Option<StateProperty<Option<Color>>>,
+    pub surface_tint_color: Option<StateProperty<Option<Color>>>,
+    pub elevation: Option<StateProperty<Option<f32>>>,
+    pub padding: Option<StateProperty<Option<EdgeInsetsGeometry>>>,
+    pub minimum_size: Option<StateProperty<Option<Size>>>,
+    pub fixed_size: Option<StateProperty<Option<Size>>>,
+    pub maximum_size: Option<StateProperty<Option<Size>>>,
+    pub icon_color: Option<StateProperty<Option<Color>>>,
+    pub icon_size: Option<StateProperty<Option<f32>>>,
+    pub icon_alignment: Option<IconAlignment>,
+    pub side: Option<StateProperty<Option<BorderSide>>>,
+    pub shape: Option<StateProperty<Option<ShapeBorder>>>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+    pub visual_density: Option<VisualDensity>,
+    pub tap_target_size: Option<MaterialTapTargetSize>,
+    /// How long the button takes to move between two states' appearances.
+    pub animation_duration: Option<std::time::Duration>,
+    pub enable_feedback: Option<bool>,
+    pub alignment: Option<AlignmentGeometry>,
+}
+
+impl ButtonStyle {
+    pub fn new() -> ButtonStyle {
+        ButtonStyle::default()
+    }
+
+    pub fn with_background_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_foreground_color(mut self, color: StateProperty<Option<Color>>) -> Self {
+        self.foreground_color = Some(color);
+        self
+    }
+
+    pub fn with_side(mut self, side: StateProperty<Option<BorderSide>>) -> Self {
+        self.side = Some(side);
+        self
+    }
+
+    pub fn with_padding(mut self, padding: StateProperty<Option<EdgeInsetsGeometry>>) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    pub fn with_minimum_size(mut self, size: StateProperty<Option<Size>>) -> Self {
+        self.minimum_size = Some(size);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: StateProperty<Option<f32>>) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    pub fn with_tap_target_size(mut self, size: MaterialTapTargetSize) -> Self {
+        self.tap_target_size = Some(size);
+        self
+    }
+
+    /// Upstream `ButtonStyle.merge`: this style's fields where it has them,
+    /// the other's where it does not.
+    ///
+    /// This is how the four button widgets combine what the caller passed
+    /// with the theme's style and then with their own defaults -- three
+    /// merges, in that order.
+    pub fn merge(&self, other: &ButtonStyle) -> ButtonStyle {
+        fn pick<T: Clone>(mine: &Option<T>, theirs: &Option<T>) -> Option<T> {
+            mine.clone().or_else(|| theirs.clone())
+        }
+        ButtonStyle {
+            text_style: pick(&self.text_style, &other.text_style),
+            background_color: pick(&self.background_color, &other.background_color),
+            foreground_color: pick(&self.foreground_color, &other.foreground_color),
+            overlay_color: pick(&self.overlay_color, &other.overlay_color),
+            shadow_color: pick(&self.shadow_color, &other.shadow_color),
+            surface_tint_color: pick(&self.surface_tint_color, &other.surface_tint_color),
+            elevation: pick(&self.elevation, &other.elevation),
+            padding: pick(&self.padding, &other.padding),
+            minimum_size: pick(&self.minimum_size, &other.minimum_size),
+            fixed_size: pick(&self.fixed_size, &other.fixed_size),
+            maximum_size: pick(&self.maximum_size, &other.maximum_size),
+            icon_color: pick(&self.icon_color, &other.icon_color),
+            icon_size: pick(&self.icon_size, &other.icon_size),
+            icon_alignment: pick(&self.icon_alignment, &other.icon_alignment),
+            side: pick(&self.side, &other.side),
+            shape: pick(&self.shape, &other.shape),
+            mouse_cursor: pick(&self.mouse_cursor, &other.mouse_cursor),
+            visual_density: pick(&self.visual_density, &other.visual_density),
+            tap_target_size: pick(&self.tap_target_size, &other.tap_target_size),
+            animation_duration: pick(&self.animation_duration, &other.animation_duration),
+            enable_feedback: pick(&self.enable_feedback, &other.enable_feedback),
+            alignment: pick(&self.alignment, &other.alignment),
+        }
+    }
+
+    /// Upstream `ButtonStyle.lerp`.
+    pub fn lerp(a: &ButtonStyle, b: &ButtonStyle, t: f32) -> ButtonStyle {
+        ButtonStyle {
+            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            background_color: lerp_state_color(
+                a.background_color.as_ref(),
+                b.background_color.as_ref(),
+                t,
+            ),
+            foreground_color: lerp_state_color(
+                a.foreground_color.as_ref(),
+                b.foreground_color.as_ref(),
+                t,
+            ),
+            overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
+            shadow_color: lerp_state_color(a.shadow_color.as_ref(), b.shadow_color.as_ref(), t),
+            surface_tint_color: lerp_state_color(
+                a.surface_tint_color.as_ref(),
+                b.surface_tint_color.as_ref(),
+                t,
+            ),
+            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
+            padding: lerp_nearer(&a.padding, &b.padding, t),
+            minimum_size: lerp_nearer(&a.minimum_size, &b.minimum_size, t),
+            fixed_size: lerp_nearer(&a.fixed_size, &b.fixed_size, t),
+            maximum_size: lerp_nearer(&a.maximum_size, &b.maximum_size, t),
+            icon_color: lerp_state_color(a.icon_color.as_ref(), b.icon_color.as_ref(), t),
+            icon_size: lerp_nearer(&a.icon_size, &b.icon_size, t),
+            icon_alignment: lerp_nearer(&a.icon_alignment, &b.icon_alignment, t),
+            side: lerp_nearer(&a.side, &b.side, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+            visual_density: match (a.visual_density, b.visual_density) {
+                (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first
+                    } else {
+                        second
+                    }
+                }
+            },
+            tap_target_size: lerp_nearer(&a.tap_target_size, &b.tap_target_size, t),
+            animation_duration: lerp_nearer(&a.animation_duration, &b.animation_duration, t),
+            enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
+            alignment: lerp_nearer(&a.alignment, &b.alignment, t),
+        }
+    }
+}
+
+/// Two optional styles interpolated -- what every button theme's `lerp` is.
+fn lerp_button_style(
+    a: &Option<ButtonStyle>,
+    b: &Option<ButtonStyle>,
+    t: f32,
+) -> Option<ButtonStyle> {
+    match (a, b) {
+        (Some(first), Some(second)) => Some(ButtonStyle::lerp(first, second, t)),
+        (first, second) => {
+            if t < 0.5 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        }
+    }
+}
+
+/// Upstream `ElevatedButtonThemeData` / `ElevatedButtonTheme`.
+///
+/// Upstream declares this as a class with one field -- the style its buttons
+/// take -- and a widget to install it. So does this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElevatedButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl ElevatedButtonThemeData {
+    pub fn new() -> ElevatedButtonThemeData {
+        ElevatedButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> ElevatedButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream's `lerp` for this theme, which is its style's.
+    pub fn lerp(
+        a: &ElevatedButtonThemeData,
+        b: &ElevatedButtonThemeData,
+        t: f32,
+    ) -> ElevatedButtonThemeData {
+        ElevatedButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `ElevatedButtonTheme`.
+pub struct ElevatedButtonTheme;
+
+impl ElevatedButtonTheme {
+    pub fn new(data: ElevatedButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ElevatedButtonThemeData {
+        context
+            .inherited::<ElevatedButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).elevated_button_theme.clone())
+    }
+}
+
+/// Upstream `FilledButtonThemeData` / `FilledButtonTheme`.
+///
+/// Upstream declares this as a class with one field -- the style its buttons
+/// take -- and a widget to install it. So does this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FilledButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl FilledButtonThemeData {
+    pub fn new() -> FilledButtonThemeData {
+        FilledButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> FilledButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream's `lerp` for this theme, which is its style's.
+    pub fn lerp(
+        a: &FilledButtonThemeData,
+        b: &FilledButtonThemeData,
+        t: f32,
+    ) -> FilledButtonThemeData {
+        FilledButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `FilledButtonTheme`.
+pub struct FilledButtonTheme;
+
+impl FilledButtonTheme {
+    pub fn new(data: FilledButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> FilledButtonThemeData {
+        context
+            .inherited::<FilledButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).filled_button_theme.clone())
+    }
+}
+
+/// Upstream `TextButtonThemeData` / `TextButtonTheme`.
+///
+/// Upstream declares this as a class with one field -- the style its buttons
+/// take -- and a widget to install it. So does this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl TextButtonThemeData {
+    pub fn new() -> TextButtonThemeData {
+        TextButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> TextButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream's `lerp` for this theme, which is its style's.
+    pub fn lerp(a: &TextButtonThemeData, b: &TextButtonThemeData, t: f32) -> TextButtonThemeData {
+        TextButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `TextButtonTheme`.
+pub struct TextButtonTheme;
+
+impl TextButtonTheme {
+    pub fn new(data: TextButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> TextButtonThemeData {
+        context
+            .inherited::<TextButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).text_button_theme.clone())
+    }
+}
+
+/// Upstream `OutlinedButtonThemeData` / `OutlinedButtonTheme`.
+///
+/// Upstream declares this as a class with one field -- the style its buttons
+/// take -- and a widget to install it. So does this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OutlinedButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl OutlinedButtonThemeData {
+    pub fn new() -> OutlinedButtonThemeData {
+        OutlinedButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> OutlinedButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream's `lerp` for this theme, which is its style's.
+    pub fn lerp(
+        a: &OutlinedButtonThemeData,
+        b: &OutlinedButtonThemeData,
+        t: f32,
+    ) -> OutlinedButtonThemeData {
+        OutlinedButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `OutlinedButtonTheme`.
+pub struct OutlinedButtonTheme;
+
+impl OutlinedButtonTheme {
+    pub fn new(data: OutlinedButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> OutlinedButtonThemeData {
+        context
+            .inherited::<OutlinedButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).outlined_button_theme.clone())
+    }
+}
+
+/// Upstream `IconButtonThemeData` / `IconButtonTheme`.
+///
+/// Upstream declares this as a class with one field -- the style its buttons
+/// take -- and a widget to install it. So does this.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconButtonThemeData {
+    pub style: Option<ButtonStyle>,
+}
+
+impl IconButtonThemeData {
+    pub fn new() -> IconButtonThemeData {
+        IconButtonThemeData::default()
+    }
+
+    pub fn with_style(mut self, style: ButtonStyle) -> IconButtonThemeData {
+        self.style = Some(style);
+        self
+    }
+
+    /// Upstream's `lerp` for this theme, which is its style's.
+    pub fn lerp(a: &IconButtonThemeData, b: &IconButtonThemeData, t: f32) -> IconButtonThemeData {
+        IconButtonThemeData {
+            style: lerp_button_style(&a.style, &b.style, t),
+        }
+    }
+}
+
+/// Upstream `IconButtonTheme`.
+pub struct IconButtonTheme;
+
+impl IconButtonTheme {
+    pub fn new(data: IconButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> IconButtonThemeData {
+        context
+            .inherited::<IconButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).icon_button_theme.clone())
+    }
+}
+
+/// What a button draws with, once the three steps and the merges have run.
+///
+/// Upstream's `ButtonStyleButton.build` merges three styles -- the one the
+/// caller passed, the one the theme installed, and the widget's own defaults
+/// -- and then resolves each field against the button's states.
+pub struct ResolvedButton {
+    pub background: Option<Color>,
+    pub foreground: Color,
+    pub side: Option<BorderSide>,
+    pub padding: Option<EdgeInsets>,
+    pub minimum_size: Option<Size>,
+}
+
+impl ResolvedButton {
+    /// Resolves for a button of `variant`, whose own defaults are the last
+    /// word.
+    pub fn of(
+        context: &mut BuildContext,
+        variant: crate::components::ButtonVariant,
+        states: WidgetStates,
+        defaults: ResolvedButton,
+    ) -> ResolvedButton {
+        use crate::components::ButtonVariant;
+        // Each variant reads the theme upstream's matching widget reads.
+        let style = match variant {
+            ButtonVariant::Filled | ButtonVariant::Danger => FilledButtonTheme::of(context).style,
+            ButtonVariant::Outlined => OutlinedButtonTheme::of(context).style,
+            ButtonVariant::Text => TextButtonTheme::of(context).style,
+        };
+        let Some(style) = style else {
+            return defaults;
+        };
+        ResolvedButton {
+            background: style
+                .background_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .or(defaults.background),
+            foreground: style
+                .foreground_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(defaults.foreground),
+            side: style
+                .side
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .or(defaults.side),
+            padding: style
+                .padding
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .or(defaults.padding),
+            minimum_size: style
+                .minimum_size
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .or(defaults.minimum_size),
+        }
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -2907,5 +3391,175 @@ mod tests {
         );
         assert_eq!(bar.selected_item_color, Some(Color::argb(255, 1, 1, 1)));
         assert_eq!(bar.show_unselected_labels, Some(false));
+    }
+
+    #[test]
+    fn a_button_style_merge_takes_this_ones_fields_first() {
+        use crate::widget_state::StateProperty;
+
+        let mine = ButtonStyle::new()
+            .with_background_color(StateProperty::all(Some(Color::argb(255, 1, 1, 1))));
+        let theirs = ButtonStyle::new()
+            .with_background_color(StateProperty::all(Some(Color::argb(255, 2, 2, 2))))
+            .with_foreground_color(StateProperty::all(Some(Color::argb(255, 3, 3, 3))));
+
+        let merged = mine.merge(&theirs);
+        assert_eq!(
+            merged
+                .background_color
+                .as_ref()
+                .expect("set on both")
+                .resolve(WidgetStates::NONE),
+            Some(Color::argb(255, 1, 1, 1)),
+            "the receiver wins where both have a field"
+        );
+        assert_eq!(
+            merged
+                .foreground_color
+                .as_ref()
+                .expect("set on the other")
+                .resolve(WidgetStates::NONE),
+            Some(Color::argb(255, 3, 3, 3)),
+            "and the other fills what the receiver left unset"
+        );
+        assert_eq!(merged.side, None, "neither had one");
+    }
+
+    #[test]
+    fn a_button_reads_the_theme_its_variant_names() {
+        use crate::components::ButtonVariant;
+        use crate::widget_state::{StateProperty, WidgetState};
+
+        let defaults = || ResolvedButton {
+            background: Some(Color::argb(255, 9, 9, 9)),
+            foreground: Color::argb(255, 8, 8, 8),
+            side: None,
+            padding: None,
+            minimum_size: None,
+        };
+
+        // No theme: the control's own defaults, untouched.
+        let plain = read_in(
+            |child| child,
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Filled,
+                    WidgetStates::NONE,
+                    defaults(),
+                )
+                .background
+            },
+        );
+        assert_eq!(plain, Some(Color::argb(255, 9, 9, 9)));
+
+        // A filled button reads the filled button theme...
+        let filled = read_in(
+            |child| {
+                FilledButtonTheme::new(
+                    FilledButtonThemeData::new().with_style(
+                        ButtonStyle::new().with_background_color(StateProperty::all(Some(
+                            Color::argb(255, 1, 1, 1),
+                        ))),
+                    ),
+                    child,
+                )
+            },
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Filled,
+                    WidgetStates::NONE,
+                    defaults(),
+                )
+                .background
+            },
+        );
+        assert_eq!(filled, Some(Color::argb(255, 1, 1, 1)));
+
+        // ...and an outlined one does not: it reads its own.
+        let outlined = read_in(
+            |child| {
+                FilledButtonTheme::new(
+                    FilledButtonThemeData::new().with_style(
+                        ButtonStyle::new().with_background_color(StateProperty::all(Some(
+                            Color::argb(255, 1, 1, 1),
+                        ))),
+                    ),
+                    child,
+                )
+            },
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Outlined,
+                    WidgetStates::NONE,
+                    defaults(),
+                )
+                .background
+            },
+        );
+        assert_eq!(
+            outlined,
+            Some(Color::argb(255, 9, 9, 9)),
+            "the filled button's theme says nothing about an outlined one"
+        );
+
+        // And the states reach the property.
+        let disabled = read_in(
+            |child| {
+                TextButtonTheme::new(
+                    TextButtonThemeData::new().with_style(
+                        ButtonStyle::new().with_foreground_color(StateProperty::resolve_with(
+                            |states: WidgetStates| {
+                                if states.contains(WidgetState::Disabled) {
+                                    Some(Color::argb(255, 5, 5, 5))
+                                } else {
+                                    Some(Color::argb(255, 6, 6, 6))
+                                }
+                            },
+                        )),
+                    ),
+                    child,
+                )
+            },
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Text,
+                    WidgetStates::NONE.with(WidgetState::Disabled),
+                    defaults(),
+                )
+                .foreground
+            },
+        );
+        assert_eq!(disabled, Color::argb(255, 5, 5, 5));
+    }
+
+    #[test]
+    fn a_button_widget_takes_a_themed_height() {
+        use crate::components::{Button, ButtonVariant};
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderBox, Size};
+        use crate::widget_state::StateProperty;
+
+        fn height_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 400.0)).height
+        }
+
+        let plain = height_of(component(Button::new(1, "Go")));
+        assert_eq!(plain, 40.0, "upstream's `Size(64, 40)` for a filled button");
+
+        let taller = height_of(FilledButtonTheme::new(
+            FilledButtonThemeData::new().with_style(
+                ButtonStyle::new()
+                    .with_minimum_size(StateProperty::all(Some(Size::new(64.0, 56.0)))),
+            ),
+            component(Button::new(1, "Go").with_style(ButtonVariant::Filled)),
+        ));
+        assert_eq!(taller, 56.0);
     }
 }

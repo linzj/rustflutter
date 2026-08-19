@@ -158,7 +158,7 @@ impl StatefulComponent for PickerDemo {
         let show_picker = |id: u64, open: fn(&mut PickerDemoState)| {
             component(
                 Button::new(id, "SHOW PICKER")
-                    .with_style(ButtonStyle::Filled)
+                    .with_style(ButtonVariant::Filled)
                     .with_pressed(state.pressed == Some(id))
                     .wired(handle.clone(), |s| &mut s.pressed, open),
             )

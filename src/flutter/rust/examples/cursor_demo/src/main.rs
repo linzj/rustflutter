@@ -151,9 +151,9 @@ fn button(index: usize, state: &State, handle: StateHandle<State>) -> AnyWidget 
     component(
         Button::new(id, label)
             .with_style(if index == state.active {
-                ButtonStyle::Filled
+                ButtonVariant::Filled
             } else {
-                ButtonStyle::Outlined
+                ButtonVariant::Outlined
             })
             .with_pressed(state.pressed == Some(id))
             .with_min_width(200.0)

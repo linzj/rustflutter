@@ -801,7 +801,7 @@ pub fn scaffold(
     if can_pop {
         bar = bar.with_trailing(component(
             Button::new(ids::BACK, "Back")
-                .with_style(ButtonStyle::Outlined)
+                .with_style(ButtonVariant::Outlined)
                 .with_pressed(state.pressed == Some(ids::BACK))
                 .wired(handle, |s| &mut s.pressed, |s| s.back()),
         ));

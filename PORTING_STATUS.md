@@ -164,6 +164,33 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:按钮一族,以及两处尺子的假阳性(2026-08-19)。**
+
+**先是个真错:crate 的 `ButtonStyle` 不是上游的 `ButtonStyle`。** 此侧那个是
+Filled/Outlined/Text/Danger 四变体的枚举,上游那个是二十五个状态属性的口袋
+——**尺子按名字比对,于是把一个没移植的类记成了 covered**。改名为
+`ButtonVariant`(它本来就是这个:上游 `FilledButton`/`OutlinedButton`/
+`TextButton`/`ElevatedButton` 四个 widget 的差别只在默认 `ButtonStyle`,
+一个带 variant 的 Button 是同一套东西的另一种说法),全仓 66 处一并改。
+
+**然后是上游的 `ButtonStyle` 真身**:22/25 字段,其余三件记账
+(`splashFactory` 同前;`backgroundBuilder`/`foregroundBuilder` 是把子件包进
+任意 widget 的构建器,主题里放 widget 的形态此侧还没有)。`merge` 是上游
+"调用方的 style → 主题的 style → 控件自己的默认"三次合并里的那一次。
+
+**五对按钮主题**(elevated/filled/text/outlined/icon),各自只有一个 `style`
+字段。**第一版用 macro_rules 生成五对——那是第二处假阳性**:尺子从源码文本里
+读声明,而宏体里的 `pub struct $data` 不是它能看见的声明,于是十个真类它一个
+也数不到;更糟的是宏名 `button_theme` 让上游的 `ButtonTheme` 被记成 covered。
+改为五对写全。**尺子是验收门,写法要让尺子能数。**
+
+**`Button` 接上了**:按 variant 读对应的那个主题(filled 读 filled、outlined
+读 outlined),states 由 enabled/pressed 组出,背景/前景/边/内距/最小尺寸各自
+解析,控件原有的三式默认作为最后一档。回归线四条,含"filled 的主题不该影响
+outlined 的按钮"。
+
+上游四个按钮 widget 与 `ButtonStyleButton` 基类入账为 `Button` + variant。
+
 **P8-M1:导航三对(2026-08-19)。**
 `NavigationRailTheme(Data)`(11/13,缺两个 `IconThemeData`——E5,连带补
 `NavigationRailLabelType`)、`BottomNavigationBarTheme(Data)`(12/14,同缺两个
