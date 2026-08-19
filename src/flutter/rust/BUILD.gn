@@ -199,6 +199,7 @@ if (enable_unittests) {
       "rustflutter/src/slider_theme.rs",
       "rustflutter/src/sliver.rs",
       "rustflutter/src/snack_bar.rs",
+      "rustflutter/src/stack_frame.rs",
       "rustflutter/src/tap_and_drag.rs",
       "rustflutter/src/tap_region.rs",
       "rustflutter/src/text_selection_controls.rs",

@@ -164,6 +164,53 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 过滤器不删帧,它在旁边写一条理由(2026-08-20)
+
+新模块 `stack_frame.rs`:`foundation/stack_frame.dart` 的 `StackFrame` 全到,加上
+`foundation/assertions.dart` 里管栈过滤的三个——`PartialStackFrame`、`StackFilter`、
+`RepetitiveStackFrameFilter`。**这是诊断那一波的第一步。**
+
+运行时打出来的栈,是一整墙文字,其中大半是关于框架的,而不是关于调用方那个错的。这里做的是
+把那墙文字拆成帧,再把没人想读的那些扔掉:异步管道、定时器内部,以及一次构建错误留下的那种
+长长的重复段。
+
+**过滤器不删帧。** 它在每个认出来的帧**旁边写一条理由**,由打印器把一串相同的理由折成一行、
+说明省掉了什么。**读者仍然会被告知藏起来了多少、以及为什么。**
+
+**回归行盯的地方:**
+
+* 一个普通帧拆成号码、类、方法、包、路径、行、列,而**原样的那一行也留着**,于是一个帧永远能
+  按它到达时的样子再显示一遍。
+* **方法里的匿名闭包就算作那个方法**——对读者来说它就是,闭包自己没有名字可查。
+* 以 `new` 开头的是**构造函数**;类名里带点表示是**具名构造函数**,点后面那截是名字。
+* 缺失的行/列是 **-1 而不是 0**,和那两个合成帧用的是同一个「没有位置」,并且区别于「第 1 行第
+  0 列」。
+* **只有 `dart:` 和 `package:` 两种 scheme 才拆得出包名**;一个 `file:` 帧保留整条路径、包名记
+  作 `<unknown>`,因为文件路径没有包可命名。
+* **一行解析不了,只赔上它自己**:上游注释说 web 上非 debug 构建会把异常消息打在栈上面,而一行
+  读不懂不该让读者失去其余每一帧。
+* 部分帧匹配的是**「哪段代码」而不是行号**——行号每改一次那段代码就变。而**包名是模式(子串)、
+  类和方法必须相等**:这不对称才让一条过滤器既能指名整个库,又能指准库里的某一个方法。
+* 交付这个错误的那套机器(`dart:async`、`package:stack_trace`、`_Timer` 等八项)是**整个删掉**
+  而不是折叠的:一个在找自己错处的读者,不该先滚过那个跑了回调的定时器。
+
+**照原样搬的一处上游怪相:** `RepetitiveStackFrameFilter.filter` 的循环边界是
+`index < length - numFrames`,**不含最后一个可能的窗口**——一段正好结束在最后一帧的重复,永远
+不会被检测到、也就永远不会被折叠;要够到它得写 `<=`。按写的搬,并用回归行钉住:**两个移植版
+打出不同的栈,比一个跟着上游怪相的更糟。**
+
+**自查:** 我在「包名是模式」那条里写了 `assert!(!x == false, ...)` 这样的双重否定,读起来是反
+的。改成正着写,并在消息里说清那条性质:上游的 `package` 是一个 `Pattern`、用 `allMatches` 匹
+配,所以 `flutter` 也匹配 `package:flutter_test/...`。
+
+**这个文件剩下的七个**(`ErrorDescription`、`ErrorSummary`、`ErrorHint`、`ErrorSpacer`、
+`FlutterErrorDetails`、`FlutterError`、`DiagnosticsStackTrace`)全都建在
+`DiagnosticsProperty` / `DiagnosticsNode` 之上,那是诊断树本身,还没搬——留到那一波。
+
+验证:`cargo test --lib` 1952 绿,GN `rustflutter_unittests` 1952 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1444 accounted / 444 MISSING。
+
 ### 那几个位是平台的,不是我们的(2026-08-20)
 
 新模块 `platform_menu_bar.rs`,`widgets/platform_menu_bar.dart` 八个全到:

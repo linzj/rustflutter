@@ -105,6 +105,7 @@ pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
 pub mod snack_bar;
+pub mod stack_frame;
 pub mod tap_and_drag;
 pub mod tap_region;
 pub mod text_selection_controls;
