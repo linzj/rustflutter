@@ -48,11 +48,12 @@ use crate::component_themes::{
     AppBarThemeData, BadgeThemeData, BottomNavigationBarThemeData, BottomSheetThemeData,
     ButtonThemeData, CardThemeData, CheckboxThemeData, ChipThemeData, DataTableThemeData,
     DialogThemeData, DividerThemeData, DrawerThemeData, ElevatedButtonThemeData,
-    ExpansionTileThemeData, FilledButtonThemeData, IconButtonThemeData, ListTileThemeData,
-    MaterialBannerThemeData, MenuBarThemeData, MenuButtonThemeData, MenuThemeData,
-    NavigationRailThemeData, OutlinedButtonThemeData, ProgressIndicatorThemeData, RadioThemeData,
-    ScrollbarThemeData, SegmentedButtonThemeData, SnackBarThemeData, SwitchThemeData,
-    TabBarThemeData, TextButtonThemeData, TooltipThemeData,
+    ExpansionTileThemeData, FilledButtonThemeData, FloatingActionButtonThemeData,
+    IconButtonThemeData, ListTileThemeData, MaterialBannerThemeData, MenuBarThemeData,
+    MenuButtonThemeData, MenuThemeData, NavigationRailThemeData, OutlinedButtonThemeData,
+    ProgressIndicatorThemeData, RadioThemeData, ScrollbarThemeData, SegmentedButtonThemeData,
+    SnackBarThemeData, SwitchThemeData, TabBarThemeData, TextButtonThemeData,
+    ToggleButtonsThemeData, TooltipThemeData,
 };
 use crate::components::Theme;
 use crate::engine::Color;
@@ -233,6 +234,8 @@ pub struct ThemeData {
     pub menu_bar_theme: MenuBarThemeData,
     pub menu_button_theme: MenuButtonThemeData,
     pub segmented_button_theme: SegmentedButtonThemeData,
+    pub floating_action_button_theme: FloatingActionButtonThemeData,
+    pub toggle_buttons_theme: ToggleButtonsThemeData,
 }
 
 impl ThemeData {
@@ -347,6 +350,8 @@ impl ThemeData {
             menu_bar_theme: MenuBarThemeData::new(),
             menu_button_theme: MenuButtonThemeData::new(),
             segmented_button_theme: SegmentedButtonThemeData::new(),
+            floating_action_button_theme: FloatingActionButtonThemeData::new(),
+            toggle_buttons_theme: ToggleButtonsThemeData::new(),
         }
     }
 
@@ -650,6 +655,16 @@ impl ThemeData {
             segmented_button_theme: SegmentedButtonThemeData::lerp(
                 &a.segmented_button_theme,
                 &b.segmented_button_theme,
+                t,
+            ),
+            floating_action_button_theme: FloatingActionButtonThemeData::lerp(
+                &a.floating_action_button_theme,
+                &b.floating_action_button_theme,
+                t,
+            ),
+            toggle_buttons_theme: ToggleButtonsThemeData::lerp(
+                &a.toggle_buttons_theme,
+                &b.toggle_buttons_theme,
                 t,
             ),
         }

@@ -3469,6 +3469,277 @@ impl SegmentedButtonTheme {
     }
 }
 
+// -- Floating action button (upstream `floating_action_button_theme.dart`) ----
+
+/// Upstream `FloatingActionButtonThemeData`.
+///
+/// The five elevations are five fields rather than one state property:
+/// upstream predates `WidgetStateProperty` here and has not moved this class
+/// over, and a port that "modernised" it would be answering a question
+/// upstream has not answered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FloatingActionButtonThemeData {
+    pub foreground_color: Option<Color>,
+    pub background_color: Option<Color>,
+    pub focus_color: Option<Color>,
+    pub hover_color: Option<Color>,
+    pub splash_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub focus_elevation: Option<f32>,
+    pub hover_elevation: Option<f32>,
+    pub disabled_elevation: Option<f32>,
+    /// The elevation while it is held down.
+    pub highlight_elevation: Option<f32>,
+    pub shape: Option<ShapeBorder>,
+    pub enable_feedback: Option<bool>,
+    pub icon_size: Option<f32>,
+    /// The box a plain button is laid out in.
+    pub size_constraints: Option<BoxConstraints>,
+    pub small_size_constraints: Option<BoxConstraints>,
+    pub large_size_constraints: Option<BoxConstraints>,
+    /// The box an extended button -- one with a label beside its icon -- is
+    /// laid out in.
+    pub extended_size_constraints: Option<BoxConstraints>,
+    pub extended_icon_label_spacing: Option<f32>,
+    pub extended_padding: Option<EdgeInsetsGeometry>,
+    pub extended_text_style: Option<TextStyle>,
+    pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
+}
+
+impl FloatingActionButtonThemeData {
+    pub fn new() -> FloatingActionButtonThemeData {
+        FloatingActionButtonThemeData::default()
+    }
+
+    pub fn with_colors(mut self, background: Color, foreground: Color) -> Self {
+        self.background_color = Some(background);
+        self.foreground_color = Some(foreground);
+        self
+    }
+
+    pub fn with_elevation(mut self, elevation: f32) -> Self {
+        self.elevation = Some(elevation);
+        self
+    }
+
+    pub fn with_shape(mut self, shape: ShapeBorder) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    pub fn with_size_constraints(mut self, constraints: BoxConstraints) -> Self {
+        self.size_constraints = Some(constraints);
+        self
+    }
+
+    /// Upstream `FloatingActionButtonThemeData.lerp`.
+    pub fn lerp(
+        a: &FloatingActionButtonThemeData,
+        b: &FloatingActionButtonThemeData,
+        t: f32,
+    ) -> FloatingActionButtonThemeData {
+        FloatingActionButtonThemeData {
+            foreground_color: lerp_color(a.foreground_color, b.foreground_color, t),
+            background_color: lerp_color(a.background_color, b.background_color, t),
+            focus_color: lerp_color(a.focus_color, b.focus_color, t),
+            hover_color: lerp_color(a.hover_color, b.hover_color, t),
+            splash_color: lerp_color(a.splash_color, b.splash_color, t),
+            elevation: lerp_f32(a.elevation, b.elevation, t),
+            focus_elevation: lerp_f32(a.focus_elevation, b.focus_elevation, t),
+            hover_elevation: lerp_f32(a.hover_elevation, b.hover_elevation, t),
+            disabled_elevation: lerp_f32(a.disabled_elevation, b.disabled_elevation, t),
+            highlight_elevation: lerp_f32(a.highlight_elevation, b.highlight_elevation, t),
+            shape: lerp_nearer(&a.shape, &b.shape, t),
+            enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
+            icon_size: lerp_f32(a.icon_size, b.icon_size, t),
+            size_constraints: lerp_nearer(&a.size_constraints, &b.size_constraints, t),
+            small_size_constraints: lerp_nearer(
+                &a.small_size_constraints,
+                &b.small_size_constraints,
+                t,
+            ),
+            large_size_constraints: lerp_nearer(
+                &a.large_size_constraints,
+                &b.large_size_constraints,
+                t,
+            ),
+            extended_size_constraints: lerp_nearer(
+                &a.extended_size_constraints,
+                &b.extended_size_constraints,
+                t,
+            ),
+            extended_icon_label_spacing: lerp_f32(
+                a.extended_icon_label_spacing,
+                b.extended_icon_label_spacing,
+                t,
+            ),
+            extended_padding: lerp_nearer(&a.extended_padding, &b.extended_padding, t),
+            extended_text_style: lerp_nearer(&a.extended_text_style, &b.extended_text_style, t),
+            mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
+        }
+    }
+}
+
+/// Upstream `FloatingActionButtonTheme`.
+pub struct FloatingActionButtonTheme;
+
+impl FloatingActionButtonTheme {
+    pub fn new(data: FloatingActionButtonThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> FloatingActionButtonThemeData {
+        context
+            .inherited::<FloatingActionButtonThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).floating_action_button_theme.clone())
+    }
+}
+
+/// What a floating action button draws with, once the three steps have run.
+pub struct ResolvedFloatingActionButton {
+    pub background: Color,
+    pub foreground: Color,
+    /// The elevation for the states it is in -- upstream picks one of the
+    /// five fields rather than blending them.
+    pub elevation: f32,
+    pub size: BoxConstraints,
+}
+
+impl ResolvedFloatingActionButton {
+    /// Upstream's `_defaultElevation`.
+    pub const ELEVATION: f32 = 6.0;
+    /// Upstream's `_defaultHighlightElevation`.
+    pub const HIGHLIGHT_ELEVATION: f32 = 12.0;
+    /// Upstream's `_kSizeConstraints`.
+    pub const SIZE: f32 = 56.0;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedFloatingActionButton {
+        let data = FloatingActionButtonTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        // Upstream picks by state, in this order: disabled, then held, then
+        // hovered, then focused, then the resting elevation.
+        let elevation = if states.contains(WidgetState::Disabled) {
+            data.disabled_elevation.or(data.elevation)
+        } else if states.contains(WidgetState::Pressed) {
+            data.highlight_elevation
+                .or(Some(ResolvedFloatingActionButton::HIGHLIGHT_ELEVATION))
+        } else if states.contains(WidgetState::Hovered) {
+            data.hover_elevation.or(data.elevation)
+        } else if states.contains(WidgetState::Focused) {
+            data.focus_elevation.or(data.elevation)
+        } else {
+            data.elevation
+        };
+        ResolvedFloatingActionButton {
+            background: data.background_color.unwrap_or(scheme.primary_container()),
+            foreground: data
+                .foreground_color
+                .unwrap_or(scheme.on_primary_container()),
+            elevation: elevation.unwrap_or(ResolvedFloatingActionButton::ELEVATION),
+            size: data.size_constraints.unwrap_or(BoxConstraints {
+                min_width: ResolvedFloatingActionButton::SIZE,
+                max_width: ResolvedFloatingActionButton::SIZE,
+                min_height: ResolvedFloatingActionButton::SIZE,
+                max_height: ResolvedFloatingActionButton::SIZE,
+            }),
+        }
+    }
+}
+
+// -- Toggle buttons (upstream `toggle_buttons_theme.dart`) --------------------
+
+/// Upstream `ToggleButtonsThemeData`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToggleButtonsThemeData {
+    pub text_style: Option<TextStyle>,
+    pub constraints: Option<BoxConstraints>,
+    /// The label's colour when the button is neither selected nor disabled.
+    pub color: Option<Color>,
+    pub selected_color: Option<Color>,
+    pub disabled_color: Option<Color>,
+    /// What a selected button is filled with.
+    pub fill_color: Option<Color>,
+    pub focus_color: Option<Color>,
+    pub highlight_color: Option<Color>,
+    pub splash_color: Option<Color>,
+    pub hover_color: Option<Color>,
+    pub border_color: Option<Color>,
+    pub selected_border_color: Option<Color>,
+    pub disabled_border_color: Option<Color>,
+    pub border_width: Option<f32>,
+    pub border_radius: Option<crate::borders::BorderRadius>,
+}
+
+impl ToggleButtonsThemeData {
+    pub fn new() -> ToggleButtonsThemeData {
+        ToggleButtonsThemeData::default()
+    }
+
+    pub fn with_colors(mut self, plain: Color, selected: Color) -> Self {
+        self.color = Some(plain);
+        self.selected_color = Some(selected);
+        self
+    }
+
+    pub fn with_fill_color(mut self, color: Color) -> Self {
+        self.fill_color = Some(color);
+        self
+    }
+
+    pub fn with_border(mut self, color: Color, width: f32) -> Self {
+        self.border_color = Some(color);
+        self.border_width = Some(width);
+        self
+    }
+
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.border_radius = Some(radius);
+        self
+    }
+
+    /// Upstream `ToggleButtonsThemeData.lerp`.
+    pub fn lerp(
+        a: &ToggleButtonsThemeData,
+        b: &ToggleButtonsThemeData,
+        t: f32,
+    ) -> ToggleButtonsThemeData {
+        ToggleButtonsThemeData {
+            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            constraints: lerp_nearer(&a.constraints, &b.constraints, t),
+            color: lerp_color(a.color, b.color, t),
+            selected_color: lerp_color(a.selected_color, b.selected_color, t),
+            disabled_color: lerp_color(a.disabled_color, b.disabled_color, t),
+            fill_color: lerp_color(a.fill_color, b.fill_color, t),
+            focus_color: lerp_color(a.focus_color, b.focus_color, t),
+            highlight_color: lerp_color(a.highlight_color, b.highlight_color, t),
+            splash_color: lerp_color(a.splash_color, b.splash_color, t),
+            hover_color: lerp_color(a.hover_color, b.hover_color, t),
+            border_color: lerp_color(a.border_color, b.border_color, t),
+            selected_border_color: lerp_color(a.selected_border_color, b.selected_border_color, t),
+            disabled_border_color: lerp_color(a.disabled_border_color, b.disabled_border_color, t),
+            border_width: lerp_f32(a.border_width, b.border_width, t),
+            border_radius: lerp_nearer(&a.border_radius, &b.border_radius, t),
+        }
+    }
+}
+
+/// Upstream `ToggleButtonsTheme`.
+pub struct ToggleButtonsTheme;
+
+impl ToggleButtonsTheme {
+    pub fn new(data: ToggleButtonsThemeData, child: AnyWidget) -> AnyWidget {
+        provide(data, child)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ToggleButtonsThemeData {
+        context
+            .inherited::<ToggleButtonsThemeData>()
+            .map(|data| (*data).clone())
+            .unwrap_or_else(|| ThemeData::of(context).toggle_buttons_theme.clone())
+    }
+}
+
 /// What a divider draws with, once the theme has had its say -- the three-step
 /// fallback written out once, since every control does the same thing.
 ///
@@ -4430,5 +4701,70 @@ mod tests {
             MenuButtonTheme::of,
         );
         assert_eq!(menu_button.style, Some(style));
+    }
+
+    #[test]
+    fn a_floating_action_button_picks_one_elevation_rather_than_blending() {
+        use crate::widget_state::{WidgetState, WidgetStates};
+
+        let scheme = ThemeData::fallback().color_scheme;
+        let resting = read_in(
+            |child| child,
+            |context| ResolvedFloatingActionButton::of(context, WidgetStates::NONE),
+        );
+        assert_eq!(resting.elevation, 6.0, "upstream's `_defaultElevation`");
+        assert_eq!(resting.background, scheme.primary_container());
+        assert_eq!(resting.foreground, scheme.on_primary_container());
+        assert_eq!(resting.size.max_width, 56.0);
+
+        // Held down: the highlight elevation, not the resting one.
+        let held = read_in(
+            |child| child,
+            |context| {
+                ResolvedFloatingActionButton::of(
+                    context,
+                    WidgetStates::NONE.with(WidgetState::Pressed),
+                )
+            },
+        );
+        assert_eq!(held.elevation, 12.0);
+
+        // A theme names the resting elevation; hover falls back to it,
+        // because upstream's `hoverElevation` is a field of its own and an
+        // unset one means "the resting one" rather than "some blend".
+        let themed = read_in(
+            |child| {
+                FloatingActionButtonTheme::new(
+                    FloatingActionButtonThemeData::new().with_elevation(2.0),
+                    child,
+                )
+            },
+            |context| {
+                ResolvedFloatingActionButton::of(
+                    context,
+                    WidgetStates::NONE.with(WidgetState::Hovered),
+                )
+            },
+        );
+        assert_eq!(themed.elevation, 2.0);
+    }
+
+    #[test]
+    fn a_toggle_buttons_theme_keeps_its_three_label_colours_apart() {
+        let themed = read_in(
+            |child| {
+                ToggleButtonsTheme::new(
+                    ToggleButtonsThemeData::new()
+                        .with_colors(Color::argb(255, 1, 1, 1), Color::argb(255, 2, 2, 2))
+                        .with_border(Color::argb(255, 3, 3, 3), 2.0),
+                    child,
+                )
+            },
+            ToggleButtonsTheme::of,
+        );
+        assert_eq!(themed.color, Some(Color::argb(255, 1, 1, 1)));
+        assert_eq!(themed.selected_color, Some(Color::argb(255, 2, 2, 2)));
+        assert_eq!(themed.disabled_color, None, "a third field, and unset");
+        assert_eq!(themed.border_width, Some(2.0));
     }
 }

@@ -164,6 +164,17 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+**P8-M1:FAB 与 toggle buttons(2026-08-19)。**
+`FloatingActionButtonTheme(Data)`(21/21)、`ToggleButtonsTheme(Data)`(15/15)。
+
+**FAB 的五个高度是五个字段而不是一个状态属性**,这是上游的形态:它早于
+`WidgetStateProperty` 且没有迁过来。此侧照抄——"现代化"它等于替上游回答一个
+它没回答的问题。`ResolvedFloatingActionButton` 按上游的顺序挑一个:
+disabled → pressed → hovered → focused → 静止,**挑一个而不是混一个**;未设的
+hover/focus 高度回落到静止高度(而不是某种插值),回归线点明了这一点。
+
+`ToggleButtonsThemeData` 的三个标签色(常态/选中/禁用)同样各自独立。
+
 **P8-M1:scrollbar 与菜单一族(2026-08-19)。**
 `ScrollbarTheme(Data)`(11/11)、`MenuStyle`(13/13)、`MenuTheme(Data)`(1/2)、
 `MenuBarTheme(Data)`、`MenuButtonTheme(Data)`、`SegmentedButtonTheme(Data)`
