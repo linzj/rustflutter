@@ -272,7 +272,11 @@ impl Chip {
         self
     }
 
-    pub fn selected(self, selected: bool) -> Self {
+    /// Named `with_selected` rather than `selected` because the getter
+    /// upstream's `SelectableChipAttributes` declares has that name, and a
+    /// builder and a getter cannot both be `selected`. This is also the shape
+    /// every other builder in the crate already has.
+    pub fn with_selected(self, selected: bool) -> Self {
         self.with_style(if selected {
             ChipStyle::Selected
         } else {
@@ -1567,6 +1571,272 @@ impl Component for Section {
     }
 }
 
+// -- What a chip can do -------------------------------------------------------
+
+/// Upstream's six chip attribute interfaces (`material/chip.dart`) say what
+/// each kind of chip supports, and they exist because upstream has six chip
+/// widgets that overlap: `Chip`, `InputChip`, `ChoiceChip`, `FilterChip`,
+/// `ActionChip` and `RawChip`. Each declares the combination it implements,
+/// and the documentation for a field is written once on the interface rather
+/// than six times on the widgets.
+///
+/// **This crate has one [`Chip`] with a [`ChipStyle`] where upstream has six
+/// widgets.** So the interfaces are ported for what they actually are here:
+/// the vocabulary that says what a chip *can be asked*, with each style
+/// answering for itself. A style that gains an ability implements another
+/// trait rather than growing a field nobody can find.
+///
+/// Every method is a question with a default, because every one of upstream's
+/// fields is nullable and null means "the theme decides". A chip only
+/// overrides what it has an answer for.
+///
+/// # The members that are not here
+///
+/// Upstream's `ChipAttributes` has twenty getters. The ones left out are
+/// those with no type in this crate to answer them: `avatar`, `focusNode`,
+/// `autofocus`, `visualDensity`, `iconTheme`, `avatarBoxConstraints` and
+/// `mouseCursor`. Naming them here is the same choice
+/// [`crate::pickers::CalendarDelegate`] makes about its formatting half --
+/// adding one later should be an addition, not a correction.
+pub trait ChipAttributes {
+    /// Upstream's `label`, the only field with no default: a chip without one
+    /// is not a chip.
+    fn label(&self) -> String;
+
+    fn label_style(&self) -> Option<TextStyle> {
+        None
+    }
+
+    /// Upstream's `side`: the outline, which for a chip is load-bearing
+    /// rather than decorative -- an unfilled chip is *only* its outline.
+    fn side(&self) -> Option<crate::borders::BorderSide> {
+        None
+    }
+
+    fn shape(&self) -> Option<crate::borders::ShapeBorder> {
+        None
+    }
+
+    fn clip_behavior(&self) -> crate::painting::ClipBehavior {
+        crate::painting::ClipBehavior::None
+    }
+
+    /// Upstream's `color`: the Material 3 state property, which is consulted
+    /// *before* `backgroundColor` and the flag-specific colours. One property
+    /// answering for every state is how M3 replaced the four separate colour
+    /// fields M2 needed.
+    fn color(&self) -> Option<crate::widget_state::StateProperty<Color>> {
+        None
+    }
+
+    fn background_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn padding(&self) -> Option<EdgeInsets> {
+        None
+    }
+
+    fn label_padding(&self) -> Option<EdgeInsets> {
+        None
+    }
+
+    fn material_tap_target_size(&self) -> Option<crate::widget_state::MaterialTapTargetSize> {
+        None
+    }
+
+    fn elevation(&self) -> Option<f32> {
+        None
+    }
+
+    fn shadow_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn surface_tint_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn chip_animation_style(&self) -> Option<ChipAnimationStyle> {
+        None
+    }
+}
+
+/// Upstream `DeletableChipAttributes`: a chip with an ✕ on it.
+///
+/// The tooltip is part of the interface rather than an afterthought, and
+/// upstream's reason is worth keeping: the delete affordance is a small
+/// target with no label, so the only thing that says *what* it deletes is the
+/// tooltip. A chip that is deletable and says nothing about it is one a
+/// reader has to guess at.
+pub trait DeletableChipAttributes {
+    /// Upstream's `onDeleted`. `None` means the chip shows no delete
+    /// affordance at all -- the icon is not merely disabled, it is absent,
+    /// because an ✕ that does nothing invites a press that does nothing.
+    fn on_deleted(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
+
+    fn delete_icon_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn delete_button_tooltip_message(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether this chip currently offers deletion, which is exactly whether
+    /// it has a callback.
+    fn is_deletable(&self) -> bool {
+        self.on_deleted().is_some()
+    }
+}
+
+/// Upstream `CheckmarkableChipAttributes`: a chip that shows a tick when
+/// selected.
+///
+/// Separate from [`SelectableChipAttributes`] because the two are genuinely
+/// different questions. A chip can be selectable and show its selection by
+/// colour alone -- upstream's `ChoiceChip` does -- and a filter chip shows a
+/// tick because a filter's *set* of selections has to be readable at a
+/// glance, where a single choice does not.
+pub trait CheckmarkableChipAttributes {
+    /// `None` is upstream's "let the theme decide", not "no".
+    fn show_checkmark(&self) -> Option<bool> {
+        None
+    }
+
+    fn checkmark_color(&self) -> Option<Color> {
+        None
+    }
+}
+
+/// Upstream `SelectableChipAttributes`: a chip that is on or off.
+pub trait SelectableChipAttributes {
+    fn selected(&self) -> bool;
+
+    /// Upstream's `onSelected`. Note it is handed the *new* value rather than
+    /// being a bare notification: a selectable chip does not own its own
+    /// selection -- whoever holds the filter does -- so the callback has to
+    /// say which way it went.
+    fn on_selected(&self) -> Option<Rc<dyn Fn(bool)>> {
+        None
+    }
+
+    /// How far the chip lifts while pressed. Shared with
+    /// [`TappableChipAttributes`], because both are about a press.
+    fn press_elevation(&self) -> Option<f32> {
+        None
+    }
+
+    fn selected_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn selected_shadow_color(&self) -> Option<Color> {
+        None
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Upstream `DisabledChipAttributes`: a chip that can be greyed out.
+pub trait DisabledChipAttributes {
+    /// Upstream's `isEnabled`, which it derives from whether any callback was
+    /// given -- a chip with nothing to do is disabled whether or not anyone
+    /// said so.
+    fn is_enabled(&self) -> bool;
+
+    fn disabled_color(&self) -> Option<Color> {
+        None
+    }
+}
+
+/// Upstream `TappableChipAttributes`: a chip that is a button.
+///
+/// Distinct from [`SelectableChipAttributes`] because pressing one *does*
+/// something and pressing the other *is* something. An action chip that
+/// stayed lit after a press would be lying about having a state.
+pub trait TappableChipAttributes {
+    fn on_pressed(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
+
+    fn press_elevation(&self) -> Option<f32> {
+        None
+    }
+
+    fn tooltip(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Upstream `ChipAnimationStyle`: the four animations a chip runs, each
+/// overridable on its own.
+///
+/// Four rather than one because they are four different events with four
+/// different right speeds: becoming enabled, becoming selected, and the two
+/// drawers -- the avatar sliding in and the delete icon sliding out. Upstream's
+/// own constants bear that out (195ms to select, 150ms for a drawer opening
+/// and 100ms for it closing, 75ms to disable), so a single knob would have to
+/// be wrong for three of them.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct ChipAnimationStyle {
+    pub enable_animation: Option<crate::animation::AnimationStyle>,
+    pub select_animation: Option<crate::animation::AnimationStyle>,
+    pub avatar_drawer_animation: Option<crate::animation::AnimationStyle>,
+    pub delete_drawer_animation: Option<crate::animation::AnimationStyle>,
+}
+
+impl ChipAnimationStyle {
+    /// Upstream's `_kSelectDuration`.
+    pub const SELECT_MICROS: i64 = 195_000;
+    /// Upstream's `_kDrawerDuration`, for a drawer opening.
+    pub const DRAWER_MICROS: i64 = 150_000;
+    /// Upstream's `_kReverseDrawerDuration`. Shorter than opening, which is
+    /// the usual asymmetry: a thing arriving is worth watching and a thing
+    /// leaving is in the way.
+    pub const REVERSE_DRAWER_MICROS: i64 = 100_000;
+    /// Upstream's `_kDisableDuration`.
+    pub const DISABLE_MICROS: i64 = 75_000;
+
+    pub fn new() -> ChipAnimationStyle {
+        ChipAnimationStyle::default()
+    }
+}
+
+impl ChipAttributes for Chip {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    /// The crate's three styles are this control's own defaults, which is
+    /// upstream's last fallback -- a theme that says nothing leaves them be.
+    /// See [`Chip::build`](Component::build).
+    fn background_color(&self) -> Option<Color> {
+        None
+    }
+}
+
+impl SelectableChipAttributes for Chip {
+    fn selected(&self) -> bool {
+        self.style == ChipStyle::Selected
+    }
+}
+
+impl TappableChipAttributes for Chip {}
+
+impl DisabledChipAttributes for Chip {
+    /// Upstream derives this from whether any callback was given, and so does
+    /// this: a chip with no tap handler has nothing to do, whatever its style
+    /// says.
+    fn is_enabled(&self) -> bool {
+        !self.handlers.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1739,5 +2009,139 @@ mod tests {
     fn an_unwired_trigger_has_no_handlers() {
         let trigger = TooltipTrigger::new(1, leaf(|| Empty));
         assert!(trigger.handlers().is_empty());
+    }
+
+    #[test]
+    fn a_chip_answers_its_label_and_leaves_the_rest_to_the_theme() {
+        // Every one of upstream's fields is nullable and null means "the
+        // theme decides"; `label` is the only one with no default, because a
+        // chip without one is not a chip.
+        let chip = Chip::new(1, "Filter");
+        assert_eq!(chip.label(), "Filter");
+        assert_eq!(chip.background_color(), None);
+        assert_eq!(chip.side(), None);
+        assert_eq!(chip.elevation(), None);
+        assert_eq!(chip.chip_animation_style(), None);
+    }
+
+    #[test]
+    fn the_style_is_what_answers_for_selection() {
+        // Upstream splits this across six widgets; here one chip with a style
+        // answers, and `ChipStyle::Selected` is what makes it selected.
+        assert!(!Chip::new(1, "x").with_selected(false).selected());
+        assert!(Chip::new(1, "x").with_selected(true).selected());
+        assert!(!Chip::new(1, "x").with_style(ChipStyle::Action).selected());
+    }
+
+    #[test]
+    fn a_chip_with_nothing_to_do_is_disabled_whatever_its_style_says() {
+        // Upstream derives `isEnabled` from whether any callback was given,
+        // not from a flag -- so a chip nobody wired up is greyed out even if
+        // it looks like an action.
+        let inert = Chip::new(1, "x").with_style(ChipStyle::Action);
+        assert!(!inert.is_enabled());
+
+        struct Nothing;
+        let handle: StateHandle<Nothing> = StateHandle::detached();
+        let wired = Chip::new(1, "x").wired(handle, |_: &mut Nothing| {});
+        assert!(wired.is_enabled());
+    }
+
+    #[test]
+    fn deleting_is_absent_rather_than_disabled_when_there_is_no_callback() {
+        // An x that does nothing invites a press that does nothing, so
+        // upstream shows no delete affordance at all rather than a dead one.
+        struct Undeletable;
+        impl DeletableChipAttributes for Undeletable {}
+        assert!(!Undeletable.is_deletable());
+
+        struct Deletable;
+        impl DeletableChipAttributes for Deletable {
+            fn on_deleted(&self) -> Option<Rc<dyn Fn()>> {
+                Some(Rc::new(|| {}))
+            }
+        }
+        assert!(Deletable.is_deletable());
+    }
+
+    #[test]
+    fn a_checkmark_left_unset_means_the_theme_decides_not_no() {
+        // The distinction matters: `Some(false)` is a chip saying "do not
+        // show one", and `None` is a chip saying nothing at all. A port that
+        // collapsed them would make every filter chip's tick untheme-able.
+        struct Quiet;
+        impl CheckmarkableChipAttributes for Quiet {}
+        assert_eq!(Quiet.show_checkmark(), None);
+
+        struct Refuses;
+        impl CheckmarkableChipAttributes for Refuses {
+            fn show_checkmark(&self) -> Option<bool> {
+                Some(false)
+            }
+        }
+        assert_eq!(Refuses.show_checkmark(), Some(false));
+        assert_ne!(Quiet.show_checkmark(), Refuses.show_checkmark());
+    }
+
+    #[test]
+    fn selection_is_reported_with_the_value_it_became() {
+        // A selectable chip does not own its own selection -- whoever holds
+        // the filter does -- so the callback has to say which way it went
+        // rather than merely that something happened.
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        struct Filter(Rc<dyn Fn(bool)>);
+        impl SelectableChipAttributes for Filter {
+            fn selected(&self) -> bool {
+                false
+            }
+            fn on_selected(&self) -> Option<Rc<dyn Fn(bool)>> {
+                Some(Rc::clone(&self.0))
+            }
+        }
+        let sink = Rc::clone(&seen);
+        let chip = Filter(Rc::new(move |value| sink.borrow_mut().push(value)));
+        let callback = chip.on_selected().expect("a callback");
+        callback(true);
+        callback(false);
+        assert_eq!(*seen.borrow(), vec![true, false]);
+    }
+
+    #[test]
+    fn the_four_chip_animations_are_four_different_speeds() {
+        // Which is why upstream has four knobs rather than one: a single one
+        // would have to be wrong for three of them.
+        assert_eq!(ChipAnimationStyle::SELECT_MICROS, 195_000);
+        assert_eq!(ChipAnimationStyle::DRAWER_MICROS, 150_000);
+        assert_eq!(ChipAnimationStyle::REVERSE_DRAWER_MICROS, 100_000);
+        assert_eq!(ChipAnimationStyle::DISABLE_MICROS, 75_000);
+        // A drawer closes faster than it opens: a thing arriving is worth
+        // watching and a thing leaving is in the way.
+        assert!(ChipAnimationStyle::REVERSE_DRAWER_MICROS < ChipAnimationStyle::DRAWER_MICROS);
+        // And all four are distinct, which is the claim.
+        let all = [
+            ChipAnimationStyle::SELECT_MICROS,
+            ChipAnimationStyle::DRAWER_MICROS,
+            ChipAnimationStyle::REVERSE_DRAWER_MICROS,
+            ChipAnimationStyle::DISABLE_MICROS,
+        ];
+        for (index, one) in all.iter().enumerate() {
+            for other in &all[index + 1..] {
+                assert_ne!(one, other);
+            }
+        }
+    }
+
+    #[test]
+    fn each_animation_is_overridable_on_its_own() {
+        // Four `Option`s rather than one style, so a caller who only cares
+        // about the select animation does not have to restate the other three.
+        let style = ChipAnimationStyle {
+            select_animation: Some(crate::animation::AnimationStyle::NO_ANIMATION),
+            ..ChipAnimationStyle::new()
+        };
+        assert!(style.select_animation.is_some());
+        assert!(style.enable_animation.is_none());
+        assert!(style.avatar_drawer_animation.is_none());
+        assert!(style.delete_drawer_animation.is_none());
     }
 }

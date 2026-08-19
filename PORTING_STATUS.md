@@ -164,6 +164,53 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一枚 chip 能被问些什么(2026-08-20)
+
+上游 `material/chip.dart` 那六个属性接口,加上 `ChipAnimationStyle`,进 `controls.rs`。
+`chip.dart` 从 1/9 到 8/9(只剩 `RawChip`)。这七个里有六个是上一轮修尺子才露出来的。
+
+**上游有六个 chip widget,这个 crate 有一个带 `ChipStyle` 的 `Chip`。** 那六个接口存在,
+是因为上游那六个 widget 互相重叠:每个声明自己实现哪几个组合,而一个字段的文档写在接口上
+一次,而不是在六个 widget 上写六次。所以这里按它们在这个 crate 里真正是什么来移植:**一
+套「一枚 chip 能被问什么」的词汇**,由每种 style 自己回答。一种 style 多出一项能力,是多
+实现一个 trait,而不是多长一个没人找得到的字段。
+
+每个方法都是一个**带默认值的问题**,因为上游每个字段都可空,而空的意思是「主题来定」。
+
+**回归行盯的地方:**
+
+* chip 只答自己的 `label`,别的留给主题——`label` 是唯一没有默认值的那个,因为**没有标签
+  的不是 chip**。
+* **是 style 在回答「选没选中」**:上游把这件事摊在六个 widget 上,这里一个带 style 的
+  chip 就答了。
+* **没事可做的 chip 就是停用的,不管它的 style 怎么说。** 上游的 `isEnabled` 是从「有没
+  有给回调」推出来的,不是一个标志位——所以一枚没接线的 chip 即使长得像 action 也是灰的。
+* **没有回调时,删除是「不存在」而不是「被禁用」。** 一个按了没反应的 ✕ 会招来一次没反应
+  的按压,所以上游干脆不显示那个 affordance。
+* **勾选没设时是「主题来定」,不是「不要」。** `Some(false)` 是 chip 说「别显示」,`None`
+  是 chip 什么都没说;把两者揉成一个,每一枚 filter chip 的勾都主题化不了了。
+* **选中是带着「它变成了什么」上报的。** 一枚可选 chip **不拥有**自己的选中状态——拿着筛
+  选条件的那一方才拥有——所以回调必须说清是往哪个方向去了,而不只是「发生了点什么」。
+* **四个 chip 动画是四个不同的速度**(选中 195ms、抽屉开 150ms 关 100ms、停用 75ms),所
+  以上游给了四个旋钮而不是一个:一个旋钮必然对其中三个是错的。**抽屉关得比开得快**——来
+  的东西值得看,走的东西挡路。而且四个各自可覆盖,只关心选中动画的调用方不必把另外三个
+  重说一遍。
+
+**顺手改了一处命名冲突,值得记。** crate 原来的构建器叫 `Chip::selected(bool)`,而上游
+`SelectableChipAttributes` 的 getter 也叫 `selected`——一个构建器和一个 getter 不能同名。
+构建器改成 `with_selected`,这**本来就是这个 crate 里其它所有构建器的形状**(`with_style`、
+`with_color`……),`selected(bool)` 才是那个例外。
+
+**一处过程记录:** 改名时我顺手把 gallery 里两处 `.selected(...)` 也改了,而那两处是
+gallery **自己的** `DemoChip`,不是 crate 的 `Chip`——GN 那一关立刻红了。已改回。这也说明
+一件事:`cargo test --lib` 绿不等于 gallery 编得过,那两道闸门量的不是同一件事,而当时
+`flutter_gallery_unittests.exe` 报的 322 绿是**上一次构建留下的旧二进制**。改回之后三个
+GN 目标都在一次干净构建里绿了。
+
+验证:`cargo test --lib` 1445 绿,GN `rustflutter_unittests` 1445 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1242 accounted / 646 MISSING。
+
 ### 一次命中测试里的三个角色(2026-08-20)
 
 `HitTestable`、`HitTestDispatcher`、`HitTestTarget`(上游 `gestures/hit_test.dart`)进

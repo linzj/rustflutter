@@ -32,7 +32,7 @@ pub(crate) fn screen(state: &GalleryState, handle: StateHandle<GalleryState>) ->
     let mut chips: Vec<AnyWidget> = Vec::new();
     for (index, category) in shrine_data::CATEGORIES.iter().enumerate() {
         let label = category.map_or("ALL", |c| c.title());
-        let chip = Chip::new(ids::STUDY_LOCAL + index as u64, label).selected(filter == index);
+        let chip = Chip::new(ids::STUDY_LOCAL + index as u64, label).with_selected(filter == index);
         // A fn pointer cannot capture the index, so each arm names its own.
         chips.push(component(match index {
             0 => chip.wired(handle.clone(), |s| s.study.filter = 0),
