@@ -178,7 +178,7 @@ impl TextEditingValue {
 ///
 /// Returns `None` if the offset is out of range or lands inside a character,
 /// which a correct platform never sends but a malformed message might.
-fn utf16_to_byte(text: &str, offset: i32) -> Option<usize> {
+pub(crate) fn utf16_to_byte(text: &str, offset: i32) -> Option<usize> {
     if offset < 0 {
         return None;
     }

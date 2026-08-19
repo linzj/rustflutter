@@ -78,6 +78,7 @@ pub mod channel;
 pub mod codec;
 pub mod system;
 pub mod text_boundary;
+pub mod text_editing_delta;
 pub mod text_input;
 
 pub use channel::{BasicMessageChannel, EventChannel, EventSink, MethodChannel};
