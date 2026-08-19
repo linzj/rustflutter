@@ -205,6 +205,7 @@ if (enable_unittests) {
       "rustflutter/src/tap_and_drag.rs",
       "rustflutter/src/tap_region.rs",
       "rustflutter/src/text_editing_intents.rs",
+      "rustflutter/src/text_selection.rs",
       "rustflutter/src/text_selection_controls.rs",
       "rustflutter/src/theme.rs",
       "rustflutter/src/ticker.rs",

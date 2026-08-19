@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 工具栏必须现在就建出来,而答案要晚一点才到(2026-08-20)
+
+新模块 `text_selection.rs`,`widgets/text_selection.dart` 八个补齐(全文件 11 个):
+`ToolbarItemsParentData`、`TextSelectionOverlay`、`SelectionOverlay`、
+`TextSelectionGestureDetectorBuilderDelegate`、`TextSelectionGestureDetectorBuilder`、
+`TextSelectionGestureDetector`、`ClipboardStatusNotifier`、`LiveTextInputStatusNotifier`。
+
+**那两个 notifier 是有意思的一半,而它们有意思的原因是:它们要回答一个框架没法同步回答的问
+题。** 剪贴板里有没有可粘贴的东西、平台提不提供 Live Text,两者都是到宿主的一次往返。**工具栏
+必须现在就建出来,而答案要晚一点才到。**
+
+它们做的每件事都由此而来:
+
+* **`Unknown` 是一个真的第三态,不是「还没答案」。** 在答案未知时显示粘贴按钮,可能按下去什么
+  都不发生;不显示,又会在一帧之后凭空冒出来。上游把这个状态留着,让调用方自己选。
+* **第一个监听者到场时才发问**——没人在听的 notifier 没有理由去跟宿主说话;而最后一个离开时停止
+  观察。
+* **每次从后台回到前台都重新问一遍**:读者可能在别的应用里复制了东西,别的什么都不会告诉我们。
+* **一次失败的询问退回 `Unknown` 而不是留着旧答案**(上游注释:好让它稍后再试)。一个过期的
+  `Pasteable` 会留下一个按了没反应的粘贴按钮。
+* **在处置之后才到的答案会被丢掉**:上游在 await 前后各查一次 `_disposed`,而**后面那次才是关
+  键**——一个在宿主作答期间被处置的 notifier,不能把值写进一个已经死掉的对象。
+
+**Live Text 那个刻意和剪贴板那个不一样:** 它的成功路径和失败路径**都会在「值没变」时提前返
+回**。Live Text 可用性是设备的属性、几乎从不变化,一条「它还是原来那样」的通知会让每个工具栏
+白白重建一次。回归行把两条路径都钉了。
+
+**回归行盯的其余地方:**
+
+* **工具栏量的按钮比它画的多**:布局和绘制是两个问题,所以一个按钮可以被量过却不画出来——溢出
+  菜单正是这么知道自己装了些什么的。
+* **force press 是「输入框」的属性而不是平台的**:压感屏上的输入框也可以不要它,而想要它的输入
+  框在没有压感的屏上根本不会遇到。
+* **滚动之后松手不该把工具栏弹出来**——正好弹在读者刚滚到的那段文字上。
+* 一次什么都没改变的点击,**只有被要求时才上报**(`onUserTapAlwaysCalled`)——一个要滚到聚焦字
+  段的表单需要这个。
+* **手柄和工具栏一起藏**:没有手柄的工具栏,操作的是一个读者已经看不到边界的选区。
+* 手柄**按它托着的那一行的高度来定大小**,而两端可以在字号不同的两行上。
+* **被拖动的手柄记住它被抓住的那个点**——和拖拽锚点同一个道理:会跳到手指底下的手柄,读起来像
+  是换了一个手柄。
+
+验证:`cargo test --lib` 2046 绿,GN `rustflutter_unittests` 2046 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1508 accounted / 380 MISSING。
+
 ### 剪切就是复制,外加把选区收起来(2026-08-20)
 
 新模块 `text_editing_intents.rs`,`widgets/text_editing_intents.dart` 二十七个全到——**全树最
