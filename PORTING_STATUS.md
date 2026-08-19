@@ -164,6 +164,52 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 那一堆制表符不是琐碎:它是读者判断一棵树在哪儿结束的唯一凭据(2026-08-20)
+
+`foundation/diagnostics.dart` **二十二个全到**。本轮补上剩下的九个:
+`TextTreeConfiguration`、`TextTreeRenderer`、`DiagnosticableNode`、
+`DiagnosticableTreeNode`、`Diagnosticable`、`DiagnosticableTree`、
+`DiagnosticableTreeMixin`、`DiagnosticsBlock`、`DiagnosticsSerializationDelegate`。
+
+`TextTreeConfiguration` 每个字段都是一小段贴在某处的字面文本,整个类型读起来像一张琐事表。**它
+不是。** 一份转储的形状,是唯一告诉读者「一个对象在哪儿结束、下一个从哪儿开始」的东西;前缀画
+错的树,没人跟得下来。十一种配置的区别**只在这些字符串里**。
+
+**回归行盯的地方:**
+
+* **最后一个孩子收口而不是延续**(`└─` 对 `├─`)——这正是那个凭据。
+* **`childLinkSpace` 和它替代的那根竖线一样宽**,于是没有竖线的那一行仍然对得齐;十一种配置逐
+  一验过。
+* offstage 就是普通的树**换成虚线**,其余一模一样——虚线本身就是全部信息:这棵子树在,但没在显
+  示。
+* 单行样式**没有换行符可用**(`lineBreak` 是空串)——**这才是它成为一行的原因**,不是某处查了个
+  标志,而是压根没东西可断。
+* **错误的框无论里面有没有东西都要合上**(唯一带 `mandatoryFooter` 的样式):一个没合上的框会
+  撞进控制台接下来打的任何东西。其余样式都没有。
+* shallow 就是 whitespace **去掉孩子**;dense 把属性挤进一对括号(这才让大树的密集转储能放进
+  一屏);transition 用的是完全另一套分隔符。
+
+**`Diagnosticable` 的默认实现才是有意思的那一半:** 一个对象**不用自己写描述**就能得到一份有
+用的描述,因为它已经为检查器列出的那些属性,正是一个字符串需要的那些属性。回归行验了「处在默
+认值上的属性不会出现在普通描述里」——上一轮那套等级机制在这里兑现。
+
+**`DiagnosticableNode` 是惰性的,而惰性就是要点:** 为了打印一个对象就把整棵树上每个对象的属性
+都建出来,在调试器里慢得会被察觉。
+
+**序列化深度是一级一级花掉的**:检查器是通过一个 socket 跟调试器说话的,而一个真实应用的
+widget 树塞不进去。到零时孩子只被命名、不再展开,而且不会花成负数。
+
+**一处坦白的等同:** `DiagnosticableTreeMixin` 在上游和 `DiagnosticableTree` 的唯一区别,是前者
+是 mixin、后者是抽象类,好让已经有父类的类型也能拿到这套行为。**在 Rust 里每个 trait 都是
+mixin**,所以这里它就是一个别名——**这么说比硬造一个区别更诚实**,而这句话写在代码里。
+
+至此 `foundation/assertions.dart` 剩下的七个(四个 error 诊断、`FlutterErrorDetails`、
+`FlutterError`、`DiagnosticsStackTrace`)所依赖的底座已经齐了。
+
+验证:`cargo test --lib` 1997 绿,GN `rustflutter_unittests` 1997 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净,警告数与基线持平。覆盖率 1466 accounted / 422 MISSING。
+
 ### `{:.1}` 和 `toStringAsFixed(1)` 的舍入方向不一样(2026-08-20)
 
 新模块 `diagnostics.rs`,`foundation/diagnostics.dart` 二十二个里的十三个:两个枚举、
