@@ -1,6 +1,26 @@
 {
   "_comment": "coverage.py 的判定台账。equivalent: 已核实的改名/合并/功能等价（锚点见 PORTING_STATUS.md）；blocked_engine: 依赖引擎能力，挂账待引擎侧立项；out_of_scope_files/_classes: web-only/无宿主/debug-only 裁剪。只登记核实过的条目，宁缺勿滥。",
   "equivalent": {
+    "MatrixUtils": {
+      "rust": "painting::matrix_utils",
+      "note": "上游是一组静态方法的类；这里是同名模块，get_as_translation/transform_point/transform_rect 逐个对应"
+    },
+    "TextInput": {
+      "rust": "services::text_input 的 attach/channel/is_editing/reset",
+      "note": "上游是静态入口类，这里是模块级函数，同一组入口"
+    },
+    "Element": {
+      "rust": "ElementTree + ElementId",
+      "note": "元素在这里是树上的一行而不是一个对象，没有独立的 Element 类型"
+    },
+    "Cubic": {
+      "rust": "Curve::Cubic(f32,f32,f32,f32)",
+      "note": "上游是曲线类，这里是 Curve 枚举的一个变体"
+    },
+    "Scrollable": {
+      "rust": "Scroll",
+      "note": "同一个角色：持有 ScrollPosition、装 viewport、接手势"
+    },
     "RenderPositionedBox": {
       "rust": "RenderAlign",
       "note": "shrinkWrap 判据与上游一致（PORTING_STATUS 回归线）"

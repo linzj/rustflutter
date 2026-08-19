@@ -49,6 +49,59 @@ pub fn repaint_boundary(child: crate::framework::AnyWidget) -> crate::framework:
     crate::framework::single(child, crate::render::RenderRepaintBoundary::new)
 }
 
+/// Clips `child` to its own bounds.
+///
+/// Upstream's `ClipRect`. The render object has been here all along; what was
+/// missing was the widget in front of it, which is what a caller building a
+/// tree actually reaches for. See [`crate::render::RenderClipRect`].
+pub fn clip_rect(child: crate::framework::AnyWidget) -> crate::framework::AnyWidget {
+    crate::framework::single(child, crate::render::RenderClipRect::new)
+}
+
+/// Lays `children` out along one axis.
+///
+/// Upstream's `Flex`, which `Row` and `Column` are the two directions of.
+/// See [`crate::render::RenderFlex`].
+pub fn flex(
+    direction: crate::render::Axis,
+    children: Vec<crate::framework::AnyWidget>,
+) -> crate::framework::AnyWidget {
+    crate::framework::many(children, move |children| {
+        let mut flex = crate::render::RenderFlex::new(direction);
+        for child in children {
+            flex = flex.push(child);
+        }
+        flex
+    })
+}
+
+/// Animates its own size to whatever `child` asks for.
+///
+/// Upstream's `AnimatedSize`. See [`crate::render::RenderAnimatedSize`].
+pub fn animated_size(
+    alignment: crate::render::Alignment,
+    duration_ms: u32,
+    child: crate::framework::AnyWidget,
+) -> crate::framework::AnyWidget {
+    crate::framework::single(child, move |child| {
+        crate::render::RenderAnimatedSize::new(alignment, child).with_duration(duration_ms)
+    })
+}
+
+/// The window on a scrollable's contents: what is on screen of something
+/// taller than the screen.
+///
+/// Upstream's `Viewport`. See [`crate::render::RenderViewport`].
+pub fn viewport(
+    axis: crate::render::Axis,
+    offset: f32,
+    child: crate::framework::AnyWidget,
+) -> crate::framework::AnyWidget {
+    crate::framework::single(child, move |child| {
+        crate::render::RenderViewport::new(axis, child).with_offset(offset)
+    })
+}
+
 /// Wraps a render object as a [`BoxedWidget`].
 pub fn boxed(render: impl crate::render::RenderBox + 'static) -> BoxedWidget {
     crate::render::RenderRef::new(render)
@@ -2166,6 +2219,71 @@ impl ColoredBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::leaf;
+
+    #[test]
+    fn the_new_facades_build_the_render_object_they_name() {
+        use crate::framework::ElementTree;
+        use crate::render::{Alignment, Axis};
+
+        // Each of these had its render object in the crate and no widget in
+        // front of it, which is what a caller building a tree reaches for.
+        let mut tree = ElementTree::new();
+        tree.rebuild(clip_rect(leaf(|| SizedBox::new(10.0, 10.0))));
+        assert_eq!(
+            tree.build_render_tree()
+                .expect("a root")
+                .layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(10.0, 10.0)
+        );
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(flex(
+            Axis::Horizontal,
+            vec![
+                leaf(|| SizedBox::new(10.0, 4.0)),
+                leaf(|| SizedBox::new(20.0, 6.0)),
+            ],
+        ));
+        // As tall as the tallest child, and -- like upstream's `Flex` -- as
+        // wide as it is allowed to be, because the default main axis size is
+        // max and not shrink-wrap. The height is what says the children
+        // actually got in.
+        assert_eq!(
+            tree.build_render_tree()
+                .expect("a root")
+                .layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(100.0, 6.0)
+        );
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(animated_size(
+            Alignment::CENTER,
+            200,
+            leaf(|| SizedBox::new(10.0, 10.0)),
+        ));
+        assert_eq!(
+            tree.build_render_tree()
+                .expect("a root")
+                .layout(BoxConstraints::loose(100.0, 100.0)),
+            Size::new(10.0, 10.0)
+        );
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(viewport(
+            Axis::Vertical,
+            0.0,
+            leaf(|| SizedBox::new(10.0, 400.0)),
+        ));
+        // A viewport is the window, not the contents: it takes the height it
+        // is offered and lets the child overflow behind it.
+        assert_eq!(
+            tree.build_render_tree()
+                .expect("a root")
+                .layout(BoxConstraints::tight(50.0, 60.0)),
+            Size::new(50.0, 60.0)
+        );
+    }
 
     struct FixedBox(Size, Size);
 

@@ -164,6 +164,54 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 把尺子上的假阳性一次查干净(2026-08-19)
+
+上一簇顺手抓到 `mod` 会冒充类之后,把同一个问题**系统查了一遍**:拿上游每个公开
+类去问「crate 里认领它的那个标识符,到底是什么」。结果是尺子还在替十一个类说谎,
+全都是名字撞上了方法或私有辅助函数:
+
+| 类 | 认领它的东西 |
+| --- | --- |
+| `Element` | `BuildContext::element()` |
+| `ClipRect` | `Canvas::clip_rect()` |
+| `Flex` | `Table::flex()` |
+| `AnimatedSize` | `render.rs` 里一个私有 `fn animated_size` |
+| `PreferredSize` | 满地的 `preferred_size()`——上一簇我自己刚加了十几个 |
+| `Scrollable` | `SemanticsProperties::scrollable()` |
+| `Viewport` | 一个测试辅助函数 |
+| `Title` | `Theme::title()` |
+| `Placeholder` | `InlineSpanSemanticsInformation::placeholder()` |
+| `Step` | 焦点遍历里的私有 `fn step` |
+| `Cubic` | 三次贝塞尔的私有求值函数 |
+
+**为什么 `fn` 本来要算。** 这个 crate 有一部分 widget 门面就是函数——
+`pub fn spacer() -> AnyWidget` 确实是上游 `Spacer` 的移植,`repaint_boundary`、
+`keyed_subtree`、`directionality`、`notification_listener` 都是。所以不能一刀切
+掉 `fn`。分界线是**自由的、公开的**:方法缩在 `impl` 里,辅助函数不 `pub`。
+`tools/coverage.py` 现在对 `fn`/`const`/`static` 只认行首的 `pub`,类型和 `impl`
+目标照旧不限位置。上面十一个一个不剩地掉了出来,五个真门面一个没误伤。
+
+**掉出来之后的处置。** 逐个看了,分三类:
+
+* 真有实现、只是换了名字——补进台账:`MatrixUtils`→`painting::matrix_utils`
+  (同名模块,三个函数逐个对应)、`TextInput`→`services::text_input` 的四个入口、
+  `Element`→`ElementTree`+`ElementId`(元素在这里是树上的一行,不是一个对象)、
+  `Cubic`→`Curve::Cubic` 变体、`Scrollable`→`Scroll`。
+* 渲染对象一直都在、缺的只是前面那层 widget——补了四个门面:`clip_rect`、
+  `flex`、`animated_size`、`viewport`,都是 `repaint_boundary` 那个形状。
+* 剩下的 `PreferredSize`、`Placeholder`、`Title`、`Step` 确实没写过,继续记
+  MISSING。
+
+`flex` 的回归行盯的是一个容易写错的默认值:上游 `Flex` 的 `mainAxisSize` 默认是
+`max`,所以一行**不是**贴着孩子收窄,而是把允许的宽度占满。高度才是「孩子确实进
+去了」的证据。
+
+验证:`cargo test --lib` 1080 绿,GN `rustflutter_unittests` 1080 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1080 accounted / 793 MISSING——数字跟上一簇几乎一样,
+但这次每一个都站得住。
+
+
 ### 区间滑块的部件,与尺子上的三个假阳性(2026-08-19)
 
 `range_slider_parts.rs`(新),上游 `range_slider_parts.dart` 的 15 个类全覆盖:

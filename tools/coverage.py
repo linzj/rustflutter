@@ -64,13 +64,33 @@ def rust_identifiers():
     """Declared symbols only (types, fns, aliases, impl targets) --
     locals named `element` must not count as covering upstream `Element`.
 
-    `mod` is deliberately not in the list. A module is a file, not a type,
-    and the snake-case fold that lets `text_theme` answer for `TextTheme`
-    also let `mod actions` answer for upstream's `Actions` widget, which
-    nothing in the crate implements."""
+    Three things are deliberately *not* counted, each because it was caught
+    crediting a class nobody had written:
+
+    * `mod`. A module is a file, not a type, and the snake-case fold that
+      lets `text_theme` answer for `TextTheme` also let `mod actions` answer
+      for upstream's `Actions` widget.
+    * A function that is not a free public one. This crate writes some widget
+      facades as functions -- `pub fn spacer() -> AnyWidget` is a real port of
+      upstream's `Spacer` -- so functions have to count for something. But a
+      *method* named `element`, `title` or `window` is not a port of
+      `Element`, `Title` or `Window`, and nor is a private helper named
+      `cubic` a port of the curve. Free and `pub` is what separates the two:
+      a method is indented inside its `impl`, and a helper is not `pub`.
+    * A constant or static that is not a free public one, for the same
+      reason.
+    """
+    # A type, an impl target, or a macro: counted wherever it is declared.
     decl = re.compile(
-        r'\b(?:struct|enum|union|trait|fn|type|const|static|macro_rules!)\s+([A-Za-z_][A-Za-z0-9_]*)'
+        r'\b(?:struct|enum|union|trait|type|macro_rules!)\s+([A-Za-z_][A-Za-z0-9_]*)'
         r'|\bimpl(?:\s*<[^{;]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*([A-Za-z_][A-Za-z0-9_]*)'
+    )
+    # A function, constant or static: only at the top of a line and only
+    # public, which is what a facade looks like and a method does not.
+    free = re.compile(
+        r'^pub(?:\([^)]*\))?\s+(?:const\s+|async\s+|unsafe\s+|extern\s+"[^"]*"\s+)*'
+        r'(?:fn|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)',
+        re.M,
     )
     ids = set()
     for root, _, files in os.walk(CRATE):
@@ -81,6 +101,7 @@ def rust_identifiers():
             text = strip_rust_comments(open(path, encoding='utf-8', errors='ignore').read())
             for m in decl.finditer(text):
                 ids.update(x for x in m.groups() if x)
+            ids.update(m.group(1) for m in free.finditer(text))
     return ids
 
 
