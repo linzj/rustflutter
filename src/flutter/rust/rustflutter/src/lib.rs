@@ -23,6 +23,7 @@
 #[cfg(any(test, rustflutter_stubs))]
 mod engine_test_stubs;
 
+pub mod about;
 pub mod actions;
 pub mod animated_scroll_view;
 pub mod animation;

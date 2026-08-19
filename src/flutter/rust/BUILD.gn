@@ -100,6 +100,7 @@ if (enable_unittests) {
     script = "run_rust_tests.py"
 
     sources = [
+      "rustflutter/src/about.rs",
       "rustflutter/src/actions.rs",
       "rustflutter/src/app.rs",
       "rustflutter/src/arc.rs",
