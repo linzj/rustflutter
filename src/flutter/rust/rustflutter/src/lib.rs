@@ -24,6 +24,7 @@
 mod engine_test_stubs;
 
 pub mod actions;
+pub mod animated_scroll_view;
 pub mod animation;
 pub mod app;
 pub mod arc;
