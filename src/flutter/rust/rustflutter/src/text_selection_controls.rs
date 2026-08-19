@@ -510,6 +510,216 @@ impl TextSelectionToolbarTextButton {
     }
 }
 
+// -- Cupertino's side of the same seam ----------------------------------------
+
+/// Upstream `CupertinoTextSelectionControls` (`cupertino/text_selection.dart`):
+/// the iOS selection handles.
+///
+/// **A lollipop, not a square.** Where
+/// [`crate::text_selection_controls::MaterialTextSelectionControls`] draws a
+/// fixed 22-pixel square sitting under the line, this draws a knob on a stem
+/// that runs the *height of the text line* -- so its size depends on the text
+/// it is selecting, and a handle beside a large heading is taller than one
+/// beside body copy.
+///
+/// The stem and the knob overlap by
+/// [`CupertinoTextSelectionControls::HANDLE_OVERLAP`], which is why the height
+/// is `textLineHeight + 2 * radius - overlap` rather than a plain sum: without
+/// the overlap the two shapes would meet exactly and leave a hairline seam
+/// where the anti-aliasing of each falls short of the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoTextSelectionControls;
+
+impl CupertinoTextSelectionControls {
+    /// Upstream's `_kSelectionHandleRadius`, taken from Apple's own design
+    /// resources.
+    pub const HANDLE_RADIUS: f32 = 6.0;
+    /// Upstream's `_kSelectionHandleOverlap`: how far the stem runs into the
+    /// knob, so the join has no seam.
+    pub const HANDLE_OVERLAP: f32 = 1.5;
+}
+
+impl TextSelectionControls for CupertinoTextSelectionControls {
+    fn handle_size(&self, text_line_height: f32) -> Size {
+        Size::new(
+            CupertinoTextSelectionControls::HANDLE_RADIUS * 2.0,
+            text_line_height + CupertinoTextSelectionControls::HANDLE_RADIUS * 2.0
+                - CupertinoTextSelectionControls::HANDLE_OVERLAP,
+        )
+    }
+
+    /// Upstream's anchors, and each of the three has its own reason:
+    ///
+    /// * **Left**: the knob is at the *top*, and the anchor is all the way at
+    ///   the bottom -- so the stem lies along the text and the knob sits above
+    ///   the line's start, out of the way of the words.
+    /// * **Right**: the handle is drawn flipped, so the anchor is near the top
+    ///   of its knob. The `+ overlap` is the same seam-hiding fudge, applied
+    ///   to the anchor rather than the shape.
+    /// * **Collapsed**: centred on the line, because it marks a caret rather
+    ///   than an edge and has no side to prefer.
+    fn handle_anchor(&self, kind: TextSelectionHandleType, text_line_height: f32) -> Offset {
+        let size = self.handle_size(text_line_height);
+        let radius = CupertinoTextSelectionControls::HANDLE_RADIUS;
+        let overlap = CupertinoTextSelectionControls::HANDLE_OVERLAP;
+        match kind {
+            TextSelectionHandleType::Left => Offset::new(size.width / 2.0, size.height),
+            TextSelectionHandleType::Right => {
+                Offset::new(size.width / 2.0, size.height - 2.0 * radius + overlap)
+            }
+            TextSelectionHandleType::Collapsed => Offset::new(
+                size.width / 2.0,
+                text_line_height + (size.height - text_line_height) / 2.0,
+            ),
+        }
+    }
+}
+
+/// Upstream `CupertinoTextSelectionHandleControls`.
+pub type CupertinoTextSelectionHandleControls =
+    TextSelectionHandleControls<CupertinoTextSelectionControls>;
+
+/// Upstream `CupertinoDesktopTextSelectionControls`
+/// (`cupertino/desktop_text_selection.dart`): no handles, for the same reason
+/// [`crate::text_selection_controls::DesktopTextSelectionControls`] has none.
+///
+/// A separate class from the Material one because the *toolbar* differs, not
+/// the handles -- both answer `Size.zero` here, and it is the menu each puts
+/// up that makes them two classes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CupertinoDesktopTextSelectionControls;
+
+impl TextSelectionControls for CupertinoDesktopTextSelectionControls {
+    fn handle_size(&self, _text_line_height: f32) -> Size {
+        Size::ZERO
+    }
+
+    fn handle_anchor(&self, _kind: TextSelectionHandleType, _text_line_height: f32) -> Offset {
+        Offset::ZERO
+    }
+}
+
+/// Upstream `CupertinoTextSelectionToolbar` (`cupertino/text_selection_toolbar.dart`):
+/// the iOS selection menu, the one with the arrow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoTextSelectionToolbar {
+    pub anchor_above: Offset,
+    pub anchor_below: Offset,
+}
+
+impl CupertinoTextSelectionToolbar {
+    /// Upstream's `kToolbarScreenPadding`, which the Material toolbar also
+    /// reads -- the one constant the two platforms share.
+    pub const SCREEN_PADDING: f32 = 8.0;
+    /// Upstream's `_kToolbarContentDistance`.
+    pub const CONTENT_DISTANCE: f32 = 8.0;
+    pub const BORDER_RADIUS: f32 = 8.0;
+    /// Upstream's `_kToolbarArrowSize`: the little triangle that points at the
+    /// selection. Wider than it is tall, so it reads as a pointer rather than
+    /// as a spike.
+    pub const ARROW_WIDTH: f32 = 14.0;
+    pub const ARROW_HEIGHT: f32 = 7.0;
+    /// Upstream's `_kArrowScreenPadding`: how far the *arrow's tip* stays from
+    /// the screen's sides.
+    ///
+    /// Much larger than the toolbar's own 8, and the difference is the point:
+    /// the toolbar may reach nearly to the edge, but the arrow may not, or it
+    /// would be drawn against the toolbar's own rounded corner and lose its
+    /// point.
+    pub const ARROW_SCREEN_PADDING: f32 = 26.0;
+    /// Upstream's `_kToolbarTransitionDuration`, in microseconds.
+    pub const TRANSITION_MICROS: i64 = 125_000;
+
+    pub fn new(anchor_above: Offset, anchor_below: Offset) -> CupertinoTextSelectionToolbar {
+        CupertinoTextSelectionToolbar {
+            anchor_above,
+            anchor_below,
+        }
+    }
+
+    /// Upstream's two padded anchors.
+    ///
+    /// **Both move by the same 8, in opposite directions** -- unlike the
+    /// Material toolbar, whose lower distance has to clear a drag handle. An
+    /// iOS handle is a stem *along* the line rather than a knob below it, so
+    /// there is nothing under the selection to clear.
+    pub fn padded_anchors(&self, padding_above: f32) -> (Offset, Offset) {
+        (
+            Offset::new(
+                self.anchor_above.dx,
+                self.anchor_above.dy
+                    - CupertinoTextSelectionToolbar::CONTENT_DISTANCE
+                    - padding_above,
+            ),
+            Offset::new(
+                self.anchor_below.dx,
+                self.anchor_below.dy + CupertinoTextSelectionToolbar::CONTENT_DISTANCE
+                    - padding_above,
+            ),
+        )
+    }
+
+    /// Where the arrow's tip may sit horizontally, given the screen's width.
+    pub fn arrow_tip_range(screen_width: f32) -> (f32, f32) {
+        (
+            CupertinoTextSelectionToolbar::ARROW_SCREEN_PADDING,
+            screen_width - CupertinoTextSelectionToolbar::ARROW_SCREEN_PADDING,
+        )
+    }
+}
+
+/// Upstream `CupertinoTextSelectionToolbarButton`.
+pub struct CupertinoTextSelectionToolbarButton;
+
+impl CupertinoTextSelectionToolbarButton {
+    /// Upstream's `_kToolbarButtonPadding`: 18 vertical against 16 horizontal.
+    ///
+    /// **Taller than it is wide**, which is the opposite of the Material
+    /// button's shape. An iOS selection menu is one row of words with dividers
+    /// between them and no icons, so the height is what gives each word a
+    /// target; a Material menu is a row of chips that already have their own.
+    pub const PADDING: EdgeInsets = EdgeInsets::symmetric(16.0, 18.0);
+}
+
+/// Upstream `CupertinoDesktopTextSelectionToolbar`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoDesktopTextSelectionToolbar {
+    pub anchor: Offset,
+}
+
+impl CupertinoDesktopTextSelectionToolbar {
+    /// Upstream's `_kToolbarWidth` -- the same 222 the Material desktop
+    /// toolbar uses, since both were measured from the same macOS menu.
+    pub const WIDTH: f32 = 222.0;
+    pub const SCREEN_PADDING: f32 = 8.0;
+    /// Upstream's `_kToolbarPadding`, around the whole menu.
+    pub const PADDING: EdgeInsets = EdgeInsets::all(6.0);
+    /// Upstream's `_kToolbarBlurSigma`: the menu is translucent and blurs what
+    /// is behind it.
+    pub const BLUR_SIGMA: f32 = 20.0;
+    /// Upstream's `_kToolbarSaturationBoost`, which goes *with* the blur: a
+    /// blur averages colours together and washes them out, so the saturation
+    /// is pushed back up to keep what shows through recognisable. One without
+    /// the other would look wrong.
+    pub const SATURATION_BOOST: f32 = 3.0;
+
+    pub fn new(anchor: Offset) -> CupertinoDesktopTextSelectionToolbar {
+        CupertinoDesktopTextSelectionToolbar { anchor }
+    }
+}
+
+/// Upstream `CupertinoDesktopTextSelectionToolbarButton`.
+pub struct CupertinoDesktopTextSelectionToolbarButton;
+
+impl CupertinoDesktopTextSelectionToolbarButton {
+    /// Upstream's `_kToolbarButtonPadding`, `fromLTRB(8, 2, 8, 5)`.
+    ///
+    /// The same downward lean as the Material desktop button's -- optical
+    /// centring for text, which sits above its box's middle -- but tighter
+    /// all round, because a macOS menu row is denser than a Material one.
+    pub const PADDING: EdgeInsets = EdgeInsets::only(8.0, 2.0, 8.0, 5.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,5 +1014,159 @@ mod tests {
         let left = TextSelectionToolbarTextButton::padding(0, 3);
         let right = TextSelectionToolbarTextButton::padding(1, 3);
         assert_eq!(left.right, right.left);
+    }
+
+    #[test]
+    fn a_cupertino_handle_grows_with_the_text_and_a_material_one_does_not() {
+        // The difference between a lollipop and a square. iOS draws a knob on
+        // a stem that runs the height of the line, so a handle beside a large
+        // heading is taller than one beside body copy; Material draws a fixed
+        // square that sits under the line whatever the text.
+        let ios = CupertinoTextSelectionControls;
+        let material = MaterialTextSelectionControls;
+
+        let small = ios.handle_size(14.0);
+        let large = ios.handle_size(40.0);
+        assert!(large.height > small.height, "{large:?} vs {small:?}");
+        assert_eq!(small.width, large.width, "only the stem grows");
+
+        assert_eq!(
+            material.handle_size(14.0),
+            material.handle_size(40.0),
+            "a square is a square"
+        );
+    }
+
+    #[test]
+    fn the_stem_overlaps_the_knob_so_the_join_has_no_seam() {
+        // Which is why the height is a sum *minus* the overlap rather than a
+        // plain sum: without it the two shapes would meet exactly and the
+        // anti-aliasing of each would fall short of the other, leaving a
+        // hairline.
+        let ios = CupertinoTextSelectionControls;
+        let radius = CupertinoTextSelectionControls::HANDLE_RADIUS;
+        let overlap = CupertinoTextSelectionControls::HANDLE_OVERLAP;
+        assert!(overlap > 0.0);
+        assert_eq!(
+            ios.handle_size(20.0).height,
+            20.0 + radius * 2.0 - overlap,
+            "the sum, less the overlap"
+        );
+    }
+
+    #[test]
+    fn the_left_handles_anchor_is_at_the_bottom_and_the_right_ones_near_its_knob() {
+        // The left handle's knob is at the top and its stem lies along the
+        // text, so the anchor is all the way down; the right one is drawn
+        // flipped, so its anchor is near the top of its knob with the same
+        // seam-hiding overlap applied.
+        let ios = CupertinoTextSelectionControls;
+        let line = 20.0;
+        let size = ios.handle_size(line);
+        assert_eq!(
+            ios.handle_anchor(TextSelectionHandleType::Left, line),
+            Offset::new(size.width / 2.0, size.height)
+        );
+        let right = ios.handle_anchor(TextSelectionHandleType::Right, line);
+        assert!(
+            right.dy < size.height,
+            "near the top rather than the bottom"
+        );
+        assert_eq!(right.dx, size.width / 2.0, "both are horizontally centred");
+
+        // And a collapsed handle is centred on the line, having no side to
+        // prefer.
+        let collapsed = ios.handle_anchor(TextSelectionHandleType::Collapsed, line);
+        assert_eq!(collapsed.dy, line + (size.height - line) / 2.0);
+    }
+
+    #[test]
+    fn both_desktop_controls_draw_no_handles_and_are_still_two_classes() {
+        // The toolbar is what differs, not the handles -- so the two answer
+        // identically here, and the reason they are two classes is the menu
+        // each puts up.
+        let ios = CupertinoDesktopTextSelectionControls;
+        let material = DesktopTextSelectionControls;
+        assert_eq!(ios.handle_size(20.0), material.handle_size(20.0));
+        assert_eq!(ios.handle_size(20.0), Size::ZERO);
+        assert!(!ios.draws_handles(20.0));
+    }
+
+    #[test]
+    fn the_ios_toolbar_moves_both_anchors_by_the_same_distance() {
+        // Unlike the Material toolbar, whose lower distance has to clear a
+        // drag handle: an iOS handle is a stem *along* the line rather than a
+        // knob below it, so there is nothing under the selection to clear.
+        let toolbar =
+            CupertinoTextSelectionToolbar::new(Offset::new(50.0, 200.0), Offset::new(50.0, 220.0));
+        let (above, below) = toolbar.padded_anchors(0.0);
+        assert_eq!(above.dy, 192.0);
+        assert_eq!(below.dy, 228.0);
+        assert_eq!(
+            200.0 - above.dy,
+            below.dy - 220.0,
+            "the same 8 in each direction"
+        );
+        // Where Material's two differ, because of the handle.
+        assert_ne!(
+            TextSelectionToolbar::CONTENT_DISTANCE,
+            TextSelectionToolbar::CONTENT_DISTANCE_BELOW
+        );
+    }
+
+    #[test]
+    fn the_arrow_stays_much_further_from_the_screen_edge_than_the_toolbar_does() {
+        // The toolbar may reach nearly to the edge; the arrow may not, or it
+        // would be drawn against the toolbar's own rounded corner and lose its
+        // point.
+        assert!(
+            CupertinoTextSelectionToolbar::ARROW_SCREEN_PADDING
+                > CupertinoTextSelectionToolbar::SCREEN_PADDING * 3.0
+        );
+        let (left, right) = CupertinoTextSelectionToolbar::arrow_tip_range(400.0);
+        assert_eq!((left, right), (26.0, 374.0));
+    }
+
+    #[test]
+    fn the_arrow_is_wider_than_it_is_tall() {
+        // So it reads as a pointer rather than as a spike.
+        assert!(
+            CupertinoTextSelectionToolbar::ARROW_WIDTH
+                > CupertinoTextSelectionToolbar::ARROW_HEIGHT
+        );
+    }
+
+    #[test]
+    fn an_ios_menu_button_is_taller_than_it_is_wide_and_a_desktop_one_is_not() {
+        // An iOS selection menu is one row of words with dividers and no
+        // icons, so the height is what gives each word a target. A macOS menu
+        // row is denser and leans on its width instead.
+        let ios = CupertinoTextSelectionToolbarButton::PADDING;
+        assert!(ios.top > ios.left, "{ios:?}");
+
+        let desktop = CupertinoDesktopTextSelectionToolbarButton::PADDING;
+        assert!(desktop.left > desktop.top);
+        // And the same downward lean the Material desktop button has, for the
+        // same optical-centring reason.
+        assert!(desktop.bottom > desktop.top);
+    }
+
+    #[test]
+    fn the_two_desktop_toolbars_agree_on_their_width() {
+        // Both were measured from the same macOS menu, so a disagreement here
+        // would mean one of them had drifted.
+        assert_eq!(
+            CupertinoDesktopTextSelectionToolbar::WIDTH,
+            DesktopTextSelectionToolbar::WIDTH
+        );
+    }
+
+    #[test]
+    fn the_blur_comes_with_a_saturation_boost() {
+        // The two go together: a blur averages colours and washes them out, so
+        // the saturation is pushed back up to keep what shows through
+        // recognisable. One without the other would look wrong.
+        assert!(CupertinoDesktopTextSelectionToolbar::BLUR_SIGMA > 0.0);
+        assert!(CupertinoDesktopTextSelectionToolbar::SATURATION_BOOST > 1.0);
     }
 }

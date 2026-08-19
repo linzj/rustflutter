@@ -164,6 +164,45 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 棒棒糖,不是方块(2026-08-20)
+
+Cupertino 这一侧的同一道接缝:`CupertinoTextSelectionControls`、
+`CupertinoTextSelectionHandleControls`、`CupertinoDesktopTextSelectionControls`、
+`CupertinoTextSelectionToolbar`、`CupertinoTextSelectionToolbarButton`、
+`CupertinoDesktopTextSelectionToolbar`、`CupertinoDesktopTextSelectionToolbarButton`。
+六个 cupertino 文件一次收口。
+
+**iOS 的手柄是个棒棒糖,不是方块。** Material 画的是一个固定 22 像素的方块,坐在行下面;
+iOS 画的是**一根跑满这一行文字高度的杆子**加一个头——所以它的尺寸**取决于它正在选的文
+字**,一个挨着大标题的手柄比挨着正文的高。
+
+**杆子和头是重叠的**(1.5),所以高度是「和**减去**重叠」而不是一个干净的和:不重叠的话两
+个形状恰好相接,而各自的抗锯齿都够不到对方,会留下一道发丝缝。
+
+**回归行盯的地方:**
+
+* **iOS 手柄随文字长高、Material 的不长**;而长的只是杆子,宽度不变。
+* 高度**确实是那个减法**。
+* **左手柄的锚点在最底下**(头在上、杆子沿着文字躺着),**右手柄的锚点靠近它的头**(它是翻
+  过来画的),而**塌缩手柄居中**——它标的是一个光标,没有哪一侧可偏。
+* **两个 desktop controls 都不画手柄,但仍然是两个类**:不同的是**工具栏**,不是手柄——所以
+  这里两者答得一模一样,而它们是两个类的理由是各自弹出的那个菜单。
+* **iOS 工具栏上下两个锚点挪的距离一样**,不像 Material 那个下距要让开拖拽手柄:iOS 的手柄
+  是**沿着**行的一根杆子,而不是行下面的一个头,所以选区底下没有东西要让。
+* **箭头离屏幕边比工具栏本身远得多**(26 对 8):工具栏可以几乎顶到边,箭头不行——否则它会
+  画在工具栏自己的圆角上,把尖给弄没了。而箭头**宽大于高**,这样它读起来是个指针而不是一根
+  刺。
+* **iOS 菜单按钮高大于宽,desktop 的反过来**:iOS 的选择菜单是一排词、中间是分隔线、没有图
+  标,所以是高度给了每个词一个目标;macOS 那一行更密,靠宽度。
+* **两个 desktop 工具栏的宽度必须相等**(都是从同一个 macOS 菜单量的),不等就说明有一个飘
+  了。
+* **模糊要配着饱和度提升一起来**:模糊会把颜色平均掉、洗淡,所以饱和度要推回去,才让透出来
+  的东西还认得出。只有其中一个会看着不对。
+
+验证:`cargo test --lib` 1553 绿,GN `rustflutter_unittests` 1553 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1288 accounted / 600 MISSING。
+
 ### 选择工具栏摆在哪儿(2026-08-20)
 
 接着上一轮:`TextSelectionToolbarAnchors`
