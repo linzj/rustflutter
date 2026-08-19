@@ -134,6 +134,7 @@ if (enable_unittests) {
       "rustflutter/src/media_query.rs",
       "rustflutter/src/menu.rs",
       "rustflutter/src/navigation.rs",
+      "rustflutter/src/page_storage.rs",
       "rustflutter/src/painting.rs",
       "rustflutter/src/physics.rs",
       "rustflutter/src/pickers.rs",

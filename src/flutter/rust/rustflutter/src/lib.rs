@@ -54,6 +54,7 @@ pub mod licenses;
 pub mod media_query;
 pub mod menu;
 pub mod navigation;
+pub mod page_storage;
 pub mod painting;
 pub mod physics;
 pub mod pickers;
