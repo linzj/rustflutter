@@ -29,6 +29,7 @@ pub mod animated_scroll_view;
 pub mod animation;
 pub mod app;
 pub mod arc;
+pub mod assertions;
 pub mod r#async;
 pub mod autocomplete;
 pub mod borders;
