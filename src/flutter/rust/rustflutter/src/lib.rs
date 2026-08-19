@@ -76,6 +76,7 @@ pub mod multidrag;
 pub mod multitap;
 pub mod navigation;
 pub mod navigation_destinations;
+pub mod nested_scroll_view;
 pub mod overflow_bar;
 pub mod page_storage;
 pub mod painting;
