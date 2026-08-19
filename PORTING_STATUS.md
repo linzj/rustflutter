@@ -164,6 +164,45 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个 alpha 决定整页怎么排(2026-08-20)
+
+`ObstructingPreferredSizeWidget`、`CupertinoPageScaffoldBackgroundColor`
+(`page_scaffold.dart`,该文件 3/3 收口)、`CupertinoNavigationBarBackButton`
+(`nav_bar.dart`)、`CupertinoCheckbox`(`checkbox.dart` 收口)。
+
+**为什么「知道自己多高」不够,还要多问一句。** `CupertinoPageScaffold` 要决定一件事:正文
+是从这条 bar **下面**开始,还是从它**底下穿过去**?两种都对,而哪种对取决于只有这条 bar 知
+道的事——它透不透。**不透的 bar** 会挡住从它后面过去的东西,正文必须从它下面起,否则第一行
+永远看不见;**半透的 bar** 恰恰是要被穿过去的:内容在它后面移动时的那层模糊就是效果本身,
+而从它下面起的正文会在那儿留下一条该有效果的空白。
+
+而 `CupertinoNavigationBar` 给的答案就一句:**背景完全不透明才算遮挡**。**一个 alpha 检查
+决定整页怎么排**——一个把 bar 调了哪怕一点透明度的调用方,已经不言而喻地要求内容从它底下穿
+过去了。
+
+**回归行盯的地方:**
+
+* 上面那条,包括**差一档的 0xFE 仍然算透**。
+* **三态复选框先走完两个确定答案再到不确定那个**:上游的循环是 false → true → null,而顺序
+  就是要点——null 排在 true **之后**而不是夹在中间,所以连点的读者会先经过两个确定答案,才
+  到那个意思是「维持原样」的。
+* **普通复选框永远到不了不确定态**:没有 `tristate` 时,null 不是读者能走到的值、只是应用能
+  设的值,所以循环停在两个上。上游那条构造断言(`tristate || value != null`)也在。
+* **按下去的叠加色随明暗反过来**:同样的 15%,浅底上是黑、深底上是白,这样一次按压在两种底
+  上都读得出来是按压。
+* **`_assemble` 出来的返回按钮不带自己的颜色和回调**:那是上游在转场途中用的两片形态——尖角
+  和标签**分开建、分开带 key**,因为(上游注释原话)它们在页面转场时**各自动画**:去页的标
+  题要变成来页的返回标签,两样东西干一件事,一个 widget 干不了。
+
+`CupertinoPageScaffoldBackgroundColor` 存在,是因为**孩子有时得自己把页面的颜色画出来**
+——bar 的模糊要知道自己在模糊什么,一行想看着像页面上的一个洞就得用页面的填充色去填。问主题
+拿到的是**主题的**背景,而 scaffold 一旦被指定了自己的颜色,那就不是同一个东西了。它只有
+`maybeOf` 没有 `of`:不在任何 scaffold 里的 widget 有一个挺好的答案,就是「去问主题」。
+
+验证:`cargo test --lib` 1585 绿,GN `rustflutter_unittests` 1585 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1306 accounted / 582 MISSING。
+
 ### 三段高亮要看着像一段(2026-08-20)
 
 五个小类,五个 cupertino 文件:`CupertinoUserInterfaceLevel`(+它的枚举)、

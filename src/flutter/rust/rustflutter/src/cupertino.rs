@@ -4289,6 +4289,214 @@ impl CupertinoLinearActivityIndicator {
     }
 }
 
+/// Upstream `ObstructingPreferredSizeWidget` (`cupertino/page_scaffold.dart`):
+/// a bar that knows its own height *and* whether the page can be seen through
+/// it.
+///
+/// # Why the second question is separate
+///
+/// A `CupertinoPageScaffold` has to decide one thing about its body: does it
+/// start **below** the bar, or **under** it? Both are right, and which is
+/// right depends on something only the bar knows -- whether it is opaque.
+///
+/// An opaque bar hides whatever passes behind it, so the body has to start
+/// below it or its first line would be permanently invisible. A translucent
+/// one is meant to be scrolled under: the blur of moving content behind the
+/// bar is the effect, and a body that started below it would leave a blank
+/// strip where that effect should be.
+///
+/// So a preferred size alone is not enough, and this is the extra question.
+pub trait ObstructingPreferredSizeWidget {
+    /// Upstream's `preferredSize`.
+    fn preferred_size(&self) -> Size;
+
+    /// Upstream's `shouldFullyObstruct`.
+    fn should_fully_obstruct(&self) -> bool;
+}
+
+/// Upstream `CupertinoNavigationBar`'s answer, as the rule on its own:
+/// **a bar obstructs exactly when its background is fully opaque.**
+///
+/// One alpha check decides the whole page's layout, which is why it is worth
+/// having by itself: a caller who tints a bar with any transparency at all has
+/// asked, without saying so, for the content to scroll under it.
+pub fn bar_fully_obstructs(background: Color) -> bool {
+    background.alpha() == 0xFF
+}
+
+/// Upstream `CupertinoPageScaffoldBackgroundColor`: the scaffold's own colour,
+/// put where its descendants can read it.
+///
+/// It exists because a **child sometimes has to paint the page's colour
+/// itself** -- a bar's blur needs to know what it is blurring, and a row that
+/// wants to look like a hole in the page has to fill with what the page is
+/// filled with. Asking the theme would give the *theme's* background, which is
+/// not the same thing once a scaffold has been given a colour of its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoPageScaffoldBackgroundColor {
+    pub color: Color,
+}
+
+impl CupertinoPageScaffoldBackgroundColor {
+    pub fn new(color: Color) -> CupertinoPageScaffoldBackgroundColor {
+        CupertinoPageScaffoldBackgroundColor { color }
+    }
+
+    /// Upstream's `maybeOf`. There is no `of`: a widget outside any scaffold
+    /// has a perfectly good answer, which is "ask the theme".
+    pub fn maybe_of(context: &BuildContext) -> Option<Color> {
+        context
+            .inherited::<CupertinoPageScaffoldBackgroundColor>()
+            .map(|scaffold| scaffold.color)
+    }
+
+    pub fn provide(color: Color, child: AnyWidget) -> AnyWidget {
+        crate::framework::provide(CupertinoPageScaffoldBackgroundColor::new(color), child)
+    }
+}
+
+/// Upstream `CupertinoNavigationBarBackButton`: the chevron and the previous
+/// page's title.
+///
+/// # Two pieces, not one
+///
+/// Upstream keeps a private `_assemble` constructor so the chevron and the
+/// label can be **created and keyed separately**, with the comment saying why:
+/// they animate separately during a page transition. The chevron slides
+/// straight across while the label fades and slides at its own rate, because
+/// the outgoing page's title has to become the incoming page's back label --
+/// two things doing one job, which one widget could not.
+pub struct CupertinoNavigationBarBackButton {
+    pub color: Option<Color>,
+    /// Upstream's `previousPageTitle`. Unset, the button shows the generic
+    /// word for "back" rather than nothing: a bare chevron says which way but
+    /// not to what.
+    pub previous_page_title: Option<String>,
+    #[allow(clippy::type_complexity)]
+    pub on_pressed: Option<std::rc::Rc<dyn Fn()>>,
+    /// Whether this was built by upstream's `_assemble` -- the two-piece form
+    /// used mid-transition, which carries no colour or callback of its own
+    /// because the bar it is flying between owns both.
+    pub assembled: bool,
+}
+
+impl CupertinoNavigationBarBackButton {
+    pub fn new() -> CupertinoNavigationBarBackButton {
+        CupertinoNavigationBarBackButton {
+            color: None,
+            previous_page_title: None,
+            on_pressed: None,
+            assembled: false,
+        }
+    }
+
+    /// Upstream's `_assemble`: the chevron and label as separately keyed
+    /// pieces, for a transition to animate apart.
+    pub fn assembled() -> CupertinoNavigationBarBackButton {
+        CupertinoNavigationBarBackButton {
+            color: None,
+            previous_page_title: None,
+            on_pressed: None,
+            assembled: true,
+        }
+    }
+
+    pub fn with_previous_page_title(mut self, title: impl Into<String>) -> Self {
+        self.previous_page_title = Some(title.into());
+        self
+    }
+
+    pub fn with_on_pressed(mut self, on_pressed: impl Fn() + 'static) -> Self {
+        self.on_pressed = Some(std::rc::Rc::new(on_pressed));
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl Default for CupertinoNavigationBarBackButton {
+    fn default() -> CupertinoNavigationBarBackButton {
+        CupertinoNavigationBarBackButton::new()
+    }
+}
+
+/// Upstream `CupertinoCheckbox`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CupertinoCheckbox {
+    /// Upstream's `value`. **Three states, not two**: `None` is the
+    /// *indeterminate* one, which a checkbox standing for a group of others
+    /// needs when some of them are ticked and some are not. A `bool` could not
+    /// say that, and rounding it to false would tell the reader the group is
+    /// empty when it is half full.
+    pub value: Option<bool>,
+    /// Upstream's `tristate`. Without it, `None` is not a value the reader can
+    /// reach -- only one the application may set. So a checkbox showing a
+    /// group is tristate and a plain one is not, and cycling stops at two.
+    pub tristate: bool,
+}
+
+impl CupertinoCheckbox {
+    /// Upstream's `CupertinoCheckbox.width`.
+    pub const WIDTH: f32 = 14.0;
+    /// Upstream's `_kPressedOverlayOpacity`: how dark the box goes while held.
+    pub const PRESSED_OVERLAY_OPACITY: f32 = 0.15;
+
+    pub fn new(value: bool) -> CupertinoCheckbox {
+        CupertinoCheckbox {
+            value: Some(value),
+            tristate: false,
+        }
+    }
+
+    /// A checkbox that can also be indeterminate.
+    pub fn tristate(value: Option<bool>) -> CupertinoCheckbox {
+        CupertinoCheckbox {
+            value,
+            tristate: true,
+        }
+    }
+
+    /// Upstream's constructor assert, `tristate || value != null`: a plain
+    /// checkbox has no indeterminate state to be in, so a null there is a
+    /// caller who meant `tristate` and forgot to say so.
+    pub fn debug_assert_valid(&self) {
+        debug_assert!(
+            self.tristate || self.value.is_some(),
+            "a checkbox that is not tristate must be true or false"
+        );
+    }
+
+    /// What a press moves the value to.
+    ///
+    /// Upstream's cycle for a tristate box is **false → true → null**, and the
+    /// order is the point: `null` sits after `true` rather than between the
+    /// two, so a reader tapping repeatedly passes through both definite
+    /// answers before reaching the one that means "leave it as it was".
+    pub fn next_value(&self) -> Option<bool> {
+        match (self.tristate, self.value) {
+            (false, _) => Some(!self.value.unwrap_or(false)),
+            (true, Some(false)) => Some(true),
+            (true, Some(true)) => None,
+            (true, None) => Some(false),
+        }
+    }
+
+    /// Upstream's pressed overlay, which is **black over a light box and
+    /// white over a dark one** -- the same 15%, inverted, so a press reads as
+    /// a press against either.
+    pub fn pressed_overlay(is_dark: bool) -> Color {
+        let alpha = (255.0 * CupertinoCheckbox::PRESSED_OVERLAY_OPACITY).round() as u8;
+        if is_dark {
+            Color::WHITE.with_alpha(alpha)
+        } else {
+            Color::BLACK.with_alpha(alpha)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5058,5 +5266,71 @@ mod tests {
                 .height,
             10.0
         );
+    }
+
+    #[test]
+    fn a_bar_obstructs_exactly_when_it_is_fully_opaque() {
+        // One alpha check decides the whole page's layout: an opaque bar hides
+        // what passes behind it, so the body must start below it; a
+        // translucent one is meant to be scrolled under, and a body that
+        // started below would leave a blank strip where the blur should be.
+        assert!(bar_fully_obstructs(Color::argb(0xFF, 0xF9, 0xF9, 0xF9)));
+        assert!(!bar_fully_obstructs(Color::argb(0xF0, 0xF9, 0xF9, 0xF9)));
+        assert!(
+            !bar_fully_obstructs(Color::argb(0xFE, 0, 0, 0)),
+            "one step short of opaque is still see-through"
+        );
+    }
+
+    #[test]
+    fn a_tristate_checkbox_cycles_through_both_definite_answers_first() {
+        // Upstream's false -> true -> null, and the order is the point: null
+        // sits *after* true rather than between the two, so a reader tapping
+        // repeatedly passes through both definite answers before reaching the
+        // one that means "leave it as it was".
+        let start = CupertinoCheckbox::tristate(Some(false));
+        assert_eq!(start.next_value(), Some(true));
+        assert_eq!(CupertinoCheckbox::tristate(Some(true)).next_value(), None);
+        assert_eq!(CupertinoCheckbox::tristate(None).next_value(), Some(false));
+    }
+
+    #[test]
+    fn a_plain_checkbox_never_reaches_the_indeterminate_state() {
+        // Without `tristate`, null is not a value the reader can reach -- only
+        // one the application may set. So the cycle stops at two.
+        assert_eq!(CupertinoCheckbox::new(false).next_value(), Some(true));
+        assert_eq!(CupertinoCheckbox::new(true).next_value(), Some(false));
+        // And upstream asserts a plain one is never null to begin with.
+        CupertinoCheckbox::new(true).debug_assert_valid();
+        CupertinoCheckbox::tristate(None).debug_assert_valid();
+    }
+
+    #[test]
+    fn the_pressed_overlay_inverts_with_the_brightness() {
+        // The same fifteen percent, black over a light box and white over a
+        // dark one, so a press reads as a press against either.
+        let light = CupertinoCheckbox::pressed_overlay(false);
+        let dark = CupertinoCheckbox::pressed_overlay(true);
+        assert_eq!(light.alpha(), dark.alpha(), "the same strength");
+        assert_ne!(light, dark, "and the opposite colour");
+        assert_eq!(light.alpha(), 38, "fifteen percent of 255");
+    }
+
+    #[test]
+    fn an_assembled_back_button_carries_no_colour_or_callback_of_its_own() {
+        // The two-piece form upstream uses mid-transition: the bar it is
+        // flying between owns both, and the pieces exist only so the chevron
+        // and the label can animate apart.
+        let assembled = CupertinoNavigationBarBackButton::assembled();
+        assert!(assembled.assembled);
+        assert!(assembled.color.is_none());
+        assert!(assembled.on_pressed.is_none());
+        assert!(assembled.previous_page_title.is_none());
+
+        let ordinary = CupertinoNavigationBarBackButton::new()
+            .with_previous_page_title("Inbox")
+            .with_on_pressed(|| {});
+        assert!(!ordinary.assembled);
+        assert_eq!(ordinary.previous_page_title.as_deref(), Some("Inbox"));
     }
 }
