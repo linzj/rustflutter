@@ -1742,6 +1742,114 @@ mod tests {
     use crate::render::{BoxConstraints, RenderBox};
 
     #[test]
+    fn all_three_radii_unset_is_exactly_the_default_size() {
+        let avatar = CircleAvatar::new();
+        assert_eq!(avatar.min_diameter(), 40.0);
+        assert_eq!(avatar.max_diameter(), 40.0);
+    }
+
+    #[test]
+    fn setting_any_one_radius_stops_the_default_applying_to_the_others() {
+        // Upstream's rule, and the one worth stating: with only a maximum
+        // given, the minimum falls to zero rather than staying at the default
+        // -- otherwise a caller who asked for "at most 8" would silently get
+        // "at least 20", which is the opposite of what they asked.
+        let bounded = CircleAvatar {
+            max_radius: Some(8.0),
+            ..CircleAvatar::new()
+        };
+        assert_eq!(bounded.min_diameter(), 0.0);
+        assert_eq!(bounded.max_diameter(), 16.0);
+
+        // And with only a minimum, the maximum is unbounded rather than the
+        // default.
+        let at_least = CircleAvatar {
+            min_radius: Some(8.0),
+            ..CircleAvatar::new()
+        };
+        assert_eq!(at_least.min_diameter(), 16.0);
+        assert!(at_least.max_diameter().is_infinite());
+    }
+
+    #[test]
+    fn a_fixed_radius_pins_both_ends() {
+        // Which is what "fixed" means: the parent's constraints have nothing
+        // left to choose between.
+        let fixed = CircleAvatar::new().with_radius(12.0);
+        assert_eq!(fixed.min_diameter(), 24.0);
+        assert_eq!(fixed.max_diameter(), 24.0);
+    }
+
+    #[test]
+    fn a_fixed_radius_wins_over_the_bounds() {
+        // Upstream's `radius ?? minRadius` and `radius ?? maxRadius`: given
+        // all three, the fixed one is both ends and the bounds are ignored.
+        let all_three = CircleAvatar {
+            radius: Some(12.0),
+            min_radius: Some(1.0),
+            max_radius: Some(99.0),
+            ..CircleAvatar::new()
+        };
+        assert_eq!(all_three.min_diameter(), 24.0);
+        assert_eq!(all_three.max_diameter(), 24.0);
+    }
+
+    #[test]
+    fn a_data_source_says_when_its_count_is_a_guess() {
+        // A source reading a stream does not know how many rows there are
+        // until it reaches the end, and a table that believed the guess would
+        // draw a scrollbar that lies.
+        struct Streaming;
+        impl DataTableSource for Streaming {
+            fn get_row(&self, _index: usize) -> Option<DataRow> {
+                None
+            }
+            fn row_count(&self) -> usize {
+                50
+            }
+            fn is_row_count_approximate(&self) -> bool {
+                true
+            }
+        }
+        assert!(Streaming.is_row_count_approximate());
+
+        // The default is the ordinary case: a source that knows.
+        struct Fixed;
+        impl DataTableSource for Fixed {
+            fn get_row(&self, index: usize) -> Option<DataRow> {
+                (index < 2).then(|| DataRow::new(Vec::new()))
+            }
+            fn row_count(&self) -> usize {
+                2
+            }
+        }
+        assert!(!Fixed.is_row_count_approximate());
+        assert_eq!(Fixed.selected_row_count(), 0);
+    }
+
+    #[test]
+    fn a_row_the_source_cannot_produce_yet_is_nothing_rather_than_empty() {
+        // A page still loading answers nothing, which the table draws as a
+        // placeholder. An empty row would be indistinguishable from a real
+        // row with no cells.
+        struct Paged;
+        impl DataTableSource for Paged {
+            fn get_row(&self, index: usize) -> Option<DataRow> {
+                (index < 20).then(|| DataRow::new(Vec::new()))
+            }
+            fn row_count(&self) -> usize {
+                10_000
+            }
+        }
+        assert!(Paged.get_row(0).is_some());
+        assert!(
+            Paged.get_row(500).is_none(),
+            "past what has loaded, and the count says nothing about that"
+        );
+        assert_eq!(Paged.row_count(), 10_000);
+    }
+
+    #[test]
     fn a_component_without_a_theme_still_builds() {
         let mut tree = ElementTree::new();
         tree.rebuild(component(Label::new("no theme installed")));
@@ -1995,5 +2103,225 @@ mod tests {
             component(Divider),
         );
         assert_eq!(height_of(themed), 24.0);
+    }
+}
+
+/// Upstream `VerticalDivider`: the same hairline, on its side.
+///
+/// A separate class rather than an axis on [`Divider`], because upstream
+/// makes it one: the two read the *same* theme fields, and `space` means
+/// width here where it means height there. One widget with an axis would
+/// have to explain that reversal at every call site.
+pub struct VerticalDivider;
+
+impl Component for VerticalDivider {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let divider = crate::component_themes::ResolvedDivider::of(context);
+        let color = divider.color;
+        // Upstream's `space` is the width it reserves, and `thickness` the
+        // width of the line inside it -- the same two fields as the
+        // horizontal rule, measured across the other axis.
+        let space = divider.space;
+        let thickness = divider.line_thickness();
+        // And the indents run down rather than across: upstream's
+        // `EdgeInsetsDirectional.only(top: indent, bottom: endIndent)`.
+        let insets = crate::render::EdgeInsets {
+            left: 0.0,
+            right: 0.0,
+            top: divider.indent,
+            bottom: divider.end_indent,
+        };
+        leaf(move || {
+            Container::new().with_width(space).with_child(Align::new(
+                Alignment::CENTER,
+                Container::new()
+                    .with_width(thickness)
+                    .with_color(color)
+                    .with_margin(insets),
+            ))
+        })
+    }
+}
+
+/// Upstream `DataTableSource`: where a paginated table's rows come from.
+///
+/// The point of it is that the table does not hold the rows. A table of ten
+/// thousand records asks for the twenty it is showing, and this is what it
+/// asks -- which is also why the count is separate from the rows, and why
+/// there is a flag for not knowing it.
+pub trait DataTableSource {
+    /// Upstream `getRow`: the row at an index, or nothing if the source
+    /// cannot produce it yet -- a page still loading answers nothing rather
+    /// than blocking.
+    fn get_row(&self, index: usize) -> Option<DataRow>;
+
+    /// Upstream `rowCount`.
+    fn row_count(&self) -> usize;
+
+    /// Upstream `isRowCountApproximate`: whether [`row_count`](Self::row_count)
+    /// is a guess.
+    ///
+    /// A source reading a stream does not know how many rows there are until
+    /// it reaches the end, and a table that believed a guess would draw a
+    /// scrollbar that lies. This is how it says so.
+    fn is_row_count_approximate(&self) -> bool {
+        false
+    }
+
+    /// Upstream `selectedRowCount`, which the table shows in its header --
+    /// "3 items selected" -- and which the source owns because selection
+    /// outlives the rows that happen to be on screen.
+    fn selected_row_count(&self) -> usize {
+        0
+    }
+}
+
+/// One row a [`DataTableSource`] produced.
+///
+/// Upstream's `DataRow` is in `data_table.dart` with the table itself; this
+/// is the part a source has to be able to make, which is the cells and
+/// whether the row is selected.
+pub struct DataRow {
+    pub cells: Vec<AnyWidget>,
+    pub selected: bool,
+}
+
+impl DataRow {
+    pub fn new(cells: Vec<AnyWidget>) -> DataRow {
+        DataRow {
+            cells,
+            selected: false,
+        }
+    }
+
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+}
+
+/// Upstream `CircleAvatar`: a round patch with something in the middle.
+///
+/// # How the three radii work
+///
+/// Upstream takes `radius`, `minRadius` and `maxRadius` and lets a caller
+/// give any of them. `radius` fixes the size; the other two bound it while
+/// letting the parent's constraints choose within them. The rule that makes
+/// this readable is upstream's: **all three unset** means the default radius
+/// exactly, and once *any* of them is set the default stops applying to
+/// either bound. Without that, giving only a `maxRadius` would silently keep
+/// the default as a minimum.
+pub struct CircleAvatar {
+    pub child: std::cell::RefCell<Option<AnyWidget>>,
+    pub background_color: Option<Color>,
+    pub foreground_color: Option<Color>,
+    pub radius: Option<f32>,
+    pub min_radius: Option<f32>,
+    pub max_radius: Option<f32>,
+}
+
+impl CircleAvatar {
+    /// Upstream's `_defaultRadius`.
+    pub const DEFAULT_RADIUS: f32 = 20.0;
+    pub const DEFAULT_MIN_RADIUS: f32 = 0.0;
+    pub const DEFAULT_MAX_RADIUS: f32 = f32::INFINITY;
+
+    pub fn new() -> CircleAvatar {
+        CircleAvatar {
+            child: std::cell::RefCell::new(None),
+            background_color: None,
+            foreground_color: None,
+            radius: None,
+            min_radius: None,
+            max_radius: None,
+        }
+    }
+
+    pub fn with_child(self, child: AnyWidget) -> Self {
+        *self.child.borrow_mut() = Some(child);
+        self
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = Some(radius);
+        self
+    }
+
+    pub fn with_radius_range(mut self, min_radius: f32, max_radius: f32) -> Self {
+        self.min_radius = Some(min_radius);
+        self.max_radius = Some(max_radius);
+        self
+    }
+
+    pub fn with_background_color(mut self, color: Color) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    pub fn with_foreground_color(mut self, color: Color) -> Self {
+        self.foreground_color = Some(color);
+        self
+    }
+
+    fn all_radii_unset(&self) -> bool {
+        self.radius.is_none() && self.min_radius.is_none() && self.max_radius.is_none()
+    }
+
+    /// Upstream's `_minDiameter`.
+    pub fn min_diameter(&self) -> f32 {
+        if self.all_radii_unset() {
+            return CircleAvatar::DEFAULT_RADIUS * 2.0;
+        }
+        2.0 * self
+            .radius
+            .or(self.min_radius)
+            .unwrap_or(CircleAvatar::DEFAULT_MIN_RADIUS)
+    }
+
+    /// Upstream's `_maxDiameter`.
+    pub fn max_diameter(&self) -> f32 {
+        if self.all_radii_unset() {
+            return CircleAvatar::DEFAULT_RADIUS * 2.0;
+        }
+        2.0 * self
+            .radius
+            .or(self.max_radius)
+            .unwrap_or(CircleAvatar::DEFAULT_MAX_RADIUS)
+    }
+}
+
+impl Default for CircleAvatar {
+    fn default() -> CircleAvatar {
+        CircleAvatar::new()
+    }
+}
+
+impl Component for CircleAvatar {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let theme = theme_of(context);
+        // Upstream falls back to the scheme's container colours; this crate's
+        // `Theme` has the one pair, which is where a filled patch takes its
+        // colours from everywhere else in it.
+        let background = self.background_color.unwrap_or(theme.surface_variant);
+        // A radius fixes the size; a range lets the parent choose between the
+        // two, and with nothing else deciding the smaller end is what is
+        // drawn. An unbounded maximum is exactly that case.
+        let diameter = self.min_diameter();
+        let child = self.child.borrow_mut().take();
+        match child {
+            Some(child) => crate::framework::single(child, move |child| {
+                Container::new()
+                    .with_size(diameter, diameter)
+                    .with_color(background)
+                    .with_corner_radius(diameter / 2.0)
+                    .with_child(Align::new(Alignment::CENTER, child))
+            }),
+            None => leaf(move || {
+                Container::new()
+                    .with_size(diameter, diameter)
+                    .with_color(background)
+                    .with_corner_radius(diameter / 2.0)
+            }),
+        }
     }
 }
