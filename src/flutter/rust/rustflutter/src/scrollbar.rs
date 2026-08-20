@@ -396,6 +396,508 @@ pub fn scrollbar(build_child: impl Fn() -> AnyWidget + 'static) -> AnyWidget {
 /// Padding a list should leave for a scrollbar that is drawn over it.
 pub const GUTTER: EdgeInsets = EdgeInsets::only(0.0, 0.0, THICKNESS + 4.0, 0.0);
 
+// -- Upstream's full scrollbar ------------------------------------------------
+//
+// Everything above is the simplified arithmetic this crate's own `Scrollbar`
+// uses. What follows is upstream's `ScrollbarPainter`, `RawScrollbar` and
+// `RawScrollbarState`, which differ in three ways that matter: margins at the
+// ends of the track, a thumb that is allowed to shrink below its minimum while
+// overscrolling, and hit testing that treats a fingertip and a cursor
+// differently.
+
+use crate::engine::Rect;
+use crate::gestures::PointerKind;
+use crate::render::AxisDirection;
+use crate::scroll_plumbing::ScrollPlatform;
+use crate::scrolling::ScrollMetrics;
+
+/// Upstream `ScrollbarOrientation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollbarOrientation {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl ScrollbarOrientation {
+    pub fn axis(self) -> Axis {
+        match self {
+            ScrollbarOrientation::Left | ScrollbarOrientation::Right => Axis::Vertical,
+            ScrollbarOrientation::Top | ScrollbarOrientation::Bottom => Axis::Horizontal,
+        }
+    }
+}
+
+/// Upstream `ScrollbarPainter`.
+///
+/// A `ChangeNotifier` that is also a painter: it is handed metrics and works
+/// out the thumb's size and position, and it is the object the gesture handlers
+/// ask when they need to turn a position on the track into a scroll offset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollbarPainter {
+    /// The smallest the thumb is allowed to get while scrolling normally.
+    /// Upstream's default is 18 logical pixels -- below that there is nothing
+    /// left to grab.
+    pub min_length: f32,
+    /// The smallest it may get while **over**scrolling, which is allowed to be
+    /// less. Must not exceed `min_length`.
+    pub min_overscroll_length: f32,
+    pub main_axis_margin: f32,
+    pub cross_axis_margin: f32,
+    pub thickness: f32,
+    pub ignore_pointer: bool,
+    /// The fade animation's current value. A scrollbar at zero is not there.
+    pub fadeout_opacity: f32,
+    metrics: Option<ScrollMetrics>,
+    axis_direction: AxisDirection,
+    track_extent: f32,
+    thumb_extent: f32,
+    notifications: usize,
+}
+
+impl ScrollbarPainter {
+    pub const DEFAULT_MIN_LENGTH: f32 = 18.0;
+    /// Upstream `_kMinInteractiveSize`: the smallest thing a finger can be
+    /// expected to hit.
+    pub const MIN_INTERACTIVE_SIZE: f32 = 48.0;
+    /// Upstream's observation, written into the source: iOS's thumb reaches its
+    /// smallest at about a fifth of a viewport of overscroll.
+    pub const OVERSCROLL_FRACTION_AT_MINIMUM: f32 = 0.2;
+
+    pub fn new(track_extent: f32) -> ScrollbarPainter {
+        ScrollbarPainter {
+            min_length: ScrollbarPainter::DEFAULT_MIN_LENGTH,
+            min_overscroll_length: ScrollbarPainter::DEFAULT_MIN_LENGTH,
+            main_axis_margin: 0.0,
+            cross_axis_margin: 0.0,
+            thickness: 6.0,
+            ignore_pointer: false,
+            fadeout_opacity: 1.0,
+            metrics: None,
+            axis_direction: AxisDirection::Down,
+            track_extent,
+            thumb_extent: 0.0,
+            notifications: 0,
+        }
+    }
+
+    pub fn with_min_lengths(mut self, min_length: f32, min_overscroll_length: f32) -> Self {
+        debug_assert!(min_length >= 0.0);
+        debug_assert!(
+            min_overscroll_length <= min_length,
+            "the overscroll minimum is the smaller of the two"
+        );
+        self.min_length = min_length;
+        self.min_overscroll_length = min_overscroll_length;
+        self
+    }
+
+    pub fn notification_count(&self) -> usize {
+        self.notifications
+    }
+
+    pub fn thumb_extent(&self) -> f32 {
+        self.thumb_extent
+    }
+
+    /// The distance the thumb may travel: the track, less the margins at each
+    /// end.
+    pub fn traversable_track_extent(&self) -> f32 {
+        (self.track_extent - self.main_axis_margin * 2.0).max(0.0)
+    }
+
+    fn is_reversed(&self) -> bool {
+        matches!(self.axis_direction, AxisDirection::Up | AxisDirection::Left)
+    }
+
+    pub fn is_vertical(&self) -> bool {
+        matches!(self.axis_direction, AxisDirection::Up | AxisDirection::Down)
+    }
+
+    /// Whether there is anything to scroll. A scrollbar over content that fits
+    /// is drawn but not touchable.
+    pub fn metrics_are_scrollable(&self) -> bool {
+        self.metrics
+            .as_ref()
+            .is_some_and(|metrics| metrics.min_scroll_extent != metrics.max_scroll_extent)
+    }
+
+    /// Upstream `update`, which returns early when nothing that matters moved.
+    ///
+    /// The comparison is on `extentBefore`, `extentInside`, `extentAfter` and
+    /// the axis direction -- **not on `pixels`**. Those three are what the thumb
+    /// is drawn from, and a change in pixels that leaves all three alone (an
+    /// overscroll that the physics absorbed, say) has nothing to repaint for.
+    pub fn update(&mut self, metrics: ScrollMetrics, axis_direction: AxisDirection) -> bool {
+        if let Some(last) = &self.metrics {
+            if last.extent_before() == metrics.extent_before()
+                && last.extent_inside() == metrics.extent_inside()
+                && last.extent_after() == metrics.extent_after()
+                && self.axis_direction == axis_direction
+            {
+                return false;
+            }
+        }
+        self.metrics = Some(metrics);
+        self.axis_direction = axis_direction;
+        self.set_thumb_extent();
+        self.notifications += 1;
+        true
+    }
+
+    /// The total content, viewport included. Upstream's `_totalContentExtent`.
+    fn total_content_extent(&self) -> f32 {
+        let metrics = self.metrics.as_ref().unwrap();
+        metrics.max_scroll_extent - metrics.min_scroll_extent + metrics.viewport_dimension
+    }
+
+    /// Upstream `_setThumbExtent`.
+    ///
+    /// The thumb's size is the fraction of the content that is visible, which
+    /// is the one thing a scrollbar is actually for: **its length is the answer
+    /// to "how much of this am I looking at".**
+    ///
+    /// The floor is where it gets interesting. While scrolling normally the
+    /// thumb never goes below `min_length`, because below that there is nothing
+    /// to grab. While *over*scrolling it may, down to
+    /// `min_overscroll_length` -- and upstream cannot interpolate that with the
+    /// visible fraction, because the fraction does not move smoothly across the
+    /// boundary. So it uses the fraction of the viewport still holding content
+    /// instead, and maps `[0.8, 1.0]` onto `[0.0, 1.0]`: the observed iOS
+    /// behaviour is that the thumb reaches its smallest at about 20% of
+    /// overscroll.
+    fn set_thumb_extent(&mut self) {
+        let Some(metrics) = self.metrics.clone() else {
+            return;
+        };
+        let traversable = self.traversable_track_extent();
+        let offsets = self.main_axis_margin * 2.0;
+        let fraction_visible = ((metrics.extent_inside() - offsets)
+            / (self.total_content_extent() - offsets))
+            .clamp(0.0, 1.0);
+
+        let thumb_extent =
+            (traversable * fraction_visible).max(traversable.min(self.min_overscroll_length));
+
+        let fraction_overscrolled = 1.0 - metrics.extent_inside() / metrics.viewport_dimension;
+        let safe_min_length = self.min_length.min(traversable);
+        let overscrolling = !(metrics.extent_before() > 0.0 && metrics.extent_after() > 0.0);
+        let new_min_length = if overscrolling {
+            safe_min_length
+                * (1.0
+                    - fraction_overscrolled
+                        .clamp(0.0, ScrollbarPainter::OVERSCROLL_FRACTION_AT_MINIMUM)
+                        / ScrollbarPainter::OVERSCROLL_FRACTION_AT_MINIMUM)
+        } else {
+            safe_min_length
+        };
+
+        // Upstream's note: the thumb must not exceed the track, "otherwise the
+        // scrollbar may scroll towards the wrong direction" -- a thumb longer
+        // than its travel makes the movable extent negative and inverts the
+        // mapping below.
+        self.thumb_extent = thumb_extent.clamp(new_min_length.min(traversable), traversable);
+    }
+
+    /// How far the thumb's leading edge sits along the track. Upstream's
+    /// `_getScrollToTrack`.
+    pub fn thumb_offset(&self) -> f32 {
+        let Some(metrics) = &self.metrics else {
+            return 0.0;
+        };
+        let scrollable_extent = metrics.max_scroll_extent - metrics.min_scroll_extent;
+        let fraction_past = if scrollable_extent > 0.0 {
+            ((metrics.pixels - metrics.min_scroll_extent) / scrollable_extent).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let fraction_past = if self.is_reversed() {
+            1.0 - fraction_past
+        } else {
+            fraction_past
+        };
+        fraction_past * (self.traversable_track_extent() - self.thumb_extent)
+    }
+
+    /// Upstream `getTrackToScroll`: the inverse of the above, and the reason
+    /// the pair has to be exact.
+    ///
+    /// The divisor is the **movable** extent -- the track less the thumb's own
+    /// length -- because that is how far the thumb can actually go. Dividing by
+    /// the whole track instead would make the content stop short of the end
+    /// with the thumb already against it.
+    pub fn get_track_to_scroll(&self, thumb_offset_local: f32) -> f32 {
+        let Some(metrics) = &self.metrics else {
+            return 0.0;
+        };
+        let scrollable_extent = metrics.max_scroll_extent - metrics.min_scroll_extent;
+        let movable = self.traversable_track_extent() - self.thumb_extent;
+        if movable == 0.0 {
+            return 0.0;
+        }
+        scrollable_extent * thumb_offset_local / movable
+    }
+
+    /// The thumb's rectangle along the main axis, as `(start, end)`.
+    pub fn thumb_bounds(&self) -> (f32, f32) {
+        let start = self.main_axis_margin + self.thumb_offset();
+        (start, start + self.thumb_extent)
+    }
+
+    /// Upstream `hitTestInteractive`: whether a pointer at `position` along the
+    /// main axis lands on the scrollbar at all, track included.
+    ///
+    /// The exception at the end is the whole reason this is not just a
+    /// rectangle test: **a faded-out scrollbar is not hittable, unless a mouse
+    /// is hovering.** That case has to work, because bringing it back into view
+    /// is exactly what a mouse moving to the edge of the window is asking for.
+    pub fn hit_test_interactive(&self, position: f32, kind: PointerKind, for_hover: bool) -> bool {
+        if self.metrics.is_none() || self.ignore_pointer || !self.metrics_are_scrollable() {
+            return false;
+        }
+        if self.fadeout_opacity == 0.0 && !(for_hover && kind == PointerKind::Mouse) {
+            return false;
+        }
+        let (thumb_start, thumb_end) = self.thumb_bounds();
+        let centre = (thumb_start + thumb_end) / 2.0;
+        let padded_start = 0.0f32.min(centre - ScrollbarPainter::MIN_INTERACTIVE_SIZE / 2.0);
+        let padded_end = self
+            .track_extent
+            .max(centre + ScrollbarPainter::MIN_INTERACTIVE_SIZE / 2.0);
+        position >= padded_start && position <= padded_end
+    }
+
+    /// Upstream `hitTestOnlyThumbInteractive`.
+    ///
+    /// A finger gets the thumb expanded to the minimum interactive size; a
+    /// mouse gets the thumb as drawn. **A cursor is a pixel and a fingertip is
+    /// not**, and padding the target for a mouse would make a six-pixel
+    /// scrollbar swallow clicks meant for the content beside it.
+    pub fn hit_test_only_thumb_interactive(&self, position: f32, kind: PointerKind) -> bool {
+        if self.metrics.is_none()
+            || self.ignore_pointer
+            || self.fadeout_opacity == 0.0
+            || !self.metrics_are_scrollable()
+        {
+            return false;
+        }
+        let (start, end) = self.thumb_bounds();
+        match kind {
+            PointerKind::Touch | PointerKind::Trackpad => {
+                let centre = (start + end) / 2.0;
+                let half = ScrollbarPainter::MIN_INTERACTIVE_SIZE / 2.0;
+                let start = start.min(centre - half);
+                let end = end.max(centre + half);
+                position >= start && position <= end
+            }
+            _ => position >= start && position <= end,
+        }
+    }
+
+    /// The rectangle the thumb is drawn in, for a vertical scrollbar on the
+    /// right of a viewport `cross_extent` wide.
+    pub fn thumb_rect(&self, cross_extent: f32) -> Rect {
+        let (start, end) = self.thumb_bounds();
+        if self.is_vertical() {
+            let x = cross_extent - self.thickness - self.cross_axis_margin;
+            Rect::ltrb(x, start, x + self.thickness, end)
+        } else {
+            let y = cross_extent - self.thickness - self.cross_axis_margin;
+            Rect::ltrb(start, y, end, y + self.thickness)
+        }
+    }
+}
+
+/// Upstream `RawScrollbar`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawScrollbar {
+    /// `None` means "decide from the platform and the gesture".
+    pub thumb_visibility: Option<bool>,
+    /// A track is only drawn under a thumb.
+    pub track_visibility: Option<bool>,
+    pub min_thumb_length: f32,
+    pub min_overscroll_length: Option<f32>,
+    /// How long the scrollbar stays after the scrolling stops.
+    pub time_to_fade_ms: f32,
+    /// How long a press must be held before the thumb can be dragged. Zero for
+    /// a mouse, non-zero on touch platforms where a press might be a scroll.
+    pub press_duration_ms: f32,
+    pub interactive: Option<bool>,
+    pub scrollbar_orientation: Option<ScrollbarOrientation>,
+    pub has_radius: bool,
+    pub has_shape: bool,
+}
+
+impl RawScrollbar {
+    pub const DEFAULT_TIME_TO_FADE_MS: f32 = 600.0;
+
+    pub fn new() -> RawScrollbar {
+        RawScrollbar {
+            thumb_visibility: None,
+            track_visibility: None,
+            min_thumb_length: ScrollbarPainter::DEFAULT_MIN_LENGTH,
+            min_overscroll_length: None,
+            time_to_fade_ms: RawScrollbar::DEFAULT_TIME_TO_FADE_MS,
+            press_duration_ms: 0.0,
+            interactive: None,
+            scrollbar_orientation: None,
+            has_radius: false,
+            has_shape: false,
+        }
+    }
+
+    /// Upstream's constructor asserts, each of which rules out a configuration
+    /// that would draw something meaningless.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.thumb_visibility == Some(false) && self.track_visibility == Some(true) {
+            // Upstream's message: a groove with nothing in it says nothing.
+            return Err("A scrollbar track cannot be drawn without a scrollbar thumb.");
+        }
+        if self.min_thumb_length < 0.0 {
+            return Err("minThumbLength must not be negative");
+        }
+        if let Some(overscroll) = self.min_overscroll_length {
+            if overscroll > self.min_thumb_length {
+                return Err("minOverscrollLength must not exceed minThumbLength");
+            }
+            if overscroll < 0.0 {
+                return Err("minOverscrollLength must not be negative");
+            }
+        }
+        if self.has_radius && self.has_shape {
+            // Two ways of saying the same thing, and no rule for which wins.
+            return Err("radius and shape cannot both be given");
+        }
+        Ok(())
+    }
+
+    /// Upstream's `minOverscrollLength ?? minThumbLength`.
+    pub fn effective_min_overscroll_length(&self) -> f32 {
+        self.min_overscroll_length.unwrap_or(self.min_thumb_length)
+    }
+}
+
+impl Default for RawScrollbar {
+    fn default() -> Self {
+        RawScrollbar::new()
+    }
+}
+
+/// What a tap on the track did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrackTapOutcome {
+    /// The scrollable refused the offset -- a locked position, say.
+    Refused,
+    /// One page towards the tap, over 100ms.
+    Paged { direction: AxisDirection, by: f32 },
+}
+
+/// Upstream `RawScrollbarState`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawScrollbarState {
+    pub widget: RawScrollbar,
+    pub painter: ScrollbarPainter,
+    /// Whether the scrollbar is being shown regardless of the fade.
+    show_scrollbar: bool,
+    fadeout_timer_ms: Option<f32>,
+    now_ms: f32,
+}
+
+impl RawScrollbarState {
+    /// Upstream's page animation for a track tap.
+    pub const TRACK_TAP_DURATION_MS: f32 = 100.0;
+
+    pub fn new(widget: RawScrollbar, painter: ScrollbarPainter) -> RawScrollbarState {
+        RawScrollbarState {
+            show_scrollbar: widget.thumb_visibility.unwrap_or(false),
+            widget,
+            painter,
+            fadeout_timer_ms: None,
+            now_ms: 0.0,
+        }
+    }
+
+    /// Upstream's `_showTrack`: a track is only drawn when the scrollbar is
+    /// showing **and** the track was asked for.
+    pub fn shows_track(&self) -> bool {
+        self.show_scrollbar && self.widget.track_visibility.unwrap_or(false)
+    }
+
+    pub fn is_faded_out(&self) -> bool {
+        self.painter.fadeout_opacity == 0.0
+    }
+
+    pub fn fadeout_pending(&self) -> bool {
+        self.fadeout_timer_ms.is_some()
+    }
+
+    /// Upstream `_maybeStartFadeoutTimer`, whose guard is the whole method: a
+    /// scrollbar that was asked to stay never starts one.
+    pub fn maybe_start_fadeout_timer(&mut self) {
+        if self.show_scrollbar {
+            return;
+        }
+        self.fadeout_timer_ms = Some(self.now_ms + self.widget.time_to_fade_ms);
+    }
+
+    pub fn advance_ms(&mut self, delta: f32) {
+        self.now_ms += delta;
+        if let Some(at) = self.fadeout_timer_ms {
+            if at <= self.now_ms {
+                self.fadeout_timer_ms = None;
+                self.painter.fadeout_opacity = 0.0;
+            }
+        }
+    }
+
+    /// A new scroll: the scrollbar comes back and the timer restarts.
+    pub fn handle_scroll(&mut self) {
+        self.painter.fadeout_opacity = 1.0;
+        self.fadeout_timer_ms = None;
+    }
+
+    /// Upstream `handleTrackTapDown`.
+    ///
+    /// Tapping the track does **not** jump to the tapped position: it pages
+    /// towards it, one page at a time, over 100ms. A jump would move the
+    /// content further than the reader can follow, and the page is the unit
+    /// they already know from the keyboard.
+    pub fn handle_track_tap_down(
+        &self,
+        local_position: f32,
+        page_extent: f32,
+        accepts_user_offset: bool,
+    ) -> TrackTapOutcome {
+        if !accepts_user_offset {
+            return TrackTapOutcome::Refused;
+        }
+        let past_thumb = local_position > self.painter.thumb_offset();
+        let direction = match (self.painter.is_vertical(), past_thumb) {
+            (true, true) => AxisDirection::Down,
+            (true, false) => AxisDirection::Up,
+            (false, true) => AxisDirection::Right,
+            (false, false) => AxisDirection::Left,
+        };
+        let by = if past_thumb {
+            page_extent
+        } else {
+            -page_extent
+        };
+        TrackTapOutcome::Paged { direction, by }
+    }
+
+    /// Whether the thumb can be dragged at all, given the platform. Upstream
+    /// defaults `interactive` from the platform: a scrollbar drawn over touch
+    /// content is an indicator, not a control.
+    pub fn is_interactive(&self, platform: ScrollPlatform) -> bool {
+        self.widget.interactive.unwrap_or(!matches!(
+            platform,
+            ScrollPlatform::Android | ScrollPlatform::IOS | ScrollPlatform::Fuchsia
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +1205,443 @@ mod tests {
             "the scrollbar heard it",
         );
         assert!(*heard.borrow() >= 1, "and so did the listener outside it");
+    }
+    // -- Upstream's ScrollbarPainter ------------------------------------------
+
+    fn metrics(pixels: f32) -> ScrollMetrics {
+        ScrollMetrics {
+            pixels,
+            min_scroll_extent: 0.0,
+            max_scroll_extent: 1600.0,
+            viewport_dimension: 400.0,
+        }
+    }
+
+    fn painter() -> ScrollbarPainter {
+        let mut painter = ScrollbarPainter::new(400.0);
+        painter.update(metrics(0.0), AxisDirection::Down);
+        painter
+    }
+
+    #[test]
+    fn the_thumbs_length_answers_how_much_of_this_am_i_looking_at() {
+        // 400 of 2000 is a fifth, so a fifth of the track.
+        let painter = painter();
+        assert!((painter.thumb_extent() - 80.0).abs() < 0.01);
+
+        let mut half = ScrollbarPainter::new(400.0);
+        half.update(
+            ScrollMetrics {
+                pixels: 0.0,
+                min_scroll_extent: 0.0,
+                max_scroll_extent: 400.0,
+                viewport_dimension: 400.0,
+            },
+            AxisDirection::Down,
+        );
+        assert!((half.thumb_extent() - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn dragging_the_thumb_and_reading_it_back_are_exact_inverses() {
+        // Or the thumb slips out from under the finger holding it.
+        let painter = painter();
+        let movable = painter.traversable_track_extent() - painter.thumb_extent();
+        assert_eq!(painter.get_track_to_scroll(0.0), 0.0);
+        assert!(
+            (painter.get_track_to_scroll(movable) - 1600.0).abs() < 0.01,
+            "the far end of the thumb's travel is the far end of the content"
+        );
+
+        let mut at_end = ScrollbarPainter::new(400.0);
+        at_end.update(metrics(1600.0), AxisDirection::Down);
+        assert!(
+            (at_end.thumb_offset() - movable).abs() < 0.01,
+            "and the thumb is against the end when the content is"
+        );
+    }
+
+    #[test]
+    fn the_thumb_travels_the_track_less_its_own_length() {
+        // Dividing by the whole track instead would leave the content short of
+        // the end with the thumb already against it.
+        let painter = painter();
+        let track = painter.traversable_track_extent();
+        assert_eq!(track, 400.0);
+        assert!(painter.thumb_extent() > 0.0);
+        let naive = 1600.0 * track / track;
+        let actual = painter.get_track_to_scroll(track);
+        assert!(actual > naive, "{actual} vs {naive}");
+    }
+
+    #[test]
+    fn a_reversed_scrollbar_puts_the_thumb_at_the_other_end() {
+        let mut down = ScrollbarPainter::new(400.0);
+        down.update(metrics(0.0), AxisDirection::Down);
+        let mut up = ScrollbarPainter::new(400.0);
+        up.update(metrics(0.0), AxisDirection::Up);
+
+        assert_eq!(down.thumb_offset(), 0.0);
+        assert!(up.thumb_offset() > 0.0);
+        assert!((up.thumb_offset() + down.thumb_extent() - 400.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_tiny_thumb_is_floored_so_there_is_something_to_grab() {
+        let mut painter = ScrollbarPainter::new(400.0);
+        painter.update(
+            ScrollMetrics {
+                pixels: 100.0,
+                min_scroll_extent: 0.0,
+                max_scroll_extent: 100_000.0,
+                viewport_dimension: 400.0,
+            },
+            AxisDirection::Down,
+        );
+        assert_eq!(painter.thumb_extent(), ScrollbarPainter::DEFAULT_MIN_LENGTH);
+    }
+
+    #[test]
+    fn the_floor_gives_way_while_overscrolling_and_not_before() {
+        // Upstream's observation, written into the source: iOS's thumb reaches
+        // its smallest at about a fifth of a viewport of overscroll. The
+        // interpolation uses the fraction of the viewport still holding
+        // content, because the visible fraction does not move smoothly across
+        // that boundary.
+        // The floor only bites on a list long enough that the proportional
+        // thumb is smaller than it -- on a short list the thumb is bigger than
+        // either minimum and neither number is consulted.
+        let long = |pixels: f32| ScrollMetrics {
+            pixels,
+            min_scroll_extent: 0.0,
+            max_scroll_extent: 100_000.0,
+            viewport_dimension: 400.0,
+        };
+        let mut painter = ScrollbarPainter::new(400.0).with_min_lengths(18.0, 8.0);
+
+        painter.update(long(50_000.0), AxisDirection::Down);
+        assert_eq!(painter.thumb_extent(), 18.0, "scrolling normally");
+
+        // Twenty per cent of the viewport past the end.
+        painter.update(long(100_080.0), AxisDirection::Down);
+        let fully_overscrolled = painter.thumb_extent();
+        assert!(
+            fully_overscrolled < 18.0,
+            "below the ordinary minimum: {fully_overscrolled}"
+        );
+        assert!(fully_overscrolled >= 8.0, "and never below the other one");
+
+        painter.update(long(100_020.0), AxisDirection::Down);
+        let partly = painter.thumb_extent();
+        assert!(
+            partly > fully_overscrolled && partly < 18.0,
+            "and part way there is part way down: {partly}"
+        );
+    }
+
+    #[test]
+    fn resting_at_the_top_is_not_overscrolling() {
+        // extentBefore is zero there, which takes the same branch -- and the
+        // formula has to degenerate to the ordinary minimum or the thumb would
+        // shrink for no reason.
+        let mut painter = ScrollbarPainter::new(400.0).with_min_lengths(18.0, 8.0);
+        painter.update(
+            ScrollMetrics {
+                pixels: 0.0,
+                min_scroll_extent: 0.0,
+                max_scroll_extent: 100_000.0,
+                viewport_dimension: 400.0,
+            },
+            AxisDirection::Down,
+        );
+        assert_eq!(painter.thumb_extent(), 18.0);
+    }
+
+    #[test]
+    fn an_update_that_changes_nothing_visible_repaints_nothing() {
+        // The comparison is on the three extents and the direction, not on
+        // pixels: a change the physics absorbed has nothing to redraw.
+        let mut painter = painter();
+        let before = painter.notification_count();
+        assert!(!painter.update(metrics(0.0), AxisDirection::Down));
+        assert_eq!(painter.notification_count(), before);
+
+        assert!(painter.update(metrics(40.0), AxisDirection::Down));
+        assert_eq!(painter.notification_count(), before + 1);
+    }
+
+    // -- Hit testing ------------------------------------------------------------
+
+    #[test]
+    fn a_faded_out_scrollbar_is_not_there_unless_a_mouse_is_looking_for_it() {
+        // Bringing it back into view is exactly what a mouse moving to the edge
+        // of the window is asking for.
+        let mut painter = painter();
+        painter.fadeout_opacity = 0.0;
+
+        assert!(!painter.hit_test_interactive(200.0, PointerKind::Touch, false));
+        assert!(!painter.hit_test_interactive(200.0, PointerKind::Mouse, false));
+        assert!(
+            painter.hit_test_interactive(200.0, PointerKind::Mouse, true),
+            "hovering finds it"
+        );
+        assert!(
+            !painter.hit_test_interactive(200.0, PointerKind::Touch, true),
+            "and a finger cannot hover"
+        );
+    }
+
+    #[test]
+    fn a_fingertip_gets_a_bigger_thumb_than_a_cursor_does() {
+        // A cursor is a pixel and a fingertip is not; padding the target for a
+        // mouse would make a thin scrollbar swallow clicks meant for the
+        // content beside it.
+        // Which only matters when the thumb is smaller than a fingertip: an
+        // eighty-pixel thumb is already bigger than the minimum and gets no
+        // padding at all.
+        let mut painter = ScrollbarPainter::new(400.0);
+        painter.update(
+            ScrollMetrics {
+                pixels: 0.0,
+                min_scroll_extent: 0.0,
+                max_scroll_extent: 100_000.0,
+                viewport_dimension: 400.0,
+            },
+            AxisDirection::Down,
+        );
+        assert_eq!(painter.thumb_extent(), ScrollbarPainter::DEFAULT_MIN_LENGTH);
+        let (_, thumb_end) = painter.thumb_bounds();
+        let just_past = thumb_end + 10.0;
+
+        assert!(painter.hit_test_only_thumb_interactive(just_past, PointerKind::Touch));
+        assert!(!painter.hit_test_only_thumb_interactive(just_past, PointerKind::Mouse));
+        assert!(
+            painter.hit_test_only_thumb_interactive(thumb_end - 1.0, PointerKind::Mouse),
+            "the mouse still gets the thumb as drawn"
+        );
+    }
+
+    #[test]
+    fn a_scrollbar_over_content_that_fits_is_drawn_but_not_touchable() {
+        let mut painter = ScrollbarPainter::new(400.0);
+        painter.update(
+            ScrollMetrics {
+                pixels: 0.0,
+                min_scroll_extent: 0.0,
+                max_scroll_extent: 0.0,
+                viewport_dimension: 400.0,
+            },
+            AxisDirection::Down,
+        );
+        assert!(!painter.metrics_are_scrollable());
+        assert!(!painter.hit_test_interactive(200.0, PointerKind::Mouse, false));
+        assert!(!painter.hit_test_only_thumb_interactive(0.0, PointerKind::Mouse));
+    }
+
+    #[test]
+    fn ignoring_the_pointer_beats_everything_else() {
+        let mut painter = painter();
+        painter.ignore_pointer = true;
+        assert!(!painter.hit_test_interactive(200.0, PointerKind::Mouse, true));
+        assert!(!painter.hit_test_only_thumb_interactive(20.0, PointerKind::Touch));
+    }
+
+    #[test]
+    fn the_thumb_is_drawn_against_the_far_edge_at_its_own_thickness() {
+        let painter = painter();
+        let rect = painter.thumb_rect(400.0);
+        assert_eq!(rect.right, 400.0);
+        assert_eq!(rect.left, 400.0 - painter.thickness);
+        assert_eq!(rect.top, 0.0);
+        assert!((rect.bottom - painter.thumb_extent()).abs() < 0.01);
+    }
+
+    // -- The widget's refusals ---------------------------------------------------
+
+    #[test]
+    fn a_track_cannot_be_drawn_without_a_thumb() {
+        // A groove with nothing in it says nothing.
+        let mut widget = RawScrollbar::new();
+        assert_eq!(widget.validate(), Ok(()));
+
+        widget.thumb_visibility = Some(false);
+        widget.track_visibility = Some(true);
+        assert_eq!(
+            widget.validate(),
+            Err("A scrollbar track cannot be drawn without a scrollbar thumb.")
+        );
+    }
+
+    #[test]
+    fn the_overscroll_minimum_is_the_smaller_of_the_two() {
+        let mut widget = RawScrollbar::new();
+        widget.min_overscroll_length = Some(40.0);
+        widget.min_thumb_length = 18.0;
+        assert!(widget.validate().is_err());
+
+        widget.min_overscroll_length = Some(8.0);
+        assert_eq!(widget.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_radius_and_a_shape_are_two_ways_to_say_the_same_thing() {
+        // And there is no rule for which would win.
+        let mut widget = RawScrollbar::new();
+        widget.has_radius = true;
+        assert_eq!(widget.validate(), Ok(()));
+        widget.has_shape = true;
+        assert!(widget.validate().is_err());
+    }
+
+    #[test]
+    fn an_absent_overscroll_minimum_is_the_ordinary_one() {
+        let widget = RawScrollbar::new();
+        assert_eq!(
+            widget.effective_min_overscroll_length(),
+            widget.min_thumb_length
+        );
+    }
+
+    // -- The state -----------------------------------------------------------------
+
+    fn scrollbar_state() -> RawScrollbarState {
+        RawScrollbarState::new(RawScrollbar::new(), painter())
+    }
+
+    #[test]
+    fn a_scrollbar_asked_to_stay_never_starts_a_fadeout() {
+        // The guard is the whole method.
+        let mut transient = scrollbar_state();
+        transient.maybe_start_fadeout_timer();
+        assert!(transient.fadeout_pending());
+
+        let mut permanent = RawScrollbarState::new(
+            RawScrollbar {
+                thumb_visibility: Some(true),
+                ..RawScrollbar::new()
+            },
+            painter(),
+        );
+        permanent.maybe_start_fadeout_timer();
+        assert!(!permanent.fadeout_pending());
+    }
+
+    #[test]
+    fn the_scrollbar_goes_six_hundred_milliseconds_after_the_list_stops() {
+        let mut state = scrollbar_state();
+        state.maybe_start_fadeout_timer();
+        state.advance_ms(599.0);
+        assert!(!state.is_faded_out());
+
+        state.advance_ms(1.0);
+        assert!(state.is_faded_out());
+    }
+
+    #[test]
+    fn scrolling_again_brings_it_back_and_restarts_the_clock() {
+        let mut state = scrollbar_state();
+        state.maybe_start_fadeout_timer();
+        state.advance_ms(500.0);
+
+        state.handle_scroll();
+        assert!(!state.fadeout_pending());
+        state.advance_ms(500.0);
+        assert!(!state.is_faded_out(), "the old timer did not survive");
+    }
+
+    #[test]
+    fn a_track_is_only_drawn_when_the_scrollbar_is_showing_and_was_asked_for() {
+        let showing = RawScrollbarState::new(
+            RawScrollbar {
+                thumb_visibility: Some(true),
+                track_visibility: Some(true),
+                ..RawScrollbar::new()
+            },
+            painter(),
+        );
+        assert!(showing.shows_track());
+
+        let transient = RawScrollbarState::new(
+            RawScrollbar {
+                track_visibility: Some(true),
+                ..RawScrollbar::new()
+            },
+            painter(),
+        );
+        assert!(!transient.shows_track());
+    }
+
+    #[test]
+    fn tapping_the_track_pages_towards_the_tap_rather_than_jumping_to_it() {
+        // A jump would move the content further than the reader can follow;
+        // the page is the unit they already know from the keyboard.
+        let state = scrollbar_state();
+        assert_eq!(
+            state.handle_track_tap_down(300.0, 400.0, true),
+            TrackTapOutcome::Paged {
+                direction: AxisDirection::Down,
+                by: 400.0
+            }
+        );
+
+        let mut at_the_end = scrollbar_state();
+        at_the_end
+            .painter
+            .update(metrics(1600.0), AxisDirection::Down);
+        assert_eq!(
+            at_the_end.handle_track_tap_down(10.0, 400.0, true),
+            TrackTapOutcome::Paged {
+                direction: AxisDirection::Up,
+                by: -400.0
+            }
+        );
+    }
+
+    #[test]
+    fn tapping_the_track_of_a_locked_scrollable_does_nothing() {
+        let state = scrollbar_state();
+        assert_eq!(
+            state.handle_track_tap_down(300.0, 400.0, false),
+            TrackTapOutcome::Refused
+        );
+    }
+
+    #[test]
+    fn a_scrollbar_over_touch_content_is_an_indicator_and_not_a_control() {
+        let state = scrollbar_state();
+        for platform in [
+            ScrollPlatform::Android,
+            ScrollPlatform::IOS,
+            ScrollPlatform::Fuchsia,
+        ] {
+            assert!(!state.is_interactive(platform), "{platform:?}");
+        }
+        for platform in [
+            ScrollPlatform::Linux,
+            ScrollPlatform::MacOS,
+            ScrollPlatform::Windows,
+        ] {
+            assert!(state.is_interactive(platform), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn saying_so_explicitly_beats_the_platform() {
+        let state = RawScrollbarState::new(
+            RawScrollbar {
+                interactive: Some(true),
+                ..RawScrollbar::new()
+            },
+            painter(),
+        );
+        assert!(state.is_interactive(ScrollPlatform::IOS));
+    }
+
+    #[test]
+    fn an_orientation_names_the_axis_it_runs_along() {
+        assert_eq!(ScrollbarOrientation::Left.axis(), Axis::Vertical);
+        assert_eq!(ScrollbarOrientation::Right.axis(), Axis::Vertical);
+        assert_eq!(ScrollbarOrientation::Top.axis(), Axis::Horizontal);
+        assert_eq!(ScrollbarOrientation::Bottom.axis(), Axis::Horizontal);
     }
 }
