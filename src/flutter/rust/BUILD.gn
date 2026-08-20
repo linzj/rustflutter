@@ -219,6 +219,7 @@ if (enable_unittests) {
       "rustflutter/src/raw_tooltip.rs",
       "rustflutter/src/recognizers.rs",
       "rustflutter/src/render.rs",
+      "rustflutter/src/render_semantics.rs",
       "rustflutter/src/reorderable_list.rs",
       "rustflutter/src/resampler.rs",
       "rustflutter/src/scroll_aware_image_provider.rs",

@@ -164,6 +164,62 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 更正:第 92 轮那句「九层已全覆盖」是我外推出来的,不对(2026-08-20)
+
+新模块 `render_semantics.rs`,收掉 `rendering/proxy_box.dart` 的七个语义 render object
+(`RenderSemanticsGestureHandler`、`RenderSemanticsAnnotations`、`RenderBlockSemantics`、
+`RenderMergeSemantics`、`RenderExcludeSemantics`、`RenderIndexedSemantics`、`RenderAnnotatedRegion`)
+与 `rendering/proxy_sliver.dart` 的 `RenderSliverSemanticsAnnotations`。覆盖率 1871/1888(99.1%)。测试
+3636。
+
+**先更正一处我自己写错的东西。** 第 92 轮我在 `PORTING_PLAN.md` 里写下「painting/animation/foundation/
+services/widgets/rendering/gestures/scheduler/material 九层已全覆盖,只剩 cupertino」——**那是从
+`material/` 归零外推的,没有逐层核对。** 这一轮开头照例列 MISSING,才看见 rendering、widgets、scheduler、
+gestures 都还有。真实分布是:
+
+```
+rendering 10   widgets  3
+cupertino  8   scheduler 3
+               gestures  1
+```
+
+已经把计划里那句改成真实的五层,并把外推那件事记在原处。**尺子一直是对的,是我没去问它。**
+
+---
+
+而 rendering 那十个里的八个凑成一族:**几轮之前 `semantics_markers.rs` 移的是这些 widget,底下的 render
+object 一直没动**——尺子按名字数,widget 有了、render object 没有,它就一直数着。
+
+**`RenderSemanticsGestureHandler.validActions` 的文档描述的是一个只会做减法的过滤器:**
+
+> If non-null, the set of actions to allow. **Other actions will be omitted, even if their callback is
+> provided.** [...] Normally, these make both the right and left, or up and down, actions available.
+
+一个横向拖动的处理器**天然同时提供 scrollLeft 和 scrollRight**,因为拖动处理器根本不知道哪边还有地方可
+去。**于是同一个动作上有两件互不相同的事:它有没有接上,和它此刻可不可行**——而只有后者会随着你滚动而变。
+回调管前一件,`validActions` 管后一件:**一个滚到最左边的列表用它说「你可以往右滚,不能往左」,而不用把任
+何回调摘下来。**
+
+---
+
+其余几条:
+
+* **`RenderMergeSemantics` 同时设两个标志**:`isSemanticBoundary = true` 和
+  `isMergingSemanticsOfDescendants = true`。**它必须这样。** 合并的意思是底下所有东西都塌进这个节点里,
+  **而「一个能被塌进去的节点」正是边界的定义**——只说合并不说边界,等于让子孙折进一个不存在的东西。
+* `RenderBlockSemantics` 挡住的是「**previously painted**」的节点——**是绘制顺序,不是树的顺序。** 而这正
+  是模态需要的:对话框画在页面之后,挡住「之前画的」恰好挡住页面。**按树的顺序反而会挡错东西——对话框并不
+  是页面的祖先。**
+* `RenderExcludeSemantics.visitChildrenForSemantics` 在排除时直接 `return`。**排除不是给子树打个隐藏标
+  记,是那趟遍历根本走不到那儿**——底下什么都没被标记,只是遍历在这个节点掉头了,子孙压根没被问过它们本来
+  会说什么。
+* `RenderAnnotatedRegion` 的 `sized` 决定这块标注**有没有形状**:不带尺寸的,搜索够得着的任何一点都算它
+  的;带尺寸的,只答自己里头的点。
+
+验证:`cargo test --lib` 3636 绿,GN `rustflutter_unittests` 3636 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1871 accounted / 17 MISSING(99.1%)。
+
 ### 滚轮没有两端,所以它的步长必须把圈合上(2026-08-20)
 
 新模块 `cupertino_pickers.rs`,收掉 `cupertino/date_picker.dart` 的 `CupertinoDatePicker`、

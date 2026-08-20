@@ -139,6 +139,7 @@ pub mod raw_menu_anchor;
 pub mod raw_tooltip;
 pub mod recognizers;
 pub mod render;
+pub mod render_semantics;
 pub mod reorderable_list;
 pub mod resampler;
 pub mod router;
