@@ -576,21 +576,44 @@ pub fn set_enabled(on: bool) {
 /// gets from `ValueNotifier` only notifying on a change. A second guard in here
 /// would be a line that cannot be wrong -- it was written and then removed once
 /// a mutation showed nothing could observe it.
+/// Turns collection on or off, and tells everyone who asked to be told.
+///
+/// # Why two of these are `try_with` and the rest are not
+///
+/// This runs from a drop -- [`SemanticsHandle`] releases itself -- and a drop
+/// can run during thread teardown, when a thread-local may already have been
+/// destroyed. `with` panics there, and a panic inside a drop inside teardown
+/// **aborts the process** rather than failing anything.
+///
+/// It is not every thread-local that can be gone, which is why this is not a
+/// blanket rule: a `Cell` initialised with `const` has nothing to drop, so no
+/// destructor is registered for it and it stays reachable for the whole life of
+/// the thread. `NEEDS_UPDATE` and `HANDLES` are those, and they are read
+/// plainly. `COLLECTOR` and `ENABLED_LISTENERS` hold `Vec`s, are registered,
+/// and are the two that can vanish underfoot.
 fn apply_enabled(on: bool) {
-    COLLECTOR.with(|collector| {
-        let mut collector = collector.borrow_mut();
-        collector.enabled = on;
-        if !on {
-            collector.nodes.clear();
-            collector.sent.clear();
-        }
-    });
+    if COLLECTOR
+        .try_with(|collector| {
+            let mut collector = collector.borrow_mut();
+            collector.enabled = on;
+            if !on {
+                collector.nodes.clear();
+                collector.sent.clear();
+            }
+        })
+        .is_err()
+    {
+        return;
+    }
     // A reader that has just arrived has been told nothing, so everything is
     // news; a reader that has just left leaves an empty tree behind, so the
     // next one to arrive is not compared against a stale one.
     mark_needs_update();
-    let listeners: Vec<Rc<dyn Fn(bool)>> =
-        ENABLED_LISTENERS.with(|listeners| listeners.borrow().iter().flatten().cloned().collect());
+    let Ok(listeners) = ENABLED_LISTENERS.try_with(|listeners| -> Vec<Rc<dyn Fn(bool)>> {
+        listeners.borrow().iter().flatten().cloned().collect()
+    }) else {
+        return;
+    };
     for listener in listeners {
         listener(on);
     }
@@ -5732,5 +5755,359 @@ mod tests {
         owner.dispose();
         assert!(owner.root().is_none());
         assert!(owner.nodes().is_empty());
+    }
+}
+
+// -- The tool on the other end of the wire -------------------------------------
+
+/// What a service extension answered with. Upstream returns a
+/// `Map<String, Object?>`, and these are the shapes it puts in it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InspectorResponse {
+    /// Upstream's `{}` -- did what you asked, nothing to say.
+    Done,
+    /// Upstream's `{'error': ...}`.
+    Error(String),
+    /// Upstream's `{'error': ..., 'needsFrame': true}`.
+    ///
+    /// A separate case because it means something different to the caller: not
+    /// "this cannot work" but "ask again after a frame". Upstream also asks for
+    /// that frame itself before answering, so the retry has something to find.
+    NeedsFrame(String),
+    /// Upstream's `{'data': {id: node, ...}}`.
+    Tree(Vec<(i32, SemanticsNode)>),
+}
+
+/// Upstream `AccessibilityInspector`: the semantics tree, on demand, for a tool
+/// outside the process.
+///
+/// # It is a singleton because what it holds must be
+///
+/// The handle it keeps is what *keeps semantics turned on*. Semantics are off
+/// until something asks, because building the tree costs work on every frame; a
+/// tool that wants to inspect them asks once and the tree stays alive until it
+/// says it is done. Two inspectors would mean two handles, and one of them
+/// turning semantics off while the other was still reading.
+///
+/// The three extensions are the whole interface, and they are three rather than
+/// one because turning semantics on and reading the tree are different moments:
+/// a tool holds the first open across many of the second.
+#[derive(Default)]
+pub struct AccessibilityInspector {
+    handle: RefCell<Option<SemanticsHandle>>,
+}
+
+thread_local! {
+    static INSPECTOR: AccessibilityInspector = AccessibilityInspector::default();
+}
+
+impl AccessibilityInspector {
+    /// Upstream's `AccessibilityInspector.instance`, with its private
+    /// constructor: there is one, and a caller cannot make another.
+    pub fn with_instance<R>(body: impl FnOnce(&AccessibilityInspector) -> R) -> R {
+        INSPECTOR.with(body)
+    }
+
+    /// Upstream's `_enableSemantics`.
+    ///
+    /// Upstream's `??=` is there to stop a tool that asks twice from taking a
+    /// second handle and leaking the first, because upstream's handle is
+    /// released by hand. **Here it cannot be observed**: [`SemanticsHandle`]
+    /// releases on drop, so assigning over one would release it in the same
+    /// breath and the count would be unchanged. Kept because it is upstream's
+    /// line and says what it means; the invariant that makes it unnecessary is
+    /// the one under test.
+    pub fn enable_semantics(&self) -> InspectorResponse {
+        let mut handle = self.handle.borrow_mut();
+        if handle.is_none() {
+            *handle = Some(SemanticsBinding::ensure_semantics());
+        }
+        InspectorResponse::Done
+    }
+
+    /// Upstream's `_disposeSemantics`, which is `resetAllState`.
+    pub fn dispose_semantics(&self) -> InspectorResponse {
+        self.reset_all_state();
+        InspectorResponse::Done
+    }
+
+    /// Upstream's `resetAllState`: drop the handle, which is what lets
+    /// semantics switch off again once nothing else wants them.
+    pub fn reset_all_state(&self) {
+        if let Some(mut handle) = self.handle.borrow_mut().take() {
+            handle.dispose();
+        }
+    }
+
+    pub fn is_holding_semantics(&self) -> bool {
+        self.handle.borrow().is_some()
+    }
+
+    /// Upstream's `_getSemanticsTree`.
+    ///
+    /// The three failures are distinct, and upstream keeps them apart:
+    ///
+    /// * semantics are not on at all -- the tool has to enable them first;
+    /// * they are on but nothing owns a tree -- nothing to read;
+    /// * there is an owner but no root **yet**, which is not a failure but a
+    ///   timing problem. Upstream asks for a frame and tells the caller to come
+    ///   back, rather than reporting an error a tool would give up on.
+    ///
+    /// The walk is a stack -- upstream's `removeLast` -- with a visited set, so
+    /// a tree that is a graph does not loop.
+    ///
+    /// **Upstream pushes each node's children twice**, once in traversal order
+    /// and once in inverse hit-test order. Both orders are over the same
+    /// children, so with the visited set in place the second pass cannot reach
+    /// a node the first did not; what it changes is the order things come off
+    /// the stack, and the result is keyed by id, so it does not change that
+    /// either. This port pushes once. Recorded rather than copied, because
+    /// copying it would look like it was doing something.
+    pub fn semantics_tree(&self, owner: Option<&SemanticsOwner>) -> InspectorResponse {
+        if !enabled() {
+            return InspectorResponse::Error("Semantics not enabled.".to_string());
+        }
+        let Some(owner) = owner else {
+            return InspectorResponse::Error(
+                "No PipelineOwner with SemanticsOwner found".to_string(),
+            );
+        };
+        let Some(root) = owner.root() else {
+            return InspectorResponse::NeedsFrame("rootSemanticsNode is null".to_string());
+        };
+
+        let mut nodes: Vec<(i32, SemanticsNode)> = Vec::new();
+        let mut visited: Vec<i32> = Vec::new();
+        let mut stack: Vec<i32> = vec![root.id];
+        while let Some(id) = stack.pop() {
+            if visited.contains(&id) {
+                continue;
+            }
+            let Some(node) = owner.node(id) else {
+                continue;
+            };
+            visited.push(id);
+            nodes.push((id, node.clone()));
+            for child in node.children.iter().rev() {
+                if !visited.contains(child) {
+                    stack.push(*child);
+                }
+            }
+        }
+        InspectorResponse::Tree(nodes)
+    }
+}
+
+#[cfg(test)]
+mod inspector_tests {
+    use super::*;
+
+    fn node(id: i32, children: Vec<i32>) -> SemanticsNode {
+        SemanticsNode {
+            id,
+            properties: SemanticsProperties::label(""),
+            left: 0.0,
+            top: 0.0,
+            right: 10.0,
+            bottom: 10.0,
+            children,
+        }
+    }
+
+    #[test]
+    fn the_handle_is_taken_once_however_often_it_is_asked_for() {
+        // Upstream's `??=`. A tool that reconnects must not leak a handle, or
+        // semantics stay on for the life of the process.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            assert!(!inspector.is_holding_semantics());
+
+            assert_eq!(inspector.enable_semantics(), InspectorResponse::Done);
+            assert!(inspector.is_holding_semantics());
+            assert!(enabled(), "and semantics are on");
+
+            inspector.enable_semantics();
+            inspector.enable_semantics();
+            assert_eq!(inspector.dispose_semantics(), InspectorResponse::Done);
+            assert!(
+                !inspector.is_holding_semantics(),
+                "one dispose is enough, because only one handle was taken"
+            );
+            assert!(!enabled(), "and semantics go off again");
+        });
+    }
+
+    /// Something that toggles semantics from its own drop -- which is what an
+    /// inspector handle in a thread-local is.
+    struct TogglesOnDrop;
+
+    impl Drop for TogglesOnDrop {
+        fn drop(&mut self) {
+            apply_enabled(false);
+        }
+    }
+
+    thread_local! {
+        static TOGGLES: TogglesOnDrop = const { TogglesOnDrop };
+    }
+
+    #[test]
+    fn toggling_from_a_drop_survives_a_half_destroyed_thread() {
+        // Thread-locals are destroyed in reverse order of initialisation, so
+        // touching the collector, then this dropper, then the listener list
+        // guarantees the drop runs with the collector still alive and the
+        // listener list already gone. Both halves have to be able to cope: a
+        // guard on the collector alone would pass and then fall into the dead
+        // list.
+        let thread = std::thread::spawn(|| {
+            let _ = enabled();
+            TOGGLES.with(|_| {});
+            SemanticsBinding::add_enabled_listener(|_| {});
+        });
+        assert!(thread.join().is_ok());
+    }
+
+    #[test]
+    fn a_handle_outliving_its_thread_does_not_abort_the_process() {
+        // The inspector's handle is released from a thread-local's drop, which
+        // runs during teardown -- after the collector it clears may already be
+        // gone. Reading that with `with` panics, and a panic inside a drop
+        // inside teardown aborts the whole process rather than failing a test.
+        let thread = std::thread::spawn(|| {
+            AccessibilityInspector::with_instance(|inspector| {
+                inspector.enable_semantics();
+            });
+            // Deliberately left held.
+        });
+        assert!(thread.join().is_ok());
+    }
+
+    #[test]
+    fn a_handle_releases_itself_when_it_is_dropped() {
+        // Which is what makes upstream's `??=` unobservable here: assigning
+        // over a handle would release it in the same breath.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            assert!(!enabled());
+            {
+                let _handle = SemanticsBinding::ensure_semantics();
+                assert!(enabled());
+            }
+            assert!(!enabled(), "released without anyone calling dispose");
+        });
+    }
+
+    #[test]
+    fn resetting_twice_is_not_an_error() {
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            inspector.reset_all_state();
+            assert!(!inspector.is_holding_semantics());
+        });
+    }
+
+    #[test]
+    fn semantics_off_is_told_apart_from_nothing_to_read() {
+        // Three different failures, and a tool does different things about
+        // each -- which is why upstream keeps them apart.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            let owner = SemanticsOwner::new(vec![node(ROOT_ID, Vec::new())]);
+            assert_eq!(
+                inspector.semantics_tree(Some(&owner)),
+                InspectorResponse::Error("Semantics not enabled.".to_string()),
+                "the tool has to enable them first"
+            );
+
+            inspector.enable_semantics();
+            assert_eq!(
+                inspector.semantics_tree(None),
+                InspectorResponse::Error("No PipelineOwner with SemanticsOwner found".to_string()),
+                "on, but nothing owns a tree"
+            );
+            inspector.reset_all_state();
+        });
+    }
+
+    #[test]
+    fn an_owner_with_no_root_yet_is_a_timing_problem_and_not_a_failure() {
+        // Upstream asks for a frame and tells the caller to come back, rather
+        // than reporting an error a tool would give up on.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            inspector.enable_semantics();
+            let empty = SemanticsOwner::new(Vec::new());
+            assert_eq!(
+                inspector.semantics_tree(Some(&empty)),
+                InspectorResponse::NeedsFrame("rootSemanticsNode is null".to_string())
+            );
+            inspector.reset_all_state();
+        });
+    }
+
+    #[test]
+    fn the_whole_tree_comes_back_once_each() {
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            inspector.enable_semantics();
+            let owner = SemanticsOwner::new(vec![
+                node(ROOT_ID, vec![2, 3]),
+                node(2, vec![4]),
+                node(3, Vec::new()),
+                node(4, Vec::new()),
+            ]);
+            let InspectorResponse::Tree(nodes) = inspector.semantics_tree(Some(&owner)) else {
+                panic!("a tree");
+            };
+            let mut ids: Vec<i32> = nodes.iter().map(|(id, _)| *id).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![ROOT_ID, 2, 3, 4]);
+            inspector.reset_all_state();
+        });
+    }
+
+    #[test]
+    fn a_tree_that_is_a_graph_does_not_loop() {
+        // The visited set is what makes the walk terminate, and two parents
+        // naming one child is enough to need it.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            inspector.enable_semantics();
+            // Ordered so that one node is on the stack *twice before it is
+            // popped* -- root pushes 2, then pushes 3, then 3 pushes 2 again.
+            // The check when a node comes off the stack is the only thing that
+            // stops it being recorded twice; the check before pushing cannot
+            // see a push that has already happened.
+            let owner = SemanticsOwner::new(vec![
+                node(ROOT_ID, vec![3, 2]),
+                node(2, Vec::new()),
+                node(3, vec![2]),
+            ]);
+            let InspectorResponse::Tree(nodes) = inspector.semantics_tree(Some(&owner)) else {
+                panic!("a tree");
+            };
+            let mut ids: Vec<i32> = nodes.iter().map(|(id, _)| *id).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![ROOT_ID, 2, 3], "each node once");
+            inspector.reset_all_state();
+        });
+    }
+
+    #[test]
+    fn a_child_the_owner_does_not_have_is_skipped() {
+        // A stale child id after a node was removed: the walk must not stop,
+        // because the rest of the tree is still worth reading.
+        AccessibilityInspector::with_instance(|inspector| {
+            inspector.reset_all_state();
+            inspector.enable_semantics();
+            let owner = SemanticsOwner::new(vec![node(ROOT_ID, vec![99, 2]), node(2, Vec::new())]);
+            let InspectorResponse::Tree(nodes) = inspector.semantics_tree(Some(&owner)) else {
+                panic!("a tree");
+            };
+            let ids: Vec<i32> = nodes.iter().map(|(id, _)| *id).collect();
+            assert!(ids.contains(&2));
+            assert!(!ids.contains(&99));
+            inspector.reset_all_state();
+        });
     }
 }

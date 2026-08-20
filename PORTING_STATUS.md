@@ -9854,3 +9854,60 @@ entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出
 
 剩余 10：debug/诊断 6、语义 2、`TrainHoppingAnimation` 1、
 `MenuSerializableShortcut` 1。下一轮做 debug/诊断那簇。
+
+## debug/诊断那簇六个，以及一个会让进程整个中止的 bug（2026-08-21）
+
+`DebugCreator`、`DiagnosticsDebugCreator`（入 `diagnostics.rs`）、
+`ShortcutMapProperty`（入 `shortcuts.rs`）、`RenderErrorBox`、
+`DebugOverflowIndicatorMixin`（新建 `debug_rendering.rs`）、
+`AccessibilityInspector`（入 `semantics.rs`）。40 条测试，24 条变异全红。
+MISSING 10 → 4。
+
+**变异逼出来的一个真 bug。** 变异 M14 跑出来不是「红」而是
+`fatal runtime error: thread local panicked on drop, aborting`——整个测试进程
+0xC0000409 崩掉。查下去是我自己写的代码：`AccessibilityInspector` 是个
+thread-local，里面握着的 `SemanticsHandle` 在**线程销毁时**被 drop，
+`dispose()` 走到 `apply_enabled(false)`，那里读 `COLLECTOR`，而 `COLLECTOR`
+这时可能已经被销毁了。`with` 在那种情况下 panic，而**drop 里的 panic 在
+teardown 期间会 abort 整个进程**，不是让一个测试失败。真实 app 里一个握着
+semantics 的 inspector 在退出时就会这样。
+
+改成 `try_with` 之后又走了一轮：**不是每个 thread-local 都会消失**。
+`const` 初始化的 `Cell` 没有东西要 drop，根本不注册析构，整个线程生命期都可达；
+`NEEDS_UPDATE` 和 `HANDLES` 是这种，我给它们加的 `try_with` **一个变异都杀不掉**
+——按老规矩，自己的不可证伪代码删掉，改回 `with`。`COLLECTOR` 和
+`ENABLED_LISTENERS` 装着 `Vec`，会注册、会消失，两个 `try_with` 都留下。
+
+`ENABLED_LISTENERS` 那个第一次也活了下来，因为 `COLLECTOR` 的守卫先返回了。
+要真正打到它，需要一个**初始化时机夹在两者之间**的 dropper：thread-local 按
+初始化的逆序销毁，所以先摸 `COLLECTOR`、再建 dropper、最后建 `ENABLED_LISTENERS`，
+drop 跑的时候前者还活着、后者已经没了。构造出来之后变异红了。
+
+几处读上游读出来的：
+
+* **`_formatPixels` 三段的边界都是 `>` 不是 `>=`**，而且下面那段是
+  `toStringAsPrecision(3)`——**三位有效数字，尾零保留**：`0.5` 是 `"0.500"`
+  不是 `"0.5"`。我第一版写成三位小数还顺手把尾零 trim 掉了，两处都错。
+* **Dart 的 `toStringAsFixed` 半数向零外舍入，Rust 的 `{:.0}` 向偶舍入**：
+  `10.5` 上游是 `11`，我第一版是 `10`。`diagnostics.rs` 里 `format_double`
+  早就记过同一个坑，这次是同一个坑的第二次。
+* **`DiagnosticsDebugCreator` 是 hidden 级，这就是它的全部内容**：它挂在 render
+  object 报的每一条错误上给 inspector 用，级别低到任何普通 dump 都不会打印，
+  所以从不出现在读者要看的 console 输出里。「存在但永不显示」是件奇怪到需要
+  单独一个类的事。
+* **`AccessibilityInspector` 的两遍子节点遍历是空的**：上游先按 traversal
+  order 压一遍、再按 inverse hit-test order 压一遍。两遍是同一批孩子，有
+  visited 集合在，第二遍不可能到达第一遍没到的节点；它只改出栈顺序，而结果按
+  id 建索引，所以那也不改。这里只压一遍，**记下来而不是照抄**——照抄会让它看起来
+  在干活。
+* **`ShortcutMapProperty` 存在只为一个方法**，而修饰键顺序上游自己就不统一：
+  `SingleActivator` 是 Control/Alt/Meta/Shift，`CharacterActivator` 是
+  Alt/Control/Meta 且根本没有 shift。原样保留，因为这些字符串会出现在人们
+  拿去和上游对比的错误信息里。
+* **`SemanticsHandle` 有 `Drop`**，所以上游 `_enableSemantics` 里那个 `??=`
+  防的泄漏在这里由 RAII 已经防住了，变异杀不掉。那是**上游的**代码不是我的，
+  按老规矩留下并标注，测试改成压那条让它多余的不变量（handle 一 drop 就释放）。
+
+剩余 4：`TrainHoppingAnimation`、`CustomPainterSemantics`、
+`PlaceholderSpanIndexSemanticsTag`、`MenuSerializableShortcut`。下一轮清完，
+然后审计 `out_of_scope`（50 条）。

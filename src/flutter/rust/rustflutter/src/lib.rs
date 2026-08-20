@@ -62,6 +62,7 @@ pub mod cupertino_tabs;
 pub mod cupertino_text_field;
 pub mod cupertino_theme;
 pub mod curves2d;
+pub mod debug_rendering;
 pub mod decoration;
 pub mod diagnostics;
 pub mod dialogs;

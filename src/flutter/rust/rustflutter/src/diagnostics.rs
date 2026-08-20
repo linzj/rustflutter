@@ -2323,3 +2323,139 @@ mod tests {
         assert!(down.expand_property_values);
     }
 }
+
+// -- Who built this, and why it is hidden --------------------------------------
+
+/// Upstream `DebugCreator`: the element a render object was built by.
+///
+/// A render object does not otherwise know: the render tree is built *from* the
+/// widget tree and does not point back at it, so when a render object throws
+/// there is nothing in hand to say which widget in the reader's own code put it
+/// there. Upstream hangs this off `RenderObject.debugCreator` in debug builds
+/// only, and its whole content is the chain it prints.
+///
+/// Upstream's `toString` is `element.debugGetCreatorChain(12)` -- twelve
+/// ancestors, not the whole way to the root, because the top of any real tree is
+/// framework scaffolding the reader did not write and does not want to read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugCreator {
+    /// The element, by id. Upstream holds the `Element` itself; an id is what
+    /// this crate's trees are keyed by, and holding the element would keep a
+    /// dead subtree alive for the sake of an error message.
+    pub element: u64,
+    /// The chain, already rendered. Upstream computes it in `toString` from the
+    /// live element; here whoever makes the creator supplies it, because by the
+    /// time an error is being formatted the tree it came from may be gone.
+    pub creator_chain: String,
+}
+
+impl DebugCreator {
+    /// Upstream's `DebugCreator(element)`, with the chain taken at the time it
+    /// is made rather than when it is printed.
+    pub fn new(element: u64, creator_chain: impl Into<String>) -> DebugCreator {
+        DebugCreator {
+            element,
+            creator_chain: creator_chain.into(),
+        }
+    }
+
+    /// Upstream's `debugGetCreatorChain` limit: twelve.
+    pub const CHAIN_LENGTH: usize = 12;
+
+    /// Joins an ancestor chain the way upstream's `debugGetCreatorChain` does:
+    /// innermost first, `\u{2190}` between, and **cut to twelve**.
+    pub fn chain_from(ancestors: &[String]) -> String {
+        ancestors
+            .iter()
+            .take(DebugCreator::CHAIN_LENGTH)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" \u{2190} ")
+    }
+}
+
+impl std::fmt::Display for DebugCreator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.creator_chain)
+    }
+}
+
+/// Upstream `DiagnosticsDebugCreator`: a [`DebugCreator`] as a property, at
+/// **hidden** level.
+///
+/// Hidden is the entire point. The property is carried on every error a render
+/// object reports so that a tool -- the inspector -- can pick it up and jump to
+/// the widget, and it is at a level no ordinary dump prints, so it never
+/// appears in the console output a reader is trying to read. A property that is
+/// present and never shown is a strange thing to write on purpose, which is why
+/// upstream gives it a class of its own rather than a call site.
+pub fn diagnostics_debug_creator(creator: &DebugCreator) -> DiagnosticsProperty {
+    let mut property = DiagnosticsProperty::new(
+        Some("debugCreator"),
+        PropertyValue::Text(creator.creator_chain.clone()),
+    );
+    property.default_level = DiagnosticLevel::Hidden;
+    property
+}
+
+/// [`diagnostics_debug_creator`] as a type, for callers that want upstream's
+/// name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiagnosticsDebugCreator(pub DebugCreator);
+
+impl DiagnosticsDebugCreator {
+    pub fn new(creator: DebugCreator) -> DiagnosticsDebugCreator {
+        DiagnosticsDebugCreator(creator)
+    }
+
+    /// The property this stands for. Upstream is a `DiagnosticsProperty`
+    /// subclass whose only content is the name and the level it passes up.
+    pub fn property(&self) -> DiagnosticsProperty {
+        diagnostics_debug_creator(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod debug_creator_tests {
+    use super::*;
+
+    #[test]
+    fn the_chain_stops_at_twelve() {
+        // Not because twelve is special, but because the top of any real tree
+        // is framework scaffolding the reader did not write.
+        let deep: Vec<String> = (0..30).map(|i| format!("W{i}")).collect();
+        let chain = DebugCreator::chain_from(&deep);
+        assert_eq!(chain.matches('\u{2190}').count(), 11, "twelve entries");
+        assert!(chain.starts_with("W0 \u{2190} W1"), "innermost first");
+        assert!(!chain.contains("W12"));
+    }
+
+    #[test]
+    fn a_short_chain_is_left_alone() {
+        assert_eq!(
+            DebugCreator::chain_from(&["Text".to_string(), "Row".to_string()]),
+            "Text \u{2190} Row"
+        );
+        assert_eq!(DebugCreator::chain_from(&[]), "");
+    }
+
+    #[test]
+    fn the_creator_prints_as_its_chain() {
+        let creator = DebugCreator::new(7, "Text \u{2190} Row \u{2190} Column");
+        assert_eq!(creator.to_string(), "Text \u{2190} Row \u{2190} Column");
+        assert_eq!(creator.element, 7);
+    }
+
+    #[test]
+    fn the_property_is_hidden_and_that_is_the_point() {
+        // It rides on every error so the inspector can find the widget, and it
+        // is at a level no ordinary dump prints so it never reaches the console.
+        let property = DiagnosticsDebugCreator::new(DebugCreator::new(1, "Text")).property();
+        assert_eq!(property.default_level, DiagnosticLevel::Hidden);
+        assert_eq!(property.name.as_deref(), Some("debugCreator"));
+        assert!(
+            DiagnosticLevel::Hidden < DiagnosticLevel::Fine,
+            "below the lowest level anything is printed at"
+        );
+    }
+}

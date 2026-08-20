@@ -327,3 +327,326 @@ mod tests {
         assert!(fired.get());
     }
 }
+
+// -- A shortcut map, printed ---------------------------------------------------
+
+impl ShortcutActivator {
+    /// Upstream's `debugDescribeKeys`: the shortcut as a reader would say it.
+    ///
+    /// The modifier order is upstream's, and upstream's is **not the same for
+    /// all three**: `SingleActivator` says Control, Alt, Meta, Shift, while
+    /// `CharacterActivator` says Alt, Control, Meta and has no shift at all --
+    /// a character already carries whether shift was involved. Kept as it is,
+    /// inconsistency included, because these strings end up in error messages
+    /// people compare against upstream's.
+    ///
+    /// `LogicalKeySet` sorts modifiers first and then by name, so that
+    /// `{A, Control}` and `{Control, A}` -- the same set, two spellings -- print
+    /// the same way.
+    pub fn debug_describe_keys(&self) -> String {
+        match self {
+            ShortcutActivator::Single {
+                key,
+                control,
+                shift,
+                alt,
+                meta,
+            } => {
+                let mut parts = Vec::new();
+                if *control {
+                    parts.push("Control".to_string());
+                }
+                if *alt {
+                    parts.push("Alt".to_string());
+                }
+                if *meta {
+                    parts.push("Meta".to_string());
+                }
+                if *shift {
+                    parts.push("Shift".to_string());
+                }
+                parts.push(describe_key(*key));
+                parts.join(" + ")
+            }
+            ShortcutActivator::Character {
+                character,
+                control,
+                single_modifier,
+            } => {
+                let mut parts = Vec::new();
+                if *control {
+                    parts.push("Control".to_string());
+                }
+                if *single_modifier {
+                    parts.push("Modifier".to_string());
+                }
+                parts.push(format!("'{character}'"));
+                parts.join(" + ")
+            }
+            ShortcutActivator::KeySet(set) => {
+                let mut described: Vec<(bool, String)> = set
+                    .keys
+                    .iter()
+                    .map(|key| (is_modifier(*key), describe_key(*key)))
+                    .collect();
+                // Modifiers first, then by name -- so that the same set written
+                // two ways prints one way.
+                described.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                described
+                    .into_iter()
+                    .map(|(_, name)| name)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            }
+        }
+    }
+}
+
+/// Whether a logical key is a modifier, for the sort above. Upstream asks
+/// whether the key has synonyms or is in its `_modifiers` set; the same
+/// question here is whether it is one of the four, side or sideless.
+fn is_modifier(key: u64) -> bool {
+    [
+        LogicalKey::CONTROL,
+        LogicalKey::CONTROL_LEFT,
+        LogicalKey::CONTROL_RIGHT,
+        LogicalKey::SHIFT,
+        LogicalKey::SHIFT_LEFT,
+        LogicalKey::SHIFT_RIGHT,
+        LogicalKey::ALT,
+        LogicalKey::ALT_LEFT,
+        LogicalKey::ALT_RIGHT,
+        LogicalKey::META,
+        LogicalKey::META_LEFT,
+        LogicalKey::META_RIGHT,
+    ]
+    .iter()
+    .any(|modifier| modifier.0 == key)
+}
+
+/// A logical key as a reader would name it.
+///
+/// Upstream reads `LogicalKeyboardKey.debugName`, which comes from a generated
+/// table this crate does not carry. What it can say without one: a printable
+/// key is the character itself, the modifiers are named, and anything else
+/// falls back to its value -- which is still enough to tell two shortcuts
+/// apart, and says plainly that it does not know the name rather than inventing
+/// one.
+fn describe_key(key: u64) -> String {
+    for (named, name) in [
+        (LogicalKey::CONTROL, "Control"),
+        (LogicalKey::CONTROL_LEFT, "Control Left"),
+        (LogicalKey::CONTROL_RIGHT, "Control Right"),
+        (LogicalKey::SHIFT, "Shift"),
+        (LogicalKey::SHIFT_LEFT, "Shift Left"),
+        (LogicalKey::SHIFT_RIGHT, "Shift Right"),
+        (LogicalKey::ALT, "Alt"),
+        (LogicalKey::ALT_LEFT, "Alt Left"),
+        (LogicalKey::ALT_RIGHT, "Alt Right"),
+        (LogicalKey::META, "Meta"),
+        (LogicalKey::META_LEFT, "Meta Left"),
+        (LogicalKey::META_RIGHT, "Meta Right"),
+        (LogicalKey::ENTER, "Enter"),
+        (LogicalKey::ESCAPE, "Escape"),
+        (LogicalKey::TAB, "Tab"),
+        (LogicalKey::SPACE, "Space"),
+        (LogicalKey::BACKSPACE, "Backspace"),
+        (LogicalKey::DELETE, "Delete"),
+        (LogicalKey::ARROW_LEFT, "Arrow Left"),
+        (LogicalKey::ARROW_RIGHT, "Arrow Right"),
+        (LogicalKey::ARROW_UP, "Arrow Up"),
+        (LogicalKey::ARROW_DOWN, "Arrow Down"),
+        (LogicalKey::HOME, "Home"),
+        (LogicalKey::END, "End"),
+    ] {
+        if named.0 == key {
+            return name.to_string();
+        }
+    }
+    match char::from_u32(key as u32).filter(|c| key < 0x80 && !c.is_control()) {
+        Some(character) => character.to_uppercase().to_string(),
+        None => format!("0x{key:x}"),
+    }
+}
+
+/// Upstream `ShortcutMapProperty`: a shortcut map as a diagnostics property.
+///
+/// It exists for one method. A map of activators to intents printed the default
+/// way gives the activators' own `toString`, and an activator is a key plus
+/// modifiers whose default rendering says nothing a reader can match against
+/// what they typed. Upstream overrides `valueToString` to print each activator
+/// through [`ShortcutActivator::debug_describe_keys`] instead, so the dump reads
+/// `{{Control + C}: CopySelectionTextIntent}` rather than a list of objects.
+pub struct ShortcutMapProperty {
+    pub name: String,
+    /// Upstream holds the map itself. `Intent` carries callbacks and so is
+    /// neither comparable nor printable on its own; what the property needs of
+    /// it is its name, which is what `action_name` gives.
+    pub entries: Vec<(ShortcutActivator, &'static str)>,
+}
+
+impl ShortcutMapProperty {
+    pub fn new(
+        name: impl Into<String>,
+        entries: Vec<(ShortcutActivator, &'static str)>,
+    ) -> ShortcutMapProperty {
+        ShortcutMapProperty {
+            name: name.into(),
+            entries,
+        }
+    }
+
+    /// The same property, taken from a live registry.
+    pub fn from_registry(
+        name: impl Into<String>,
+        registry: &ShortcutRegistry,
+    ) -> ShortcutMapProperty {
+        ShortcutMapProperty::new(
+            name,
+            registry
+                .entries
+                .iter()
+                .map(|(activator, intent)| (activator.clone(), intent.action_name()))
+                .collect(),
+        )
+    }
+
+    /// Upstream's `valueToString`: `{{keys}: intent, {keys}: intent}`.
+    ///
+    /// The doubled braces are upstream's -- the outer pair is the map, the
+    /// inner pair is each activator's key description -- and they are what
+    /// makes a multi-key shortcut readable in the middle of a map.
+    pub fn value_to_string(&self) -> String {
+        let body = self
+            .entries
+            .iter()
+            .map(|(activator, intent)| format!("{{{}}}: {intent}", activator.debug_describe_keys()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{{{body}}}")
+    }
+
+    /// The property this stands for.
+    pub fn property(&self) -> crate::diagnostics::DiagnosticsProperty {
+        crate::diagnostics::DiagnosticsProperty::new(
+            Some(self.name.clone()),
+            crate::diagnostics::PropertyValue::Text(self.value_to_string()),
+        )
+    }
+}
+
+#[cfg(test)]
+mod shortcut_property_tests {
+    use super::*;
+
+    #[test]
+    fn a_shortcut_prints_as_a_reader_would_say_it() {
+        let copy = ShortcutActivator::Single {
+            key: LogicalKey::from_char('c').0,
+            control: true,
+            shift: false,
+            alt: false,
+            meta: false,
+        };
+        assert_eq!(copy.debug_describe_keys(), "Control + C");
+    }
+
+    #[test]
+    fn the_modifier_order_is_upstreams_and_not_alphabetical() {
+        // Control, Alt, Meta, Shift -- upstream's order in SingleActivator, and
+        // these strings end up in messages people compare against upstream's.
+        let all = ShortcutActivator::Single {
+            key: LogicalKey::from_char('a').0,
+            control: true,
+            shift: true,
+            alt: true,
+            meta: true,
+        };
+        assert_eq!(
+            all.debug_describe_keys(),
+            "Control + Alt + Meta + Shift + A"
+        );
+    }
+
+    #[test]
+    fn a_character_activator_quotes_its_character() {
+        // And has no shift: a character already carries whether shift was held.
+        let question = ShortcutActivator::Character {
+            character: '?',
+            control: false,
+            single_modifier: false,
+        };
+        assert_eq!(question.debug_describe_keys(), "'?'");
+    }
+
+    #[test]
+    fn a_key_set_puts_the_modifiers_first_so_two_spellings_print_alike() {
+        let one = ShortcutActivator::KeySet(LogicalKeySet::new(&[
+            LogicalKey::from_char('a').0,
+            LogicalKey::CONTROL.0,
+        ]));
+        let other = ShortcutActivator::KeySet(LogicalKeySet::new(&[
+            LogicalKey::CONTROL.0,
+            LogicalKey::from_char('a').0,
+        ]));
+        assert_eq!(one.debug_describe_keys(), "Control + A");
+        assert_eq!(one.debug_describe_keys(), other.debug_describe_keys());
+    }
+
+    #[test]
+    fn a_key_with_no_name_says_so_rather_than_inventing_one() {
+        let unknown = ShortcutActivator::Single {
+            key: 0x1234_5678,
+            control: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        };
+        assert_eq!(unknown.debug_describe_keys(), "0x12345678");
+    }
+
+    #[test]
+    fn the_map_prints_with_the_doubled_braces() {
+        // The outer pair is the map and the inner pair is each activator's key
+        // description, which is what makes a multi-key shortcut readable in the
+        // middle of one.
+        let property = ShortcutMapProperty::new(
+            "shortcuts",
+            vec![
+                (
+                    ShortcutActivator::Single {
+                        key: LogicalKey::from_char('c').0,
+                        control: true,
+                        shift: false,
+                        alt: false,
+                        meta: false,
+                    },
+                    "CopySelectionTextIntent",
+                ),
+                (
+                    ShortcutActivator::Single {
+                        key: LogicalKey::ESCAPE.0,
+                        control: false,
+                        shift: false,
+                        alt: false,
+                        meta: false,
+                    },
+                    "DismissIntent",
+                ),
+            ],
+        );
+        assert_eq!(
+            property.value_to_string(),
+            "{{Control + C}: CopySelectionTextIntent, {Escape}: DismissIntent}"
+        );
+        assert_eq!(property.property().name.as_deref(), Some("shortcuts"));
+    }
+
+    #[test]
+    fn an_empty_map_is_still_a_map() {
+        assert_eq!(
+            ShortcutMapProperty::new("shortcuts", Vec::new()).value_to_string(),
+            "{}"
+        );
+    }
+}
