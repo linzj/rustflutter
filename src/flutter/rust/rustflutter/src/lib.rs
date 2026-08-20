@@ -27,6 +27,7 @@ pub mod about;
 pub mod action_buttons;
 pub mod actions;
 pub mod adapter;
+pub mod animated_icons;
 pub mod animated_scroll_view;
 pub mod animation;
 pub mod app;
@@ -216,6 +217,9 @@ pub mod widgets;
 pub mod widgets_app;
 
 pub use actions::{Action, ActionDispatcher, Intent};
+pub use animated_icons::{
+    AnimatedIcon, AnimatedIconData, AnimatedIcons, PathCommand, PathFrames, ResolvedCommand,
+};
 pub use animation::{
     AlwaysStoppedAnimation, Animatable, Animation, AnimationListener, AnimationMax, AnimationMean,
     AnimationMin, AnimationStatus, AnimationStyle, Animations, ConstantTween, Controller,

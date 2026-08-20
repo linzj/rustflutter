@@ -1,8 +1,15 @@
 # 完全覆盖计划 —— 与上游逐类对齐
 
-目标只有一个：`packages/flutter/lib/src` 的 widgets/rendering/painting/
-gestures/services/animation/scheduler/foundation/material/cupertino 十层里，
-**每个公共类**在 Rust 框架里有语义对齐的对应物，或有记录在案的处置。
+目标只有一个：`packages/flutter/lib/src` **全部十三个层目录**（widgets/
+rendering/painting/gestures/services/animation/scheduler/foundation/material/
+cupertino/physics/semantics/widget_previews，含子目录）里，**每个公共类**在
+Rust 框架里有语义对齐的对应物，或有记录在案的处置。
+
+> 标题原本写「十层」，而下面口径三则第 1 条写的是「framework 全层」——两句话
+> 不一致，尺子照前者实现，于是 physics/semantics/widget_previews 和
+> `material/animated_icons/` 从未被数过。2026-08-21 按后者统一，尺子同步修正
+> （`os.walk` 而非 `os.listdir`、类型要求 `pub`、跳过 `#[cfg(test)]`）。
+> 分母 1888 → 1930。
 尺子先行——完全覆盖定义为 **coverage 脚本报 0 个未记账缺失**：
 
 ```
@@ -28,7 +35,11 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-20）：1888 accounted / 0 MISSING（100%，总数因尺子修正 1873→1888）。十层全部归零，逐类对齐完成。**（第 92 轮此处曾误写「九层已全覆盖」，那次是从 material 归零外推的；此后每次都数过每层的 MISSING 才写。） 层别：painting
+**进度（2026-08-21）：1930 accounted / 0 MISSING（100%）。十三层全部归零。**
+上一次写「十层归零」时是真的，但那把尺子看不见三个层目录与一个子目录，藏了 34 个
+未 port 的类（semantics 22、widget_previews 6、animated_icons 3、physics 3）。
+尺子修正后重新归零，过程见 `PORTING_STATUS.md`。**旧记录（2026-08-20）：1888
+accounted / 0 MISSING**（第 92 轮此处曾误写「九层已全覆盖」，那次是从 material 归零外推的；此后每次都数过每层的 MISSING 才写。） 层别：painting
 100%、animation 100%、foundation 100%、services 100%、gestures 98%、rendering
 95%、material 74%、widgets 75%、cupertino 63%、scheduler 57%。
 

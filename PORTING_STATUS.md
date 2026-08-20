@@ -9619,6 +9619,112 @@ entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出
 
 ---
 
+### 尺子修正与第二次归零（2026-08-21）
+
+上一轮写下「十层全部归零、逐类对齐完成」时，那句话按当时那把尺子是真的。但那把
+尺子看不见三个层目录和一个子目录——**它藏了 34 个没 port 的类**。审计尺子本身
+才发现的，不是靠再跑一遍它。
+
+**尺子的四个盲区**，每一个都是藏工作而不是美化数字（后者更好发现）：
+
+| 盲区 | 后果 |
+| --- | --- |
+| `LAYERS` 只列十个，上游 `src/` 下有十三个目录 | physics 9、semantics 24、widget_previews 6 个公共类从未被数 |
+| `os.listdir` 不递归 | `material/animated_icons/` 3 个类从未被数 |
+| 数 `#[cfg(test)]` 里的声明 | 上游 `Page` 被我自己写的一个测试 struct 顶掉 |
+| 类型声明不要求 `pub`（而函数与常量要求） | 私有 helper 替上游公共的 `FocusManager`/`FocusScope`/`State`/`RenderObjectWidget` 顶包 |
+
+`impl` 计分**保留**，而且必须保留：这个 crate 用宏生成整族类型（11 个
+`caret_movement_intent!`），尺子不展开宏，手写 `impl` 是唯一证据——实测去掉就全红。
+但只认行首的，因为 `root: impl Widget` 是参数位，它一直在替上游的 `Widget` 答到。
+四条规则每条都单独量过影响再采纳。
+
+**分母 1888 → 1930，MISSING 0 → 39，再归零。**
+
+补齐的东西（按轮次）：physics 3 → semantics 值类型 6 + `StringAttribute` →
+`SemanticsEvent` 族 7 → `SemanticsLabelBuilder` → widget_previews 6 →
+`SemanticsBinding`/`SemanticsHandle` → `SemanticsConfiguration` →
+`ChildSemanticsConfigurations*` + `Page` → `FocusScope` → `SemanticsData` →
+`SemanticsOwner` → animated_icons 3。台账新增 `FocusManager`、`Widget`、`State`
+与 5 个 `SemanticsEvent` 子类的改判条目。
+
+---
+
+### 这一程里被测试或 mutation 抓出来的自己的错
+
+按发生顺序，因为它们的共同点比各自的内容更值得记：**每一条都是"讲得通的读法"，
+而讲得通不等于上游那么写**。
+
+1. **`AttributedString.concat` 的空串早返回**我写成"承重的、不是优化"。删掉一个，
+   测试全绿——空串带不了属性，通用路径算出同样的答案。它就是优化;让它*安全*的是
+   那条不变量。改了文档，并把测试从"测那个删掉也不红的捷径"换成"测它依赖的不变量"。
+2. **`SemanticsLabelBuilder` 有两行上游代码改变不了结果**（`?? textDirection` 的
+   兜底、单段早返回）。保留照抄——会整理源码的 port 没法拿去 diff——但标注它们不
+   做事，读者不该自己去推。
+3. **`hasConflictingFlags` 我理解反了**。我写的是"两个不同的种类 flag 冲突——一个
+   节点不能既是按钮又是文本框"。上游的规则是**同一个 flag 两边都置位**;按钮和文本
+   框合并得好好的，拦住不该合并的是另一条 `_hasExplicitRole`，而 `isButton` 有意
+   不在那个名单里。是测试红了才去查的源码。
+4. **`apply_enabled` 里我多加的一道判断**永远不会错——调用点已经在计数跨 0 时才调。
+   这次是删掉而不是加注释：那是我的代码不是上游的。
+5. **一个测试没在测它声称的东西**（`removing_one_listener_leaves_the_others...`）：
+   移除两个 listener 里的第一个再检查第二个还在，无论移除是留洞还是补位都成立。
+   改成三个、按 token 移第三个，移位实现会因 token 越界而做错。
+6. **一个 mutation 看起来幸存，其实是工具打偏了**：锚点匹配到另一个函数里一模一样
+   的行。此后 mutation 脚本会拒绝不唯一的锚点。
+7. **`FocusScope` 的回退测试前提不成立**：`drop(tree)` 不清空焦点注册表，`prune`
+   才清。节点还注册着、还持有焦点时，`focus_scope` 正确地无事可做，回退根本没跑。
+8. **`PreviewThemeData` 我按印象写成空的 const 类**，实际是 `abstract base class`
+   带一个 `apply`；`PreviewLocalizationsData` 还漏了 `localizationsDelegates`。
+9. **`SemanticsOwner` 文档里写了一条这边没有对应物的规则**（合并全部后代的节点终止
+   遍历）。这边合并发生在收集时，被合并的后代根本不会成为节点——改成写明"没有对应物
+   也不需要"。
+
+---
+
+### 值得单独记的上游细节
+
+- **两个 `TextDirection` 枚举顺序相反。** `dart:ui` 先声明 `rtl`（线上 rtl=0），
+  这个 crate 先声明 `Ltr`。直接 cast 会让每条无障碍播报方向都反，两边都不报错——
+  读屏只会把阿拉伯语从左往右念。查 `sky_engine/lib/ui/text.dart` 证实的。
+- **同一个上游文件里两个"带方向标记拼接文字"的函数规则不同。**
+  `SemanticsLabelBuilder` 与 `_concatAttributedString` 在分隔符（`" "` vs `"\n"`）、
+  何时包裹（要求两边方向已知 vs 只要对方已知且不同）、单独一段（不包 vs 包）三处
+  都不一样。拿错一个得到一个被微妙误读的 label。
+- **`SemanticsTag` 按对象身份、`CustomSemanticsAction` 按值发 id**，方向相反且都
+  对：tag 是给某个祖先标记某个节点的，读起来一样的两个不能撞车;custom action 是
+  读屏菜单里的一条，两个节点给出同样 label 就是同一个动作。
+- **`AnimatedIcon` 的关键帧是"列表里的位置"而不是"首尾之间的比例"**：三帧在
+  progress 0.5 精确给出中间那帧。这才是图标能*穿过*中间形状而不是直线滑过去的原因。
+- **`AnimatedIcon` 的镜像是转 π 再平移，不是水平翻转**——两个轴都翻。上游那十四个
+  图标上下对称，所以看起来一样;换个不对称的图标就不一样了。
+- **`SemanticsData` 的构造函数几乎全是断言**：六个字段说同一件事——有文字就必须有
+  方向。没有方向可交给读屏时它按字符猜，全一种文字时猜得对，混排时静默地错。
+- **`ChildSemanticsConfigurationsResultBuilder` 的判重比对象不比内容**：两个说得
+  一模一样的孩子仍是两个孩子。
+- **`Page` 的两个无 key 页面是匹配的**（Dart 里 `null == null` 为真）。这正是声明式
+  navigator 重排无 key 页面时看起来像"内容变了"的原因。
+
+---
+
+### 有意留下的边界
+
+- **animated_icons 的十四份美术数据没有 port**：上游是 34,000 行 `.g.dart` 生成
+  产物，由不在本仓库的工具从矢量图生成。逐行誊抄等于用眼睛复制构建产物，且无从
+  校验。机器（插值、路径命令、镜像、缩放、透明度合成）完整可用，调用方自己造的
+  `AnimatedIconData` 今天就画得对；`AnimatedIcons::data` 返回 `None` 而不是一个
+  空图标——空图标什么都不画却自称是图标，调用方要到渲染的另一头才发现。
+- **`Preview` 的注解那一半没有对应物**：Dart 的 `@Preview()` 是当元数据用的 const
+  实例，Rust 的对应物是属性宏——那是个 proc-macro crate 而不是类型，等到有东西消费
+  它时再写才值得。
+- **`SemanticsConfiguration`/`SemanticsData` 的字段取本 crate 已建模的那套**，上游
+  约四十个字段里的 platform view id、link URL、validation result、role、input type、
+  traversal identifier 在此侧没有对应物。合并规则与断言是真正 port 的部分。
+- **`SemanticsOwner` 不做脏节点增量**：上游的节点是原地变更的长寿对象，这边是扁平
+  列表里的值，重走加 diff 到达同一个「只告诉平台变了什么」。
+
+---
+
 ## 三、不要弄坏的(这些已经逐条比过,是对的)
 
 改任何一条时,这些是回归线:

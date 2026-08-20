@@ -127,6 +127,7 @@ if (enable_unittests) {
       "rustflutter/src/animated_scroll_view.rs",
       "rustflutter/src/action_buttons.rs",
       "rustflutter/src/adapter.rs",
+      "rustflutter/src/animated_icons.rs",
       "rustflutter/src/animation.rs",
       "rustflutter/src/autocomplete_view.rs",
       "rustflutter/src/autofill.rs",
