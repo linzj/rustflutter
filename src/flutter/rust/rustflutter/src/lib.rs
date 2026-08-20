@@ -50,6 +50,7 @@ pub mod controls;
 pub mod crossfade;
 pub mod cupertino;
 pub mod cupertino_route;
+pub mod cupertino_theme;
 pub mod decoration;
 pub mod diagnostics;
 pub mod direction;

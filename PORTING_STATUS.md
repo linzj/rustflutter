@@ -164,6 +164,71 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 连默认值本身都没有一个默认的 brightness(2026-08-20)
+
+新模块 `cupertino_theme.rs`,收掉 `cupertino/theme.dart` 的 `CupertinoThemeData`、
+`InheritedCupertinoTheme` 与 `cupertino/text_theme.dart` 的 `CupertinoTextThemeData`。覆盖率
+1845/1888(97.7%)。测试 3548。**cupertino 是十层里最后一层,还剩 43 类。**
+
+**上一轮那个 `MaterialBasedCupertinoThemeData` 靠着 `.noDefault()` 才能把窟窿留给 Material 去填,当时只
+能从外面推断这套机制。这一轮把它翻出来了。**
+
+```dart
+class CupertinoThemeData extends NoDefaultCupertinoThemeData with Diagnosticable
+```
+
+**继承的方向值得留意:带默认值的那个,是不带默认值那个的子类。** 这是对的——把默认值填上是加行为,不是减
+行为——但它带来一个后果:在这个类里面,`super.primaryColor` 是「人家跟我说的」,`this.primaryColor` 是
+「我答出来的」,而每个 getter 都写成后者由前者定义:
+
+```dart
+Color get primaryColor => super.primaryColor ?? _defaults.primaryColor;
+```
+
+于是 `noDefault()` 的写法就顺理成章:**每一个字段都走 `super.` 读,刻意绕开这个类自己的补默认 getter。**
+它答的是「我被告知了什么」,不是「我会说什么」。**而这个区分,正是上一轮那个 Material 适配器能落到
+Material 上的全部原因。** 基类自己的 `noDefault()` 是 `=> this`——它本来就没有什么可剥的。
+
+回归行里专门写了一条,把这一轮的 `no_default()` 直接喂给上一轮那个桥,断言 Material 的颜色真的透了过来,
+并把「若不剥默认值,iOS 蓝会赢」也一并钉住。
+
+---
+
+**而私有的 `_CupertinoThemeDefaults` 里有一个字段和别的都不一样:**
+
+```dart
+final Brightness? brightness;   // 其余 Color / bool 字段全是非空的
+```
+
+**连「负责把没人说的填上」的那一层,都没有一个默认的 brightness。** 因为真正的默认值不是个常量:
+
+```dart
+return inheritedTheme?.theme.data.brightness ?? MediaQuery.platformBrightnessOf(context);
+```
+
+**一个没写 brightness 的主题,意思是「跟着设备走」**——而这个「没写」必须一路活到 `MediaQuery` 那里,包括
+穿过那一层专门用来消灭「没写」的东西。所以这一个字段一直开着口子到底。
+
+---
+
+其余几条:
+
+* **`resolveFrom` 在同一个方法里逐字段地混用 `super.` 和普通读法**:颜色走 `super.` 再 resolve,而
+  `brightness` 和 `applyThemeToAll` 直接读。**这不是不一致。** 颜色是靠拿到 context 才解析出来的,所以必
+  须保住「调用者到底说没说」——在这儿把默认值解析进去,它就被烤死了,之后 `noDefault()` 会交出一个没人要
+  求过的值。而后两个没有什么可解析的,取补过默认的那个读数反而正是有用的那个。
+* 文本主题的默认值是**有条件**解析的(`resolveTextTheme ? ... : ...`):调用者自己给的文本主题已经自己解
+  析过了,这个标志是为了别做第二遍。
+* 类文档说:「if a `primaryColor` is specified, it would cascade down to affect some fonts in
+  `textTheme` if `textTheme` is not specified」——**一个只填了一半的主题,不是「你给的那些 + 其余照抄默认
+  值」;你给的那些会改变其余的默认值。**
+* `InheritedCupertinoTheme.updateShouldNotify` 比的是 `theme.data != oldWidget.theme.data`——**比的是数
+  据,不是 widget。** 一个重建出来、但携带相等 `CupertinoThemeData` 的 `CupertinoTheme`,谁也吵不醒。
+
+验证:`cargo test --lib` 3548 绿,GN `rustflutter_unittests` 3548 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1845 accounted / 43 MISSING(97.7%)。
+
 ### 一边是活的视图,另一边是拍下来的照片(2026-08-20)
 
 新模块 `theme_bridge.rs`,收掉 material 层最后四个类:`MaterialBasedCupertinoThemeData`、
