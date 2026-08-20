@@ -216,6 +216,8 @@ if (enable_unittests) {
       "rustflutter/src/scrolling.rs",
       "rustflutter/src/selectable_region.rs",
       "rustflutter/src/selection.rs",
+      "rustflutter/src/segmented_button.rs",
+      "rustflutter/src/selection_area.rs",
       "rustflutter/src/selection_container.rs",
       "rustflutter/src/search_anchor.rs",
       "rustflutter/src/semantics.rs",

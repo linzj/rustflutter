@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 它开始时的那个状态,得是它自己能走到的状态(2026-08-20)
+
+两个新模块:`segmented_button.rs`(`ButtonSegment`、`SegmentedButton`、`SegmentedButtonState`)与
+`selection_area.rs`(`SelectionArea`、`SelectionAreaState`、`SelectableText`)。覆盖率
+1778/1888(94.2%)。测试 3248。
+
+**`SegmentedButton` 的三条构造断言,合起来说的是同一件事:它开始时的那个状态,得是它自己能走到的状态。**
+一个「不允许为空却从空开始」、或者「不允许多选却选了两个」的按钮,处在一个它自己的按下逻辑永远产生不出来
+的位置上——**而下面每一条规则,就会变成在推理一件不可能的事。**
+
+**`_handleOnPressed` 里四个子句每一个都在挣自己的位置,而最要紧的是 `validChange`:按下那个「唯一被选中
+的」段,什么都不会发生,除非这个按钮允许空选。** **单选模式下没法靠再按一次取消选择**——和第 56 轮单选组
+的空格键、第 61 轮 toggleable 的点击循环是同一个判断:**一个能被误触清空的控件,比一个不能的更糟。**
+
+而 `toggle` 那一行说的是:**单选确实会切换,而且只在一种情况下**——最后一个被选中的段,并且允许清空时。
+
+---
+
+**还有一处值得单独说,而它是一个「不写」的决定。**
+
+上游最后有一句 `if (!setEquals(updatedSelection, widget.selected))` 才发回调。我本想为它写一条回归行,然
+后发现:**顺着前面的子句走,这个分支到不了。** 不切换时,按下把选中集换成正好那一个段,而它只可能在「按
+下的就是唯一选中的那个」时和原来相等——但那种情况 `validChange` 已经拦掉了(除非允许清空,而那时 `toggle`
+又是 true)。切换时,加一个或减一个总是变。
+
+**所以我没有为它编一个场景,而是写了一条穷举所有合法配置、断言「Unchanged 到不了」的回归行**,并在注释
+里把推理写下来。**那个守卫防的是上面几条子句将来被改动,不是防某个输入;如实移植就意味着把一个到不了的
+分支也移过来。**
+
+---
+
+**`SelectionArea` 和 `SelectableText` 都薄得刻意:机器在 `SelectableRegion` 和 `EditableText` 里,这两个
+加的是「平台对三个问题的自己的答案」**——手柄长什么样、右键菜单给什么、有没有放大镜。
+
+**而放大镜那条默认值的第三种情况最有意思:iOS 给 Cupertino 的,Android 给 Material 的,其余平台什么都不
+建。** 放大镜存在,是因为**指尖盖住了它正在选的那段文字**;而鼠标指针什么都不盖,**于是在桌面上它不是「缺
+了」,是「不适用」。**
+
+`SelectableText` 则是「一个把编辑关掉的 `EditableText`」——选择、手柄、工具条、放大镜本来就是为编辑造的。
+而 `showCursor` 默认关,上游在字段文档里写了代价:**它在移动端是长按、在别处是双击,会和周围的手势抢。**
+
+验证:`cargo test --lib` 3248 绿,GN `rustflutter_unittests` 3248 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1778 accounted / 110 MISSING(94.2%)。
+
 ### 附着在别的东西上的那个,得在那东西移动时走开(2026-08-20)
 
 新模块 `search_anchor.rs`,收掉 `search_anchor.dart` 的 `SearchAnchor`、`SearchController`、
