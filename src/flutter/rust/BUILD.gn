@@ -267,6 +267,7 @@ if (enable_unittests) {
       "rustflutter/src/services/system.rs",
       "rustflutter/src/services/keyboard_inserted_content.rs",
       "rustflutter/src/services/process_text.rs",
+      "rustflutter/src/services/restoration.rs",
       "rustflutter/src/services/spell_check.rs",
       "rustflutter/src/services/system_channels.rs",
       "rustflutter/src/services/text_boundary.rs",

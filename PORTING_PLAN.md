@@ -58,9 +58,24 @@ accounted / 0 MISSING**（第 92 轮此处曾误写「九层已全覆盖」，�
 | --- | --- | --- |
 | force press | ABI 已有 `pressure: f64`，宿主恒填 1.0 | 框架侧可实现（测试桩喂压），宿主数据另立 |
 | Texture / PlatformView / AndroidView | 渲染 ABI 无 external texture / platform view 通路 | blocked-engine |
-| restoration 全家 | 引擎与框架两侧皆零 | blocked-engine |
+| restoration 全家 | ~~引擎与框架两侧皆零~~ 通道已在（`services/system.rs` 的 `RESTORATION`），宿主未实现 | **宿主侧另立**（2026-08-21 改判，见下） |
 | SystemMouseCursor 应答 | 通道已在（`services/system.rs`），宿主未实现 | 宿主侧另立 |
 | web-only、iOS 专属实现 | 宿主集合 Windows/Android/macOS | out-of-scope |
+
+> **restoration 改判的理由（2026-08-21）。** 这张表里紧挨着的两行处置口径互相
+> 矛盾：`SystemMouseCursor` 那行是「通道已在、宿主未实现 → 宿主侧另立」，而
+> restoration 那行是「两侧皆零 → blocked-engine」。写下时后者属实，但
+> `flutter/restoration` 通道此后已在 `services/system.rs` 声明，两行于是处在同一
+> 处境而处置不同。
+>
+> 更要紧的是**理由不成立**：上游 `services/restoration.dart` 1018 行里，只有
+> `RestorationManager` 的两个方法碰引擎（`_getRootBucketFromEngine` 与
+> `sendToEngine`，后者上游自己文档写明可覆写以便测试）。`RestorationBucket` 是
+> `Map` 上的一棵纯树，`Restorable*` 全族是读写这棵树的纯值，`RestorationScope` /
+> `RestorationMixin` 是纯 widget 管线。**依赖引擎的是数据来源，不是这些类。**
+>
+> 与 `overlay.rs`（先 port 完整逻辑、后接宿主）和 `widget_previews`（消费者在本
+> 仓库外）是同一形状。25 个类因此从 blocked-engine 移出，MISSING 由 0 回到 25。
 
 ## 横切地基 E（随波次前置，不单独立项）
 

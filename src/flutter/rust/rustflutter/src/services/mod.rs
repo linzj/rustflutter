@@ -81,6 +81,7 @@ pub mod channel;
 pub mod codec;
 pub mod keyboard_inserted_content;
 pub mod process_text;
+pub mod restoration;
 pub mod spell_check;
 pub mod system;
 pub mod system_channels;
