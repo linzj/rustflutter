@@ -111,6 +111,7 @@ pub mod presence;
 pub mod radio_group;
 pub mod range_slider_parts;
 pub mod raw_menu_anchor;
+pub mod raw_tooltip;
 pub mod recognizers;
 pub mod render;
 pub mod reorderable_list;
