@@ -110,6 +110,7 @@ pub mod media_query;
 pub mod menu;
 pub mod menu_anchor;
 pub mod mergeable_material;
+pub mod messenger;
 pub mod modal_barrier;
 pub mod motion;
 pub mod multidrag;

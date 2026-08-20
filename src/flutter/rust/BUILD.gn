@@ -193,6 +193,7 @@ if (enable_unittests) {
       "rustflutter/src/modal_barrier.rs",
       "rustflutter/src/motion.rs",
       "rustflutter/src/multidrag.rs",
+      "rustflutter/src/messenger.rs",
       "rustflutter/src/multitap.rs",
       "rustflutter/src/navigation.rs",
       "rustflutter/src/navigator.rs",
