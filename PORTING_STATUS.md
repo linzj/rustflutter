@@ -164,6 +164,66 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 这一周的多参数 assert 全是「至多给一个」,这条是反过来的(2026-08-20)
+
+新模块 `chip.rs`(`RawChip`),并把 `Autocomplete` 补进已有的 `autocomplete.rs`。覆盖率 1822/1888
+(96.5%)。测试 3436。
+
+**`RawAutocomplete` 的三条 assert 里,中间那条的形状这一周还没见过:**
+
+```dart
+assert((focusNode == null) == (textEditingController == null)),
+```
+
+**两个判空之间的一个等号。** 不是「至多给一个」,也不是「至少给一个」——**要么都给,要么都不给。**
+
+这一周记下的多参数 assert 全是前一种:stepper 的三个 extent 来源、chip 的两个回调、reorderable list 的两
+个回调。**这是头一条反过来的。** 而它反过来是有道理的:焦点和文字是同一个输入框的两半,**你可以让 widget
+全权拥有它,也可以自己全权拥有它,但没有一半的版本**——自己攥着 focus node、让 widget 去造 controller,
+那是把一个东西的两半交给了两个主人。
+
+而第一条 assert 正是 `Autocomplete` 不必操心这一切的原因:**它总会给一个 `fieldViewBuilder`**,于是那条
+「否则你得同时给出 key、focusNode 和 controller」的分支,从 Material 这一层根本够不着。
+
+---
+
+**第二件:`tapEnabled` 这个名字说的是杠杆,它的文档说的是拉杠杆的理由。**
+
+> If set, this indicates that the chip should be **disabled if all of the tap callbacks are null**. For
+> example, the `Chip` class sets this to false because it **can't be disabled**, even if no callbacks
+> are set on it, since it is used for displaying information only.
+
+**一个普通的 `Chip` 身上一个回调也没有,而它绝不该看起来是灰的。** 于是它把 `tapEnabled` 关掉——**关掉的
+不是「能不能点」,是「要不要从『没有回调』推出『它被禁用了』」。** 点还是点不动,但它看上去是个标签,不是
+一个死掉的按钮。
+
+**这是这一周第三个这种名字**:第 84 轮 `indexIsChanging` 按「因为什么」命名,第 82 轮
+`ListTileControlAffinity.platform` 按错了的那条轴命名,现在是一个名字描述机制、文档描述意图的。回归行把
+两者的差别钉死了:同一个没有回调的 chip,`tapEnabled` 开着是「看起来禁用」,关着是「看起来正常」;把
+`looks_disabled` 改成不看 `tapEnabled` 的那个天真版本,那条会红。
+
+---
+
+**第三件,一处需要更正我自己的初读。** 我先是以为「`onPressed` 和 `onSelected` 不能同时给」这条只写在文
+档里、没有 assert——**不对,assert 是有的,只是不在构造器里,在 `initState` 里。**
+
+而这个位置本身有后果:**构造器的 assert 在 widget 被造出来时就响;`initState` 的 assert 只在元素被挂上树
+时才响。** 一个造出来放进列表、始终没插进树的 chip,永远碰不到它。
+
+再往下看那个点击处理:
+
+```dart
+widget.onSelected?.call(!widget.selected);
+widget.onPressed?.call();
+```
+
+**两行,谁也不挡谁。两个都给了,两个都会调**——而这正是 release 构建里会发生的事,因为那里 assert 已经
+没了。**底下这段代码完全容得下 assert 所禁止的那种状态。** 回归行把这件事照实钉住了。
+
+验证:`cargo test --lib` 3436 绿,GN `rustflutter_unittests` 3436 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1822 accounted / 66 MISSING(96.5%)。
+
 ### 两个滑块叠在一处的时候,它不猜(2026-08-20)
 
 新模块 `range_slider.rs`(`RangeSlider`),并把 `ReorderableListView`、`TooltipVisibility`、

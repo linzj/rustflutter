@@ -40,6 +40,7 @@ pub mod borders;
 pub mod bottom_bars;
 pub mod buttons;
 pub mod carousel;
+pub mod chip;
 pub mod color_scheme;
 pub mod colors;
 pub mod component_themes;

@@ -832,3 +832,142 @@ mod tests {
         );
     }
 }
+
+// -- material/autocomplete.dart ----------------------------------------------------
+
+/// Upstream `Autocomplete`: the Material dressing over [`RawAutocomplete`].
+///
+/// It is a `StatelessWidget` that supplies two builders and one constraint, and
+/// hands everything else straight through. Almost all of the behaviour lives in
+/// the raw widget above.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Autocomplete {
+    pub options_view_open_direction: OptionsViewOpenDirection,
+    /// Upstream's `optionsMaxHeight`, applied as a `BoxConstraints(maxHeight:)`
+    /// on the options list.
+    pub options_max_height: f32,
+    pub has_field_view_builder: bool,
+    pub has_options_view_builder: bool,
+    pub has_initial_value: bool,
+    pub has_text_editing_controller: bool,
+}
+
+impl Autocomplete {
+    /// Upstream's default, and the only number this class contributes.
+    pub const DEFAULT_OPTIONS_MAX_HEIGHT: f32 = 200.0;
+
+    pub fn new() -> Autocomplete {
+        Autocomplete {
+            options_view_open_direction: OptionsViewOpenDirection::Down,
+            options_max_height: Autocomplete::DEFAULT_OPTIONS_MAX_HEIGHT,
+            // Both builders default to Material implementations rather than to
+            // nothing, which is the difference between this and the raw widget.
+            has_field_view_builder: true,
+            has_options_view_builder: true,
+            has_initial_value: false,
+            has_text_editing_controller: false,
+        }
+    }
+
+    /// The height cap is a `maxHeight` constraint, not a fixed height: a short
+    /// list is short, and only a long one is cut off and scrolled.
+    pub fn options_height_for(&self, natural_height: f32) -> f32 {
+        natural_height.min(self.options_max_height)
+    }
+
+    /// `Autocomplete` passes `initialValue` and `textEditingController`
+    /// straight through, so the three asserts that judge them are
+    /// `RawAutocomplete`'s -- and one of them has a shape worth naming.
+    ///
+    /// ```dart
+    /// assert(
+    ///   fieldViewBuilder != null ||
+    ///       (key != null && focusNode != null && textEditingController != null),
+    ///   'Pass in a fieldViewBuilder, or otherwise create a separate field and pass in ...',
+    /// ),
+    /// assert((focusNode == null) == (textEditingController == null)),
+    /// assert(
+    ///   !(textEditingController != null && initialValue != null),
+    ///   'textEditingController and initialValue cannot be simultaneously defined.',
+    /// );
+    /// ```
+    ///
+    /// The middle one is **an equality between two null checks**. Not "at most
+    /// one of these" and not "at least one" -- **both or neither.** You may let
+    /// the widget own the field's focus and its text, or own both yourself, and
+    /// there is no half of it: a focus node you hold and a controller the widget
+    /// made would leave the two halves of one field belonging to different
+    /// owners.
+    ///
+    /// Every other multi-argument assert this week has been some flavour of "at
+    /// most one" -- the stepper's three extent sources, the chip's two
+    /// callbacks, the reorderable list's two. This is the first of the opposite
+    /// kind.
+    ///
+    /// The first assert is the reason `Autocomplete` never has to think about
+    /// any of it: it always supplies a `fieldViewBuilder`, so the branch
+    /// demanding a key and a focus node and a controller is unreachable from
+    /// here.
+    pub fn defers_its_field_asserts_to_the_raw_widget() -> bool {
+        true
+    }
+
+    /// Upstream's `assert((focusNode == null) == (textEditingController == null))`.
+    pub fn field_ownership_is_whole(
+        has_focus_node: bool,
+        has_text_editing_controller: bool,
+    ) -> bool {
+        has_focus_node == has_text_editing_controller
+    }
+}
+
+impl Default for Autocomplete {
+    fn default() -> Autocomplete {
+        Autocomplete::new()
+    }
+}
+
+#[cfg(test)]
+mod material_autocomplete_tests {
+    use super::*;
+
+    #[test]
+    fn the_height_is_a_cap_and_not_a_size() {
+        let field = Autocomplete::new();
+        assert_eq!(
+            field.options_height_for(60.0),
+            60.0,
+            "a short list is short"
+        );
+        assert_eq!(field.options_height_for(600.0), 200.0, "a long one is cut");
+        assert_eq!(field.options_height_for(200.0), 200.0);
+    }
+
+    #[test]
+    fn the_material_wrapper_brings_builders_where_the_raw_one_requires_them() {
+        let field = Autocomplete::new();
+        assert!(field.has_field_view_builder);
+        assert!(field.has_options_view_builder);
+        assert_eq!(field.options_max_height, 200.0);
+    }
+
+    #[test]
+    fn a_field_is_owned_whole_or_not_at_all() {
+        // The one assert this week that is not "at most one of these".
+        assert!(Autocomplete::field_ownership_is_whole(false, false));
+        assert!(Autocomplete::field_ownership_is_whole(true, true));
+        assert!(
+            !Autocomplete::field_ownership_is_whole(true, false),
+            "a focus node you hold and a controller the widget made"
+        );
+        assert!(!Autocomplete::field_ownership_is_whole(false, true));
+    }
+
+    #[test]
+    fn it_opens_downwards_unless_told_otherwise() {
+        assert_eq!(
+            Autocomplete::new().options_view_open_direction,
+            OptionsViewOpenDirection::Down
+        );
+    }
+}
