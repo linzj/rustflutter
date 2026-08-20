@@ -164,6 +164,77 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 九十八处「眼睛量的」,七十四处在同一层里(2026-08-20)
+
+新模块 `cupertino_sheet.rs`,收掉 `cupertino/nav_bar.dart` 的 `CupertinoSliverNavigationBar` 与
+`cupertino/sheet.dart` 的 `CupertinoSheetTransition`、`CupertinoSheetRoute`。覆盖率 1857/1888
+(98.4%)。测试 3609。
+
+这两个文件里满是「有人对着手机看出来的」数字,而且都写明了。顺手把整棵树数了一遍:
+
+```
+cupertino  74      rendering   1
+material   15      painting    0
+widgets     8      gestures    0
+                   services    0
+                   animation   0
+                   scheduler   0
+                   foundation  0
+```
+
+**九十八处,四分之三在同一层里。而这不是谁马虎——是两套设计语言的东西不一样。**
+
+**Material 是一份能读的公开规范;iOS 是一件只能量的成品。** 没有任何文档写着 iOS 导航栏的背景是在十个逻
+辑像素里淡入的,**所以有人在模拟器上打开设置,盯着看。**
+
+而尾巴那一半同样说明问题:`painting`、`gestures`、`services`、`animation`、`scheduler`、`foundation`
+**一处都没有**。因为它们算的是**为真**的东西,不是**看着对**的东西。贝塞尔曲线就是贝塞尔曲线。
+**这个数量正好随着「从外观往算术走」一路掉下去。**
+
+---
+
+**而同样是「眼睛量的」,写法差得很远。**
+
+```dart
+/// Eyeballed on the native Settings app on an iPhone 15 simulator running iOS 17.4.
+const double _kNavBarScrollUnderAnimationExtent = 10.0;
+```
+
+**它说了看的哪个 app、哪台设备、哪个系统版本——于是它是一句别人能去复核的断言,而不只是一个数。** 对照
+`cupertino/button.dart` 的「Eyeballed values. Feel free to tweak.」**两句都诚实,只有一句可复现。**
+
+而 sheet 里那个更进一步:
+
+```dart
+// Amount the sheet in the background scales down. Found by measuring the width
+// of the sheet in the background and comparing against the screen width on the
+// iOS simulator showing an iPhone 16 pro running iOS 18.0.
+const double _kSheetScaleFactor = 0.0835;
+```
+
+**这不是眼睛量的,是尺子量的**,而且方法写出来了(比两个宽度)。**所以它有四位有效数字,而旁边那些眼睛量
+的是 2.0、300、10.0。数字的精度会告诉你它是怎么来的**——这条回归行专门钉住了这个对照。
+
+顺带一个小巧合:`_kNavBarShowLargeTitleThreshold` 和 `_kNavBarScrollUnderAnimationExtent` **都是 10.0,
+干的却是两件事**(一个是标题往上收的距离,一个是背景淡入的距离),**而只有其中一个说了自己从哪儿来。**
+
+---
+
+其余几条:
+
+* `assert(topGap == null || (topGap >= 0.0 && topGap <= 0.9))`——**上界是 0.9,不是 1.0。** 一张 sheet 必
+  须给屏幕留下至少十分之一:**盖满了的就不像一张 sheet 了**——后面那条露出来的边,正是「这后头还有东西可
+  以退回去」的那句话。
+* 导航栏那条 assert 的消息**把两条出路都说了**:「Either provide a largeTitle or set
+  automaticallyImplyTitle to true.」**对一条双边规则来说,这是有用的形状**——撞上它的人本来两个改法都不
+  想要,他想要的是一个标题;只把规则念一遍,他还得自己猜该动哪边。
+* 而 `assert(!widget._searchable || widget.bottom == null)`:**能搜索的导航栏不能再有 bottom,因为那个搜
+  索框就是 bottom。**
+
+验证:`cargo test --lib` 3609 绿,GN `rustflutter_unittests` 3609 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1857 accounted / 31 MISSING(98.4%)。
+
 ### 一边把值重载了,另一边加了个模式(2026-08-20)
 
 新模块 `cupertino_text_field.rs`,收掉 `cupertino/text_field.dart` 的 `CupertinoTextField` 与
