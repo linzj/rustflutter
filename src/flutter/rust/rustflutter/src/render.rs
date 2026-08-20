@@ -1845,6 +1845,29 @@ pub(crate) fn flush_layout() -> bool {
 /// A rebuild that replaces the root object hands the frame a fresh handle,
 /// which remembers no constraints and so is dirty by this test -- which is
 /// right, and is the case a walk from the root used to be kept around for.
+/// The handle of the render object currently being laid out.
+///
+/// A render object is `&mut self` inside its own `layout` and has no way to
+/// reach the handle everything else holds it by -- but `layout_child` pushed
+/// that object's state before calling in, so the top of the layout stack is it.
+/// Reconstituting the handle from the state is how an object can hand *itself*
+/// to something that will need to mark it later.
+///
+/// Used by `RenderTheatre` to register with the portal registry: a portal that
+/// appears or goes away has to make the theatre lay out again, and a mark from
+/// the portal stops at the first relayout boundary between them.
+pub(crate) fn laying_out_handle() -> Option<RenderRef> {
+    LAYING_OUT.with(|stack| {
+        let stack = stack.borrow();
+        let state = stack.last()?;
+        let render = state.render.borrow().upgrade()?;
+        Some(RenderRef {
+            render,
+            state: Rc::clone(state),
+        })
+    })
+}
+
 pub(crate) fn schedule_root_layout(root: &RenderRef, constraints: BoxConstraints) {
     let state = &root.state;
     *state.parent.borrow_mut() = Weak::new();

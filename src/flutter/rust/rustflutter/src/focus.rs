@@ -368,6 +368,60 @@ fn enclosing_group(ancestors: &[u64]) -> Option<u64> {
 /// [`OrderedTraversalPolicy`], and a group node stands in its parent's list
 /// for its whole subtree -- which is what keeps a group's stops together and
 /// keeps an order inside one group from jumping a node past another group's.
+thread_local! {
+    /// The focus traps in force, innermost last.
+    ///
+    /// Upstream a `ModalRoute` installs a `FocusScopeNode` and traversal is
+    /// confined to it; there is no scope node here, so the confinement is said
+    /// directly. A trap is a node id, and while one is in force only that node
+    /// and its descendants are reachable.
+    ///
+    /// A stack rather than a flag because modals nest: a dialog over a dialog
+    /// confines to the inner one, and closing it returns to the outer.
+    static TRAPS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Confines focus to `root` and its descendants until [`release_trap`].
+///
+/// Upstream's `ModalRoute` focus scope. What it prevents is a Tab out of a
+/// dialog and into the page behind it -- which a reader cannot see is there,
+/// and which is not supposed to be reachable while the dialog is up.
+pub fn trap_focus(root: u64) {
+    TRAPS.with(|traps| traps.borrow_mut().push(root));
+}
+
+/// Lifts the trap `root` installed. Lifting one that is not the innermost
+/// removes it anyway: a modal may be dismissed out of order, and the
+/// alternative is a trap that outlives what it was protecting.
+pub fn release_trap(root: u64) {
+    TRAPS.with(|traps| {
+        let mut traps = traps.borrow_mut();
+        if let Some(at) = traps.iter().rposition(|id| *id == root) {
+            traps.remove(at);
+        }
+    });
+}
+
+/// The trap in force, if any.
+pub fn active_trap() -> Option<u64> {
+    TRAPS.with(|traps| traps.borrow().last().copied())
+}
+
+/// Whether a node is reachable under the trap in force.
+fn within_trap(manager: &FocusManager, id: u64) -> bool {
+    let Some(trap) = active_trap() else {
+        return true;
+    };
+    if id == trap {
+        return true;
+    }
+    manager
+        .entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .is_some_and(|entry| entry.ancestors.contains(&trap))
+}
+
 fn traversal_order(manager: &FocusManager) -> Vec<u64> {
     fn expand(manager: &FocusManager, group: Option<u64>, out: &mut Vec<u64>) {
         let mut members: Vec<(usize, &FocusEntry)> = manager
@@ -391,6 +445,10 @@ fn traversal_order(manager: &FocusManager) -> Vec<u64> {
 
     let mut order = Vec::new();
     expand(manager, None, &mut order);
+    // A trap removes the stops outside it rather than reordering them: Tab has
+    // to *stay* in the dialog, so the page's fields are not later in the cycle,
+    // they are not in the cycle.
+    order.retain(|id| within_trap(manager, *id));
     order
 }
 

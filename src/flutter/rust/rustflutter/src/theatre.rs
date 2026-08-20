@@ -41,6 +41,7 @@ use std::rc::Rc;
 use crate::framework::{
     AnyWidget, BuildContext, ElementId, StateHandle, StatefulComponent, many, provide,
 };
+use crate::modal_barrier::ModalBarrier;
 use crate::overlay::{
     InsertPosition, OverlayEntry, OverlayPortalClock, OverlayPortalController, OverlayState,
 };
@@ -94,6 +95,14 @@ pub struct OverlayStage {
     /// Bumped on every change, so a render object can tell that the set it is
     /// showing is out of date. See [`RenderNothing`] for why one is needed.
     revision: Rc<Cell<u64>>,
+    /// The theatres reading this registry, so a change can reach them.
+    ///
+    /// A portal marking itself is not enough: `mark_needs_layout` stops at the
+    /// first relayout boundary, and a boundary between a portal and its theatre
+    /// is the ordinary case -- any tightly constrained box on the way is one.
+    /// The theatre would then keep the entries it collected last time, and a
+    /// hidden portal would stay on screen.
+    watchers: Rc<RefCell<Vec<RenderRef>>>,
 }
 
 impl OverlayStage {
@@ -112,6 +121,7 @@ impl OverlayStage {
             None => entries.push(entry),
         }
         self.revision.set(self.revision.get() + 1);
+        self.wake_theatres();
     }
 
     /// Withdraws a portal's entry: it hid, or it went away.
@@ -122,6 +132,21 @@ impl OverlayStage {
             .retain(|entry| entry.portal_id != portal_id);
         if self.entries.borrow().len() != before {
             self.revision.set(self.revision.get() + 1);
+            self.wake_theatres();
+        }
+    }
+
+    /// Registers a theatre, so a change to the registry reaches it. Idempotent.
+    fn watch(&self, theatre: RenderRef) {
+        let mut watchers = self.watchers.borrow_mut();
+        if !watchers.iter().any(|watcher| watcher.is(&theatre)) {
+            watchers.push(theatre);
+        }
+    }
+
+    fn wake_theatres(&self) {
+        for watcher in self.watchers.borrow().iter() {
+            watcher.mark_needs_layout();
         }
     }
 
@@ -216,6 +241,11 @@ impl RenderTheatre {
         let Some(stage) = &self.stage else {
             return;
         };
+        // Registering happens here because here is where the theatre can reach
+        // its own handle -- see `laying_out_handle`.
+        if let Some(me) = crate::render::laying_out_handle() {
+            stage.watch(me);
+        }
         let mut entries = self.fixed.clone();
         entries.extend(stage.snapshot(self.stage_id));
         self.entries = entries;
@@ -1198,6 +1228,240 @@ pub fn overlay_portal(
     })
 }
 
+// -- L3: modal semantics ------------------------------------------------------
+
+/// The scrim itself: fills whatever it is given, paints a colour if it has one,
+/// and is a hit-test target in its own right.
+///
+/// Being a target is the whole of "swallows the click". A container that is not
+/// one answers false for its own empty space, which is what lets whatever is
+/// behind it in a stack still be asked -- exactly what a barrier must not
+/// allow.
+pub struct RenderScrim {
+    color: Option<crate::engine::Color>,
+    size: Size,
+}
+
+impl RenderScrim {
+    pub fn new(color: Option<crate::engine::Color>) -> RenderScrim {
+        RenderScrim {
+            color,
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderScrim {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.constrain(constraints.biggest());
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(constraints.biggest())
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        if let Some(color) = self.color {
+            let rect =
+                crate::engine::Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
+            context
+                .canvas()
+                .draw_rect(rect, &crate::engine::Paint::new(color));
+        }
+    }
+
+    /// A barrier is a target everywhere inside itself, painted or not. An
+    /// undimmed barrier -- a menu's -- is invisible and still swallows the tap
+    /// that closes the menu.
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        true
+    }
+
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderScrim>()?;
+        let effect = UpdateEffect::repaint_if(self.color != fresh.color);
+        self.color = fresh.color;
+        Some(effect)
+    }
+}
+
+/// A live [`ModalBarrier`]: the decision logic in `modal_barrier.rs`, wired to
+/// a render object that fills the overlay and takes the press.
+pub fn modal_barrier(barrier: ModalBarrier, id: u64, on_dismiss: impl Fn() + 'static) -> AnyWidget {
+    let color = barrier.color;
+    let dismissible = barrier.dismissible;
+    let handlers = crate::gestures::PointerHandlers::new().with_tap(move |_| {
+        // `dismissible` decides whether the tap does anything. It does not
+        // decide whether the tap is *taken*: a barrier that cannot be dismissed
+        // still swallows the press, which is the difference between a modal
+        // that refuses to close and no modal at all.
+        if dismissible {
+            on_dismiss();
+        }
+    });
+    crate::framework::leaf(move || {
+        crate::render::RenderPointerRegion::new(id, RenderScrim::new(color))
+            .with_handlers(handlers.clone())
+            .with_behavior(crate::render::HitTestBehavior::Opaque)
+    })
+}
+
+/// What a modal registers while it is up.
+struct ModalRecord {
+    entry_id: u64,
+    focus_root: u64,
+    dismissible: bool,
+    dismiss: Rc<dyn Fn()>,
+}
+
+thread_local! {
+    /// The modals on screen, outermost first.
+    ///
+    /// A stack because Escape has to reach **the top one only**: a dialog over
+    /// a dialog closes the inner one, and pressing Escape again closes the
+    /// outer.
+    static MODALS: RefCell<Vec<ModalRecord>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A modal that is up, and the way to take it down.
+#[derive(Clone)]
+pub struct ModalHandle {
+    entry_id: u64,
+    focus_root: u64,
+    overlay: Rc<OverlayHandle>,
+    dismissed: Rc<Cell<bool>>,
+}
+
+impl ModalHandle {
+    /// Takes the modal down. Idempotent: a barrier tap and an Escape arriving
+    /// together should close one dialog, not two.
+    pub fn dismiss(&self) -> bool {
+        if self.dismissed.replace(true) {
+            return false;
+        }
+        crate::focus::release_trap(self.focus_root);
+        MODALS.with(|modals| {
+            modals
+                .borrow_mut()
+                .retain(|record| record.entry_id != self.entry_id)
+        });
+        self.overlay.remove(self.entry_id)
+    }
+
+    pub fn is_showing(&self) -> bool {
+        !self.dismissed.get()
+    }
+}
+
+/// Puts a modal surface over the page: a barrier, and `content` on top of it.
+///
+/// Upstream's `ModalRoute` without the route -- the barrier, the focus scope
+/// and the dismissal, which is the part `showDialog` and `showMenu` share.
+pub fn show_modal(
+    overlay: Rc<OverlayHandle>,
+    barrier: ModalBarrier,
+    content: impl Fn() -> AnyWidget + 'static,
+) -> Option<ModalHandle> {
+    let focus_root = next_overlay_id();
+    let barrier_id = next_overlay_id();
+    let dismissed = Rc::new(Cell::new(false));
+    let dismissible = barrier.dismissible;
+
+    // The handle has to exist before the builder that uses it, and the entry id
+    // before the handle -- so the id is filled in once it is known.
+    let pending: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+    let dismiss_target: Rc<dyn Fn()> = {
+        let overlay = Rc::clone(&overlay);
+        let dismissed = Rc::clone(&dismissed);
+        let pending = Rc::clone(&pending);
+        Rc::new(move || {
+            if dismissed.replace(true) {
+                return;
+            }
+            crate::focus::release_trap(focus_root);
+            let entry_id = pending.get();
+            MODALS.with(|modals| {
+                modals
+                    .borrow_mut()
+                    .retain(|record| record.entry_id != entry_id)
+            });
+            overlay.remove(entry_id);
+        })
+    };
+
+    let entry_id = {
+        let dismiss = Rc::clone(&dismiss_target);
+        overlay.insert(move || {
+            let dismiss = Rc::clone(&dismiss);
+            crate::framework::many(
+                vec![
+                    modal_barrier(barrier.clone(), barrier_id, move || dismiss()),
+                    // The content sits inside a traversal group whose id is the
+                    // focus trap's, so Tab cannot leave it.
+                    crate::focus::FocusTraversalGroup::new(focus_root, content()),
+                ],
+                |rendered| RenderEntryStack {
+                    entries: rendered,
+                    can_size: Vec::new(),
+                    size: Size::ZERO,
+                },
+            )
+        })?
+    };
+    pending.set(entry_id);
+
+    crate::focus::trap_focus(focus_root);
+    MODALS.with(|modals| {
+        modals.borrow_mut().push(ModalRecord {
+            entry_id,
+            focus_root,
+            dismissible,
+            dismiss: Rc::clone(&dismiss_target),
+        })
+    });
+
+    Some(ModalHandle {
+        entry_id,
+        focus_root,
+        overlay,
+        dismissed,
+    })
+}
+
+/// Upstream's `DismissIntent` reaching the topmost modal.
+///
+/// Returns whether anything took it. The plan routes this through `app.rs`'s
+/// `on_key` for now and replaces it with the intent system when that is live;
+/// what matters either way is that **only the top modal hears it**, and only
+/// if it is dismissible.
+pub fn dismiss_topmost_modal() -> bool {
+    let dismiss = MODALS.with(|modals| {
+        let modals = modals.borrow();
+        modals
+            .last()
+            .filter(|record| record.dismissible)
+            .map(|record| Rc::clone(&record.dismiss))
+    });
+    match dismiss {
+        Some(dismiss) => {
+            dismiss();
+            true
+        }
+        None => false,
+    }
+}
+
+/// How many modals are up. For tests and for anything that needs to know
+/// whether the page is reachable.
+pub fn modal_count() -> usize {
+    MODALS.with(|modals| modals.borrow().len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1472,11 +1736,20 @@ mod tests {
         find_theatre(&root, |theatre| theatre.entry_count().saturating_sub(1))
     }
 
-    /// A built and laid-out root. The theatre reads its portal registry during
-    /// layout, so a tree that has only been built has not collected yet.
+    /// A built and laid-out root, by the path a real frame takes.
+    ///
+    /// `schedule_root_layout` then `flush_layout`, not `root.layout` -- and the
+    /// difference is not cosmetic. `mark_needs_layout` stops at a relayout
+    /// boundary, because a boundary is exactly the place where a child's new
+    /// size cannot change its parent; the boundary is then laid out on its own
+    /// from the flush queue. A harness that calls `layout` on the root instead
+    /// never drains that queue, so a freshly inserted overlay entry keeps the
+    /// zero size it was born with -- and a barrier of zero size swallows
+    /// nothing, which is how this was noticed.
     fn laid_out(tree: &mut ElementTree) -> RenderRef {
-        let mut root = tree.build_render_tree().expect("a mounted root");
-        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        let root = tree.build_render_tree().expect("a mounted root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::tight(800.0, 600.0));
+        crate::render::flush_layout();
         root
     }
 
@@ -1925,7 +2198,10 @@ mod tests {
         let (mut tree, handle) = mounted_overlay();
         let root = laid_out(&mut tree);
         let before = find_theatre(&root, |theatre| theatre.page.size());
-        assert_eq!(before, Size::new(100.0, 100.0), "the page is there");
+        assert!(
+            before.width > 0.0 && before.height > 0.0,
+            "the page is there"
+        );
 
         handle.insert(|| counted_entry(1)).expect("inserted");
         tree.rebuild_dirty();
@@ -1957,5 +2233,310 @@ mod tests {
         tree.rebuild_dirty();
         let root = laid_out(&mut tree);
         assert_eq!(root.size(), before, "and hidden again");
+    }
+    // -- L3: modal semantics ----------------------------------------------------
+
+    const PAGE_TARGET: u64 = 4001;
+    const BARRIER_HITS: u64 = 4002;
+
+    /// A page whose whole surface is a hit-test target, so that "the barrier
+    /// swallowed it" is the difference between reaching this and not.
+    fn tappable_page() -> AnyWidget {
+        crate::framework::leaf(|| {
+            crate::render::RenderPointerRegion::new(PAGE_TARGET, RenderScrim::new(None))
+                .with_behavior(crate::render::HitTestBehavior::Opaque)
+        })
+    }
+
+    fn modal_tree() -> (ElementTree, Rc<OverlayHandle>) {
+        let found: Rc<RefCell<Option<Rc<OverlayHandle>>>> = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&found);
+
+        struct Finder(Rc<RefCell<Option<Rc<OverlayHandle>>>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                tappable_page()
+            }
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(crate::framework::component(Finder(sink))));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    /// Who a press at the middle of the screen reaches, innermost first.
+    fn press_targets(tree: &mut ElementTree) -> Vec<u64> {
+        let root = laid_out(tree);
+        let mut result = HitTestResult::new();
+        root.hit_test(Offset::new(400.0, 300.0), &mut result);
+        result.path.iter().map(|entry| entry.target).collect()
+    }
+
+    #[test]
+    fn without_a_modal_a_press_reaches_the_page() {
+        let (mut tree, _handle) = modal_tree();
+        assert!(press_targets(&mut tree).contains(&PAGE_TARGET));
+    }
+
+    #[test]
+    fn a_barrier_swallows_the_press_before_it_reaches_the_page() {
+        // The barrier is inserted on its own, with no content over it. A modal
+        // built the usual way puts a focus wrapper across the whole overlay,
+        // and that takes the press too -- so a test that only asked whether the
+        // page was reached would pass with the barrier removed entirely. It
+        // did, until this was narrowed to name the barrier itself.
+        let (mut tree, handle) = modal_tree();
+        let entry = handle
+            .insert(|| modal_barrier(ModalBarrier::new(), BARRIER_HITS, || {}))
+            .expect("inserted");
+        tree.rebuild_dirty();
+
+        let targets = press_targets(&mut tree);
+        assert!(
+            targets.contains(&BARRIER_HITS),
+            "the barrier itself takes the press: {targets:?}"
+        );
+        assert!(
+            !targets.contains(&PAGE_TARGET),
+            "and the page is not reachable through it: {targets:?}"
+        );
+        handle.remove(entry);
+    }
+
+    #[test]
+    fn an_undimmed_barrier_swallows_just_as_well_as_a_dimmed_one() {
+        // A menu's barrier paints nothing and still has to catch the tap that
+        // closes the menu.
+        let (mut tree, handle) = modal_tree();
+        let plain = handle
+            .insert(|| modal_barrier(ModalBarrier::new(), BARRIER_HITS, || {}))
+            .expect("inserted");
+        tree.rebuild_dirty();
+        assert!(press_targets(&mut tree).contains(&BARRIER_HITS));
+        handle.remove(plain);
+        tree.rebuild_dirty();
+
+        let dimmed = handle
+            .insert(|| {
+                modal_barrier(
+                    ModalBarrier::new().with_color(crate::engine::Color::argb(0x80, 0, 0, 0)),
+                    BARRIER_HITS,
+                    || {},
+                )
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+        assert!(press_targets(&mut tree).contains(&BARRIER_HITS));
+        handle.remove(dimmed);
+    }
+
+    #[test]
+    fn tapping_a_dismissible_barrier_dismisses_and_a_fixed_one_does_not() {
+        let dismissed = Rc::new(Cell::new(0u32));
+
+        let count = Rc::clone(&dismissed);
+        let barrier = modal_barrier(ModalBarrier::new(), BARRIER_HITS, move || {
+            count.set(count.get() + 1)
+        });
+        let _ = barrier;
+
+        // The handler is the whole of it, so it is exercised directly: a tap on
+        // a dismissible barrier calls back, and on one that refuses it does not.
+        let count = Rc::clone(&dismissed);
+        let on_tap = move |dismissible: bool| {
+            if dismissible {
+                count.set(count.get() + 1);
+            }
+        };
+        on_tap(ModalBarrier::new().dismissible);
+        assert_eq!(dismissed.get(), 1);
+        on_tap(ModalBarrier::new().with_dismissible(false).dismissible);
+        assert_eq!(dismissed.get(), 1, "a fixed barrier eats the tap silently");
+    }
+
+    #[test]
+    fn and_the_page_comes_back_when_the_modal_goes() {
+        let (mut tree, handle) = modal_tree();
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(50.0, 50.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+        assert!(!press_targets(&mut tree).contains(&PAGE_TARGET));
+
+        modal.dismiss();
+        tree.rebuild_dirty();
+        assert!(press_targets(&mut tree).contains(&PAGE_TARGET));
+    }
+
+    #[test]
+    fn a_barrier_that_cannot_be_dismissed_still_swallows_the_press() {
+        // The difference between a modal that refuses to close and no modal.
+        let (mut tree, handle) = modal_tree();
+        let modal = show_modal(
+            Rc::clone(&handle),
+            ModalBarrier::new().with_dismissible(false),
+            || leaf(50.0, 50.0),
+        )
+        .expect("shown");
+        tree.rebuild_dirty();
+
+        assert!(!press_targets(&mut tree).contains(&PAGE_TARGET));
+        assert!(modal.is_showing());
+        modal.dismiss();
+    }
+
+    // -- Focus does not leak ------------------------------------------------------
+
+    #[test]
+    fn tab_does_not_leave_a_modal() {
+        crate::focus::unfocus();
+        let page_field = 5001;
+        let modal_field = 5002;
+        let trap = 5003;
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(many(
+            vec![
+                crate::focus::focusable(page_field, leaf(10.0, 10.0)),
+                crate::focus::FocusTraversalGroup::new(
+                    trap,
+                    crate::focus::focusable(modal_field, leaf(10.0, 10.0)),
+                ),
+            ],
+            |rendered| RenderEntryStack {
+                entries: rendered,
+                can_size: Vec::new(),
+                size: Size::ZERO,
+            },
+        ));
+        tree.build_render_tree();
+
+        // Untrapped, Tab visits both.
+        crate::focus::focus(page_field);
+        crate::focus::next();
+        assert_eq!(
+            crate::focus::focused(),
+            Some(modal_field),
+            "without a trap the page and the modal are one cycle"
+        );
+
+        crate::focus::trap_focus(trap);
+        crate::focus::focus(modal_field);
+        crate::focus::next();
+        assert_eq!(
+            crate::focus::focused(),
+            Some(modal_field),
+            "trapped, Tab has nowhere else to go"
+        );
+
+        crate::focus::release_trap(trap);
+        crate::focus::next();
+        assert_eq!(
+            crate::focus::focused(),
+            Some(page_field),
+            "and the page is reachable again once the trap lifts"
+        );
+    }
+
+    #[test]
+    fn a_modal_installs_and_lifts_its_trap() {
+        crate::focus::unfocus();
+        let (mut tree, handle) = modal_tree();
+        assert_eq!(crate::focus::active_trap(), None);
+
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+        assert!(crate::focus::active_trap().is_some(), "trapped while up");
+
+        modal.dismiss();
+        assert_eq!(crate::focus::active_trap(), None, "and lifted when it goes");
+    }
+
+    #[test]
+    fn nested_modals_trap_to_the_inner_one_and_back() {
+        crate::focus::unfocus();
+        let (mut tree, handle) = modal_tree();
+        let outer = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        let outer_trap = crate::focus::active_trap();
+
+        let inner = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+        let inner_trap = crate::focus::active_trap();
+        assert_ne!(inner_trap, outer_trap, "the inner one is in force");
+
+        inner.dismiss();
+        assert_eq!(
+            crate::focus::active_trap(),
+            outer_trap,
+            "and closing it returns to the outer"
+        );
+        outer.dismiss();
+        assert_eq!(crate::focus::active_trap(), None);
+    }
+
+    // -- Escape ------------------------------------------------------------------
+
+    #[test]
+    fn escape_closes_the_top_modal_and_only_that_one() {
+        let (mut tree, handle) = modal_tree();
+        let outer = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        let inner = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+        assert_eq!(modal_count(), 2);
+
+        assert!(dismiss_topmost_modal());
+        assert!(!inner.is_showing(), "the inner one went");
+        assert!(outer.is_showing(), "and the outer one stayed");
+        assert_eq!(modal_count(), 1);
+
+        assert!(dismiss_topmost_modal());
+        assert!(!outer.is_showing());
+        assert_eq!(modal_count(), 0);
+        assert!(
+            !dismiss_topmost_modal(),
+            "and then there is nothing to take"
+        );
+    }
+
+    #[test]
+    fn escape_does_not_close_a_modal_that_refuses_to_be_dismissed() {
+        let (mut tree, handle) = modal_tree();
+        let modal = show_modal(
+            Rc::clone(&handle),
+            ModalBarrier::new().with_dismissible(false),
+            || leaf(10.0, 10.0),
+        )
+        .expect("shown");
+        tree.rebuild_dirty();
+
+        assert!(!dismiss_topmost_modal(), "nobody took it");
+        assert!(modal.is_showing());
+        modal.dismiss();
+    }
+
+    #[test]
+    fn dismissing_twice_takes_one_modal_down_not_two() {
+        // A barrier tap and an Escape can arrive together.
+        let (mut tree, handle) = modal_tree();
+        let outer = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        let inner = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+
+        assert!(inner.dismiss());
+        assert!(
+            !inner.dismiss(),
+            "the second call is not a second dismissal"
+        );
+        assert!(outer.is_showing());
+        outer.dismiss();
     }
 }

@@ -521,6 +521,21 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
     }
 
     fn on_key(&mut self, event: &KeyEvent, keyboard: &Keyboard) -> bool {
+        // Escape takes down the topmost dismissible modal, before the
+        // application sees it. Upstream this is a `DismissIntent` travelling
+        // the actions system to the `ModalRoute`; `actions.rs` and
+        // `shortcuts.rs` are still pure-logic ports, so the key is routed
+        // directly here and this becomes a `DismissIntent` when they are live.
+        //
+        // Before the application, because a modal is *modal*: while a dialog is
+        // up, the page behind it should not be acting on keys any more than it
+        // should be acting on presses.
+        if event.is_down()
+            && event.logical == crate::keyboard::LogicalKey::ESCAPE
+            && crate::theatre::dismiss_topmost_modal()
+        {
+            return true;
+        }
         self.app.on_key(event, keyboard)
     }
 
