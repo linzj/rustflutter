@@ -118,6 +118,7 @@ if (enable_unittests) {
       "rustflutter/src/animated_scroll_view.rs",
       "rustflutter/src/adapter.rs",
       "rustflutter/src/animation.rs",
+      "rustflutter/src/autofill.rs",
       "rustflutter/src/color_scheme.rs",
       "rustflutter/src/colors.rs",
       "rustflutter/src/component_themes.rs",

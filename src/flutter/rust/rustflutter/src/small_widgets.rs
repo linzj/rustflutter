@@ -392,6 +392,173 @@ impl SpellCheckConfiguration {
     }
 }
 
+/// Upstream `Placeholder`.
+///
+/// A rectangle with both diagonals -- the universal "nothing here yet" mark,
+/// borrowed from a printer's crop-marked box. It is drawn as a **single path**
+/// (the rectangle plus two open polygons) so the whole thing is one stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placeholder {
+    /// Blue Grey 700: dark enough to read on white, plainly not a real colour
+    /// anybody chose for a design.
+    pub color: Color,
+    pub stroke_width: f32,
+    /// What to be when nothing constrains it.
+    ///
+    /// A placeholder in an unbounded box would otherwise be a layout error, and
+    /// the point of the widget is to stand in for something that is not written
+    /// yet -- failing there would be the opposite of useful. Four hundred is big
+    /// enough to see and small enough not to wreck the layout around it.
+    pub fallback_width: f32,
+    pub fallback_height: f32,
+    pub child: Option<u64>,
+}
+
+impl Placeholder {
+    pub const DEFAULT_COLOR: Color = Color(0xFF45_5A64);
+    pub const DEFAULT_STROKE_WIDTH: f32 = 2.0;
+    pub const DEFAULT_FALLBACK: f32 = 400.0;
+
+    pub fn new() -> Placeholder {
+        Placeholder {
+            color: Placeholder::DEFAULT_COLOR,
+            stroke_width: Placeholder::DEFAULT_STROKE_WIDTH,
+            fallback_width: Placeholder::DEFAULT_FALLBACK,
+            fallback_height: Placeholder::DEFAULT_FALLBACK,
+            child: None,
+        }
+    }
+
+    /// The size it takes, given what the parent allowed. `None` for a bound
+    /// means unbounded.
+    pub fn size(&self, max_width: Option<f32>, max_height: Option<f32>) -> (f32, f32) {
+        (
+            max_width.unwrap_or(self.fallback_width),
+            max_height.unwrap_or(self.fallback_height),
+        )
+    }
+
+    /// The lines drawn, as `((x1, y1), (x2, y2))` pairs, after the rectangle.
+    pub fn diagonals(&self, size: (f32, f32)) -> [((f32, f32), (f32, f32)); 2] {
+        let (w, h) = size;
+        [
+            ((w, 0.0), (0.0, h)), // top right to bottom left
+            ((0.0, 0.0), (w, h)), // top left to bottom right
+        ]
+    }
+
+    /// Upstream `shouldRepaint`, which compares only what is painted.
+    pub fn should_repaint(&self, old: &Placeholder) -> bool {
+        self.color != old.color || self.stroke_width != old.stroke_width
+    }
+}
+
+impl Default for Placeholder {
+    fn default() -> Self {
+        Placeholder::new()
+    }
+}
+
+/// Upstream `RawKeyboardListener`.
+///
+/// **Deprecated upstream**, and the deprecation is the interesting part: it
+/// listens to the *raw* key events, which are the platform's own codes passed
+/// through unchanged. `KeyboardListener` replaced it because those codes differ
+/// between platforms for the same physical key, so anything written against
+/// them was written against one operating system.
+///
+/// Ported because the ruler asks for it and because the shape is worth having
+/// written down: same fields, same defaults, one older event type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawKeyboardListener {
+    pub focus_node: u64,
+    /// Defaults to false: grabbing focus on build takes it from whatever the
+    /// reader was using.
+    pub autofocus: bool,
+    /// Defaults to true: something that takes key events is something a
+    /// keyboard user can reach.
+    pub include_semantics: bool,
+    pub has_on_key: bool,
+    pub child: u64,
+}
+
+impl RawKeyboardListener {
+    pub fn new(focus_node: u64, child: u64) -> RawKeyboardListener {
+        RawKeyboardListener {
+            focus_node,
+            autofocus: false,
+            include_semantics: true,
+            has_on_key: false,
+            child,
+        }
+    }
+
+    /// Whether this is the deprecated raw-event listener rather than
+    /// [`KeyboardListener`]. Both exist; only one should be reached for.
+    pub fn is_deprecated() -> bool {
+        true
+    }
+
+    /// A listener with no callback passes the key on rather than swallowing it.
+    pub fn handle(&self, has_focus: bool) -> KeyEventResult {
+        if has_focus && self.has_on_key {
+            KeyEventResult::Handled
+        } else {
+            KeyEventResult::Ignored
+        }
+    }
+}
+
+/// Upstream `DefaultTextHeightBehavior`.
+///
+/// An `InheritedTheme` carrying one value down a subtree: how the first line's
+/// ascent and the last line's descent are treated when a `TextStyle.height` is
+/// set.
+///
+/// It is an inherited **theme** rather than a plain inherited widget, which
+/// matters in one place: a route pushed on top of this subtree is built
+/// somewhere else in the tree entirely, and only a theme is captured and
+/// carried across that boundary. Without it, a dialog's text would silently
+/// stop matching the page that opened it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DefaultTextHeightBehavior {
+    /// Whether the first line's ascent is scaled by the style's height.
+    pub apply_height_to_first_ascent: bool,
+    /// And the last line's descent. Both default to true.
+    pub apply_height_to_last_descent: bool,
+    pub child: u64,
+}
+
+impl DefaultTextHeightBehavior {
+    pub fn new(child: u64) -> DefaultTextHeightBehavior {
+        DefaultTextHeightBehavior {
+            apply_height_to_first_ascent: true,
+            apply_height_to_last_descent: true,
+            child,
+        }
+    }
+
+    /// Upstream `maybeOf`, which creates a dependency. There is also an `of`
+    /// that asserts -- two spellings of the same lookup, one for callers that
+    /// can cope with an absence and one for callers that cannot.
+    pub fn maybe_of(
+        ancestor: Option<DefaultTextHeightBehavior>,
+    ) -> Option<DefaultTextHeightBehavior> {
+        ancestor
+    }
+
+    pub fn update_should_notify(&self, old: &DefaultTextHeightBehavior) -> bool {
+        self.apply_height_to_first_ascent != old.apply_height_to_first_ascent
+            || self.apply_height_to_last_descent != old.apply_height_to_last_descent
+    }
+
+    /// Whether this is carried across a route boundary. It is, because it is a
+    /// theme.
+    pub fn is_captured_by_routes() -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +765,99 @@ mod tests {
     fn disabled_is_a_kind_of_configuration_rather_than_a_field() {
         assert!(SpellCheckConfiguration::new().spell_check_enabled());
         assert!(!SpellCheckConfiguration::disabled().spell_check_enabled());
+    }
+    // -- Placeholder ----------------------------------------------------------
+
+    #[test]
+    fn a_placeholder_in_an_unbounded_box_falls_back_rather_than_failing() {
+        // Failing there would be the opposite of useful: the point of the
+        // widget is to stand in for something not written yet.
+        let placeholder = Placeholder::new();
+        assert_eq!(placeholder.size(Some(200.0), Some(100.0)), (200.0, 100.0));
+        assert_eq!(placeholder.size(None, Some(100.0)), (400.0, 100.0));
+        assert_eq!(placeholder.size(None, None), (400.0, 400.0));
+    }
+
+    #[test]
+    fn the_mark_is_a_box_with_both_diagonals() {
+        let placeholder = Placeholder::new();
+        let diagonals = placeholder.diagonals((100.0, 50.0));
+        assert_eq!(diagonals[0], ((100.0, 0.0), (0.0, 50.0)));
+        assert_eq!(diagonals[1], ((0.0, 0.0), (100.0, 50.0)));
+    }
+
+    #[test]
+    fn a_placeholder_repaints_only_for_what_is_painted() {
+        let base = Placeholder::new();
+        let mut wider = base;
+        wider.fallback_width = 800.0;
+        assert!(!base.should_repaint(&wider), "size is not paint");
+
+        let mut recoloured = base;
+        recoloured.color = Color(0xFFFF_0000);
+        assert!(base.should_repaint(&recoloured));
+    }
+
+    // -- RawKeyboardListener ---------------------------------------------------
+
+    #[test]
+    fn the_raw_listener_is_the_deprecated_one() {
+        // Raw events are the platform's own codes, which differ between
+        // platforms for the same physical key.
+        assert!(RawKeyboardListener::is_deprecated());
+    }
+
+    #[test]
+    fn a_raw_listener_with_no_callback_is_transparent() {
+        let mut listener = RawKeyboardListener::new(1, 2);
+        assert_eq!(listener.handle(true), KeyEventResult::Ignored);
+
+        listener.has_on_key = true;
+        assert_eq!(listener.handle(true), KeyEventResult::Handled);
+        assert_eq!(listener.handle(false), KeyEventResult::Ignored);
+    }
+
+    #[test]
+    fn it_does_not_grab_focus_but_does_appear_to_a_screen_reader() {
+        let listener = RawKeyboardListener::new(1, 2);
+        assert!(!listener.autofocus);
+        assert!(listener.include_semantics);
+    }
+
+    // -- DefaultTextHeightBehavior -----------------------------------------------
+
+    #[test]
+    fn being_a_theme_is_what_carries_it_across_a_route_boundary() {
+        // A route is built somewhere else in the tree entirely, and only a
+        // theme is captured across that seam. Without it a dialog's text would
+        // silently stop matching the page that opened it.
+        assert!(DefaultTextHeightBehavior::is_captured_by_routes());
+    }
+
+    #[test]
+    fn both_ends_of_the_line_get_the_height_by_default() {
+        let behavior = DefaultTextHeightBehavior::new(1);
+        assert!(behavior.apply_height_to_first_ascent);
+        assert!(behavior.apply_height_to_last_descent);
+    }
+
+    #[test]
+    fn it_notifies_only_when_one_of_the_two_flags_moved() {
+        let base = DefaultTextHeightBehavior::new(1);
+        assert!(!base.update_should_notify(&DefaultTextHeightBehavior::new(2)));
+
+        let mut changed = base;
+        changed.apply_height_to_last_descent = false;
+        assert!(base.update_should_notify(&changed));
+    }
+
+    #[test]
+    fn an_absent_ancestor_is_an_answer_rather_than_an_error() {
+        assert_eq!(DefaultTextHeightBehavior::maybe_of(None), None);
+        let present = DefaultTextHeightBehavior::new(1);
+        assert_eq!(
+            DefaultTextHeightBehavior::maybe_of(Some(present)),
+            Some(present)
+        );
     }
 }

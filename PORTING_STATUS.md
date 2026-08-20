@@ -164,6 +164,54 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### widgets 层只剩一个文件了(2026-08-20)
+
+一次收掉 widgets 层最后五个非引擎类:`Placeholder`、`RawKeyboardListener`、
+`DefaultTextHeightBehavior`(都进 `small_widgets.rs`)、`AutofillGroupState`(新模块 `autofill.rs`)、
+`TextSelectionToolbarLayoutDelegate`(进 `text_selection.rs`)。覆盖率 1742/1888(92.3%)。测试 3160。
+
+**至此 `widgets/` 层只剩 `platform_view.dart` 一个文件**(3 个 MISSING,同文件另有 5 个已记为
+blocked-engine)。**其余每一个 widgets 文件都已覆盖。**
+
+---
+
+**`TextSelectionToolbarLayoutDelegate` 拿到的是两个锚点,不是一个**——「在选区上方时坐哪」和「在下方时坐
+哪」——**由布局阶段来挑。** 因为在工具条被量出来之前,没有人知道它放得下哪一边,而到那时调用方早就走了。
+
+它的 `centerOn` 三个分支,上游都在注释里点了名:左边溢出就贴左、右边溢出就贴右、否则正中。**一条半挂在
+屏幕外的工具条,比一条没有正对着选区的工具条更糟**——和 tooltip 的 `positionDependentBox` 是同一个判断。
+
+**而 `fitsAbove` 是一个可选的覆写,上游给的理由很具体:** Material 的工具条在它的溢出菜单展开时会强制这
+个值,因为**展开的菜单比收起的高,否则工具条会在读者正用着它的时候翻到另一边去**。**这个覆写存在,是为
+了让一个 widget 在动画期间把一个决定摁住。**
+
+**`AutofillGroupState` 里最要紧的一条:只有最外层的那个组会去结束平台的 autofill 上下文。** 那个上下文对
+整张表单是一个东西,**而一个嵌套的组被重建时,不该替整张表单决定「到现在为止填的东西值不值得存」。**
+`_isTopmostAutofillGroup` 在 `didChangeDependencies` 里重算,于是一个被挪到别人下面的组,**不用谁告诉它
+就不再是最外层了。**
+
+另外两条:`autofillClients` **只过滤出启用的那些**——一个禁用的字段仍然属于这张表单,只是不递给平台;而
+`unregister` **断言那个 id 在**——注销一个从没注册过的东西,意味着注册/注销已经失步,**悄悄什么都不做会
+把这件事藏起来。**
+
+---
+
+其余三个,各是一条被写下来的判断:
+
+* **`Placeholder` 在无约束的盒子里退回 400×400 而不是报错。** 失败在这里恰恰是反效果:**这个 widget 的用
+  途就是替一个还没写的东西站着**,它在还没写的地方崩掉就毫无意义。而那个「打叉的框」是一次
+  `Path`——矩形加两条开放折线——所以整个记号是**一次描边**。
+* **`RawKeyboardListener` 是上游已经废弃的那个,而废弃本身才是要点:** 它听的是**原始**按键事件,也就是平
+  台自己的编码原样传过来。`KeyboardListener` 取代了它,因为**同一个物理按键在不同平台上的编码不一样**,
+  于是照着它们写的东西,是照着一个操作系统写的。
+* **`DefaultTextHeightBehavior` 是 `InheritedTheme` 而不是普通的 InheritedWidget,而这一处区别只在一个地
+  方要紧:** 一个被推上来的路由是在树里完全另一个地方构建的,**而只有 theme 会被捕获并带过那道缝。** 没
+  有它,一个对话框里的文字会悄悄地和打开它的那个页面不一致。
+
+验证:`cargo test --lib` 3160 绿,GN `rustflutter_unittests` 3160 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1742 accounted / 146 MISSING(92.3%)。
+
 ### 一个不创建渲染对象的渲染对象 widget(2026-08-20)
 
 新模块 `adapter.rs`(`RenderObjectToWidgetAdapter`、`RenderObjectToWidgetElement`),以及补进

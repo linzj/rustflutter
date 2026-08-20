@@ -522,6 +522,90 @@ impl TextSelectionOverlay {
     }
 }
 
+/// Upstream `TextSelectionToolbarLayoutDelegate`.
+///
+/// Where a selection toolbar goes. It is given **two anchors, not one** --
+/// where to sit above the selection and where to sit below -- and picks between
+/// them at layout, because nobody can know which side the toolbar fits on until
+/// it has been measured, and by then the caller is long gone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSelectionToolbarLayoutDelegate {
+    pub anchor_above: (f32, f32),
+    pub anchor_below: (f32, f32),
+    /// An override. Upstream's reason is specific: the Material toolbar forces
+    /// it while its overflow menu is open, because the open menu is taller than
+    /// the closed one and the toolbar would otherwise flip sides in the middle
+    /// of the reader using it. **The override exists so a widget can hold a
+    /// decision still while it animates.**
+    pub fits_above: Option<bool>,
+}
+
+impl TextSelectionToolbarLayoutDelegate {
+    pub fn new(
+        anchor_above: (f32, f32),
+        anchor_below: (f32, f32),
+    ) -> TextSelectionToolbarLayoutDelegate {
+        TextSelectionToolbarLayoutDelegate {
+            anchor_above,
+            anchor_below,
+            fits_above: None,
+        }
+    }
+
+    pub fn with_fits_above(mut self, fits: bool) -> Self {
+        self.fits_above = Some(fits);
+        self
+    }
+
+    /// Upstream's static `centerOn`, whose three cases upstream names in
+    /// comments: overflowing left, put it as far left as possible; overflowing
+    /// right, as far right; otherwise perfectly centred.
+    ///
+    /// **A toolbar half off the screen is worse than one not quite over the
+    /// selection** -- the same judgement the tooltip's `positionDependentBox`
+    /// makes.
+    pub fn center_on(position: f32, width: f32, max: f32) -> f32 {
+        if position - width / 2.0 < 0.0 {
+            return 0.0;
+        }
+        if position + width / 2.0 > max {
+            return max - width;
+        }
+        position - width / 2.0
+    }
+
+    /// Upstream `getPositionForChild`.
+    pub fn position_for_child(&self, size: (f32, f32), child_size: (f32, f32)) -> (f32, f32) {
+        let fits_above = self
+            .fits_above
+            .unwrap_or(self.anchor_above.1 >= child_size.1);
+        let anchor = if fits_above {
+            self.anchor_above
+        } else {
+            self.anchor_below
+        };
+        let y = if fits_above {
+            // Even "fits" is clamped: a toolbar pushed off the top would be
+            // unreachable rather than merely misplaced.
+            (anchor.1 - child_size.1).max(0.0)
+        } else {
+            anchor.1
+        };
+        (
+            TextSelectionToolbarLayoutDelegate::center_on(anchor.0, child_size.0, size.0),
+            y,
+        )
+    }
+
+    /// Upstream `shouldRelayout`, which compares all three inputs -- including
+    /// the override, so forcing it re-runs the layout.
+    pub fn should_relayout(&self, old: &TextSelectionToolbarLayoutDelegate) -> bool {
+        self.anchor_above != old.anchor_above
+            || self.anchor_below != old.anchor_below
+            || self.fits_above != old.fits_above
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,5 +878,93 @@ mod tests {
 
         overlay.end_handle_drag();
         assert!(!overlay.is_dragging_handle());
+    }
+    // -- TextSelectionToolbarLayoutDelegate ------------------------------------
+
+    fn delegate() -> TextSelectionToolbarLayoutDelegate {
+        TextSelectionToolbarLayoutDelegate::new((200.0, 300.0), (200.0, 360.0))
+    }
+
+    #[test]
+    fn two_anchors_because_nobody_knows_which_side_fits_until_it_is_measured() {
+        let delegate = delegate();
+        // Room above: 300 of space for a 44-tall toolbar.
+        assert_eq!(
+            delegate.position_for_child((400.0, 800.0), (120.0, 44.0)).1,
+            256.0
+        );
+        // No room above: a toolbar taller than the anchor goes below instead.
+        assert_eq!(
+            delegate
+                .position_for_child((400.0, 800.0), (120.0, 400.0))
+                .1,
+            360.0
+        );
+    }
+
+    #[test]
+    fn a_toolbar_half_off_the_screen_is_worse_than_one_not_quite_centred() {
+        assert_eq!(
+            TextSelectionToolbarLayoutDelegate::center_on(200.0, 120.0, 400.0),
+            140.0,
+            "centred where it fits"
+        );
+        assert_eq!(
+            TextSelectionToolbarLayoutDelegate::center_on(10.0, 120.0, 400.0),
+            0.0,
+            "flush left rather than off the left edge"
+        );
+        assert_eq!(
+            TextSelectionToolbarLayoutDelegate::center_on(395.0, 120.0, 400.0),
+            280.0,
+            "and flush right at the other end"
+        );
+    }
+
+    #[test]
+    fn forcing_the_side_holds_it_still_while_something_animates() {
+        // The Material toolbar forces it while its overflow menu opens, because
+        // the open menu is taller and the toolbar would otherwise flip sides in
+        // the middle of the reader using it.
+        let forced = delegate().with_fits_above(true);
+        assert_eq!(
+            forced.position_for_child((400.0, 800.0), (120.0, 400.0)).1,
+            0.0,
+            "kept above, and clamped rather than pushed off the top"
+        );
+
+        let unforced = delegate();
+        assert_eq!(
+            unforced
+                .position_for_child((400.0, 800.0), (120.0, 400.0))
+                .1,
+            360.0,
+            "which is what it would have done on its own"
+        );
+    }
+
+    #[test]
+    fn even_fitting_above_is_clamped_to_the_top_of_the_screen() {
+        // A toolbar pushed off the top would be unreachable rather than merely
+        // misplaced.
+        let tight = TextSelectionToolbarLayoutDelegate::new((200.0, 20.0), (200.0, 80.0))
+            .with_fits_above(true);
+        assert_eq!(
+            tight.position_for_child((400.0, 800.0), (120.0, 44.0)).1,
+            0.0
+        );
+    }
+
+    #[test]
+    fn changing_the_forced_side_re_runs_the_layout() {
+        let base = delegate();
+        assert!(!base.should_relayout(&delegate()));
+        assert!(base.should_relayout(&delegate().with_fits_above(true)));
+        assert!(
+            base.should_relayout(&TextSelectionToolbarLayoutDelegate::new(
+                (200.0, 301.0),
+                (200.0, 360.0)
+            ))
+        );
     }
 }
