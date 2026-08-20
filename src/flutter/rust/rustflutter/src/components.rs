@@ -212,6 +212,37 @@ pub enum ButtonVariant {
     Text,
     /// Filled with the danger colour.
     Danger,
+    /// Upstream `ElevatedButton`: a raised card of a button.
+    ///
+    /// **Not a filled button with a shadow.** Its background is
+    /// `surfaceContainerLow` and its label the primary -- the opposite way
+    /// round from a filled button, whose background is the primary. Material 3
+    /// demotes it deliberately: elevation is how it stands out, so the colour
+    /// does not have to, and a raised button in the primary colour would be
+    /// shouting twice.
+    Elevated,
+}
+
+impl ButtonVariant {
+    /// The control's own defaults -- the *third* step of upstream's chain,
+    /// after the caller's style and the theme's.
+    ///
+    /// On the enum rather than inside `Button::build` because it is not only
+    /// `Button` that needs it: the gallery's button demo draws its own
+    /// variants and had this table copied out by hand, which meant adding a
+    /// variant here broke it there. A table two places have to agree on
+    /// belongs to neither of them.
+    pub fn default_colors(self, theme: &Theme) -> (Option<Color>, Color, Option<Color>) {
+        match self {
+            ButtonVariant::Filled => (Some(theme.primary), theme.on_primary, None),
+            ButtonVariant::Danger => (Some(theme.danger), theme.on_primary, None),
+            ButtonVariant::Outlined => (None, theme.primary, Some(theme.outline)),
+            ButtonVariant::Text => (None, theme.primary, None),
+            // See the variant's own docs: the low surface container behind a
+            // primary label, which is a filled button's pair the other way up.
+            ButtonVariant::Elevated => (Some(theme.surface_variant), theme.primary, None),
+        }
+    }
 }
 
 /// A button's height, and the least width one may be. Upstream's
@@ -471,12 +502,7 @@ impl Component for Button {
         let id = self.id;
         let min_width = self.min_width;
 
-        let (mut fill, mut label_color, mut border) = match style {
-            ButtonVariant::Filled => (Some(theme.primary), theme.on_primary, None),
-            ButtonVariant::Danger => (Some(theme.danger), theme.on_primary, None),
-            ButtonVariant::Outlined => (None, theme.primary, Some(theme.outline)),
-            ButtonVariant::Text => (None, theme.primary, None),
-        };
+        let (mut fill, mut label_color, mut border) = style.default_colors(&theme);
         if !enabled {
             // A disabled button is one rule rather than a palette per style,
             // and it is upstream M3's: the surface overlaid with 12% of the
@@ -531,6 +557,9 @@ impl Component for Button {
         // colour, which is all a press has to say there.
         let press_overlay = pressed.then(|| match style {
             ButtonVariant::Filled | ButtonVariant::Danger => theme.on_primary.with_alpha(0x1A),
+            // Elevated tints in the primary with the unfilled ones, not in
+            // `onPrimary` with the filled one: its *label* is the primary, so
+            // that is the colour a press has to say something in.
             _ => theme.primary.with_alpha(0x1A),
         });
         // As round as the button is tall: upstream's `StadiumBorder`.
@@ -3093,6 +3122,136 @@ mod tests {
             Offset::new(0.0, 8.0),
             "upstream's compatibility constant, added to whatever was asked for"
         );
+    }
+
+    // -- The elevated variant ----------------------------------------------------------
+
+    use crate::component_themes::{
+        ButtonStyle, ElevatedButtonTheme, ElevatedButtonThemeData, ResolvedButton,
+    };
+
+    fn resolved_button(
+        variant: ButtonVariant,
+        style: Option<ButtonStyle>,
+        states: crate::widget_state::WidgetStates,
+    ) -> ResolvedButton {
+        struct Reader {
+            variant: ButtonVariant,
+            states: crate::widget_state::WidgetStates,
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedButton>>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let theme = theme_of(context);
+                *self.seen.borrow_mut() = Some(ResolvedButton::of(
+                    context,
+                    self.variant,
+                    self.states,
+                    ResolvedButton {
+                        background: Some(theme.surface_variant),
+                        foreground: theme.primary,
+                        side: None,
+                        padding: None,
+                        minimum_size: None,
+                    },
+                ));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut data = ElevatedButtonThemeData::new();
+        data.style = style;
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            ElevatedButtonTheme::new(
+                data,
+                component(Reader {
+                    variant,
+                    states,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn an_elevated_button_is_not_a_filled_one_with_a_shadow() {
+        // Its background is the low surface container and its label the
+        // primary -- the opposite way round from a filled button. Material 3
+        // demotes it deliberately: elevation is how it stands out, so the
+        // colour does not have to.
+        let theme = Theme::dark();
+        let elevated = resolved_button(
+            ButtonVariant::Elevated,
+            None,
+            crate::widget_state::WidgetStates::NONE,
+        );
+        assert_eq!(elevated.foreground, theme.primary);
+        assert_eq!(elevated.background, Some(theme.surface_variant));
+        assert_ne!(
+            elevated.background,
+            Some(theme.primary),
+            "a filled button's colours, the other way round"
+        );
+    }
+
+    #[test]
+    fn every_variant_has_its_own_pair_and_no_two_agree() {
+        // Asked through the one table both `Button::build` and the gallery's
+        // demo read, so a variant added in one place cannot be forgotten in
+        // the other.
+        let theme = Theme::dark();
+        let all = [
+            ButtonVariant::Filled,
+            ButtonVariant::Danger,
+            ButtonVariant::Outlined,
+            ButtonVariant::Text,
+            ButtonVariant::Elevated,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(
+                    a.default_colors(&theme),
+                    b.default_colors(&theme),
+                    "{a:?} and {b:?} are drawn the same"
+                );
+            }
+        }
+
+        // And the elevated one is the filled one's colours the other way up.
+        let (elevated_fill, elevated_label, _) = ButtonVariant::Elevated.default_colors(&theme);
+        let (filled_fill, filled_label, _) = ButtonVariant::Filled.default_colors(&theme);
+        assert_eq!(elevated_label, theme.primary);
+        assert_eq!(filled_fill, Some(theme.primary));
+        assert_ne!(elevated_fill, filled_fill);
+        assert_ne!(elevated_label, filled_label);
+    }
+
+    #[test]
+    fn an_elevated_button_reads_its_own_theme_and_not_the_filled_one_s() {
+        const MINE: Color = Color::argb(0xFF, 0x31, 0x41, 0x59);
+        let mut style = ButtonStyle::default();
+        style.background_color = Some(crate::widget_state::StateProperty::resolve_with(|_| {
+            Some(MINE)
+        }));
+        let resolved = resolved_button(
+            ButtonVariant::Elevated,
+            Some(style.clone()),
+            crate::widget_state::WidgetStates::NONE,
+        );
+        assert_eq!(resolved.background, Some(MINE));
+
+        // The same theme installed while a *filled* button resolves changes
+        // nothing: each variant reads the theme upstream's matching widget
+        // reads.
+        let filled = resolved_button(
+            ButtonVariant::Filled,
+            Some(style),
+            crate::widget_state::WidgetStates::NONE,
+        );
+        assert_ne!(filled.background, Some(MINE));
     }
 
     #[test]

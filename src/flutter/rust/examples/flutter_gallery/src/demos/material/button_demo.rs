@@ -270,13 +270,10 @@ impl Component for IconDemoButton {
         let handlers = self.handlers.clone();
         let id = self.id;
 
-        // The colour table is `Button::build`'s, verbatim.
-        let (mut fill, mut label_color, mut border) = match style {
-            ButtonVariant::Filled => (Some(theme.primary), theme.on_primary, None),
-            ButtonVariant::Danger => (Some(theme.danger), theme.on_primary, None),
-            ButtonVariant::Outlined => (None, theme.primary, Some(theme.outline)),
-            ButtonVariant::Text => (None, theme.primary, None),
-        };
+        // The colour table is `Button::build`'s -- asked for rather than
+        // copied. It used to be copied, and a variant added to the framework
+        // stopped this file compiling, which is exactly what a copy is for.
+        let (mut fill, mut label_color, mut border) = style.default_colors(&theme);
         if !enabled {
             if fill.is_some() || border.is_some() {
                 let wash = theme.text.with_alpha(0x1F);

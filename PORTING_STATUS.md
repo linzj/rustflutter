@@ -10247,3 +10247,37 @@ M7（widget 传空状态）和 M8（widget 不看 enabled）。解析函数本�
 而主题说 fixed」这种情况就漏了——而那恰恰是开发者最难自己看出来的一种。
 
 主题 34 → 33。
+
+## `unwired.py` 自己错了：之前报的数是**多报**的（2026-08-21）
+
+这轮本来要接按钮那一族，一看发现 `ResolvedButton::of` **早就被 `components.rs`
+调着**，读的正是 `FilledButtonTheme`/`OutlinedButtonTheme`/`TextButtonTheme`——
+而工具把这三个都算成「没人读」。
+
+原因是工具只认两种名字：`XTheme::of` 和 `Resolved<X去掉Theme>::of`。**解析器可以
+叫任何名字，也可以一个解析器读好几个主题。** `ResolvedButton` 两条都不符合。
+
+这跟 `depth.py` 文档里写明的盲点是同一个，只是这次咬到了另一把尺子。改成两级
+可达：先在主题文件里找出所有「`of` 里调了 `XTheme::of`」的类型，再看这些类型有没有
+被外面调。
+
+**所以之前几轮报的 38/37/36/35/34/33 都是多报的**——按接线的先后，真实数应是
+36/35/34/33/32/31 左右。每一轮做的接线都是真的（那些主题确实没人读），少的是本来
+就已经接上的那几个。修正后的数：**49 个主题，31 个没人读**。
+
+### 顺手做掉的：`ElevatedButtonTheme`
+
+`ResolvedButton` 覆盖 filled/outlined/text，**没有 elevated**——因为
+`ButtonVariant` 里根本没有这个变体。补上了。
+
+**它不是「带阴影的实心按钮」**：背景是低层 surface container、文字是 primary，
+和实心按钮正好反过来。Material 3 是故意把它降级的——**它靠高度突出，所以颜色
+就不必再喊一遍**。
+
+补的时候 gallery 编译不过了：`button_demo.rs` 里有一份**逐字抄过来的颜色表**
+（注释就写着 "verbatim"），加一个变体就漏了一个分支。修法不是补分支，是把表提到
+`ButtonVariant::default_colors` 上，两边都问它——**两个地方必须保持一致的表，
+不属于其中任何一个**。这也顺带让那条「elevated 用了 filled 的配色」的变异变红：
+之前测试是自己传默认值进解析器的，压根没经过那张表。
+
+主题 31 → 30。

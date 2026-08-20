@@ -54,18 +54,51 @@ def readers():
     return out
 
 
+def resolvers():
+    """{resolver name: [themes it reads]} for every `X::of` in the themes file.
+
+    A resolver is any type in the themes file whose `of` calls one or more
+    `XTheme::of`.  Following these is what the first version of this tool did
+    not do, and it over-reported by a third: `ResolvedButton::of` reads three
+    button themes and is called from `components.rs`, but the tool looked for
+    `ResolvedFilledButton` -- a name derived from the theme's -- and found
+    nothing.  A resolver may be called anything, and several themes may share
+    one.
+    """
+    text = io.open(THEMES, encoding='utf-8', errors='replace').read()
+    out = {}
+    for match in re.finditer(r'^impl (\w+) \{', text, re.M):
+        name = match.group(1)
+        end = text.find(chr(10) + 'impl ', match.end())
+        body = text[match.end():end if end > 0 else len(text)]
+        if not re.search(r'fn of\(', body):
+            continue
+        reads = sorted(set(re.findall(r'(\w+Theme)::of\(', body)))
+        if reads:
+            out[name] = reads
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--all', action='store_true')
     args = parser.parse_args()
 
     sources = readers()
+    # A resolver called from outside marks every theme it reads as read.
+    through = {}
+    for resolver, themes in resolvers().items():
+        pattern = re.compile(re.escape(resolver) + r'::of\(')
+        where = sorted(name for name, text in sources.items() if pattern.search(text))
+        for theme in themes:
+            through.setdefault(theme, []).extend(
+                f'{name} (via {resolver})' for name in where)
+
     rows = []
     for theme in wrappers():
-        resolved = 'Resolved' + theme[:-len('Theme')]
-        pattern = re.compile(
-            re.escape(theme) + r'::of\(|' + re.escape(resolved) + r'::of\(')
+        pattern = re.compile(re.escape(theme) + r'::of\(')
         where = sorted(name for name, text in sources.items() if pattern.search(text))
+        where += sorted(through.get(theme, []))
         rows.append((theme, where))
 
     unwired = [(theme, where) for theme, where in rows if not where]

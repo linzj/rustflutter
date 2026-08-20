@@ -3198,6 +3198,7 @@ impl ResolvedButton {
         // Each variant reads the theme upstream's matching widget reads.
         let style = match variant {
             ButtonVariant::Filled | ButtonVariant::Danger => FilledButtonTheme::of(context).style,
+            ButtonVariant::Elevated => ElevatedButtonTheme::of(context).style,
             ButtonVariant::Outlined => OutlinedButtonTheme::of(context).style,
             ButtonVariant::Text => TextButtonTheme::of(context).style,
         };
