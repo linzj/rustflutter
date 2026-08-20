@@ -1167,6 +1167,140 @@ impl ResolvedProgressIndicator {
     }
 }
 
+/// Where a snack bar's `behavior` came from.
+///
+/// Upstream's assert message names this, and it is the reason the enum exists
+/// rather than a bool: told only that *"Width can only be used with floating
+/// behavior"*, a developer who never wrote `behavior:` anywhere has nowhere to
+/// look. Told that the fixed behaviour came from the inherited theme, they do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnackBarBehaviorSource {
+    Widget,
+    Theme,
+    Default,
+}
+
+/// What a snack bar is drawn with -- upstream's `_SnackBarState.build` reading
+/// `SnackBarTheme.of` and then `_SnackbarDefaultsM3`.
+///
+/// # `width` and `margin` only mean anything when it floats
+///
+/// A fixed snack bar is attached to the bottom edge of the screen and spans it;
+/// there is no room in that for a width or a margin, and upstream asserts
+/// rather than quietly ignoring them. It also asserts *where the fixed
+/// behaviour came from* -- see [`SnackBarBehaviorSource`].
+pub struct ResolvedSnackBar {
+    pub behavior: SnackBarBehavior,
+    pub behavior_source: SnackBarBehaviorSource,
+    pub background_color: Color,
+    pub elevation: f32,
+    pub width: Option<f32>,
+    pub inset_padding: EdgeInsets,
+    pub show_close_icon: bool,
+    pub action_overflow_threshold: f32,
+    pub content_text_style: Option<TextStyle>,
+    pub action_text_color: Option<Color>,
+}
+
+impl ResolvedSnackBar {
+    /// Upstream's `_SnackbarDefaultsM3`.
+    pub const ELEVATION: f32 = 6.0;
+    pub const ACTION_OVERFLOW_THRESHOLD: f32 = 0.25;
+    pub const SHOW_CLOSE_ICON: bool = false;
+
+    /// Upstream's horizontal padding, which differs by behaviour: 16 floating,
+    /// 24 fixed. A floating bar already has its inset padding holding it off
+    /// the edges, so it needs less of its own.
+    pub fn horizontal_padding(behavior: SnackBarBehavior) -> f32 {
+        match behavior {
+            SnackBarBehavior::Floating => 16.0,
+            SnackBarBehavior::Fixed => 24.0,
+        }
+    }
+
+    pub fn of(context: &mut BuildContext, bar: &crate::snack_bar::SnackBar) -> ResolvedSnackBar {
+        let data = SnackBarTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        let (behavior, behavior_source) = match (bar.behavior, data.behavior) {
+            (Some(behavior), _) => (behavior, SnackBarBehaviorSource::Widget),
+            (None, Some(behavior)) => (behavior, SnackBarBehaviorSource::Theme),
+            (None, None) => (SnackBarBehavior::Fixed, SnackBarBehaviorSource::Default),
+        };
+        ResolvedSnackBar {
+            behavior,
+            behavior_source,
+            background_color: data.background_color.unwrap_or(scheme.inverse_surface()),
+            elevation: bar
+                .elevation
+                .or(data.elevation)
+                .unwrap_or(ResolvedSnackBar::ELEVATION),
+            width: bar.width.or(data.width),
+            inset_padding: data
+                .inset_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets {
+                    left: 15.0,
+                    top: 5.0,
+                    right: 15.0,
+                    bottom: 10.0,
+                }),
+            show_close_icon: bar
+                .show_close_icon
+                .or(data.show_close_icon)
+                .unwrap_or(ResolvedSnackBar::SHOW_CLOSE_ICON),
+            action_overflow_threshold: bar
+                .action_overflow_threshold
+                .or(data.action_overflow_threshold)
+                .unwrap_or(ResolvedSnackBar::ACTION_OVERFLOW_THRESHOLD),
+            content_text_style: data.content_text_style.clone(),
+            action_text_color: data.action_text_color,
+        }
+    }
+
+    /// Upstream's assert inside `build`: `width` and `margin` are floating-only,
+    /// and the message says which of the three steps chose the behaviour.
+    ///
+    /// Returned rather than asserted so it can be checked; the widget asserts on
+    /// it.
+    pub fn check(&self, margin: Option<f32>) -> Result<(), String> {
+        if self.behavior == SnackBarBehavior::Floating {
+            return Ok(());
+        }
+        let blame = match self.behavior_source {
+            SnackBarBehaviorSource::Widget => {
+                "SnackBarBehavior.fixed was set in the SnackBar constructor."
+            }
+            SnackBarBehaviorSource::Theme => {
+                "SnackBarBehavior.fixed was set by the inherited SnackBarThemeData."
+            }
+            SnackBarBehaviorSource::Default => "SnackBarBehavior.fixed was set by default.",
+        };
+        for (value, name) in [
+            (margin.is_some(), "Margin"),
+            (self.width.is_some(), "Width"),
+        ] {
+            if value {
+                return Err(format!(
+                    "{name} can only be used with floating behavior. {blame}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Upstream's `willOverflowAction`: the action moves to its own line when it
+    /// would take more than the threshold's share of the bar.
+    ///
+    /// A fraction and not a width, because the bar's width is the screen's and
+    /// the same action is comfortable on a tablet and crowded on a phone.
+    pub fn will_overflow_action(&self, action_width: f32, bar_width: f32) -> bool {
+        if bar_width <= 0.0 {
+            return false;
+        }
+        action_width / bar_width > self.action_overflow_threshold
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

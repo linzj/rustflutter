@@ -162,6 +162,28 @@ impl SnackBar {
         }
     }
 
+    /// This bar's appearance, with the theme and the defaults folded in.
+    ///
+    /// Upstream does this inline in `_SnackBarState.build`; here it is a method
+    /// so that the answer can be checked without building a frame, and so that
+    /// [`SnackBar::check`] has something to check.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedSnackBar {
+        crate::component_themes::ResolvedSnackBar::of(context, self)
+    }
+
+    /// Upstream's floating-only assert, run against the resolved behaviour.
+    ///
+    /// It has to be the *resolved* one and not `self.behavior`: a bar that set
+    /// a width and left the behaviour alone is still wrong when the theme says
+    /// fixed, and that is the case a developer has the hardest time seeing --
+    /// which is why the message names where the behaviour came from.
+    pub fn check(&self, context: &mut crate::framework::BuildContext) -> Result<(), String> {
+        self.resolved(context).check(self.margin)
+    }
+
     /// Upstream's `action`, which also sets `persist`.
     ///
     /// **A bar with something to press does not go away on its own.**
@@ -474,6 +496,217 @@ mod tests {
         assert!(
             with_action.persists(),
             "and it still waits -- persist was decided when the action arrived"
+        );
+    }
+}
+
+#[cfg(test)]
+mod snack_bar_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ResolvedSnackBar, SnackBarBehaviorSource, SnackBarTheme, SnackBarThemeData,
+    };
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader {
+        bar: std::cell::RefCell<Option<SnackBar>>,
+        seen: std::rc::Rc<std::cell::RefCell<Option<(ResolvedSnackBar, Result<(), String>)>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let bar = self.bar.borrow_mut().take().expect("built once");
+            let resolved = bar.resolved(context);
+            let checked = bar.check(context);
+            *self.seen.borrow_mut() = Some((resolved, checked));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(bar: SnackBar, data: SnackBarThemeData) -> (ResolvedSnackBar, Result<(), String>) {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            SnackBarTheme::new(
+                data,
+                component(Reader {
+                    bar: std::cell::RefCell::new(Some(bar)),
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn a_bar_is_fixed_unless_something_says_otherwise() {
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert_eq!(resolved.behavior, SnackBarBehavior::Fixed);
+        assert_eq!(resolved.behavior_source, SnackBarBehaviorSource::Default);
+    }
+
+    #[test]
+    fn the_behaviour_comes_from_the_widget_then_the_theme_then_the_default() {
+        let mut floating = SnackBarThemeData::new();
+        floating.behavior = Some(SnackBarBehavior::Floating);
+
+        let (from_theme, _) = resolve(SnackBar::new(), floating.clone());
+        assert_eq!(from_theme.behavior, SnackBarBehavior::Floating);
+        assert_eq!(from_theme.behavior_source, SnackBarBehaviorSource::Theme);
+
+        let mut fixed = SnackBar::new();
+        fixed.behavior = Some(SnackBarBehavior::Fixed);
+        let (from_widget, _) = resolve(fixed, floating);
+        assert_eq!(from_widget.behavior, SnackBarBehavior::Fixed);
+        assert_eq!(from_widget.behavior_source, SnackBarBehaviorSource::Widget);
+    }
+
+    #[test]
+    fn width_and_margin_are_floating_only() {
+        let mut wide = SnackBar::new();
+        wide.width = Some(300.0);
+        let (_, checked) = resolve(wide, SnackBarThemeData::new());
+        assert!(checked.is_err(), "fixed by default, and a width was set");
+
+        let mut floating = SnackBarThemeData::new();
+        floating.behavior = Some(SnackBarBehavior::Floating);
+        let mut wide = SnackBar::new();
+        wide.width = Some(300.0);
+        assert!(resolve(wide, floating).1.is_ok());
+    }
+
+    #[test]
+    fn the_complaint_names_which_of_the_three_steps_chose_fixed() {
+        // Told only that a width needs floating behaviour, a developer who
+        // never wrote `behavior:` has nowhere to look.
+        let mut wide = SnackBar::new();
+        wide.width = Some(300.0);
+        let message = resolve(wide, SnackBarThemeData::new()).1.unwrap_err();
+        assert!(message.contains("by default"), "{message}");
+
+        let mut fixed_theme = SnackBarThemeData::new();
+        fixed_theme.behavior = Some(SnackBarBehavior::Fixed);
+        let mut wide = SnackBar::new();
+        wide.width = Some(300.0);
+        let message = resolve(wide, fixed_theme).1.unwrap_err();
+        assert!(message.contains("inherited SnackBarThemeData"), "{message}");
+
+        let mut wide = SnackBar::new();
+        wide.width = Some(300.0);
+        wide.behavior = Some(SnackBarBehavior::Fixed);
+        let message = resolve(wide, SnackBarThemeData::new()).1.unwrap_err();
+        assert!(message.contains("in the SnackBar constructor"), "{message}");
+    }
+
+    #[test]
+    fn a_margin_is_complained_about_by_name_and_so_is_a_width() {
+        let mut with_margin = SnackBar::new();
+        with_margin.margin = Some(8.0);
+        assert!(
+            resolve(with_margin, SnackBarThemeData::new())
+                .1
+                .unwrap_err()
+                .starts_with("Margin")
+        );
+
+        let mut with_width = SnackBar::new();
+        with_width.width = Some(8.0);
+        assert!(
+            resolve(with_width, SnackBarThemeData::new())
+                .1
+                .unwrap_err()
+                .starts_with("Width")
+        );
+    }
+
+    #[test]
+    fn a_floating_bar_needs_less_padding_of_its_own() {
+        // Its inset padding already holds it off the edges.
+        assert_eq!(
+            ResolvedSnackBar::horizontal_padding(SnackBarBehavior::Floating),
+            16.0
+        );
+        assert_eq!(
+            ResolvedSnackBar::horizontal_padding(SnackBarBehavior::Fixed),
+            24.0
+        );
+    }
+
+    #[test]
+    fn the_action_moves_to_its_own_line_by_fraction_and_not_by_width() {
+        // The bar's width is the screen's, and the same action is comfortable
+        // on a tablet and crowded on a phone.
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert_eq!(resolved.action_overflow_threshold, 0.25);
+
+        assert!(
+            !resolved.will_overflow_action(100.0, 800.0),
+            "an eighth of a tablet"
+        );
+        assert!(
+            resolved.will_overflow_action(100.0, 320.0),
+            "the same action on a phone"
+        );
+    }
+
+    #[test]
+    fn a_threshold_of_exactly_the_share_does_not_overflow() {
+        // Upstream's test is `>`, not `>=`.
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert!(!resolved.will_overflow_action(100.0, 400.0), "exactly 0.25");
+        assert!(resolved.will_overflow_action(101.0, 400.0));
+    }
+
+    #[test]
+    fn a_bar_of_no_width_does_not_divide_by_it() {
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert!(!resolved.will_overflow_action(100.0, 0.0));
+    }
+
+    #[test]
+    fn the_widget_beats_the_theme_beats_the_default_for_the_rest_too() {
+        let mut data = SnackBarThemeData::new();
+        data.elevation = Some(3.0);
+        data.show_close_icon = Some(true);
+        data.action_overflow_threshold = Some(0.5);
+
+        let (from_theme, _) = resolve(SnackBar::new(), data.clone());
+        assert_eq!(from_theme.elevation, 3.0);
+        assert!(from_theme.show_close_icon);
+        assert_eq!(from_theme.action_overflow_threshold, 0.5);
+
+        let mut bar = SnackBar::new();
+        bar.elevation = Some(9.0);
+        bar.show_close_icon = Some(false);
+        bar.action_overflow_threshold = Some(0.75);
+        let (from_widget, _) = resolve(bar, data);
+        assert_eq!(from_widget.elevation, 9.0);
+        assert!(!from_widget.show_close_icon);
+        assert_eq!(from_widget.action_overflow_threshold, 0.75);
+    }
+
+    #[test]
+    fn the_defaults_are_upstreams() {
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert_eq!(resolved.elevation, 6.0);
+        assert!(!resolved.show_close_icon);
+        assert_eq!(
+            resolved.inset_padding,
+            crate::render::EdgeInsets {
+                left: 15.0,
+                top: 5.0,
+                right: 15.0,
+                bottom: 10.0,
+            }
+        );
+        assert_eq!(
+            resolved.background_color,
+            crate::theme::ThemeData::fallback()
+                .color_scheme
+                .inverse_surface(),
+            "a snack bar is the inverse surface: it is a message over the app, \
+             not part of it"
         );
     }
 }
