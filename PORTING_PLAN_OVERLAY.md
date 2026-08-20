@@ -265,7 +265,30 @@ Navigator 那条线带来的是路由栈、返回键、`Future` 结果语义与 
 | S3 | L1 宿主接线 | `overlay.rs` 旧单测全绿 + 新树测 |
 | S4 | L2 正式实现（`OverlayPortal` 公开 API） | 继承上下文测试 + z 序测试 |
 | S5 | L3 模态语义 | barrier 吞点击、焦点不外泄、Esc 关闭 |
-| S6 | L4 逐件回填 | 每件一个相册 demo 页 |
+| S6 | L4 逐件回填 | 每件一个相册 demo 页（见下方「S6 出口判据的冲突」） |
+
+**S6 出口判据的冲突，以及怎么收的。**
+
+「每件一个相册 demo 页」在四件上做不到，原因不在本线：相册的移植契约
+（`examples/flutter_gallery/src/PORTING.md`）是**严格一一映射** ——「Every
+non-generated `lib/**.dart` file gets a same-relative-path `.rs` file」——而
+上游 flutter/gallery 的 26 个 material demo 里，**没有** autocomplete、
+magnifier、文本选择手柄、DragTarget feedback 的任何一个。给它们造页面就是往
+相册里加上游没有的文件，那是拿一条契约去换另一条。
+
+所以按实际能满足的方式收：
+
+- **上游相册有页面的六件**（Tooltip、SnackBar、PopupMenu、Drawer、
+  showDialog/show*Picker，以及 Autocomplete 走的那套宿主机制）——全部改接到
+  框架宿主，每件 demo 头部那段「因为没有 overlay 所以…」的说明同步删掉或改写，
+  过程中挖出的真问题记在各自的 commit 里。
+- **上游相册没有页面的四件**——靠框架侧的**活树测试**兜住，不是纯逻辑测试：
+  `drag_feedback` 14 个、`magnifier_host` 14 个、`selection_host` 19 个、
+  `autocomplete_view` 8 个，每一个都挂真 overlay、走 `flush_layout`、用命中
+  测试断言，比一个只断言「stage 能布局」的 demo 页更硬。每条承重断言都反向
+  改错验证过能变红。
+
+上游哪天给相册加了这些 demo，照一一映射抄过来即可，本线不欠它们什么。
 
 **S1 先行的理由**：它是全案唯一的赌点。切片成立，后面全是量的问题；不成立，
 S2 的 48 处机械工作会白做一半（退路方案对 L0 的需求不同）。
@@ -302,6 +325,12 @@ S2 的 48 处机械工作会白做一半（退路方案对 L0 的需求不同）
 
 `RenderObject.applyPaintTransform` / `getTransformTo` / `RenderBox.localToGlobal`
 属 rendering 层，L0 完成后一并改判。
+
+**实际结果：这一步是空的，不是漏了。** 上面列的 11 个类本来就按名计入，
+`coverage_ledger.json` 里从来没有它们的例外条目——查过每一节。三个 rendering
+成员是**方法不是类**，`coverage.py` 从不追踪。L0 补齐时还多了一个
+`RenderBox.globalToLocal`（`RenderRef::global_to_local`），同样不进台账。
+覆盖率全程保持 1888/1888、0 MISSING。
 
 ---
 

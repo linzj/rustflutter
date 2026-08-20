@@ -9573,6 +9573,52 @@ entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出
 
 ---
 
+### 弹层线 S6：相册六个 demo 页改接框架宿主
+
+`PORTING_PLAN_OVERLAY.md` S6 的出口判据是「每件一个相册 demo 页」。上游相册有
+页面的六件全部改接完毕；没有页面的四件为什么不造页面，见计划文件 §9 新增的那
+一段。改接过程本身挖出的东西比预期多。
+
+**每个 demo 头部原本都写着自己缺什么，现在那些话逐条删掉了。** 这是 gate 7 的
+精神落到相册侧：
+
+| demo | 原话（节选） | 现在 |
+| --- | --- | --- |
+| `tooltip_demo` | 气泡叠在列的最后一项，注释叫它「the overlay slot without the overlay」 | 一个 `Tooltip`，气泡在 overlay 里，按按钮实测位置摆 |
+| `snackbar_demo` | 「the launcher cannot reach that state without a new field on the shared DemoState」 | `Messenger` 持有队列与生命周期，字段删了 |
+| `dialog_demo` | `dialog_open` + `mod.rs` 的共享 overlay 槽 + 手搭 `Scrim` | `show_dialog_with` 三样全删 |
+| `picker_demo` | 「the stage grows to OVERLAY_HOST_HEIGHT while a picker is open」 | 常量删除，stage 开合都是自己内容那么高 |
+| `menu_demo` | 「no way to read a sibling's rect at build time」+ 0/56/112/168 偏移表 | 偏移表删除，`popup_menu_offset` 拿到真锚点 |
+| `navigation_drawer` | 指向 `drawer.rs` 的「没有 owner 所以没有动画」 | 246ms 滑入回来了 |
+
+**挖出的三个真问题**（都不是接线错误，是端口本来就缺的东西）：
+
+1. **`SnackBar.persist`**。上游构造函数末尾 `persist = persist ?? action != null`
+   ——**带 action 的 bar 不会自动消失**，字段文档写了理由：读者正被要求「做一件
+   事」，bar 走了就把那件事带走了。相册 demo 原本四秒关掉两个 bar，包括带 ACTION
+   的那个，正好反了。计时器补进 `Messenger`（上游也放在 `ScaffoldMessengerState`
+   而不是 widget 上），六个测试，三种改错都能变红。上游的写法是**照样起计时器、
+   由回调拒绝**，这里照抄，免得一个后来被改成非 persist 的 bar 白拿四秒。
+2. **全屏 dialog 的 barrier 不该能点掉**。上游那个是 `MaterialPageRoute`，另外
+   三个才是 `DialogRoute`：一整页没有背景可暗，也不该靠点旁边离开。旧写法一个
+   `Scrim` 服务所有变体，表达不了这个区别。
+3. **dialog 里的按钮按压高亮该是它自己的**。原本记在共享 `GalleryState` 上——
+   dialog 的内容只在弹出时构建、在 entry 重建时才重建，从页面状态读到的高亮会
+   冻在那一帧。是个真 bug，不只是整洁问题。
+
+**三处「`fn` 收不下」的成对 API**：`Snackbar::on_action`、
+`menu::PopupMenuButton::on_press`，加上原有的 `Switch::with_handlers`。规律一样：
+翻转一个具名字段用 `fn` 版最短，要抓 `Messenger`/`PopupMenuOpener`/overlay 的必须
+用闭包。上游对应物（`SnackBarAction.onPressed` 等）本来就是任意回调。
+
+**命名归位**：`pub use` 这一步（`PORTING_PLAN.md` 三步接线的第一步）之前十个模块
+一个都没做，做了以后撞出三处重名，一律按「名字给对得上上游类的那个」收：
+`controls::Tooltip`→`TooltipBubble`、`pickers::show_*_picker`→`*_surface`、
+`menu::PopupMenuButton` 不再是导出的那个。每个被改名的东西都在自己文档里写了
+原名和改名理由。
+
+---
+
 ## 三、不要弄坏的(这些已经逐条比过,是对的)
 
 改任何一条时,这些是回归线:
