@@ -2656,6 +2656,184 @@ fn has_duplicate(configs: &[Rc<SemanticsConfiguration>]) -> bool {
     })
 }
 
+// -- The snapshot a node carries ----------------------------------------------
+
+/// Upstream `SemanticsData`: everything about one node, frozen.
+///
+/// [`SemanticsConfiguration`] is what a render object fills in and what merging
+/// works over; this is what comes out the other side, and it is immutable
+/// because it is what gets compared against last frame's to decide whether the
+/// platform needs telling.
+///
+/// # Its constructor is mostly assertions, and they are the content
+///
+/// Six of upstream's eight say the same thing about six different fields:
+/// **text with no direction is not allowed**. A label, a value, an increased or
+/// decreased value, a hint or a tooltip may be empty, and if it is not then
+/// `textDirection` must be set.
+///
+/// The reason is downstream: the embedder hands the string to a screen reader
+/// along with a direction, and with none to hand it the reader guesses from the
+/// characters. That is right for text that is all one script and wrong for
+/// everything else -- a phone number in an Arabic interface, a name in an
+/// English one -- and it is wrong silently, which is why this is caught here
+/// rather than noticed by a reader.
+///
+/// The other two: a heading level is 0 to 6, because that is the range
+/// `aria-level` and the platform bridges accept; and a link URL requires the
+/// `isLink` flag, because the embedder reads the URL off a node it has already
+/// decided is a link and would otherwise never look.
+///
+/// # The field set is this crate's
+///
+/// The same narrowing [`SemanticsConfiguration`] carries, for the same reason:
+/// upstream's thirty-odd fields include platform view ids, validation results,
+/// roles and traversal identifiers this port has no counterpart for. The
+/// assertions are ported for the fields that exist.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticsData {
+    pub flags: SemanticsFlags,
+    /// The actions this node accepts, as a bit set -- the same encoding
+    /// [`SemanticsProperties::actions`] uses, because it is the one that goes
+    /// over the wire.
+    pub actions: i32,
+    pub identifier: String,
+    pub label: AttributedString,
+    pub value: AttributedString,
+    pub increased_value: AttributedString,
+    pub decreased_value: AttributedString,
+    pub hint: AttributedString,
+    pub tooltip: String,
+    pub text_direction: Option<TextDirection>,
+    /// Where the node is, in its parent's coordinates.
+    pub rect: Rect,
+    /// Upstream's `headingLevel`: 0 for "not a heading", 1 to 6 otherwise.
+    pub heading_level: u8,
+    pub scroll_index: Option<i32>,
+    pub scroll_child_count: Option<i32>,
+    pub scroll_position: Option<f32>,
+    pub scroll_extent_max: Option<f32>,
+    pub scroll_extent_min: Option<f32>,
+    /// Upstream's `tags`, which a parent uses to find nodes it marked.
+    pub tags: Vec<SemanticsTag>,
+    /// Upstream's `customSemanticsActionIds`, the ids
+    /// [`CustomSemanticsAction::identifier`] handed out.
+    pub custom_action_ids: Vec<i32>,
+}
+
+impl Default for SemanticsData {
+    /// An empty snapshot at the origin.
+    ///
+    /// Hand-written rather than derived because [`Rect`] has no `Default` --
+    /// deliberately, since a zero rectangle is a real answer ("here, with no
+    /// size") and not an absence, and a type that hands one out for free
+    /// invites it being read as one.
+    fn default() -> SemanticsData {
+        SemanticsData {
+            flags: SemanticsFlags::default(),
+            actions: 0,
+            identifier: String::new(),
+            label: AttributedString::default(),
+            value: AttributedString::default(),
+            increased_value: AttributedString::default(),
+            decreased_value: AttributedString::default(),
+            hint: AttributedString::default(),
+            tooltip: String::new(),
+            text_direction: None,
+            rect: Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            heading_level: 0,
+            scroll_index: None,
+            scroll_child_count: None,
+            scroll_position: None,
+            scroll_extent_max: None,
+            scroll_extent_min: None,
+            tags: Vec::new(),
+            custom_action_ids: Vec::new(),
+        }
+    }
+}
+
+impl SemanticsData {
+    /// Checks upstream's constructor assertions.
+    ///
+    /// Split out from a constructor because this crate's `SemanticsData` is a
+    /// plain struct a caller fills in field by field -- there is no one place
+    /// every value passes through. A caller that built one by hand can ask;
+    /// [`crate::semantics::flush`]'s successor will ask on every node.
+    ///
+    /// Returns the first thing wrong, in upstream's own words where it has
+    /// them, or `None` if the snapshot is sound.
+    pub fn check(&self) -> Option<String> {
+        // Upstream's six, in its order.
+        for (what, text) in [
+            ("tooltip", self.tooltip.as_str()),
+            ("label", self.label.string()),
+            ("value", self.value.string()),
+            ("decreasedValue", self.decreased_value.string()),
+            ("increasedValue", self.increased_value.string()),
+            ("hint", self.hint.string()),
+        ] {
+            if !text.is_empty() && self.text_direction.is_none() {
+                return Some(format!(
+                    "A SemanticsData object with {what} \"{text}\" had a null textDirection."
+                ));
+            }
+        }
+        if self.heading_level > 6 {
+            return Some("Heading level must be between 0 and 6".to_string());
+        }
+        None
+    }
+
+    /// Whether this node accepts `action`. Upstream's `hasAction`.
+    pub fn has_action(&self, action: SemanticsAction) -> bool {
+        self.actions & action as i32 != 0
+    }
+
+    /// Whether `tag` was put on this node. Upstream's `SemanticsNode.isTagged`,
+    /// which reads the same set.
+    ///
+    /// Compared by tag identity, not by name -- see [`SemanticsTag`], where the
+    /// reason is that two subsystems picking the same word must not collide.
+    pub fn is_tagged(&self, tag: &SemanticsTag) -> bool {
+        self.tags.contains(tag)
+    }
+
+    /// The snapshot a config becomes once the walk has given it a rectangle.
+    ///
+    /// The direction is carried across whether or not there is text, and
+    /// [`SemanticsData::check`] is what says whether that was enough.
+    pub fn from_configuration(config: &SemanticsConfiguration, rect: Rect) -> SemanticsData {
+        SemanticsData {
+            flags: config.flags,
+            actions: config
+                .actions
+                .iter()
+                .fold(0, |bits, action| bits | *action as i32),
+            identifier: config.identifier.clone(),
+            label: config.label.clone(),
+            value: config.value.clone(),
+            increased_value: config.increased_value.clone(),
+            decreased_value: config.decreased_value.clone(),
+            hint: config.hint.clone(),
+            tooltip: config.tooltip.clone(),
+            text_direction: config.text_direction,
+            rect,
+            heading_level: 0,
+            scroll_index: config.scroll_index,
+            scroll_child_count: config.scroll_child_count,
+            scroll_position: config.scroll_position,
+            scroll_extent_max: config.scroll_extent_max,
+            scroll_extent_min: config.scroll_extent_min,
+            // Upstream's `tagsForChildren` are put on the *children*, not on
+            // the node that named them -- so a config's own snapshot starts
+            // untagged and the walk applies them going down.
+            tags: Vec::new(),
+            custom_action_ids: Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5156,5 +5334,154 @@ mod tests {
             2,
             "grouped anyway; the walk sorts it out"
         );
+    }
+
+    // -- SemanticsData: the assertions are the content -----------------------------
+
+    fn snapshot() -> SemanticsData {
+        SemanticsData {
+            text_direction: Some(TextDirection::Ltr),
+            ..SemanticsData::default()
+        }
+    }
+
+    #[test]
+    fn an_empty_snapshot_needs_no_direction() {
+        // Every one of upstream's six assertions is "empty, or a direction".
+        // Nothing to read means nothing to read in a direction.
+        assert_eq!(SemanticsData::default().check(), None);
+    }
+
+    #[test]
+    fn text_without_a_direction_is_caught_for_every_field_upstream_names() {
+        // Six fields, six assertions. The reason is downstream: with no
+        // direction to hand over, a reader guesses from the characters, which
+        // is right for text that is all one script and silently wrong for
+        // everything else.
+        let cases: Vec<(&str, fn(&mut SemanticsData))> = vec![
+            ("tooltip", |d| d.tooltip = "Create".to_string()),
+            ("label", |d| d.label = AttributedString::new("Send")),
+            ("value", |d| d.value = AttributedString::new("7")),
+            ("decreasedValue", |d| {
+                d.decreased_value = AttributedString::new("6")
+            }),
+            ("increasedValue", |d| {
+                d.increased_value = AttributedString::new("8")
+            }),
+            ("hint", |d| d.hint = AttributedString::new("double tap")),
+        ];
+        for (name, set) in cases {
+            let mut data = SemanticsData::default();
+            set(&mut data);
+            let complaint = data
+                .check()
+                .unwrap_or_else(|| panic!("{name} went unchecked"));
+            assert!(complaint.contains(name), "{complaint}");
+            assert!(complaint.contains("null textDirection"), "{complaint}");
+
+            // And the same field with a direction is fine.
+            let mut with_direction = data.clone();
+            with_direction.text_direction = Some(TextDirection::Ltr);
+            assert_eq!(with_direction.check(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_heading_level_runs_from_zero_to_six() {
+        // Zero is "not a heading"; one to six is what `aria-level` and the
+        // platform bridges accept.
+        for level in 0..=6u8 {
+            let data = SemanticsData {
+                heading_level: level,
+                ..snapshot()
+            };
+            assert_eq!(data.check(), None, "level {level}");
+        }
+        let too_deep = SemanticsData {
+            heading_level: 7,
+            ..snapshot()
+        };
+        assert!(too_deep.check().is_some());
+    }
+
+    #[test]
+    fn check_reports_the_first_thing_wrong_and_not_a_list() {
+        // Upstream's constructor throws on the first assertion that trips, so a
+        // snapshot with two problems reports the earlier one.
+        let data = SemanticsData {
+            tooltip: "Create".to_string(),
+            label: AttributedString::new("Send"),
+            ..SemanticsData::default()
+        };
+        let complaint = data.check().expect("two problems, one report");
+        assert!(complaint.contains("tooltip"), "{complaint}");
+    }
+
+    #[test]
+    fn actions_are_a_bit_set_because_that_is_what_goes_over_the_wire() {
+        let data = SemanticsData {
+            actions: SemanticsAction::Tap as i32 | SemanticsAction::Increase as i32,
+            ..snapshot()
+        };
+        assert!(data.has_action(SemanticsAction::Tap));
+        assert!(data.has_action(SemanticsAction::Increase));
+        assert!(!data.has_action(SemanticsAction::Decrease));
+    }
+
+    #[test]
+    fn a_tag_is_recognised_by_identity_and_not_by_name() {
+        let mine = SemanticsTag::new("row");
+        let theirs = SemanticsTag::new("row");
+        let data = SemanticsData {
+            tags: vec![mine.clone()],
+            ..snapshot()
+        };
+        assert!(data.is_tagged(&mine));
+        assert!(
+            !data.is_tagged(&theirs),
+            "same word, different tag -- two subsystems must not collide"
+        );
+    }
+
+    #[test]
+    fn a_configuration_becomes_a_snapshot_with_the_rectangle_the_walk_found() {
+        let mut config = said("Volume");
+        config.value = AttributedString::new("7");
+        config.text_direction = Some(TextDirection::Ltr);
+        config.actions.push(SemanticsAction::Increase);
+        config.scroll_index = Some(3);
+
+        let rect = Rect::ltrb(10.0, 20.0, 110.0, 60.0);
+        let data = SemanticsData::from_configuration(&config, rect);
+        assert_eq!(data.label.string(), "Volume");
+        assert_eq!(data.value.string(), "7");
+        assert!(data.has_action(SemanticsAction::Increase));
+        assert_eq!(data.scroll_index, Some(3));
+        assert_eq!(data.rect, rect);
+        assert_eq!(data.check(), None, "and it is a sound snapshot");
+    }
+
+    #[test]
+    fn a_configs_child_tags_do_not_land_on_its_own_snapshot() {
+        // `tagsForChildren` goes on the children, not on the node that named
+        // them -- so the node's own snapshot starts untagged.
+        let mut config = said("List");
+        config.text_direction = Some(TextDirection::Ltr);
+        config.add_tag_for_children(SemanticsTag::new("row"));
+
+        let data = SemanticsData::from_configuration(&config, Rect::ltrb(0.0, 0.0, 1.0, 1.0));
+        assert!(data.tags.is_empty());
+        assert_eq!(config.tags_for_children.len(), 1, "the config still has it");
+    }
+
+    #[test]
+    fn a_config_with_text_and_no_direction_makes_a_snapshot_that_fails_its_check() {
+        // The seam works both ways: the config does not require a direction,
+        // and the snapshot does. That is where the requirement is enforced,
+        // because it is the snapshot the platform is handed.
+        let config = said("Send");
+        assert!(config.text_direction.is_none());
+        let data = SemanticsData::from_configuration(&config, Rect::ltrb(0.0, 0.0, 1.0, 1.0));
+        assert!(data.check().is_some());
     }
 }

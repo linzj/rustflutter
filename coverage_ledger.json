@@ -1873,6 +1873,14 @@
     "FocusManager": {
       "rust": "focus 模块本身：thread_local 注册表 + focused/focus/unfocus/next/previous/prune/dispatch_key 等自由函数",
       "note": "上游是 FocusManager.instance 这一个单例类；这里是同名模块，状态放 thread_local（每 UI 线程一份，与按键集合、文本输入连接同侧），API 是模块级自由函数。与台账里 MatrixUtils→painting::matrix_utils 同一种改判。逐项：primaryFocus≙focused()、requestFocus≙focus(id)、传播与遍历≙next()/previous()/dispatch_key()、节点生命周期≙prune()。未 port 的两处：highlightMode（触摸/键盘高亮模式，ink_well.rs 与 toggleable.rs 模块头各自记着它缺），以及 FocusManager 的全局 listener（这里焦点变化走 Focus::with_on_focus_change 逐节点回调，没有全局订阅口）。"
+    },
+    "Widget": {
+      "rust": "framework::AnyWidget（+ Component / StatefulComponent 两个 trait）",
+      "note": "上游 Widget 是元素树的不可变配置基类，靠继承分出 StatelessWidget/StatefulWidget/RenderObjectWidget 等。此侧按 PORTING_PLAN 口径三则 #2「element 层保持单一 ElementTree 形态，不重写为上游的类层级」：AnyWidget 是那个不可变配置本身，Component/StatefulComponent 是它的两种来源，RenderObjectWidget 那一路由 framework::leaf/single/many 的 assemble 闭包承担。逐项：Widget.key≙framework::GlobalKey（with_global_key）、Widget.createElement≙ElementTree 内部按 AnyWidget 的形态分发、canUpdate≙ElementTree 的复用判定。未 port：没有可供应用继承的 Widget 基类——这边扩展点是实现 Component 而不是继承。"
+    },
+    "State": {
+      "rust": "framework::StatefulComponent::State（关联类型）+ StateHandle",
+      "note": "上游 State<T> 是持有可变状态、带 initState/didUpdateWidget/dispose/setState 生命周期的类。此侧状态是 StatefulComponent 的关联类型（一个 Default 值），生命周期由 ElementTree 持有，setState 是 StateHandle::set_state。逐项：initState≙StatefulComponent::initial_state、build≙build(&state, handle, context)、setState≙StateHandle::set_state、每帧回调≙advance(&mut state, frame_time_micros)。未 port：didUpdateWidget 与 dispose 没有对应回调——状态随元素消失而消失，没有可挂清理的钩子；需要清理的模块（drawer_host、messenger 等）把它挂在自己持有的句柄上。"
     }
   },
   "blocked_engine": {

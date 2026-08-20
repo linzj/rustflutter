@@ -341,7 +341,7 @@ pub use selection_host::{SelectionEndpoint, SelectionHost, show_selection_overla
 pub use semantics::{
     AttributedString, AttributedStringProperty, ChildSemanticsConfigurationsResult,
     ChildSemanticsConfigurationsResultBuilder, CustomSemanticsAction, OrdinalSortKey,
-    SemanticsAction, SemanticsBinding, SemanticsConfiguration, SemanticsHandle,
+    SemanticsAction, SemanticsBinding, SemanticsConfiguration, SemanticsData, SemanticsHandle,
     SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsProperties,
     SemanticsSortKey, SemanticsTag, StringAttribute,
 };
