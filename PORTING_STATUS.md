@@ -164,6 +164,74 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一边是活的视图,另一边是拍下来的照片(2026-08-20)
+
+新模块 `theme_bridge.rs`,收掉 material 层最后四个类:`MaterialBasedCupertinoThemeData`、
+`CupertinoBasedMaterialThemeData`(`theme_data.dart`)、`TextFormField`、
+`UserAccountsDrawerHeader`。覆盖率 1842/1888(97.6%)。测试 3532。
+
+**`material/` 这一层到此 MISSING 归零。十层里已经完成九层,只剩 `cupertino/` 的 46 个类。**
+
+---
+
+**两个跨设计语言的适配器,名字对仗,东西根本不对仗。**
+
+`MaterialBasedCupertinoThemeData` **继承 `CupertinoThemeData`**,把每个 getter 都改写成「先问 override,
+再问 Material」:
+
+```dart
+Color get primaryColor => _cupertinoOverrideTheme.primaryColor ?? _materialTheme.colorScheme.primary;
+```
+
+**每次访问都现问一遍。这是一个活的视图。**
+
+而 `CupertinoBasedMaterialThemeData` **什么都不继承**。它是一个只有一个字段的盒子,构造的时候用
+`ColorScheme.fromSeed` 算一次就完事:
+
+```dart
+CupertinoBasedMaterialThemeData({required CupertinoThemeData themeData})
+  : materialTheme = ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: themeData.primaryColor, ...));
+```
+
+**一边是视图,一边是快照。** 而这个不对称是数据本身逼出来的:**Material 主题回答得了任何 Cupertino 的问
+题**——Cupertino 问的就是那么几个它手上现成的颜色;**反过来,四个 Cupertino 颜色回答不了任意一个 Material
+问题**,所以它不「转发」,它拿主色当种子把整套 `ColorScheme` **生成**出来交给你。
+
+顺带:种子给了主色,`primary` 又显式传了一遍同一个颜色——**生成的那套负责填上没人说过的,不负责改写说过
+的。**
+
+**而让整条 `??` 链能够落到 Material 上的,是那个 `.noDefault()`。** `_cupertinoOverrideTheme` 的类型是
+`NoDefaultCupertinoThemeData`——一个把默认值全剥掉的主题。**「没设」必须和「设成了 iOS 默认值」区分得
+开**,否则每个 `??` 都会在一个 iOS 默认颜色上短路,Material 那一半永远轮不到。回归行专门把这条钉住了:
+把 override 改成带着已解析的 iOS 默认值,五条红。
+
+`copyWith` 的文档也异常直白:「**No derived attributes from iOS defaults or from cascaded Material theme
+attributes are copied**」「This copyWith cannot change the base Material ThemeData」——**复制这个主题,
+复制的是它「被告知」的东西,不是它「回答」的东西。**
+
+---
+
+**其余几条:**
+
+* `TextFormField` 有九条构造器 assert,其中 `maxLength == null || maxLength == TextField.noMaxLength ||
+  maxLength > 0` **把一个哨兵值从正数检查里挖了出来**——而 `noMaxLength` 是 **-1**。**一个负数表示「没有
+  上限」。** 而 null 已经表示「根本不显示计数器」了,所以这第二种「没上限」是另一件事:**显示计数器,一直
+  往上数,永不拦你。** 三种状态,两种都叫「没有最大长度」。
+* `assert(!obscureText || maxLines == 1, 'Obscured fields cannot be multiline.')`——又一条单向蕴含,而且
+  `maxLines: null`(不限行)也算多行,一样被拒。
+* `UserAccountsDrawerHeader.build` 开头三条 assert,**其中两条一模一样**:
+  ```dart
+  assert(debugCheckHasDirectionality(context));
+  assert(debugCheckHasMaterialLocalizations(context));
+  assert(debugCheckHasMaterialLocalizations(context));
+  ```
+  无害——这个检查没有副作用、永远返回 true——写在这里,只因为**它正是那种会让读者盯着找区别的东西。没有
+  区别。**
+
+验证:`cargo test --lib` 3532 绿,GN `rustflutter_unittests` 3532 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1842 accounted / 46 MISSING(97.6%),**material 层 MISSING 归零**。
+
 ### 上一轮是两个文件切在不同处,这一轮是一个类里的两个方法(2026-08-20)
 
 新模块 `text_toolbars.rs`(`AdaptiveTextSelectionToolbar`、`SpellCheckSuggestionsToolbar`、

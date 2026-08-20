@@ -274,6 +274,7 @@ if (enable_unittests) {
       "rustflutter/src/text_selection_controls.rs",
       "rustflutter/src/text_toolbars.rs",
       "rustflutter/src/theme.rs",
+      "rustflutter/src/theme_bridge.rs",
       "rustflutter/src/ticker.rs",
       "rustflutter/src/toggleable.rs",
       "rustflutter/src/transitions.rs",

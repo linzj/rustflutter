@@ -180,6 +180,7 @@ pub mod text_selection;
 pub mod text_selection_controls;
 pub mod text_toolbars;
 pub mod theme;
+pub mod theme_bridge;
 pub mod ticker;
 pub mod toggleable;
 pub mod transitions;
