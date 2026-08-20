@@ -279,6 +279,152 @@ impl Component for DrawerHeader {
     }
 }
 
+// -- The controller, from `material/drawer.dart` -------------------------------
+
+/// Upstream's `_kEdgeDragWidth`: the strip at the screen edge a drag can open
+/// the drawer from.
+pub const EDGE_DRAG_WIDTH: f32 = 20.0;
+/// Upstream's `_kMinFlingVelocity`, in logical pixels per second.
+pub const MIN_FLING_VELOCITY: f32 = 365.0;
+/// Upstream's `_kBaseSettleDuration`.
+pub const BASE_SETTLE_MILLISECONDS: u32 = 246;
+
+/// What a released drag did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SettleOutcome {
+    /// The drawer was not showing at all, so there was nothing to settle.
+    NothingToSettle,
+    /// Fast enough to count, so the direction decides whatever the position is.
+    Flung { opening: bool },
+    /// Slower than a fling, so the halfway point decides.
+    SettledToNearest { opening: bool },
+}
+
+/// Upstream `DrawerControllerState`, as its decisions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawerController {
+    pub alignment: DrawerAlignment,
+    /// Whether an edge drag may open it. Upstream also turns this off on
+    /// desktop regardless.
+    pub enable_open_drag_gesture: bool,
+    /// A caller's override for the grab strip's width.
+    pub edge_drag_width: Option<f32>,
+    /// The animation's 0..1 position: 0 closed, 1 open.
+    pub value: f32,
+}
+
+impl DrawerController {
+    pub fn new(alignment: DrawerAlignment) -> DrawerController {
+        DrawerController {
+            alignment,
+            enable_open_drag_gesture: true,
+            edge_drag_width: None,
+            value: 0.0,
+        }
+    }
+
+    pub fn with_value(mut self, value: f32) -> Self {
+        self.value = value;
+        self
+    }
+
+    /// Which way a positive drag moves the drawer. An end-aligned drawer opens
+    /// the other way, so its velocities are flipped before the controller sees
+    /// them.
+    pub fn direction_factor(&self) -> f32 {
+        match self.alignment {
+            DrawerAlignment::Start => 1.0,
+            DrawerAlignment::End => -1.0,
+        }
+    }
+
+    /// Upstream's `visualVelocity`: pixels per second turned into the
+    /// controller's own 0..1 per second by dividing by the drawer's width.
+    ///
+    /// **The controller does not know about pixels**; converting is the
+    /// drawer's job, and it is the drawer's width that sets the exchange rate.
+    /// A wider drawer moves through the same animation more slowly for the
+    /// same finger speed, which is what makes a wide one feel heavy.
+    pub fn visual_velocity(&self, pixel_velocity: f32, width: f32) -> f32 {
+        pixel_velocity / width * self.direction_factor()
+    }
+
+    /// Upstream `_settle`.
+    ///
+    /// Three ways out, and the order is the rule: **speed overrules position,
+    /// but only when the speed is a real fling.** A drawer nine tenths open,
+    /// flicked shut, closes; released gently at the same place, it opens. Below
+    /// the threshold there is nothing to read into the movement, so the halfway
+    /// point decides.
+    pub fn settle(&self, pixel_velocity: f32, width: f32) -> SettleOutcome {
+        if self.value == 0.0 {
+            // Upstream returns when the controller is dismissed: a drag that
+            // never opened anything has nothing to settle.
+            return SettleOutcome::NothingToSettle;
+        }
+        if pixel_velocity.abs() >= MIN_FLING_VELOCITY {
+            let visual = self.visual_velocity(pixel_velocity, width);
+            return SettleOutcome::Flung {
+                opening: visual > 0.0,
+            };
+        }
+        SettleOutcome::SettledToNearest {
+            opening: self.value >= 0.5,
+        }
+    }
+
+    /// Upstream's `dragAreaWidth`.
+    ///
+    /// Twenty pixels **plus the system inset on whichever side this drawer is
+    /// actually on**. A phone with a curved edge or a notch in landscape puts
+    /// unusable pixels along that edge, and a grab strip entirely inside them
+    /// would leave the drawer impossible to open by drag.
+    ///
+    /// The four cases are one rule written out: start-aligned reads the leading
+    /// inset, end-aligned the trailing one, and which is which depends on the
+    /// reading direction.
+    pub fn drag_area_width(&self, left_inset: f32, right_inset: f32, left_to_right: bool) -> f32 {
+        if let Some(width) = self.edge_drag_width {
+            return width;
+        }
+        let inset = match (self.alignment, left_to_right) {
+            (DrawerAlignment::Start, true) => left_inset,
+            (DrawerAlignment::Start, false) => right_inset,
+            (DrawerAlignment::End, false) => left_inset,
+            (DrawerAlignment::End, true) => right_inset,
+        };
+        EDGE_DRAG_WIDTH + inset
+    }
+
+    /// Whether an edge drag can open it here.
+    ///
+    /// Upstream disables it on desktop outright. There is no edge swipe on a
+    /// desktop -- a drag from the window edge is a resize or a selection -- and
+    /// taking it would break both without giving anything back, since a desktop
+    /// drawer is opened from a button.
+    pub fn opens_by_edge_drag(&self, is_desktop: bool) -> bool {
+        self.enable_open_drag_gesture && !is_desktop
+    }
+
+    /// Upstream's outer and inner alignments, which are **opposites**: the
+    /// outer is the screen edge the drawer hugs, the inner is the edge its
+    /// contents are pushed against as it slides.
+    pub fn outer_alignment(&self) -> DrawerAlignment {
+        self.alignment
+    }
+
+    pub fn inner_alignment(&self) -> DrawerAlignment {
+        match self.alignment {
+            DrawerAlignment::Start => DrawerAlignment::End,
+            DrawerAlignment::End => DrawerAlignment::Start,
+        }
+    }
+}
+
+/// Upstream `DrawerControllerState` is the state of the above; this crate holds
+/// the decisions on one type.
+pub type DrawerControllerState = DrawerController;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +538,147 @@ mod tests {
         // the device can draw, not no line.
         assert_eq!(side.width, divider.line_thickness());
         assert!(side.width >= 1.0);
+    }
+    // -- The controller ---------------------------------------------------------
+
+    #[test]
+    fn speed_overrules_position_but_only_when_it_is_a_real_fling() {
+        // A drawer nine tenths open, flicked shut, closes; released gently at
+        // the same place, it opens.
+        let nearly_open = DrawerController::new(DrawerAlignment::Start).with_value(0.9);
+        assert_eq!(
+            nearly_open.settle(-MIN_FLING_VELOCITY - 1.0, DRAWER_WIDTH),
+            SettleOutcome::Flung { opening: false }
+        );
+        assert_eq!(
+            nearly_open.settle(-MIN_FLING_VELOCITY + 1.0, DRAWER_WIDTH),
+            SettleOutcome::SettledToNearest { opening: true }
+        );
+    }
+
+    #[test]
+    fn below_the_threshold_the_halfway_point_decides() {
+        let start = DrawerAlignment::Start;
+        assert_eq!(
+            DrawerController::new(start)
+                .with_value(0.49)
+                .settle(0.0, DRAWER_WIDTH),
+            SettleOutcome::SettledToNearest { opening: false }
+        );
+        assert_eq!(
+            DrawerController::new(start)
+                .with_value(0.5)
+                .settle(0.0, DRAWER_WIDTH),
+            SettleOutcome::SettledToNearest { opening: true }
+        );
+    }
+
+    #[test]
+    fn a_drag_that_never_opened_anything_has_nothing_to_settle() {
+        let closed = DrawerController::new(DrawerAlignment::Start);
+        assert_eq!(
+            closed.settle(-1000.0, DRAWER_WIDTH),
+            SettleOutcome::NothingToSettle
+        );
+    }
+
+    #[test]
+    fn an_end_aligned_drawer_reads_the_same_finger_the_other_way() {
+        let start = DrawerController::new(DrawerAlignment::Start).with_value(0.5);
+        let end = DrawerController::new(DrawerAlignment::End).with_value(0.5);
+        let rightwards = MIN_FLING_VELOCITY + 100.0;
+
+        assert_eq!(
+            start.settle(rightwards, DRAWER_WIDTH),
+            SettleOutcome::Flung { opening: true }
+        );
+        assert_eq!(
+            end.settle(rightwards, DRAWER_WIDTH),
+            SettleOutcome::Flung { opening: false },
+            "the same swipe closes the one on the other side"
+        );
+    }
+
+    #[test]
+    fn a_wider_drawer_moves_more_slowly_for_the_same_finger_speed() {
+        // Which is what makes a wide one feel heavy: the controller works in
+        // 0..1, and the width is the exchange rate.
+        let controller = DrawerController::new(DrawerAlignment::Start);
+        let narrow = controller.visual_velocity(1000.0, 200.0);
+        let wide = controller.visual_velocity(1000.0, 400.0);
+        assert!(wide < narrow);
+        assert_eq!(wide * 2.0, narrow);
+    }
+
+    // -- Where you can grab it ------------------------------------------------------
+
+    #[test]
+    fn the_grab_strip_starts_inside_the_system_inset() {
+        // A phone with a curved edge puts unusable pixels along it, and a strip
+        // entirely inside them would leave the drawer impossible to drag open.
+        let controller = DrawerController::new(DrawerAlignment::Start);
+        assert_eq!(controller.drag_area_width(0.0, 0.0, true), EDGE_DRAG_WIDTH);
+        assert_eq!(
+            controller.drag_area_width(44.0, 0.0, true),
+            EDGE_DRAG_WIDTH + 44.0
+        );
+    }
+
+    #[test]
+    fn each_drawer_reads_the_inset_on_the_side_it_is_actually_on() {
+        let start = DrawerController::new(DrawerAlignment::Start);
+        let end = DrawerController::new(DrawerAlignment::End);
+
+        assert_eq!(
+            start.drag_area_width(44.0, 10.0, true),
+            EDGE_DRAG_WIDTH + 44.0
+        );
+        assert_eq!(
+            start.drag_area_width(44.0, 10.0, false),
+            EDGE_DRAG_WIDTH + 10.0,
+            "in right-to-left the start side is the right one"
+        );
+        assert_eq!(
+            end.drag_area_width(44.0, 10.0, true),
+            EDGE_DRAG_WIDTH + 10.0
+        );
+        assert_eq!(
+            end.drag_area_width(44.0, 10.0, false),
+            EDGE_DRAG_WIDTH + 44.0
+        );
+    }
+
+    #[test]
+    fn a_caller_who_named_a_width_gets_it_untouched() {
+        let mut controller = DrawerController::new(DrawerAlignment::Start);
+        controller.edge_drag_width = Some(64.0);
+        assert_eq!(controller.drag_area_width(44.0, 0.0, true), 64.0);
+    }
+
+    #[test]
+    fn there_is_no_edge_swipe_on_a_desktop() {
+        // A drag from the window edge is a resize or a selection, and taking it
+        // would break both while giving nothing back -- a desktop drawer is
+        // opened from a button.
+        let controller = DrawerController::new(DrawerAlignment::Start);
+        assert!(controller.opens_by_edge_drag(false));
+        assert!(!controller.opens_by_edge_drag(true));
+
+        let mut disabled = controller;
+        disabled.enable_open_drag_gesture = false;
+        assert!(!disabled.opens_by_edge_drag(false));
+    }
+
+    #[test]
+    fn the_outer_and_inner_alignments_are_opposites() {
+        // The outer is the screen edge the drawer hugs; the inner is the edge
+        // its contents are pushed against as it slides.
+        let start = DrawerController::new(DrawerAlignment::Start);
+        assert_eq!(start.outer_alignment(), DrawerAlignment::Start);
+        assert_eq!(start.inner_alignment(), DrawerAlignment::End);
+
+        let end = DrawerController::new(DrawerAlignment::End);
+        assert_eq!(end.outer_alignment(), DrawerAlignment::End);
+        assert_eq!(end.inner_alignment(), DrawerAlignment::Start);
     }
 }
