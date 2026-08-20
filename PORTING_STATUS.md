@@ -164,6 +164,77 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 不确定态是走到的,不是路过的(2026-08-20)
+
+两个新模块:`toggleable.rs`(`ToggleableStateMixin`、`ToggleablePainter`)与
+`sliver_fill.rs`(`SliverFillViewport`、`SliverFillRemaining`)。覆盖率 1717/1888(91.0%)。测试 3031。
+
+`toggleable.dart` 是复选框、开关、单选按钮共用的那套机器——**上一轮 `RawRadio` 混入的正是它**。而它们共
+有的不是形状,是几个**问题**:一次点击接下来该做什么、控件怎么从一个视觉状态走到下一个、以及墨水反应怎
+么同时听三件事的话。
+
+**`_handleTap` 的循环就是设计本身:**
+
+```dart
+case false: onChanged!(true);
+case true:  onChanged!(tristate ? null : false);
+case null:  onChanged!(false);
+```
+
+**于是三态控件是「关 → 开 → 不确定」,而不是「关 → 不确定 → 开」。** **不确定是一个读者走到的状态,不是
+他在打开某样东西的路上必须路过的一站。**
+
+**而 `animateToValue` 里有一处该是 `else` 的地方写成了并列语句,那不是笔误:**
+
+```dart
+if (value == null) { _positionController.value = 0.0; }
+if (value ?? true) { _positionController.forward(); } else { ... }
+```
+
+**对 `null`,两句都跑:位置被拍回 0,然后重新向 1 跑一遍。** 于是**一个转到不确定态的三态复选框,不是停
+在空和满之间的某处——它先清空,再重新填。** 这才让「不确定」看上去像一个**故意的状态**,而不是一个**没做
+完的动画**。
+
+而**不是三态的控件把 `null` 读成 false**,直接清空——同一个值,两个相反的动作。回归行把这一对放在一起
+钉住了。
+
+**墨水那边,`paintRadialReaction` 的三层 `Color.lerp` 嵌套是一个优先级:**
+
+```
+lerp( lerp( lerp(inactive, reaction, position), hover, hoverFade ), focus, focusFade )
+```
+
+**最外层那一层说了算:focus 盖过 hover,hover 盖过控件自己的值。** 一个持有焦点的控件,不管别的怎样,看
+上去就是持有焦点的。
+
+**而半径的规则不一样:focus 或 hover 时直接就是整个 splashRadius,不做动画;只有点击的墨水才从零长
+起。** 区别在于**点击有一个可以长出来的点,而另外两个没有**——控件上没有哪个位置是「获得焦点」发生的地
+方。回归行按 `reaction_origin` 把这一条也钉了:有按下点就从按下点长,没有就从中心。
+
+---
+
+**`sliver_fill.dart` 那两个是从视口而不是从内容取尺寸的 sliver。**
+
+**`SliverFillViewport` 的端部内边距是
+`padEnds ? clamp(1 - viewportFraction, 0, 1) / 2 : 0`。** 0.8 的分数给出每端 0.1 的内边距,正好把第一张
+卡片停在正中。**而那个 clamp 做的,正是上游用文字说的那件事:分数大于 1 时 `padEnds` 没有效果**——每个孩
+子都已经比视口宽了,没有什么可以居中的,而 `1 - fraction` 变负数就是这件事自己掉出来的方式,不用另写一
+个 if。
+
+**`SliverFillRemaining` 有两个布尔,却只有三个渲染对象。** `fillOverscroll` 只在 `hasScrollBody` 为
+false 时被问,而上游把这句写在那个字段自己的文档里:**一个会滚动的孩子没有固定尺寸可以拉伸,第四种组合
+没有意义。**
+
+它的**默认值是更让人意外的那个:`hasScrollBody = true`,孩子会伸到视口外面去滚**——那正是
+`NestedScrollView` 的 body 要的。**把它设成 false,才让这个 sliver 变成「把这页剩下的地方填满」。**
+
+而填满是**一份好意,不是一个保证**:上游文档写明,当前面的滚动范围或孩子自己的尺寸超过视口时,**这个
+sliver 会让位给孩子的尺寸而不是覆盖它。** **把一个装不下的孩子压扁,比让它溢出更糟。**
+
+验证:`cargo test --lib` 3031 绿,GN `rustflutter_unittests` 3031 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1717 accounted / 171 MISSING(91.0%)。
+
 ### 刘海应用一次,而两侧的内边距要发给每一行(2026-08-20)
 
 新模块 `scroll_view.rs`,收掉 `scroll_view.dart` 的 `ScrollView`、`CustomScrollView`、`BoxScrollView`,
