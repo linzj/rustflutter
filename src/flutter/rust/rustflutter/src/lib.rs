@@ -97,6 +97,7 @@ pub mod navigator;
 pub mod nested_scroll_view;
 pub mod overflow_bar;
 pub mod overlay;
+pub mod overscroll_indicator;
 pub mod page_storage;
 pub mod page_view;
 pub mod painting;

@@ -164,6 +164,91 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 同一个文件里承认了两次「不知道为什么」(2026-08-20)
+
+新模块 `overscroll_indicator.rs`,收掉 `GlowingOverscrollIndicator`、
+`StretchingOverscrollIndicator`、`OverscrollIndicatorNotification`。覆盖率 1686/1888(89.3%)。
+
+**这两个指示器不是一个设计的两种皮肤,而是对同一个问题的两个答案:辉光在内容「上面」画一个东西,拉伸让
+内容自己变形。** 而 `ScrollBehavior` 把辉光恰好发给那些物理本身不拉伸的平台——上一轮已经记过,这一轮
+是它的另一半。
+
+**而这个文件最值得写下来的,是它承认了两次「不知道为什么」。**
+
+**第一次在辉光的 `pull` 里:**
+
+```dart
+_pullDistance += overscroll / 200.0; // This factor is magic. Not clear why we need it to match Android.
+```
+
+**第二次在拉伸的常量里,而这一次上游写了整整一段:** `kNaturalFrequency` 和 `kDampingRatio` 是从 Android
+的 `EdgeEffect.java` 直接搬来的,可是照搬之后动画「noticeably faster than the native Android
+behavior」,而「**The underlying reason for this discrepancy is unknown**」。于是有了
+`kTimeCorrectionFactor = 0.8`——一个**靠肉眼比对(“eyeballing”)得出的**数。
+
+**这一段还顺手写下了一个等价关系,而代码用的正是它:** 缩放时间 `t`,等价于把固有频率和初速度乘以同一
+个系数。于是实现里 `stiffness` 乘了 **0.8²**、初速度乘了 **0.8**——**一个物理上的恒等式,被用来把「改
+时间」翻译成「改弹簧」。**
+
+---
+
+**辉光的两个入口是两件不同的事,而不是一件事的两种参数:** `absorbImpact` 是一次**飞掷撞到了边**,亮度
+由**速度**给;`pull` 是一根**手指拖过了边**,亮度由**距离/视口**给。滚动视图告诉它的本来就是两回事。
+
+**而这里我自己的测试先错了一次,错法值得记下来:** 我写了「快的比慢的亮」,红了。因为**不透明度是拿它
+自己的 `begin` 当下界去 clamp 的**:
+
+```dart
+_glowOpacityTween.end = clampDouble(velocity * _velocityGlowFactor, _glowOpacityTween.begin!, _maxOpacity);
+```
+
+空闲的辉光 `begin` 固定是 0.3,而 `0.3 / 0.00006 = 5000`——**于是任何低于 5000 px/s 的撞击,看上去完全
+一样。速度要到 5000 以上才开始说话。** 回归行现在把这条边界两侧都钉住了(4900 与 6000)。
+
+其余几条:
+
+* **一次拖动中辉光只会变大,不会变小**——`math.max(..., _glowSize.value)` 是规则不是保险丝,只有 recede
+  会把它带下去。
+* **手指不必松开。** 停下不动 167ms,就会启动一段 **2000ms** 的慢衰减;而真的松开,给的是 **600ms**
+  ——**「我停下了」和「我放手了」是两件事,淡出的时间差了三倍多。**
+* **`_pullDistance` 一直留到辉光彻底消失才清零**,于是一个松手又在淡出途中重新抓住的读者,是接着来的,
+  不是从头来的。
+* **有一个分支专门为「拖动比它自己的动画活得久」而存在:** 167ms 的 pull 动画跑完了而手指还在动,这时没
+  有任何动画会去安排下一帧,于是它自己 `notifyListeners()`。
+* **辉光横向追手指,半衰期恰好是 60Hz 的一帧**——每帧走完剩余距离的一半:够快,看着是黏在手指上的;够
+  慢,不是瞬移。
+* **那道弧其实是一个半径为视口宽度 1.5 倍的圆**,在 Y 上按 glowSize 压扁,再裁进一条只有宽度约五分之一
+  高的带子里。**一个宽这么多的圆,露出来的只有它很平的顶部**——那正是 Android 辉光的形状。
+
+---
+
+**拉伸那边的强度是「线性 + 指数」,而两半是轮流工作的:** 起手时指数项主导(它在 0 处的斜率是线性项的
+`EXPONENTIAL_SCALAR` 倍,约九倍),然后**指数项饱和成一个常数,只剩下慢慢长的线性项**。**一次已经拉得
+很远的拖动,再拖几乎不动了——这就是「阻力」的手感。**(我最初把这句写成「约两倍」,是错的,回归行按解
+析斜率重算并钉住。)
+
+* **`_interruptedOverscroll`:** 一次 pull 打断正在跑的回弹时,**先把动画当下的值抓下来,再加到 pull 算
+  出的量上**。否则一根从没抬起来的手指,会看着边缘先弹回零再重新拉开。
+* **`scrollEnd` 只在没有 controller 时才起跑**——已经在回家路上的弹簧,不该被再踢一脚。
+* **`whenComplete` 里那个 `if (_controller == controller)` 守卫**,上游注释写明了理由:后来的 pull 可能
+  已经换掉并销毁了它,**一个过期的完成回调不能去碰共享状态**(也不能二次销毁)。
+* **只有「有拉伸」并且「视口比屏幕小」时才裁剪。** 上游把理由写下来了:视口占满屏幕时,溢出根本没地方
+  被看见——**而一个 clip 是一层,是要钱的。**
+
+**`OverscrollIndicatorNotification` 三个字段里有两个是可变的**,这对一个通知很不寻常,而这正是这个类的
+用途:**它往上冒,并且在路上被写进去。** 祖先可以直接否决(`disallowIndicator`),也可以只挪一挪画的位
+置(`paintOffset`,顶部栏用它让辉光出现在栏下面而不是栏底下)。**而否决是单向的——没有对应的
+`allow`,于是一个祖先的反对不会被另一个祖先推翻。**
+
+**另一处自查:** 我先按想当然写了 `main_axis_scale` / `grows_from_leading_edge` 两个方法,读了
+`build` 才发现上游根本不是这么做的——它交给 `StretchEffect` 的是 `-overscroll`(反向轴再取一次负),裁剪
+的判断也另有其事。两个方法整个换成了上游真有的 `stretch_strength` 与 `clips`。**在读到实现之前写下的
+API,是猜的。**
+
+验证:`cargo test --lib` 2857 绿,GN `rustflutter_unittests` 2857 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1686 accounted / 202 MISSING(89.3%)。
+
 ### 销毁这个句柄,就是那句话本身(2026-08-20)
 
 `automatic_keep_alive.dart` 整个文件收口(`KeepAliveNotification`、`KeepAliveHandle`、

@@ -177,6 +177,7 @@ if (enable_unittests) {
       "rustflutter/src/nested_scroll_view.rs",
       "rustflutter/src/overflow_bar.rs",
       "rustflutter/src/overlay.rs",
+      "rustflutter/src/overscroll_indicator.rs",
       "rustflutter/src/page_storage.rs",
       "rustflutter/src/page_view.rs",
       "rustflutter/src/painting.rs",
