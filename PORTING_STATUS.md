@@ -164,6 +164,69 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 竖着滚就按行走,上游自己说这看起来是反的(2026-08-20)
+
+新模块 `two_dimensional.rs`,`widgets/two_dimensional_viewport.dart` 五个全到
+(`TwoDimensionalViewport`、`TwoDimensionalViewportParentData`、
+`RenderTwoDimensionalViewport`、`TwoDimensionalChildManager`、`ChildVicinity`),外加
+`widgets/two_dimensional_scroll_view.dart` 的 `TwoDimensionalScrollView`。覆盖率
+1565/1888(82.9%)。
+
+一维视口可以用一个数字给孩子命名,二维的不行,于是每个孩子由一个 `ChildVicinity`——一对
+`(x, y)`——命名。**用的词是「邻近」而不是「位置」,是有讲究的:** 孩子可以被摆在任何地方,这对索引
+只说明谁是谁的邻居。一张有合并单元格的表,一个孩子覆盖好几个 vicinity,布局**跳过被它吞掉的那
+些**,而这不是错误。
+
+**主轴决定绘制顺序,而映射是反的:竖直主轴给出的是行优先。** 上游自己的注释就写着「this seems
+backwards」,紧接着给了理由——**竖直是 Flutter 默认的滚动轴,而行优先是矩阵的默认**,要让两个默认
+彼此对上,中间的映射就得反过来。所以 `_sortByYIndex`(y 后 x)对应竖直,而 `compareTo` 本身
+(x 后 y)对应水平。回归行把两种顺序分别钉住,并额外钉住「两种排序键真的不同」——`(0,5)` 和
+`(1,0)` 在两种顺序下的大小关系正好相反。
+
+**可见性是布局之后算的,不是布局当中。** 孩子说它想在哪儿,视口算出这里面有多少落在了屏幕上。完
+全在外面的孩子拿到零绘制范围、绘制时被跳过——一万个单元格的表,代价就是屏幕上那四十个。
+
+**`computeChildPaintExtent` 的第一行值得读两遍:宽或高为零的孩子直接不可见,不管它在哪儿。** 否
+则裁剪会给一个零面积的孩子算出一个落在视口内的范围,让它看起来是可见的。
+
+**而 `isVisible` 里有一处冗余,原样移植并写下来:**
+
+```dart
+return _paintExtent != Size.zero || _paintExtent!.height != 0.0 || _paintExtent!.width != 0.0;
+```
+
+**后两个子句永远不会生效。** 第一个为假就意味着范围**就是** `Size.zero`,那么两个维度也都是零。整
+个表达式等于「绘制范围不恰好为零」。照抄原文会让读者猜测「是不是在特殊照顾零宽但有高的孩子」——并
+没有,那种孩子早在第一个子句就已经算可见了。所以这里写成它实际的意思,再把原文和这段说明留在文
+档里。
+
+**`layoutOffset` 和 `paintOffset` 是两个东西,而它们只在 down/right 时相等。** 布局偏移从滚动的前
+沿量起,绘制偏移从视口左上角量起;`up` 和 `left` 时要翻回视口坐标。上游文档里那句「覆写 paint 时
+请用 paintOffset 而不是 layoutOffset」,正是这一对存在的理由——让这个错误可被发现。回归行把
+down/right 相等、up/left 翻转、而布局偏移**始终没动**这三件事一起钉住。
+
+**`reuseChild` 和 `buildChild` 分开,是为了不在每一滚动帧里丢掉孩子的状态。** 而条件里
+`needsDelegateRebuild` 那一半才是要点:**delegate 变了会作废每一个孩子,连原地没动的也不例外**
+——复用它们会把旧 delegate 的内容显示在新布局里。
+
+**保活桶的进出也是两条判断:** 出桶算 **reuse 而不是 build**(这就是桶的全部意义:滚走了又滚回
+来,状态还在);而进桶靠的是「本轮布局**没有**要过它」这个集合差——没要过就是滚出范围了,想留就留
+下,不想留就交给 child manager 处置。
+
+**`visitChildren` 会走保活桶,`visitChildrenForSemantics` 不会。** 屏幕阅读器念出读者已经滚过去的
+那些行,等于在念一张没人在看的表。
+
+**滚动视图那半边有一个真正的约束而不是偏好:** `primary` 与主轴自带 controller **不能同时成立**,上
+游是断言。两个 controller 驱动同一根轴,会各自以为滚动位置归自己所有。
+
+**未移植的部分写在模块头里**:`RenderBox` 那套管线(`performLayout`、命中测试、持有 child manager
+的 element)属于本 crate 自己的渲染树,不重复。移植的是 vicinity 与它的两种顺序、parent data 与它
+的可见性规则、绘制范围裁剪、build/reuse 判断、保活桶,以及滚动视图的配置校验。
+
+验证:`cargo test --lib` 2224 绿,GN `rustflutter_unittests` 2224 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1565 accounted / 323 MISSING(82.9%)。
+
 ### 套接字另一头拿不住一个对象,只能拿住一个字符串(2026-08-20)
 
 新模块 `widget_inspector.rs`,`widgets/widget_inspector.dart` 十个全到:
