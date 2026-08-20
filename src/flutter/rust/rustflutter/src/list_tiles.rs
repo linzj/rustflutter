@@ -4,6 +4,11 @@
 //! A control with a label you can also tap, three times over. Reading the three
 //! together turns up something none of them says on its own.
 
+use std::cell::RefCell;
+
+use crate::framework::{AnyWidget, BuildContext, Component, component};
+use crate::gestures::PointerHandlers;
+
 /// Upstream `ListTileControlAffinity`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ListTileControlAffinity {
@@ -175,9 +180,467 @@ impl SwitchListTile {
     }
 }
 
+// -- Building the three ---------------------------------------------------------
+
+/// One of the three tiles, with everything needed to put it on screen.
+///
+/// [`ControlListTile`] is the decision -- where the control goes, whether the
+/// value is legal, what merges into what. This is that decision plus the
+/// content, and it is what upstream's three widgets are once their
+/// `build` methods have chosen the slots: **a `ListTile` with the control in
+/// one slot and the secondary widget in the other**.
+///
+/// That is worth saying plainly because it is what the three have in common
+/// and none of them says: none of them lays anything out. Every one of
+/// upstream's `build` methods ends in a `ListTile`, and the tile is where the
+/// padding, the height, the colours and the tap all come from.
+pub struct ControlTile {
+    tile: ControlListTile,
+    id: u64,
+    title: String,
+    subtitle: Option<String>,
+    secondary: RefCell<Option<AnyWidget>>,
+    handlers: PointerHandlers,
+    enabled: bool,
+    selected: bool,
+    dense: Option<bool>,
+    theme_affinity: Option<ListTileControlAffinity>,
+}
+
+impl ControlTile {
+    pub fn new(id: u64, tile: ControlListTile, title: impl Into<String>) -> ControlTile {
+        ControlTile {
+            tile,
+            id,
+            title: title.into(),
+            subtitle: None,
+            secondary: RefCell::new(None),
+            handlers: PointerHandlers::new(),
+            enabled: true,
+            selected: false,
+            dense: None,
+            theme_affinity: None,
+        }
+    }
+
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self.tile.has_subtitle = true;
+        self
+    }
+
+    /// Upstream's `secondary`: the widget in whichever slot the control is not
+    /// in.
+    pub fn with_secondary(self, secondary: AnyWidget) -> Self {
+        *self.secondary.borrow_mut() = Some(secondary);
+        let mut tile = self;
+        tile.tile.has_secondary = true;
+        tile
+    }
+
+    /// Upstream's `onChanged`, which being null is what `enabled: false` means
+    /// for these three -- they have no separate flag.
+    pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
+        self.handlers = handlers;
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn with_dense(mut self, dense: bool) -> Self {
+        self.dense = Some(dense);
+        self
+    }
+
+    pub fn with_control_affinity(mut self, affinity: ListTileControlAffinity) -> Self {
+        self.tile.control_affinity = Some(affinity);
+        self
+    }
+
+    /// The theme's affinity, which sits between the widget's and `platform`.
+    pub fn with_theme_affinity(mut self, affinity: ListTileControlAffinity) -> Self {
+        self.theme_affinity = Some(affinity);
+        self
+    }
+
+    pub fn with_three_line(mut self, is_three_line: bool) -> Self {
+        self.tile.is_three_line = is_three_line;
+        self
+    }
+
+    pub fn slots(&self) -> TileSlots {
+        self.tile.slots(self.theme_affinity)
+    }
+
+    /// The control itself, as a widget.
+    ///
+    /// A disabled tile builds the control **without handlers**, which is how
+    /// upstream's null `onChanged` reaches it: the control is drawn and does
+    /// not answer, rather than being drawn and answering into nothing.
+    fn control_widget(&self) -> AnyWidget {
+        let handlers = if self.enabled {
+            self.handlers.clone()
+        } else {
+            PointerHandlers::new()
+        };
+        let value = self.tile.value.unwrap_or(false);
+        match self.tile.control {
+            TileControl::Checkbox => component(
+                crate::controls::Checkbox::new(self.id, value)
+                    .with_enabled(self.enabled)
+                    .with_handlers(handlers),
+            ),
+            TileControl::Radio => component(
+                crate::controls::Radio::new(self.id, value)
+                    .with_enabled(self.enabled)
+                    .with_handlers(handlers),
+            ),
+            TileControl::Switch => {
+                component(crate::components::Switch::new(self.id, value).with_handlers(handlers))
+            }
+        }
+    }
+}
+
+impl Component for ControlTile {
+    /// Upstream's three `build` methods, which differ only in which control
+    /// they make and which way `platform` resolves.
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        debug_assert!(
+            self.tile.validate().is_ok(),
+            "{}",
+            self.tile.validate().unwrap_err()
+        );
+        let slots = self.slots();
+        let control = self.control_widget();
+        let secondary = self.secondary.borrow_mut().take();
+
+        let mut list = crate::components::ListTile::new(self.title.clone())
+            .with_selected(self.selected)
+            .with_enabled(self.enabled)
+            .with_three_line(self.tile.is_three_line);
+        // Upstream's three all pass `onTap` down to the tile, and it is not a
+        // convenience: **the label is part of the control**. A row whose
+        // checkbox is the only target makes the reader aim at a 20-pixel box
+        // when a 400-pixel one is sitting right there saying what it does.
+        //
+        // The `enabled` check here is upstream's `onTap: onChanged != null ?
+        // ... : null`, and [`crate::components::ListTile`] checks `enabled`
+        // again before it makes itself a target -- upstream passes both, and
+        // each of them alone is enough. Neither can be removed on its own
+        // without the other still refusing the tap, so the two are load-bearing
+        // only as a pair; a mutation has to take both to see it.
+        if self.enabled {
+            list = list.tappable(self.id, self.handlers.clone());
+        }
+        if let Some(subtitle) = &self.subtitle {
+            list = list
+                .with_subtitle(subtitle.clone())
+                .with_three_line(self.tile.is_three_line);
+        }
+        if let Some(dense) = self.dense {
+            list = list.with_dense(dense);
+        }
+        // The two slots, filled the way `slots()` said. The secondary goes in
+        // whichever one the control did not take -- and if there is no
+        // secondary that slot stays empty rather than being filled with the
+        // control, which is what makes affinity visible with nothing else in
+        // the tile.
+        if slots.control_is_leading {
+            list = list.with_leading(control);
+            if let Some(secondary) = secondary {
+                list = list.with_trailing(secondary);
+            }
+        } else {
+            list = list.with_trailing(control);
+            if let Some(secondary) = secondary {
+                list = list.with_leading(secondary);
+            }
+        }
+
+        // Upstream wraps the whole thing in `MergeSemantics`, which is what
+        // makes the tile *one* thing to a reader rather than a control beside
+        // some unrelated text -- see [`ControlListTile::merges_semantics`].
+        // This crate's [`crate::semantics_markers::MergeSemantics`] is the
+        // description and not a wrapper, and nothing here turns a subtree into
+        // a merged one, so the claim stands where it already stood and the
+        // tree is built plainly. Saying it in a wrapper that does nothing
+        // would read as though it did.
+        component(list)
+    }
+}
+
+impl CheckboxListTile {
+    /// The widget. Upstream's `CheckboxListTile.build`.
+    pub fn widget(self, id: u64, title: impl Into<String>) -> ControlTile {
+        ControlTile::new(id, self.0, title)
+    }
+}
+
+impl RadioListTile {
+    /// The widget. Upstream's `RadioListTile.build`.
+    pub fn widget(self, id: u64, title: impl Into<String>) -> ControlTile {
+        ControlTile::new(id, self.0, title)
+    }
+}
+
+impl SwitchListTile {
+    /// The widget. Upstream's `SwitchListTile.build`.
+    pub fn widget(self, id: u64, title: impl Into<String>) -> ControlTile {
+        ControlTile::new(id, self.0, title)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- The three, actually built -----------------------------------------------------
+
+    use crate::framework::{ElementTree, provide};
+    use crate::render::{BoxConstraints, RenderBox};
+
+    const TILE: u64 = 31;
+    const SECONDARY: u64 = 32;
+
+    /// How many targets are stacked at `x`. The row is one of them once the
+    /// tile is tappable, so "is the control here" is "is there more than the
+    /// row".
+    fn depth_at(tile: ControlTile, x: f32) -> usize {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            crate::framework::component(tile),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = root.layout(BoxConstraints::tight(400.0, 80.0));
+        let mut result = crate::render::HitTestResult::new();
+        root.hit_test(
+            crate::render::Offset::new(x, size.height / 2.0),
+            &mut result,
+        );
+        result.path.len()
+    }
+
+    /// Which marker is at `x`, halfway down a 400-wide tile.
+    fn hit(tile: ControlTile, x: f32) -> Option<u64> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            crate::framework::component(tile),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = root.layout(BoxConstraints::tight(400.0, 80.0));
+        let mut result = crate::render::HitTestResult::new();
+        root.hit_test(
+            crate::render::Offset::new(x, size.height / 2.0),
+            &mut result,
+        );
+        result.path.first().map(|entry| entry.target)
+    }
+
+    fn secondary() -> crate::framework::AnyWidget {
+        crate::framework::leaf(|| {
+            crate::widgets::Pointer::new(
+                SECONDARY,
+                crate::widgets::Container::new().with_size(30.0, 24.0),
+            )
+        })
+    }
+
+    #[test]
+    fn a_radio_tile_puts_its_control_first_and_a_switch_tile_puts_it_last() {
+        // The finding, now visible on screen rather than only in the
+        // resolution: `platform` varies by control.
+        // Measured by depth rather than by identity: the row is a target
+        // everywhere now, and it carries the same id as the control, so the
+        // question "is the control here" is "is there anything above the row".
+        let radio = RadioListTile::new(true).widget(TILE, "Medium");
+        assert_eq!(depth_at(radio, 25.0), 2, "leading edge");
+
+        let switch = SwitchListTile::new(true).widget(TILE, "Wi-Fi");
+        assert_eq!(depth_at(switch, 375.0), 2, "trailing edge");
+
+        let checkbox = CheckboxListTile::new(true).widget(TILE, "Remember me");
+        assert_eq!(depth_at(checkbox, 375.0), 2);
+    }
+
+    #[test]
+    fn an_explicit_affinity_overrides_the_control_s_habit() {
+        let radio = RadioListTile::new(true)
+            .widget(TILE, "Medium")
+            .with_control_affinity(ListTileControlAffinity::Trailing);
+        assert_eq!(depth_at(radio, 375.0), 2);
+
+        let switch = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_control_affinity(ListTileControlAffinity::Leading);
+        assert_eq!(depth_at(switch, 25.0), 2);
+    }
+
+    #[test]
+    fn the_theme_sits_between_the_widget_and_the_control_s_habit() {
+        // Widget, then theme, then platform.
+        let themed = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_theme_affinity(ListTileControlAffinity::Leading);
+        assert!(themed.slots().control_is_leading);
+
+        let overridden = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_theme_affinity(ListTileControlAffinity::Leading)
+            .with_control_affinity(ListTileControlAffinity::Trailing);
+        assert!(!overridden.slots().control_is_leading);
+    }
+
+    #[test]
+    fn the_secondary_takes_whichever_slot_the_control_did_not() {
+        let switch = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_secondary(secondary());
+        assert_eq!(hit(switch, 375.0), Some(TILE), "control trailing");
+
+        let switch = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_secondary(secondary());
+        assert_eq!(hit(switch, 25.0), Some(SECONDARY), "secondary leading");
+
+        let radio = RadioListTile::new(true)
+            .widget(TILE, "Medium")
+            .with_secondary(secondary());
+        assert_eq!(
+            hit(radio, 25.0),
+            Some(TILE),
+            "and the other way for a radio"
+        );
+        let radio = RadioListTile::new(true)
+            .widget(TILE, "Medium")
+            .with_secondary(secondary());
+        assert_eq!(hit(radio, 375.0), Some(SECONDARY));
+    }
+
+    #[test]
+    fn a_tile_with_no_secondary_leaves_that_slot_empty() {
+        // Rather than filling it with the control, which would make affinity
+        // invisible in the commonest case of all. Both branches, because each
+        // fills a different slot and a rule that held on one side only would
+        // pass a test of the other.
+        let switch = SwitchListTile::new(true).widget(TILE, "Wi-Fi");
+        assert_eq!(depth_at(switch, 25.0), 1, "control trails, leading empty");
+
+        let radio = RadioListTile::new(true).widget(TILE, "Medium");
+        assert_eq!(depth_at(radio, 375.0), 1, "control leads, trailing empty");
+    }
+
+    #[test]
+    fn a_disabled_tile_builds_a_control_that_does_not_answer() {
+        // Upstream's null `onChanged` is what `enabled: false` means for these
+        // three -- they have no flag of their own.
+        let live = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_handlers(crate::gestures::PointerHandlers::new());
+        assert_eq!(hit(live, 375.0), Some(TILE));
+
+        let dead = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_handlers(crate::gestures::PointerHandlers::new())
+            .with_enabled(false);
+        assert_eq!(
+            depth_at(dead, 200.0),
+            0,
+            "and the row itself is not a target either"
+        );
+    }
+
+    #[test]
+    fn a_disabled_controls_own_tap_goes_nowhere() {
+        // The control is still drawn and still hit-testable -- it is the
+        // handlers it is built without. Tapping it has to reach nothing.
+        fn taps(enabled: bool) -> usize {
+            let heard = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counter = std::rc::Rc::clone(&heard);
+            let handlers = crate::gestures::PointerHandlers::new()
+                .with_tap(move |_| counter.set(counter.get() + 1));
+            let tile = SwitchListTile::new(true)
+                .widget(TILE, "Wi-Fi")
+                .with_handlers(handlers)
+                .with_enabled(enabled);
+
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                crate::framework::component(tile),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            let size = root.layout(BoxConstraints::tight(400.0, 80.0));
+            let mut result = crate::render::HitTestResult::new();
+            root.hit_test(
+                crate::render::Offset::new(375.0, size.height / 2.0),
+                &mut result,
+            );
+            for entry in &result.path {
+                if let Some(handlers) = &entry.handlers {
+                    if let Some(tap) = &handlers.on_tap {
+                        tap(crate::gestures::TapEvent {
+                            local_position: crate::render::Offset::ZERO,
+                            pointer_id: 0,
+                        });
+                    }
+                }
+            }
+            heard.get()
+        }
+
+        // Two, and both are the point: the control answers, and so does the
+        // row -- the label is part of the control, and a reader aiming at a
+        // 20-pixel box when a 400-pixel one says the same thing is the bug
+        // upstream's `onTap` on the tile exists to prevent.
+        assert_eq!(taps(true), 2, "the control and the row it is in");
+        assert_eq!(taps(false), 0, "and neither, when disabled");
+    }
+
+    #[test]
+    fn a_subtitle_is_recorded_on_the_description_the_asserts_read() {
+        // What a subtitle *does* is invisible to this harness twice over: text
+        // measures nothing in the stub engine, and the control's own height
+        // sets the row's anyway, so the tile is the same height with one and
+        // without. What is decidable is that the description knows -- which is
+        // what `validate` and the three-line rule read.
+        let plain = SwitchListTile::new(true).widget(TILE, "Wi-Fi");
+        assert!(!plain.tile.has_subtitle);
+
+        let with_one = SwitchListTile::new(true)
+            .widget(TILE, "Wi-Fi")
+            .with_subtitle("Connected to Home");
+        assert!(with_one.tile.has_subtitle);
+        assert_eq!(with_one.subtitle.as_deref(), Some("Connected to Home"));
+    }
+
+    #[test]
+    fn three_lines_without_a_subtitle_is_refused() {
+        // Checked at build too -- `ControlTile::build` asserts it -- but
+        // asserted here rather than there, because the element tree catches a
+        // panicking build and reports it instead of letting it out, so a
+        // `should_panic` around the build would never see it.
+        let tile = CheckboxListTile::new(true)
+            .widget(TILE, "Remember me")
+            .with_three_line(true);
+        assert_eq!(tile.tile.validate(), Err("isThreeLine requires a subtitle"));
+
+        let with_one = CheckboxListTile::new(true)
+            .widget(TILE, "Remember me")
+            .with_subtitle("and stay signed in")
+            .with_three_line(true);
+        assert_eq!(with_one.tile.validate(), Ok(()));
+    }
 
     // -- The finding ------------------------------------------------------------
 

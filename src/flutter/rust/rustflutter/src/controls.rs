@@ -68,6 +68,14 @@ impl Checkbox {
         self
     }
 
+    /// The handlers directly, for a caller that already has them -- a control
+    /// inside a list tile, where the tile and the control answer the same tap.
+    /// [`Checkbox::wired`] is the same thing for the common case.
+    pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
+        self.handlers = handlers;
+        self
+    }
+
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, toggle: fn(&mut S)) -> Self {
         if self.enabled {
             self.handlers = PointerHandlers::new().with_tap(move |_| {
@@ -173,6 +181,14 @@ impl Radio {
 
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// The handlers directly -- see [`Checkbox::with_handlers`].
+    pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
+        if self.enabled {
+            self.handlers = handlers;
+        }
         self
     }
 

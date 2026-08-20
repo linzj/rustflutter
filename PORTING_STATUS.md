@@ -10011,3 +10011,41 @@ getter/setter 对、`==`/`hashCode`/`toString` 变成 derive、一个 Rust enum 
   失败的测试比不写更糟**。
 
 `covered` 桶的重读是一条长队列（682 个候选，约三成为真）。下一轮继续。
+
+## `covered` 桶重读之二：三个控件列表项**根本没有 widget**（2026-08-21）
+
+`list_tiles.rs` 里 `CheckboxListTile`/`RadioListTile`/`SwitchListTile` 早就在，
+`ListTileControlAffinity::resolve` 那条发现（`platform` 按控件而不是按平台变）也
+写得很清楚——**但整个文件里没有一个 `Component`、没有一个 `build`、没有一个
+`AnyWidget`**。三个类型是纯描述，没有任何东西能把它们画出来。
+
+跟 ListTile 那次是不同形状的漏：不是「选项被丢掉」，是**控件从来没被建出来**。
+上游这三个的 `build` 全都以一个 `ListTile` 收尾——而 `ListTile` 上一轮刚补深，
+所以现在正好建得出来。加了 `ControlTile`：把控件放进 affinity 说的那个槽、
+secondary 放另一个、subtitle/dense/selected/enabled 往下传给 `ListTile`。
+
+11 条变异，5 条第一轮活着，每一条都指出一个真问题：
+
+* **M2**（没有 secondary 时用控件填另一个槽）：变异打在 `control_is_leading`
+  为真的分支上，而我的测试用的是 switch（控件在 trailing）——**变异根本没碰到
+  被测的那条路**。补了 radio 那一侧才红。
+* **M3**（禁用时控件仍带 handlers）：我的测试传的本来就是空 handlers，去不去闸
+  一样。改成传真 handlers、点下去数回调次数。
+* **M4 / M10 互相遮蔽**：`ControlTile` 有一道 `if self.enabled` 才 `tappable`，
+  `ListTile::build` 里还有一道 `enabled.then_some(id)`。**两道闸各自单独去掉都不
+  会红**，因为另一道还拦着。两道都是上游的（`enabled: onChanged != null` 与
+  `onTap: onChanged == null ? null : ...`），所以都留下并标注；再跑一条**同时去掉
+  两道**的变异证明这对是承重的（M11 红）。
+* **M9 让我发现一个真 bug**：`ControlTile` 一开始**没把整行做成点击目标**。上游三
+  个都把 `onTap` 传给 tile，那不是便利——**标签是控件的一部分**。一行只有那个
+  20 像素的方框能点、旁边 400 像素写着它是干什么的却不能点，正是上游那个 `onTap`
+  存在的理由。补上之后 M9 红。
+* **M7**（subtitle 内容不往下传）活着，而且**在这个测试架子里不可观测**：stub 引擎
+  的文字量为零，控件自身 28 高又决定了整行高度，有没有副标题一样高。只断言了
+  描述记住了它（`validate` 和三行规则读的就是这个），并写明为什么不断言别的。
+
+顺带给 `Checkbox`/`Radio` 补了 `with_handlers`（`Switch` 早就有）。
+
+**尺子的比值没动**（SwitchListTile 仍是 3/46）——成员在 `ControlTile` 和
+`ControlListTile` 上，不在同名类型上，这正是 `depth.py` 文档里写明的盲点之一。
+比值是待读清单，不是判决。
