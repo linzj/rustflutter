@@ -470,9 +470,48 @@ pub fn mark_needs_update() {
     NEEDS_UPDATE.with(|needs| needs.set(true));
 }
 
-/// Turns semantics on or off. Called by the shell when an assistive technology
-/// arrives or leaves.
+/// The platform saying an assistive technology arrived or left.
+///
+/// **This is not the switch, it is one client of it.** Upstream's binding holds
+/// a single [`SemanticsHandle`] on the platform's behalf and disposes it when
+/// the platform loses interest -- `_semanticsHandle ??= ensureSemantics()` one
+/// way and `_semanticsHandle?.dispose()` the other -- so a reader leaving does
+/// not switch semantics off for anyone else who asked. See [`SemanticsBinding`].
+///
+/// Called by the shell; idempotent, because the platform reports its state
+/// rather than a change to it.
 pub fn set_enabled(on: bool) {
+    PLATFORM_HANDLE.with(|held| {
+        if held.get() == on {
+            return;
+        }
+        held.set(on);
+        if on {
+            // Deliberately leaked: the platform's interest lasts until the
+            // platform says otherwise, which is the next call here, and there
+            // is nowhere to keep the handle that outlives this function.
+            // Upstream keeps it in a field for the same lifetime.
+            std::mem::forget(SemanticsBinding::ensure_semantics());
+        } else {
+            // The matching release, by hand for the same reason.
+            let mut handle = SemanticsHandle { released: false };
+            handle.dispose();
+        }
+    });
+}
+
+/// What the collector does once the count says yes or no.
+///
+/// Split out from [`set_enabled`] because there are two ways in now -- the
+/// platform's handle and anyone else's -- and both have to leave the collector
+/// in the same state.
+///
+/// **Only ever called on an edge.** The callers gate on the count crossing zero
+/// (`was == 0` going up, `remaining == 0` coming down), which is what upstream
+/// gets from `ValueNotifier` only notifying on a change. A second guard in here
+/// would be a line that cannot be wrong -- it was written and then removed once
+/// a mutation showed nothing could observe it.
+fn apply_enabled(on: bool) {
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
         collector.enabled = on;
@@ -485,6 +524,146 @@ pub fn set_enabled(on: bool) {
     // news; a reader that has just left leaves an empty tree behind, so the
     // next one to arrive is not compared against a stale one.
     mark_needs_update();
+    let listeners: Vec<Rc<dyn Fn(bool)>> =
+        ENABLED_LISTENERS.with(|listeners| listeners.borrow().iter().flatten().cloned().collect());
+    for listener in listeners {
+        listener(on);
+    }
+}
+
+// -- Who is asking for semantics ----------------------------------------------
+
+/// Upstream `SemanticsBinding`, reduced to the part that decides whether the
+/// tree is built at all.
+///
+/// # There is one mechanism, and the platform is only one of its clients
+///
+/// It is tempting to read `semanticsEnabled` as "the platform turned a screen
+/// reader on", and the crate read it that way until now: a boolean the shell
+/// set. Upstream's is a **count of outstanding handles**, asserted equal to it
+/// on every read -- `assert(_semanticsEnabled.value == (_outstandingHandles >
+/// 0))` -- and the platform's own interest is expressed by the binding holding
+/// one handle and disposing it, exactly as any other client would.
+///
+/// The difference shows the moment there are two clients. With a boolean, an
+/// inspector that turned semantics on to read the tree is switched off again
+/// the next time the platform says no reader is attached, halfway through the
+/// inspection. With a count, the platform releasing its handle leaves the
+/// inspector's standing.
+///
+/// So [`set_enabled`] is no longer the switch. It is the platform taking and
+/// releasing its one handle, and the switch is what the count says.
+pub struct SemanticsBinding;
+
+impl SemanticsBinding {
+    /// Upstream's `ensureSemantics()`: asks for the tree to be built and hands
+    /// back the reason it is.
+    ///
+    /// The tree is collected while any handle is alive. Drop the handle and, if
+    /// it was the last, collection stops.
+    pub fn ensure_semantics() -> SemanticsHandle {
+        let was = HANDLES.with(|handles| {
+            let count = handles.get();
+            handles.set(count + 1);
+            count
+        });
+        if was == 0 {
+            apply_enabled(true);
+        }
+        SemanticsHandle { released: false }
+    }
+
+    /// Upstream's `debugOutstandingSemanticsHandles`.
+    pub fn outstanding_handles() -> usize {
+        HANDLES.with(|handles| handles.get())
+    }
+
+    /// Upstream's `addSemanticsEnabledListener`.
+    ///
+    /// Answers a token to remove it with, since a Rust closure has no identity
+    /// to compare -- upstream removes by passing the same function object back,
+    /// which only works because a Dart method tear-off is stable.
+    pub fn add_enabled_listener(listener: impl Fn(bool) + 'static) -> usize {
+        ENABLED_LISTENERS.with(|listeners| {
+            let mut listeners = listeners.borrow_mut();
+            let token = listeners.len();
+            listeners.push(Some(Rc::new(listener)));
+            token
+        })
+    }
+
+    /// Upstream's `removeSemanticsEnabledListener`.
+    pub fn remove_enabled_listener(token: usize) -> bool {
+        ENABLED_LISTENERS.with(|listeners| {
+            let mut listeners = listeners.borrow_mut();
+            match listeners.get_mut(token) {
+                Some(slot) => slot.take().is_some(),
+                None => false,
+            }
+        })
+    }
+
+    /// Forgets every handle and listener. For tests, which share a thread and
+    /// would otherwise inherit each other's counts.
+    pub fn reset_for_tests() {
+        HANDLES.with(|handles| handles.set(0));
+        PLATFORM_HANDLE.with(|held| held.set(false));
+        ENABLED_LISTENERS.with(|listeners| listeners.borrow_mut().clear());
+        apply_enabled(false);
+    }
+}
+
+/// Upstream `SemanticsHandle`: a client's standing interest in the semantics
+/// tree.
+///
+/// # Dropping is disposing
+///
+/// Upstream's has a `dispose()` that must be called by hand, and a debug
+/// allocation tracker to catch the ones that are not. Here the drop does it, so
+/// a handle that goes out of scope has released its interest and there is
+/// nothing to leak and nothing to assert about.
+///
+/// [`SemanticsHandle::dispose`] is kept for callers reading across from
+/// upstream, and for the case where the release has to happen before the end of
+/// a scope. It is idempotent, and the drop after it does nothing.
+pub struct SemanticsHandle {
+    released: bool,
+}
+
+impl SemanticsHandle {
+    /// Upstream's `dispose()`. Calling it twice is not an error; the second
+    /// call has nothing left to release.
+    pub fn dispose(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        let remaining = HANDLES.with(|handles| {
+            let count = handles.get().saturating_sub(1);
+            handles.set(count);
+            count
+        });
+        if remaining == 0 {
+            apply_enabled(false);
+        }
+    }
+}
+
+impl Drop for SemanticsHandle {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
+thread_local! {
+    /// Upstream's `_outstandingHandles`.
+    static HANDLES: Cell<usize> = const { Cell::new(0) };
+    /// Whether the platform is currently holding one. Upstream's
+    /// `_semanticsHandle`, which the binding keeps and nulls.
+    static PLATFORM_HANDLE: Cell<bool> = const { Cell::new(false) };
+    #[allow(clippy::type_complexity)]
+    static ENABLED_LISTENERS: RefCell<Vec<Option<Rc<dyn Fn(bool)>>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// The tree the platform is holding.
@@ -3745,5 +3924,212 @@ mod tests {
         assert_eq!(Unicode::RLE, '\u{202B}');
         assert_eq!(Unicode::LRE, '\u{202A}');
         assert_eq!(Unicode::PDF, '\u{202C}');
+    }
+
+    // -- Who is asking for semantics ----------------------------------------------
+
+    #[test]
+    fn semantics_is_on_while_a_handle_is_alive_and_off_when_it_drops() {
+        SemanticsBinding::reset_for_tests();
+        assert!(!enabled());
+        assert_eq!(SemanticsBinding::outstanding_handles(), 0);
+
+        {
+            let _handle = SemanticsBinding::ensure_semantics();
+            assert!(enabled());
+            assert_eq!(SemanticsBinding::outstanding_handles(), 1);
+        }
+
+        assert!(!enabled(), "the handle went out of scope");
+        assert_eq!(SemanticsBinding::outstanding_handles(), 0);
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn the_count_and_the_flag_agree_the_way_upstream_asserts_they_do() {
+        // Upstream reads `assert(_semanticsEnabled.value == (_outstandingHandles
+        // > 0))` on every access. Here that is a test rather than an assert,
+        // because there is nowhere to put an assert that runs on every read of
+        // a plain function.
+        SemanticsBinding::reset_for_tests();
+        let a = SemanticsBinding::ensure_semantics();
+        assert_eq!(enabled(), SemanticsBinding::outstanding_handles() > 0);
+        let b = SemanticsBinding::ensure_semantics();
+        assert_eq!(enabled(), SemanticsBinding::outstanding_handles() > 0);
+        drop(a);
+        assert_eq!(enabled(), SemanticsBinding::outstanding_handles() > 0);
+        drop(b);
+        assert_eq!(enabled(), SemanticsBinding::outstanding_handles() > 0);
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn a_second_client_keeps_semantics_on_after_the_first_lets_go() {
+        // The whole reason this is a count and not a boolean.
+        SemanticsBinding::reset_for_tests();
+        let inspector = SemanticsBinding::ensure_semantics();
+        let other = SemanticsBinding::ensure_semantics();
+        assert_eq!(SemanticsBinding::outstanding_handles(), 2);
+
+        drop(other);
+        assert!(enabled(), "the inspector is still looking");
+        drop(inspector);
+        assert!(!enabled());
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn the_platform_letting_go_does_not_switch_off_a_client_that_asked() {
+        // The case a boolean gets wrong: an inspector that turned semantics on
+        // to read the tree used to be switched off again the next time the
+        // platform said no reader was attached, halfway through the inspection.
+        SemanticsBinding::reset_for_tests();
+        set_enabled(true);
+        let inspector = SemanticsBinding::ensure_semantics();
+        assert_eq!(SemanticsBinding::outstanding_handles(), 2);
+
+        set_enabled(false);
+        assert!(
+            enabled(),
+            "the platform released its handle; the inspector's still stands"
+        );
+        assert_eq!(SemanticsBinding::outstanding_handles(), 1);
+
+        drop(inspector);
+        assert!(!enabled());
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn the_platform_reports_its_state_rather_than_a_change_so_saying_it_twice_is_free() {
+        // The shell calls this with whatever the platform currently says, which
+        // may be what it said last time.
+        SemanticsBinding::reset_for_tests();
+        set_enabled(true);
+        set_enabled(true);
+        set_enabled(true);
+        assert_eq!(
+            SemanticsBinding::outstanding_handles(),
+            1,
+            "one platform handle, however many times it was announced"
+        );
+
+        set_enabled(false);
+        set_enabled(false);
+        assert_eq!(SemanticsBinding::outstanding_handles(), 0);
+        assert!(!enabled());
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn disposing_a_handle_twice_releases_it_once() {
+        SemanticsBinding::reset_for_tests();
+        let keep = SemanticsBinding::ensure_semantics();
+        let mut handle = SemanticsBinding::ensure_semantics();
+        assert_eq!(SemanticsBinding::outstanding_handles(), 2);
+
+        handle.dispose();
+        handle.dispose();
+        assert_eq!(
+            SemanticsBinding::outstanding_handles(),
+            1,
+            "and the drop that follows does nothing either"
+        );
+        drop(handle);
+        assert_eq!(SemanticsBinding::outstanding_handles(), 1);
+
+        drop(keep);
+        assert_eq!(SemanticsBinding::outstanding_handles(), 0);
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn turning_semantics_off_clears_what_the_platform_was_holding() {
+        // The behaviour `set_enabled` had before the handles went in, checked
+        // through the new path: a reader that left leaves an empty tree behind,
+        // so the next one is not compared against a stale one.
+        SemanticsBinding::reset_for_tests();
+        set_enabled(true);
+        assert!(enabled());
+        set_enabled(false);
+        assert!(tree().is_empty());
+        SemanticsBinding::reset_for_tests();
+    }
+
+    // -- Listeners ------------------------------------------------------------------
+
+    #[test]
+    fn a_listener_hears_the_edges_and_not_every_call() {
+        SemanticsBinding::reset_for_tests();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let recorder = Rc::clone(&heard);
+        let token =
+            SemanticsBinding::add_enabled_listener(move |on| recorder.borrow_mut().push(on));
+
+        let first = SemanticsBinding::ensure_semantics();
+        let second = SemanticsBinding::ensure_semantics();
+        drop(second);
+        drop(first);
+
+        assert_eq!(
+            *heard.borrow(),
+            vec![true, false],
+            "on at the first handle and off at the last, nothing in between"
+        );
+        SemanticsBinding::remove_enabled_listener(token);
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn a_removed_listener_stops_hearing() {
+        SemanticsBinding::reset_for_tests();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let recorder = Rc::clone(&heard);
+        let token =
+            SemanticsBinding::add_enabled_listener(move |on| recorder.borrow_mut().push(on));
+
+        drop(SemanticsBinding::ensure_semantics());
+        assert_eq!(heard.borrow().len(), 2);
+
+        assert!(SemanticsBinding::remove_enabled_listener(token));
+        assert!(
+            !SemanticsBinding::remove_enabled_listener(token),
+            "removing it again finds nothing"
+        );
+        drop(SemanticsBinding::ensure_semantics());
+        assert_eq!(heard.borrow().len(), 2, "nothing new was heard");
+        SemanticsBinding::reset_for_tests();
+    }
+
+    #[test]
+    fn a_token_still_names_its_own_listener_after_an_earlier_one_is_removed() {
+        // The token is an index into the list, so removing an entry has to
+        // leave a hole rather than close the gap -- otherwise every token after
+        // it silently comes to mean the next listener along.
+        //
+        // Three listeners, and the first is removed before the *third* is:
+        // with a shifting removal the third's token would be out of range by
+        // then, so it would survive and be heard.
+        SemanticsBinding::reset_for_tests();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let (one, two, three) = (Rc::clone(&heard), Rc::clone(&heard), Rc::clone(&heard));
+        let a = SemanticsBinding::add_enabled_listener(move |_| one.borrow_mut().push("a"));
+        let b = SemanticsBinding::add_enabled_listener(move |_| two.borrow_mut().push("b"));
+        let c = SemanticsBinding::add_enabled_listener(move |_| three.borrow_mut().push("c"));
+
+        assert!(SemanticsBinding::remove_enabled_listener(a));
+        assert!(
+            SemanticsBinding::remove_enabled_listener(c),
+            "c's token still finds c"
+        );
+
+        drop(SemanticsBinding::ensure_semantics());
+        assert_eq!(
+            *heard.borrow(),
+            vec!["b", "b"],
+            "only b is left, and it heard both edges"
+        );
+        SemanticsBinding::remove_enabled_listener(b);
+        SemanticsBinding::reset_for_tests();
     }
 }
