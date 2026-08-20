@@ -164,6 +164,60 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 前导图标不是「第 0 个孩子」,它是前导那个(2026-08-20)
+
+新模块 `slotted.rs`,`widgets/slotted_render_object_widget.dart` 四个全到:
+`SlottedMultiChildRenderObjectWidget`、`SlottedMultiChildRenderObjectWidgetMixin`、
+`SlottedContainerRenderObjectMixin`、`SlottedRenderObjectElement`。覆盖率 1614/1888(85.5%)。
+
+**大多数带多个孩子的渲染对象把孩子放在一个列表里,而孩子的身份就是它在列表里的位置。** 对于孩子各
+有含义的 widget,这是错的:**一个列表项的前导图标和尾部箭头,不是「第 0 个孩子」和「第 2 个孩子」,
+它们是前导那个和尾部那个**,而任何一个缺席时,另一个都不该跟着挪位置。
+
+于是孩子住在一张**槽位到孩子的映射**里,而有意思的部分是这张表被重建时会发生什么。
+
+**一个带 key 的孩子在槽位之间移动时会保住它的状态。** 匹配器**先在所有槽位里找 key 匹配**,再看当
+前正在填的这个槽位——于是把一个带 key 的 widget 从 leading 挪到 trailing,它的 `State` 会跟着走,和
+在列表里挪动一个带 key 的孩子完全一样。**列表给了这个承诺,槽位没有理由打破它。**
+
+三路选择的完整规则:
+
+1. **任何位置的 key 匹配优先**,元素从它原来那个槽位里被取出来。
+2. **否则复用同槽位的旧孩子,但只在它没有 key 时。** 一个没匹配上的带 key 旧孩子是**别人的**,复用
+   它就是把它的状态交给错的 widget。
+3. **否则什么都不复用**,新建一个元素。
+
+回归行把三条都钉了,还钉了「两个带 key 的孩子互换槽位,两个都活下来」。
+
+**渲染对象那一侧有两处顺序上的小心:**
+
+* **`_setChild` 先 drop 旧孩子再 adopt 新的。** 顺序要紧:一个还挂在别处就被收养的渲染对象,会在一
+  条语句的时间里有两个父节点,树的深度不变式会短暂地为假。
+* **`_moveChild` 只在旧槽位「仍然握着这个孩子」时才清它。** 等这次移动跑起来的时候,别的东西可能已
+  经占了那个槽位——**那时清掉它,会把一个刚到的孩子丢掉。**
+
+**两条不变式都是断言:槽位列表不能变,槽位不能重复。** 上游对前者的措辞异常坚决——「The list of slots
+must be static and must never change for a given class」。一个槽位会变的类,会让孩子因为没人要求过的
+理由出现和消失。这里两条都做成了可返回的错误,好让它们能被钉住。
+
+**自查:尺子指出我少了一个名字,而它是对的。** 我把 `SlottedContainerRenderObjectMixin` 命名成了
+`SlottedContainerRenderObject`——去掉了 `Mixin` 后缀,因为它在这里是一个结构体而不是 trait。但**尺
+子按名字匹配,读者也按名字搜**;上游叫什么,这里就该叫什么。改回带 `Mixin` 的名字,并在文档里说明
+它为什么是结构体:**不像上游多数 mixin,这一个是带状态的**——槽位映射本身——而它做的每件事都是在这张
+映射上的方法。
+
+**其余两条:**
+
+* **`children` 的基类实现「对返回顺序不作保证」,而上游明确告诉子类:顺序要紧时请覆写——尤其是命中测
+  试。** 一个按映射顺序访问孩子的命中测试,会让错的那个赢。这个移植保留声明的槽位顺序,这比上游的基
+  类更强,并把这件事写出来而不是假装映射是有序的。
+* **那个 mixin 版本是被废弃的**,理由是「to simplify the process of creating slotted widgets」——**同
+  一件事有两种说法,就比需要的多了一种**,而继承那种不需要解释。
+
+验证:`cargo test --lib` 2490 绿,GN `rustflutter_unittests` 2490 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1614 accounted / 274 MISSING(85.5%)。
+
 ### 点外面往下关,按 Esc 从根上关(2026-08-20)
 
 新模块 `raw_menu_anchor.rs`,`widgets/raw_menu_anchor.dart` 五个全到:`RawMenuOverlayInfo`、
