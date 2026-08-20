@@ -164,6 +164,59 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 那句「小心别重排」保护的四步里,有一步在默认值下根本看不出来(2026-08-20)
+
+新模块 `buttons.rs`,一次收掉 `RawMaterialButton`(`button.dart`)、`MaterialButton`
+(`material_button.dart`)、`IconButton`(`icon_button.dart`)与 `FloatingActionButton`
+(`floating_action_button.dart`)。覆盖率 1803/1888(95.5%)。测试 3351。
+
+**`_effectiveElevation` 上面挂着一句作者自己写的警告:**
+
+```dart
+// These conditionals are in order of precedence, so be careful about reorganizing them.
+if (widget.onPressed == null) return widget.disabledElevation;
+if (_pressed)  return widget.highlightElevation;
+if (_hovered)  return widget.hoverElevation;
+if (_focused)  return widget.focusElevation;
+return widget.elevation;
+```
+
+**这四个状态可以同时为真——被禁用的按钮照样能被悬停,而用鼠标的话,按下就必然同时悬停着。** 所以必须有个
+先后,而这条 if 链就是那份先后。禁用在最前,因为**被悬停的禁用按钮仍然是禁用的**;按下压过悬停,因为
+**不这么排的话,鼠标用户永远看不到 highlightElevation** ——它会被 hover 那一条永远挡住。
+
+**但把默认值填进去,这条链有一步是量不出来的:`focusElevation` 和 `hoverElevation` 都是 4.0。** 一个照默
+认值配出来的按钮,把 focus 和 hover 两条对调,谁也看不出区别——用户看不出,测试也测不出。**真正在承重的
+是「按下压过悬停」那一步,因为 8.0 ≠ 4.0。**
+
+于是回归行不用默认值写,用五个互不相同的数,让每一步都可观测;并且专门留了一条把「默认值区分不了
+focus 和 hover」这件事本身钉住——**不绕开它,而是把它记下来:先后仍然要紧,因为主题可以让这两个数不
+一样。** 随后把 pressed / hovered 两条对调跑了一遍,确认那条回归行确实会红。
+
+---
+
+**`IconButton` 那条,是同一类事的另一种说法:**
+
+> The hit region of an icon button will, if possible, be at least `kMinInteractiveDimension` pixels in
+> size, **regardless of the actual `iconSize`**.
+
+**画出来的东西和按得着的东西是两个尺寸**,按钮只把后者撑大,不动前者。默认情况下这个比例正好是二比一
+——**画 24,按 48**,而 `alignment` 决定图标落在这块靶子的哪儿。48 是地板不是尺寸:上游文档自己举的
+72 号图标,靶子就是 72。和第 59 轮滚动条的触摸扩张是同一件事:**手指不是光标,按得着的从来不等于看得见的。**
+
+其余两条:
+
+* `assert(splashRadius == null || splashRadius > 0)`——**半径为零的水波是「有反应但没墨」,这跟「不要反应」
+  不是一回事**,所以 `None`(用默认)可以,`Some(0.0)` 不行。
+* `FloatingActionButton` 的五个 elevation **全是可空的**,断言也跟着变形成
+  `elevation == null || elevation >= 0.0`:**它默认谁也不覆盖,只改被交代过的那几个。**
+* 而 `MaterialButton` 的文档把调用者指向别处(`TextButton` / `ElevatedButton` / `OutlinedButton`)。
+  **它留着是因为已经有代码写着它,不是因为还该有人用它。**
+
+验证:`cargo test --lib` 3351 绿,GN `rustflutter_unittests` 3351 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1803 accounted / 85 MISSING(95.5%)。
+
 ### 那个枚举值按错了的那条轴命名(2026-08-20)
 
 新模块 `list_tiles.rs`,一次收掉 `CheckboxListTile`、`RadioListTile`、`SwitchListTile`。覆盖率

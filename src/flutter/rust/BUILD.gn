@@ -121,6 +121,7 @@ if (enable_unittests) {
       "rustflutter/src/animation.rs",
       "rustflutter/src/autofill.rs",
       "rustflutter/src/bottom_bars.rs",
+      "rustflutter/src/buttons.rs",
       "rustflutter/src/carousel.rs",
       "rustflutter/src/color_scheme.rs",
       "rustflutter/src/colors.rs",

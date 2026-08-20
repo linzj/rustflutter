@@ -38,6 +38,7 @@ pub mod autofill;
 pub mod binding;
 pub mod borders;
 pub mod bottom_bars;
+pub mod buttons;
 pub mod carousel;
 pub mod color_scheme;
 pub mod colors;
