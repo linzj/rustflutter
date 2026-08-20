@@ -1869,6 +1869,10 @@
     "FocusSemanticEvent": {
       "rust": "semantics_event::SemanticsEvent::Focus",
       "note": "同上，type 字符串 \"focus\"，无数据。名字同样少一个 s。"
+    },
+    "FocusManager": {
+      "rust": "focus 模块本身：thread_local 注册表 + focused/focus/unfocus/next/previous/prune/dispatch_key 等自由函数",
+      "note": "上游是 FocusManager.instance 这一个单例类；这里是同名模块，状态放 thread_local（每 UI 线程一份，与按键集合、文本输入连接同侧），API 是模块级自由函数。与台账里 MatrixUtils→painting::matrix_utils 同一种改判。逐项：primaryFocus≙focused()、requestFocus≙focus(id)、传播与遍历≙next()/previous()/dispatch_key()、节点生命周期≙prune()。未 port 的两处：highlightMode（触摸/键盘高亮模式，ink_well.rs 与 toggleable.rs 模块头各自记着它缺），以及 FocusManager 的全局 listener（这里焦点变化走 Focus::with_on_focus_change 逐节点回调，没有全局订阅口）。"
     }
   },
   "blocked_engine": {

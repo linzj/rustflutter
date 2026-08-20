@@ -1801,10 +1801,161 @@ impl Ord for OrdinalSortKey {
     }
 }
 
+// -- Joining text into one label ----------------------------------------------
+
+/// Upstream `SemanticsLabelBuilder`: several pieces of text joined into one
+/// label a screen reader can read straight through.
+///
+/// A label assembled by hand -- `"$title $subtitle"` -- reads correctly right
+/// up until one of the pieces is in the other script, and then the reader runs
+/// them together in whichever direction it guessed. This puts Unicode's
+/// directional embedding marks around the pieces that need them.
+///
+/// # Three rules, and the third is a surprise
+///
+/// * **Empty parts are dropped**, in `add_part` rather than in `build`, so they
+///   do not leave a doubled separator behind.
+/// * **A part is wrapped only when its direction differs from the builder's**,
+///   and a part that did not name one is never wrapped. Only an explicitly
+///   contrary part gets marks.
+/// * **The first part is never wrapped**, whatever direction it names.
+///   Upstream writes it to the buffer unprocessed and starts the
+///   direction-checking loop at the second.
+///
+/// That third rule looks like an oversight and behaves like one -- a label
+/// whose first piece is Arabic and whose builder is left-to-right gets no
+/// marks on the piece that most needs them. It is upstream's behaviour, it is
+/// what an application built against upstream will have been laid out around,
+/// and changing it here would make this port the odd one out. Ported as-is and
+/// written down, which is the whole point of writing it down.
+///
+/// # Two lines of upstream that cannot change the answer
+///
+/// Both are kept, because a port that quietly tidies its source is a port
+/// nobody can diff against it. Both are marked, because a reader should not
+/// have to work out for themselves that they do nothing:
+///
+/// * `partTextDirection ?? textDirection`. With the fallback, an unnamed part
+///   takes the builder's direction and the "differs" test is false; without it
+///   the part's direction is null and the null check is false. Neither path
+///   ever wraps.
+/// * the single-part early return. The general path writes the first part
+///   unprocessed and then iterates an empty remainder, which is the same
+///   string.
+///
+/// Found by removing each and watching every test stay green.
+#[derive(Clone, Debug)]
+pub struct SemanticsLabelBuilder {
+    separator: String,
+    text_direction: Option<TextDirection>,
+    parts: Vec<(String, Option<TextDirection>)>,
+}
+
+impl SemanticsLabelBuilder {
+    /// A builder joining with a single space, upstream's default separator, and
+    /// no overall direction -- which means nothing is ever wrapped, since a
+    /// part can only differ from a direction that exists.
+    pub fn new() -> SemanticsLabelBuilder {
+        SemanticsLabelBuilder {
+            separator: " ".to_string(),
+            text_direction: None,
+            parts: Vec::new(),
+        }
+    }
+
+    /// Upstream's `separator:`. May be empty, and then the parts run together
+    /// with only the directional marks between them.
+    pub fn with_separator(mut self, separator: impl Into<String>) -> Self {
+        self.separator = separator.into();
+        self
+    }
+
+    /// Upstream's `textDirection:`: the direction of the label as a whole, and
+    /// the thing each part is compared against.
+    pub fn with_text_direction(mut self, direction: TextDirection) -> Self {
+        self.text_direction = Some(direction);
+        self
+    }
+
+    /// Upstream's `addPart`. An empty label is ignored.
+    pub fn add_part(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if !label.is_empty() {
+            self.parts.push((label, None));
+        }
+    }
+
+    /// Upstream's `addPart(label, textDirection:)`.
+    pub fn add_part_in(&mut self, label: impl Into<String>, direction: TextDirection) {
+        let label = label.into();
+        if !label.is_empty() {
+            self.parts.push((label, Some(direction)));
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    /// How many parts were kept -- which is not how many were added, since
+    /// empty ones were dropped.
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// Upstream's `clear`, so one builder can make several labels.
+    pub fn clear(&mut self) {
+        self.parts.clear();
+    }
+
+    /// Upstream's `build`.
+    pub fn build(&self) -> String {
+        if self.parts.is_empty() {
+            return String::new();
+        }
+        // A shortcut, not a rule: the general path below writes the first part
+        // unprocessed and then iterates nothing. See the type's docs.
+        if self.parts.len() == 1 {
+            return self.parts[0].0.clone();
+        }
+
+        let mut label = String::new();
+        // The first part, unprocessed. This is where the third rule lives.
+        label.push_str(&self.parts[0].0);
+
+        for (text, part_direction) in &self.parts[1..] {
+            // Upstream's `partTextDirection ?? textDirection`. The fallback
+            // cannot change the outcome either way -- see the type's docs --
+            // and is kept so this reads as its source does.
+            let direction = part_direction.or(self.text_direction);
+            label.push_str(&self.separator);
+            match (self.text_direction, direction) {
+                (Some(overall), Some(part)) if overall != part => {
+                    label.push(match part {
+                        TextDirection::Rtl => crate::licenses::Unicode::RLE,
+                        TextDirection::Ltr => crate::licenses::Unicode::LRE,
+                    });
+                    label.push_str(text);
+                    label.push(crate::licenses::Unicode::PDF);
+                }
+                _ => label.push_str(text),
+            }
+        }
+        label
+    }
+}
+
+impl Default for SemanticsLabelBuilder {
+    fn default() -> SemanticsLabelBuilder {
+        SemanticsLabelBuilder::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::framework::{ElementTree, leaf, many};
+    use crate::licenses::Unicode;
     use crate::render::{EdgeInsets, RenderFlex, RenderPadding};
     use crate::widgets::SizedBox;
     use std::cell::Cell;
@@ -3418,5 +3569,181 @@ mod tests {
             ],
             "unnamed first by order, then each group by name, then by order"
         );
+    }
+
+    // -- SemanticsLabelBuilder ----------------------------------------------------
+
+    #[test]
+    fn joining_two_parts_puts_the_separator_between_them() {
+        // Upstream's own first example.
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part("Hello");
+        builder.add_part("world");
+        assert_eq!(builder.build(), "Hello world");
+    }
+
+    #[test]
+    fn an_empty_part_is_dropped_rather_than_leaving_a_doubled_separator() {
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part("Hello");
+        builder.add_part("");
+        builder.add_part("world");
+        assert_eq!(builder.len(), 2, "the empty one was never kept");
+        assert_eq!(builder.build(), "Hello world");
+    }
+
+    #[test]
+    fn no_parts_is_an_empty_label_and_one_part_is_itself() {
+        let mut builder = SemanticsLabelBuilder::new();
+        assert!(builder.is_empty());
+        assert_eq!(builder.build(), "");
+
+        builder.add_part("Increment");
+        assert_eq!(builder.build(), "Increment", "no separator, nothing added");
+    }
+
+    #[test]
+    fn a_part_in_the_other_direction_is_wrapped_in_embedding_marks() {
+        // Upstream's second example: a left-to-right label with an Arabic part
+        // in it. Without the marks the reader runs the two together in
+        // whichever direction it guessed.
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("Welcome", TextDirection::Ltr);
+        builder.add_part_in("\u{645}\u{631}\u{62d}\u{628}\u{627}", TextDirection::Rtl);
+
+        let label = builder.build();
+        assert_eq!(
+            label,
+            format!(
+                "Welcome {}{}{}",
+                Unicode::RLE,
+                "\u{645}\u{631}\u{62d}\u{628}\u{627}",
+                Unicode::PDF
+            )
+        );
+    }
+
+    #[test]
+    fn a_part_in_the_same_direction_is_left_alone() {
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("Welcome", TextDirection::Ltr);
+        builder.add_part_in("back", TextDirection::Ltr);
+        assert_eq!(builder.build(), "Welcome back", "no marks to add");
+    }
+
+    #[test]
+    fn a_part_that_names_no_direction_inherits_the_builders_and_so_never_differs() {
+        // The second rule. Only an explicitly contrary part gets marks -- an
+        // unnamed one takes the builder's direction and therefore cannot differ
+        // from it.
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part("Welcome");
+        builder.add_part("\u{645}\u{631}\u{62d}\u{628}\u{627}");
+        assert_eq!(
+            builder.build(),
+            "Welcome \u{645}\u{631}\u{62d}\u{628}\u{627}",
+            "Arabic text, no marks, because nobody said it was Arabic"
+        );
+    }
+
+    #[test]
+    fn a_builder_with_no_direction_of_its_own_wraps_nothing() {
+        // A part can only differ from a direction that exists.
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part_in("Welcome", TextDirection::Ltr);
+        builder.add_part_in("\u{645}\u{631}\u{62d}\u{628}\u{627}", TextDirection::Rtl);
+        assert_eq!(
+            builder.build(),
+            "Welcome \u{645}\u{631}\u{62d}\u{628}\u{627}"
+        );
+    }
+
+    #[test]
+    fn the_first_part_is_never_wrapped_however_contrary_it_is() {
+        // Upstream's third rule, and it looks like an oversight: the first part
+        // is written to the buffer before the direction-checking loop starts.
+        // A label whose first piece is the contrary one gets no marks on the
+        // piece that most needs them.
+        //
+        // Ported as-is because an application built against upstream will have
+        // been laid out around this, and a port that quietly did better would
+        // be the odd one out.
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("\u{645}\u{631}\u{62d}\u{628}\u{627}", TextDirection::Rtl);
+        builder.add_part_in("Welcome", TextDirection::Ltr);
+
+        let label = builder.build();
+        assert_eq!(
+            label, "\u{645}\u{631}\u{62d}\u{628}\u{627} Welcome",
+            "the contrary first part is bare"
+        );
+        assert!(
+            !label.contains(Unicode::RLE),
+            "and no embedding mark anywhere"
+        );
+
+        // The same two parts the other way round *are* marked, which is what
+        // makes this a rule about position rather than about content.
+        let mut reversed = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        reversed.add_part_in("Welcome", TextDirection::Ltr);
+        reversed.add_part_in("\u{645}\u{631}\u{62d}\u{628}\u{627}", TextDirection::Rtl);
+        assert!(reversed.build().contains(Unicode::RLE));
+    }
+
+    #[test]
+    fn a_single_contrary_part_is_returned_bare() {
+        // The third rule reached the other way. Note this does *not* test the
+        // single-part early return: the general path would answer the same,
+        // because it leaves the first part unprocessed too.
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("\u{645}\u{631}\u{62d}\u{628}\u{627}", TextDirection::Rtl);
+        assert_eq!(builder.build(), "\u{645}\u{631}\u{62d}\u{628}\u{627}");
+    }
+
+    #[test]
+    fn an_empty_separator_leaves_only_the_marks_between_parts() {
+        let mut builder = SemanticsLabelBuilder::new()
+            .with_separator("")
+            .with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("a", TextDirection::Ltr);
+        builder.add_part_in("b", TextDirection::Rtl);
+        assert_eq!(
+            builder.build(),
+            format!("a{}b{}", Unicode::RLE, Unicode::PDF)
+        );
+    }
+
+    #[test]
+    fn a_custom_separator_is_used_between_every_pair() {
+        let mut builder = SemanticsLabelBuilder::new().with_separator(", ");
+        builder.add_part("one");
+        builder.add_part("two");
+        builder.add_part("three");
+        assert_eq!(builder.build(), "one, two, three");
+    }
+
+    #[test]
+    fn clearing_lets_one_builder_make_a_second_label() {
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part("first");
+        assert_eq!(builder.build(), "first");
+
+        builder.clear();
+        assert!(builder.is_empty());
+        builder.add_part("second");
+        assert_eq!(
+            builder.build(),
+            "second",
+            "nothing left over from the first"
+        );
+    }
+
+    #[test]
+    fn the_embedding_marks_are_the_ones_unicode_names() {
+        // RLE and LRE open an embedding and PDF closes it. Getting one wrong
+        // leaves the reader in that direction for the rest of the label.
+        assert_eq!(Unicode::RLE, '\u{202B}');
+        assert_eq!(Unicode::LRE, '\u{202A}');
+        assert_eq!(Unicode::PDF, '\u{202C}');
     }
 }
