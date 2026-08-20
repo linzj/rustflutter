@@ -214,6 +214,7 @@ if (enable_unittests) {
       "rustflutter/src/theme.rs",
       "rustflutter/src/ticker.rs",
       "rustflutter/src/transitions.rs",
+      "rustflutter/src/widget_inspector.rs",
       "rustflutter/src/widget_state.rs",
       "rustflutter/src/widgets.rs",
     ]

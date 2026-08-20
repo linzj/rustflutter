@@ -164,6 +164,76 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 套接字另一头拿不住一个对象,只能拿住一个字符串(2026-08-20)
+
+新模块 `widget_inspector.rs`,`widgets/widget_inspector.dart` 十个全到:
+`InspectorReferenceData`、`WidgetInspectorService`、`WidgetInspector`、
+`EnableWidgetInspectorScope`、`DisableWidgetInspectorScope`、`InspectorButton`、
+`InspectorSelection`、`DevToolsDeepLinkProperty`、`InspectorSerializationDelegate`、
+`WeakMap`。覆盖率 1559/1888(82.6%)。
+
+**这个 service 存在的理由只有一条:套接字另一头的调试器拿不住一个 Dart 对象,只能拿住一个字符
+串。** 于是它发 id、自己维护一张表。整个文件的形状都是这一条约束推出来的:
+
+* **id 是分组的**,工具一次调用就能丢掉它看过的全部东西,而不是每检查一个 widget 就漏一份引用。
+* **引用要计数**,因为同一个 widget 可以同时在两个组里,谁也不许把它从对方脚下释放掉。
+* **表弱持有对象**,检查一个 widget 不该把这个 widget 留住。
+
+**计数的粒度是「组成员身份」,不是「请求次数」**,这一条最容易写错:同一个组里问两次同一个
+widget,拿到同一个 id,而计数**不动**。工具序列化一棵在两个位置提到同一个 widget 的树是常态,把
+它算成两次,会留下一个 `disposeGroup` 永远归不了零的引用。真正让计数动起来的是**第二个组**来
+问——那恰好就是「丢掉一个组不能释放对象」的那种情形。回归行把两边都钉住了。
+
+**两种查找失败是分开的:** id 根本不在表里(工具握着一个过期引用)和 id 在表里但属于别的组(工具
+自己有 bug)。上游抛的是两条不同的 `FlutterError`,这里是两个不同的错误值。
+
+**「值为 null」在这里是一个有意义的答案**,不是失败——它表示一个弱持有的对象已经被回收,而 id 还
+在表里。工具看到的就是「那个 widget 没了」。所以 `toObject` 对未知 id 抛错而不是返回 null:两者
+必须能区分。
+
+**而弱持有有一处不对称,值得写下来:** `WeakReference` **拒绝**字符串、数字和布尔,所以这三类是
+**强持有**的。后果是:表里的一个数字被 inspector 留住了,而一个 widget 不会。`WeakMap` 里那个
+「原始类型和对象分两张表」也是同一个原因——不是优化,是 `Expando` 根本不收这些键。
+
+**「这是谁的 widget」在没配根目录时是一个猜测,而上游明说是猜的**(TODO 指向
+flutter/flutter#32660):判据是「路径里没有 `packages/flutter/`」。这是对的猜法——读者要的是「除了
+框架以外的一切」,而要说清楚**哪些是他的**,得有构建系统来回答。配了根目录之后就变成纯前缀比较,
+框架那条猜测**完全不再适用**。回归行把这个切换钉住了,顺带钉住「改根目录必须清缓存」——缓存记的正
+是一个刚刚改了答案的问题。
+
+**`_shouldShowInSummaryTree` 除最后一条外每条分支都是「显示它」**,这个默认方向是要点:摘要树是个
+过滤器,而**一个猜错了的过滤器不该藏起任何东西**。错误节点总显示;不是 diagnosable 的总显示;编译
+器没记录创建位置时,**全部**显示——因为根本没法判断这是谁的 widget。
+
+**细节树的深度会「憋着不花」,直到遇见一个也在摘要树里的节点。** 效果是:展开一个节点,会把它底下
+那一长串框架 widget 一次展开到下一个读者自己写的东西为止。按层花深度的话,读者要点穿六个
+`RenderObjectWidget` 才能看到下一个属于自己的节点。
+
+**其余几条:**
+
+* **`clearCandidates` 不是 `clear`**:它只丢掉命中测试候选,保留选中项。这是为「选择来自 DevTools
+  而不是设备上的点击」准备的——陈旧候选是读者上次在屏幕上碰到的东西,把它们画在另一个窗口里选中的
+  widget 周围,就是高亮错了对象。
+* **选中项的 render object 一旦脱离树,它就不再是一个选中项**(`current` getter 走 `active`),尽
+  管字段里还留着它。
+* **选择是在手指抬起时提交的,不是按下时**:读者可以在屏幕上移动、看着高亮跟着走,然后再决定。
+* **`toObjectForSourceLocation` 把 Element 换成配置它的 Widget**:读者问的是「这东西哪来的」,而
+  widget 的类才是他要的答案;element 的类是他没写过的框架细节。
+* **`DevToolsDeepLinkProperty` 的名字是空串**,只靠 description 渲染——错误转储里 URL 前面挂个标
+  签,是读者必须读过去才能拿到链接的噪音。
+* **只有 toggle 变体才有「开没开」这个答案**:上游的具名构造函数对另外两种留 null 而不是给默认
+  值,于是一个 filled 按钮不会被读成「关着的」。
+* **自己写的 widget 比框架的露出更多**:本地节点按 `fine` 过滤属性,其余按 `info`。读者在调自己的
+  代码,不是在调 `RenderFlex`。
+
+**未移植的部分写在模块头里**:VM service 扩展注册、JSON 编码、画选中框的 overlay 都不在——这个
+crate 没有服务协议,也没有上游那个形状的 `Element` 树。移植的是**引用表和它的计数、选择状态机、
+本地项目判定连同它的缓存,以及摘要树过滤器**。
+
+验证:`cargo test --lib` 2198 绿,GN `rustflutter_unittests` 2198 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1559 accounted / 329 MISSING(82.6%)。
+
 ### 一次更新只让最上面那个动,其余的直接就位(2026-08-20)
 
 新模块 `navigator.rs`,`widgets/navigator.dart` 九个补齐(全文件 12 个):`RouteSettings`、
