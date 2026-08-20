@@ -308,6 +308,7 @@ pub use messenger::{Messenger, SnackBarDisplay};
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
+pub use navigator::Page;
 pub use painting::{
     Accumulator, Affine, BlendMode, ClipBehavior, ClipOp, ColorSwatch, DecorationImage, FillType,
     Gradient, GradientTransform, HSLColor, HSVColor, Image, InlineSpanSemanticsInformation,
@@ -335,7 +336,8 @@ pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};
 pub use selection_host::{SelectionEndpoint, SelectionHost, show_selection_overlay};
 pub use semantics::{
-    AttributedString, AttributedStringProperty, CustomSemanticsAction, OrdinalSortKey,
+    AttributedString, AttributedStringProperty, ChildSemanticsConfigurationsResult,
+    ChildSemanticsConfigurationsResultBuilder, CustomSemanticsAction, OrdinalSortKey,
     SemanticsAction, SemanticsBinding, SemanticsConfiguration, SemanticsHandle,
     SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsProperties,
     SemanticsSortKey, SemanticsTag, StringAttribute,

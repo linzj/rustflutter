@@ -2529,6 +2529,133 @@ impl SemanticsConfiguration {
     }
 }
 
+// -- How a render object's children are grouped into nodes --------------------
+
+/// Upstream `ChildSemanticsConfigurationsResult`: how one render object's
+/// children are to be arranged into semantics nodes.
+///
+/// A render object that wants a say in this returns one of these from its
+/// `childConfigurationsDelegate`, and the walk obeys it. There are two things
+/// it can ask for:
+///
+/// * **merge up** -- fold this child's description into mine, so the reader
+///   hears one thing where there were two. What a `ListTile` does with its
+///   title and its subtitle.
+/// * **a sibling merge group** -- take these children, merge them with each
+///   other, and hang the result beside me rather than under me. Upstream's own
+///   example is a render object whose child forms a node: anything from that
+///   child's sibling groups attaches as a *sibling* of the child's node, not as
+///   a child of it.
+///
+/// Neither is a promise. A config in either list that is a semantics boundary,
+/// or that conflicts with the others it is being merged with, is pulled back
+/// out and gets a node of its own -- upstream says so on both fields, and it is
+/// the same [`SemanticsConfiguration::is_compatible_with`] that decides.
+///
+/// # Configs are held by handle, because the identity is the object
+///
+/// Upstream's duplicate check is a `Set<SemanticsConfiguration>` under Dart's
+/// default identity equality -- the same *object* twice, not two objects that
+/// describe themselves alike. Two children that happen to say exactly the same
+/// thing are still two children, and both belong in the list.
+///
+/// A [`SemanticsConfiguration`] here is a value with no identity of its own, so
+/// these are `Rc`s and the check is [`Rc::ptr_eq`]. The same problem
+/// [`SemanticsTag`] has, solved the other way round -- a tag is constructed
+/// once and handed about, so it carries an id; a config is already behind a
+/// handle by the time it gets here.
+#[derive(Clone, Default)]
+pub struct ChildSemanticsConfigurationsResult {
+    /// Upstream's `mergeUp`.
+    pub merge_up: Vec<Rc<SemanticsConfiguration>>,
+    /// Upstream's `siblingMergeGroups`.
+    pub sibling_merge_groups: Vec<Vec<Rc<SemanticsConfiguration>>>,
+}
+
+impl ChildSemanticsConfigurationsResult {
+    /// Every config named anywhere in this result, in the order the duplicate
+    /// check walks them: the merge-ups first, then each sibling group.
+    pub fn all(&self) -> Vec<Rc<SemanticsConfiguration>> {
+        self.merge_up
+            .iter()
+            .chain(self.sibling_merge_groups.iter().flatten())
+            .cloned()
+            .collect()
+    }
+}
+
+/// Upstream `ChildSemanticsConfigurationsResultBuilder`.
+///
+/// Mark each child config as one or the other, then [`build`].
+///
+/// [`build`]: ChildSemanticsConfigurationsResultBuilder::build
+#[derive(Default)]
+pub struct ChildSemanticsConfigurationsResultBuilder {
+    merge_up: Vec<Rc<SemanticsConfiguration>>,
+    sibling_merge_groups: Vec<Vec<Rc<SemanticsConfiguration>>>,
+}
+
+impl ChildSemanticsConfigurationsResultBuilder {
+    pub fn new() -> ChildSemanticsConfigurationsResultBuilder {
+        ChildSemanticsConfigurationsResultBuilder::default()
+    }
+
+    /// Upstream's `markAsMergeUp`.
+    pub fn mark_as_merge_up(&mut self, config: Rc<SemanticsConfiguration>) {
+        self.merge_up.push(config);
+    }
+
+    /// Upstream's `markAsSiblingMergeGroup`.
+    pub fn mark_as_sibling_merge_group(&mut self, configs: Vec<Rc<SemanticsConfiguration>>) {
+        self.sibling_merge_groups.push(configs);
+    }
+
+    /// Upstream's `build`, assert included.
+    ///
+    /// **A config may be named once, across both lists.** Upstream's assert
+    /// spells out how it goes wrong -- "this can happen if the same
+    /// `SemanticsConfiguration` was marked twice in `markAsMergeUp` and/or
+    /// `markAsSiblingMergeGroup`" -- and what it prevents is one child being
+    /// described in two places at once, which a reader hears as the same thing
+    /// twice with no way to tell they are one.
+    pub fn build(&self) -> ChildSemanticsConfigurationsResult {
+        let result = ChildSemanticsConfigurationsResult {
+            merge_up: self.merge_up.clone(),
+            sibling_merge_groups: self.sibling_merge_groups.clone(),
+        };
+        debug_assert!(
+            !has_duplicate(&result.all()),
+            "the same SemanticsConfiguration was marked more than once"
+        );
+        result
+    }
+
+    /// Whether a config has already been marked, so a caller can ask instead of
+    /// tripping the assert.
+    ///
+    /// Not upstream's -- upstream builds the set inside the assert and throws it
+    /// away, which is the right shape for a check that only runs in debug. This
+    /// is here because a delegate assembling groups from a loop has no other way
+    /// to find out.
+    pub fn is_marked(&self, config: &Rc<SemanticsConfiguration>) -> bool {
+        self.merge_up
+            .iter()
+            .chain(self.sibling_merge_groups.iter().flatten())
+            .any(|marked| Rc::ptr_eq(marked, config))
+    }
+}
+
+/// Whether any handle appears twice. Quadratic, and deliberately so: it runs
+/// under `debug_assert` over one render object's children, and a hash of
+/// pointers would need the configs to outlive the set.
+fn has_duplicate(configs: &[Rc<SemanticsConfiguration>]) -> bool {
+    configs.iter().enumerate().any(|(at, config)| {
+        configs[at + 1..]
+            .iter()
+            .any(|other| Rc::ptr_eq(config, other))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4903,5 +5030,131 @@ mod tests {
         let properties = said("Button").to_properties();
         assert!(properties.scroll_position.is_nan());
         assert!(properties.scroll_extent_max.is_nan());
+    }
+
+    // -- ChildSemanticsConfigurationsResult ---------------------------------------
+
+    fn config(label: &str) -> Rc<SemanticsConfiguration> {
+        Rc::new(said(label))
+    }
+
+    #[test]
+    fn a_builder_keeps_the_two_arrangements_apart() {
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        let title = config("Title");
+        let subtitle = config("Subtitle");
+        let badge = config("3 unread");
+
+        builder.mark_as_merge_up(Rc::clone(&title));
+        builder.mark_as_merge_up(Rc::clone(&subtitle));
+        builder.mark_as_sibling_merge_group(vec![Rc::clone(&badge)]);
+
+        let result = builder.build();
+        assert_eq!(result.merge_up.len(), 2);
+        assert_eq!(result.sibling_merge_groups.len(), 1);
+        assert_eq!(result.sibling_merge_groups[0].len(), 1);
+    }
+
+    #[test]
+    fn all_walks_the_merge_ups_first_then_each_group() {
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        builder.mark_as_merge_up(config("up"));
+        builder.mark_as_sibling_merge_group(vec![config("a"), config("b")]);
+        builder.mark_as_sibling_merge_group(vec![config("c")]);
+
+        let all = builder.build().all();
+        let labels: Vec<&str> = all.iter().map(|c| c.label.string()).collect();
+        assert_eq!(labels, vec!["up", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn an_empty_result_names_nothing() {
+        let result = ChildSemanticsConfigurationsResultBuilder::new().build();
+        assert!(result.all().is_empty());
+        assert!(result.merge_up.is_empty());
+        assert!(result.sibling_merge_groups.is_empty());
+    }
+
+    #[test]
+    fn two_children_that_say_the_same_thing_are_still_two_children() {
+        // The identity rule. Upstream's duplicate check is a set under Dart's
+        // default identity equality -- the same *object* twice. Two configs
+        // that describe themselves alike are two separate children and both
+        // belong in the list.
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        builder.mark_as_merge_up(config("Delete"));
+        builder.mark_as_merge_up(config("Delete"));
+
+        let result = builder.build();
+        assert_eq!(result.merge_up.len(), 2, "two rows, both called Delete");
+    }
+
+    #[test]
+    fn the_same_config_marked_twice_is_the_thing_being_guarded_against() {
+        // Checked through `is_marked` rather than by tripping the assert, since
+        // a debug assertion cannot be observed without unwinding.
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        let shared = config("Row");
+        builder.mark_as_merge_up(Rc::clone(&shared));
+
+        assert!(builder.is_marked(&shared), "already spoken for");
+        assert!(
+            !builder.is_marked(&config("Row")),
+            "and a different config that reads the same is not"
+        );
+    }
+
+    #[test]
+    fn a_config_in_a_sibling_group_counts_as_marked_too() {
+        // The assert spans both lists: upstream's message names them together.
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        let shared = config("Badge");
+        builder.mark_as_sibling_merge_group(vec![Rc::clone(&shared)]);
+        assert!(builder.is_marked(&shared));
+    }
+
+    #[test]
+    fn a_config_marked_in_two_places_is_caught() {
+        // The duplicate check itself, exercised directly -- `build`'s assert
+        // runs on exactly this list.
+        let shared = config("Row");
+        let other = config("Other");
+        assert!(!has_duplicate(&[Rc::clone(&shared), Rc::clone(&other)]));
+        assert!(has_duplicate(&[
+            Rc::clone(&shared),
+            Rc::clone(&other),
+            Rc::clone(&shared)
+        ]));
+    }
+
+    #[test]
+    fn the_duplicate_check_compares_handles_and_not_contents() {
+        // Two configs built from the same text are different objects, so the
+        // check must not fire on them.
+        assert!(!has_duplicate(&[config("same"), config("same")]));
+
+        let shared = config("same");
+        assert!(has_duplicate(&[Rc::clone(&shared), shared]));
+    }
+
+    #[test]
+    fn a_group_may_hold_configs_that_will_not_actually_merge() {
+        // Neither list is a promise: a config in one that conflicts with the
+        // others is pulled back out by the walk and gets a node of its own.
+        // The builder does not check, and upstream's does not either -- it is
+        // `is_compatible_with` that decides, later.
+        let mut one = said("Send");
+        one.flags.is_button = true;
+        let mut two = said("Cancel");
+        two.flags.is_button = true;
+        assert!(!one.is_compatible_with(Some(&two)), "these cannot merge");
+
+        let mut builder = ChildSemanticsConfigurationsResultBuilder::new();
+        builder.mark_as_sibling_merge_group(vec![Rc::new(one), Rc::new(two)]);
+        assert_eq!(
+            builder.build().sibling_merge_groups[0].len(),
+            2,
+            "grouped anyway; the walk sorts it out"
+        );
     }
 }

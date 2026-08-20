@@ -60,6 +60,118 @@ impl RouteSettings {
     }
 }
 
+/// Upstream `Page`: a route described declaratively, as an entry in a list
+/// rather than as something pushed.
+///
+/// The difference from [`RouteSettings`] -- which it extends upstream -- is
+/// that a page is *matched against the previous frame's list*. A navigator
+/// handed a new page list has to work out which pages are the same ones it had,
+/// which are new, and which have gone, and [`Page::can_update`] is that answer.
+///
+/// # Two stand-ins, both for things this crate has no counterpart for
+///
+/// Upstream's `canUpdate` is `other.runtimeType == runtimeType && other.key ==
+/// key`, and neither half survives literally:
+///
+/// * **`runtimeType`.** Upstream's `Page` is abstract and applications subclass
+///   it, so the type is what says a `HomePage` is not a `SettingsPage`. Here
+///   there is one concrete type, so [`Page::kind`] carries that distinction
+///   explicitly and the caller sets it.
+/// * **`key`.** Upstream's is a `LocalKey`, which this crate does not have;
+///   carried as an opaque string, the same way [`RouteSettings::arguments`]
+///   carries upstream's `Object?` and for the same stated reason.
+///
+/// A stand-in that a caller has to fill in is worse than a language feature
+/// that fills itself in, and both are written down rather than hidden behind a
+/// default that looks like it works.
+#[derive(Clone)]
+pub struct Page {
+    /// The name and arguments, which upstream inherits from `RouteSettings`.
+    pub settings: RouteSettings,
+    /// Upstream's `key`. **Two pages with no key never match**, which falls out
+    /// of `null == null` being true in Dart and is therefore *not* what
+    /// upstream does -- see [`Page::can_update`], which spells the case out.
+    pub key: Option<String>,
+    /// The stand-in for `runtimeType`. Two pages of different kinds never
+    /// update into one another however their keys compare.
+    pub kind: &'static str,
+    /// Upstream's `restorationId`.
+    pub restoration_id: Option<String>,
+    /// Upstream's `canPop`, which defaults to **true**: a page is poppable
+    /// unless it says otherwise.
+    pub can_pop: bool,
+}
+
+impl Page {
+    /// A page of `kind`, poppable, with nothing else said about it.
+    pub fn new(kind: &'static str) -> Page {
+        Page {
+            settings: RouteSettings::new(),
+            key: None,
+            kind,
+            restoration_id: None,
+            can_pop: true,
+        }
+    }
+
+    pub fn with_key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.settings.name = Some(name.into());
+        self
+    }
+
+    pub fn with_arguments(mut self, arguments: impl Into<String>) -> Self {
+        self.settings.arguments = Some(arguments.into());
+        self
+    }
+
+    pub fn with_restoration_id(mut self, id: impl Into<String>) -> Self {
+        self.restoration_id = Some(id.into());
+        self
+    }
+
+    /// Upstream's `canPop: false`, for a page that refuses the back gesture.
+    pub fn with_can_pop(mut self, can_pop: bool) -> Self {
+        self.can_pop = can_pop;
+        self
+    }
+
+    /// Upstream's `canUpdate`: whether `other` describes the same page as this
+    /// one, so the route already on screen can be reused instead of replaced.
+    ///
+    /// # Two keyless pages *do* match, and that is upstream's behaviour
+    ///
+    /// Dart's `null == null` is true, so `other.key == key` holds when neither
+    /// has one. That means a list of unkeyed pages of the same kind matches
+    /// position for position -- which is why a declarative navigator that
+    /// reorders unkeyed pages appears to change their contents rather than
+    /// move them, and why keys are what upstream tells you to add when that
+    /// happens.
+    ///
+    /// It is worth stating because the intuition runs the other way: "no key"
+    /// reads like "no identity", and it is not.
+    pub fn can_update(&self, other: &Page) -> bool {
+        self.kind == other.kind && self.key == other.key
+    }
+}
+
+impl std::fmt::Debug for Page {
+    /// Upstream's `toString`: the name, the key and the arguments.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Page(\"{}\", {:?}, {:?})",
+            self.settings.name.as_deref().unwrap_or(""),
+            self.key,
+            self.settings.arguments
+        )
+    }
+}
+
 /// Upstream `NavigatorObserver`: the seven things a navigator announces.
 ///
 /// Every method has an empty default, so an observer implements only what it
@@ -1551,5 +1663,85 @@ mod tests {
                 .as_deref(),
             Some("42")
         );
+    }
+
+    // -- Page ---------------------------------------------------------------------
+
+    #[test]
+    fn two_pages_of_the_same_kind_and_key_are_the_same_page() {
+        let before = Page::new("Home").with_key("home").with_name("/");
+        let after = Page::new("Home").with_key("home").with_name("/");
+        assert!(before.can_update(&after));
+    }
+
+    #[test]
+    fn a_different_key_is_a_different_page() {
+        let a = Page::new("Detail").with_key("item-1");
+        let b = Page::new("Detail").with_key("item-2");
+        assert!(!a.can_update(&b));
+    }
+
+    #[test]
+    fn a_different_kind_never_matches_however_the_keys_compare() {
+        // Upstream's `runtimeType` half. A HomePage does not update into a
+        // SettingsPage even if somebody gave them the same key.
+        let home = Page::new("Home").with_key("same");
+        let settings = Page::new("Settings").with_key("same");
+        assert!(!home.can_update(&settings));
+
+        let unkeyed_home = Page::new("Home");
+        let unkeyed_settings = Page::new("Settings");
+        assert!(!unkeyed_home.can_update(&unkeyed_settings));
+    }
+
+    #[test]
+    fn two_keyless_pages_of_one_kind_do_match() {
+        // The case the intuition gets backwards. "No key" reads like "no
+        // identity", and in Dart `null == null` is true -- so a list of unkeyed
+        // pages matches position for position, which is why reordering them
+        // looks like their contents changed and why upstream tells you to add
+        // keys when it does.
+        let a = Page::new("Item").with_name("first");
+        let b = Page::new("Item").with_name("second");
+        assert!(
+            a.can_update(&b),
+            "same kind, both keyless: the navigator reuses the route"
+        );
+    }
+
+    #[test]
+    fn the_name_and_arguments_do_not_decide_identity() {
+        // Only the kind and the key. A page whose arguments changed is still
+        // the same page, which is the point -- the route is updated rather than
+        // replaced.
+        let a = Page::new("Detail").with_key("k").with_arguments("id=1");
+        let b = Page::new("Detail").with_key("k").with_arguments("id=2");
+        assert!(a.can_update(&b));
+    }
+
+    #[test]
+    fn a_page_is_poppable_unless_it_says_otherwise() {
+        assert!(Page::new("Home").can_pop);
+        assert!(!Page::new("Home").with_can_pop(false).can_pop);
+    }
+
+    #[test]
+    fn a_page_carries_the_settings_a_route_was_built_from() {
+        let page = Page::new("Detail")
+            .with_name("/detail")
+            .with_arguments("id=7")
+            .with_restoration_id("detail-7");
+        assert_eq!(page.settings.name.as_deref(), Some("/detail"));
+        assert_eq!(page.settings.arguments.as_deref(), Some("id=7"));
+        assert_eq!(page.restoration_id.as_deref(), Some("detail-7"));
+        assert!(!page.settings.is_anonymous());
+    }
+
+    #[test]
+    fn a_pages_debug_form_is_upstreams_to_string() {
+        let page = Page::new("Home").with_name("/").with_key("home");
+        let shown = format!("{page:?}");
+        assert!(shown.starts_with("Page(\"/\""), "{shown}");
+        assert!(shown.contains("home"), "{shown}");
     }
 }
