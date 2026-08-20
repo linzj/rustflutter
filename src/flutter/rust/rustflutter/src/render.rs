@@ -2033,6 +2033,19 @@ impl RenderRef {
     /// been laid out -- in the last case the answer is the identity, which is
     /// the honest reading of "nowhere yet" and matches upstream returning the
     /// identity for a detached subtree.
+    ///
+    /// # Not during your own layout
+    ///
+    /// The walk borrows each ancestor to ask it where its child is, and
+    /// `layout_child` holds every ancestor on the current path **mutably** for
+    /// the duration of the layout below it. So an object that calls this from
+    /// inside its own `layout` panics on a re-entrant borrow -- not sometimes,
+    /// always, as soon as anything above it is still laying out.
+    ///
+    /// Ask from a `&self` phase instead: paint, hit testing, or semantics. Each
+    /// of those borrows immutably, and any number of immutable borrows are
+    /// fine. `RenderTooltipPosition` is the worked example -- it wants its
+    /// target's position and takes it at paint, caching the answer.
     pub fn transform_to(&self, ancestor: Option<&RenderRef>) -> [f32; 6] {
         let mut transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         let mut current = self.clone();

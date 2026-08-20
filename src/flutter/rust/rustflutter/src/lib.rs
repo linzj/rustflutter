@@ -195,6 +195,7 @@ pub mod theme;
 pub mod theme_bridge;
 pub mod ticker;
 pub mod toggleable;
+pub mod tooltip;
 pub mod transitions;
 pub mod two_dimensional;
 pub mod undo_history;

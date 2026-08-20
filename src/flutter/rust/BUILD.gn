@@ -290,6 +290,7 @@ if (enable_unittests) {
       "rustflutter/src/ticker.rs",
       "rustflutter/src/toggleable.rs",
       "rustflutter/src/transitions.rs",
+      "rustflutter/src/tooltip.rs",
       "rustflutter/src/two_dimensional.rs",
       "rustflutter/src/undo_history.rs",
       "rustflutter/src/view.rs",
