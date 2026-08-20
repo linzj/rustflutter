@@ -164,6 +164,69 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 返回键问到有人认领就停,退出请求问完所有人才停(2026-08-20)
+
+新模块 `binding.rs`,`widgets/binding.dart` 五个全到:`WidgetsBindingObserver`、
+`WidgetsBinding`、`RootWidget`、`RootElement`、`WidgetsFlutterBinding`。覆盖率 1605/1888
+(85.0%),**整数关口 85%**。
+
+**这个文件里最值得写下来的,是两条彼此矛盾却都对的分发规则:**
+
+* **一次返回按下,问到第一个认领的就停。** 最里面那个处理掉,后面的人根本不会听说这次按下——**一次
+  返回关掉两个东西,正是这条规则要防的 bug**。而没人认领时应用退出,这是对的默认:没人想要的一次按
+  下,就该离开。
+* **一次退出请求,不在第一个说「取消」的地方停。** 上游的注释把理由写死了:
+
+  > Don't early return. For the case where someone is just using the observer
+  > to know when exit happens, we want to call all the observers, even if we
+  > already know we're going to cancel.
+
+  一个要在退出路上保存草稿的观察者,即便别人已经拒绝了这次退出,也必须被告知。**一个取消足以取消;
+  但不足以停止询问。**
+
+回归行把两条都按「问了几个」钉住:返回键那条断言第三个观察者**从没被问过**,退出那条断言三个**全被
+问了**,尽管第一个就已经取消。
+
+**两个循环都遍历观察者列表的一份拷贝**,于是一个在被通知时把自己摘掉的观察者,不会把它正身处其中的
+那次遍历弄坏。
+
+**`didRequestAppExit` 的默认答案是「退出」**,这一条也值得单说:**一个不关心的观察者,绝不该成为应用
+关不掉的原因。**
+
+**`didPushRouteInformation` 的默认实现会把 URI 规范化再转给 `didPushRoute`**,而规范化不是装饰:空
+路径变 `/`,空的查询和片段被丢掉而不是留下一个光秃秃的 `?` 或 `#`。否则一个靠字符串匹配路由的观察
+者,要应付同一个地址的四种拼法。
+
+**根那半边,`attach` 的分支正是热重载能保住状态的原因。** 没有 element 时新建并挂载;**有 element
+时,把新 widget 存起来、把 element 标脏**,而不是重新挂载一遍——热重载的第二次 `runApp` 就地更新这
+棵树,底下每一个 `State` 都活下来。回归行钉住了「标脏之后、build 阶段之前,孩子还是旧的那个」。
+
+**而 `performRebuild` 里 `_newWidget` 可以为空,上游也说了为什么**:「if, for instance, we were
+rebuilt due to a reassemble」。一次没有新 widget 的重建,就是对同一个 widget 的重建,而这正是
+reassemble 想要的。
+
+**`_rebuild` 的 catch 带着整个文件里最锋利的一句注释:「No error widget possible here since it
+wouldn't have a view to render into.」** 框架里其他任何地方,构建失败都会被换成那个红色错误 widget;
+这里没有东西可以换上去——**失败的那个,正是本该提供视图的那个**。于是错误被上报、孩子留空,读者得到
+的是一块白屏加一条真的错误日志,而不是一次崩溃。
+
+**其余几条:**
+
+* **`RootWidget.child` 是可选的**:一个底下什么都没有的根,正是 `ensureInitialized` 与第一次
+  `runApp` 之间存在的那个状态。
+* **`debugShortDescription` 替换掉一个所有应用共享的类名**:没有它,每份错误转储的开头都是同一行没
+  有信息量的字。
+* **`RootElement.mount` 断言父节点为空**:它就是根,挂到别人底下会让这棵树有两个根。
+* **`ensureInitialized` 实现的模式值得点名:第一个调用者决定这个 binding 是什么。** 测试框架在应用之
+  前先调它自己的那一版,于是等 `runApp` 来问时已经有一个测试 binding 在那儿了,不会被顶掉。无条件构
+  造就会把它换走。
+* **预测性返回手势在没人注册时会退回成一次普通返回按下**——平台把手势发给一个从没登记过的应用,不该
+  把这次按下弄丢。
+
+验证:`cargo test --lib` 2437 绿,GN `rustflutter_unittests` 2437 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1605 accounted / 283 MISSING(85.0%)。
+
 ### 「大概是中文」比「读者的第二选择,但完全对上」更差(2026-08-20)
 
 新模块 `localizations.rs`,`widgets/localizations.dart` 五个全到:`LocalizationsDelegate`、

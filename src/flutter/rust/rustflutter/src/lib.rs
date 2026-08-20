@@ -32,6 +32,7 @@ pub mod arc;
 pub mod assertions;
 pub mod r#async;
 pub mod autocomplete;
+pub mod binding;
 pub mod borders;
 pub mod color_scheme;
 pub mod colors;

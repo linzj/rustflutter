@@ -107,6 +107,7 @@ if (enable_unittests) {
       "rustflutter/src/assertions.rs",
       "rustflutter/src/async.rs",
       "rustflutter/src/autocomplete.rs",
+      "rustflutter/src/binding.rs",
       "rustflutter/src/borders.rs",
       "rustflutter/src/cupertino.rs",
       "rustflutter/src/cupertino_route.rs",
