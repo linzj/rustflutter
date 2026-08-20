@@ -174,6 +174,7 @@ pub mod selection_container;
 pub mod selection_host;
 pub mod semantics;
 pub mod semantics_debugger;
+pub mod semantics_event;
 pub mod semantics_markers;
 pub mod sensitive_content;
 pub mod services;
@@ -337,6 +338,7 @@ pub use semantics::{
     SemanticsAction, SemanticsHintOverrides, SemanticsNode, SemanticsProperties, SemanticsSortKey,
     SemanticsTag, StringAttribute,
 };
+pub use semantics_event::{Assertiveness, SemanticsEvent, SemanticsService};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,

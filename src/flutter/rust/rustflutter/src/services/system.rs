@@ -13,12 +13,15 @@
 //! # These are names, not implementations
 //!
 //! A channel constant is a name and a codec. Declaring one says what the
-//! protocol *is*, not that anything answers it: [`ACCESSIBILITY`] is spelled
-//! out here because that is its name wherever it is implemented, and this port
-//! has no semantics tree to implement it with. A call on a channel nobody
+//! protocol *is*, not that anything answers it. A call on a channel nobody
 //! serves comes back as `Ok(None)` -- upstream's `MissingPluginException` --
 //! which is a normal outcome rather than a fault. See
 //! [`MethodReply`](super::channel::MethodReply).
+//!
+//! [`ACCESSIBILITY`] used to be listed here as a name with nothing behind it,
+//! on the grounds that this port had no semantics tree. It has one
+//! ([`crate::semantics`]), and [`crate::semantics_event`] is what sends on this
+//! channel -- announcements and the platform's tap and long-press feedback.
 //!
 //! What the Windows host in this repository answers is [`PLATFORM`] -- the
 //! clipboard, sound and exit methods of it -- and [`TEXT_INPUT`], which is the

@@ -1849,6 +1849,26 @@
     "DecorationImagePainter": {
       "rust": "painting::DecorationImage::paint",
       "note": "上游它是 createPainter(onChanged) 造出来的一个对象，存在的理由是给「一条已解析的 image stream」一个生命周期落脚点——所以它有 dispose。这个 crate 的 DecorationImage::paint 每次绘制自己 resolve，没有要持有的流、也就没有要 dispose 的东西；那两个方法里真正做事的那个就在它身上，文档也早点了名。差别是解析时机，不是这个类少了。"
+    },
+    "AnnounceSemanticsEvent": {
+      "rust": "semantics_event::SemanticsEvent::Announce",
+      "note": "上游 SemanticsEvent 的五个子类在此侧合并为一个枚举，因为集合是封闭的：引擎两侧的 bridge 就 switch 这五个 type 字符串，第六个谁都不认。每个变体带的字段与上游同名子类逐一对应，data_map() 就是各自的 getDataMap()。"
+    },
+    "TooltipSemanticsEvent": {
+      "rust": "semantics_event::SemanticsEvent::Tooltip",
+      "note": "同上，type 字符串 \"tooltip\"。"
+    },
+    "LongPressSemanticsEvent": {
+      "rust": "semantics_event::SemanticsEvent::LongPress",
+      "note": "同上，type 字符串 \"longPress\"，无数据。"
+    },
+    "TapSemanticEvent": {
+      "rust": "semantics_event::SemanticsEvent::Tap",
+      "note": "同上，type 字符串 \"tap\"，无数据。注意上游这个名字少一个 s（TapSemanticEvent 而非 TapSemanticsEvent），与它的 LongPressSemanticsEvent 兄弟不一致，这是上游的写法。"
+    },
+    "FocusSemanticEvent": {
+      "rust": "semantics_event::SemanticsEvent::Focus",
+      "note": "同上，type 字符串 \"focus\"，无数据。名字同样少一个 s。"
     }
   },
   "blocked_engine": {

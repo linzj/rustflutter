@@ -255,6 +255,7 @@ if (enable_unittests) {
       "rustflutter/src/semantics.rs",
       "rustflutter/src/sensitive_content.rs",
       "rustflutter/src/semantics_debugger.rs",
+      "rustflutter/src/semantics_event.rs",
       "rustflutter/src/semantics_markers.rs",
       "rustflutter/src/services/asset_bundle.rs",
       "rustflutter/src/services/asset_manifest.rs",
