@@ -260,6 +260,7 @@ if (enable_unittests) {
       "rustflutter/src/slotted.rs",
       "rustflutter/src/small_widgets.rs",
       "rustflutter/src/snapshot_widget.rs",
+      "rustflutter/src/stepper.rs",
       "rustflutter/src/stretch_effect.rs",
       "rustflutter/src/table.rs",
       "rustflutter/src/tabs.rs",

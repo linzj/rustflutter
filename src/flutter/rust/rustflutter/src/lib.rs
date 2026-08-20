@@ -163,6 +163,7 @@ pub mod small_widgets;
 pub mod snack_bar;
 pub mod snapshot_widget;
 pub mod stack_frame;
+pub mod stepper;
 pub mod stretch_effect;
 pub mod table;
 pub mod tabs;

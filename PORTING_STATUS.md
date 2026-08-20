@@ -164,6 +164,82 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 那条 assert 放过去的那一种,恰好长成它要拦的样子(2026-08-20)
+
+新模块 `stepper.rs`,一次收掉 `stepper.dart`(`ControlsDetails`、`Step`、`Stepper`、`StepStyle`)与
+`toggle_buttons.dart`(`ToggleButtons`)。覆盖率 1816/1888(96.2%)。测试 3401。
+
+**上一轮刚记下「文档和它旁边那条 assert 说的不是一回事」,这一轮又撞上一次——而且这次能一路推到底。**
+
+```dart
+assert(
+  stepIconHeight == null || stepIconWidth == null || stepIconHeight == stepIconWidth,
+  'If either stepIconHeight or stepIconWidth is specified, both must be specified and '
+  'the values must be equal.',
+);
+```
+
+**消息说「只给一个是错的」。条件根本没查这件事**——只给 height、width 留 null,第二项直接把检查短路掉,
+assert 过。
+
+而往下三百行,画的时候是这么取的:
+
+```dart
+width: _stepIconWidth ?? _kStepSize,
+height: _stepIconHeight ?? _kStepSize,
+```
+
+**于是 `stepIconHeight: 40` 单给一个,画出来是 24 × 40。这条 assert 存在的全部理由就是「别弄成不方的」,
+而它放过去的那一种,恰好就是不方的。** 把同一件事明说出来(`height: 40, width: 24`)反而会被拦下。
+
+回归行把这三步分别钉住:半给通过、算出来 24×40、明说被拒。随后把 assert「修」成消息声称的样子跑了一遍,
+确认那条会红。
+
+顺带:范围消息写的是 *"must be greater than 24.0"*,代码是 `>= _kStepSize`——**24.0 正好是许可的**,也钉了
+一条。
+
+---
+
+**第二件:`ToggleButtons` 的 `hitTest` 只把一条轴压平,另一条原样留着。**
+
+```dart
+// Only adjust one axis to ensure the correct button is tapped.
+final Offset center = switch (direction) {
+  Axis.horizontal => Offset(position.dx, child!.size.height / 2),
+  Axis.vertical   => Offset(child!.size.width / 2, position.dy),
+};
+```
+
+**这是这几天第三个「按得着的比画出来的大」**(第 59 轮滚动条、第 83 轮 icon button),但只有这一个是
+**故意只扩一条轴**。它不得不这样:按钮为了凑够 tap target 在纵向补了白,所以点在按钮上方的空白里也得算数
+——**可这些按钮在横向是肩并肩排着的,横轴也压平的话,每一次点击都会落到「先被问到的那个邻居」身上。**
+
+**两条轴一起扩,对一个孤零零的控件是对的,对一排控件恰好是错的。** 滚动条和 icon button 可以用省事的那
+个版本,这个不行。
+
+---
+
+其余几条:
+
+* **`assert(widget.steps.length == oldWidget.steps.length)`,而 `steps` 的文档写着「The length of steps
+  must not change」——列表的长度是这个 widget 身份的一部分。** 这在 Flutter 里不常见。原因就在它下一行:
+  state 按下标把每个 step 的旧状态存起来,好让圆圈从 `indexed` 动画到 `complete`。**中间插一个,后面每个
+  圆圈都会从别人的过去开始动。**
+* **`ControlsDetails` 带两个下标**:`currentStep` 和 `stepIndex`。**因为切换的过程中两个 step 同时在屏幕
+  上**,builder 两个都会跑一遍,得能分清这次跑的是哪个。**和上一轮 tab 那条是同一个形状:过渡期间有两个
+  东西,代码就得能把两个都叫出名字。**
+* 而同一个文件里有两个 `isActive`,意思不一样:`Step.isActive` 的文档是「**The flag only influences
+  styling**」,调用者自己设;`ControlsDetails.isActive` 是 `currentStep == stepIndex` 算出来的。
+* `Stepper.build` 里有一条 debug assert 直接抛 `FlutterError`:「**Steppers must not be nested**」,并附上
+  material 规范的链接。**这里不会坏任何东西——它不是布局约束,也不是代码依赖的不变量,它是一条设计规范,
+  被框架当成错误来执行。**
+* `ToggleButtons` 那条 build 期 assert 的消息里无保护地写了 `focusNodes!.length`。Dart 只在 assert 失败时
+  才构造消息,而条件恰好保证那时它非 null——**正确,但只差一根头发。**
+
+验证:`cargo test --lib` 3401 绿,GN `rustflutter_unittests` 3401 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1816 accounted / 72 MISSING(96.2%)。
+
 ### 那个标志按「因为什么」命名,不按「是不是」命名(2026-08-20)
 
 新模块 `tabs.rs`,一次收掉 `tab_controller.dart`(`TabController`、`DefaultTabController`)、
