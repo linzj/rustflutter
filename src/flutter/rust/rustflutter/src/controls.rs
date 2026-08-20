@@ -787,6 +787,16 @@ impl Dialog {
         }
     }
 
+    /// This dialog's appearance and placement, with the theme and the M3
+    /// defaults folded in -- including the keyboard's insets, which are added
+    /// to the margin rather than replacing it.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedDialog {
+        crate::component_themes::ResolvedDialog::of(context)
+    }
+
     pub fn with_body(mut self, body: impl Into<String>) -> Self {
         self.body = Some(body.into());
         self
@@ -3610,5 +3620,143 @@ mod bottom_sheet_theme_tests {
             4.0,
             "and the persistent one still takes the shared field"
         );
+    }
+}
+
+#[cfg(test)]
+mod dialog_theme_tests {
+    use super::*;
+    use crate::component_themes::{DialogTheme, DialogThemeData, ResolvedDialog};
+    use crate::framework::{ElementTree, component, provide};
+    use crate::render::EdgeInsets;
+
+    struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedDialog>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(Dialog::new("t").resolved(context));
+            leaf(|| Empty)
+        }
+    }
+
+    fn resolve(data: DialogThemeData) -> ResolvedDialog {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            DialogTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn the_keyboards_insets_are_added_to_the_margin_and_not_maxed_with_it() {
+        // Taking the larger would leave the dialog resting on the keyboard:
+        // right by the arithmetic, wrong to look at. The margin is not there to
+        // clear the edge of the screen -- it is there so the dialog does not
+        // touch whatever is beneath it.
+        let resolved = resolve(DialogThemeData::new());
+        let keyboard = EdgeInsets {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 300.0,
+        };
+        let effective = resolved.effective_padding(keyboard);
+        assert_eq!(
+            effective.bottom,
+            300.0 + ResolvedDialog::INSET_PADDING.bottom,
+            "the keyboard plus the margin, not the larger of the two"
+        );
+        assert_eq!(
+            effective.left,
+            ResolvedDialog::INSET_PADDING.left,
+            "and the sides are untouched"
+        );
+    }
+
+    #[test]
+    fn with_nothing_covering_the_view_the_margin_is_all_there_is() {
+        let resolved = resolve(DialogThemeData::new());
+        assert_eq!(
+            resolved.effective_padding(EdgeInsets::ZERO),
+            ResolvedDialog::INSET_PADDING
+        );
+    }
+
+    #[test]
+    fn the_default_margin_is_wider_at_the_sides_than_at_the_ends() {
+        // Upstream's `symmetric(horizontal: 40, vertical: 24)`. A dialog is a
+        // column of text, and text that runs the full width of a phone is hard
+        // to read; there is no such reason to keep it short.
+        assert_eq!(ResolvedDialog::INSET_PADDING.left, 40.0);
+        assert_eq!(ResolvedDialog::INSET_PADDING.top, 24.0);
+        assert!(ResolvedDialog::INSET_PADDING.left > ResolvedDialog::INSET_PADDING.top);
+    }
+
+    #[test]
+    fn the_width_constraint_is_a_floor_and_not_a_size() {
+        // A dialog narrower than this reads as a tooltip that got lost.
+        let resolved = resolve(DialogThemeData::new());
+        assert_eq!(resolved.constraints.min_width, ResolvedDialog::MIN_WIDTH);
+        assert_eq!(
+            resolved.constraints.max_width,
+            f32::INFINITY,
+            "and nothing stops a wide one being wide"
+        );
+    }
+
+    #[test]
+    fn a_dialog_is_centred_unless_the_theme_moves_it() {
+        assert_eq!(
+            resolve(DialogThemeData::new()).alignment,
+            crate::render::Alignment::CENTER
+        );
+
+        let mut data = DialogThemeData::new();
+        data.alignment = Some(crate::render::AlignmentGeometry::Absolute(
+            crate::render::Alignment::TOP_LEFT,
+        ));
+        assert_eq!(resolve(data).alignment, crate::render::Alignment::TOP_LEFT);
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults_field_by_field() {
+        let mut data = DialogThemeData::new();
+        data.elevation = Some(2.0);
+        data.inset_padding = Some(EdgeInsets::all(5.0));
+        let resolved = resolve(data);
+        assert_eq!(resolved.elevation, 2.0);
+        assert_eq!(resolved.inset_padding, EdgeInsets::all(5.0));
+        assert_eq!(
+            resolved.constraints.min_width,
+            ResolvedDialog::MIN_WIDTH,
+            "and what it did not set is untouched"
+        );
+    }
+
+    #[test]
+    fn a_themed_margin_is_what_the_keyboard_is_added_to() {
+        let mut data = DialogThemeData::new();
+        data.inset_padding = Some(EdgeInsets::all(5.0));
+        let keyboard = EdgeInsets {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 100.0,
+        };
+        assert_eq!(resolve(data).effective_padding(keyboard).bottom, 105.0);
+    }
+
+    #[test]
+    fn nothing_is_invented_for_the_fields_upstream_leaves_null() {
+        // A shadow colour, a surface tint and a barrier colour that nobody set
+        // stay unset: the widget above decides, and a colour made up here would
+        // be one it could not tell from a real answer.
+        let resolved = resolve(DialogThemeData::new());
+        assert_eq!(resolved.shadow_color, None);
+        assert_eq!(resolved.surface_tint_color, None);
+        assert_eq!(resolved.barrier_color, None);
+        assert_eq!(resolved.title_text_style, None);
     }
 }

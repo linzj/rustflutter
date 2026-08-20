@@ -1522,6 +1522,93 @@ impl ResolvedBottomSheet {
     }
 }
 
+/// What a dialog is drawn and placed with -- upstream's `Dialog.build` reading
+/// `DialogTheme.of` and then the M3 defaults.
+///
+/// # The keyboard's insets are *added* to the dialog's margin, not maxed with it
+///
+/// `effectivePadding = MediaQuery.viewInsetsOf(context) + (insetPadding ??
+/// theme ?? default)`. When the on-screen keyboard comes up, the dialog is
+/// pushed above it **and keeps its own margin on top of that**. Taking the
+/// larger of the two would leave the dialog resting on the keyboard: correct by
+/// the arithmetic, and wrong to look at, because the margin is not there to
+/// clear the edge of the screen -- it is there so the dialog does not touch
+/// whatever is beneath it.
+pub struct ResolvedDialog {
+    pub background: Color,
+    pub elevation: f32,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+    pub alignment: crate::render::Alignment,
+    pub inset_padding: EdgeInsets,
+    pub constraints: BoxConstraints,
+    pub barrier_color: Option<Color>,
+    pub title_text_style: Option<TextStyle>,
+    pub content_text_style: Option<TextStyle>,
+    pub actions_padding: EdgeInsets,
+    pub icon_color: Option<Color>,
+}
+
+impl ResolvedDialog {
+    /// Upstream's `_defaultInsetPadding`.
+    pub const INSET_PADDING: EdgeInsets = EdgeInsets {
+        left: 40.0,
+        top: 24.0,
+        right: 40.0,
+        bottom: 24.0,
+    };
+    /// Upstream's `BoxConstraints(minWidth: 280.0)` -- a floor and not a size.
+    /// A dialog narrower than this reads as a tooltip that got lost.
+    pub const MIN_WIDTH: f32 = 280.0;
+    /// Upstream's `_DialogDefaultsM3.elevation`.
+    pub const ELEVATION: f32 = 6.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedDialog {
+        let data = DialogTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedDialog {
+            background: data
+                .background_color
+                .unwrap_or(scheme.surface_container_high()),
+            elevation: data.elevation.unwrap_or(ResolvedDialog::ELEVATION),
+            shadow_color: data.shadow_color,
+            surface_tint_color: data.surface_tint_color,
+            shape: data.shape.clone(),
+            alignment: data
+                .alignment
+                .map(|alignment| alignment.resolve(crate::direction::current_direction()))
+                .unwrap_or(crate::render::Alignment::CENTER),
+            inset_padding: data.inset_padding.unwrap_or(ResolvedDialog::INSET_PADDING),
+            constraints: data.constraints.unwrap_or(BoxConstraints {
+                min_width: ResolvedDialog::MIN_WIDTH,
+                max_width: f32::INFINITY,
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+            }),
+            barrier_color: data.barrier_color,
+            title_text_style: data.title_text_style.clone(),
+            content_text_style: data.content_text_style.clone(),
+            actions_padding: data
+                .actions_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::ZERO),
+            icon_color: data.icon_color,
+        }
+    }
+
+    /// Upstream's `effectivePadding`: what is covering the view, **plus** the
+    /// dialog's own margin. See the type's docs for why it is a sum.
+    pub fn effective_padding(&self, view_insets: EdgeInsets) -> EdgeInsets {
+        EdgeInsets {
+            left: view_insets.left + self.inset_padding.left,
+            top: view_insets.top + self.inset_padding.top,
+            right: view_insets.right + self.inset_padding.right,
+            bottom: view_insets.bottom + self.inset_padding.bottom,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
