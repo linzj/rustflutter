@@ -1,0 +1,972 @@
+//! The raw menu anchor -- a port of upstream's `widgets/raw_menu_anchor.dart`.
+//!
+//! A menu system is a **tree of anchors**, not a list of open menus. Each
+//! anchor knows its parent and its children, and almost every decision here
+//! is about which direction along that tree a request travels.
+//!
+//! * A tap outside closes **downwards**: the submenu goes, its parent stays.
+//!   A reader who clicked away from a submenu did not ask to lose the menu
+//!   bar.
+//! * Escape closes from the **root**: `DismissMenuAction` reaches for
+//!   `_anchor.root` rather than the anchor it was invoked on, because escape
+//!   means "I am done with this menu", not "one level please".
+//! * An open-state change travels **upwards** first, so an ancestor that
+//!   paints differently while a descendant is open finds out before anyone
+//!   rebuilds.
+//!
+//! The other recurring idea is that closing has two speeds. `closeChildren`
+//! shuts a child immediately; `requestChildrenClose` starts its *closing
+//! sequence*, which an animated menu needs in order to animate out at all.
+//! Upstream keeps both and documents the difference on each.
+//!
+//! ## What is not here
+//!
+//! The overlay portal that hosts the menu surface, the focus traversal
+//! between items and the tap-region plumbing belong to widgets this crate
+//! spells differently -- see [`crate::overlay`] and [`crate::menu_anchor`].
+//! What is ported is the anchor tree, the open and close request paths, and
+//! the two automatic closes.
+
+use crate::render::{Offset, Size};
+
+/// A rectangle, as this module needs it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AnchorRect {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+/// Upstream `RawMenuOverlayInfo`: what a menu's overlay builder is told.
+///
+/// The anchor rect is measured against **whichever overlay the menu is going
+/// into** -- the nearest one, or the root when `useRootOverlay` is set. Two
+/// different coordinate spaces for the same anchor, and the flag is what says
+/// which one the builder is being handed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawMenuOverlayInfo {
+    pub anchor_rect: AnchorRect,
+    pub overlay_size: Size,
+    /// The `position` given to [`MenuController::open`], to be applied as an
+    /// offset from the anchor's **top-left corner**.
+    pub position: Option<Offset>,
+    /// Upstream's `tapRegionGroupId`: the whole menu system shares one, which
+    /// is what makes a tap inside a submenu not count as a tap outside its
+    /// parent.
+    pub tap_region_group_id: u64,
+}
+
+impl RawMenuOverlayInfo {
+    pub fn new(
+        anchor_rect: AnchorRect,
+        overlay_size: Size,
+        tap_region_group_id: u64,
+    ) -> RawMenuOverlayInfo {
+        RawMenuOverlayInfo {
+            anchor_rect,
+            overlay_size,
+            position: None,
+            tap_region_group_id,
+        }
+    }
+
+    pub fn with_position(mut self, position: Offset) -> Self {
+        self.position = Some(position);
+        self
+    }
+}
+
+/// How thoroughly a close is being asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseKind {
+    /// Upstream's `closeChildren`: shut now, no sequence.
+    Immediate,
+    /// Upstream's `requestChildrenClose`: run each child's closing sequence,
+    /// which is what lets an animated menu animate out.
+    Requested,
+}
+
+/// One anchor in the menu tree.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuAnchorNode {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub children: Vec<u64>,
+    pub open: bool,
+    /// Upstream's `consumeOutsideTaps`: whether the tap that dismissed the
+    /// menu is also swallowed. False by default, so a tap that closes a menu
+    /// still reaches whatever it landed on -- which is usually what the reader
+    /// meant by tapping there.
+    pub consume_outside_taps: bool,
+    /// Upstream's `useRootOverlay`, which decides whose coordinate space the
+    /// overlay info is in.
+    pub use_root_overlay: bool,
+    /// How many times this anchor's *closing sequence* was started, as
+    /// opposed to it being shut outright. Upstream's `onCloseRequested` runs
+    /// here, and a menu that animates out is animating during this count.
+    pub close_requests: usize,
+    /// How many times a rebuild was asked for.
+    pub dirty_marks: usize,
+    /// Rebuilds deferred because the request arrived during a build.
+    pub deferred_marks: usize,
+}
+
+impl MenuAnchorNode {
+    pub fn new(id: u64) -> MenuAnchorNode {
+        MenuAnchorNode {
+            id,
+            parent: None,
+            children: Vec::new(),
+            open: false,
+            close_requests: 0,
+            consume_outside_taps: false,
+            use_root_overlay: false,
+            dirty_marks: 0,
+            deferred_marks: 0,
+        }
+    }
+}
+
+/// The anchor tree, which is what a [`MenuController`] and the two anchor
+/// widgets act on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuAnchorTree {
+    nodes: Vec<MenuAnchorNode>,
+    /// What was opened and closed, in order.
+    log: Vec<(u64, bool)>,
+}
+
+impl MenuAnchorTree {
+    pub fn new() -> MenuAnchorTree {
+        MenuAnchorTree::default()
+    }
+
+    pub fn log(&self) -> &[(u64, bool)] {
+        &self.log
+    }
+
+    pub fn node(&self, id: u64) -> Option<&MenuAnchorNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
+    fn node_mut(&mut self, id: u64) -> Option<&mut MenuAnchorNode> {
+        self.nodes.iter_mut().find(|node| node.id == id)
+    }
+
+    pub fn is_open(&self, id: u64) -> bool {
+        self.node(id).map(|node| node.open).unwrap_or(false)
+    }
+
+    pub fn insert(&mut self, node: MenuAnchorNode) {
+        debug_assert!(self.node(node.id).is_none(), "an anchor is added once");
+        self.nodes.push(node);
+    }
+
+    /// Upstream's `didChangeDependencies` re-parenting, which **removes from
+    /// the old parent before adding to the new**. An anchor moved in the tree
+    /// would otherwise be a child of two menus, and closing one of them would
+    /// leave it half attached.
+    pub fn set_parent(&mut self, child: u64, parent: Option<u64>) -> Result<(), &'static str> {
+        if parent == Some(child) {
+            return Err("a MenuController should only be attached to one anchor at a time");
+        }
+        let old_parent = self.node(child).and_then(|node| node.parent);
+        if old_parent == parent {
+            return Ok(());
+        }
+        if let Some(old) = old_parent {
+            if let Some(node) = self.node_mut(old) {
+                node.children.retain(|held| *held != child);
+            }
+        }
+        if let Some(node) = self.node_mut(child) {
+            node.parent = parent;
+        }
+        if let Some(new) = parent {
+            if let Some(node) = self.node_mut(new) {
+                debug_assert!(!node.children.contains(&child));
+                node.children.push(child);
+            }
+        }
+        Ok(())
+    }
+
+    /// Upstream's `root`: walk up until there is no parent.
+    pub fn root_of(&self, id: u64) -> u64 {
+        let mut at = id;
+        while let Some(parent) = self.node(at).and_then(|node| node.parent) {
+            at = parent;
+        }
+        at
+    }
+
+    pub fn is_root(&self, id: u64) -> bool {
+        self.node(id)
+            .map(|node| node.parent.is_none())
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `handleOpenRequest` reaching `open`.
+    pub fn open(&mut self, id: u64) {
+        if let Some(node) = self.node_mut(id) {
+            if node.open {
+                return;
+            }
+            node.open = true;
+        }
+        self.log.push((id, true));
+        self.child_changed_open_state(id, false);
+    }
+
+    /// Upstream's `close`.
+    pub fn close(&mut self, id: u64) {
+        // Children go first: a submenu outliving its parent would be a menu
+        // floating over nothing.
+        self.close_children(id, CloseKind::Immediate);
+        let was_open = self.node(id).map(|node| node.open).unwrap_or(false);
+        if let Some(node) = self.node_mut(id) {
+            node.open = false;
+        }
+        if was_open {
+            self.log.push((id, false));
+            self.child_changed_open_state(id, false);
+        }
+    }
+
+    /// Upstream's `closeChildren` and `requestChildrenClose`, which differ in
+    /// **how** each child is shut rather than in which children are shut.
+    ///
+    /// `Immediate` is `closeChildren`: it calls `close` on each child, which
+    /// shuts it now. `Requested` is `requestChildrenClose`: it calls
+    /// `handleCloseRequest`, which starts the child's *closing sequence* --
+    /// and that sequence is where an animated menu animates out. Upstream
+    /// documents the pair on each method with a cross-reference to the other,
+    /// which is how you can tell the difference is load-bearing.
+    ///
+    /// The `inDispose` path uses the immediate one, and has to: a menu being
+    /// unmounted has no frames left to animate in.
+    ///
+    /// Both iterate a **copy** of the child list, because closing a child
+    /// removes it from that list.
+    pub fn close_children(&mut self, id: u64, kind: CloseKind) {
+        let children = self
+            .node(id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default();
+        for child in children {
+            match kind {
+                CloseKind::Immediate => self.close(child),
+                CloseKind::Requested => self.handle_close_request(child),
+            }
+        }
+    }
+
+    /// Upstream's `handleCloseRequest`, the entry point of the closing
+    /// sequence. The default implementation closes straight away; a menu with
+    /// an `onCloseRequested` of its own may delay it, or decline.
+    pub fn handle_close_request(&mut self, id: u64) {
+        if let Some(node) = self.node_mut(id) {
+            node.close_requests += 1;
+        }
+        self.close(id);
+    }
+
+    /// A menu whose `onCloseRequested` is still waiting: the request was
+    /// recorded but the close has not happened.
+    pub fn handle_close_request_deferred(&mut self, id: u64) {
+        if let Some(node) = self.node_mut(id) {
+            node.close_requests += 1;
+        }
+    }
+
+    /// Upstream's `handleOutsideTap`, which closes this anchor's **children**
+    /// and leaves the anchor itself open.
+    ///
+    /// A reader who clicked away from a submenu did not ask to lose the menu
+    /// bar it hangs off. Only a tap outside the whole system reaches the root,
+    /// and the shared tap-region group id is what makes a tap inside a submenu
+    /// not count as outside its parent.
+    pub fn handle_outside_tap(&mut self, id: u64) -> bool {
+        if !self.is_open(id) {
+            return false;
+        }
+        self.close_children(id, CloseKind::Requested);
+        self.node(id)
+            .map(|node| node.consume_outside_taps)
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `DismissMenuAction.invoke`, which reaches for **the root**
+    /// rather than the anchor it was invoked on. Escape means "I am done with
+    /// this menu", not "one level, please".
+    pub fn dismiss(&mut self, id: u64) {
+        let root = self.root_of(id);
+        self.close(root);
+    }
+
+    /// Upstream's `_handleScroll`, and the comment on it is the decision:
+    ///
+    /// > If an ancestor scrolls, and we're a root anchor, then close the
+    /// > menus. Don't just close it on *any* scroll, since we want to be able
+    /// > to scroll menus themselves if they're too big for the view.
+    ///
+    /// So only the **root** listens. A menu long enough to scroll would
+    /// otherwise close itself the moment the reader scrolled it.
+    pub fn handle_ancestor_scroll(&mut self, id: u64) -> bool {
+        if !self.is_root(id) || !self.is_open(id) {
+            return false;
+        }
+        self.close(id);
+        true
+    }
+
+    /// Upstream's view-size check in `didChangeDependencies`: a menu is
+    /// positioned against a viewport that just changed, so its position is
+    /// stale. Closing is the honest answer -- there is no way to know where
+    /// the anchor moved to until the next layout.
+    ///
+    /// Only checked when this anchor is the root **and** already open, and
+    /// only when the size genuinely differs; the first observation records the
+    /// size without closing anything.
+    pub fn handle_view_size_change(
+        &mut self,
+        id: u64,
+        old_size: Option<Size>,
+        new_size: Size,
+    ) -> bool {
+        let changed = old_size.is_some_and(|old| old != new_size);
+        if !self.is_root(id) || !changed || !self.is_open(id) {
+            return false;
+        }
+        self.close(id);
+        true
+    }
+
+    /// Upstream's `_childChangedOpenState`, which travels **up first** and
+    /// marks dirty second.
+    ///
+    /// `during_build` is upstream's `SchedulerPhase.persistentCallbacks`
+    /// check: a state change arriving mid-build cannot mark anything dirty, so
+    /// it is deferred to a post-frame callback. Marking during a build is the
+    /// error this avoids, and deferring costs one frame of a menu drawn in its
+    /// old state.
+    pub fn child_changed_open_state(&mut self, id: u64, during_build: bool) {
+        let mut at = Some(id);
+        while let Some(current) = at {
+            if let Some(node) = self.node_mut(current) {
+                if during_build {
+                    node.deferred_marks += 1;
+                } else {
+                    node.dirty_marks += 1;
+                }
+                at = node.parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Upstream's `dispose`, which closes, detaches from the parent, clears
+    /// the children and detaches the controller -- in that order.
+    pub fn dispose(&mut self, id: u64) {
+        if self.is_open(id) {
+            self.close(id);
+        }
+        let parent = self.node(id).and_then(|node| node.parent);
+        if let Some(parent) = parent {
+            if let Some(node) = self.node_mut(parent) {
+                node.children.retain(|held| *held != id);
+            }
+        }
+        if let Some(node) = self.node_mut(id) {
+            node.parent = None;
+            node.children.clear();
+        }
+        self.nodes.retain(|node| node.id != id);
+    }
+}
+
+/// Upstream `MenuController`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuController {
+    /// Upstream's `_anchor`, set when the controller is attached.
+    anchor: Option<u64>,
+}
+
+impl MenuController {
+    pub fn new() -> MenuController {
+        MenuController::default()
+    }
+
+    pub fn anchor(&self) -> Option<u64> {
+        self.anchor
+    }
+
+    /// Upstream's `_attach`.
+    pub fn attach(&mut self, anchor: u64) {
+        self.anchor = Some(anchor);
+    }
+
+    /// Upstream's `_detach`, which detaches **only if it is that anchor**. An
+    /// anchor being disposed after the controller has moved on must not tear
+    /// the controller off its new one.
+    pub fn detach(&mut self, anchor: u64) {
+        if self.anchor == Some(anchor) {
+            self.anchor = None;
+        }
+    }
+
+    pub fn is_open(&self, tree: &MenuAnchorTree) -> bool {
+        self.anchor.map(|id| tree.is_open(id)).unwrap_or(false)
+    }
+
+    /// Upstream's `open`, which **asserts it is attached**. Opening a menu
+    /// nobody built is a programming error rather than a no-op.
+    pub fn open(&self, tree: &mut MenuAnchorTree) {
+        let anchor = self.anchor.expect("MenuController is not attached");
+        tree.open(anchor);
+    }
+
+    /// Upstream's `close`, which -- unlike `open` -- does **not** assert.
+    /// Closing a menu that is already gone is exactly what a dispose path
+    /// does, and it should be allowed to say so harmlessly.
+    pub fn close(&self, tree: &mut MenuAnchorTree) {
+        if let Some(anchor) = self.anchor {
+            tree.close(anchor);
+        }
+    }
+
+    /// Upstream's `closeChildren`, which shuts the submenus and leaves this
+    /// menu open.
+    pub fn close_children(&self, tree: &mut MenuAnchorTree) {
+        let anchor = self.anchor.expect("MenuController is not attached");
+        tree.close_children(anchor, CloseKind::Requested);
+    }
+}
+
+/// Whether a lookup of the controller establishes a dependency.
+///
+/// Upstream ships both, and the pair is the interesting part.
+/// `MenuController.maybeOf` deliberately does **not** depend, so a menu item
+/// that holds a controller in order to call `close()` does not rebuild every
+/// time any menu opens. `maybeIsOpenOf` does depend, because its answer is
+/// exactly the thing that changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerLookup {
+    /// `maybeOf`: read it, do not watch it.
+    WithoutDependency,
+    /// `maybeIsOpenOf`: watch it.
+    WithDependency,
+}
+
+impl ControllerLookup {
+    pub fn establishes_dependency(self) -> bool {
+        self == ControllerLookup::WithDependency
+    }
+}
+
+/// Upstream `RawMenuAnchor`: an anchor with a menu overlay of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMenuAnchor {
+    pub consume_outside_taps: bool,
+    pub use_root_overlay: bool,
+    /// Whether a `childFocusNode` was supplied. Upstream uses it to send focus
+    /// back to the thing that opened the menu when the menu closes -- without
+    /// it, closing a menu with the keyboard leaves focus nowhere.
+    pub has_child_focus_node: bool,
+}
+
+impl RawMenuAnchor {
+    pub fn new() -> RawMenuAnchor {
+        RawMenuAnchor::default()
+    }
+
+    /// Upstream's `_defaultOnOpenRequested`, which calls `showOverlay`
+    /// **synchronously** -- so `onOpen` fires in the same turn, and it fires
+    /// **whether or not the overlay was already showing**.
+    ///
+    /// The extension point is what the shape is for: a custom
+    /// `onOpenRequested` may delay the call, or never make it, and then
+    /// `onOpen` never fires either. That is how a menu waits for an animation
+    /// or refuses to open at all.
+    pub fn default_on_open_requested(show_overlay: impl FnOnce()) {
+        show_overlay();
+    }
+
+    /// Upstream's note that calling `showOverlay` after disposal is a no-op
+    /// and does not trigger `onOpen`. A delayed opener whose menu went away
+    /// while it waited must not announce an opening that cannot happen.
+    pub fn show_overlay(&self, disposed: bool) -> bool {
+        !disposed
+    }
+}
+
+/// Upstream `RawMenuAnchorGroup`: an anchor with children and no menu of its
+/// own.
+///
+/// A menu bar is one of these. It never opens -- `isOpen` is true when **any
+/// child** is open -- which is why a menu bar can host submenus without
+/// itself being a menu that could be dismissed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMenuAnchorGroup;
+
+impl RawMenuAnchorGroup {
+    /// Upstream's `isOpen` for a group.
+    pub fn is_open(tree: &MenuAnchorTree, id: u64) -> bool {
+        tree.node(id)
+            .map(|node| node.children.iter().any(|child| tree.is_open(*child)))
+            .unwrap_or(false)
+    }
+}
+
+/// Upstream `DismissMenuAction`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DismissMenuAction {
+    pub controller: MenuController,
+}
+
+impl DismissMenuAction {
+    pub fn new(controller: MenuController) -> DismissMenuAction {
+        DismissMenuAction { controller }
+    }
+
+    /// Upstream's `isEnabled`: only while the controller is attached. An
+    /// escape press with no menu open should reach whatever else wanted it --
+    /// a dialog, usually.
+    pub fn is_enabled(&self) -> bool {
+        self.controller.anchor().is_some()
+    }
+
+    /// Upstream's `invoke`, which closes from the root.
+    pub fn invoke(&self, tree: &mut MenuAnchorTree) {
+        if let Some(anchor) = self.controller.anchor() {
+            tree.dismiss(anchor);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A menu bar (1) with two submenus (2, 3), and a sub-submenu (4) under 2.
+    fn menu_tree() -> MenuAnchorTree {
+        let mut tree = MenuAnchorTree::new();
+        for id in 1..=4 {
+            tree.insert(MenuAnchorNode::new(id));
+        }
+        tree.set_parent(2, Some(1)).unwrap();
+        tree.set_parent(3, Some(1)).unwrap();
+        tree.set_parent(4, Some(2)).unwrap();
+        tree
+    }
+
+    fn open_all(tree: &mut MenuAnchorTree) {
+        for id in [1, 2, 4] {
+            tree.open(id);
+        }
+    }
+
+    // -- The tree ----------------------------------------------------------
+
+    #[test]
+    fn the_root_is_whatever_has_no_parent_above_it() {
+        let tree = menu_tree();
+        assert_eq!(tree.root_of(4), 1);
+        assert_eq!(tree.root_of(1), 1);
+        assert!(tree.is_root(1));
+        assert!(!tree.is_root(2));
+    }
+
+    #[test]
+    fn moving_an_anchor_takes_it_off_the_old_parent_first() {
+        // Otherwise it is a child of two menus, and closing one leaves it half
+        // attached.
+        let mut tree = menu_tree();
+        assert_eq!(tree.node(2).unwrap().children, vec![4]);
+
+        tree.set_parent(4, Some(3)).unwrap();
+        assert!(tree.node(2).unwrap().children.is_empty());
+        assert_eq!(tree.node(3).unwrap().children, vec![4]);
+    }
+
+    #[test]
+    fn an_anchor_cannot_be_its_own_parent() {
+        let mut tree = menu_tree();
+        assert!(tree.set_parent(2, Some(2)).is_err());
+    }
+
+    #[test]
+    fn re_parenting_to_where_it_already_is_changes_nothing() {
+        let mut tree = menu_tree();
+        tree.set_parent(4, Some(2)).unwrap();
+        assert_eq!(tree.node(2).unwrap().children, vec![4], "not duplicated");
+    }
+
+    // -- Which way a close travels -----------------------------------------
+
+    #[test]
+    fn a_tap_outside_a_submenu_leaves_the_menu_bar_alone() {
+        // A reader who clicked away from a submenu did not ask to lose the bar
+        // it hangs off.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+
+        tree.handle_outside_tap(2);
+        assert!(!tree.is_open(4), "the sub-submenu went");
+        assert!(tree.is_open(2), "but the submenu stayed");
+        assert!(tree.is_open(1));
+    }
+
+    #[test]
+    fn escape_closes_from_the_root_however_deep_it_was_pressed() {
+        // "I am done with this menu", not "one level, please".
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+
+        tree.dismiss(4);
+        assert!(!tree.is_open(1) && !tree.is_open(2) && !tree.is_open(4));
+    }
+
+    #[test]
+    fn closing_a_menu_takes_its_submenus_with_it() {
+        // A submenu outliving its parent would be a menu floating over
+        // nothing.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+
+        tree.close(2);
+        assert!(!tree.is_open(4));
+        assert!(tree.is_open(1), "and the bar is untouched");
+    }
+
+    #[test]
+    fn the_children_go_before_the_parent_does() {
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let before = tree.log().len();
+
+        tree.close(1);
+        let closes: Vec<u64> = tree.log()[before..]
+            .iter()
+            .filter(|(_, open)| !*open)
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(closes, vec![4, 2, 1], "innermost first");
+    }
+
+    #[test]
+    fn shutting_a_child_and_asking_it_to_close_are_different_paths() {
+        // A menu that animates out is animating during the request, and the
+        // dispose path uses the immediate one because it has no frames left.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        tree.close_children(1, CloseKind::Immediate);
+        assert_eq!(tree.node(2).unwrap().close_requests, 0);
+
+        open_all(&mut tree);
+        tree.close_children(1, CloseKind::Requested);
+        assert_eq!(
+            tree.node(2).unwrap().close_requests,
+            1,
+            "the closing sequence ran"
+        );
+    }
+
+    #[test]
+    fn a_menu_whose_close_is_still_animating_is_not_yet_closed() {
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        tree.handle_close_request_deferred(2);
+        assert_eq!(tree.node(2).unwrap().close_requests, 1);
+        assert!(tree.is_open(2), "the sequence started and has not finished");
+    }
+
+    #[test]
+    fn a_tap_outside_a_closed_menu_does_nothing_at_all() {
+        let mut tree = menu_tree();
+        assert!(!tree.handle_outside_tap(2));
+    }
+
+    #[test]
+    fn the_tap_that_closed_a_menu_still_reaches_what_it_landed_on() {
+        // Which is usually what the reader meant by tapping there.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        assert!(!tree.handle_outside_tap(2), "not consumed, by default");
+
+        let mut greedy = MenuAnchorTree::new();
+        greedy.insert(MenuAnchorNode::new(1));
+        let mut swallowing = MenuAnchorNode::new(2);
+        swallowing.consume_outside_taps = true;
+        greedy.insert(swallowing);
+        greedy.set_parent(2, Some(1)).unwrap();
+        greedy.open(1);
+        greedy.open(2);
+        assert!(greedy.handle_outside_tap(2));
+    }
+
+    // -- The two automatic closes ------------------------------------------
+
+    #[test]
+    fn only_the_root_closes_when_an_ancestor_scrolls() {
+        // Upstream: don't close on *any* scroll, or a menu too big for the
+        // view would close itself the moment the reader scrolled it.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+
+        assert!(!tree.handle_ancestor_scroll(2), "a submenu ignores it");
+        assert!(tree.is_open(2));
+
+        assert!(tree.handle_ancestor_scroll(1));
+        assert!(!tree.is_open(1) && !tree.is_open(2));
+    }
+
+    #[test]
+    fn a_closed_root_has_nothing_to_close_on_a_scroll() {
+        let mut tree = menu_tree();
+        assert!(!tree.handle_ancestor_scroll(1));
+    }
+
+    #[test]
+    fn a_view_that_changed_size_leaves_the_menu_positioned_against_nothing() {
+        // There is no way to know where the anchor moved to until the next
+        // layout, so closing is the honest answer.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let old = Size {
+            width: 400.0,
+            height: 800.0,
+        };
+        let new = Size {
+            width: 800.0,
+            height: 400.0,
+        };
+        assert!(tree.handle_view_size_change(1, Some(old), new));
+        assert!(!tree.is_open(1));
+    }
+
+    #[test]
+    fn the_first_time_a_size_is_seen_it_is_only_recorded() {
+        // Or every menu would close on the frame it opened.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let size = Size {
+            width: 400.0,
+            height: 800.0,
+        };
+        assert!(!tree.handle_view_size_change(1, None, size));
+        assert!(tree.is_open(1));
+
+        assert!(
+            !tree.handle_view_size_change(1, Some(size), size),
+            "and the same size again is not a change"
+        );
+    }
+
+    #[test]
+    fn a_submenu_does_not_close_itself_when_the_view_resizes() {
+        // The root will close, and take it along.
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let old = Size {
+            width: 400.0,
+            height: 800.0,
+        };
+        let new = Size {
+            width: 800.0,
+            height: 400.0,
+        };
+        assert!(!tree.handle_view_size_change(2, Some(old), new));
+    }
+
+    // -- Rebuild propagation ------------------------------------------------
+
+    #[test]
+    fn an_open_state_change_travels_up_to_the_root() {
+        // An ancestor that paints differently while a descendant is open finds
+        // out before anyone rebuilds.
+        let mut tree = menu_tree();
+        tree.open(4);
+        assert_eq!(tree.node(4).unwrap().dirty_marks, 1);
+        assert_eq!(tree.node(2).unwrap().dirty_marks, 1);
+        assert_eq!(tree.node(1).unwrap().dirty_marks, 1);
+        assert_eq!(tree.node(3).unwrap().dirty_marks, 0, "not a sibling");
+    }
+
+    #[test]
+    fn a_change_arriving_mid_build_is_deferred_rather_than_marking_dirty() {
+        // Marking during a build is the error this avoids; deferring costs one
+        // frame of a menu drawn in its old state.
+        let mut tree = menu_tree();
+        tree.child_changed_open_state(4, true);
+        assert_eq!(tree.node(4).unwrap().dirty_marks, 0);
+        assert_eq!(tree.node(4).unwrap().deferred_marks, 1);
+        assert_eq!(tree.node(1).unwrap().deferred_marks, 1, "all the way up");
+    }
+
+    #[test]
+    fn opening_something_already_open_says_nothing() {
+        let mut tree = menu_tree();
+        tree.open(1);
+        let marks = tree.node(1).unwrap().dirty_marks;
+        tree.open(1);
+        assert_eq!(tree.node(1).unwrap().dirty_marks, marks);
+        assert_eq!(tree.log().len(), 1);
+    }
+
+    #[test]
+    fn closing_something_already_closed_says_nothing() {
+        let mut tree = menu_tree();
+        tree.close(1);
+        assert!(tree.log().is_empty());
+    }
+
+    // -- The controller ----------------------------------------------------
+
+    #[test]
+    fn a_controller_detaches_only_from_the_anchor_it_is_on() {
+        // An anchor disposed after the controller moved on must not tear it
+        // off its new one.
+        let mut controller = MenuController::new();
+        controller.attach(1);
+        controller.attach(2);
+
+        controller.detach(1);
+        assert_eq!(controller.anchor(), Some(2), "the old anchor's dispose");
+
+        controller.detach(2);
+        assert_eq!(controller.anchor(), None);
+    }
+
+    #[test]
+    fn closing_an_unattached_controller_is_harmless_where_opening_is_not() {
+        // Closing a menu that is already gone is what a dispose path does, and
+        // it should be allowed to say so.
+        let mut tree = menu_tree();
+        let controller = MenuController::new();
+        controller.close(&mut tree);
+        assert!(tree.log().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "MenuController is not attached")]
+    fn opening_a_menu_nobody_built_is_a_programming_error() {
+        let mut tree = menu_tree();
+        MenuController::new().open(&mut tree);
+    }
+
+    #[test]
+    fn close_children_leaves_the_menu_itself_open() {
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let mut controller = MenuController::new();
+        controller.attach(2);
+
+        controller.close_children(&mut tree);
+        assert!(!tree.is_open(4));
+        assert!(tree.is_open(2));
+    }
+
+    #[test]
+    fn reading_the_controller_and_watching_it_are_different_questions() {
+        // A menu item holding a controller to call close() should not rebuild
+        // every time any menu opens.
+        assert!(!ControllerLookup::WithoutDependency.establishes_dependency());
+        assert!(ControllerLookup::WithDependency.establishes_dependency());
+    }
+
+    // -- The group and the dismiss action ----------------------------------
+
+    #[test]
+    fn a_menu_bar_is_open_when_any_of_its_children_is() {
+        // Which is how it can host submenus without itself being a menu that
+        // could be dismissed.
+        let mut tree = menu_tree();
+        assert!(!RawMenuAnchorGroup::is_open(&tree, 1));
+
+        tree.open(3);
+        assert!(RawMenuAnchorGroup::is_open(&tree, 1));
+
+        tree.close(3);
+        assert!(!RawMenuAnchorGroup::is_open(&tree, 1));
+    }
+
+    #[test]
+    fn escape_with_no_menu_open_reaches_whatever_else_wanted_it() {
+        // A dialog, usually.
+        let unattached = DismissMenuAction::new(MenuController::new());
+        assert!(!unattached.is_enabled());
+
+        let mut controller = MenuController::new();
+        controller.attach(4);
+        assert!(DismissMenuAction::new(controller).is_enabled());
+    }
+
+    #[test]
+    fn the_dismiss_action_closes_the_whole_system() {
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+        let mut controller = MenuController::new();
+        controller.attach(4);
+
+        DismissMenuAction::new(controller).invoke(&mut tree);
+        assert!(!tree.is_open(1));
+    }
+
+    // -- The anchor widget --------------------------------------------------
+
+    #[test]
+    fn the_default_open_request_shows_the_overlay_at_once() {
+        let mut shown = false;
+        RawMenuAnchor::default_on_open_requested(|| shown = true);
+        assert!(shown);
+    }
+
+    #[test]
+    fn a_delayed_opener_whose_menu_went_away_announces_nothing() {
+        // Calling showOverlay after disposal is a no-op and must not trigger
+        // onOpen.
+        let anchor = RawMenuAnchor::new();
+        assert!(anchor.show_overlay(false));
+        assert!(!anchor.show_overlay(true));
+    }
+
+    #[test]
+    fn disposing_an_anchor_closes_it_and_unhooks_it_from_its_parent() {
+        let mut tree = menu_tree();
+        open_all(&mut tree);
+
+        tree.dispose(2);
+        assert!(tree.node(2).is_none());
+        assert_eq!(
+            tree.node(1).unwrap().children,
+            vec![3],
+            "and the parent forgot it"
+        );
+        assert!(!tree.is_open(4), "its children went with it");
+    }
+
+    #[test]
+    fn overlay_info_carries_the_position_the_caller_asked_to_open_at() {
+        let info = RawMenuOverlayInfo::new(
+            AnchorRect {
+                left: 10.0,
+                top: 20.0,
+                right: 110.0,
+                bottom: 44.0,
+            },
+            Size {
+                width: 400.0,
+                height: 800.0,
+            },
+            7,
+        );
+        assert_eq!(info.position, None);
+
+        let placed = info.clone().with_position(Offset { dx: 4.0, dy: 8.0 });
+        assert_eq!(placed.position, Some(Offset { dx: 4.0, dy: 8.0 }));
+        assert_ne!(placed, info);
+    }
+}

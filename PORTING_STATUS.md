@@ -164,6 +164,63 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 点外面往下关,按 Esc 从根上关(2026-08-20)
+
+新模块 `raw_menu_anchor.rs`,`widgets/raw_menu_anchor.dart` 五个全到:`RawMenuOverlayInfo`、
+`RawMenuAnchor`、`RawMenuAnchorGroup`、`MenuController`、`DismissMenuAction`。覆盖率 1610/1888
+(85.3%)。
+
+**菜单系统是一棵锚点树,不是一串打开的菜单。** 每个锚点知道自己的父与子,而这里几乎每一条判断,说
+的都是**一个请求沿树往哪个方向走**:
+
+* **点击外面往下关**:子菜单没了,它的父级还在。**一个从子菜单上点开的读者,并没有要求丢掉那条菜单
+  栏。**
+* **Esc 从根上关**:`DismissMenuAction.invoke` 伸手去拿的是 `_anchor.root`,而不是它被触发的那个锚
+  点——**Esc 的意思是「这个菜单我用完了」,不是「往上退一级」。**
+* **打开状态的变化先往上走**:一个在后代打开时画法不同的祖先,要在任何人重建之前就知道。
+
+**关闭有两种速度,而这个区别是承重的。** `closeChildren` 立刻关掉孩子;`requestChildrenClose` 启动
+孩子的**关闭序列**——而**一个会淡出的菜单,正是在这段序列里淡出的**。上游在两个方法的文档里互相交叉
+引用,这本身就说明这个差别不是措辞问题。而 `inDispose` 那条路走的是立刻关的那个,也必须如此:**一
+个正在被卸载的菜单,已经没有帧可以拿来做动画了。**
+
+**自查:我第一版把这两条写成了同一件事。** `CloseKind` 的两个分支都调 `close`,注释说它们不同、代
+码说它们一样——这正是我一直在抓的那种「摆设」。改成 `Requested` 走 `handle_close_request`(记录一次
+关闭请求再关),并补了一个 `handle_close_request_deferred` 表示「序列开始了但还没结束」。回归行现在
+能看出差别:立刻关那条 `close_requests` 是 0,请求关那条是 1。
+
+**两个自动关闭各有各的克制:**
+
+* **只有根锚点在祖先滚动时关闭。** 上游的注释把理由写死了:「Don't just close it on *any* scroll,
+  since we want to be able to scroll menus themselves if they're too big for the view.」——**一个长
+  到需要滚动的菜单,否则会在读者刚滚它的那一刻把自己关掉。**
+* **视口尺寸变了就关**,因为菜单是相对一个刚刚变过的视口定位的,它的位置已经过时;**在下一次布局之
+  前,没有办法知道锚点挪到哪儿去了**,关掉是诚实的答案。而**第一次观察到尺寸只做记录不做关闭**——否
+  则每个菜单都会在它打开的那一帧关掉自己。
+
+**`maybeOf` 和 `maybeIsOpenOf` 这一对值得单说:前者刻意**不**建立依赖**,于是一个只是握着控制器好
+调用 `close()` 的菜单项,不会在任何菜单开合时都重建一次;后者**建立**依赖,因为它的答案正是那个变
+了的东西。
+
+**其余几条:**
+
+* **`MenuController.open` 断言已附着,而 `close` 不断言。** 关掉一个已经没了的菜单,正是 dispose
+  路径会做的事,它应该被允许无害地这么说;而打开一个没人构建的菜单是编程错误。
+* **`_detach` 只在「就是那个锚点」时才摘**:一个在控制器已经转移之后才被销毁的锚点,不该把控制器从
+  它的新锚点上扯下来。
+* **`RawMenuAnchorGroup` 自己永远不「打开」**——它的 `isOpen` 是「**任何一个孩子**开着」。这就是菜单
+  栏能托管子菜单、而自己不是一个可被 dismiss 的菜单的原因。
+* **`consumeOutsideTaps` 默认 false**:关掉菜单的那一下点击**仍然会到达它落在的东西上**,而这通常正
+  是读者点那儿的用意。
+* **`showOverlay` 在处置之后调用是空操作,而且不会触发 `onOpen`**:一个延迟打开的菜单,如果在等待期
+  间已经没了,不该宣告一次不可能发生的打开。
+* **`DismissMenuAction.isEnabled` 看控制器有没有附着**:没有菜单开着时的一次 Esc,应该到达别的想要
+  它的东西那里——通常是一个对话框。
+
+验证:`cargo test --lib` 2470 绿,GN `rustflutter_unittests` 2470 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1610 accounted / 278 MISSING(85.3%)。
+
 ### 返回键问到有人认领就停,退出请求问完所有人才停(2026-08-20)
 
 新模块 `binding.rs`,`widgets/binding.dart` 五个全到:`WidgetsBindingObserver`、
