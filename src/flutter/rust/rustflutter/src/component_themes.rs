@@ -72,19 +72,27 @@ pub(crate) fn lerp_color(a: Option<Color>, b: Option<Color>, t: f32) -> Option<C
     }
 }
 
-/// The same for a number.
+/// The same for a number, following upstream's `lerpDouble`.
+///
+/// # A null end is **zero**, not a step
+///
+/// `lerpDouble` is `a ??= 0.0; b ??= 0.0; a * (1 - t) + b * t`. An absent
+/// number behaves as nothing-of-that-quantity, so an elevation that one theme
+/// sets and the other does not sinks to the surface rather than snapping there
+/// halfway. This had the same step-at-the-middle rule
+/// [`lerp_color`] did, and for the same reason: the two agree at the ends and
+/// nowhere in between.
+///
+/// `lerpDouble` returns `a` outright when `a == b`, which is why two absent
+/// numbers stay absent instead of interpolating between two zeroes and
+/// answering `Some(0.0)`.
 pub(crate) fn lerp_f32(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(a), Some(b)) => Some(a + (b - a) * t),
-        _ => {
-            if t < 0.5 {
-                a
-            } else {
-                b
-            }
-        }
+    if a == b {
+        return a;
     }
+    let from = a.unwrap_or(0.0);
+    let to = b.unwrap_or(0.0);
+    Some(from * (1.0 - t) + to * t)
 }
 
 /// A colour property, both ends resolved against the same states and then
@@ -7035,15 +7043,61 @@ mod tests {
         assert_eq!(half.color, Some(Color::argb(255, 128, 128, 128)));
         assert_eq!(half.space, Some(15.0));
 
-        // One end unset: the answer changes over at the halfway point, which
-        // is what `Color.lerp(null, colour, t)` comes to for a field a theme
-        // either has or does not.
+        // One end unset: the number **grows from zero**, it does not change
+        // over at the halfway point.
+        //
+        // This test used to assert the changeover, and explained it as what
+        // `Color.lerp(null, colour, t)` comes to. That is not what `Color.lerp`
+        // does either -- it scales the alpha -- and a number is not a colour
+        // anyway: `lerpDouble` reads an absent end as `0.0` and interpolates.
+        // A divider that one theme spaces and the other does not closes up
+        // smoothly instead of snapping shut halfway through.
         let one_ended = DividerThemeData::lerp(&DividerThemeData::new(), &b, 0.4);
-        assert_eq!(one_ended.space, None);
+        assert_eq!(one_ended.space, Some(8.0), "two fifths of the way to 20");
         assert_eq!(
             DividerThemeData::lerp(&DividerThemeData::new(), &b, 0.6).space,
-            Some(20.0)
+            Some(12.0)
         );
+        assert_eq!(
+            DividerThemeData::lerp(&DividerThemeData::new(), &b, 1.0).space,
+            Some(20.0),
+            "and arrives at the end it was going to"
+        );
+
+        // A colour, by contrast, fades: it is the alpha that scales.
+        let faded = DividerThemeData::lerp(&DividerThemeData::new(), &b, 0.4);
+        assert_eq!(faded.color.expect("fading in").alpha(), 102);
+    }
+
+    #[test]
+    fn two_absent_numbers_stay_absent_rather_than_becoming_zero() {
+        // `lerpDouble` returns `a` outright when `a == b`, which is what stops
+        // two nulls interpolating between two zeroes and answering `Some(0.0)`
+        // -- a theme with no elevation anywhere would otherwise acquire one of
+        // exactly nothing, which is a different thing from having none.
+        assert_eq!(lerp_f32(None, None, 0.5), None);
+
+        // The same line also keeps two *equal* numbers exactly equal, which is
+        // not free: `a * (1 - t) + a * t` is not `a` in floating point, and a
+        // theme lerping against itself would drift in the last bits. Upstream
+        // has the check for that and for NaN, which f32 comparison cannot see.
+        assert_eq!(lerp_f32(Some(123.456), Some(123.456), 0.001), Some(123.456));
+        assert_eq!(lerp_f32(Some(0.1), Some(0.1), 0.002), Some(0.1));
+    }
+
+    #[test]
+    fn a_number_leaving_grows_down_to_nothing() {
+        // The other direction: set at the start and absent at the end.
+        assert_eq!(lerp_f32(Some(10.0), None, 0.25), Some(7.5));
+        assert_eq!(lerp_f32(Some(10.0), None, 1.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_field_that_cannot_be_interpolated_still_changes_over_at_the_middle() {
+        // `lerp_nearer` keeps the old rule and should: a shape or an enum has
+        // no midpoint, so the only honest answer is one end or the other.
+        assert_eq!(lerp_nearer(&Some("a"), &Some("b"), 0.4), Some("a"));
+        assert_eq!(lerp_nearer(&Some("a"), &Some("b"), 0.6), Some("b"));
     }
 
     #[test]
