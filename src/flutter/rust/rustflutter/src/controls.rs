@@ -390,6 +390,15 @@ pub struct TabBar {
 }
 
 impl TabBar {
+    /// This bar's colours and metrics, with the theme and the defaults folded
+    /// in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedTabBar {
+        crate::component_themes::ResolvedTabBar::of(context)
+    }
+
     /// `first_id` is the hit-test identity of the first tab; the rest follow
     /// consecutively, so a caller reserves a small range rather than a set.
     pub fn new(first_id: u64, labels: Vec<String>, selected: usize) -> TabBar {
@@ -3758,5 +3767,133 @@ mod dialog_theme_tests {
         assert_eq!(resolved.surface_tint_color, None);
         assert_eq!(resolved.barrier_color, None);
         assert_eq!(resolved.title_text_style, None);
+    }
+}
+
+#[cfg(test)]
+mod tab_bar_theme_tests {
+    use super::*;
+    use crate::component_themes::{ResolvedTabBar, TabBarTheme, TabBarThemeData};
+    use crate::framework::{ElementTree, component, provide};
+
+    struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedTabBar>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(TabBar::new(1, Vec::new(), 0).resolved(context));
+            leaf(|| Empty)
+        }
+    }
+
+    fn resolve(data: TabBarThemeData) -> ResolvedTabBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            TabBarTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn scheme() -> crate::color_scheme::ColorScheme {
+        crate::theme::ThemeData::fallback().color_scheme
+    }
+
+    const IN_FIELD: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+    const IN_STYLE: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+
+    #[test]
+    fn a_colour_inside_the_text_style_counts_but_counts_last() {
+        // Upstream consults labelStyle.color after both explicit labelColors.
+        // Moving it up would be a breaking change with no migration, so the
+        // less specific place keeps the higher precedence.
+        let mut style_only = TabBarThemeData::new();
+        style_only.label_style = Some(crate::engine::TextStyle {
+            color: IN_STYLE,
+            ..Default::default()
+        });
+        assert_eq!(resolve(style_only.clone()).label_color, IN_STYLE);
+
+        let mut both = style_only;
+        both.label_color = Some(IN_FIELD);
+        assert_eq!(
+            resolve(both).label_color,
+            IN_FIELD,
+            "the field wins even though the style is the more specific place"
+        );
+    }
+
+    #[test]
+    fn the_unselected_label_has_the_same_chain_of_its_own() {
+        let mut data = TabBarThemeData::new();
+        data.unselected_label_style = Some(crate::engine::TextStyle {
+            color: IN_STYLE,
+            ..Default::default()
+        });
+        assert_eq!(resolve(data.clone()).unselected_label_color, IN_STYLE);
+
+        data.unselected_label_color = Some(IN_FIELD);
+        assert_eq!(resolve(data).unselected_label_color, IN_FIELD);
+    }
+
+    #[test]
+    fn the_two_labels_do_not_borrow_from_each_other() {
+        let mut data = TabBarThemeData::new();
+        data.label_color = Some(IN_FIELD);
+        let resolved = resolve(data);
+        assert_eq!(resolved.label_color, IN_FIELD);
+        assert_eq!(
+            resolved.unselected_label_color,
+            scheme().on_surface_variant(),
+            "the unselected one keeps its own default"
+        );
+    }
+
+    #[test]
+    fn the_indicator_does_not_follow_the_label() {
+        // `_TabsPrimaryDefaultsM3.indicatorColor` is the primary in its own
+        // right: a theme that recolours the labels leaves the underline where
+        // it was.
+        let mut data = TabBarThemeData::new();
+        data.label_color = Some(IN_FIELD);
+        let resolved = resolve(data);
+        assert_eq!(resolved.indicator_color, scheme().primary);
+        assert_ne!(resolved.indicator_color, resolved.label_color);
+    }
+
+    #[test]
+    fn the_pre_material_three_unselected_colour_is_the_selected_one_at_seventy_per_cent() {
+        // The two labels are one colour said at two volumes, not two colours.
+        let quiet = ResolvedTabBar::unselected_from(IN_FIELD);
+        assert_eq!(quiet.alpha(), 0xB2);
+        assert_eq!(quiet.red(), IN_FIELD.red());
+        assert_ne!(
+            quiet,
+            resolve(TabBarThemeData::new()).unselected_label_color,
+            "and it is not what Material 3 uses, which is why it is a function"
+        );
+    }
+
+    #[test]
+    fn the_metrics_have_upstreams_defaults() {
+        let resolved = resolve(TabBarThemeData::new());
+        assert_eq!(resolved.divider_height, 1.0);
+        assert_eq!(resolved.divider_color, scheme().outline_variant());
+        assert_eq!(resolved.label_padding.left, 16.0);
+        assert_eq!(resolved.label_padding.top, 0.0);
+    }
+
+    #[test]
+    fn the_styles_themselves_are_passed_through_unchanged() {
+        // The colour is pulled out of them for the chain; the rest of the
+        // style is the caller's and is not second-guessed.
+        let mut data = TabBarThemeData::new();
+        data.label_style = Some(crate::engine::TextStyle {
+            color: IN_STYLE,
+            font_size: 22.0,
+            ..Default::default()
+        });
+        let resolved = resolve(data);
+        assert_eq!(resolved.label_style.expect("kept").font_size, 22.0);
     }
 }

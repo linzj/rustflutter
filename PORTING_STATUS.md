@@ -10425,3 +10425,31 @@ M7（widget 传空状态）和 M8（widget 不看 enabled）。解析函数本�
 （外加它自己那半句 NaN）。补了测试之后变异红。
 
 主题仍是 25——这轮做的是三个插值规则，不是接线。
+
+## 未接线队列之十一：`TabBar`，以及一次差点写进注释的错话（2026-08-21）
+
+先做了个顺手的扫查：全 crate 里 `t < 0.5` 的地方还有二十来处，逐个看过——**都
+是对的**。渐变、形状、枚举、亮度这些本来就没有中点，上游 `ShapeBorder.lerp` 自己
+也是这么退化的；那两条错的只有 `lerp_color` 和 `lerp_f32`，都已改。
+
+然后 `TabBarTheme`。这次不是「没有解析器」——**`ResolvedTabBar` 早就在，六个字段
+写得好好的，只是没有任何人调用它**。补的是链上缺的几步和缺的三个字段，再把
+`TabBar::resolved` 接上。
+
+**五步链，不是三步**：`labelColor ?? theme.labelColor ?? labelStyle?.color ??
+theme.labelStyle?.color ?? default`。文字样式里的颜色算数，但排在两个显式
+`labelColor` **之后**。上游注释解释了为什么排这么后：提前会是个没有迁移方案的
+破坏性改动——所以**不那么具体的那个位置反而优先级更高**。
+
+**一句差点写错的话。** 我起初打算写「指示器跟随选中标签的颜色，因为下划线和它上面
+那个词是一个记号」——听着很有道理。查了上游：`_TabsPrimaryDefaultsM3.indicatorColor`
+就是 primary 本身，和标签颜色无关，重新配色标签**不会**动下划线。查证省下了一句
+编得很像回事的假话。
+
+还有一条上游明说、这里表达不了的：如果 `labelColor` 是个 `WidgetStateColor`，
+上游会用它同时解析出选中和未选中两个颜色，并且**完全忽略** `unselectedLabelColor`。
+Dart 的 `WidgetStateColor` **是** `Color` 的子类，`Color?` 字段能装下它；Rust
+没有这种子类型关系。记下来，不绕开——把这里的字段改成 `StateProperty` 会是另一套
+API，不是这一套。
+
+7 条测试、7 条变异，第一轮全红。主题 25 → 24。

@@ -2722,6 +2722,9 @@ pub struct ResolvedTabBar {
     pub divider_color: Color,
     pub divider_height: f32,
     pub indicator_size: TabBarIndicatorSize,
+    pub label_padding: EdgeInsets,
+    pub label_style: Option<TextStyle>,
+    pub unselected_label_style: Option<TextStyle>,
 }
 
 impl ResolvedTabBar {
@@ -2729,15 +2732,34 @@ impl ResolvedTabBar {
     pub const INDICATOR_WEIGHT: f32 = 3.0;
     /// Upstream's default divider height.
     pub const DIVIDER_HEIGHT: f32 = 1.0;
+    /// Upstream's pre-M3 unselected-label alpha: seventy per cent.
+    pub const UNSELECTED_ALPHA: u8 = 0xB2;
 
     pub fn of(context: &mut BuildContext) -> ResolvedTabBar {
         let data = TabBarTheme::of(context);
         let scheme = ThemeData::of(context).color_scheme;
         ResolvedTabBar {
+            // The indicator has a colour of its own and does not follow the
+            // label: upstream's `_TabsPrimaryDefaultsM3.indicatorColor` is the
+            // primary in its own right, and a theme that recolours the labels
+            // leaves the underline where it was.
             indicator_color: data.indicator_color.unwrap_or(scheme.primary),
-            label_color: data.label_color.unwrap_or(scheme.primary),
+            // Five steps, not three. A colour set *inside the text style*
+            // counts, and counts after both explicit `labelColor`s. Upstream's
+            // comment says why the style is consulted so late: moving it up
+            // would be a breaking change with no migration, so the less
+            // specific place keeps the higher precedence.
+            label_color: data
+                .label_color
+                .or_else(|| data.label_style.as_ref().map(|style| style.color))
+                .unwrap_or(scheme.primary),
             unselected_label_color: data
                 .unselected_label_color
+                .or_else(|| {
+                    data.unselected_label_style
+                        .as_ref()
+                        .map(|style| style.color)
+                })
                 .unwrap_or(scheme.on_surface_variant()),
             divider_color: data.divider_color.unwrap_or(scheme.outline_variant()),
             divider_height: data
@@ -2745,7 +2767,24 @@ impl ResolvedTabBar {
                 .unwrap_or(ResolvedTabBar::DIVIDER_HEIGHT),
             // Upstream's Material 3 default is `TabBarIndicatorSize.tab`.
             indicator_size: data.indicator_size.unwrap_or(TabBarIndicatorSize::Tab),
+            label_padding: data
+                .label_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(16.0, 0.0)),
+            label_style: data.label_style.clone(),
+            unselected_label_style: data.unselected_label_style.clone(),
         }
+    }
+
+    /// Upstream's pre-Material-3 fallback for an unselected label: the selected
+    /// colour at seventy per cent.
+    ///
+    /// Not the default here -- Material 3 gives the unselected label a scheme
+    /// colour of its own -- but this is what the field *means*: the two labels
+    /// are one colour said at two volumes, not two colours. A caller matching
+    /// an older design needs it.
+    pub fn unselected_from(selected: Color) -> Color {
+        selected.with_alpha(ResolvedTabBar::UNSELECTED_ALPHA)
     }
 }
 
