@@ -5,21 +5,22 @@
 //! Popup menus, ported from `material/popup_menu.dart`.
 //!
 //! Upstream a menu is a route: `showMenu` pushes a `_PopupMenuRoute` onto the
-//! nearest `Navigator` and the route's barrier is what dismisses it. This
-//! framework has no `Overlay` and no route for transient surfaces -- an overlay
-//! is a `Stack` with the overlay last, and the application already knows how to
-//! write one (see the module docs of [`crate::controls`]). So what is ported
-//! here is everything except the route: the entries, the menu surface, the
-//! button, and the placement math. Showing one is the application's state: a
-//! `Stack` whose last children are a [`crate::controls::Scrim`] and the
-//! [`PopupMenu`], the menu positioned with [`popup_menu_offset`], and closing
-//! it is clearing that state.
+//! nearest `Navigator` and the route's barrier is what dismisses it. What is
+//! ported here is everything except the route: the entries, the menu surface,
+//! the button, and the placement math.
 //!
-//! What that leaves out, each noted where it would live: the open/close
-//! animation (`_kMenuDuration` 300ms and the per-item `Interval` fades -- a
-//! route's entrance animation, and there is no route), scrolling for menus
-//! taller than the screen (`_PopupMenu`'s `SingleChildScrollView`), and the
-//! width-step rounding (`IntrinsicWidth(stepWidth:)` -- the crate's
+//! [`crate::popup`] is the showing. A menu goes up as a modal over the
+//! application's `Overlay` -- barrier, focus trap, Escape and dismissal -- and
+//! [`popup_menu_offset`] finally has a caller other than its own unit test:
+//! anchoring wants the button's rectangle *in the overlay's coordinates*, and
+//! before there was a host there was no such thing to ask for.
+//!
+//! What is still missing, each noted where it would live: the open/close
+//! animation (`_kMenuDuration` 300ms and the per-item `Interval` fades -- an
+//! entrance animation belongs to a route, and routes are the line after this
+//! one), scrolling for menus taller than the screen (`_PopupMenu`'s
+//! `SingleChildScrollView`), and the width-step rounding
+//! (`IntrinsicWidth(stepWidth:)` -- the crate's
 //! [`crate::render::RenderIntrinsicWidth`] has no step).
 
 use std::cell::RefCell;

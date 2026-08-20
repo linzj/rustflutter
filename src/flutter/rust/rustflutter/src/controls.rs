@@ -8,14 +8,20 @@
 //! pieces a page is built from -- surfaces, text, buttons; this has the pieces
 //! a page is *operated* by.
 //!
-//! # Overlays are the app's, not the framework's
+//! # Overlays are the framework's now
 //!
-//! A dialog, a sheet and a snackbar all mean "draw this over everything and
-//! take the taps first". That is a `Stack` with the overlay as its last child,
-//! which the application already knows how to write, so there is no overlay
-//! manager here -- only the things that go in one. What the framework would add
-//! is a place to put an overlay from a callback that has no access to the build,
-//! and every callback here has a `StateHandle` instead.
+//! This module used to say the opposite, and it is worth keeping the reason it
+//! gave: a dialog, a sheet and a snackbar all mean "draw this over everything
+//! and take the taps first", which is a `Stack` with the overlay as its last
+//! child, and an application already knows how to write one. What it could not
+//! write was an overlay that escapes the caller's `Stack` -- past a clip, past
+//! a transform, above whatever else is on screen -- or one put up from a
+//! callback with no build context to hand.
+//!
+//! [`crate::theatre`] is the manager, and every application has one:
+//! `app.rs` installs an `Overlay` between the `MediaQuery` and the application.
+//! The pieces here still go *in* one, and they are still perfectly usable in a
+//! caller's own `Stack`; what has changed is that they no longer have to be.
 
 use std::cell::RefCell;
 use std::rc::Rc;

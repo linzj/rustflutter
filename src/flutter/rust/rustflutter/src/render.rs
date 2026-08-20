@@ -16519,8 +16519,20 @@ impl RenderBox for RenderOffstage {
         }
     }
 
-    fn hit_test_children(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
-        false
+    /// Upstream's `RenderOffstage.hitTest` is
+    /// `!offstage && super.hitTest(result, position: position)` -- **the
+    /// `offstage` is the whole of the condition**, and a box that is onstage
+    /// hit-tests exactly like any other.
+    ///
+    /// This answered `false` unconditionally, so a subtree inside an
+    /// `Offstage(offstage: false)` was painted, was visited, and could not be
+    /// pressed: visible and dead. Found by the coordinate round trip in this
+    /// file, which is the one test that asks `visit_children` and
+    /// `hit_test_children` the same question -- and it found it on the first
+    /// run that included this container, which is the argument for covering
+    /// every one of them rather than the ones that look likely.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        !self.offstage && self.child.hit_test(position, result)
     }
 
     fn min_intrinsic_width(&self, height: f32) -> f32 {
@@ -22521,6 +22533,66 @@ mod coordinate_round_trip {
                 RenderMetaData::new(1, probe),
             ))
         });
+        round_trips("RenderOffstage/onstage", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(7.0, 5.0, 0.0, 0.0),
+                RenderOffstage::new(false, probe),
+            ))
+        });
+        round_trips("RenderFractionalTranslation", |probe| {
+            // A translation of zero: the round trip is about the container's
+            // own offset bookkeeping, and a non-zero fractional translation is
+            // one of the cases `visit_children` reports untransformed -- see
+            // the note under `transform_to`.
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(4.0, 12.0, 0.0, 0.0),
+                RenderFractionalTranslation::new((0.0, 0.0), probe),
+            ))
+        });
+        round_trips("RenderIntrinsicHeight", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(3.0, 3.0, 0.0, 0.0),
+                RenderIntrinsicHeight::new(probe),
+            ))
+        });
+        round_trips("RenderFullWidth", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(8.0, 8.0, 0.0, 0.0),
+                RenderFullWidth::new().with_child(probe),
+            ))
+        });
+        round_trips("RenderFittedBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(5.0, 11.0, 0.0, 0.0),
+                RenderFittedBox::new(probe),
+            ))
+        });
+        round_trips("RenderBackdropFilter", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(6.0, 4.0, 0.0, 0.0),
+                RenderBackdropFilter::new(2.0, probe),
+            ))
+        });
+        round_trips("RenderCustomPaint", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(9.0, 7.0, 0.0, 0.0),
+                RenderCustomPaint::new(probe),
+            ))
+        });
+        round_trips("RenderFractionallySizedOverflowBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(2.0, 9.0, 0.0, 0.0),
+                RenderConstrainedBox::tight(200.0, 150.0).with_child(
+                    RenderFractionallySizedOverflowBox::new(Alignment::CENTER, probe),
+                ),
+            ))
+        });
+        round_trips("RenderAnimatedSize", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(4.0, 4.0, 0.0, 0.0),
+                RenderAnimatedSize::new(Alignment::CENTER, probe),
+            ))
+        });
         round_trips("nested", |probe| {
             // Three levels, so a composition that drops a step is caught as
             // well as one that gets a single step wrong.
@@ -22535,6 +22607,81 @@ mod coordinate_round_trip {
                 ),
             ))
         });
+    }
+
+    /// The `hit_test_children` implementors this table does **not** reach, and
+    /// why -- the plan that asked for it forbids skipping a container on the
+    /// grounds that it will not host an overlay, and it is right to, since
+    /// `transform_to` is general machinery. These are refusals of a different
+    /// kind: the harness cannot express them, not that they were not worth
+    /// checking.
+    ///
+    /// * `RenderViewport`, `RenderSliverViewport` -- their children speak the
+    ///   sliver protocol, so a box probe cannot be one. The box side of a
+    ///   viewport goes through `RenderSliverToBoxAdapter`, whose own offset is
+    ///   what a round trip would be testing.
+    /// * `RenderTable`, `RenderFlow`, `RenderCustomSingleChildLayoutBox`,
+    ///   `RenderCustomMultiChildLayoutBox` -- each needs a delegate to place
+    ///   anything at all, so what would be under test is the delegate.
+    /// * `RenderRotatedBox`, and `RenderTransform` at a non-identity matrix --
+    ///   deliberately outside the translation-only agreement between
+    ///   `visit_children` and `hit_test_children`; the test named for that
+    ///   pins the agreement instead.
+    /// * `RenderShaderMask`, `RenderClipRSuperellipse`,
+    ///   `RenderConstraintsTransformBox`, `RenderPhysicalShape`,
+    ///   `RenderClipPath`, `RenderCustomClipPath` -- constructed from paths,
+    ///   shapes and clippers rather than from a child alone. Their offset
+    ///   bookkeeping is a plain pass-through, and the pass-through cases in the
+    ///   table above cover that shape.
+    /// * `RenderRef` -- the handle. Its `hit_test_children` is the delegation
+    ///   every entry in this table already goes through.
+    ///
+    /// Left as prose rather than as `#[ignore]`d tests, because an ignored test
+    /// reads as a thing that should pass and does not.
+    #[test]
+    fn an_onstage_offstage_box_can_be_pressed() {
+        // The bug the table found: `hit_test_children` answered false whatever
+        // `offstage` said, so a subtree inside `Offstage(offstage: false)` was
+        // painted, was visited, and was dead to the touch.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderOffstage::new(false, probe));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        let mut result = HitTestResult::new();
+        root.hit_test(Offset::new(5.0, 5.0), &mut result);
+        assert!(
+            result.path.iter().any(|entry| entry.target == PROBE_ID),
+            "onstage means hit-testable"
+        );
+    }
+
+    #[test]
+    fn and_an_offstage_one_cannot() {
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderOffstage::new(true, probe));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        let mut result = HitTestResult::new();
+        root.hit_test(Offset::new(5.0, 5.0), &mut result);
+        assert!(
+            !result.path.iter().any(|entry| entry.target == PROBE_ID),
+            "offstage is not on the screen and not under the finger"
+        );
+    }
+
+    #[test]
+    fn what_the_round_trip_table_does_not_reach_is_written_down() {
+        // A test so the list above is compiled against something rather than
+        // left to rot: these are the two the table deliberately excludes for a
+        // behavioural reason rather than a harness one.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderRotatedBox::new(1, probe.clone()));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        assert_eq!(
+            probe.transform_to(None),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "a rotation is not carried, and hit testing does not carry it either"
+        );
     }
 
     #[test]

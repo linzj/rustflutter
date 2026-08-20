@@ -828,6 +828,23 @@ pub fn overlay(page: AnyWidget) -> AnyWidget {
 
 /// A fresh identity for each overlay, so two of them are never mistaken for
 /// each other by [`OverlayHandle`]'s equality.
+pub fn next_surface_id() -> u64 {
+    next_overlay_id()
+}
+
+/// Wraps an overlay entry that is already in place as a [`ModalHandle`], for a
+/// surface that put itself up with `insert_entry` rather than through
+/// [`show_modal`] -- a drawer, which brings its own barrier because its barrier
+/// has to fade with it.
+pub fn modal_from_entry(overlay: Rc<OverlayHandle>, entry_id: u64) -> ModalHandle {
+    ModalHandle {
+        entry_id,
+        focus_root: 0,
+        overlay,
+        dismissed: Rc::new(Cell::new(false)),
+    }
+}
+
 fn next_overlay_id() -> u64 {
     thread_local! {
         static NEXT: Cell<u64> = const { Cell::new(1) };

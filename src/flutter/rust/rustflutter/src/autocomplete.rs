@@ -16,13 +16,18 @@
 //!   omission: a list that wraps sends a reader who is holding the key back to
 //!   the top without their noticing.
 //!
-//! ## What is not here
+//! ## Where the options view is
 //!
-//! The options view is an `OverlayPortal` upstream, positioned against the
-//! field's paint transform. [`crate::overlay`] carries the entry list and
-//! the portal's z-ordering, but nothing yet hosts the widgets. The field and
-//! the list are the caller's to build, exactly as upstream's `fieldViewBuilder`
-//! and `optionsViewBuilder` are.
+//! Upstream's is an `OverlayPortal` positioned against the field's paint
+//! transform, and so is this one: [`crate::autocomplete_view`] hosts it. This
+//! module is still only the decisions -- focus, whether there is anything to
+//! show, the highlight, the keyboard intents -- and the field and the list
+//! remain the caller's to build, exactly as upstream's `fieldViewBuilder` and
+//! `optionsViewBuilder` are.
+//!
+//! This paragraph used to say that `crate::overlay` carried the entry list and
+//! the portal's z-ordering and that nothing hosted the widgets. Something does
+//! now: [`crate::theatre`].
 
 use crate::foundation::ValueNotifier;
 use crate::keyboard::LogicalKey;

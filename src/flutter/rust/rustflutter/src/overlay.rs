@@ -22,12 +22,23 @@
 //! overlay instead would give a tooltip the overlay's inherited context rather
 //! than the button's.
 //!
-//! ## What is not here
+//! ## What is here, and what is next door
 //!
-//! The `_Theater` render object, the layout that lets an entry size the
-//! overlay, and the element-level plumbing that moves a portal's child into
-//! another subtree are absent. What is ported is the entry list and its
-//! ordering rules, the onstage/offstage decision, and the portal's z-ordering.
+//! This file is the decisions: the entry list and its ordering rules, the
+//! onstage/offstage rule, and the portal's z-ordering. The `_Theater` render
+//! object, the layout that lets an entry size the overlay, and the plumbing
+//! that moves a portal's child into another subtree are in
+//! [`crate::theatre`] -- they used to be missing, and the split is the same
+//! one: what can be decided without seeing a widget is decided here.
+//!
+//! # Where this is used
+//!
+//! [`crate::theatre`] is the host. `OverlayState`'s decisions -- which
+//! entries are on stage, in what order, and which of the offstage ones keep
+//! their state -- drive a live overlay in every application, and
+//! `OverlayPortalController`'s z-order clock decides which of two portals
+//! is on top. Nothing in this file changed to make that work, which was the
+//! point of keeping the decisions free of widgets.
 
 /// Upstream `OverlayEntry`: one thing in the overlay.
 #[derive(Clone, Debug, PartialEq, Eq)]

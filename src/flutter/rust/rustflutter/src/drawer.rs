@@ -6,25 +6,27 @@
 //!
 //! Upstream a drawer is driven by a `DrawerController`: an animation
 //! controller slides it in, edge drags and flings steer the animation, and a
-//! local history entry wires the back button to close it. Of that machinery,
-//! what survives a framework with no routes and a desktop host is the shape:
-//! the [`Drawer`] panel itself, and the [`crate::components::Scaffold`] slot
-//! that stacks it over the page behind a scrim. Opening and closing are the
-//! application's state, the same way every overlay here is (see the module
-//! docs of [`crate::controls`]).
+//! local history entry wires the back button to close it. This module is the
+//! panel itself and the geometry -- [`Drawer`], the settle arithmetic, the
+//! fling threshold -- and [`crate::drawer_host`] is the controller.
 //!
-//! What is deliberately not ported, each with upstream's own reason for it:
+//! It can also still be placed by hand, in a [`crate::components::Scaffold`]
+//! slot over a scrim, which is what it was before there was an overlay.
+//!
+//! What is still not ported, each with upstream's own reason for it:
 //!
 //! - **The edge-drag gesture** (`_kEdgeDragWidth` 20.0, `_move`/`_settle` and
 //!   the fling settle). Upstream only installs it on non-desktop platforms --
 //!   `_buildDrawer` answers a `SizedBox.shrink` for a closed drawer when
-//!   `isDesktop` -- and this crate's hosts are desktop.
-//! - **The slide animation** (`_kBaseSettleDuration` 246ms of
-//!   `AnimationController`): it is the controller's `value` that positions the
-//!   drawer and fades the scrim, and there is no controller without a
-//!   route-like owner for it. The drawer is simply present or absent.
+//!   `isDesktop` -- and this crate's hosts are desktop. The arithmetic is here
+//!   and tested; what is missing is the gesture that would drive it.
 //! - **The local history entry** (`_ensureHistoryEntry`): it exists to make an
 //!   Android back button pop the drawer; there is no Navigator to hold it.
+//!
+//! The slide animation used to be on that list, with the reason that there is
+//! no controller without a route-like owner for it. There is one now: an
+//! overlay entry outlives its frames, and a `StatefulComponent` inside one is
+//! handed a clock. See [`crate::drawer_host::DrawerAnimation`].
 
 use std::cell::RefCell;
 
