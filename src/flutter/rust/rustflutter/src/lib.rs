@@ -350,7 +350,13 @@ pub use semantics::{
     SemanticsProperties, SemanticsSortKey, SemanticsTag, StringAttribute,
 };
 pub use semantics_event::{Assertiveness, SemanticsEvent, SemanticsService};
-pub use services::restoration::{BucketData, RestorationBucket};
+pub use services::restoration::{
+    BucketData, Restorable, RestorableBool, RestorableBoolN, RestorableChangeNotifier,
+    RestorableDateTime, RestorableDateTimeN, RestorableDouble, RestorableDoubleN, RestorableEnum,
+    RestorableEnumN, RestorableInt, RestorableIntN, RestorableListenable, RestorableNum,
+    RestorableNumN, RestorableProperty, RestorableString, RestorableStringN,
+    RestorableTextEditingController, RestorationBucket,
+};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,

@@ -359,6 +359,574 @@ impl std::fmt::Debug for RestorationBucket {
     }
 }
 
+// -- The values a widget remembers --------------------------------------------
+
+/// Upstream `RestorableProperty<T>`: one thing a widget wants back.
+///
+/// Four members, and between them they are the whole contract with the bucket:
+/// what to be when there is nothing stored, how to read what was stored, how to
+/// write it, and whether to bother at all.
+///
+/// A trait here rather than a class hierarchy, because upstream's four levels
+/// (`RestorableProperty` → `RestorableValue` → `_RestorablePrimitiveValue{,N}`
+/// → the concrete ones) exist to share Dart field declarations, and the sharing
+/// is what a generic does in Rust. [`Restorable`] is that generic and the
+/// concrete names are aliases of it.
+pub trait RestorableProperty {
+    /// What is stored, once decoded.
+    type Value;
+
+    /// Upstream's `createDefaultValue`: what to be when the bucket has nothing.
+    fn default_value(&self) -> Self::Value;
+
+    /// Upstream's `fromPrimitives`: what the bucket held, as a value.
+    fn from_primitives(&self, data: &Value) -> Self::Value;
+
+    /// Upstream's `toPrimitives`: this value, as something the bucket can hold.
+    fn to_primitives(&self) -> Value;
+
+    /// Upstream's `enabled`, true by default.
+    ///
+    /// A property that answers false is **not written to the bucket at all** --
+    /// not written as null, not left at its old value. What it is for is a
+    /// widget whose state is only worth remembering under some condition; a
+    /// text field inside a form that has not been touched has nothing to say,
+    /// and saying nothing keeps it out of a blob that crosses a channel.
+    fn enabled(&self) -> bool {
+        true
+    }
+}
+
+/// How a value converts to and from what a bucket can hold.
+///
+/// The seam between [`Restorable`] and the primitive types. Upstream gets this
+/// from Dart's dynamic typing -- `serialized as T` -- which is one cast and no
+/// declaration; here each kind says how it crosses.
+pub trait RestorableCodec: Sized {
+    fn encode(&self) -> Value;
+    /// `None` when the stored form is not this kind, which is what an
+    /// application updated since the blob was written will see.
+    fn decode(data: &Value) -> Option<Self>;
+}
+
+impl RestorableCodec for i64 {
+    fn encode(&self) -> Value {
+        Value::I64(*self)
+    }
+    fn decode(data: &Value) -> Option<i64> {
+        match data {
+            Value::I64(n) => Some(*n),
+            // The standard codec narrows small integers to 32 bits, so a value
+            // written as an `int` may come back either way. Upstream's `as int`
+            // does not care because a Dart `int` has no width.
+            Value::I32(n) => Some(*n as i64),
+            _ => None,
+        }
+    }
+}
+
+impl RestorableCodec for f64 {
+    fn encode(&self) -> Value {
+        Value::F64(*self)
+    }
+    fn decode(data: &Value) -> Option<f64> {
+        match data {
+            Value::F64(n) => Some(*n),
+            // A whole number written as a double may come back as an integer.
+            Value::I64(n) => Some(*n as f64),
+            Value::I32(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+}
+
+impl RestorableCodec for bool {
+    fn encode(&self) -> Value {
+        Value::Bool(*self)
+    }
+    fn decode(data: &Value) -> Option<bool> {
+        match data {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+impl RestorableCodec for String {
+    fn encode(&self) -> Value {
+        Value::String(self.clone())
+    }
+    fn decode(data: &Value) -> Option<String> {
+        match data {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Upstream `RestorableValue<T>` and the two primitive bases under it.
+///
+/// # The setter fires only on a change
+///
+/// Upstream's `set value` compares before assigning and calls
+/// `didUpdateValue` only if it differs. That is the same rule
+/// [`RestorationBucket::write`] has one level down, and it is here for the same
+/// reason and one more: the listeners are what rebuild the widget, so a
+/// property reassigned to what it already held would rebuild for nothing.
+#[derive(Clone, Debug)]
+pub struct Restorable<T> {
+    value: T,
+    default_value: T,
+    enabled: bool,
+}
+
+impl<T: Clone + PartialEq + RestorableCodec> Restorable<T> {
+    /// Upstream's constructors, which all take the default value.
+    pub fn new(default_value: T) -> Restorable<T> {
+        Restorable {
+            value: default_value.clone(),
+            default_value,
+            enabled: true,
+        }
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// Upstream's `set value`. Answers whether anything changed, which is what
+    /// upstream signals by calling `notifyListeners`.
+    pub fn set(&mut self, value: T) -> bool {
+        if self.value == value {
+            return false;
+        }
+        self.value = value;
+        true
+    }
+
+    /// Upstream's `initWithValue`, which assigns **without** the change check
+    /// and without notifying: this is the bucket handing back what it stored,
+    /// not the application changing its mind.
+    pub fn init_with_value(&mut self, value: T) {
+        self.value = value;
+    }
+
+    /// Turns writing off. See [`RestorableProperty::enabled`].
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Reads this property out of `bucket`, or takes the default when it holds
+    /// nothing this can read.
+    ///
+    /// **A stored value of the wrong kind is treated as absent**, which is what
+    /// an application updated since the blob was written will meet. Upstream's
+    /// `serialized as T` would throw; the honest end of that in Rust is the
+    /// default, because the alternative is refusing to start over a value the
+    /// reader does not know exists.
+    pub fn restore(&mut self, bucket: &RestorationBucket, restoration_id: &str) {
+        let stored = bucket.read(restoration_id);
+        self.value = match stored {
+            Some(data) => self.from_primitives(&data),
+            None => self.default_value(),
+        };
+    }
+
+    /// Writes this property into `bucket`, if it is enabled.
+    pub fn save(&self, bucket: &RestorationBucket, restoration_id: &str) {
+        if self.enabled {
+            bucket.write(restoration_id, self.to_primitives());
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + RestorableCodec> RestorableProperty for Restorable<T> {
+    type Value = T;
+
+    fn default_value(&self) -> T {
+        self.default_value.clone()
+    }
+
+    fn from_primitives(&self, data: &Value) -> T {
+        T::decode(data).unwrap_or_else(|| self.default_value.clone())
+    }
+
+    fn to_primitives(&self) -> Value {
+        self.value.encode()
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Upstream `RestorableInt`.
+pub type RestorableInt = Restorable<i64>;
+/// Upstream `RestorableDouble`.
+pub type RestorableDouble = Restorable<f64>;
+/// Upstream `RestorableBool`.
+pub type RestorableBool = Restorable<bool>;
+/// Upstream `RestorableString`.
+pub type RestorableString = Restorable<String>;
+/// Upstream `RestorableNum<T>`, whose `T extends num`.
+///
+/// Dart's `num` is the supertype of `int` and `double`, and a Rust alias cannot
+/// be generic over "either of two concrete types". `f64` is the one that can
+/// hold both without loss for the range restoration deals in, so this is that.
+pub type RestorableNum = Restorable<f64>;
+
+/// The nullable half of the family: upstream's `RestorableIntN` and friends,
+/// built on `_RestorablePrimitiveValueN`.
+///
+/// Upstream needs two class hierarchies for this because Dart's nullability is
+/// in the type parameter and the non-nullable setter has to be narrowed.
+/// `Option<T>` needs neither.
+impl<T: Clone + PartialEq + RestorableCodec> RestorableCodec for Option<T> {
+    fn encode(&self) -> Value {
+        match self {
+            Some(value) => value.encode(),
+            None => Value::Null,
+        }
+    }
+
+    fn decode(data: &Value) -> Option<Option<T>> {
+        match data {
+            Value::Null => Some(None),
+            other => T::decode(other).map(Some),
+        }
+    }
+}
+
+/// Upstream `RestorableIntN`.
+pub type RestorableIntN = Restorable<Option<i64>>;
+/// Upstream `RestorableDoubleN`.
+pub type RestorableDoubleN = Restorable<Option<f64>>;
+/// Upstream `RestorableBoolN`.
+pub type RestorableBoolN = Restorable<Option<bool>>;
+/// Upstream `RestorableStringN`.
+pub type RestorableStringN = Restorable<Option<String>>;
+/// Upstream `RestorableNumN`.
+pub type RestorableNumN = Restorable<Option<f64>>;
+
+/// Upstream `RestorableDateTime`: a moment, stored as milliseconds since the
+/// epoch.
+///
+/// Upstream's `toPrimitives` is `value.millisecondsSinceEpoch` and its
+/// `fromPrimitives` is `DateTime.fromMillisecondsSinceEpoch(data as int)`. This
+/// crate has no `DateTime`, so the millisecond count *is* the type -- which is
+/// what crosses the channel either way, and what a caller would have had to
+/// convert to.
+pub type RestorableDateTime = Restorable<i64>;
+/// Upstream `RestorableDateTimeN`.
+pub type RestorableDateTimeN = Restorable<Option<i64>>;
+
+/// Upstream `RestorableEnum<T>`: one of a known set, stored by **name**.
+///
+/// # Stored by name, and the set is checked on the way back
+///
+/// Upstream stores `value.name` rather than the index, and the reason shows up
+/// on the way back: an application whose enum gained a value in the middle
+/// would restore every stored index to the wrong member. A name survives
+/// reordering.
+///
+/// What a name does not survive is being *removed*. Upstream's `fromPrimitives`
+/// walks the allowed set and, finding no match, asserts in debug and answers
+/// the default in release -- so an application that dropped an enum value
+/// restores to its default rather than to nothing. Kept, minus the assert:
+/// there is no "debug only" behaviour to hang it on here, and answering the
+/// default is what actually happens in a shipped build either way.
+#[derive(Clone, Debug)]
+pub struct RestorableEnum {
+    value: String,
+    default_value: String,
+    /// The names this may hold. Upstream takes the enum's `values`.
+    allowed: Vec<String>,
+    enabled: bool,
+}
+
+impl RestorableEnum {
+    /// Upstream asserts the default is in the set, and it is worth keeping as
+    /// one: a default outside the set is a value the property would restore to
+    /// and then refuse to be set to.
+    pub fn new(default_value: impl Into<String>, allowed: Vec<String>) -> RestorableEnum {
+        let default_value = default_value.into();
+        debug_assert!(
+            allowed.contains(&default_value),
+            "a default outside the allowed set is a value this can restore to and not be set to"
+        );
+        RestorableEnum {
+            value: default_value.clone(),
+            default_value,
+            allowed,
+            enabled: true,
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Upstream asserts the new value is in the set. Answers whether it was
+    /// taken, so a caller can tell a refusal from a no-op.
+    pub fn set(&mut self, value: impl Into<String>) -> bool {
+        let value = value.into();
+        debug_assert!(
+            self.allowed.contains(&value),
+            "an enum value outside the allowed set"
+        );
+        if !self.allowed.contains(&value) || self.value == value {
+            return false;
+        }
+        self.value = value;
+        true
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn restore(&mut self, bucket: &RestorationBucket, restoration_id: &str) {
+        self.value = match bucket.read(restoration_id) {
+            Some(data) => self.from_primitives(&data),
+            None => self.default_value.clone(),
+        };
+    }
+
+    pub fn save(&self, bucket: &RestorationBucket, restoration_id: &str) {
+        if self.enabled {
+            bucket.write(restoration_id, self.to_primitives());
+        }
+    }
+}
+
+impl RestorableProperty for RestorableEnum {
+    type Value = String;
+
+    fn default_value(&self) -> String {
+        self.default_value.clone()
+    }
+
+    fn from_primitives(&self, data: &Value) -> String {
+        match data {
+            Value::String(name) if self.allowed.contains(name) => name.clone(),
+            // A name the application no longer has: the default, not nothing.
+            _ => self.default_value.clone(),
+        }
+    }
+
+    fn to_primitives(&self) -> Value {
+        Value::String(self.value.clone())
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Upstream `RestorableEnumN`: the same, and `None` is a value it may hold.
+///
+/// Upstream's `fromPrimitives` answers `null` for stored null **before** it
+/// consults the allowed set, so a null survives whatever the set says.
+#[derive(Clone, Debug)]
+pub struct RestorableEnumN {
+    inner: RestorableEnum,
+    is_null: bool,
+}
+
+impl RestorableEnumN {
+    pub fn new(default_value: Option<String>, allowed: Vec<String>) -> RestorableEnumN {
+        let is_null = default_value.is_none();
+        let seed = default_value.unwrap_or_else(|| {
+            allowed
+                .first()
+                .cloned()
+                .unwrap_or_else(|| String::from("<none>"))
+        });
+        RestorableEnumN {
+            // The seed only matters when this is not null, and `new`'s assert
+            // would otherwise fire on an empty allowed set with a null default.
+            inner: RestorableEnum {
+                value: seed.clone(),
+                default_value: seed,
+                allowed,
+                enabled: true,
+            },
+            is_null,
+        }
+    }
+
+    pub fn value(&self) -> Option<&str> {
+        if self.is_null {
+            None
+        } else {
+            Some(self.inner.value())
+        }
+    }
+
+    pub fn set(&mut self, value: Option<String>) -> bool {
+        match value {
+            None => {
+                if self.is_null {
+                    return false;
+                }
+                self.is_null = true;
+                true
+            }
+            Some(value) => {
+                let was_null = self.is_null;
+                let changed = self.inner.set(value);
+                if changed || was_null {
+                    self.is_null = false;
+                }
+                changed || was_null
+            }
+        }
+    }
+
+    pub fn restore(&mut self, bucket: &RestorationBucket, restoration_id: &str) {
+        match bucket.read(restoration_id) {
+            // Null first, before the set is consulted.
+            Some(Value::Null) | None => self.is_null = true,
+            Some(data) => {
+                self.inner.value = self.inner.from_primitives(&data);
+                self.is_null = false;
+            }
+        }
+    }
+
+    pub fn save(&self, bucket: &RestorationBucket, restoration_id: &str) {
+        if !self.inner.enabled {
+            return;
+        }
+        bucket.write(
+            restoration_id,
+            match self.value() {
+                Some(name) => Value::String(name.to_string()),
+                None => Value::Null,
+            },
+        );
+    }
+}
+
+/// Upstream `RestorableListenable<T>`: a property whose value is an object that
+/// announces its own changes.
+///
+/// The difference from [`Restorable`] is where the notification comes from --
+/// upstream's listens to the held object and republishes, rather than firing on
+/// assignment. What it holds is not serialised by this type; a subclass says
+/// how.
+///
+/// Modelled here as the callback seam, because this crate has no
+/// `ChangeNotifier` base for a value to extend: a caller hands over what to do
+/// when the held thing changed, and [`RestorableListenable::changed`] is what
+/// the held thing calls.
+pub struct RestorableListenable {
+    on_change: Option<Rc<dyn Fn()>>,
+}
+
+impl RestorableListenable {
+    pub fn new() -> RestorableListenable {
+        RestorableListenable { on_change: None }
+    }
+
+    pub fn with_on_change(mut self, on_change: impl Fn() + 'static) -> Self {
+        self.on_change = Some(Rc::new(on_change));
+        self
+    }
+
+    /// What the held object calls. Upstream's republished notification.
+    pub fn changed(&self) {
+        if let Some(on_change) = &self.on_change {
+            on_change();
+        }
+    }
+}
+
+impl Default for RestorableListenable {
+    fn default() -> RestorableListenable {
+        RestorableListenable::new()
+    }
+}
+
+/// Upstream `RestorableChangeNotifier<T>`: a [`RestorableListenable`] that also
+/// owns what it holds, and disposes it.
+///
+/// Upstream's addition over its parent is the lifetime: it creates the notifier
+/// in `initWithValue` and disposes the old one when a new value replaces it, so
+/// a widget restoring twice does not leak the first. There is nothing to leak
+/// here -- a replaced value is dropped -- so what survives is the shape.
+pub struct RestorableChangeNotifier {
+    listenable: RestorableListenable,
+}
+
+impl RestorableChangeNotifier {
+    pub fn new() -> RestorableChangeNotifier {
+        RestorableChangeNotifier {
+            listenable: RestorableListenable::new(),
+        }
+    }
+
+    pub fn with_on_change(mut self, on_change: impl Fn() + 'static) -> Self {
+        self.listenable = self.listenable.with_on_change(on_change);
+        self
+    }
+
+    pub fn changed(&self) {
+        self.listenable.changed();
+    }
+}
+
+impl Default for RestorableChangeNotifier {
+    fn default() -> RestorableChangeNotifier {
+        RestorableChangeNotifier::new()
+    }
+}
+
+/// Upstream `RestorableTextEditingController`: a text field's contents and
+/// selection, remembered.
+///
+/// Upstream stores **the text alone**, not the selection -- `toPrimitives` is
+/// `value.text` and `fromPrimitives` builds a fresh controller from it. So a
+/// restored field has the reader's words back and the caret at the end, which
+/// is upstream's judgement: the words are what was lost and the caret is where
+/// a reader would put it anyway.
+#[derive(Clone, Debug)]
+pub struct RestorableTextEditingController {
+    text: Restorable<String>,
+}
+
+impl RestorableTextEditingController {
+    pub fn new(text: impl Into<String>) -> RestorableTextEditingController {
+        RestorableTextEditingController {
+            text: Restorable::new(text.into()),
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        self.text.value()
+    }
+
+    pub fn set_text(&mut self, text: impl Into<String>) -> bool {
+        self.text.set(text.into())
+    }
+
+    /// Where the caret lands on a restore: the end of the text, because the
+    /// selection is not stored.
+    pub fn restored_selection(&self) -> usize {
+        self.text.value().len()
+    }
+
+    pub fn restore(&mut self, bucket: &RestorationBucket, restoration_id: &str) {
+        self.text.restore(bucket, restoration_id);
+    }
+
+    pub fn save(&self, bucket: &RestorationBucket, restoration_id: &str) {
+        self.text.save(bucket, restoration_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,5 +1182,288 @@ mod tests {
 
         let root = RestorationBucket::from_data("root", BucketData::from_value(&wire));
         assert_eq!(root.claim_child("list").read("scroll"), Some(int(420)));
+    }
+
+    // -- Restorable values ----------------------------------------------------------
+
+    #[test]
+    fn setting_a_value_to_what_it_already_is_is_not_a_change() {
+        // The same rule the bucket has one level down, and here it also decides
+        // whether the widget rebuilds -- a property reassigned to what it held
+        // would rebuild for nothing.
+        let mut tab = RestorableInt::new(0);
+        assert!(tab.set(2));
+        assert!(!tab.set(2), "same value");
+        assert!(tab.set(3));
+        assert_eq!(*tab.value(), 3);
+    }
+
+    #[test]
+    fn a_property_with_nothing_stored_takes_its_default() {
+        let bucket = RestorationBucket::empty("root");
+        let mut tab = RestorableInt::new(7);
+        tab.set(2);
+        tab.restore(&bucket, "tab");
+        assert_eq!(*tab.value(), 7, "the default, not what it happened to hold");
+    }
+
+    #[test]
+    fn a_property_reads_back_what_it_wrote() {
+        let bucket = RestorationBucket::empty("root");
+        let mut tab = RestorableInt::new(0);
+        tab.set(2);
+        tab.save(&bucket, "tab");
+
+        let mut restored = RestorableInt::new(0);
+        restored.restore(&bucket, "tab");
+        assert_eq!(*restored.value(), 2);
+    }
+
+    #[test]
+    fn a_disabled_property_is_not_written_at_all() {
+        // Not written as null, not left at its old value -- absent. A widget
+        // whose state is only worth remembering under some condition keeps out
+        // of a blob that crosses a channel.
+        let bucket = RestorationBucket::empty("root");
+        let mut draft = RestorableString::new(String::new()).with_enabled(false);
+        draft.set("half-typed".to_string());
+        draft.save(&bucket, "draft");
+        assert!(!bucket.contains("draft"));
+    }
+
+    #[test]
+    fn a_stored_value_of_the_wrong_kind_is_treated_as_absent() {
+        // What an application updated since the blob was written meets.
+        // Upstream's `serialized as T` would throw; answering the default is
+        // the honest end of that, because refusing to start over a value the
+        // reader does not know exists is worse.
+        let bucket = RestorationBucket::empty("root");
+        bucket.write("tab", Value::String("not a number".into()));
+
+        // Moved off the default first, or the assertion cannot tell "took the
+        // default" from "kept what it was holding" -- they are the same number
+        // on a freshly built property, and the first version of this test could
+        // not tell them apart.
+        let mut tab = RestorableInt::new(7);
+        tab.set(2);
+        tab.restore(&bucket, "tab");
+        assert_eq!(*tab.value(), 7, "the default, not the 2 it was holding");
+    }
+
+    #[test]
+    fn an_integer_written_narrow_comes_back() {
+        // The standard codec narrows small integers to 32 bits, so a value
+        // written as an int may come back either way. Upstream's `as int` does
+        // not care, because a Dart int has no width.
+        let bucket = RestorationBucket::empty("root");
+        bucket.write("tab", Value::I32(2));
+        let mut tab = RestorableInt::new(0);
+        tab.restore(&bucket, "tab");
+        assert_eq!(*tab.value(), 2);
+    }
+
+    #[test]
+    fn a_whole_number_read_as_a_double_survives() {
+        let bucket = RestorationBucket::empty("root");
+        bucket.write("scroll", Value::I64(420));
+        let mut scroll = RestorableDouble::new(0.0);
+        scroll.restore(&bucket, "scroll");
+        assert_eq!(*scroll.value(), 420.0);
+    }
+
+    #[test]
+    fn init_with_value_assigns_without_calling_it_a_change() {
+        // The bucket handing back what it stored is not the application
+        // changing its mind, so upstream's `initWithValue` skips the check.
+        let mut tab = RestorableInt::new(0);
+        tab.init_with_value(5);
+        assert_eq!(*tab.value(), 5);
+        assert!(!tab.set(5), "and it is now the current value");
+    }
+
+    // -- The nullable half ------------------------------------------------------------
+
+    #[test]
+    fn a_nullable_property_round_trips_both_states() {
+        let bucket = RestorationBucket::empty("root");
+        let mut picked = RestorableIntN::new(None);
+        picked.set(Some(3));
+        picked.save(&bucket, "picked");
+
+        let mut back = RestorableIntN::new(None);
+        back.restore(&bucket, "picked");
+        assert_eq!(*back.value(), Some(3));
+
+        picked.set(None);
+        picked.save(&bucket, "picked");
+        back.restore(&bucket, "picked");
+        assert_eq!(*back.value(), None, "and null is a value it may hold");
+    }
+
+    #[test]
+    fn null_is_stored_as_null_and_not_as_a_missing_key() {
+        // Absent means "take the default"; null means "the reader chose
+        // nothing". A property that stored null by omitting the key could not
+        // tell the two apart on the way back.
+        let bucket = RestorationBucket::empty("root");
+        let mut picked = RestorableIntN::new(Some(9));
+        picked.set(None);
+        picked.save(&bucket, "picked");
+        assert_eq!(bucket.read("picked"), Some(Value::Null));
+
+        let mut back = RestorableIntN::new(Some(9));
+        back.restore(&bucket, "picked");
+        assert_eq!(*back.value(), None, "not the default of 9");
+    }
+
+    // -- Enums ------------------------------------------------------------------------
+
+    fn colours() -> Vec<String> {
+        vec!["red".into(), "green".into(), "blue".into()]
+    }
+
+    #[test]
+    fn an_enum_is_stored_by_name_and_not_by_index() {
+        // An application whose enum gained a value in the middle would restore
+        // every stored index to the wrong member. A name survives reordering.
+        let bucket = RestorationBucket::empty("root");
+        let mut colour = RestorableEnum::new("red", colours());
+        colour.set("blue");
+        colour.save(&bucket, "colour");
+        assert_eq!(bucket.read("colour"), Some(Value::String("blue".into())));
+
+        // The same blob against a set whose order changed.
+        let mut reordered =
+            RestorableEnum::new("red", vec!["blue".into(), "red".into(), "green".into()]);
+        reordered.restore(&bucket, "colour");
+        assert_eq!(reordered.value(), "blue");
+    }
+
+    #[test]
+    fn a_name_the_application_no_longer_has_restores_to_the_default() {
+        // What a name does not survive is being removed. Upstream asserts in
+        // debug and answers the default in release; the default is what
+        // actually happens in a shipped build either way.
+        let bucket = RestorationBucket::empty("root");
+        bucket.write("colour", Value::String("chartreuse".into()));
+
+        let mut colour = RestorableEnum::new("green", colours());
+        colour.restore(&bucket, "colour");
+        assert_eq!(colour.value(), "green");
+    }
+
+    #[test]
+    fn a_nullable_enum_answers_null_before_it_consults_the_set() {
+        // Upstream's `fromPrimitives` returns null for stored null first, so a
+        // null survives whatever the allowed set says.
+        let bucket = RestorationBucket::empty("root");
+        bucket.write("colour", Value::Null);
+
+        let mut colour = RestorableEnumN::new(Some("red".into()), colours());
+        colour.restore(&bucket, "colour");
+        assert_eq!(colour.value(), None);
+    }
+
+    #[test]
+    fn a_nullable_enum_moves_between_null_and_a_name() {
+        let mut colour = RestorableEnumN::new(None, colours());
+        assert_eq!(colour.value(), None);
+        assert!(colour.set(Some("red".into())));
+        assert_eq!(colour.value(), Some("red"));
+        assert!(!colour.set(Some("red".into())), "no change");
+        assert!(colour.set(None));
+        assert_eq!(colour.value(), None);
+        assert!(!colour.set(None), "no change");
+    }
+
+    // -- DateTime ----------------------------------------------------------------------
+
+    #[test]
+    fn a_moment_is_stored_as_milliseconds_since_the_epoch() {
+        // Which is what crosses the channel upstream too --
+        // `value.millisecondsSinceEpoch` -- so the count is the type here.
+        let bucket = RestorationBucket::empty("root");
+        let mut when = RestorableDateTime::new(0);
+        when.set(1_700_000_000_000);
+        when.save(&bucket, "when");
+        assert_eq!(bucket.read("when"), Some(Value::I64(1_700_000_000_000)));
+    }
+
+    // -- The text controller --------------------------------------------------------------
+
+    #[test]
+    fn a_text_controller_stores_the_words_and_not_the_selection() {
+        // Upstream's `toPrimitives` is `value.text`. A restored field has the
+        // reader's words back and the caret at the end, which is upstream's
+        // judgement: the words are what was lost.
+        let bucket = RestorationBucket::empty("root");
+        let mut field = RestorableTextEditingController::new("");
+        field.set_text("half a sentence");
+        field.save(&bucket, "field");
+        assert_eq!(
+            bucket.read("field"),
+            Some(Value::String("half a sentence".into()))
+        );
+
+        let mut back = RestorableTextEditingController::new("");
+        back.restore(&bucket, "field");
+        assert_eq!(back.text(), "half a sentence");
+        assert_eq!(back.restored_selection(), "half a sentence".len());
+    }
+
+    // -- Listenables -----------------------------------------------------------------------
+
+    #[test]
+    fn a_listenable_republishes_what_it_holds() {
+        use std::cell::Cell;
+        let heard = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&heard);
+        let listenable = RestorableListenable::new().with_on_change(move || {
+            counter.set(counter.get() + 1);
+        });
+        listenable.changed();
+        listenable.changed();
+        assert_eq!(heard.get(), 2);
+    }
+
+    #[test]
+    fn a_listenable_with_nobody_listening_is_not_an_error() {
+        RestorableListenable::new().changed();
+        RestorableChangeNotifier::new().changed();
+    }
+
+    // -- Through the bucket tree -------------------------------------------------------------
+
+    #[test]
+    fn a_property_saved_into_a_child_is_in_the_roots_blob() {
+        // The end-to-end shape: a widget deep in the tree writes, and the root
+        // is what gets sent.
+        let root = RestorationBucket::empty("root");
+        let list = root.claim_child("list");
+        let mut scroll = RestorableDouble::new(0.0);
+        scroll.set(420.0);
+        scroll.save(&list, "scroll");
+
+        assert_eq!(
+            root.to_data().children["list"].values["scroll"],
+            Value::F64(420.0)
+        );
+    }
+
+    #[test]
+    fn a_blob_from_the_platform_restores_a_property_deep_in_the_tree() {
+        let root = RestorationBucket::empty("root");
+        let list = root.claim_child("list");
+        let mut scroll = RestorableDouble::new(0.0);
+        scroll.set(420.0);
+        scroll.save(&list, "scroll");
+        let wire = root.to_data().to_value();
+
+        // A fresh run, given what the platform kept.
+        let restored_root = RestorationBucket::from_data("root", BucketData::from_value(&wire));
+        let restored_list = restored_root.claim_child("list");
+        let mut restored_scroll = RestorableDouble::new(0.0);
+        restored_scroll.restore(&restored_list, "scroll");
+        assert_eq!(*restored_scroll.value(), 420.0);
     }
 }
