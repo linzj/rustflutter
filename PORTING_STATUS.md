@@ -164,6 +164,64 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 表单是一份登记表,而它花力气最多的问题是「什么时候校验」(2026-08-20)
+
+两个新模块:`form.rs`(`FormState`、`FormFieldState`)和 `layout_builder.rs`
+(`ConstrainedLayoutBuilder`、`RenderAbstractLayoutBuilderMixin`)。覆盖率 1636/1888(86.7%)。
+
+**表单是一份登记表,不是一个容器。** 字段通过 context 找到它、把自己登记上去;表单从不去遍历自己的
+子树找字段。这就是一个字段能藏在任意深的布局后面、仍然跟其余字段一起被保存和校验的原因。
+
+**这个文件花力气最多的问题是「什么时候校验」。** 每次按键都校验,等于告诉读者他打了一半的邮箱地址是
+错的;只在提交时校验,又让他一次性面对五个错误。五个 `AutovalidateMode` 是五个答案,而最有用的那两
+个——`onUserInteraction` 和 `onUserInteractionIfError`——都说「**在他做了什么之前不要**」,区别只在于
+一个已经出错的字段,是不是在他修的过程中继续被检查。
+
+**上游那条按字段的守卫是一条恒真式,原样按它计算的意思移植,并写下来:**
+
+```dart
+if (!validateOnFocusChange || !hasFocus || (validateOnFocusChange && hasFocus))
+```
+
+读成 `!A || !B || (A && B)`——只有 `A && B && !(A && B)` 时才为假,而那不可能。**每个字段都会被校
+验,不管它有没有焦点。** 照抄原文会让读者以为这里有一条焦点规则,而并没有。回归行直接钉住「有焦点的
+那个也在失败列表里」。
+
+**其余几条判断:**
+
+* **只有第一条错误会被念给屏幕阅读器**,上游注释直说。一次念四条失败,比一条能立刻处理的失败告诉读者
+  的更少。
+* **`validate()` 会先把 `_hasInteractedByUser` 置为 true**,这对一次程序化调用读起来很怪——没人交互
+  过。但它买到的东西是:一次显式校验之后,`onUserInteraction` 会在读者修改的过程中继续检查,而那时这
+  才是有帮助的。
+* **`forceErrorText` 会完全短路校验器。** 服务器说「这个用户名已被占用」,不是客户端校验器能检查或推
+  翻的事,所以它根本不会被问到。回归行用一个「被调用就 panic」的校验器把这条钉死。
+* **`isValid` 是被动的**:上游文档强调它「不会设置 errorText 或 hasError,也不会更新错误显示」——给那
+  种想在读者还在打字时就点亮提交按钮、又不想把表单弄红的调用方用。
+* **`_fieldDidChange` 里那个「交互过」标志是从字段重新算出来的,而不是拴住的。** 这正是 `reset` 能工
+  作的原因:字段全被重置的表单会退回「没交互过」,而拴住的标志做不到这一点。
+* **`setValue` 不算「读者做了什么」**:widget 在构建期间自己算出来的值,不该让表单以为有人动过。
+* **保存不是提交**:`save` 把值交给 `onSaved`,什么都不改变。表单是在告诉调用方它手里有什么,而不是
+  把它放到哪儿去。
+
+**布局构建器那半边,所有别扭之处都来自一次倒置:孩子是在父级的 `performLayout` **里面**构建的。** 在
+布局期间构建意味着在布局期间把东西标脏,而框架平时禁止这件事;于是重建走的是布局回调而不是普通的
+build scope,而**安排一次重建必须小心它发生在什么时候**。
+
+* **在 idle 和 postFrameCallbacks 期间,请求会被推迟到下一帧开始。** 上游的理由是:「the render tree
+  should typically be kept clean during the postFrameCallbacks and the idle phase, so the layout
+  data can be safely read」——帧与帧之间把渲染树弄脏,会让任何正在读它的人(测试、正在算命中的手势竞技
+  场、检查器)读到一棵改到一半的树。而**已经推迟过就直接返回**:帧间的一串请求只该花下一帧开头的一次
+  布局,不是每个一次。
+* **回调没变就不重新安排布局。** 这个 widget 的父级每次重建它都会跟着重建,为一个一模一样的回调重新
+  安排,会让每次祖先重建都付一次布局的代价。
+* **`updateShouldRebuild` 默认是 true**,因为没有办法比较两个闭包。知道得更清楚的子类去覆写它——那也
+  是唯一能阻止布局构建器在父级每次重建时都重建整棵子树的办法。
+
+验证:`cargo test --lib` 2605 绿,GN `rustflutter_unittests` 2605 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1636 accounted / 252 MISSING(86.7%)。
+
 ### 空集合的意思是「全部」,而问过全部之后就收不回来了(2026-08-20)
 
 新模块 `inherited.rs`,一次收掉五个文件的七个类:`InheritedModel`、`InheritedModelElement`、
