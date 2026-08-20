@@ -164,6 +164,64 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 「挡住」和「排除」听着像一回事,方向正好相反(2026-08-20)
+
+两个新模块:`semantics_markers.rs` 收掉 `basic.dart` 剩下的语义五件套(`SliverSemantics`、
+`MergeSemantics`、`BlockSemantics`、`ExcludeSemantics`、`IndexedSemantics`),
+`page_transitions_builder.rs` 收掉 `PageTransitionsBuilder`、
+`FadeUpwardsPageTransitionsBuilder`、`OpenUpwardsPageTransitionsBuilder`。**`widgets/basic.dart` 至此
+全覆盖**(65 covered + 4 mapped + 3 blocked)。覆盖率 1694/1888(89.7%)。
+
+**语义那四个各自只有三行,而为什么是四个而不是一个开关,答案是它们删掉的东西不一样。最值得写下来的是
+`BlockSemantics` 和 `ExcludeSemantics`——名字听着像一回事,看的方向正好相反:**
+
+* **`ExcludeSemantics` 往里看**:丢掉**自己这棵子树**。
+* **`BlockSemantics` 往外、往后看**:丢掉在同一个语义容器里**比它先画**的一切。**不是它的后代,是它的
+  兄弟——而且specifically 是屏幕上压在它下面的那些。**
+
+**而「先画」这件事只在屏幕上有意义,树里没有。** 这就是为什么这个类必须按绘制顺序来解析,回归行也是按
+绘制顺序构造的:画在 block 之后的东西完全不受影响。
+
+上游给的场景把这个区别说透了:**一个弹窗、一个拉开的抽屉——它们要藏起来的东西不在自己下面,而在自己身
+后**,而且那些东西还部分可见。**一个仍然够得到它们的读屏器,会让读者去操作一个已经不在眼前的页面。**
+
+其余三条:
+
+* **`blocking` 和 `excluding` 是字段而不是「这个 widget 在不在」**,于是一个 widget 可以停止挡住,而不
+  必从树里消失。
+* **`MergeSemantics` 合并是有代价的,上游写得很小心:** 标签用换行拼起来,而**如果被合并的子树里不止一
+  个节点能处理手势,树序里第一个拿走回调**——其余的不是被合并,是被丢掉。
+* **`IndexedSemantics` 的存在理由,上游用一个例子给了:** 列表里夹着 `Spacer`,自动索引会把空白也数进
+  去,于是读屏器宣布「可见四项」而实际只有两项。
+
+---
+
+**另一半是两个 Android 页面转场,而把它们摆在一起才有意思:同一个问题,两种相反的习惯。**
+
+**`FadeUpwards`(Android O)用两条曲线做两件事:** 位置走 `fastOutSlowIn`,不透明度走 `easeIn`。**于是
+页面已经基本到位了,却还基本是透明的——它看上去不是滑进来的,是落定进来的。** 回归行按「位置进度比不透
+明度至少多 0.2」钉住了这个差。
+
+**`OpenUpwards`(Android P)反过来:一条曲线管全部,而动画有两个,因为旧页面也在动。**
+
+* **新页面根本没有淡入——它是被「露出来」的。** 上游把页面按**全高**放进一个 `OverflowBox`,再让外面的
+  裁剪框从底部长上来。**于是内容从不被压扁,变的只是你能看见多少。**
+* **旧页面跟着新页面走同一个方向,只走一半远**(5% 对 2.5%)。**不是被推开,是跟过去**,外加一层压到四
+  分之一黑的遮罩。
+* **那条曲线 `Cubic(0.20, 0.00, 0.00, 1.00)` 的第二个控制点 x 是 0**,把运动整个拽到了前面:**时间过去
+  五分之一时,动画已经走完一半以上。** 页面「弹开」,然后慢慢把最后一点走完。
+* **反向用的是 `curve.flipped` 而不是把同一条曲线倒着跑。** 一条前重的曲线倒着跑,出去时还是前重的——那
+  看上去像页面「啪」地合上。回归行把这两件事分开钉住了:正向在 t=0.2 已过 0.45,镜像在同一点还不到
+  0.05。
+
+**`PageTransitionsBuilder` 本身有一处默认值值得点名:`reverseTransitionDuration` 默认等于
+`transitionDuration`,而不是等于它自己的一个常数。** 于是一个只想把入场改长的子类,**顺手就得到了对称
+的出场**,只有真想让两者不同时才需要开口。回归行用一个只覆写了入场时长的子类验了这一条。
+
+验证:`cargo test --lib` 2878 绿,GN `rustflutter_unittests` 2878 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1694 accounted / 194 MISSING(89.7%)。
+
 ### 同一个文件里承认了两次「不知道为什么」(2026-08-20)
 
 新模块 `overscroll_indicator.rs`,收掉 `GlowingOverscrollIndicator`、
