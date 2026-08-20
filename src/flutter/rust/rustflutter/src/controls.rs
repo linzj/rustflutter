@@ -1284,23 +1284,30 @@ impl Component for DataTable {
     }
 }
 
-/// The label bubble of a tooltip: a dark pill with the message. This is the
-/// surface half of upstream's `Tooltip` (`material/tooltip.dart`); the trigger
-/// half -- what shows and hides it -- is [`TooltipTrigger`], and composing the
-/// two is the application's `Stack`, as with every overlay here.
-pub struct Tooltip {
+/// The label bubble of a tooltip: a dark pill with the message.
+///
+/// The surface half of upstream's `Tooltip` (`material/tooltip.dart`), and only
+/// that. The trigger half -- what shows and hides it -- is [`TooltipTrigger`],
+/// and the whole assembly, with the bubble in an `OverlayPortal` placed against
+/// the target, is [`crate::tooltip::Tooltip`]. Use that one unless you are
+/// building the bubble into something of your own.
+///
+/// It was called `Tooltip` while there was nothing to host it and the caller
+/// composed the two halves in their own `Stack`. There is a host now, so the
+/// name went to the thing that matches upstream's.
+pub struct TooltipBubble {
     message: String,
 }
 
-impl Tooltip {
-    pub fn new(message: impl Into<String>) -> Tooltip {
-        Tooltip {
+impl TooltipBubble {
+    pub fn new(message: impl Into<String>) -> TooltipBubble {
+        TooltipBubble {
             message: message.into(),
         }
     }
 }
 
-impl Component for Tooltip {
+impl Component for TooltipBubble {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let message = self.message.clone();

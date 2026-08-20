@@ -198,7 +198,7 @@ impl StatefulComponent for PickerDemo {
                 // the bounds are 2015 to 2100.
                 let confirm = handle.clone();
                 let cancel = handle.clone();
-                Some(show_date_picker(
+                Some(date_picker_surface(
                     DatePickerDialog::new(
                         DATE_DIALOG,
                         Date::new(2015, 1, 1),
@@ -220,7 +220,7 @@ impl StatefulComponent for PickerDemo {
                 // `_timePickerRoute`: the initial time is the current value.
                 let confirm = handle.clone();
                 let cancel = handle.clone();
-                Some(show_time_picker(
+                Some(time_picker_surface(
                     TimePickerDialog::new(TIME_DIALOG, state.from_time)
                         .with_on_confirm(move |time| {
                             confirm.set_state(move |s| {
@@ -239,7 +239,7 @@ impl StatefulComponent for PickerDemo {
                 let this_year = Date::today().year;
                 let confirm = handle.clone();
                 let cancel = handle.clone();
-                Some(show_date_range_picker(
+                Some(date_range_picker_surface(
                     DateRangePickerDialog::new(
                         RANGE_DIALOG,
                         Date::new(this_year - 5, 1, 1),

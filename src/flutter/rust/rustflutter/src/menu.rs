@@ -520,11 +520,15 @@ pub fn popup_menu_offset(
 ///
 /// Upstream the button owns the menu: `itemBuilder` builds the entries,
 /// `showButtonMenu` pushes the route, and `onSelected` reports what came back.
-/// Here the menu is the application's to show -- the button's tap is one more
-/// `set_state`, and the entries carry their own [`PopupMenuItem::wired`]
-/// callbacks. What remains of the button is the button: a tap target with the
-/// overflow glyph, 8 of padding, and a tooltip the caller adds with
-/// [`crate::controls::TooltipTrigger`].
+/// This one is the button alone: a tap target with the overflow glyph, 8 of
+/// padding, and a tooltip the caller adds with
+/// [`crate::controls::TooltipTrigger`]. Showing the menu is the caller's, and
+/// the entries carry their own [`PopupMenuItem::wired`] callbacks.
+///
+/// [`crate::popup::PopupMenuButton`] is the whole of upstream's: it owns the
+/// menu, opens it into the overlay against its own measured position, and is
+/// what a caller usually wants. This one stays for a caller assembling the
+/// pieces themselves.
 pub struct PopupMenuButton {
     id: u64,
     tooltip: Option<String>,

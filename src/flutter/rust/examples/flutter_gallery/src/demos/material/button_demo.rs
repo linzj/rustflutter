@@ -620,7 +620,7 @@ impl StatefulComponent for FabDemo {
                 Box::new(Center::new(row))
             })];
         if state.tooltip {
-            children.push(single(component(Tooltip::new("Create")), |bubble| {
+            children.push(single(component(TooltipBubble::new("Create")), |bubble| {
                 Box::new(Center::new(bubble))
             }));
         }

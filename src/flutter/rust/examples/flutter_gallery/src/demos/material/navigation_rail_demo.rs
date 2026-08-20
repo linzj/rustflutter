@@ -180,7 +180,7 @@ impl Component for Rail {
         let mut children = vec![fab];
         children.extend(destinations);
         if tooltip {
-            children.push(component(Tooltip::new("Create")));
+            children.push(component(TooltipBubble::new("Create")));
         }
 
         many(children, move |rendered| {

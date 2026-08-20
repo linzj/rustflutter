@@ -2248,15 +2248,19 @@ impl StatefulComponent for DatePickerDialog {
 // showDatePicker (anchor: date_picker.dart showDatePicker).
 // ---------------------------------------------------------------------------
 
-/// The dialog over a scrim, ready to stack over the page.
+/// The dialog over a scrim, as a widget to place.
 ///
-/// Anchor: `showDatePicker`, which routes the dialog through `showDialog`
-/// onto the `Navigator`. There is no `Navigator` here, so the overlay is
-/// returned instead: the caller stacks it over the page and drops it from
-/// the tree when `on_confirm`/`on_cancel` fires -- those callbacks are what
-/// upstream's returned `Future` resolves with. Tapping the scrim is the
-/// barrier dismiss, and lands on `on_cancel`.
-pub fn show_date_picker(dialog: DatePickerDialog) -> AnyWidget {
+/// Anchor: `showDatePicker`, which routes the dialog through `showDialog` onto
+/// the `Navigator`.
+///
+/// **This is not the imperative API** -- [`crate::dialogs::show_date_picker`]
+/// is, and it is what a caller usually wants: it puts this surface into the
+/// overlay and hands back something to close it with. This one returns the
+/// widget, for a caller placing it in a `Stack` of their own. It was called
+/// `show_date_picker` while there was no overlay to put it in.
+///
+/// Tapping the scrim is the barrier dismiss, and lands on `on_cancel`.
+pub fn date_picker_surface(dialog: DatePickerDialog) -> AnyWidget {
     let on_cancel = dialog.on_cancel.clone();
     let scrim_id = dialog.id * 10;
     let scrim: AnyWidget = leaf(move || {
@@ -3509,7 +3513,7 @@ impl StatefulComponent for TimePickerDialog {
 /// Anchor: `showTimePicker`; the same returned-overlay stand-in for the
 /// `Navigator` push as [`show_date_picker`]. The scrim's hit-test id is
 /// `dialog.id * 100`, the dialog's own ids starting at `+ 1`.
-pub fn show_time_picker(dialog: TimePickerDialog) -> AnyWidget {
+pub fn time_picker_surface(dialog: TimePickerDialog) -> AnyWidget {
     let on_cancel = dialog.on_cancel.clone();
     let scrim_id = dialog.id * 100;
     let scrim: AnyWidget = leaf(move || {
@@ -4618,7 +4622,7 @@ impl StatefulComponent for DateRangePickerDialog {
 /// [`show_date_picker`]. The dialog fills the overlay in calendar mode and
 /// centers itself in input mode, so it is positioned to fill here. The
 /// scrim's hit-test id is `dialog.id * 10 + 9`.
-pub fn show_date_range_picker(dialog: DateRangePickerDialog) -> AnyWidget {
+pub fn date_range_picker_surface(dialog: DateRangePickerDialog) -> AnyWidget {
     let on_cancel = dialog.on_cancel.clone();
     let scrim_id = dialog.id * 10 + 9;
     let scrim: AnyWidget = leaf(move || {
@@ -5158,7 +5162,7 @@ mod tests {
     #[test]
     fn the_overlays_fill_their_stack() {
         let size = lay_out(
-            show_date_picker(
+            date_picker_surface(
                 DatePickerDialog::new(7, date(2024, 1, 1), date(2030, 12, 31))
                     .with_current_date(date(2024, 1, 15)),
             ),
@@ -5167,13 +5171,13 @@ mod tests {
         );
         assert_eq!(size, Size::new(800.0, 700.0));
         let size = lay_out(
-            show_time_picker(TimePickerDialog::new(7, TimeOfDay::new(9, 30))),
+            time_picker_surface(TimePickerDialog::new(7, TimeOfDay::new(9, 30))),
             800.0,
             700.0,
         );
         assert_eq!(size, Size::new(800.0, 700.0));
         let size = lay_out(
-            show_date_range_picker(
+            date_range_picker_surface(
                 DateRangePickerDialog::new(7, date(2024, 1, 1), date(2024, 12, 31))
                     .with_current_date(date(2024, 1, 15)),
             ),

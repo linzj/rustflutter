@@ -93,7 +93,6 @@ pub struct DemoState {
     pub rail: usize,
     #[allow(dead_code)]
     pub rail_extended: bool,
-    pub tooltip_pressed: bool,
     pub counter: i32,
 }
 
@@ -114,7 +113,6 @@ impl Default for DemoState {
             banner_open: true,
             rail: 1,
             rail_extended: false,
-            tooltip_pressed: false,
             counter: 0,
         }
     }

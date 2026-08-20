@@ -228,6 +228,7 @@ pub use app::{
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
 pub use r#async::{AsyncSnapshot, ConnectionState, async_builder};
+pub use autocomplete_view::{AutocompleteView, autocomplete_view, options_placement};
 pub use borders::{
     BeveledRectangleBorder, Border, BorderDirectional, BorderRadius, BorderRadiusDirectional,
     BorderRadiusGeometry, BorderSide, BorderStyle, BoxBorder, BoxShape, CircleBorder,
@@ -242,8 +243,8 @@ pub use components::{
 };
 pub use controls::{
     Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
-    Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar, Tooltip,
-    TooltipTrigger, TooltipTriggerMode,
+    Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
+    TooltipBubble, TooltipTrigger, TooltipTriggerMode,
 };
 pub use cupertino::{
     CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
@@ -254,8 +255,16 @@ pub use cupertino::{
     CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
 };
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
+pub use dialogs::{
+    DialogCloser, show_date_picker, show_date_range_picker, show_dialog, show_dialog_with,
+    show_time_picker,
+};
 pub use direction::{TextDirection, current_direction, direction_of, directionality};
+pub use drag_feedback::{
+    DragAvatar, TargetCallbacks, register_target, start_drag, unregister_target,
+};
 pub use drawer::{Drawer, DrawerAlignment};
+pub use drawer_host::{DrawerControls, DrawerHost, DrawerSide, show_drawer};
 pub use editable::{RenderEditable, TextField, TextFieldState};
 pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
@@ -285,13 +294,15 @@ pub use interactive_viewer::{
     interactive_viewer,
 };
 pub use keyboard::{KeyChange, KeyEvent, Keyboard, LogicalKey, PhysicalKey};
+pub use magnifier_host::{MagnifierHost, MagnifierStyle, show_magnifier};
 pub use media_query::{
     MediaQuery, MediaQueryData, SafeArea, current_text_scale, media_query_of, safe_area,
 };
 pub use menu::{
-    CheckedPopupMenuItem, PopupMenu, PopupMenuButton, PopupMenuDivider, PopupMenuEntry,
-    PopupMenuItem, PopupMenuPosition, popup_menu_offset,
+    CheckedPopupMenuItem, PopupMenu, PopupMenuDivider, PopupMenuEntry, PopupMenuItem,
+    PopupMenuPosition, popup_menu_offset,
 };
+pub use messenger::Messenger;
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
@@ -308,17 +319,24 @@ pub use pickers::{
     DateTimeRange, DayPeriod, InputDatePickerFormField, InputDatePickerState, Orientation,
     SelectableDayForRangePredicate, SelectableDayPredicate, TimeOfDay, TimePickerDialog,
     TimePickerDialogState, TimePickerEntryMode, YearPicker, YearPickerState, add_days_to_date,
-    add_months_to_month_date, days_in_month, first_day_offset, format_compact_date,
-    format_full_date, format_medium_date, format_month_year, is_same_day, is_same_month,
-    month_delta, parse_compact_date, show_date_picker, show_date_range_picker, show_time_picker,
+    add_months_to_month_date, date_picker_surface, date_range_picker_surface, days_in_month,
+    first_day_offset, format_compact_date, format_full_date, format_medium_date, format_month_year,
+    is_same_day, is_same_month, month_delta, parse_compact_date, time_picker_surface,
 };
+pub use popup::{PopupMenuButton, PopupMenuOpener, menu_placement};
 pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};
+pub use selection_host::{SelectionEndpoint, SelectionHost, show_selection_overlay};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,
 };
 pub use shortcuts::{CallbackShortcuts, LogicalKeySet, ShortcutActivator, ShortcutRegistry};
+pub use theatre::{
+    Anchor, ModalHandle, OverlayHandle, Placement, PortalController, anchored,
+    dismiss_topmost_modal, modal_barrier, overlay, overlay_portal, show_modal,
+};
+pub use tooltip::{Tooltip, tooltip};
 pub use widgets::{
     Baseline, BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox,
     FractionallySizedBox, IndexedStack, LimitedBox, Offset, OverflowBox, Size, SizedOverflowBox,
@@ -343,7 +361,7 @@ pub mod prelude {
     pub use crate::controls::{
         Banner, BottomNavigation, BottomSheet, Checkbox, Chip, ChipStyle, DataTable, Destination,
         Dialog, GridList, NavigationRail, Radio, Scrim, Section, Snackbar, Spinner, TabBar,
-        Tooltip, TooltipTrigger, TooltipTriggerMode,
+        TooltipBubble, TooltipTrigger, TooltipTriggerMode,
     };
     pub use crate::cupertino::{
         CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
@@ -384,8 +402,8 @@ pub mod prelude {
     pub use crate::pickers::{
         CalendarDatePicker, Date, DatePickerDialog, DatePickerEntryMode, DatePickerMode,
         DateRangePickerDialog, DateTimeRange, DayPeriod, InputDatePickerFormField, Orientation,
-        TimeOfDay, TimePickerDialog, TimePickerEntryMode, YearPicker, show_date_picker,
-        show_date_range_picker, show_time_picker,
+        TimeOfDay, TimePickerDialog, TimePickerEntryMode, YearPicker, date_picker_surface,
+        date_range_picker_surface, time_picker_surface,
     };
     pub use crate::platform::{Brightness, Locale, UserSettings};
     pub use crate::scrollbar::{Scrollbar, scrollbar};
