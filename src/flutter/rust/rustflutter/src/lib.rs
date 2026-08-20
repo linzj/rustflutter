@@ -145,6 +145,7 @@ pub mod resampler;
 pub mod router;
 pub mod routes;
 pub mod scaffold_messenger;
+pub mod scheduler_priority;
 pub mod scroll_aware_image_provider;
 pub mod scroll_physics;
 pub mod scroll_plumbing;

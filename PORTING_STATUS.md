@@ -164,6 +164,60 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 是减速带,不是墙——而且它自己说了(2026-08-20)
+
+新模块 `scheduler_priority.rs`,收掉 `scheduler/priority.dart` 的 `Priority`、`scheduler/binding.dart`
+的 `PerformanceModeRequestHandle` 与 `SchedulerBinding`,以及 `gestures/binding.dart` 的
+`FlutterErrorDetailsForPointerEventDispatcher`。覆盖率 1875/1888(99.3%)。测试 3648。
+
+**三个具名优先级隔着 100,000,而 `kMaxOffset` 是 10,000。** 也就是说**相邻两档之间的距离,是单次最大偏移
+的十倍**——一次相对偏移永远抬不动一个任务从 idle 跨进 animation。这个间距就是为了让它跨不过去而选的。
+
+而文档没有装作那是一堵墙:
+
+> It is still possible to have priorities that are offset by more than this amount **by repeatedly
+> taking relative offsets**, but that is generally discouraged.
+
+**是减速带,不是墙。** 夹的是**偏移量,不是结果**——所以连着走十次最大偏移,就正好落在 animation 上。回归行
+把这两面都钉住了:一次跨不过去,十次正好到;而把夹取改成夹结果(那样才是真的墙),第二条当场红。
+
+顺带一处漂亮的小事:`operator -` 的实现是 `this + (-offset)`。**一份实现加一个别名,而不是把夹取抄两
+遍**——**这一轮扫下来见了太多抄两遍的块,这里是没抄的那个。**
+
+---
+
+**`SchedulerBinding.requestPerformanceMode` 的返回类型就已经把设计说完了:它返回可空的句柄。**
+
+```dart
+// conflicting requests are not allowed.
+if (_performanceMode != null && _performanceMode != mode) {
+  return null;
+}
+```
+
+三种结果:没人占着,你拿走;有人占着**同一个**模式,计数加一,一直撑到最后一个句柄松手;**有人占着别的模
+式,你拿到 null。** 不是异常,不是覆盖,不是排队。**先来的赢,后来的不同意见直接被拒。**
+
+而且没有办法强行拿到——这正是重点:**应用里两处要求引擎做相反的事,不可能都对,而悄悄让后来的赢会让结果
+取决于启动顺序。**
+
+`PerformanceModeRequestHandle` 则是「句柄即请求」:**它唯一的方法是 dispose,而文档写着「This method must
+only be called once per object」。** 拿着它就是这个模式还需要,松手就是撤回。和早先那个 `KeepAliveHandle`
+是同一个形状——**一个没有内容的对象,它的全部含义就是「还没被 dispose」。**
+
+---
+
+最后一条:`FlutterErrorDetailsForPointerEventDispatcher` 在 `FlutterErrorDetails` 上加了两个字段,而两个
+都在回答同一个问题:**是哪一个?** 一条指针路由上可能挂着十几个 handler,**「handleEvent 里抛了个异常」在
+你知道是哪个事件、哪个目标之前,还算不上一份报告。**
+
+而 `hitTestEntry` 可空的理由写在文档里:hover、added、removed 这三类**根本不经过命中测试**。**这个 null
+标的是一整类事件,不是一次失败。**
+
+验证:`cargo test --lib` 3648 绿,GN `rustflutter_unittests` 3648 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1875 accounted / 13 MISSING(99.3%)。
+
 ### 更正:第 92 轮那句「九层已全覆盖」是我外推出来的,不对(2026-08-20)
 
 新模块 `render_semantics.rs`,收掉 `rendering/proxy_box.dart` 的七个语义 render object
