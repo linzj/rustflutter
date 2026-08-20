@@ -84,7 +84,6 @@ pub struct DemoState {
     pub bottom_nav: usize,
     #[allow(dead_code)]
     pub chips: Vec<bool>,
-    pub dialog_open: bool,
     pub sheet_open: bool,
     pub snackbar_open: bool,
     #[allow(dead_code)]
@@ -107,7 +106,6 @@ impl Default for DemoState {
             tab: 0,
             bottom_nav: 0,
             chips: vec![true, false, false, false],
-            dialog_open: false,
             sheet_open: false,
             snackbar_open: false,
             banner_open: true,
@@ -203,7 +201,6 @@ pub fn overlay(
     handle: StateHandle<GalleryState>,
 ) -> Option<AnyWidget> {
     match demo.slug {
-        "dialog" if state.demo.dialog_open => Some(dialog_demo::dialog_overlay(state, handle)),
         "bottom-sheet" if state.demo.sheet_open => Some(bottom_sheet_demo::sheet_overlay(handle)),
         _ => None,
     }

@@ -13,36 +13,43 @@
 //! variants: a caption with the variant's upstream title and its SHOW DIALOG
 //! button.
 //!
-//! State: upstream's `_DialogDemoState` holds three `RestorableRouteFuture`s
-//! and the value the popped route handed `_showInSnackBar`. The overlay a
-//! demo shows is dispatched from `mod.rs`'s shared `overlay()`, which reads
-//! only `GalleryState`, so this demo's slice of the shared `DemoState`
-//! carries it: `dialog_open` is whether a dialog is up, and `counter` is the
-//! open dialog's variant index while one is, or the popped value encoded as
-//! `1 + variant * 4 + option index` after one closes (0 = nothing yet). The
-//! encoding is this file's own; `mod.rs` only ever reads `dialog_open`.
+//! Upstream's `_DialogDemoState` holds three `RestorableRouteFuture`s and the
+//! value the popped route handed `_showInSnackBar`. The dialogs go up here
+//! through [`rustflutter::show_dialog_with`], the imperative call upstream's
+//! `showDialog` is: it puts the content in the application's overlay behind a
+//! real `ModalBarrier` and hands back a [`rustflutter::ModalHandle`] to close
+//! it with. The popped value stays in this demo's slice of `DemoState` as
+//! `counter`, encoded `1 + variant * 4 + option index` (0 = nothing yet).
+//!
+//! This file used to keep a `dialog_open` flag beside it so that `mod.rs`'s
+//! shared `overlay()` slot could dispatch which dialog to stack over the page,
+//! and hand-rolled a `Scrim` under the card. Both are gone: the framework has
+//! the overlay, so the demo shows a dialog by asking for one, and a press
+//! pushes a dialog the way upstream's press pushes a route.
 //!
 //! Divergences, each marked at its site as well:
 //!
 //! * **the snackbar is inline** -- upstream's `_showInSnackBar` goes through
-//!   `ScaffoldMessenger`, whose overlay here belongs to the dialog itself
-//!   (`mod.rs` gives a demo one overlay slot). The `SnackBar` is drawn as the
-//!   stage's last row instead, and does not time out.
-//! * **barrier dismiss pops no value** -- upstream's barrier tap completes
-//!   the route with null, which the demo's non-nullable `onComplete` never
-//!   sees as a selection; here the scrim closes the dialog and clears the
-//!   result, the same observable outcome.
+//!   `ScaffoldMessenger`. The `SnackBar` is drawn as the stage's last row
+//!   instead, which keeps the popped value beside the button that produced it;
+//!   `snackbar_demo.rs` is the demo that exercises the messenger.
+//! * **barrier dismiss pops no value** -- upstream's barrier tap completes the
+//!   route with null, which the demo's non-nullable `onComplete` never sees as
+//!   a selection; here the barrier closes the dialog and leaves the previous
+//!   result standing, the same observable outcome.
 //! * **hand-rolled dialog card** -- the framework's `Dialog` always draws a
 //!   title row, and upstream's alert (`_alertDialogDemoRoute`) has none, so
 //!   all three modal variants share the card helper below, styled as the
 //!   framework's is (surface, radius 28, elevation 6).
 
-use rustflutter::framework::single;
+use rustflutter::framework::{BuildContext, single};
 use rustflutter::prelude::*;
 use rustflutter::render::{
     Alignment, CrossAxisAlignment, MainAxisAlignment, MainAxisSize, RenderBox, RenderFlex,
 };
-use rustflutter::widgets::{Align, Center, Empty, Pointer, Positioned, Row, Stack};
+use rustflutter::modal_barrier::ModalBarrier;
+use rustflutter::widgets::{Align, Center, Empty, Pointer, Row};
+use rustflutter::{DialogCloser, ModalHandle, OverlayHandle, show_dialog_with};
 
 use crate::app::{ids, GalleryState};
 use crate::data::demos::MATERIAL_ICONS;
@@ -95,6 +102,28 @@ pub(super) fn dialog_launcher(
     pressed: Option<u64>,
     handle: StateHandle<GalleryState>,
 ) -> AnyWidget {
+    // A component rather than a plain function, because showing a dialog needs
+    // the overlay and the overlay is read from a `BuildContext`.
+    component(DialogLauncher {
+        result: state.counter,
+        pressed,
+        gallery: handle,
+    })
+}
+
+struct DialogLauncher {
+    /// The popped value, or 0 for nothing yet.
+    result: i32,
+    pressed: Option<u64>,
+    gallery: StateHandle<GalleryState>,
+}
+
+impl Component for DialogLauncher {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+    let overlay = OverlayHandle::of(context);
+    let pressed = self.pressed;
+    let handle = self.gallery.clone();
+    let result = self.result;
     let l10n = GalleryLocalizations::en();
     let sections = [
         (variant::ALERT, l10n.demo_alert_dialog_title()),
@@ -120,11 +149,14 @@ pub(super) fn dialog_launcher(
                         rustflutter::gestures::PointerHandlers::new()
                             .with_tap({
                                 let handle = handle.clone();
+                                let overlay = overlay.clone();
                                 move |_| {
-                                    handle.set_state(move |s| {
-                                        s.demo.counter = variant;
-                                        s.demo.dialog_open = true;
-                                    });
+                                    // Upstream's press pushes a route; this one
+                                    // puts a dialog in the overlay. Two presses
+                                    // give two, as two pushes would.
+                                    if let Some(overlay) = overlay.clone() {
+                                        show_variant(overlay, variant, handle.clone());
+                                    }
                                 }
                             })
                             .with_press_change({
@@ -144,7 +176,7 @@ pub(super) fn dialog_launcher(
     // Upstream's `_showInSnackBar`: the popped value, shown after a dialog
     // closes. Inline rather than through `ScaffoldMessenger` (see the module
     // header); the fullscreen route pops with void, so it sets no result.
-    if let Some(text) = result_text(state.counter) {
+    if let Some(text) = result_text(result) {
         children.push(component(Snackbar::new(
             ids::DEMO_LOCAL + sections.len() as u64,
             l10n.dialog_selected_option(text),
@@ -152,37 +184,58 @@ pub(super) fn dialog_launcher(
     }
 
     column(children, 12.0)
-}
-
-/// The modal over the demo's page: upstream's three `DialogRoute`s and the
-/// fullscreen `MaterialPageRoute`, dispatched by the open variant.
-pub(super) fn dialog_overlay(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWidget {
-    let pressed = state.pressed;
-    match state.demo.counter {
-        variant::FULLSCREEN => fullscreen_dialog(pressed, handle),
-        other => {
-            let scrim_handle = handle.clone();
-            let scrim = component(Scrim::new(ids::SCRIM).wired(scrim_handle, |s| {
-                s.demo.dialog_open = false;
-                s.demo.counter = 0;
-            }));
-            let dialog = match other {
-                variant::ALERT => alert_dialog(pressed, handle),
-                variant::ALERT_TITLE => alert_dialog_with_title(pressed, handle),
-                _ => simple_dialog(pressed, handle),
-            };
-            many(vec![scrim, dialog], |mut rendered| {
-                let dialog = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                let scrim = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                Box::new(
-                    Stack::new()
-                        .push_positioned(scrim, Positioned::fill())
-                        .push(Center::new(dialog)),
-                )
-            })
-        }
     }
 }
+
+/// Puts one variant up. Upstream's four routes, as four calls.
+///
+/// The fullscreen one gets a barrier that **cannot be tapped away**, because
+/// upstream's is a `MaterialPageRoute` and not a `DialogRoute`: a page is left
+/// through its own SAVE, not by touching beside it. The three dialogs take
+/// `showDialog`'s dismissible default.
+fn show_variant(
+    overlay: std::rc::Rc<OverlayHandle>,
+    variant: i32,
+    gallery: StateHandle<GalleryState>,
+) -> Option<ModalHandle> {
+    let closer = DialogCloser::new();
+    let barrier = barrier_for(variant);
+
+    let opened = {
+        let closer = closer.clone();
+        show_dialog_with(overlay, barrier, move || {
+            let gallery = gallery.clone();
+            let closer = closer.clone();
+            match variant {
+                variant::FULLSCREEN => fullscreen_dialog(gallery, closer),
+                variant::ALERT => alert_dialog(gallery, closer),
+                variant::ALERT_TITLE => alert_dialog_with_title(gallery, closer),
+                _ => simple_dialog(gallery, closer),
+            }
+        })
+    };
+    if let Some(handle) = opened.clone() {
+        // The knot: the buttons inside the dialog need the handle, and the
+        // handle does not exist until the dialog is up. See `DialogCloser`.
+        closer.arm(handle);
+    }
+    opened
+}
+
+/// The barrier a variant goes behind.
+fn barrier_for(variant: i32) -> ModalBarrier {
+    if variant == variant::FULLSCREEN {
+        // Upstream's fullscreen route is a `MaterialPageRoute`: it fills the
+        // screen, so there is no page behind it to dim, and it is left through
+        // its own SAVE rather than by touching beside it.
+        ModalBarrier::new().with_dismissible(false)
+    } else {
+        ModalBarrier::new().with_color(DIALOG_BARRIER_COLOR)
+    }
+}
+
+/// The scrim upstream's `showDialog` puts under a dialog: `Colors.black54`.
+const DIALOG_BARRIER_COLOR: Color = Color::argb(0x8A, 0, 0, 0);
 
 /// The card the three modal variants share: the framework `Dialog`'s metrics
 /// (Material 3's 28-radius corner, elevation 6, 280 minimum width), hand-rolled
@@ -212,31 +265,69 @@ fn dialog_button(
     id: u64,
     text: String,
     option: usize,
-    pressed: Option<u64>,
+    variant: i32,
     handle: StateHandle<GalleryState>,
+    closer: DialogCloser,
 ) -> AnyWidget {
-    component(
-        Button::new(id, text)
-            .with_style(ButtonVariant::Text)
-            .with_pressed(pressed == Some(id))
-            .with_handlers(
-                rustflutter::gestures::PointerHandlers::new()
-                    .with_tap({
-                        let handle = handle.clone();
-                        move |_| {
+    stateful(DialogButton {
+        id,
+        text,
+        option,
+        variant,
+        handle,
+        closer,
+    })
+}
+
+/// A button inside a dialog.
+///
+/// **Its press highlight is its own**, where the page's buttons put theirs on
+/// the shared `GalleryState`. A dialog's content is built once when it goes up
+/// and rebuilt only when the overlay entry does, so a highlight read from the
+/// page's state would be whatever it was at that moment. Local state is also
+/// what it should have been all along: nothing outside the dialog has any
+/// business knowing which of its buttons is held.
+struct DialogButton {
+    id: u64,
+    text: String,
+    option: usize,
+    /// Which dialog this button is in. The popped value is
+    /// `result_code(variant, option)`, and the dialog no longer announces its
+    /// variant through a shared field for the button to read back.
+    variant: i32,
+    handle: StateHandle<GalleryState>,
+    closer: DialogCloser,
+}
+
+impl StatefulComponent for DialogButton {
+    type State = bool;
+
+    fn build(&self, held: &bool, held_handle: StateHandle<bool>, _: &mut BuildContext) -> AnyWidget {
+        let id = self.id;
+        let option = self.option;
+        let variant = self.variant;
+        let handle = self.handle.clone();
+        let closer = self.closer.clone();
+        component(
+            Button::new(id, self.text.clone())
+                .with_style(ButtonVariant::Text)
+                .with_pressed(*held)
+                .with_handlers(
+                    rustflutter::gestures::PointerHandlers::new()
+                        .with_tap(move |_| {
+                            // Upstream's `Navigator.pop(context, value)`: the
+                            // value first, then the route goes.
                             handle.set_state(move |s| {
-                                s.demo.counter = result_code(s.demo.counter, option);
-                                s.demo.dialog_open = false;
+                                s.demo.counter = result_code(variant, option);
                             });
-                        }
-                    })
-                    .with_press_change(move |down| {
-                        handle.set_state(move |s| {
-                            s.pressed = if down { Some(id) } else { None };
-                        });
-                    }),
-            ),
-    )
+                            closer.close();
+                        })
+                        .with_press_change(move |down| {
+                            held_handle.set_state(move |held| *held = down);
+                        }),
+                ),
+        )
+    }
 }
 
 /// The actions row upstream's `AlertDialog` lays out: end-aligned text
@@ -255,21 +346,23 @@ fn actions_row(rendered: Vec<rustflutter::widgets::BoxedWidget>) -> RenderFlex {
 }
 
 /// Upstream's `_alertDialogDemoRoute`: content only, no title.
-fn alert_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> AnyWidget {
+fn alert_dialog(handle: StateHandle<GalleryState>, closer: DialogCloser) -> AnyWidget {
     let l10n = GalleryLocalizations::en();
     let cancel = dialog_button(
         ids::DEMO_LOCAL + 10,
         l10n.dialog_cancel().to_string(),
         0,
-        pressed,
+        variant::ALERT,
         handle.clone(),
+        closer.clone(),
     );
     let discard = dialog_button(
         ids::DEMO_LOCAL + 11,
         l10n.dialog_discard().to_string(),
         1,
-        pressed,
+        variant::ALERT,
         handle,
+        closer,
     );
     many(vec![cancel, discard], move |rendered| {
         Box::new(dialog_card(
@@ -284,21 +377,23 @@ fn alert_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> AnyW
 }
 
 /// Upstream's `_alertDialogWithTitleDemoRoute`.
-fn alert_dialog_with_title(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> AnyWidget {
+fn alert_dialog_with_title(handle: StateHandle<GalleryState>, closer: DialogCloser) -> AnyWidget {
     let l10n = GalleryLocalizations::en();
     let disagree = dialog_button(
         ids::DEMO_LOCAL + 10,
         l10n.dialog_disagree().to_string(),
         0,
-        pressed,
+        variant::ALERT_TITLE,
         handle.clone(),
+        closer.clone(),
     );
     let agree = dialog_button(
         ids::DEMO_LOCAL + 11,
         l10n.dialog_agree().to_string(),
         1,
-        pressed,
+        variant::ALERT_TITLE,
         handle,
+        closer,
     );
     many(vec![disagree, agree], move |rendered| {
         Box::new(dialog_card(
@@ -320,7 +415,7 @@ fn alert_dialog_with_title(pressed: Option<u64>, handle: StateHandle<GalleryStat
 
 /// Upstream's `_simpleDialogDemoRoute`: a title and three
 /// `SimpleDialogOption`s.
-fn simple_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> AnyWidget {
+fn simple_dialog(handle: StateHandle<GalleryState>, closer: DialogCloser) -> AnyWidget {
     let l10n = GalleryLocalizations::en();
     let items = [
         // Upstream's `Icons.account_circle` in `colorScheme.primary`.
@@ -348,15 +443,14 @@ fn simple_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> Any
     for (index, (icon, color, text)) in items.iter().enumerate() {
         let id = ids::DEMO_LOCAL + 12 + index as u64;
         let option = index;
-        let tap_handle = handle.clone();
-        options.push(component(DialogDemoItem {
+        options.push(stateful(DialogDemoItem {
             id,
             icon,
             color: *color,
             text: text.clone(),
-            pressed: pressed == Some(id),
             option,
-            handle: tap_handle,
+            handle: handle.clone(),
+            closer: closer.clone(),
         }));
     }
 
@@ -386,34 +480,41 @@ struct DialogDemoItem {
     icon: &'static str,
     color: Color,
     text: String,
-    pressed: bool,
     /// Which `SimpleDialogOption` this is; the tap pops with it.
     option: usize,
     handle: StateHandle<GalleryState>,
+    closer: DialogCloser,
 }
 
-impl rustflutter::framework::Component for DialogDemoItem {
-    fn build(&self, _context: &mut rustflutter::framework::BuildContext) -> AnyWidget {
+impl StatefulComponent for DialogDemoItem {
+    /// Its own held-ness, for the reason [`DialogButton`] documents.
+    type State = bool;
+
+    fn build(
+        &self,
+        held: &bool,
+        held_handle: StateHandle<bool>,
+        _: &mut rustflutter::framework::BuildContext,
+    ) -> AnyWidget {
         let id = self.id;
         let icon = self.icon;
         let color = self.color;
         let text = self.text.clone();
-        let pressed = self.pressed;
+        let pressed = *held;
         let option = self.option;
         let tap_handle = self.handle.clone();
-        let press_handle = self.handle.clone();
+        let closer = self.closer.clone();
+        let press_handle = held_handle;
 
         let handlers = rustflutter::gestures::PointerHandlers::new()
             .with_tap(move |_| {
                 tap_handle.set_state(move |s| {
                     s.demo.counter = result_code(variant::SIMPLE, option);
-                    s.demo.dialog_open = false;
                 });
+                closer.close();
             })
             .with_press_change(move |down| {
-                press_handle.set_state(move |s| {
-                    s.pressed = if down { Some(id) } else { None };
-                });
+                press_handle.set_state(move |held| *held = down);
             });
 
         rustflutter::framework::leaf(move || {
@@ -454,20 +555,12 @@ impl rustflutter::framework::Component for DialogDemoItem {
 /// Upstream's `_FullScreenDialogDemo`: a `Scaffold` whose app bar carries the
 /// SAVE action, over a centred line of text. It fills the demo's area, as
 /// upstream's fullscreen route fills the demo's navigator.
-fn fullscreen_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) -> AnyWidget {
+fn fullscreen_dialog(handle: StateHandle<GalleryState>, closer: DialogCloser) -> AnyWidget {
     let l10n = GalleryLocalizations::en();
-    let save = component(
-        Button::new(ids::DEMO_LOCAL + 16, l10n.dialog_fullscreen_save())
-            .with_style(ButtonVariant::Text)
-            .with_pressed(pressed == Some(ids::DEMO_LOCAL + 16))
-            .wired(
-                handle,
-                |s| &mut s.pressed,
-                |s| {
-                    s.demo.dialog_open = false;
-                },
-            ),
-    );
+    let _ = handle;
+    // SAVE pops with nothing -- upstream's fullscreen route returns void -- so
+    // the button closes and sets no result. `dialog_button` would set one.
+    let save = stateful(FullscreenSave { closer });
 
     many(vec![save], move |mut rendered| {
         let save = rendered.pop().unwrap_or_else(|| boxed(Empty));
@@ -512,9 +605,80 @@ fn fullscreen_dialog(pressed: Option<u64>, handle: StateHandle<GalleryState>) ->
     })
 }
 
+/// The fullscreen page's SAVE. Its own held-ness, as the dialog buttons have.
+struct FullscreenSave {
+    closer: DialogCloser,
+}
+
+impl StatefulComponent for FullscreenSave {
+    type State = bool;
+
+    fn build(&self, held: &bool, held_handle: StateHandle<bool>, _: &mut BuildContext) -> AnyWidget {
+        let closer = self.closer.clone();
+        component(
+            Button::new(
+                ids::DEMO_LOCAL + 16,
+                GalleryLocalizations::en().dialog_fullscreen_save(),
+            )
+            .with_style(ButtonVariant::Text)
+            .with_pressed(*held)
+            .with_handlers(
+                rustflutter::gestures::PointerHandlers::new()
+                    .with_tap(move |_| {
+                        closer.close();
+                    })
+                    .with_press_change(move |down| {
+                        held_handle.set_state(move |held| *held = down);
+                    }),
+            ),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fullscreen_page_cannot_be_tapped_away_and_the_dialogs_can() {
+        // Upstream's is a `MaterialPageRoute` and the other three are
+        // `DialogRoute`s. A page is left through its own SAVE; a dialog is
+        // `showDialog`'s barrierDismissible default, which is true.
+        for variant in [variant::ALERT, variant::ALERT_TITLE, variant::SIMPLE] {
+            assert!(
+                barrier_for(variant).dismissible,
+                "variant {variant} is a dialog"
+            );
+        }
+        assert!(!barrier_for(variant::FULLSCREEN).dismissible);
+    }
+
+    #[test]
+    fn a_dialog_dims_what_is_behind_it_and_the_page_does_not() {
+        // The scrim is what says "this is over the page"; a full-screen page
+        // has no page showing to dim.
+        assert_eq!(
+            barrier_for(variant::ALERT).color,
+            Some(DIALOG_BARRIER_COLOR)
+        );
+        assert_eq!(barrier_for(variant::FULLSCREEN).color, None);
+        assert_eq!(DIALOG_BARRIER_COLOR.alpha(), 0x8A, "Colors.black54");
+    }
+
+    #[test]
+    fn a_button_pops_with_its_own_dialogs_variant() {
+        // The button carries its variant now, where it used to read the open
+        // dialog's back off a shared field. Same answers, no shared field.
+        assert_eq!(
+            result_text(result_code(variant::ALERT_TITLE, 1)).as_deref(),
+            Some("AGREE")
+        );
+        assert_eq!(
+            result_text(result_code(variant::ALERT, 1)).as_deref(),
+            Some("DISCARD"),
+            "the same option index means something different per variant"
+        );
+    }
 
     #[test]
     fn the_result_encoding_round_trips() {

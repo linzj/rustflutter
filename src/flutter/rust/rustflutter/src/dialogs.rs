@@ -193,7 +193,12 @@ impl DialogCloser {
         DialogCloser::default()
     }
 
-    fn arm(&self, handle: ModalHandle) {
+    /// Ties the knot: hands the closer the handle it was made in place of.
+    ///
+    /// Public because the knot is not this module's -- any caller building a
+    /// dialog whose own buttons close it has the same ordering problem, and the
+    /// gallery's dialog demo is one.
+    pub fn arm(&self, handle: ModalHandle) {
         *self.handle.borrow_mut() = Some(handle);
     }
 
