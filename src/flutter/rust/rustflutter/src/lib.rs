@@ -122,6 +122,7 @@ pub mod preferred_size;
 pub mod presence;
 pub mod progress_indicator;
 pub mod radio_group;
+pub mod range_slider;
 pub mod range_slider_parts;
 pub mod raw_menu_anchor;
 pub mod raw_tooltip;

@@ -944,3 +944,306 @@ mod tests {
         assert!(!state.sliver.is_dragging());
     }
 }
+
+// -- material/reorderable_list.dart ------------------------------------------------
+//
+// The Material list on top of the widgets-layer machinery above. It reuses
+// `reorder_report` rather than restating it.
+
+/// Why a reorderable list view's construction was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReorderableListViewError {
+    MoreThanOneExtentSource,
+    AChildWithoutAKey,
+    BothCallbacks,
+    NeitherCallback,
+}
+
+/// Upstream `ReorderableListView`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReorderableListView {
+    pub item_count: usize,
+    pub has_on_reorder_item: bool,
+    /// Upstream's deprecated `onReorder`.
+    pub has_on_reorder: bool,
+    pub has_item_extent: bool,
+    pub has_prototype_item: bool,
+    pub has_item_extent_builder: bool,
+    /// Only the list constructor can answer this up front. See
+    /// [`ReorderableListView::validate`].
+    pub every_child_has_a_key: bool,
+    pub builds_default_drag_handles: bool,
+}
+
+impl ReorderableListView {
+    pub fn new(item_count: usize) -> ReorderableListView {
+        ReorderableListView {
+            item_count,
+            has_on_reorder_item: true,
+            has_on_reorder: false,
+            has_item_extent: false,
+            has_prototype_item: false,
+            has_item_extent_builder: false,
+            every_child_has_a_key: true,
+            builds_default_drag_handles: true,
+        }
+    }
+
+    /// Upstream's constructor asserts.
+    ///
+    /// The key rule is enforced **twice, by two different mechanisms**: the list
+    /// constructor asserts `children.every((w) => w.key != null)` up front,
+    /// while `_itemBuilder` throws a `FlutterError` per item as it is built.
+    /// That is not belt and braces -- a builder's items do not exist until
+    /// somebody scrolls far enough to need them, so the only moment to check one
+    /// is the moment it appears. The two constructors get the same rule and the
+    /// only enforcement each of them can have.
+    ///
+    /// The extent assert is written as three pairwise tests rather than a count:
+    ///
+    /// ```dart
+    /// (itemExtent == null && prototypeItem == null) ||
+    ///     (itemExtent == null && itemExtentBuilder == null) ||
+    ///     (prototypeItem == null && itemExtentBuilder == null),
+    /// ```
+    ///
+    /// Each clause names the two that are *absent*, so the whole reads "some two
+    /// of the three were left out". Equivalent to "at most one given", and it
+    /// takes a minute to see why.
+    pub fn validate(&self) -> Result<(), ReorderableListViewError> {
+        let extent_sources = [
+            self.has_item_extent,
+            self.has_prototype_item,
+            self.has_item_extent_builder,
+        ]
+        .iter()
+        .filter(|given| **given)
+        .count();
+        if extent_sources > 1 {
+            return Err(ReorderableListViewError::MoreThanOneExtentSource);
+        }
+        if !self.every_child_has_a_key {
+            return Err(ReorderableListViewError::AChildWithoutAKey);
+        }
+        match (self.has_on_reorder_item, self.has_on_reorder) {
+            (true, true) => Err(ReorderableListViewError::BothCallbacks),
+            (false, false) => Err(ReorderableListViewError::NeitherCallback),
+            _ => Ok(()),
+        }
+    }
+
+    /// What a drop reports, deferring to [`reorder_report`] for the arithmetic.
+    pub fn report_drop(&self, old_index: usize, new_index: usize) -> ReorderReport {
+        reorder_report(old_index, new_index, self.has_on_reorder)
+    }
+
+    /// Upstream wraps each item's key in a private global key keyed on the state
+    /// as well, so the same key may appear in two lists at once.
+    pub fn wraps_child_keys() -> bool {
+        true
+    }
+}
+
+// -- material/tooltip_visibility.dart ------------------------------------------------
+
+/// Upstream `TooltipVisibility`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TooltipVisibility {
+    pub visible: bool,
+}
+
+impl TooltipVisibility {
+    /// Upstream `TooltipVisibility.of`, which **defaults to `true` when there is
+    /// no ancestor at all**.
+    ///
+    /// An inherited widget whose absence is a yes. Which is the only workable
+    /// default -- tooltips exist without anybody opting in, and this widget is
+    /// there to turn them *off* for a subtree.
+    pub fn of(enclosing: Option<TooltipVisibility>) -> bool {
+        enclosing.map_or(true, |scope| scope.visible)
+    }
+}
+
+/// Upstream `TooltipState`, whose defaults live on the state class rather than
+/// the widget so the theme can be consulted first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TooltipState {
+    pub visible: bool,
+    pub has_overlay_entry: bool,
+}
+
+impl TooltipState {
+    pub const DEFAULT_VERTICAL_OFFSET: f32 = 24.0;
+    pub const DEFAULT_PREFER_BELOW: bool = true;
+    pub const DEFAULT_SHOW_DURATION_MS: u64 = 1500;
+    pub const DEFAULT_EXIT_DURATION_MS: u64 = 100;
+    /// Upstream's `_defaultWaitDuration` is `Duration.zero`: **a tooltip that
+    /// has been asked for does not make you wait again.** The wait is what a
+    /// hovering pointer serves before the tooltip is asked for at all.
+    pub const DEFAULT_WAIT_DURATION_MS: u64 = 0;
+
+    pub fn new() -> TooltipState {
+        TooltipState {
+            visible: true,
+            has_overlay_entry: false,
+        }
+    }
+
+    /// Upstream `ensureTooltipVisible`, which forwards to the `RawTooltipState`
+    /// behind a global key **and answers `false` if there is not one yet**.
+    ///
+    /// The return value is not "is it visible now" but "was there something to
+    /// ask": a tooltip whose raw state has not been built cannot be shown, and
+    /// saying so is more useful than throwing.
+    pub fn ensure_tooltip_visible(&self, raw_state_built: bool) -> bool {
+        raw_state_built
+    }
+
+    /// Upstream reads `TooltipVisibility.of(context)` in
+    /// `didChangeDependencies`, so an ancestor turning tooltips off reaches this
+    /// one without it being rebuilt by its parent.
+    pub fn did_change_dependencies(&mut self, enclosing: Option<TooltipVisibility>) {
+        self.visible = TooltipVisibility::of(enclosing);
+    }
+}
+
+impl Default for TooltipState {
+    fn default() -> Self {
+        TooltipState::new()
+    }
+}
+
+#[cfg(test)]
+mod material_reorderable_tests {
+    use super::*;
+
+    // -- The same rule, two enforcements ------------------------------------------
+
+    #[test]
+    fn a_child_without_a_key_is_refused_where_it_can_be_seen_up_front() {
+        let mut list = ReorderableListView::new(3);
+        assert_eq!(list.validate(), Ok(()));
+        list.every_child_has_a_key = false;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableListViewError::AChildWithoutAKey)
+        );
+    }
+
+    #[test]
+    fn at_most_one_source_of_extent() {
+        let mut list = ReorderableListView::new(3);
+        assert_eq!(list.validate(), Ok(()), "none is fine");
+
+        list.has_item_extent = true;
+        assert_eq!(list.validate(), Ok(()), "and one is fine");
+
+        list.has_prototype_item = true;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableListViewError::MoreThanOneExtentSource)
+        );
+
+        // Every pair is refused, not just the first.
+        list.has_item_extent = false;
+        list.has_item_extent_builder = true;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableListViewError::MoreThanOneExtentSource)
+        );
+    }
+
+    #[test]
+    fn exactly_one_of_the_two_reorder_callbacks() {
+        let mut list = ReorderableListView::new(3);
+        assert_eq!(list.validate(), Ok(()));
+
+        list.has_on_reorder = true;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableListViewError::BothCallbacks)
+        );
+
+        list.has_on_reorder_item = false;
+        assert_eq!(
+            list.validate(),
+            Ok(()),
+            "the deprecated one alone still works"
+        );
+
+        list.has_on_reorder = false;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableListViewError::NeitherCallback)
+        );
+    }
+
+    #[test]
+    fn the_view_hands_its_drops_to_the_same_arithmetic_as_the_sliver() {
+        let modern = ReorderableListView::new(5);
+        assert_eq!(
+            modern.report_drop(2, 3),
+            ReorderReport::Nothing,
+            "one slot down is where it already was"
+        );
+        assert_eq!(
+            modern.report_drop(2, 4),
+            ReorderReport::Adjusted {
+                old_index: 2,
+                new_index: 3
+            }
+        );
+
+        let mut legacy = ReorderableListView::new(5);
+        legacy.has_on_reorder = true;
+        legacy.has_on_reorder_item = false;
+        assert_eq!(
+            legacy.report_drop(2, 3),
+            ReorderReport::Raw {
+                old_index: 2,
+                new_index: 3
+            },
+            "which the deprecated callback does report, unadjusted"
+        );
+    }
+
+    // -- An inherited widget whose absence is a yes ---------------------------------
+
+    #[test]
+    fn tooltips_are_visible_when_nobody_has_said_anything() {
+        assert!(TooltipVisibility::of(None));
+        assert!(TooltipVisibility::of(Some(TooltipVisibility {
+            visible: true
+        })));
+        assert!(!TooltipVisibility::of(Some(TooltipVisibility {
+            visible: false
+        })));
+    }
+
+    #[test]
+    fn an_ancestor_turning_them_off_reaches_a_state_that_was_not_rebuilt() {
+        let mut state = TooltipState::new();
+        assert!(state.visible);
+        state.did_change_dependencies(Some(TooltipVisibility { visible: false }));
+        assert!(!state.visible);
+        state.did_change_dependencies(None);
+        assert!(state.visible, "and removing the scope restores the default");
+    }
+
+    #[test]
+    fn asking_an_unbuilt_tooltip_to_show_answers_no_rather_than_throwing() {
+        let state = TooltipState::new();
+        assert!(!state.ensure_tooltip_visible(false));
+        assert!(state.ensure_tooltip_visible(true));
+    }
+
+    #[test]
+    fn a_tooltip_asked_for_directly_does_not_wait() {
+        assert_eq!(TooltipState::DEFAULT_WAIT_DURATION_MS, 0);
+        assert_eq!(TooltipState::DEFAULT_SHOW_DURATION_MS, 1500);
+        assert!(
+            TooltipState::DEFAULT_EXIT_DURATION_MS < TooltipState::DEFAULT_SHOW_DURATION_MS,
+            "a tooltip leaves faster than it stays"
+        );
+    }
+}

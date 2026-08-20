@@ -199,6 +199,7 @@ if (enable_unittests) {
       "rustflutter/src/platform.rs",
       "rustflutter/src/progress_indicator.rs",
       "rustflutter/src/radio_group.rs",
+      "rustflutter/src/range_slider.rs",
       "rustflutter/src/range_slider_parts.rs",
       "rustflutter/src/platform_menu_bar.rs",
       "rustflutter/src/presence.rs",

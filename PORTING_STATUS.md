@@ -164,6 +164,66 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 两个滑块叠在一处的时候,它不猜(2026-08-20)
+
+新模块 `range_slider.rs`(`RangeSlider`),并把 `ReorderableListView`、`TooltipVisibility`、
+`TooltipState` 补进已有的 `reorderable_list.rs`。覆盖率 1820/1888(96.4%)。测试 3422。
+
+**先说一件差点重复劳动的事:动手前照例翻了一遍已有的模块,发现 `reorderable_list.rs` 里已经有
+`reorder_report`,而且把 `onReorder` / `onReorderItem` 那条差异记得比我这轮草稿更准。** 于是这一轮只补了
+Material 那层的 `ReorderableListView`,让它去调已有的那份算术,没有再写一遍。**尺子说 MISSING,不等于那
+个文件是空的**——这条第 59 轮就写下来过,这次是它头一回省下事而不是闯出祸。
+
+---
+
+**`_defaultRangeThumbSelector` 的重点,在它会返回 null。**
+
+区间滑块有两个滑块头。**两个头叠在同一处,是读者完全会做的事**(把区间收成一个点),而这时候一次触摸同时
+落在两个触摸区里——**手指底下的位置没法说清你要的是哪一个。**
+
+```dart
+if (inStartTouchTarget && inEndTouchTarget) {
+  final (bool towardsStart, bool towardsEnd) = switch (textDirection) {
+    TextDirection.ltr => (dx < 0, dx > 0),
+    TextDirection.rtl => (dx > 0, dx < 0),
+  };
+  if (towardsStart) return Thumb.start;
+  if (towardsEnd)   return Thumb.end;
+}
+...
+return null;
+```
+
+**它不猜。它谁也不选,然后等着。** 而 `dx` 是拖动至今的位移,**按定义,第一次按下的时候它是 0**。
+
+解开这个结的,是第一次非零的位移:**你往哪边开始动,就说明你抓的是哪一个。** 往左是 start,往右是 end。
+这与其说是启发式,不如说是**唯一能落地的读法**——你手里真攥着的那个头,只可能是从另一个头旁边被拉走的
+那个。
+
+而且看的是**屏幕上的方向,不是数值上的**:RTL 下 start 画在右边,两边就对调。回归行把这一整串钉住了:
+静止时是 None、最小的一点位移就够、RTL 下同样的手势抓到的是另一个,以及**这块含混区间的宽度随滑块头变宽
+而变宽**(10px 的头在 2000px 轨道上隔着 0.1 绰绰有余,300px 的头就够着了)。随后把那个 None 改成硬猜
+Start 跑了一遍,四条红。
+
+---
+
+其余几条:
+
+* **同一条「每个孩子都得有 key」的规则,被用两种机制执行了两遍**:列表构造器上是
+  `assert(children.every((w) => w.key != null))`,而 builder 那条路是 `_itemBuilder` 里逐个抛
+  `FlutterError`。**这不是双保险——builder 的条目在有人滚到它之前根本不存在,唯一能查的时刻就是它出现的
+  那一刻。两个构造器拿到的是同一条规则,和各自唯一能有的那种执行方式。**
+* 那条 extent 的 assert 写成三个「两两都为空」的或:**每一项点的是缺席的那两个**,合起来读是「三个里有
+  两个没给」。等价于「至多给一个」,但要愣一下才看得出来。
+* **`TooltipVisibility.of` 在完全没有祖先的时候返回 `true`。** 一个「不存在即是同意」的 inherited
+  widget——也只能这样:tooltip 本来就不需要谁来开启,这个 widget 是用来给一棵子树**关掉**它的。
+* `TooltipState.ensureTooltipVisible` 在 raw state 还没建出来时返回 `false`。**它答的不是「现在可见吗」,
+  是「有没有东西可问」**——还没建出来的 tooltip 没法显示,如实说比抛出去有用。
+
+验证:`cargo test --lib` 3422 绿,GN `rustflutter_unittests` 3422 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1820 accounted / 68 MISSING(96.4%)。
+
 ### 那条 assert 放过去的那一种,恰好长成它要拦的样子(2026-08-20)
 
 新模块 `stepper.rs`,一次收掉 `stepper.dart`(`ControlsDetails`、`Step`、`Stepper`、`StepStyle`)与
