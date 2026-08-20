@@ -164,6 +164,67 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 三份同一个函数,每份上面都写着「改这儿记得改另外那份」,而它们已经不一样了(2026-08-20)
+
+新模块 `cupertino_app.rs`,收掉 `cupertino/app.dart` 的 `CupertinoApp`、`CupertinoScrollBehavior` 与
+`cupertino/localizations.dart` 的 `CupertinoLocalizations`、`DefaultCupertinoLocalizations`。覆盖率
+1849/1888(97.9%)。测试 3565。
+
+**第 89 轮移的是 Material 那四个,这一轮是它们的对号。把两边并排读,基本就是这一轮的全部内容。**
+
+`buildScrollbar` 一共有三份实现——基类 `ScrollBehavior`、`MaterialScrollBehavior`、
+`CupertinoScrollBehavior`——每一份上面都挂着同一句话:
+
+```dart
+// When modifying this function, consider modifying the implementation in
+// the base class as well.
+```
+
+**而 Material 那份开头多了一层 axis 判断,先把横向的原样返回,再去问平台;基类和 Cupertino 这两份都没
+有。** 于是**同一个横向列表,在 macOS 上的 Cupertino 应用里有滚动条,在 Material 应用里没有。**
+
+**一句要求三份拷贝保持同步的注释,做的是一个共用函数该做的事,而它没做住。** 回归行把这条差异钉成了断言:
+横向上两边不同、纵向上两边逐平台一致。
+
+---
+
+**第二件:第 89 轮的那个猜测,这一轮被上游自己的注释确认了,而且范围更大。**
+
+当时读 Material 的 `buildOverscrollIndicator` 只装饰 Android,我写下的推断是「拿到指示器的,恰好是那些
+物理本身不会告诉你边界在哪的平台」。而 Cupertino 这份的函数体全文是:
+
+```dart
+// No overscroll indicator.
+return child;
+```
+
+**因为 Cupertino 应用在所有六个平台上都用回弹物理,所以哪儿都不需要。** 这条规矩从来不是关于 iOS 的,是
+关于回弹的。**Android 就是那个把话说清楚的例子:同一个平台,在 Material 应用里被装饰,在 Cupertino 应用
+里光着**——差别只在于哪一个给了它回弹。回归行拿这两个并排断言了一次。
+
+顺带:`getScrollPhysics` 里**只有 macOS** 拿到 `ScrollDecelerationRate.fast`。那是触控板——拇指一甩是要
+滑出去的,两指在玻璃上一划是个更小、更可复现的手势,滑一样远就全冲过头了。
+
+---
+
+**第三件,和第 89 轮那条注释错误正好对上。**
+
+Cupertino 这边的 `_shortWeekdays` 和 Material 那边**一模一样的七个字符串,一模一样的
+`weekDay - DateTime.monday` 索引法**——**而这边一句注释都没有。** 那边解释了两遍,两遍都把
+`DateTime.sunday` 写成 6(它是 7)。
+
+**两个文件做着同一件正确的事;只有一个解释了自己,而那个正是能把读者带沟里的那个。**
+
+顺带一条小的:`datePickerDayOfMonth` 返回的是 `' ${...} $dayIndex '`——**首尾各带一个空格,烙在本地化字符
+串里面**,给它将要落进去的那个滚轮用。**一段藏在翻译里的排版。**
+
+而 `CupertinoApp` 没有 `debugShowMaterialGrid` 的对号:**没有 Cupertino 网格叠层,因为 iOS 的设计语言不
+像 Material 那样是照着一个 8dp 网格写出来的。**
+
+验证:`cargo test --lib` 3565 绿,GN `rustflutter_unittests` 3565 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1849 accounted / 39 MISSING(97.9%)。
+
 ### 连默认值本身都没有一个默认的 brightness(2026-08-20)
 
 新模块 `cupertino_theme.rs`,收掉 `cupertino/theme.dart` 的 `CupertinoThemeData`、
