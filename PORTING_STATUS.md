@@ -10453,3 +10453,24 @@ Dart 的 `WidgetStateColor` **是** `Color` 的子类，`Color?` 字段能装下
 API，不是这一套。
 
 7 条测试、7 条变异，第一轮全红。主题 25 → 24。
+
+## 未接线队列之十二：按下的按钮不回落到静止高度（2026-08-21）
+
+上一轮发现 `ResolvedTabBar` 早就写好只是没人调，所以先查了一遍：**21 个解析器里
+只有 1 个是这种情况**——`ResolvedFloatingActionButton`。其余没接线的主题是真的
+连解析器都没有。接上了这一个。
+
+FAB 的五个高度里有一条上游写法值得记：**`hoverElevation ?? elevation`、
+`focusElevation ?? elevation`、`disabledElevation ?? elevation` 都回落到静止高度，
+而 `highlightElevation` 不回落。** 按下是唯一一个「相对手指更低」的状态——
+借用静止高度会把整个按压效果抹平。
+
+顺序也是承重的：disabled 先于 held 先于 hovered 先于 focused。一个按钮可以同时
+处在好几个状态里，而高度只有一个。
+
+8 条测试、6 条变异。**一条一开始活着**：把 widget 那侧 hover 和 focus 的顺序对调，
+没有测试能看见——因为我只单独设过其中一个。补了「两个高度都设、两个状态都在」
+那一例才红。**只设一个字段的测试看不见字段之间的顺序**，这轮和上轮（两个 elevation
+都设）是同一个教训的第二次。
+
+主题 24 → 23。

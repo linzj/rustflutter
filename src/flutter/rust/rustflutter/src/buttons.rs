@@ -252,6 +252,39 @@ impl FloatingActionButton {
         .all(|value| value.is_none_or(|elevation| elevation >= 0.0))
     }
 
+    /// This button's appearance, with the theme and the defaults folded in.
+    ///
+    /// The widget's own elevation for the state in hand comes **first**, ahead
+    /// of the theme's -- which is why this is not simply
+    /// [`ResolvedFloatingActionButton::of`](crate::component_themes::ResolvedFloatingActionButton::of).
+    /// The resolver knows how to pick one of the five by state; the widget
+    /// knows which five it was given.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        states: crate::widget_state::WidgetStates,
+    ) -> crate::component_themes::ResolvedFloatingActionButton {
+        use crate::widget_state::WidgetState;
+        let mut resolved =
+            crate::component_themes::ResolvedFloatingActionButton::of(context, states);
+        // The same order the resolver uses, over the widget's own fields.
+        let mine = if states.contains(WidgetState::Disabled) {
+            self.disabled_elevation.or(self.elevation)
+        } else if states.contains(WidgetState::Pressed) {
+            self.highlight_elevation
+        } else if states.contains(WidgetState::Hovered) {
+            self.hover_elevation.or(self.elevation)
+        } else if states.contains(WidgetState::Focused) {
+            self.focus_elevation.or(self.elevation)
+        } else {
+            self.elevation
+        };
+        if let Some(mine) = mine {
+            resolved.elevation = mine;
+        }
+        resolved
+    }
+
     /// What the button uses, given the theme's own five.
     pub fn resolve(&self, theme: ButtonElevations) -> ButtonElevations {
         ButtonElevations {
@@ -467,5 +500,228 @@ mod tests {
             RawMaterialButton::new().elevations,
             "it is the raw button's five, unchanged"
         );
+    }
+}
+
+#[cfg(test)]
+mod fab_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        FloatingActionButtonTheme, FloatingActionButtonThemeData, ResolvedFloatingActionButton,
+    };
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+    use crate::widget_state::{WidgetState, WidgetStates};
+
+    struct Reader {
+        button: FloatingActionButton,
+        states: WidgetStates,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedFloatingActionButton>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.button.resolved(context, self.states));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(
+        button: FloatingActionButton,
+        data: FloatingActionButtonThemeData,
+        states: WidgetStates,
+    ) -> ResolvedFloatingActionButton {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            FloatingActionButtonTheme::new(
+                data,
+                component(Reader {
+                    button,
+                    states,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn none() -> WidgetStates {
+        WidgetStates::NONE
+    }
+
+    #[test]
+    fn the_state_picks_one_of_the_five_rather_than_blending_them() {
+        // An elevation is a height, and a button that is both hovered and
+        // focused is at one height, not at the average of two.
+        let mut data = FloatingActionButtonThemeData::new();
+        data.elevation = Some(1.0);
+        data.hover_elevation = Some(2.0);
+        data.focus_elevation = Some(3.0);
+        data.highlight_elevation = Some(4.0);
+        data.disabled_elevation = Some(5.0);
+        let fab = || FloatingActionButton::new();
+
+        assert_eq!(resolve(fab(), data.clone(), none()).elevation, 1.0);
+        assert_eq!(
+            resolve(fab(), data.clone(), none().with(WidgetState::Hovered)).elevation,
+            2.0
+        );
+        assert_eq!(
+            resolve(fab(), data.clone(), none().with(WidgetState::Focused)).elevation,
+            3.0
+        );
+        assert_eq!(
+            resolve(fab(), data.clone(), none().with(WidgetState::Pressed)).elevation,
+            4.0
+        );
+        assert_eq!(
+            resolve(fab(), data, none().with(WidgetState::Disabled)).elevation,
+            5.0
+        );
+    }
+
+    #[test]
+    fn disabled_beats_held_beats_hovered_beats_focused() {
+        // A button can be several of these at once and there is only one
+        // height; the order is upstream's.
+        let mut data = FloatingActionButtonThemeData::new();
+        data.hover_elevation = Some(2.0);
+        data.focus_elevation = Some(3.0);
+        data.highlight_elevation = Some(4.0);
+        data.disabled_elevation = Some(5.0);
+
+        let every = none()
+            .with(WidgetState::Hovered)
+            .with(WidgetState::Focused)
+            .with(WidgetState::Pressed)
+            .with(WidgetState::Disabled);
+        assert_eq!(
+            resolve(FloatingActionButton::new(), data.clone(), every).elevation,
+            5.0
+        );
+
+        let busy = none()
+            .with(WidgetState::Hovered)
+            .with(WidgetState::Focused)
+            .with(WidgetState::Pressed);
+        assert_eq!(
+            resolve(FloatingActionButton::new(), data.clone(), busy).elevation,
+            4.0
+        );
+
+        let both = none().with(WidgetState::Hovered).with(WidgetState::Focused);
+        assert_eq!(
+            resolve(FloatingActionButton::new(), data, both).elevation,
+            2.0
+        );
+    }
+
+    #[test]
+    fn the_buttons_own_elevation_beats_the_themes() {
+        let mut data = FloatingActionButtonThemeData::new();
+        data.elevation = Some(1.0);
+        data.hover_elevation = Some(2.0);
+
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        assert_eq!(resolve(mine, data.clone(), none()).elevation, 20.0);
+
+        let mut hovering = FloatingActionButton::new();
+        hovering.hover_elevation = Some(30.0);
+        assert_eq!(
+            resolve(hovering, data, none().with(WidgetState::Hovered)).elevation,
+            30.0
+        );
+    }
+
+    #[test]
+    fn the_buttons_own_five_are_picked_in_the_same_order_as_the_themes() {
+        // A button that is hovered *and* focused takes the hover height, on
+        // its own fields as on the theme's. Setting one of them alone cannot
+        // see the order.
+        let mut mine = FloatingActionButton::new();
+        mine.hover_elevation = Some(30.0);
+        mine.focus_elevation = Some(40.0);
+        let both = none().with(WidgetState::Hovered).with(WidgetState::Focused);
+        assert_eq!(
+            resolve(mine, FloatingActionButtonThemeData::new(), both).elevation,
+            30.0,
+            "hover before focus"
+        );
+
+        let mut disabled_too = FloatingActionButton::new();
+        disabled_too.hover_elevation = Some(30.0);
+        disabled_too.disabled_elevation = Some(50.0);
+        assert_eq!(
+            resolve(
+                disabled_too,
+                FloatingActionButtonThemeData::new(),
+                both.with(WidgetState::Disabled)
+            )
+            .elevation,
+            50.0,
+            "and disabled before everything"
+        );
+    }
+
+    #[test]
+    fn a_buttons_resting_elevation_stands_in_for_the_states_it_did_not_set() {
+        // Upstream's `hoverElevation ?? elevation`: a caller who raised the
+        // button meant it raised, hovered or not.
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        assert_eq!(
+            resolve(
+                mine,
+                FloatingActionButtonThemeData::new(),
+                none().with(WidgetState::Hovered)
+            )
+            .elevation,
+            20.0
+        );
+    }
+
+    #[test]
+    fn a_held_button_does_not_fall_back_to_the_resting_height() {
+        // Upstream's highlight branch has no `?? elevation`: being pressed is
+        // the one state whose height is *lower relative to the finger*, and
+        // borrowing the resting value would flatten the press entirely.
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        assert_eq!(
+            resolve(
+                mine,
+                FloatingActionButtonThemeData::new(),
+                none().with(WidgetState::Pressed)
+            )
+            .elevation,
+            ResolvedFloatingActionButton::HIGHLIGHT_ELEVATION,
+            "the highlight default, not the button's own resting height"
+        );
+    }
+
+    #[test]
+    fn the_defaults_are_upstreams() {
+        let resolved = resolve(
+            FloatingActionButton::new(),
+            FloatingActionButtonThemeData::new(),
+            none(),
+        );
+        assert_eq!(resolved.elevation, 6.0);
+        assert_eq!(resolved.size.min_width, 56.0);
+        assert_eq!(resolved.size.max_width, 56.0, "a FAB is a fixed size");
+        let scheme = crate::theme::ThemeData::fallback().color_scheme;
+        assert_eq!(resolved.background, scheme.primary_container());
+        assert_eq!(resolved.foreground, scheme.on_primary_container());
+    }
+
+    #[test]
+    fn a_negative_elevation_is_refused() {
+        let mut fab = FloatingActionButton::new();
+        fab.elevation = Some(-1.0);
+        assert!(!fab.is_valid());
+        fab.elevation = Some(0.0);
+        assert!(fab.is_valid(), "resting on the surface is allowed");
     }
 }
