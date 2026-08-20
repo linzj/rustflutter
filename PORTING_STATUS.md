@@ -164,6 +164,58 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一边把值重载了,另一边加了个模式(2026-08-20)
+
+新模块 `cupertino_text_field.rs`,收掉 `cupertino/text_field.dart` 的 `CupertinoTextField` 与
+`cupertino/text_form_field_row.dart` 的 `CupertinoTextFormFieldRow`。覆盖率 1854/1888(98.2%)。测试
+3593。
+
+**第 92 轮记下过 Material `TextFormField` 的 `maxLength` 有三种状态:**
+
+```dart
+assert(maxLength == null || maxLength == TextField.noMaxLength || maxLength > 0),
+```
+
+**而 Cupertino 这边的同一行是:**
+
+```dart
+assert(maxLength == null || maxLength > 0),
+```
+
+**这个文件里根本没有 `noMaxLength`**,字段文档也说得干脆:「This value must be either null or greater than
+zero.」
+
+**而这不是漏掉了。** 第 92 轮把 Material 那第三种状态读成「显示计数器,一直往上数,永不拦你」——**而
+`CupertinoTextField` 压根没有计数器**,没有 `buildCounter`,没有任何显示计数的东西。**没有计数器,「只数
+不拦」就没有意思可表达**,那个哨兵在这儿没有活干。**反过来,这也把第 92 轮对那个 -1 的解读坐实了。**
+
+而 Cupertino 确实需要「别真的拦住」的时候,它是用**一个单独的枚举**说的——`MaxLengthEnforcement.none`——
+而不是往那个数字里塞一个魔法值。
+
+**同一个需求的两种设计:一边把值重载了,另一边加了个模式。** 而加模式的那个,是**你还能同时给一个真数字**
+的那个:`maxLength: 10` 配上 `enforcement: none`,「数到 10,但不拦」;Material 那边一旦用了 -1,那个数字
+就没了。回归行把这一点专门钉住了。
+
+---
+
+其余几条:
+
+* 那二十行 assert 在这个类里**出现了两遍**——普通构造器一遍,`.borderless` 一遍,一个字节都不差。**和第
+  94 轮那三份 `buildScrollbar` 对照着看很有意思:** 那三份每份上头都挂着「改这儿记得改别处」的注释,而它
+  们已经不一样了;这两份一句注释也没有,却是一模一样的。**把拷贝拴在一起的不是那句注释**,是距离——那三份
+  在三个文件里,这两份隔着十二行。
+* `CupertinoTextFormFieldRow` 的 `padding` 文档:「If the padding parameter is null, `CupertinoFormRow`
+  constructs its own default padding [...] **If no edge insets are intended, explicitly pass
+  `EdgeInsets.zero`.**」**null 不是零,是「用标准的那个」。** 这是这一轮扫过的第三处同样的区分了,前两处
+  是 icon button 的 `splashRadius`(null 是默认,`Some(0.0)` 被拒)和这个文件自己的 `maxLength`。
+  **每一次,"没设" 和 "设成零" 都是两件事;每一次,API 都只能用散文说出来,因为类型说不出来。**
+* 而 `prefix` 的文档说「iOS guidelines encourage passing a `Text` widget to `prefix` to detail the nature
+  of the input」——**标签在字段旁边,不像 Material 那样浮在字段里面。**
+
+验证:`cargo test --lib` 3593 绿,GN `rustflutter_unittests` 3593 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1854 accounted / 34 MISSING(98.2%)。
+
 ### 同一句话说了三遍,三处都没法检查它(2026-08-20)
 
 新模块 `cupertino_tabs.rs`,收掉 `cupertino/tab_scaffold.dart` 的 `CupertinoTabController`、
