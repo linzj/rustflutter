@@ -1088,6 +1088,176 @@ impl PageRouteBuilder {
     }
 }
 
+// -- Material's two modal routes ----------------------------------------------
+//
+// `ModalBottomSheetRoute` and `DialogRoute` are Material's subclasses of the
+// popup route above. Both dim the page and sit on top of it; what separates
+// them is how long they take and how hard you have to push to get rid of them.
+
+/// Upstream's `_kBottomSheetEnterDuration` and `_kBottomSheetExitDuration`.
+///
+/// **Asymmetric on purpose: 250 in, 200 out.** Arriving should feel deliberate;
+/// leaving should get out of the way. The same shape as the drawer's settle and
+/// the tooltip's fade.
+pub const BOTTOM_SHEET_ENTER_MS: u32 = 250;
+pub const BOTTOM_SHEET_EXIT_MS: u32 = 200;
+
+/// Upstream's `_kMinFlingVelocity` for a sheet -- **nearly twice the drawer's
+/// 365**, though the two numbers were plainly picked apart rather than derived
+/// from each other.
+///
+/// A bottom sheet usually holds something scrollable, and a vertical flick
+/// inside one is far more often a scroll than a dismissal. Making the sheet
+/// harder to fling away is what keeps the two gestures apart.
+pub const BOTTOM_SHEET_MIN_FLING_VELOCITY: f32 = 700.0;
+
+/// Upstream's `_kCloseProgressThreshold`.
+pub const BOTTOM_SHEET_CLOSE_THRESHOLD: f32 = 0.5;
+
+/// Upstream's dialog transition, and it is **shorter than the sheet's**: 150
+/// against 250. A dialog interrupts; a sheet arrives.
+pub const DIALOG_TRANSITION_MS: u32 = 150;
+
+/// Both routes use `Colors.black54` behind them, so a dialog and a sheet dim
+/// the page by exactly the same amount.
+pub const MODAL_BARRIER_ALPHA: u8 = 0x8A;
+
+/// Upstream `ModalBottomSheetRoute`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModalBottomSheetRoute {
+    /// Whether a tap on the scrim closes it. Upstream's `barrierDismissible`
+    /// is literally this field under another name -- one concept named twice,
+    /// once for the sheet and once for the route it lives in.
+    pub is_dismissible: bool,
+    /// Whether the sheet is expected to hold a scrollable and may be dragged
+    /// past the usual height.
+    pub is_scroll_controlled: bool,
+    /// The cap when it is not scroll controlled. Nine sixteenths: enough to be
+    /// a sheet, not so much that the page behind it disappears.
+    pub scroll_control_disabled_max_height_ratio: f32,
+    /// Durations a caller's own controller supplies, if any.
+    pub controller_duration_ms: Option<u32>,
+    pub controller_reverse_duration_ms: Option<u32>,
+}
+
+impl ModalBottomSheetRoute {
+    pub const DEFAULT_MAX_HEIGHT_RATIO: f32 = 9.0 / 16.0;
+
+    pub fn new() -> ModalBottomSheetRoute {
+        ModalBottomSheetRoute {
+            is_dismissible: true,
+            is_scroll_controlled: false,
+            scroll_control_disabled_max_height_ratio:
+                ModalBottomSheetRoute::DEFAULT_MAX_HEIGHT_RATIO,
+            controller_duration_ms: None,
+            controller_reverse_duration_ms: None,
+        }
+    }
+
+    pub fn barrier_dismissible(&self) -> bool {
+        self.is_dismissible
+    }
+
+    pub fn transition_duration_ms(&self) -> u32 {
+        self.controller_duration_ms.unwrap_or(BOTTOM_SHEET_ENTER_MS)
+    }
+
+    /// Upstream falls back through four levels here, and the second is the one
+    /// worth reading: `transitionAnimationController?.reverseDuration ??
+    /// transitionAnimationController?.duration ?? ...`.
+    ///
+    /// **A controller that names only a forward duration is taken to mean it
+    /// for both directions.** Skipping to the default instead would hand the
+    /// caller an asymmetry they never asked for -- their 400ms in and the
+    /// framework's 200ms out.
+    pub fn reverse_transition_duration_ms(&self) -> u32 {
+        self.controller_reverse_duration_ms
+            .or(self.controller_duration_ms)
+            .unwrap_or(BOTTOM_SHEET_EXIT_MS)
+    }
+
+    /// The height cap, or `None` when the sheet controls its own scrolling and
+    /// no ratio applies at all.
+    pub fn max_height(&self, available: f32) -> Option<f32> {
+        if self.is_scroll_controlled {
+            None
+        } else {
+            Some(available * self.scroll_control_disabled_max_height_ratio)
+        }
+    }
+
+    /// Whether a downward flick at this speed dismisses the sheet.
+    pub fn flick_dismisses(velocity: f32) -> bool {
+        velocity >= BOTTOM_SHEET_MIN_FLING_VELOCITY
+    }
+
+    /// Below the fling speed, position decides -- the same three-way shape as
+    /// the drawer.
+    pub fn drag_dismisses(progress: f32) -> bool {
+        progress < BOTTOM_SHEET_CLOSE_THRESHOLD
+    }
+}
+
+impl Default for ModalBottomSheetRoute {
+    fn default() -> Self {
+        ModalBottomSheetRoute::new()
+    }
+}
+
+/// Upstream `DialogRoute`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DialogRoute {
+    pub barrier_dismissible: bool,
+    pub use_safe_area: bool,
+    pub transition_ms: u32,
+}
+
+impl DialogRoute {
+    pub fn new() -> DialogRoute {
+        DialogRoute {
+            barrier_dismissible: true,
+            use_safe_area: true,
+            transition_ms: DIALOG_TRANSITION_MS,
+        }
+    }
+
+    /// Upstream wraps the dialog in `Semantics(hitTestBehavior: opaque)` with
+    /// the comment *"Prevent clicks inside the dialog from passing through to
+    /// the barrier"*.
+    ///
+    /// Note what it is: the **semantics** hit test, not the pointer one. A
+    /// pointer tap already stops at the dialog's own material. What this stops
+    /// is an assistive-technology activation landing inside the dialog and
+    /// reaching the dismissable barrier behind it -- which would close the very
+    /// thing the reader was trying to use.
+    pub fn semantics_hit_test_is_opaque() -> bool {
+        true
+    }
+
+    /// Upstream's curves: `easeOut` **both ways**.
+    ///
+    /// Most transitions in this framework flip the curve on the way back. A
+    /// dialog does not: it decelerates in and decelerates out, so neither
+    /// direction accelerates away from the reader. It is an interruption, and
+    /// an interruption that leaves in a hurry reads as a mistake.
+    pub fn curve_is_symmetric() -> bool {
+        true
+    }
+
+    /// Upstream's `_setAnimation` rebuilds the curved animation only when the
+    /// parent actually changed, disposing the old one. The same "not for the
+    /// same answer" guard that turns up all over this framework.
+    pub fn rebuilds_curve(old_parent: Option<u64>, new_parent: u64) -> bool {
+        old_parent != Some(new_parent)
+    }
+}
+
+impl Default for DialogRoute {
+    fn default() -> Self {
+        DialogRoute::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1631,5 +1801,113 @@ mod tests {
             &[(2, RouteAwareEvent::DidPop)],
             "and 1 hears nothing"
         );
+    }
+    // -- Material's two modal routes -------------------------------------------
+
+    #[test]
+    fn arriving_is_deliberate_and_leaving_gets_out_of_the_way() {
+        assert_eq!(BOTTOM_SHEET_ENTER_MS, 250);
+        assert_eq!(BOTTOM_SHEET_EXIT_MS, 200);
+        assert!(BOTTOM_SHEET_EXIT_MS < BOTTOM_SHEET_ENTER_MS);
+    }
+
+    #[test]
+    fn a_dialog_interrupts_and_a_sheet_arrives() {
+        assert!(DIALOG_TRANSITION_MS < BOTTOM_SHEET_ENTER_MS);
+        assert_eq!(DIALOG_TRANSITION_MS, 150);
+    }
+
+    #[test]
+    fn a_sheet_takes_nearly_twice_the_speed_of_a_drawer_to_fling_away() {
+        // A bottom sheet usually holds something scrollable, and a vertical
+        // flick inside one is far more often a scroll than a dismissal.
+        assert_eq!(BOTTOM_SHEET_MIN_FLING_VELOCITY, 700.0);
+        assert!(
+            BOTTOM_SHEET_MIN_FLING_VELOCITY > 365.0 * 1.9,
+            "nearly twice the drawer's 365, though not exactly: 700 is 1.92 of it"
+        );
+
+        assert!(ModalBottomSheetRoute::flick_dismisses(701.0));
+        assert!(!ModalBottomSheetRoute::flick_dismisses(699.0));
+    }
+
+    #[test]
+    fn below_the_fling_speed_the_position_decides_as_it_does_for_a_drawer() {
+        assert!(ModalBottomSheetRoute::drag_dismisses(0.49));
+        assert!(!ModalBottomSheetRoute::drag_dismisses(0.5));
+    }
+
+    #[test]
+    fn a_controller_naming_only_one_duration_is_taken_to_mean_it_both_ways() {
+        // Skipping to the default instead would hand the caller an asymmetry
+        // they never asked for: their 400 in and the framework's 200 out.
+        let mut route = ModalBottomSheetRoute::new();
+        route.controller_duration_ms = Some(400);
+        assert_eq!(route.transition_duration_ms(), 400);
+        assert_eq!(route.reverse_transition_duration_ms(), 400);
+
+        route.controller_reverse_duration_ms = Some(120);
+        assert_eq!(
+            route.reverse_transition_duration_ms(),
+            120,
+            "and a stated reverse wins over the borrowed one"
+        );
+    }
+
+    #[test]
+    fn with_no_controller_the_frameworks_own_pair_is_used() {
+        let route = ModalBottomSheetRoute::new();
+        assert_eq!(route.transition_duration_ms(), BOTTOM_SHEET_ENTER_MS);
+        assert_eq!(route.reverse_transition_duration_ms(), BOTTOM_SHEET_EXIT_MS);
+    }
+
+    #[test]
+    fn a_scroll_controlled_sheet_has_no_height_ratio_at_all() {
+        let plain = ModalBottomSheetRoute::new();
+        assert_eq!(plain.max_height(1600.0), Some(900.0), "nine sixteenths");
+
+        let mut scrollable = ModalBottomSheetRoute::new();
+        scrollable.is_scroll_controlled = true;
+        assert_eq!(
+            scrollable.max_height(1600.0),
+            None,
+            "no ratio applies, not a larger one"
+        );
+    }
+
+    #[test]
+    fn one_concept_named_twice_for_the_sheet_and_for_its_route() {
+        let mut route = ModalBottomSheetRoute::new();
+        assert!(route.barrier_dismissible());
+        route.is_dismissible = false;
+        assert!(!route.barrier_dismissible());
+    }
+
+    #[test]
+    fn the_opaque_hit_test_is_the_semantics_one_and_not_the_pointer_one() {
+        // A pointer tap already stops at the dialog's own material. What this
+        // stops is an assistive-technology activation inside the dialog
+        // reaching the dismissable barrier behind it -- closing the very thing
+        // the reader was trying to use.
+        assert!(DialogRoute::semantics_hit_test_is_opaque());
+    }
+
+    #[test]
+    fn a_dialog_decelerates_in_and_decelerates_out() {
+        // Most transitions flip the curve on the way back. An interruption that
+        // leaves in a hurry reads as a mistake.
+        assert!(DialogRoute::curve_is_symmetric());
+    }
+
+    #[test]
+    fn the_curve_is_rebuilt_only_when_its_parent_actually_changed() {
+        assert!(DialogRoute::rebuilds_curve(None, 1));
+        assert!(DialogRoute::rebuilds_curve(Some(1), 2));
+        assert!(!DialogRoute::rebuilds_curve(Some(1), 1));
+    }
+
+    #[test]
+    fn a_dialog_and_a_sheet_dim_the_page_by_the_same_amount() {
+        assert_eq!(MODAL_BARRIER_ALPHA, 0x8A);
     }
 }

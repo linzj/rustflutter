@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个匆匆离开的打断,读起来像是弄错了(2026-08-20)
+
+`ModalBottomSheetRoute`(`bottom_sheet.dart`)与 `DialogRoute`(`dialog.dart`)补进 `routes.rs`——它们正
+是第 47 轮那个 `PopupRoute` 的两个 Material 子类。覆盖率 1794/1888(95.0%)。测试 3318。**首次过九成
+五。**
+
+**底部弹层的进出时长是刻意不对称的:进 250、出 200。到达该显得从容,离开该让开路。** 和抽屉的 settle、
+tooltip 的淡出是同一个形状。**而对话框比弹层更短:150。一个对话框是打断,一个弹层是到来。**
+
+**`reverseTransitionDuration` 一路回退四层,而第二层才是要点:**
+
+```dart
+transitionAnimationController?.reverseDuration ?? transitionAnimationController?.duration ?? ...
+```
+
+**一个只说了正向时长的 controller,被当成两个方向都是那个数。** 直接跳到默认值,会递给调用方一个他从没
+要过的不对称——他的 400 进,框架的 200 出。
+
+---
+
+**`DialogRoute` 里那句「Prevent clicks inside the dialog from passing through to the barrier」,加的是
+`Semantics(hitTestBehavior: opaque)`——是**语义**命中测试,不是指针的。**
+
+指针点击本来就停在对话框自己的 Material 上;**这里挡的是一次辅助技术的激活落在对话框内部、却够到了后面那
+层可点掉的遮罩——那会关掉读者正想用的东西。** 精确地说出这一点,比笼统地说「防止点击穿透」有用。
+
+**而它的曲线两个方向都是 `easeOut`。** 这个框架里多数转场会在返回时把曲线翻过来,对话框不翻:**进来减
+速,出去也减速,哪个方向都不会从读者面前加速逃走。它是一次打断,而一个匆匆离开的打断,读起来像是弄错
+了。**
+
+---
+
+**一处自查:** 我写了「弹层的甩动阈值是抽屉的两倍」并按 `> 2 × 365 - 1` 断言,红了。**700 不是 730,是
+365 的 1.92 倍。** 改成「将近两倍」并按 1.9 断言,同时在文档里补了一句:**这两个数显然是各自挑的,不是从
+对方推出来的。**
+
+**这正是一条真断言该做的事**——把一句听上去顺口、其实只是差不多的话拦下来。
+
+其余两条:`barrierDismissible` 就是 `isDismissible`(**一个概念在两层各有一个名字**);而
+scroll-controlled 的弹层**根本没有高度比例**,不是换了个更大的比例。
+
+验证:`cargo test --lib` 3318 绿,GN `rustflutter_unittests` 3318 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1794 accounted / 94 MISSING(95.0%)。
+
 ### 布局变了,是因为地方不够了,不是因为谁做了选择(2026-08-20)
 
 新模块 `bottom_bars.rs`,一次收掉底部那三条:`BottomNavigationBar`(M2)、`NavigationBar`(M3)、
