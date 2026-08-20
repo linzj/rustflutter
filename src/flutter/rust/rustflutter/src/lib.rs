@@ -24,6 +24,7 @@
 mod engine_test_stubs;
 
 pub mod about;
+pub mod action_buttons;
 pub mod actions;
 pub mod adapter;
 pub mod animated_scroll_view;

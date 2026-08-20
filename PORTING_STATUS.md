@@ -164,6 +164,51 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 图标跟主题走,标签跟操作系统走(2026-08-20)
+
+转入 material 层。新模块 `action_buttons.rs`,一次收掉 `material/action_buttons.dart` 全部八个类:
+`BackButton`/`BackButtonIcon`、`CloseButton`/`CloseButtonIcon`、`DrawerButton`/`DrawerButtonIcon`、
+`EndDrawerButton`/`EndDrawerButtonIcon`。覆盖率 1750/1888(92.7%)。测试 3171。
+
+**这个文件值得读的是一处反转和一处区分。**
+
+**反转:`onPressed` 为 null 不会禁用这些按钮。** 在一个普通的 `IconButton` 上,null 回调会把它变灰;而
+这里的基类把处理器包了一层,null 会落到那件显而易见的事上去。**一个没有回调的返回按钮,仍然是一个返回
+按钮**——调用方什么都不给,说的不是「什么也别做」,而是「做返回按钮该做的事」。
+
+**区分:图标按 `Theme.of(context).platform` 选,而语义标签按 `defaultTargetPlatform` 选。** 上游把理由
+写在注释里:「This can't use the platform from Theme because it is the Android OS that expects the
+duplicated tooltip and label.」
+
+**一次主题覆写改变的是应用长什么样;它不该改变操作系统的无障碍服务被告知了什么。** 一个打扮成 iOS 的应
+用跑在 Android 上,读它的仍然是 TalkBack。回归行专门构造了这一对会「不一致」的情形:iOS 的尖角箭头,加
+Android 的标签。
+
+其余几条:
+
+* **`BackButton` 和 `CloseButton` 做的是完全同一件事**(`Navigator.maybePop`),只在图标和 tooltip 上不
+  同——**同一个动作,被给了两个意思**:「回到你刚才在的地方」和「把这个关掉」。而 **tooltip 是唯一把它们
+  分开的东西。**
+* **是 `maybePop` 不是 `pop`:** 一条拒绝返回的路由(比如第 62 轮那个 `canPop: false` 的 `PopScope`)会被
+  尊重,而不是被压过去。
+* **Web 上永远是那支朴素的箭头**,不看平台。**Mac 上的一个网页仍然是一个网页**,而浏览器自己有一个返回
+  的东西,不该跟它撞脸。
+* **图标被拆成独立的 widget,理由只有一个:`ActionIconTheme` 可以一次把四个全换掉。**
+
+---
+
+**一处工具上的发现,值得记进规矩:尺子不展开宏。**
+
+我先用一个 `macro_rules!` 把这八个类生成了出来——**代码能编译、测试能过,而覆盖率纹丝不动,还是
+MISSING:8。** 之前记过尺子「不展开宏体」,这一轮是第一次真的撞上。
+
+改成把八个显式写出来之后立刻变成 covered:8。**而这样其实更好:八个能被搜到的名字,比一个宏加四行调用更
+容易读**——这也正是上游把它们写成八个类而不是一个带参数的类的理由:**调用点上的那个名字,就是重点。**
+
+验证:`cargo test --lib` 3171 绿,GN `rustflutter_unittests` 3171 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1750 accounted / 138 MISSING(92.7%)。
+
 ### widgets 层只剩一个文件了(2026-08-20)
 
 一次收掉 widgets 层最后五个非引擎类:`Placeholder`、`RawKeyboardListener`、
