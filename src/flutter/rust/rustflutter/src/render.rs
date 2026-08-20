@@ -1924,6 +1924,16 @@ impl RenderRef {
         Rc::ptr_eq(&self.render, &other.render)
     }
 
+    /// Runs `f` on the object behind this handle.
+    ///
+    /// The handle is what everything holds and the object is what answers, so
+    /// something has to bridge the two for a caller that needs to ask the
+    /// object a question the handle does not forward -- `visit_children` from
+    /// a parent during [`RenderRef::transform_to`], or a downcast in a test.
+    pub fn with<R>(&self, f: impl FnOnce(&dyn RenderBox) -> R) -> R {
+        f(&**self.render.borrow())
+    }
+
     /// Says this object's layout is no longer good, so the next frame does it
     /// again even at the same constraints.
     ///

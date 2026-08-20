@@ -190,6 +190,7 @@ pub mod text_editing_intents;
 pub mod text_selection;
 pub mod text_selection_controls;
 pub mod text_toolbars;
+pub mod theatre;
 pub mod theme;
 pub mod theme_bridge;
 pub mod ticker;
