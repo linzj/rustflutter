@@ -164,6 +164,82 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 那个标志按「因为什么」命名,不按「是不是」命名(2026-08-20)
+
+新模块 `tabs.rs`,一次收掉 `tab_controller.dart`(`TabController`、`DefaultTabController`)、
+`tabs.dart`(`Tab`、`TabBarScrollController`、`TabBarView`、`TabPageSelectorIndicator`、
+`TabPageSelector`)与 `tab_indicator.dart`(`UnderlineTabIndicator`)。覆盖率 1811/1888(95.9%)。
+测试 3382。
+
+**`indexIsChanging` 的文档念起来是自相矛盾的:**
+
+> True while we're animating from `previousIndex` to `index` **as a consequence of calling
+> `animateTo`**. [...] It is **false** when `offset` is changing as a consequence of the user
+> dragging (and "flinging") the `TabBarView`.
+
+拖动的时候选中项**确实在变**,而这个叫「index 正在变」的东西是 false。**因为它问的不是「在不在变」,是
+「在按哪一种方式变」——而这两种方式的算法根本不是同一个。**
+
+`TabPageSelector._buildTabIndicator` 把这件事摊开了:一排小圆点,两条分支,两套完全不同的算术。
+
+* **点选那一支**:进度从 previousIndex 走到 index,**中间被跨过去的那些标签一个都不亮**。从第 0 页点到
+  第 4 页,1、2、3 全程是暗的。
+* **拖动那一支**:能亮的只有当前那个和它紧挨着的一个,**因为一次拖动本来就到不了更远**。当前的按
+  `1 - |offset|` 暗下去,邻居按 `|offset|` 亮起来,两个加起来恒为 1。
+
+**这两条谁也推不出谁**:点选那一支需要 previousIndex,拖动那一支需要 offset,而各自在对方的处境里都没有
+意义。所以这个标志必须存在,而且必须按「因为什么」命名。
+
+配套还有一条:`offset` 的 setter 里写着 `assert(!indexIsChanging)`。**两种方式不只是被区分开,它们是互斥
+的——点选的动画还在跑的时候,你没法拖。**
+
+---
+
+**第二件事:一句文档和紧挨着它的那条 assert 说的不是一回事,而输的是文档。**
+
+```dart
+/// The `initialIndex` must be valid given [length]. If [length] is zero, then
+/// `initialIndex` must be 0 (the default).
+...
+assert(initialIndex >= 0 && (length == 0 || initialIndex < length)),
+```
+
+**`length == 0` 这一项把范围检查整个关掉了。** 于是 `TabController(length: 0, initialIndex: 47)` 是能造出
+来的,而且**后面没有任何一步会去修它**。写这条移植的时候我按文档写了测试,结果红了——红的是测试,不是实现。
+
+同一个洞在 `_changeIndex` 里又出现一次,而那里真正堵住它的是另一行:
+
+```dart
+if (value == _index || length < 2) return;
+```
+
+**`length < 2` 读起来像个抠性能的短路,它其实是那条不变量唯一的看守。** 没有它,一个零标签的 controller
+连 `index = 47` 都会照收。回归行把这两条分别钉住了:零标签的赋值被拒,**而那个 47 仍然留在那儿**——它只是
+不能再动,不是被修好了。
+
+---
+
+其余几条:
+
+* **`_indexIsChangingCount` 是个计数器,不是布尔。** 因为动画会叠:第一个还没跑完就点了第二个,这时有两次
+  变更在飞。**用布尔的话,先完成的那个会把还在跑的那个也报成「停了」。**
+* 而不带动画的那一支写成 `+= 1; 赋值; -= 1;`——**计数事后永远看不出非零,但被那次赋值叫醒的监听者看得
+  见。那对增减不是为动画的时长准备的,是为那一次通知准备的。**
+* `UnderlineTabIndicator` 的 `lerpFrom` / `lerpTo` **都没把 `borderRadius` 传给新建的那个**,于是它退回
+  null:**两个圆角下划线之间做动画,整个过程是方的,落地才弹回圆角。** 按上游的样子移植并记下——在这儿单方
+  面修好,只会让两边在动画中途对不上。
+* `TabBarScrollController` 整个类的存在理由写在它自己的注释里:**「只是为了处理可滚动 TabBar 带非零
+  initialIndex 的情况」**。因为**要滚到哪儿才能看见第五个标签,得先知道 bar 有多宽,而那要等布局跑完。**
+  所以位置先不带 pixels 建出来,等尺寸到了再自己纠正。而它下面还压着一条:**视口在真尺寸算出来之前会短暂
+  地是 0**,少了那个 guard,第一次布局就会从一个不该信的位置弹射出去——**而且只在 release 里看得见。**
+* `Tab` 的 `assert(text == null || child == null)`:**text 不是 child 的简写,是它的替代品**,两个都给是
+  错误,不是优先级问题。而 72 那个高度是**给「上下摞两样东西」准备的,不是给「有图标」准备的**——只有图标
+  的标签仍然是 46。
+
+验证:`cargo test --lib` 3382 绿,GN `rustflutter_unittests` 3382 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1811 accounted / 77 MISSING(95.9%)。
+
 ### 那句「小心别重排」保护的四步里,有一步在默认值下根本看不出来(2026-08-20)
 
 新模块 `buttons.rs`,一次收掉 `RawMaterialButton`(`button.dart`)、`MaterialButton`

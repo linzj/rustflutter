@@ -165,6 +165,7 @@ pub mod snapshot_widget;
 pub mod stack_frame;
 pub mod stretch_effect;
 pub mod table;
+pub mod tabs;
 pub mod tap_and_drag;
 pub mod tap_region;
 pub mod text_editing_intents;

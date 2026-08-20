@@ -262,6 +262,7 @@ if (enable_unittests) {
       "rustflutter/src/snapshot_widget.rs",
       "rustflutter/src/stretch_effect.rs",
       "rustflutter/src/table.rs",
+      "rustflutter/src/tabs.rs",
       "rustflutter/src/text_selection.rs",
       "rustflutter/src/text_selection_controls.rs",
       "rustflutter/src/theme.rs",
