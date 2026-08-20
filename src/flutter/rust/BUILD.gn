@@ -137,6 +137,7 @@ if (enable_unittests) {
       "rustflutter/src/flexible_space_bar.rs",
       "rustflutter/src/focus.rs",
       "rustflutter/src/form.rs",
+      "rustflutter/src/focus_node.rs",
       "rustflutter/src/foundation.rs",
       "rustflutter/src/framework.rs",
       "rustflutter/src/icon_data.rs",

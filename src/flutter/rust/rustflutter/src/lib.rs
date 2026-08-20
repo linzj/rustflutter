@@ -58,6 +58,7 @@ pub mod expansion_panel;
 pub mod fab_location;
 pub mod flexible_space_bar;
 pub mod focus;
+pub mod focus_node;
 pub mod form;
 pub mod foundation;
 pub mod framework;
