@@ -164,6 +164,67 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 2.975 旁边一句话都没有(2026-08-20)
+
+新模块 `cupertino_controls.rs`,收掉 `cupertino/thumb_painter.dart` 的 `CupertinoThumbPainter`、
+`cupertino/radio.dart` 的 `CupertinoRadio`、`cupertino/sliding_segmented_control.dart` 的
+`CupertinoSlidingSegmentedControl` 与 `cupertino/icons.dart` 的 `CupertinoIcons`。覆盖率 1884/1888
+(99.8%)。**只剩 4 类。**
+
+```dart
+const double _kOuterRadius = 7.0;
+const double _kInnerRadius = 2.975;
+```
+
+**四位有效数字,挨着一个平平的 7.0,上头一句注释都没有。** 第 97 轮在 `cupertino/sheet.dart` 里见过同样形状
+的数字——`_kSheetScaleFactor = 0.0835`——**那一个把「量的什么、跟什么比、在哪台模拟器上、哪个 iOS 版本」全
+写清楚了。这一个同样明显是量出来的,却什么也没说。**(它是外圈的 0.425 倍——这是量出来的比例,不是选出来
+的。)
+
+**同一个团队,同一层,同一种数字,两种交代方式。** 第 97 轮说「数字的精度会告诉你它是怎么来的」,这一轮补
+上后半句:**精度告诉你它是量的,但只有注释能告诉你量的是什么。**
+
+---
+
+**两个 thumb,画在不同的高度上。**
+
+滑块的 thumb 有**三层**阴影,开关的有**两层**,而**第一层一模一样**,之后分岔。滑块多出来的那层是
+`offset (0, 1)`、blur 1 的贴身接触阴影——**那是「一个被拈起来的东西」的画法**;开关的 thumb 只在轨道里滑,
+拿的是更扁的那一对。
+
+而边框那一笔:`canvas.drawRRect(thumbShape.inflate(0.5), ...)`,**画在填充之前**。**它不是描边,是一个稍大
+一点的形状垫在后面**——外扩半像素,再被填充盖住,剩下的那根发丝完全在 thumb 之外,而不是骑在边上。第 85 轮
+toggle buttons 是先内缩再描边,**同一个目的,两头走。**
+
+还有一句注释值得留:
+
+> Paint RRects instead of RSuperellipses here, because practically `CupertinoSlider` only draws
+> circular thumbs.
+
+iOS 的形状通常是超椭圆,**而圆是唯一一种「用便宜的那个图元不是近似、就是同一个图形」的情况。**
+
+---
+
+其余两条:
+
+* `assert(children.length >= 2)`——**二是「还算个选择」的最小数目。** 和第 84 轮 `TabController` 里那个
+  `length < 2` 是同一个门槛,只不过那边藏在 `if (value == _index || length < 2) return;` 里,**还阴差阳错
+  成了唯一守住那条不变量的东西**;这边是在构造器里明说的,那是更该待的地方。
+* 而 `didUpdateWidget` 开头那条 `assert(oldWidget.key == widget.key)`——**它不可能失败。**
+  `didUpdateWidget` 只在 `Element.update` 之后才到得了,而那只在 `Widget.canUpdate` 为真时才到得了,
+  那就是 `oldWidget.runtimeType == newWidget.runtimeType && oldWidget.key == newWidget.key`。**框架在调用
+  之前已经要求过一模一样的事。** 这是一条穿着 assert 外衣的文档——无害,而且恰好是这个移植对自己测试那条规
+  矩的镜像:**一条不可能失败的检查,在测试里是缺陷,在这里只是冗余。** 按「陈述不变量」而不是「检查」移植
+  了。
+* `CupertinoIcons` 同时给出 `iconFont` 和 **`iconFontPackage = 'cupertino_icons'`**。Material 的图标随框架
+  一起发,靠 pubspec 里 `uses-material-design: true` 打开;**这些住在一个独立的 pub 包里。** 同一种失败——
+  一个字体里的码位,而构建没把那个字体带上——**一边是构建开关,一边是依赖,两边类型系统都看不见。**(1,322
+  个,对 Material 的 8,825 个。)
+
+验证:`cargo test --lib` 3674 绿,GN `rustflutter_unittests` 3674 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1884 accounted / 4 MISSING(99.8%)。
+
 ### 是「向下」,不是「竖直」(2026-08-20)
 
 新模块 `platform_tree.rs`,收掉 `rendering/sliver_tree.dart` 的 `TreeSliverNodeParentData`、

@@ -50,6 +50,7 @@ pub mod controls;
 pub mod crossfade;
 pub mod cupertino;
 pub mod cupertino_app;
+pub mod cupertino_controls;
 pub mod cupertino_pickers;
 pub mod cupertino_route;
 pub mod cupertino_sheet;
