@@ -394,6 +394,13 @@ pub struct LayerCalls {
     /// Layers recorded into again in place, by a boundary that kept one and
     /// had something under it change.
     pub rerecorded: u32,
+    /// Rectangles drawn onto a canvas, square and rounded together.
+    ///
+    /// The layer counters above say how a frame was *structured*; this says how
+    /// much was drawn into it. Without it a claim like "a zero-width border is
+    /// not drawn" has nothing to be checked against, because the colours and
+    /// the geometry go straight into a display list nothing here reads back.
+    pub rects: u32,
 }
 
 // The three below are what a *dependent* crate's tests read -- this module is
@@ -417,7 +424,7 @@ thread_local! {
         const { std::cell::Cell::new(LayerCalls {
             transforms: 0, offsets: 0, clip_rects: 0, clip_rounded_rects: 0,
             clip_paths: 0, opacities: 0, pops: 0, display_lists: 0,
-            retainable: 0, retained: 0, rerecorded: 0,
+            retainable: 0, retained: 0, rerecorded: 0, rects: 0,
         }) };
 }
 
@@ -493,6 +500,14 @@ fn record_picture() {
 #[allow(dead_code)]
 pub fn layer_calls() -> LayerCalls {
     LAYER_CALLS.with(|calls| calls.get())
+}
+
+fn count_rect() {
+    LAYER_CALLS.with(|calls| {
+        let mut counts = calls.get();
+        counts.rects += 1;
+        calls.set(counts);
+    });
 }
 
 /// Starts counting again. Thread-local, so tests do not need to coordinate.
@@ -698,6 +713,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rect(
     bottom: f32,
     paint: *const RfPaint,
 ) {
+    count_rect();
 }
 
 #[unsafe(no_mangle)]
@@ -710,6 +726,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rrect(
     radius: f32,
     paint: *const RfPaint,
 ) {
+    count_rect();
 }
 
 #[unsafe(no_mangle)]

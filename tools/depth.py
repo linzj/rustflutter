@@ -187,6 +187,22 @@ def rust_bodies():
     return bodies
 
 
+# Where a class's members plausibly live besides the type of the same name.
+#
+# The single biggest source of false positives is a member answered somewhere
+# else: `MediaQuery`'s sixty accessors are `MediaQueryData`'s fields, `ListTile`
+# reads its defaults off `ResolvedListTile`, and half of `widgets/basic.dart` is
+# ported as free functions with no type at all.  Crediting these does not make
+# the ruler strict -- it still cannot see a member answered on a type whose name
+# shares nothing with upstream's -- but it stops it reporting the same four
+# shapes over and over.
+def companion_body(rust, name):
+    parts = [rust.get(candidate, '')
+             for candidate in (name, name + 'Data', name + 'State',
+                               'Resolved' + name, 'Render' + name)]
+    return ''.join(parts)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--top', type=int, default=20)
@@ -222,7 +238,7 @@ def main():
             wanted = dart_members(body)
             if len(wanted) < args.min_members:
                 continue
-            have = len(RUST_MEMBER.findall(rust.get(name, '')))
+            have = len(RUST_MEMBER.findall(companion_body(rust, name)))
             rows.append((have / len(wanted), have, len(wanted), name, relative))
 
     rows.sort()

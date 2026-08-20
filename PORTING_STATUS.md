@@ -10049,3 +10049,39 @@ secondary 放另一个、subtitle/dense/selected/enabled 往下传给 `ListTile`
 **尺子的比值没动**（SwitchListTile 仍是 3/46）——成员在 `ControlTile` 和
 `ControlListTile` 上，不在同名类型上，这正是 `depth.py` 文档里写明的盲点之一。
 比值是待读清单，不是判决。
+
+## `covered` 桶重读之三：`Switch` 不读自己的主题（2026-08-21）
+
+先给 `depth.py` 加了「同伴类型」：类 `X` 的成员也可能答在 `XData`、`XState`、
+`ResolvedX`、`RenderX` 上。加上之后 `MediaQuery`、`Flex`、`AppBar`、`TabBar`、
+`InputDecorationTheme` 这一批假阳性直接掉出榜单——不是因为尺子变松了，是因为它
+本来就在报同一种盲点报了十几次。
+
+然后 `Switch`（4/30）：**`SwitchThemeData` 完整移植着**——`thumb_color`、
+`track_color`、`track_outline_color`、`track_outline_width`、`padding`、
+`splash_radius`、`material_tap_target_size` 全在，`SwitchTheme::of` 也在——
+**而控件一个都不读**，颜色全是从 app theme 硬取的 `theme.primary` / `theme.outline`。
+ListWheel、ListTile 之后同一形状第三次。
+
+补上：读 `SwitchTheme`、`enabled`（上游的 `onChanged == null`）、四个单控件颜色
+覆盖（`activeColor`/`activeTrackColor`/`inactiveThumbColor`/`inactiveTrackColor`）。
+比值 4/30 → 11/30。
+
+**颜色在这个测试架子里本来是看不见的**：stub 引擎只记「开了几个 layer」，不记画
+了什么颜色。所以把解析从 `build` 里提出来成 `Switch::resolved` —— `build` 调它，
+测试也调它，**测的是真路径而不是一个 getter**。9 条测试，8 条变异。
+
+**M6 活了下来，而它指向的是我自己的多余代码**：我在 `build` 里写了
+`if outline_width > 0.0` 才画边框，而 `RenderDecoratedBox` 里**本来就有一道
+`if self.border_width > 0.0`**。按老规矩，自己的不可证伪代码删掉。
+
+但删之前先问了一句：**那道我准备去依赖的闸，自己有测试吗？** 变异掉它——
+全绿。没有。整个 crate 里「零宽边框不画」这条没有任何东西在测，而且**谁也测不
+了**：stub 的 `rf_canvas_draw_rect` 是个空函数。
+
+所以给 stub 加了一个 `rects` 计数器。`LayerCalls` 原来只说一帧是怎么**搭**的，
+现在也说往里**画**了多少。加完之后那条变异红了，而且这解锁的不止这一条——
+任何「这个东西画了/没画」的断言现在都有东西可对。
+
+同 `in_layer` 放宽到 `pub(crate)` 那次一样：**为了让一条断言可证伪而动一下工具，
+比留一条不可证伪的断言划算。**

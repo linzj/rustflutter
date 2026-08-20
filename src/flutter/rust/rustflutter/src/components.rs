@@ -793,11 +793,50 @@ impl Component for Label {
 
 // -- Switch -------------------------------------------------------------------
 
-/// An on/off control.
+/// What one switch's appearance came out as. Upstream has no such type -- it
+/// resolves each property where it is used -- and having one here is what lets
+/// the decision be checked without painting it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwitchColors {
+    pub track: Color,
+    pub knob: Color,
+    /// `None` when the theme named no outline colour.
+    pub outline: Option<Color>,
+    /// Zero when none was asked for, which is what stops the border being drawn.
+    pub outline_width: f32,
+    pub padding: EdgeInsets,
+}
+
+/// Upstream `Switch`: an on/off control.
+///
+/// # The colours come from the theme through a state, not from the value
+///
+/// Upstream's `thumbColor`, `trackColor` and `trackOutlineColor` are
+/// `WidgetStateProperty`s, and the state they are resolved against carries
+/// `selected` **and** `disabled` together. That is why a disabled switch that
+/// is on and a disabled switch that is off can be told apart, and why they are
+/// both distinguishable from the enabled pair -- four appearances, from two
+/// bits, out of one property. Reading the value alone would give two.
+///
+/// The per-switch `activeColor` and `inactiveTrackColor` sit *above* the theme
+/// and are the plain way to change one switch; upstream keeps them because a
+/// caller with one switch to recolour should not have to write a state
+/// property to do it.
 pub struct Switch {
     id: u64,
     value: bool,
     handlers: PointerHandlers,
+    /// Upstream's `onChanged == null`, which is how a switch is disabled --
+    /// there is no separate flag.
+    enabled: bool,
+    /// Upstream's `activeColor`: the thumb when on.
+    active_color: Option<Color>,
+    /// Upstream's `activeTrackColor`.
+    active_track_color: Option<Color>,
+    /// Upstream's `inactiveThumbColor`.
+    inactive_thumb_color: Option<Color>,
+    /// Upstream's `inactiveTrackColor`.
+    inactive_track_color: Option<Color>,
 }
 
 impl Switch {
@@ -806,6 +845,108 @@ impl Switch {
             id,
             value,
             handlers: PointerHandlers::new(),
+            enabled: true,
+            active_color: None,
+            active_track_color: None,
+            inactive_thumb_color: None,
+            inactive_track_color: None,
+        }
+    }
+
+    /// Upstream's `onChanged: null`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_active_color(mut self, color: Color) -> Self {
+        self.active_color = Some(color);
+        self
+    }
+
+    pub fn with_active_track_color(mut self, color: Color) -> Self {
+        self.active_track_color = Some(color);
+        self
+    }
+
+    pub fn with_inactive_thumb_color(mut self, color: Color) -> Self {
+        self.inactive_thumb_color = Some(color);
+        self
+    }
+
+    pub fn with_inactive_track_color(mut self, color: Color) -> Self {
+        self.inactive_track_color = Some(color);
+        self
+    }
+
+    /// The states this switch resolves its theme properties against.
+    ///
+    /// Upstream's `_SwitchState.statesController`, reduced to the two bits this
+    /// crate can know without a pointer-tracking state object: whether it is on
+    /// and whether it can be used.
+    pub fn states(&self) -> crate::widget_state::WidgetStates {
+        let mut states = crate::widget_state::WidgetStates::NONE;
+        if self.value {
+            states = states.with(crate::widget_state::WidgetState::Selected);
+        }
+        if !self.enabled {
+            states = states.with(crate::widget_state::WidgetState::Disabled);
+        }
+        states
+    }
+
+    /// Everything the switch's appearance is decided by, once.
+    ///
+    /// Pulled out of `build` so it can be asked as well as painted: the engine
+    /// this crate's tests link records how many layers were opened and not what
+    /// colour anything was, so a test that painted a switch could not see the
+    /// answer. `build` calls this, so asking it is asking the real path.
+    pub fn resolved(
+        &self,
+        switch_theme: crate::component_themes::SwitchThemeData,
+        theme: &Theme,
+    ) -> SwitchColors {
+        // Upstream's order, and it is a real precedence and not a formality:
+        // the one-off colour on this switch, then the theme's state property,
+        // then the control's own default. A caller with one switch to recolour
+        // writes a colour; a caller restyling every switch writes a property.
+        let states = self.states();
+        let value = self.value;
+        let resolve = |property: &Option<crate::widget_state::StateProperty<Option<Color>>>| {
+            property
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+        };
+
+        SwitchColors {
+            track: if value {
+                self.active_track_color
+            } else {
+                self.inactive_track_color
+            }
+            .or_else(|| resolve(&switch_theme.track_color))
+            .unwrap_or(if value { theme.primary } else { theme.outline }),
+            knob: if value {
+                self.active_color
+            } else {
+                self.inactive_thumb_color
+            }
+            .or_else(|| resolve(&switch_theme.thumb_color))
+            .unwrap_or(if value {
+                theme.on_primary
+            } else {
+                theme.text_muted
+            }),
+            outline: resolve(&switch_theme.track_outline_color),
+            outline_width: switch_theme
+                .track_outline_width
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(0.0),
+            padding: switch_theme
+                .padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::all(4.0)),
         }
     }
 
@@ -835,14 +976,22 @@ impl Component for Switch {
         let theme = theme_of(context);
         let value = self.value;
         let id = self.id;
-        let handlers = self.handlers.clone();
-        let track = if value { theme.primary } else { theme.outline };
-        let knob = if value {
-            theme.on_primary
+        // Upstream builds without callbacks when `onChanged` is null, so a
+        // disabled switch is drawn and does not answer.
+        let handlers = if self.enabled {
+            self.handlers.clone()
         } else {
-            theme.text_muted
+            PointerHandlers::new()
         };
-        let tap = self.handlers.on_tap.clone();
+        let resolved = self.resolved(crate::component_themes::SwitchTheme::of(context), &theme);
+        let SwitchColors {
+            track,
+            knob,
+            outline,
+            outline_width,
+            padding,
+        } = resolved;
+        let tap = handlers.on_tap.clone();
 
         let switch = leaf(move || {
             // The knob is a positioned child of a row rather than a Stack, so
@@ -861,16 +1010,19 @@ impl Component for Switch {
                 row.with_main_axis_alignment(MainAxisAlignment::Start)
                     .push(knob_box)
             };
-            Pointer::new(
-                id,
-                Container::new()
-                    .with_size(48.0, 28.0)
-                    .with_color(track)
-                    .with_corner_radius(14.0)
-                    .with_padding(EdgeInsets::all(4.0))
-                    .with_child(row),
-            )
-            .with_handlers(handlers.clone())
+            let mut container = Container::new()
+                .with_size(48.0, 28.0)
+                .with_color(track)
+                .with_corner_radius(14.0)
+                .with_padding(padding)
+                .with_child(row);
+            // No width check here: `RenderDecoratedBox` already skips a
+            // zero-width border, and a second guard on top of that one could
+            // not be shown to do anything.
+            if let Some(outline) = outline {
+                container = container.with_border(outline_width, outline);
+            }
+            Pointer::new(id, container).with_handlers(handlers.clone())
         });
 
         // A switch says which way it is, and that is the whole point of
@@ -2341,6 +2493,223 @@ mod tests {
     use super::*;
     use crate::framework::{ElementTree, provide};
     use crate::render::{BoxConstraints, RenderBox};
+
+    // -- The switch's colours ----------------------------------------------------------
+
+    use crate::component_themes::SwitchThemeData;
+    use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+    /// A state property that answers one colour when selected and another
+    /// otherwise -- which is what a real switch theme is.
+    fn by_selection(on: Color, off: Color) -> StateProperty<Option<Color>> {
+        StateProperty::resolve_with(move |states: WidgetStates| {
+            Some(if states.contains(WidgetState::Selected) {
+                on
+            } else {
+                off
+            })
+        })
+    }
+
+    fn resolved(switch: Switch, data: SwitchThemeData) -> SwitchColors {
+        switch.resolved(data, &Theme::dark())
+    }
+
+    const MINE: Color = Color::argb(0xFF, 0x99, 0x88, 0x77);
+    const ON: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+    const OFF: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+
+    #[test]
+    fn the_states_carry_both_bits_so_four_appearances_come_out_of_two() {
+        // Reading the value alone would give two. A disabled switch that is on
+        // and a disabled switch that is off are different pictures, and so is
+        // each from its enabled twin.
+        let all = [
+            Switch::new(1, true).states(),
+            Switch::new(1, false).states(),
+            Switch::new(1, true).with_enabled(false).states(),
+            Switch::new(1, false).with_enabled(false).states(),
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "four states, all different");
+            }
+        }
+        assert!(all[0].contains(WidgetState::Selected));
+        assert!(!all[0].contains(WidgetState::Disabled));
+        assert!(all[2].contains(WidgetState::Disabled));
+    }
+
+    #[test]
+    fn with_no_theme_a_switch_falls_back_to_the_apps_own_colours() {
+        let theme = Theme::dark();
+        let lit = resolved(Switch::new(1, true), SwitchThemeData::new());
+        assert_eq!(lit.track, theme.primary);
+        assert_eq!(lit.knob, theme.on_primary);
+
+        let dark = resolved(Switch::new(1, false), SwitchThemeData::new());
+        assert_eq!(dark.track, theme.outline);
+        assert_eq!(dark.knob, theme.text_muted);
+    }
+
+    #[test]
+    fn the_theme_beats_the_controls_own_default() {
+        let data = SwitchThemeData::new().with_track_color(by_selection(ON, OFF));
+        assert_eq!(resolved(Switch::new(1, true), data).track, ON);
+        assert_ne!(ON, Theme::dark().primary, "or the test would prove nothing");
+    }
+
+    #[test]
+    fn the_switchs_own_colour_beats_the_theme() {
+        // A caller with one switch to recolour should not have to write a state
+        // property to do it.
+        let data = SwitchThemeData::new().with_track_color(by_selection(ON, OFF));
+        let mine = resolved(Switch::new(1, true).with_active_track_color(MINE), data);
+        assert_eq!(mine.track, MINE);
+
+        let data = SwitchThemeData::new().with_thumb_color(by_selection(ON, OFF));
+        assert_eq!(
+            resolved(Switch::new(1, true).with_active_color(MINE), data).knob,
+            MINE
+        );
+    }
+
+    #[test]
+    fn the_off_colours_are_a_separate_pair_from_the_on_ones() {
+        let data = SwitchThemeData::new().with_track_color(by_selection(ON, OFF));
+        assert_eq!(resolved(Switch::new(1, true), data.clone()).track, ON);
+        assert_eq!(resolved(Switch::new(1, false), data).track, OFF);
+
+        // And the widget's own overrides come in pairs too, so setting the on
+        // colour leaves the off one where it was.
+        let only_on = resolved(
+            Switch::new(1, false).with_active_track_color(MINE),
+            SwitchThemeData::new().with_track_color(by_selection(ON, OFF)),
+        );
+        assert_eq!(only_on.track, OFF, "the off switch kept the off colour");
+    }
+
+    #[test]
+    fn a_disabled_switch_gets_a_different_answer_from_the_same_property() {
+        // Which is the whole reason the property is resolved against states
+        // rather than against the value.
+        const DEAD: Color = Color::argb(0xFF, 0x77, 0x77, 0x77);
+        let data = SwitchThemeData::new().with_track_color(StateProperty::resolve_with(
+            move |states: WidgetStates| {
+                Some(if states.contains(WidgetState::Disabled) {
+                    DEAD
+                } else {
+                    ON
+                })
+            },
+        ));
+        assert_eq!(resolved(Switch::new(1, true), data.clone()).track, ON);
+        assert_eq!(
+            resolved(Switch::new(1, true).with_enabled(false), data).track,
+            DEAD,
+            "the same property, a different answer"
+        );
+    }
+
+    #[test]
+    fn no_outline_width_means_no_outline_however_a_colour_was_named() {
+        // A border layer that shows nothing still costs a pass.
+        let mut data = SwitchThemeData::new();
+        data.track_outline_color = Some(by_selection(ON, ON));
+        let unset = resolved(Switch::new(1, true), data.clone());
+        assert_eq!(unset.outline, Some(ON), "the colour is known");
+        assert_eq!(unset.outline_width, 0.0, "and nothing is drawn with it");
+
+        data.track_outline_width = Some(StateProperty::resolve_with(|_| Some(2.0)));
+        assert_eq!(resolved(Switch::new(1, true), data).outline_width, 2.0);
+    }
+
+    #[test]
+    fn the_padding_comes_from_the_theme_and_defaults_to_the_controls_own() {
+        assert_eq!(
+            resolved(Switch::new(1, true), SwitchThemeData::new()).padding,
+            EdgeInsets::all(4.0)
+        );
+        let mut data = SwitchThemeData::new();
+        data.padding = Some(crate::borders::EdgeInsetsGeometry::Absolute(
+            EdgeInsets::all(9.0),
+        ));
+        assert_eq!(
+            resolved(Switch::new(1, true), data).padding,
+            EdgeInsets::all(9.0)
+        );
+    }
+
+    #[test]
+    fn a_zero_width_border_is_not_drawn() {
+        // The invariant the switch leans on instead of guarding again itself:
+        // `RenderDecoratedBox` skips a border of no width, so passing one
+        // through costs nothing. Counted in rectangles drawn, because that is
+        // the only thing the stub engine reports about what was painted.
+        fn rects(width: f32) -> u32 {
+            crate::engine_test_stubs::reset_layer_calls();
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                Theme::dark(),
+                crate::framework::leaf(move || {
+                    Container::new()
+                        .with_size(40.0, 40.0)
+                        .with_color(Color::argb(0xFF, 1, 2, 3))
+                        .with_border(width, Color::argb(0xFF, 9, 9, 9))
+                }),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::tight(60.0, 60.0));
+            let mut layers = crate::engine::LayerTree::new(60, 60);
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(60.0, 60.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            crate::engine_test_stubs::layer_calls().rects
+        }
+
+        let none = rects(0.0);
+        let drawn = rects(2.0);
+        assert_eq!(drawn, none + 1, "a border is one more rectangle");
+    }
+
+    #[test]
+    fn a_disabled_switch_takes_no_taps() {
+        fn taps(enabled: bool) -> usize {
+            let heard = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counter = std::rc::Rc::clone(&heard);
+            let switch = Switch::new(1, true)
+                .with_handlers(
+                    PointerHandlers::new().with_tap(move |_| counter.set(counter.get() + 1)),
+                )
+                .with_enabled(enabled);
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(Theme::dark(), component(switch)));
+            let mut root = tree.build_render_tree().expect("a root");
+            let size = root.layout(BoxConstraints::tight(200.0, 60.0));
+            let mut result = crate::render::HitTestResult::new();
+            root.hit_test(
+                crate::render::Offset::new(size.width / 2.0, size.height / 2.0),
+                &mut result,
+            );
+            for entry in &result.path {
+                if let Some(handlers) = &entry.handlers {
+                    if let Some(tap) = &handlers.on_tap {
+                        tap(crate::gestures::TapEvent {
+                            local_position: crate::render::Offset::ZERO,
+                            pointer_id: 0,
+                        });
+                    }
+                }
+            }
+            heard.get()
+        }
+        assert_eq!(taps(true), 1);
+        assert_eq!(taps(false), 0);
+    }
 
     #[test]
     fn all_three_radii_unset_is_exactly_the_default_size() {
