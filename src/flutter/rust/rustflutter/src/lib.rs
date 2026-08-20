@@ -332,6 +332,11 @@ pub use popup::{PopupMenuButton, PopupMenuOpener, menu_placement};
 pub use scrollbar::{Scrollbar, scrollbar};
 pub use scrolling::{ExtentBook, ItemWindow, LazyList, Scroll, VariableExtentList, item_window};
 pub use selection_host::{SelectionEndpoint, SelectionHost, show_selection_overlay};
+pub use semantics::{
+    AttributedString, AttributedStringProperty, CustomSemanticsAction, OrdinalSortKey,
+    SemanticsAction, SemanticsHintOverrides, SemanticsNode, SemanticsProperties, SemanticsSortKey,
+    SemanticsTag, StringAttribute,
+};
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
     MethodChannel, MethodError, MethodResult, StandardMessageCodec, StandardMethodCodec, Value,

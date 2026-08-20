@@ -97,13 +97,14 @@ use crate::direction::TextDirection;
 use crate::engine::Rect;
 use crate::framework::{AnyWidget, BuildContext, Component, component, single};
 use crate::render::{BoxConstraints, BoxedRender, Offset, PaintContext, RenderBox, Size};
+use crate::services::text_boundary::TextRange;
 
 /// What a reader can be told to do with a node.
 ///
 /// The discriminants are `flutter::SemanticsAction`, which is in turn
 /// `SemanticsAction` in `semantics.dart` and in every embedder. Four copies of
 /// one set of bits upstream; this is the fifth, and it has to match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum SemanticsAction {
     Tap = 1 << 0,
@@ -1221,6 +1222,585 @@ pub fn semantics_with_action(
         .build()
 }
 
+// -- What a label carries besides its letters ---------------------------------
+
+/// Upstream's `StringAttribute` family (`dart:ui`), which a screen reader reads
+/// *with* rather than *instead of* the text.
+///
+/// Two of them, and both are about pronunciation rather than meaning: a range
+/// to spell out letter by letter, and a range in another language. Declared
+/// here because `dart:ui` is the engine's side and this crate needs the shape
+/// to carry across; the payload reaches the platform unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StringAttribute {
+    /// Upstream `SpellOutStringAttribute`: read this range one letter at a
+    /// time. For a code, a licence plate, a password hint -- anything a reader
+    /// would otherwise pronounce as a word and get wrong.
+    SpellOut { range: TextRange },
+    /// Upstream `LocaleStringAttribute`: read this range as the named language.
+    /// A French phrase inside an English sentence is unintelligible read with
+    /// English phonetics.
+    Locale { range: TextRange, locale: String },
+}
+
+impl StringAttribute {
+    pub fn range(&self) -> TextRange {
+        match self {
+            StringAttribute::SpellOut { range } => *range,
+            StringAttribute::Locale { range, .. } => *range,
+        }
+    }
+
+    /// Upstream's `StringAttribute.copy(range:)`, which every concatenation
+    /// needs: the attribute keeps its kind and takes a new range.
+    pub fn with_range(&self, range: TextRange) -> StringAttribute {
+        match self {
+            StringAttribute::SpellOut { .. } => StringAttribute::SpellOut { range },
+            StringAttribute::Locale { locale, .. } => StringAttribute::Locale {
+                range,
+                locale: locale.clone(),
+            },
+        }
+    }
+}
+
+/// Upstream `AttributedString`: a label plus the ranges inside it that are read
+/// differently.
+///
+/// # Concatenation is where the work is
+///
+/// Joining two of them has to shift the right operand's ranges by the left
+/// one's length, or every attribute past the seam points at the wrong letters.
+/// Upstream's `operator +` does exactly that, and then has two early returns:
+/// an empty left hands back the right operand whole, and an empty right hands
+/// back the left one.
+///
+/// **Those two are an optimisation, and they are safe because of the
+/// constructor's assert.** An empty string may carry no attributes
+/// (`string.isNotEmpty || attributes.isEmpty` upstream), so an empty operand
+/// has nothing to contribute and returning the other one whole loses nothing --
+/// the general path would compute the same answer. If that invariant were ever
+/// broken, the early return would silently drop the attributes the general path
+/// would have kept, which is why the assert is worth having rather than being
+/// merely tidy.
+///
+/// This paragraph first claimed the early returns were load-bearing rather than
+/// an optimisation. Removing one and watching every test stay green is what
+/// corrected it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AttributedString {
+    string: String,
+    attributes: Vec<StringAttribute>,
+}
+
+impl AttributedString {
+    /// Plain text, no attributes.
+    pub fn new(string: impl Into<String>) -> AttributedString {
+        AttributedString {
+            string: string.into(),
+            attributes: Vec::new(),
+        }
+    }
+
+    /// Upstream's constructor with `attributes:`.
+    ///
+    /// It asserts two things and both are kept: an empty string carries no
+    /// attributes, and every range is inside the string. A range past the end
+    /// would be handed to a screen reader that then reads whatever it finds
+    /// there, which is a silent wrong rather than a crash.
+    pub fn with_attributes(
+        string: impl Into<String>,
+        attributes: Vec<StringAttribute>,
+    ) -> AttributedString {
+        let string = string.into();
+        debug_assert!(
+            !string.is_empty() || attributes.is_empty(),
+            "an empty string carries no attributes"
+        );
+        debug_assert!(
+            attributes.iter().all(|attribute| {
+                let range = attribute.range();
+                range.start >= 0
+                    && range.end >= 0
+                    && (range.start as usize) <= string.len()
+                    && (range.end as usize) <= string.len()
+            }),
+            "an attribute's range is outside the string it is on"
+        );
+        AttributedString { string, attributes }
+    }
+
+    pub fn string(&self) -> &str {
+        &self.string
+    }
+
+    pub fn attributes(&self) -> &[StringAttribute] {
+        &self.attributes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.string.is_empty()
+    }
+
+    /// Upstream's `operator +`.
+    pub fn concat(&self, other: &AttributedString) -> AttributedString {
+        if self.string.is_empty() {
+            return other.clone();
+        }
+        if other.string.is_empty() {
+            return self.clone();
+        }
+        // The offset is the *byte* length, which is what the ranges in this
+        // crate are counted in -- `TextRange` here indexes the same string the
+        // engine is handed.
+        let offset = self.string.len() as isize;
+        let mut attributes = self.attributes.clone();
+        attributes.extend(other.attributes.iter().map(|attribute| {
+            let range = attribute.range();
+            attribute.with_range(TextRange::new(range.start + offset, range.end + offset))
+        }));
+        AttributedString {
+            string: format!("{}{}", self.string, other.string),
+            attributes,
+        }
+    }
+}
+
+impl std::ops::Add for &AttributedString {
+    type Output = AttributedString;
+
+    fn add(self, other: &AttributedString) -> AttributedString {
+        self.concat(other)
+    }
+}
+
+/// Upstream `AttributedStringProperty`: an [`AttributedString`] as a
+/// diagnostics property.
+///
+/// Its own rule, and the reason it is a class rather than a `StringProperty`:
+/// **it hides itself when the string is empty**, and it shows the attributes
+/// only when there are some. A diagnostics dump of a tree where most nodes have
+/// no label would otherwise be mostly empty quotes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributedStringProperty {
+    name: String,
+    value: Option<AttributedString>,
+    /// Upstream's `showName`, which a caller turns off when the name is
+    /// obvious from position.
+    show_name: bool,
+}
+
+impl AttributedStringProperty {
+    pub fn new(
+        name: impl Into<String>,
+        value: Option<AttributedString>,
+    ) -> AttributedStringProperty {
+        AttributedStringProperty {
+            name: name.into(),
+            value,
+            show_name: true,
+        }
+    }
+
+    pub fn with_show_name(mut self, show: bool) -> Self {
+        self.show_name = show;
+        self
+    }
+
+    /// Upstream's `isInteresting`: absent or empty is not worth printing.
+    pub fn is_interesting(&self) -> bool {
+        self.value
+            .as_ref()
+            .is_some_and(|value| !value.string().is_empty())
+    }
+
+    /// Upstream's `valueToString`: the text in quotes, and the attributes after
+    /// it only when there are any.
+    pub fn value_to_string(&self) -> String {
+        let Some(value) = &self.value else {
+            return "null".to_string();
+        };
+        if value.attributes().is_empty() {
+            format!("\"{}\"", value.string())
+        } else {
+            format!("\"{}\" {:?}", value.string(), value.attributes())
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn show_name(&self) -> bool {
+        self.show_name
+    }
+}
+
+// -- Marking a node for someone else to find ----------------------------------
+
+/// Upstream `SemanticsTag`: a marker a node carries so an ancestor can pick it
+/// out later.
+///
+/// # Its name is not its identity
+///
+/// This is upstream's own emphasis and it is worth keeping. The name is *for
+/// debugging*: "two tags created with the same name and the `new` operator are
+/// not considered identical", while two `const` ones are, because Dart
+/// canonicalises constants. So identity is the object, not the string.
+///
+/// Rust has no const canonicalisation to lean on, so identity is an id handed
+/// out at construction: two [`SemanticsTag::new`] calls with the same name are
+/// different tags, exactly as two `new` calls are upstream. The way to get
+/// upstream's `const` behaviour is the way a Rust caller would reach for
+/// anyway -- declare it once and share it:
+///
+/// ```ignore
+/// static SCROLLED_INTO_VIEW: LazyLock<SemanticsTag> =
+///     LazyLock::new(|| SemanticsTag::new("scrolled into view"));
+/// ```
+///
+/// A tag compared by name instead would make two unrelated subsystems that
+/// happened to pick the same word interfere with each other, which is the bug
+/// upstream's identity rule exists to prevent.
+#[derive(Clone, Debug)]
+pub struct SemanticsTag {
+    name: String,
+    id: u64,
+}
+
+impl SemanticsTag {
+    pub fn new(name: impl Into<String>) -> SemanticsTag {
+        SemanticsTag {
+            name: name.into(),
+            id: next_tag_id(),
+        }
+    }
+
+    /// For debugging only. Two tags with this same name may well be different
+    /// tags.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl PartialEq for SemanticsTag {
+    fn eq(&self, other: &SemanticsTag) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for SemanticsTag {}
+
+impl std::hash::Hash for SemanticsTag {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+thread_local! {
+    static NEXT_TAG_ID: Cell<u64> = const { Cell::new(1) };
+}
+
+fn next_tag_id() -> u64 {
+    NEXT_TAG_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
+}
+
+// -- Saying what an action does, in this node's words -------------------------
+
+/// Upstream `SemanticsHintOverrides`: what a screen reader says a tap or a long
+/// press will *do*, in place of the standard phrasing.
+///
+/// # The hint says what happens, not how to do it
+///
+/// Upstream's doc gives the rule as two pairs of examples, and they are the
+/// whole of the type's value:
+///
+/// * Bad: "Double tap to show movies". Good: "show movies".
+/// * Bad: "Double tap and hold to show tooltip". Good: "show tooltip".
+///
+/// The platform already tells the reader *how* to activate things -- it knows
+/// whether this device wants a double tap, a split tap, or a keyboard -- and a
+/// hint that repeats the gesture is both redundant and, on a device that uses a
+/// different gesture, wrong.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SemanticsHintOverrides {
+    on_tap_hint: Option<String>,
+    on_long_press_hint: Option<String>,
+}
+
+impl SemanticsHintOverrides {
+    pub fn new() -> SemanticsHintOverrides {
+        SemanticsHintOverrides::default()
+    }
+
+    /// Upstream asserts `onTapHint != ''`. **Empty is not the same as absent**:
+    /// absent means "use the standard hint", and empty would mean "say nothing
+    /// at all", which is a way of hiding what the button does rather than
+    /// describing it. A caller who meant the first wrote the second.
+    pub fn with_tap_hint(mut self, hint: impl Into<String>) -> Self {
+        let hint = hint.into();
+        debug_assert!(
+            !hint.is_empty(),
+            "an empty tap hint is not the same as none"
+        );
+        self.on_tap_hint = Some(hint);
+        self
+    }
+
+    pub fn with_long_press_hint(mut self, hint: impl Into<String>) -> Self {
+        let hint = hint.into();
+        debug_assert!(
+            !hint.is_empty(),
+            "an empty long-press hint is not the same as none"
+        );
+        self.on_long_press_hint = Some(hint);
+        self
+    }
+
+    pub fn on_tap_hint(&self) -> Option<&str> {
+        self.on_tap_hint.as_deref()
+    }
+
+    pub fn on_long_press_hint(&self) -> Option<&str> {
+        self.on_long_press_hint.as_deref()
+    }
+
+    /// Upstream's `isNotEmpty`: whether either hint was set.
+    pub fn is_not_empty(&self) -> bool {
+        self.on_tap_hint.is_some() || self.on_long_press_hint.is_some()
+    }
+}
+
+// -- Actions the standard set has no name for ---------------------------------
+
+/// Upstream `CustomSemanticsAction`: an action offered to a screen reader
+/// beyond the fixed vocabulary of [`SemanticsAction`].
+///
+/// Two shapes, and upstream gives each its own constructor because they are not
+/// variations of one thing:
+///
+/// * a **new** action, which has a `label` and appears in the reader's actions
+///   menu as its own entry -- [`CustomSemanticsAction::labelled`];
+/// * an action that **overrides a standard one**, which has a `hint` and a
+///   [`SemanticsAction`] it replaces, so the reader keeps offering the standard
+///   gesture and describes it in this node's words --
+///   [`CustomSemanticsAction::overriding`].
+///
+/// A label without an action is the first; a hint with an action is the second;
+/// neither ever has both a label and a hint.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CustomSemanticsAction {
+    label: Option<String>,
+    hint: Option<String>,
+    action: Option<SemanticsAction>,
+}
+
+impl CustomSemanticsAction {
+    /// Upstream's default constructor. It asserts the label is not empty: an
+    /// action with no name is an entry in the reader's menu that says nothing.
+    pub fn labelled(label: impl Into<String>) -> CustomSemanticsAction {
+        let label = label.into();
+        debug_assert!(!label.is_empty(), "a custom action needs a name");
+        CustomSemanticsAction {
+            label: Some(label),
+            hint: None,
+            action: None,
+        }
+    }
+
+    /// Upstream's `CustomSemanticsAction.overridingAction`.
+    pub fn overriding(hint: impl Into<String>, action: SemanticsAction) -> CustomSemanticsAction {
+        let hint = hint.into();
+        debug_assert!(!hint.is_empty(), "an overriding action needs a hint");
+        CustomSemanticsAction {
+            label: None,
+            hint: Some(hint),
+            action: Some(action),
+        }
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
+
+    pub fn action(&self) -> Option<SemanticsAction> {
+        self.action
+    }
+
+    /// Upstream's static `getIdentifier`: the number this action is known by on
+    /// the wire, assigned on first ask and stable afterwards.
+    ///
+    /// It is keyed on the action's **value**, not on the object -- unlike
+    /// [`SemanticsTag`], whose whole point is the opposite. That is upstream's
+    /// choice and it follows from what each is for: a tag marks one particular
+    /// node for one particular ancestor, so two tags that read alike must not
+    /// collide; a custom action is a menu entry, and two nodes offering the
+    /// same label and hint *are* offering the same action and should share an
+    /// id.
+    pub fn identifier(action: &CustomSemanticsAction) -> i32 {
+        CUSTOM_ACTIONS.with(|registry| {
+            let registry = &mut *registry.borrow_mut();
+            if let Some(id) = registry.ids.get(action) {
+                return *id;
+            }
+            let id = registry.next;
+            registry.next += 1;
+            registry.ids.insert(action.clone(), id);
+            registry.actions.insert(id, action.clone());
+            id
+        })
+    }
+
+    /// Upstream's static `getAction`: the action a number stands for, or
+    /// nothing if that number was never handed out.
+    pub fn from_identifier(id: i32) -> Option<CustomSemanticsAction> {
+        CUSTOM_ACTIONS.with(|registry| registry.borrow().actions.get(&id).cloned())
+    }
+
+    /// Upstream's `resetForTests`, and it exists for the same reason: the
+    /// registry is process-wide, so one test's actions would otherwise decide
+    /// the next one's ids.
+    pub fn reset_for_tests() {
+        CUSTOM_ACTIONS.with(|registry| {
+            let registry = &mut *registry.borrow_mut();
+            registry.ids.clear();
+            registry.actions.clear();
+            registry.next = 0;
+        });
+    }
+}
+
+#[derive(Default)]
+struct CustomActionRegistry {
+    next: i32,
+    ids: std::collections::HashMap<CustomSemanticsAction, i32>,
+    actions: std::collections::HashMap<i32, CustomSemanticsAction>,
+}
+
+thread_local! {
+    static CUSTOM_ACTIONS: RefCell<CustomActionRegistry> =
+        RefCell::new(CustomActionRegistry::default());
+}
+
+// -- Deciding the order a reader walks in -------------------------------------
+
+/// Upstream `SemanticsSortKey`: what decides traversal order when the geometry
+/// would get it wrong.
+///
+/// A screen reader normally walks a screen in reading order worked out from
+/// where things are. That is right until it is not -- a two-column layout whose
+/// columns should be read one after the other rather than line by line, a
+/// toolbar that belongs after the content it acts on -- and a sort key is how a
+/// widget says so.
+///
+/// # Two rules, both surprising
+///
+/// * **Keys of different kinds never compare.** Upstream asserts on
+///   `runtimeType`, because there is no meaningful answer: an ordinal 3 is
+///   neither before nor after some other scheme's key. Rust gives this for
+///   free -- [`OrdinalSortKey`] is its own type and there is nothing to compare
+///   it against -- so the assert has no counterpart here, which is the good
+///   kind of missing.
+/// * **Unnamed keys sort before named ones**, and named keys sort by name
+///   before their own ordering is consulted. So `name` is a grouping, not a
+///   label: two keys with different names are ordered by their names whatever
+///   their values say.
+pub trait SemanticsSortKey {
+    /// The group this key belongs to. `None` sorts first.
+    fn name(&self) -> Option<&str>;
+
+    /// Upstream's `doCompare`, called only when the names match.
+    fn do_compare(&self, other: &Self) -> std::cmp::Ordering;
+
+    /// Upstream's `compareTo`: name first, then the subclass's own ordering.
+    fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.name(), other.name()) {
+            (a, b) if a == b => self.do_compare(other),
+            // "Keys that don't have a name are sorted together and come before
+            // those with a name."
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => a.cmp(b),
+            // Both unnamed is caught by the equality arm above. Spelled out
+            // rather than left to a wildcard, so a later edit to the arms above
+            // cannot silently fall through to a wrong answer.
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+/// Upstream `OrdinalSortKey`: a number, lowest read first.
+///
+/// The order must be finite. Upstream asserts it is strictly between the two
+/// infinities, and the reason is that a sort is only a sort if every pair has
+/// an answer: two keys both at positive infinity compare equal and would be
+/// left in whatever order they arrived, which is exactly the non-determinism a
+/// caller reached for a sort key to escape.
+#[derive(Clone, Debug)]
+pub struct OrdinalSortKey {
+    order: f64,
+    name: Option<String>,
+}
+
+impl OrdinalSortKey {
+    pub fn new(order: f64) -> OrdinalSortKey {
+        debug_assert!(order.is_finite(), "a sort key's order must be finite");
+        OrdinalSortKey { order, name: None }
+    }
+
+    /// Groups this key with others of the same name. See
+    /// [`SemanticsSortKey`]'s second rule.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn order(&self) -> f64 {
+        self.order
+    }
+}
+
+impl SemanticsSortKey for OrdinalSortKey {
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn do_compare(&self, other: &OrdinalSortKey) -> std::cmp::Ordering {
+        // Finite by construction, so this never sees a NaN.
+        self.order
+            .partial_cmp(&other.order)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+impl PartialEq for OrdinalSortKey {
+    fn eq(&self, other: &OrdinalSortKey) -> bool {
+        self.compare(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for OrdinalSortKey {}
+
+impl PartialOrd for OrdinalSortKey {
+    fn partial_cmp(&self, other: &OrdinalSortKey) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdinalSortKey {
+    fn cmp(&self, other: &OrdinalSortKey) -> std::cmp::Ordering {
+        self.compare(other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1228,6 +1808,7 @@ mod tests {
     use crate::render::{EdgeInsets, RenderFlex, RenderPadding};
     use crate::widgets::SizedBox;
     use std::cell::Cell;
+    use std::cmp::Ordering;
 
     /// Lays out a tree, paints it, and returns what it says about itself.
     ///
@@ -2492,5 +3073,350 @@ mod tests {
         let (_, marked) = step(&mut faded, 0.25);
         assert!(marked, "and it is describable again");
         set_enabled(false);
+    }
+
+    // -- AttributedString ---------------------------------------------------------
+
+    #[test]
+    fn joining_two_attributed_strings_moves_the_right_ones_ranges() {
+        // The whole of what concatenation has to do: every attribute past the
+        // seam would otherwise point at the wrong letters.
+        let left = AttributedString::with_attributes(
+            "hello ",
+            vec![StringAttribute::SpellOut {
+                range: TextRange::new(0, 5),
+            }],
+        );
+        let right = AttributedString::with_attributes(
+            "world",
+            vec![StringAttribute::Locale {
+                range: TextRange::new(0, 5),
+                locale: "fr".to_string(),
+            }],
+        );
+
+        let joined = &left + &right;
+        assert_eq!(joined.string(), "hello world");
+        assert_eq!(joined.attributes().len(), 2);
+        assert_eq!(
+            joined.attributes()[0].range(),
+            TextRange::new(0, 5),
+            "the left one did not move"
+        );
+        assert_eq!(
+            joined.attributes()[1].range(),
+            TextRange::new(6, 11),
+            "the right one moved by the left string's length"
+        );
+        assert_eq!(
+            &joined.string()[6..11],
+            "world",
+            "and the moved range still names the words it was on"
+        );
+    }
+
+    #[test]
+    fn an_attribute_keeps_its_kind_when_its_range_moves() {
+        let right = AttributedString::with_attributes(
+            "bonjour",
+            vec![StringAttribute::Locale {
+                range: TextRange::new(0, 7),
+                locale: "fr".to_string(),
+            }],
+        );
+        let joined = &AttributedString::new("say ") + &right;
+        assert_eq!(
+            joined.attributes()[0],
+            StringAttribute::Locale {
+                range: TextRange::new(4, 11),
+                locale: "fr".to_string()
+            },
+            "still French, just further along"
+        );
+    }
+
+    #[test]
+    fn joining_with_an_empty_string_hands_back_the_other_one_whole() {
+        let text = AttributedString::with_attributes(
+            "code",
+            vec![StringAttribute::SpellOut {
+                range: TextRange::new(0, 4),
+            }],
+        );
+        let empty = AttributedString::new("");
+
+        assert_eq!(&empty + &text, text);
+        assert_eq!(&text + &empty, text);
+        assert_eq!(
+            (&text + &empty).attributes().len(),
+            1,
+            "and the attributes survived"
+        );
+    }
+
+    #[test]
+    fn an_empty_string_carries_no_attributes_which_is_what_makes_the_shortcut_safe() {
+        // The early returns in `concat` hand back one operand whole. That is
+        // only lossless because an empty string has nothing to hand over -- the
+        // invariant the constructor asserts. Without it the shortcut would drop
+        // attributes the general path would have kept.
+        //
+        // Checked by removing the shortcut and watching the tests above stay
+        // green: they cannot tell the two paths apart, because there is nothing
+        // to tell apart. This is the assertion that actually holds the claim up.
+        let empty = AttributedString::new("");
+        assert!(empty.attributes().is_empty());
+        assert!(empty.is_empty());
+
+        // And the general path agrees with the shortcut, which is the whole
+        // reason the shortcut is allowed to exist.
+        let text = AttributedString::with_attributes(
+            "code",
+            vec![StringAttribute::SpellOut {
+                range: TextRange::new(0, 4),
+            }],
+        );
+        let the_long_way = AttributedString::with_attributes(
+            format!("{}{}", empty.string(), text.string()),
+            text.attributes().to_vec(),
+        );
+        assert_eq!(&empty + &text, the_long_way);
+    }
+
+    #[test]
+    fn two_attributed_strings_are_equal_when_their_attributes_are_too() {
+        let spell = |s: &str| {
+            AttributedString::with_attributes(
+                s,
+                vec![StringAttribute::SpellOut {
+                    range: TextRange::new(0, s.len() as isize),
+                }],
+            )
+        };
+        assert_eq!(spell("abc"), spell("abc"));
+        assert_ne!(
+            spell("abc"),
+            AttributedString::new("abc"),
+            "same letters, different instructions for reading them"
+        );
+    }
+
+    #[test]
+    fn an_attributed_string_property_hides_itself_when_there_is_nothing_to_say() {
+        assert!(!AttributedStringProperty::new("label", None).is_interesting());
+        assert!(
+            !AttributedStringProperty::new("label", Some(AttributedString::new("")))
+                .is_interesting()
+        );
+        assert!(
+            AttributedStringProperty::new("label", Some(AttributedString::new("Increment")))
+                .is_interesting()
+        );
+    }
+
+    #[test]
+    fn an_attributed_string_property_prints_attributes_only_when_there_are_some() {
+        let plain = AttributedStringProperty::new("label", Some(AttributedString::new("abc")));
+        assert_eq!(plain.value_to_string(), "\"abc\"");
+
+        let attributed = AttributedStringProperty::new(
+            "label",
+            Some(AttributedString::with_attributes(
+                "abc",
+                vec![StringAttribute::SpellOut {
+                    range: TextRange::new(0, 3),
+                }],
+            )),
+        );
+        assert!(attributed.value_to_string().starts_with("\"abc\" "));
+        assert!(attributed.value_to_string().contains("SpellOut"));
+    }
+
+    // -- SemanticsTag -------------------------------------------------------------
+
+    #[test]
+    fn a_tags_name_is_not_its_identity() {
+        // Upstream's own emphasis: the name is for debugging, and two tags made
+        // with `new` and the same name are not the same tag. A tag compared by
+        // name would make two unrelated subsystems that picked the same word
+        // interfere.
+        let mine = SemanticsTag::new("selected");
+        let theirs = SemanticsTag::new("selected");
+        assert_eq!(mine.name(), theirs.name());
+        assert_ne!(mine, theirs, "same word, different tags");
+        assert_eq!(mine, mine.clone(), "and a copy is the same tag");
+    }
+
+    #[test]
+    fn a_tag_shared_from_one_place_is_one_tag() {
+        // The Rust way to get upstream's `const` behaviour: declare it once.
+        let shared = SemanticsTag::new("scrolled into view");
+        let a = shared.clone();
+        let b = shared.clone();
+        assert_eq!(a, b);
+
+        // And it works as a key, which is what marking a node is for.
+        let mut marked = std::collections::HashSet::new();
+        marked.insert(a);
+        assert!(marked.contains(&b));
+        assert!(!marked.contains(&SemanticsTag::new("scrolled into view")));
+    }
+
+    // -- SemanticsHintOverrides ---------------------------------------------------
+
+    #[test]
+    fn a_hint_override_says_what_happens_and_not_how_to_do_it() {
+        // Upstream's rule, as its own examples: "show movies", not "double tap
+        // to show movies". The platform already tells the reader which gesture
+        // its own device wants.
+        let hints = SemanticsHintOverrides::new()
+            .with_tap_hint("show movies")
+            .with_long_press_hint("show tooltip");
+        assert_eq!(hints.on_tap_hint(), Some("show movies"));
+        assert_eq!(hints.on_long_press_hint(), Some("show tooltip"));
+        assert!(hints.is_not_empty());
+    }
+
+    #[test]
+    fn no_hint_and_an_empty_hint_are_different_things() {
+        // Absent means "use the standard phrasing"; empty would mean "say
+        // nothing", which hides what the control does. Upstream asserts against
+        // the second, which is why only the first is reachable here.
+        let none = SemanticsHintOverrides::new();
+        assert!(!none.is_not_empty());
+        assert_eq!(none.on_tap_hint(), None);
+
+        let one = SemanticsHintOverrides::new().with_tap_hint("open");
+        assert!(one.is_not_empty());
+        assert_eq!(one.on_long_press_hint(), None, "the other stays absent");
+    }
+
+    // -- CustomSemanticsAction ----------------------------------------------------
+
+    #[test]
+    fn a_custom_action_is_either_a_new_one_or_an_override_and_never_both() {
+        let new_one = CustomSemanticsAction::labelled("Add to favourites");
+        assert_eq!(new_one.label(), Some("Add to favourites"));
+        assert_eq!(new_one.hint(), None);
+        assert_eq!(new_one.action(), None);
+
+        let override_one = CustomSemanticsAction::overriding("show movies", SemanticsAction::Tap);
+        assert_eq!(override_one.label(), None);
+        assert_eq!(override_one.hint(), Some("show movies"));
+        assert_eq!(override_one.action(), Some(SemanticsAction::Tap));
+    }
+
+    #[test]
+    fn a_custom_actions_identifier_is_stable_and_keyed_on_its_value() {
+        // Unlike a tag, whose whole point is the opposite: two nodes offering
+        // the same label are offering the same action and share an id.
+        CustomSemanticsAction::reset_for_tests();
+        let first = CustomSemanticsAction::labelled("Archive");
+        let same = CustomSemanticsAction::labelled("Archive");
+        let other = CustomSemanticsAction::labelled("Delete");
+
+        let id = CustomSemanticsAction::identifier(&first);
+        assert_eq!(
+            CustomSemanticsAction::identifier(&same),
+            id,
+            "the same action, however it was built"
+        );
+        assert_eq!(
+            CustomSemanticsAction::identifier(&first),
+            id,
+            "and asking twice does not hand out a second id"
+        );
+        assert_ne!(CustomSemanticsAction::identifier(&other), id);
+
+        assert_eq!(CustomSemanticsAction::from_identifier(id), Some(first));
+        assert_eq!(CustomSemanticsAction::from_identifier(9999), None);
+        CustomSemanticsAction::reset_for_tests();
+    }
+
+    #[test]
+    fn an_overriding_action_is_not_the_same_action_as_a_label_that_reads_alike() {
+        CustomSemanticsAction::reset_for_tests();
+        let labelled = CustomSemanticsAction::labelled("open");
+        let overriding = CustomSemanticsAction::overriding("open", SemanticsAction::Tap);
+        assert_ne!(
+            CustomSemanticsAction::identifier(&labelled),
+            CustomSemanticsAction::identifier(&overriding)
+        );
+        CustomSemanticsAction::reset_for_tests();
+    }
+
+    #[test]
+    fn resetting_the_registry_starts_the_ids_over() {
+        // It exists because the registry outlives any one test, so one test's
+        // actions would otherwise decide the next one's ids.
+        CustomSemanticsAction::reset_for_tests();
+        let first = CustomSemanticsAction::identifier(&CustomSemanticsAction::labelled("a"));
+        CustomSemanticsAction::reset_for_tests();
+        let again = CustomSemanticsAction::identifier(&CustomSemanticsAction::labelled("b"));
+        assert_eq!(first, again, "a different action, the same first id");
+    }
+
+    // -- Sort keys ----------------------------------------------------------------
+
+    #[test]
+    fn a_lower_ordinal_is_read_first() {
+        let first = OrdinalSortKey::new(1.0);
+        let second = OrdinalSortKey::new(2.0);
+        assert!(first < second);
+        assert_eq!(first.compare(&OrdinalSortKey::new(1.0)), Ordering::Equal);
+    }
+
+    #[test]
+    fn keys_with_no_name_are_read_before_keys_with_one() {
+        // Upstream: "Keys that don't have a name are sorted together and come
+        // before those with a name."
+        let unnamed = OrdinalSortKey::new(100.0);
+        let named = OrdinalSortKey::new(1.0).with_name("toolbar");
+        assert!(
+            unnamed < named,
+            "the unnamed one goes first even though its order is far higher"
+        );
+    }
+
+    #[test]
+    fn the_name_is_a_grouping_and_it_wins_over_the_order() {
+        // Two keys with different names are ordered by their names whatever
+        // their numbers say -- so a name is not a label, it decides the
+        // sequence.
+        let early_name_late_order = OrdinalSortKey::new(999.0).with_name("aaa");
+        let late_name_early_order = OrdinalSortKey::new(1.0).with_name("zzz");
+        assert!(early_name_late_order < late_name_early_order);
+    }
+
+    #[test]
+    fn keys_in_the_same_group_fall_back_to_their_order() {
+        let first = OrdinalSortKey::new(1.0).with_name("toolbar");
+        let second = OrdinalSortKey::new(2.0).with_name("toolbar");
+        assert!(first < second);
+    }
+
+    #[test]
+    fn a_list_of_keys_sorts_into_the_order_a_reader_walks() {
+        let mut keys = vec![
+            OrdinalSortKey::new(2.0).with_name("body"),
+            OrdinalSortKey::new(5.0),
+            OrdinalSortKey::new(1.0).with_name("body"),
+            OrdinalSortKey::new(1.0),
+            OrdinalSortKey::new(1.0).with_name("aside"),
+        ];
+        keys.sort();
+        let described: Vec<(Option<&str>, f64)> =
+            keys.iter().map(|k| (k.name(), k.order())).collect();
+        assert_eq!(
+            described,
+            vec![
+                (None, 1.0),
+                (None, 5.0),
+                (Some("aside"), 1.0),
+                (Some("body"), 1.0),
+                (Some("body"), 2.0),
+            ],
+            "unnamed first by order, then each group by name, then by order"
+        );
     }
 }
