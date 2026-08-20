@@ -164,6 +164,53 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 「我能不能演出去」其实是「来的那个知不知道拿我怎么办」(2026-08-20)
+
+新模块 `material_page.rs`,收掉 `material/page.dart` 三个类:`MaterialRouteTransitionMixin`、
+`MaterialPageRoute`、`MaterialPage`。覆盖率 1787/1888(94.7%)。测试 3283。
+
+**`canTransitionTo` 问的是「我可以演出去吗」,而它真正在问的是「来的那个知不知道拿我怎么办」。**
+
+一条路由只在两种情况下演出场动画:**新来的那条用的是同一个 mixin**(于是两边本来就同步),**或者新来的那
+条带着一个 delegated transition**(于是它会亲自驱动这条的退场)。**两者都没有,这条路由就干脆不动**——那比
+两个各干各的动画在同一块屏幕上打架要好。
+
+**而全屏对话框底下什么都不演:** 它盖住一切,**底下的运动是没有人看得见的运动。** `canTransitionFrom` 是
+同一个判断的另一面:一个全屏对话框会压掉它盖住的那条路由的转场。
+
+---
+
+**还有一处值得小心地记下来:那句 `?? const Duration(microseconds: 300)`。**
+
+**注意单位。** 附近每一个时长都是毫秒,而三百**微秒**是零点三毫秒——等于瞬间。**这是一个笔误。**
+
+**而它是一个谁也碰不到的笔误:** 它上面那个按平台分支的 `switch` 对 `TargetPlatform` 是穷尽的,于是查找永
+远不返回 null,`??` 永远不触发。
+
+**我照原样移过来了,并且把这件事写进文档和回归行**——理由是:**一个里面装着错数字的死分支,恰恰是在有人加
+一个新平台那天不再死的东西。** 这和第 74、75 两轮那两条不可达守卫是同一类处理:**说出来,而不是绕过去,也
+不是悄悄修好。**
+
+顺带,这条 fallback **和 `PageTransitionsTheme` 自己的默认表不是一回事**:主题给 Android 的是预测式返回,
+而这条更简单的二分给它 zoom;它只在主题那张表里没有这个平台时才跑。回归行把两者摆在一起对照。
+
+---
+
+**`didPush` 和 `didPop` 被覆写,只为了手动把时长塞进 controller**,注释给了理由:`AnimationController` 只
+在建的时候读一次 `transitionDuration`,**于是后来变了的主题够不着它。** 上游的 TODO 里写着它自己的删除条
+件——**一个把「什么时候可以删掉我」写在旁边的变通做法。**
+
+而 `barrierColor` 和 `barrierLabel` 都是 null:**一条页面路由盖住整个屏幕,后面的遮罩既看不见,又要多花一
+层。**
+
+**`MaterialPage` 和 `MaterialPageRoute` 的区别不在长相,在于谁拥有那个栈。** 路由是被 push/pop 命令出来
+的;页是一份描述,由 navigator 拿新列表和旧列表比对,自己算出该 push 什么、pop 什么。**这也正是页需要
+`key` 而路由不需要的原因:navigator 得能说「这是刚才那一页,换了个位置」,而不是「走了一页又来了一页」。**
+
+验证:`cargo test --lib` 3283 绿,GN `rustflutter_unittests` 3283 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1787 accounted / 101 MISSING(94.7%)。
+
 ### 关掉那条线,轮廓还在(2026-08-20)
 
 新模块 `input_decorator.rs`,收掉 `InputDecorator`、`InputDecoration`(`input_decorator.dart`)与

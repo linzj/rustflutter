@@ -169,6 +169,7 @@ if (enable_unittests) {
       "rustflutter/src/localizations.rs",
       "rustflutter/src/magnifier.rs",
       "rustflutter/src/material.rs",
+      "rustflutter/src/material_page.rs",
       "rustflutter/src/media_query.rs",
       "rustflutter/src/menu.rs",
       "rustflutter/src/menu_anchor.rs",
