@@ -109,6 +109,7 @@ if (enable_unittests) {
       "rustflutter/src/autocomplete.rs",
       "rustflutter/src/binding.rs",
       "rustflutter/src/borders.rs",
+      "rustflutter/src/crossfade.rs",
       "rustflutter/src/cupertino.rs",
       "rustflutter/src/cupertino_route.rs",
       "rustflutter/src/elevation_overlay.rs",
