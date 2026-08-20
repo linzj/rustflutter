@@ -18,7 +18,8 @@
 //!
 //! ## What is not here
 //!
-//! The drag proxy is an `OverlayEntry` upstream, and this crate has no overlay;
+//! The drag proxy is an `OverlayEntry` upstream. [`crate::overlay`] has the
+//! entry bookkeeping but nothing that hosts the widget yet;
 //! the auto-scroll at the edges is an `EdgeDraggingAutoScroller`, which is not
 //! ported either. Both are about *showing* the drag rather than about deciding
 //! what it means, and the deciding is what this module carries.

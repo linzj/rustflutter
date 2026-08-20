@@ -423,8 +423,9 @@ impl<D: TextSelectionGestureDetectorBuilderDelegate> TextSelectionGestureDetecto
 ///
 /// Upstream puts them in an `Overlay` so they can be drawn over anything,
 /// including outside the field's own bounds -- a handle below the last line of
-/// a field would otherwise be clipped away. This crate has no overlay; what is
-/// ported is the configuration and the visibility rules.
+/// a field would otherwise be clipped away. [`crate::overlay`] carries the
+/// entry list and its ordering; nothing hosts the widgets yet, so what is
+/// ported here is the configuration and the visibility rules.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct SelectionOverlay {
     /// Upstream's `handlesVisible`.

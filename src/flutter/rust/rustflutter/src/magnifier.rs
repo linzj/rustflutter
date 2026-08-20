@@ -176,8 +176,9 @@ impl RawMagnifier {
 ///
 /// The part worth porting is [`MagnifierController::shift_within_bounds`],
 /// which is where the loupe's position is actually decided; the rest of
-/// upstream's controller is an `OverlayEntry`'s lifetime, and this crate has
-/// no overlay (the gap [`crate::material`] records for `Material.of`).
+/// upstream's controller is an `OverlayEntry`'s lifetime -- see
+/// [`crate::overlay`] for the entry rules; nothing hosts the widget yet (the
+/// gap [`crate::material`] records for `Material.of`).
 pub struct MagnifierController;
 
 impl MagnifierController {

@@ -19,7 +19,8 @@
 //! ## What is not here
 //!
 //! The options view is an `OverlayPortal` upstream, positioned against the
-//! field's paint transform; this crate has no overlay. The field itself and
+//! field's paint transform. [`crate::overlay`] carries the entry list and
+//! the portal's z-ordering, but nothing yet hosts the widgets. The field and
 //! the list are the caller's to build, exactly as upstream's `fieldViewBuilder`
 //! and `optionsViewBuilder` are.
 

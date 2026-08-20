@@ -85,6 +85,7 @@ pub mod navigation_destinations;
 pub mod navigator;
 pub mod nested_scroll_view;
 pub mod overflow_bar;
+pub mod overlay;
 pub mod page_storage;
 pub mod painting;
 pub mod physics;
