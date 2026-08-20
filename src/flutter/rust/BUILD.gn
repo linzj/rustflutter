@@ -140,6 +140,7 @@ if (enable_unittests) {
       "rustflutter/src/controls.rs",
       "rustflutter/src/decoration.rs",
       "rustflutter/src/diagnostics.rs",
+      "rustflutter/src/dialogs.rs",
       "rustflutter/src/direction.rs",
       "rustflutter/src/directional_traversal.rs",
       "rustflutter/src/display_feature.rs",

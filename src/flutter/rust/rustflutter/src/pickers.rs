@@ -1764,6 +1764,12 @@ fn date_dialog_entry_mode_toggle(
 /// Hit-test ids derive from `id`: the calendar is `id * 10 + 1`, the input
 /// field `id * 10 + 2`, the mode toggle `id * 10 + 3`, OK `id * 10 + 4`,
 /// Cancel `id * 10 + 5`.
+/// `Clone` because a dialog shown through `dialogs.rs` is *built* rather than
+/// placed: an overlay entry is rebuilt whenever the overlay is, so what the
+/// caller hands over has to be reproducible. Every field is plain data or an
+/// `Rc` to a callback, so cloning shares the callbacks rather than copying
+/// them -- which is what a second build of the same dialog should do.
+#[derive(Clone)]
 pub struct DatePickerDialog {
     id: u64,
     initial_date: Option<Date>,
@@ -2713,6 +2719,12 @@ impl RenderBox for TimeDial {
 /// Hit-test ids derive from `id`: the dial is `id * 100 + 1`, the hour and
 /// minute header boxes `+ 2` and `+ 3`, AM/PM `+ 4` and `+ 5`, the input
 /// fields `+ 6` and `+ 7`, the mode toggle `+ 8`, OK `+ 9`, Cancel `+ 10`.
+/// `Clone` because a dialog shown through `dialogs.rs` is *built* rather than
+/// placed: an overlay entry is rebuilt whenever the overlay is, so what the
+/// caller hands over has to be reproducible. Every field is plain data or an
+/// `Rc` to a callback, so cloning shares the callbacks rather than copying
+/// them -- which is what a second build of the same dialog should do.
+#[derive(Clone)]
 pub struct TimePickerDialog {
     id: u64,
     initial_time: TimeOfDay,
@@ -3888,6 +3900,12 @@ fn validate_range_texts(
 /// fields `+ 2` and `+ 3`, the mode toggle `+ 4`, OK/Save `+ 5`, Cancel
 /// `+ 6`, the close button `+ 7`; day cells are
 /// `id * 1_000_000 + month_index * 100 + day`.
+/// `Clone` because a dialog shown through `dialogs.rs` is *built* rather than
+/// placed: an overlay entry is rebuilt whenever the overlay is, so what the
+/// caller hands over has to be reproducible. Every field is plain data or an
+/// `Rc` to a callback, so cloning shares the callbacks rather than copying
+/// them -- which is what a second build of the same dialog should do.
+#[derive(Clone)]
 pub struct DateRangePickerDialog {
     id: u64,
     initial_date_range: Option<DateTimeRange>,

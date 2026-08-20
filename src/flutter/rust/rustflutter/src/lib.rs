@@ -60,6 +60,7 @@ pub mod cupertino_text_field;
 pub mod cupertino_theme;
 pub mod decoration;
 pub mod diagnostics;
+pub mod dialogs;
 pub mod direction;
 pub mod directional_traversal;
 pub mod display_feature;
