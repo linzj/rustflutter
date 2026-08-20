@@ -216,6 +216,7 @@ if (enable_unittests) {
       "rustflutter/src/tap_and_drag.rs",
       "rustflutter/src/tap_region.rs",
       "rustflutter/src/text_editing_intents.rs",
+      "rustflutter/src/sliver_tree.rs",
       "rustflutter/src/slotted.rs",
       "rustflutter/src/text_selection.rs",
       "rustflutter/src/text_selection_controls.rs",

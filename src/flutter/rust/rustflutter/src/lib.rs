@@ -117,6 +117,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
+pub mod sliver_tree;
 pub mod slotted;
 pub mod snack_bar;
 pub mod stack_frame;
