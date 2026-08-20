@@ -164,6 +164,63 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 单选按钮是唯一一个没法单独做的控件(2026-08-20)
+
+新模块 `radio_group.rs`,一次收掉 `radio_group.dart` 与 `raw_radio.dart` 全部四个类:`RadioGroup`、
+`RadioGroupRegistry`、`RadioClient`、`RawRadio`。覆盖率 1698/1888(89.9%)。
+
+**一个单选按钮显示成什么样,取决于它的兄弟在做什么;而按下它会改变它们。** 于是这两个文件就是这套安
+排:**组持有值,而按钮向组注册、自己不存任何状态。**
+
+`RawRadio` 的 `value` getter 是一行:`widget.value == registry?.groupValue`。**由此得到一个不那么显然
+的结论:一个没有组的单选按钮不是「未选中」,而是「不可交互」**——没有 registry 就没有东西可比,也没有东
+西可通知,所以 `onChanged` 是 null,而 null 的 `onChanged` 正是 toggleable 那套机制读作「关掉」的信号。
+
+**而这个文件真正的分量在键盘上,那两件事都不是从 widget 树里长出来的,是平台约定,各自需要一个类去安
+排:**
+
+**其一:一个单选组是「一个」Tab 停靠点,不是每个选项一个。** `_SkipUnselectedRadioPolicy` 在读序排序里
+把**未选中的同伴全部剔掉**,只留下选中的那个。没有它,走过一个五选一的组要按五次 Tab。
+
+而这个策略的两个退路都想到了:
+
+* **一个还没人回答过的组,拿读序里第一个单选按钮顶上**——否则 Tab 进一个空组会落在什么都没有上。
+* **当前获得焦点的那个节点永远不被剔除**,上游写明了原因:它是排序的 `currentNode`,没法把它从结果里
+  拿掉。
+
+**其二:方向键在组内移动,而且移动的同时就选中。** `_selectRadioInDirection` 一次做两件事——
+`onChanged(...)` 加 `requestFocus()`。**这就是为什么方向键不能交给普通焦点遍历:遍历只会移动,而单选组
+的约定是「走到哪儿就选到哪儿」。** 走到头会绕回开头,而**禁用的按钮不是一个「会被跳过的停靠点」,它压根
+不在环上**。
+
+**`_RadioGroupShortcutManager` 只做一件事,而那件事是一个否定:没有任何单选按钮持有焦点时,按键被
+`ignored` 而不是 `handled`。** 上游把理由写下来了——不要吞掉本该给当前持有焦点的非单选控件的事件。**一
+个把子树里所有按键都吃掉的快捷键管理器,会让这个组变得没法住人**:组里放一个文本框,方向键就再也移不动
+光标了。
+
+**空格键那条规则值得单独说:按在已选中的按钮上什么都不做,除非它是 tristate。** 一个能被误触空格清空的
+单选组,是一个比不能清空的更糟的控件。
+
+其余几处:
+
+* **`RadioClient.registry` 的 setter 照搬了上游的不对称:注销是有条件的(`_registry != newRegistry`),
+  注册是无条件的。** 于是把同一个 registry 赋两次,会在没注销的情况下再注册一次——**只因为 registry 存
+  的是一个 `Set`,这才无害。** 两半都钉住了。
+* **`initState` 里 `registry = widget.groupRegistry` 写在 `super.initState()` 之前**,上游注释说明了原
+  因:`ToggleableStateMixin` 初始化时会读 `value`,而 `value` 是一个问向 registry 的问题。**注册顺序是
+  承重的。**
+* **`_handleChanged(false)` 什么都不做。** 单选按钮没法靠「被按一下」把自己取消——只有组、或者一个
+  toggleable 按钮的第二次按下,能清掉这个值。
+* **那条 debug 检查比的是 `< 2`**:允许一个**什么都没选**的组(未选中是一个合法状态),只拒绝同时选中两
+  个——这个策略根本描述不了一个允许多选的组。
+* **语义按平台分岔,而分岔的理由被写下来了:** iOS/macOS 设 `selected` 属性,并且**只给未选中的按钮一条
+  hint**——因为选中状态 iOS 已经从 `selected` 念过一遍了,再给一条 hint 就是说了两次。其余平台只用
+  `checked`。
+
+验证:`cargo test --lib` 2901 绿,GN `rustflutter_unittests` 2901 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1698 accounted / 190 MISSING(89.9%)。
+
 ### 「挡住」和「排除」听着像一回事,方向正好相反(2026-08-20)
 
 两个新模块:`semantics_markers.rs` 收掉 `basic.dart` 剩下的语义五件套(`SliverSemantics`、
