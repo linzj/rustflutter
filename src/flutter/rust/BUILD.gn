@@ -157,6 +157,7 @@ if (enable_unittests) {
       "rustflutter/src/inherited.rs",
       "rustflutter/src/ink.rs",
       "rustflutter/src/ink_well.rs",
+      "rustflutter/src/input_decorator.rs",
       "rustflutter/src/interactive_viewer.rs",
       "rustflutter/src/keep_alive.rs",
       "rustflutter/src/keyboard/keys.rs",

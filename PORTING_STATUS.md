@@ -164,6 +164,47 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 关掉那条线,轮廓还在(2026-08-20)
+
+新模块 `input_decorator.rs`,收掉 `InputDecorator`、`InputDecoration`(`input_decorator.dart`)与
+`ShapedInputBorder`(`input_border.dart`)。覆盖率 1784/1888(94.5%)。测试 3271。
+
+**`ShapedInputBorder` 的文档里有一句最值得留:边框的 `borderSide` 设成 `none` 时不画线,「However, it
+will still define a shape (which you can see if `InputDecoration.filled` is true)」。**
+
+**一条边框是两样东西:一条线和一个轮廓。把线关掉,轮廓还在。** 填充色被裁到那个轮廓上,所以你看得见它。
+
+**而上游顺手警告的那个坑,是同一件事的另一面:** 这种情况下浮动标签应该设成 `never`,否则「the label will
+extend beyond the container as if the border were still being drawn」——**标签的缺口是从形状上切的,不是从
+线上切的,于是没有线可切的时候它照样切。** 回归行把这两条分别钉住了。
+
+还有一条相关的:**调用方明确写了 `BorderSide.none` 时,decorator 不会拿主题里的那份去替换它。** 一个被去
+掉的边,是一个决定,不是一处缺席。
+
+---
+
+**`FloatingLabelBehavior.auto` 的定义是「聚焦时**或者有内容时**浮起」,而后半句才是要紧的那半:一个已经
+填了字的字段必须把标签浮上去,否则标签会压在读者刚打的字上面。**
+
+---
+
+**helper 和 error 共用字段下面那一行,而 error 赢。** 上游写得直白:「the helper text is displayed in the
+same location as errorText. If a non-null errorText value is specified then the helper text is not
+shown.」
+
+**这是对的:两者都是「字段底下那一行」,而一个字段没法同时在解释自己和在抱怨。抱怨更急。**
+
+其余两条:
+
+* **三处「only one of X and XText」**(helper、prefix、suffix):**widget 形式和字符串形式是二选一**——只有
+  一个槽,而同时给两个没有任何规则说该用哪个。
+* **`InputDecoration.collapsed` 同时设了 `isCollapsed` 和零内容内边距。** 「collapsed」是**两个设置的一
+  捆,不是一个开关**;只有标志、却还留着原来内边距的字段,仍然占着它本想省下的地方。
+
+验证:`cargo test --lib` 3271 绿,GN `rustflutter_unittests` 3271 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1784 accounted / 104 MISSING(94.5%)。
+
 ### 一条在这个浮点宽度上打不着的守卫(2026-08-20)
 
 新模块 `carousel.rs`,收掉 `CarouselView`、`CarouselScrollPhysics`、`CarouselController`。覆盖率

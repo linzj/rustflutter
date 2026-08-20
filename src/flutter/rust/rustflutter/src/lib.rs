@@ -79,6 +79,7 @@ pub mod implicit;
 pub mod inherited;
 pub mod ink;
 pub mod ink_well;
+pub mod input_decorator;
 pub mod interactive_viewer;
 pub mod keep_alive;
 pub mod keyboard;
