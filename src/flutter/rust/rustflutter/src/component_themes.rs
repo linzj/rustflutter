@@ -1118,6 +1118,55 @@ impl ResolvedTooltip {
     }
 }
 
+/// What a progress indicator draws with -- upstream's
+/// `_LinearProgressIndicatorState` and `_CircularProgressIndicatorState`
+/// reading `ProgressIndicatorTheme.of` and then the M3 defaults.
+///
+/// # The track and the fill are different colours for a reason
+///
+/// The fill is the scheme's primary and the track is
+/// `secondaryContainer` -- not a dimmed primary. A track dimmed from the fill
+/// reads as "this part is done less"; a track in its own colour reads as the
+/// space the fill is moving through, which is what it is. Upstream's linear
+/// and circular indicators differ here and the difference is deliberate: a
+/// circular one's track is transparent by default, because a spinner with a
+/// ring behind it looks like a control rather than an activity.
+pub struct ResolvedProgressIndicator {
+    pub color: Color,
+    /// Upstream's `linearTrackColor`.
+    pub linear_track_color: Color,
+    pub linear_min_height: f32,
+    /// Upstream's `circularTrackColor`, which is `None` by default -- a
+    /// spinner draws no ring behind itself.
+    pub circular_track_color: Option<Color>,
+    pub refresh_background_color: Color,
+    pub stop_indicator_color: Option<Color>,
+    pub stop_indicator_radius: Option<f32>,
+}
+
+impl ResolvedProgressIndicator {
+    /// Upstream's `LinearProgressIndicator.minHeight` default.
+    pub const LINEAR_MIN_HEIGHT: f32 = 4.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedProgressIndicator {
+        let data = ProgressIndicatorTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedProgressIndicator {
+            color: data.color.unwrap_or(scheme.primary),
+            linear_track_color: data
+                .linear_track_color
+                .unwrap_or(scheme.secondary_container()),
+            linear_min_height: data
+                .linear_min_height
+                .unwrap_or(ResolvedProgressIndicator::LINEAR_MIN_HEIGHT),
+            circular_track_color: data.circular_track_color,
+            refresh_background_color: data.refresh_background_color.unwrap_or(scheme.surface),
+            stop_indicator_color: data.stop_indicator_color,
+            stop_indicator_radius: data.stop_indicator_radius,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

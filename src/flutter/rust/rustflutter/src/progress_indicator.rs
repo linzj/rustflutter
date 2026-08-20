@@ -132,6 +132,114 @@ impl CircularProgressIndicator {
     }
 }
 
+// -- Drawing them ---------------------------------------------------------------
+
+/// Upstream `LinearProgressIndicator`, as a widget.
+///
+/// # The track is a colour of its own and not a dimmed fill
+///
+/// A track dimmed from the fill reads as "this part is done less". A track in
+/// its own colour reads as the space the fill is moving through, which is what
+/// it is. Upstream's default is `secondaryContainer`, and that is why.
+///
+/// # An indeterminate bar has no width to draw
+///
+/// `value` of `None` means nobody knows how far along it is, and upstream
+/// animates a sliver back and forth. This port draws the full track and no
+/// fill, and says so: an indeterminate bar drawn as a *full* one would be a
+/// lie, and drawn as an empty one is at least true.
+impl crate::framework::Component for LinearProgressIndicator {
+    fn build(&self, context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        debug_assert!(
+            self.base.validate().is_ok(),
+            "{}",
+            self.base.validate().unwrap_err()
+        );
+        let resolved = crate::component_themes::ResolvedProgressIndicator::of(context);
+        // Upstream's `minHeight ?? theme.linearMinHeight ?? 4`.
+        let height = if self.min_height == LinearProgressIndicator::DEFAULT_MIN_HEIGHT {
+            resolved.linear_min_height
+        } else {
+            self.min_height
+        };
+        let value = self.base.value;
+        let fill = resolved.color;
+        let track = resolved.linear_track_color;
+
+        crate::framework::leaf(move || {
+            let mut bar = crate::widgets::Container::new()
+                .with_height(height)
+                .with_color(track)
+                .with_corner_radius(height / 2.0);
+            if let Some(value) = value {
+                // A flex weight rather than a width: the bar's own width is
+                // whatever it is given, and a fraction of it is not known until
+                // then. Writing it as a width would mean guessing.
+                let value = value.clamp(0.0, 1.0);
+                let filled = (value * 1000.0).round() as u32;
+                let rest = 1000 - filled.min(1000);
+                let mut row = crate::render::RenderFlex::row()
+                    .with_main_axis_size(crate::render::MainAxisSize::Max)
+                    .with_main_axis_alignment(crate::render::MainAxisAlignment::Start)
+                    .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Stretch);
+                // Zero-weight children are not pushed at all: a flex factor of
+                // nothing is not a child that takes no room, it is a
+                // contradiction, and the flex says so.
+                if filled > 0 {
+                    row = row.push_flex(crate::render::FlexChild::expanded(
+                        crate::render::RenderRef::new(
+                            crate::widgets::Container::new()
+                                .with_color(fill)
+                                .with_corner_radius(height / 2.0),
+                        ),
+                        filled,
+                    ));
+                }
+                if rest > 0 {
+                    row = row.push_flex(crate::render::FlexChild::expanded(
+                        crate::render::RenderRef::new(crate::widgets::Empty),
+                        rest,
+                    ));
+                }
+                bar = bar.with_child(row);
+            }
+            bar
+        })
+    }
+}
+
+/// Upstream `CircularProgressIndicator`, as a widget.
+///
+/// The track is transparent by default -- upstream's `circularTrackColor` is
+/// null -- because a spinner with a ring behind it reads as a control that
+/// could be dragged rather than as something happening.
+impl crate::framework::Component for CircularProgressIndicator {
+    fn build(&self, context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        debug_assert!(
+            self.base.validate().is_ok(),
+            "{}",
+            self.base.validate().unwrap_err()
+        );
+        let resolved = crate::component_themes::ResolvedProgressIndicator::of(context);
+        let stroke = self.stroke_width;
+        let fill = resolved.color;
+        let track = resolved.circular_track_color;
+        // Upstream's `_kMinCircularProgressIndicatorSize`.
+        let size = 36.0;
+
+        crate::framework::leaf(move || {
+            let mut ring = crate::widgets::Container::new()
+                .with_size(size, size)
+                .with_corner_radius(size / 2.0)
+                .with_border(stroke, fill);
+            if let Some(track) = track {
+                ring = ring.with_color(track);
+            }
+            ring
+        })
+    }
+}
+
 /// Upstream `RefreshProgressIndicator`: the circular one that
 /// [`RefreshIndicator`] shows.
 ///
@@ -522,5 +630,233 @@ mod tests {
         idle.drag_by(100.0, 400.0);
         assert_eq!(idle.position(), 0.0);
         assert_eq!(idle.status(), RefreshIndicatorStatus::Idle);
+    }
+}
+
+#[cfg(test)]
+mod progress_widget_tests {
+    use super::*;
+    use crate::component_themes::{
+        ProgressIndicatorTheme, ProgressIndicatorThemeData, ResolvedProgressIndicator,
+    };
+    use crate::engine::Color;
+    use crate::framework::{BuildContext, Component, ElementTree, component, provide};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+
+    struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedProgressIndicator>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+            *self.0.borrow_mut() = Some(ResolvedProgressIndicator::of(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(data: ProgressIndicatorThemeData) -> ResolvedProgressIndicator {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            ProgressIndicatorTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    /// Lays a widget out at 200 by 40 and reports every child rectangle in it.
+    fn boxes(widget: crate::framework::AnyWidget) -> Vec<(Offset, Size)> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(crate::components::Theme::dark(), widget));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::tight(200.0, 40.0));
+
+        fn walk(node: &dyn RenderBox, at: Offset, found: &mut Vec<(Offset, Size)>) {
+            node.visit_children(&mut |child, offset| {
+                let here = Offset::new(at.dx + offset.dx, at.dy + offset.dy);
+                found.push((here, child.size()));
+                walk(child, here, found);
+            });
+        }
+        let mut found = Vec::new();
+        walk(&root, Offset::ZERO, &mut found);
+        found
+    }
+
+    fn bar(value: Option<f32>) -> LinearProgressIndicator {
+        LinearProgressIndicator::new(ProgressIndicator {
+            value,
+            has_controller: false,
+        })
+    }
+
+    #[test]
+    fn the_track_is_a_colour_of_its_own_and_not_a_dimmed_fill() {
+        // A track dimmed from the fill reads as "this part is done less". Its
+        // own colour reads as the space the fill is moving through.
+        let resolved = resolve(ProgressIndicatorThemeData::new());
+        let scheme = crate::theme::ThemeData::fallback().color_scheme;
+        assert_eq!(resolved.color, scheme.primary);
+        assert_eq!(resolved.linear_track_color, scheme.secondary_container());
+        assert_ne!(resolved.color, resolved.linear_track_color);
+    }
+
+    #[test]
+    fn a_spinner_has_no_ring_behind_it_unless_one_is_asked_for() {
+        // A ring makes it read as a control that could be dragged rather than
+        // as something happening. The linear one has a track by default and the
+        // circular one does not, and the difference is upstream's.
+        let resolved = resolve(ProgressIndicatorThemeData::new());
+        assert_eq!(resolved.circular_track_color, None);
+
+        let mut data = ProgressIndicatorThemeData::new();
+        data.circular_track_color = Some(Color::argb(0xFF, 1, 2, 3));
+        assert_eq!(
+            resolve(data).circular_track_color,
+            Some(Color::argb(0xFF, 1, 2, 3))
+        );
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults() {
+        let mut data = ProgressIndicatorThemeData::new();
+        data.color = Some(Color::argb(0xFF, 9, 9, 9));
+        data.linear_min_height = Some(11.0);
+        let resolved = resolve(data);
+        assert_eq!(resolved.color, Color::argb(0xFF, 9, 9, 9));
+        assert_eq!(resolved.linear_min_height, 11.0);
+    }
+
+    #[test]
+    fn a_bar_is_the_themes_height_and_a_widget_that_asked_gets_its_own() {
+        let mut data = ProgressIndicatorThemeData::new();
+        data.linear_min_height = Some(10.0);
+        let themed = {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                ProgressIndicatorTheme::new(data.clone(), component(bar(Some(0.5)))),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints {
+                min_width: 0.0,
+                max_width: 200.0,
+                min_height: 0.0,
+                max_height: 100.0,
+            })
+        };
+        assert_eq!(themed.height, 10.0);
+
+        let mut asked = bar(Some(0.5));
+        asked.min_height = 20.0;
+        let own = {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                ProgressIndicatorTheme::new(data, component(asked)),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints {
+                min_width: 0.0,
+                max_width: 200.0,
+                min_height: 0.0,
+                max_height: 100.0,
+            })
+        };
+        assert_eq!(own.height, 20.0);
+    }
+
+    #[test]
+    fn the_fill_is_as_wide_a_fraction_of_the_bar_as_the_value_says() {
+        // Read off the laid-out tree rather than from the code: a fraction of a
+        // width nobody knows until layout is exactly the thing that can be got
+        // wrong by writing it as a width.
+        let half = boxes(component(bar(Some(0.5))));
+        let widest = half
+            .iter()
+            .filter(|(_, size)| size.width > 0.0 && size.width < 200.0)
+            .map(|(_, size)| size.width)
+            .fold(0.0f32, f32::max);
+        assert!(
+            (widest - 100.0).abs() < 1.0,
+            "half of two hundred, got {widest}"
+        );
+
+        let quarter = boxes(component(bar(Some(0.25))));
+        let quarter_width = quarter
+            .iter()
+            .filter(|(_, size)| size.width > 0.0 && size.width < 200.0)
+            .map(|(_, size)| size.width)
+            .fold(0.0f32, f32::max);
+        assert!(
+            (quarter_width - 50.0).abs() < 1.0,
+            "a quarter, got {quarter_width}"
+        );
+    }
+
+    #[test]
+    fn a_full_bar_leaves_nothing_and_an_empty_one_fills_nothing() {
+        let full = boxes(component(bar(Some(1.0))));
+        assert!(
+            full.iter()
+                .any(|(_, size)| (size.width - 200.0).abs() < 1.0),
+            "the fill reaches the end"
+        );
+
+        let empty = boxes(component(bar(Some(0.0))));
+        assert!(
+            !empty
+                .iter()
+                .any(|(_, size)| size.width > 0.0 && size.width < 200.0),
+            "and nothing is filled at zero: {empty:?}"
+        );
+    }
+
+    #[test]
+    fn an_indeterminate_bar_draws_the_track_and_no_fill() {
+        // Drawing it full would be a lie about how far along it is; drawing it
+        // empty is at least true.
+        // Counted in rectangles drawn, not in box widths: a *full* fill is
+        // exactly as wide as the track, so "narrower than the bar" -- which is
+        // how the other tests here find a fill -- cannot see one. Counting
+        // catches both the empty case and the full one.
+        fn rects(value: Option<f32>) -> u32 {
+            crate::engine_test_stubs::reset_layer_calls();
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                component(bar(value)),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::tight(200.0, 40.0));
+            let mut layers = crate::engine::LayerTree::new(200, 40);
+            {
+                let mut context =
+                    crate::render::PaintContext::new(&mut layers, Size::new(200.0, 40.0));
+                root.paint(&mut context, Offset::ZERO);
+            }
+            crate::engine_test_stubs::layer_calls().rects
+        }
+
+        let track_only = rects(None);
+        assert_eq!(
+            rects(Some(0.5)),
+            track_only + 1,
+            "a value adds exactly one rectangle: the fill"
+        );
+        assert_eq!(
+            rects(Some(1.0)),
+            track_only + 1,
+            "and a full bar is still one fill, not none"
+        );
+    }
+
+    #[test]
+    fn a_value_and_a_controller_together_are_refused() {
+        // Upstream's assert: having both is asking for both kinds of indicator
+        // at once.
+        let base = ProgressIndicator {
+            value: Some(0.5),
+            has_controller: true,
+        };
+        assert!(base.validate().is_err());
     }
 }
