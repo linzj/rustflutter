@@ -164,6 +164,75 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 开着读屏器的时候,那个淡出整个不发生(2026-08-20)
+
+新模块 `app_bar.rs`(`SliverAppBar`)与 `icons.rs`(`Icons`、`PlatformAdaptiveIcons`)。覆盖率
+1833/1888(97.1%)。测试 3494。
+
+```dart
+final double toolbarOpacity = !accessibleNavigation && (!pinned || isPinnedWithOpacityFade)
+    ? clampDouble(visibleToolbarHeight / (toolbarHeight ?? kToolbarHeight), 0.0, 1.0)
+    : 1.0;
+```
+
+**`accessibleNavigation` 把这段淡出整个关掉,不是调暗,是不发生。** 读屏器开着的时候,工具栏无论滚出去多
+少都保持全不透明——**因为一个淡了一半的工具栏照样能被聚焦、照样会被念出来,淡掉它只会留下一个「读屏器够
+得着、人眼看不见」的控件。**
+
+**无障碍那条路不是普通那条路把某个数字拧小,它是另一个答案。** 和第 138 轮那条给 VoiceOver 让路的整整一
+秒延迟是同一件事的两个样子。
+
+---
+
+**一处需要更正我自己的预期。** 我先写的回归行断言「收起到八成时工具栏已经在淡了」——红了,而且实现是对
+的。
+
+算一遍:expandedHeight 200、toolbar 56、没有 bottom,于是 minExtent 就是 56。整个收起过程里
+`visibleToolbarHeight` 从 144 降到 56,除以 56 之后一路被 clamp 在 1.0。**收起的时候工具栏根本不淡——因为
+栏在丢掉的是它展开出来的那部分空间,而工具栏正是这部分底下剩下的那个东西。** 淡出属于收满之后继续往上走
+的那一段:不钉住的栏会接着滚,直到离开视口顶部。
+
+改成照实测的四个点(0 处满、收满时仍满、再走一段开始淡、走完为 0),并把这句话写进了测试名。
+
+---
+
+**其余在 `SliverAppBar` 里的:**
+
+* `assert(floating || !snap, 'The "snap" argument only makes sense for floating app bars.')`——又一条**单向
+  蕴含**,而且消息把理由说成了人话:**snap 是浮动栏在你半途松手时做的事,不会浮动的栏没有什么可 snap 的。**
+  三个构造器(small / medium / large)里这三条 assert 一字不差地各写了一遍。
+* `maxExtent` 外面套的那个 `math.max(..., minExtent)` **是防止表头翻过来的**:一个比收起高度还小的
+  `expandedHeight` 会让「展开」比「收起」还矮,底下每一条收缩计算都会倒着跑。
+* `_isPinnedWithOpacityFade` 用**四个条件**点出一种布局:钉住、且浮动、且有 bottom、且没有额外的工具栏高
+  度。**这是钉住的栏唯一被允许淡出的场合**——工具栏滑走,把 bottom 留在那儿。而 `bottomOpacity` 那边
+  `pinned ? 1.0 : ...` 没有对应的例外:**在那种布局里,bottom 恰恰就是留下来的那一半。**
+
+---
+
+**另一件,两个相邻文件把同样六个平台切在了不同的地方。**
+
+`PlatformAdaptiveIcons._isCupertino()` 画的线是**苹果对其余**:macOS 跟 iOS 一边,Linux 和 Windows 跟
+Android、Fuchsia 一边。而上一轮 `MaterialScrollBehavior` 画的线是**桌面对触摸**:三个桌面一边。
+
+**iOS 和 macOS 在这两条线上分处两侧。** 哪一条都不是「那个平台划分」——**每个文件按自己那个问题需要的地
+方下刀**:图标问的是用户期待哪套视觉语言,滚动条问的是有没有一个光标能去抓它。
+
+还有一处形状上的事:`Icons` 全是 `static const`,而 `PlatformAdaptiveIcons` 的每一个成员都是**实例
+getter**。**一个 const 没法问自己跑在什么平台上。** 所以自适应那套不能是编译期折叠掉的常量命名空间,只能
+是一个每次访问都求值的对象——这正是 `adaptive` 返回实例而不是又一个命名空间的全部理由,也是为什么你写
+`Icons.arrow_back` 却要写 `Icons.adaptive.arrow_back`。
+
+(顺带:`final class PlatformAdaptiveIcons implements Icons` 里那个 `implements` **什么也没承诺**——
+`Icons` 只有静态成员,而 Dart 不继承静态成员。它是个名字。)
+
+上游 `icons.dart` 是 29,454 行、8,825 条 `static const IconData`,整块夹在 `// BEGIN GENERATED ICONS`
+里,上面写着 `// Generated code: do not hand-edit.`。**把九千个码位搬过来,读者从字体里能得到的东西一点没
+多**,所以这边只留了有代表性的一小把和外面那层机制——有话可说的是那一层。
+
+验证:`cargo test --lib` 3494 绿,GN `rustflutter_unittests` 3494 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1833 accounted / 55 MISSING(97.1%)。
+
 ### `DateTime.sunday` 是 7,而那条注释写着 6——写了两遍(2026-08-20)
 
 新模块 `material_app.rs`,收掉 `app.dart`(`MaterialApp`、`MaterialScrollBehavior`)与
