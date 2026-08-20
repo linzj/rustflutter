@@ -879,6 +879,84 @@ impl ResolvedCheckbox {
     }
 }
 
+/// What a radio draws with, once the theme and the defaults have both had a
+/// say -- upstream's `Radio.build` reading `RadioTheme.of` and then its own.
+///
+/// # Two radii, and the inner one is a state property
+///
+/// Upstream's `_kOuterRadius` is 8 and `_kInnerRadius` is 4.5, and the inner
+/// one is overridable *per state* while the outer one is not. That asymmetry is
+/// the animation: a radio fills in by growing its dot from nothing, so the dot
+/// is the part that has a size per state and the ring is the part that stays
+/// put. An unselected radio's inner radius is zero, and that is not a special
+/// case -- it is the same property answering for a different state.
+pub struct ResolvedRadio {
+    /// The dot, and the ring when it is filled.
+    pub fill: Color,
+    pub side: BorderSide,
+    /// Upstream's `_kOuterRadius`.
+    pub outer_radius: f32,
+    /// Upstream's `innerRadius` property, resolved. Zero when unselected.
+    pub inner_radius: f32,
+    pub background: Option<Color>,
+    pub tap_target_size: MaterialTapTargetSize,
+}
+
+impl ResolvedRadio {
+    /// Upstream's `_kOuterRadius`.
+    pub const OUTER_RADIUS: f32 = 8.0;
+    /// Upstream's `_kInnerRadius`.
+    pub const INNER_RADIUS: f32 = 4.5;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedRadio {
+        let data = RadioTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let selected = states.contains(WidgetState::Selected);
+        let disabled = states.contains(WidgetState::Disabled);
+        // Upstream's `_defaultFillColor`: the primary when chosen, the outline
+        // when not, and the disabled colour over both.
+        let default_fill = if disabled {
+            scheme.on_surface.with_alpha(0x61)
+        } else if selected {
+            scheme.primary
+        } else {
+            scheme.on_surface_variant()
+        };
+        let fill = data
+            .fill_color
+            .as_ref()
+            .and_then(|property| property.resolve(states))
+            .unwrap_or(default_fill);
+        ResolvedRadio {
+            fill,
+            // The ring is the fill colour, not a colour of its own: upstream
+            // paints the outline with the same `_defaultFillColor` it paints
+            // the dot with, which is why choosing a radio colours both at once.
+            side: data.side.unwrap_or(BorderSide {
+                color: fill,
+                width: 2.0,
+                ..BorderSide::NONE
+            }),
+            outer_radius: ResolvedRadio::OUTER_RADIUS,
+            inner_radius: data
+                .inner_radius
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or(if selected {
+                    ResolvedRadio::INNER_RADIUS
+                } else {
+                    0.0
+                }),
+            background: data
+                .background_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            tap_target_size: data.material_tap_target_size.unwrap_or_default(),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

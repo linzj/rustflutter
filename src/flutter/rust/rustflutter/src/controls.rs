@@ -212,31 +212,41 @@ impl Component for Radio {
         let handlers = self.handlers.clone();
         let label = self.label.clone();
         let body = theme.body();
-        let primary = theme.primary;
-        let outline = theme.outline;
         let spacing = theme.spacing;
+        // Upstream's `Radio.build`: the fill, the ring and the dot's radius all
+        // come off `RadioTheme.of(context)` resolved against the states this
+        // radio is in, and fall back to the scheme. The same three steps
+        // [`crate::controls::Checkbox`] takes.
+        let mut states = crate::widget_state::WidgetStates::NONE;
+        if selected {
+            states = states.with(crate::widget_state::WidgetState::Selected);
+        }
+        if !enabled {
+            states = states.with(crate::widget_state::WidgetState::Disabled);
+        }
+        let resolved = crate::component_themes::ResolvedRadio::of(context, states);
+        let fill = resolved.fill;
+        let ring_color = resolved.side.color;
+        let ring_width = resolved.side.width;
+        let outer = resolved.outer_radius;
+        let inner = resolved.inner_radius;
+        let background = resolved.background;
 
         leaf(move || {
-            let dot = if selected {
-                Container::new()
-                    .with_size(10.0, 10.0)
-                    .with_color(if enabled { primary } else { outline })
-                    .with_corner_radius(5.0)
-            } else {
-                Container::new().with_size(10.0, 10.0)
-            };
-            let ring = Container::new()
-                .with_size(20.0, 20.0)
-                .with_corner_radius(10.0)
-                .with_border(
-                    2.0,
-                    if enabled && selected {
-                        primary
-                    } else {
-                        outline
-                    },
-                )
+            // The dot's size is the resolved radius doubled, and an unselected
+            // radio resolves to zero -- so there is one path here and not two.
+            let dot = Container::new()
+                .with_size(inner * 2.0, inner * 2.0)
+                .with_color(fill)
+                .with_corner_radius(inner);
+            let mut ring = Container::new()
+                .with_size(outer * 2.0, outer * 2.0)
+                .with_corner_radius(outer)
+                .with_border(ring_width, ring_color)
                 .with_child(Center::new(dot));
+            if let Some(background) = background {
+                ring = ring.with_color(background);
+            }
 
             let content: crate::widgets::BoxedWidget = match &label {
                 Some(text) => crate::render::RenderRef::new(
@@ -3200,5 +3210,197 @@ mod tests {
             InteractiveInkFeatureFactory::NoSplash,
             InteractiveInkFeatureFactory::Splash
         );
+    }
+}
+
+#[cfg(test)]
+mod radio_theme_tests {
+    use crate::component_themes::{RadioTheme, RadioThemeData, ResolvedRadio};
+    use crate::engine::Color;
+    use crate::framework::{ElementTree, provide};
+    use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+    const MINE: Color = Color::argb(0xFF, 0x12, 0x34, 0x56);
+
+    fn selected() -> WidgetStates {
+        WidgetStates::NONE.with(WidgetState::Selected)
+    }
+
+    /// Reads the resolution from inside a tree that has the theme installed.
+    struct Reader {
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedRadio>>>,
+        states: WidgetStates,
+    }
+
+    impl crate::framework::Component for Reader {
+        fn build(
+            &self,
+            context: &mut crate::framework::BuildContext,
+        ) -> crate::framework::AnyWidget {
+            *self.seen.borrow_mut() = Some(ResolvedRadio::of(context, self.states));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(data: RadioThemeData, states: WidgetStates) -> ResolvedRadio {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(RadioTheme::new(
+            data,
+            crate::framework::component(Reader {
+                seen: std::rc::Rc::clone(&seen),
+                states,
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn an_unselected_radio_has_a_dot_of_no_size_at_all() {
+        // Not a special case in the drawing: the same property answers zero for
+        // the unselected state, which is why the dot can grow from nothing when
+        // the radio is chosen.
+        assert_eq!(
+            resolve(RadioThemeData::new(), WidgetStates::NONE).inner_radius,
+            0.0
+        );
+        assert_eq!(
+            resolve(RadioThemeData::new(), selected()).inner_radius,
+            ResolvedRadio::INNER_RADIUS
+        );
+    }
+
+    #[test]
+    fn the_ring_does_not_change_size_with_the_state() {
+        // Only the dot has a radius per state. The ring staying put is what
+        // makes a column of radios line up.
+        for states in [WidgetStates::NONE, selected()] {
+            assert_eq!(
+                resolve(RadioThemeData::new(), states).outer_radius,
+                ResolvedRadio::OUTER_RADIUS
+            );
+        }
+    }
+
+    #[test]
+    fn choosing_a_radio_colours_the_ring_and_the_dot_together() {
+        // Upstream paints the outline with the same default fill it paints the
+        // dot with, so they cannot disagree.
+        let chosen = resolve(RadioThemeData::new(), selected());
+        assert_eq!(chosen.side.color, chosen.fill);
+
+        let plain = resolve(RadioThemeData::new(), WidgetStates::NONE);
+        assert_eq!(plain.side.color, plain.fill);
+        assert_ne!(chosen.fill, plain.fill, "and the two states differ");
+    }
+
+    #[test]
+    fn a_disabled_radio_is_the_same_colour_whether_it_is_chosen_or_not() {
+        // Upstream's `_defaultFillColor` tests disabled first, so it wins over
+        // selected -- a greyed-out group should not have one item shouting.
+        let off = resolve(
+            RadioThemeData::new(),
+            WidgetStates::NONE.with(WidgetState::Disabled),
+        );
+        let on = resolve(
+            RadioThemeData::new(),
+            selected().with(WidgetState::Disabled),
+        );
+        assert_eq!(off.fill, on.fill);
+        assert_ne!(on.fill, resolve(RadioThemeData::new(), selected()).fill);
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults() {
+        let mut data = RadioThemeData::new();
+        data.fill_color = Some(StateProperty::resolve_with(|_| Some(MINE)));
+        assert_eq!(resolve(data, selected()).fill, MINE);
+    }
+
+    #[test]
+    fn a_themed_inner_radius_answers_for_every_state_including_the_empty_one() {
+        // Which is the point of it being a property: a theme can make an
+        // unselected radio show a small dot rather than none.
+        let mut data = RadioThemeData::new();
+        data.inner_radius = Some(StateProperty::resolve_with(|_| Some(3.0)));
+        assert_eq!(resolve(data.clone(), WidgetStates::NONE).inner_radius, 3.0);
+        assert_eq!(resolve(data, selected()).inner_radius, 3.0);
+    }
+
+    #[test]
+    fn a_themed_side_replaces_the_ring_outright() {
+        let mut data = RadioThemeData::new();
+        data.side = Some(crate::borders::BorderSide {
+            color: MINE,
+            width: 7.0,
+            ..crate::borders::BorderSide::NONE
+        });
+        let resolved = resolve(data, selected());
+        assert_eq!(resolved.side.width, 7.0);
+        assert_eq!(resolved.side.color, MINE);
+        assert_ne!(resolved.fill, MINE, "the dot is not dragged along with it");
+    }
+
+    #[test]
+    fn the_widget_resolves_against_its_own_state_and_not_a_blank_one() {
+        // The resolution above is only worth having if the widget hands it the
+        // right states. Observed through the extra rectangle a background
+        // paints: a theme that gives one only to the chosen radio makes the
+        // two draw different amounts, and a widget passing a blank state would
+        // make them draw the same.
+        fn rects_for(selected: bool, enabled: bool, wanted: WidgetState) -> u32 {
+            let mut data = RadioThemeData::new();
+            data.background_color =
+                Some(StateProperty::resolve_with(move |states: WidgetStates| {
+                    states.contains(wanted).then_some(MINE)
+                }));
+            crate::engine_test_stubs::reset_layer_calls();
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                RadioTheme::new(
+                    data,
+                    crate::framework::component(
+                        super::Radio::new(1, selected).with_enabled(enabled),
+                    ),
+                ),
+            ));
+            use crate::render::RenderBox;
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(crate::render::BoxConstraints::tight(60.0, 60.0));
+            let mut layers = crate::engine::LayerTree::new(60, 60);
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(60.0, 60.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            crate::engine_test_stubs::layer_calls().rects
+        }
+
+        let selected = |on| rects_for(on, true, WidgetState::Selected);
+        assert_eq!(
+            selected(true),
+            selected(false) + 1,
+            "the chosen radio paints a background the other does not"
+        );
+
+        // And the same for the other bit, which a widget reading only its value
+        // would get wrong in exactly the same way.
+        let disabled = |on| rects_for(true, on, WidgetState::Disabled);
+        assert_eq!(
+            disabled(false),
+            disabled(true) + 1,
+            "the disabled radio paints a background the live one does not"
+        );
+    }
+
+    #[test]
+    fn no_background_is_asked_for_unless_the_theme_asks() {
+        assert_eq!(resolve(RadioThemeData::new(), selected()).background, None);
+        let mut data = RadioThemeData::new();
+        data.background_color = Some(StateProperty::resolve_with(|_| Some(MINE)));
+        assert_eq!(resolve(data, selected()).background, Some(MINE));
     }
 }
