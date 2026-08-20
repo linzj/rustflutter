@@ -132,6 +132,7 @@ pub mod selectable_region;
 pub mod selection;
 pub mod selection_container;
 pub mod semantics;
+pub mod semantics_debugger;
 pub mod semantics_markers;
 pub mod sensitive_content;
 pub mod services;

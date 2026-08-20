@@ -164,6 +164,61 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个语义动作没有位置(2026-08-20)
+
+新模块 `semantics_debugger.rs`(`SemanticsDebugger`),以及补进 `semantics_markers.rs` 的
+`SemanticsGestureDelegate`(`gesture_detector.dart`)与 `SliverEnsureSemantics`(`sliver.dart`)。三个类,
+一个主题:**语义树被告知了什么,以及你怎么看见它。** 覆盖率 1734/1888(91.8%)。测试 3124。
+**`widgets/` 层只剩 8 个类。**
+
+**`SemanticsGestureDelegate` 的全部难处在一句话上:一个语义动作没有位置。** 读屏器说的是「激活这个」,不
+说「在哪儿」。于是这个委托**编一个出来——widget 的中心**,再从那儿把整个手势合成出来。
+
+**而且不是只合成最后一个回调。** 一次语义点击变成 `onTapDown`、`onTapUp`、`onTap` 三个,按顺序发。因为
+识别器的每个回调都可能有意义:**一个「按下时高亮、抬起时触发」的按钮,否则对读屏器用户永远不会高亮。**
+指针种类填 `unknown`,那是诚实的答案。
+
+**一次语义拖动更甚:down、start、update、end——一整个手势在一次调用里合成完。** 读屏器只给一个 delta,
+开头和结尾都得围着它编出来。而**结束速度是 0**:读屏器的划动没有速度,**编一个出来会把列表甩飞。**
+
+**而委托只为「确实存在的识别器」装处理器:** 没有 `TapGestureRecognizer`,就不宣告语义 tap。**语义树对外
+提供的,恰好是这个 widget 真的能做的那些。** 而 pan 会同时答应两条轴(pan 本来就管两个方向),并且当 pan
+和轴向识别器同时在场时,上游两个都调,不做取舍。
+
+上游还在默认委托上写了一句不常见的话:**「For readers who come here to learn how to write custom
+semantics delegates: this is not a proper sample code.」**——它伸手进了检测器的私有状态,而那是为了保住比
+这个接口更早的既有行为。真正的委托应该把回调存成属性。
+
+---
+
+**`SemanticsDebugger` 之所以有用而不只是装饰,是因为它接管手势之后派发的是语义动作,不是触摸。** 一个模
+拟点击的调试器只会告诉你「这个应用能用」;**这一个对语义树做命中测试并执行找到的那个动作——正是读屏器做
+的事**,于是你看见的是语义到底行不行。
+
+它的 `_handlePanEnd` 有两处值得写下来:
+
+* **正好对角的一甩什么都不做。** 上游在两个速度分量绝对值相等时直接 return,而不是挑一个:**没有正确答
+  案,而猜会让调试器的行为取决于浮点噪声。**
+* **横向甩发两个动作,纵向甩发一个。** 向左在滑块上是 `decrease`,在列表上是 `scrollLeft`,**而调试器根本
+  不知道手指下面那个节点是哪种——于是两个都发,让节点挑自己有的那个。** 纵向没有 increase/decrease 的约
+  定,所以只发 scroll。
+
+---
+
+**`SliverEnsureSemantics` 是两行:一个代理 sliver,渲染对象把 `ensureSemantics` 覆写成 true**,让孩子即
+使滚出了视口**并且**滚出了缓存区,也留在语义树里。读屏器于是够得到一个谁都看不见的头部。
+
+**而它的文档里带着一句其实是坦白的警告,那才是有意思的地方:这东西只对「事先知道自己范围」的 sliver 真的
+管用。** 一个懒惰的 `SliverList` 会低估滚动范围,而**按那个范围导航的辅助技术,会滚不到这个 widget 刚刚
+让它够得到的那份内容。** 上游的建议是改用 `SliverFixedExtentList`、`SliverVariedExtentList` 或
+`SliverPrototypeExtentList`。
+
+**让一样东西「够得到」,和让它「找得到」,不是一回事。**
+
+验证:`cargo test --lib` 3124 绿,GN `rustflutter_unittests` 3124 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1734 accounted / 154 MISSING(91.8%)。
+
 ### 屏幕录制没法只录一半(2026-08-20)
 
 两个新模块 `sensitive_content.rs`(`SensitiveContentHost`、`SensitiveContent`)与
