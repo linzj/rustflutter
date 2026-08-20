@@ -733,6 +733,23 @@ impl DefaultSelectionStyle {
         }
     }
 
+    /// The colours a field paints with, read off the ambient
+    /// `TextSelectionTheme` and the scheme -- upstream's `_TextFieldState`
+    /// chain, including the rule that an error cursor is not negotiable.
+    ///
+    /// [`DefaultSelectionStyle::resolved`] is the same question with nothing to
+    /// read from, and answers with upstream's grey.
+    pub fn of(
+        context: &mut crate::framework::BuildContext,
+        has_error: bool,
+    ) -> crate::component_themes::ResolvedTextSelection {
+        let style = context
+            .inherited::<DefaultSelectionStyle>()
+            .map(|style| *style)
+            .unwrap_or_default();
+        crate::component_themes::ResolvedTextSelection::of(context, style.cursor_color, has_error)
+    }
+
     /// The colours to actually paint with, once nobody above set them.
     pub fn resolved(&self) -> (Color, Color) {
         (
@@ -1400,5 +1417,141 @@ mod selection_pieces_tests {
             0.0,
             "an empty line is its own start"
         );
+    }
+}
+
+#[cfg(test)]
+mod selection_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ResolvedTextSelection, TextSelectionTheme, TextSelectionThemeData,
+    };
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader {
+        has_error: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedTextSelection>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(DefaultSelectionStyle::of(context, self.has_error));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(
+        style: Option<DefaultSelectionStyle>,
+        data: TextSelectionThemeData,
+        has_error: bool,
+    ) -> ResolvedTextSelection {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let reader = component(Reader {
+            has_error,
+            seen: std::rc::Rc::clone(&seen),
+        });
+        let inner = match style {
+            Some(style) => provide(style, reader),
+            None => reader,
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(TextSelectionTheme::new(data, inner));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn scheme() -> crate::color_scheme::ColorScheme {
+        crate::theme::ThemeData::fallback().color_scheme
+    }
+
+    const MINE: Color = Color::argb(0xFF, 0x31, 0x41, 0x59);
+
+    #[test]
+    fn an_error_cursor_is_not_negotiable() {
+        // Upstream puts the error *outside* the chain rather than at the top of
+        // it: a caller who set a cursor colour does not keep it while the field
+        // is refusing what was typed. A field that looks the same wrong as
+        // right is worse than an ugly one.
+        let mut data = TextSelectionThemeData::new();
+        data.cursor_color = Some(MINE);
+        let style = DefaultSelectionStyle::new().with_cursor_color(MINE);
+
+        assert_eq!(resolve(Some(style), data.clone(), false).cursor, MINE);
+        assert_eq!(
+            resolve(Some(style), data, true).cursor,
+            scheme().error,
+            "and neither the widget nor the theme gets a say"
+        );
+    }
+
+    #[test]
+    fn a_selection_is_not_recoloured_by_an_error() {
+        // A selection is the reader's own doing; recolouring it would be
+        // blaming them for the error.
+        let plain = resolve(None, TextSelectionThemeData::new(), false);
+        let wrong = resolve(None, TextSelectionThemeData::new(), true);
+        assert_eq!(plain.selection, wrong.selection);
+        assert_ne!(plain.cursor, wrong.cursor);
+    }
+
+    #[test]
+    fn the_selection_is_the_cursors_colour_at_forty_per_cent() {
+        // Not a colour of its own. A selection has to be visible *through* --
+        // the text under it must stay readable -- so it is the same hue said
+        // quietly rather than a second colour competing.
+        let resolved = resolve(None, TextSelectionThemeData::new(), false);
+        assert_eq!(resolved.cursor, scheme().primary);
+        assert_eq!(resolved.selection.red(), scheme().primary.red());
+        assert_eq!(resolved.selection.alpha(), 102, "forty per cent of 255");
+    }
+
+    #[test]
+    fn a_handle_is_solid_where_the_selection_behind_it_is_faint() {
+        // A handle is a thing to grab. Falling back to the selection colour
+        // would make the one part the reader has to hit the hardest to see.
+        let resolved = resolve(None, TextSelectionThemeData::new(), false);
+        assert_eq!(resolved.handle, scheme().primary);
+        assert_eq!(resolved.handle.alpha(), 255);
+        assert_ne!(resolved.handle, resolved.selection);
+    }
+
+    #[test]
+    fn the_style_beats_the_theme_beats_the_scheme() {
+        let mut data = TextSelectionThemeData::new();
+        data.cursor_color = Some(Color::argb(0xFF, 1, 2, 3));
+
+        assert_eq!(
+            resolve(None, data.clone(), false).cursor,
+            Color::argb(0xFF, 1, 2, 3),
+            "the theme's"
+        );
+        assert_eq!(
+            resolve(
+                Some(DefaultSelectionStyle::new().with_cursor_color(MINE)),
+                data,
+                false
+            )
+            .cursor,
+            MINE,
+            "and the style's over it"
+        );
+        assert_eq!(
+            resolve(None, TextSelectionThemeData::new(), false).cursor,
+            scheme().primary,
+            "and the scheme when neither said"
+        );
+    }
+
+    #[test]
+    fn each_of_the_three_colours_is_its_own_chain() {
+        let mut data = TextSelectionThemeData::new();
+        data.selection_handle_color = Some(MINE);
+        let resolved = resolve(None, data, false);
+        assert_eq!(resolved.handle, MINE);
+        assert_eq!(
+            resolved.cursor,
+            scheme().primary,
+            "setting one does not move the others"
+        );
+        assert_eq!(resolved.selection.alpha(), 102);
     }
 }

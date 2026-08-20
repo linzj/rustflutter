@@ -1389,6 +1389,67 @@ impl ResolvedIcon {
     }
 }
 
+/// What a text field draws its cursor, selection and handles with --
+/// upstream's `_TextFieldState.build` reading `DefaultSelectionStyle.of` and
+/// then the platform's own colours.
+///
+/// # A field that failed validation has a red cursor whatever anyone asked for
+///
+/// Upstream's line is `cursorColor = _hasError ? errorColor : (widget.cursorColor
+/// ?? selectionStyle.cursorColor ?? default)` -- the error is *outside* the
+/// chain, not the first step of it. A caller who set a cursor colour does not
+/// get to keep it while the field is refusing what was typed: the state matters
+/// more than the styling, and a field that looks the same wrong as right is
+/// worse than an ugly one.
+///
+/// The selection colour has no such rule. It is the same colour either way,
+/// because a selection is the reader's own doing and recolouring it would be
+/// blaming them for the error.
+///
+/// # The selection is the cursor's colour at forty per cent
+///
+/// Not a colour of its own: `primary.withOpacity(0.40)`. A selection has to be
+/// visible *through* -- the text under it must stay readable -- so it is the
+/// same hue announced quietly rather than a second colour competing with it.
+pub struct ResolvedTextSelection {
+    pub cursor: Color,
+    pub selection: Color,
+    pub handle: Color,
+}
+
+impl ResolvedTextSelection {
+    /// Upstream's `withOpacity(0.40)` on the selection.
+    pub const SELECTION_OPACITY: f32 = 0.40;
+
+    pub fn of(
+        context: &mut BuildContext,
+        widget_cursor: Option<Color>,
+        has_error: bool,
+    ) -> ResolvedTextSelection {
+        let data = TextSelectionTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let default_cursor = scheme.primary;
+        ResolvedTextSelection {
+            cursor: if has_error {
+                scheme.error
+            } else {
+                widget_cursor
+                    .or(data.cursor_color)
+                    .unwrap_or(default_cursor)
+            },
+            selection: data.selection_color.unwrap_or_else(|| {
+                default_cursor
+                    .with_alpha((255.0 * ResolvedTextSelection::SELECTION_OPACITY).round() as u8)
+            }),
+            // Upstream's handle colour falls back to the *primary* and not to
+            // the selection colour: a handle is a thing to grab and has to be
+            // solid, where the selection behind it is deliberately faint.
+            handle: data.selection_handle_color.unwrap_or(default_cursor),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
