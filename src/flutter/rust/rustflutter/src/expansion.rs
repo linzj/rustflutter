@@ -93,6 +93,18 @@ pub struct ExpansionTile {
 }
 
 impl ExpansionTile {
+    /// This tile's two appearances, with the theme and the defaults folded in.
+    ///
+    /// Both ends at once, because they are the endpoints of the tween the
+    /// expansion drives -- see
+    /// [`crate::component_themes::ResolvedExpansionTile`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedExpansionTile {
+        crate::component_themes::ResolvedExpansionTile::of(context)
+    }
+
     pub fn new() -> ExpansionTile {
         ExpansionTile {
             is_expanded: false,
@@ -250,5 +262,145 @@ mod tests {
         // other way round.
         assert_eq!(ExpansionTile::state_hint(true), "collapsedHint");
         assert_eq!(ExpansionTile::state_hint(false), "expandedHint");
+    }
+}
+
+#[cfg(test)]
+mod expansion_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ExpansionTileTheme, ExpansionTileThemeData, ResolvedExpansionTile, lerp_color,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedExpansionTile>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(ExpansionTile::new().resolved(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(data: ExpansionTileThemeData) -> ResolvedExpansionTile {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            ExpansionTileTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    const OPEN: Color = Color::argb(0xFF, 0x00, 0xFF, 0x00);
+    const SHUT: Color = Color::argb(0xFF, 0xFF, 0x00, 0x00);
+
+    #[test]
+    fn a_null_end_fades_rather_than_switching_halfway() {
+        // Dart's `Color.lerp(null, y, t)` is `_scaleAlpha(y, t)`. Stepping at
+        // the halfway point would flick a colour on mid-transition instead of
+        // bringing it in, and the two agree only at the ends.
+        let opaque = Color::argb(0xFF, 1, 2, 3);
+        assert_eq!(lerp_color(None, Some(opaque), 0.0).unwrap().alpha(), 0);
+        assert_eq!(lerp_color(None, Some(opaque), 0.25).unwrap().alpha(), 64);
+        assert_eq!(lerp_color(None, Some(opaque), 1.0).unwrap().alpha(), 255);
+
+        assert_eq!(lerp_color(Some(opaque), None, 0.25).unwrap().alpha(), 191);
+        assert_eq!(
+            lerp_color(None, None, 0.5),
+            None,
+            "and nothing stays nothing"
+        );
+    }
+
+    #[test]
+    fn two_real_colours_interpolate_as_colours() {
+        let half = lerp_color(Some(SHUT), Some(OPEN), 0.5).expect("both ends");
+        assert!(
+            half.red() > 0 && half.green() > 0,
+            "somewhere between: {half:?}"
+        );
+        assert_eq!(half.alpha(), 255, "and neither end was transparent");
+    }
+
+    #[test]
+    fn the_pairs_are_tween_endpoints_and_not_an_either_or() {
+        // A tile that switched colours would look right at both ends and wrong
+        // for the whole of the animation, which is the part anyone watches.
+        let mut data = ExpansionTileThemeData::new();
+        data.collapsed_text_color = Some(SHUT);
+        data.text_color = Some(OPEN);
+        let resolved = resolve(data);
+
+        assert_eq!(resolved.lerp(0.0).1, SHUT);
+        assert_eq!(resolved.lerp(1.0).1, OPEN);
+        let middle = resolved.lerp(0.5).1;
+        assert_ne!(middle, SHUT);
+        assert_ne!(middle, OPEN);
+        assert!(middle.red() > 0 && middle.green() > 0, "{middle:?}");
+    }
+
+    #[test]
+    fn an_unstyled_tile_is_transparent_at_both_ends() {
+        // Upstream's `_updateBackgroundColor` has no defaults step at all: the
+        // tile sits in a list and the list has its own background.
+        let resolved = resolve(ExpansionTileThemeData::new());
+        assert_eq!(resolved.collapsed_background, None);
+        assert_eq!(resolved.expanded_background, None);
+        assert_eq!(resolved.lerp(0.5).0, None);
+    }
+
+    #[test]
+    fn a_background_set_at_one_end_only_fades_in() {
+        // Which is the case the lerp rule was got wrong for.
+        let mut data = ExpansionTileThemeData::new();
+        data.background_color = Some(OPEN);
+        let resolved = resolve(data);
+        assert_eq!(resolved.lerp(0.0).0.unwrap().alpha(), 0);
+        assert_eq!(resolved.lerp(1.0).0.unwrap().alpha(), 255);
+    }
+
+    #[test]
+    fn the_foregrounds_have_defaults_where_the_backgrounds_do_not() {
+        // A colour is not optional the way a background is.
+        let resolved = resolve(ExpansionTileThemeData::new());
+        let scheme = crate::theme::ThemeData::fallback().color_scheme;
+        assert_eq!(resolved.collapsed_text_color, scheme.on_surface);
+        assert_eq!(
+            resolved.expanded_text_color, scheme.primary,
+            "an open tile's title is the thing the reader just chose"
+        );
+        assert_ne!(resolved.collapsed_icon_color, resolved.expanded_icon_color);
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults_at_each_end_separately() {
+        let mut data = ExpansionTileThemeData::new();
+        data.collapsed_text_color = Some(SHUT);
+        let resolved = resolve(data);
+        assert_eq!(resolved.collapsed_text_color, SHUT);
+        assert_eq!(
+            resolved.expanded_text_color,
+            crate::theme::ThemeData::fallback().color_scheme.primary,
+            "the other end is untouched"
+        );
+    }
+
+    #[test]
+    fn the_expansion_is_clamped_rather_than_extrapolated() {
+        // With mid-range colours, because a tween clamps its *channels* and
+        // two saturated ends would come back to the right answer by accident:
+        // red 255 extrapolated past green 0 lands on 255 again either way.
+        // These two have room to overshoot, so the clamp is the only thing
+        // stopping them.
+        const DIM: Color = Color::argb(0xFF, 100, 100, 100);
+        const BRIGHT: Color = Color::argb(0xFF, 150, 150, 150);
+        let mut data = ExpansionTileThemeData::new();
+        data.collapsed_text_color = Some(DIM);
+        data.text_color = Some(BRIGHT);
+        let resolved = resolve(data);
+        assert_eq!(resolved.lerp(-1.0).1, DIM, "not 50");
+        assert_eq!(resolved.lerp(2.0).1, BRIGHT, "not 200");
     }
 }

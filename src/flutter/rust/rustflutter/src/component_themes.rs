@@ -46,20 +46,29 @@ use crate::widget_state::{
     MaterialTapTargetSize, StateProperty, WidgetState, WidgetStates, lerp_state_property,
 };
 
-/// Interpolates two optional colours, as every `*ThemeData.lerp` upstream
-/// does through `Color.lerp`: a null end is a null answer before the halfway
-/// point and the other end's colour after it.
+/// Interpolates two optional colours, as every `*ThemeData.lerp` upstream does
+/// through `Color.lerp`.
+///
+/// # A null end fades, it does not switch
+///
+/// `Color.lerp(null, y, t)` is `_scaleAlpha(y, t)` and `Color.lerp(x, null, t)`
+/// is `_scaleAlpha(x, 1 - t)`: an absent colour behaves as *transparent* at
+/// that end, so the other end fades in or out.
+///
+/// This used to step -- answer `a` below the halfway point and `b` above it --
+/// while its own doc claimed to follow `Color.lerp`. The two differ everywhere
+/// except the ends, and the difference is visible: a theme transition where one
+/// side sets a colour and the other does not would flick it on halfway through
+/// instead of bringing it in.
 pub(crate) fn lerp_color(a: Option<Color>, b: Option<Color>, t: f32) -> Option<Color> {
+    fn scale_alpha(color: Color, factor: f32) -> Color {
+        color.with_alpha((color.alpha() as f32 * factor.clamp(0.0, 1.0)).round() as u8)
+    }
     match (a, b) {
         (None, None) => None,
         (Some(a), Some(b)) => Some(crate::animation::ColorTween { begin: a, end: b }.lerp(t)),
-        _ => {
-            if t < 0.5 {
-                a
-            } else {
-                b
-            }
-        }
+        (Some(a), None) => Some(scale_alpha(a, 1.0 - t)),
+        (None, Some(b)) => Some(scale_alpha(b, t)),
     }
 }
 
@@ -1606,6 +1615,108 @@ impl ResolvedDialog {
             right: view_insets.right + self.inset_padding.right,
             bottom: view_insets.bottom + self.inset_padding.bottom,
         }
+    }
+}
+
+/// What an expansion tile is drawn with at each end of its animation --
+/// upstream's `_ExpansionTileState._updateHeaderColor`, `_updateIconColor` and
+/// `_updateBackgroundColor` reading `ExpansionTileTheme.of`.
+///
+/// # The pairs are tween endpoints, not an either/or
+///
+/// `collapsedTextColor` and `textColor` are `begin` and `end` of a
+/// `ColorTween` the expansion animation drives. The tile does not *switch*
+/// colours when it opens, it crosses from one to the other over the same
+/// curve the height follows -- which is why they are resolved together and
+/// held together rather than being picked by a boolean.
+///
+/// Reading the state and choosing one would look right at both ends and wrong
+/// for the whole of the animation in between, which is the part anyone
+/// actually watches.
+///
+/// # The backgrounds have no defaults and the foregrounds do
+///
+/// Upstream's `_updateBackgroundColor` has no `defaults.` third step at all:
+/// an unstyled expansion tile is transparent at both ends, because it sits in a
+/// list and a list has its own background. The text and icon colours do have
+/// defaults, because a colour is not optional the way a background is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedExpansionTile {
+    pub collapsed_background: Option<Color>,
+    pub expanded_background: Option<Color>,
+    pub collapsed_text_color: Color,
+    pub expanded_text_color: Color,
+    pub collapsed_icon_color: Color,
+    pub expanded_icon_color: Color,
+    pub collapsed_shape: Option<ShapeBorder>,
+    pub expanded_shape: Option<ShapeBorder>,
+    pub tile_padding: EdgeInsets,
+    /// Only meaningful while open, which is the only time there are children.
+    pub expanded_alignment: crate::render::Alignment,
+    pub children_padding: EdgeInsets,
+}
+
+impl ResolvedExpansionTile {
+    pub fn of(context: &mut BuildContext) -> ResolvedExpansionTile {
+        let data = ExpansionTileTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        let direction = crate::direction::current_direction();
+        ResolvedExpansionTile {
+            // No third step: upstream has none either. Transparent at both ends
+            // unless somebody said otherwise.
+            collapsed_background: data.collapsed_background_color,
+            expanded_background: data.background_color,
+            collapsed_text_color: data.collapsed_text_color.unwrap_or(scheme.on_surface),
+            // Upstream's `_ExpansionTileDefaultsM3.textColor` is the primary:
+            // an open tile's title is the thing the reader just chose, and it
+            // says so.
+            expanded_text_color: data.text_color.unwrap_or(scheme.primary),
+            collapsed_icon_color: data
+                .collapsed_icon_color
+                .unwrap_or(scheme.on_surface_variant()),
+            expanded_icon_color: data.icon_color.unwrap_or(scheme.primary),
+            collapsed_shape: data.collapsed_shape.clone(),
+            expanded_shape: data.shape.clone(),
+            tile_padding: data
+                .tile_padding
+                .map(|padding| padding.resolve(direction))
+                .unwrap_or(EdgeInsets::symmetric(16.0, 0.0)),
+            expanded_alignment: data
+                .expanded_alignment
+                .map(|alignment| alignment.resolve(direction))
+                .unwrap_or(crate::render::Alignment::CENTER),
+            children_padding: data
+                .children_padding
+                .map(|padding| padding.resolve(direction))
+                .unwrap_or(EdgeInsets::ZERO),
+        }
+    }
+
+    /// The colours partway through the animation. `t` is the expansion, zero
+    /// closed and one open.
+    ///
+    /// Returns `(background, text, icon)`. The background is an `Option`
+    /// throughout: a tween between two absent colours is absent, and one
+    /// between an absent colour and a real one fades from transparent --
+    /// upstream's `ColorTween` treats null as transparent-of-the-other-end
+    /// rather than as opaque black, which is what keeps a tile that colours
+    /// only when open from flashing.
+    pub fn lerp(&self, t: f32) -> (Option<Color>, Color, Color) {
+        let t = t.clamp(0.0, 1.0);
+        let background = lerp_color(self.collapsed_background, self.expanded_background, t);
+        (
+            background,
+            crate::animation::ColorTween {
+                begin: self.collapsed_text_color,
+                end: self.expanded_text_color,
+            }
+            .lerp(t),
+            crate::animation::ColorTween {
+                begin: self.collapsed_icon_color,
+                end: self.expanded_icon_color,
+            }
+            .lerp(t),
+        )
     }
 }
 
