@@ -71,6 +71,7 @@ pub mod interactive_viewer;
 pub mod keyboard;
 pub mod licenses;
 pub mod list_wheel;
+pub mod localizations;
 pub mod magnifier;
 pub mod material;
 pub mod media_query;
