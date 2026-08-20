@@ -443,9 +443,9 @@ impl FrictionSimulation {
         // Upstream's `_finalTime`: Newton's method on `dx`, whose derivative
         // is `v * drag^t * ln(drag)` -- upstream subtracts a constant
         // deceleration here too, but this port does not have one (the
-        // parameter upstream added it for is desktop scrolling, and this
-        // simulation's only caller is iOS-style bouncing, which is not ported
-        // yet). Ten iterations from zero.
+        // parameter upstream added it for is desktop scrolling, and its other
+        // caller, `BouncingScrollSimulation`, passes zero). Ten iterations
+        // from zero.
         let final_time = newtons_method(
             0.0,
             0.0,
@@ -466,6 +466,31 @@ impl FrictionSimulation {
     /// Where it comes to rest.
     pub fn final_x(&self) -> f32 {
         self.position - self.velocity / self.drag_log
+    }
+
+    /// When it passes `x`, or infinity if it never does. Upstream's `timeAtX`.
+    ///
+    /// This is what lets [`crate::scroll_simulation::BouncingScrollSimulation`]
+    /// join a friction run to a spring **at the exact instant the content
+    /// crosses the edge** rather than at the next frame boundary, which is why
+    /// an iOS bounce has no visible seam in it.
+    ///
+    /// The two refusals are both real: a simulation with no velocity never gets
+    /// anywhere, and one asked about a point behind it or past where it stops
+    /// never gets there either.
+    pub fn time_at_x(&self, x: f32) -> f32 {
+        if x == self.position {
+            return 0.0;
+        }
+        let unreachable = if self.velocity > 0.0 {
+            x < self.position || x > self.final_x()
+        } else {
+            x > self.position || x < self.final_x()
+        };
+        if self.velocity == 0.0 || unreachable {
+            return f32::INFINITY;
+        }
+        (self.drag_log * (x - self.position) / self.velocity + 1.0).ln() / self.drag_log
     }
 
     /// A friction simulation whose drag is chosen so that it passes through

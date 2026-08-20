@@ -433,6 +433,81 @@ impl Component for SafeArea {
     }
 }
 
+/// Upstream `SliverSafeArea`: [`SafeArea`] for a sliver.
+///
+/// The same two ideas, and both are worth naming because neither is the obvious
+/// one.
+///
+/// **`minimum` is a floor, not an addition.** The greater of the minimum and
+/// the system's own inset wins, per side -- so `minimum: all(16)` gives at
+/// least sixteen everywhere and more where the notch demands it, rather than
+/// sixteen plus the notch.
+///
+/// **The sides it consumed are zeroed out of the `MediaQuery` it passes down**,
+/// so a safe area inside a safe area does not inset twice. Compare
+/// [`crate::scroll_view::BoxScrollView`], which *splits* the padding by axis
+/// rather than removing all of it: a list needs its children to keep the
+/// cross-axis half, and this does not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverSafeArea {
+    pub left: bool,
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub minimum: EdgeInsets,
+}
+
+impl SliverSafeArea {
+    pub fn new() -> SliverSafeArea {
+        SliverSafeArea {
+            left: true,
+            top: true,
+            right: true,
+            bottom: true,
+            minimum: EdgeInsets::ZERO,
+        }
+    }
+
+    pub fn with_sides(mut self, left: bool, top: bool, right: bool, bottom: bool) -> Self {
+        self.left = left;
+        self.top = top;
+        self.right = right;
+        self.bottom = bottom;
+        self
+    }
+
+    pub fn with_minimum(mut self, minimum: EdgeInsets) -> Self {
+        self.minimum = minimum;
+        self
+    }
+
+    /// The padding this sliver applies.
+    pub fn resolve_padding(&self, ambient: EdgeInsets) -> EdgeInsets {
+        EdgeInsets {
+            left: if self.left { ambient.left } else { 0.0 }.max(self.minimum.left),
+            top: if self.top { ambient.top } else { 0.0 }.max(self.minimum.top),
+            right: if self.right { ambient.right } else { 0.0 }.max(self.minimum.right),
+            bottom: if self.bottom { ambient.bottom } else { 0.0 }.max(self.minimum.bottom),
+        }
+    }
+
+    /// What the sliver below it sees.
+    pub fn inner_padding(&self, ambient: EdgeInsets) -> EdgeInsets {
+        EdgeInsets {
+            left: if self.left { 0.0 } else { ambient.left },
+            top: if self.top { 0.0 } else { ambient.top },
+            right: if self.right { 0.0 } else { ambient.right },
+            bottom: if self.bottom { 0.0 } else { ambient.bottom },
+        }
+    }
+}
+
+impl Default for SliverSafeArea {
+    fn default() -> Self {
+        SliverSafeArea::new()
+    }
+}
+
 /// [`SafeArea`] as a widget, for the common case of avoiding every side.
 pub fn safe_area(child: AnyWidget) -> AnyWidget {
     component(SafeArea::new(child))
@@ -900,5 +975,55 @@ mod tests {
             crate::painting::TextScaler::NO_SCALING.text_scale_factor,
             1.0
         );
+    }
+    // -- SliverSafeArea --------------------------------------------------------
+
+    const NOTCH: EdgeInsets = EdgeInsets::only(0.0, 44.0, 0.0, 34.0);
+
+    #[test]
+    fn a_minimum_is_a_floor_and_not_an_addition() {
+        // sixteen everywhere, and more where the notch demands it -- not
+        // sixteen plus the notch.
+        let area = SliverSafeArea::new().with_minimum(EdgeInsets::all(16.0));
+        let padding = area.resolve_padding(NOTCH);
+        assert_eq!(padding.top, 44.0, "the notch is larger, so the notch wins");
+        assert_eq!(padding.bottom, 34.0);
+        assert_eq!(
+            padding.left, 16.0,
+            "and the minimum wins where it is larger"
+        );
+        assert_eq!(padding.right, 16.0);
+    }
+
+    #[test]
+    fn a_side_that_was_not_asked_for_still_gets_its_minimum() {
+        let area = SliverSafeArea::new()
+            .with_sides(true, false, true, true)
+            .with_minimum(EdgeInsets::all(8.0));
+        assert_eq!(area.resolve_padding(NOTCH).top, 8.0);
+    }
+
+    #[test]
+    fn the_sides_it_consumed_are_zeroed_for_whatever_is_below_it() {
+        // So a safe area inside a safe area does not inset twice.
+        let area = SliverSafeArea::new();
+        assert_eq!(area.inner_padding(NOTCH), EdgeInsets::ZERO);
+    }
+
+    #[test]
+    fn a_side_it_left_alone_is_passed_through_untouched() {
+        let bottom_only = SliverSafeArea::new().with_sides(false, false, false, true);
+        let inner = bottom_only.inner_padding(NOTCH);
+        assert_eq!(inner.top, 44.0, "still there for somebody else to handle");
+        assert_eq!(inner.bottom, 0.0, "and this one is dealt with");
+        assert_eq!(bottom_only.resolve_padding(NOTCH).top, 0.0);
+    }
+
+    #[test]
+    fn a_sliver_safe_area_avoids_every_side_unless_told_otherwise() {
+        let area = SliverSafeArea::default();
+        assert!(area.left && area.top && area.right && area.bottom);
+        assert_eq!(area.minimum, EdgeInsets::ZERO);
+        assert_eq!(area.resolve_padding(NOTCH), NOTCH);
     }
 }
