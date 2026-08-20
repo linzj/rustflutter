@@ -495,6 +495,16 @@ impl OverlayPortalClock {
         }
     }
 
+    /// A clock reading `now`, so a caller keeping the one shared counter
+    /// upstream keeps as a static can drive `show` with it.
+    ///
+    /// The tick has to be shared: the z-order index exists to be compared
+    /// against other portals, and two clocks counting from their own starts
+    /// would make two portals shown minutes apart compare as simultaneous.
+    pub fn at(now: i64) -> OverlayPortalClock {
+        OverlayPortalClock { now }
+    }
+
     /// Upstream's `_now()`: increments first, then returns. Every call gives a
     /// value strictly greater than the last.
     pub fn tick(&mut self) -> i64 {

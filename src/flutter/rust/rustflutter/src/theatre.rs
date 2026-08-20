@@ -41,7 +41,9 @@ use std::rc::Rc;
 use crate::framework::{
     AnyWidget, BuildContext, ElementId, StateHandle, StatefulComponent, many, provide,
 };
-use crate::overlay::{InsertPosition, OverlayEntry, OverlayState};
+use crate::overlay::{
+    InsertPosition, OverlayEntry, OverlayPortalClock, OverlayPortalController, OverlayState,
+};
 use crate::render::{
     BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox,
     RenderConstrainedBox, RenderRef, Size, UpdateEffect,
@@ -51,6 +53,9 @@ use crate::render::{
 /// the stack.
 #[derive(Clone)]
 pub struct StagedEntry {
+    /// Which portal put it there. The registry is keyed by this, so a portal
+    /// that rebuilds replaces its own entry rather than adding another.
+    pub portal_id: u64,
     /// The render object a portal built in its own place.
     pub render: RenderRef,
     /// Upstream's `OverlayPortalController._zOrderIndex`: the tick at which the
@@ -62,17 +67,33 @@ pub struct StagedEntry {
     pub stage_id: u64,
 }
 
-/// The side channel between a portal and its theatre.
+/// What portals have handed to their theatre, and still stand behind.
 ///
-/// One frame's worth of staged entries. Portals push during their assemble;
-/// the theatre drains during its own, which runs later in the same walk.
+/// # It is a registry, not a per-frame buffer
 ///
-/// It is a `RefCell<Vec<_>>` rather than anything cleverer because the whole
-/// exchange happens inside one synchronous tree walk on one thread: there is no
-/// moment at which a push and a drain could interleave.
+/// It was a buffer first: portals pushed during their assemble and the theatre
+/// drained during its own, which runs later in the same walk. That works only
+/// while every frame rebuilds every widget, and this framework does not. A
+/// portal whose render object is *reconfigured* rather than remade reports no
+/// change to its parent, so the walk stops before reaching the theatre, whose
+/// assemble never re-runs -- and the pushed entry sits in the buffer forever.
+/// The reverse case is worse: a portal that did not rebuild at all pushes
+/// nothing, so a drained buffer would lose it.
+///
+/// So entries persist, keyed by the portal that owns them. A portal replaces
+/// its own entry when it rebuilds, removes it when it hides, and is otherwise
+/// left alone -- and the theatre reads the whole set at layout, which is a
+/// phase that runs whenever anything beneath it changed.
+///
+/// This works because a [`RenderRef`] is a *persistent handle*: a rebuilt
+/// subtree keeps its render objects, so an entry registered once stays correct
+/// across rebuilds without being re-registered.
 #[derive(Clone, Default)]
 pub struct OverlayStage {
     entries: Rc<RefCell<Vec<StagedEntry>>>,
+    /// Bumped on every change, so a render object can tell that the set it is
+    /// showing is out of date. See [`RenderNothing`] for why one is needed.
+    revision: Rc<Cell<u64>>,
 }
 
 impl OverlayStage {
@@ -80,32 +101,51 @@ impl OverlayStage {
         OverlayStage::default()
     }
 
-    /// Called from a portal's assemble.
-    pub fn stage(&self, entry: StagedEntry) {
-        self.entries.borrow_mut().push(entry);
+    /// Registers, or replaces, the entry a portal is showing.
+    pub fn put(&self, entry: StagedEntry) {
+        let mut entries = self.entries.borrow_mut();
+        match entries
+            .iter_mut()
+            .find(|existing| existing.portal_id == entry.portal_id)
+        {
+            Some(existing) => *existing = entry,
+            None => entries.push(entry),
+        }
+        self.revision.set(self.revision.get() + 1);
     }
 
-    /// Called from a theatre's assemble: takes everything staged for
-    /// `stage_id`, in z order, and leaves the rest for another theatre.
-    pub fn collect(&self, stage_id: u64) -> Vec<StagedEntry> {
-        let mut all = self.entries.borrow_mut();
-        let mut mine = Vec::new();
-        let mut rest = Vec::new();
-        for entry in all.drain(..) {
-            if entry.stage_id == stage_id {
-                mine.push(entry);
-            } else {
-                rest.push(entry);
-            }
+    /// Withdraws a portal's entry: it hid, or it went away.
+    pub fn take_out(&self, portal_id: u64) {
+        let before = self.entries.borrow().len();
+        self.entries
+            .borrow_mut()
+            .retain(|entry| entry.portal_id != portal_id);
+        if self.entries.borrow().len() != before {
+            self.revision.set(self.revision.get() + 1);
         }
-        *all = rest;
+    }
+
+    /// What the registry is up to. Compared by [`RenderNothing`].
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    /// Everything registered for `stage_id`, in z order. Non-destructive: the
+    /// theatre reads this every layout and the entries outlive the reading.
+    pub fn snapshot(&self, stage_id: u64) -> Vec<StagedEntry> {
+        let mut mine: Vec<StagedEntry> = self
+            .entries
+            .borrow()
+            .iter()
+            .filter(|entry| entry.stage_id == stage_id)
+            .cloned()
+            .collect();
         mine.sort_by_key(|entry| entry.z_order);
         mine
     }
 
-    /// How many entries are waiting. For tests and for the assertion that a
-    /// frame left nothing behind.
-    pub fn pending(&self) -> usize {
+    /// How many entries are registered, for tests.
+    pub fn registered(&self) -> usize {
         self.entries.borrow().len()
     }
 }
@@ -135,12 +175,17 @@ pub struct RenderTheatre {
     /// `Overlay` can be dropped into an existing tree without the caller having
     /// to re-express their page as an entry.
     page: BoxedRender,
+    /// What the theatre is hosting: the entries handed to it by its assemble,
+    /// then everything the portals have registered.
     entries: Vec<StagedEntry>,
+    /// The entries that came from the assemble, kept apart because the portal
+    /// half is refreshed from the registry on every layout.
+    fixed: Vec<StagedEntry>,
+    /// Where the portals register. Read at layout rather than at assemble --
+    /// see [`OverlayStage`] for why that has to be the phase.
+    stage: Option<OverlayStage>,
+    stage_id: u64,
     placements: Vec<EntryPlacement>,
-    /// Which of the leading entries offered to size the overlay, in order.
-    /// Upstream's `canSizeOverlay`, which matters only under unbounded
-    /// constraints.
-    entry_can_size: Vec<bool>,
     size: Size,
 }
 
@@ -149,11 +194,33 @@ impl RenderTheatre {
         let placements = vec![EntryPlacement::Fill; entries.len()];
         RenderTheatre {
             page,
-            entries,
+            entries: entries.clone(),
+            fixed: entries,
+            stage: None,
+            stage_id: 0,
             placements,
-            entry_can_size: Vec::new(),
             size: Size::ZERO,
         }
+    }
+
+    /// Points the theatre at the registry its portals write to.
+    pub fn with_stage(mut self, stage: OverlayStage, stage_id: u64) -> RenderTheatre {
+        self.stage = Some(stage);
+        self.stage_id = stage_id;
+        self
+    }
+
+    /// Re-reads the registry. Called at the top of every layout, which is the
+    /// phase that runs whenever anything beneath the theatre changed.
+    fn refresh_entries(&mut self) {
+        let Some(stage) = &self.stage else {
+            return;
+        };
+        let mut entries = self.fixed.clone();
+        entries.extend(stage.snapshot(self.stage_id));
+        self.entries = entries;
+        self.placements
+            .resize(self.entries.len(), EntryPlacement::Fill);
     }
 
     /// Places the entries somewhere other than filling the theatre. Used by the
@@ -176,16 +243,6 @@ impl RenderTheatre {
         }
     }
 
-    /// The topmost entry that offered to size the overlay, if any.
-    ///
-    /// Topmost, not first: the entry nearest the reader is the one whose size
-    /// the overlay should be, and it is the last in paint order.
-    fn sizing_entry(&self) -> Option<usize> {
-        (0..self.entries.len())
-            .rev()
-            .find(|index| self.entry_can_size.get(*index).copied().unwrap_or(false))
-    }
-
     /// Whether the object behind `render` is one of this theatre's entries.
     pub fn hosts(&self, render: &RenderRef) -> bool {
         self.entries.iter().any(|entry| entry.render.is(render))
@@ -194,30 +251,12 @@ impl RenderTheatre {
 
 impl RenderBox for RenderTheatre {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.refresh_entries();
         // The page first and alone decides the size, exactly as upstream's
         // theatre takes its size from the constraints it was given rather than
         // from any entry: an overlay that grew to fit a tooltip would move the
         // page underneath it.
         //
-        // Except when nothing can: under unbounded constraints there is no
-        // size to inherit, and upstream lets the topmost entry that offered
-        // `canSizeOverlay` answer instead. An entry that offers is taking on
-        // the question the overlay could not answer, which is why it has to
-        // cope with unbounded constraints itself.
-        if !constraints.has_bounded_width() || !constraints.has_bounded_height() {
-            if let Some(index) = self.sizing_entry() {
-                let chosen = self.entries[index].render.layout_child(constraints, true);
-                self.size = chosen;
-                let tight = BoxConstraints::tight(chosen.width, chosen.height);
-                self.page.layout_child(tight, true);
-                for (other, entry) in self.entries.iter_mut().enumerate() {
-                    if other != index {
-                        entry.render.layout_child(tight, true);
-                    }
-                }
-                return self.size;
-            }
-        }
         self.size = self.page.layout_child(constraints, true);
         let tight = BoxConstraints::tight(self.size.width, self.size.height);
         for (index, entry) in self.entries.iter_mut().enumerate() {
@@ -279,8 +318,11 @@ impl RenderBox for RenderTheatre {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderTheatre>()?;
         self.page = fresh.page.clone();
+        self.fixed = std::mem::take(&mut fresh.fixed);
         self.entries = std::mem::take(&mut fresh.entries);
         self.placements = std::mem::take(&mut fresh.placements);
+        self.stage = fresh.stage.take();
+        self.stage_id = fresh.stage_id;
         Some(UpdateEffect::Relayout)
     }
 }
@@ -322,11 +364,24 @@ fn visit_subtree(root: &RenderRef, visit: &mut dyn FnMut(&RenderRef)) {
 /// [`RenderPortal::hosts_overlay_child`] is what a test asks to prove it.
 pub struct RenderPortal {
     child: BoxedRender,
+    /// The gate's render object: zero-sized, never painted, and **kept**.
+    ///
+    /// It has to be in the tree. `mark_needs_layout` walks up
+    /// `RenderState::parent`, which is claimed during layout -- so a render
+    /// object nobody lays out has no parent, and anything it reports goes
+    /// nowhere. The gate is what notices that the portal registry changed, and
+    /// dropping it on the floor is what made a hidden portal stay on screen.
+    gate: Option<BoxedRender>,
 }
 
 impl RenderPortal {
     pub fn new(child: BoxedRender) -> RenderPortal {
-        RenderPortal { child }
+        RenderPortal { child, gate: None }
+    }
+
+    pub fn with_gate(mut self, gate: BoxedRender) -> RenderPortal {
+        self.gate = Some(gate);
+        self
     }
 
     /// Whether `render` is anywhere in this portal's own render subtree.
@@ -348,6 +403,9 @@ impl RenderPortal {
 
 impl RenderBox for RenderPortal {
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        if let Some(gate) = &mut self.gate {
+            gate.layout_child(BoxConstraints::tight(0.0, 0.0), false);
+        }
         self.child.layout_child(constraints, true)
     }
 
@@ -373,8 +431,20 @@ impl RenderBox for RenderPortal {
 
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderPortal>()?;
-        let changed = !self.child.is(&fresh.child);
+        // The gate is compared as well as the child, and it has to be. Showing
+        // and hiding produce different widget types at the gate's position, so
+        // its render object is *remade* rather than reconfigured -- and a
+        // portal that only compared its in-place child would reconfigure
+        // cleanly, report nothing, and leave the theatre showing an entry that
+        // has been withdrawn.
+        let gate_changed = match (&self.gate, &fresh.gate) {
+            (Some(mine), Some(theirs)) => !mine.is(theirs),
+            (None, None) => false,
+            _ => true,
+        };
+        let changed = !self.child.is(&fresh.child) || gate_changed;
         self.child = fresh.child.clone();
+        self.gate = fresh.gate.take();
         Some(UpdateEffect::relayout_if(changed))
     }
 }
@@ -386,16 +456,18 @@ impl RenderBox for RenderPortal {
 /// as `overlay_child: Option<_>`: a portal with nothing to show stages nothing.
 pub fn portal(
     stage: OverlayStage,
+    portal_id: u64,
     z_order: u64,
     child: AnyWidget,
     overlay_child: Option<AnyWidget>,
 ) -> AnyWidget {
-    portal_on(stage, 0, z_order, child, overlay_child)
+    portal_on(stage, portal_id, 0, z_order, child, overlay_child)
 }
 
 /// [`portal`] aimed at a particular theatre.
 pub fn portal_on(
     stage: OverlayStage,
+    portal_id: u64,
     stage_id: u64,
     z_order: u64,
     child: AnyWidget,
@@ -411,12 +483,18 @@ pub fn portal_on(
         // there. Taken from the back, because the in-place child is first.
         if has_overlay_child {
             if let Some(render) = rendered.pop() {
-                stage.stage(StagedEntry {
+                stage.put(StagedEntry {
+                    portal_id,
                     render,
                     z_order,
                     stage_id,
                 });
             }
+        } else {
+            // Showing nothing is a withdrawal, not a silence: the registry
+            // keeps what it was last told, so a portal that has hidden has to
+            // say so.
+            stage.take_out(portal_id);
         }
         RenderPortal::new(rendered.pop().expect("a portal always has its own child"))
     })
@@ -437,19 +515,15 @@ pub fn theatre_with(
     placements: Vec<EntryPlacement>,
 ) -> AnyWidget {
     many(vec![child], move |mut rendered| {
-        let entries = stage.collect(stage_id);
-        let placements = if placements.is_empty() {
-            vec![EntryPlacement::Fill; entries.len()]
-        } else {
-            let mut filled = placements.clone();
-            filled.resize(entries.len(), EntryPlacement::Fill);
-            filled
-        };
-        RenderTheatre::new(
+        let mut theatre = RenderTheatre::new(
             rendered.pop().expect("a theatre always has its page"),
-            entries,
+            Vec::new(),
         )
-        .with_placements(placements)
+        .with_stage(stage.clone(), stage_id);
+        if !placements.is_empty() {
+            theatre = theatre.with_placements(placements.clone());
+        }
+        theatre
     })
 }
 
@@ -510,6 +584,22 @@ impl LiveOverlay {
             .filter_map(|onstage| self.builder(onstage.id).map(|builder| builder()))
             .collect()
     }
+
+    /// Which of the on-stage entries offered to size the overlay, in the order
+    /// they will be laid out.
+    fn onstage_can_size(&self) -> Vec<bool> {
+        self.state
+            .onstage()
+            .into_iter()
+            .filter_map(|onstage| {
+                self.state
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == onstage.id)
+                    .map(|entry| entry.can_size_overlay)
+            })
+            .collect()
+    }
 }
 
 /// A descendant's way to reach the overlay above it. Upstream's `Overlay.of`.
@@ -517,7 +607,20 @@ impl LiveOverlay {
 /// Published with `provide`, so `Overlay::of(context)` is an inherited lookup.
 #[derive(Clone)]
 pub struct OverlayHandle {
-    handle: StateHandle<LiveOverlay>,
+    /// The data, owned by the `overlay()` call rather than by an element.
+    ///
+    /// It lives outside the tree because the page must **not** be something the
+    /// overlay has to reproduce. An earlier arrangement kept the page inside the
+    /// stateful component that owned the entries, and the page vanished the
+    /// moment an entry was inserted: a `set_state` rebuild re-runs that
+    /// component with the widget it already had, and a page taken out of an
+    /// `Option` on the first build is not there on the second. The page is a
+    /// sibling of the entries now, and nothing regenerates it.
+    data: Rc<RefCell<LiveOverlay>>,
+    /// The element to rebuild when the entry list changes.
+    host: Rc<RefCell<Option<StateHandle<EntryHostState>>>>,
+    /// Identity, and the only thing equality looks at.
+    id: u64,
     stage: OverlayStage,
 }
 
@@ -538,7 +641,7 @@ pub struct OverlayHandle {
 /// every frame, and comparing it would be comparing this frame's leftovers.
 impl PartialEq for OverlayHandle {
     fn eq(&self, other: &OverlayHandle) -> bool {
-        self.handle.element() == other.handle.element()
+        self.id == other.id
     }
 }
 
@@ -555,49 +658,95 @@ impl OverlayHandle {
         &self.stage
     }
 
-    pub fn element(&self) -> ElementId {
-        self.handle.element()
+    /// How many entries are inserted, on stage or not.
+    pub fn entry_count(&self) -> usize {
+        self.data.borrow().state.entries().len()
     }
 
-    /// Upstream `OverlayState.insert`. Returns the id the entry was given, or
-    /// `None` if the overlay has gone away.
+    /// Upstream `OverlayState.insert`. Returns the id the entry was given.
     pub fn insert(&self, builder: impl Fn() -> AnyWidget + 'static) -> Option<u64> {
         self.insert_entry(OverlayEntry::new(0), builder)
     }
 
-    /// [`OverlayHandle::insert`] with the entry's flags -- `opaque`,
-    /// `maintainState`, `canSizeOverlay` -- chosen. The id on the entry passed
-    /// in is ignored; the overlay assigns one.
+    /// [`OverlayHandle::insert`] with the entry's flags chosen -- `opaque`,
+    /// `maintainState`, `canSizeOverlay`. The id on the entry passed in is
+    /// ignored; the overlay assigns one.
     pub fn insert_entry(
         &self,
-        entry: OverlayEntry,
+        mut entry: OverlayEntry,
         builder: impl Fn() -> AnyWidget + 'static,
     ) -> Option<u64> {
-        if !self.handle.is_valid() {
-            return None;
-        }
-        let builder: EntryBuilder = Rc::new(builder);
-        let id = Rc::new(Cell::new(0u64));
-        let assigned = Rc::clone(&id);
-        let accepted = self.handle.set_state(move |live| {
+        let id = {
+            let live = &mut *self.data.borrow_mut();
             let entry_id = live.next_id;
             live.next_id += 1;
-            assigned.set(entry_id);
-            let mut entry = entry;
             entry.id = entry_id;
-            let _ = live.state.insert(entry, InsertPosition::Top);
-            live.builders.push((entry_id, builder));
+            live.state.insert(entry, InsertPosition::Top).ok()?;
+            live.builders.push((entry_id, Rc::new(builder)));
             live.state.flush_build();
-        });
-        accepted.then(|| id.get())
+            entry_id
+        };
+        self.wake();
+        Some(id)
     }
 
     /// Upstream `OverlayEntry.remove`.
     pub fn remove(&self, id: u64) -> bool {
-        self.handle.set_state(move |live| {
-            live.state.remove(id, false);
+        let removed = {
+            let live = &mut *self.data.borrow_mut();
+            let removed = live.state.remove(id, false).is_some();
             live.builders.retain(|(entry_id, _)| *entry_id != id);
             live.state.flush_build();
+            removed
+        };
+        if removed {
+            self.wake();
+        }
+        removed
+    }
+
+    /// Asks the element that builds the entries to build them again.
+    fn wake(&self) {
+        let handle = self.host.borrow().clone();
+        if let Some(handle) = handle {
+            handle.set_state(|state| state.revision += 1);
+        }
+    }
+}
+
+/// What the entry-building element keeps: nothing but a reason to rebuild.
+#[derive(Default)]
+pub struct EntryHostState {
+    revision: u64,
+}
+
+/// The element that turns the overlay's entry list into widgets.
+///
+/// It is a **sibling of the page**, which is the whole point of it existing
+/// separately: an insert rebuilds this and leaves the page untouched.
+struct EntryHost {
+    data: Rc<RefCell<LiveOverlay>>,
+    host: Rc<RefCell<Option<StateHandle<EntryHostState>>>>,
+}
+
+impl StatefulComponent for EntryHost {
+    type State = EntryHostState;
+
+    fn build(
+        &self,
+        _state: &EntryHostState,
+        handle: StateHandle<EntryHostState>,
+        _context: &mut BuildContext,
+    ) -> AnyWidget {
+        *self.host.borrow_mut() = Some(handle);
+        let (children, can_size) = {
+            let live = self.data.borrow();
+            (live.onstage_widgets(), live.onstage_can_size())
+        };
+        many(children, move |rendered| RenderEntryStack {
+            entries: rendered,
+            can_size: can_size.clone(),
+            size: Size::ZERO,
         })
     }
 }
@@ -608,85 +757,139 @@ impl OverlayHandle {
 /// the bottom entry -- upstream's overlay *is* the whole surface and the app is
 /// its first entry, but an overlay that can be dropped over an existing tree is
 /// more useful here than one the caller has to re-express their app for.
-pub struct OverlayHost {
-    page: RefCell<Option<AnyWidget>>,
+pub fn overlay(page: AnyWidget) -> AnyWidget {
+    let data = Rc::new(RefCell::new(LiveOverlay::new()));
+    let host: Rc<RefCell<Option<StateHandle<EntryHostState>>>> = Rc::new(RefCell::new(None));
+    let stage = data.borrow().stage.clone();
+    let id = next_overlay_id();
+
+    let handle = OverlayHandle {
+        data: Rc::clone(&data),
+        host: Rc::clone(&host),
+        id,
+        stage: stage.clone(),
+    };
+    let entry_host = crate::framework::stateful(EntryHost {
+        data: Rc::clone(&data),
+        host,
+    });
+
+    provide(
+        handle,
+        many(vec![page, entry_host], move |mut rendered| {
+            let entry_stack = rendered.pop().expect("the entry host");
+            let page = rendered.pop().expect("the page");
+            RenderTheatre::new(
+                page,
+                // The inserted entries are one layer, beneath every portal: a
+                // dialog is put up by the application and a tooltip by the
+                // thing it belongs to, and the application's surfaces go under.
+                vec![StagedEntry {
+                    portal_id: 0,
+                    render: entry_stack,
+                    z_order: 0,
+                    stage_id: 0,
+                }],
+            )
+            .with_stage(stage.clone(), 0)
+        }),
+    )
 }
 
-impl OverlayHost {
-    pub fn new(page: AnyWidget) -> OverlayHost {
-        OverlayHost {
-            page: RefCell::new(Some(page)),
+/// A fresh identity for each overlay, so two of them are never mistaken for
+/// each other by [`OverlayHandle`]'s equality.
+fn next_overlay_id() -> u64 {
+    thread_local! {
+        static NEXT: Cell<u64> = const { Cell::new(1) };
+    }
+    NEXT.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
+}
+
+/// The inserted entries, stacked. One render object, so the theatre sees the
+/// whole set as a single layer beneath the portals.
+pub struct RenderEntryStack {
+    entries: Vec<BoxedRender>,
+    can_size: Vec<bool>,
+    size: Size,
+}
+
+impl RenderEntryStack {
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The topmost entry that offered to size the overlay. Topmost, not first:
+    /// the entry nearest the reader is the one whose size the overlay should be.
+    fn sizing_entry(&self) -> Option<usize> {
+        (0..self.entries.len())
+            .rev()
+            .find(|index| self.can_size.get(*index).copied().unwrap_or(false))
+    }
+}
+
+impl RenderBox for RenderEntryStack {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // Under unbounded constraints there is no size to inherit, and upstream
+        // lets the topmost entry that offered `canSizeOverlay` answer instead.
+        // An entry that offers is taking on the question the overlay could not
+        // answer, which is why it has to cope with unbounded constraints.
+        if !constraints.has_bounded_width() || !constraints.has_bounded_height() {
+            if let Some(index) = self.sizing_entry() {
+                let chosen = self.entries[index].layout_child(constraints, true);
+                let tight = BoxConstraints::tight(chosen.width, chosen.height);
+                for (other, entry) in self.entries.iter_mut().enumerate() {
+                    if other != index {
+                        entry.layout_child(tight, true);
+                    }
+                }
+                self.size = chosen;
+                return self.size;
+            }
+        }
+        self.size = constraints.constrain(constraints.biggest());
+        let tight = BoxConstraints::tight(self.size.width, self.size.height);
+        for entry in self.entries.iter_mut() {
+            entry.layout_child(tight, true);
+        }
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        for entry in &self.entries {
+            context.paint_child(entry, offset);
         }
     }
-}
 
-impl StatefulComponent for OverlayHost {
-    type State = LiveOverlay;
-
-    fn initial_state(&self) -> LiveOverlay {
-        LiveOverlay::new()
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .any(|entry| entry.hit_test(position, result))
     }
 
-    fn build(
-        &self,
-        state: &LiveOverlay,
-        handle: StateHandle<LiveOverlay>,
-        _context: &mut BuildContext,
-    ) -> AnyWidget {
-        let stage = state.stage.clone();
-        let page = self
-            .page
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| crate::framework::render_widget(EmptyPage));
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        for entry in &self.entries {
+            visit(entry, Offset::ZERO);
+        }
+    }
 
-        let mut children = vec![page];
-        let entry_count = {
-            let entries = state.onstage_widgets();
-            let count = entries.len();
-            children.extend(entries);
-            count
-        };
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(constraints.biggest())
+    }
 
-        let sizing = state
-            .state
-            .entries()
-            .iter()
-            .map(|entry| entry.can_size_overlay)
-            .collect::<Vec<_>>();
-
-        provide(
-            OverlayHandle {
-                handle,
-                stage: stage.clone(),
-            },
-            many(children, move |mut rendered| {
-                // The staged portal children, collected in the same walk that
-                // built them -- see this module's header.
-                let staged = stage.collect(0);
-                let entries: Vec<StagedEntry> = rendered
-                    .split_off(1)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, render)| StagedEntry {
-                        render,
-                        // Inserted entries stack in list order, beneath every
-                        // portal: a portal is opened by the thing it belongs
-                        // to and a dialog by the application, and the
-                        // application's surfaces go under.
-                        z_order: index as u64,
-                        stage_id: 0,
-                    })
-                    .chain(staged.into_iter().map(|mut entry| {
-                        entry.z_order = entry.z_order.saturating_add(1 << 32);
-                        entry
-                    }))
-                    .collect();
-                let mut theatre = RenderTheatre::new(rendered.pop().expect("the page"), entries);
-                theatre.entry_can_size = sizing.iter().take(entry_count).copied().collect();
-                theatre
-            }),
-        )
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderEntryStack>()?;
+        self.entries = std::mem::take(&mut fresh.entries);
+        self.can_size = std::mem::take(&mut fresh.can_size);
+        Some(UpdateEffect::Relayout)
     }
 }
 
@@ -704,9 +907,295 @@ impl crate::framework::RenderWidget for EmptyPage {
     }
 }
 
-/// Puts an overlay above `page`. Upstream's `Overlay` in `WidgetsApp`.
-pub fn overlay(page: AnyWidget) -> AnyWidget {
-    crate::framework::stateful(OverlayHost::new(page))
+// -- L2: the public portal ----------------------------------------------------
+
+/// What a portal's element keeps. The controller holds everything that
+/// matters, so this exists to *be* something `set_state` can reach: showing a
+/// portal has to rebuild the portal, and a handle is how.
+#[derive(Default)]
+pub struct PortalState {
+    /// Bumped on every show and hide, so the rebuild is not mistaken for a
+    /// no-op by anything that compares states.
+    revision: u64,
+}
+
+struct PortalControllerInner {
+    /// The portal's identity in the registry. The controller is the natural
+    /// place for it: a portal widget is rebuilt and replaced, and the
+    /// controller is what stays the same thing across all of it.
+    portal_id: u64,
+    controller: OverlayPortalController,
+    /// The element to wake. `None` until the portal has built once -- upstream's
+    /// `OverlayPortalController` is likewise inert until its portal attaches.
+    attached: Option<StateHandle<PortalState>>,
+}
+
+/// **One clock for every portal, because a tick is only meaningful against the
+/// other ticks.**
+///
+/// Upstream's is a static on `OverlayPortalController`, and it has to be: the
+/// z-order index exists so that two portals can be *compared*, and two
+/// controllers each counting from their own start would produce numbers that
+/// compare as though they had been shown at the same moment. Written per
+/// controller first, and the test for two portals stacking in the order they
+/// were shown is what said so.
+fn tick_z_order() -> i64 {
+    thread_local! {
+        static CLOCK: RefCell<OverlayPortalClock> =
+            RefCell::new(OverlayPortalClock::new());
+    }
+    CLOCK.with(|clock| clock.borrow_mut().tick())
+}
+
+/// Upstream `OverlayPortalController`, made shareable.
+///
+/// The decision logic -- attached, showing, the z-order tick -- is
+/// [`crate::overlay::OverlayPortalController`] and is not restated here. What
+/// this adds is the two things a live controller needs and a pure one cannot
+/// have: somewhere to keep the clock, and a way to tell its portal that the
+/// answer changed.
+#[derive(Clone)]
+pub struct PortalController {
+    inner: Rc<RefCell<PortalControllerInner>>,
+}
+
+impl Default for PortalController {
+    fn default() -> Self {
+        PortalController::new()
+    }
+}
+
+impl PortalController {
+    pub fn new() -> PortalController {
+        PortalController {
+            inner: Rc::new(RefCell::new(PortalControllerInner {
+                portal_id: next_overlay_id(),
+                controller: OverlayPortalController::new(None),
+                attached: None,
+            })),
+        }
+    }
+
+    /// Upstream `OverlayPortalController.show`.
+    ///
+    /// The tick is taken here rather than at build time, and that is the whole
+    /// of the stacking rule: **two portals stack in the order they were shown,
+    /// not the order the tree reaches them.** A tooltip opened over an already
+    /// open menu is above it even though the menu's button is further down the
+    /// page.
+    pub fn show(&self) {
+        let mut clock = OverlayPortalClock::at(tick_z_order() - 1);
+        let woke = {
+            let inner = &mut *self.inner.borrow_mut();
+            inner.controller.show(&mut clock);
+            inner.attached.clone()
+        };
+        Self::wake(woke);
+    }
+
+    /// Upstream `OverlayPortalController.hide`.
+    pub fn hide(&self) {
+        let woke = {
+            let inner = &mut *self.inner.borrow_mut();
+            inner.controller.hide();
+            inner.attached.clone()
+        };
+        Self::wake(woke);
+    }
+
+    pub fn toggle(&self) {
+        if self.is_showing() {
+            self.hide()
+        } else {
+            self.show()
+        }
+    }
+
+    pub fn is_showing(&self) -> bool {
+        self.inner.borrow().controller.is_showing()
+    }
+
+    /// This portal's key in the stage registry.
+    pub fn portal_id(&self) -> u64 {
+        self.inner.borrow().portal_id
+    }
+
+    pub fn is_attached(&self) -> bool {
+        self.inner.borrow().controller.is_attached()
+    }
+
+    /// Upstream's `_zOrderIndex`, which is what the theatre sorts by.
+    pub fn z_order(&self) -> Option<i64> {
+        self.inner.borrow().controller.z_order_index()
+    }
+
+    fn wake(handle: Option<StateHandle<PortalState>>) {
+        if let Some(handle) = handle {
+            handle.set_state(|state| state.revision += 1);
+        }
+    }
+
+    fn attach(&self, handle: StateHandle<PortalState>) {
+        let inner = &mut *self.inner.borrow_mut();
+        if inner.attached.is_none() {
+            inner.controller.attach();
+        }
+        inner.attached = Some(handle);
+    }
+}
+
+/// The half of a portal that comes and goes.
+///
+/// It is a **sibling of the portal's own child**, and that is structural rather
+/// than incidental. A `set_state` rebuild re-runs a component with the widget
+/// it already had, so a child taken out of an `Option` on the first build is
+/// gone on the second -- the overlay lost its page that way before this was
+/// arranged, and the portal lost its child. Only the part that actually changes
+/// when the controller is toggled is stateful, and the part that does not is
+/// left alone entirely.
+///
+/// It still builds *here*, at the portal's position in the element tree, so
+/// what it inherits is the button's context and not the overlay's. That is the
+/// whole reason `OverlayPortal` exists.
+struct PortalGate {
+    controller: PortalController,
+    overlay_child: Rc<dyn Fn() -> AnyWidget>,
+}
+
+impl StatefulComponent for PortalGate {
+    type State = PortalState;
+
+    fn build(
+        &self,
+        _state: &PortalState,
+        handle: StateHandle<PortalState>,
+        context: &mut BuildContext,
+    ) -> AnyWidget {
+        self.controller.attach(handle);
+        let portal_id = self.controller.portal_id();
+
+        // Upstream asserts an `Overlay` above; here a portal with none shows
+        // nothing. A widget that wants an overlay only when there is one -- and
+        // a test that mounts a button on its own -- is better served by an
+        // answer than by a panic.
+        let Some(overlay) = OverlayHandle::of(context) else {
+            return many(Vec::new(), |_| RenderNothing::default());
+        };
+
+        let stage = overlay.stage().clone();
+        if !self.controller.is_showing() {
+            // Showing nothing is a withdrawal, not a silence: the registry
+            // keeps what it was last told.
+            stage.take_out(portal_id);
+            let revision = stage.revision();
+            return many(Vec::new(), move |_| RenderNothing::at(revision));
+        }
+
+        let z_order = portal_z_order(self.controller.z_order());
+        many(vec![(self.overlay_child)()], move |mut rendered| {
+            if let Some(render) = rendered.pop() {
+                stage.put(StagedEntry {
+                    portal_id,
+                    render,
+                    z_order,
+                    stage_id: 0,
+                });
+            }
+            RenderNothing::at(stage.revision())
+        })
+    }
+}
+
+/// Turns a controller's tick into a stacking order, order-preservingly.
+///
+/// **The ticks are negative.** Upstream's clock starts at the most negative
+/// integer there is -- `i64::MIN` on native, `-2^53` on the web -- so that it
+/// can count upwards for the life of the program without ever wrapping. Clamping
+/// them at zero, which is the obvious way to reach a `u64`, maps every tick a
+/// program will ever produce onto the same value and makes every portal tie.
+///
+/// Found by opening two portals and watching them both land on zero.
+///
+/// The shift is the usual order-preserving map: adding `2^63` to a signed value
+/// and reading it unsigned keeps `a < b` true. Entries inserted into the overlay
+/// occupy order 0, so a portal is offset past them by one.
+fn portal_z_order(tick: Option<i64>) -> u64 {
+    let tick = tick.unwrap_or(i64::MIN);
+    ((tick as u64) ^ (1u64 << 63)).saturating_add(1)
+}
+
+/// What a portal leaves where its overlay child was built: nothing at all.
+///
+/// The child is in the element tree here and in the render tree elsewhere, so
+/// this is the shape of the hole it leaves behind.
+///
+/// # Why it carries a number
+///
+/// It is the only thing left in the render tree at the portal's position when
+/// the overlay child has gone elsewhere, which makes it the only thing that can
+/// report that the registry changed. Without that, nothing marks the theatre
+/// for layout: the gate's rebuild is absorbed one level up -- a `RenderPortal`
+/// whose in-place child did not change reconfigures cleanly and tells its own
+/// parent nothing -- so the theatre keeps the entries it collected last time
+/// and a hidden portal stays on screen.
+///
+/// Found by hiding a portal and watching it not go away.
+#[derive(Default)]
+pub struct RenderNothing {
+    /// The stage revision this was built at.
+    revision: u64,
+    size: Size,
+}
+
+impl RenderNothing {
+    pub fn at(revision: u64) -> RenderNothing {
+        RenderNothing {
+            revision,
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderNothing {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = constraints.constrain(Size::ZERO);
+        self.size
+    }
+    fn size(&self) -> Size {
+        self.size
+    }
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(Size::ZERO)
+    }
+    fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderNothing>()?;
+        // A changed registry has to reach the theatre, and this is the only
+        // object on the path that knows it changed.
+        let effect = UpdateEffect::relayout_if(self.revision != fresh.revision);
+        self.revision = fresh.revision;
+        Some(effect)
+    }
+}
+
+/// Upstream `OverlayPortal`.
+///
+/// Renders `child` where it is, and -- while `controller` is showing -- builds
+/// `overlay_child` here and renders it in the nearest enclosing overlay.
+pub fn overlay_portal(
+    controller: PortalController,
+    child: AnyWidget,
+    overlay_child: impl Fn() -> AnyWidget + 'static,
+) -> AnyWidget {
+    let gate = crate::framework::stateful(PortalGate {
+        controller,
+        overlay_child: Rc::new(overlay_child),
+    });
+    many(vec![child, gate], |mut rendered| {
+        let gate = rendered.pop().expect("the gate");
+        RenderPortal::new(rendered.pop().expect("a portal always has its own child"))
+            .with_gate(gate)
+    })
 }
 
 #[cfg(test)]
@@ -769,6 +1258,7 @@ mod tests {
                     Marker(2),
                     portal(
                         stage.clone(),
+                        1,
                         0,
                         leaf(100.0, 100.0),
                         Some(crate::framework::component(Probe)),
@@ -796,7 +1286,7 @@ mod tests {
     fn the_theatre_receives_the_portals_child_in_the_same_frame() {
         let stage = OverlayStage::new();
         let mut tree = slice_tree(&stage);
-        let root = tree.build_render_tree().expect("a mounted root");
+        let root = laid_out(&mut tree);
 
         assert_eq!(
             with_theatre(&root, |theatre| theatre.entry_count()),
@@ -804,9 +1294,9 @@ mod tests {
             "the portal staged its overlay child and the theatre took it"
         );
         assert_eq!(
-            stage.pending(),
-            0,
-            "and nothing was left waiting for a later frame"
+            stage.registered(),
+            1,
+            "and the registry still stands behind it"
         );
     }
 
@@ -830,8 +1320,7 @@ mod tests {
     fn it_renders_where_the_theatre_put_it_and_not_where_it_was_built() {
         let stage = OverlayStage::new();
         let mut tree = slice_tree(&stage);
-        let mut root = tree.build_render_tree().expect("a mounted root");
-        root.layout(BoxConstraints::tight(800.0, 600.0));
+        let root = laid_out(&mut tree);
 
         assert_eq!(
             with_theatre(&root, |theatre| theatre.entry_offset(0)),
@@ -844,7 +1333,7 @@ mod tests {
     fn and_the_portals_own_render_subtree_does_not_contain_it() {
         let stage = OverlayStage::new();
         let mut tree = slice_tree(&stage);
-        let root = tree.build_render_tree().expect("a mounted root");
+        let root = laid_out(&mut tree);
         let entry = with_theatre(&root, |theatre| theatre.entries[0].render.clone());
 
         let mut portal_found = false;
@@ -868,9 +1357,9 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(theatre(
             stage.clone(),
-            portal(stage.clone(), 0, leaf(10.0, 10.0), None),
+            portal(stage.clone(), 1, 0, leaf(10.0, 10.0), None),
         ));
-        let root = tree.build_render_tree().expect("a mounted root");
+        let root = laid_out(&mut tree);
         assert_eq!(with_theatre(&root, |theatre| theatre.entry_count()), 0);
     }
 
@@ -884,12 +1373,13 @@ mod tests {
             stage.clone(),
             portal(
                 stage.clone(),
+                1,
                 9,
-                portal(stage.clone(), 3, leaf(10.0, 10.0), Some(leaf(1.0, 1.0))),
+                portal(stage.clone(), 2, 3, leaf(10.0, 10.0), Some(leaf(1.0, 1.0))),
                 Some(leaf(2.0, 2.0)),
             ),
         ));
-        let root = tree.build_render_tree().expect("a mounted root");
+        let root = laid_out(&mut tree);
 
         let orders = with_theatre(&root, |theatre| {
             theatre
@@ -908,25 +1398,26 @@ mod tests {
     #[test]
     fn a_stage_serving_two_theatres_gives_each_only_its_own() {
         let stage = OverlayStage::new();
-        stage.stage(StagedEntry {
+        stage.put(StagedEntry {
+            portal_id: 1,
             render: RenderRef::new(RenderConstrainedBox::tight(1.0, 1.0)),
             z_order: 0,
             stage_id: 7,
         });
-        stage.stage(StagedEntry {
+        stage.put(StagedEntry {
+            portal_id: 2,
             render: RenderRef::new(RenderConstrainedBox::tight(2.0, 2.0)),
             z_order: 1,
             stage_id: 8,
         });
 
-        assert_eq!(stage.collect(7).len(), 1);
+        assert_eq!(stage.snapshot(7).len(), 1);
+        assert_eq!(stage.snapshot(8).len(), 1);
         assert_eq!(
-            stage.pending(),
-            1,
-            "the other theatre's entry is still waiting for it"
+            stage.registered(),
+            2,
+            "and reading one theatre's entries does not consume the other's"
         );
-        assert_eq!(stage.collect(8).len(), 1);
-        assert_eq!(stage.pending(), 0);
     }
     // -- L1: the live overlay ---------------------------------------------------
 
@@ -974,9 +1465,35 @@ mod tests {
         (tree, handle)
     }
 
+    /// How many portals the theatre is hosting: everything above the entry
+    /// stack, which is always its first entry.
     fn theatre_entry_count(tree: &mut ElementTree) -> usize {
-        let root = tree.build_render_tree().expect("a mounted root");
-        find_theatre(&root, |theatre| theatre.entry_count())
+        let root = laid_out(tree);
+        find_theatre(&root, |theatre| theatre.entry_count().saturating_sub(1))
+    }
+
+    /// A built and laid-out root. The theatre reads its portal registry during
+    /// layout, so a tree that has only been built has not collected yet.
+    fn laid_out(tree: &mut ElementTree) -> RenderRef {
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        root
+    }
+
+    /// How many entries were inserted imperatively and built this frame.
+    fn inserted_entry_count(tree: &mut ElementTree) -> usize {
+        let root = laid_out(tree);
+        find_theatre(&root, |theatre| {
+            theatre.entries[0]
+                .render
+                .with(|object| {
+                    object
+                        .as_any()
+                        .downcast_ref::<RenderEntryStack>()
+                        .map(|stack| stack.entry_count())
+                })
+                .unwrap_or(0)
+        })
     }
 
     fn find_theatre<R>(root: &RenderRef, f: impl FnOnce(&RenderTheatre) -> R) -> R {
@@ -1002,10 +1519,7 @@ mod tests {
     #[test]
     fn a_descendant_finds_the_overlay_above_it() {
         let (_tree, handle) = mounted_overlay();
-        assert!(
-            handle.handle.is_valid(),
-            "a live handle to a mounted overlay"
-        );
+        assert_eq!(handle.entry_count(), 0, "a live, empty overlay");
     }
 
     #[test]
@@ -1015,7 +1529,7 @@ mod tests {
 
         handle.insert(|| counted_entry(1)).expect("inserted");
         tree.rebuild_dirty();
-        assert_eq!(theatre_entry_count(&mut tree), 1);
+        assert_eq!(inserted_entry_count(&mut tree), 1);
         assert_eq!(entry_builds(), vec![1]);
     }
 
@@ -1024,11 +1538,11 @@ mod tests {
         let (mut tree, handle) = mounted_overlay();
         let id = handle.insert(|| counted_entry(1)).expect("inserted");
         tree.rebuild_dirty();
-        assert_eq!(theatre_entry_count(&mut tree), 1);
+        assert_eq!(inserted_entry_count(&mut tree), 1);
 
         assert!(handle.remove(id));
         tree.rebuild_dirty();
-        assert_eq!(theatre_entry_count(&mut tree), 0);
+        assert_eq!(inserted_entry_count(&mut tree), 0);
     }
 
     #[test]
@@ -1049,7 +1563,7 @@ mod tests {
             vec![2],
             "only the opaque one; the entry beneath it was never asked"
         );
-        assert_eq!(theatre_entry_count(&mut tree), 1);
+        assert_eq!(inserted_entry_count(&mut tree), 1);
     }
 
     #[test]
@@ -1084,7 +1598,9 @@ mod tests {
         tree.build_render_tree();
 
         let second = OverlayHandle {
-            handle: first.handle.clone(),
+            data: Rc::clone(&first.data),
+            host: Rc::clone(&first.host),
+            id: first.id,
             stage: OverlayStage::new(),
         };
         assert!(
@@ -1099,19 +1615,16 @@ mod tests {
         handle.insert(|| counted_entry(1)).expect("inserted");
         tree.rebuild_dirty();
 
-        // The portal stages onto the overlay's own stage.
-        let staged = StagedEntry {
+        // The portal registers on the overlay's own stage.
+        handle.stage().put(StagedEntry {
+            portal_id: 99,
             render: RenderRef::new(RenderConstrainedBox::tight(5.0, 5.0)),
-            z_order: 0,
+            z_order: 1,
             stage_id: 0,
-        };
-        handle.stage().stage(staged);
+        });
 
-        assert_eq!(
-            theatre_entry_count(&mut tree),
-            2,
-            "the inserted entry and the staged portal child"
-        );
+        assert_eq!(inserted_entry_count(&mut tree), 1, "the inserted entry");
+        assert_eq!(theatre_entry_count(&mut tree), 1, "and the staged portal");
     }
 
     #[test]
@@ -1123,13 +1636,14 @@ mod tests {
         handle.insert(|| counted_entry(1)).expect("inserted");
         handle.insert(|| counted_entry(2)).expect("inserted");
         tree.rebuild_dirty();
-        handle.stage().stage(StagedEntry {
+        handle.stage().put(StagedEntry {
+            portal_id: 99,
             render: RenderRef::new(RenderConstrainedBox::tight(5.0, 5.0)),
-            z_order: 0,
+            z_order: 1,
             stage_id: 0,
         });
 
-        let root = tree.build_render_tree().expect("a mounted root");
+        let root = laid_out(&mut tree);
         let orders = find_theatre(&root, |theatre| {
             theatre
                 .entries
@@ -1137,10 +1651,14 @@ mod tests {
                 .map(|entry| entry.z_order)
                 .collect::<Vec<_>>()
         });
-        assert_eq!(orders.len(), 3);
+        assert_eq!(
+            orders.len(),
+            2,
+            "the inserted entries are one layer, the portal another"
+        );
         assert!(
-            orders[2] > orders[1] && orders[1] > orders[0],
-            "the portal is on top: {orders:?}"
+            orders[1] > orders[0],
+            "and the portal is above them: {orders:?}"
         );
     }
 
@@ -1151,20 +1669,26 @@ mod tests {
         let page = RenderRef::new(RenderConstrainedBox::tight(10.0, 10.0));
         let entries = vec![
             StagedEntry {
+                portal_id: 1,
                 render: RenderRef::new(RenderConstrainedBox::tight(50.0, 40.0)),
                 z_order: 0,
                 stage_id: 0,
             },
             StagedEntry {
+                portal_id: 2,
                 render: RenderRef::new(RenderConstrainedBox::tight(70.0, 60.0)),
                 z_order: 1,
                 stage_id: 0,
             },
         ];
-        let mut theatre = RenderTheatre::new(page, entries);
-        theatre.entry_can_size = vec![true, true];
+        let mut stack = RenderEntryStack {
+            entries: entries.into_iter().map(|entry| entry.render).collect(),
+            can_size: vec![true, true],
+            size: Size::ZERO,
+        };
+        let _ = page;
 
-        let size = theatre.layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, f32::INFINITY));
+        let size = stack.layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, f32::INFINITY));
         assert_eq!(
             size,
             Size::new(70.0, 60.0),
@@ -1176,17 +1700,262 @@ mod tests {
     fn and_with_bounded_constraints_the_page_still_decides() {
         let page = RenderRef::new(RenderConstrainedBox::tight(10.0, 10.0));
         let entries = vec![StagedEntry {
+            portal_id: 1,
             render: RenderRef::new(RenderConstrainedBox::tight(70.0, 60.0)),
             z_order: 0,
             stage_id: 0,
         }];
         let mut theatre = RenderTheatre::new(page, entries);
-        theatre.entry_can_size = vec![true];
 
         assert_eq!(
             theatre.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0)),
             Size::new(10.0, 10.0),
             "an overlay that grew to fit an entry would move the page under it"
         );
+    }
+    // -- L2: the public portal --------------------------------------------------
+
+    thread_local! {
+        static OVERLAY_CHILD_SAW: Cell<Option<u32>> = const { Cell::new(None) };
+    }
+
+    /// An overlay child that records the marker it inherited.
+    struct Watcher;
+
+    impl Component for Watcher {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            OVERLAY_CHILD_SAW
+                .with(|cell| cell.set(context.inherited::<Marker>().map(|marker| marker.0)));
+            leaf(15.0, 15.0)
+        }
+    }
+
+    /// An app with an overlay, a marker between it and the portal, and a portal
+    /// driven by the returned controller.
+    fn portal_app(controller: PortalController) -> ElementTree {
+        OVERLAY_CHILD_SAW.with(|cell| cell.set(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Marker(1),
+            overlay(provide(
+                Marker(2),
+                overlay_portal(controller, leaf(50.0, 50.0), || {
+                    crate::framework::component(Watcher)
+                }),
+            )),
+        ));
+        tree.build_render_tree();
+        tree
+    }
+
+    #[test]
+    fn a_portal_shows_nothing_until_its_controller_says_so() {
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+        assert!(!controller.is_showing());
+        assert_eq!(theatre_entry_count(&mut tree), 0);
+        assert_eq!(OVERLAY_CHILD_SAW.with(|cell| cell.get()), None);
+    }
+
+    #[test]
+    fn showing_it_puts_the_child_in_the_overlay_on_the_next_frame() {
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+
+        controller.show();
+        assert!(controller.is_showing());
+        tree.rebuild_dirty();
+
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+    }
+
+    #[test]
+    fn and_the_child_inherited_from_the_portal_not_from_the_overlay() {
+        // The whole reason the class exists, now through the public API.
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+        controller.show();
+        tree.rebuild_dirty();
+        tree.build_render_tree();
+
+        assert_eq!(
+            OVERLAY_CHILD_SAW.with(|cell| cell.get()),
+            Some(2),
+            "the marker at the portal, not the one above the overlay"
+        );
+    }
+
+    #[test]
+    fn hiding_it_takes_the_child_back_out() {
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+        controller.show();
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+
+        controller.hide();
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 0);
+    }
+
+    #[test]
+    fn toggling_alternates() {
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+
+        controller.toggle();
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+
+        controller.toggle();
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 0);
+    }
+
+    #[test]
+    fn a_portal_attaches_to_its_element_on_the_first_build() {
+        let controller = PortalController::new();
+        assert!(!controller.is_attached(), "inert until it has a portal");
+        let _tree = portal_app(controller.clone());
+        assert!(controller.is_attached());
+    }
+
+    #[test]
+    fn two_portals_stack_in_the_order_they_were_shown() {
+        // Not the order the tree reaches them: the deeper portal is shown
+        // first, so it is underneath.
+        let deep = PortalController::new();
+        let shallow = PortalController::new();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(overlay_portal(
+            shallow.clone(),
+            overlay_portal(deep.clone(), leaf(10.0, 10.0), || leaf(1.0, 1.0)),
+            || leaf(2.0, 2.0),
+        )));
+        tree.build_render_tree();
+
+        deep.show();
+        shallow.show();
+        tree.rebuild_dirty();
+
+        let root = laid_out(&mut tree);
+        let orders = find_theatre(&root, |theatre| {
+            theatre
+                .entries
+                .iter()
+                .map(|entry| entry.z_order)
+                .collect::<Vec<_>>()
+        });
+        // Entry 0 is the inserted-entry layer; the portals are above it.
+        assert_eq!(orders.len(), 3, "the entry layer and the two portals");
+        assert!(
+            orders[1] < orders[2],
+            "the one shown first is beneath: {orders:?}"
+        );
+        assert!(
+            deep.z_order() < shallow.z_order(),
+            "and the tick is what decides it"
+        );
+    }
+
+    #[test]
+    fn showing_it_again_moves_it_to_the_top() {
+        // Upstream takes a fresh tick on every show, so re-showing a portal
+        // that was already up raises it above whatever went up meanwhile.
+        let first = PortalController::new();
+        let second = PortalController::new();
+        first.show();
+        second.show();
+        assert!(first.z_order() < second.z_order());
+
+        first.show();
+        assert!(
+            first.z_order() > second.z_order(),
+            "re-shown, so on top now"
+        );
+    }
+
+    #[test]
+    fn a_portal_with_no_overlay_above_it_renders_its_child_and_shows_nothing() {
+        // Upstream asserts; answering is more useful for a widget that wants an
+        // overlay only if there is one, and for a test that mounts a button on
+        // its own.
+        let controller = PortalController::new();
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay_portal(controller.clone(), leaf(40.0, 25.0), || {
+            leaf(5.0, 5.0)
+        }));
+        controller.show();
+        tree.rebuild_dirty();
+
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        assert_eq!(
+            root.size(),
+            Size::new(40.0, 25.0),
+            "the child, and nothing put anywhere"
+        );
+    }
+    #[test]
+    fn probe_page_survives_a_state_only_rebuild() {
+        let (mut tree, handle) = mounted_overlay();
+        let mut root = tree.build_render_tree().expect("root");
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        let before = find_theatre(&root, |t| t.page.size());
+
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("root");
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        let after = find_theatre(&root, |t| t.page.size());
+        assert_eq!(
+            before, after,
+            "the page must not vanish when an entry arrives"
+        );
+    }
+    #[test]
+    fn the_page_survives_an_entry_arriving() {
+        // The bug that decided the shape of all this. The overlay used to keep
+        // the page inside the stateful component that owned the entries, and
+        // a `set_state` rebuild re-runs a component with the widget it already
+        // had -- so a page taken out of an `Option` on the first build was gone
+        // on the second, and the whole application vanished the moment a dialog
+        // went up. The page is a sibling of the entries now.
+        let (mut tree, handle) = mounted_overlay();
+        let root = laid_out(&mut tree);
+        let before = find_theatre(&root, |theatre| theatre.page.size());
+        assert_eq!(before, Size::new(100.0, 100.0), "the page is there");
+
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        tree.rebuild_dirty();
+        let root = laid_out(&mut tree);
+        assert_eq!(
+            find_theatre(&root, |theatre| theatre.page.size()),
+            before,
+            "and still there once an entry arrived"
+        );
+    }
+
+    #[test]
+    fn a_portals_own_child_survives_being_shown_and_hidden() {
+        // The same bug in the portal: its child used to live inside the
+        // component that rebuilt on show, so showing a tooltip erased the
+        // button it belonged to.
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+        let root = laid_out(&mut tree);
+        let before = root.size();
+        assert!(before.width > 0.0, "the page has a size to lose");
+
+        controller.show();
+        tree.rebuild_dirty();
+        let root = laid_out(&mut tree);
+        assert_eq!(root.size(), before, "shown");
+
+        controller.hide();
+        tree.rebuild_dirty();
+        let root = laid_out(&mut tree);
+        assert_eq!(root.size(), before, "and hidden again");
     }
 }
