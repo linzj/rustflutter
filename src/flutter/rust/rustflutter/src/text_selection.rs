@@ -24,7 +24,9 @@
 //!
 //! This paragraph used to end "which this crate does not have".
 
-use crate::render::Offset;
+use crate::direction::TextDirection;
+use crate::engine::Color;
+use crate::render::{Offset, PaintContext, Size};
 
 /// Upstream `ClipboardStatus`.
 ///
@@ -612,6 +614,259 @@ impl TextSelectionToolbarLayoutDelegate {
     }
 }
 
+// -- The pieces a selection is described with ---------------------------------
+
+/// Upstream `TextSelectionPoint`: one end of a selection, and which way the
+/// text runs there.
+///
+/// The direction is per *point*, not per selection, and that is the reason this
+/// is a type rather than an `Offset`. A selection that starts in English and
+/// ends in Arabic has ends that run opposite ways, and the handle drawn at each
+/// end has to know which -- a left handle at a right-to-left end is the wrong
+/// handle.
+///
+/// It is `Option` for the same reason upstream's is nullable: a point in text
+/// with no strong direction has no answer to give.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSelectionPoint {
+    pub point: Offset,
+    pub direction: Option<TextDirection>,
+}
+
+impl TextSelectionPoint {
+    pub fn new(point: Offset, direction: Option<TextDirection>) -> TextSelectionPoint {
+        TextSelectionPoint { point, direction }
+    }
+}
+
+/// Upstream `DesktopTextSelectionToolbarLayoutDelegate`: where a desktop
+/// selection toolbar goes.
+///
+/// # It hangs from the anchor and is pulled back only when it would fall off
+///
+/// The whole rule is upstream's `getPositionForChild`: put the toolbar's
+/// top-left at the anchor, then, for each axis independently, if that would
+/// push its far edge past the container, slide it back by exactly the overhang.
+///
+/// **Independently per axis** is the part worth having: a toolbar near the
+/// right edge and nowhere near the bottom slides left and does not move up. The
+/// Material toolbar's rule is different -- it flips above or below the selection
+/// (see [`crate::text_selection::TextSelectionToolbarLayoutDelegate`]) -- because
+/// a touch toolbar must not sit under the finger, and a desktop one has no
+/// finger to avoid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DesktopTextSelectionToolbarLayoutDelegate {
+    pub anchor: Offset,
+}
+
+impl DesktopTextSelectionToolbarLayoutDelegate {
+    pub fn new(anchor: Offset) -> DesktopTextSelectionToolbarLayoutDelegate {
+        DesktopTextSelectionToolbarLayoutDelegate { anchor }
+    }
+
+    /// Upstream's `getConstraintsForChild`, which loosens: the toolbar is its
+    /// own size, not the container's.
+    pub fn constraints_for_child(&self, container: Size) -> Size {
+        container
+    }
+
+    /// Upstream's `getPositionForChild`.
+    pub fn position_for_child(&self, container: Size, child: Size) -> Offset {
+        let overhang_x = self.anchor.dx + child.width - container.width;
+        let overhang_y = self.anchor.dy + child.height - container.height;
+        Offset::new(
+            if overhang_x > 0.0 {
+                self.anchor.dx - overhang_x
+            } else {
+                self.anchor.dx
+            },
+            if overhang_y > 0.0 {
+                self.anchor.dy - overhang_y
+            } else {
+                self.anchor.dy
+            },
+        )
+    }
+}
+
+/// Upstream `DefaultSelectionStyle`: the cursor and selection colours a field
+/// takes when it was not told.
+///
+/// An inherited theme, so a form can set them once. Upstream's `merge` takes
+/// each field from the new value **or the enclosing one**, which is what lets a
+/// subtree override the cursor colour without restating the selection colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DefaultSelectionStyle {
+    pub cursor_color: Option<Color>,
+    pub selection_color: Option<Color>,
+}
+
+impl DefaultSelectionStyle {
+    /// Upstream's `defaultColor`, a half-transparent grey. It is the fallback
+    /// for *both* colours, which is why it is one constant.
+    pub const DEFAULT_COLOR: Color = Color::argb(0x80, 0x80, 0x80, 0x80);
+
+    pub fn new() -> DefaultSelectionStyle {
+        DefaultSelectionStyle::default()
+    }
+
+    pub fn with_cursor_color(mut self, color: Color) -> Self {
+        self.cursor_color = Some(color);
+        self
+    }
+
+    pub fn with_selection_color(mut self, color: Color) -> Self {
+        self.selection_color = Some(color);
+        self
+    }
+
+    /// Upstream's `merge`: this style over `parent`, field by field.
+    ///
+    /// A field this style did not set is taken from the parent -- **not** from
+    /// the default. Falling back to the default per field would make a subtree
+    /// that set only the cursor colour silently discard the form's selection
+    /// colour.
+    pub fn merge(&self, parent: &DefaultSelectionStyle) -> DefaultSelectionStyle {
+        DefaultSelectionStyle {
+            cursor_color: self.cursor_color.or(parent.cursor_color),
+            selection_color: self.selection_color.or(parent.selection_color),
+        }
+    }
+
+    /// The colours to actually paint with, once nobody above set them.
+    pub fn resolved(&self) -> (Color, Color) {
+        (
+            self.cursor_color
+                .unwrap_or(DefaultSelectionStyle::DEFAULT_COLOR),
+            self.selection_color
+                .unwrap_or(DefaultSelectionStyle::DEFAULT_COLOR),
+        )
+    }
+}
+
+/// Upstream `RenderEditablePainter`: something that draws over an editable,
+/// under or above its text.
+///
+/// Upstream is an abstract `ChangeNotifier` with two members --
+/// `shouldRepaint(old)` and `paint(canvas, size, renderEditable)` -- and this is
+/// the same pair. What it is for is the caret and the selection highlight,
+/// which upstream draws through two of these rather than in `RenderEditable`
+/// itself, so that a field can replace either without replacing the field.
+pub trait RenderEditablePainter {
+    /// Upstream's `shouldRepaint`. `None` means there was no previous painter,
+    /// which upstream treats as "yes" -- a painter that has just arrived has
+    /// not drawn yet.
+    fn should_repaint(&self, old: Option<&dyn RenderEditablePainter>) -> bool;
+
+    /// Upstream's `paint`. The size is the editable's, and the painter draws in
+    /// its coordinates.
+    fn paint(&self, context: &mut PaintContext, offset: Offset, size: Size);
+}
+
+/// Upstream `VerticalCaretMovementRun`: the caret moving up or down through
+/// lines, one arrow press at a time.
+///
+/// # The column is sticky, and that is the whole point
+///
+/// Pressing down from the end of a long line onto a short one puts the caret at
+/// the end of the short line -- and pressing down *again* onto another long line
+/// puts it back at the original column, not at the short line's end. Upstream
+/// gets that by keeping the **original horizontal offset** for the life of the
+/// run and asking each new line what is closest to it, rather than carrying the
+/// position from line to line.
+///
+/// A run is therefore a thing with a lifetime: it starts when the reader begins
+/// arrowing vertically and ends when they do anything else. Upstream's editable
+/// holds one and drops it on any horizontal movement or edit.
+///
+/// # It goes invalid when the text is laid out again
+///
+/// Upstream compares the line metrics **by identity** -- `!identical(newLineMetrics,
+/// _lineMetrics)` -- and gives up if they were recomputed, with a comment
+/// admitting it is leaning on an implementation detail of `computeLineMetrics`.
+/// A run that kept going would be indexing lines that no longer exist. This port
+/// keeps the rule and takes a revision number instead of relying on identity,
+/// which is the same test said in a way that does not depend on an allocator.
+pub struct VerticalCaretMovementRun {
+    /// Where the caret was when the run started. Nothing writes it after
+    /// construction -- that is the stickiness, and it is a property of the type
+    /// rather than of any one method.
+    origin_x: f32,
+    current_line: usize,
+    line_count: usize,
+    /// The layout this run was made against.
+    revision: u64,
+    valid: bool,
+}
+
+impl VerticalCaretMovementRun {
+    pub fn new(
+        origin_x: f32,
+        current_line: usize,
+        line_count: usize,
+        revision: u64,
+    ) -> VerticalCaretMovementRun {
+        VerticalCaretMovementRun {
+            origin_x,
+            current_line,
+            line_count,
+            revision,
+            valid: true,
+        }
+    }
+
+    /// The column every line in this run is measured against.
+    pub fn origin_x(&self) -> f32 {
+        self.origin_x
+    }
+
+    pub fn current_line(&self) -> usize {
+        self.current_line
+    }
+
+    /// Upstream's `isValid`, which consults the layout each time it is asked
+    /// rather than being told.
+    pub fn is_valid(&mut self, layout_revision: u64) -> bool {
+        if layout_revision != self.revision {
+            self.valid = false;
+        }
+        self.valid
+    }
+
+    /// Upstream's `moveNext`: down a line, or false at the last one.
+    ///
+    /// **False rather than clamping.** The caller needs to know it did not
+    /// move, because an arrow at the bottom of a field should pass through to
+    /// whatever is below rather than being swallowed.
+    pub fn move_next(&mut self) -> bool {
+        if !self.valid || self.current_line + 1 >= self.line_count {
+            return false;
+        }
+        self.current_line += 1;
+        true
+    }
+
+    /// Upstream's `movePrevious`.
+    pub fn move_previous(&mut self) -> bool {
+        if !self.valid || self.current_line == 0 {
+            return false;
+        }
+        self.current_line -= 1;
+        true
+    }
+
+    /// Where the caret lands on the current line: the sticky column, clamped
+    /// into the line.
+    ///
+    /// `line_extent` is how wide the line's text is. A line shorter than the
+    /// column puts the caret at its end, and the *next* line is still measured
+    /// against the original column -- which is the behaviour the whole type
+    /// exists for.
+    pub fn offset_in_line(&self, line_extent: f32) -> f32 {
+        self.origin_x.min(line_extent)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -971,6 +1226,179 @@ mod tests {
                 (200.0, 301.0),
                 (200.0, 360.0)
             ))
+        );
+    }
+}
+
+#[cfg(test)]
+mod selection_pieces_tests {
+    use super::*;
+
+    fn at(x: f32, y: f32) -> Offset {
+        Offset::new(x, y)
+    }
+
+    // -- TextSelectionPoint -----------------------------------------------------------
+
+    #[test]
+    fn a_selections_two_ends_may_run_opposite_ways() {
+        // Which is why the direction is per point. A left handle at a
+        // right-to-left end is the wrong handle.
+        let start = TextSelectionPoint::new(at(10.0, 20.0), Some(TextDirection::Ltr));
+        let end = TextSelectionPoint::new(at(90.0, 20.0), Some(TextDirection::Rtl));
+        assert_ne!(start.direction, end.direction);
+    }
+
+    #[test]
+    fn a_point_in_text_with_no_strong_direction_has_none_to_give() {
+        let point = TextSelectionPoint::new(at(0.0, 0.0), None);
+        assert_eq!(point.direction, None);
+    }
+
+    // -- The desktop toolbar's placement -------------------------------------------------
+
+    #[test]
+    fn a_desktop_toolbar_hangs_from_its_anchor() {
+        let delegate = DesktopTextSelectionToolbarLayoutDelegate::new(at(40.0, 60.0));
+        let at_anchor =
+            delegate.position_for_child(Size::new(800.0, 600.0), Size::new(200.0, 40.0));
+        assert_eq!(at_anchor, at(40.0, 60.0), "room on both sides");
+    }
+
+    #[test]
+    fn it_slides_back_by_exactly_the_overhang() {
+        // Anchor at 700 with a 200-wide toolbar in an 800-wide container
+        // overhangs by 100, so it lands at 600 -- flush with the right edge.
+        let delegate = DesktopTextSelectionToolbarLayoutDelegate::new(at(700.0, 60.0));
+        let placed = delegate.position_for_child(Size::new(800.0, 600.0), Size::new(200.0, 40.0));
+        assert_eq!(placed.dx, 600.0);
+        assert_eq!(placed.dy, 60.0, "and the other axis did not move");
+    }
+
+    #[test]
+    fn the_two_axes_are_decided_independently() {
+        // A toolbar near the right edge and nowhere near the bottom slides left
+        // and does not move up.
+        let delegate = DesktopTextSelectionToolbarLayoutDelegate::new(at(700.0, 580.0));
+        let placed = delegate.position_for_child(Size::new(800.0, 600.0), Size::new(200.0, 40.0));
+        assert_eq!(placed.dx, 600.0, "pulled back");
+        assert_eq!(placed.dy, 560.0, "and so was this one, on its own account");
+
+        let one_axis = DesktopTextSelectionToolbarLayoutDelegate::new(at(700.0, 10.0));
+        let placed = one_axis.position_for_child(Size::new(800.0, 600.0), Size::new(200.0, 40.0));
+        assert_eq!((placed.dx, placed.dy), (600.0, 10.0));
+    }
+
+    #[test]
+    fn a_toolbar_that_fits_exactly_is_not_moved() {
+        // The overhang is zero, and the rule is `> 0`.
+        let delegate = DesktopTextSelectionToolbarLayoutDelegate::new(at(600.0, 0.0));
+        let placed = delegate.position_for_child(Size::new(800.0, 600.0), Size::new(200.0, 40.0));
+        assert_eq!(placed.dx, 600.0);
+    }
+
+    // -- DefaultSelectionStyle ---------------------------------------------------------------
+
+    #[test]
+    fn merging_takes_each_field_from_the_parent_and_not_from_the_default() {
+        // A subtree that set only the cursor colour must not silently discard
+        // the form's selection colour.
+        let form = DefaultSelectionStyle::new()
+            .with_cursor_color(Color::argb(0xFF, 1, 0, 0))
+            .with_selection_color(Color::argb(0xFF, 0, 1, 0));
+        let subtree = DefaultSelectionStyle::new().with_cursor_color(Color::argb(0xFF, 0, 0, 1));
+
+        let merged = subtree.merge(&form);
+        assert_eq!(
+            merged.cursor_color,
+            Some(Color::argb(0xFF, 0, 0, 1)),
+            "its own"
+        );
+        assert_eq!(
+            merged.selection_color,
+            Some(Color::argb(0xFF, 0, 1, 0)),
+            "and the form's, kept"
+        );
+    }
+
+    #[test]
+    fn both_colours_fall_back_to_the_one_default() {
+        let (cursor, selection) = DefaultSelectionStyle::new().resolved();
+        assert_eq!(cursor, DefaultSelectionStyle::DEFAULT_COLOR);
+        assert_eq!(selection, DefaultSelectionStyle::DEFAULT_COLOR);
+        assert_eq!(
+            DefaultSelectionStyle::DEFAULT_COLOR,
+            Color::argb(0x80, 0x80, 0x80, 0x80),
+            "upstream's half-transparent grey"
+        );
+    }
+
+    // -- VerticalCaretMovementRun ---------------------------------------------------------------
+
+    #[test]
+    fn the_column_is_sticky_across_a_short_line() {
+        // Down from the end of a long line onto a short one puts the caret at
+        // the short line's end; down again onto a long one puts it back at the
+        // original column. That is the whole reason this type exists.
+        let mut run = VerticalCaretMovementRun::new(200.0, 0, 3, 1);
+        assert_eq!(
+            run.offset_in_line(400.0),
+            200.0,
+            "the long line it started on"
+        );
+
+        assert!(run.move_next());
+        assert_eq!(
+            run.offset_in_line(50.0),
+            50.0,
+            "clamped into the short line"
+        );
+
+        assert!(run.move_next());
+        assert_eq!(
+            run.offset_in_line(400.0),
+            200.0,
+            "back at the original column, not at 50"
+        );
+    }
+
+    #[test]
+    fn a_run_stops_at_the_ends_rather_than_clamping() {
+        // The caller needs to know it did not move, because an arrow at the
+        // bottom should pass through to whatever is below rather than being
+        // swallowed.
+        let mut run = VerticalCaretMovementRun::new(0.0, 2, 3, 1);
+        assert!(!run.move_next(), "already on the last line");
+        assert_eq!(run.current_line(), 2, "and it did not move");
+
+        let mut top = VerticalCaretMovementRun::new(0.0, 0, 3, 1);
+        assert!(!top.move_previous());
+        assert_eq!(top.current_line(), 0);
+    }
+
+    #[test]
+    fn a_run_goes_invalid_when_the_text_is_laid_out_again() {
+        // A run that kept going would be indexing lines that no longer exist.
+        let mut run = VerticalCaretMovementRun::new(100.0, 0, 5, 7);
+        assert!(run.is_valid(7));
+        assert!(run.move_next());
+
+        assert!(!run.is_valid(8), "the layout was recomputed");
+        assert!(!run.move_next(), "and it stops moving");
+        assert!(
+            !run.is_valid(7),
+            "and stays invalid even if the revision came back"
+        );
+    }
+
+    #[test]
+    fn a_column_past_the_end_of_every_line_lands_at_each_end() {
+        let run = VerticalCaretMovementRun::new(1000.0, 0, 2, 1);
+        assert_eq!(run.offset_in_line(30.0), 30.0);
+        assert_eq!(
+            run.offset_in_line(0.0),
+            0.0,
+            "an empty line is its own start"
         );
     }
 }

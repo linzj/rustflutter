@@ -9776,3 +9776,37 @@ entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出
 
 ---
 
+
+## 文本选择那簇六个，以及一个 InheritedWidget 该怎么落地（2026-08-21）
+
+`TextSelectionPoint`、`DesktopTextSelectionToolbarLayoutDelegate`、
+`DefaultSelectionStyle`、`RenderEditablePainter`、`VerticalCaretMovementRun`
+入 `text_selection.rs`，`AutofillGroup` 入 `autofill.rs`。12 + 8 条测试，
+11 条变异全红。MISSING 19 → 13。
+
+几处值得记：
+
+* **`VerticalCaretMovementRun` 的黏着列**：从长行末尾按下到短行，光标落在短行
+  末尾；**再**按下到另一条长行，回到原来那一列而不是短行末尾。上游靠的是
+  `origin_x` 整段生命期不变、每条新行都拿它去问，而不是逐行搬运位置。这里
+  `origin_x` 私有且没有任何写它的代码——「从不更新」是类型的性质而非某个方法的
+  行为，所以我删掉了那条空测试：它断言的是编译期已经保证的事。
+* **`.max(0.0)` 是我自己加的**：`line_extent` 不为负、光标 x 也不为负，这个夹
+  值没有任何输入能让它生效。上游没有它（上游是问段落「离这个偏移最近的位置」）。
+  按这条线的老规矩——自己的不可证伪代码删掉，不是加注释——删了。
+* **变异 M1 第一次写错了**：`a.min(b)` 换成 `b.min(a)` 不是变异，是同一个函数。
+  换成「完全不夹进行内」才真的红。**一条存活的变异要先怀疑变异本身。**
+* **`AutofillGroup` 的第一版用了 thread-local 栈**：push 状态、build 子树、pop。
+  在这个框架里是错的——`build` 返回子 widget 而不是就地构建它，等子树里的字段
+  真正 build 时栈早空了。改用框架自己的 `provide` / `context.inherited`，问题
+  自然消失，而且上游 `_AutofillScope.updateShouldNotify` 比的是 `_scope` 的
+  **身份**（`!=` 比对象），正好落在 `provide` 要求的 `PartialEq` 上：用
+  `Rc::ptr_eq`。比内容会让表单里任何一个字段注册一次就重建全部字段。
+* **区分身份与内容的测试第一次没做到**：我拿同一个 `Rc` 包出的两个 handle 去比，
+  内容比较给的是同样的答案，变异因此存活。真正能分开的用例是**两个不同的组持有
+  完全相同的内容**——加上之后 M3 红了。
+* **先问祖先、后发布**，顺序是承重的：先发布的话每个组都能看见自己，于是没有一
+  个组是 topmost，autofill context 永远不会被结束。变异掉这个顺序，三条测试红。
+
+剩余 13：list wheel 3、debug/诊断 6、语义 2、`TrainHoppingAnimation` 1、
+`MenuSerializableShortcut` 1。下一轮做 list wheel 那簇。
