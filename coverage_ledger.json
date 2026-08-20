@@ -1639,14 +1639,6 @@
       "rust": "scrolling::ScrollNotification::UserScroll",
       "note": "上游一类一件，此侧一个枚举五变体"
     },
-    "ScrollPhysics": {
-      "rust": "physics.rs 的 Simulation 族 + Scroll 的边界钳制",
-      "note": "上游按物理策略分类；此侧钳制是 Scroll 的固定行为，弹跳一族属 E7"
-    },
-    "ClampingScrollPhysics": {
-      "rust": "physics::ClampingScrollSimulation",
-      "note": "Android 式摩擦减速，撞界即停——此侧的默认也是唯一行为"
-    },
     "SliverChildDelegate": {
       "rust": "sliver::SliverList 的 builder 闭包",
       "note": "上游委托对象的全部职责是\"按索引造孩子\"，此侧就是那个闭包"
