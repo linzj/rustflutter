@@ -142,6 +142,18 @@ impl DrawerControls {
         self.with(|state| state.close())
     }
 
+    /// Whether these controls have a drawer behind them.
+    ///
+    /// False before the hosted component's first build, and false again once
+    /// the entry has gone -- so a caller can tell "no drawer" from "a drawer
+    /// that has not drawn its first frame".
+    pub fn is_attached(&self) -> bool {
+        self.handle
+            .borrow()
+            .as_ref()
+            .is_some_and(|handle| handle.is_valid())
+    }
+
     fn with(&self, mutate: impl FnOnce(&mut DrawerAnimation) + 'static) -> bool {
         let handle = self.handle.borrow().clone();
         handle.is_some_and(|handle| handle.set_state(mutate))

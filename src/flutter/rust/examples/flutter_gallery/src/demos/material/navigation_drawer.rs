@@ -5,14 +5,19 @@
 //! Ported from `lib/demos/material/navigation_drawer.dart` (flutter/gallery @
 //! d12640d), aligned with upstream.
 //!
-//! Upstream's `NavDrawerDemo` is a `Scaffold` whose `AppBar` gets an
-//! automatic drawer button, whose body is a centered line of text, and whose
-//! `drawer` is a `Drawer` with a `UserAccountsDrawerHeader` and two tappable
-//! items. Here the scaffold is the framework's (`components.rs`), the drawer
-//! the framework's `Drawer` (`drawer.rs`), and whether the drawer is open is
-//! this demo's own state, the way every overlay's is (see `drawer.rs`'s
-//! module docs: the `DrawerController` machinery -- the slide animation, the
-//! edge drag, the back-button history entry -- is not ported).
+//! Upstream's `NavDrawerDemo` is a `Scaffold` whose `AppBar` gets an automatic
+//! drawer button, whose body is a centered line of text, and whose `drawer` is
+//! a `Drawer` with a `UserAccountsDrawerHeader` and two tappable items. Here
+//! the scaffold is the framework's (`components.rs`) and the panel the
+//! framework's `Drawer` (`drawer.rs`); opening it is
+//! [`rustflutter::show_drawer`], which is upstream's `DrawerController` -- the
+//! 246ms slide, the scrim fading up behind it, and a barrier tap that closes.
+//!
+//! This file used to say that whether the drawer is open is the demo's own
+//! state, "the way every overlay's is", and pointed at `drawer.rs`'s note that
+//! the `DrawerController` machinery is not ported. The slide is back; what is
+//! still missing is the edge drag (desktop-only upstream) and the back-button
+//! history entry (there is no Navigator to hold it).
 //!
 //! Divergences, each also marked at its site:
 //!
@@ -33,6 +38,8 @@ use rustflutter::prelude::*;
 use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisSize, RenderFlex};
 use rustflutter::widgets::{Align, Center, Pointer, SizedBox};
 
+use rustflutter::{DrawerControls, DrawerSide, OverlayHandle, show_drawer};
+
 use crate::app::ids;
 use crate::data::demos::{self as catalog, icon};
 use crate::pages::splash;
@@ -47,14 +54,17 @@ pub(super) fn stage() -> AnyWidget {
     stateful(NavDrawerDemo)
 }
 
-/// Upstream's `NavDrawerDemo`, stateful here because the drawer's
-/// open-and-shut is the application's state in this framework (upstream's
-/// `ScaffoldState` owns it, through the unported `DrawerController`).
+/// Upstream's `NavDrawerDemo`.
 struct NavDrawerDemo;
 
+/// What the demo holds on to: the controls for whatever drawer it put up.
+///
+/// Not a bool. `open` used to be one, because the drawer was a slot in the
+/// scaffold that was either filled or not; a drawer that slides has states in
+/// between, and the controls are what has them.
 #[derive(Default)]
 struct NavDrawerState {
-    open: bool,
+    drawer: Option<DrawerControls>,
 }
 
 impl StatefulComponent for NavDrawerDemo {
@@ -64,14 +74,33 @@ impl StatefulComponent for NavDrawerDemo {
         &self,
         state: &NavDrawerState,
         handle: StateHandle<NavDrawerState>,
-        _context: &mut BuildContext,
+        context: &mut BuildContext,
     ) -> AnyWidget {
+        let overlay = OverlayHandle::of(context);
+        let already_open = state
+            .drawer
+            .as_ref()
+            .is_some_and(|controls| controls.is_attached());
         let open_handle = handle.clone();
         let bar = component(DrawerBar {
             handlers: PointerHandlers::new().with_tap(move |_| {
                 // Upstream's `ScaffoldState.openDrawer`, behind the app bar's
                 // automatic drawer button.
-                open_handle.set_state(|state| state.open = true);
+                let Some(overlay) = overlay.clone() else {
+                    return;
+                };
+                if already_open {
+                    return;
+                }
+                let panel_handle = open_handle.clone();
+                let opened = show_drawer(overlay, DrawerSide::Start, move || {
+                    component(Drawer::new(component(DrawerItems {
+                        handle: panel_handle.clone(),
+                    })))
+                });
+                if let Some((_, controls)) = opened {
+                    open_handle.set_state(move |state| state.drawer = Some(controls));
+                }
             }),
         });
 
@@ -79,16 +108,10 @@ impl StatefulComponent for NavDrawerDemo {
         // the text `demoNavigationDrawerText`.
         let body = component(BodyText);
 
-        let drawer = component(Drawer::new(component(DrawerItems {
-            handle: handle.clone(),
-        })));
-
-        let scaffold = Scaffold::new(body)
-            .with_app_bar(bar)
-            .with_drawer(drawer)
-            .with_drawer_open(state.open)
-            // The barrier dismisses, upstream's `drawerBarrierDismissible`.
-            .wired_drawer(ids::SCRIM, handle, |state| state.open = false);
+        // The scaffold has no drawer slot filled: the drawer is over the whole
+        // window now, as upstream's is over the whole screen, rather than
+        // inside this demo's card.
+        let scaffold = Scaffold::new(body).with_app_bar(bar);
 
         single(component(scaffold), |inner| {
             Box::new(Container::new().with_height(DEMO_HEIGHT).with_child(inner))
@@ -183,7 +206,14 @@ impl Component for DrawerItems {
         let item = |index: u64, glyph: &'static str, label: &'static str| {
             let handle = self.handle.clone();
             let handlers = PointerHandlers::new().with_tap(move |_| {
-                handle.set_state(|state| state.open = false);
+                // Upstream's `Navigator.pop` on the drawer's route: the item
+                // closes it. Through the controls rather than a flag, so the
+                // panel slides out instead of vanishing.
+                handle.set_state(|state| {
+                    if let Some(controls) = &state.drawer {
+                        controls.close();
+                    }
+                });
             });
             let ink = ink;
             let body = body.clone();
@@ -283,10 +313,44 @@ mod tests {
     use rustflutter::render::{BoxConstraints, RenderBox};
 
     #[test]
-    fn the_drawer_starts_closed() {
-        // Upstream's drawer starts closed too: the `DrawerController`'s
-        // animation starts dismissed.
-        assert!(!NavDrawerState::default().open);
+    fn there_is_no_drawer_until_the_button_is_pressed() {
+        // Upstream's `Scaffold` builds its drawer lazily behind the automatic
+        // button; there is nothing on screen before the press.
+        assert!(NavDrawerState::default().drawer.is_none());
+    }
+
+    #[test]
+    fn the_panel_slides_rather_than_appearing() {
+        // What the rewiring bought, and the thing `drawer.rs` said it could not
+        // have without a route-like owner: the panel is partway in, not present
+        // or absent. The owner is an overlay entry.
+        let mut animation = rustflutter::drawer_host::DrawerAnimation::default();
+        animation.open();
+        animation.advance(0);
+        assert_eq!(animation.progress(), 0.0);
+
+        let quarter = (rustflutter::drawer::BASE_SETTLE_MILLISECONDS as i64 * 1000) / 4;
+        animation.advance(quarter);
+        let at = animation.progress();
+        assert!(at > 0.0 && at < 1.0, "partway in: {at}");
+
+        animation.advance(rustflutter::drawer::BASE_SETTLE_MILLISECONDS as i64 * 1000);
+        assert_eq!(animation.progress(), 1.0, "and arrives in 246ms");
+    }
+
+    #[test]
+    fn a_closing_drawer_stays_on_screen_until_it_has_left() {
+        // Removing the entry when `close` was called is what made the old
+        // drawer pop rather than close.
+        let mut animation = rustflutter::drawer_host::DrawerAnimation::default();
+        animation.open();
+        animation.advance(0);
+        animation.advance(rustflutter::drawer::BASE_SETTLE_MILLISECONDS as i64 * 1000);
+        animation.close();
+        assert!(!animation.is_closed(), "on its way out, still visible");
+
+        animation.advance(rustflutter::drawer::BASE_SETTLE_MILLISECONDS as i64 * 3000);
+        assert!(animation.is_closed());
     }
 
     #[test]
