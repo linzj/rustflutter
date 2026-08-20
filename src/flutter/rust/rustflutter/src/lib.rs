@@ -133,6 +133,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
+pub mod sliver_headers;
 pub mod sliver_tree;
 pub mod slotted;
 pub mod small_widgets;

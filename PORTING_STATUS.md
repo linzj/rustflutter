@@ -164,6 +164,66 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 「占多少地方」和「看得见多少」是两个数(2026-08-20)
+
+新模块 `sliver_headers.rs`,一次收掉四个文件五个类:`SliverPersistentHeaderDelegate`、
+`SliverPersistentHeader`、`PinnedHeaderSliver`、`SliverResizingHeader`、`SliverFloatingHeader`。覆盖率
+1706/1888(90.4%)。
+
+**这四个是「一个留下来的头部」的四种答案,而把它们分开的是 sliver 协议做出、别处都没有的一个区分:**
+
+* **`layoutExtent` 是这个 sliver 从后面的内容那里占走多少地方。**
+* **`paintExtent` 是你能看见它多少。**
+
+**对普通内容,这两个是同一个数。而这里每一个头部,都是这两个数的一组不同答案。**
+
+**钉住这条的回归行是最直接的那个:一个 pinned 头部滚到很远处时,`layoutExtent` 是 0、`paintExtent` 仍
+然是 56。** 它不再占地方,而仍然被看见——**这就是「钉住」。**
+
+**四个答案:**
+
+**`SliverPersistentHeader` 是最老、最通用的那个,而它是唯一一个要求调用方「预先说出尺寸」的。**
+`minExtent` 和 `maxExtent` 在任何东西被布局之前就被问了,而上游的文档坚持它们**在委托的一生中不能
+变**——必须完全来自构造参数,想给别的答案就得通过 `shouldRebuild` 说。**另外三个头部之所以存在,很大程
+度上就是因为「对一个你还没量过的 widget 做出这种承诺」很难。**
+
+它的 `pinned` 和 `floating` **是两个独立的问题**,所以是四个渲染对象而不是一条光谱:**`pinned` 问的是
+「读者滚过去时会怎样」,`floating` 问的是「读者回头时会怎样」。** 而 snap 配置**只在 floating 时才被理
+会**——snap 是回来路上的事,一个不会自己回来的头部,没有一条可以 snap 的回来路。
+
+**`PinnedHeaderSliver` 是那个窄用例,而它更好正是因为窄:没有委托,也不必预测尺寸,因为它只有一个尺
+寸。** 它量自己的孩子然后报上去。它的 `maxScrollObstructionExtent` 是孩子的整个高度——**这是它告诉视口
+「这么多以后再也滚不到了」的方式。** 而 `paintOrigin` 取 `constraints.overlap`,**这让它叠在前一个钉住
+的东西「下面」而不是「底下」。**
+
+**`SliverResizingHeader` 的区别是:两个尺寸是 widget 而不是数字。** 给它一个一行版和一个三行版,它自己
+去量;不给最大原型,它就对孩子做一次 **dry layout**——量而不落地。而**孩子是被约束着缩小的,不是被裁
+的**,这才让标题移动、副标题消失,而不是被从中间切断。它的 `scrollExtent` 是**全高**、
+`maxScrollObstructionExtent` 是**缩到最小后的那点**——两个数说的是不同的事,而两件事都要紧。
+
+**`SliverFloatingHeader` 的诀窍是它根本不按 `constraints.scrollOffset` 布局。** 它自己维护一个
+`effectiveScrollOffset`,按读者滚动的**增量**移动。**于是往回滚五十像素,就带回来五十像素的头部——不管
+读者在列表的多深处。** 而读者刚一回头时,如果这个偏移已经超过了孩子的高度,就被**停到「刚好在视口上
+沿」**,好让它从那里滑进来,而不是从它当初消失的地方。
+
+上游还留了一条噪声守卫,并且写明了:**增量为正(头部在长大)而方向不是往回滚,是矛盾的——当成噪声,归
+零。**
+
+**而 `snapMode` 是「有没有东西让路」的两个答案:** `overlay` 的 `layoutExtent` 按真实滚动偏移算(头部
+盖在内容上,内容不动),`scroll` 的等于 `paintExtent`(内容被推下去)。回归行把同一个回来的头部按两种模
+式各跑一遍,确认**看见的一样多、占的地方不一样。**
+
+**还有一条四个都一样的:`hasVisualOverflow: true`,并且注释说明了是有意保守的——"Conservatively say we
+do have overflow to avoid complexity."** 这个方向错了,代价是一层多余的裁剪;**反过来错了,代价是一个
+画到视口外面去的头部。**
+
+最后,`PinnedHeaderSliver` 在盖住内容时会给孩子打上 `excludeFromScrolling` 标签:**一个试图滚动到钉住
+头部的读屏器,会永远滚下去。**
+
+验证:`cargo test --lib` 2950 绿,GN `rustflutter_unittests` 2950 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1706 accounted / 182 MISSING(90.4%)。
+
 ### 从一个提示移到下一个,不再等待(2026-08-20)
 
 新模块 `raw_tooltip.rs`,收掉 `TooltipPositionContext`、`RawTooltip`、`RawTooltipState`。覆盖率
