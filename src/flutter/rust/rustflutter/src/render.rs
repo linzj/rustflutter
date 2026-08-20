@@ -1934,6 +1934,129 @@ impl RenderRef {
         f(&**self.render.borrow())
     }
 
+    // -- Where this object is ------------------------------------------------
+    //
+    // Upstream keeps `applyPaintTransform` on every `RenderObject` and composes
+    // the chain in `getTransformTo`. There is no such override here and there
+    // does not need to be: `visit_children` already reports each child together
+    // with where its parent paints it, which is the same number pointing the
+    // same way. It is also implemented more widely -- 79 objects across the
+    // crate answer `visit_children` where 52 answer `hit_test_children` -- so
+    // building on it starts with better coverage than a new method would end
+    // with, and keeps one source of truth for one fact instead of two that can
+    // drift.
+
+    /// This object's parent, as a handle.
+    ///
+    /// [`RenderState::parent`] is a weak state, claimed during layout; a state
+    /// knows the object it belongs to, so the pair reconstitutes the handle.
+    /// `None` at the root, and `None` for anything that has not been laid out
+    /// yet -- a parent is noticed by being laid out inside, so before that
+    /// there is nothing to report.
+    fn parent_ref(&self) -> Option<RenderRef> {
+        let state = self.state.parent.borrow().upgrade()?;
+        let render = state.render.borrow().upgrade()?;
+        Some(RenderRef { render, state })
+    }
+
+    /// Where `parent` paints this object, relative to `parent`'s own origin.
+    ///
+    /// Asks the parent, because the parent is the only one who knows: the
+    /// offset lives in whatever field suited it -- a vector in `RenderFlex`, an
+    /// inset computed in `RenderPadding` -- and `visit_children` is where every
+    /// one of them says it out loud.
+    fn offset_in(&self, parent: &RenderRef) -> Option<Offset> {
+        parent.with(|object| {
+            let mut found = None;
+            object.visit_children(&mut |child, offset| {
+                if found.is_none()
+                    && child
+                        .as_any()
+                        .downcast_ref::<RenderRef>()
+                        .is_some_and(|handle| handle.is(self))
+                {
+                    found = Some(offset);
+                }
+            });
+            found
+        })
+    }
+
+    /// The affine taking a point in this object's coordinates to `ancestor`'s,
+    /// or to the root when `ancestor` is `None`.
+    ///
+    /// Upstream's `RenderObject.getTransformTo`.
+    ///
+    /// # It composes translations, and that is not a shortcut
+    ///
+    /// The matrix is a full `[a, b, c, d, e, f]` affine and always will be, but
+    /// every step composed into it today is a translation, because
+    /// `visit_children` reports offsets and [`RenderTransform`] deliberately
+    /// reports its child untransformed.
+    ///
+    /// That is not this method conceding something the rest of the framework
+    /// does not. `hit_test_children` on `RenderTransform` tests against the
+    /// untransformed geometry too, and says why: two answers to "where is this"
+    /// that disagreed would be worse than one that is approximate. **A
+    /// `transform_to` that understood rotation while `hit_test` did not would
+    /// be exactly that disagreement** -- a menu anchored where the finger
+    /// cannot press.
+    ///
+    /// So the two move together or not at all. The return type is the full
+    /// affine so that when hit testing learns to invert one, this needs no
+    /// change to start reporting it.
+    ///
+    /// Stops early at `ancestor`, at the root, or at an object that has not
+    /// been laid out -- in the last case the answer is the identity, which is
+    /// the honest reading of "nowhere yet" and matches upstream returning the
+    /// identity for a detached subtree.
+    pub fn transform_to(&self, ancestor: Option<&RenderRef>) -> [f32; 6] {
+        let mut transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mut current = self.clone();
+        loop {
+            if ancestor.is_some_and(|ancestor| current.is(ancestor)) {
+                break;
+            }
+            let Some(parent) = current.parent_ref() else {
+                break;
+            };
+            let offset = current.offset_in(&parent).unwrap_or(Offset::ZERO);
+            // The step just taken happens *after* everything below it, so it
+            // goes on the left: a point rises through its own parent first and
+            // through the root last.
+            transform = compose_affine([1.0, 0.0, 0.0, 1.0, offset.dx, offset.dy], transform);
+            current = parent;
+        }
+        transform
+    }
+
+    /// A point in this object's coordinates, in `ancestor`'s.
+    ///
+    /// Upstream's `RenderBox.localToGlobal`, which is `getTransformTo` followed
+    /// by `MatrixUtils.transformPoint`.
+    pub fn local_to_global(&self, point: Offset, ancestor: Option<&RenderRef>) -> Offset {
+        let [a, b, c, d, e, f] = self.transform_to(ancestor);
+        Offset::new(
+            a * point.dx + c * point.dy + e,
+            b * point.dx + d * point.dy + f,
+        )
+    }
+
+    /// This object's own bounds, in `ancestor`'s coordinates.
+    ///
+    /// What an overlay anchors against: the rectangle of the button that owns
+    /// the menu, expressed where the menu is going to be laid out.
+    ///
+    /// Under a translation the four corners stay a rectangle, so mapping the
+    /// origin and adding the size is exact. It would not be under a rotation --
+    /// which is the same limitation [`RenderRef::transform_to`] carries, in the
+    /// same place, for the same reason.
+    pub fn global_rect(&self, ancestor: Option<&RenderRef>) -> crate::engine::Rect {
+        let origin = self.local_to_global(Offset::ZERO, ancestor);
+        let size = self.size();
+        crate::engine::Rect::xywh(origin.dx, origin.dy, size.width, size.height)
+    }
+
     /// Says this object's layout is no longer good, so the next frame does it
     /// again even at the same constraints.
     ///
@@ -22080,5 +22203,407 @@ mod layout_flush_tests {
             object.paint(&mut context, Offset::ZERO);
         }
         assert_eq!(painted.get(), 1, "and once laid out it draws");
+    }
+}
+
+/// The differential test `PORTING_PLAN_OVERLAY.md` makes L0's exit criterion,
+/// and the reason it is worth insisting on.
+///
+/// `transform_to` reads [`RenderBox::visit_children`]. `hit_test` reads
+/// [`RenderBox::hit_test_children`]. Those are **two independently written
+/// methods on every container**, expressing the same offset in opposite
+/// directions -- one says where the parent paints the child, the other subtracts
+/// that same number to push a point down into the child. Nothing but discipline
+/// keeps them agreeing.
+///
+/// So: map a point up with one and back down with the other, and the point must
+/// come home. A container that disagrees with itself fails here and nowhere
+/// else, because every other test in this file asks only one of the two.
+#[cfg(test)]
+mod coordinate_round_trip {
+    use super::*;
+
+    /// A leaf that can be found by hit test and knows its own name.
+    struct Probe {
+        id: u64,
+        size: Size,
+    }
+
+    impl Probe {
+        fn new(id: u64) -> Probe {
+            Probe {
+                id,
+                size: Size::ZERO,
+            }
+        }
+    }
+
+    impl RenderBox for Probe {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.size = constraints.constrain(Size::new(40.0, 20.0));
+            self.size
+        }
+        fn size(&self) -> Size {
+            self.size
+        }
+        fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(Size::new(40.0, 20.0))
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+        fn hit_test_id(&self) -> u64 {
+            self.id
+        }
+        // A leaf that reported no intrinsics would be squeezed to nothing by
+        // anything that sizes a child from them -- `RenderIntrinsicWidth` did
+        // exactly that, and the round trip failed against a zero-wide probe
+        // rather than against the container. A probe has to be a plausible
+        // leaf or it tests the harness.
+        fn min_intrinsic_width(&self, _height: f32) -> f32 {
+            40.0
+        }
+        fn max_intrinsic_width(&self, _height: f32) -> f32 {
+            40.0
+        }
+        fn min_intrinsic_height(&self, _width: f32) -> f32 {
+            20.0
+        }
+        fn max_intrinsic_height(&self, _width: f32) -> f32 {
+            20.0
+        }
+    }
+
+    const PROBE_ID: u64 = 0xB0B;
+
+    /// Builds `container(probe)`, lays it out, and checks that a point in the
+    /// probe's own coordinates survives the trip up and back.
+    fn round_trips(name: &str, wrap: impl FnOnce(RenderRef) -> BoxedRender) {
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = wrap(probe.clone());
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        // A point inside the probe, off its origin so a dropped translation
+        // shows up as more than a sign error.
+        let local = Offset::new(7.0, 3.0);
+        let global = probe.local_to_global(local, None);
+
+        let mut result = HitTestResult::new();
+        root.hit_test(global, &mut result);
+        let entry = result
+            .path
+            .iter()
+            .find(|entry| entry.target == PROBE_ID)
+            .unwrap_or_else(|| {
+                panic!("{name}: the forward transform put the point outside the probe: {global:?}")
+            });
+
+        assert!(
+            (entry.local_position.dx - local.dx).abs() < 1e-3
+                && (entry.local_position.dy - local.dy).abs() < 1e-3,
+            "{name}: went up as {global:?} and came back as {:?}, not {local:?}",
+            entry.local_position
+        );
+    }
+
+    /// Every box container in this file that puts a child somewhere, each
+    /// arranged so the offset it contributes is **not** zero -- a round trip
+    /// through an identity is not a test of anything.
+    #[test]
+    fn every_container_agrees_with_itself_about_where_its_child_is() {
+        round_trips("RenderPadding", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(11.0, 13.0, 0.0, 0.0),
+                probe,
+            ))
+        });
+        round_trips("RenderAlign", |probe| {
+            RenderRef::new(
+                RenderConstrainedBox::tight(300.0, 200.0)
+                    .with_child(RenderAlign::new(Alignment::CENTER, probe)),
+            )
+        });
+        round_trips("RenderAlign/bottomRight", |probe| {
+            RenderRef::new(
+                RenderConstrainedBox::tight(300.0, 200.0)
+                    .with_child(RenderAlign::new(Alignment::new(1.0, 1.0), probe)),
+            )
+        });
+        round_trips("RenderStack", |probe| {
+            let mut stack = RenderStack::new();
+            stack = stack.push(RenderConstrainedBox::tight(300.0, 200.0));
+            stack = stack.push(probe);
+            RenderRef::new(stack)
+        });
+        round_trips("RenderFlex/column", |probe| {
+            let mut flex = RenderFlex::column();
+            flex = flex.push(RenderConstrainedBox::tight(50.0, 60.0));
+            flex = flex.push(probe);
+            RenderRef::new(flex)
+        });
+        round_trips("RenderFlex/row", |probe| {
+            let mut flex = RenderFlex::row();
+            flex = flex.push(RenderConstrainedBox::tight(50.0, 60.0));
+            flex = flex.push(probe);
+            RenderRef::new(flex)
+        });
+        round_trips("RenderOpacity", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(5.0, 9.0, 0.0, 0.0),
+                RenderOpacity::new(0.5, probe),
+            ))
+        });
+        round_trips("RenderClipRect", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(4.0, 6.0, 0.0, 0.0),
+                RenderClipRect::new(probe),
+            ))
+        });
+        round_trips("RenderRepaintBoundary", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(3.0, 8.0, 0.0, 0.0),
+                RenderRepaintBoundary::new(probe),
+            ))
+        });
+        round_trips("RenderLimitedBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(2.0, 7.0, 0.0, 0.0),
+                RenderLimitedBox::new(probe),
+            ))
+        });
+        round_trips("RenderConstrainedBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(6.0, 6.0, 0.0, 0.0),
+                RenderConstrainedBox::new(BoxConstraints::new(0.0, 100.0, 0.0, 100.0))
+                    .with_child(probe),
+            ))
+        });
+        round_trips("RenderDecoratedBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(9.0, 2.0, 0.0, 0.0),
+                RenderDecoratedBox::new().with_child(probe),
+            ))
+        });
+        round_trips("RenderBaseline", |probe| {
+            // A baseline far enough down that the child lands inside the root:
+            // a negative global position is not something hit_test can reach,
+            // so it would test the harness rather than the container.
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(8.0, 4.0, 0.0, 0.0),
+                RenderBaseline::new(60.0, probe),
+            ))
+        });
+        round_trips("RenderIndexedStack", |probe| {
+            let mut stack = RenderIndexedStack::new();
+            stack = stack.push(RenderConstrainedBox::tight(300.0, 200.0));
+            stack = stack.push(probe);
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(3.0, 5.0, 0.0, 0.0),
+                stack.with_index(Some(1)),
+            ))
+        });
+        round_trips("RenderListBody", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(6.0, 2.0, 0.0, 0.0),
+                RenderListBody::new(
+                    AxisDirection::Down,
+                    vec![
+                        RenderRef::new(RenderConstrainedBox::tight(30.0, 25.0)),
+                        probe,
+                    ],
+                ),
+            ))
+        });
+        round_trips("RenderWrap", |probe| {
+            let mut wrap = RenderWrap::new(Axis::Horizontal);
+            wrap = wrap.push(RenderConstrainedBox::tight(30.0, 25.0));
+            wrap = wrap.push(probe);
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(4.0, 9.0, 0.0, 0.0),
+                wrap,
+            ))
+        });
+        round_trips("RenderOverflowBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(7.0, 11.0, 0.0, 0.0),
+                RenderConstrainedBox::tight(120.0, 90.0).with_child(RenderOverflowBox::new(probe)),
+            ))
+        });
+        round_trips("RenderFractionallySizedBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(5.0, 5.0, 0.0, 0.0),
+                RenderConstrainedBox::tight(120.0, 90.0)
+                    .with_child(RenderFractionallySizedBox::new(probe)),
+            ))
+        });
+        round_trips("RenderAspectRatio", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(6.0, 3.0, 0.0, 0.0),
+                RenderAspectRatio::new(2.0, probe),
+            ))
+        });
+        round_trips("RenderIntrinsicWidth", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(2.0, 4.0, 0.0, 0.0),
+                RenderIntrinsicWidth::new(probe),
+            ))
+        });
+        round_trips("RenderClipRRect", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(3.0, 7.0, 0.0, 0.0),
+                RenderClipRRect::new(crate::borders::BorderRadius::circular(4.0), probe),
+            ))
+        });
+        round_trips("RenderClipOval", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(9.0, 3.0, 0.0, 0.0),
+                RenderClipOval::new(probe),
+            ))
+        });
+        round_trips("RenderAbsorbPointer/off", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(4.0, 8.0, 0.0, 0.0),
+                RenderAbsorbPointer::new(false, probe),
+            ))
+        });
+        round_trips("RenderPhysicalModel", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(5.0, 4.0, 0.0, 0.0),
+                RenderPhysicalModel::new(probe),
+            ))
+        });
+        round_trips("RenderSizedOverflowBox", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(6.0, 6.0, 0.0, 0.0),
+                RenderSizedOverflowBox::new(Size::new(60.0, 40.0), probe),
+            ))
+        });
+        round_trips("RenderMetaData", |probe| {
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(12.0, 1.0, 0.0, 0.0),
+                RenderMetaData::new(1, probe),
+            ))
+        });
+        round_trips("nested", |probe| {
+            // Three levels, so a composition that drops a step is caught as
+            // well as one that gets a single step wrong.
+            RenderRef::new(RenderPadding::new(
+                EdgeInsets::only(10.0, 20.0, 0.0, 0.0),
+                RenderPadding::new(
+                    EdgeInsets::only(5.0, 6.0, 0.0, 0.0),
+                    RenderClipRect::new(RenderPadding::new(
+                        EdgeInsets::only(1.0, 2.0, 0.0, 0.0),
+                        probe,
+                    )),
+                ),
+            ))
+        });
+    }
+
+    #[test]
+    fn the_composition_is_the_sum_of_the_steps() {
+        // Stated as a number as well as a round trip, so a failure says which
+        // of the two is wrong.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderPadding::new(
+            EdgeInsets::only(10.0, 20.0, 0.0, 0.0),
+            RenderPadding::new(EdgeInsets::only(5.0, 6.0, 0.0, 0.0), probe.clone()),
+        ));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        assert_eq!(
+            probe.local_to_global(Offset::ZERO, None),
+            Offset::new(15.0, 26.0),
+            "10 + 5 across and 20 + 6 down"
+        );
+        assert_eq!(
+            probe.local_to_global(Offset::new(2.0, 3.0), None),
+            Offset::new(17.0, 29.0),
+            "and the point rides along"
+        );
+    }
+
+    #[test]
+    fn stopping_at_an_ancestor_stops_there() {
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let inner = RenderRef::new(RenderPadding::new(
+            EdgeInsets::only(5.0, 6.0, 0.0, 0.0),
+            probe.clone(),
+        ));
+        let mut root = RenderRef::new(RenderPadding::new(
+            EdgeInsets::only(10.0, 20.0, 0.0, 0.0),
+            inner.clone(),
+        ));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        assert_eq!(
+            probe.local_to_global(Offset::ZERO, Some(&inner)),
+            Offset::new(5.0, 6.0),
+            "the inner padding's contribution only"
+        );
+        assert_eq!(
+            probe.local_to_global(Offset::ZERO, None),
+            Offset::new(15.0, 26.0),
+            "and all of it when nothing stops the walk"
+        );
+    }
+
+    #[test]
+    fn a_rect_is_the_origin_mapped_and_the_size_kept() {
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderPadding::new(
+            EdgeInsets::only(10.0, 20.0, 0.0, 0.0),
+            probe.clone(),
+        ));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        let rect = probe.global_rect(None);
+        assert_eq!((rect.left, rect.top), (10.0, 20.0));
+        assert_eq!((rect.width(), rect.height()), (40.0, 20.0));
+    }
+
+    #[test]
+    fn an_object_nobody_has_laid_out_reports_the_identity() {
+        // Upstream answers the identity for a detached subtree, and "nowhere
+        // yet" is the honest reading: a parent is noticed by laying the child
+        // out, so before that there is no chain to walk.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        assert_eq!(
+            probe.transform_to(None),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "no layout, no parent, no offset"
+        );
+    }
+
+    #[test]
+    fn a_translating_transform_is_carried_but_a_rotation_is_not() {
+        // The limitation `transform_to` documents, pinned so it cannot drift
+        // silently: RenderTransform reports its child untransformed, matching
+        // its own hit testing, so translation is carried and rotation is not.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderTransform::new(
+            [1.0, 0.0, 0.0, 1.0, 30.0, 40.0],
+            probe.clone(),
+        ));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+
+        assert_eq!(
+            probe.local_to_global(Offset::ZERO, None),
+            Offset::ZERO,
+            "even the translation is not carried, because visit_children \
+             reports zero -- and hit_test agrees, which is the point"
+        );
+
+        // The two agree, which is the invariant that matters more than either
+        // answer on its own.
+        let mut result = HitTestResult::new();
+        root.hit_test(Offset::new(7.0, 3.0), &mut result);
+        let entry = result
+            .path
+            .iter()
+            .find(|entry| entry.target == PROBE_ID)
+            .expect("the untransformed geometry is what is tested");
+        assert_eq!(entry.local_position, Offset::new(7.0, 3.0));
     }
 }
