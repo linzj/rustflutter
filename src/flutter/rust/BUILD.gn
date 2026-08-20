@@ -217,6 +217,7 @@ if (enable_unittests) {
       "rustflutter/src/platform_menu_bar.rs",
       "rustflutter/src/platform_tree.rs",
       "rustflutter/src/presence.rs",
+      "rustflutter/src/popup.rs",
       "rustflutter/src/preferred_size.rs",
       "rustflutter/src/raw_menu_anchor.rs",
       "rustflutter/src/raw_tooltip.rs",

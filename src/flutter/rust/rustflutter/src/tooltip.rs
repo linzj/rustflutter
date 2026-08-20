@@ -12,188 +12,56 @@
 //! `position_dependent_box` wants the target's centre **in global
 //! coordinates**, and a widget does not know where it is until layout has run.
 //! So the two halves happen in different phases: the portal hands the bubble to
-//! the theatre during build, and [`RenderTooltipPosition`] asks the target
-//! where it ended up during layout -- by which time the page beneath the
-//! overlay has been laid out, because the theatre lays its page out first.
+//! the theatre during build, and [`crate::theatre::RenderAnchored`] asks the
+//! target where it ended up once layout is over.
 //!
 //! That is the whole reason this could not be written before L0: without
 //! `RenderRef::transform_to` there was no way to ask.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::framework::{AnyWidget, many};
 use crate::raw_tooltip::{TooltipPositionContext, position_dependent_box};
-use crate::render::{
-    BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox, RenderRef, Size,
-    UpdateEffect,
-};
-use crate::theatre::{PortalController, overlay_portal};
+use crate::render::{BoxConstraints, Offset, RenderBox, RenderRef, Size};
+use crate::theatre::{Anchor, Placement, PortalController, anchored, overlay_portal};
 
-/// Where the tooltip's target ended up.
-///
-/// Filled in during the target's assemble, read during the bubble's layout.
-/// One cell rather than a lookup because a tooltip has exactly one target and
-/// the two are built together.
-#[derive(Clone, Default)]
-pub struct TooltipAnchor {
-    target: Rc<RefCell<Option<RenderRef>>>,
-}
+/// Upstream's `Tooltip.verticalOffset` default.
+pub const DEFAULT_VERTICAL_OFFSET: f32 = 24.0;
 
-impl TooltipAnchor {
-    pub fn new() -> TooltipAnchor {
-        TooltipAnchor::default()
-    }
-
-    fn set(&self, target: RenderRef) {
-        *self.target.borrow_mut() = Some(target);
-    }
-
-    /// The target's rectangle in the coordinates of whatever encloses it all --
-    /// which is the overlay, since the walk stops at the root.
-    fn rect(&self) -> Option<crate::engine::Rect> {
-        self.target
-            .borrow()
-            .as_ref()
-            .map(|target| target.global_rect(None))
-    }
-}
-
-/// Puts its child where [`position_dependent_box`] says, against the anchor.
-pub struct RenderTooltipPosition {
-    anchor: TooltipAnchor,
-    child: BoxedRender,
-    vertical_offset: f32,
-    prefer_below: bool,
-    /// Where the bubble goes, worked out in a `&self` phase and kept.
-    ///
-    /// A `Cell` because the question cannot be asked during layout: see
-    /// [`RenderRef::transform_to`]. Paint and hit testing both refresh it, and
-    /// both borrow immutably, which is what makes the walk up the ancestors
-    /// legal there and illegal in `layout`.
-    placed: Cell<Offset>,
-    size: Size,
-}
-
-impl RenderTooltipPosition {
-    pub fn new(anchor: TooltipAnchor, child: BoxedRender) -> RenderTooltipPosition {
-        RenderTooltipPosition {
-            anchor,
-            child,
-            vertical_offset: 24.0,
-            prefer_below: true,
-            placed: Cell::new(Offset::ZERO),
-            size: Size::ZERO,
-        }
-    }
-
-    pub fn with_vertical_offset(mut self, offset: f32) -> Self {
-        self.vertical_offset = offset;
-        self
-    }
-
-    pub fn with_prefer_below(mut self, prefer_below: bool) -> Self {
-        self.prefer_below = prefer_below;
-        self
-    }
-
-    /// Where the bubble goes, against the anchor.
-    ///
-    /// Called from paint and from hit testing, never from layout. The target
-    /// has been laid out by then -- the theatre lays its page out before its
-    /// entries -- and, more to the point, nothing on the way up is still
-    /// mutably borrowed.
-    fn resolve(&self) -> Offset {
-        let Some(rect) = self.anchor.rect() else {
-            // No target yet: the first frame of a tooltip whose button has not
-            // been laid out. The origin is the honest answer for that frame.
-            return Offset::ZERO;
-        };
-        let bubble = self.child.size();
-        let context = TooltipPositionContext::new(
-            // Upstream passes the target's *centre*.
-            (
-                (rect.left + rect.right) / 2.0,
-                (rect.top + rect.bottom) / 2.0,
-            ),
-            (rect.width(), rect.height()),
-            (bubble.width, bubble.height),
-        )
-        .with_overlay((self.size.width, self.size.height))
-        .with_vertical_offset(self.vertical_offset)
-        .with_prefer_below(self.prefer_below);
-        let (x, y) = position_dependent_box(&context);
-        let placed = Offset::new(x, y);
-        self.placed.set(placed);
-        placed
-    }
-
-    /// Where the bubble was last put. For tests and for anything that needs to
-    /// point at it.
-    pub fn placed(&self) -> Offset {
-        self.placed.get()
-    }
-}
-
-impl RenderBox for RenderTooltipPosition {
-    fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        // The positioner fills the overlay; the bubble takes its own size
-        // inside it. Where the bubble *goes* is not decided here -- see
-        // `resolve`.
-        self.size = constraints.constrain(constraints.biggest());
-        self.child.layout_child(
-            BoxConstraints::new(0.0, self.size.width, 0.0, self.size.height),
-            true,
-        );
-        self.size
-    }
-
-    fn size(&self) -> Size {
-        self.size
-    }
-
-    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
-        constraints.constrain(constraints.biggest())
-    }
-
-    fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        context.paint_child(&self.child, offset.plus(self.resolve()));
-    }
-
-    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
-        self.child.hit_test(position.minus(self.resolve()), result)
-    }
-
-    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
-        // The last answer, not a fresh one: a walk that asked would be asking
-        // during somebody else's walk, and `visit_children` is what the ask
-        // itself is built on.
-        visit(&self.child, self.placed.get());
-    }
-
-    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-        let fresh = fresh.as_any_mut().downcast_mut::<RenderTooltipPosition>()?;
-        let changed = !self.child.is(&fresh.child)
-            || self.vertical_offset != fresh.vertical_offset
-            || self.prefer_below != fresh.prefer_below;
-        self.child = fresh.child.clone();
-        self.anchor = fresh.anchor.clone();
-        self.vertical_offset = fresh.vertical_offset;
-        self.prefer_below = fresh.prefer_below;
-        Some(UpdateEffect::relayout_if(changed))
-    }
+/// The placement rule a tooltip uses: upstream's `positionDependentBox`, in the
+/// shape [`crate::theatre::RenderAnchored`] asks for.
+pub fn tooltip_placement(vertical_offset: f32, prefer_below: bool) -> Placement {
+    Rc::new(
+        move |target: crate::engine::Rect, bubble: Size, overlay: Size| {
+            let context = TooltipPositionContext::new(
+                // Upstream passes the target's *centre*.
+                (
+                    (target.left + target.right) / 2.0,
+                    (target.top + target.bottom) / 2.0,
+                ),
+                (target.width(), target.height()),
+                (bubble.width, bubble.height),
+            )
+            .with_overlay((overlay.width, overlay.height))
+            .with_vertical_offset(vertical_offset)
+            .with_prefer_below(prefer_below);
+            let (x, y) = position_dependent_box(&context);
+            Offset::new(x, y)
+        },
+    )
 }
 
 /// A tooltip: `child` as it was, and `bubble` above it while the pointer rests
 /// on it.
 ///
-/// The trigger is deliberately thin here -- hover in, hover out -- because the
-/// delays, the touch path and the announcement are `raw_tooltip.rs`'s and are
-/// driven by whoever owns the clock. What this adds is the hosting.
+/// The trigger here is hover in and hover out. The delays, the touch path and
+/// the announcement belong to `raw_tooltip.rs` and are driven by whoever owns
+/// the clock -- [`Tooltip::controller`] is how they reach this.
 pub struct Tooltip {
     id: u64,
     controller: PortalController,
-    anchor: TooltipAnchor,
+    anchor: Anchor,
     child: RefCell<Option<AnyWidget>>,
     bubble: Rc<dyn Fn() -> AnyWidget>,
     vertical_offset: f32,
@@ -205,10 +73,10 @@ impl Tooltip {
         Tooltip {
             id,
             controller: PortalController::new(),
-            anchor: TooltipAnchor::new(),
+            anchor: Anchor::new(),
             child: RefCell::new(Some(child)),
             bubble: Rc::new(bubble),
-            vertical_offset: 24.0,
+            vertical_offset: DEFAULT_VERTICAL_OFFSET,
             prefer_below: true,
         }
     }
@@ -224,21 +92,20 @@ impl Tooltip {
     }
 
     /// The controller, so a caller with its own clock -- a `RawTooltipState`,
-    /// say -- can decide when to show.
+    /// say -- decides when the bubble is up.
     pub fn controller(&self) -> PortalController {
         self.controller.clone()
     }
 
-    pub fn anchor(&self) -> TooltipAnchor {
+    pub fn anchor(&self) -> Anchor {
         self.anchor.clone()
     }
 
-    /// The hit-test identity of the target, so a test or a gesture can find it.
+    /// The hit-test identity of the target.
     pub fn id(&self) -> u64 {
         self.id
     }
 
-    /// Builds the widget.
     pub fn build(self) -> AnyWidget {
         let Tooltip {
             id,
@@ -262,8 +129,8 @@ impl Tooltip {
         });
 
         // The anchor is filled in from the target's own assemble, which runs
-        // before any layout -- so by the time the bubble is laid out there is a
-        // handle to ask.
+        // before any layout -- so by the time the bubble needs a position there
+        // is a handle to ask.
         let anchor_for_target = anchor.clone();
         let target = many(vec![child], move |mut rendered| {
             let child = rendered.pop().expect("the target");
@@ -273,14 +140,9 @@ impl Tooltip {
             region
         });
 
-        let anchor_for_bubble = anchor.clone();
+        let place = tooltip_placement(vertical_offset, prefer_below);
         overlay_portal(controller, target, move || {
-            let anchor = anchor_for_bubble.clone();
-            many(vec![(bubble)()], move |mut rendered| {
-                RenderTooltipPosition::new(anchor.clone(), rendered.pop().expect("the bubble"))
-                    .with_vertical_offset(vertical_offset)
-                    .with_prefer_below(prefer_below)
-            })
+            anchored(anchor.clone(), Rc::clone(&place), (bubble)())
         })
     }
 }
@@ -302,6 +164,7 @@ mod tests {
     use super::*;
     use crate::framework::ElementTree;
     use crate::render::{RenderConstrainedBox, RenderPadding};
+    use crate::theatre::RenderAnchored;
     use crate::theatre::overlay;
 
     fn leaf(width: f32, height: f32) -> AnyWidget {
@@ -353,7 +216,7 @@ mod tests {
                 return;
             }
             let children: Vec<RenderRef> = handle.with(|object| {
-                if let Some(position) = object.as_any().downcast_ref::<RenderTooltipPosition>() {
+                if let Some(position) = object.as_any().downcast_ref::<RenderAnchored>() {
                     *found = Some(position.placed());
                 }
                 let mut kids = Vec::new();

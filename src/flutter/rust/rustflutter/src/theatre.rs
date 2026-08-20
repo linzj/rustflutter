@@ -1462,6 +1462,153 @@ pub fn modal_count() -> usize {
     MODALS.with(|modals| modals.borrow().len())
 }
 
+// -- Anchoring ----------------------------------------------------------------
+
+/// Where a surface's target ended up.
+///
+/// Filled in during the target's assemble -- the moment its render object
+/// exists -- and read later, when the question can be answered. A tooltip has
+/// one target and one bubble; so does a menu, and a magnifier, and a selection
+/// handle. The cell is the seam between them.
+#[derive(Clone, Default)]
+pub struct Anchor {
+    target: Rc<RefCell<Option<RenderRef>>>,
+}
+
+impl Anchor {
+    pub fn new() -> Anchor {
+        Anchor::default()
+    }
+
+    /// Records the target. Called from the assemble that built it.
+    pub fn set(&self, target: RenderRef) {
+        *self.target.borrow_mut() = Some(target);
+    }
+
+    /// The target's rectangle in the overlay's coordinates, or `None` before
+    /// there is a target to ask.
+    ///
+    /// The walk runs to the root, which is where the overlay is -- so what
+    /// comes back is already in the frame a theatre entry is laid out in.
+    pub fn rect(&self) -> Option<crate::engine::Rect> {
+        self.target
+            .borrow()
+            .as_ref()
+            .map(|target| target.global_rect(None))
+    }
+}
+
+/// Decides where an anchored surface goes: given the target's rectangle, the
+/// surface's own size and the overlay's, the surface's top-left.
+///
+/// `position_dependent_box` and `popup_menu_offset` are both this shape, which
+/// is why one positioner serves a tooltip and a menu.
+pub type Placement = Rc<dyn Fn(crate::engine::Rect, Size, Size) -> Offset>;
+
+/// Puts its child where a [`Placement`] says, against an [`Anchor`].
+///
+/// # Why the placement is not decided in `layout`
+///
+/// Asking the anchor means walking up its ancestors, and
+/// [`RenderRef::transform_to`] cannot be called from inside a layout: every
+/// ancestor on the current path is mutably borrowed for the duration. So the
+/// answer is worked out in a `&self` phase -- paint or hit testing, both of
+/// which borrow immutably -- and kept.
+pub struct RenderAnchored {
+    anchor: Anchor,
+    child: BoxedRender,
+    place: Placement,
+    placed: Cell<Offset>,
+    size: Size,
+}
+
+impl RenderAnchored {
+    pub fn new(anchor: Anchor, place: Placement, child: BoxedRender) -> RenderAnchored {
+        RenderAnchored {
+            anchor,
+            child,
+            place,
+            placed: Cell::new(Offset::ZERO),
+            size: Size::ZERO,
+        }
+    }
+
+    /// Works out where the child goes, and remembers it.
+    fn resolve(&self) -> Offset {
+        let Some(rect) = self.anchor.rect() else {
+            // No target yet: the first frame of a surface whose anchor has not
+            // been laid out. The origin is the honest answer for that frame.
+            return Offset::ZERO;
+        };
+        let placed = (self.place)(rect, self.child.size(), self.size);
+        self.placed.set(placed);
+        placed
+    }
+
+    /// Where the child was last put.
+    pub fn placed(&self) -> Offset {
+        self.placed.get()
+    }
+}
+
+impl RenderBox for RenderAnchored {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // The positioner fills the overlay; the surface takes its own size
+        // inside it. Where it *goes* is decided in `resolve`.
+        self.size = constraints.constrain(constraints.biggest());
+        self.child.layout_child(
+            BoxConstraints::new(0.0, self.size.width, 0.0, self.size.height),
+            true,
+        );
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(constraints.biggest())
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset.plus(self.resolve()));
+    }
+
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position.minus(self.resolve()), result)
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        // The last answer, not a fresh one: a walk that asked would be asking
+        // during somebody else's walk, and `visit_children` is what the ask is
+        // built on.
+        visit(&self.child, self.placed.get());
+    }
+
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh.as_any_mut().downcast_mut::<RenderAnchored>()?;
+        self.child = fresh.child.clone();
+        self.anchor = fresh.anchor.clone();
+        self.place = Rc::clone(&fresh.place);
+        // The placement is a closure and cannot be compared, so this always
+        // relays out. It is one box against one anchor, so the cost is a
+        // constraint check and a cached child layout.
+        Some(UpdateEffect::Relayout)
+    }
+}
+
+/// Wraps `surface` in a positioner that places it against `anchor`.
+pub fn anchored(anchor: Anchor, place: Placement, surface: AnyWidget) -> AnyWidget {
+    many(vec![surface], move |mut rendered| {
+        RenderAnchored::new(
+            anchor.clone(),
+            Rc::clone(&place),
+            rendered.pop().expect("the anchored surface"),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
