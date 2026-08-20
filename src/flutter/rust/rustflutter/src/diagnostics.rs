@@ -2459,3 +2459,254 @@ mod debug_creator_tests {
         );
     }
 }
+
+// -- Properties a tool can do more with than read ------------------------------
+
+/// The extra fields a property hands a tool alongside its printed form.
+///
+/// Upstream's `DiagnosticsProperty.toJsonMap` puts these under
+/// `valueProperties`, and the three subclasses below exist for nothing else.
+/// The point is that a tool should not have to parse the description: the
+/// inspector draws a colour swatch from numbers, not from the string
+/// `Color(0xff2196f3)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValueProperties {
+    pub entries: Vec<(&'static str, i64)>,
+}
+
+impl ValueProperties {
+    pub fn get(&self, name: &str) -> Option<i64> {
+        self.entries
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| *value)
+    }
+}
+
+/// Upstream `ColorProperty`: a colour, plus its channels for the inspector.
+///
+/// The whole subclass is `toJsonMap` adding red, green, blue and alpha. A tool
+/// with those can draw the swatch; a tool with only the description would have
+/// to parse hex out of a string that a `defaultValue` or an `ifNull` may have
+/// replaced entirely.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorProperty {
+    pub name: String,
+    pub value: Option<crate::engine::Color>,
+}
+
+impl ColorProperty {
+    pub fn new(name: impl Into<String>, value: Option<crate::engine::Color>) -> ColorProperty {
+        ColorProperty {
+            name: name.into(),
+            value,
+        }
+    }
+
+    /// Upstream's `valueProperties`. Absent for a null colour -- upstream
+    /// guards on `value != null`, because "no colour" has no channels and
+    /// zeros would read as transparent black.
+    pub fn value_properties(&self) -> Option<ValueProperties> {
+        let color = self.value?;
+        Some(ValueProperties {
+            entries: vec![
+                ("red", color.red() as i64),
+                ("green", color.green() as i64),
+                ("blue", color.blue() as i64),
+                ("alpha", color.alpha() as i64),
+            ],
+        })
+    }
+
+    pub fn property(&self) -> DiagnosticsProperty {
+        DiagnosticsProperty::new(
+            Some(self.name.clone()),
+            match self.value {
+                Some(color) => PropertyValue::Text(format!("{color:?}")),
+                None => PropertyValue::Null,
+            },
+        )
+    }
+}
+
+/// Upstream `IconDataProperty`: an icon, plus its codepoint for the inspector.
+///
+/// One field where [`ColorProperty`] has four, and for the same reason: the
+/// printed form of an icon is a name, and a tool that wants to *draw* the glyph
+/// needs the number.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IconDataProperty {
+    pub name: String,
+    pub value: Option<crate::icon_data::IconData>,
+}
+
+impl IconDataProperty {
+    pub fn new(
+        name: impl Into<String>,
+        value: Option<crate::icon_data::IconData>,
+    ) -> IconDataProperty {
+        IconDataProperty {
+            name: name.into(),
+            value,
+        }
+    }
+
+    pub fn value_properties(&self) -> Option<ValueProperties> {
+        let icon = self.value.as_ref()?;
+        Some(ValueProperties {
+            entries: vec![("codePoint", icon.code_point as i64)],
+        })
+    }
+
+    pub fn property(&self) -> DiagnosticsProperty {
+        DiagnosticsProperty::new(
+            Some(self.name.clone()),
+            match &self.value {
+                Some(icon) => PropertyValue::Text(format!("IconData(U+{:05X})", icon.code_point)),
+                None => PropertyValue::Null,
+            },
+        )
+    }
+}
+
+/// Upstream `TransformProperty`: a matrix, printed one way inside a line and
+/// another way on its own.
+///
+/// This is the subclass whose content is `valueToString` rather than
+/// `toJsonMap`, and the two forms are not a preference. A matrix is four rows,
+/// and four rows are what a reader can actually check -- but a property nested
+/// inside a parent that does not break lines cannot have four of them, so it
+/// collapses to one bracketed line with semicolons between the rows. Printing
+/// the four-row form there would break the parent's layout; printing the
+/// one-line form always would make every matrix unreadable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformProperty {
+    pub name: String,
+    /// This crate's 2D affine `[a, b, c, d, e, f]`, which is upstream's
+    /// `Matrix4` with the third dimension it never uses left out.
+    pub value: Option<[f32; 6]>,
+}
+
+impl TransformProperty {
+    pub fn new(name: impl Into<String>, value: Option<[f32; 6]>) -> TransformProperty {
+        TransformProperty {
+            name: name.into(),
+            value,
+        }
+    }
+
+    /// The rows, as upstream's `debugDescribeTransform` gives them: one string
+    /// per row, each already bracketed.
+    ///
+    /// The affine `[a, b, c, d, e, f]` is the matrix
+    /// `[[a, c, e], [b, d, f], [0, 0, 1]]` -- the column order is upstream's
+    /// storage order, which is why `b` and `c` are not where they look like they
+    /// should be.
+    pub fn rows(&self) -> Vec<String> {
+        let Some([a, b, c, d, e, f]) = self.value else {
+            return vec!["null".to_string()];
+        };
+        let n = |value: f32| PropertyValue::format_double(Some(value as f64));
+        vec![
+            format!("[{},{},{}]", n(a), n(c), n(e)),
+            format!("[{},{},{}]", n(b), n(d), n(f)),
+            format!("[{},{},{}]", n(0.0), n(0.0), n(1.0)),
+        ]
+    }
+
+    /// Upstream's `valueToString`. `line_break_properties` is the parent
+    /// configuration's flag: false means this has to fit on one line.
+    pub fn value_to_string(&self, line_break_properties: bool) -> String {
+        if self.value.is_none() {
+            return "null".to_string();
+        }
+        if line_break_properties {
+            return self.rows().join("\n");
+        }
+        let inner: Vec<String> = self
+            .rows()
+            .into_iter()
+            .map(|row| row.trim_matches(['[', ']']).to_string())
+            .collect();
+        format!("[{}]", inner.join("; "))
+    }
+
+    pub fn property(&self) -> DiagnosticsProperty {
+        DiagnosticsProperty::new(
+            Some(self.name.clone()),
+            PropertyValue::Text(self.value_to_string(false)),
+        )
+    }
+}
+
+#[cfg(test)]
+mod value_property_tests {
+    use super::*;
+    use crate::engine::Color;
+
+    #[test]
+    fn a_colour_hands_over_its_channels_so_a_tool_need_not_parse() {
+        let property = ColorProperty::new("color", Some(Color::argb(0xFF, 0x21, 0x96, 0xF3)));
+        let values = property.value_properties().expect("a colour");
+        assert_eq!(values.get("red"), Some(0x21));
+        assert_eq!(values.get("green"), Some(0x96));
+        assert_eq!(values.get("blue"), Some(0xF3));
+        assert_eq!(values.get("alpha"), Some(0xFF));
+    }
+
+    #[test]
+    fn no_colour_has_no_channels_rather_than_zeros() {
+        // Zeros would read as transparent black, which is a colour.
+        assert_eq!(ColorProperty::new("color", None).value_properties(), None);
+        assert!(ColorProperty::new("color", None).property().value.is_null());
+    }
+
+    #[test]
+    fn an_icon_hands_over_the_number_a_tool_would_draw_with() {
+        let icon = crate::icon_data::IconData {
+            code_point: 0xE5D2,
+            font_family: None,
+            font_family_fallback: None,
+            font_package: None,
+            match_text_direction: false,
+        };
+        let property = IconDataProperty::new("icon", Some(icon));
+        assert_eq!(
+            property.value_properties().and_then(|v| v.get("codePoint")),
+            Some(0xE5D2)
+        );
+        assert_eq!(IconDataProperty::new("icon", None).value_properties(), None);
+    }
+
+    #[test]
+    fn a_matrix_on_its_own_is_four_rows_a_reader_can_check() {
+        let property = TransformProperty::new("transform", Some([2.0, 0.0, 0.0, 3.0, 5.0, 7.0]));
+        let printed = property.value_to_string(true);
+        assert_eq!(printed.lines().count(), 3);
+        assert!(printed.starts_with("[2.0,0.0,5.0]"), "got {printed}");
+    }
+
+    #[test]
+    fn inside_a_line_it_collapses_rather_than_breaking_the_parents_layout() {
+        let property = TransformProperty::new("transform", Some([2.0, 0.0, 0.0, 3.0, 5.0, 7.0]));
+        let printed = property.value_to_string(false);
+        assert_eq!(printed.lines().count(), 1);
+        assert_eq!(printed, "[2.0,0.0,5.0; 0.0,3.0,7.0; 0.0,0.0,1.0]");
+    }
+
+    #[test]
+    fn the_affine_is_read_in_the_order_it_is_stored_and_not_the_order_it_looks() {
+        // [a, b, c, d, e, f] is [[a, c, e], [b, d, f], [0, 0, 1]] -- b and c are
+        // not where they appear to be.
+        let property = TransformProperty::new("t", Some([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        assert_eq!(property.rows()[0], "[1.0,3.0,5.0]");
+        assert_eq!(property.rows()[1], "[2.0,4.0,6.0]");
+    }
+
+    #[test]
+    fn a_null_matrix_prints_the_same_either_way() {
+        let property = TransformProperty::new("transform", None);
+        assert_eq!(property.value_to_string(true), "null");
+        assert_eq!(property.value_to_string(false), "null");
+    }
+}

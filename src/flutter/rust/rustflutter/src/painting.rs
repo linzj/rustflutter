@@ -4097,3 +4097,291 @@ mod text_painter_tests {
         assert!(InlineSpanSemanticsInformation::placeholder().is_placeholder);
     }
 }
+
+// -- Turning a clip behaviour into canvas calls --------------------------------
+
+/// What one clip-and-paint did to the canvas, in order.
+///
+/// The point of recording it is that the sequence is the whole of
+/// [`ClipContext`], and it is not the same for every behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipStep {
+    Save,
+    /// The clip itself. The flag is upstream's `doAntiAlias`.
+    Clip {
+        anti_alias: bool,
+    },
+    SaveLayer,
+    Paint,
+    Restore,
+}
+
+/// Upstream `ClipContext`: the four clip behaviours, as the canvas calls they
+/// stand for.
+///
+/// This is not a debug helper -- upstream's `PaintingContext extends
+/// ClipContext`, and every clipped paint in the framework goes through it.
+///
+/// # The behaviours are four different sequences, not four flags
+///
+/// * `none` saves and restores and clips nothing, so a caller need not branch;
+/// * `hardEdge` clips without anti-aliasing;
+/// * `antiAlias` clips with it;
+/// * `antiAliasWithSaveLayer` clips with it **and opens a save layer**, which
+///   is a second restore on the way out.
+///
+/// The last one is the reason this is a type. Anti-aliasing a clip blends the
+/// edge pixels against what is already on the canvas -- fine over an opaque
+/// background, and visibly wrong when the clipped content is itself composited,
+/// because the edge gets blended twice. The save layer gives the content its
+/// own buffer so the blend happens once. It costs an offscreen pass, which is
+/// why it is not simply the default.
+pub trait ClipContext {
+    /// Records one canvas call. An implementer drives the real canvas here.
+    fn record(&mut self, step: ClipStep);
+
+    /// Upstream's private `_clipAndPaint`, which the three public methods all
+    /// funnel through. They differ only in *which* clip call they make, and the
+    /// order around it is what is shared.
+    fn clip_and_paint(&mut self, behavior: ClipBehavior, paint: impl FnOnce(&mut Self)) {
+        self.record(ClipStep::Save);
+        match behavior {
+            ClipBehavior::None => {}
+            ClipBehavior::HardEdge => self.record(ClipStep::Clip { anti_alias: false }),
+            ClipBehavior::AntiAlias => self.record(ClipStep::Clip { anti_alias: true }),
+            ClipBehavior::AntiAliasWithSaveLayer => {
+                self.record(ClipStep::Clip { anti_alias: true });
+                self.record(ClipStep::SaveLayer);
+            }
+        }
+        paint(self);
+        if behavior == ClipBehavior::AntiAliasWithSaveLayer {
+            self.record(ClipStep::Restore);
+        }
+        self.record(ClipStep::Restore);
+    }
+
+    /// Upstream's `clipRectAndPaint`.
+    fn clip_rect_and_paint(&mut self, behavior: ClipBehavior, paint: impl FnOnce(&mut Self)) {
+        self.clip_and_paint(behavior, paint);
+    }
+
+    /// Upstream's `clipRRectAndPaint`.
+    fn clip_rrect_and_paint(&mut self, behavior: ClipBehavior, paint: impl FnOnce(&mut Self)) {
+        self.clip_and_paint(behavior, paint);
+    }
+
+    /// Upstream's `clipPathAndPaint`.
+    fn clip_path_and_paint(&mut self, behavior: ClipBehavior, paint: impl FnOnce(&mut Self)) {
+        self.clip_and_paint(behavior, paint);
+    }
+}
+
+// -- Telling a developer their image is bigger than the space it is in ---------
+
+/// Upstream `ImageSizeInfo`: a decoded image, and the size it was actually
+/// drawn at.
+///
+/// # What it is for
+///
+/// An image decoded at 4000 by 3000 and drawn into a 100 by 75 box costs about
+/// forty times the memory it needs to, and nothing on screen says so -- it
+/// looks right. Upstream collects these during a debug frame and reports the
+/// ones that are wasteful, which is how a developer finds out.
+///
+/// The comparison is by **area at device pixels**, not by either dimension:
+/// upstream's rule is that the decoded size is excessive when it is more than
+/// twice the display size in each direction, which is four times the pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageSizeInfo {
+    /// Where the image came from, for the message. `None` when the caller has
+    /// no name for it.
+    pub source: Option<&'static str>,
+    /// The size the image is drawn at, in logical pixels.
+    pub display_size: crate::render::Size,
+    /// The size it was decoded at.
+    pub image_size: crate::render::Size,
+}
+
+impl ImageSizeInfo {
+    /// Upstream's `displaySizeInBytes`, at four bytes a pixel.
+    pub fn display_size_in_bytes(&self) -> usize {
+        ImageSizeInfo::size_in_bytes(self.display_size)
+    }
+
+    /// Upstream's `decodedSizeInBytes`.
+    pub fn decoded_size_in_bytes(&self) -> usize {
+        ImageSizeInfo::size_in_bytes(self.image_size)
+    }
+
+    fn size_in_bytes(size: crate::render::Size) -> usize {
+        (size.width.max(0.0) * size.height.max(0.0)) as usize * 4
+    }
+
+    /// Upstream's `isOversized`: more than twice the display size **in each
+    /// direction**.
+    ///
+    /// Each direction and not area, because an image that is wide and short
+    /// relative to its box is not being wasted -- it is being letterboxed, and
+    /// the developer chose that.
+    pub fn is_oversized(&self) -> bool {
+        self.image_size.width > self.display_size.width * 2.0
+            && self.image_size.height > self.display_size.height * 2.0
+    }
+
+    /// The wasted bytes, which is what makes the report worth reading: a
+    /// percentage says nothing about whether it matters.
+    pub fn wasted_bytes(&self) -> usize {
+        self.decoded_size_in_bytes()
+            .saturating_sub(self.display_size_in_bytes())
+    }
+}
+
+#[cfg(test)]
+mod clip_context_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Recorder {
+        steps: Vec<ClipStep>,
+    }
+
+    impl ClipContext for Recorder {
+        fn record(&mut self, step: ClipStep) {
+            self.steps.push(step);
+        }
+    }
+
+    fn steps(behavior: ClipBehavior) -> Vec<ClipStep> {
+        let mut recorder = Recorder::default();
+        recorder.clip_rect_and_paint(behavior, |context| context.record(ClipStep::Paint));
+        recorder.steps
+    }
+
+    #[test]
+    fn none_still_saves_and_restores_so_a_caller_need_not_branch() {
+        assert_eq!(
+            steps(ClipBehavior::None),
+            vec![ClipStep::Save, ClipStep::Paint, ClipStep::Restore]
+        );
+    }
+
+    #[test]
+    fn hard_edge_and_anti_alias_differ_only_in_the_flag() {
+        assert_eq!(
+            steps(ClipBehavior::HardEdge),
+            vec![
+                ClipStep::Save,
+                ClipStep::Clip { anti_alias: false },
+                ClipStep::Paint,
+                ClipStep::Restore
+            ]
+        );
+        assert_eq!(
+            steps(ClipBehavior::AntiAlias),
+            vec![
+                ClipStep::Save,
+                ClipStep::Clip { anti_alias: true },
+                ClipStep::Paint,
+                ClipStep::Restore
+            ]
+        );
+    }
+
+    #[test]
+    fn the_save_layer_form_opens_a_buffer_and_closes_it_again() {
+        // The extra restore is not decoration: without it the layer is left
+        // open and everything painted afterwards goes into it.
+        assert_eq!(
+            steps(ClipBehavior::AntiAliasWithSaveLayer),
+            vec![
+                ClipStep::Save,
+                ClipStep::Clip { anti_alias: true },
+                ClipStep::SaveLayer,
+                ClipStep::Paint,
+                ClipStep::Restore,
+                ClipStep::Restore
+            ]
+        );
+    }
+
+    #[test]
+    fn every_behaviour_balances_its_saves_and_restores() {
+        for behavior in [
+            ClipBehavior::None,
+            ClipBehavior::HardEdge,
+            ClipBehavior::AntiAlias,
+            ClipBehavior::AntiAliasWithSaveLayer,
+        ] {
+            let steps = steps(behavior);
+            let opened = steps
+                .iter()
+                .filter(|s| matches!(s, ClipStep::Save | ClipStep::SaveLayer))
+                .count();
+            let closed = steps.iter().filter(|s| **s == ClipStep::Restore).count();
+            assert_eq!(opened, closed, "{behavior:?} leaves the canvas unbalanced");
+        }
+    }
+
+    #[test]
+    fn the_three_shapes_share_the_sequence_and_differ_only_in_the_clip_call() {
+        let mut a = Recorder::default();
+        a.clip_rrect_and_paint(ClipBehavior::AntiAlias, |c| c.record(ClipStep::Paint));
+        let mut b = Recorder::default();
+        b.clip_path_and_paint(ClipBehavior::AntiAlias, |c| c.record(ClipStep::Paint));
+        assert_eq!(a.steps, b.steps);
+        assert_eq!(a.steps, steps(ClipBehavior::AntiAlias));
+    }
+}
+
+#[cfg(test)]
+mod image_size_tests {
+    use super::*;
+    use crate::render::Size;
+
+    fn info(display: (f32, f32), decoded: (f32, f32)) -> ImageSizeInfo {
+        ImageSizeInfo {
+            source: Some("test"),
+            display_size: Size::new(display.0, display.1),
+            image_size: Size::new(decoded.0, decoded.1),
+        }
+    }
+
+    #[test]
+    fn a_photograph_in_a_thumbnail_is_oversized() {
+        let waste = info((100.0, 75.0), (4000.0, 3000.0));
+        assert!(waste.is_oversized());
+        assert_eq!(waste.decoded_size_in_bytes(), 4000 * 3000 * 4);
+        assert_eq!(waste.display_size_in_bytes(), 100 * 75 * 4);
+        assert_eq!(waste.wasted_bytes(), 4000 * 3000 * 4 - 100 * 75 * 4);
+    }
+
+    #[test]
+    fn exactly_twice_is_not_oversized() {
+        // Upstream's test is `>`, not `>=`, and doubling is what a 2x display
+        // asks for.
+        assert!(!info((100.0, 100.0), (200.0, 200.0)).is_oversized());
+        assert!(info((100.0, 100.0), (201.0, 201.0)).is_oversized());
+        // Each axis is tested on its own account, so one of them sitting
+        // exactly on the boundary is enough to say no.
+        assert!(!info((100.0, 100.0), (200.0, 400.0)).is_oversized());
+        assert!(!info((100.0, 100.0), (400.0, 200.0)).is_oversized());
+    }
+
+    #[test]
+    fn a_letterboxed_image_is_not_a_waste() {
+        // Oversized in each direction and not by area: an image far wider than
+        // its box but no taller is being letterboxed, which the developer
+        // chose.
+        let wide = info((100.0, 100.0), (1000.0, 100.0));
+        assert!(!wide.is_oversized(), "ten times the area, and still not it");
+        assert!(wide.wasted_bytes() > 0, "though it does waste bytes");
+    }
+
+    #[test]
+    fn an_image_smaller_than_its_box_wastes_nothing() {
+        let small = info((100.0, 100.0), (50.0, 50.0));
+        assert!(!small.is_oversized());
+        assert_eq!(small.wasted_bytes(), 0, "saturating, not negative");
+    }
+}

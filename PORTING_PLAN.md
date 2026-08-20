@@ -35,13 +35,23 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-21）：1930 accounted / 4 MISSING（99.8%）。**
+**进度（2026-08-21，第四次归零）：1930 accounted / 0 MISSING（100%）。**
+**四个桶全部审计过了。** 最后一个 `out_of_scope`（59 条）这轮审计完：9 条理由
+不成立，改判回 MISSING 并已补齐——三个 `DiagnosticsProperty` 子类记的「诊断树
+未移植」在 `diagnostics.rs` 存在之后就是**假的**；`ClipContext` 记的「仅 debug
+断言用」也是假的（上游 `PaintingContext extends ClipContext`，每一次带裁剪的绘制
+都走它）；`ImageSizeInfo` 与内存分配四件套记的「debug-only」，在这条线上一轮
+整簇移植 debug 类（`RenderErrorBox`/`DebugOverflowIndicatorMixin`/
+`AccessibilityInspector`/`DebugCreator`）之后不再是一个理由。
+剩下 50 条站得住：8 个 `raw_keyboard*` 文件（上游 v3.18 起 `@Deprecated`，已核）、
+11 个 iOS 专属、1 个 web-only、3 个纯文档注解、`NetworkAssetBundle`（需要 HTTP
+客户端）。
+**四次审计，四次都找出了被判断藏起来的真实工作**——尺子一次、`blocked_engine`
+一次、`mapped` 一次、`out_of_scope` 一次。
+
 第三次归零后审计 `mapped` 桶（472 条），发现其中 30 条记的「等价」实际意思是
 「以后再说」，其中 4 条明写「没有消费者，等第一个用处」——这条线此前已经两次
-拒绝过这个理由。30 条改判回 MISSING、3 条改判 blocked-engine，至今补齐 26 条，
-余 4。**归零三次，两次是因为量的东西变了，不是因为做的东西变了——尺子错一次、
-台账错两次。第三个桶 `out_of_scope`（50 条）还没审计过，前三次审计各找出一批被
-判断藏起来的真实工作，没有理由假定它是干净的。**
+拒绝过这个理由。30 条改判回 MISSING、3 条改判 blocked-engine，全部补齐。
 第二次归零后审计台账，发现 restoration 全家 25 个类记的「blocked-engine」理由不
 成立（见门控项台账的改判说明），MISSING 由 0 回到 25 并已补齐。
 上一次写「十层归零」时是真的，但那把尺子看不见三个层目录与一个子目录，藏了 34 个

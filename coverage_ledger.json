@@ -1,5 +1,5 @@
 {
-  "_comment": "coverage.py 的判定台账。equivalent: 已核实的改名/合并/功能等价（锚点见 PORTING_STATUS.md）；blocked_engine: 依赖引擎能力，挂账待引擎侧立项；out_of_scope_files/_classes: web-only/无宿主/debug-only 裁剪。只登记核实过的条目，宁缺勿滥。",
+  "_comment": "coverage.py 的判定台账。equivalent: 已核实的改名/合并/功能等价（锚点见 PORTING_STATUS.md）；blocked_engine: 依赖引擎能力，挂账待引擎侧立项；out_of_scope_files/_classes: web-only/无宿主/debug-only 裁剪。只登记核实过的条目，宁缺勿滥。 第四次审计（2026-08-21，out_of_scope 桶）：9 条理由不成立，改判回 MISSING——三个 DiagnosticsProperty 子类记的「诊断树未移植」在 diagnostics.rs 存在之后就是假的；ClipContext 记的「仅 debug 断言用」是假的（PaintingContext extends ClipContext）；ImageSizeInfo 与内存分配四件套记的「debug-only」在这条线刚整簇移植 debug 类之后不再是理由。",
   "equivalent": {
     "MatrixUtils": {
       "rust": "painting::matrix_utils",
@@ -1808,12 +1808,7 @@
     "system_context_menu.dart": "整文件 iOS 专属（`isSupported` 即 `defaultTargetPlatform == iOS`），宿主集合为 Windows/Android/macOS"
   },
   "out_of_scope_classes": {
-    "IconDataProperty": "DiagnosticsProperty<IconData> 的子类，属于诊断树（P10 收尾）；IconData 本身已覆盖",
     "NetworkAssetBundle": "上游是 dart:io HttpClient 套在 AssetBundle 接口后面；这个 crate 没有 HTTP 客户端，写一个不属于移植框架的范围（CachingAssetBundle/PlatformAssetBundle 已覆盖）",
-    "ColorProperty": "debug 诊断树专用（foundation DiagnosticsNode 族未移植，P10 终裁）",
-    "TransformProperty": "同上，诊断树专用",
-    "ClipContext": "debug 绘制辅助（painting/clip.dart 仅 debug 断言用）",
-    "ImageSizeInfo": "debug 图片尺寸上报（painting/debug.dart）",
     "BrowserContextMenu": "web-only",
     "IOSSystemContextMenuItemData": "iOS 专属，宿主集合为 Windows/Android/macOS",
     "IOSSystemContextMenuItemDataCopy": "iOS 专属，宿主集合为 Windows/Android/macOS",
@@ -1826,10 +1821,6 @@
     "IOSSystemContextMenuItemDataLiveText": "iOS 专属，宿主集合为 Windows/Android/macOS",
     "IOSSystemContextMenuItemDataCustom": "iOS 专属，宿主集合为 Windows/Android/macOS",
     "LiveText": "iOS 专属（Live Text 取词）",
-    "ObjectEvent": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
-    "ObjectCreated": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
-    "ObjectDisposed": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
-    "FlutterMemoryAllocations": "devtools 泄漏追踪钩子，上游在 kFlutterMemoryAllocationsEnabled 之后，debug-only",
     "Category": "文档生成用的注解，无运行期行为",
     "DocumentationIcon": "文档生成用的注解，无运行期行为",
     "Summary": "文档生成用的注解，无运行期行为"

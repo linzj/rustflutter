@@ -9911,3 +9911,52 @@ drop 跑的时候前者还活着、后者已经没了。构造出来之后变异
 剩余 4：`TrainHoppingAnimation`、`CustomPainterSemantics`、
 `PlaceholderSpanIndexSemanticsTag`、`MenuSerializableShortcut`。下一轮清完，
 然后审计 `out_of_scope`（50 条）。
+
+## 最后四个，以及第四次审计：out_of_scope 桶（2026-08-21）
+
+`TrainHoppingAnimation`、`PlaceholderSpanIndexSemanticsTag`、
+`CustomPainterSemantics`、`MenuSerializableShortcut` 落地，MISSING 4 → 0。
+然后审计了**唯一没审过的桶** `out_of_scope`（59 条），9 条理由不成立，
+改判回 MISSING 并当轮补齐，再次归零。共 41 条测试、32 条变异全红。
+
+### 最后四个里值得记的
+
+* **`TrainHoppingAnimation` 的两个顺序都承重**：值处理器里先跳车再读值——反过来
+  会把旧车最后一个值再报一次；`onSwitchedTrain` 在值通知**之后**才发——反过来
+  听到「换车了」的人看到的还是旧车的值。两条各有一条变异。
+* **`PlaceholderSpanIndexSemanticsTag` 是唯一按值比较的 tag**。`SemanticsTag`
+  按身份比，就是为了让两个碰巧取同名的子系统互不干扰；这个故意反过来，因为段落
+  每次布局都重造一批，这一帧的节点必须被认成上一帧那个。这里写成**由 index 推出
+  的 id**，落在计数器够不到的区间，两套方案不会撞。
+* **`MenuSerializableShortcut` 上游是 mixin 而不是 `ShortcutActivator` 的成员**，
+  因为「匹配按键事件」和「出现在平台自己的菜单栏里」是两套机器，而且不是每个
+  activator 都能做后者：`LogicalKeySet` 没有「一个触发键 + 修饰位」这种平台能画
+  的形状，上游干脆不给它 mix。
+
+### 第四次审计的收获
+
+| 条目 | 记的理由 | 实情 |
+|---|---|---|
+| `ColorProperty` `IconDataProperty` `TransformProperty` | 「诊断树未移植」 | **假的**，`diagnostics.rs` 早就在了，本会话还用它做了两个类 |
+| `ClipContext` | 「仅 debug 断言用」 | **假的**，上游 `PaintingContext extends ClipContext` |
+| `ImageSizeInfo` + 内存分配四件套 | 「debug-only」 | 上一轮刚整簇移植 debug 类，这不再是理由 |
+
+补齐时读出来的：
+
+* **`ClipContext` 的四种行为是四条不同的调用序列，不是四个开关。**
+  `antiAliasWithSaveLayer` 出去时要 **restore 两次**，因为它多开了一层。抗锯齿
+  裁剪会把边缘像素和画布上已有的东西混合——背景不透明时没问题，被裁的内容自己
+  也要合成时就会混两次，边缘看得出来。save layer 给它一块自己的缓冲，代价是一趟
+  离屏，所以不能当默认。
+* **`ImageSizeInfo.isOversized` 按「每个方向都超过两倍」而不是按面积。** 一张远
+  比框宽、却不比框高的图不是浪费，是加信箱边——开发者自己选的。变异 M6 一开始
+  活了下来，因为我的边界测试两个轴同时正好卡在两倍，`&&` 把它挡住了；补了「一个
+  轴正好两倍、另一个轴远超」才红。
+* **`FlutterMemoryAllocations` 在 dispatch 期间移除监听者是写洞而不是删元素。**
+  按下标走的循环里删一个会让后面的整体前移、漏掉一个。用的是**活跃循环计数**而
+  不是布尔，因为可以嵌套。长度也只在开头读一次，所以本轮加进来的监听者不会被
+  本轮叫到。
+* **创建事件带库名和类名、销毁事件不带**，这个不对称就是设计：追踪器按对象身份
+  配对，跑完还没配上的就是泄漏，而且名字已经在手上了。
+
+四个桶全部审计过一遍了。**四次审计，四次都找出被判断藏起来的真实工作。**
