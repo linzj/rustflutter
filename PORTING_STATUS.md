@@ -9960,3 +9960,54 @@ drop 跑的时候前者还活着、后者已经没了。构造出来之后变异
   配对，跑完还没配上的就是泄漏，而且名字已经在手上了。
 
 四个桶全部审计过一遍了。**四次审计，四次都找出被判断藏起来的真实工作。**
+
+## 第五次审计：`covered` 桶不等于「已移植」（2026-08-21）
+
+四个台账桶审完之后，剩下的唯一未经检验的判断是 **`covered` 桶本身**——1400 多个
+类，判据只是「有个同名符号」。口径三则第 2 条从一开始就写着「名字命中只是入门」，
+而本会话已经撞见过一次反例：`RenderListWheel` 名字对得上、少五个属性，其中三个
+widget 层已经声明却从没往下传。
+
+所以写了第二把尺子 `tools/depth.py`：对每个 covered 类，数上游声明的公开成员、
+数本侧对应类型暴露的成员、报比值。**它是启发式的，而且撒谎的方向是固定的**——
+getter/setter 对、`==`/`hashCode`/`toString` 变成 derive、一个 Rust enum 顶掉
+一族 Dart 子类、成员答在别处（自由函数、别的类型），每一种都让比值**低报**。
+对一把「产出待读清单」的尺子来说这是对的方向：宁可多报，不藏。
+
+**这把尺子自己也错了两次，两次都是往「看起来更糟」的方向错：**
+
+1. `RUST_MEMBER` 只认 `pub`。trait 的方法和 enum 的变体**没有 `pub`**——它们随
+   类型公开。结果全 crate 的 trait 和 enum 都读成 0 个成员。
+2. Dart 侧只按缩进匹配，把每个方法体里的局部变量和构造调用都算成成员。
+   `ListTile` 因此报了 87 个成员，里面有 `break`、`false`、`InkWell`——比值实际
+   在度量「上游的方法有多长」。改成跟踪花括号深度，只数类自己那一层：87 → 40。
+
+修好之后，682 个 6+ 成员的 covered 类里，最浅的那一批**约三成是真的**：
+
+| 抽样 | 报的 | 实情 |
+|---|---|---|
+| `MediaQuery` 6/65 | 浅 | **假阳性**，65 个几乎全是 `xOf`/`maybeXOf` 便利静态方法，这里由 `context.inherited::<MediaQueryData>()` answer |
+| `SemanticsNode` 9/69 | 浅 | **假阳性**，成员在 `SemanticsProperties` 上 |
+| `ListTile` 6/40 | 浅 | **真的**——见下 |
+| `Text`/`Flex`/`ClipRect` 0/n | 浅 | **假阳性**，移植成自由函数（`pub fn flex(...)`），尺子看不见 |
+
+### `ListTile`：主题解析了控件从不读的东西
+
+跟 ListWheel 一模一样的形状。`ResolvedListTile::of(context, selected)` 早就完整
+处理 `selected`（`selected_color`、`selected_tile_color`），也早就解析出
+`min_leading_width`、`dense`、`text_color`——**而控件把 `selected` 恒传 `false`，
+另外三个一个都不读**。而且没有 `leading`：那是 ListTile 最常用的一个位置。
+
+补上 `leading`、`selected`、`enabled`、`dense`、`is_three_line`、
+`content_padding`、`min_leading_width`。10 条测试，10 条变异，两条一开始活着：
+
+* **`dense` 那条是我自己想错了。** 我写的是「解析完再按 dense 取 min」，上游是
+  `minTileHeight ?? (dense ? 48 : 56)`——**主题显式设了高度就赢到底，dense 什么
+  都不改**。事后调整高度分不出这两种情况。改成把 widget 的 `dense` 传进
+  `ResolvedListTile::of` 里去参与解析，两条变异都红了。
+* **`min_leading_width` 的几何后果在这个测试架子里不可观测**：它影响的是**标题**
+  从哪儿开始，而标题是 tile 内部建的、没有标记，intrinsics 这条链上也没人实现。
+  只断言了「控件的值压过主题的」，并在测试里写明为什么不断言几何——**写一条不可能
+  失败的测试比不写更糟**。
+
+`covered` 桶的重读是一条长队列（682 个候选，约三成为真）。下一轮继续。

@@ -1407,10 +1407,22 @@ impl ResolvedListTile {
     /// Upstream's default `minLeadingWidth`.
     pub const MIN_LEADING_WIDTH: f32 = 40.0;
 
-    pub fn of(context: &mut BuildContext, selected: bool) -> ResolvedListTile {
+    /// Upstream's resolution, with the widget's own `dense` folded in.
+    ///
+    /// `dense_override` is the tile's own value, and it has to arrive *here*
+    /// rather than being applied to the result, because `minTileHeight` is
+    /// `data.minTileHeight ?? (dense ? 48 : 56)`: a theme that set the height
+    /// explicitly wins outright and `dense` changes nothing, while a theme that
+    /// did not gets one of two constants chosen by `dense`. Adjusting the
+    /// height afterwards cannot tell those two cases apart.
+    pub fn of(
+        context: &mut BuildContext,
+        selected: bool,
+        dense_override: Option<bool>,
+    ) -> ResolvedListTile {
         let data = ListTileTheme::of(context);
         let theme = ThemeData::of(context);
-        let dense = data.dense.unwrap_or(false);
+        let dense = dense_override.or(data.dense).unwrap_or(false);
         let text_color = if selected {
             data.selected_color.unwrap_or(theme.color_scheme.primary)
         } else {
@@ -6368,7 +6380,7 @@ mod tests {
     fn a_list_tile_resolves_its_padding_gap_and_minimum_height() {
         let plain = read_in(
             |child| child,
-            |context| ResolvedListTile::of(context, false),
+            |context| ResolvedListTile::of(context, false, None),
         );
         assert_eq!(plain.min_tile_height, 56.0);
         assert_eq!(plain.horizontal_title_gap, 16.0);
@@ -6385,7 +6397,7 @@ mod tests {
         // Dense drops the minimum height, as upstream's defaults do.
         let dense = read_in(
             |child| ListTileTheme::new(ListTileThemeData::new().with_dense(true), child),
-            |context| ResolvedListTile::of(context, false),
+            |context| ResolvedListTile::of(context, false, None),
         );
         assert_eq!(dense.min_tile_height, 48.0);
 
@@ -6400,7 +6412,7 @@ mod tests {
                     child,
                 )
             },
-            |context| ResolvedListTile::of(context, true),
+            |context| ResolvedListTile::of(context, true, None),
         );
         assert_eq!(selected.tile_color, Some(Color::argb(255, 2, 2, 2)));
         assert_eq!(

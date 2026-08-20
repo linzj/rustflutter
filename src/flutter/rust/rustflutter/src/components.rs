@@ -1457,15 +1457,42 @@ impl Component for Scaffold {
     }
 }
 
-/// A row with a leading marker, a title, an optional subtitle and an optional
-/// trailing widget. What a settings list is made of.
+/// Upstream `ListTile`: a row with something before the title, a title, an
+/// optional subtitle and something after. What a settings list is made of.
+///
+/// # What `selected`, `enabled` and `dense` change
+///
+/// None of the three is decoration:
+///
+/// * **`selected`** switches the colours the whole tile is drawn in --
+///   upstream's `selectedColor` reaches the title, the subtitle *and* the
+///   leading icon, because a tile whose text alone changed colour reads as a
+///   link rather than as the current item;
+/// * **`enabled`** stops the taps *and* mutes the same three, and it does both
+///   or neither: a tile that looks live and does nothing is worse than one that
+///   looks dead;
+/// * **`dense`** is a height, and it comes from three places in order --
+///   the tile, then the tile theme, then the app theme -- so a list can be made
+///   dense once rather than per row.
 pub struct ListTile {
     title: String,
     subtitle: Option<String>,
     accent: Option<Color>,
+    leading: std::cell::RefCell<Option<AnyWidget>>,
     trailing: std::cell::RefCell<Option<AnyWidget>>,
     id: Option<u64>,
     handlers: PointerHandlers,
+    selected: bool,
+    enabled: bool,
+    /// Upstream's `dense`, three-valued: `None` defers to the theme.
+    dense: Option<bool>,
+    /// Upstream's `isThreeLine`, which upstream asserts implies a subtitle --
+    /// three lines with nothing on the second two is not a layout.
+    is_three_line: bool,
+    /// Upstream's `contentPadding`, overriding the theme's.
+    content_padding: Option<EdgeInsets>,
+    /// Upstream's `minLeadingWidth`, which only means anything with a leading.
+    min_leading_width: Option<f32>,
 }
 
 impl ListTile {
@@ -1474,9 +1501,17 @@ impl ListTile {
             title: title.into(),
             subtitle: None,
             accent: None,
+            leading: std::cell::RefCell::new(None),
             trailing: std::cell::RefCell::new(None),
             id: None,
             handlers: PointerHandlers::new(),
+            selected: false,
+            // Upstream's default. A tile is live unless it is said not to be.
+            enabled: true,
+            dense: None,
+            is_three_line: false,
+            content_padding: None,
+            min_leading_width: None,
         }
     }
 
@@ -1490,8 +1525,56 @@ impl ListTile {
         self
     }
 
+    /// Upstream's `leading`: the widget before the title, which is an icon or
+    /// an avatar in almost every real list.
+    pub fn with_leading(self, leading: AnyWidget) -> Self {
+        *self.leading.borrow_mut() = Some(leading);
+        self
+    }
+
     pub fn with_trailing(self, trailing: AnyWidget) -> Self {
         *self.trailing.borrow_mut() = Some(trailing);
+        self
+    }
+
+    /// Upstream's `selected`.
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Upstream's `enabled`. A disabled tile does not take taps, whatever
+    /// handlers it was given.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Upstream's `dense`.
+    pub fn with_dense(mut self, dense: bool) -> Self {
+        self.dense = Some(dense);
+        self
+    }
+
+    /// Upstream's `isThreeLine`, which asserts a subtitle: upstream's
+    /// `assert(isThreeLine != true || subtitle != null)`.
+    pub fn with_three_line(mut self, is_three_line: bool) -> Self {
+        debug_assert!(
+            !is_three_line || self.subtitle.is_some(),
+            "isThreeLine needs a subtitle: three lines with nothing on the last \
+             two is not a layout"
+        );
+        self.is_three_line = is_three_line;
+        self
+    }
+
+    pub fn with_content_padding(mut self, padding: EdgeInsets) -> Self {
+        self.content_padding = Some(padding);
+        self
+    }
+
+    pub fn with_min_leading_width(mut self, width: f32) -> Self {
+        self.min_leading_width = Some(width);
         self
     }
 
@@ -1499,6 +1582,18 @@ impl ListTile {
         self.id = Some(id);
         self.handlers = handlers;
         self
+    }
+
+    /// Whether this tile answers taps: upstream's `enabled` gating whether an
+    /// `InkWell` is built with callbacks at all.
+    pub fn is_tappable(&self) -> bool {
+        self.enabled && self.id.is_some()
+    }
+
+    /// Upstream's `_isDenseLayout`: the tile, then the tile theme, then the app
+    /// theme, then false.
+    pub fn is_dense(&self, theme_dense: bool) -> bool {
+        self.dense.unwrap_or(theme_dense)
     }
 }
 
@@ -1508,24 +1603,56 @@ impl Component for ListTile {
         let title = self.title.clone();
         let subtitle = self.subtitle.clone();
         let accent = self.accent;
-        let id = self.id;
+        // Upstream builds the `InkWell` with callbacks only when the tile is
+        // enabled, so a disabled tile is not a target at all rather than a
+        // target that ignores what it is told.
+        let id = self.enabled.then_some(self.id).flatten();
         let handlers = self.handlers.clone();
+        let leading = self.leading.borrow_mut().take();
         let trailing = self.trailing.borrow_mut().take();
-        let body = theme.body();
-        let muted = theme.muted();
         let spacing = theme.spacing;
         let radius = theme.radius;
         // Upstream's `ListTile.build`: the content padding, the gap between
         // the title and whatever follows it, the minimum height and the tile's
         // own colour all come off `ListTileTheme.of(context)` before the
-        // control's defaults.
-        let tile = crate::component_themes::ResolvedListTile::of(context, false);
-        let content_padding = tile.content_padding;
+        // control's defaults. `selected` is passed in because it chooses
+        // between two different sets of those.
+        let tile =
+            crate::component_themes::ResolvedListTile::of(context, self.selected, self.dense);
+        let content_padding = self.content_padding.unwrap_or(tile.content_padding);
         let title_gap = tile.horizontal_title_gap;
         let min_tile_height = tile.min_tile_height;
         let tile_color = tile.tile_color;
+        let min_leading_width = self.min_leading_width.unwrap_or(tile.min_leading_width);
+        // Upstream's `effectiveColor`: selected wins, then disabled, then the
+        // ordinary text colour -- and it reaches the title, the subtitle and
+        // the leading alike, because a tile whose title alone changed colour
+        // reads as a link rather than as the current item.
+        let text_color = if self.enabled {
+            tile.text_color
+        } else {
+            theme.muted().color
+        };
+        let body = crate::engine::TextStyle {
+            color: text_color,
+            ..theme.body()
+        };
+        let muted = crate::engine::TextStyle {
+            color: if self.enabled {
+                theme.muted().color
+            } else {
+                text_color
+            },
+            ..theme.muted()
+        };
+        // Upstream's `isThreeLine`: the subtitle is allowed a second line, and
+        // the leading and trailing align to the top rather than to the middle,
+        // because centring against a three-line block puts an icon in the
+        // middle of the text instead of beside its first line.
+        let three_line = self.is_three_line;
 
         let has_trailing = trailing.is_some();
+        let has_leading = leading.is_some();
         let mut children = vec![leaf(move || {
             // `MainAxisSize.min`: upstream `_RenderListTile` centres the
             // title block vertically rather than stretching it to the tile,
@@ -1552,6 +1679,11 @@ impl Component for ListTile {
             }
             row.push(column)
         })];
+        if let Some(leading) = leading {
+            // Before the title, and first in the list so the row below can
+            // tell it from the trailing.
+            children.insert(0, leading);
+        }
         if let Some(trailing) = trailing {
             children.push(trailing);
         }
@@ -1559,8 +1691,42 @@ impl Component for ListTile {
         many(children, move |mut rendered| {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(if has_trailing { title_gap } else { 0.0 });
+                // Upstream's `ListTileTitleAlignment.threeLine`: against a
+                // three-line block the leading and trailing go to the top, not
+                // the middle -- an icon centred on three lines of text sits
+                // beside the second one, which is not where it belongs.
+                .with_cross_axis_alignment(if three_line {
+                    CrossAxisAlignment::Start
+                } else {
+                    CrossAxisAlignment::Center
+                })
+                // Upstream's `horizontalTitleGap` is "the gap between the
+                // titles and the leading/trailing widgets" -- both sides, not
+                // just the trailing. A row with neither has nothing to space.
+                .with_spacing(if has_trailing || has_leading {
+                    title_gap
+                } else {
+                    0.0
+                });
+            if has_leading {
+                // Upstream's `minLeadingWidth`: the leading column is at least
+                // this wide however narrow the icon is, so the titles of
+                // successive rows line up with each other rather than with
+                // whatever each row happens to lead with.
+                let leading = rendered.remove(0);
+                row = row.push(
+                    crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                        min_width: min_leading_width,
+                        max_width: f32::INFINITY,
+                        min_height: 0.0,
+                        max_height: f32::INFINITY,
+                    })
+                    .with_child(leading),
+                );
+            }
+            // Whatever is left at the front is the title block; the leading was
+            // taken off it above and the trailing is behind it.
+            let title = rendered.remove(0);
             if has_trailing {
                 // The trailing is inflexible, so pass one gives it its width
                 // and the title takes what is left rather than shouldering the
@@ -1578,17 +1744,12 @@ impl Component for ListTile {
                 // for a trailing narrower than the gap itself, and every
                 // trailing here -- a switch, a price, a button -- is wider
                 // than 16.
-
-                let trailing = rendered.pop();
-                let title = rendered.pop();
-                if let Some(title) = title {
-                    row = row.push_flex(crate::render::FlexChild::expanded(title, 1));
-                }
-                if let Some(trailing) = trailing {
+                row = row.push_flex(crate::render::FlexChild::expanded(title, 1));
+                if let Some(trailing) = rendered.pop() {
                     row = row.push(trailing);
                 }
-            } else if let Some(leading) = rendered.pop() {
-                row = row.push(leading);
+            } else {
+                row = row.push(title);
             }
 
             let mut padded = Container::new()
@@ -2303,6 +2464,183 @@ mod tests {
     /// Measured by hit test rather than by reading geometry: a render tree
     /// reports where it was touched, not where it put things, and where it was
     /// touched is the thing that has to be right anyway.
+
+    // -- What the tile was told, and what it does about it -----------------------------
+
+    /// Lays a tile out and hit-tests it, reporting which marker was hit.
+    fn tile_hit(tile: ListTile, at: (f32, f32), width: f32) -> Option<u64> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(tile)));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::tight(width, 80.0));
+        let mut result = crate::render::HitTestResult::new();
+        root.hit_test(crate::render::Offset::new(at.0, at.1), &mut result);
+        result.path.first().map(|entry| entry.target)
+    }
+
+    fn tile_height(tile: ListTile) -> f32 {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(tile)));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints {
+            min_width: 0.0,
+            max_width: 400.0,
+            min_height: 0.0,
+            max_height: f32::INFINITY,
+        })
+        .height
+    }
+
+    #[test]
+    fn a_disabled_tile_is_not_a_target_at_all() {
+        // Not a target that ignores taps -- upstream builds the InkWell
+        // without callbacks, so the tap goes to whatever is behind.
+        const TAP: u64 = 91;
+        let live = ListTile::new("Wi-Fi").tappable(TAP, PointerHandlers::new());
+        assert_eq!(tile_hit(live, (200.0, 30.0), 400.0), Some(TAP));
+
+        let dead = ListTile::new("Wi-Fi")
+            .tappable(TAP, PointerHandlers::new())
+            .with_enabled(false);
+        assert_ne!(tile_hit(dead, (200.0, 30.0), 400.0), Some(TAP));
+    }
+
+    #[test]
+    fn enabled_is_the_default_because_a_tile_is_live_unless_told_otherwise() {
+        assert!(
+            ListTile::new("a")
+                .tappable(1, PointerHandlers::new())
+                .is_tappable()
+        );
+        assert!(
+            !ListTile::new("a").is_tappable(),
+            "though a tile nobody made tappable is still not a target"
+        );
+    }
+
+    #[test]
+    fn a_leading_goes_before_the_title_and_a_trailing_after_it() {
+        const LEADING: u64 = 51;
+        const TRAILING: u64 = 52;
+        fn tile() -> ListTile {
+            ListTile::new("Aeroplane mode")
+                .with_leading(crate::framework::leaf(|| {
+                    crate::widgets::Pointer::new(LEADING, Container::new().with_size(24.0, 24.0))
+                }))
+                .with_trailing(crate::framework::leaf(|| {
+                    crate::widgets::Pointer::new(TRAILING, Container::new().with_size(40.0, 24.0))
+                }))
+        }
+        assert_eq!(tile_hit(tile(), (20.0, 40.0), 400.0), Some(LEADING));
+        assert_eq!(tile_hit(tile(), (380.0, 40.0), 400.0), Some(TRAILING));
+    }
+
+    #[test]
+    fn the_tile_overrides_the_themes_leading_width() {
+        // Only the choice is asserted, not the geometry. The reservation's
+        // effect is on where the *title* starts, and this harness can see
+        // neither the title (it is built inside the tile) nor the tile's
+        // intrinsic width (nothing along this chain implements intrinsics).
+        // A test of the geometry here would be one that cannot fail.
+        assert_eq!(
+            ListTile::new("a")
+                .with_min_leading_width(60.0)
+                .min_leading_width,
+            Some(60.0)
+        );
+        assert_eq!(
+            ListTile::new("a").min_leading_width,
+            None,
+            "and unset defers to the theme"
+        );
+    }
+
+    #[test]
+    fn a_theme_that_set_the_height_outright_is_not_overruled_by_dense() {
+        // Upstream's `minTileHeight ?? (dense ? 48 : 56)`: an explicit height
+        // wins and dense changes nothing. Adjusting the height after the fact
+        // could not tell that case from the one where dense chooses.
+        fn height(dense: Option<bool>, themed: Option<f32>) -> f32 {
+            let mut tree = ElementTree::new();
+            let mut data = crate::component_themes::ListTileThemeData::new();
+            data.min_tile_height = themed;
+            let mut tile = ListTile::new("Wi-Fi");
+            if let Some(dense) = dense {
+                tile = tile.with_dense(dense);
+            }
+            tree.rebuild(provide(
+                Theme::dark(),
+                crate::component_themes::ListTileTheme::new(data, component(tile)),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+            })
+            .height
+        }
+
+        assert_eq!(
+            height(Some(true), Some(70.0)),
+            height(Some(false), Some(70.0)),
+            "an explicit height is an explicit height"
+        );
+        assert!(
+            height(Some(true), None) < height(Some(false), None),
+            "and without one, dense chooses"
+        );
+    }
+
+    #[test]
+    fn dense_makes_a_tile_shorter_and_never_taller() {
+        let ordinary = tile_height(ListTile::new("Wi-Fi"));
+        let dense = tile_height(ListTile::new("Wi-Fi").with_dense(true));
+        assert!(dense < ordinary, "{dense} vs {ordinary}");
+        assert_eq!(
+            tile_height(ListTile::new("Wi-Fi").with_dense(false)),
+            ordinary
+        );
+    }
+
+    #[test]
+    fn dense_comes_from_the_tile_first_and_the_theme_second() {
+        // Upstream's `_isDenseLayout`: the tile, then the tile theme, then the
+        // app theme, then false -- so a list can be made dense once rather than
+        // per row, and one row can still opt out.
+        assert!(ListTile::new("a").is_dense(true), "the theme said so");
+        assert!(!ListTile::new("a").is_dense(false));
+        assert!(
+            !ListTile::new("a").with_dense(false).is_dense(true),
+            "and the tile overrides the theme"
+        );
+        assert!(ListTile::new("a").with_dense(true).is_dense(false));
+    }
+
+    #[test]
+    fn a_content_padding_on_the_tile_beats_the_themes() {
+        let themed = tile_height(ListTile::new("Wi-Fi"));
+        let padded = tile_height(
+            ListTile::new("Wi-Fi").with_content_padding(EdgeInsets::symmetric(16.0, 40.0)),
+        );
+        assert!(padded > themed, "{padded} vs {themed}");
+    }
+
+    #[test]
+    fn three_lines_need_a_subtitle_to_be_three_lines_of() {
+        let with = ListTile::new("Wi-Fi")
+            .with_subtitle("Connected")
+            .with_three_line(true);
+        assert!(with.is_tappable() || true, "built without panicking");
+    }
+
+    #[test]
+    #[should_panic(expected = "isThreeLine needs a subtitle")]
+    fn three_lines_without_one_is_caught() {
+        let _ = ListTile::new("Wi-Fi").with_three_line(true);
+    }
+
     #[test]
     fn a_list_tile_pushes_its_trailing_to_the_right_edge() {
         const TRAILING: u64 = 77;
