@@ -104,6 +104,7 @@ pub mod overlay;
 pub mod overscroll_indicator;
 pub mod page_storage;
 pub mod page_transitions_builder;
+pub mod page_transitions_theme;
 pub mod page_view;
 pub mod painting;
 pub mod physics;

@@ -184,6 +184,7 @@ if (enable_unittests) {
       "rustflutter/src/overscroll_indicator.rs",
       "rustflutter/src/page_storage.rs",
       "rustflutter/src/page_transitions_builder.rs",
+      "rustflutter/src/page_transitions_theme.rs",
       "rustflutter/src/page_view.rs",
       "rustflutter/src/painting.rs",
       "rustflutter/src/physics.rs",

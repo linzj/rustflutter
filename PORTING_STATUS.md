@@ -164,6 +164,62 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 快照是一张照片,里面动着的东西就不动了(2026-08-20)
+
+新模块 `page_transitions_theme.rs`,补齐页面转场这一族:`FadeForwardsPageTransitionsBuilder`、
+`ZoomPageTransitionsBuilder`、`PageTransitionsTheme`(`page_transitions_theme.dart`),以及
+`PredictiveBackPageTransitionsBuilder`、`PredictiveBackFullscreenPageTransitionsBuilder`。**第 55 轮从抽
+象基类和 Android 两个老答案开的头,这一轮把它收完。** 覆盖率 1762/1888(93.3%)。测试 3203。
+
+**`FadeForwards` 的时长带着这个移植至今找到的第三处「我们是肉眼调的」,而且是最直白的一处:**
+
+> Eyeballed on a physical Pixel 9 running Android 16. This does not match the actual value used by
+> native Android, which is 800ms, because native Android is using Material 3 Expressive springs that
+> are not currently supported by Flutter. So for now at least, this is an approximation.
+
+**它说出了自己不是的那个数(800ms)、说出了为什么不能是那个数、还说了这个差距是暂时的。** 对比第 54 轮那
+两处越界的常量:那里承认了不解,但说不出正确答案本该是什么。回归行把 450 和 800 都钉住,并断言两者不
+等——**这条断言的用处就是,哪天 Flutter 支持了那种弹簧,它会红。**
+
+而 `backgroundColor` 存在的理由很朴素:**一页在淡出、另一页在淡入,中间有一刻两页都不是不透明的**,背后
+没有颜色的话,读者看穿过去是空的。
+
+---
+
+**`ZoomPageTransitionsBuilder` 的 `allowSnapshotting`,上游把代价和好处写得一样直白:** 打开时,「进出路
+由上正在跑的动画,可能看上去是冻住的——除非它是 hero 动画或者画在另一个 overlay 上的东西」。
+
+**这就是快照:一张照片,而里面动着的东西就不动了。** 交换的是一次光栅化,对上一整棵子树在转场的每一帧重
+绘;对多数页面,照片赢。
+
+而 `allowEnterRouteSnapshotting` 是**单独一个开关**,理由说得通:**一个读者正要去操作的页面被冻住,比一
+个他正在离开的页面被冻住更糟。**
+
+---
+
+**`PageTransitionsTheme` 默认表里有一件事值得看:它根本没有 Fuchsia 这一项**,而查表时是**回退**而不是报
+错——回退到 zoom。**一个新平台、或者一个应用故意没配的平台,拿到的是一个合理的东西而不是什么都没有;而
+zoom 是那个中立的选择,它不属于任何一个平台。**
+
+**而 `operator ==` 那里的 `_all` 有一句解释自己的注释**:把 builders 映射成「每个平台一个」的列表再比。
+**直接比两个 map 比的是它们的键集;真正要紧的是两个主题对每个平台的回答是否一样。** 一个列了四个平台的
+主题和一个列了六个的,完全可能是同一个主题——回归行正是这么构造的。
+
+---
+
+**预测式返回那两个类,唯一值得读的决定是:它只在真的有手势时才跑。** 按钮按下或者程序调用 pop,退回到
+`FadeForwards`。
+
+**而这不是保守,是对的:「预测式」的意思就是这个动画在跟着一次还没结束的拖动;按钮按下时没有东西可
+跟。** 照跑不误的话,那是一个没有输入在驱动的形状。
+
+**而全屏那个和它的区别只有一处:回退到的是 zoom 而不是 fade-forwards。** 一个没有手势、直接来的全屏路
+由,正是 zoom 本来就是为它写的那种情况。
+
+验证:`cargo test --lib` 3203 绿,GN `rustflutter_unittests` 3203 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1762 accounted / 126 MISSING(93.3%)。
+
 ### 被选中的那一项落在按钮上(2026-08-20)
 
 新模块 `dropdown.rs`,一次收掉三个文件七个类:`DropdownMenuItem`、
