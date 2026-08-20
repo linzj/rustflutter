@@ -205,7 +205,6 @@ pub fn overlay(
     match demo.slug {
         "dialog" if state.demo.dialog_open => Some(dialog_demo::dialog_overlay(state, handle)),
         "bottom-sheet" if state.demo.sheet_open => Some(bottom_sheet_demo::sheet_overlay(handle)),
-        "snackbars" if state.demo.snackbar_open => Some(snackbar_demo::snackbar_overlay(handle)),
         _ => None,
     }
 }

@@ -954,6 +954,19 @@ impl Snackbar {
         });
         self
     }
+
+    /// The action's handler as a closure, for one that has to carry something.
+    ///
+    /// [`Snackbar::wired`] takes a `fn` and not a closure, which is what makes
+    /// it short: there is nothing to capture and nothing to allocate. That is
+    /// the right trade for an action that flips one named field and the wrong
+    /// one for an action that has to reach a `Messenger` -- upstream's own
+    /// `SnackBarAction.onPressed` is an arbitrary callback. The same pair
+    /// [`Switch::wired`] and [`Switch::with_handlers`] make.
+    pub fn on_action(mut self, action: impl Fn() + 'static) -> Self {
+        self.handlers = PointerHandlers::new().with_tap(move |_| action());
+        self
+    }
 }
 
 impl Component for Snackbar {

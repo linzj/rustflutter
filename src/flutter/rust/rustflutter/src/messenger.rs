@@ -35,9 +35,74 @@ struct MessengerInner {
     /// The widgets, in the same order as the queue. Kept apart for the same
     /// reason the overlay keeps its builders apart from `OverlayState`: the
     /// queue can decide everything it decides without seeing a widget.
-    queue: Vec<MessageBuilder>,
+    queue: Vec<(SnackBarDisplay, MessageBuilder)>,
     /// The overlay entry the front of the queue is currently occupying.
     showing: Option<u64>,
+    /// When the bar on screen went up, on the frame clock. `None` until the
+    /// first `advance` after it did -- upstream starts its timer once the
+    /// entry animation has completed, and with no entry animation here the
+    /// first frame the bar is up is that moment.
+    shown_micros: Option<i64>,
+}
+
+/// A snack bar's own display rules. Upstream's `SnackBar.duration` and
+/// `SnackBar.persist`.
+///
+/// # A bar with an action does not time out
+///
+/// Upstream's constructor ends `persist = persist ?? action != null`, and the
+/// doc says why: a persisting bar "remains visible even after the timeout,
+/// until the user taps the action button or the close icon". A message the
+/// reader is being asked to *act* on must not leave while they are reading it,
+/// because leaving takes the action with it.
+///
+/// So [`SnackBarDisplay::with_action`] is what a caller uses when the bar has
+/// one, and it turns persistence on -- rather than the caller remembering to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnackBarDisplay {
+    /// Upstream's `_snackBarDisplayDuration`, four seconds.
+    pub duration_micros: i64,
+    pub persist: bool,
+}
+
+impl SnackBarDisplay {
+    /// Upstream's `_snackBarDisplayDuration`.
+    pub const DEFAULT_DURATION_MICROS: i64 = 4_000_000;
+
+    /// Four seconds, and it times out. Upstream's defaults for a bar with no
+    /// action.
+    pub fn new() -> SnackBarDisplay {
+        SnackBarDisplay {
+            duration_micros: SnackBarDisplay::DEFAULT_DURATION_MICROS,
+            persist: false,
+        }
+    }
+
+    /// A bar with an action, which therefore persists.
+    pub fn with_action() -> SnackBarDisplay {
+        SnackBarDisplay {
+            persist: true,
+            ..SnackBarDisplay::new()
+        }
+    }
+
+    pub fn with_duration_micros(mut self, micros: i64) -> Self {
+        self.duration_micros = micros;
+        self
+    }
+
+    /// Upstream's explicit `persist:`, which overrides the action rule in
+    /// either direction.
+    pub fn with_persist(mut self, persist: bool) -> Self {
+        self.persist = persist;
+        self
+    }
+}
+
+impl Default for SnackBarDisplay {
+    fn default() -> SnackBarDisplay {
+        SnackBarDisplay::new()
+    }
 }
 
 /// A live `ScaffoldMessenger`.
@@ -61,22 +126,71 @@ impl Messenger {
                 state,
                 queue: Vec::new(),
                 showing: None,
+                shown_micros: None,
             })),
             overlay,
         }
     }
 
-    /// Upstream `ScaffoldMessengerState.showSnackBar`.
+    /// Upstream `ScaffoldMessengerState.showSnackBar`, with the bar's own
+    /// display rules.
     ///
     /// Queued rather than shown when one is already up: two messages at once
     /// would mean one of them was not read.
-    pub fn show_snack_bar(&self, bar: impl Fn() -> AnyWidget + 'static) {
+    pub fn show_snack_bar_with(
+        &self,
+        display: SnackBarDisplay,
+        bar: impl Fn() -> AnyWidget + 'static,
+    ) {
         {
             let inner = &mut *self.inner.borrow_mut();
             inner.state.show_snack_bar();
-            inner.queue.push(Rc::new(bar));
+            inner.queue.push((display, Rc::new(bar)));
         }
         self.present();
+    }
+
+    /// A snack bar with upstream's defaults: four seconds, and no action, so it
+    /// times out.
+    pub fn show_snack_bar(&self, bar: impl Fn() -> AnyWidget + 'static) {
+        self.show_snack_bar_with(SnackBarDisplay::new(), bar)
+    }
+
+    /// Upstream's `_snackBarTimer`, on the frame clock: the bar on screen goes
+    /// once its `duration` is up.
+    ///
+    /// Answers whether another frame is wanted, so a caller can stop asking
+    /// when nothing is counting down.
+    ///
+    /// A **persisting** bar is not counted. That is upstream's
+    /// `if (snackBar.persist) return;` inside the timer's callback -- the timer
+    /// still runs, and it still declines to hide the bar. See
+    /// [`SnackBarDisplay::persist`], which defaults to *true* for a bar with an
+    /// action.
+    pub fn advance(&self, frame_time_micros: i64) -> bool {
+        let expired = {
+            let inner = &mut *self.inner.borrow_mut();
+            let Some(display) = inner.queue.first().map(|(display, _)| *display) else {
+                inner.shown_micros = None;
+                return false;
+            };
+            if inner.showing.is_none() {
+                return false;
+            }
+            let shown = *inner.shown_micros.get_or_insert(frame_time_micros);
+            if display.persist {
+                // Upstream's timer is armed either way; it is the callback that
+                // declines. Modelled the same way so a bar that is later made
+                // non-persisting does not get a fresh four seconds.
+                return false;
+            }
+            frame_time_micros - shown >= display.duration_micros
+        };
+        if expired {
+            self.hide_current(SnackBarClosedReason::Timeout);
+            return false;
+        }
+        true
     }
 
     /// Upstream `hideCurrentSnackBar`: close the front one politely and let the
@@ -96,6 +210,7 @@ impl Messenger {
             inner.state.hide_current_snack_bar(reason);
             inner.state.remove_current_snack_bar(reason);
             inner.queue.remove(0);
+            inner.shown_micros = None;
             inner.showing.take()
         };
         if let Some(entry) = hidden {
@@ -129,6 +244,7 @@ impl Messenger {
             inner
                 .state
                 .remove_current_snack_bar(SnackBarClosedReason::Remove);
+            inner.shown_micros = None;
             inner.showing.take()
         };
         if let Some(entry) = hidden {
@@ -165,7 +281,7 @@ impl Messenger {
                 return;
             }
             match inner.queue.first() {
-                Some(builder) => Rc::clone(builder),
+                Some((_, builder)) => Rc::clone(builder),
                 None => return,
             }
         };
@@ -404,5 +520,113 @@ mod tests {
             4_000_000,
             "long enough to read a sentence"
         );
+    }
+
+    // -- The timer, and the rule that suspends it ---------------------------------
+
+    #[test]
+    fn a_bar_with_no_action_leaves_after_four_seconds() {
+        let (tree, messenger) = mounted();
+        let before = messenger.overlay_entries();
+        messenger.show_snack_bar(bar);
+        assert_eq!(messenger.overlay_entries(), before + 1);
+
+        // The first advance is when the clock is first known -- upstream starts
+        // its timer once the entry animation completes, and there is none here.
+        assert!(messenger.advance(1_000_000), "counting");
+        assert!(
+            messenger.advance(1_000_000 + SnackBarDisplay::DEFAULT_DURATION_MICROS - 1),
+            "not yet"
+        );
+        assert!(!messenger.advance(1_000_000 + SnackBarDisplay::DEFAULT_DURATION_MICROS));
+        assert_eq!(
+            messenger.overlay_entries(),
+            before,
+            "and it is off the screen"
+        );
+        drop(tree);
+    }
+
+    #[test]
+    fn a_bar_with_an_action_stays_put() {
+        // Upstream's `persist = persist ?? action != null`, and its reason: a
+        // message the reader is being asked to act on must not leave while they
+        // are reading it, because leaving takes the action with it.
+        let (tree, messenger) = mounted();
+        let before = messenger.overlay_entries();
+        messenger.show_snack_bar_with(SnackBarDisplay::with_action(), bar);
+
+        messenger.advance(1_000_000);
+        messenger.advance(1_000_000 + SnackBarDisplay::DEFAULT_DURATION_MICROS * 10);
+        assert_eq!(
+            messenger.overlay_entries(),
+            before + 1,
+            "ten times its duration later it is still there"
+        );
+        assert!(messenger.is_showing());
+        drop(tree);
+    }
+
+    #[test]
+    fn persist_can_be_said_either_way() {
+        // Upstream's explicit `persist:` overrides the action rule in both
+        // directions, so a bar with an action can still be told to go.
+        assert!(!SnackBarDisplay::with_action().with_persist(false).persist);
+        assert!(SnackBarDisplay::new().with_persist(true).persist);
+    }
+
+    #[test]
+    fn the_next_bar_gets_its_own_four_seconds() {
+        // The clock restarts when the queue moves on. A second bar that
+        // inherited the first one's start would flash past.
+        let (tree, messenger) = mounted();
+        messenger.show_snack_bar(bar);
+        messenger.show_snack_bar(bar);
+
+        messenger.advance(0);
+        assert!(!messenger.advance(SnackBarDisplay::DEFAULT_DURATION_MICROS));
+        assert!(messenger.is_showing(), "the second one took its place");
+
+        // Right after the swap the second bar has not started counting.
+        let at = SnackBarDisplay::DEFAULT_DURATION_MICROS;
+        assert!(messenger.advance(at), "counting again from here");
+        assert!(
+            messenger.advance(at + SnackBarDisplay::DEFAULT_DURATION_MICROS - 1),
+            "still up, on its own clock rather than the first one's"
+        );
+        assert!(!messenger.advance(at + SnackBarDisplay::DEFAULT_DURATION_MICROS));
+        assert!(!messenger.is_showing());
+        drop(tree);
+    }
+
+    #[test]
+    fn a_shorter_duration_is_honoured() {
+        let (tree, messenger) = mounted();
+        messenger.show_snack_bar_with(SnackBarDisplay::new().with_duration_micros(1_000_000), bar);
+        messenger.advance(0);
+        assert!(messenger.advance(999_999));
+        assert!(!messenger.advance(1_000_000));
+        assert!(!messenger.is_showing());
+        drop(tree);
+    }
+
+    #[test]
+    fn advancing_with_nothing_up_asks_for_no_more_frames() {
+        let (tree, messenger) = mounted();
+        assert!(!messenger.advance(1_000_000));
+        drop(tree);
+    }
+
+    #[test]
+    fn a_bar_hidden_by_hand_does_not_also_time_out() {
+        let (tree, messenger) = mounted();
+        let before = messenger.overlay_entries();
+        messenger.show_snack_bar(bar);
+        messenger.advance(0);
+        assert!(messenger.hide_current(SnackBarClosedReason::Action));
+        assert_eq!(messenger.overlay_entries(), before);
+        assert!(!messenger.advance(SnackBarDisplay::DEFAULT_DURATION_MICROS * 2));
+        assert_eq!(messenger.overlay_entries(), before, "and nothing came back");
+        drop(tree);
     }
 }

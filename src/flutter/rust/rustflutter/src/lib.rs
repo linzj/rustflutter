@@ -302,7 +302,7 @@ pub use menu::{
     CheckedPopupMenuItem, PopupMenu, PopupMenuDivider, PopupMenuEntry, PopupMenuItem,
     PopupMenuPosition, popup_menu_offset,
 };
-pub use messenger::Messenger;
+pub use messenger::{Messenger, SnackBarDisplay};
 pub use navigation::{
     Motion, Navigator, Presentation, Route, RouteArgs, Transition, TransitionOffsets,
 };
