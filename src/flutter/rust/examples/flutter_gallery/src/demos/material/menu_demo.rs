@@ -17,12 +17,18 @@
 //! * `MenuDemo.build`'s `Scaffold`/`AppBar` (title "Menu") and its centering
 //!   `Padding` are the demo page's own chrome now (`pages/demo.rs`); the
 //!   stage starts at the four items.
-//! * Upstream shows a menu as a route whose `RelativeRect` anchor is measured
-//!   from the button's render box. There is no route and no way to read a
-//!   sibling's rect at build time, so an open menu is stacked over the stage
-//!   at a fixed offset next to its row ([`menu_position`]) rather than at the
-//!   button's measured position, and `menu.rs`'s `popup_menu_offset` fitting
-//!   math has no anchor rect to work from.
+//! * **The menus open at their buttons' measured positions.** Upstream shows a
+//!   menu as a route whose `RelativeRect` anchor is measured from the button's
+//!   render box, and [`rustflutter::PopupMenuButton`] does the same: the button
+//!   records itself on an anchor, the menu goes into the application's overlay,
+//!   and `menu.rs`'s `popup_menu_offset` -- which fits the menu on screen -- is
+//!   handed the button's rectangle in the overlay's coordinates.
+//!
+//!   This paragraph used to say there was no route and no way to read a
+//!   sibling's rect at build time, so an open menu was stacked over the stage
+//!   at a fixed offset per row -- a table of 0, 56, 112 and 168 derived from
+//!   the rows' known heights -- and the fitting math had no anchor to work
+//!   from. The table is deleted.
 //! * The sectioned menu's items lead with icons upstream (`ListTile` children
 //!   with `Icons.visibility`/`person_add`/`link`/`delete`);
 //!   `PopupMenuItem` here carries a label only, so the icons are absent.
@@ -34,7 +40,10 @@
 use rustflutter::framework::BuildContext;
 use rustflutter::prelude::*;
 use rustflutter::render::StackPosition;
-use rustflutter::widgets::{Positioned, Stack};
+use rustflutter::widgets::Stack;
+
+use rustflutter::popup::{PopupMenuButton as LiveMenuButton, PopupMenuOpener};
+use rustflutter::{OverlayHandle, dismiss_topmost_modal};
 
 use crate::app::ids;
 
@@ -58,7 +67,10 @@ enum CheckedValue {
     Four,
 }
 
-/// Which of the four demos' menus is open, if any.
+/// Which of the four demos' menus a button opens.
+///
+/// It used to also be *which one is open*, kept in `MenuDemoState`, because the
+/// stage had to build the open menu itself. The overlay holds it now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpenMenu {
     Context,
@@ -72,7 +84,6 @@ enum OpenMenu {
 /// `_ChecklistMenuDemoState._checkedValues`.
 #[derive(Default)]
 struct MenuDemoState {
-    open: Option<OpenMenu>,
     snackbar: Option<String>,
     simple: SimpleValue,
     checked: [bool; 4],
@@ -156,49 +167,84 @@ impl StatefulComponent for MenuDemo {
         &self,
         state: &MenuDemoState,
         handle: StateHandle<MenuDemoState>,
-        _context: &mut BuildContext,
+        context: &mut BuildContext,
     ) -> AnyWidget {
         let base = ids::DEMO_LOCAL;
+        let overlay = OverlayHandle::of(context);
+        let simple = state.simple;
+        let checked = state.checked;
 
         // The four items, in upstream's configuration order: context menu,
         // sectioned menu, checklist menu, simple menu.
-        let context_item = component(
-            ListTile::new("An item with a context menu").with_trailing(component(
-                PopupMenuButton::new(base)
-                    .wired(handle.clone(), |s| s.open = Some(OpenMenu::Context)),
-            )),
+        //
+        // Each is a live `PopupMenuButton`: the trailing glyph (or, for the
+        // simple demo, the whole row) is its child, and the menu it opens is
+        // built where the button is -- which is what gives the menu the row's
+        // inherited theme and the anchor its position.
+        let context_item = anchored_menu(
+            overlay.clone(),
+            |open| {
+                component(ListTile::new("An item with a context menu").with_trailing(
+                    component(PopupMenuButton::new(base).on_press(open)),
+                ))
+            },
+            {
+                let handle = handle.clone();
+                move || open_menu(OpenMenu::Context, simple, checked, handle.clone())
+            },
         );
-        let sectioned_item = component(
-            ListTile::new("An item with a sectioned menu").with_trailing(component(
-                PopupMenuButton::new(base + 1)
-                    .wired(handle.clone(), |s| s.open = Some(OpenMenu::Sectioned)),
-            )),
+        let sectioned_item = anchored_menu(
+            overlay.clone(),
+            |open| {
+                component(ListTile::new("An item with a sectioned menu").with_trailing(
+                    component(PopupMenuButton::new(base + 1).on_press(open)),
+                ))
+            },
+            {
+                let handle = handle.clone();
+                move || open_menu(OpenMenu::Sectioned, simple, checked, handle.clone())
+            },
         );
-        let checklist_item = component(
-            ListTile::new("An item with a checklist menu").with_trailing(component(
-                PopupMenuButton::new(base + 2)
-                    .wired(handle.clone(), |s| s.open = Some(OpenMenu::Checklist)),
-            )),
+        let checklist_item = anchored_menu(
+            overlay.clone(),
+            |open| {
+                component(ListTile::new("An item with a checklist menu").with_trailing(
+                    component(PopupMenuButton::new(base + 2).on_press(open)),
+                ))
+            },
+            {
+                let handle = handle.clone();
+                move || open_menu(OpenMenu::Checklist, simple, checked, handle.clone())
+            },
         );
         // `_SimpleMenuDemo`: the whole list item is the button, its subtitle
         // the current value.
-        let simple_item = component(
-            PopupMenuButton::new(base + 3)
-                .with_child(component(
-                    ListTile::new("An item with a simple menu")
-                        .with_subtitle(simple_label(state.simple)),
-                ))
-                .wired(handle.clone(), |s| s.open = Some(OpenMenu::Simple)),
+        let simple_item = anchored_menu(
+            overlay.clone(),
+            move |open| {
+                component(
+                    PopupMenuButton::new(base + 3)
+                        .with_child(component(
+                            ListTile::new("An item with a simple menu")
+                                .with_subtitle(simple_label(simple)),
+                        ))
+                        .on_press(open),
+                )
+            },
+            {
+                let handle = handle.clone();
+                move || open_menu(OpenMenu::Simple, simple, checked, handle.clone())
+            },
         );
 
         let items = column(
             vec![context_item, sectioned_item, checklist_item, simple_item],
             0.0,
         );
-        // The stack needs some height of its own: an open menu hangs below
-        // its row, and the snackbar pins to the bottom edge. Upstream gets
-        // both from the screen; the stage is only as tall as its content
-        // otherwise.
+        // The stack needs some height of its own so the snackbar has an edge to
+        // pin to; upstream gets it from the screen. It used to also have to be
+        // tall enough for an open menu to hang into, which the overlay handles
+        // now.
         let base_layer = single(items, |inner| {
             Box::new(Container::new().with_height(360.0).with_child(inner))
         });
@@ -210,16 +256,6 @@ impl StatefulComponent for MenuDemo {
         let mut positions: Vec<Option<StackPosition>> = Vec::new();
         layers.push(base_layer);
         positions.push(None);
-        if let Some(open) = state.open {
-            // The route's barrier: a tap off the menu dismisses it without a
-            // selection.
-            layers.push(component(
-                Scrim::new(ids::SCRIM).wired(handle.clone(), |s| s.open = None),
-            ));
-            positions.push(Some(Positioned::fill()));
-            layers.push(open_menu(open, state, handle.clone()));
-            positions.push(Some(menu_position(open)));
-        }
         if let Some(message) = &state.snackbar {
             // Tap to dismiss; upstream's four-second timer has no clock here.
             layers.push(component(
@@ -247,45 +283,48 @@ impl StatefulComponent for MenuDemo {
     }
 }
 
-/// Where an open menu goes: next to the row that opened it, on the side its
-/// button is on.
+/// Builds a row and the menu it opens, wired together.
 ///
-/// Upstream anchors the route to the button's measured rect
-/// (`PopupMenuButtonState.showButtonMenu` builds a `RelativeRect` from the
-/// box's `localToGlobal`); a build here cannot read a sibling's rect, so the
-/// offsets are the rows' known geometry instead: the items are stacked from
-/// the top with no spacing, a one-line `ListTile` is about 56 tall and the
-/// simple item (with its subtitle) about 72.
-fn menu_position(menu: OpenMenu) -> StackPosition {
-    let top = match menu {
-        OpenMenu::Context => 0.0,
-        OpenMenu::Sectioned => 56.0,
-        OpenMenu::Checklist => 112.0,
-        OpenMenu::Simple => 168.0,
+/// The child is built *by* the caller and *inside* the menu button, which is
+/// the whole point: the menu is built where the button is, so it inherits the
+/// row's context, and the button records itself on the anchor the menu is
+/// placed against.
+///
+/// The opener is made fresh each build. That is safe because a menu's barrier
+/// covers the button that opened it -- there is no way to press it again while
+/// it is up -- and a selection closes the topmost modal rather than going back
+/// through the opener that happens to be current.
+fn anchored_menu(
+    overlay: Option<std::rc::Rc<OverlayHandle>>,
+    child: impl FnOnce(Box<dyn Fn()>) -> AnyWidget,
+    menu: impl Fn() -> AnyWidget + 'static,
+) -> AnyWidget {
+    let opener: std::rc::Rc<std::cell::RefCell<Option<PopupMenuOpener>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let press = {
+        let opener = std::rc::Rc::clone(&opener);
+        let overlay = overlay.clone();
+        Box::new(move || {
+            let (Some(overlay), Some(opener)) = (overlay.clone(), opener.borrow().clone()) else {
+                return;
+            };
+            opener.open(overlay);
+        }) as Box<dyn Fn()>
     };
-    match menu {
-        // The trailing buttons sit at the row's right edge; the menu grows
-        // left from it.
-        OpenMenu::Context | OpenMenu::Sectioned | OpenMenu::Checklist => StackPosition {
-            right: Some(16.0),
-            top: Some(top),
-            ..Default::default()
-        },
-        // The simple menu's button is the whole row; upstream aligns the menu
-        // over the item's center line with the current value highlighted.
-        OpenMenu::Simple => StackPosition {
-            left: Some(16.0),
-            top: Some(top),
-            ..Default::default()
-        },
-    }
+    let (widget, made) = LiveMenuButton::new(child(press), menu).build();
+    *opener.borrow_mut() = Some(made);
+    widget
 }
 
 /// The open menu itself, entries wired the way upstream's `onSelected` wires
 /// them: every selection closes the menu and shows the snackbar.
+/// Upstream builds `itemBuilder` once, when the route is pushed, so the values
+/// the menu shows are the ones that were current at the press. Passed by value
+/// for the same reason.
 fn open_menu(
     menu: OpenMenu,
-    state: &MenuDemoState,
+    simple: SimpleValue,
+    checked: [bool; 4],
     handle: StateHandle<MenuDemoState>,
 ) -> AnyWidget {
     let base = ids::DEMO_LOCAL + 10;
@@ -293,7 +332,6 @@ fn open_menu(
     let popup: AnyWidget = match menu {
         OpenMenu::Context => {
             let select = |s: &mut MenuDemoState, value: &'static str| {
-                s.open = None;
                 show_in_snackbar(s, format!("Selected: {value}"));
             };
             component(
@@ -318,7 +356,6 @@ fn open_menu(
         }
         OpenMenu::Sectioned => {
             let select = |s: &mut MenuDemoState, value: &'static str| {
-                s.open = None;
                 show_in_snackbar(s, format!("Selected: {value}"));
             };
             component(
@@ -346,10 +383,9 @@ fn open_menu(
             let select = |s: &mut MenuDemoState, value: SimpleValue| {
                 // `showAndSetMenuSelection`: the value first, then the snackbar.
                 s.simple = value;
-                s.open = None;
                 show_in_snackbar(s, format!("Selected: {}", simple_label(value)));
             };
-            let mut popup = PopupMenu::new().with_initial_value(state.simple);
+            let mut popup = PopupMenu::new().with_initial_value(simple);
             for (offset, value) in [SimpleValue::One, SimpleValue::Two, SimpleValue::Three]
                 .into_iter()
                 .enumerate()
@@ -368,34 +404,100 @@ fn open_menu(
                     base + 10 + offset as u64,
                     checked_label(value),
                     value,
-                    state.checked[offset],
+                    checked[offset],
                 )
                 // Upstream's item two is `enabled: false`.
                 .with_enabled(value != CheckedValue::Two)
-                .wired(handle.clone(), |s, value| {
-                    s.open = None;
-                    check_toggled(s, value);
-                });
+                .wired(handle.clone(), |s, value| check_toggled(s, value));
                 popup = popup.push(item);
             }
             component(popup)
         }
     };
 
-    popup
+    // Upstream's `onSelected` pops the menu route; here every item closes the
+    // topmost modal, which is this menu. Going through the opener instead would
+    // mean holding on to whichever one happened to be current when the item was
+    // built, and the menu is the thing on top by construction.
+    close_on_select(popup)
+}
+
+/// Wraps a menu so that a tap anywhere in it closes it, after its own handler
+/// has run. Upstream's `Navigator.pop` at the end of `onSelected`.
+fn close_on_select(popup: AnyWidget) -> AnyWidget {
+    single(popup, |inner| {
+        Box::new(
+            rustflutter::widgets::Pointer::new(ids::SCRIM + 1, inner).with_handlers(
+                rustflutter::gestures::PointerHandlers::new().with_tap(|_| {
+                    dismiss_topmost_modal();
+                }),
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustflutter::engine::Rect;
+    use rustflutter::render::{EdgeInsets, Size};
+    use rustflutter::TextDirection;
 
     #[test]
     fn the_initial_selection_matches_upstream_init_state() {
         let state = MenuDemo.initial_state();
         assert_eq!(state.simple, SimpleValue::Two);
         assert_eq!(state.checked, [false, false, true, false]);
-        assert!(state.open.is_none());
         assert!(state.snackbar.is_none());
+    }
+
+    #[test]
+    fn a_menu_goes_where_its_button_is_and_not_at_a_table_of_offsets() {
+        // The plan's first named symptom, and the thing this demo was chosen to
+        // validate: `popup_menu_offset` wants the button's rectangle in the
+        // overlay's coordinates, and until L0 nothing could produce one. The
+        // demo used to substitute a table -- 0, 56, 112, 168 -- derived from the
+        // rows' known heights.
+        //
+        // Two rows at different heights get menus at different places, and the
+        // difference is the difference between the rows.
+        let overlay = Size::new(800.0, 600.0);
+        let menu = Size::new(200.0, 120.0);
+        let first = rustflutter::popup::menu_offset_for(
+            overlay,
+            Rect::xywh(740.0, 8.0, 40.0, 48.0),
+            menu,
+            EdgeInsets::ZERO,
+            TextDirection::Ltr,
+        );
+        let third = rustflutter::popup::menu_offset_for(
+            overlay,
+            Rect::xywh(740.0, 120.0, 40.0, 48.0),
+            menu,
+            EdgeInsets::ZERO,
+            TextDirection::Ltr,
+        );
+        assert_eq!(third.dy - first.dy, 112.0, "the rows are 112 apart");
+        assert_eq!(first.dx, third.dx, "and in the same column");
+    }
+
+    #[test]
+    fn a_menu_near_the_bottom_is_pulled_back_on_screen() {
+        // The fitting math the old shape could not reach at all: a fixed
+        // offset table has no idea where the screen ends.
+        let overlay = Size::new(800.0, 600.0);
+        let menu = Size::new(200.0, 200.0);
+        let at = rustflutter::popup::menu_offset_for(
+            overlay,
+            Rect::xywh(740.0, 560.0, 40.0, 48.0),
+            menu,
+            EdgeInsets::ZERO,
+            TextDirection::Ltr,
+        );
+        assert!(
+            at.dy + menu.height <= overlay.height,
+            "the menu fits on the screen: {at:?}"
+        );
     }
 
     #[test]

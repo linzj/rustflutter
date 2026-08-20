@@ -580,6 +580,20 @@ impl PopupMenuButton {
         }
         self
     }
+
+    /// The tap as a closure, for an opener that has to be carried.
+    ///
+    /// [`PopupMenuButton::wired`] takes a `fn`, which cannot capture -- and
+    /// what a live menu needs captured is a
+    /// [`crate::popup::PopupMenuOpener`] and the overlay to put it in. The same
+    /// pair `Switch::wired` and `Switch::with_handlers` make, for the same
+    /// reason.
+    pub fn on_press(mut self, open: impl Fn() + 'static) -> Self {
+        if self.enabled {
+            self.handlers = PointerHandlers::new().with_tap(move |_| open());
+        }
+        self
+    }
 }
 
 impl Component for PopupMenuButton {
