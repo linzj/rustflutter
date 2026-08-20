@@ -164,6 +164,62 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 屏幕录制没法只录一半(2026-08-20)
+
+两个新模块 `sensitive_content.rs`(`SensitiveContentHost`、`SensitiveContent`)与
+`scroll_aware_image_provider.rs`(`ScrollAwareImageProvider`)。主题是**「知道什么时候不做」**:别把这块
+内容录进屏幕录像;别在列表飞速滑过时去解码这张图。覆盖率 1731/1888(91.7%)。测试 3111。
+
+**`_ContentSensitivitySetting` 的聚合规则是一个严格优先级,不是投票:** 树里任何一个 `sensitive` 的
+widget,就让整个窗口 sensitive,不管屏幕上还有什么别的。
+
+**而这是这个问题唯一可能正确的规则,因为屏幕录制对一个窗口是全有或全无的——没有办法只录一半。** 于是任
+何一个说「这块不行」的 widget,必须压过每一个说「这块没事」的。回归行拿二十个 `notSensitive` 加一个
+`sensitive`,确认它以一敌二十一。
+
+**计数存在,是因为 widget 会来会走;而答案是一个最大值,永远不是一个和。**
+
+其余几条:
+
+* **「没人在问」和「所有人都说不用」是两回事:** 计数全为零时返回 `null`,而 `null` 会让 host 把平台**放
+  回它原来的样子**——那个 fallback 是**第一个 widget 注册时**抓下来的,是嵌入层或开发者本来设的值(在
+  Android API 35 上,没人说过话的话就是 auto-sensitive)。**是恢复,不是重置成一个默认值。** 而它只抓一
+  次,后来的注册不会覆盖它。
+* **平台支不支持这件事,只问一次并记住;而问的时候抛了 `PlatformException`,记成「不支持」**并报错。**没
+  能查清楚平台能不能做某件事,不是假定它能做的理由**——往那个方向猜错,代价是读者以为藏起来了的内容出现
+  在录像里。
+* **等级没变就什么都不说。** 每次 widget build 都发一条 channel 消息,就是每帧一条。
+* **计数变成负数时,上游报的是一个带「Please file an issue」的错误而不是断言**——那是框架自己把注册和注销
+  弄丢了步,不是调用方的错。
+
+**还有一件事值得记下来:上游根本没有导出这个文件。** 类是 `@visibleForTesting`,上面挂着一条 TODO:
+「This is not ready for production」,以及一个「内容在 media projection 期间仍会泄露」的 issue。**这一
+版是把已经想清楚的那部分安排移过来,平台那一侧还没有。** 文件头写明了这一点。
+
+---
+
+**`ScrollAwareImageProvider` 整个类是四个检查,而顺序就是设计。**
+
+**缓存检查排在滚动检查之前,也排在「context 还在不在」之前,而上游把两个理由都写了:**
+
+* 告诉被包住的 provider「这张图已经在缓存里」,会更新缓存的 LRU 信息——**「Even though we never showed
+  the image, it was still touched more recently.」**
+* 而排在滚动检查之前,是因为**字节已经在那儿了,就不管列表飞得多快都直接画出来**:纹理内存没有额外要分配
+  的,**等下去省不到任何东西。**
+
+**这正是这个类的要点:推迟的是「工作」,不是「显示」。**
+
+其余三步:
+
+* **context 离开了树,就整个结束,而且流永远不会被标记完成**——监听者不会被通知,因为已经没有人在等了。
+* **滚得太快,不是放弃也不是照做,而是排到下一帧帧末重来。**
+* **而「重来」是从第一个检查重来,不是从滚动检查接着走。** 因为下一帧时这张图可能已经从别处进了缓存,或
+  者 context 已经离开了树——**从中间接着走会把这两种情况都漏掉。** 回归行把这两条分别构造了一遍。
+
+验证:`cargo test --lib` 3111 绿,GN `rustflutter_unittests` 3111 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1731 accounted / 157 MISSING(91.7%)。
+
 ### 竖直在外、水平在内,而这个顺序不是随手定的(2026-08-20)
 
 新模块 `scrollable.rs`,补上 `scrollable.dart` 的三个状态类:`ScrollableState`、
