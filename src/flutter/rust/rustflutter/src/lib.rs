@@ -134,6 +134,7 @@ pub mod scrollable;
 pub mod scrollable_helpers;
 pub mod scrollbar;
 pub mod scrolling;
+pub mod search_anchor;
 pub mod selectable_region;
 pub mod selection;
 pub mod selection_container;

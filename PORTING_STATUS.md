@@ -164,6 +164,45 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 附着在别的东西上的那个,得在那东西移动时走开(2026-08-20)
+
+新模块 `search_anchor.rs`,收掉 `search_anchor.dart` 的 `SearchAnchor`、`SearchController`、
+`SearchBar`,以及 `search.dart` 的 `SearchDelegate`。覆盖率 1772/1888(93.9%)。测试 3229。
+
+**搜索视图是一条路由。** `_openView` 推一条 `_SearchViewRoute`,`_closeView` pop 掉 navigator。**于是系统
+返回手势关掉搜索,不需要任何人去写这件事——因为「搜索」本来就是一个你去到的地方。**
+
+**而上游文档里那条不对称,理由值得留:**
+
+> The search view route will be popped if the window size is changed and the search view route is not
+> in full-screen mode. However, if the search view route is in full-screen mode, changing the window
+> size, such as rotating a mobile device, will not close the search view.
+
+**附着在别的东西上的那个,得在那东西移动时走开;没有附着的那个,不用。** 一个 docked 的视图是相对一个锚点
+widget 摆的,而那个 widget 在屏幕上的位置刚刚变了,它已经没有地方可待;**一个全屏视图从来就没锚在什么上
+面,转屏只是把它重新布局一遍。**
+
+**`SearchController` 继承自 `TextEditingController`**——一个对象同时握着查询文本和视图的开合状态。它们为
+什么该在一起,在 `closeView` 里看得见:**先设文本,再 pop**,顺序如此,于是视图淡出时锚点上的那个条已经
+读的是被选中的文本了。**两个对象会给你一帧的旧查询。**
+
+而 `_detach` 上的守卫是熟悉的那种形状:**一个已经交给新锚点的 controller,不该被旧锚点的销毁摘掉。**
+
+---
+
+**`SearchDelegate` 是更老的那套,而它的全部就是两页:打字时是建议,提交后是结果。** 有意思的是**两页之间
+的移动是显式的**——上游对 `buildSuggestions` 的指引写着:点中一条建议时,应该把 `query` 设成它,**然后**
+调 `showResults`。
+
+**选一条建议不是一次搜索;那是把框填好,然后再搜索。** 回归行把这两步分开钉住了:只改 `query` 不会翻页。
+
+还有一条小的:**锚点的 builder 如果返回的是一个 Icon 或者别的点不动的东西,调用方就不必显式调
+`openView`**——锚点会替它接上点击。
+
+验证:`cargo test --lib` 3229 绿,GN `rustflutter_unittests` 3229 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1772 accounted / 116 MISSING(93.9%)。
+
 ### 一个写成乘法的时长(2026-08-20)
 
 新模块 `progress_indicator.rs`,收掉 `progress_indicator.dart` 四个类(`ProgressIndicator`、
