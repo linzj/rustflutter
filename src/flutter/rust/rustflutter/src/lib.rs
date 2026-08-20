@@ -121,6 +121,7 @@ pub mod theme;
 pub mod ticker;
 pub mod transitions;
 pub mod two_dimensional;
+pub mod undo_history;
 pub mod widget_inspector;
 pub mod widget_state;
 pub mod widgets;
