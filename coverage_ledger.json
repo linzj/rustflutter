@@ -1283,10 +1283,6 @@
       "rust": "P7（引擎通道位）",
       "note": "随 editable"
     },
-    "AutomaticKeepAlive": {
-      "rust": "离窗即弃（记录在案分歧）",
-      "note": "sliver 侧自陈"
-    },
     "AnnotatedRegion": {
       "rust": "P4 余量：注解区域查找",
       "note": "随 AnnotatedRegionLayer"

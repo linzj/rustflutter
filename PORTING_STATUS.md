@@ -164,6 +164,73 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 销毁这个句柄,就是那句话本身(2026-08-20)
+
+`automatic_keep_alive.dart` 整个文件收口(`KeepAliveNotification`、`KeepAliveHandle`、
+`AutomaticKeepAliveClientMixin`,外加 **`AutomaticKeepAlive` 本身**),以及 `scroll_delegate.dart` 的二
+维三件套(`TwoDimensionalChildDelegate`、`TwoDimensionalChildBuilderDelegate`、
+`TwoDimensionalChildListDelegate`)。覆盖率 1683/1888(89.1%)。
+
+**这一轮同时退掉了一条记录在案的分歧。** 账本里 `AutomaticKeepAlive` 一直记着「离窗即弃(记录在案分
+歧)」——本 crate 就是把滚出视口的孩子丢掉。现在它是真的移植过来了,那条 `equivalent` 条目已删除。**一
+条诚实的分歧记录,过期之后就变成一句恭维话。**
+
+**`KeepAliveHandle` 上游的全部代码,是一个 `dispose` 覆写,里面先 `notifyListeners()` 再
+`super.dispose()`。** 从 dispose 里发通知,通常恰恰是不该做的事。**但在这里,销毁就是那句话本身**——这
+个句柄存在只为传一条通知:「我不再需要被留下了」,而毁掉它就是说出这句话的方式。
+
+**而 `KeepAliveNotification` 只有一个字段,并且那个字段是 `Listenable` 而不是一个布尔量。** 因为有意思
+的消息不是「留住我」,而是「你可以放手了」。**通知说的是前一句;它捎带的那个句柄,是后一句稍后到达的通
+道——而那时发信的 widget 可能已经不在了。**
+
+**客户端那一侧最值得写下来的是 `deactivate`:句柄在离开树时被释放,哪怕这个 widget 仍然想被留下**,然
+后由 `build` 在回来时重新建立。**这个不变式是每次 build 重新申明的,而不是跨 build 携带的**——否则宿主
+会攥着一个属于「已经搬到别处去的子树」的句柄。
+
+由此又生出一条:**`build` 只会重新建立 keep-alive,从不结束一个。** 一个悄悄变成 false 的
+`wantKeepAlive`,会一直被留着,直到有人明确调用 `updateKeepAlive` 说出来。回归行把这条钉死了。
+
+**而 `_NullWidget` 整个类就是一个会抛异常的 `build`。** 混入方的 `build` 必须**被调用**、其返回值必须
+**被忽略**;而「你忽略了吗」这件事没有任何办法检查——**除非把返回的那个值做成毒药。**
+
+**宿主 `AutomaticKeepAlive` 的形状,就是它两半的不对称:**
+
+* **开始留住一棵子树,是 out of turn 同步应用的**,必要时在 build 中途——因为另一种可能是,这一行在请
+  求落地之前就已经被丢掉了。
+* **停止留住,做不到这一点**:它需要一次 rebuild。上游拿 `schedulerPhase` 和 `persistentCallbacks` 比,
+  build/layout 还没开始就 `setState`;已经过了,就只能等下一帧。上游自己在注释里管这叫「very
+  unfortunate」,并且把代价写了出来:**这些资源要再过 16ms 才会被回收。**
+
+另外还有两处小的:第一次 build 时孩子还不存在,于是应用父数据被推到帧末,而那个回调**第一件事是检查自
+己还挂着没有**——中间过了一帧,这一行可能已经被滚走了。而句柄在宿主销毁之后被触发,报错信息直接点名原
+因:**某个 widget 在离开时忘了触发它的句柄。**
+
+---
+
+**另一半是二维委托,而它和一维委托的真正区别只有一个:`TwoDimensionalChildDelegate extends
+ChangeNotifier`。** `SliverChildDelegate` 不是可监听的,于是告诉 sliver「孩子变了」的唯一办法,是交给它
+**一个新的委托**并让 `shouldRebuild` 返回 true。**二维的这个,可以直接说一声。**
+
+* **上界断言的是 `>= -1` 而不是 `>= 0`,而这不是宽容:它们是「最大下标」**,于是 0 已经表示「有一个孩
+  子」,**不往下走一格就没法表达「一个都没有」。**
+* **上界可以是 null**,因为委托未必知道:散点图上面的孩子比下面多,**那条轴上根本没有一个数**。
+* **setter 只在真的变了时才通知**——视口把从这个委托缓存的一切在每次通知时全部作废,一次多余的通知就是
+  一次孩子的全量重建。
+* **builder 委托的 `shouldRebuild` 恒返回 true,而它只能这样:闭包是不透明的,没有东西可比。** 而在便宜
+  的那个方向上猜错,留下的是屏幕上的陈旧孩子。
+* **list 委托比的是列表的「身份」而不是内容**,这正是上游文档反复强调「改了就必须换一个新的 list 对
+  象」的原因——**一个被就地改过的列表还是同一个对象,委托会说什么都没变。** 这里用 `Rc::ptr_eq` 如实照
+  搬,回归行两半都钉住了。
+* **list 委托按 `children[yIndex][xIndex]` 取,y 在前**——和 `ChildVicinity` 命名它们的顺序正好相反。而
+  **每行的长度是从那一行读的**,于是不齐的数组也能用。
+* **包装顺序是 `AutomaticKeepAlive(_SelectionKeepAlive(RepaintBoundary(child)))`,keep-alive 在重绘边
+  界外面。** 一行正被留住时并没有在画,外面的边界没有东西可隔离;而里面那层在这一行回来时照样管用。
+* **builder 抛异常时给出的是一个错误 widget**:表格里一个坏掉的格子是一个坏掉的格子,不是一整块白屏。
+
+验证:`cargo test --lib` 2826 绿,GN `rustflutter_unittests` 2826 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1683 accounted / 205 MISSING(89.1%)。
+
 ### 「往右」不是一个有唯一答案的问题(2026-08-20)
 
 两个新模块,主题都是**在两个地方之间移动**:`heroes.rs`(`Hero`、`HeroMode`、`HeroController`)与

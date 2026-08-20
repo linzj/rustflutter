@@ -596,6 +596,323 @@ impl TwoDimensionalScrollView {
     }
 }
 
+// -- The child delegates, from `widgets/scroll_delegate.dart` ---------------
+
+/// The `ChangeNotifier` half of `TwoDimensionalChildDelegate`.
+///
+/// This is the one real difference from the one-dimensional delegates:
+/// `SliverChildDelegate` is not listenable, so the only way to tell a sliver
+/// its children changed is to hand it a **new delegate** whose `shouldRebuild`
+/// returns true. A two-dimensional delegate can also just say so.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DelegateNotifier {
+    listeners: Vec<u64>,
+    notifications: usize,
+}
+
+impl DelegateNotifier {
+    pub fn new() -> DelegateNotifier {
+        DelegateNotifier::default()
+    }
+
+    pub fn add_listener(&mut self, listener: u64) {
+        self.listeners.push(listener);
+    }
+
+    pub fn remove_listener(&mut self, listener: u64) {
+        if let Some(index) = self.listeners.iter().position(|id| *id == listener) {
+            self.listeners.remove(index);
+        }
+    }
+
+    pub fn listener_count(&self) -> usize {
+        self.listeners.len()
+    }
+
+    /// How many times the delegate has announced a change. Upstream's viewport
+    /// treats each one as "everything you cached from me is invalid".
+    pub fn notification_count(&self) -> usize {
+        self.notifications
+    }
+
+    pub fn notify_listeners(&mut self) {
+        self.notifications += 1;
+    }
+}
+
+/// A child as a delegate hands it over: the widget, and what it was wrapped in.
+///
+/// The wrappers are recorded outermost first, because the order is a decision.
+/// The keep-alive goes **outside** the repaint boundary: a row that is being
+/// kept alive is not being painted, so there is nothing for a boundary outside
+/// it to isolate, while a boundary inside it still does its job when the row
+/// comes back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltChild {
+    pub child: u64,
+    pub wrappers: Vec<&'static str>,
+    /// Whether the builder threw and this is the error widget standing in for
+    /// the child.
+    pub is_error: bool,
+}
+
+impl BuiltChild {
+    fn wrapped(
+        child: u64,
+        repaint_boundaries: bool,
+        keep_alives: bool,
+        is_error: bool,
+    ) -> BuiltChild {
+        let mut wrappers = Vec::new();
+        if keep_alives {
+            wrappers.push("AutomaticKeepAlive");
+            wrappers.push("_SelectionKeepAlive");
+        }
+        if repaint_boundaries {
+            wrappers.push("RepaintBoundary");
+        }
+        BuiltChild {
+            child,
+            wrappers,
+            is_error,
+        }
+    }
+}
+
+/// Upstream `TwoDimensionalChildDelegate`.
+pub trait TwoDimensionalChildDelegate {
+    /// Returns the child at the given vicinity, or `None` if there is none
+    /// there. Upstream's contract is specific: null must be returned for a
+    /// vicinity that does not exist, and the results are cached until the
+    /// delegate says otherwise.
+    fn build(&self, vicinity: ChildVicinity) -> Option<BuiltChild>;
+
+    /// Upstream's `shouldRebuild(covariant TwoDimensionalChildDelegate)`. The
+    /// `covariant` is doing what `&Self` does here: an implementation is only
+    /// ever handed another of its own kind.
+    fn should_rebuild(&self, old: &Self) -> bool
+    where
+        Self: Sized;
+
+    fn notifier(&self) -> &DelegateNotifier;
+
+    fn notifier_mut(&mut self) -> &mut DelegateNotifier;
+}
+
+/// Upstream `TwoDimensionalChildBuilderDelegate`.
+pub struct TwoDimensionalChildBuilderDelegate {
+    notifier: DelegateNotifier,
+    max_x_index: Option<i32>,
+    max_y_index: Option<i32>,
+    pub add_repaint_boundaries: bool,
+    pub add_automatic_keep_alives: bool,
+    #[allow(clippy::type_complexity)]
+    builder: Box<dyn Fn(ChildVicinity) -> Result<Option<u64>, String>>,
+}
+
+impl std::fmt::Debug for TwoDimensionalChildBuilderDelegate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TwoDimensionalChildBuilderDelegate")
+            .field("max_x_index", &self.max_x_index)
+            .field("max_y_index", &self.max_y_index)
+            .field("add_repaint_boundaries", &self.add_repaint_boundaries)
+            .field("add_automatic_keep_alives", &self.add_automatic_keep_alives)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TwoDimensionalChildBuilderDelegate {
+    /// The bounds are `Option`s because a delegate need not know them: a
+    /// scatter plot has more children at the top than at the bottom, and there
+    /// is no single number for either axis. When they are given, upstream
+    /// asserts `>= -1` rather than `>= 0` -- these are *maximum indices*, so
+    /// zero already means "one child", and there would otherwise be no way to
+    /// say "none at all".
+    pub fn new(
+        builder: impl Fn(ChildVicinity) -> Result<Option<u64>, String> + 'static,
+    ) -> TwoDimensionalChildBuilderDelegate {
+        TwoDimensionalChildBuilderDelegate {
+            notifier: DelegateNotifier::new(),
+            max_x_index: None,
+            max_y_index: None,
+            add_repaint_boundaries: true,
+            add_automatic_keep_alives: true,
+            builder: Box::new(builder),
+        }
+    }
+
+    pub fn with_bounds(mut self, max_x_index: Option<i32>, max_y_index: Option<i32>) -> Self {
+        debug_assert!(max_x_index.is_none_or(|value| value >= -1));
+        debug_assert!(max_y_index.is_none_or(|value| value >= -1));
+        self.max_x_index = max_x_index;
+        self.max_y_index = max_y_index;
+        self
+    }
+
+    pub fn with_wrappers(mut self, repaint_boundaries: bool, keep_alives: bool) -> Self {
+        self.add_repaint_boundaries = repaint_boundaries;
+        self.add_automatic_keep_alives = keep_alives;
+        self
+    }
+
+    pub fn max_x_index(&self) -> Option<i32> {
+        self.max_x_index
+    }
+
+    pub fn max_y_index(&self) -> Option<i32> {
+        self.max_y_index
+    }
+
+    /// Upstream's setter, which notifies only when the value actually moved --
+    /// the viewport throws away everything it cached from the delegate on each
+    /// notification, so a redundant one costs a full rebuild of the children.
+    pub fn set_max_x_index(&mut self, value: Option<i32>) {
+        if self.max_x_index == value {
+            return;
+        }
+        debug_assert!(value.is_none_or(|value| value >= -1));
+        self.max_x_index = value;
+        self.notifier.notify_listeners();
+    }
+
+    pub fn set_max_y_index(&mut self, value: Option<i32>) {
+        if self.max_y_index == value {
+            return;
+        }
+        debug_assert!(value.is_none_or(|value| value >= -1));
+        self.max_y_index = value;
+        self.notifier.notify_listeners();
+    }
+}
+
+impl TwoDimensionalChildDelegate for TwoDimensionalChildBuilderDelegate {
+    fn build(&self, vicinity: ChildVicinity) -> Option<BuiltChild> {
+        if vicinity.x_index < 0 || self.max_x_index.is_some_and(|max| vicinity.x_index > max) {
+            return None;
+        }
+        if vicinity.y_index < 0 || self.max_y_index.is_some_and(|max| vicinity.y_index > max) {
+            return None;
+        }
+        // A builder that throws yields an error widget rather than taking the
+        // viewport down with it -- one broken cell in a table is a broken cell,
+        // not a blank screen.
+        let child = match (self.builder)(vicinity) {
+            Ok(Some(child)) => child,
+            Ok(None) => return None,
+            Err(_) => {
+                return Some(BuiltChild::wrapped(
+                    0,
+                    self.add_repaint_boundaries,
+                    self.add_automatic_keep_alives,
+                    true,
+                ));
+            }
+        };
+        Some(BuiltChild::wrapped(
+            child,
+            self.add_repaint_boundaries,
+            self.add_automatic_keep_alives,
+            false,
+        ))
+    }
+
+    /// Always true, and it has to be: a closure is opaque, so there is nothing
+    /// to compare. The delegate cannot tell whether the new builder would
+    /// produce different widgets, and guessing wrong in the cheap direction
+    /// leaves stale children on screen.
+    fn should_rebuild(&self, _old: &Self) -> bool {
+        true
+    }
+
+    fn notifier(&self) -> &DelegateNotifier {
+        &self.notifier
+    }
+
+    fn notifier_mut(&mut self) -> &mut DelegateNotifier {
+        &mut self.notifier
+    }
+}
+
+/// Upstream `TwoDimensionalChildListDelegate`.
+///
+/// The children are indexed `children[vicinity.yIndex][vicinity.xIndex]` --
+/// **y first**, which is row-then-column and so the opposite order to the one
+/// `ChildVicinity` names them in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TwoDimensionalChildListDelegate {
+    notifier: DelegateNotifier,
+    /// Behind an `Rc` on purpose: upstream compares the list by *identity*,
+    /// which is why its documentation insists that a changed list must be a new
+    /// list object rather than a mutated one.
+    children: std::rc::Rc<Vec<Vec<u64>>>,
+    pub add_repaint_boundaries: bool,
+    pub add_automatic_keep_alives: bool,
+}
+
+impl TwoDimensionalChildListDelegate {
+    pub fn new(children: Vec<Vec<u64>>) -> TwoDimensionalChildListDelegate {
+        TwoDimensionalChildListDelegate {
+            notifier: DelegateNotifier::new(),
+            children: std::rc::Rc::new(children),
+            add_repaint_boundaries: true,
+            add_automatic_keep_alives: true,
+        }
+    }
+
+    /// A second delegate over the very same list object, as upstream gets when
+    /// a widget rebuilds without its children having changed.
+    pub fn sharing(&self) -> TwoDimensionalChildListDelegate {
+        TwoDimensionalChildListDelegate {
+            notifier: DelegateNotifier::new(),
+            children: std::rc::Rc::clone(&self.children),
+            add_repaint_boundaries: self.add_repaint_boundaries,
+            add_automatic_keep_alives: self.add_automatic_keep_alives,
+        }
+    }
+
+    pub fn with_wrappers(mut self, repaint_boundaries: bool, keep_alives: bool) -> Self {
+        self.add_repaint_boundaries = repaint_boundaries;
+        self.add_automatic_keep_alives = keep_alives;
+        self
+    }
+
+    pub fn children(&self) -> &[Vec<u64>] {
+        &self.children
+    }
+}
+
+impl TwoDimensionalChildDelegate for TwoDimensionalChildListDelegate {
+    fn build(&self, vicinity: ChildVicinity) -> Option<BuiltChild> {
+        // No maximum index to consult: the bounds are the array's own shape,
+        // and the row's length is read per row, so a ragged array is fine.
+        if vicinity.y_index < 0 || vicinity.y_index as usize >= self.children.len() {
+            return None;
+        }
+        let row = &self.children[vicinity.y_index as usize];
+        if vicinity.x_index < 0 || vicinity.x_index as usize >= row.len() {
+            return None;
+        }
+        Some(BuiltChild::wrapped(
+            row[vicinity.x_index as usize],
+            self.add_repaint_boundaries,
+            self.add_automatic_keep_alives,
+            false,
+        ))
+    }
+
+    fn should_rebuild(&self, old: &Self) -> bool {
+        !std::rc::Rc::ptr_eq(&self.children, &old.children)
+    }
+
+    fn notifier(&self) -> &DelegateNotifier {
+        &self.notifier
+    }
+
+    fn notifier_mut(&mut self) -> &mut DelegateNotifier {
+        &mut self.notifier
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,5 +1412,182 @@ mod tests {
             DiagonalDragBehavior::None
         );
         assert_eq!(DiagonalDragBehavior::default(), DiagonalDragBehavior::None);
+    }
+    // -- The child delegates ---------------------------------------------------
+
+    fn grid_builder() -> TwoDimensionalChildBuilderDelegate {
+        TwoDimensionalChildBuilderDelegate::new(|vicinity| {
+            Ok(Some((vicinity.y_index * 100 + vicinity.x_index) as u64))
+        })
+    }
+
+    #[test]
+    fn a_builder_delegate_stops_at_the_bounds_it_was_given() {
+        let delegate = grid_builder().with_bounds(Some(2), Some(3));
+        assert!(delegate.build(ChildVicinity::new(2, 3)).is_some());
+        assert!(delegate.build(ChildVicinity::new(3, 3)).is_none());
+        assert!(delegate.build(ChildVicinity::new(2, 4)).is_none());
+    }
+
+    #[test]
+    fn minus_one_is_how_a_bound_says_there_are_no_children_at_all() {
+        // These are maximum indices, so zero already means "one child" -- there
+        // would be no way to say "none" without going below it.
+        let none = grid_builder().with_bounds(Some(-1), Some(-1));
+        assert!(none.build(ChildVicinity::new(0, 0)).is_none());
+
+        let one = grid_builder().with_bounds(Some(0), Some(0));
+        assert!(one.build(ChildVicinity::new(0, 0)).is_some());
+        assert!(one.build(ChildVicinity::new(1, 0)).is_none());
+    }
+
+    #[test]
+    fn an_absent_bound_leaves_the_answer_to_the_builder() {
+        // A scatter plot has more children at the top than at the bottom, so
+        // there is no single number for the axis.
+        let delegate = TwoDimensionalChildBuilderDelegate::new(|vicinity| {
+            if vicinity.x_index > vicinity.y_index {
+                Ok(None)
+            } else {
+                Ok(Some(1))
+            }
+        });
+        assert!(delegate.max_x_index().is_none());
+        assert!(delegate.build(ChildVicinity::new(5, 9)).is_some());
+        assert!(delegate.build(ChildVicinity::new(9, 5)).is_none());
+    }
+
+    #[test]
+    fn a_negative_index_is_out_whatever_the_bounds_say() {
+        let delegate = grid_builder();
+        assert!(delegate.build(ChildVicinity::new(-1, 0)).is_none());
+        assert!(delegate.build(ChildVicinity::new(0, -1)).is_none());
+    }
+
+    #[test]
+    fn a_throwing_builder_yields_one_broken_cell_not_a_blank_viewport() {
+        let delegate = TwoDimensionalChildBuilderDelegate::new(|vicinity| {
+            if vicinity.x_index == 1 {
+                Err("no".to_string())
+            } else {
+                Ok(Some(7))
+            }
+        });
+        let broken = delegate.build(ChildVicinity::new(1, 0)).unwrap();
+        assert!(broken.is_error);
+        assert!(!delegate.build(ChildVicinity::new(0, 0)).unwrap().is_error);
+    }
+
+    #[test]
+    fn the_keep_alive_wraps_outside_the_repaint_boundary() {
+        // A row being kept alive is not being painted, so a boundary outside it
+        // has nothing to isolate; one inside it still works when the row
+        // returns.
+        let built = grid_builder().build(ChildVicinity::new(0, 0)).unwrap();
+        assert_eq!(
+            built.wrappers,
+            [
+                "AutomaticKeepAlive",
+                "_SelectionKeepAlive",
+                "RepaintBoundary"
+            ]
+        );
+    }
+
+    #[test]
+    fn either_wrapper_can_be_turned_off_on_its_own() {
+        let no_boundary = grid_builder().with_wrappers(false, true);
+        assert_eq!(
+            no_boundary
+                .build(ChildVicinity::new(0, 0))
+                .unwrap()
+                .wrappers,
+            ["AutomaticKeepAlive", "_SelectionKeepAlive"]
+        );
+
+        let bare = grid_builder().with_wrappers(false, false);
+        assert!(
+            bare.build(ChildVicinity::new(0, 0))
+                .unwrap()
+                .wrappers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn changing_a_bound_announces_it_and_setting_the_same_one_does_not() {
+        // The viewport throws away everything it cached on each notification,
+        // so a redundant one costs a full rebuild of the children.
+        let mut delegate = grid_builder().with_bounds(Some(2), Some(2));
+        assert_eq!(delegate.notifier().notification_count(), 0);
+
+        delegate.set_max_x_index(Some(5));
+        assert_eq!(delegate.notifier().notification_count(), 1);
+
+        delegate.set_max_x_index(Some(5));
+        assert_eq!(delegate.notifier().notification_count(), 1);
+
+        delegate.set_max_y_index(None);
+        assert_eq!(delegate.notifier().notification_count(), 2);
+    }
+
+    #[test]
+    fn a_builder_delegate_always_asks_to_be_rebuilt() {
+        // A closure is opaque: there is nothing to compare, and guessing wrong
+        // in the cheap direction leaves stale children on screen.
+        assert!(grid_builder().should_rebuild(&grid_builder()));
+    }
+
+    #[test]
+    fn a_list_delegate_is_indexed_row_first() {
+        // children[yIndex][xIndex] -- the opposite order to the one
+        // ChildVicinity names them in.
+        let delegate =
+            TwoDimensionalChildListDelegate::new(vec![vec![10, 11, 12], vec![20, 21, 22]]);
+        assert_eq!(delegate.build(ChildVicinity::new(2, 1)).unwrap().child, 22);
+        assert_eq!(delegate.build(ChildVicinity::new(1, 0)).unwrap().child, 11);
+    }
+
+    #[test]
+    fn a_ragged_array_is_measured_row_by_row() {
+        // The row's length is read from the row, not from the first one.
+        let delegate = TwoDimensionalChildListDelegate::new(vec![vec![10, 11, 12], vec![20]]);
+        assert!(delegate.build(ChildVicinity::new(2, 0)).is_some());
+        assert!(delegate.build(ChildVicinity::new(2, 1)).is_none());
+        assert!(delegate.build(ChildVicinity::new(0, 2)).is_none());
+    }
+
+    #[test]
+    fn a_list_delegate_rebuilds_for_a_new_list_object_not_new_contents() {
+        // Which is why upstream's documentation insists a changed list must be
+        // a new list rather than a mutated one: a mutated list is the same
+        // object, and the delegate would say nothing changed.
+        let first = TwoDimensionalChildListDelegate::new(vec![vec![1, 2]]);
+        assert!(
+            !first.should_rebuild(&first.sharing()),
+            "the same list means nothing changed"
+        );
+
+        let equal_but_separate = TwoDimensionalChildListDelegate::new(vec![vec![1, 2]]);
+        assert!(
+            equal_but_separate.should_rebuild(&first),
+            "a new list is a change even when it reads the same"
+        );
+    }
+
+    #[test]
+    fn a_two_dimensional_delegate_can_say_it_changed_without_being_replaced() {
+        // Which the one-dimensional delegates cannot: SliverChildDelegate is
+        // not listenable, so a sliver only hears about changes through a new
+        // delegate whose shouldRebuild returns true.
+        let mut delegate = TwoDimensionalChildListDelegate::new(vec![vec![1]]);
+        delegate.notifier_mut().add_listener(7);
+        assert_eq!(delegate.notifier().listener_count(), 1);
+
+        delegate.notifier_mut().notify_listeners();
+        assert_eq!(delegate.notifier().notification_count(), 1);
+
+        delegate.notifier_mut().remove_listener(7);
+        assert_eq!(delegate.notifier().listener_count(), 0);
     }
 }
