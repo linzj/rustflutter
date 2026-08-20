@@ -94,6 +94,7 @@ pub mod list_wheel;
 pub mod localizations;
 pub mod magnifier;
 pub mod material;
+pub mod material_app;
 pub mod material_page;
 pub mod media_query;
 pub mod menu;

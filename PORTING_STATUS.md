@@ -164,6 +164,66 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### `DateTime.sunday` 是 7,而那条注释写着 6——写了两遍(2026-08-20)
+
+新模块 `material_app.rs`,收掉 `app.dart`(`MaterialApp`、`MaterialScrollBehavior`)与
+`material_localizations.dart`(`MaterialLocalizations`、`DefaultMaterialLocalizations`)。覆盖率
+1830/1888(96.9%)。测试 3472。
+
+```dart
+// Ordered to match DateTime.monday=1, DateTime.sunday=6
+static const List<String> _shortWeekdays = <String>['Mon', ..., 'Sun'];
+
+// Ordered to match DateTime.monday=1, DateTime.sunday=6
+static const List<String> _weekdays = <String>['Monday', ..., 'Sunday'];
+```
+
+**Dart 的 `DateTime.sunday` 是 7。** 这条注释在同一个类里出现两遍,两遍都把**下标**写在了**常量**的位置
+上:表是七项,按 `date.weekday - DateTime.monday` 取,周日落在下标 6——注释想说的是这个,写出来的却是一句
+关于 Dart 常量的假话。
+
+**代码是对的,错的只有注释。而这种错法很费读者的时间:照它的字面算,`sunday - monday = 6 - 1 = 5`,而下标
+5 是周六。** 回归行把两边都钉住了——七个工作日各自映射到自己的名字、下标 5 确实是 Sat、以及 `SUNDAY` 就是
+7;把常量按注释改成 6,那条会红。
+
+---
+
+**第二件:被装饰的滚动条和不被装饰的,连起来看是一条规律。**
+
+`buildScrollbar` 里,**横向滚动在任何平台上都拿不到滚动条**——`Axis.horizontal` 那一支在问平台之前就把
+child 原样返回了。纵向的里头,只有三个桌面平台有。触摸平台上你是拽着列表本身滚的,一根用来抓的条子是没
+人用的家具。
+
+而那句 `assert(details.controller != null)` **只待在桌面那一支里**:滚动条需要有个东西可以挂上去,不造滚
+动条的平台自然没这个要求。回归行专门断言了「要求 controller 的场合」和「造滚动条的场合」是同一批。
+
+`buildOverscrollIndicator` 那边**只装饰 Android**。乍看奇怪,和物理对上就顺了:**iOS 的滚动会回弹,而那
+一下回弹本身就是「到头了」的反馈;Android 是钳住的,于是必须画点什么出来说这件事。** 桌面在光标底下滚,
+也什么都不给。
+
+**所以拿到 overscroll 指示的那些平台,恰好就是那些物理本身不会告诉你边界在哪的平台。**
+
+---
+
+其余几条:
+
+* **`tabLabel` 断言 `tabIndex >= 1`——它是一基的,而第 84 轮那个 `TabController.index` 是零基的。**
+  读屏器念出来的号码,不是代码用来数数的号码。把 controller 的 index 直接递进去,第一个标签就会念成
+  「Tab 0 of 3」并当场踩中断言。**这条 assert 站的正是两套计数法交界的地方。**
+* `MaterialApp` 的 `debugShowMaterialGrid` 那个 `GridPaper` **是包在 `assert(() { ... }())` 里的**——
+  release 下不是「默认关着」,是**那段画它的代码根本不在**。
+* `DefaultMaterialLocalizations` 的文档自己说了它是什么:「for **US English (only)**」,而
+  `formatCompactDate` 上面还压着一句 `// Assumes US mm/dd/yyyy format`。**这个「默认」大方承认自己是一种
+  locale,不是中立的那个。** 年份还走了另一条路(`padLeft(4, '0')`),因为它不是个两位数。
+* 而 `_formatTwoDigitZeroPad` 带着范围 assert,`formatMinute` 却把同样的补零逻辑**又内联写了一遍**——同一
+  条规则在同一个类里存在两份,一份有范围检查,一份没有。
+* `MaterialApp.router` 的 `assert(routerDelegate != null || routerConfig != null)` 是**「至少给一个」**,
+  在这一周的排他、单向蕴含之后又添一种形状。
+
+验证:`cargo test --lib` 3472 绿,GN `rustflutter_unittests` 3472 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1830 accounted / 58 MISSING(96.9%)。
+
 ### 下拉框得能显示出它自己现在的值(2026-08-20)
 
 新模块 `paginated_data_table.rs`(`PaginatedDataTable`、`PaginatedDataTableState`),并把
