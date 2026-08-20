@@ -40,6 +40,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
+use crate::framework::{AnyWidget, BuildContext, Component};
 use crate::services::codec::Value;
 
 /// Upstream's `_childrenMapKey`.
@@ -353,6 +354,17 @@ impl RestorationBucket {
     }
 }
 
+impl RestorationBucket {
+    /// Whether this and `other` are the same bucket.
+    ///
+    /// Identity, because a bucket is a handle and two handles onto one node are
+    /// the same node. This is what [`UnmanagedRestorationScope`]'s equality
+    /// asks, and it is deliberately not a comparison of contents -- see there.
+    pub fn is(&self, other: &RestorationBucket) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
 impl std::fmt::Debug for RestorationBucket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RestorationBucket({})", self.restoration_id())
@@ -560,6 +572,19 @@ impl<T: Clone + PartialEq + RestorableCodec> RestorableProperty for Restorable<T
         self.enabled
     }
 }
+
+/// Upstream `RestorableValue<T>`.
+///
+/// Upstream's is the abstract middle of a four-level hierarchy: it adds the
+/// held value and the change-checking setter to [`RestorableProperty`], and
+/// leaves `didUpdateValue` for a subclass. [`Restorable`] is that layer, and is
+/// concrete because the only thing the subclasses were varying is how the value
+/// converts -- which is [`RestorableCodec`] here, a separate trait rather than
+/// another rung.
+///
+/// An alias rather than a ledger entry, so that a reader who comes looking for
+/// upstream's name lands on the thing that plays its part.
+pub type RestorableValue<T> = Restorable<T>;
 
 /// Upstream `RestorableInt`.
 pub type RestorableInt = Restorable<i64>;
@@ -924,6 +949,352 @@ impl RestorableTextEditingController {
 
     pub fn save(&self, bucket: &RestorationBucket, restoration_id: &str) {
         self.text.save(bucket, restoration_id);
+    }
+}
+
+// -- Where a widget finds its bucket ------------------------------------------
+
+/// Upstream `UnmanagedRestorationScope`: the bucket, published to the subtree.
+///
+/// "Unmanaged" because it does not claim or release anything -- it carries a
+/// bucket somebody else is looking after. [`RestorationScope`] is the managed
+/// one, and it is built out of this.
+///
+/// The bucket is optional and the `None` is meaningful: restoration is off, or
+/// the root has not arrived from the platform yet, and a widget below finds
+/// nothing to write into rather than a bucket that goes nowhere.
+#[derive(Clone, Debug)]
+pub struct UnmanagedRestorationScope {
+    pub bucket: Option<RestorationBucket>,
+}
+
+impl UnmanagedRestorationScope {
+    pub fn new(bucket: Option<RestorationBucket>) -> UnmanagedRestorationScope {
+        UnmanagedRestorationScope { bucket }
+    }
+}
+
+/// Upstream's `updateShouldNotify`, which is `oldWidget.bucket != bucket`.
+///
+/// **Identity, not contents.** A bucket whose values changed is the same bucket
+/// and the subtree does not need rebuilding for it -- the properties that care
+/// are listening to themselves. What a rebuild is for is the bucket being
+/// *replaced*, which is restoration arriving or going away.
+impl PartialEq for UnmanagedRestorationScope {
+    fn eq(&self, other: &UnmanagedRestorationScope) -> bool {
+        match (&self.bucket, &other.bucket) {
+            (None, None) => true,
+            (Some(mine), Some(theirs)) => mine.is(theirs),
+            _ => false,
+        }
+    }
+}
+
+/// Upstream `RestorationScope`: claims a child bucket and publishes it.
+///
+/// A widget wanting to remember something looks up the nearest one of these,
+/// claims a child of *its* bucket, and writes there -- so the tree of buckets
+/// mirrors the tree of scopes, and a widget's place in the blob is its place on
+/// screen.
+///
+/// # A null id turns it off for the subtree
+///
+/// Upstream's `restorationId` is nullable, and a null one publishes no bucket
+/// rather than claiming one called "null". That is how a subtree opts out:
+/// everything below finds nothing to write into and quietly does not remember.
+pub struct RestorationScope {
+    restoration_id: Option<String>,
+    child: RefCell<Option<AnyWidget>>,
+}
+
+impl RestorationScope {
+    pub fn new(restoration_id: impl Into<String>, child: AnyWidget) -> RestorationScope {
+        RestorationScope {
+            restoration_id: Some(restoration_id.into()),
+            child: RefCell::new(Some(child)),
+        }
+    }
+
+    /// A scope that publishes nothing, turning restoration off below it.
+    pub fn disabled(child: AnyWidget) -> RestorationScope {
+        RestorationScope {
+            restoration_id: None,
+            child: RefCell::new(Some(child)),
+        }
+    }
+
+    /// Upstream's `RestorationScope.maybeOf`: the bucket in scope, if there is
+    /// one.
+    pub fn maybe_of(context: &mut BuildContext) -> Option<RestorationBucket> {
+        context
+            .inherited::<UnmanagedRestorationScope>()
+            .and_then(|scope| scope.bucket.clone())
+    }
+
+    /// Upstream's `RestorationScope.of`, which asserts.
+    ///
+    /// Upstream's error names the fix rather than the fault -- "state
+    /// restoration must be enabled for a RestorationScope to exist... by
+    /// passing a restorationScopeId to MaterialApp... or by wrapping the widget
+    /// tree in a RootRestorationScope". Answering `None` here and letting the
+    /// caller decide, because a missing scope is the ordinary state of an
+    /// application that does not restore, and this crate has no host that does.
+    pub fn of(context: &mut BuildContext) -> Option<RestorationBucket> {
+        RestorationScope::maybe_of(context)
+    }
+}
+
+impl Component for RestorationScope {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let parent = RestorationScope::maybe_of(context);
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
+
+        // A null id, or no parent bucket to claim from, and nothing is
+        // published -- the subtree finds no bucket and does not remember.
+        let bucket = match (&self.restoration_id, parent) {
+            (Some(id), Some(parent)) => Some(parent.claim_child(id.clone())),
+            _ => None,
+        };
+        crate::framework::provide(UnmanagedRestorationScope::new(bucket), child)
+    }
+}
+
+/// Upstream `RootRestorationScope`: the top of the tree, which waits.
+///
+/// The root bucket does not exist until the platform hands it over, and
+/// upstream's scope **builds nothing until it arrives** -- its state holds the
+/// child back rather than showing a subtree that would claim buckets it then
+/// had to throw away.
+///
+/// That wait is the whole difference from [`RestorationScope`], and it is why
+/// this is a separate class rather than the same one at the top.
+pub struct RootRestorationScope {
+    restoration_id: Option<String>,
+    root: Option<RestorationBucket>,
+    child: RefCell<Option<AnyWidget>>,
+}
+
+impl RootRestorationScope {
+    pub fn new(
+        restoration_id: impl Into<String>,
+        root: Option<RestorationBucket>,
+        child: AnyWidget,
+    ) -> RootRestorationScope {
+        RootRestorationScope {
+            restoration_id: Some(restoration_id.into()),
+            root,
+            child: RefCell::new(Some(child)),
+        }
+    }
+
+    /// Whether the root has arrived. Upstream's `_okToRenderBlankContainer`
+    /// inverted: while this is false, upstream renders an empty box.
+    pub fn is_ready(&self) -> bool {
+        self.restoration_id.is_none() || self.root.is_some()
+    }
+}
+
+impl Component for RootRestorationScope {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
+        if !self.is_ready() {
+            // Upstream's blank container. Not the child without a bucket: a
+            // subtree built now would claim buckets and have to give them up
+            // the moment the real root landed.
+            return crate::framework::leaf(|| crate::widgets::Empty);
+        }
+        crate::framework::provide(UnmanagedRestorationScope::new(self.root.clone()), child)
+    }
+}
+
+/// Upstream `RestorationMixin`: what a widget's state uses to register its
+/// properties.
+///
+/// Upstream is a mixin on `State` because that is where the lifecycle hooks
+/// are. This crate's state is a plain value owned by the element tree, so this
+/// is a value the state holds -- and the hooks it needs (`didUpdateWidget`,
+/// `dispose`) are the two `State` members the ledger records as absent, so the
+/// owner drives it explicitly.
+#[derive(Default)]
+pub struct RestorationMixin {
+    bucket: Option<RestorationBucket>,
+    /// Which ids are taken, so the two assertions below have something to
+    /// check. Upstream keeps the properties themselves; the ids are what the
+    /// assertions actually compare.
+    registered: Vec<String>,
+}
+
+impl RestorationMixin {
+    pub fn new() -> RestorationMixin {
+        RestorationMixin::default()
+    }
+
+    /// The bucket this state writes into, once it has one.
+    pub fn bucket(&self) -> Option<&RestorationBucket> {
+        self.bucket.as_ref()
+    }
+
+    /// Upstream's `didToggleBucket` path: the state is given a bucket, or given
+    /// a different one, or given none.
+    ///
+    /// Answers whether this is the **initial** restore -- upstream passes that
+    /// to `restoreState` as `initialRestore`, and it is the difference between
+    /// "you are being set up" and "the platform replaced your data underneath
+    /// you", which a widget with a controller has to handle differently.
+    pub fn set_bucket(&mut self, bucket: Option<RestorationBucket>) -> bool {
+        let initial = self.bucket.is_none();
+        self.bucket = bucket;
+        self.registered.clear();
+        initial
+    }
+
+    /// Upstream's `registerForRestoration`.
+    ///
+    /// **The stored value wins over the default**, which is the whole of
+    /// restoration in one line: `hasSerializedValue ? fromPrimitives(...) :
+    /// createDefaultValue()`. The property is then written back, so a value
+    /// that came from the default is in the blob for next time.
+    ///
+    /// Upstream asserts twice, and both are about the same mistake from two
+    /// sides -- a property registered under two ids, and an id used by two
+    /// properties. Either would make one of them silently overwrite the other,
+    /// which the reader would see as a control that does not come back.
+    pub fn register_for_restoration<T>(
+        &mut self,
+        property: &mut Restorable<T>,
+        restoration_id: impl Into<String>,
+    ) where
+        T: Clone + PartialEq + RestorableCodec,
+    {
+        let restoration_id = restoration_id.into();
+        debug_assert!(
+            !self.registered.contains(&restoration_id),
+            "\"{restoration_id}\" is already registered to another property"
+        );
+        let Some(bucket) = &self.bucket else {
+            // No bucket: the property keeps its default and nothing is stored.
+            return;
+        };
+        property.restore(bucket, &restoration_id);
+        property.save(bucket, &restoration_id);
+        self.registered.push(restoration_id);
+    }
+
+    /// Upstream's `unregisterFromRestoration`: the property stops being written
+    /// **and its stored value is removed**.
+    ///
+    /// The removal is the part worth noticing. A property that merely stopped
+    /// being written would leave its last value in the blob, and a later widget
+    /// claiming that id would restore somebody else's state.
+    pub fn unregister_from_restoration(&mut self, restoration_id: &str) {
+        if let Some(bucket) = &self.bucket {
+            bucket.remove(restoration_id);
+        }
+        self.registered.retain(|id| id != restoration_id);
+    }
+
+    /// Which ids this state has registered.
+    pub fn registered_ids(&self) -> &[String] {
+        &self.registered
+    }
+}
+
+/// Upstream `RestorationManager`: the seam to the platform.
+///
+/// # This is the one class in the family that genuinely needs the engine
+///
+/// Everything else in this file is a tree over a map. The manager is where the
+/// platform comes in, through two calls on `flutter/restoration`: asking for
+/// the root bucket at startup, and pushing the serialised tree back whenever it
+/// changed. Nothing in this repository serves that channel -- see the module
+/// docs -- so [`RestorationManager::send_to_engine`] is a seam a host or a test
+/// fills in, which is what upstream documents its own as being for.
+pub struct RestorationManager {
+    root: Option<RestorationBucket>,
+    /// Upstream's `isReplacing`: whether the data currently being restored came
+    /// from the platform replacing what was there, rather than from startup.
+    is_replacing: bool,
+    send: Option<Rc<dyn Fn(&Value)>>,
+}
+
+impl RestorationManager {
+    pub fn new() -> RestorationManager {
+        RestorationManager {
+            root: None,
+            is_replacing: false,
+            send: None,
+        }
+    }
+
+    /// What to do with the serialised tree. Upstream's `sendToEngine`, which it
+    /// documents as overridable for exactly this.
+    pub fn with_send(mut self, send: impl Fn(&Value) + 'static) -> Self {
+        self.send = Some(Rc::new(send));
+        self
+    }
+
+    /// Upstream's `rootBucket`, which is null until the platform answers.
+    pub fn root_bucket(&self) -> Option<&RestorationBucket> {
+        self.root.as_ref()
+    }
+
+    pub fn is_replacing(&self) -> bool {
+        self.is_replacing
+    }
+
+    /// The platform handed over restoration data. Upstream's
+    /// `handleRestorationUpdateFromEngine`.
+    ///
+    /// `enabled` false means the platform has turned restoration off, and
+    /// upstream drops the root rather than keeping a bucket nothing will
+    /// collect -- a widget that kept writing into it would be writing into
+    /// nothing, slowly.
+    pub fn handle_update_from_engine(&mut self, enabled: bool, data: Option<&Value>) {
+        self.is_replacing = self.root.is_some();
+        self.root = if enabled {
+            Some(RestorationBucket::from_data(
+                "root",
+                data.map(BucketData::from_value).unwrap_or_default(),
+            ))
+        } else {
+            None
+        };
+    }
+
+    /// Upstream's `scheduleSerializationFor` reaching its end: the tree goes to
+    /// the platform if anything in it changed.
+    ///
+    /// Answers whether anything was sent, and clears the dirty flag either way
+    /// -- upstream's per-frame `_doSerialization`.
+    pub fn flush(&mut self) -> bool {
+        let Some(root) = &self.root else {
+            return false;
+        };
+        if !root.needs_serialization() {
+            root.finalize();
+            return false;
+        }
+        let data = root.to_data().to_value();
+        root.finalize();
+        if let Some(send) = &self.send {
+            send(&data);
+        }
+        self.is_replacing = false;
+        true
+    }
+}
+
+impl Default for RestorationManager {
+    fn default() -> RestorationManager {
+        RestorationManager::new()
     }
 }
 
@@ -1465,5 +1836,342 @@ mod tests {
         let mut restored_scroll = RestorableDouble::new(0.0);
         restored_scroll.restore(&restored_list, "scroll");
         assert_eq!(*restored_scroll.value(), 420.0);
+    }
+
+    // -- Scopes -----------------------------------------------------------------------
+
+    #[test]
+    fn two_handles_onto_one_bucket_are_the_same_bucket() {
+        let bucket = RestorationBucket::empty("root");
+        assert!(bucket.is(&bucket.clone()));
+        assert!(!bucket.is(&RestorationBucket::empty("root")));
+    }
+
+    #[test]
+    fn a_scope_rebuilds_the_subtree_when_the_bucket_is_replaced_and_not_when_it_changes() {
+        // Identity, not contents. A bucket whose values changed is the same
+        // bucket, and the properties that care are watching themselves; what a
+        // rebuild is for is restoration arriving or going away.
+        let one = RestorationBucket::empty("root");
+        let same = UnmanagedRestorationScope::new(Some(one.clone()));
+        one.write("tab", Value::I64(2));
+        assert_eq!(
+            same,
+            UnmanagedRestorationScope::new(Some(one.clone())),
+            "the values moved; the bucket did not"
+        );
+
+        // Two *different* buckets holding exactly the same thing. This is the
+        // pair that tells identity from contents, and without it the assertion
+        // passes either way -- the first version of this test compared a bucket
+        // with itself and an empty one, which contents-comparison also gets
+        // right.
+        let twin = RestorationBucket::empty("root");
+        twin.write("tab", Value::I64(2));
+        assert_eq!(one.to_data(), twin.to_data(), "identical contents");
+        assert_ne!(
+            same,
+            UnmanagedRestorationScope::new(Some(twin)),
+            "and still a different bucket"
+        );
+
+        let other = RestorationBucket::empty("root");
+        assert_ne!(same, UnmanagedRestorationScope::new(Some(other)));
+        assert_ne!(same, UnmanagedRestorationScope::new(None));
+        assert_eq!(
+            UnmanagedRestorationScope::new(None),
+            UnmanagedRestorationScope::new(None)
+        );
+    }
+
+    #[test]
+    fn a_scope_claims_a_child_of_the_bucket_above_it() {
+        use crate::framework::{ElementTree, leaf};
+        use crate::widgets::Empty;
+        use std::cell::RefCell as Cell2;
+
+        let seen: Rc<Cell2<Option<RestorationBucket>>> = Rc::new(Cell2::new(None));
+
+        struct Probe(Rc<Cell2<Option<RestorationBucket>>>);
+        impl Component for Probe {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = RestorationScope::maybe_of(context);
+                leaf(|| Empty)
+            }
+        }
+
+        let root = RestorationBucket::empty("root");
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::provide(
+            UnmanagedRestorationScope::new(Some(root.clone())),
+            crate::framework::component(RestorationScope::new(
+                "list",
+                crate::framework::component(Probe(Rc::clone(&seen))),
+            )),
+        ));
+        tree.build_render_tree();
+
+        let claimed = seen.borrow().clone().expect("a bucket in scope");
+        assert_eq!(claimed.restoration_id(), "list");
+        assert!(root.is_claimed("list"), "claimed from the one above");
+    }
+
+    #[test]
+    fn a_scope_with_no_id_publishes_nothing_and_the_subtree_stops_remembering() {
+        use crate::framework::{ElementTree, leaf};
+        use crate::widgets::Empty;
+        use std::cell::RefCell as Cell2;
+
+        let seen: Rc<Cell2<Option<RestorationBucket>>> = Rc::new(Cell2::new(None));
+        struct Probe(Rc<Cell2<Option<RestorationBucket>>>);
+        impl Component for Probe {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = RestorationScope::maybe_of(context);
+                leaf(|| Empty)
+            }
+        }
+
+        let root = RestorationBucket::empty("root");
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::provide(
+            UnmanagedRestorationScope::new(Some(root.clone())),
+            crate::framework::component(RestorationScope::disabled(crate::framework::component(
+                Probe(Rc::clone(&seen)),
+            ))),
+        ));
+        tree.build_render_tree();
+
+        assert!(seen.borrow().is_none(), "nothing to write into");
+        assert!(root.to_data().children.is_empty(), "and nothing claimed");
+    }
+
+    #[test]
+    fn a_root_scope_shows_nothing_until_the_root_bucket_arrives() {
+        // Not the child without a bucket: a subtree built now would claim
+        // buckets and have to give them up the moment the real root landed.
+        // Built rather than merely asked, because `is_ready` alone cannot tell
+        // whether `build` consults it.
+        use crate::framework::{ElementTree, leaf};
+        use crate::widgets::Empty;
+        use std::cell::Cell as Flag;
+
+        let built = Rc::new(Flag::new(false));
+
+        struct Probe(Rc<Flag<bool>>);
+        impl Component for Probe {
+            fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+                self.0.set(true);
+                leaf(|| Empty)
+            }
+        }
+
+        let waiting = RootRestorationScope::new(
+            "app",
+            None,
+            crate::framework::component(Probe(Rc::clone(&built))),
+        );
+        assert!(!waiting.is_ready());
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(waiting));
+        tree.build_render_tree();
+        assert!(!built.get(), "the subtree was not built");
+
+        let ready = Rc::new(Flag::new(false));
+        let arrived = RootRestorationScope::new(
+            "app",
+            Some(RestorationBucket::empty("root")),
+            crate::framework::component(Probe(Rc::clone(&ready))),
+        );
+        assert!(arrived.is_ready());
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(arrived));
+        tree.build_render_tree();
+        assert!(ready.get(), "and once the root arrived, it was");
+    }
+
+    // -- Registration --------------------------------------------------------------------
+
+    #[test]
+    fn a_stored_value_wins_over_the_default_and_the_default_is_written_back() {
+        // The whole of restoration in one line, and the write-back is what puts
+        // a first-run default into the blob for next time.
+        let bucket = RestorationBucket::empty("state");
+        bucket.write("tab", Value::I64(3));
+
+        let mut state = RestorationMixin::new();
+        state.set_bucket(Some(bucket.clone()));
+
+        let mut restored = RestorableInt::new(0);
+        state.register_for_restoration(&mut restored, "tab");
+        assert_eq!(*restored.value(), 3, "the stored value");
+
+        let mut fresh = RestorableInt::new(9);
+        state.register_for_restoration(&mut fresh, "other");
+        assert_eq!(*fresh.value(), 9, "the default");
+        assert_eq!(
+            bucket.read("other"),
+            Some(Value::I64(9)),
+            "and it is in the blob for next time"
+        );
+    }
+
+    #[test]
+    fn registering_without_a_bucket_leaves_the_property_at_its_default() {
+        let mut state = RestorationMixin::new();
+        let mut tab = RestorableInt::new(7);
+        tab.set(2);
+        state.register_for_restoration(&mut tab, "tab");
+        assert_eq!(*tab.value(), 2, "untouched: there was nowhere to look");
+        assert!(state.registered_ids().is_empty());
+    }
+
+    #[test]
+    fn unregistering_removes_the_stored_value_and_not_only_the_registration() {
+        // A property that merely stopped being written would leave its last
+        // value in the blob, and a later widget claiming that id would restore
+        // somebody else's state.
+        let bucket = RestorationBucket::empty("state");
+        let mut state = RestorationMixin::new();
+        state.set_bucket(Some(bucket.clone()));
+
+        let mut tab = RestorableInt::new(0);
+        tab.set(4);
+        state.register_for_restoration(&mut tab, "tab");
+        assert!(bucket.contains("tab"));
+
+        state.unregister_from_restoration("tab");
+        assert!(!bucket.contains("tab"), "gone from the blob too");
+        assert!(state.registered_ids().is_empty());
+    }
+
+    #[test]
+    fn the_first_bucket_is_an_initial_restore_and_a_replacement_is_not() {
+        // The difference between "you are being set up" and "the platform
+        // replaced your data underneath you", which a widget holding a
+        // controller has to handle differently.
+        let mut state = RestorationMixin::new();
+        assert!(state.set_bucket(Some(RestorationBucket::empty("a"))));
+        assert!(!state.set_bucket(Some(RestorationBucket::empty("b"))));
+    }
+
+    #[test]
+    fn a_new_bucket_clears_what_was_registered_against_the_old_one() {
+        let mut state = RestorationMixin::new();
+        state.set_bucket(Some(RestorationBucket::empty("a")));
+        let mut tab = RestorableInt::new(0);
+        state.register_for_restoration(&mut tab, "tab");
+        assert_eq!(state.registered_ids(), &["tab".to_string()]);
+
+        state.set_bucket(Some(RestorationBucket::empty("b")));
+        assert!(
+            state.registered_ids().is_empty(),
+            "the ids belonged to the old bucket"
+        );
+    }
+
+    // -- The manager ----------------------------------------------------------------------
+
+    #[test]
+    fn the_manager_has_no_root_until_the_platform_answers() {
+        let manager = RestorationManager::new();
+        assert!(manager.root_bucket().is_none());
+        assert!(!manager.is_replacing());
+    }
+
+    #[test]
+    fn an_update_from_the_platform_becomes_the_root_bucket() {
+        let mut data = BucketData::default();
+        data.values.insert("tab".into(), Value::I64(2));
+
+        let mut manager = RestorationManager::new();
+        manager.handle_update_from_engine(true, Some(&data.to_value()));
+        let root = manager.root_bucket().expect("a root");
+        assert_eq!(root.read("tab"), Some(Value::I64(2)));
+        assert!(
+            !manager.is_replacing(),
+            "the first one is not a replacement"
+        );
+    }
+
+    #[test]
+    fn a_second_update_is_a_replacement() {
+        let mut manager = RestorationManager::new();
+        manager.handle_update_from_engine(true, None);
+        manager.handle_update_from_engine(true, None);
+        assert!(manager.is_replacing());
+    }
+
+    #[test]
+    fn the_platform_turning_restoration_off_drops_the_root() {
+        // A widget that kept writing into a bucket nothing will collect would
+        // be writing into nothing, slowly.
+        let mut manager = RestorationManager::new();
+        manager.handle_update_from_engine(true, None);
+        assert!(manager.root_bucket().is_some());
+        manager.handle_update_from_engine(false, None);
+        assert!(manager.root_bucket().is_none());
+    }
+
+    #[test]
+    fn the_tree_goes_to_the_platform_only_when_something_changed() {
+        use std::cell::RefCell as Cell2;
+        let sent: Rc<Cell2<Vec<Value>>> = Rc::new(Cell2::new(Vec::new()));
+        let recorder = Rc::clone(&sent);
+
+        let mut manager = RestorationManager::new()
+            .with_send(move |value| recorder.borrow_mut().push(value.clone()));
+        manager.handle_update_from_engine(true, None);
+
+        // The root was just built, so nothing is dirty yet.
+        manager.flush();
+        let before = sent.borrow().len();
+
+        manager
+            .root_bucket()
+            .expect("a root")
+            .write("tab", Value::I64(2));
+        assert!(manager.flush(), "something changed");
+        assert_eq!(sent.borrow().len(), before + 1);
+
+        assert!(!manager.flush(), "and nothing has changed since");
+        assert_eq!(sent.borrow().len(), before + 1);
+    }
+
+    #[test]
+    fn what_the_platform_is_sent_is_the_whole_tree() {
+        use std::cell::RefCell as Cell2;
+        let sent: Rc<Cell2<Option<Value>>> = Rc::new(Cell2::new(None));
+        let recorder = Rc::clone(&sent);
+
+        let mut manager = RestorationManager::new()
+            .with_send(move |value| *recorder.borrow_mut() = Some(value.clone()));
+        manager.handle_update_from_engine(true, None);
+
+        let root = manager.root_bucket().expect("a root").clone();
+        let list = root.claim_child("list");
+        list.write("scroll", Value::I64(420));
+        manager.flush();
+
+        let blob = sent.borrow().clone().expect("something was sent");
+        let data = BucketData::from_value(&blob);
+        assert_eq!(
+            data.children["list"].values["scroll"],
+            Value::I64(420),
+            "a leaf's write reached the platform"
+        );
+    }
+
+    #[test]
+    fn a_manager_with_nowhere_to_send_still_clears_the_dirty_flag() {
+        // Nothing serves this channel in this repository, and a manager that
+        // stayed dirty for ever would try to serialise the tree every frame.
+        let mut manager = RestorationManager::new();
+        manager.handle_update_from_engine(true, None);
+        manager
+            .root_bucket()
+            .expect("a root")
+            .write("tab", Value::I64(2));
+        assert!(manager.flush());
+        assert!(!manager.root_bucket().expect("a root").needs_serialization());
     }
 }

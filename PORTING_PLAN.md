@@ -35,7 +35,10 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-21）：1930 accounted / 0 MISSING（100%）。十三层全部归零。**
+**进度（2026-08-21，第三次归零）：1930 accounted / 0 MISSING（100%）。**
+第二次归零后审计台账，发现 restoration 全家 25 个类记的「blocked-engine」理由不
+成立（见门控项台账的改判说明），MISSING 由 0 回到 25 并已补齐。**归零三次，两次
+是因为量的东西变了，不是因为做的东西变了——尺子与台账各错一次。**
 上一次写「十层归零」时是真的，但那把尺子看不见三个层目录与一个子目录，藏了 34 个
 未 port 的类（semantics 22、widget_previews 6、animated_icons 3、physics 3）。
 尺子修正后重新归零，过程见 `PORTING_STATUS.md`。**旧记录（2026-08-20）：1888

@@ -355,7 +355,8 @@ pub use services::restoration::{
     RestorableDateTime, RestorableDateTimeN, RestorableDouble, RestorableDoubleN, RestorableEnum,
     RestorableEnumN, RestorableInt, RestorableIntN, RestorableListenable, RestorableNum,
     RestorableNumN, RestorableProperty, RestorableString, RestorableStringN,
-    RestorableTextEditingController, RestorationBucket,
+    RestorableTextEditingController, RestorableValue, RestorationBucket, RestorationManager,
+    RestorationMixin, RestorationScope, RootRestorationScope, UnmanagedRestorationScope,
 };
 pub use services::{
     BasicMessageChannel, EventChannel, EventSink, JsonMessageCodec, JsonMethodCodec, MethodCall,
