@@ -54,6 +54,7 @@ pub mod drag_boundary;
 pub mod drag_target;
 pub mod draggable_sheet;
 pub mod drawer;
+pub mod dropdown;
 pub mod dual_transition_builder;
 pub mod editable;
 pub mod editable_text;

@@ -134,6 +134,7 @@ if (enable_unittests) {
       "rustflutter/src/drag_target.rs",
       "rustflutter/src/draggable_sheet.rs",
       "rustflutter/src/drawer.rs",
+      "rustflutter/src/dropdown.rs",
       "rustflutter/src/dual_transition_builder.rs",
       "rustflutter/src/editable.rs",
       "rustflutter/src/editable_text.rs",

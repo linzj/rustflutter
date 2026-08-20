@@ -164,6 +164,58 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 被选中的那一项落在按钮上(2026-08-20)
+
+新模块 `dropdown.rs`,一次收掉三个文件七个类:`DropdownMenuItem`、
+`DropdownButtonHideUnderline`、`DropdownButton`、`DropdownButtonFormField`(`dropdown.dart`),
+`DropdownMenuEntry`、`DropdownMenu`(`dropdown_menu.dart`),`DropdownMenuFormField`。覆盖率
+1757/1888(93.1%)。测试 3189。
+
+**`getMenuLimits` 是这个 widget 之所以「像系统自带控件」的全部原因:菜单被摆成让当前选中的那一项正好落在
+按钮上。** 按下「Medium」,「Medium」就在你手指底下,于是再选一次是一次小移动,不是一次寻找。回归行按
+「选中项的顶边 == 按钮的顶边」直接钉住了这一条,并且验证换一个选中项时**移动的是整个菜单,不是那一项**。
+
+那段算术后面跟着**三次修正,而且有顺序**:太高就贴上限、太低就贴下限,**而第三次是在补前两次造成的伤**
+——如果贴边把选中项的中心推到了按钮中心上面,就再拉回来。
+
+**边距是一个会给按钮让路的偏好:** `topLimit = min(_kMenuItemHeight, buttonTop)`。通常留一个菜单项高度
+的边,但一个离屏幕顶只有十像素的按钮,得到的是离顶十像素的菜单。
+
+**而菜单永远不会占满屏幕**——上限是视口高度减去**两个**菜单项高度,上游引了 Material 规范说明理由:「This
+ensures a tappable area outside of the simple menu with which to dismiss the menu.」**一个铺满屏幕的菜
+单,没有地方可以点出去。**
+
+**装不下时改用滚动把选中项对上去,而上游对这条老实地写了两个限制:只在菜单第一次显示时做**(之后读者自
+己的滚动位置不再被动)、**而且只对定高的菜单项准确**(那是默认值,不是保证)。
+
+还有一句上游的坦白值得留:那个「菜单在屏幕内」的断言**只在按钮完整在屏幕上时才检查**,注释写着「If the
+button was a bit off-screen, then, oh well.」——**一个只在能讲清楚的情况下成立的不变式,被说出来了,而不
+是被默默假设。**
+
+---
+
+**`DropdownButtonHideUnderline` 是一个完全没有数据的 InheritedWidget:它的存在本身就是消息。**
+`at(context)` 是对查找结果的一次判空,而 `updateShouldNotify` 返回 false——**因为没有任何东西可能变过**:
+出现和消失是树形状的变化,框架本来就管。
+
+---
+
+**而 `DropdownButton` 和 `DropdownMenu` 之间真正的区别,不是长相。** 上游自己的迁移说明先说视觉「差一点
+点」,然后给出那条要紧的:**`DropdownButton` 让应用持有当前值,`DropdownMenu` 自己持有。** 一个是受控
+的,一个不是,其余都是装饰。回归行把这一对摆在一起:受控那个的 `value` 得由应用给;不受控那个 `select`
+之后就自己变了,而 `initial_selection`(它**从哪儿开始**)还是原来那个。
+
+**由此还带出一条:`DropdownMenuItem` 带的是一个 widget,`DropdownMenuEntry` 带的是一个 label。** 这正是
+`DropdownMenu` 能在读者打字时过滤的原因——**你没法搜索一个 widget。**
+
+**而过滤和搜索是两件事:过滤用 `contains` 会删掉不匹配的,搜索用 `starts_with` 只是指过去。** 我第一版回
+归行写了「只有 Medium 含 m」,红了——**"Small" 中间也有一个 m。** 改完之后这条正好成了这两者区别的最好例
+子:`filtered("m")` 是两个,`search("m")` 只指向 Medium。
+
+验证:`cargo test --lib` 3189 绿,GN `rustflutter_unittests` 3189 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1757 accounted / 131 MISSING(93.1%)。
+
 ### 图标跟主题走,标签跟操作系统走(2026-08-20)
 
 转入 material 层。新模块 `action_buttons.rs`,一次收掉 `material/action_buttons.dart` 全部八个类:

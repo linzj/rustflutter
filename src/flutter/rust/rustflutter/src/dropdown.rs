@@ -1,0 +1,629 @@
+//! Ports of `material/dropdown.dart`, `material/dropdown_menu.dart` and
+//! `material/dropdown_menu_form_field.dart`.
+//!
+//! Choosing one thing from a list, twice: the Material 2 `DropdownButton` and
+//! the Material 3 `DropdownMenu`. Upstream's own migration notes say the
+//! visuals differ "a little bit" and then give the change that actually
+//! matters -- **`DropdownButton` makes the application hold the current value
+//! and `DropdownMenu` holds it itself.** One is a controlled widget and the
+//! other is not, and everything else is decoration.
+
+use crate::direction::TextDirection;
+
+/// Upstream's `_kMenuItemHeight`, which is `kMinInteractiveDimension`.
+pub const MENU_ITEM_HEIGHT: f32 = 48.0;
+/// Upstream's `_kDenseButtonHeight`.
+pub const DENSE_BUTTON_HEIGHT: f32 = 24.0;
+/// Upstream's `kMaterialListPadding.vertical`.
+pub const LIST_PADDING_VERTICAL: f32 = 8.0;
+
+/// Upstream `DropdownMenuItem`: one row of a [`DropdownButton`]'s menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropdownMenuItem {
+    pub value: i32,
+    /// Defaults to true. A disabled item is still **laid out and shown** -- it
+    /// is part of the list the reader is choosing from, and hiding it would
+    /// change what they think the options are.
+    pub enabled: bool,
+    pub child: u64,
+}
+
+impl DropdownMenuItem {
+    pub fn new(value: i32, child: u64) -> DropdownMenuItem {
+        DropdownMenuItem {
+            value,
+            enabled: true,
+            child,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
+/// Upstream `DropdownButtonHideUnderline`.
+///
+/// An inherited widget with **no data at all**: its presence is the whole
+/// message. `at(context)` is a null check on the lookup, and
+/// `updateShouldNotify` returns false because there is nothing that could have
+/// changed -- appearing and disappearing are changes of tree shape, which the
+/// framework already handles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DropdownButtonHideUnderline;
+
+impl DropdownButtonHideUnderline {
+    /// Upstream's static `at`.
+    pub fn at(ancestor_present: bool) -> bool {
+        ancestor_present
+    }
+
+    pub fn update_should_notify() -> bool {
+        false
+    }
+}
+
+/// Where the menu ended up. Upstream's `_MenuLimits`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuLimits {
+    pub top: f32,
+    pub bottom: f32,
+    pub height: f32,
+    /// How far the menu is scrolled so the selected item still lines up when
+    /// the whole list does not fit.
+    pub scroll_offset: f32,
+}
+
+/// Upstream `DropdownButton`, and the layout that makes it feel native.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropdownButton {
+    /// The current value. **The application holds this**, which is what makes
+    /// this a controlled widget: it does not change until the app says so.
+    pub value: Option<i32>,
+    pub items: Vec<DropdownMenuItem>,
+    pub item_heights: Vec<f32>,
+    pub menu_max_height: Option<f32>,
+    pub is_dense: bool,
+}
+
+impl DropdownButton {
+    pub fn new(items: Vec<DropdownMenuItem>) -> DropdownButton {
+        let item_heights = vec![MENU_ITEM_HEIGHT; items.len()];
+        DropdownButton {
+            value: None,
+            items,
+            item_heights,
+            menu_max_height: None,
+            is_dense: false,
+        }
+    }
+
+    pub fn with_value(mut self, value: i32) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.value
+            .and_then(|value| self.items.iter().position(|item| item.value == value))
+            .unwrap_or(0)
+    }
+
+    /// Where an item starts, measured from the top of the menu's content.
+    pub fn item_offset(&self, index: usize) -> f32 {
+        let mut offset = LIST_PADDING_VERTICAL / 2.0;
+        for height in self.item_heights.iter().take(index) {
+            offset += height;
+        }
+        offset
+    }
+
+    /// Upstream's `getConstraintsForChild` maximum.
+    ///
+    /// The menu is capped at the viewport height less **two** item heights, and
+    /// upstream cites the Material spec for why: *"This ensures a tappable area
+    /// outside of the simple menu with which to dismiss the menu."* A menu
+    /// filling the screen would have nowhere left to tap to get out of it.
+    pub fn max_menu_height(&self, available_height: f32) -> f32 {
+        let computed = (available_height - 2.0 * MENU_ITEM_HEIGHT).max(0.0);
+        match self.menu_max_height {
+            Some(requested) if requested <= computed => requested,
+            _ => computed,
+        }
+    }
+
+    /// Upstream `getMenuLimits`, which is the whole reason this widget feels
+    /// like the platform's own control: **the menu is placed so the currently
+    /// selected item lands over the button.** Press "Medium" and "Medium" is
+    /// under your finger, so choosing again is a small movement rather than a
+    /// hunt.
+    pub fn menu_limits(
+        &self,
+        button_top: f32,
+        button_height: f32,
+        available_height: f32,
+    ) -> MenuLimits {
+        let index = self.selected_index();
+        let computed_max_height = self.max_menu_height(available_height);
+        let button_bottom = (button_top + button_height).min(available_height);
+        let selected_offset = self.item_offset(index);
+        let selected_height = self
+            .item_heights
+            .get(index)
+            .copied()
+            .unwrap_or(MENU_ITEM_HEIGHT);
+
+        // Normally a menu item's height of margin at each edge -- but if the
+        // button is nearer the edge than that, the button's own edge. **The
+        // margin is a preference that yields to the button.**
+        let top_limit = MENU_ITEM_HEIGHT.min(button_top);
+        let bottom_limit = (available_height - MENU_ITEM_HEIGHT).max(button_bottom);
+
+        // Centre the selected item on the button.
+        let mut menu_top = (button_top - selected_offset) - (selected_height - button_height) / 2.0;
+        let preferred = LIST_PADDING_VERTICAL + self.item_heights.iter().sum::<f32>();
+        let menu_height = computed_max_height.min(preferred);
+        let mut menu_bottom = menu_top + menu_height;
+
+        // Three corrections, in order.
+        if menu_top < top_limit {
+            menu_top = button_top.min(top_limit);
+            menu_bottom = menu_top + menu_height;
+        }
+        if menu_bottom > bottom_limit {
+            menu_bottom = button_bottom.max(bottom_limit);
+            menu_top = menu_bottom - menu_height;
+        }
+        // And a third that undoes the damage of the first two: if clamping
+        // pushed the selected item's centre above the button's, pull it back.
+        if menu_bottom - selected_height / 2.0 < button_bottom - button_height / 2.0 {
+            menu_bottom = button_bottom - button_height / 2.0 + selected_height / 2.0;
+            menu_top = menu_bottom - menu_height;
+        }
+
+        // When the list does not fit, the selected item is lined up by
+        // scrolling instead. Upstream notes two limits on this honestly: it is
+        // done **only when the menu is first shown** -- afterwards the reader's
+        // own scroll position is left alone -- and it is **only accurate for
+        // fixed-height items**, which is the default and not a guarantee.
+        let scroll_offset = if preferred > computed_max_height {
+            (selected_offset - (button_top - menu_top))
+                .max(0.0)
+                .min(preferred - menu_height)
+        } else {
+            0.0
+        };
+
+        MenuLimits {
+            top: menu_top,
+            bottom: menu_bottom,
+            height: menu_height,
+            scroll_offset,
+        }
+    }
+
+    /// Upstream's horizontal placement, which reads from the far edge in
+    /// right-to-left.
+    pub fn menu_left(
+        button_left: f32,
+        button_right: f32,
+        child_width: f32,
+        available_width: f32,
+        direction: TextDirection,
+    ) -> f32 {
+        match direction {
+            TextDirection::Rtl => button_right.clamp(0.0, available_width) - child_width,
+            TextDirection::Ltr => button_left.clamp(0.0, available_width - child_width),
+        }
+    }
+
+    /// Upstream's assert is guarded on the button being fully on screen, with
+    /// the comment saying so: *"If the button was a bit off-screen, then, oh
+    /// well."* An invariant that only holds in the case anybody can reason
+    /// about, said out loud rather than quietly assumed.
+    pub fn menu_is_on_screen_check_applies(button_fully_on_screen: bool) -> bool {
+        button_fully_on_screen
+    }
+}
+
+/// Upstream `DropdownButtonFormField`: the same button inside a `FormField`, so
+/// it validates and saves with everything else on the form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropdownButtonFormField {
+    pub button: DropdownButton,
+    pub has_validator: bool,
+}
+
+impl DropdownButtonFormField {
+    pub fn new(button: DropdownButton) -> DropdownButtonFormField {
+        DropdownButtonFormField {
+            button,
+            has_validator: false,
+        }
+    }
+
+    /// A form field's value and the widget's value are the same thing, which is
+    /// why this wrapper exists at all rather than a caller wiring the two
+    /// together and getting it subtly wrong.
+    pub fn value(&self) -> Option<i32> {
+        self.button.value
+    }
+}
+
+/// Upstream `DropdownMenuEntry`: one row of a [`DropdownMenu`].
+///
+/// Where a [`DropdownMenuItem`] carries a **widget**, this carries a **label**
+/// -- a string. That is what lets `DropdownMenu` filter as the reader types:
+/// you cannot search a widget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DropdownMenuEntry {
+    pub value: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub has_leading_icon: bool,
+    pub has_trailing_icon: bool,
+}
+
+impl DropdownMenuEntry {
+    pub fn new(value: i32, label: impl Into<String>) -> DropdownMenuEntry {
+        DropdownMenuEntry {
+            value,
+            label: label.into(),
+            enabled: true,
+            has_leading_icon: false,
+            has_trailing_icon: false,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
+/// Upstream `DropdownMenu`, the Material 3 one.
+///
+/// It is a text field with a menu attached, and the difference from
+/// [`DropdownButton`] that matters is not how it looks: **it keeps the
+/// selection itself.** The application gives an `initial_selection` and is told
+/// about changes; it does not have to hold the value and hand it back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropdownMenu {
+    /// Where it starts. Compare [`DropdownButton::value`], which is where it
+    /// **is**.
+    pub initial_selection: Option<i32>,
+    pub entries: Vec<DropdownMenuEntry>,
+    /// Whether the reader can type to filter the entries. Being a text field is
+    /// what makes this possible at all.
+    pub enable_filter: bool,
+    /// Whether the field can be typed in freely, or only chosen from.
+    pub enable_search: bool,
+    selection: Option<i32>,
+}
+
+impl DropdownMenu {
+    pub fn new(entries: Vec<DropdownMenuEntry>) -> DropdownMenu {
+        DropdownMenu {
+            initial_selection: None,
+            entries,
+            enable_filter: false,
+            enable_search: true,
+            selection: None,
+        }
+    }
+
+    pub fn with_initial_selection(mut self, value: i32) -> Self {
+        self.initial_selection = Some(value);
+        self.selection = Some(value);
+        self
+    }
+
+    pub fn with_filter(mut self) -> Self {
+        self.enable_filter = true;
+        self
+    }
+
+    /// What is selected now, which this widget knows without being told.
+    pub fn selection(&self) -> Option<i32> {
+        self.selection
+    }
+
+    pub fn select(&mut self, value: Option<i32>) {
+        self.selection = value;
+    }
+
+    /// Upstream's filter: the entries whose label contains what has been typed.
+    /// With filtering off, every entry stays -- the text is a search cursor
+    /// rather than a sieve.
+    pub fn filtered(&self, typed: &str) -> Vec<&DropdownMenuEntry> {
+        if !self.enable_filter || typed.is_empty() {
+            return self.entries.iter().collect();
+        }
+        let needle = typed.to_lowercase();
+        self.entries
+            .iter()
+            .filter(|entry| entry.label.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// Upstream's search, which highlights rather than removes: the first entry
+    /// whose label starts with what was typed.
+    pub fn search(&self, typed: &str) -> Option<usize> {
+        if !self.enable_search || typed.is_empty() {
+            return None;
+        }
+        let needle = typed.to_lowercase();
+        self.entries
+            .iter()
+            .position(|entry| entry.label.to_lowercase().starts_with(&needle))
+    }
+}
+
+/// Upstream `DropdownMenuFormField`: [`DropdownMenu`] inside a `FormField`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropdownMenuFormField {
+    pub menu: DropdownMenu,
+    pub has_validator: bool,
+}
+
+impl DropdownMenuFormField {
+    pub fn new(menu: DropdownMenu) -> DropdownMenuFormField {
+        DropdownMenuFormField {
+            menu,
+            has_validator: false,
+        }
+    }
+
+    /// The form field's value is the menu's own selection, which is the point:
+    /// the menu already knows, so the field does not keep a second copy to
+    /// disagree with it.
+    pub fn value(&self) -> Option<i32> {
+        self.menu.selection()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn button() -> DropdownButton {
+        DropdownButton::new(vec![
+            DropdownMenuItem::new(0, 10),
+            DropdownMenuItem::new(1, 11),
+            DropdownMenuItem::new(2, 12),
+        ])
+    }
+
+    // -- The layout that makes it feel native ---------------------------------
+
+    #[test]
+    fn the_selected_item_lands_over_the_button() {
+        // Press "Medium" and "Medium" is under your finger, so choosing again
+        // is a small movement rather than a hunt.
+        let middle = button().with_value(1);
+        let limits = middle.menu_limits(300.0, 48.0, 800.0);
+        // The selected item's top is menu_top + its offset.
+        let selected_top = limits.top + middle.item_offset(1);
+        assert!(
+            (selected_top - 300.0).abs() < 0.01,
+            "selected item at {selected_top}, button at 300"
+        );
+    }
+
+    #[test]
+    fn a_different_selection_moves_the_whole_menu_not_the_item() {
+        let first = button().with_value(0).menu_limits(300.0, 48.0, 800.0);
+        let last = button().with_value(2).menu_limits(300.0, 48.0, 800.0);
+        assert!(
+            last.top < first.top,
+            "the menu slid up to bring item 2 down"
+        );
+        assert_eq!(first.height, last.height);
+    }
+
+    #[test]
+    fn a_menu_never_fills_the_screen_so_there_is_somewhere_to_tap_to_dismiss_it() {
+        // Upstream cites the Material spec for this.
+        let many = DropdownButton::new(
+            (0..40)
+                .map(|i| DropdownMenuItem::new(i, i as u64))
+                .collect(),
+        );
+        assert_eq!(many.max_menu_height(800.0), 800.0 - 96.0);
+        assert!(many.menu_limits(300.0, 48.0, 800.0).height <= 704.0);
+    }
+
+    #[test]
+    fn a_caller_may_ask_for_less_but_not_for_more() {
+        let mut capped = button();
+        capped.menu_max_height = Some(200.0);
+        assert_eq!(capped.max_menu_height(800.0), 200.0);
+
+        capped.menu_max_height = Some(5000.0);
+        assert_eq!(
+            capped.max_menu_height(800.0),
+            704.0,
+            "an over-large request is ignored rather than honoured"
+        );
+    }
+
+    #[test]
+    fn the_edge_margin_yields_to_a_button_that_is_nearer_the_edge() {
+        // Normally an item's height of margin; but a button ten pixels from
+        // the top gets a menu ten pixels from the top.
+        let near_top = button().with_value(0).menu_limits(10.0, 48.0, 800.0);
+        assert!(near_top.top >= 0.0);
+        assert!(near_top.top <= 10.0);
+    }
+
+    #[test]
+    fn a_menu_at_the_bottom_of_the_screen_stays_on_it() {
+        let near_bottom = button().with_value(2).menu_limits(760.0, 48.0, 800.0);
+        assert!(near_bottom.bottom <= 800.0 + 0.01, "{}", near_bottom.bottom);
+        assert!(near_bottom.top >= 0.0);
+    }
+
+    #[test]
+    fn a_menu_too_long_to_fit_scrolls_to_the_selection_instead_of_moving_to_it() {
+        let many = DropdownButton::new(
+            (0..40)
+                .map(|i| DropdownMenuItem::new(i, i as u64))
+                .collect(),
+        )
+        .with_value(30);
+        let limits = many.menu_limits(300.0, 48.0, 800.0);
+        assert!(limits.scroll_offset > 0.0);
+        assert!(
+            limits.scroll_offset <= LIST_PADDING_VERTICAL + 40.0 * MENU_ITEM_HEIGHT - limits.height,
+            "and never past the end of the list"
+        );
+    }
+
+    #[test]
+    fn a_menu_that_fits_does_not_scroll_at_all() {
+        assert_eq!(
+            button()
+                .with_value(2)
+                .menu_limits(300.0, 48.0, 800.0)
+                .scroll_offset,
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_menu_reads_from_the_far_edge_in_right_to_left() {
+        assert_eq!(
+            DropdownButton::menu_left(100.0, 300.0, 200.0, 400.0, TextDirection::Ltr),
+            100.0
+        );
+        assert_eq!(
+            DropdownButton::menu_left(100.0, 300.0, 200.0, 400.0, TextDirection::Rtl),
+            100.0,
+            "the same here, because the button is exactly the menu's width"
+        );
+        assert_eq!(
+            DropdownButton::menu_left(100.0, 300.0, 250.0, 400.0, TextDirection::Rtl),
+            50.0,
+            "a wider menu grows leftwards from the button's right edge"
+        );
+    }
+
+    #[test]
+    fn the_on_screen_check_only_applies_where_it_can_be_reasoned_about() {
+        // Upstream says so out loud: if the button was a bit off-screen, oh
+        // well.
+        assert!(DropdownButton::menu_is_on_screen_check_applies(true));
+        assert!(!DropdownButton::menu_is_on_screen_check_applies(false));
+    }
+
+    // -- The hide-underline trick -----------------------------------------------
+
+    #[test]
+    fn an_inherited_widget_whose_payload_is_its_own_existence() {
+        assert!(DropdownButtonHideUnderline::at(true));
+        assert!(!DropdownButtonHideUnderline::at(false));
+        assert!(
+            !DropdownButtonHideUnderline::update_should_notify(),
+            "there is nothing that could have changed"
+        );
+    }
+
+    // -- Items -------------------------------------------------------------------
+
+    #[test]
+    fn a_disabled_item_is_still_shown_because_it_is_one_of_the_options() {
+        let item = DropdownMenuItem::new(1, 11).disabled();
+        assert!(!item.enabled);
+        assert_eq!(item.value, 1);
+    }
+
+    #[test]
+    fn nothing_selected_falls_back_to_the_first_item() {
+        assert_eq!(button().selected_index(), 0);
+        assert_eq!(button().with_value(2).selected_index(), 2);
+    }
+
+    // -- The Material 3 one ---------------------------------------------------------
+
+    fn menu() -> DropdownMenu {
+        DropdownMenu::new(vec![
+            DropdownMenuEntry::new(0, "Small"),
+            DropdownMenuEntry::new(1, "Medium"),
+            DropdownMenuEntry::new(2, "Large"),
+        ])
+    }
+
+    #[test]
+    fn the_button_is_told_its_value_and_the_menu_knows_its_own() {
+        // Which is the change that actually matters between the two, not the
+        // visuals.
+        let controlled = button().with_value(1);
+        assert_eq!(controlled.value, Some(1));
+
+        let mut uncontrolled = menu().with_initial_selection(1);
+        assert_eq!(uncontrolled.selection(), Some(1));
+        uncontrolled.select(Some(2));
+        assert_eq!(
+            uncontrolled.selection(),
+            Some(2),
+            "and it changed without the application handing it back"
+        );
+        assert_eq!(
+            uncontrolled.initial_selection,
+            Some(1),
+            "while where it started is still where it started"
+        );
+    }
+
+    #[test]
+    fn an_entry_carries_a_label_and_an_item_carries_a_widget() {
+        // Which is what lets the menu filter as the reader types: you cannot
+        // search a widget.
+        let entry = DropdownMenuEntry::new(1, "Medium");
+        assert_eq!(entry.label, "Medium");
+    }
+
+    #[test]
+    fn filtering_removes_and_searching_only_points() {
+        let filtering = menu().with_filter();
+        assert_eq!(filtering.filtered("me").len(), 1, "only Medium");
+        assert_eq!(filtering.filtered("l").len(), 2, "Small and Large");
+        assert_eq!(
+            filtering.filtered("m").len(),
+            2,
+            "Small has one in the middle -- filtering is contains, not starts_with"
+        );
+        assert_eq!(
+            filtering.search("m"),
+            Some(1),
+            "while searching is starts_with, so it points at Medium alone"
+        );
+
+        let searching = menu();
+        assert_eq!(
+            searching.filtered("m").len(),
+            3,
+            "with filtering off nothing is removed"
+        );
+        assert_eq!(searching.search("me"), Some(1));
+        assert_eq!(searching.search("z"), None);
+    }
+
+    #[test]
+    fn an_empty_query_leaves_everything_where_it_was() {
+        assert_eq!(menu().with_filter().filtered("").len(), 3);
+        assert_eq!(menu().search(""), None);
+    }
+
+    // -- The form fields --------------------------------------------------------------
+
+    #[test]
+    fn a_form_field_reads_the_value_rather_than_keeping_a_second_copy() {
+        let field = DropdownButtonFormField::new(button().with_value(1));
+        assert_eq!(field.value(), Some(1));
+
+        let menu_field = DropdownMenuFormField::new(menu().with_initial_selection(2));
+        assert_eq!(menu_field.value(), Some(2));
+    }
+}
