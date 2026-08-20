@@ -811,7 +811,15 @@ impl<'a> PaintContext<'a> {
     /// The picture in progress is closed first, so the layer's content starts
     /// clean, and closed again afterwards, so whatever the caller draws next
     /// lands outside the layer rather than inside it.
-    fn in_layer(&mut self, open: impl FnOnce(&mut LayerTree), body: impl FnOnce(&mut Self)) {
+    /// `pub(crate)` because a render object that composites *a group* of its
+    /// children -- the wheel clipping all of them at once -- has nothing to
+    /// hand the `child: &dyn RenderBox` API, and this is the same escape hatch
+    /// the helpers just below already take.
+    pub(crate) fn in_layer(
+        &mut self,
+        open: impl FnOnce(&mut LayerTree),
+        body: impl FnOnce(&mut Self),
+    ) {
         self.flush();
         open(self.tree);
         body(self);

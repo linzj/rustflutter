@@ -9810,3 +9810,47 @@ entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出
 
 剩余 13：list wheel 3、debug/诊断 6、语义 2、`TrainHoppingAnimation` 1、
 `MenuSerializableShortcut` 1。下一轮做 list wheel 那簇。
+
+## 列表轮那簇三个：改名不算 port（2026-08-21）
+
+`ListWheelChildManager`、`ListWheelParentData`、`RenderListWheelViewport` 入
+`list_wheel.rs`。22 条测试，10 条变异全红。MISSING 13 → 10。
+
+**这三个的账本来可以用「已等价，只是叫 `RenderListWheel`」搪塞过去。** 但那正是
+上一轮审计 `mapped` 桶清出去的东西，所以照做了真的：
+
+* **`ListWheelChildManager` 是个 trait，`ListWheelElement` 实现它**——上游的
+  element 也正是 `implements ListWheelChildManager`。四个成员元素本来就都有，
+  缺的只是那句「它是这个」，而这句话编译器能检查。`child_count` 返回 `None`
+  **不是「没有孩子」而是「没有已知上界」**，循环轮就是这么没有两头的；这是最容易
+  读反的一个成员，专门写了测试。
+* **`ListWheelParentData` 的 `index` render object 推不出来**：活跃区间从轮子
+  滚到哪儿开始就从哪儿开始，不从 0 开始。`transform` 是**画的时候记下来**的，
+  因为 `applyPaintTransform` 是之后才问的，而投影不是任何一边能凭几何重算的。
+  上游说 `transform` 为空「正常不会发生」，在这里会：圆柱背面的孩子布局了但不
+  画——不是错误。
+* **`RenderListWheelViewport` 原来漏了五个属性**，其中三个 widget 层
+  （`ListWheelViewport`）已经声明了却从来没传给 render object：
+  `over_and_under_center_opacity`、`render_children_outside_viewport`、`clip`。
+  声明了不接线，比没声明更难发现。
+
+三处把上游读对了才没做错的地方：
+
+* **`offAxisFraction` 的 0 是中间，不是 0.5。** 我第一版文档写的就是 0.5。
+  上游 `_centerOriginTransform` 平移 `width/2 * (-f*2+1)`：f=0 → 中间，
+  f=0.5 → 左边缘，f=-0.5 → 右边缘。
+* **`overAndUnderCenterOpacity` 不是渐变。** 我第一版写了个按距中心距离的
+  ramp。上游是**一律的一个值**，而且把所有偏心孩子画进**同一个** opacity 层，
+  再把中心那些按全不透明画一遍——`center` 参数就是为这个存在的。每个孩子一层
+  会有多少行就有多少层，而且重叠处会露缝。改成两遍。
+* **`use_magnifier` 与 `magnification` 是两件事。** 变异 M9 一开始活了下来：
+  没有测试区分「放大镜关着但带着放大倍数」。上游分支看的是 flag 不是比值，
+  补了测试之后红。
+
+一个 API 让步：`PaintContext::in_layer` 从模块私有放宽到 `pub(crate)`。给**一组**
+孩子加裁剪或不透明层的 render object 没有东西可以喂给 `child: &dyn RenderBox` 的
+接口，而 `RenderBox: AsAny` 蕴含 `'static`，借用式的包装类型做不出来。render.rs
+里的辅助函数本来就走这个口子。
+
+剩余 10：debug/诊断 6、语义 2、`TrainHoppingAnimation` 1、
+`MenuSerializableShortcut` 1。下一轮做 debug/诊断那簇。

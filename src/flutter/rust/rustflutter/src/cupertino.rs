@@ -50,8 +50,8 @@ use crate::framework::{
 };
 use crate::gestures::PointerHandlers;
 use crate::list_wheel::{
-    RenderListWheel, angle_for, index_to_scroll_offset, inside_magnifier_band, project_center,
-    scroll_offset_to_index,
+    RenderListWheelViewport, angle_for, index_to_scroll_offset, inside_magnifier_band,
+    project_center, scroll_offset_to_index,
 };
 use crate::platform::Brightness;
 use crate::render::{
@@ -2373,6 +2373,11 @@ pub struct CupertinoPicker {
     squeeze: f32,
     magnification: f32,
     use_magnifier: bool,
+    /// Upstream's `offAxisFraction`, 0.0 by default -- see
+    /// [`crate::list_wheel::RenderListWheelViewport::off_axis_fraction`]. The
+    /// date picker sets it per column so all of them appear to turn on one
+    /// shared axis.
+    off_axis_fraction: f32,
     background_color: Option<Color>,
     selection_overlay: bool,
     initial_item: usize,
@@ -2401,6 +2406,7 @@ impl CupertinoPicker {
             squeeze: PICKER_SQUEEZE,
             magnification: 1.0,
             use_magnifier: false,
+            off_axis_fraction: 0.0,
             background_color: None,
             selection_overlay: true,
             initial_item: 0,
@@ -2591,6 +2597,7 @@ impl StatefulComponent for CupertinoPicker {
         let squeeze = self.squeeze;
         let magnification = self.magnification;
         let use_magnifier = self.use_magnifier;
+        let off_axis_fraction = self.off_axis_fraction;
         let viewport = state.viewport.clone();
 
         // The visible window, computed as `RenderListWheelViewport.
@@ -2698,17 +2705,23 @@ impl StatefulComponent for CupertinoPicker {
                 }
             }
 
-            let wheel = RenderListWheel {
+            let wheel = RenderListWheelViewport {
                 children: items,
                 first_index: first,
                 item_extent: extent,
                 offset,
                 diameter_ratio,
                 squeeze,
-                magnification: if use_magnifier { magnification } else { 1.0 },
+                use_magnifier,
+                magnification,
+                off_axis_fraction,
+                over_and_under_center_opacity: 1.0,
+                render_children_outside_viewport: false,
+                clip_behavior: crate::painting::ClipBehavior::HardEdge,
                 perspective: PICKER_PERSPECTIVE,
                 viewport_sink: viewport.clone(),
                 laid_out: Size::ZERO,
+                child_data: std::cell::RefCell::new(Vec::new()),
             };
 
             let mut stack = RenderStack::new().with_fit(crate::render::StackFit::Expand);
@@ -4633,7 +4646,7 @@ mod tests {
 
     #[test]
     fn the_wheel_hit_tests_in_flat_coordinates() {
-        let mut wheel = RenderListWheel {
+        let mut wheel = RenderListWheelViewport {
             children: vec![RenderRef::new(Pointer::new(
                 7,
                 Container::new().with_size(100.0, 32.0),
@@ -4646,7 +4659,7 @@ mod tests {
             magnification: 1.0,
             perspective: PICKER_PERSPECTIVE,
             viewport_sink: Rc::new(Cell::new(0.0)),
-            laid_out: Size::ZERO,
+            ..Default::default()
         };
         let size = wheel.layout(BoxConstraints::tight_for(Size::new(300.0, 216.0)));
         assert_eq!(size, Size::new(300.0, 216.0));

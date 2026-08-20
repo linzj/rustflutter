@@ -22,7 +22,9 @@
 //! now in `physics.rs` and all five scenarios are here.
 
 use crate::animation::Curve;
+use crate::engine::Rect;
 use crate::framework::AnyWidget;
+use crate::painting::ClipBehavior;
 use crate::physics::{
     FrictionSimulation, Simulation, SpringDescription, SpringSimulation, Tolerance,
 };
@@ -545,6 +547,43 @@ pub const CLIP_AND_RENDER_OUTSIDE_CONFLICT: &str = "Cannot renderChildrenOutside
 /// child exists is answered by building it** -- which is how the end of an
 /// unbounded builder's run gets discovered during layout rather than declared
 /// in advance.
+/// Upstream `ListWheelChildManager`: what the render object asks when it needs
+/// to know how far the wheel goes and to get another child.
+///
+/// This is the seam between the element and the render object, and the reason
+/// it is a seam is that the render object cannot know where the list ends. It
+/// works outwards from the centre and asks, index by index, and the manager
+/// answers -- from arithmetic for a bounded delegate, and from actually
+/// building for a builder that only finds out by trying.
+///
+/// `child_count` of `None` is not "no children"; it is **no known limit**, and
+/// upstream says so explicitly: the range is then whatever contiguous run
+/// [`child_exists_at`](ListWheelChildManager::child_exists_at) keeps saying yes
+/// to. A looping wheel answers `None` and yes to everything, which is how it
+/// has no ends.
+pub trait ListWheelChildManager {
+    /// Upstream's `childCount`. `None` means no explicit limit -- see the
+    /// trait's docs, because this is the member most easily read backwards.
+    fn child_count(&self) -> Option<usize>;
+
+    /// Upstream's `childExistsAt`. About whether the *delegate* can supply one,
+    /// not about whether it is currently attached.
+    fn child_exists_at(&self, index: i64) -> bool;
+
+    /// Upstream's `createChild(index, after:)`. `after` is the index this one
+    /// follows, and upstream asserts it is already live, because the live set
+    /// is one contiguous run and inserting into a hole would break it.
+    ///
+    /// Upstream returns nothing and mutates the render object's child list;
+    /// here the child is handed back, which is the same event said in the
+    /// direction this crate's trees are built.
+    fn create_child(&self, index: i64, after: Option<i64>) -> Option<AnyWidget>;
+
+    /// Upstream's `removeChild`, which takes the `RenderBox`. Here the index
+    /// identifies it, because that is what the live set is keyed by.
+    fn remove_child(&self, index: i64);
+}
+
 pub struct ListWheelElement {
     delegate: Rc<dyn ListWheelChildDelegate>,
     /// Upstream's `_childWidgets`, split in two because `AnyWidget` cannot be
@@ -694,6 +733,27 @@ impl ListWheelElement {
     }
 }
 
+/// [`ListWheelElement`] is upstream's `ListWheelChildManager` implementer --
+/// upstream's element `implements ListWheelChildManager` on the same four
+/// members.
+impl ListWheelChildManager for ListWheelElement {
+    fn child_count(&self) -> Option<usize> {
+        ListWheelElement::child_count(self)
+    }
+
+    fn child_exists_at(&self, index: i64) -> bool {
+        ListWheelElement::child_exists_at(self, index)
+    }
+
+    fn create_child(&self, index: i64, after: Option<i64>) -> Option<AnyWidget> {
+        ListWheelElement::create_child(self, index, after)
+    }
+
+    fn remove_child(&self, index: i64) {
+        ListWheelElement::remove_child(self, index)
+    }
+}
+
 /// Upstream `ListWheelViewport`: the wheel's parameters, and the render object
 /// they configure.
 ///
@@ -706,6 +766,9 @@ pub struct ListWheelViewport {
     pub perspective: f32,
     pub magnification: f32,
     pub use_magnifier: bool,
+    /// Upstream's `offAxisFraction` -- see
+    /// [`RenderListWheelViewport::off_axis_fraction`].
+    pub off_axis_fraction: f32,
     pub over_and_under_center_opacity: f32,
     pub squeeze: f32,
     pub render_children_outside_viewport: bool,
@@ -720,11 +783,19 @@ impl ListWheelViewport {
             perspective: DEFAULT_PERSPECTIVE,
             magnification: 1.0,
             use_magnifier: false,
+            off_axis_fraction: 0.0,
             over_and_under_center_opacity: 1.0,
             squeeze: 1.0,
             render_children_outside_viewport: false,
             clip: true,
         }
+    }
+
+    /// Upstream's `offAxisFraction`, whose default is 0.0 -- the middle. See
+    /// [`RenderListWheelViewport::off_axis_fraction`].
+    pub fn with_off_axis_fraction(mut self, fraction: f32) -> Self {
+        self.off_axis_fraction = fraction;
+        self
     }
 
     pub fn with_diameter_ratio(mut self, diameter_ratio: f32) -> Self {
@@ -821,22 +892,28 @@ impl ListWheelViewport {
         first_index: usize,
         offset: f32,
         viewport_sink: Rc<Cell<f32>>,
-    ) -> RenderListWheel {
-        RenderListWheel {
+    ) -> RenderListWheelViewport {
+        RenderListWheelViewport {
             children,
             first_index,
             item_extent: self.item_extent,
             offset,
             diameter_ratio: self.diameter_ratio,
             squeeze: self.squeeze,
-            magnification: if self.use_magnifier {
-                self.magnification
+            use_magnifier: self.use_magnifier,
+            magnification: self.magnification,
+            off_axis_fraction: self.off_axis_fraction,
+            over_and_under_center_opacity: self.over_and_under_center_opacity,
+            render_children_outside_viewport: self.render_children_outside_viewport,
+            clip_behavior: if self.clip {
+                ClipBehavior::HardEdge
             } else {
-                1.0
+                ClipBehavior::None
             },
             perspective: self.perspective,
             viewport_sink,
             laid_out: Size::ZERO,
+            child_data: RefCell::new(Vec::new()),
         }
     }
 }
@@ -1070,10 +1147,32 @@ pub(crate) fn inside_magnifier_band(
     (screen_center_y - height / 2.0).abs() + item_extent / 2.0 <= item_extent * magnification / 2.0
 }
 
+/// Upstream `ListWheelParentData`: what the wheel keeps about each child it is
+/// holding.
+///
+/// Two fields, and they answer different questions. `index` is the child's
+/// place in the list, which the render object cannot derive because the live
+/// run does not start at zero -- upstream's comment says it is the manager's
+/// job to maintain. `transform` is what the child was painted through, saved
+/// *during paint* because `apply_paint_transform` is asked afterwards and the
+/// projection is not something either side can recompute from geometry alone.
+///
+/// `transform` being `None` means laid out but not painted. Upstream notes
+/// that normally this does not happen, because the wheel paints everything it
+/// lays out -- but a child on the backside of the cylinder is skipped, so here
+/// it does happen and is not an error.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ListWheelParentData {
+    /// Upstream's `index`.
+    pub index: Option<i64>,
+    /// Upstream's `transform`, as this crate's 2D affine.
+    pub transform: Option<[f32; 6]>,
+}
+
 /// The wheel's render object: fixed-extent children laid out flat and painted
-/// through the cylindrical projection. `RenderListWheelViewport`, reduced to
-/// a vertical, non-looping wheel.
-pub struct RenderListWheel {
+/// through the cylindrical projection. Upstream `RenderListWheelViewport`,
+/// vertical and non-looping.
+pub struct RenderListWheelViewport {
     pub children: Vec<BoxedRender>,
     /// The index `children[0]` stands for.
     pub first_index: usize,
@@ -1081,17 +1180,227 @@ pub struct RenderListWheel {
     pub offset: f32,
     pub diameter_ratio: f32,
     pub squeeze: f32,
-    /// 1.0 when the magnifier is off.
+    /// Upstream's `useMagnifier`. Separate from `magnification` because they
+    /// mean different things: a wheel can have a magnification set and the
+    /// magnifier off, and upstream checks this flag, not the ratio.
+    pub use_magnifier: bool,
+    /// Upstream's `magnification`, which upstream asserts is positive.
     pub magnification: f32,
+    /// Upstream's `offAxisFraction`: where the cylinder's axis sits across the
+    /// wheel.
+    ///
+    /// **Zero is the middle**, which reads backwards until you see upstream's
+    /// arithmetic: `_centerOriginTransform` translates the origin by
+    /// `width / 2 * (-offAxisFraction * 2 + 1)`, so 0.0 lands at `width / 2`,
+    /// 0.5 at the left edge and -0.5 at the right.
+    ///
+    /// It moves the *origin the projection turns about*, not the children --
+    /// which is why a wheel with the axis off to one side looks like it is
+    /// being seen from the side rather than looking like a shifted wheel. The
+    /// date picker's columns use it so that all of them appear to turn on one
+    /// shared axis.
+    pub off_axis_fraction: f32,
+    /// Upstream's `overAndUnderCenterOpacity`: how visible the children away
+    /// from the magnifier are.
+    ///
+    /// It is a **flat opacity, not a ramp**: every child outside the centre
+    /// band gets exactly this value, and upstream paints all of them into *one*
+    /// shared layer before painting the centre ones at full opacity. That one
+    /// layer is the whole reason the paint path splits in two -- an opacity
+    /// layer per child would cost one layer per row and would show the seams
+    /// where rows overlap.
+    ///
+    /// 1.0 is upstream's default and means no dimming; upstream tests `>= 1`
+    /// and takes the single-pass path, so the default costs nothing.
+    pub over_and_under_center_opacity: f32,
+    /// Upstream's `renderChildrenOutsideViewport`, which **doubles the range of
+    /// children laid out**. They are not painted -- the backside of the
+    /// cylinder is skipped either way -- so what it buys is children that are
+    /// already built when they turn into view. Upstream asserts it is not set
+    /// together with clipping, because the two ask for opposite things.
+    pub render_children_outside_viewport: bool,
+    /// Upstream's `clipBehavior`, which defaults to `hardEdge`.
+    pub clip_behavior: ClipBehavior,
     /// Upstream's `perspective`. Was the picker's constant while this lived in
     /// `cupertino.rs`; upstream's render object has always had it as a
     /// parameter, and now that two widgets share the object it has to be one.
     pub perspective: f32,
     pub viewport_sink: Rc<Cell<f32>>,
     pub laid_out: Size,
+    /// Upstream's per-child `ListWheelParentData`, indexed alongside
+    /// `children`. A `RefCell` because upstream writes the transform from
+    /// `paint`, which does not have the render object mutably.
+    pub child_data: RefCell<Vec<ListWheelParentData>>,
 }
 
-impl RenderBox for RenderListWheel {
+/// Upstream's constructor defaults, so a caller states only what it means to
+/// change. `item_extent` has no upstream default -- it is required there -- and
+/// zero here is a base to be overwritten, not a usable wheel.
+impl Default for RenderListWheelViewport {
+    fn default() -> RenderListWheelViewport {
+        RenderListWheelViewport {
+            children: Vec::new(),
+            first_index: 0,
+            item_extent: 0.0,
+            offset: 0.0,
+            diameter_ratio: DEFAULT_DIAMETER_RATIO,
+            squeeze: 1.0,
+            use_magnifier: false,
+            magnification: 1.0,
+            off_axis_fraction: 0.0,
+            over_and_under_center_opacity: 1.0,
+            render_children_outside_viewport: false,
+            clip_behavior: ClipBehavior::HardEdge,
+            perspective: DEFAULT_PERSPECTIVE,
+            viewport_sink: Rc::new(Cell::new(0.0)),
+            laid_out: Size::ZERO,
+            child_data: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl RenderListWheelViewport {
+    /// Upstream's `indexOf`, which reads the child's parent data.
+    pub fn index_of(&self, child: usize) -> Option<i64> {
+        self.child_data.borrow().get(child).and_then(|d| d.index)
+    }
+
+    /// Upstream's `applyPaintTransform`, which multiplies in whatever the last
+    /// paint recorded. Nothing recorded means the child was not painted, and
+    /// upstream leaves the transform alone.
+    pub fn apply_paint_transform(&self, child: usize) -> Option<[f32; 6]> {
+        self.child_data
+            .borrow()
+            .get(child)
+            .and_then(|d| d.transform)
+    }
+
+    /// Upstream's `_shouldClipAtCurrentOffset`, which clips only when a child
+    /// actually reaches past an edge -- so a wheel whose content fits pays for
+    /// no clip layer at all.
+    pub fn should_clip_at_current_offset(&self) -> bool {
+        if self.render_children_outside_viewport {
+            return false;
+        }
+        let top = self.offset;
+        let bottom = self.offset + self.laid_out.height;
+        let first = self.first_index as f32 * self.item_extent;
+        let last = first + self.children.len() as f32 * self.item_extent;
+        first < top || last > bottom
+    }
+
+    /// Where the projection's origin sits across the wheel. Upstream's
+    /// `_centerOriginTransform` translates by
+    /// `centerX * (-offAxisFraction * 2 + 1)`, which is the middle at 0.5 and
+    /// slides to an edge as the fraction goes to 0 or 1.
+    /// Upstream's `_paintVisibleChildren`, which is the two-pass split and
+    /// nothing else.
+    ///
+    /// One shared opacity layer around every off-centre child, then the centre
+    /// ones at full opacity -- see
+    /// [`over_and_under_center_opacity`](Self::over_and_under_center_opacity)
+    /// for why it is one layer and not one per child. With no dimming asked for
+    /// there is one pass and no layer at all.
+    fn paint_children(&self, context: &mut PaintContext, offset: Offset) {
+        if self.over_and_under_center_opacity >= 1.0 {
+            self.paint_all_children(context, offset, None);
+            return;
+        }
+        let alpha = self.off_center_alpha();
+        context.in_layer(
+            |tree| tree.push_opacity(alpha, 0.0, 0.0),
+            |context| self.paint_all_children(context, offset, Some(false)),
+        );
+        self.paint_all_children(context, offset, Some(true));
+    }
+
+    /// Upstream's `_paintAllChildren`.
+    ///
+    /// `center` selects which children this pass is for, and it is upstream's
+    /// own three-way parameter: `None` for all of them, `Some(true)` for the
+    /// ones in the magnifier band, `Some(false)` for the ones outside it.
+    /// Upstream splits a *partially* intersecting child across both passes by
+    /// clipping it twice; this port magnifies a child only when it is wholly
+    /// inside the band -- see [`inside_magnifier_band`] -- so each child falls
+    /// on exactly one side, which is the same split made stepwise.
+    fn paint_all_children(&self, context: &mut PaintContext, offset: Offset, center: Option<bool>) {
+        let height = self.laid_out.height;
+        if height <= 0.0 {
+            return;
+        }
+        self.child_data
+            .borrow_mut()
+            .resize(self.children.len(), ListWheelParentData::default());
+        let radius = height * self.diameter_ratio / 2.0;
+        for (i, child) in self.children.iter().enumerate() {
+            let index = self.first_index + i;
+            self.child_data.borrow_mut()[i].index = Some(index as i64);
+            let flat_center =
+                index as f32 * self.item_extent + self.item_extent / 2.0 - self.offset;
+            let angle = angle_for(flat_center, height, self.diameter_ratio, self.squeeze);
+            // The backside of the cylinder is not painted -- which is also why
+            // `renderChildrenOutsideViewport` costs nothing at paint time: the
+            // extra children it lays out are exactly the ones skipped here.
+            if angle.abs() > std::f32::consts::FRAC_PI_2 || angle.is_nan() {
+                continue;
+            }
+            let y_rel = flat_center - height / 2.0;
+            let (screen_y, mut sx) = project_center(y_rel, angle, radius, height, self.perspective);
+            let mut sy = project_scale_y(y_rel, angle, radius, height, self.perspective);
+            let in_center = self.use_magnifier
+                && inside_magnifier_band(screen_y, height, self.item_extent, self.magnification);
+            if center.is_some_and(|center| center != in_center) {
+                continue;
+            }
+            if in_center {
+                sx *= self.magnification;
+                sy *= self.magnification;
+            }
+            let child_size = child.size();
+            // Scale about the projection's origin, placed at the child's
+            // projected position: `push_transform`'s pivot form. The pivot is
+            // in the child's coordinates, so the origin -- which
+            // `offAxisFraction` moves across the *viewport* -- is carried back
+            // through where the child sits.
+            let across = (self.laid_out.width - child_size.width) / 2.0;
+            let pivot = Offset::new(self.center_origin_x() - across, child_size.height / 2.0);
+            let at = Offset::new(
+                offset.dx + across,
+                offset.dy + screen_y - child_size.height / 2.0,
+            );
+            let matrix = [sx, 0.0, 0.0, sy, 0.0, 0.0];
+            // Upstream saves the transform it painted through so that
+            // `applyPaintTransform` can answer afterwards -- see
+            // [`ListWheelParentData::transform`]. This is `push_transform`'s
+            // composition written out: scale about the pivot, then place.
+            self.child_data.borrow_mut()[i].transform = Some([
+                sx,
+                0.0,
+                0.0,
+                sy,
+                at.dx + pivot.dx - sx * pivot.dx,
+                at.dy + pivot.dy - sy * pivot.dy,
+            ]);
+            context.push_transform(matrix, pivot, at, child);
+        }
+    }
+
+    /// The alpha the off-centre children share. Upstream's
+    /// `(overAndUnderCenterOpacity * 255).round()`.
+    fn off_center_alpha(&self) -> u8 {
+        (self.over_and_under_center_opacity.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// Where the projection's origin sits across the wheel. Upstream's
+    /// `_centerOriginTransform` translates by
+    /// `width / 2 * (-offAxisFraction * 2 + 1)` -- the middle at 0.0, the left
+    /// edge at 0.5, the right edge at -0.5.
+    fn center_origin_x(&self) -> f32 {
+        self.laid_out.width / 2.0 * (-self.off_axis_fraction * 2.0 + 1.0)
+    }
+}
+
+impl RenderBox for RenderListWheelViewport {
     /// `sizedByParent`: the wheel is exactly what it is offered.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         let width = if constraints.has_bounded_width() {
@@ -1120,40 +1429,32 @@ impl RenderBox for RenderListWheel {
         self.laid_out
     }
 
+    /// Upstream's `paint`, which is the clip decision and nothing else.
+    ///
+    /// The clip is only pushed when a child actually reaches past an edge --
+    /// upstream's `_shouldClipAtCurrentOffset` -- so a wheel whose content fits
+    /// pays for no clip layer at all. `renderChildrenOutsideViewport` turns it
+    /// off outright, because the two ask for opposite things and upstream
+    /// asserts they are not both set.
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
-        let height = self.laid_out.height;
-        if height <= 0.0 {
+        if self.children.is_empty() {
             return;
         }
-        let radius = height * self.diameter_ratio / 2.0;
-        for (i, child) in self.children.iter().enumerate() {
-            let index = self.first_index + i;
-            let flat_center =
-                index as f32 * self.item_extent + self.item_extent / 2.0 - self.offset;
-            let angle = angle_for(flat_center, height, self.diameter_ratio, self.squeeze);
-            // The backside of the cylinder is not painted.
-            if angle.abs() > std::f32::consts::FRAC_PI_2 {
-                continue;
-            }
-            let y_rel = flat_center - height / 2.0;
-            let (screen_y, mut sx) = project_center(y_rel, angle, radius, height, self.perspective);
-            let mut sy = project_scale_y(y_rel, angle, radius, height, self.perspective);
-            if self.magnification > 1.0
-                && inside_magnifier_band(screen_y, height, self.item_extent, self.magnification)
-            {
-                sx *= self.magnification;
-                sy *= self.magnification;
-            }
-            let child_size = child.size();
-            // Scale about the child's center, placed at its projected
-            // position: `push_transform`'s pivot form.
-            let pivot = Offset::new(child_size.width / 2.0, child_size.height / 2.0);
-            let at = Offset::new(
-                offset.dx + (self.laid_out.width - child_size.width) / 2.0,
-                offset.dy + screen_y - child_size.height / 2.0,
-            );
-            context.push_transform([sx, 0.0, 0.0, sy, 0.0, 0.0], pivot, at, child);
+        if self.clip_behavior == ClipBehavior::None || !self.should_clip_at_current_offset() {
+            self.paint_children(context, offset);
+            return;
         }
+        let bounds = Rect::xywh(
+            offset.dx,
+            offset.dy,
+            self.laid_out.width,
+            self.laid_out.height,
+        );
+        let behavior = self.clip_behavior;
+        context.in_layer(
+            |tree| tree.push_clip_rect(bounds, behavior),
+            |context| self.paint_children(context, offset),
+        );
     }
 
     /// Hit testing works in flat coordinates: the cylindrical transform is a
@@ -1782,5 +2083,317 @@ mod tests {
             .expect("it stops");
         let landed = simulation.x(stop);
         assert!((landed / 40.0 - (landed / 40.0).round()).abs() * 40.0 < 0.5);
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use crate::render::RenderRef;
+    use crate::widgets::Container;
+
+    fn wheel(count: usize) -> RenderListWheelViewport {
+        RenderListWheelViewport {
+            children: (0..count)
+                .map(|_| RenderRef::new(Container::new().with_size(100.0, 40.0)))
+                .collect(),
+            item_extent: 40.0,
+            ..Default::default()
+        }
+    }
+
+    fn laid_out(mut wheel: RenderListWheelViewport) -> RenderListWheelViewport {
+        wheel.layout(BoxConstraints::tight_for(Size::new(200.0, 200.0)));
+        wheel
+    }
+
+    fn children(count: usize) -> Vec<Rc<dyn Fn() -> AnyWidget>> {
+        (0..count)
+            .map(|_| -> Rc<dyn Fn() -> AnyWidget> {
+                Rc::new(|| crate::framework::leaf(|| crate::widgets::Empty))
+            })
+            .collect()
+    }
+
+    fn paint_once(wheel: &RenderListWheelViewport) {
+        let mut layers = crate::engine::LayerTree::new(200, 200);
+        let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+        wheel.paint(&mut context, Offset::ZERO);
+    }
+
+    /// Which children a single pass painted, read off the parent data it wrote.
+    fn painted_by(wheel: &RenderListWheelViewport, center: Option<bool>) -> Vec<bool> {
+        wheel.child_data.borrow_mut().clear();
+        let mut layers = crate::engine::LayerTree::new(200, 200);
+        let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+        wheel.paint_all_children(&mut context, Offset::ZERO, center);
+        wheel
+            .child_data
+            .borrow()
+            .iter()
+            .map(|d| d.transform.is_some())
+            .collect()
+    }
+
+    // -- ListWheelChildManager --------------------------------------------------------
+
+    #[test]
+    fn no_known_limit_is_not_no_children() {
+        // The member most easily read backwards: `None` means the wheel has no
+        // ends, which is how the looping delegate works, not that it is empty.
+        let looping =
+            ListWheelElement::new(Rc::new(ListWheelChildLoopingListDelegate::new(children(3))));
+        assert_eq!(ListWheelChildManager::child_count(&looping), None);
+        assert!(looping.child_exists_at(1_000_000));
+        assert!(looping.child_exists_at(-1_000_000));
+
+        let bounded = ListWheelElement::new(Rc::new(ListWheelChildListDelegate::new(children(3))));
+        assert_eq!(ListWheelChildManager::child_count(&bounded), Some(3));
+        assert!(!bounded.child_exists_at(3));
+    }
+
+    #[test]
+    fn the_element_is_the_manager() {
+        // Upstream's element `implements ListWheelChildManager`; this is the
+        // same claim, made where the compiler can check it.
+        fn ask(manager: &dyn ListWheelChildManager) -> Option<usize> {
+            manager.child_count()
+        }
+        let element = ListWheelElement::new(Rc::new(ListWheelChildListDelegate::new(children(4))));
+        assert_eq!(ask(&element), Some(4));
+
+        let made = ListWheelChildManager::create_child(&element, 0, None);
+        assert!(made.is_some());
+        assert_eq!(element.active_indices(), vec![0]);
+        ListWheelChildManager::remove_child(&element, 0);
+        assert!(element.active_indices().is_empty());
+    }
+
+    // -- ListWheelParentData ------------------------------------------------------------
+
+    #[test]
+    fn each_child_knows_its_index_and_the_first_one_need_not_be_zero() {
+        // The render object cannot derive it: the live run starts wherever the
+        // wheel is scrolled to.
+        let mut w = wheel(3);
+        w.first_index = 17;
+        let w = laid_out(w);
+        paint_once(&w);
+        assert_eq!(w.index_of(0), Some(17));
+        assert_eq!(w.index_of(2), Some(19));
+        assert_eq!(w.index_of(3), None, "there is no fourth child");
+    }
+
+    #[test]
+    fn a_child_on_the_backside_is_laid_out_and_not_painted() {
+        // So its transform stays empty, which upstream says normally does not
+        // happen -- here it does, and it is not an error.
+        let w = laid_out(wheel(40));
+        paint_once(&w);
+        let data = w.child_data.borrow();
+        assert!(
+            data.iter().any(|d| d.transform.is_some()),
+            "something faces the front"
+        );
+        assert!(
+            data.iter().any(|d| d.transform.is_none()),
+            "and something is round the back"
+        );
+        assert!(
+            data.iter().all(|d| d.index.is_some()),
+            "but every one of them still knows its index"
+        );
+    }
+
+    #[test]
+    fn the_recorded_transform_is_what_the_child_was_painted_through() {
+        // The child at the centre is not turned at all -- angle 0, and the
+        // perspective divide is 1 there -- so it must be painted through an
+        // identity scale at its natural place. Anything else means the recorded
+        // transform and the paint have drifted apart.
+        let w = laid_out(wheel(5));
+        paint_once(&w);
+        let [a, b, c, d, e, f] = w.apply_paint_transform(2).expect("index 2 is centred");
+        assert_eq!((b, c), (0.0, 0.0), "no rotation: the projection is a scale");
+        assert!((a - 1.0).abs() < 1e-3, "unscaled across, got {a}");
+        assert!((d - 1.0).abs() < 1e-3, "and down, got {d}");
+        assert!((e - 50.0).abs() < 1e-3, "centred across the wheel, got {e}");
+        assert!((f - 80.0).abs() < 1e-3, "and centred down it, got {f}");
+    }
+
+    #[test]
+    fn a_child_away_from_the_centre_is_turned_and_shrunk() {
+        // The other half: the projection has to actually do something, or the
+        // test above would pass on a wheel that never turns.
+        let w = laid_out(wheel(5));
+        paint_once(&w);
+        let far = w.apply_paint_transform(0).expect("painted");
+        assert!(far[0] < 1.0, "narrower, got {}", far[0]);
+        assert!(far[3] < 1.0, "and shorter, got {}", far[3]);
+    }
+
+    // -- offAxisFraction ------------------------------------------------------------------
+
+    #[test]
+    fn zero_puts_the_axis_in_the_middle() {
+        // Reads backwards, and is upstream's arithmetic: 0.0 -> width / 2.
+        let w = laid_out(wheel(3));
+        assert_eq!(w.center_origin_x(), 100.0, "the middle of a 200-wide wheel");
+
+        let mut left = wheel(3);
+        left.off_axis_fraction = 0.5;
+        assert_eq!(laid_out(left).center_origin_x(), 0.0, "the left edge");
+
+        let mut right = wheel(3);
+        right.off_axis_fraction = -0.5;
+        assert_eq!(laid_out(right).center_origin_x(), 200.0, "the right edge");
+    }
+
+    #[test]
+    fn moving_the_axis_leaves_the_centre_child_where_it_was() {
+        // It moves the origin the projection turns about, not the children --
+        // and the child at the centre is not turned at all, so it must not move.
+        let mut centered = wheel(9);
+        centered.offset = 40.0 * 4.0 - 80.0;
+        let centered = laid_out(centered);
+        paint_once(&centered);
+        let straight = centered.apply_paint_transform(4).expect("painted");
+
+        let mut off = wheel(9);
+        off.offset = 40.0 * 4.0 - 80.0;
+        off.off_axis_fraction = 0.5;
+        let off = laid_out(off);
+        paint_once(&off);
+        let tilted = off.apply_paint_transform(4).expect("painted");
+
+        for (a, b) in straight.iter().zip(tilted.iter()) {
+            assert!((a - b).abs() < 1e-3, "{straight:?} vs {tilted:?}");
+        }
+    }
+
+    #[test]
+    fn a_turned_child_does_move_when_the_axis_does() {
+        // The other half: if nothing moved, the fraction would be doing nothing.
+        let mut straight = wheel(9);
+        straight.offset = 40.0 * 4.0 - 80.0;
+        let straight = laid_out(straight);
+        paint_once(&straight);
+        let a = straight.apply_paint_transform(1).expect("painted");
+
+        let mut off = wheel(9);
+        off.offset = 40.0 * 4.0 - 80.0;
+        off.off_axis_fraction = 0.5;
+        let off = laid_out(off);
+        paint_once(&off);
+        let b = off.apply_paint_transform(1).expect("painted");
+
+        assert!((a[4] - b[4]).abs() > 1.0, "{a:?} vs {b:?}");
+    }
+
+    // -- overAndUnderCenterOpacity ----------------------------------------------------------
+
+    #[test]
+    fn full_opacity_is_one_pass_and_no_layer() {
+        // Upstream tests `>= 1` and takes the single-pass path, so the default
+        // costs nothing.
+        let w = laid_out(wheel(5));
+        assert_eq!(w.over_and_under_center_opacity, 1.0);
+        assert_eq!(w.off_center_alpha(), 255);
+    }
+
+    #[test]
+    fn the_dimming_is_flat_and_not_a_ramp() {
+        // Every off-centre child gets the same value -- one shared layer. A
+        // per-child ramp would need one layer per row and would show the seams
+        // where rows overlap.
+        let mut w = wheel(5);
+        w.over_and_under_center_opacity = 0.5;
+        assert_eq!(w.off_center_alpha(), 128);
+        w.over_and_under_center_opacity = 0.0;
+        assert_eq!(w.off_center_alpha(), 0);
+    }
+
+    #[test]
+    fn the_two_passes_between_them_paint_each_child_once() {
+        // The centre pass and the off-centre pass partition the children; a
+        // child painted by both would come out heavier than its neighbours.
+        let mut w = wheel(9);
+        w.use_magnifier = true;
+        w.magnification = 1.5;
+        w.over_and_under_center_opacity = 0.5;
+        w.offset = 40.0 * 4.0 - 80.0;
+        let w = laid_out(w);
+
+        let in_center = painted_by(&w, Some(true));
+        let outside = painted_by(&w, Some(false));
+
+        assert!(in_center.iter().any(|&x| x), "something is in the band");
+        assert!(outside.iter().any(|&x| x), "and something is not");
+        for (i, (a, b)) in in_center.iter().zip(outside.iter()).enumerate() {
+            assert!(!(*a && *b), "child {i} was painted by both passes");
+        }
+
+        let both = painted_by(&w, None);
+        for (i, (a, b)) in in_center.iter().zip(outside.iter()).enumerate() {
+            assert_eq!(both[i], *a || *b, "child {i}");
+        }
+    }
+
+    // -- useMagnifier -----------------------------------------------------------------------
+
+    #[test]
+    fn a_magnification_with_the_magnifier_off_does_nothing() {
+        // Upstream branches on `useMagnifier`, not on the ratio. They are two
+        // settings, and a wheel can carry a magnification it is not using --
+        // which is what a picker does while the magnifier is being turned off.
+        let mut w = wheel(5);
+        w.magnification = 2.0;
+        w.use_magnifier = false;
+        let w = laid_out(w);
+        paint_once(&w);
+        let plain = w.apply_paint_transform(2).expect("index 2 is centred");
+        assert!(
+            (plain[0] - 1.0).abs() < 1e-3,
+            "unmagnified, got {}",
+            plain[0]
+        );
+
+        let mut on = wheel(5);
+        on.magnification = 2.0;
+        on.use_magnifier = true;
+        let on = laid_out(on);
+        paint_once(&on);
+        let magnified = on.apply_paint_transform(2).expect("index 2 is centred");
+        assert!((magnified[0] - 2.0).abs() < 1e-3, "got {}", magnified[0]);
+    }
+
+    // -- renderChildrenOutsideViewport and clipping --------------------------------------------
+
+    #[test]
+    fn a_wheel_whose_content_fits_asks_for_no_clip() {
+        let w = laid_out(wheel(5));
+        assert!(!w.should_clip_at_current_offset(), "5 * 40 == 200, exactly");
+    }
+
+    #[test]
+    fn a_child_reaching_past_an_edge_asks_for_one() {
+        let w = laid_out(wheel(6));
+        assert!(w.should_clip_at_current_offset(), "6 * 40 > 200");
+
+        let mut scrolled = wheel(5);
+        scrolled.offset = 10.0;
+        assert!(
+            laid_out(scrolled).should_clip_at_current_offset(),
+            "and content that fits but is scrolled reaches past the top"
+        );
+    }
+
+    #[test]
+    fn rendering_outside_the_viewport_turns_clipping_off_outright() {
+        // The two ask for opposite things, and upstream asserts they are not
+        // both set.
+        let mut w = wheel(20);
+        w.render_children_outside_viewport = true;
+        assert!(!laid_out(w).should_clip_at_current_offset());
     }
 }
