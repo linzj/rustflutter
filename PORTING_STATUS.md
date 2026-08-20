@@ -164,6 +164,65 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个不创建渲染对象的渲染对象 widget(2026-08-20)
+
+新模块 `adapter.rs`(`RenderObjectToWidgetAdapter`、`RenderObjectToWidgetElement`),以及补进
+`sliver_fill.rs` 的 `SliverPrototypeExtentList`。覆盖率 1737/1888(92.0%)。测试 3138。
+
+**`adapter.dart` 是那道嫁接口。** 框架里别处都是 widget 描述一个渲染对象、由框架去造;**而这里渲染对象
+早就在了**——它就是引擎给的那个视图——需要做的是把一棵 widget 树接到它下面。`runApp` 做的就是这件事,而
+这个倒转就是整个设计。
+
+于是 `createRenderObject` **返回它收到的那个 container**,一个也不造。**一个不创建渲染对象的渲染对象
+widget 读起来像自相矛盾,直到你看见它是干什么的:渲染树先存在,而这个 widget 是框架同意假装是自己造
+的。** `updateRenderObject` 的函数体是空的——container 从来就不是被这个 widget 配置的,没有什么可更新。
+
+**而它的 key 是 `GlobalObjectKey(container)`——container 自己就是身份。** 这正是**第二次调用 `runApp` 会
+「换掉」应用而不是「重启」它**的原因:同一个视图上的两个 adapter 是同一个 widget,于是下面那棵 element
+树是被协调,不是被扔掉。**热重载就活在这一行上。**
+
+`attachToRenderTree` 的两条路也是两种语气:**第一次是命令式的**——锁住状态、创建 element、指派 owner、
+在 build scope 里 mount,当场做完,因为没有一帧正在进行可以推迟给它;**之后是声明式的**——把新 widget
+**存起来**,标记需要重建。
+
+其余几条:
+
+* **`_rebuild` 的 `catch` 里,根部的构建失败不会把应用带走,而是把错误 widget 立起来。** 而注意它传的参
+  数是 `updateChild(**null**, error, slot)`——**失败的那棵子树是被丢掉的,不是拿去和错误 widget 协调**:
+  跟一棵在构建时抛了异常的树做协调,等于把同一个问题再问一遍。
+* **`moveRenderObjectChild` 的函数体是 `assert(false)`。** 不是「不支持」,是**不可能**:只有一个槽,没有
+  地方可移。走到这里是框架的 bug,不是调用方在做什么出格的事。
+* **`performRebuild` 里 `_newWidget` 可能为 null**,上游把场景写在注释里:**一次 reassemble——热重载——会
+  在不递新 widget 的情况下重建根。**
+* **`mount` 断言 parent 为 null**:这个 element 只可能是根。
+
+---
+
+**`SliverPrototypeExtentList` 是「范围从哪来」的第三个答案。** `SliverFillViewport` 从视口取,
+`SliverFillRemaining` 从剩下的地方取,**而这一个从一个你交给它、它从不给你看的 widget 那里取。**
+
+那个原型是渲染对象的孩子,却**不是列表的孩子**:它待在一个自己的槽里、在下标空间之外,**每一趟都被布局,
+一趟都不被绘制**。于是范围是由一个真 widget 的真布局量出来的,而完全没有把它放上屏幕的代价。
+
+**`performLayout` 那两行的顺序是有理由的:先布局原型,然后才跑下面那个定长列表的布局**——因为正是那趟布
+局在问 `itemExtent`,而在原型有尺寸之前,这个答案根本不存在。而 `itemExtent` 会断言原型已经被布局过:
+**提前读是一个错误,不是一个缺席**;这里返回 `None` 而不是一个 0——**一个 0 会安静地让每个孩子都没有高
+度。**
+
+**而这正是上一轮 `SliverEnsureSemantics` 点名要的那几个 sliver 之一**,理由也是那一条:它的滚动范围在孩
+子被构建之前就是已知的,于是按那个范围导航的辅助技术,会到达它本来要去的地方。
+
+**另外,这两个类在同一处地方形状一样:`RenderObjectToWidgetElement` 和这个原型槽,都只有一个槽、
+`moveRenderObjectChild` 都是 `assert(false)`——「只有一个,没地方去」。**
+
+**一处工具上的自查:** 注册模块时用 `sed ... || sed ...` 想做回退,但 **`sed -i` 在没有匹配时也返回
+0**,于是回退分支从不执行,模块没被写进 `lib.rs`。是紧接着的 `grep` 打印为空才发现的。**在 shell 里拿退
+出码当「有没有改到」用,是错的;要么验证结果,要么别写回退。**
+
+验证:`cargo test --lib` 3138 绿,GN `rustflutter_unittests` 3138 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1737 accounted / 151 MISSING(92.0%)。
+
 ### 一个语义动作没有位置(2026-08-20)
 
 新模块 `semantics_debugger.rs`(`SemanticsDebugger`),以及补进 `semantics_markers.rs` 的

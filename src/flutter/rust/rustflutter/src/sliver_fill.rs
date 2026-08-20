@@ -1,9 +1,10 @@
 //! A port of `widgets/sliver_fill.dart`: `SliverFillViewport` and
 //! `SliverFillRemaining`.
 //!
-//! Two slivers that size themselves from the viewport rather than from their
-//! content. One gives every child a share of it; the other takes whatever the
-//! slivers above it left over.
+//! Slivers that size themselves from something other than their own content.
+//! One gives every child a share of the viewport; the second takes whatever the
+//! slivers above it left over; and `SliverPrototypeExtentList`, below, measures
+//! a widget it never shows.
 
 use crate::render::SliverConstraints;
 
@@ -174,6 +175,78 @@ impl SliverFillRemaining {
 impl Default for SliverFillRemaining {
     fn default() -> Self {
         SliverFillRemaining::new()
+    }
+}
+
+/// Upstream `SliverPrototypeExtentList`.
+///
+/// A third answer to "where does the extent come from". [`SliverFillViewport`]
+/// takes it from the viewport and [`SliverFillRemaining`] from what is left;
+/// this one takes it from **a widget you hand it and it never shows you**.
+///
+/// The prototype is a child of the render object but not one of the list's
+/// children: it lives in a slot of its own, outside the index space, and is
+/// laid out on every pass and painted on none. So the extent is measured by
+/// real layout of a real widget, with none of the cost of having it on screen.
+///
+/// This is one of the slivers [`crate::semantics_markers::SliverEnsureSemantics`]
+/// asks for, and for the reason that class gives: its scroll extent is known
+/// before its children are built, so assistive technology navigating by that
+/// extent arrives where it meant to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliverPrototypeExtentList {
+    /// The measured extent of the prototype along the main axis, once it has
+    /// been laid out.
+    prototype_extent: Option<f32>,
+}
+
+impl SliverPrototypeExtentList {
+    /// Upstream's `_prototypeSlot`, a `static final Object()` kept apart from
+    /// the integer slots the children use. A slot that cannot be confused with
+    /// an index is how the prototype stays out of the list.
+    pub const PROTOTYPE_SLOT: i64 = -1;
+
+    pub fn new() -> SliverPrototypeExtentList {
+        SliverPrototypeExtentList {
+            prototype_extent: None,
+        }
+    }
+
+    /// Upstream `performLayout`, whose two lines are in this order for a
+    /// reason: **the prototype is laid out first, and only then does the
+    /// fixed-extent list underneath run** -- because that layout is what asks
+    /// for `itemExtent`, and the answer does not exist until the prototype has
+    /// a size.
+    pub fn perform_layout(&mut self, prototype_measured_extent: f32) {
+        self.prototype_extent = Some(prototype_measured_extent);
+    }
+
+    /// Upstream `itemExtent`, which asserts the prototype exists and has been
+    /// laid out. Reading it earlier is a mistake, not an absence -- so this
+    /// returns `None` rather than a zero that would quietly give every child no
+    /// height.
+    pub fn item_extent(&self) -> Option<f32> {
+        self.prototype_extent
+    }
+
+    /// Whether a slot belongs to the prototype rather than to a child.
+    pub fn is_prototype_slot(slot: i64) -> bool {
+        slot == SliverPrototypeExtentList::PROTOTYPE_SLOT
+    }
+
+    /// Upstream `moveRenderObjectChild` asserts false for the prototype slot,
+    /// with the comment saying why: *"There's only one prototype child so it
+    /// cannot be moved."* The same shape as the root element in
+    /// [`crate::adapter::RenderObjectToWidgetElement`] -- one slot, nowhere to
+    /// go.
+    pub fn prototype_can_be_moved() -> bool {
+        false
+    }
+}
+
+impl Default for SliverPrototypeExtentList {
+    fn default() -> Self {
+        SliverPrototypeExtentList::new()
     }
 }
 
@@ -350,5 +423,48 @@ mod tests {
             stretching.child_extent(&constraints(0.0, 800.0), 100.0),
             800.0
         );
+    }
+    // -- SliverPrototypeExtentList -----------------------------------------------
+
+    #[test]
+    fn the_extent_comes_from_a_widget_that_is_never_shown() {
+        // Measured by real layout of a real widget, with none of the cost of
+        // having it on screen.
+        let mut list = SliverPrototypeExtentList::new();
+        list.perform_layout(72.0);
+        assert_eq!(list.item_extent(), Some(72.0));
+    }
+
+    #[test]
+    fn asking_before_the_prototype_was_laid_out_is_a_mistake_not_an_absence() {
+        // A zero here would quietly give every child no height.
+        let list = SliverPrototypeExtentList::new();
+        assert_eq!(list.item_extent(), None);
+    }
+
+    #[test]
+    fn the_prototype_lives_in_a_slot_that_cannot_be_confused_with_an_index() {
+        // Which is how it stays out of the list it is measuring.
+        assert!(SliverPrototypeExtentList::is_prototype_slot(
+            SliverPrototypeExtentList::PROTOTYPE_SLOT
+        ));
+        for index in 0..5 {
+            assert!(!SliverPrototypeExtentList::is_prototype_slot(index));
+        }
+    }
+
+    #[test]
+    fn there_is_only_one_prototype_so_it_cannot_be_moved() {
+        // The same shape as the root element in adapter.rs: one slot, nowhere
+        // to go.
+        assert!(!SliverPrototypeExtentList::prototype_can_be_moved());
+    }
+
+    #[test]
+    fn a_relaid_out_prototype_changes_every_item() {
+        let mut list = SliverPrototypeExtentList::new();
+        list.perform_layout(72.0);
+        list.perform_layout(96.0);
+        assert_eq!(list.item_extent(), Some(96.0));
     }
 }
