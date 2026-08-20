@@ -164,6 +164,73 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 是「向下」,不是「竖直」(2026-08-20)
+
+新模块 `platform_tree.rs`,收掉 `rendering/sliver_tree.dart` 的 `TreeSliverNodeParentData`、
+`RenderTreeSliver` 与 `widgets/platform_view.dart` 的 `HtmlElementView`、
+`PlatformViewCreationParams`、`AndroidViewSurface`。覆盖率 1880/1888(99.6%)。测试 3660。
+
+**十层里九层归零,只剩 cupertino 的 8 类——而这一次是逐层核过的,不是外推的。**(上一轮刚更正过一次外推,
+所以这次特意把每层的 MISSING 数了一遍再说。)
+
+---
+
+```dart
+assert(
+  constraints.axisDirection == AxisDirection.down,
+  'TreeSliver is only supported in Viewports with an AxisDirection.down. '
+  'The current axis direction is: ${constraints.axisDirection}.',
+);
+```
+
+**是 down,不是 vertical。** 一个反向的竖直视口会和两个横向的一起被拒——**这比第一眼看上去严格,而且是对
+的:树的次序天生是从上往下的,列表要是朝上跑,每个孩子都会画在它父节点上面。** 缩进照样能算,意思没了。
+
+而那条消息把**实际拿到的方向**报了出来——这是「一条断言」和「一次诊断」之间的差别。
+
+---
+
+**缩进那件事,文档用一句话把取舍说完了:**
+
+> the space allotted to the indentation will **not** be part of the space made available to the Widget
+> returned by `TreeSliver.treeNodeBuilder`
+
+**所以选的不是「缩多少」,是「那块缩进的像素归谁」**——而这决定了那儿能不能画东西。把活交给 builder
+(`TreeSliverIndentationType.none`),你才能在缩进里铺装饰、让水波纹漫过去;**render object 那个版本里,
+那块空间不属于任何人。**
+
+顺带:**`none` 和 `custom(0.0)` 是同一个值。** render object 完全分不出这两者——它们是靠**意图**区分的:
+`none` 的文档写着「你打算自己在 builder 里做缩进」,`custom(0.0)` 只是「不缩」。**一个值,两个名字,分野在
+说话人那边而不在行为那边。**
+
+---
+
+**而 `HtmlElementView.isVisible` 说的根本不是「看不看得见」:**
+
+> so the engine doesn't _waste_ an overlay to render Flutter content on top of views that **don't paint
+> any pixels**.
+
+**`isVisible: false` 不隐藏任何东西。它说的是「这个元素一个像素都不画」**——它是个点击靶子或者一个链接锚
+点,不是一幅画——**引擎据此省下一层合成 overlay。** 文档举的例子正是 `pointer_interceptor` 和 `Link`。
+
+**一个按外观命名、实际管的是合成预算的标志。** 这是这一轮收集到的第四个同类:第 84 轮 `indexIsChanging`
+(按「因为什么」命名)、第 82 轮 `ListTileControlAffinity.platform`(按错轴命名)、第 87 轮 `tapEnabled`
+(按杠杆命名),现在是这个。
+
+其余两条:
+
+* 三个平台视图构造器里都写着 `assert(creationParams == null || creationParamsCodec != null)`——**又一条蕴
+  含:有参数就必须有编解码器。** 平台通道上没法在不说明怎么编码的情况下塞值进去。**有 codec 没参数可以,
+  有参数没 codec 发不出去。**
+* `AndroidViewSurface` 的文档把你劝去别处:「you may want to use `AndroidView` directly, since it requires
+  **less boilerplate code** [...] and there's **no difference in performance, or other trade-off(s)**」。
+  **和第 83 轮 `MaterialButton` 指向 `TextButton` 是同一个形状——只不过那个是被取代了,这个从一开始就没有
+  什么优势可失去。**
+
+验证:`cargo test --lib` 3660 绿,GN `rustflutter_unittests` 3660 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1880 accounted / 8 MISSING(99.6%),**九层归零。**
+
 ### 是减速带,不是墙——而且它自己说了(2026-08-20)
 
 新模块 `scheduler_priority.rs`,收掉 `scheduler/priority.dart` 的 `Priority`、`scheduler/binding.dart`

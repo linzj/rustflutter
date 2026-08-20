@@ -129,6 +129,7 @@ pub mod physics;
 pub mod pickers;
 pub mod platform;
 pub mod platform_menu_bar;
+pub mod platform_tree;
 pub mod preferred_size;
 pub mod presence;
 pub mod progress_indicator;

@@ -213,6 +213,7 @@ if (enable_unittests) {
       "rustflutter/src/range_slider.rs",
       "rustflutter/src/range_slider_parts.rs",
       "rustflutter/src/platform_menu_bar.rs",
+      "rustflutter/src/platform_tree.rs",
       "rustflutter/src/presence.rs",
       "rustflutter/src/preferred_size.rs",
       "rustflutter/src/raw_menu_anchor.rs",
