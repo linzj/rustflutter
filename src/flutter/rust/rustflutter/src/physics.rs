@@ -552,6 +552,16 @@ impl FrictionSimulation {
     }
 }
 
+impl FrictionSimulation {
+    /// The tolerance this was built with, which
+    /// [`BoundedFrictionSimulation`] needs to decide how close to a wall counts
+    /// as arriving. Upstream reads the inherited `tolerance` field directly;
+    /// there is no inheritance here, so it is asked for.
+    pub fn tolerance(&self) -> Tolerance {
+        self.tolerance
+    }
+}
+
 impl Simulation for FrictionSimulation {
     fn x(&self, time: f32) -> f32 {
         if time > self.final_time {
@@ -612,6 +622,243 @@ impl Simulation for GravitySimulation {
 
     fn is_done(&self, time: f32) -> bool {
         self.x(time).abs() >= self.end
+    }
+}
+
+// -- Clamping another simulation ----------------------------------------------
+
+/// Upstream `ClampedSimulation`: another simulation with limits on what it is
+/// allowed to report.
+///
+/// # The limits are on the *outputs*, not on the motion
+///
+/// This is the whole of what upstream's doc-comment spends a paragraph on, and
+/// it is worth having in front of you because the class does not behave the way
+/// its name suggests. A gravity simulation thrown upward past a maximum
+/// position does not stop at the maximum and fall back early: it flies its full
+/// arc and lands at exactly the moment it always would have, and all that
+/// changes is that the *reported* position reads as pinned while the particle
+/// is above the line.
+///
+/// Two consequences follow, and upstream names both:
+///
+/// * **`x` will change at a rate that does not match `dx`** while either is
+///   being clamped. They are clamped independently, and a caller integrating
+///   `dx` to check `x` will disagree with it.
+/// * **`is_done` is not clamped at all.** It is forwarded, so a clamped
+///   simulation finishes when the thing underneath finishes, not when the
+///   reported position stops moving.
+///
+/// Neither is a wart to be fixed. A caller that wanted the motion itself
+/// bounded wants [`BoundedFrictionSimulation`], which stops early on purpose.
+pub struct ClampedSimulation<S: Simulation> {
+    simulation: S,
+    x_min: f32,
+    x_max: f32,
+    dx_min: f32,
+    dx_max: f32,
+}
+
+impl<S: Simulation> ClampedSimulation<S> {
+    /// Unbounded on every side. Upstream's constructor defaults, which are the
+    /// two infinities on both pairs -- so a `ClampedSimulation` with nothing
+    /// set is a pass-through, and a caller narrows the sides it cares about.
+    pub fn new(simulation: S) -> ClampedSimulation<S> {
+        ClampedSimulation {
+            simulation,
+            x_min: f32::NEG_INFINITY,
+            x_max: f32::INFINITY,
+            dx_min: f32::NEG_INFINITY,
+            dx_max: f32::INFINITY,
+        }
+    }
+
+    /// Upstream asserts `xMax >= xMin`. An inverted range has no value that
+    /// satisfies it, so every answer would be wrong and a clamp would silently
+    /// pick one of the two ends -- which is why upstream asserts rather than
+    /// swapping them.
+    pub fn with_x_range(mut self, min: f32, max: f32) -> Self {
+        debug_assert!(max >= min, "x_max must not be below x_min");
+        self.x_min = min;
+        self.x_max = max;
+        self
+    }
+
+    /// Upstream asserts `dxMax >= dxMin`, for the same reason.
+    pub fn with_dx_range(mut self, min: f32, max: f32) -> Self {
+        debug_assert!(max >= min, "dx_max must not be below dx_min");
+        self.dx_min = min;
+        self.dx_max = max;
+        self
+    }
+
+    /// The simulation underneath, for a caller who wants the unclamped answer.
+    pub fn inner(&self) -> &S {
+        &self.simulation
+    }
+}
+
+impl<S: Simulation> Simulation for ClampedSimulation<S> {
+    fn x(&self, time: f32) -> f32 {
+        self.simulation.x(time).clamp(self.x_min, self.x_max)
+    }
+
+    fn dx(&self, time: f32) -> f32 {
+        self.simulation.dx(time).clamp(self.dx_min, self.dx_max)
+    }
+
+    /// Forwarded, deliberately. See the type's docs.
+    fn is_done(&self, time: f32) -> bool {
+        self.simulation.is_done(time)
+    }
+}
+
+// -- Friction that stops at a wall --------------------------------------------
+
+/// Upstream `BoundedFrictionSimulation`: a [`FrictionSimulation`] that stops
+/// when it reaches either end of a range.
+///
+/// Unlike [`ClampedSimulation`], this one really does end early: reaching a
+/// bound is a way of being finished, not merely a value the reports are pinned
+/// to. That is the difference between the two, and it is why upstream has both.
+///
+/// The bound is checked against the tolerance rather than for equality, because
+/// a particle decelerating towards a wall approaches it without arriving, and a
+/// simulation that waited for exact equality would run until its own friction
+/// time-out instead.
+pub struct BoundedFrictionSimulation {
+    friction: FrictionSimulation,
+    min_x: f32,
+    max_x: f32,
+}
+
+impl BoundedFrictionSimulation {
+    /// Upstream asserts the initial position is already inside the range --
+    /// `clampDouble(position, _minX, _maxX) == position`. A particle starting
+    /// outside would be finished on its first frame at a position it never
+    /// occupied, which is a caller's bug and not something to round away.
+    pub fn new(
+        drag: f32,
+        position: f32,
+        velocity: f32,
+        min_x: f32,
+        max_x: f32,
+    ) -> BoundedFrictionSimulation {
+        BoundedFrictionSimulation::with_tolerance(
+            drag,
+            position,
+            velocity,
+            min_x,
+            max_x,
+            Tolerance::DEFAULT,
+        )
+    }
+
+    pub fn with_tolerance(
+        drag: f32,
+        position: f32,
+        velocity: f32,
+        min_x: f32,
+        max_x: f32,
+        tolerance: Tolerance,
+    ) -> BoundedFrictionSimulation {
+        debug_assert!(
+            position.clamp(min_x, max_x) == position,
+            "a bounded friction simulation starts inside its bounds"
+        );
+        BoundedFrictionSimulation {
+            friction: FrictionSimulation::with_tolerance(drag, position, velocity, tolerance),
+            min_x,
+            max_x,
+        }
+    }
+}
+
+impl Simulation for BoundedFrictionSimulation {
+    fn x(&self, time: f32) -> f32 {
+        self.friction.x(time).clamp(self.min_x, self.max_x)
+    }
+
+    /// Not clamped, and upstream does not clamp it either: the particle's speed
+    /// is the friction simulation's speed right up until it is done.
+    fn dx(&self, time: f32) -> f32 {
+        self.friction.dx(time)
+    }
+
+    /// Finished when the friction is finished **or** when either wall is within
+    /// tolerance. The bounds are checked against the already-clamped `x`, which
+    /// is upstream's `x(time)` and not `super.x(time)` -- so a particle that
+    /// overshot far past a wall is still reported as done at the wall rather
+    /// than at wherever the unclamped curve went.
+    fn is_done(&self, time: f32) -> bool {
+        let at = self.x(time);
+        self.friction.is_done(time)
+            || (at - self.min_x).abs() < self.friction.tolerance().distance
+            || (at - self.max_x).abs() < self.friction.tolerance().distance
+    }
+}
+
+// -- A spring that lands exactly ----------------------------------------------
+
+/// Upstream `ScrollSpringSimulation`: a [`SpringSimulation`] whose `x` is
+/// **exactly** the end value once it is done.
+///
+/// One line upstream, and the line earns its class. A spring approaches its
+/// rest position without arriving, so `SpringSimulation::x` at the moment
+/// `is_done` first answers true is within the tolerance of the end and not at
+/// it -- a thousandth of a pixel out, by default. That is invisible on screen
+/// and is not invisible to a scroll position, which stores what it was handed
+/// and reports it as the resting offset for as long as nobody scrolls again.
+/// The list would sit a thousandth of a pixel from the top for ever, and
+/// anything comparing the offset against zero would disagree with the reader.
+pub struct ScrollSpringSimulation {
+    spring: SpringSimulation,
+    end: f32,
+}
+
+impl ScrollSpringSimulation {
+    pub fn new(
+        spring: SpringDescription,
+        start: f32,
+        end: f32,
+        velocity: f32,
+    ) -> ScrollSpringSimulation {
+        ScrollSpringSimulation::with_tolerance(spring, start, end, velocity, Tolerance::DEFAULT)
+    }
+
+    pub fn with_tolerance(
+        spring: SpringDescription,
+        start: f32,
+        end: f32,
+        velocity: f32,
+        tolerance: Tolerance,
+    ) -> ScrollSpringSimulation {
+        ScrollSpringSimulation {
+            spring: SpringSimulation::with_tolerance(spring, start, end, velocity, tolerance),
+            end,
+        }
+    }
+}
+
+impl Simulation for ScrollSpringSimulation {
+    fn x(&self, time: f32) -> f32 {
+        if self.is_done(time) {
+            self.end
+        } else {
+            self.spring.x(time)
+        }
+    }
+
+    /// Not snapped. Upstream overrides `x` only -- the velocity at the end of a
+    /// spring is already within the velocity tolerance of zero, and rounding it
+    /// would hide a spring that was still moving when something declared it
+    /// done.
+    fn dx(&self, time: f32) -> f32 {
+        self.spring.dx(time)
+    }
+
+    fn is_done(&self, time: f32) -> bool {
+        self.spring.is_done(time)
     }
 }
 
@@ -839,5 +1086,228 @@ mod tests {
         let sticky = ClampingScrollSimulation::with_friction(0.0, 2000.0, 0.05);
         assert!(sticky.final_x() < slippery.final_x());
         assert!(sticky.duration() < slippery.duration());
+    }
+
+    // -- ClampedSimulation --------------------------------------------------------
+
+    #[test]
+    fn a_clamped_simulation_pins_what_it_reports_and_not_what_it_does() {
+        // Upstream's own worked example: a particle thrown up past a maximum
+        // returns to where it started **at the same moment it would have
+        // anyway**. The clamp is on the reports.
+        let up = GravitySimulation::new(-200.0, 0.0, f32::INFINITY, 100.0);
+        let clamped =
+            ClampedSimulation::new(GravitySimulation::new(-200.0, 0.0, f32::INFINITY, 100.0))
+                .with_x_range(f32::NEG_INFINITY, 5.0);
+
+        // At the apogee the free particle is well above the ceiling.
+        let apogee = 0.5;
+        assert!(up.x(apogee) > 5.0, "{}", up.x(apogee));
+        assert_eq!(clamped.x(apogee), 5.0, "reported as pinned");
+
+        // And back below it, the two agree again -- the arc was never altered.
+        let late = 0.95;
+        assert!(up.x(late) < 5.0);
+        assert_eq!(clamped.x(late), up.x(late));
+    }
+
+    #[test]
+    fn a_clamped_x_and_dx_are_allowed_to_disagree() {
+        // Upstream says so in as many words: "the x value will change at a rate
+        // that does not match the reported dx value while one or the other is
+        // being clamped". A caller integrating dx to check x will be wrong, and
+        // that is the design.
+        let clamped =
+            ClampedSimulation::new(GravitySimulation::new(-200.0, 0.0, f32::INFINITY, 100.0))
+                .with_x_range(f32::NEG_INFINITY, 5.0);
+
+        // Position is pinned across this interval; velocity is not.
+        assert_eq!(clamped.x(0.4), 5.0);
+        assert_eq!(clamped.x(0.5), 5.0);
+        assert_ne!(
+            clamped.dx(0.4),
+            clamped.dx(0.5),
+            "the particle is still slowing while its position reads as still"
+        );
+    }
+
+    #[test]
+    fn clamping_the_velocity_is_a_separate_pair_of_limits() {
+        let clamped =
+            ClampedSimulation::new(GravitySimulation::new(-200.0, 0.0, f32::INFINITY, 100.0))
+                .with_dx_range(-10.0, 10.0);
+        assert_eq!(clamped.dx(0.0), 10.0, "100 up, reported as 10");
+        assert_eq!(clamped.dx(2.0), -10.0, "and falling fast, reported as -10");
+        assert_eq!(
+            clamped.x(0.5),
+            clamped.inner().x(0.5),
+            "the position was not asked to change"
+        );
+    }
+
+    #[test]
+    fn a_clamped_simulation_finishes_when_the_one_underneath_does() {
+        // `isDone` is forwarded, unclamped. A caller who wanted the motion
+        // itself bounded wants BoundedFrictionSimulation.
+        //
+        // The `end` is far away on purpose: with a near one the particle is
+        // already done at every sample and the assertion compares true to true.
+        // The first version of this test did that and stayed green when
+        // `is_done` was made to consult the clamp.
+        let inner = GravitySimulation::new(-200.0, 0.0, 1000.0, 100.0);
+        let clamped = ClampedSimulation::new(GravitySimulation::new(-200.0, 0.0, 1000.0, 100.0))
+            .with_x_range(f32::NEG_INFINITY, 5.0);
+        for t in [0.1f32, 0.5, 1.0, 2.0] {
+            assert!(!inner.is_done(t), "the particle is still flying at {t}");
+            assert!(
+                clamped.x(t) >= 5.0 || t > 0.9,
+                "and pinned at the ceiling for most of it"
+            );
+            assert_eq!(clamped.is_done(t), inner.is_done(t), "at {t}");
+        }
+    }
+
+    #[test]
+    fn an_unclamped_clamped_simulation_is_a_pass_through() {
+        // The constructor's defaults are the two infinities, so narrowing is
+        // opt-in per side.
+        let inner = FrictionSimulation::new(0.135, 0.0, 500.0);
+        let same = ClampedSimulation::new(FrictionSimulation::new(0.135, 0.0, 500.0));
+        for t in [0.0f32, 0.25, 1.0, 4.0] {
+            assert_eq!(same.x(t), inner.x(t));
+            assert_eq!(same.dx(t), inner.dx(t));
+        }
+    }
+
+    // -- BoundedFrictionSimulation ------------------------------------------------
+
+    #[test]
+    fn a_bounded_friction_simulation_really_stops_at_the_wall() {
+        // The difference from ClampedSimulation, and the reason upstream has
+        // both: reaching a bound is a way of being *finished*, not merely a
+        // value the reports are pinned to.
+        let free = FrictionSimulation::new(0.135, 0.0, 500.0);
+        let bounded = BoundedFrictionSimulation::new(0.135, 0.0, 500.0, -1000.0, 50.0);
+
+        // Find the first moment the free particle is past the wall.
+        let mut t = 0.0f32;
+        while free.x(t) < 50.0 && t < 5.0 {
+            t += 0.001;
+        }
+        assert!(t < 5.0, "the fling does reach the wall");
+        assert!(!free.is_done(t), "the free one is still going");
+        assert!(bounded.is_done(t), "the bounded one has arrived");
+        assert_eq!(bounded.x(t), 50.0);
+    }
+
+    #[test]
+    fn a_bounded_friction_simulation_that_never_reaches_a_wall_is_ordinary_friction() {
+        let free = FrictionSimulation::new(0.135, 0.0, 100.0);
+        let bounded = BoundedFrictionSimulation::new(0.135, 0.0, 100.0, -10_000.0, 10_000.0);
+        for t in [0.0f32, 0.1, 0.5, 2.0] {
+            assert_eq!(bounded.x(t), free.x(t), "at {t}");
+            assert_eq!(bounded.dx(t), free.dx(t), "at {t}");
+            assert_eq!(bounded.is_done(t), free.is_done(t), "at {t}");
+        }
+    }
+
+    #[test]
+    fn arriving_is_measured_against_the_tolerance_and_not_equality() {
+        // A particle decelerating towards a wall approaches without arriving;
+        // waiting for exact equality would run to the friction time-out
+        // instead.
+        let bounded = BoundedFrictionSimulation::with_tolerance(
+            0.135,
+            0.0,
+            500.0,
+            -1000.0,
+            1000.0,
+            Tolerance {
+                distance: 5.0,
+                ..Tolerance::DEFAULT
+            },
+        );
+        // The fling settles a long way short of 1000, so what makes this done
+        // is the *other* wall never being reached and friction running out.
+        assert!(bounded.is_done(5.0));
+
+        // With the wall placed within the (generous) tolerance of the start,
+        // it is done immediately -- which is what a 5-pixel tolerance means.
+        let at_the_wall = BoundedFrictionSimulation::with_tolerance(
+            0.135,
+            0.0,
+            500.0,
+            -3.0,
+            1000.0,
+            Tolerance {
+                distance: 5.0,
+                ..Tolerance::DEFAULT
+            },
+        );
+        assert!(at_the_wall.is_done(0.0), "the wall is within tolerance");
+    }
+
+    #[test]
+    fn the_velocity_of_a_bounded_simulation_is_not_clamped() {
+        // Upstream overrides `x` and `isDone` and leaves `dx` alone: the
+        // particle's speed is the friction simulation's speed right up until it
+        // is finished.
+        let free = FrictionSimulation::new(0.135, 0.0, 500.0);
+        let bounded = BoundedFrictionSimulation::new(0.135, 0.0, 500.0, -1000.0, 1.0);
+        assert_eq!(bounded.dx(0.0), free.dx(0.0));
+        assert_eq!(bounded.dx(0.5), free.dx(0.5));
+    }
+
+    // -- ScrollSpringSimulation ---------------------------------------------------
+
+    #[test]
+    fn a_scroll_spring_lands_exactly_on_its_end_value() {
+        // The whole of what the class adds. A plain spring is within the
+        // tolerance of the end and not at it, and a scroll position stores what
+        // it was handed: the list would rest a thousandth of a pixel from the
+        // top for ever.
+        let spring = SpringDescription::new(1.0, 100.0, 20.0);
+        let plain = SpringSimulation::new(spring, 0.0, 300.0, 0.0);
+        let scroll = ScrollSpringSimulation::new(spring, 0.0, 300.0, 0.0);
+
+        // The first moment it is done.
+        let mut t = 0.0f32;
+        while !scroll.is_done(t) && t < 10.0 {
+            t += 0.001;
+        }
+        assert!(t < 10.0, "it does settle");
+
+        assert_eq!(scroll.x(t), 300.0, "exactly");
+        assert_ne!(plain.x(t), 300.0, "and the plain one is not");
+        assert!(
+            (plain.x(t) - 300.0).abs() < Tolerance::DEFAULT.distance,
+            "though it is within tolerance, which is why this is easy to miss"
+        );
+    }
+
+    #[test]
+    fn a_scroll_spring_is_an_ordinary_spring_until_it_is_done() {
+        let spring = SpringDescription::new(1.0, 100.0, 20.0);
+        let plain = SpringSimulation::new(spring, 0.0, 300.0, 0.0);
+        let scroll = ScrollSpringSimulation::new(spring, 0.0, 300.0, 0.0);
+        for t in [0.0f32, 0.05, 0.1, 0.2] {
+            assert!(!scroll.is_done(t), "still moving at {t}");
+            assert_eq!(scroll.x(t), plain.x(t), "at {t}");
+            assert_eq!(scroll.dx(t), plain.dx(t), "at {t}");
+        }
+    }
+
+    #[test]
+    fn a_scroll_springs_velocity_is_not_snapped() {
+        // Upstream overrides `x` only. Rounding `dx` would hide a spring that
+        // was still moving when something declared it done.
+        let spring = SpringDescription::new(1.0, 100.0, 20.0);
+        let plain = SpringSimulation::new(spring, 0.0, 300.0, 0.0);
+        let scroll = ScrollSpringSimulation::new(spring, 0.0, 300.0, 0.0);
+        let mut t = 0.0f32;
+        while !scroll.is_done(t) && t < 10.0 {
+            t += 0.001;
+        }
+        assert_eq!(scroll.dx(t), plain.dx(t), "reported as it is");
     }
 }

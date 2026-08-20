@@ -313,6 +313,11 @@ pub use painting::{
     RenderPath, ShaderGradient, StrokeCap, StrokeJoin, StrutStyle, SweepGradient, TextBaseline,
     TextPainter, TextScaler, TileMode, WordBoundary, matrix_utils,
 };
+pub use physics::{
+    BoundedFrictionSimulation, ClampedSimulation, ClampingScrollSimulation, FrictionSimulation,
+    GravitySimulation, ScrollSpringSimulation, Simulation, SpringDescription, SpringSimulation,
+    Tolerance,
+};
 pub use pickers::{
     CalendarDatePicker, CalendarDatePickerState, Date, DatePickerDialog, DatePickerDialogState,
     DatePickerEntryMode, DatePickerMode, DateRangePickerDialog, DateRangePickerDialogState,
