@@ -12,14 +12,18 @@
 //!
 //! Divergences, each also noted at its site:
 //!
-//! - **The overlay is the stage's, not a route's.** Upstream presents each
-//!   picker as a `DialogRoute` over the whole demo screen
-//!   (`_datePickerRoute`, `_timePickerRoute`, `_dateRangePickerRoute`). The
-//!   framework's pickers return the overlay widget for the caller to stack
-//!   (see `rustflutter::pickers`), and the page-level `overlay()` dispatch is
-//!   shared code, so the overlay is stacked over this stage: the scrim covers
-//!   the demo card rather than the window, and the stage grows to
-//!   [`OVERLAY_HOST_HEIGHT`] while a picker is open so the dialog fits.
+//! - **The pickers go up through the framework, over the window.** Upstream
+//!   presents each as a `DialogRoute` over the whole demo screen
+//!   (`_datePickerRoute`, `_timePickerRoute`, `_dateRangePickerRoute`), and so
+//!   does this: [`rustflutter::show_date_picker`] and its two siblings are the
+//!   imperative calls, and they put the dialog in the application's overlay
+//!   behind a real barrier.
+//!
+//!   This paragraph used to say the opposite. The stage stacked the picker over
+//!   itself, so the scrim covered the demo card rather than the window, and the
+//!   stage had to grow to a hard-coded 600 while a picker was open -- tall
+//!   enough for the calendar -- because a dialog inside the card could not
+//!   exceed it. All of that is gone, along with the constant.
 //! - **No restoration.** Upstream's `RestorationMixin`/`RestorableRouteFuture`
 //!   machinery has no counterpart here; the state is plain component state.
 //! - **UTC, not local.** `Date::today`/`TimeOfDay::now` read the UTC clock
@@ -29,8 +33,9 @@
 
 use rustflutter::framework::{AnyWidget, BuildContext, StateHandle, StatefulComponent};
 use rustflutter::prelude::*;
-use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex, RenderRef};
-use rustflutter::widgets::{Center, Empty, Positioned, Stack};
+use rustflutter::OverlayHandle;
+use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex};
+use rustflutter::widgets::Center;
 
 use crate::app::ids;
 
@@ -44,8 +49,12 @@ pub(super) fn stage() -> AnyWidget {
 /// Upstream's `PickerDemo`, state in `_PickerDemoState`.
 struct PickerDemo;
 
-/// Which picker's dialog is open, if any. Upstream this is which restorable
-/// route future has been presented.
+/// Which picker a button opens. Upstream this is which restorable route future
+/// it presents.
+///
+/// It used to also be *which one is open*, kept in `PickerDemoState`, because
+/// the demo had to build the open dialog itself every frame. The overlay holds
+/// the open dialog now, so this is only the choice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OpenPicker {
     Date,
@@ -56,7 +65,6 @@ enum OpenPicker {
 /// Upstream's `_PickerDemoState`: `_fromDate`, `_fromTime`, `_startDate` and
 /// `_endDate`, all starting at "now".
 struct PickerDemoState {
-    open: Option<OpenPicker>,
     from_date: Date,
     from_time: TimeOfDay,
     start_date: Date,
@@ -69,7 +77,6 @@ impl Default for PickerDemoState {
     fn default() -> PickerDemoState {
         let today = Date::today();
         PickerDemoState {
-            open: None,
             from_date: today,
             from_time: TimeOfDay::now(),
             start_date: today,
@@ -109,11 +116,6 @@ fn format_abbrev_date(date: Date) -> String {
     )
 }
 
-/// The height the stage takes while a picker is open: the tallest dialog (the
-/// calendar date picker's 568) plus air. See the module header for why the
-/// overlay lives inside the stage at all.
-const OVERLAY_HOST_HEIGHT: f32 = 600.0;
-
 /// Hit-test ids local to this demo. Only one demo is on stage at a time, so
 /// they share the `DEMO_LOCAL` block; the picker dialogs derive their child
 /// ids from the base they are given (`id * 10 + n`, day cells `id * 10000 +
@@ -151,16 +153,41 @@ impl StatefulComponent for PickerDemo {
         &self,
         state: &PickerDemoState,
         handle: StateHandle<PickerDemoState>,
-        _context: &mut BuildContext,
+        context: &mut BuildContext,
     ) -> AnyWidget {
-        // `Button::wired` takes a bare `fn`, so each button's opener is its
-        // own non-capturing closure.
-        let show_picker = |id: u64, open: fn(&mut PickerDemoState)| {
+        let overlay = OverlayHandle::of(context);
+
+        // Each button opens its own picker, which means capturing the overlay
+        // and the state handle -- so the handlers are built rather than going
+        // through `Button::wired`, whose action is a bare `fn`.
+        // What each picker opens on, read from the state this build saw. A
+        // press handler runs between builds, and a state change is what causes
+        // the next one -- so these are current at the moment of the press.
+        let opens_on = OpensOn {
+            date: state.from_date,
+            time: state.from_time,
+        };
+        let show_picker = |id: u64, which: OpenPicker| {
+            let overlay = overlay.clone();
+            let opener = handle.clone();
+            let presser = handle.clone();
             component(
                 Button::new(id, "SHOW PICKER")
                     .with_style(ButtonVariant::Filled)
                     .with_pressed(state.pressed == Some(id))
-                    .wired(handle.clone(), |s| &mut s.pressed, open),
+                    .with_handlers(
+                        rustflutter::gestures::PointerHandlers::new()
+                            .with_tap(move |_| {
+                                if let Some(overlay) = overlay.clone() {
+                                    open_picker(overlay, which, opens_on, opener.clone());
+                                }
+                            })
+                            .with_press_change(move |down| {
+                                presser.set_state(move |s| {
+                                    s.pressed = if down { Some(id) } else { None };
+                                });
+                            }),
+                    ),
             )
         };
 
@@ -176,108 +203,102 @@ impl StatefulComponent for PickerDemo {
                 caption("Date Picker"),
                 picker_section(
                     format_abbrev_date(state.from_date),
-                    show_picker(DATE_BUTTON, |s| s.open = Some(OpenPicker::Date)),
+                    show_picker(DATE_BUTTON, OpenPicker::Date),
                 ),
                 caption("Time Picker"),
                 picker_section(
                     state.from_time.format(false),
-                    show_picker(TIME_BUTTON, |s| s.open = Some(OpenPicker::Time)),
+                    show_picker(TIME_BUTTON, OpenPicker::Time),
                 ),
                 caption("Date Range Picker"),
                 picker_section(
                     range_label,
-                    show_picker(RANGE_BUTTON, |s| s.open = Some(OpenPicker::Range)),
+                    show_picker(RANGE_BUTTON, OpenPicker::Range),
                 ),
             ],
             16.0,
         );
 
-        let overlay: Option<AnyWidget> = match state.open {
-            Some(OpenPicker::Date) => {
-                // `_datePickerRoute`: initialDate is the current value, and
-                // the bounds are 2015 to 2100.
-                let confirm = handle.clone();
-                let cancel = handle.clone();
-                Some(date_picker_surface(
-                    DatePickerDialog::new(
-                        DATE_DIALOG,
-                        Date::new(2015, 1, 1),
-                        Date::new(2100, 12, 31),
-                    )
-                    .with_initial_date(Some(state.from_date))
-                    .with_on_confirm(move |date| {
-                        confirm.set_state(move |s| {
-                            s.from_date = select_date(s.from_date, Some(date));
-                            s.open = None;
-                        });
-                    })
-                    .with_on_cancel(move || {
-                        cancel.set_state(|s| s.open = None);
-                    }),
-                ))
-            }
-            Some(OpenPicker::Time) => {
-                // `_timePickerRoute`: the initial time is the current value.
-                let confirm = handle.clone();
-                let cancel = handle.clone();
-                Some(time_picker_surface(
-                    TimePickerDialog::new(TIME_DIALOG, state.from_time)
-                        .with_on_confirm(move |time| {
-                            confirm.set_state(move |s| {
-                                s.from_time = select_time(s.from_time, Some(time));
-                                s.open = None;
-                            });
-                        })
-                        .with_on_cancel(move || {
-                            cancel.set_state(|s| s.open = None);
-                        }),
-                ))
-            }
-            Some(OpenPicker::Range) => {
-                // `_dateRangePickerRoute`: the bounds are five years either
-                // side of this one, and no initial range is passed.
-                let this_year = Date::today().year;
-                let confirm = handle.clone();
-                let cancel = handle.clone();
-                Some(date_range_picker_surface(
-                    DateRangePickerDialog::new(
-                        RANGE_DIALOG,
-                        Date::new(this_year - 5, 1, 1),
-                        Date::new(this_year + 5, 1, 1),
-                    )
-                    .with_on_confirm(move |range| {
-                        confirm.set_state(move |s| {
-                            // `_selectDateRange`.
-                            s.start_date = range.start;
-                            s.end_date = range.end;
-                            s.open = None;
-                        });
-                    })
-                    .with_on_cancel(move || {
-                        cancel.set_state(|s| s.open = None);
-                    }),
-                ))
-            }
-            None => None,
-        };
-
-        match overlay {
-            None => body,
-            Some(overlay) => many(vec![body, overlay], move |mut rendered| {
-                let overlay = rendered.pop().unwrap_or_else(|| RenderRef::new(Empty));
-                let body = rendered.pop().unwrap_or_else(|| RenderRef::new(Empty));
-                Box::new(
-                    Container::new()
-                        .with_height(OVERLAY_HOST_HEIGHT)
-                        .with_child(
-                            Stack::new()
-                                .push(Center::new(body))
-                                .push_positioned(overlay, Positioned::fill()),
-                        ),
-                )
-            }),
-        }
+        body
     }
+}
+
+/// Puts one picker up. Upstream's three `DialogRoute`s, as three calls.
+///
+/// Each of the framework's `show_*_picker` functions closes its own dialog when
+/// it answers, so there is nothing here to take it down -- which is the whole
+/// difference from `pickers::*_surface`, and the part every caller of those had
+/// to write.
+fn open_picker(
+    overlay: std::rc::Rc<OverlayHandle>,
+    which: OpenPicker,
+    opens_on: OpensOn,
+    handle: StateHandle<PickerDemoState>,
+) {
+    let opened = match which {
+        OpenPicker::Date => {
+            // `_datePickerRoute`: initialDate is the current value, and the
+            // bounds are 2015 to 2100.
+            rustflutter::show_date_picker(
+                overlay,
+                DatePickerDialog::new(DATE_DIALOG, Date::new(2015, 1, 1), Date::new(2100, 12, 31))
+                    .with_initial_date(Some(opens_on.date)),
+                move |date| {
+                    handle.set_state(move |s| s.from_date = select_date(s.from_date, date));
+                },
+            )
+        }
+        OpenPicker::Time => {
+            // `_timePickerRoute`: the initial time is the current value.
+            rustflutter::show_time_picker(
+                overlay,
+                TimePickerDialog::new(TIME_DIALOG, opens_on.time),
+                move |time| {
+                    handle.set_state(move |s| s.from_time = select_time(s.from_time, time));
+                },
+            )
+        }
+        OpenPicker::Range => {
+            // `_dateRangePickerRoute`: the bounds are five years either side of
+            // this one, and no initial range is passed.
+            let this_year = Date::today().year;
+            rustflutter::show_date_range_picker(
+                overlay,
+                DateRangePickerDialog::new(
+                    RANGE_DIALOG,
+                    Date::new(this_year - 5, 1, 1),
+                    Date::new(this_year + 5, 1, 1),
+                ),
+                move |range| {
+                    // `_selectDateRange`, which takes both ends or neither.
+                    let Some(range) = range else {
+                        return;
+                    };
+                    handle.set_state(move |s| {
+                        s.start_date = range.start;
+                        s.end_date = range.end;
+                    });
+                },
+            )
+        }
+    };
+    // A picker that could not find an overlay shows nothing rather than
+    // pretending; `OverlayHandle::of` already returned one, so this is only
+    // true if the overlay went away between the press and the call.
+    let _ = opened;
+}
+
+/// What a picker opens on: upstream's `initialDate` and `initialTime`, which
+/// are the demo's current values.
+///
+/// Carried from `build` rather than read at the press, because `StateHandle`
+/// writes and does not read -- and it does not need to. A state change is what
+/// causes the next build, so the values a handler captured are the ones on
+/// screen when it runs.
+#[derive(Clone, Copy)]
+struct OpensOn {
+    date: Date,
+    time: TimeOfDay,
 }
 
 #[cfg(test)]
@@ -312,15 +333,34 @@ mod tests {
     }
 
     #[test]
+    fn the_stage_does_not_grow_to_hold_a_picker() {
+        // What the rewiring bought, and the reason the old shape needed a
+        // 600-tall host: a picker used to be a child of this stage, so the
+        // stage had to be at least as tall as the tallest dialog while one was
+        // open, and its scrim covered the demo card rather than the window.
+        // The picker is in the application's overlay now, so the stage is its
+        // own content and nothing else.
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), stage()));
+        let mut root = tree.build_render_tree().expect("a root");
+        let closed = root.layout(BoxConstraints::loose(460.0, 820.0));
+
+        // Rebuilding does not change it -- there is no open-picker state left
+        // on the stage for it to grow around.
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a root");
+        assert_eq!(root.layout(BoxConstraints::loose(460.0, 820.0)), closed);
+    }
+
+    #[test]
     fn the_stage_lays_out() {
         let mut tree = ElementTree::new();
         tree.rebuild(provide(Theme::dark(), stage()));
         let mut root = tree.build_render_tree().expect("a root");
         let size = root.layout(BoxConstraints::loose(460.0, 820.0));
         assert!(size.width > 0.0 && size.height > 0.0);
-        assert!(
-            size.height < OVERLAY_HOST_HEIGHT,
-            "closed, the stage is its content"
-        );
+        // The stage is its content, open or closed. It used to have to be 600
+        // tall while a picker was up, because the picker was inside it.
+        assert!(size.height < 600.0, "the stage is its content");
     }
 }
