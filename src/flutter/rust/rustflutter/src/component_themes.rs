@@ -957,6 +957,79 @@ impl ResolvedRadio {
     }
 }
 
+/// What a badge draws with, once the widget, the theme and the M3 defaults have
+/// each had their say -- upstream's `Badge.build` reading `BadgeTheme.of` and
+/// then `_BadgeDefaultsM3`.
+///
+/// # A badge is red because of what it is for
+///
+/// The default background is `colorScheme.error` and not the primary. A badge
+/// is a count of things demanding attention, and the scheme already has a
+/// colour that means exactly that. Using the primary would make a badge look
+/// like a decoration of the thing it is sitting on.
+///
+/// # Two sizes, because there are two badges
+///
+/// `smallSize` is the diameter of a badge with *no* label -- the bare dot that
+/// says "something happened" without saying how much -- and `largeSize` is the
+/// height of one with a label. They are separate numbers rather than one
+/// scaled, because the dot is not a small stadium: it has no text to leave room
+/// for and its size is chosen to read as a mark rather than as a shape.
+pub struct ResolvedBadge {
+    pub background: Color,
+    pub text_color: Color,
+    pub small_size: f32,
+    pub large_size: f32,
+    pub padding: EdgeInsets,
+    pub alignment: AlignmentGeometry,
+    pub offset: Offset,
+    pub text_style: Option<TextStyle>,
+}
+
+impl ResolvedBadge {
+    /// Upstream's `_BadgeDefaultsM3`.
+    pub const SMALL_SIZE: f32 = 6.0;
+    pub const LARGE_SIZE: f32 = 16.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedBadge {
+        let data = BadgeTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedBadge {
+            background: data.background_color.unwrap_or(scheme.error),
+            text_color: data.text_color.unwrap_or(scheme.on_error),
+            small_size: data.small_size.unwrap_or(ResolvedBadge::SMALL_SIZE),
+            large_size: data.large_size.unwrap_or(ResolvedBadge::LARGE_SIZE),
+            // Upstream's `EdgeInsets.symmetric(horizontal: 4)`: room at the
+            // sides only, because the height is `largeSize` and padding on top
+            // of that would fight it.
+            padding: data
+                .padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(4.0, 0.0)),
+            alignment: data.alignment.unwrap_or(AlignmentGeometry::Directional(
+                crate::render::AlignmentDirectional::TOP_END,
+            )),
+            // Upstream's default is `(4, -4)` reading left-to-right and
+            // `(-4, -4)` the other way -- out past the corner and up. The
+            // `(0, 8)` added to it is not design: upstream's own comment says
+            // it was put there so that a change to the positioning arithmetic
+            // would not move every existing badge. Kept, because a badge that
+            // sits eight pixels from where upstream's does is wrong however
+            // defensible the reason.
+            offset: {
+                let asked = data
+                    .offset
+                    .unwrap_or(match crate::direction::current_direction() {
+                        crate::direction::TextDirection::Ltr => Offset::new(4.0, -4.0),
+                        crate::direction::TextDirection::Rtl => Offset::new(-4.0, -4.0),
+                    });
+                Offset::new(asked.dx, asked.dy + 8.0)
+            },
+            text_style: data.text_style.clone(),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

@@ -2001,41 +2001,190 @@ pub fn gap(units: f32) -> AnyWidget {
 
 /// A badge: a small pill of text.
 pub struct Badge {
-    label: String,
-    color: Option<Color>,
+    /// Upstream's `label`, and it is optional: **a badge with no label is a
+    /// dot**, not an empty stadium. The two say different things -- a count
+    /// says how much is waiting, a dot says only that something is.
+    label: Option<String>,
+    background_color: Option<Color>,
+    text_color: Option<Color>,
+    /// Upstream's `isLabelVisible`, which hides the badge without taking the
+    /// child with it -- a count that has gone to zero should leave the icon
+    /// exactly where it was.
+    is_label_visible: bool,
+    /// Upstream's `child`: what the badge is sitting on. `None` is a badge on
+    /// its own, which upstream allows and which is what this crate's earlier
+    /// Badge always was.
+    child: std::cell::RefCell<Option<AnyWidget>>,
 }
 
 impl Badge {
+    /// A badge with a count. Upstream's default constructor with a `label`.
     pub fn new(label: impl Into<String>) -> Badge {
         Badge {
-            label: label.into(),
-            color: None,
+            label: Some(label.into()),
+            background_color: None,
+            text_color: None,
+            is_label_visible: true,
+            child: std::cell::RefCell::new(None),
         }
     }
 
+    /// Upstream's `Badge()` with no label: the bare dot.
+    pub fn dot() -> Badge {
+        Badge {
+            label: None,
+            background_color: None,
+            text_color: None,
+            is_label_visible: true,
+            child: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Upstream's `backgroundColor`.
     pub fn with_color(mut self, color: Color) -> Self {
-        self.color = Some(color);
+        self.background_color = Some(color);
         self
+    }
+
+    pub fn with_text_color(mut self, color: Color) -> Self {
+        self.text_color = Some(color);
+        self
+    }
+
+    /// Upstream's `isLabelVisible`.
+    pub fn with_label_visible(mut self, visible: bool) -> Self {
+        self.is_label_visible = visible;
+        self
+    }
+
+    /// Upstream's `child`.
+    pub fn with_child(self, child: AnyWidget) -> Self {
+        *self.child.borrow_mut() = Some(child);
+        self
+    }
+
+    pub fn has_label(&self) -> bool {
+        self.label.is_some()
     }
 }
 
 impl Component for Badge {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
-        let color = self.color.unwrap_or(theme.primary);
+        let resolved = crate::component_themes::ResolvedBadge::of(context);
+        // Upstream's order at every field: the widget, then the theme, then the
+        // M3 default. `ResolvedBadge` has already done the last two.
+        let background = self.background_color.unwrap_or(resolved.background);
+        let text_color = self.text_color.unwrap_or(resolved.text_color);
         let label = self.label.clone();
-        let size = theme.body_size - 3.0;
-        leaf(move || {
-            Container::new()
-                .with_color(color.with_alpha(0x22))
-                .with_corner_radius(9.0)
-                .with_padding(EdgeInsets::symmetric(9.0, 5.0))
-                .with_child(
-                    Text::new(label.clone())
-                        .with_size(size)
-                        .with_weight(700)
-                        .with_color(color),
-                )
+        let visible = self.is_label_visible;
+        let child = self.child.borrow_mut().take();
+        let small = resolved.small_size;
+        let large = resolved.large_size;
+        let padding = resolved.padding;
+        let size = resolved
+            .text_style
+            .as_ref()
+            .map(|style| style.font_size)
+            .unwrap_or(theme.body_size - 3.0);
+        let alignment = resolved
+            .alignment
+            .resolve(crate::direction::current_direction());
+        // Upstream's `offset: hasLabel ? effectiveOffset : Offset.zero`. A dot
+        // sits exactly where the alignment put it: the nudge exists to keep a
+        // wide count from covering the thing it is counting, and a dot is not
+        // wide.
+        let offset = if self.label.is_some() {
+            resolved.offset
+        } else {
+            Offset::ZERO
+        };
+
+        let mark = leaf(move || -> crate::widgets::BoxedWidget {
+            if !visible {
+                // Upstream returns the child alone when the label is hidden --
+                // and here that is an empty mark, so the child below keeps its
+                // place and its size.
+                return crate::render::RenderRef::new(crate::widgets::Empty);
+            }
+            match &label {
+                // A stadium at least `largeSize` tall, with room at the sides
+                // only.
+                Some(label) => crate::render::RenderRef::new(
+                    // Upstream's `_IntrinsicHorizontalStadium(minSize: largeSize)`:
+                    // exactly `largeSize` tall, and at least that wide so a
+                    // one-digit count is a circle rather than a sliver. The
+                    // width is otherwise free -- that is what makes it a
+                    // stadium and not a pill of fixed size.
+                    crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                        min_width: large,
+                        max_width: f32::INFINITY,
+                        min_height: large,
+                        max_height: large,
+                    })
+                    .with_child(
+                        Container::new()
+                            .with_color(background)
+                            .with_corner_radius(large / 2.0)
+                            .with_padding(padding)
+                            // No `Center` here: upstream's Container has
+                            // `alignment: Alignment.center`, which on a
+                            // content-sized box moves nothing -- while a
+                            // `Center` *expands to fill*, and under a loose
+                            // parent that makes the badge as wide as whatever
+                            // it was offered.
+                            .with_child(
+                                Text::new(label.clone())
+                                    .with_size(size)
+                                    .with_weight(700)
+                                    .with_color(text_color),
+                            ),
+                    ),
+                ),
+                // The dot: `smallSize` across, and round rather than a stadium
+                // because there is nothing inside to stretch it.
+                None => crate::render::RenderRef::new(
+                    Container::new()
+                        .with_size(small, small)
+                        .with_color(background)
+                        .with_corner_radius(small / 2.0),
+                ),
+            }
+        });
+
+        let Some(child) = child else {
+            return mark;
+        };
+        // Upstream stacks the badge over the child, positioned to *fill* it,
+        // and aligns it inside that -- which is why the child alone sizes the
+        // stack. A badge must not make the thing it is marking any bigger, or a
+        // row of icons would shift the moment one of them got a count.
+        many(vec![child, mark], move |mut rendered| {
+            let mark = rendered.pop().expect("the mark");
+            let child = rendered.pop().expect("the child");
+            let aligned = crate::render::RenderAlign::new_boxed(
+                crate::render::Alignment::new(alignment.x, alignment.y),
+                mark,
+            )
+            .with_nudge(offset);
+            let mut stack = crate::render::RenderStack::new()
+                .with_fit(crate::render::StackFit::Loose)
+                // Upstream's `clipBehavior: Clip.none`: the badge is allowed to
+                // hang outside the icon it is marking, and usually does.
+                .with_clip_behavior(crate::painting::ClipBehavior::None);
+            stack = stack.push_boxed(child);
+            stack = stack.push_positioned_boxed(
+                crate::render::RenderRef::new(aligned),
+                crate::render::StackPosition {
+                    left: Some(0.0),
+                    top: Some(0.0),
+                    right: Some(0.0),
+                    bottom: Some(0.0),
+                    width: None,
+                    height: None,
+                },
+            );
+            Box::new(stack)
         })
     }
 }
@@ -2709,6 +2858,241 @@ mod tests {
         }
         assert_eq!(taps(true), 1);
         assert_eq!(taps(false), 0);
+    }
+
+    // -- The badge ---------------------------------------------------------------------
+
+    use crate::component_themes::{BadgeTheme, BadgeThemeData, ResolvedBadge};
+
+    fn badge_size(badge: Badge) -> crate::render::Size {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(badge)));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints {
+            min_width: 0.0,
+            max_width: 400.0,
+            min_height: 0.0,
+            max_height: 400.0,
+        })
+    }
+
+    fn marked(child_size: f32, badge: Badge) -> crate::render::Size {
+        badge_size(badge.with_child(crate::framework::leaf(move || {
+            Container::new().with_size(child_size, child_size)
+        })))
+    }
+
+    fn resolved_badge(data: BadgeThemeData) -> ResolvedBadge {
+        struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedBadge>>>);
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(ResolvedBadge::of(context));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            BadgeTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn a_badge_with_no_label_is_a_dot_and_not_an_empty_stadium() {
+        // The two say different things: a count says how much is waiting, a dot
+        // says only that something is.
+        let dot = badge_size(Badge::dot());
+        assert_eq!(
+            dot,
+            crate::render::Size::new(ResolvedBadge::SMALL_SIZE, ResolvedBadge::SMALL_SIZE)
+        );
+        assert!(!Badge::dot().has_label());
+
+        let counted = badge_size(Badge::new("3"));
+        assert!(counted.width > dot.width && counted.height > dot.height);
+        assert_eq!(
+            counted.height,
+            ResolvedBadge::LARGE_SIZE,
+            "a labelled badge is largeSize tall"
+        );
+    }
+
+    #[test]
+    fn a_badge_does_not_make_the_thing_it_marks_any_bigger() {
+        // Or a row of icons would shift the moment one of them got a count.
+        let bare = marked(24.0, Badge::dot().with_label_visible(false));
+        let dotted = marked(24.0, Badge::dot());
+        let counted = marked(24.0, Badge::new("99"));
+        assert_eq!(bare, crate::render::Size::new(24.0, 24.0));
+        assert_eq!(dotted, bare);
+        assert_eq!(counted, bare, "even a wide count");
+    }
+
+    /// Where the badge landed inside its child, and how big it came out.
+    ///
+    /// Read by walking the render tree rather than by hit testing: a badge is
+    /// not a tap target, so the only way to see where it is put is to ask the
+    /// tree what it did.
+    fn badge_placement(badge: Badge) -> (crate::render::Offset, crate::render::Size) {
+        use crate::render::RenderBox;
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            component(badge.with_child(crate::framework::leaf(|| {
+                Container::new().with_size(24.0, 24.0)
+            }))),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::tight(24.0, 24.0));
+
+        // The deepest thing that is not the 24-by-24 child is the badge.
+        fn deepest(
+            node: &dyn RenderBox,
+            at: crate::render::Offset,
+            found: &mut Vec<(crate::render::Offset, crate::render::Size)>,
+        ) {
+            node.visit_children(&mut |child, offset| {
+                let here = crate::render::Offset::new(at.dx + offset.dx, at.dy + offset.dy);
+                found.push((here, child.size()));
+                deepest(child, here, found);
+            });
+        }
+        let mut found = Vec::new();
+        deepest(&root, crate::render::Offset::ZERO, &mut found);
+        *found
+            .iter()
+            .filter(|(_, size)| size.width > 0.0 && size.width != 24.0)
+            .min_by(|a, b| a.1.width.partial_cmp(&b.1.width).expect("finite"))
+            .expect("the badge is in there somewhere")
+    }
+
+    #[test]
+    fn hiding_the_label_stops_the_badge_being_drawn_at_all() {
+        // Upstream's `isLabelVisible`: a count that has gone to zero should not
+        // take the icon with it -- and should not leave a mark either.
+        fn rects(visible: bool) -> u32 {
+            use crate::render::RenderBox;
+            crate::engine_test_stubs::reset_layer_calls();
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                Theme::dark(),
+                component(Badge::new("0").with_label_visible(visible).with_child(
+                    crate::framework::leaf(|| Container::new().with_size(24.0, 24.0)),
+                )),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::tight(24.0, 24.0));
+            let mut layers = crate::engine::LayerTree::new(24, 24);
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(24.0, 24.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            crate::engine_test_stubs::layer_calls().rects
+        }
+        assert!(
+            rects(true) > rects(false),
+            "the badge is one more rectangle"
+        );
+
+        assert_eq!(
+            marked(24.0, Badge::new("0").with_label_visible(false)),
+            marked(24.0, Badge::new("0")),
+            "and the child does not move either way"
+        );
+    }
+
+    #[test]
+    fn a_dot_sits_on_the_corner_and_a_count_is_nudged_off_it() {
+        // The nudge keeps a wide count from covering the thing it is counting.
+        // A dot is not wide, so it sits exactly where the alignment put it.
+        let (dot_at, dot_size) = badge_placement(Badge::dot());
+        assert_eq!(
+            dot_at.dx + dot_size.width,
+            24.0,
+            "flush with the child's right edge"
+        );
+        assert_eq!(dot_at.dy, 0.0, "and its top");
+
+        let (count_at, _) = badge_placement(Badge::new("9"));
+        assert_ne!(
+            count_at.dy, 0.0,
+            "a count is moved off the corner and a dot is not"
+        );
+    }
+
+    #[test]
+    fn a_badge_is_the_error_colour_and_not_the_primary() {
+        // The scheme already has a colour that means "this wants attention".
+        // The primary would make a badge read as decoration.
+        let scheme = crate::theme::ThemeData::fallback().color_scheme;
+        let resolved = resolved_badge(BadgeThemeData::new());
+        assert_eq!(resolved.background, scheme.error);
+        assert_eq!(resolved.text_color, scheme.on_error);
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults_field_by_field() {
+        let mut data = BadgeThemeData::new();
+        data.background_color = Some(Color::argb(0xFF, 1, 2, 3));
+        data.large_size = Some(30.0);
+        let resolved = resolved_badge(data);
+        assert_eq!(resolved.background, Color::argb(0xFF, 1, 2, 3));
+        assert_eq!(resolved.large_size, 30.0);
+        assert_eq!(
+            resolved.small_size,
+            ResolvedBadge::SMALL_SIZE,
+            "and the fields it did not set are untouched"
+        );
+    }
+
+    #[test]
+    fn the_badges_own_colour_is_recorded_for_the_widget_step() {
+        // The widget-then-theme-then-default order has three steps and
+        // `ResolvedBadge` does the last two; the first is the widget's own
+        // `unwrap_or` in `build`. Which colour came out is not observable --
+        // the stub engine counts rectangles and does not say what colour they
+        // were -- so only the field the step reads is asserted here.
+        const MINE: Color = Color::argb(0xFF, 0x77, 0x66, 0x55);
+        assert_eq!(
+            Badge::new("1").with_color(MINE).background_color,
+            Some(MINE)
+        );
+        assert_eq!(Badge::new("1").background_color, None, "unset defers");
+        assert_eq!(Badge::new("1").with_text_color(MINE).text_color, Some(MINE));
+    }
+
+    #[test]
+    fn a_lone_labelled_badge_is_a_stadium_and_not_as_wide_as_it_is_offered() {
+        // `max_width: INFINITY` under a loose parent would take everything, and
+        // a badge four hundred pixels wide is not a badge.
+        let size = badge_size(Badge::new("3"));
+        assert!(size.width < 400.0, "got {}", size.width);
+        assert!(
+            size.width >= size.height,
+            "a stadium is at least as wide as it is tall: {size:?}"
+        );
+    }
+
+    #[test]
+    fn a_labelled_badge_is_nudged_off_the_corner_and_a_dot_is_not() {
+        // The nudge keeps a wide count from covering the thing it is counting.
+        // A dot is not wide, so it sits exactly where the alignment put it.
+        let resolved = resolved_badge(BadgeThemeData::new());
+        assert_ne!(resolved.offset, Offset::ZERO, "the theme's own offset");
+
+        // The offset upstream adds on top of whatever was asked for.
+        let mut data = BadgeThemeData::new();
+        data.offset = Some(Offset::new(0.0, 0.0));
+        assert_eq!(
+            resolved_badge(data).offset,
+            Offset::new(0.0, 8.0),
+            "upstream's compatibility constant, added to whatever was asked for"
+        );
     }
 
     #[test]

@@ -4695,6 +4695,14 @@ impl RenderBox for RenderPadding {
 /// The width/height factors let it shrink-wrap instead: a factor of 1.0 on an
 /// axis makes it exactly its child's size on that axis.
 pub struct RenderAlign {
+    /// Added to wherever the alignment put the child.
+    ///
+    /// Upstream has no `Align` with an offset -- it is `Badge`'s private
+    /// `_Badge` render object, which aligns and then nudges in one step. Doing
+    /// it here rather than with a transform around the child is what keeps
+    /// paint, hit testing and [`RenderBox::visit_children`] agreeing: a
+    /// transform moves the pixels and leaves the layout saying something else.
+    nudge: Offset,
     alignment: Alignment,
     /// The start-based alignment this was given, when it was one: upstream's
     /// `AlignmentGeometry`, which is either an `Alignment` or an
@@ -4723,12 +4731,29 @@ impl RenderAlign {
             height_factor: None,
             child: RenderRef::new(child),
             child_offset: Offset::ZERO,
+            nudge: Offset::ZERO,
             size: Size::ZERO,
         }
     }
 
     /// Upstream's `Align` given an `AlignmentDirectional`: which side `start`
     /// means is decided by the ambient direction, taken here at construction.
+    /// [`RenderAlign::new`] for a caller that already has a boxed child, as
+    /// [`RenderStack::push_boxed`] is for [`RenderStack::push`].
+    pub fn new_boxed(alignment: Alignment, child: BoxedRender) -> RenderAlign {
+        RenderAlign {
+            child,
+            child_offset: Offset::ZERO,
+            ..RenderAlign::new(alignment, crate::widgets::Empty)
+        }
+    }
+
+    /// Moves the child by `nudge` from wherever the alignment put it.
+    pub fn with_nudge(mut self, nudge: Offset) -> Self {
+        self.nudge = nudge;
+        self
+    }
+
     pub fn directional(
         alignment: AlignmentDirectional,
         child: impl RenderBox + 'static,
@@ -4803,7 +4828,10 @@ impl RenderBox for RenderAlign {
             None => child_size.height,
         };
         self.size = constraints.constrain(Size::new(width, height));
-        self.child_offset = self.resolved_alignment().inscribe(child_size, self.size);
+        self.child_offset = self
+            .resolved_alignment()
+            .inscribe(child_size, self.size)
+            .plus(self.nudge);
         self.size
     }
 
@@ -8503,6 +8531,14 @@ impl RenderTransform {
             origin: Alignment::CENTER,
             child: RenderRef::new(child),
             size: Size::ZERO,
+        }
+    }
+
+    /// [`RenderTransform::new`] for a caller that already has a boxed child.
+    pub fn new_boxed(matrix: [f32; 6], child: BoxedRender) -> RenderTransform {
+        RenderTransform {
+            child,
+            ..RenderTransform::new(matrix, crate::widgets::Empty)
         }
     }
 
