@@ -438,6 +438,66 @@ pub fn safe_area(child: AnyWidget) -> AnyWidget {
     component(SafeArea::new(child))
 }
 
+/// Upstream `SystemTextScaler`, the `TextScaler` a `MediaQuery` carries when
+/// the scaling came from the platform.
+///
+/// [`crate::painting::TextScaler`]'s own documentation anticipated this one:
+/// the linear spelling is the only one the engine's bare factor can express,
+/// and a non-linear platform scaler arrives as something else. This is that
+/// something else.
+///
+/// **The reason it cannot be a number is that newer Android does not scale
+/// linearly**: at a large accessibility setting, small text is enlarged
+/// considerably and text that is already large is enlarged much less, so the
+/// layout does not fall apart. No single multiplier describes that, so the
+/// scaling has to be a call into the platform.
+///
+/// `text_scale_factor` survives anyway, and upstream says exactly what it is
+/// for: **comparing two scalers, and not arithmetic.** Two system scalers with
+/// the same factor produce the same output for the same input, so the factor is
+/// a sound identity -- but multiplying a font size by it would be inventing a
+/// linear model the platform never agreed to.
+#[derive(Clone, Copy, Debug)]
+pub struct SystemTextScaler {
+    text_scale_factor: f32,
+    /// The platform's answer, as a function this port can be handed for a test.
+    scale_fn: fn(f32) -> f32,
+}
+
+impl SystemTextScaler {
+    pub fn new(text_scale_factor: f32, scale_fn: fn(f32) -> f32) -> SystemTextScaler {
+        SystemTextScaler {
+            text_scale_factor,
+            scale_fn,
+        }
+    }
+
+    /// For comparison only.
+    pub fn text_scale_factor(&self) -> f32 {
+        self.text_scale_factor
+    }
+
+    /// Upstream `scale`, which asks the platform dispatcher rather than
+    /// multiplying.
+    pub fn scale(&self, font_size: f32) -> f32 {
+        (self.scale_fn)(font_size)
+    }
+
+    /// Upstream's `==`, which has a case worth keeping: a system scaler whose
+    /// factor is exactly 1.0 **equals `TextScaler.noScaling`**, because the two
+    /// are extensionally the same function. A widget comparing against "no
+    /// scaling" to decide whether it can take a shortcut gets the right answer
+    /// without knowing where the scaler came from.
+    pub fn equals_no_scaling(&self) -> bool {
+        self.text_scale_factor == 1.0
+    }
+
+    /// Upstream compares two `SystemTextScaler`s by their factors alone.
+    pub fn same_as(&self, other: &SystemTextScaler) -> bool {
+        self.text_scale_factor == other.text_scale_factor
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,5 +846,59 @@ mod tests {
         assert!(tree.publish(louder));
         tree.rebuild_dirty();
         assert_eq!(builds.get(), 3, "and so is a text scale change");
+    }
+    // -- SystemTextScaler ------------------------------------------------------
+
+    /// Android's non-linear curve, roughly: small text is enlarged a lot and
+    /// text that is already large much less.
+    fn android_non_linear(font_size: f32) -> f32 {
+        if font_size <= 14.0 {
+            font_size * 2.0
+        } else if font_size <= 24.0 {
+            font_size * 1.5
+        } else {
+            font_size * 1.1
+        }
+    }
+
+    #[test]
+    fn the_platform_scaler_cannot_be_a_number_because_it_is_not_a_line() {
+        // At a large accessibility setting, small text is enlarged a lot and
+        // text that is already large much less, so the layout does not fall
+        // apart. No single multiplier says that.
+        let scaler = SystemTextScaler::new(2.0, android_non_linear);
+        assert_eq!(scaler.scale(10.0), 20.0);
+        assert_eq!(scaler.scale(20.0), 30.0);
+        assert!((scaler.scale(40.0) - 44.0).abs() < 1e-4);
+
+        assert_ne!(
+            scaler.scale(40.0),
+            40.0 * scaler.text_scale_factor(),
+            "multiplying by the factor would invent a model the platform never agreed to"
+        );
+    }
+
+    #[test]
+    fn the_factor_is_for_comparing_scalers_and_nothing_else() {
+        // Two with the same factor produce the same output for the same input,
+        // so it is a sound identity.
+        let a = SystemTextScaler::new(1.5, android_non_linear);
+        let b = SystemTextScaler::new(1.5, android_non_linear);
+        let c = SystemTextScaler::new(2.0, android_non_linear);
+        assert!(a.same_as(&b));
+        assert!(!a.same_as(&c));
+    }
+
+    #[test]
+    fn a_system_scaler_at_one_is_the_same_function_as_no_scaling_at_all() {
+        // A widget comparing against "no scaling" to decide whether it can take
+        // a shortcut gets the right answer without knowing where the scaler
+        // came from.
+        assert!(SystemTextScaler::new(1.0, |size| size).equals_no_scaling());
+        assert!(!SystemTextScaler::new(1.5, android_non_linear).equals_no_scaling());
+        assert_eq!(
+            crate::painting::TextScaler::NO_SCALING.text_scale_factor,
+            1.0
+        );
     }
 }

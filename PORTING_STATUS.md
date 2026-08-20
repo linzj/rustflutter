@@ -164,6 +164,77 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 否决是一个字段,不是一个回调(2026-08-20)
+
+新模块 `widgets_app.rs`,收掉包住一切的那一圈:`WidgetsApp`(`widgets/app.dart`)、
+`CheckedModeBanner`(`banner.dart`)、`PerformanceOverlay`(`performance_overlay.dart`)、
+`PopScope`(`pop_scope.dart`);另外把 `SystemTextScaler` 加进了 `media_query.rs`。覆盖率
+1722/1888(91.2%)。测试 3053。
+
+**(先按上一轮的规矩查了文件名:`app.rs` 已经存在——但它是完全另一回事,是 shell 契约、引擎调进来的那套
+FFI。所以新模块叫 `widgets_app.rs`,并在文件头写明了这个区别。)**
+
+---
+
+**`PopScope` 是最容易被读反的一个类,而读反的地方是以为 `onPopInvokedWithResult` 能拦住一次返回。它不
+能**——上游自己的文档就写着:这个回调跑的时候,**「the pop has already happened」**。
+
+**否决是一个字段:`canPop`,而且必须提前设好。** 因为这个决定在手势到达的那一刻就要用,而一个能晚点回答
+的回调,得让整个导航停在那儿等它想清楚。
+
+**而这个回调在返回被取消时照样会跑**,由 `didPop` 说明发生了哪一种。**这才是它有用的原因:一个拒绝返回
+手势的页面,恰恰就是那个想弹「要放弃修改吗?」的页面,而它必须听见自己刚挡下的那次尝试。**
+
+---
+
+**`CheckedModeBanner` 整个类是一个 `build`,而它的函数体整个坐在 `assert(() { ... return true; }())`
+里面**——那是 Dart 写「release 编译器会删掉的代码」的方式。**在 release 构建里,这个 widget 就是它的孩
+子,它身上没有任何东西还要花钱。**
+
+而横幅的位置是 `topEnd`、文字方向却被**硬写成从左到右**,于是那个 DEBUG 标签不管应用的语言是什么,永远
+在右上角。这是有意的:**横幅是给做这个应用的人看的,让它随语言换位置只会让它更难找。**
+
+---
+
+**`PerformanceOverlayOption` 的变体上有一句注释值得留:** 「these must be in the order needed for their
+index values to match the constants in `performance_overlay_layer.h`」。**声明顺序是一份 ABI。** 调换它
+们不会编译不过,**只会让这个覆盖层安静地显示错的东西。** 回归行把四个下标逐个钉住了。
+
+而它显示两套数字,是因为**有两个线程、两种丢帧的方式**:UI 线程可能来不及**搭**图层树,光栅化器可能来
+不及**画**它。**知道是哪一个超了预算,才是这个覆盖层的全部诊断价值**,一个数字说不了这件事。
+
+---
+
+**`WidgetsApp` 那一串断言之间说的是同一件事:一个应用必须有某种办法产出一条路由。** `home`、
+`routes['/']`、`onGenerateRoute`、`onUnknownRoute`、`builder`——至少要有一个;而其中几种组合是**冗余**
+而不是错的(比如同时给 `home` 和 `routes['/']`,**两个在回答同一个问题,而没有东西说谁赢**)。
+
+**而查找顺序本身有意思:`home` 和 routes 表在 `onGenerateRoute` 之前被查。** **一条有人写下来的路由,赢
+过一条有人本来会算出来的。**
+
+还有一条:**用了 `home` 或 `routes`,就必须给 `pageRouteBuilder`**——默认处理器要造一个 page route,而没
+有别的东西告诉它造哪一种。
+
+---
+
+**`SystemTextScaler` 正好补上了本 crate `TextScaler` 文档里预留的那句话**(「non-linear platform
+scalers would arrive as a new variant」)。
+
+**它之所以不能是一个数,是因为新版 Android 的缩放不是线性的**:在很大的无障碍设置下,**小字被放大很多,
+本来就大的字放大得少得多**,好让版面不至于散架。**没有哪一个乘数能描述这件事**,所以缩放必须是一次对平
+台的调用。
+
+而 `textScaleFactor` 仍然留着,上游写明了它是干什么的:**用来比较两个 scaler,不用来做算术。** 两个因子
+相同的系统 scaler 对同一个输入给出同一个输出,所以这个因子是一个可靠的身份;**但拿字号去乘它,是在发明
+一个平台从没同意过的线性模型。** 回归行按一条真的非线性曲线把这一条钉住了。
+
+它的 `==` 还有一处:**因子恰好是 1.0 的系统 scaler,等于 `TextScaler.noScaling`**——两者在外延上是同一个
+函数,于是一个拿「没有缩放」去判断能不能走捷径的 widget,不必知道 scaler 从哪来就能得到正确答案。
+
+验证:`cargo test --lib` 3053 绿,GN `rustflutter_unittests` 3053 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1722 accounted / 166 MISSING(91.2%)。
+
 ### 不确定态是走到的,不是路过的(2026-08-20)
 
 两个新模块:`toggleable.rs`(`ToggleableStateMixin`、`ToggleablePainter`)与

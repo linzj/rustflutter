@@ -158,6 +158,7 @@ pub mod view;
 pub mod widget_inspector;
 pub mod widget_state;
 pub mod widgets;
+pub mod widgets_app;
 
 pub use actions::{Action, ActionDispatcher, Intent};
 pub use animation::{
