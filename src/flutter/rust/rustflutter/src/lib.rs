@@ -50,6 +50,7 @@ pub mod draggable_sheet;
 pub mod drawer;
 pub mod dual_transition_builder;
 pub mod editable;
+pub mod editable_text;
 pub mod elevation_overlay;
 pub mod engine;
 pub mod expansion_panel;
