@@ -164,6 +164,70 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 滚轮没有两端,所以它的步长必须把圈合上(2026-08-20)
+
+新模块 `cupertino_pickers.rs`,收掉 `cupertino/date_picker.dart` 的 `CupertinoDatePicker`、
+`CupertinoTimerPicker` 与 `cupertino/menu_anchor.dart` 的 `CupertinoMenuEntry`、
+`CupertinoMenuAnchor`、`CupertinoMenuDivider`、`CupertinoMenuItem`。覆盖率 1863/1888(98.7%)。测试
+3623。
+
+```dart
+assert(
+  minuteInterval > 0 && 60 % minuteInterval == 0,
+  'minute interval is not a positive integer factor of 60',
+),
+```
+
+**分钟间隔必须**整除**六十,不是「是个正数」就行。因为这个轮子是绕圈的。** 间隔取 7,停位是 0、7、……、
+56,然后过四分钟就又见到 0——**唯一一个不等于间隔的间隙,恰好是你看不见它要来的那个。**
+
+而紧接着还有一条:`assert(initialDateTime.minute % minuteInterval == 0)`。两条合起来说的是:**你没法把一
+个没有中间态的轮子停在两档中间。**
+
+**十二条 assert 里有六条是按模式分的,写法都是 `mode != X || <真正的检查>`** ——每个模式一条蕴含,内联写
+着。而第 88 轮那个 `PaginatedDataTable` 把同一个意思写成了 `assert(() { if (...) { assert(...); } return
+true; }())` 的闭包套 assert。**同一个「这条规矩只在这种情形下管用」,两个文件两种写法。**
+
+顺带:`assert(oldWidget.mode == widget.mode, "The $runtimeType's mode cannot change once it's built.")`
+——**又一个「构造参数是 widget 身份的一部分」**,这是这一轮扫过的第二个,上一个是第 85 轮 stepper 的 step
+列表;道理也一样:每个模式搭的是另一组轮子,底下那些 scroll controller 只造一次。
+
+---
+
+**而 `CupertinoMenuEntry` 是个只有两个成员的 `abstract interface class`——两个成员讲的都是邻居,不是自
+己。**
+
+```dart
+/// If [hasLeading] returns true, siblings of this menu item that are missing
+/// a leading widget will have leading space added to align the leading edges
+/// of all menu items.
+bool hasLeading(BuildContext context);
+
+/// When true, a divider will not be drawn above or below this menu item.
+bool get isDivider;
+```
+
+**一个条目带了图标,其余每个条目都要跟着缩进。** 对齐是这一组的属性,而这组是靠挨个问成员问出来的——于是
+「这个条目有没有前置组件」这个答案,**除了它自己,所有人都要读。**
+
+而 `isDivider` 说的不是「我是一条线」,是**「别在我旁边画线」**——正是这条让你自己加的那道分隔线,不会跟菜
+单自动画的那两道挤在一起。回归行把这个反过来的读法钉住了:三个普通条目之间画两道线,中间插一道显式分隔
+线,两个缝**一道都不画**;而把 `isDivider` 改成天真的那个意思,三条红。
+
+---
+
+其余两条:
+
+* `assert(enableSwipe || !enableLongPressToOpen, 'enableLongPressToOpen cannot be true if enableSwipe
+  is false')`——又一条蕴含,而且是物理意义上的:**长按打开菜单之后,你的手指已经按在上面了**,这个手势自
+  然要接着滑过去选一项。**关掉滑动却留着长按打开,等于把那根打开它的手指晾在那儿。**
+* `CupertinoTimerPicker` 的 `assert(initialTimerDuration < const Duration(days: 1))`——**严格小于一天**:
+  这个选择器只有时、分、秒三列,**二十四小时没有地方显示,只会读成零。**
+
+验证:`cargo test --lib` 3623 绿,GN `rustflutter_unittests` 3623 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1863 accounted / 25 MISSING(98.7%)。
+
 ### 九十八处「眼睛量的」,七十四处在同一层里(2026-08-20)
 
 新模块 `cupertino_sheet.rs`,收掉 `cupertino/nav_bar.dart` 的 `CupertinoSliverNavigationBar` 与
