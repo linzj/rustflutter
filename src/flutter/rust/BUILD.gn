@@ -194,6 +194,7 @@ if (enable_unittests) {
       "rustflutter/src/page_transitions_builder.rs",
       "rustflutter/src/page_transitions_theme.rs",
       "rustflutter/src/page_view.rs",
+      "rustflutter/src/paginated_data_table.rs",
       "rustflutter/src/painting.rs",
       "rustflutter/src/physics.rs",
       "rustflutter/src/pickers.rs",

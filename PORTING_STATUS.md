@@ -164,6 +164,92 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 下拉框得能显示出它自己现在的值(2026-08-20)
+
+新模块 `paginated_data_table.rs`(`PaginatedDataTable`、`PaginatedDataTableState`),并把
+`PopupMenuItemState`、`PopupMenuButtonState` 补进已有的 `menu.rs`。覆盖率 1826/1888(96.7%)。测试
+3456。
+
+**`PaginatedDataTable` 一个构造器里九条 assert,凑齐了参数检查的好几种形状——其中三种值得分开说。**
+
+**一、蕴含,不是互斥。**
+
+```dart
+assert(actions == null || (header != null)),
+```
+
+**actions 需要 header,header 不需要 actions。** 这既不是「至多给一个」,也不是上一轮那条「要么都给要么
+都不给」——**是单向的**。原因很实在:actions 是画在 header 那一行里的,没有 header 就没地方放。
+
+**二、有条件的 assert。**
+
+```dart
+assert(() {
+  if (onRowsPerPageChanged != null) {
+    assert(availableRowsPerPage.contains(rowsPerPage));
+  }
+  return true;
+}()),
+```
+
+**一个改不了的每页行数,可以是任何数;一个能改的,就必须是候选列表里有的那个——因为那个下拉框得能显示出
+它自己现在的值。** 回归行把两边都钉住了:`rowsPerPage: 7` 而候选里没有 7,不给 `onRowsPerPageChanged` 时
+通过,给了就被拒。把这条改成无条件的,那一条会红。
+
+**三、把退化情形一次排除掉,后面的检查就能是干净的检查。**
+
+```dart
+assert(columns.isNotEmpty),
+assert(sortColumnIndex == null || (sortColumnIndex >= 0 && sortColumnIndex < columns.length)),
+```
+
+**和第 84 轮的 `TabController` 正好是两条路。** 那个允许 length 为 0,于是每一条后续 assert 都得挂一个
+`length == 0 ||` 的活口——而那个活口最后成了「文档说 index 必须是 0,assert 却放 47 过去」的来源。这里
+**开头一句 `columns.isNotEmpty` 把退化情形排掉,下面那条范围检查就真的只是一条范围检查。**
+
+---
+
+**还有一处,是被废弃参数的体面退场:**
+
+```dart
+assert(
+  dataRowHeight == null || (dataRowMinHeight == null && dataRowMaxHeight == null),
+  'dataRowHeight ($dataRowHeight) must not be set if dataRowMinHeight ... are set.',
+),
+dataRowMinHeight = dataRowHeight ?? dataRowMinHeight,
+dataRowMaxHeight = dataRowHeight ?? dataRowMaxHeight,
+```
+
+**assert 不许你把旧的单值和取代它的区间混着说,紧接着的初始化就把那个单值塌进区间里。** 一个固定行高活
+下来的样子,是一个宽度为零的区间(min == max),而下游只认那一对。
+
+顺带一条:`pageTo` 的名字在悄悄做事——`(rowIndex ~/ rowsPerPage) * rowsPerPage`。**它收的是行号,给你的
+是那一行所在的那一页**,想停在半页中间是停不住的。而 `onPageChanged` 只在**取整之后**的下标变了才发,所以
+在同一页里换个行号,是无声的。
+
+---
+
+**另一件:菜单项先把自己关掉,再把控制权交出去。**
+
+```dart
+// Need to pop the navigator first in case onTap may push new route onto navigator.
+Navigator.pop<T>(context, widget.value);
+widget.onTap?.call();
+```
+
+**不是为了整洁。** 一个会 push 新路由的回调,若是先跑,那么本该关掉菜单的那次 pop 就会把它刚推上去的路
+由弹掉。**所以菜单趁自己还认得哪条路由是自己的时候先退场,然后才随调用者去动 navigator。** 和第 83 轮那
+条 elevation 链是同一个形状:**次序是承重的,而且作者写了注释说它承重。** 回归行把两行对调跑了一遍,红。
+
+而 `PopupMenuButtonState` 里那两个缓存(`_cachedButtonRenderBox` / `_cachedOverlayRenderBox`)带着注释和
+一个 issue 链接:**这是一份为「活多久」而不是为「快多少」留的缓存。** 定位函数在菜单路由做动画的时候会跑
+——包括退场那一程,而那时按钮自己的 render object 可能已经没了。**提前把盒子取下来攥着,菜单才能对着一个
+已经离场的按钮把自己摆完。**
+
+验证:`cargo test --lib` 3456 绿,GN `rustflutter_unittests` 3456 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1826 accounted / 62 MISSING(96.7%)。
+
 ### 这一周的多参数 assert 全是「至多给一个」,这条是反过来的(2026-08-20)
 
 新模块 `chip.rs`(`RawChip`),并把 `Autocomplete` 补进已有的 `autocomplete.rs`。覆盖率 1822/1888

@@ -756,3 +756,221 @@ mod tests {
         assert!(item.handlers.is_empty());
     }
 }
+
+// -- The two state classes ----------------------------------------------------------
+
+/// What tapping a popup menu item does, in the order it does it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemTapStep {
+    /// `Navigator.pop<T>(context, widget.value)`.
+    PopTheMenu,
+    /// `widget.onTap?.call()`.
+    CallOnTap,
+}
+
+/// Upstream `PopupMenuItemState`.
+///
+/// A `State` subclass that upstream made public on purpose: its `buildChild`
+/// and `handleTap` are `@protected` and documented as override points, so a
+/// caller subclasses `PopupMenuItem` and replaces the pieces rather than
+/// rebuilding the item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PopupMenuItemState {
+    pub enabled: bool,
+    pub has_on_tap: bool,
+}
+
+impl PopupMenuItemState {
+    pub fn new() -> PopupMenuItemState {
+        PopupMenuItemState {
+            enabled: true,
+            has_on_tap: false,
+        }
+    }
+
+    /// Upstream `handleTap`, whose two lines carry a comment explaining their
+    /// order:
+    ///
+    /// ```dart
+    /// // Need to pop the navigator first in case onTap may push new route onto navigator.
+    /// Navigator.pop<T>(context, widget.value);
+    /// widget.onTap?.call();
+    /// ```
+    ///
+    /// **The menu closes itself before handing control over.** Not for
+    /// tidiness: a callback that pushes a route would otherwise have its own
+    /// route popped by the line meant to dismiss the menu. So the item takes
+    /// itself off the stack while it still knows which entry is its own, and
+    /// only then lets the caller do whatever it likes to the navigator.
+    ///
+    /// The same shape as the button elevation chain in tick 83 -- an ordering
+    /// that is load-bearing, with a comment saying so.
+    pub fn handle_tap(&self) -> Vec<ItemTapStep> {
+        let mut steps = vec![ItemTapStep::PopTheMenu];
+        if self.has_on_tap {
+            steps.push(ItemTapStep::CallOnTap);
+        }
+        steps
+    }
+
+    /// Upstream wires the `InkWell` with `onTap: widget.enabled ? handleTap : null`,
+    /// so a disabled item is not a tap that does nothing -- it has no handler at
+    /// all, and the ink does not react either.
+    pub fn tap_handler(&self) -> Option<Vec<ItemTapStep>> {
+        self.enabled.then(|| self.handle_tap())
+    }
+
+    /// Upstream `buildChild`, documented as *"By default, this returns
+    /// `PopupMenuItem.child`. Override this to put something else in the menu
+    /// entry."*
+    pub fn builds_widget_child_by_default() -> bool {
+        true
+    }
+}
+
+impl Default for PopupMenuItemState {
+    fn default() -> Self {
+        PopupMenuItemState::new()
+    }
+}
+
+/// Upstream `PopupMenuButtonState`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PopupMenuButtonState {
+    is_menu_expanded: bool,
+    /// Upstream's `_cachedButtonRenderBox` and `_cachedOverlayRenderBox`, taken
+    /// together. See [`PopupMenuButtonState::update_cached_objects`].
+    has_cached_boxes: bool,
+    mounted: bool,
+}
+
+impl PopupMenuButtonState {
+    pub fn new() -> PopupMenuButtonState {
+        PopupMenuButtonState {
+            is_menu_expanded: false,
+            has_cached_boxes: false,
+            mounted: true,
+        }
+    }
+
+    /// Upstream `_updateCachedObjects`, called from `didChangeDependencies`,
+    /// with a comment and a linked issue:
+    ///
+    /// > Caches some objects relying on context used in `_positionBuilder()`
+    /// > to avoid crashing when the popup menu is inactive.
+    ///
+    /// **A cache kept for lifetime rather than for speed.** The position builder
+    /// runs while the menu route is animating, including on its way out, and by
+    /// then the button's own render object may be gone. Reading the boxes early
+    /// and holding them means the menu can finish positioning itself against a
+    /// button that has already left.
+    ///
+    /// The `mounted` check is the other half: there is no point caching a
+    /// context that is already dead.
+    pub fn update_cached_objects(&mut self) {
+        if self.mounted {
+            self.has_cached_boxes = true;
+        }
+    }
+
+    pub fn did_change_dependencies(&mut self) {
+        self.update_cached_objects();
+    }
+
+    /// Whether the menu can still work out where to place itself.
+    pub fn can_position_menu(&self) -> bool {
+        self.has_cached_boxes
+    }
+
+    pub fn unmount(&mut self) {
+        self.mounted = false;
+    }
+
+    /// Upstream `showButtonMenu`, which flips `_isMenuExpanded` and pushes the
+    /// route; the flag is what the button reports to semantics.
+    pub fn show_button_menu(&mut self) {
+        self.is_menu_expanded = true;
+    }
+
+    pub fn menu_dismissed(&mut self) {
+        self.is_menu_expanded = false;
+    }
+
+    pub fn is_menu_expanded(&self) -> bool {
+        self.is_menu_expanded
+    }
+}
+
+#[cfg(test)]
+mod popup_state_tests {
+    use super::*;
+
+    #[test]
+    fn the_menu_closes_itself_before_handing_control_over() {
+        // A callback that pushes a route would otherwise lose its own route to
+        // the pop meant for the menu.
+        let mut item = PopupMenuItemState::new();
+        item.has_on_tap = true;
+        assert_eq!(
+            item.handle_tap(),
+            vec![ItemTapStep::PopTheMenu, ItemTapStep::CallOnTap]
+        );
+    }
+
+    #[test]
+    fn an_item_with_no_callback_still_pops() {
+        // The pop is how the value gets back to whoever opened the menu; onTap
+        // is extra.
+        assert_eq!(
+            PopupMenuItemState::new().handle_tap(),
+            vec![ItemTapStep::PopTheMenu]
+        );
+    }
+
+    #[test]
+    fn a_disabled_item_has_no_handler_rather_than_an_empty_one() {
+        let mut item = PopupMenuItemState::new();
+        item.enabled = false;
+        assert_eq!(item.tap_handler(), None, "and so the ink does not react");
+
+        item.enabled = true;
+        assert!(item.tap_handler().is_some());
+    }
+
+    // -- A cache kept for lifetime -------------------------------------------------
+
+    #[test]
+    fn the_render_boxes_are_taken_early_so_the_menu_can_outlive_its_button() {
+        let mut button = PopupMenuButtonState::new();
+        assert!(!button.can_position_menu(), "nothing cached yet");
+
+        button.did_change_dependencies();
+        button.show_button_menu();
+        assert!(button.can_position_menu());
+
+        // The button goes away while the menu is still animating out.
+        button.unmount();
+        assert!(
+            button.can_position_menu(),
+            "and the menu can still place itself"
+        );
+    }
+
+    #[test]
+    fn nothing_is_cached_from_a_context_that_is_already_gone() {
+        let mut button = PopupMenuButtonState::new();
+        button.unmount();
+        button.did_change_dependencies();
+        assert!(!button.can_position_menu());
+    }
+
+    #[test]
+    fn the_expansion_flag_is_what_the_button_reports() {
+        let mut button = PopupMenuButtonState::new();
+        assert!(!button.is_menu_expanded());
+        button.show_button_menu();
+        assert!(button.is_menu_expanded());
+        button.menu_dismissed();
+        assert!(!button.is_menu_expanded());
+    }
+}

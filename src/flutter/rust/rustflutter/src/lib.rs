@@ -114,6 +114,7 @@ pub mod page_storage;
 pub mod page_transitions_builder;
 pub mod page_transitions_theme;
 pub mod page_view;
+pub mod paginated_data_table;
 pub mod painting;
 pub mod physics;
 pub mod pickers;
