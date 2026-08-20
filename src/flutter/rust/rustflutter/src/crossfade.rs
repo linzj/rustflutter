@@ -340,13 +340,21 @@ impl FadeInImage {
 /// It is a font glyph rather than a picture, which is why it takes a `size`
 /// and a `color` and no `fit`: it scales like text because it *is* text, and
 /// a font renders at any size without blurring.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Icon {
     /// `None` means "inherit from the ambient `IconTheme`", which is how a
-    /// whole toolbar's icons change colour by one line above them.
+    /// whole toolbar's icons change colour by one line above them. Every field
+    /// below is the same three-step chain: the icon, the theme, the fallback.
     pub size: Option<f32>,
+    pub color: Option<crate::engine::Color>,
     pub fill: Option<f32>,
     pub weight: Option<f32>,
+    pub grade: Option<f32>,
+    pub optical_size: Option<f32>,
+    /// Upstream's `applyTextScaling` -- see
+    /// [`crate::component_themes::ResolvedIcon`] for why it defaults to off.
+    pub apply_text_scaling: Option<bool>,
+    pub shadows: Option<Vec<crate::painting::BoxShadow>>,
     /// Upstream's `semanticLabel`. Absent by default, and that is right: most
     /// icons sit next to a label that already says what they are, and
     /// announcing both would say it twice.
@@ -361,8 +369,21 @@ impl Icon {
         Icon::default()
     }
 
+    /// The size against a theme size handed in, for a caller with no context.
+    ///
+    /// The fallback here is 24 and not `kDefaultFontSize`, because a caller
+    /// passing a theme size explicitly has a theme -- see
+    /// [`crate::component_themes::ResolvedIcon`], where the distinction lives.
     pub fn resolved_size(&self, theme_size: Option<f32>) -> f32 {
         self.size.or(theme_size).unwrap_or(Self::DEFAULT_SIZE)
+    }
+
+    /// Everything this icon is drawn with, read off the ambient `IconTheme`.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedIcon {
+        crate::component_themes::ResolvedIcon::of(context, self)
     }
 
     /// Upstream asserts `fill` is between 0 and 1 and `weight` is above zero
@@ -379,7 +400,7 @@ impl Icon {
 /// -- and it takes the `IconTheme`'s size and colour so it lines up with the
 /// font icons beside it. The colour is applied as a **blend**, which is why an
 /// `ImageIcon` of a photograph comes out tinted rather than replaced.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ImageIcon {
     pub icon: Icon,
 }
@@ -625,5 +646,172 @@ mod tests {
         // Most sit next to a label that already says what they are, and
         // announcing both would say it twice.
         assert!(!Icon::new().has_semantic_label);
+    }
+}
+
+#[cfg(test)]
+mod icon_theme_tests {
+    use super::*;
+    use crate::component_themes::{IconTheme, IconThemeData, ResolvedIcon};
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component};
+
+    struct Reader {
+        icon: Icon,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedIcon>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.icon.resolved(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(icon: Icon, data: IconThemeData) -> ResolvedIcon {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(IconTheme::new(
+            data,
+            component(Reader {
+                icon,
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    /// No theme installed at all, which is the case the two defaults differ in.
+    fn resolve_bare(icon: Icon) -> ResolvedIcon {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Reader {
+            icon,
+            seen: std::rc::Rc::clone(&seen),
+        }));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn a_theme_says_twenty_four_and_no_theme_at_all_says_fourteen() {
+        // Not an oversight. An icon with nothing around it to belong to is a
+        // glyph in a line of type, and fourteen is what a glyph is; twenty-four
+        // is the Material icon size, which is a thing a *theme* knows.
+        let mut data = IconThemeData::new();
+        data.size = Some(ResolvedIcon::THEME_SIZE);
+        assert_eq!(resolve(Icon::new(), data).size, 24.0);
+        assert_eq!(
+            resolve_bare(Icon::new()).size,
+            ResolvedIcon::DEFAULT_FONT_SIZE
+        );
+        assert_eq!(ResolvedIcon::DEFAULT_FONT_SIZE, 14.0);
+    }
+
+    #[test]
+    fn the_icons_own_size_beats_the_themes() {
+        let mut data = IconThemeData::new();
+        data.size = Some(24.0);
+        let mut icon = Icon::new();
+        icon.size = Some(48.0);
+        assert_eq!(resolve(icon, data).size, 48.0);
+    }
+
+    #[test]
+    fn an_icon_does_not_grow_with_the_text_unless_it_is_told_to() {
+        // An icon in a sentence should follow the reader's text size; an icon
+        // that is a button should not, because the button around it is a fixed
+        // target and a growing glyph would burst it.
+        let mut data = IconThemeData::new();
+        data.size = Some(20.0);
+        assert!(!resolve(Icon::new(), data.clone()).apply_text_scaling);
+        assert_eq!(resolve(Icon::new(), data.clone()).size, 20.0);
+
+        // Under a real scale, because at the default of 1.0 a scaled size and
+        // an unscaled one are the same number and the test would pass either
+        // way.
+        crate::media_query::with_text_scale(2.0, || {
+            let mut icon = Icon::new();
+            icon.apply_text_scaling = Some(true);
+            let scaled = resolve(icon, data.clone());
+            assert!(scaled.apply_text_scaling);
+            assert_eq!(
+                scaled.size, 40.0,
+                "the tentative twenty, through the scaler"
+            );
+
+            assert_eq!(
+                resolve(Icon::new(), data.clone()).size,
+                20.0,
+                "and an icon that did not ask is left alone"
+            );
+        });
+
+        // And the theme can ask for it on everything below it.
+        data.apply_text_scaling = Some(true);
+        assert!(resolve(Icon::new(), data).apply_text_scaling);
+    }
+
+    #[test]
+    fn the_opacity_applies_to_whichever_colour_came_out() {
+        // Which is why it is not a colour of its own: it dims the icon's own
+        // colour and the theme's alike.
+        let mut data = IconThemeData::new();
+        data.color = Some(Color::argb(0xFF, 1, 2, 3));
+        let data = data.with_opacity(0.5);
+        assert_eq!(resolve(Icon::new(), data.clone()).color.alpha(), 128);
+
+        let mut icon = Icon::new();
+        icon.color = Some(Color::argb(0xFF, 9, 9, 9));
+        let mine = resolve(icon, data);
+        assert_eq!(mine.color.red(), 9, "my colour");
+        assert_eq!(mine.color.alpha(), 128, "and the theme's opacity over it");
+    }
+
+    #[test]
+    fn an_icon_with_no_colour_anywhere_is_black() {
+        assert_eq!(
+            resolve_bare(Icon::new()).color,
+            Color::argb(0xFF, 0, 0, 0),
+            "upstream's IconThemeData.fallback colour"
+        );
+    }
+
+    #[test]
+    fn the_variable_font_axes_fall_back_to_upstreams_fallback_values() {
+        let bare = resolve_bare(Icon::new());
+        assert_eq!(bare.fill, 0.0);
+        assert_eq!(bare.weight, 400.0);
+        assert_eq!(bare.grade, 0.0);
+        assert_eq!(bare.optical_size, 48.0);
+    }
+
+    #[test]
+    fn each_axis_is_its_own_three_step_chain() {
+        let mut data = IconThemeData::new();
+        data.weight = Some(700.0);
+        data.grade = Some(200.0);
+        let mut icon = Icon::new();
+        icon.weight = Some(300.0);
+        let resolved = resolve(icon, data);
+        assert_eq!(resolved.weight, 300.0, "the icon's");
+        assert_eq!(resolved.grade, 200.0, "the theme's");
+        assert_eq!(resolved.fill, 0.0, "and the fallback for what neither set");
+    }
+
+    #[test]
+    fn the_axes_have_ranges_and_a_number_outside_them_is_refused() {
+        // Variable-font axes with real ranges, not free numbers.
+        let mut fill = Icon::new();
+        fill.fill = Some(1.5);
+        assert!(!fill.axes_are_valid());
+
+        let mut weight = Icon::new();
+        weight.weight = Some(0.0);
+        assert!(!weight.axes_are_valid());
+
+        let mut fine = Icon::new();
+        fine.fill = Some(1.0);
+        fine.weight = Some(1.0);
+        assert!(fine.axes_are_valid());
     }
 }

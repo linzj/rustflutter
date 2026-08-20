@@ -1301,6 +1301,94 @@ impl ResolvedSnackBar {
     }
 }
 
+/// What an icon is drawn with -- upstream's `Icon.build` reading
+/// `IconTheme.of` and then its own fallbacks.
+///
+/// # Two different defaults, and they are not the same number
+///
+/// `IconThemeData.fallback()` says 24, and that is the size of an icon under a
+/// theme -- which in a real app is every icon, because the app installs one at
+/// the root. But `Icon.build`'s own last resort is `kDefaultFontSize`, **14**:
+/// with no theme anywhere, an icon falls back to the size of *text*, not to the
+/// Material icon size. That is not an oversight. An icon with nothing around it
+/// to belong to is a glyph in a line of type, and 14 is what a glyph is.
+///
+/// # An icon does not grow with the text unless it is told to
+///
+/// `applyTextScaling` is false by default. An icon inside a sentence should
+/// follow the reader's text size; an icon that is a button should not, because
+/// the button around it is a fixed target and a growing glyph would burst it.
+/// Upstream makes the caller say which kind it is rather than guessing.
+pub struct ResolvedIcon {
+    pub size: f32,
+    pub color: Color,
+    pub fill: f32,
+    pub weight: f32,
+    pub grade: f32,
+    pub optical_size: f32,
+    pub apply_text_scaling: bool,
+    pub shadows: Option<Vec<crate::painting::BoxShadow>>,
+}
+
+impl ResolvedIcon {
+    /// Upstream's `IconThemeData.fallback()`.
+    pub const THEME_SIZE: f32 = 24.0;
+    pub const THEME_FILL: f32 = 0.0;
+    pub const THEME_WEIGHT: f32 = 400.0;
+    pub const THEME_GRADE: f32 = 0.0;
+    pub const THEME_OPTICAL_SIZE: f32 = 48.0;
+    /// Upstream's `kDefaultFontSize`, which is `Icon.build`'s last resort and
+    /// **not** the theme's fallback -- see the type's docs.
+    pub const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+    pub fn of(context: &mut BuildContext, icon: &crate::crossfade::Icon) -> ResolvedIcon {
+        let data = IconTheme::of(context);
+        let apply_text_scaling = icon
+            .apply_text_scaling
+            .or(data.apply_text_scaling)
+            .unwrap_or(false);
+        let tentative = icon
+            .size
+            .or(data.size)
+            .unwrap_or(ResolvedIcon::DEFAULT_FONT_SIZE);
+        ResolvedIcon {
+            size: if apply_text_scaling {
+                crate::media_query::current_text_scale() * tentative
+            } else {
+                tentative
+            },
+            // Upstream's opacity applies to whatever colour came out, its own
+            // or the theme's -- which is why it is not a colour of its own.
+            color: {
+                let base = icon
+                    .color
+                    .or(data.color)
+                    .unwrap_or(Color::argb(0xFF, 0, 0, 0));
+                match data.opacity {
+                    Some(opacity) => base
+                        .with_alpha((base.alpha() as f32 * opacity.clamp(0.0, 1.0)).round() as u8),
+                    None => base,
+                }
+            },
+            fill: icon.fill.or(data.fill).unwrap_or(ResolvedIcon::THEME_FILL),
+            weight: icon
+                .weight
+                .or(data.weight)
+                .unwrap_or(ResolvedIcon::THEME_WEIGHT),
+            grade: icon
+                .grade
+                .or(data.grade)
+                .unwrap_or(ResolvedIcon::THEME_GRADE),
+            optical_size: icon
+                .optical_size
+                .or(data.optical_size)
+                .unwrap_or(ResolvedIcon::THEME_OPTICAL_SIZE),
+            apply_text_scaling,
+            shadows: icon.shadows.clone().or_else(|| data.shadows.clone()),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
