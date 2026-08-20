@@ -874,18 +874,58 @@ impl Component for Dialog {
 pub struct BottomSheet {
     title: Option<String>,
     child: RefCell<Option<AnyWidget>>,
+    /// Upstream's `enableDrag`, **true by default**: a sheet the reader cannot
+    /// push away is the exception and has to be asked for.
+    enable_drag: bool,
+    /// Upstream's `showDragHandle`. `None` defers to the theme -- but see
+    /// [`crate::component_themes::ResolvedBottomSheet`], where the theme's
+    /// answer is *and*-ed with `enable_drag` rather than simply taken.
+    show_drag_handle: Option<bool>,
 }
 
 impl BottomSheet {
+    /// This sheet's appearance, with the theme and the defaults folded in.
+    ///
+    /// `is_modal` is not a field on the sheet because it is not a property of
+    /// the sheet: the same sheet shown two ways resolves differently, and which
+    /// way it is being shown is the caller's to say.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        is_modal: bool,
+    ) -> crate::component_themes::ResolvedBottomSheet {
+        crate::component_themes::ResolvedBottomSheet::of(
+            context,
+            is_modal,
+            self.show_drag_handle,
+            self.enable_drag,
+        )
+    }
+
     pub fn new(child: AnyWidget) -> BottomSheet {
         BottomSheet {
             title: None,
             child: RefCell::new(Some(child)),
+            enable_drag: true,
+            show_drag_handle: None,
         }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    pub fn with_enable_drag(mut self, enable_drag: bool) -> Self {
+        self.enable_drag = enable_drag;
+        self
+    }
+
+    /// Upstream's `showDragHandle`, which is the only thing that can put a
+    /// handle on a sheet that cannot be dragged -- a caller saying it outright
+    /// has taken responsibility for it.
+    pub fn with_drag_handle(mut self, show: bool) -> Self {
+        self.show_drag_handle = Some(show);
         self
     }
 }
@@ -3217,7 +3257,7 @@ mod tests {
 mod radio_theme_tests {
     use crate::component_themes::{RadioTheme, RadioThemeData, ResolvedRadio};
     use crate::engine::Color;
-    use crate::framework::{ElementTree, provide};
+    use crate::framework::{ElementTree, component, provide};
     use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
 
     const MINE: Color = Color::argb(0xFF, 0x12, 0x34, 0x56);
@@ -3402,5 +3442,173 @@ mod radio_theme_tests {
         let mut data = RadioThemeData::new();
         data.background_color = Some(StateProperty::resolve_with(|_| Some(MINE)));
         assert_eq!(resolve(data, selected()).background, Some(MINE));
+    }
+}
+
+#[cfg(test)]
+mod bottom_sheet_theme_tests {
+    use super::*;
+    use crate::component_themes::{BottomSheetTheme, BottomSheetThemeData, ResolvedBottomSheet};
+    use crate::framework::{ElementTree, component, provide};
+
+    struct Reader {
+        sheet: std::cell::RefCell<Option<BottomSheet>>,
+        is_modal: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedBottomSheet>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let sheet = self.sheet.borrow_mut().take().expect("built once");
+            *self.seen.borrow_mut() = Some(sheet.resolved(context, self.is_modal));
+            leaf(|| Empty)
+        }
+    }
+
+    fn resolve(
+        sheet: BottomSheet,
+        data: BottomSheetThemeData,
+        is_modal: bool,
+    ) -> ResolvedBottomSheet {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            BottomSheetTheme::new(
+                data,
+                component(Reader {
+                    sheet: std::cell::RefCell::new(Some(sheet)),
+                    is_modal,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn sheet() -> BottomSheet {
+        BottomSheet::new(leaf(|| Empty))
+    }
+
+    const SHARED: Color = Color::argb(0xFF, 0x11, 0x11, 0x11);
+    const MODAL: Color = Color::argb(0xFF, 0x22, 0x22, 0x22);
+
+    #[test]
+    fn a_shared_field_styles_both_kinds_and_a_modal_one_styles_only_modals() {
+        // The four-step chain is what lets a theme say "sheets here look like
+        // this" once, and separately say "and modal ones differently".
+        let mut data = BottomSheetThemeData::new();
+        data.background_color = Some(SHARED);
+        assert_eq!(resolve(sheet(), data.clone(), false).background, SHARED);
+        assert_eq!(resolve(sheet(), data.clone(), true).background, SHARED);
+
+        data.modal_background_color = Some(MODAL);
+        assert_eq!(
+            resolve(sheet(), data.clone(), false).background,
+            SHARED,
+            "a persistent sheet never looks at the modal fields"
+        );
+        assert_eq!(resolve(sheet(), data, true).background, MODAL);
+    }
+
+    #[test]
+    fn a_modal_only_field_does_not_leak_into_a_persistent_sheet() {
+        let mut data = BottomSheetThemeData::new();
+        data.modal_background_color = Some(MODAL);
+        data.modal_elevation = Some(9.0);
+        let persistent = resolve(sheet(), data, false);
+        assert_ne!(persistent.background, MODAL);
+        assert_eq!(persistent.elevation, ResolvedBottomSheet::ELEVATION);
+    }
+
+    #[test]
+    fn the_barrier_is_only_a_modal_thing() {
+        // A persistent sheet has nothing behind it to dim.
+        let mut data = BottomSheetThemeData::new();
+        data.modal_barrier_color = Some(MODAL);
+        assert_eq!(
+            resolve(sheet(), data.clone(), true).modal_barrier_color,
+            Some(MODAL)
+        );
+        assert_eq!(resolve(sheet(), data, false).modal_barrier_color, None);
+    }
+
+    #[test]
+    fn a_theme_asking_for_handles_does_not_put_one_on_a_sheet_that_cannot_be_dragged() {
+        // A control promising something it does not do. The theme's answer is
+        // *and*-ed with enableDrag, not merely defaulted to.
+        let mut data = BottomSheetThemeData::new();
+        data.show_drag_handle = Some(true);
+
+        assert!(resolve(sheet(), data.clone(), false).show_drag_handle);
+        assert!(
+            !resolve(sheet().with_enable_drag(false), data.clone(), false).show_drag_handle,
+            "the theme asked, and the sheet cannot be dragged"
+        );
+
+        // Only the sheet's own word overrides that.
+        assert!(
+            resolve(
+                sheet().with_enable_drag(false).with_drag_handle(true),
+                data,
+                false
+            )
+            .show_drag_handle,
+            "a caller saying it outright has taken responsibility"
+        );
+    }
+
+    #[test]
+    fn no_handle_unless_something_asks_even_when_dragging_is_on() {
+        // Draggable is the default; a handle is not.
+        assert!(!resolve(sheet(), BottomSheetThemeData::new(), false).show_drag_handle);
+        assert!(
+            !resolve(sheet(), BottomSheetThemeData::new(), true).show_drag_handle,
+            "and a modal one is no different"
+        );
+    }
+
+    #[test]
+    fn a_sheet_can_be_told_to_hide_a_handle_the_theme_asked_for() {
+        let mut data = BottomSheetThemeData::new();
+        data.show_drag_handle = Some(true);
+        assert!(!resolve(sheet().with_drag_handle(false), data, false).show_drag_handle);
+    }
+
+    #[test]
+    fn both_elevations_default_to_one_because_the_scrim_does_the_separating() {
+        // A persistent sheet is part of the page and barely lifted off it; a
+        // modal one is separated by its barrier rather than by height.
+        assert_eq!(
+            resolve(sheet(), BottomSheetThemeData::new(), false).elevation,
+            1.0
+        );
+        assert_eq!(
+            resolve(sheet(), BottomSheetThemeData::new(), true).elevation,
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_shared_elevation_reaches_a_modal_sheet_when_the_modal_one_is_unset() {
+        let mut data = BottomSheetThemeData::new();
+        data.elevation = Some(4.0);
+        assert_eq!(resolve(sheet(), data.clone(), true).elevation, 4.0);
+        assert_eq!(resolve(sheet(), data, false).elevation, 4.0);
+    }
+
+    #[test]
+    fn with_both_elevations_set_the_modal_one_wins_for_a_modal_sheet() {
+        // The order inside the chain, which a test that sets only one of them
+        // cannot see: modal first, then shared, then the default.
+        let mut data = BottomSheetThemeData::new();
+        data.elevation = Some(4.0);
+        data.modal_elevation = Some(9.0);
+        assert_eq!(resolve(sheet(), data.clone(), true).elevation, 9.0);
+        assert_eq!(
+            resolve(sheet(), data, false).elevation,
+            4.0,
+            "and the persistent one still takes the shared field"
+        );
     }
 }

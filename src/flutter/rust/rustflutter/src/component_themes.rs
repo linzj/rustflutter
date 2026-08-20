@@ -1450,6 +1450,78 @@ impl ResolvedTextSelection {
     }
 }
 
+/// What a bottom sheet is drawn with -- upstream's `_BottomSheetState.build`
+/// and `ModalBottomSheetRoute.buildPage` reading `BottomSheetTheme.of`.
+///
+/// # A modal sheet's chain has four steps and not three
+///
+/// `widget ?? theme.modalX ?? theme.X ?? defaults.modalX`. The modal-specific
+/// theme field comes first, then the *shared* one, then the modal default.
+/// That is what lets a theme say "sheets here look like this" once and have it
+/// apply to both kinds, while a theme that sets `modalBackgroundColor` is
+/// saying "and modal ones differently". A three-step chain could express one or
+/// the other and not both.
+///
+/// A persistent sheet never looks at the modal fields at all: it is part of the
+/// page, not something over it.
+///
+/// # The theme's drag handle is *and*-ed with whether you can drag
+///
+/// `showDragHandle ?? (enableDrag && (theme.showDragHandle ?? false))`. A theme
+/// asking for handles does not put one on a sheet that cannot be dragged --
+/// that would be a control promising something it does not do. Only the sheet's
+/// own `showDragHandle` can override that, because a caller saying it outright
+/// has taken responsibility for it.
+pub struct ResolvedBottomSheet {
+    pub background: Color,
+    pub elevation: f32,
+    pub shadow_color: Option<Color>,
+    pub modal_barrier_color: Option<Color>,
+    pub show_drag_handle: bool,
+    pub drag_handle_color: Option<Color>,
+    pub shape: Option<ShapeBorder>,
+}
+
+impl ResolvedBottomSheet {
+    /// Upstream's `_BottomSheetDefaultsM3.elevation`, which is 1: a persistent
+    /// sheet is part of the page and barely lifted off it.
+    pub const ELEVATION: f32 = 1.0;
+    /// And `modalElevation`, also 1 in Material 3 -- the scrim is what
+    /// separates a modal sheet from the page, so it does not also need height.
+    pub const MODAL_ELEVATION: f32 = 1.0;
+
+    pub fn of(
+        context: &mut BuildContext,
+        is_modal: bool,
+        show_drag_handle: Option<bool>,
+        enable_drag: bool,
+    ) -> ResolvedBottomSheet {
+        let data = BottomSheetTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        ResolvedBottomSheet {
+            background: if is_modal {
+                data.modal_background_color.or(data.background_color)
+            } else {
+                data.background_color
+            }
+            .unwrap_or(scheme.surface_container_low()),
+            elevation: if is_modal {
+                data.modal_elevation
+                    .or(data.elevation)
+                    .unwrap_or(ResolvedBottomSheet::MODAL_ELEVATION)
+            } else {
+                data.elevation.unwrap_or(ResolvedBottomSheet::ELEVATION)
+            },
+            shadow_color: data.shadow_color,
+            modal_barrier_color: is_modal.then_some(data.modal_barrier_color).flatten(),
+            show_drag_handle: show_drag_handle
+                .unwrap_or(enable_drag && data.show_drag_handle.unwrap_or(false)),
+            drag_handle_color: data.drag_handle_color,
+            shape: data.shape.clone(),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

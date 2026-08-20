@@ -10328,3 +10328,26 @@ M7（widget 传空状态）和 M8（widget 不看 enabled）。解析函数本�
 7 条测试、6 条变异，第一轮全红。
 
 主题 29 → 28。
+
+## 未接线队列之八：一条**四步**的链，和一个与出来的把手（2026-08-21）
+
+`BottomSheetThemeData` 里有成对的字段——`background_color` 配
+`modal_background_color`、`elevation` 配 `modal_elevation`——一个都没人读，
+而 `BottomSheet` 控件连 `enable_drag`/`show_drag_handle` 都没有。
+
+两处上游的规则，都不是三步链能表达的：
+
+* **模态 sheet 的链有四步**：`widget ?? theme.modalX ?? theme.X ?? defaults.modalX`。
+  模态专用字段在前，**共享字段在后**，再才是默认。这样一个主题可以先说一句
+  「这里的 sheet 长这样」管住两种，再单独说「模态的不一样」。三步链只能表达其中
+  一句。持久式的 sheet 根本不看模态字段——它是页面的一部分，不是压在页面上的东西。
+* **主题要的拖拽把手要和「能不能拖」相与**：
+  `showDragHandle ?? (enableDrag && (theme.showDragHandle ?? false))`。
+  一个要把手的主题，不会给一个拖不动的 sheet 装把手——那是控件在承诺它做不到的
+  事。只有 sheet 自己写明的 `showDragHandle` 能压过这条，因为**明写的人已经把
+  责任接过去了**。
+
+9 条测试、6 条变异。**一条一开始活着，因为没有一个测试同时设了两个 elevation**
+——只设一个的时候，谁先谁后看不出来。补上「两个都设」那一例才红。
+
+主题 28 → 27。
