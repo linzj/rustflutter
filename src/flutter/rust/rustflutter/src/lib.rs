@@ -62,6 +62,7 @@ pub mod editable;
 pub mod editable_text;
 pub mod elevation_overlay;
 pub mod engine;
+pub mod expansion;
 pub mod expansion_panel;
 pub mod fab_location;
 pub mod flexible_space_bar;

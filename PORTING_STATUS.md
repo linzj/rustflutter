@@ -164,6 +164,49 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 等一秒,是因为不等的话读者什么都听不见(2026-08-20)
+
+新模块 `expansion.rs`,收掉 `ExpansionTile`(`expansion_tile.dart`)与 `ExpandIcon`
+(`expand_icon.dart`)。覆盖率 1796/1888(95.1%)。测试 3327。
+
+**这个文件里最不像话、也最值得记的,是一个整整一秒的延迟——而且只在 iOS 上。**
+
+```dart
+// TODO(tahatesser): This is a workaround for VoiceOver interrupting
+// semantic announcements on iOS. https://github.com/flutter/flutter/issues/122101.
+_timer = Timer(const Duration(seconds: 1), () { ... sendAnnouncement ... });
+```
+
+**VoiceOver 在瓦片开完的时候还在念这次点击,而在那当口发出的播报会被打断。** 于是这条播报被推迟一整秒。
+**在别的所有地方,等待都比不等待糟;唯独在这里,它是「被听见」和「没被听见」的区别。**
+
+而那一秒**是展开动画(200ms)的五倍**——回归行专门断言了这一点,**因为这正是「它等的不是动画」的证据。**
+
+配套还有一条:**新播报排上之前会先取消掉挂着的那条**,于是一个被快速开合的瓦片说的是后一句,而不是两句
+都说。
+
+---
+
+**`ExpandIcon` 的文档用一句话把受控控件的约定说清了:**
+
+> Rebuilding the widget with a different `isExpanded` value will trigger the animation, but will not
+> trigger the `onPressed` callback.
+
+**动画跟着值走,回调报告的是那次按下。** 从外面改值会把箭头转过去,而**不会假装有人按过**——这正是「一个
+能被驱动的控件」和「一个跟驱动它的人吵架的控件」之间的区别。
+
+---
+
+**`ExpansionTile.maintainState` 默认是 false:收起时孩子被从树里拿掉,展开时重建。** 于是一列五十个收起
+的瓦片,代价是五十个标题,不是五十个页面。**想留住的,是那些重建代价高或者根本恢复不了的东西**——一张填了
+一半的表、一段播到中间的视频。
+
+而 controller 那条规则又出现了一次:**只销毁自己造的那个**,和二维滚动、搜索锚点一样。
+
+验证:`cargo test --lib` 3327 绿,GN `rustflutter_unittests` 3327 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1796 accounted / 92 MISSING(95.1%)。
+
 ### 一个匆匆离开的打断,读起来像是弄错了(2026-08-20)
 
 `ModalBottomSheetRoute`(`bottom_sheet.dart`)与 `DialogRoute`(`dialog.dart`)补进 `routes.rs`——它们正
