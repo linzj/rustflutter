@@ -164,6 +164,46 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个写成乘法的时长(2026-08-20)
+
+新模块 `progress_indicator.rs`,收掉 `progress_indicator.dart` 四个类(`ProgressIndicator`、
+`LinearProgressIndicator`、`CircularProgressIndicator`、`RefreshProgressIndicator`)与
+`refresh_indicator.dart` 两个类(`RefreshIndicator`、`RefreshIndicatorState`)。覆盖率
+1768/1888(93.6%)。测试 3217。
+
+**圆形不定态的周期是 `1333 * 2222`——一个写成乘法的常数,大约四十九分钟。**
+
+那当然不是给人看的一段时长。**它是一个公倍数:旋转和描边扫过的周期不一样,而这个数让它们只有在很久之后
+才重新对上相位——于是这个动画看上去永远不重复。** 而这个数和线性那个 1800ms 一样,是从 Android 自己的
+`progress_indeterminate_material.xml` 里抠出来的,**注释里给了源码 URL。两个常数都是引文,而且注明了出
+处。**
+
+其余几条:
+
+* **`value` 和 `controller` 不能同时给**,而报错信息说清了矛盾在哪:`value` 是给知道进度的确定态用的,
+  `controller` 是用来驱动不定态动画的。**同时给,是一次要了两种指示器。**
+* **`_kTrackGapRampDownThreshold = 0.01`:** 进度低于百分之一时,轨道上那道缝按比例缩掉。**进度为零时根本
+  没有条,那道「条和轨道之间的缝」就成了一个悬在空处的缺口**;把它斜坡降下去,比给空状态写一个特例便宜。
+* **刷新那个圆圈比普通的画得粗:** 它浮在内容上方的一张卡片上,得在任何背景上都读得出来。
+
+---
+
+**拉动刷新那边,要拖的距离是「容器的四分之一」,不是一个固定像素数。** 于是一个长列表和一个短列表,要的
+都是「你能看见的那部分的四分之一」,长的那个不会显得又硬又远。回归行拿 400 和 800 两个视口各跑一遍。
+
+**而 armed 之后有一行只在 armed 时跑:`newValue = max(newValue, 1 / _kDragSizeFactorLimit)`。**
+**一旦进入 armed,指示器就不会再缩回它的静止尺寸以下**,不管读者往回拖多远。**靠往回拖来「解除武装」,会
+让这个控件恰好在读者正在做决定的那一刻变得神经质。**
+
+**六个状态里,最后两个值得点名:`done` 和 `canceled` 都是淡出,区别只在于「为什么」。** 它们被分开,一是
+因为长得不一样(刷新完成的会缩掉,放弃的只是收回去),二是因为**「成了」和「你改主意了」不是同一句话。**
+
+还有一条守卫:通知必须 `depth == 0` 且 `leading`。**里面嵌的列表越界不是一次下拉刷新,而滚到底也不是。**
+
+验证:`cargo test --lib` 3217 绿,GN `rustflutter_unittests` 3217 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1768 accounted / 120 MISSING(93.6%)。
+
 ### 快照是一张照片,里面动着的东西就不动了(2026-08-20)
 
 新模块 `page_transitions_theme.rs`,补齐页面转场这一族:`FadeForwardsPageTransitionsBuilder`、
