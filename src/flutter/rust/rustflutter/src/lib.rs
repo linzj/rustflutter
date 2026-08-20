@@ -272,7 +272,10 @@ pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
     TextStyle,
 };
-pub use focus::{Focus, KeyResult, focusable};
+pub use focus::{
+    Focus, FocusScope, KeyResult, first_focusable_in, focus_scope_widget, focusable, focused_child,
+    is_scope,
+};
 pub use foundation::{
     ChangeNotifier, Listenable, ListenableMerge, ValueNotifier, keys as foundation_keys,
 };

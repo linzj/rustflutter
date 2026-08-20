@@ -196,7 +196,7 @@ impl OrderedTraversalPolicy {
 /// stack, because a child widget is *built* long after the parent's build
 /// returned.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct FocusScope(Vec<u64>);
+struct FocusAncestors(Vec<u64>);
 
 /// The nodes, and where the keyboard is.
 #[derive(Default)]
@@ -241,6 +241,209 @@ pub fn prune(is_live: impl Fn(ElementRef) -> bool) {
 /// Only for tests: the registry outlives frames now, so a test that mounts its
 /// own tree has to say when the last one stopped existing. Nothing in a
 /// running application calls this -- `prune` is the real thing.
+// -- Scopes -------------------------------------------------------------------
+
+/// Upstream `FocusScope` (`widgets/focus_scope.dart`), built on upstream's
+/// `FocusScopeNode`.
+///
+/// A scope is a [`Focus`] that **remembers**. Focusing a plain node moves the
+/// keyboard to that node; focusing a scope moves it to whichever descendant
+/// held it last, and only falls back to the first one if the scope has never
+/// been entered.
+///
+/// # What it is for
+///
+/// Two panes, or a dialog over a page, or a tab bar's pages: the reader types
+/// in one, moves away, comes back -- and expects to be back where they were,
+/// not at the top. Without a scope the framework has nowhere to keep "where
+/// they were", because the node that had focus is one of many and nothing
+/// distinguishes it afterwards.
+///
+/// # How this differs from upstream's, and it does
+///
+/// Upstream's `FocusScopeNode` keeps a **stack of its immediate children**
+/// (`_focusedChildren`, most recent last), each of which may itself be a scope,
+/// and restoring walks down that chain -- `_doRequestFocus(findFirstFocus:
+/// true)` descends until it reaches a node that takes focus. This crate's
+/// registry is flat: a node knows its ancestor chain but a scope does not hold
+/// its children.
+///
+/// So a scope here remembers **the descendant that most recently held focus**,
+/// at any depth, rather than the immediate child that leads to it. The two
+/// agree whenever nothing changed in between, which is the case a reader
+/// notices. They differ when a nested scope's own memory has moved on since:
+/// upstream would descend and land on the inner scope's *current* choice, and
+/// this lands on the node that was actually last focused. Written down rather
+/// than papered over.
+pub struct FocusScope {
+    focus: Focus,
+}
+
+impl FocusScope {
+    pub fn new(id: u64, child: AnyWidget) -> FocusScope {
+        FocusScope {
+            // Not a tab stop itself. Upstream's scope has
+            // `skipTraversal` left alone but is not something Tab lands on --
+            // it is the thing containing the stops.
+            focus: Focus::new(id, child).with_traversable(false),
+        }
+    }
+
+    /// The scope's id, which is what [`focused_child`] and
+    /// [`focus_scope`](fn@focus_scope) are asked about.
+    pub fn id(&self) -> u64 {
+        self.focus.id
+    }
+
+    pub fn with_on_key(mut self, handler: impl Fn(&KeyEvent) -> KeyResult + 'static) -> Self {
+        self.focus = self.focus.with_on_key(handler);
+        self
+    }
+
+    pub fn with_on_focus_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.focus = self.focus.with_on_focus_change(handler);
+        self
+    }
+
+    /// Whether tapping the scope's own area focuses it -- and so restores its
+    /// remembered child. Off by default, because a scope covers everything
+    /// inside it and a tap on a child would otherwise be a tap on the scope
+    /// too.
+    pub fn with_focus_on_tap(mut self, focus_on_tap: bool) -> Self {
+        self.focus = self.focus.with_focus_on_tap(focus_on_tap);
+        self
+    }
+}
+
+impl Component for FocusScope {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        register_scope(self.focus.id);
+        self.focus.build(context)
+    }
+}
+
+/// [`FocusScope`] as a widget.
+pub fn focus_scope_widget(id: u64, child: AnyWidget) -> AnyWidget {
+    component(FocusScope::new(id, child).with_focus_on_tap(false))
+}
+
+thread_local! {
+    /// What each scope last had focused inside it. Upstream's
+    /// `FocusScopeNode._focusedChildren`, flattened -- see [`FocusScope`].
+    static SCOPE_MEMORY: RefCell<Vec<(u64, u64)>> = const { RefCell::new(Vec::new()) };
+    /// Which ids are scopes. A node's ancestor chain is just ids, so this is
+    /// how the walk tells a scope from an ordinary ancestor.
+    static SCOPES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Marks `id` as a scope. Idempotent: a scope re-registers on every build, as
+/// its [`Focus`] does.
+fn register_scope(id: u64) {
+    SCOPES.with(|scopes| {
+        let mut scopes = scopes.borrow_mut();
+        if !scopes.contains(&id) {
+            scopes.push(id);
+        }
+    });
+}
+
+/// Whether `id` names a scope.
+pub fn is_scope(id: u64) -> bool {
+    SCOPES.with(|scopes| scopes.borrow().contains(&id))
+}
+
+/// Upstream's `FocusScopeNode.focusedChild`: what this scope would restore.
+///
+/// `None` for a scope nothing has been focused inside yet, and for an id that
+/// is not a scope at all.
+pub fn focused_child(scope: u64) -> Option<u64> {
+    SCOPE_MEMORY.with(|memory| {
+        memory
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == scope)
+            .map(|(_, child)| *child)
+    })
+}
+
+/// Records that `node` holds the keyboard, in every scope that encloses it.
+///
+/// Upstream's `_setAsFocusedChildForScope`, which walks up doing the same. Every
+/// enclosing scope is told, not only the nearest, because a reader leaving an
+/// outer scope and coming back expects the same place as one leaving the inner
+/// one -- and the outer scope has no way to ask the inner one later.
+fn remember_focus(node: u64) {
+    let ancestors = MANAGER.with(|manager| {
+        manager
+            .borrow()
+            .entries
+            .iter()
+            .find(|entry| entry.id == node)
+            .map(|entry| entry.ancestors.clone())
+    });
+    let Some(ancestors) = ancestors else {
+        return;
+    };
+    SCOPE_MEMORY.with(|memory| {
+        let mut memory = memory.borrow_mut();
+        for scope in ancestors.into_iter().filter(|id| is_scope(*id)) {
+            match memory.iter_mut().find(|(id, _)| *id == scope) {
+                Some(slot) => slot.1 = node,
+                None => memory.push((scope, node)),
+            }
+        }
+    });
+}
+
+/// Upstream's `FocusScopeNode.requestFocus`: give the keyboard to whatever this
+/// scope had last, or to its first traversable descendant if it has had none.
+///
+/// Answers whether the keyboard moved.
+pub fn focus_scope(scope: u64) -> bool {
+    if let Some(child) = focused_child(scope) {
+        // The remembered node may have gone since -- a list row scrolled out of
+        // the registry, a dialog's field dismissed. `focus` refuses an
+        // unregistered id, so fall through to the first descendant.
+        if focus(child) {
+            return true;
+        }
+        if has_focus(child) {
+            return false;
+        }
+    }
+    match first_focusable_in(scope) {
+        Some(first) => focus(first),
+        None => false,
+    }
+}
+
+/// The first traversable node inside `scope`, in traversal order.
+///
+/// Upstream's `findFirstFocus`, which walks the scope's children in the order
+/// the policy sorts them. Here that is [`traversal_order`], filtered to the ones
+/// inside this scope -- so a scope's first stop is the same node Tab would
+/// reach first, which is what makes entering a scope and tabbing into it agree.
+pub fn first_focusable_in(scope: u64) -> Option<u64> {
+    let order = MANAGER.with(|manager| traversal_order(&manager.borrow()));
+    MANAGER.with(|manager| {
+        let manager = manager.borrow();
+        order.into_iter().find(|id| {
+            manager
+                .entries
+                .iter()
+                .find(|entry| entry.id == *id)
+                .is_some_and(|entry| entry.ancestors.contains(&scope) && entry.traversable)
+        })
+    })
+}
+
+/// Forgets every scope and what it remembered. For tests, and for the same
+/// reason [`reset`] exists.
+pub fn reset_scopes() {
+    SCOPES.with(|scopes| scopes.borrow_mut().clear());
+    SCOPE_MEMORY.with(|memory| memory.borrow_mut().clear());
+}
+
 #[cfg(test)]
 pub(crate) fn reset() {
     MANAGER.with(|manager| *manager.borrow_mut() = FocusManager::default());
@@ -314,6 +517,9 @@ pub fn focus(id: u64) -> bool {
     }
     if let Some(gained) = gained {
         gained(true);
+    }
+    if changed {
+        remember_focus(id);
     }
     changed
 }
@@ -613,7 +819,7 @@ impl Focus {
 impl Component for Focus {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let scope = context
-            .inherited::<FocusScope>()
+            .inherited::<FocusAncestors>()
             .map(|s| s.0.clone())
             .unwrap_or_default();
         let child = self
@@ -625,7 +831,7 @@ impl Component for Focus {
         // what this publishes.
         let mut inner = scope.clone();
         inner.push(self.id);
-        let built = crate::framework::provide(FocusScope(inner), child);
+        let built = crate::framework::provide(FocusAncestors(inner), child);
 
         // Registered from the build, which is where upstream registers too
         // (`_FocusState.initState` and `didUpdateWidget`). It survives the
@@ -1117,5 +1323,195 @@ mod tests {
             dispatcher.maybe_invoke(&Intent::NextFocus, &key(LogicalKey::TAB)),
             KeyResult::Ignored
         );
+    }
+
+    // -- Scopes ---------------------------------------------------------------------
+
+    /// A scope with `count` focusable children under it, mounted and built.
+    ///
+    /// The ids are the scope's own and then `scope + 1 ..= scope + count`.
+    fn scoped(scope: u64, count: u64) -> ElementTree {
+        let mut children = Vec::new();
+        for n in 1..=count {
+            children.push(focusable(scope + n, leaf(|| Empty)));
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(focus_scope_widget(
+            scope,
+            crate::framework::many(children, |rendered| {
+                let mut column = Column::new();
+                for child in rendered {
+                    column = column.push(child);
+                }
+                Box::new(column)
+            }),
+        ));
+        tree.build_render_tree();
+        tree
+    }
+
+    #[test]
+    fn a_scope_with_no_history_lands_on_its_first_stop() {
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 3);
+
+        assert_eq!(focused_child(100), None, "nothing has been focused yet");
+        assert!(focus_scope(100));
+        assert_eq!(
+            focused(),
+            Some(101),
+            "the first traversable node inside it, which is where Tab would go too"
+        );
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn a_scope_returns_the_reader_to_where_they_were() {
+        // The whole point. Focus the third child, leave, come back.
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 3);
+
+        focus(103);
+        assert_eq!(focused_child(100), Some(103), "the scope noticed");
+
+        unfocus();
+        assert_eq!(focused(), None);
+
+        assert!(focus_scope(100));
+        assert_eq!(focused(), Some(103), "not the first one");
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn the_scope_remembers_the_most_recent_and_not_the_first() {
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 3);
+
+        focus(101);
+        focus(102);
+        focus(103);
+        assert_eq!(focused_child(100), Some(103));
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn focusing_a_scope_that_already_has_the_right_node_changes_nothing() {
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 2);
+
+        focus(102);
+        assert!(
+            !focus_scope(100),
+            "already there, so the keyboard did not move"
+        );
+        assert_eq!(focused(), Some(102));
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn a_remembered_node_that_has_gone_falls_back_to_the_first() {
+        // A row scrolled out of the registry, a dismissed dialog's field. The
+        // scope's memory outlives the node, and `focus` refuses an id nothing
+        // owns -- so the fallback has to run.
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 2);
+        focus(102);
+        assert_eq!(focused_child(100), Some(102));
+        drop(tree);
+
+        // Dropping the tree does not empty the registry -- `prune` does, once
+        // per frame, and that is what really takes a departed node out. Saying
+        // so here rather than relying on the drop is the difference between
+        // testing the fallback and testing nothing: with 102 still registered
+        // and still focused, `focus_scope` correctly has nothing to do.
+        prune(|_| false);
+        assert_eq!(focused(), None, "focus followed the node that went");
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(focus_scope_widget(100, focusable(101, leaf(|| Empty))));
+        tree.build_render_tree();
+
+        assert_eq!(focused_child(100), Some(102), "the memory is still there");
+        assert!(focus_scope(100));
+        assert_eq!(focused(), Some(101), "but it landed on what exists");
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_scope_remembers_nothing() {
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 2);
+        focus(101);
+
+        assert!(is_scope(100));
+        assert!(!is_scope(101), "an ordinary node is not a scope");
+        assert_eq!(focused_child(101), None);
+        assert!(!focus_scope(101), "and cannot be entered as one");
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn every_enclosing_scope_is_told_and_not_only_the_nearest() {
+        // A reader leaving the outer scope and coming back expects the same
+        // place as one leaving the inner scope -- and the outer scope has no
+        // way to ask the inner one later.
+        reset();
+        reset_scopes();
+        let mut tree = ElementTree::new();
+        tree.rebuild(focus_scope_widget(
+            100,
+            focus_scope_widget(200, focusable(201, leaf(|| Empty))),
+        ));
+        tree.build_render_tree();
+
+        focus(201);
+        assert_eq!(focused_child(200), Some(201), "the inner scope");
+        assert_eq!(focused_child(100), Some(201), "and the outer one");
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn a_scope_is_not_itself_a_tab_stop() {
+        // It is the thing containing the stops. A scope that Tab landed on
+        // would be a stop the reader cannot see or type into.
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 2);
+
+        let stops = MANAGER.with(|manager| traversal_order(&manager.borrow()));
+        assert!(!stops.contains(&100), "{stops:?}");
+        assert!(stops.contains(&101) && stops.contains(&102));
+        drop(tree);
+        reset_scopes();
+    }
+
+    #[test]
+    fn a_scopes_first_stop_is_the_one_tab_would_reach_first() {
+        // The two have to agree, or entering a scope and tabbing into it land
+        // in different places.
+        reset();
+        reset_scopes();
+        let tree = scoped(100, 3);
+
+        let first_by_tab = MANAGER
+            .with(|manager| traversal_order(&manager.borrow()))
+            .into_iter()
+            .find(|id| *id != 100);
+        assert_eq!(first_focusable_in(100), first_by_tab);
+        drop(tree);
+        reset_scopes();
     }
 }
