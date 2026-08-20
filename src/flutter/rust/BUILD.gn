@@ -225,6 +225,7 @@ if (enable_unittests) {
       "rustflutter/src/text_editing_intents.rs",
       "rustflutter/src/sliver_tree.rs",
       "rustflutter/src/slotted.rs",
+      "rustflutter/src/small_widgets.rs",
       "rustflutter/src/snapshot_widget.rs",
       "rustflutter/src/table.rs",
       "rustflutter/src/text_selection.rs",

@@ -164,6 +164,63 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 一个类一个文件,通常意味着一个被写下来的判断(2026-08-20)
+
+新模块 `small_widgets.rs`,一次收掉六个单类文件:`ImageFiltered`、`GridPaper`、
+`KeyboardListener`、`NavigationToolbar`、`SharedAppData`、`SpellCheckConfiguration`。覆盖率
+1663/1888(88.1%)。
+
+它们没有共同的主题。**它们共同的是「每个文件一个类」——而那通常意味着这个类就是一个被写下来的判
+断。** 六个各有一条值得点名:
+
+**`ImageFiltered.enabled` 存在的理由,上游写在文档里:「prefer setting enabled to `false` instead of
+creating a no-op filter」。** 一个空操作的滤镜不是免费的——孩子照样被光栅化进一个图层、照样过一遍滤
+镜,而**半径为零的模糊,代价几乎等于半径为十的模糊**。`enabled: false` 整个跳过图层,这正是一个要把
+滤镜动画**进来**的调用方,在动画开始前每一帧都想要的。
+
+**`GridPaper` 对两个计数都断言大于零**,而报错信息各自说明了理由:「if there were no divisions, the
+grid paper would not paint anything」。**零被拒绝,而不是被当成「只画主线」**——写了零的调用方是有意图
+的,而回给他一张空白覆盖层,不会告诉他两个参数里错的是哪个。而**两个计数是相乘不是相加**,这才让默认
+值(100 / 2 / 5)给出十像素的最细网格而不是十四像素。默认颜色是半透明的,因为**网格是用来对着量的,
+一张透不过去的网格是在量它自己**。
+
+**`KeyboardListener` 是 `Focus` 的朴素版,而区别在于它**不**做什么:** 没有遍历、没有快捷键、没有
+action。想要「我这棵子树有焦点时按键就跑这个」而不要别的调用方,不必再去关掉一套自己没要过的遍历策
+略。而**没有回调时它是透明的而不是一个按键掉进去的洞**;`autofocus` 默认关(构建时抢焦点会从读者正在
+用的东西那里抢走);`includeSemantics` 默认开(**能接按键的东西,就是键盘用户够得到的东西**)。
+
+**`NavigationToolbar` 存在是因为 `Row` 会把这件事做错。** `Row` 里居中的标题是**在剩下的空间里**居
+中,于是它会随着前导或尾部 widget 宽度变化而移动——**一个返回箭头出现就把标题挪走了**。这个类把中间那
+块对着**整条工具栏**布局,只在放不下时才让步。回归行钉住了「前导出现,标题不动」和「真挤不下时,它只
+挪它必须挪的那么多」。
+
+**`SharedAppData` 的两个静态方法是一处刻意的对比:`getValue` 建立依赖,`setValue` 不建立。** 上游文档
+直说「unlike `SharedAppData.getValue`, this method does _not_ create a dependency」。**一个写值的
+widget 不该被自己的写触发重建——它已经知道了。** 而依赖是**按 key** 建立的(走
+`InheritedModel.inheritFrom` 把 key 当 aspect),于是读 `foo` 的 widget 不会因为 `bar` 变了而重建。
+
+它的文档还异常小心地说明了它**不是**什么:「not intended to be a substitute for Provider or any of the
+other general purpose application state systems」。它存在,是为了让一个包能发布共享一两个值的
+widget,而**不必要求开发者往应用里加一个这个包专用的伞状 widget**——`WidgetsApp` 自动创建一个,所以它
+总是在那儿。
+
+**`SpellCheckConfiguration.copyWith` 的第一行最值得写下来:一个被禁用的配置,拷不出一个启用的。**
+
+```dart
+if (!_spellCheckEnabled) {
+  return const SpellCheckConfiguration.disabled();
+}
+```
+
+调用方传的每个字段都被丢掉。这比看上去更严格,而它是对的:**一个主题交给字段一份禁用配置,说的是「这
+里拼写检查是关的」,而一个想加个拼写错误样式的调用方,不该顺手把它打开。** 而 `disabled` 是一个**独立
+构造函数**而不是一个 `enabled: false` 参数——正是这条 `copyWith` 规则说明了为什么:**禁用不是调用方能
+翻的一个字段,它是一种配置。**
+
+验证:`cargo test --lib` 2722 绿,GN `rustflutter_unittests` 2722 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1663 accounted / 225 MISSING(88.1%)。
+
 ### 两个 Text 不带 key,什么动画都不会发生(2026-08-20)
 
 新模块 `crossfade.rs`,一次收掉五个文件五个类:`AnimatedCrossFade`、`AnimatedSwitcher`、

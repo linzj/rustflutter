@@ -126,6 +126,7 @@ pub mod slider_theme;
 pub mod sliver;
 pub mod sliver_tree;
 pub mod slotted;
+pub mod small_widgets;
 pub mod snack_bar;
 pub mod snapshot_widget;
 pub mod stack_frame;
