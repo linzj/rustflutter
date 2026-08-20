@@ -101,6 +101,7 @@ pub mod pickers;
 pub mod platform;
 pub mod platform_menu_bar;
 pub mod preferred_size;
+pub mod presence;
 pub mod range_slider_parts;
 pub mod raw_menu_anchor;
 pub mod recognizers;

@@ -164,6 +164,64 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 「隐藏」不是一个状态,而是一架阶梯(2026-08-20)
+
+新模块 `presence.rs`,一次收掉五个文件九个类:`Visibility`、`SliverVisibility`、
+`ExpansibleController`、`Expansible`、`OrientationBuilder`、`DeviceOrientationBuilder`、`Title`、
+`StatusTransitionWidget`(外加 `Orientation`)。覆盖率 1652/1888(87.5%),widgets 层 81%。
+
+**把它们串起来的问题是:一个 widget 被隐藏之后,还剩下多少。** 「不可见」不是一个状态——被隐藏的东西
+可以保留、也可以不保留它的 `State`,可以继续、也可以不继续动画,可以占、也可以不占位置,可以被、也
+可以不被屏幕阅读器念出来,可以接、也可以不接点击和焦点。`Visibility` 让这六件事**分别可选**,然后用
+五条断言把它们约束成一架阶梯:
+
+```
+maintainState  <--  maintainAnimation  <--  maintainSize  <--  maintainSemantics
+      ^                                            ^
+      |                                            +-------  maintainInteractivity
+ maintainFocusability
+```
+
+箭头读作「需要」。**保不住一个没在动画的东西的尺寸**——保尺寸意味着保持布局,而一棵 ticker 关掉的已布
+局子树,是一棵冻在动画中间的子树。**念不出一个不占空间的东西**——屏幕阅读器是按几何导航的。**点不到一
+个没有面积的东西。** 而**可聚焦性挂在 state 上而不是走尺寸那条链**:一个可聚焦的东西需要存在,不需要
+占地方。
+
+**默认值是最会让人意外的那个:一个普通的 `Visibility` 什么都不保。** 翻转 `visible` 会销毁并重建整棵
+子树,里面的滚动位置、打了一半的输入框都没了。上游提供 `Visibility.maintain` 这个「全开」构造函数,
+正是因为整架阶梯才是「还在,只是没画出来」的常见需求——而每次手写六个布尔值,恰好是踩中那五条断言的
+方式。
+
+**`Visibility.of` 会走**每一个**祖先作用域,而不是停在最近那个。** 一个孩子只有在它上面每一个
+`Visibility` 都说可见时才可见,这是唯一正确的答案:一个不可见的祖先会盖住它下面的一切,不管别人多么
+声称自己可见。
+
+**两个方向构建器回答的是不同的问题,而混淆它们是真实的 bug:** `OrientationBuilder` 读的是**传进来的
+约束**(宽大于高就是横向),`DeviceOrientationBuilder` 读的是**设备**。一个占了横屏平板三分之一的侧
+边栏,约束是竖向的、设备是横向的——问「我这个盒子宽不宽」的调用方要前者,问「该不该显示平板布局」的
+要后者。而**正方形算竖向**,因为比较是严格大于:总得有人打破平局,而一个在正方形里假设横向的布局,会
+没地方放它那一行。
+
+**`Title` 断言颜色必须完全不透明。** 它不是 Flutter 画的颜色——它交给操作系统去画任务切换器的卡片,而
+系统会拿它跟任意背景合成。半透明的那个出来会是一个谁都没选过的颜色。而**默认标题是空串而不是应用
+名**:框架不知道这个应用叫什么,编一个出来等于在切换器里放了个错名字。
+
+**`StatusTransitionWidget` 听的是动画的**状态**而不是它的**值**,而这就是这个类的全部。** 值监听器一
+秒钟触发六十次;状态监听器在一次动画的一生里触发四次——dismissed、forward、completed、reverse。**一个
+只需要知道「有没有在跑」而不需要知道「跑到哪了」的 widget,付第二种代价而不是第一种。**
+
+**其余两条:**
+
+* **`ExpansibleController.expand` 是终态而不是切换**——已经展开时调用它没有效果,也不通知任何人。而
+  `Expansible` 本身是**刻意没有样式的**:上游把它从 `ExpansionTile` 里抽出来,好让 Material 和
+  Cupertino 共用这套机制而不共用外观。
+* **`SliverVisibility` 是单独一个类而不是一个标志**,因为替代物的种类不同:隐藏的盒子塌成零尺寸的
+  盒子,隐藏的 sliver 塌成零延展的 sliver,而没有哪个 widget 同时是这两样。
+
+验证:`cargo test --lib` 2683 绿,GN `rustflutter_unittests` 2683 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1652 accounted / 236 MISSING(87.5%)。
+
 ### 子树能接返回时,这层反而要说自己不能弹(2026-08-20)
 
 一次收掉四个文件六个类:`ModalBarrier`、`AnimatedModalBarrier`(新模块 `modal_barrier.rs`)、
