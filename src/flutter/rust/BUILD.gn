@@ -144,6 +144,7 @@ if (enable_unittests) {
       "rustflutter/src/gestures.rs",
       "rustflutter/src/grid.rs",
       "rustflutter/src/implicit.rs",
+      "rustflutter/src/inherited.rs",
       "rustflutter/src/ink.rs",
       "rustflutter/src/ink_well.rs",
       "rustflutter/src/interactive_viewer.rs",

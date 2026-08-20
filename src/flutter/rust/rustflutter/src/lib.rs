@@ -66,6 +66,7 @@ pub mod grid;
 pub mod icon_data;
 pub mod image;
 pub mod implicit;
+pub mod inherited;
 pub mod ink;
 pub mod ink_well;
 pub mod interactive_viewer;

@@ -164,6 +164,72 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 空集合的意思是「全部」,而问过全部之后就收不回来了(2026-08-20)
+
+新模块 `inherited.rs`,一次收掉五个文件的七个类:`InheritedModel`、`InheritedModelElement`、
+`InheritedNotifier`、`InheritedTheme`、`CapturedThemes`、`LookupBoundary`、
+`LayoutChangedNotification`。覆盖率 1632/1888(86.4%)。
+
+**一个普通的 `InheritedWidget` 提供的是一笔交易:依赖我,我变的时候重建你。** 这几个 widget 各改这笔
+交易的一项:
+
+* **`InheritedModel` 收窄「什么算变化」**——问了某个字段的 widget,不会因为另一个字段动了而重建。
+* **`InheritedNotifier` 放宽「什么时候发生」**——widget 持有的那个值发出通知时就重建,而不只是 widget
+  本身被替换时。
+* **`InheritedTheme` 把答案拷一份走**——一棵渲染在别处的子树,仍然看见它被构建时所处的那些主题。
+* **`LookupBoundary` 让查找停下**——widget 不能越过它作者画的那道框往外够。
+
+**model 那套两个方法的分工是它的全部设计:** `updateShouldNotify` 回答「有没有东西变了」,问一次;
+`updateShouldNotifyDependent` **对每个依赖者各问一次**,带着那个依赖者点过名的 aspect 集合,回答「它
+问过的东西变了没有」。十个字段一百个依赖者的 model,于是只重建那些字段真的动了的。
+
+**而 `updateDependencies` 的第一行是最容易看漏的一条:**
+
+```dart
+if (dependencies != null && dependencies.isEmpty) return;
+```
+
+**空集合的意思是「全部」,而一个依赖者一旦问过全部,再点名一个 aspect 也收不回来了。** 一个先不带
+aspect 调 `inheritFrom`、后来又带 aspect 调的 widget,仍然是在要求听到每一次变化;第二次调用不该悄悄
+把这个拿走。回归行把这个方向和反方向(先点名、后不点名 → 放宽回全部)分别钉住。
+
+**还有一处相差一个字符的区分:「没有记录」的依赖者根本不通知,「记录为空集」的依赖者永远通知。**
+
+**`_findModels` 会为那些答不上来的 model 也建立依赖**,而不只是最后那个能答的。理由是:它们中的任何
+一个都可能在后续构建里**开始**支持这个 aspect,而一个只对远处那个注册过的依赖者永远不会知道。
+
+**`isSupportedAspect` 是「只遮蔽一部分」的手段:** 一个对某个 aspect 答 false 的 model,会让查找就那
+一个 aspect 继续往上走,同时仍然为其余的作答。一个只覆盖颜色、不覆盖字体的主题正是这样。
+
+**notifier 那边有两处克制:** 监听器**只在 notifier 真的换了时才搬家**(每次重建都摘了再挂,是每帧
+为零变化付的功夫);而通知是**在 build 里发的,不是通知到达的那一刻**——于是一帧之内的一串通知合并
+成对依赖者的一次重建。**null 的 notifier 什么都不发**,因为一个 null 对象没法自己发通知。
+
+**主题捕获有两条规则:** `from == to` 捕获**空**(它们之间没有跨度,空才是诚实的答案);而**每种类型
+只留第一个**——上游的注释是「inherited themes completely shadow ancestors of the same type」,留两个
+会把孩子包两层,外面那层永远看不到。而 `CapturedThemes` 是**冻住的**:原来那些主题后来怎么变,包住
+的孩子都看不见,除非重新捕获一次。一条从主题化子树里推出去的路由正需要这个——它渲染在 overlay 里,
+离它被创建的地方很远。
+
+**`LookupBoundary.dependOnInheritedWidgetOfExactType` 做的第一件事,没人会猜到:它无条件先依赖那个
+boundary 自己,哪怕这次查找什么都没找到。** 上游的注释写明了为什么——否则一个没找到东西的 widget 会
+**一个依赖都没有**,而把它挪到一个答案确实存在的地方,永远不会有人告诉它。
+
+而 `findAncestorWidgetOfExactType` 的访问者返回的是 `runtimeType != LookupBoundary`,于是
+**boundary 是最后一个被访问的元素,而不是第一个被跳过的**——查找 boundary 类型本身是找得到的。
+
+**`debugIsHidingAncestorWidgetOfExactType` 只在 debug 下存在,而它是为报错信息活着的:** 「没找到
+Material」远不如「有一个,但被一个 LookupBoundary 挡住了」有用,而后面那句只有在有人去看的时候才说
+得出来。
+
+**`LayoutChangedNotification` 什么都不带,这是设计:** 听众被告知的是「下面有东西改了尺寸」,不是改
+了什么、改了多少。更具体的内容会是发送方给不出的承诺——这条通知会冒泡穿过一堆对那次布局一无所知的
+widget。
+
+验证:`cargo test --lib` 2574 绿,GN `rustflutter_unittests` 2574 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1632 accounted / 256 MISSING(86.4%)。
+
 ### 单元格被摊平之后,行就不存在了(2026-08-20)
 
 两个新模块:`table.rs`(`TableRow`、`Table`、`TableCell`)和 `snapshot_widget.rs`
