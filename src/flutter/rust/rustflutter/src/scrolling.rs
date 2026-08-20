@@ -1789,8 +1789,81 @@ impl crate::render::RenderBox for RenderMeasuredItem {
     }
 }
 
+/// Upstream `ShrinkWrappingViewport`: a viewport that takes only the space its
+/// slivers need.
+///
+/// The difference from an ordinary `Viewport` is one line of intent and a
+/// great deal of consequence. An ordinary viewport takes **all** the space
+/// offered on the main axis and scrolls its content through it; this one takes
+/// as much as its content asked for, up to that maximum.
+///
+/// The consequence is that its slivers must be laid out before its own size is
+/// known, so it cannot be given unbounded constraints -- there would be no
+/// maximum to stop at -- and it cannot lay out lazily, because "how big is the
+/// content" is exactly the question laziness declines to answer. A shrink-wrap
+/// list builds every child. That is why upstream's `ListView` warns against
+/// `shrinkWrap: true` on a long list: it is not a hint, it is a promise to
+/// build all of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShrinkWrappingViewport {
+    pub axis_direction: crate::render::AxisDirection,
+    pub cross_axis_direction: Option<crate::render::AxisDirection>,
+    pub cache_extent: Option<f32>,
+}
+
+impl Default for ShrinkWrappingViewport {
+    fn default() -> ShrinkWrappingViewport {
+        ShrinkWrappingViewport::new(crate::render::AxisDirection::Down)
+    }
+}
+
+impl ShrinkWrappingViewport {
+    pub fn new(axis_direction: crate::render::AxisDirection) -> ShrinkWrappingViewport {
+        ShrinkWrappingViewport {
+            axis_direction,
+            cross_axis_direction: None,
+            cache_extent: None,
+        }
+    }
+
+    /// The size the viewport takes on its main axis: what the content wanted,
+    /// clamped to what was offered.
+    pub fn main_axis_extent(&self, content_extent: f32, max_extent: f32) -> f32 {
+        content_extent.min(max_extent).max(0.0)
+    }
+
+    /// Whether this viewport can be laid out at all under the given
+    /// constraint. An unbounded main axis has no maximum to shrink-wrap
+    /// against.
+    pub fn accepts_unbounded_main_axis(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shrink_wrapping_viewport_takes_what_its_content_asked_for() {
+        let viewport = ShrinkWrappingViewport::default();
+        assert_eq!(viewport.main_axis_extent(120.0, 400.0), 120.0);
+    }
+
+    #[test]
+    fn but_never_more_than_it_was_offered() {
+        // Which is what still makes it a viewport rather than a column.
+        let viewport = ShrinkWrappingViewport::default();
+        assert_eq!(viewport.main_axis_extent(900.0, 400.0), 400.0);
+        assert_eq!(viewport.main_axis_extent(-5.0, 400.0), 0.0);
+    }
+
+    #[test]
+    fn there_is_no_maximum_to_shrink_wrap_against_on_an_unbounded_axis() {
+        // And no laziness either: "how big is the content" is exactly the
+        // question laziness declines to answer, so a shrink-wrap list builds
+        // every child.
+        assert!(!ShrinkWrappingViewport::default().accepts_unbounded_main_axis());
+    }
+
     use super::*;
 
     /// A scroll with room to move, for the tests below. The viewport is the

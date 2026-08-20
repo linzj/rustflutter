@@ -2722,8 +2722,78 @@ impl Default for ElementTree {
 
 // -- Tests --------------------------------------------------------------------
 
+/// Upstream `UniqueWidget`: a widget with exactly one inflated instance.
+///
+/// The key is **required**, which is the whole design. An ordinary widget can
+/// appear anywhere any number of times, and "the state of this widget" is then
+/// not a question with one answer. A global key makes it one, and
+/// `currentState` is the answer -- so a caller outside the tree can reach the
+/// state directly rather than threading a callback down to it.
+///
+/// `currentState` is an `Option` and stays one: the widget may not be mounted,
+/// and upstream returns null rather than asserting. A unique widget that is
+/// not on screen is an ordinary state of affairs, not a mistake.
+pub struct UniqueWidget<S> {
+    key: u64,
+    state: Option<S>,
+}
+
+impl<S> UniqueWidget<S> {
+    pub fn new(key: u64) -> UniqueWidget<S> {
+        UniqueWidget { key, state: None }
+    }
+
+    pub fn key(&self) -> u64 {
+        self.key
+    }
+
+    /// Upstream's `currentState`, read through the global key.
+    pub fn current_state(&self) -> Option<&S> {
+        self.state.as_ref()
+    }
+
+    /// The state being created as the one instance mounts.
+    pub fn mount(&mut self, state: S) {
+        debug_assert!(
+            self.state.is_none(),
+            "a UniqueWidget has exactly one inflated instance"
+        );
+        self.state = Some(state);
+    }
+
+    pub fn unmount(&mut self) {
+        self.state = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_unique_widget_that_is_not_mounted_has_no_state_and_that_is_fine() {
+        // Upstream returns null rather than asserting: a unique widget off
+        // screen is an ordinary state of affairs.
+        let mut widget: UniqueWidget<u32> = UniqueWidget::new(7);
+        assert_eq!(widget.key(), 7);
+        assert!(widget.current_state().is_none());
+
+        widget.mount(42);
+        assert_eq!(widget.current_state(), Some(&42));
+
+        widget.unmount();
+        assert!(
+            widget.current_state().is_none(),
+            "and it goes back to none rather than keeping a stale one"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly one inflated instance")]
+    fn a_second_instance_of_a_unique_widget_is_the_mistake_the_key_prevents() {
+        let mut widget: UniqueWidget<u32> = UniqueWidget::new(7);
+        widget.mount(1);
+        widget.mount(2);
+    }
+
     use super::*;
     use crate::render::{BoxConstraints, RenderBox, RenderFlex, Size};
     use crate::widgets::Empty;

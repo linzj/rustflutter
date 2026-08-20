@@ -878,8 +878,162 @@ impl RouteObserver {
     }
 }
 
+/// Upstream `WillPopScope`: the deprecated ancestor of `PopScope`.
+///
+/// It is deprecated for a reason worth stating, because it is the same reason
+/// [`PopEntry`] holds a standing answer: **`onWillPop` is asked at pop time
+/// and returns a future.** Android's predictive back gesture has to know
+/// before the swipe starts whether the page will leave, so it can draw the
+/// page behind it -- and there is no way to get an answer out of a future
+/// that has not been awaited yet. The replacement swaps the question for a
+/// value that is always available.
+///
+/// The registration dance is the whole implementation: register on
+/// `didChangeDependencies`, swap on `didUpdateWidget`, unregister on
+/// `dispose`. The first of those is not `initState`, and that matters -- the
+/// enclosing route is found through the context, and the context has no
+/// ancestors to search until dependencies are being resolved.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WillPopScope {
+    /// Whether a callback was supplied. Upstream allows null, meaning the
+    /// scope is inert -- a caller can leave one in the tree and turn it off by
+    /// passing null rather than removing the widget.
+    pub has_callback: bool,
+    registered: bool,
+    registrations: usize,
+    removals: usize,
+}
+
+impl WillPopScope {
+    pub fn new(has_callback: bool) -> WillPopScope {
+        WillPopScope {
+            has_callback,
+            registered: false,
+            registrations: 0,
+            removals: 0,
+        }
+    }
+
+    pub fn is_registered(&self) -> bool {
+        self.registered
+    }
+
+    pub fn registrations(&self) -> usize {
+        self.registrations
+    }
+
+    pub fn removals(&self) -> usize {
+        self.removals
+    }
+
+    /// Upstream's `didChangeDependencies`, which **removes before it adds**
+    /// even on the first run. The route may have changed under the widget --
+    /// it moved to a different one -- and the callback has to come off the old
+    /// route before going onto the new.
+    pub fn did_change_dependencies(&mut self, has_route: bool) {
+        if self.has_callback && self.registered {
+            self.registered = false;
+            self.removals += 1;
+        }
+        if self.has_callback && has_route {
+            self.registered = true;
+            self.registrations += 1;
+        }
+    }
+
+    /// Upstream's `didUpdateWidget`, which swaps only when the callback itself
+    /// changed. A rebuild that passes the same callback must not churn the
+    /// route's list.
+    pub fn did_update_widget(&mut self, next_has_callback: bool, callback_changed: bool) {
+        if !callback_changed {
+            return;
+        }
+        if self.has_callback && self.registered {
+            self.registered = false;
+            self.removals += 1;
+        }
+        self.has_callback = next_has_callback;
+        if self.has_callback {
+            self.registered = true;
+            self.registrations += 1;
+        }
+    }
+
+    pub fn dispose(&mut self) {
+        if self.has_callback && self.registered {
+            self.registered = false;
+            self.removals += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_will_pop_scope_registers_when_dependencies_resolve_and_not_before() {
+        // The enclosing route is found through the context, and the context
+        // has no ancestors to search until dependencies are being resolved.
+        let mut scope = WillPopScope::new(true);
+        assert!(!scope.is_registered());
+
+        scope.did_change_dependencies(true);
+        assert!(scope.is_registered());
+        assert_eq!(scope.registrations(), 1);
+        assert_eq!(scope.removals(), 0);
+    }
+
+    #[test]
+    fn moving_to_a_different_route_takes_the_callback_off_the_old_one_first() {
+        let mut scope = WillPopScope::new(true);
+        scope.did_change_dependencies(true);
+        scope.did_change_dependencies(true);
+        assert_eq!(scope.removals(), 1, "off the old route");
+        assert_eq!(scope.registrations(), 2, "and onto the new");
+    }
+
+    #[test]
+    fn a_scope_with_no_callback_is_inert_rather_than_broken() {
+        // A caller can leave one in the tree and turn it off by passing null.
+        let mut scope = WillPopScope::new(false);
+        scope.did_change_dependencies(true);
+        assert!(!scope.is_registered());
+        assert_eq!(scope.registrations(), 0);
+    }
+
+    #[test]
+    fn a_rebuild_with_the_same_callback_does_not_churn_the_routes_list() {
+        let mut scope = WillPopScope::new(true);
+        scope.did_change_dependencies(true);
+        let before = (scope.registrations(), scope.removals());
+
+        scope.did_update_widget(true, false);
+        assert_eq!((scope.registrations(), scope.removals()), before);
+
+        scope.did_update_widget(true, true);
+        assert_eq!(scope.registrations(), before.0 + 1);
+        assert_eq!(scope.removals(), before.1 + 1);
+    }
+
+    #[test]
+    fn turning_the_callback_off_removes_it_without_adding_another() {
+        let mut scope = WillPopScope::new(true);
+        scope.did_change_dependencies(true);
+        scope.did_update_widget(false, true);
+        assert!(!scope.is_registered());
+        assert_eq!(scope.removals(), 1);
+        assert_eq!(scope.registrations(), 1, "no second registration");
+    }
+
+    #[test]
+    fn disposing_takes_the_callback_off_the_route() {
+        // Or the route would call into a widget that no longer exists.
+        let mut scope = WillPopScope::new(true);
+        scope.did_change_dependencies(true);
+        scope.dispose();
+        assert!(!scope.is_registered());
+        assert_eq!(scope.removals(), 1);
+    }
+
     use super::*;
 
     // -- Local history ----------------------------------------------------

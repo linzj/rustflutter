@@ -3167,8 +3167,115 @@ impl DecorationImage {
 
 // -- Tests --------------------------------------------------------------------
 
+/// Upstream `WidgetSpan`: a widget sitting inline in a paragraph.
+///
+/// It is a **leaf** of the span tree -- the widget it holds is not part of the
+/// text at all, and the paragraph only reserves a box for it. That is why the
+/// class carries an alignment and a baseline rather than any text: those are
+/// the only questions the shaper can answer about something it cannot measure.
+///
+/// The assertion is the interesting part: the three baseline-relative
+/// alignments **require** a baseline to be named. Aligning to a baseline
+/// without saying which one is not a stricter request than the default, it is
+/// an unanswerable one, and upstream refuses it rather than picking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetSpan {
+    pub alignment: PlaceholderAlignment,
+    /// `None` unless the alignment needs it.
+    pub baseline: Option<TextBaseline>,
+}
+
+impl Default for WidgetSpan {
+    fn default() -> WidgetSpan {
+        WidgetSpan::new(PlaceholderAlignment::Bottom, None).expect("bottom needs no baseline")
+    }
+}
+
+impl WidgetSpan {
+    pub fn new(
+        alignment: PlaceholderAlignment,
+        baseline: Option<TextBaseline>,
+    ) -> Option<WidgetSpan> {
+        if Self::needs_baseline(alignment) && baseline.is_none() {
+            return None;
+        }
+        Some(WidgetSpan {
+            alignment,
+            baseline,
+        })
+    }
+
+    /// Upstream's assertion, stated positively.
+    pub fn needs_baseline(alignment: PlaceholderAlignment) -> bool {
+        matches!(
+            alignment,
+            PlaceholderAlignment::AboveBaseline
+                | PlaceholderAlignment::BelowBaseline
+                | PlaceholderAlignment::Baseline
+        )
+    }
+
+    /// Upstream's `extractFromInlineSpan` scale factor, per span.
+    ///
+    /// The scaler is asked about the **font size in effect at this span**
+    /// rather than about the span itself, and the factor handed to the widget
+    /// is the ratio. A widget inline in a heading should grow with the heading
+    /// when the reader turns text scaling up, and the heading's own size is
+    /// the only thing that says by how much.
+    ///
+    /// The zero case is guarded because the ratio would otherwise divide by
+    /// it: a font size of zero scales to zero, not to one.
+    pub fn text_scale_factor(font_size: f32, scaled_font_size: f32) -> f32 {
+        if font_size == 0.0 {
+            return 0.0;
+        }
+        scaled_font_size / font_size
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn aligning_to_a_baseline_without_naming_one_is_unanswerable() {
+        // Not a stricter request than the default -- an impossible one, so
+        // upstream refuses it rather than picking a baseline.
+        for alignment in [
+            PlaceholderAlignment::Baseline,
+            PlaceholderAlignment::AboveBaseline,
+            PlaceholderAlignment::BelowBaseline,
+        ] {
+            assert!(WidgetSpan::needs_baseline(alignment), "{alignment:?}");
+            assert!(WidgetSpan::new(alignment, None).is_none(), "{alignment:?}");
+            assert!(WidgetSpan::new(alignment, Some(TextBaseline::Alphabetic)).is_some());
+        }
+    }
+
+    #[test]
+    fn the_alignments_that_do_not_touch_the_baseline_do_not_need_one() {
+        for alignment in [
+            PlaceholderAlignment::Top,
+            PlaceholderAlignment::Bottom,
+            PlaceholderAlignment::Middle,
+        ] {
+            assert!(!WidgetSpan::needs_baseline(alignment), "{alignment:?}");
+            assert!(WidgetSpan::new(alignment, None).is_some(), "{alignment:?}");
+        }
+    }
+
+    #[test]
+    fn an_inline_widget_grows_with_the_text_it_sits_in() {
+        // The scaler is asked about the font size in effect at the span, and
+        // the factor is the ratio -- so a widget in a heading grows by the
+        // heading's amount.
+        assert_eq!(WidgetSpan::text_scale_factor(14.0, 21.0), 1.5);
+        assert_eq!(WidgetSpan::text_scale_factor(14.0, 14.0), 1.0);
+    }
+
+    #[test]
+    fn a_font_size_of_zero_scales_to_zero_rather_than_dividing_by_it() {
+        assert_eq!(WidgetSpan::text_scale_factor(0.0, 10.0), 0.0);
+    }
+
     use super::*;
     use crate::engine::TextDecoration;
 
