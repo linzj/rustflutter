@@ -2834,6 +2834,131 @@ impl SemanticsData {
     }
 }
 
+// -- Who owns the tree the platform is holding --------------------------------
+
+/// Upstream `SemanticsOwner`: the tree that has been handed over, and the
+/// checks that run before the next one is.
+///
+/// # Upstream tracks dirty nodes; this rebuilds and diffs
+///
+/// Upstream's owner keeps a set of dirty `SemanticsNode`s, sorts them
+/// shallowest-first, and sends an update built from those alone --
+/// incrementally, because its nodes are long-lived objects that mutate in
+/// place. This crate walks the render tree afresh whenever anything marked
+/// ([`mark_needs_update`]) and compares the result against what was last sent,
+/// which the `sent` field has documented since it was written.
+///
+/// Both arrive at "tell the platform only what changed". The difference is
+/// where the bookkeeping lives, and it follows from the node representation:
+/// a `SemanticsNode` here is a value in a flat list, so there is nothing to
+/// mark dirty and nothing to sort by depth.
+///
+/// So what an owner is *for* here is the other half of upstream's
+/// `sendSemanticsUpdate`: holding the tree, answering questions about it, and
+/// running the check that upstream puts in front of every send.
+pub struct SemanticsOwner {
+    nodes: Vec<SemanticsNode>,
+}
+
+impl SemanticsOwner {
+    /// An owner holding `nodes` -- what [`flush`] produced, or what [`tree`]
+    /// answers.
+    pub fn new(nodes: Vec<SemanticsNode>) -> SemanticsOwner {
+        SemanticsOwner { nodes }
+    }
+
+    /// The owner over the tree the platform is currently holding.
+    pub fn current() -> SemanticsOwner {
+        SemanticsOwner::new(tree())
+    }
+
+    /// Upstream's `rootSemanticsNode`, which it reads as `_nodes[0]`. Here the
+    /// root is [`ROOT_ID`] for the same reason: the view's own node is the one
+    /// everything painted into it hangs from.
+    pub fn root(&self) -> Option<&SemanticsNode> {
+        self.node(ROOT_ID)
+    }
+
+    /// Upstream's `getSemanticsNode`.
+    pub fn node(&self, id: i32) -> Option<&SemanticsNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
+    pub fn nodes(&self) -> &[SemanticsNode] {
+        &self.nodes
+    }
+
+    /// Upstream's `dispose`: the owner forgets everything.
+    pub fn dispose(&mut self) {
+        self.nodes.clear();
+    }
+
+    /// Upstream's assertion in front of every `sendSemanticsUpdate`: **no
+    /// invisible node may be in the tree**.
+    ///
+    /// An invisible node is one whose rectangle is empty and which is not
+    /// merged into a visible parent. Upstream spends four error hints on why it
+    /// matters, and the middle one is the whole of it: such a node "does not
+    /// provide any visual indication when the user selects it via accessibility
+    /// technologies". The reader hears something announced and there is nothing
+    /// on the glass to look at -- worse than the thing being absent, because
+    /// they now believe they have missed it.
+    ///
+    /// One rule makes it less obvious than it sounds, and it is upstream's:
+    /// **the root may be invisible while it has no children.** An application
+    /// that has not laid out yet has a zero-size root and nothing under it,
+    /// which is a state to pass through rather than a bug.
+    ///
+    /// Upstream has a second rule -- a node that merges all its descendants
+    /// stops the walk, because their rectangles describe nothing separately
+    /// reachable. It has **no counterpart here and needs none**: merging in
+    /// this crate happens while the tree is being collected (`labelled_depth`
+    /// in [`Collector`]), so a merged descendant never becomes a node at all.
+    /// There is nothing in the list to skip.
+    ///
+    /// Answers the offending nodes' ids, empty when the tree is sound.
+    pub fn invisible_nodes(&self) -> Vec<i32> {
+        let mut found = Vec::new();
+        let Some(root) = self.root() else {
+            return found;
+        };
+        if !root.children.is_empty() && is_empty_rect(root) {
+            found.push(root.id);
+        } else {
+            for child in &root.children {
+                self.find_invisible(*child, &mut found);
+            }
+        }
+        found
+    }
+
+    fn find_invisible(&self, id: i32, found: &mut Vec<i32>) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if is_empty_rect(node) {
+            // Upstream adds it and does *not* descend: a subtree under an
+            // invisible node is invisible for the same reason, and reporting
+            // all of it would bury the one that has to be fixed.
+            found.push(node.id);
+            return;
+        }
+        for child in &node.children {
+            self.find_invisible(*child, found);
+        }
+    }
+}
+
+/// Upstream's `node.rect.isEmpty`.
+///
+/// `dart:ui`'s is `left >= right || top >= bottom` -- **either** extent
+/// collapsing, not both. A node one pixel wide and zero tall is exactly as
+/// unreachable as one that is zero by zero, so `&&` here would let a whole
+/// class of invisible node through.
+fn is_empty_rect(node: &SemanticsNode) -> bool {
+    node.width() <= 0.0 || node.height() <= 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5483,5 +5608,129 @@ mod tests {
         assert!(config.text_direction.is_none());
         let data = SemanticsData::from_configuration(&config, Rect::ltrb(0.0, 0.0, 1.0, 1.0));
         assert!(data.check().is_some());
+    }
+
+    // -- SemanticsOwner ------------------------------------------------------------
+
+    fn node_at(id: i32, rect: (f32, f32, f32, f32), children: Vec<i32>) -> SemanticsNode {
+        SemanticsNode {
+            id,
+            properties: SemanticsProperties::label(""),
+            left: rect.0,
+            top: rect.1,
+            right: rect.2,
+            bottom: rect.3,
+            children,
+        }
+    }
+
+    #[test]
+    fn an_owner_answers_for_its_root_and_by_id() {
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7]),
+            node_at(7, (0.0, 0.0, 100.0, 40.0), vec![]),
+        ]);
+        assert_eq!(owner.root().map(|n| n.id), Some(ROOT_ID));
+        assert_eq!(owner.node(7).map(|n| n.id), Some(7));
+        assert!(owner.node(99).is_none());
+    }
+
+    #[test]
+    fn an_empty_owner_has_no_root_and_nothing_to_complain_about() {
+        let owner = SemanticsOwner::new(Vec::new());
+        assert!(owner.root().is_none());
+        assert!(owner.invisible_nodes().is_empty());
+    }
+
+    #[test]
+    fn a_node_with_no_size_is_a_node_the_reader_cannot_land_on() {
+        // Upstream asserts against these before every send. What goes wrong is
+        // that the reader hears something announced and there is nothing on the
+        // glass -- worse than the thing being absent, because they now believe
+        // they missed it.
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7]),
+            node_at(7, (10.0, 10.0, 10.0, 10.0), vec![]),
+        ]);
+        assert_eq!(owner.invisible_nodes(), vec![7]);
+    }
+
+    #[test]
+    fn either_extent_collapsing_is_enough() {
+        // `dart:ui`'s `Rect.isEmpty` is `left >= right || top >= bottom`. A
+        // node one pixel wide and zero tall is exactly as unreachable as one
+        // that is zero by zero, and an `&&` here would let it through.
+        for rect in [
+            (10.0, 10.0, 11.0, 10.0),
+            (10.0, 10.0, 10.0, 11.0),
+            (10.0, 10.0, 9.0, 20.0),
+        ] {
+            let owner = SemanticsOwner::new(vec![
+                node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7]),
+                node_at(7, rect, vec![]),
+            ]);
+            assert_eq!(owner.invisible_nodes(), vec![7], "{rect:?}");
+        }
+    }
+
+    #[test]
+    fn a_root_with_no_children_is_allowed_to_be_invisible() {
+        // An application that has not laid out yet: zero-size root, nothing
+        // under it. A state to pass through, not a bug.
+        let owner = SemanticsOwner::new(vec![node_at(ROOT_ID, (0.0, 0.0, 0.0, 0.0), vec![])]);
+        assert!(owner.invisible_nodes().is_empty());
+    }
+
+    #[test]
+    fn a_root_with_children_is_not() {
+        // Something is claiming to be on screen underneath a root that is not.
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 0.0, 0.0), vec![7]),
+            node_at(7, (0.0, 0.0, 100.0, 40.0), vec![]),
+        ]);
+        assert_eq!(owner.invisible_nodes(), vec![ROOT_ID]);
+    }
+
+    #[test]
+    fn the_walk_stops_at_the_first_invisible_node_on_a_branch() {
+        // Upstream adds it and does not descend. Everything under an invisible
+        // node is invisible for the same reason, and reporting the lot would
+        // bury the one that has to be fixed.
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7]),
+            node_at(7, (0.0, 0.0, 0.0, 0.0), vec![8]),
+            node_at(8, (0.0, 0.0, 0.0, 0.0), vec![]),
+        ]);
+        assert_eq!(owner.invisible_nodes(), vec![7], "not 7 and 8");
+    }
+
+    #[test]
+    fn a_sound_tree_reports_nothing() {
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7, 8]),
+            node_at(7, (0.0, 0.0, 100.0, 40.0), vec![9]),
+            node_at(8, (0.0, 50.0, 100.0, 90.0), vec![]),
+            node_at(9, (5.0, 5.0, 95.0, 35.0), vec![]),
+        ]);
+        assert!(owner.invisible_nodes().is_empty());
+    }
+
+    #[test]
+    fn every_bad_branch_is_reported_and_not_only_the_first() {
+        let owner = SemanticsOwner::new(vec![
+            node_at(ROOT_ID, (0.0, 0.0, 800.0, 600.0), vec![7, 8]),
+            node_at(7, (0.0, 0.0, 0.0, 0.0), vec![]),
+            node_at(8, (0.0, 0.0, 0.0, 0.0), vec![]),
+        ]);
+        assert_eq!(owner.invisible_nodes(), vec![7, 8]);
+    }
+
+    #[test]
+    fn disposing_an_owner_leaves_it_holding_nothing() {
+        let mut owner = SemanticsOwner::new(vec![node_at(ROOT_ID, (0.0, 0.0, 8.0, 6.0), vec![])]);
+        assert!(owner.root().is_some());
+        owner.dispose();
+        assert!(owner.root().is_none());
+        assert!(owner.nodes().is_empty());
     }
 }

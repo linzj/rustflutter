@@ -342,8 +342,8 @@ pub use semantics::{
     AttributedString, AttributedStringProperty, ChildSemanticsConfigurationsResult,
     ChildSemanticsConfigurationsResultBuilder, CustomSemanticsAction, OrdinalSortKey,
     SemanticsAction, SemanticsBinding, SemanticsConfiguration, SemanticsData, SemanticsHandle,
-    SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsProperties,
-    SemanticsSortKey, SemanticsTag, StringAttribute,
+    SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsOwner,
+    SemanticsProperties, SemanticsSortKey, SemanticsTag, StringAttribute,
 };
 pub use semantics_event::{Assertiveness, SemanticsEvent, SemanticsService};
 pub use services::{
