@@ -5304,3 +5304,136 @@ mod tests {
         );
     }
 }
+
+// -- material/time.dart's RestorableTimeOfDay ---------------------------------------
+
+/// Upstream `RestorableTimeOfDay`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestorableTimeOfDay {
+    default_value: TimeOfDay,
+    value: TimeOfDay,
+}
+
+impl RestorableTimeOfDay {
+    pub fn new(default_value: TimeOfDay) -> RestorableTimeOfDay {
+        RestorableTimeOfDay {
+            default_value,
+            value: default_value,
+        }
+    }
+
+    /// Upstream `createDefaultValue`.
+    pub fn create_default_value(&self) -> TimeOfDay {
+        self.default_value
+    }
+
+    pub fn value(&self) -> TimeOfDay {
+        self.value
+    }
+
+    pub fn set_value(&mut self, value: TimeOfDay) {
+        self.value = value;
+    }
+
+    /// Upstream `toPrimitives`, and the order is the thing to notice:
+    ///
+    /// ```dart
+    /// Object? toPrimitives() => <int>[value.minute, value.hour];
+    ///
+    /// TimeOfDay fromPrimitives(Object? data) {
+    ///   final timeData = data! as List<Object?>;
+    ///   return TimeOfDay(minute: timeData[0]! as int, hour: timeData[1]! as int);
+    /// }
+    /// ```
+    ///
+    /// **Minute first, hour second** -- the reverse of how anyone writes a time,
+    /// and the reverse of `TimeOfDay`'s own constructor, whose named arguments
+    /// are given here in the opposite order to their declaration so the indices
+    /// line up.
+    ///
+    /// The two ends agree, so it round-trips correctly. What makes it worth
+    /// writing down is the failure it invites: **both fields are small integers,
+    /// so swapping one end and not the other crashes nothing.** A reader
+    /// tidying `[minute, hour]` into `[hour, minute]` on the way out, and
+    /// missing the read side, would restore half past four as four minutes past
+    /// half.
+    ///
+    /// Ported in upstream's order, with the order tested from both directions.
+    pub fn to_primitives(&self) -> [u32; 2] {
+        [self.value.minute, self.value.hour]
+    }
+
+    /// Upstream `fromPrimitives`.
+    pub fn from_primitives(data: [u32; 2]) -> TimeOfDay {
+        TimeOfDay {
+            minute: data[0],
+            hour: data[1],
+        }
+    }
+
+    /// Upstream `didUpdateValue` asserts both components are serialisable
+    /// before notifying, which in Dart means "is a plain int".
+    pub fn did_update_value(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod restorable_time_tests {
+    use super::*;
+
+    #[test]
+    fn the_stored_order_is_minute_then_hour() {
+        let mut restorable = RestorableTimeOfDay::new(TimeOfDay { hour: 0, minute: 0 });
+        restorable.set_value(TimeOfDay {
+            hour: 16,
+            minute: 30,
+        });
+        assert_eq!(restorable.to_primitives(), [30, 16], "not [16, 30]");
+    }
+
+    #[test]
+    fn and_the_read_side_agrees_so_it_round_trips() {
+        let mut restorable = RestorableTimeOfDay::new(TimeOfDay { hour: 0, minute: 0 });
+        for (hour, minute) in [(16, 30), (0, 0), (23, 59), (4, 4)] {
+            restorable.set_value(TimeOfDay { hour, minute });
+            let restored = RestorableTimeOfDay::from_primitives(restorable.to_primitives());
+            assert_eq!(restored, TimeOfDay { hour, minute });
+        }
+    }
+
+    #[test]
+    fn tidying_one_end_alone_would_restore_a_plausible_wrong_time() {
+        // Both components are small integers, so nothing would crash. 16:30
+        // comes back as 30:16 -- or here, read the sensible way round, as the
+        // hour and minute traded.
+        let stored = [30u32, 16u32];
+        let honest = RestorableTimeOfDay::from_primitives(stored);
+        let tidied = TimeOfDay {
+            hour: stored[0],
+            minute: stored[1],
+        };
+        assert_eq!(
+            honest,
+            TimeOfDay {
+                hour: 16,
+                minute: 30
+            }
+        );
+        assert_eq!(
+            tidied,
+            TimeOfDay {
+                hour: 30,
+                minute: 16
+            }
+        );
+        assert_ne!(honest, tidied);
+    }
+
+    #[test]
+    fn a_fresh_restorable_holds_the_default_it_was_given() {
+        let restorable = RestorableTimeOfDay::new(TimeOfDay { hour: 9, minute: 5 });
+        assert_eq!(restorable.value(), TimeOfDay { hour: 9, minute: 5 });
+        assert_eq!(restorable.create_default_value(), restorable.value());
+    }
+}

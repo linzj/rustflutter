@@ -178,6 +178,7 @@ pub mod tap_region;
 pub mod text_editing_intents;
 pub mod text_selection;
 pub mod text_selection_controls;
+pub mod text_toolbars;
 pub mod theme;
 pub mod ticker;
 pub mod toggleable;

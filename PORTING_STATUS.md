@@ -164,6 +164,78 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 上一轮是两个文件切在不同处,这一轮是一个类里的两个方法(2026-08-20)
+
+新模块 `text_toolbars.rs`(`AdaptiveTextSelectionToolbar`、`SpellCheckSuggestionsToolbar`、
+`SpellCheckSuggestionsToolbarLayoutDelegate`),并把 `RestorableTimeOfDay` 补进 `pickers.rs`。覆盖率
+1837/1888(97.3%)。测试 3514。
+
+`AdaptiveTextSelectionToolbar` 里有两个平台 switch,**Fuchsia 在这两个里站在不同的队里**:
+
+```dart
+// getAdaptiveButtons
+case TargetPlatform.fuchsia:
+case TargetPlatform.android:      // → TextSelectionToolbarTextButton(Material 的按钮)
+
+// build
+case TargetPlatform.fuchsia:
+case TargetPlatform.linux:
+case TargetPlatform.windows:      // → DesktopTextSelectionToolbar
+```
+
+**于是 Fuchsia 上的上下文菜单,是 Android 的按钮装在桌面的工具栏壳子里。** 六个平台里只有它挪了位置,另外
+五个在两个 switch 里都对得上——回归行专门把这一点钉住了,**因为「只有它一个不一致」正是它值得被指出来、而
+不是耸耸肩的原因。**
+
+上一轮记的是这件事发生在**两个文件**之间(图标按苹果/其余切,滚动行为按桌面/触摸切),当时的结论是「每个
+问题按自己需要的地方下刀」。**这一轮是同一个类的两个方法。** 按钮样式和外壳样式确实是两个问题,Fuchsia 想
+要 Material 的按钮配桌面的框也说得通——**但这里没有任何一句话是这么说的。** 照它的行为移植,把这处分歧钉
+住而不是抹平。
+
+---
+
+**第二件:拼写建议的工具栏是滑的,不是翻的。**
+
+```dart
+anchor.dy + childSize.height > size.height ? size.height - childSize.height : anchor.dy
+```
+
+框架里别的选区工具栏都有「上锚点」和「下锚点」,放不下就翻到另一边。**这一个只往下放**——往上就会盖住你正
+在改的那个词——**放不下的时候只往上挪恰好够的那么多,一点不多。**
+
+而且结果没有下界:工具栏比可用空间还高时,`size.height - childSize.height` 是负的,它就挂在屏幕上边外头。
+**上游在这儿什么都不夹**,道理是:溢出比盖住那个词好。
+
+顺带两条数字:`_kMaxSuggestions = 3`,而构造器的 assert 写的是 `<= _kMaxSuggestions + 1`——**写成 3+1 而
+不是 4,是在说第四个不是建议**(是底下那个删除按钮)。高度则是
+`_kDefaultToolbarHeight - (48.0 * (4 - buttonItems.length))`,而 `_kDefaultToolbarHeight` 是 **193 = 4×48
++ 1**:**这条栏在每一种尺寸上都比它那几行高出一个像素**,因为它是从一个四行的常量往下减的。又一个没人解释
+过的数,原样留着——矮一个像素是没人要求过的可见改动。
+
+---
+
+**第三件,一个只有把它改得「看起来对」才会出错的顺序。**
+
+```dart
+Object? toPrimitives() => <int>[value.minute, value.hour];
+
+TimeOfDay fromPrimitives(Object? data) {
+  final timeData = data! as List<Object?>;
+  return TimeOfDay(minute: timeData[0]! as int, hour: timeData[1]! as int);
+}
+```
+
+**分钟在前,小时在后**——和人写时间的顺序相反,也和 `TimeOfDay` 自己构造器的参数声明顺序相反(为了对上下
+标,这里的具名参数是倒着写的)。
+
+两头是一致的,所以它 round-trip 是对的。**值得写下来的是它招来的那种错法:两个字段都是小整数,只改一头
+不改另一头,什么都不会崩。** 一个顺手把 `[minute, hour]` 「理顺」成 `[hour, minute]`、又漏了读那一侧的人,
+会把四点半存成半点四分。回归行从两个方向都测了,而把写入侧单独「理顺」跑一遍,round-trip 那条当场红。
+
+验证:`cargo test --lib` 3514 绿,GN `rustflutter_unittests` 3514 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1837 accounted / 51 MISSING(97.3%)。
+
 ### 开着读屏器的时候,那个淡出整个不发生(2026-08-20)
 
 新模块 `app_bar.rs`(`SliverAppBar`)与 `icons.rs`(`Icons`、`PlatformAdaptiveIcons`)。覆盖率

@@ -272,6 +272,7 @@ if (enable_unittests) {
       "rustflutter/src/tabs.rs",
       "rustflutter/src/text_selection.rs",
       "rustflutter/src/text_selection_controls.rs",
+      "rustflutter/src/text_toolbars.rs",
       "rustflutter/src/theme.rs",
       "rustflutter/src/ticker.rs",
       "rustflutter/src/toggleable.rs",
