@@ -1743,10 +1743,29 @@ impl SemanticsTag {
         }
     }
 
+    /// A tag whose identity is *derived* rather than allocated.
+    ///
+    /// The only caller is [`PlaceholderSpanIndexSemanticsTag`], and its docs
+    /// give the reason: a tag that has to match across frames cannot take a
+    /// fresh id each time it is built. Ids from
+    /// `PlaceholderSpanIndexSemanticsTag::ID_BASE` up are reserved for that and
+    /// are out of the counter's reach.
+    pub(crate) fn with_id(name: impl Into<String>, id: u64) -> SemanticsTag {
+        SemanticsTag {
+            name: name.into(),
+            id,
+        }
+    }
+
     /// For debugging only. Two tags with this same name may well be different
     /// tags.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// What this tag is compared by.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -1761,6 +1780,55 @@ impl Eq for SemanticsTag {}
 impl std::hash::Hash for SemanticsTag {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+
+/// Upstream `PlaceholderSpanIndexSemanticsTag`: the tag that says which inline
+/// placeholder a semantics node came from.
+///
+/// # It is the one tag compared by value, and deliberately so
+///
+/// [`SemanticsTag`] is compared by **identity** -- two tags made with the same
+/// name are different tags, so two subsystems that happen to pick the same word
+/// do not interfere. This one overrides that: upstream's doc says outright that
+/// two tags with the same `index` are considered the same.
+///
+/// The reason is that the paragraph makes these fresh on every layout, one per
+/// placeholder, and the node from this frame has to be recognised as the node
+/// from the last one. Identity would make every frame's tags unrelated to the
+/// previous frame's, and nothing would ever match.
+///
+/// So the tag it produces carries an id derived from the index rather than
+/// drawn from the counter, which is how "equal by index" is said in a scheme
+/// built on identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlaceholderSpanIndexSemanticsTag {
+    pub index: usize,
+}
+
+impl PlaceholderSpanIndexSemanticsTag {
+    /// Ids from here up belong to placeholder tags. Above anything the counter
+    /// will reach, so a derived id can never collide with an allocated one.
+    const ID_BASE: u64 = 1 << 48;
+
+    pub fn new(index: usize) -> PlaceholderSpanIndexSemanticsTag {
+        PlaceholderSpanIndexSemanticsTag { index }
+    }
+
+    /// The tag itself. Upstream's name is `PlaceholderSpanIndexSemanticsTag(3)`
+    /// and so is this one -- it is what appears in a semantics dump.
+    pub fn to_tag(&self) -> SemanticsTag {
+        SemanticsTag::with_id(
+            format!("PlaceholderSpanIndexSemanticsTag({})", self.index),
+            PlaceholderSpanIndexSemanticsTag::ID_BASE + self.index as u64,
+        )
+    }
+
+    /// Reads the index back out of a tag, if it is one of these.
+    pub fn index_of(tag: &SemanticsTag) -> Option<usize> {
+        let id = tag.id();
+        id.checked_sub(PlaceholderSpanIndexSemanticsTag::ID_BASE)
+            .map(|index| index as usize)
     }
 }
 
@@ -6109,5 +6177,59 @@ mod inspector_tests {
             assert!(!ids.contains(&99));
             inspector.reset_all_state();
         });
+    }
+}
+
+#[cfg(test)]
+mod placeholder_tag_tests {
+    use super::*;
+
+    #[test]
+    fn two_tags_with_the_same_index_are_the_same_tag() {
+        // Which is the opposite of the base rule, and deliberately so: the
+        // paragraph makes these fresh on every layout, and the node from this
+        // frame has to be recognised as the node from the last one.
+        assert_eq!(
+            PlaceholderSpanIndexSemanticsTag::new(3).to_tag(),
+            PlaceholderSpanIndexSemanticsTag::new(3).to_tag()
+        );
+        assert_ne!(
+            PlaceholderSpanIndexSemanticsTag::new(3).to_tag(),
+            PlaceholderSpanIndexSemanticsTag::new(4).to_tag()
+        );
+    }
+
+    #[test]
+    fn an_ordinary_tag_is_still_compared_by_identity() {
+        // The base rule the one above is an exception to.
+        assert_ne!(SemanticsTag::new("scrolled"), SemanticsTag::new("scrolled"));
+    }
+
+    #[test]
+    fn a_derived_id_can_never_collide_with_an_allocated_one() {
+        let mut allocated = SemanticsTag::new("a");
+        for _ in 0..100 {
+            allocated = SemanticsTag::new("a");
+        }
+        assert!(allocated.id() < PlaceholderSpanIndexSemanticsTag::new(0).to_tag().id());
+    }
+
+    #[test]
+    fn the_index_reads_back_out() {
+        let tag = PlaceholderSpanIndexSemanticsTag::new(7).to_tag();
+        assert_eq!(PlaceholderSpanIndexSemanticsTag::index_of(&tag), Some(7));
+        assert_eq!(
+            PlaceholderSpanIndexSemanticsTag::index_of(&SemanticsTag::new("other")),
+            None,
+            "and an ordinary tag is not one of these"
+        );
+    }
+
+    #[test]
+    fn the_name_is_what_a_dump_shows() {
+        assert_eq!(
+            PlaceholderSpanIndexSemanticsTag::new(2).to_tag().name(),
+            "PlaceholderSpanIndexSemanticsTag(2)"
+        );
     }
 }

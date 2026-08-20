@@ -11264,12 +11264,101 @@ pub trait CustomPainter {
         None
     }
 
+    /// Upstream `CustomPainter.semanticsBuilder`, which defaults to null: a
+    /// painter says nothing to a screen reader unless it chooses to.
+    ///
+    /// Called with the box's size, so a painter can place its nodes against the
+    /// same geometry it drew into.
+    fn semantics_builder(&self, _size: Size) -> Vec<CustomPainterSemantics> {
+        Vec::new()
+    }
+
     /// Same-kind check standing in for upstream's `runtimeType` comparison.
     fn kind_id(&self) -> std::any::TypeId;
 
     /// The concrete self, for `should_repaint` implementors that want to
     /// compare fields with the old delegate.
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Upstream `CustomPainterSemantics`: one semantics node a painter says is
+/// there.
+///
+/// A painter draws pixels, and pixels are nothing to a screen reader. This is
+/// how a painter that has drawn, say, a set of clock hands can say "there is a
+/// slider here, at this rectangle, with this value" -- the reader hears a
+/// control the painter never built as a widget.
+///
+/// # The key is for matching across rebuilds
+///
+/// Upstream matches the new list against the last one and reuses the semantics
+/// nodes it can, exactly as the widget tree matches children -- and for the same
+/// reason: a node reused keeps its identity, and a screen reader with its focus
+/// on it keeps that focus. Without keys the match is positional, so inserting
+/// one node at the front would shift every reader's focus by one.
+///
+/// Upstream asserts in debug that no key appears twice, because two nodes
+/// claiming the same identity make the match arbitrary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomPainterSemantics {
+    /// Upstream's `key`. `None` means "match me by position".
+    pub key: Option<u64>,
+    /// Where the node is, in the painter's coordinates.
+    pub rect: Rect,
+    pub properties: crate::semantics::SemanticsProperties,
+    /// Upstream's `transform`, applied on top of `rect`. `None` is the
+    /// identity.
+    pub transform: Option<[f32; 6]>,
+    pub tags: Vec<crate::semantics::SemanticsTag>,
+}
+
+impl CustomPainterSemantics {
+    pub fn new(
+        rect: Rect,
+        properties: crate::semantics::SemanticsProperties,
+    ) -> CustomPainterSemantics {
+        CustomPainterSemantics {
+            key: None,
+            rect,
+            properties,
+            transform: None,
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn with_key(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn with_transform(mut self, transform: [f32; 6]) -> Self {
+        self.transform = Some(transform);
+        self
+    }
+
+    pub fn with_tag(mut self, tag: crate::semantics::SemanticsTag) -> Self {
+        self.tags.push(tag);
+        self
+    }
+
+    /// Upstream's debug assert inside `_updateSemanticsChildren`: the position
+    /// of the first key that appears twice, or `None` if they are all distinct.
+    ///
+    /// Nodes without a key are not compared -- they are the ones asking to be
+    /// matched positionally, and any number of them is fine.
+    pub fn duplicate_key_at(children: &[CustomPainterSemantics]) -> Option<usize> {
+        let mut seen: Vec<u64> = Vec::new();
+        for (index, child) in children.iter().enumerate() {
+            let Some(key) = child.key else {
+                continue;
+            };
+            if seen.contains(&key) {
+                return Some(index);
+            }
+            seen.push(key);
+        }
+        None
+    }
 }
 
 /// Upstream `RenderCustomPaint`: paints a delegate, then the child, then a
@@ -22949,5 +23038,85 @@ mod coordinate_round_trip {
             .find(|entry| entry.target == PROBE_ID)
             .expect("the untransformed geometry is what is tested");
         assert_eq!(entry.local_position, Offset::new(7.0, 3.0));
+    }
+}
+
+#[cfg(test)]
+mod custom_painter_semantics_tests {
+    use super::*;
+    use crate::semantics::{SemanticsProperties, SemanticsTag};
+
+    fn at(x: f32) -> CustomPainterSemantics {
+        CustomPainterSemantics::new(
+            Rect::xywh(x, 0.0, 10.0, 10.0),
+            SemanticsProperties::label("a"),
+        )
+    }
+
+    #[test]
+    fn a_painter_says_nothing_unless_it_chooses_to() {
+        // The default is an empty list, as upstream's `semanticsBuilder` is
+        // null: drawing pixels does not by itself claim anything is there.
+        struct Silent;
+        impl CustomPainter for Silent {
+            fn paint(&self, _canvas: &mut Canvas, _size: Size) {}
+            fn should_repaint(&self, _old: &dyn CustomPainter) -> bool {
+                false
+            }
+            fn kind_id(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Silent>()
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        assert!(Silent.semantics_builder(Size::new(10.0, 10.0)).is_empty());
+    }
+
+    #[test]
+    fn unkeyed_nodes_are_never_duplicates_of_each_other() {
+        // They are the ones asking to be matched by position, and any number of
+        // them is fine.
+        let children = vec![at(0.0), at(10.0), at(20.0)];
+        assert_eq!(CustomPainterSemantics::duplicate_key_at(&children), None);
+    }
+
+    #[test]
+    fn the_first_repeat_is_reported_at_its_own_position() {
+        let children = vec![
+            at(0.0).with_key(1),
+            at(10.0).with_key(2),
+            at(20.0).with_key(1),
+            at(30.0).with_key(2),
+        ];
+        assert_eq!(
+            CustomPainterSemantics::duplicate_key_at(&children),
+            Some(2),
+            "the second appearance, not the first"
+        );
+    }
+
+    #[test]
+    fn distinct_keys_and_a_mix_with_unkeyed_ones_are_fine() {
+        let children = vec![
+            at(0.0).with_key(1),
+            at(10.0),
+            at(20.0).with_key(2),
+            at(30.0),
+        ];
+        assert_eq!(CustomPainterSemantics::duplicate_key_at(&children), None);
+    }
+
+    #[test]
+    fn the_transform_and_the_tags_are_optional_extras() {
+        let plain = at(0.0);
+        assert_eq!(plain.transform, None, "None is the identity");
+        assert!(plain.tags.is_empty());
+
+        let dressed = at(0.0)
+            .with_transform([2.0, 0.0, 0.0, 2.0, 0.0, 0.0])
+            .with_tag(SemanticsTag::new("marked"));
+        assert!(dressed.transform.is_some());
+        assert_eq!(dressed.tags.len(), 1);
     }
 }

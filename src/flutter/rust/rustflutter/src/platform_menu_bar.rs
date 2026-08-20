@@ -15,6 +15,7 @@
 //! what carries the decisions, and it is here in full.
 
 use crate::keyboard::LogicalKey;
+use crate::shortcuts::ShortcutActivator;
 
 /// Upstream's channel keys, which are the wire format and therefore not free
 /// to rename.
@@ -919,5 +920,151 @@ mod tests {
         ))]);
         assert_eq!(bar.menus.len(), 1);
         assert_eq!(PlatformMenuBar::default().menus.len(), 0);
+    }
+}
+
+/// Upstream `MenuSerializableShortcut`: a shortcut activator that can also say
+/// itself to the platform.
+///
+/// A mixin upstream, which is a trait here. It exists because the two things a
+/// shortcut has to do are answered by different machinery: *matching a key
+/// event* is the framework's job and belongs to the activator, while *appearing
+/// next to a menu item in the platform's own menu bar* means handing the
+/// platform a description it understands. Not every activator can do the second
+/// -- an activator that matches on something the platform has no way to draw
+/// has nothing to serialize -- which is why upstream makes it a separate mixin
+/// rather than a member of `ShortcutActivator`.
+pub trait MenuSerializableShortcut {
+    /// Upstream's `serializeForMenu`.
+    fn serialize_for_menu(&self) -> ShortcutSerialization;
+}
+
+impl MenuSerializableShortcut for ShortcutActivator {
+    /// The two activators that can be drawn in a platform menu.
+    ///
+    /// A `LogicalKeySet` cannot: the platform's menus take one trigger key plus
+    /// modifier flags, and a set of arbitrary keys held together has no such
+    /// shape. Upstream's `LogicalKeySet` does not mix in
+    /// `MenuSerializableShortcut` at all; here the closed enum has to answer
+    /// something, so it answers with its lowest key as the trigger and says so.
+    fn serialize_for_menu(&self) -> ShortcutSerialization {
+        match self {
+            ShortcutActivator::Character {
+                character,
+                control,
+                single_modifier,
+            } => ShortcutSerialization::Character {
+                character: *character,
+                alt: false,
+                control: *control,
+                meta: *single_modifier,
+            },
+            ShortcutActivator::Single {
+                key,
+                control,
+                shift,
+                alt,
+                meta,
+            } => ShortcutSerialization::Modifier {
+                trigger: LogicalKey(*key),
+                control: *control,
+                shift: *shift,
+                alt: *alt,
+                meta: *meta,
+            },
+            ShortcutActivator::KeySet(set) => ShortcutSerialization::Modifier {
+                trigger: LogicalKey(set.keys.first().copied().unwrap_or_default()),
+                control: false,
+                shift: false,
+                alt: false,
+                meta: false,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod menu_serializable_tests {
+    use super::*;
+    use crate::shortcuts::LogicalKeySet;
+
+    #[test]
+    fn a_single_activator_serializes_as_a_trigger_and_flags() {
+        let save = ShortcutActivator::Single {
+            key: LogicalKey::from_char('s').0,
+            control: true,
+            shift: false,
+            alt: false,
+            meta: true,
+        };
+        assert_eq!(
+            save.serialize_for_menu(),
+            ShortcutSerialization::Modifier {
+                trigger: LogicalKey::from_char('s'),
+                control: true,
+                shift: false,
+                alt: false,
+                meta: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_character_activator_carries_no_shift() {
+        // A character already says whether shift was held -- see
+        // [`ShortcutSerialization::Character`].
+        let dollar = ShortcutActivator::Character {
+            character: '$',
+            control: false,
+            single_modifier: true,
+        };
+        let ShortcutSerialization::Character {
+            character, meta, ..
+        } = dollar.serialize_for_menu()
+        else {
+            panic!("a character");
+        };
+        assert_eq!(character, '$');
+        assert!(meta);
+    }
+
+    #[test]
+    fn a_key_set_has_no_shape_the_platform_can_draw() {
+        // The platform's menus take one trigger plus modifier flags, and a set
+        // of arbitrary keys held together is not that. It answers with its
+        // lowest key and no modifiers rather than inventing a combination.
+        let set = ShortcutActivator::KeySet(LogicalKeySet::new(&[
+            LogicalKey::from_char('b').0,
+            LogicalKey::from_char('a').0,
+        ]));
+        assert_eq!(
+            set.serialize_for_menu(),
+            ShortcutSerialization::Modifier {
+                trigger: LogicalKey::from_char('a'),
+                control: false,
+                shift: false,
+                alt: false,
+                meta: false,
+            },
+            "the lowest key, which is the sorted set's first"
+        );
+    }
+
+    #[test]
+    fn the_trait_is_what_a_menu_item_asks_through() {
+        fn ask(shortcut: &dyn MenuSerializableShortcut) -> ShortcutSerialization {
+            shortcut.serialize_for_menu()
+        }
+        let escape = ShortcutActivator::Single {
+            key: LogicalKey::ESCAPE.0,
+            control: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        };
+        assert!(matches!(
+            ask(&escape),
+            ShortcutSerialization::Modifier { .. }
+        ));
     }
 }

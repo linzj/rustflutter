@@ -1165,6 +1165,11 @@ impl AnimationListeners {
     pub fn is_empty(&self) -> bool {
         self.listeners.borrow().is_empty()
     }
+
+    /// Upstream's `clearListeners`, which `dispose` calls.
+    pub fn clear(&self) {
+        self.listeners.borrow_mut().clear();
+    }
 }
 
 /// Upstream `AnimationController`: the one animation nothing else drives.
@@ -2032,5 +2037,472 @@ mod animation_graph_tests {
             ChainedAnimatable::<f32, f32>::evaluate(&inner, &outer, 0.5),
             50.0
         );
+    }
+}
+
+// -- Changing horses in midstream ---------------------------------------------
+
+/// Which way the two trains have to cross before the hop is allowed.
+///
+/// Upstream's private `_TrainHoppingMode`, decided once at construction from
+/// which train is ahead. It is not re-decided later, and that is the point: the
+/// mode is the answer to "which way round were they when we started", and a hop
+/// happens the moment they meet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrainHoppingMode {
+    /// The next train started **below** the current one, so hop when it catches
+    /// up from below.
+    Minimize,
+    /// The next train started **above**, so hop when it comes down to meet.
+    Maximize,
+}
+
+/// Upstream `TrainHoppingAnimation`: follows one animation until a second one
+/// crosses it, then follows that one instead.
+///
+/// # What it is for
+///
+/// A value that must not jump. Upstream's use is a route transition whose
+/// driving animation is replaced mid-flight -- switching to the new one
+/// immediately would show a visible step, so this waits until the two agree on
+/// a value and switches *there*, where the change costs nothing.
+///
+/// # It hops once, and then it is an ordinary animation
+///
+/// After the hop the next train is dropped and there is nothing left to hop to.
+/// Upstream never takes a third; a caller that wants another chain builds
+/// another hopper.
+///
+/// # The degenerate case is handled at construction
+///
+/// If the two trains already agree, upstream switches immediately in the
+/// constructor and never records a mode at all -- so the mode is `None` exactly
+/// when there is no next train, which is what its final assert says.
+pub struct TrainHoppingAnimation {
+    current: RefCell<Rc<dyn Animation>>,
+    next: RefCell<Option<Rc<dyn Animation>>>,
+    mode: Cell<Option<TrainHoppingMode>>,
+    last_value: Cell<Option<f32>>,
+    last_status: Cell<Option<AnimationStatus>>,
+    on_switched_train: RefCell<Option<Rc<dyn Fn()>>>,
+    listeners: AnimationListeners,
+}
+
+impl TrainHoppingAnimation {
+    /// Upstream's constructor, including the two things it settles before
+    /// anything is listening.
+    pub fn new(
+        current: Rc<dyn Animation>,
+        next: Option<Rc<dyn Animation>>,
+    ) -> Rc<TrainHoppingAnimation> {
+        let mut current = current;
+        let mut next = next;
+        let mut mode = None;
+        if let Some(candidate) = next.clone() {
+            if current.value() == candidate.value() {
+                // Already met: hop now and never record a mode.
+                current = candidate;
+                next = None;
+            } else if current.value() > candidate.value() {
+                mode = Some(TrainHoppingMode::Maximize);
+            } else {
+                mode = Some(TrainHoppingMode::Minimize);
+            }
+        }
+        debug_assert!(
+            mode.is_some() || next.is_none(),
+            "a next train without a mode has no rule for when to hop"
+        );
+        Rc::new(TrainHoppingAnimation {
+            current: RefCell::new(current),
+            next: RefCell::new(next),
+            mode: Cell::new(mode),
+            last_value: Cell::new(None),
+            last_status: Cell::new(None),
+            on_switched_train: RefCell::new(None),
+            listeners: AnimationListeners::new(),
+        })
+    }
+
+    pub fn with_on_switched_train(self: &Rc<Self>, on_switched: impl Fn() + 'static) -> Rc<Self> {
+        *self.on_switched_train.borrow_mut() = Some(Rc::new(on_switched));
+        Rc::clone(self)
+    }
+
+    /// Upstream's `currentTrain`. `None` after [`dispose`](Self::dispose).
+    pub fn current_train(&self) -> Rc<dyn Animation> {
+        Rc::clone(&self.current.borrow())
+    }
+
+    pub fn mode(&self) -> Option<TrainHoppingMode> {
+        self.mode.get()
+    }
+
+    pub fn has_next_train(&self) -> bool {
+        self.next.borrow().is_some()
+    }
+
+    /// Upstream's `_valueChangeHandler`, which is where everything happens.
+    ///
+    /// Both trains' value listeners run this, and the order inside it is
+    /// upstream's and matters: hop first, *then* read the value, so the value
+    /// reported is the new train's. Reading first would report the old train's
+    /// last value one final time after the switch.
+    ///
+    /// The `onSwitchedTrain` callback fires **after** the value listeners, not
+    /// at the moment of the hop. A listener told "we switched" before the value
+    /// went out would look at a value belonging to the old train.
+    pub fn pump(&self) {
+        let mut hopped = false;
+        let next = self.next.borrow().clone();
+        if let Some(next) = next {
+            let mode = self.mode.get().expect("a next train always has a mode");
+            let current_value = self.current.borrow().value();
+            let hop = match mode {
+                TrainHoppingMode::Minimize => next.value() <= current_value,
+                TrainHoppingMode::Maximize => next.value() >= current_value,
+            };
+            if hop {
+                *self.current.borrow_mut() = next;
+                *self.next.borrow_mut() = None;
+                hopped = true;
+                let status = self.current.borrow().status();
+                self.note_status(status);
+            }
+        }
+        let value = self.current.borrow().value();
+        if self.last_value.get() != Some(value) {
+            self.listeners.notify_value();
+            self.last_value.set(Some(value));
+        }
+        if hopped {
+            let callback = self.on_switched_train.borrow().clone();
+            if let Some(callback) = callback {
+                callback();
+            }
+        }
+    }
+
+    /// Upstream's `_statusChangeHandler`, whose whole content is the guard: a
+    /// status that has not changed is not announced.
+    ///
+    /// It is needed because the hop calls this by hand with the new train's
+    /// status, and that will usually be the status the old train already had --
+    /// a listener told the animation started forward twice would, for instance,
+    /// play an entry sound twice.
+    pub fn note_status(&self, status: AnimationStatus) {
+        if self.last_status.get() != Some(status) {
+            self.listeners.notify_status(status);
+            self.last_status.set(Some(status));
+        }
+    }
+
+    /// Upstream's `dispose`, which lets go of both trains and every listener.
+    /// After it the object is not usable, as upstream's doc says in as many
+    /// words.
+    pub fn dispose(&self) {
+        *self.next.borrow_mut() = None;
+        self.listeners.clear();
+    }
+}
+
+impl Animation for TrainHoppingAnimation {
+    fn value(&self) -> f32 {
+        self.current.borrow().value()
+    }
+
+    fn status(&self) -> AnimationStatus {
+        self.current.borrow().status()
+    }
+
+    fn add_listener(&self, listener: AnimationListener) {
+        self.listeners.add(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.listeners.remove(listener);
+    }
+}
+
+#[cfg(test)]
+mod train_hopping_tests {
+    use super::*;
+
+    /// An animation whose value the test sets by hand.
+    struct Dial {
+        value: Cell<f32>,
+        status: Cell<AnimationStatus>,
+        listeners: AnimationListeners,
+    }
+
+    impl Dial {
+        fn at(value: f32) -> Rc<Dial> {
+            Rc::new(Dial {
+                value: Cell::new(value),
+                status: Cell::new(AnimationStatus::Forward),
+                listeners: AnimationListeners::new(),
+            })
+        }
+
+        fn set(&self, value: f32) {
+            self.value.set(value);
+            self.listeners.notify_value();
+        }
+    }
+
+    impl Animation for Dial {
+        fn value(&self) -> f32 {
+            self.value.get()
+        }
+
+        fn status(&self) -> AnimationStatus {
+            self.status.get()
+        }
+
+        fn add_listener(&self, listener: AnimationListener) {
+            self.listeners.add(listener);
+        }
+
+        fn remove_listener(&self, listener: &AnimationListener) {
+            self.listeners.remove(listener);
+        }
+    }
+
+    #[test]
+    fn the_mode_is_decided_by_which_train_is_ahead() {
+        let behind = TrainHoppingAnimation::new(Dial::at(0.8), Some(Dial::at(0.2)));
+        assert_eq!(
+            behind.mode(),
+            Some(TrainHoppingMode::Maximize),
+            "next is below"
+        );
+
+        let ahead = TrainHoppingAnimation::new(Dial::at(0.2), Some(Dial::at(0.8)));
+        assert_eq!(
+            ahead.mode(),
+            Some(TrainHoppingMode::Minimize),
+            "next is above"
+        );
+    }
+
+    #[test]
+    fn trains_that_already_agree_hop_before_anyone_is_listening() {
+        // And record no mode at all, because there is nothing left to wait for.
+        let next = Dial::at(0.5);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.5), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        assert_eq!(hopper.mode(), None);
+        assert!(!hopper.has_next_train());
+        assert!(Rc::ptr_eq(
+            &hopper.current_train(),
+            &(Rc::clone(&next) as Rc<dyn Animation>)
+        ));
+    }
+
+    #[test]
+    fn one_train_alone_has_no_mode_and_nothing_to_do() {
+        let hopper = TrainHoppingAnimation::new(Dial::at(0.3), None);
+        assert_eq!(hopper.mode(), None);
+        assert_eq!(hopper.value(), 0.3);
+        hopper.pump();
+        assert_eq!(hopper.value(), 0.3);
+    }
+
+    #[test]
+    fn it_hops_the_moment_the_trains_meet() {
+        // The point of the whole class: switching before they meet would show a
+        // visible step in whatever the value drives.
+        let current = Dial::at(0.2);
+        let next = Dial::at(0.8);
+        let hopper = TrainHoppingAnimation::new(
+            Rc::clone(&current) as Rc<dyn Animation>,
+            Some(Rc::clone(&next) as Rc<dyn Animation>),
+        );
+
+        next.value.set(0.5);
+        hopper.pump();
+        assert!(hopper.has_next_train(), "0.5 is still above 0.2");
+        assert_eq!(
+            hopper.value(),
+            0.2,
+            "and the value is still the old train's"
+        );
+
+        next.value.set(0.2);
+        hopper.pump();
+        assert!(!hopper.has_next_train(), "they met");
+        assert_eq!(hopper.value(), 0.2, "at the same value, so nothing jumped");
+
+        // And from here it follows the new train, not the old.
+        current.value.set(0.9);
+        next.value.set(0.4);
+        hopper.pump();
+        assert_eq!(hopper.value(), 0.4);
+    }
+
+    #[test]
+    fn maximize_waits_for_the_next_train_to_come_down() {
+        let next = Dial::at(0.2);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.8), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        next.value.set(0.7);
+        hopper.pump();
+        assert!(hopper.has_next_train(), "0.7 is still below 0.8");
+
+        next.value.set(0.9);
+        hopper.pump();
+        assert!(!hopper.has_next_train());
+        assert_eq!(hopper.value(), 0.9);
+    }
+
+    #[test]
+    fn it_hops_once_and_then_it_is_an_ordinary_animation() {
+        let next = Dial::at(0.8);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.2), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        next.value.set(0.1);
+        hopper.pump();
+        assert!(!hopper.has_next_train());
+
+        // Whatever the old train does now, there is nothing to hop back to.
+        for value in [0.0, 0.5, 1.0] {
+            next.value.set(value);
+            hopper.pump();
+            assert_eq!(hopper.value(), value);
+        }
+    }
+
+    #[test]
+    fn listeners_hear_the_new_trains_value_and_not_the_old_ones_again() {
+        // Which is why the hop happens before the value is read.
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let next = Dial::at(0.8);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.2), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        let recorder = Rc::clone(&heard);
+        let reader = Rc::clone(&hopper);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(move || recorder.borrow_mut().push(reader.value())),
+            on_status: None,
+        });
+
+        next.value.set(0.1);
+        hopper.pump();
+        assert_eq!(*heard.borrow(), vec![0.1], "the new train's, at once");
+    }
+
+    #[test]
+    fn the_switched_callback_comes_after_the_value_went_out() {
+        // A listener told "we switched" before the value went out would be
+        // looking at a value belonging to the old train.
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let next = Dial::at(0.8);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.2), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        let switched = Rc::clone(&order);
+        let hopper = hopper.with_on_switched_train(move || switched.borrow_mut().push("switched"));
+        let valued = Rc::clone(&order);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(move || valued.borrow_mut().push("value")),
+            on_status: None,
+        });
+
+        next.value.set(0.1);
+        hopper.pump();
+        assert_eq!(*order.borrow(), vec!["value", "switched"]);
+    }
+
+    #[test]
+    fn the_switched_callback_does_not_fire_without_a_hop() {
+        let order = Rc::new(RefCell::new(0));
+        let current = Dial::at(0.2);
+        let hopper = TrainHoppingAnimation::new(
+            Rc::clone(&current) as Rc<dyn Animation>,
+            Some(Dial::at(0.8)),
+        );
+        let counter = Rc::clone(&order);
+        let hopper = hopper.with_on_switched_train(move || *counter.borrow_mut() += 1);
+        current.value.set(0.3);
+        hopper.pump();
+        assert_eq!(*order.borrow(), 0);
+    }
+
+    #[test]
+    fn a_value_that_did_not_change_is_not_announced() {
+        let heard = Rc::new(RefCell::new(0));
+        let current = Dial::at(0.4);
+        let hopper = TrainHoppingAnimation::new(Rc::clone(&current) as Rc<dyn Animation>, None);
+        let counter = Rc::clone(&heard);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(move || *counter.borrow_mut() += 1),
+            on_status: None,
+        });
+
+        hopper.pump();
+        assert_eq!(*heard.borrow(), 1, "the first read is news");
+        hopper.pump();
+        hopper.pump();
+        assert_eq!(*heard.borrow(), 1, "and the same value is not");
+        current.value.set(0.5);
+        hopper.pump();
+        assert_eq!(*heard.borrow(), 2);
+    }
+
+    #[test]
+    fn a_status_that_did_not_change_is_not_announced_either() {
+        // The hop calls the status handler by hand with the new train's status,
+        // which will usually be the status the old train already had.
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let hopper = TrainHoppingAnimation::new(Dial::at(0.5), None);
+        let recorder = Rc::clone(&heard);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: Some(Rc::new(move |status| recorder.borrow_mut().push(status))),
+        });
+
+        hopper.note_status(AnimationStatus::Forward);
+        hopper.note_status(AnimationStatus::Forward);
+        assert_eq!(*heard.borrow(), vec![AnimationStatus::Forward], "once");
+        hopper.note_status(AnimationStatus::Completed);
+        assert_eq!(heard.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_hop_between_trains_of_the_same_status_says_nothing() {
+        let heard = Rc::new(RefCell::new(0));
+        let next = Dial::at(0.8);
+        let hopper =
+            TrainHoppingAnimation::new(Dial::at(0.2), Some(Rc::clone(&next) as Rc<dyn Animation>));
+        hopper.note_status(AnimationStatus::Forward);
+        let counter = Rc::clone(&heard);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: Some(Rc::new(move |_| *counter.borrow_mut() += 1)),
+        });
+
+        next.value.set(0.1);
+        hopper.pump();
+        assert_eq!(*heard.borrow(), 0, "both trains were going forward");
+    }
+
+    #[test]
+    fn disposing_lets_go_of_the_next_train_and_every_listener() {
+        let heard = Rc::new(RefCell::new(0));
+        let current = Dial::at(0.2);
+        let hopper = TrainHoppingAnimation::new(
+            Rc::clone(&current) as Rc<dyn Animation>,
+            Some(Dial::at(0.8)),
+        );
+        let counter = Rc::clone(&heard);
+        hopper.add_listener(AnimationListener {
+            on_value: Rc::new(move || *counter.borrow_mut() += 1),
+            on_status: None,
+        });
+
+        hopper.dispose();
+        assert!(!hopper.has_next_train());
+        current.value.set(0.9);
+        hopper.pump();
+        assert_eq!(*heard.borrow(), 0);
     }
 }
