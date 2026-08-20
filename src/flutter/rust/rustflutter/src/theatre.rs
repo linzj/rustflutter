@@ -35,13 +35,16 @@
 //!
 //! No second layout pass, no one-frame lag, no deferred queue.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::framework::{AnyWidget, many};
+use crate::framework::{
+    AnyWidget, BuildContext, ElementId, StateHandle, StatefulComponent, many, provide,
+};
+use crate::overlay::{InsertPosition, OverlayEntry, OverlayState};
 use crate::render::{
-    BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox, RenderRef, Size,
-    UpdateEffect,
+    BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox,
+    RenderConstrainedBox, RenderRef, Size, UpdateEffect,
 };
 
 /// A render object waiting to be picked up by a theatre, and where it sits in
@@ -134,6 +137,10 @@ pub struct RenderTheatre {
     page: BoxedRender,
     entries: Vec<StagedEntry>,
     placements: Vec<EntryPlacement>,
+    /// Which of the leading entries offered to size the overlay, in order.
+    /// Upstream's `canSizeOverlay`, which matters only under unbounded
+    /// constraints.
+    entry_can_size: Vec<bool>,
     size: Size,
 }
 
@@ -144,6 +151,7 @@ impl RenderTheatre {
             page,
             entries,
             placements,
+            entry_can_size: Vec::new(),
             size: Size::ZERO,
         }
     }
@@ -168,6 +176,16 @@ impl RenderTheatre {
         }
     }
 
+    /// The topmost entry that offered to size the overlay, if any.
+    ///
+    /// Topmost, not first: the entry nearest the reader is the one whose size
+    /// the overlay should be, and it is the last in paint order.
+    fn sizing_entry(&self) -> Option<usize> {
+        (0..self.entries.len())
+            .rev()
+            .find(|index| self.entry_can_size.get(*index).copied().unwrap_or(false))
+    }
+
     /// Whether the object behind `render` is one of this theatre's entries.
     pub fn hosts(&self, render: &RenderRef) -> bool {
         self.entries.iter().any(|entry| entry.render.is(render))
@@ -180,6 +198,26 @@ impl RenderBox for RenderTheatre {
         // theatre takes its size from the constraints it was given rather than
         // from any entry: an overlay that grew to fit a tooltip would move the
         // page underneath it.
+        //
+        // Except when nothing can: under unbounded constraints there is no
+        // size to inherit, and upstream lets the topmost entry that offered
+        // `canSizeOverlay` answer instead. An entry that offers is taking on
+        // the question the overlay could not answer, which is why it has to
+        // cope with unbounded constraints itself.
+        if !constraints.has_bounded_width() || !constraints.has_bounded_height() {
+            if let Some(index) = self.sizing_entry() {
+                let chosen = self.entries[index].render.layout_child(constraints, true);
+                self.size = chosen;
+                let tight = BoxConstraints::tight(chosen.width, chosen.height);
+                self.page.layout_child(tight, true);
+                for (other, entry) in self.entries.iter_mut().enumerate() {
+                    if other != index {
+                        entry.render.layout_child(tight, true);
+                    }
+                }
+                return self.size;
+            }
+        }
         self.size = self.page.layout_child(constraints, true);
         let tight = BoxConstraints::tight(self.size.width, self.size.height);
         for (index, entry) in self.entries.iter_mut().enumerate() {
@@ -415,10 +453,267 @@ pub fn theatre_with(
     })
 }
 
+// -- L1: the live overlay -----------------------------------------------------
+
+/// What an entry is built from. Upstream's `OverlayEntry.builder`.
+type EntryBuilder = Rc<dyn Fn() -> AnyWidget>;
+
+/// The state an `Overlay` element keeps: the decision logic from
+/// [`crate::overlay::OverlayState`], plus the builders it has no business
+/// knowing about.
+///
+/// The split is deliberate. `overlay.rs` decides *which* entries are on stage,
+/// in what order, and which of the offstage ones keep their state -- and it can
+/// decide all of that without ever seeing a widget. What it cannot do is turn
+/// an id back into something to build, so that lives here.
+#[derive(Default)]
+pub struct LiveOverlay {
+    state: OverlayState,
+    builders: Vec<(u64, EntryBuilder)>,
+    next_id: u64,
+    stage: OverlayStage,
+}
+
+impl LiveOverlay {
+    pub fn new() -> LiveOverlay {
+        LiveOverlay {
+            state: OverlayState::new(),
+            builders: Vec::new(),
+            next_id: 1,
+            stage: OverlayStage::new(),
+        }
+    }
+
+    pub fn state(&self) -> &OverlayState {
+        &self.state
+    }
+
+    fn builder(&self, id: u64) -> Option<EntryBuilder> {
+        self.builders
+            .iter()
+            .find(|(entry_id, _)| *entry_id == id)
+            .map(|(_, builder)| Rc::clone(builder))
+    }
+
+    /// The widgets to build this frame, in paint order.
+    ///
+    /// `onstage()` is the whole of the decision -- an entry below an opaque one
+    /// is simply **not in this list**, so it is not built at all rather than
+    /// built and covered up. That is upstream's arrangement and the reason it
+    /// matters is a stack of routes: ten screens behind an opaque one cost
+    /// nothing per frame, where ten built-and-hidden screens would cost ten
+    /// builds and ten layouts to draw nothing.
+    fn onstage_widgets(&self) -> Vec<AnyWidget> {
+        self.state
+            .onstage()
+            .into_iter()
+            .filter_map(|onstage| self.builder(onstage.id).map(|builder| builder()))
+            .collect()
+    }
+}
+
+/// A descendant's way to reach the overlay above it. Upstream's `Overlay.of`.
+///
+/// Published with `provide`, so `Overlay::of(context)` is an inherited lookup.
+#[derive(Clone)]
+pub struct OverlayHandle {
+    handle: StateHandle<LiveOverlay>,
+    stage: OverlayStage,
+}
+
+/// **Equality is the element identity and nothing else, and that is load
+/// bearing.**
+///
+/// `inherited()` registers a dependency on the value it read, and
+/// `ElementTree::publish` marks every dependent dirty when the value it
+/// publishes is not equal to the one already there. An `OverlayHandle` is
+/// republished every frame, so a handle that compared unequal frame to frame
+/// would mark every descendant that had ever asked for the overlay -- which is
+/// every button with a menu, every field with a tooltip -- dirty on every
+/// frame, forever.
+///
+/// The element id is stable for as long as the overlay is mounted, which is
+/// exactly as long as the handle means anything. The stage is deliberately not
+/// compared: it is an `Rc` to a scratch buffer that is emptied and refilled
+/// every frame, and comparing it would be comparing this frame's leftovers.
+impl PartialEq for OverlayHandle {
+    fn eq(&self, other: &OverlayHandle) -> bool {
+        self.handle.element() == other.handle.element()
+    }
+}
+
+impl OverlayHandle {
+    /// Upstream `Overlay.of`, with `maybeOf`'s signature: a subtree with no
+    /// overlay above it is an ordinary state of affairs for a widget that only
+    /// wants one if there is one.
+    pub fn of(context: &mut BuildContext) -> Option<Rc<OverlayHandle>> {
+        context.inherited::<OverlayHandle>()
+    }
+
+    /// The stage portals beneath this overlay hand their children to.
+    pub fn stage(&self) -> &OverlayStage {
+        &self.stage
+    }
+
+    pub fn element(&self) -> ElementId {
+        self.handle.element()
+    }
+
+    /// Upstream `OverlayState.insert`. Returns the id the entry was given, or
+    /// `None` if the overlay has gone away.
+    pub fn insert(&self, builder: impl Fn() -> AnyWidget + 'static) -> Option<u64> {
+        self.insert_entry(OverlayEntry::new(0), builder)
+    }
+
+    /// [`OverlayHandle::insert`] with the entry's flags -- `opaque`,
+    /// `maintainState`, `canSizeOverlay` -- chosen. The id on the entry passed
+    /// in is ignored; the overlay assigns one.
+    pub fn insert_entry(
+        &self,
+        entry: OverlayEntry,
+        builder: impl Fn() -> AnyWidget + 'static,
+    ) -> Option<u64> {
+        if !self.handle.is_valid() {
+            return None;
+        }
+        let builder: EntryBuilder = Rc::new(builder);
+        let id = Rc::new(Cell::new(0u64));
+        let assigned = Rc::clone(&id);
+        let accepted = self.handle.set_state(move |live| {
+            let entry_id = live.next_id;
+            live.next_id += 1;
+            assigned.set(entry_id);
+            let mut entry = entry;
+            entry.id = entry_id;
+            let _ = live.state.insert(entry, InsertPosition::Top);
+            live.builders.push((entry_id, builder));
+            live.state.flush_build();
+        });
+        accepted.then(|| id.get())
+    }
+
+    /// Upstream `OverlayEntry.remove`.
+    pub fn remove(&self, id: u64) -> bool {
+        self.handle.set_state(move |live| {
+            live.state.remove(id, false);
+            live.builders.retain(|(entry_id, _)| *entry_id != id);
+            live.state.flush_build();
+        })
+    }
+}
+
+/// Upstream `Overlay`: the host.
+///
+/// Wraps a page and puts entries on top of it. The page is a child rather than
+/// the bottom entry -- upstream's overlay *is* the whole surface and the app is
+/// its first entry, but an overlay that can be dropped over an existing tree is
+/// more useful here than one the caller has to re-express their app for.
+pub struct OverlayHost {
+    page: RefCell<Option<AnyWidget>>,
+}
+
+impl OverlayHost {
+    pub fn new(page: AnyWidget) -> OverlayHost {
+        OverlayHost {
+            page: RefCell::new(Some(page)),
+        }
+    }
+}
+
+impl StatefulComponent for OverlayHost {
+    type State = LiveOverlay;
+
+    fn initial_state(&self) -> LiveOverlay {
+        LiveOverlay::new()
+    }
+
+    fn build(
+        &self,
+        state: &LiveOverlay,
+        handle: StateHandle<LiveOverlay>,
+        _context: &mut BuildContext,
+    ) -> AnyWidget {
+        let stage = state.stage.clone();
+        let page = self
+            .page
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| crate::framework::render_widget(EmptyPage));
+
+        let mut children = vec![page];
+        let entry_count = {
+            let entries = state.onstage_widgets();
+            let count = entries.len();
+            children.extend(entries);
+            count
+        };
+
+        let sizing = state
+            .state
+            .entries()
+            .iter()
+            .map(|entry| entry.can_size_overlay)
+            .collect::<Vec<_>>();
+
+        provide(
+            OverlayHandle {
+                handle,
+                stage: stage.clone(),
+            },
+            many(children, move |mut rendered| {
+                // The staged portal children, collected in the same walk that
+                // built them -- see this module's header.
+                let staged = stage.collect(0);
+                let entries: Vec<StagedEntry> = rendered
+                    .split_off(1)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, render)| StagedEntry {
+                        render,
+                        // Inserted entries stack in list order, beneath every
+                        // portal: a portal is opened by the thing it belongs
+                        // to and a dialog by the application, and the
+                        // application's surfaces go under.
+                        z_order: index as u64,
+                        stage_id: 0,
+                    })
+                    .chain(staged.into_iter().map(|mut entry| {
+                        entry.z_order = entry.z_order.saturating_add(1 << 32);
+                        entry
+                    }))
+                    .collect();
+                let mut theatre = RenderTheatre::new(rendered.pop().expect("the page"), entries);
+                theatre.entry_can_size = sizing.iter().take(entry_count).copied().collect();
+                theatre
+            }),
+        )
+    }
+}
+
+/// The page an overlay built with nothing under it shows: nothing.
+struct EmptyPage;
+
+impl crate::framework::RenderWidget for EmptyPage {
+    fn children(&self) -> Vec<AnyWidget> {
+        Vec::new()
+    }
+    fn create_render(&self, _children: Vec<BoxedRender>) -> BoxedRender {
+        RenderRef::new(RenderConstrainedBox::new(BoxConstraints::new(
+            0.0, 0.0, 0.0, 0.0,
+        )))
+    }
+}
+
+/// Puts an overlay above `page`. Upstream's `Overlay` in `WidgetsApp`.
+pub fn overlay(page: AnyWidget) -> AnyWidget {
+    crate::framework::stateful(OverlayHost::new(page))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::framework::{BuildContext, Component, ElementTree, provide};
+    use crate::overlay::OverlayEntry as Entry;
     use crate::render::RenderConstrainedBox;
     use std::cell::Cell;
 
@@ -632,5 +927,266 @@ mod tests {
         );
         assert_eq!(stage.collect(8).len(), 1);
         assert_eq!(stage.pending(), 0);
+    }
+    // -- L1: the live overlay ---------------------------------------------------
+
+    thread_local! {
+        static ENTRY_BUILDS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// An entry that records the fact of having been built.
+    fn counted_entry(tag: u32) -> AnyWidget {
+        crate::framework::component(CountedEntry(tag))
+    }
+
+    struct CountedEntry(u32);
+
+    impl Component for CountedEntry {
+        fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+            ENTRY_BUILDS.with(|builds| builds.borrow_mut().push(self.0));
+            leaf(30.0, 30.0)
+        }
+    }
+
+    fn entry_builds() -> Vec<u32> {
+        ENTRY_BUILDS.with(|builds| builds.borrow().clone())
+    }
+
+    /// Mounts an overlay over a page and hands back the tree and the handle a
+    /// descendant would have found.
+    fn mounted_overlay() -> (ElementTree, Rc<OverlayHandle>) {
+        ENTRY_BUILDS.with(|builds| builds.borrow_mut().clear());
+        let found: Rc<RefCell<Option<Rc<OverlayHandle>>>> = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&found);
+
+        struct Finder(Rc<RefCell<Option<Rc<OverlayHandle>>>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                leaf(100.0, 100.0)
+            }
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(crate::framework::component(Finder(sink))));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    fn theatre_entry_count(tree: &mut ElementTree) -> usize {
+        let root = tree.build_render_tree().expect("a mounted root");
+        find_theatre(&root, |theatre| theatre.entry_count())
+    }
+
+    fn find_theatre<R>(root: &RenderRef, f: impl FnOnce(&RenderTheatre) -> R) -> R {
+        let mut found = None;
+        let hit = root.with(|object| {
+            object
+                .as_any()
+                .downcast_ref::<RenderTheatre>()
+                .map(|theatre| theatre as *const RenderTheatre)
+        });
+        if hit.is_some() {
+            return root.with(|object| f(object.as_any().downcast_ref::<RenderTheatre>().unwrap()));
+        }
+        visit_subtree(root, &mut |handle| {
+            if found.is_none() && handle.with(|object| object.as_any().is::<RenderTheatre>()) {
+                found = Some(handle.clone());
+            }
+        });
+        let found = found.expect("the overlay built a theatre");
+        found.with(|object| f(object.as_any().downcast_ref::<RenderTheatre>().unwrap()))
+    }
+
+    #[test]
+    fn a_descendant_finds_the_overlay_above_it() {
+        let (_tree, handle) = mounted_overlay();
+        assert!(
+            handle.handle.is_valid(),
+            "a live handle to a mounted overlay"
+        );
+    }
+
+    #[test]
+    fn an_inserted_entry_is_a_child_of_the_theatre_on_the_next_frame() {
+        let (mut tree, handle) = mounted_overlay();
+        assert_eq!(theatre_entry_count(&mut tree), 0);
+
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+        assert_eq!(entry_builds(), vec![1]);
+    }
+
+    #[test]
+    fn and_removing_it_takes_it_back_out() {
+        let (mut tree, handle) = mounted_overlay();
+        let id = handle.insert(|| counted_entry(1)).expect("inserted");
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+
+        assert!(handle.remove(id));
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 0);
+    }
+
+    #[test]
+    fn an_entry_below_an_opaque_one_is_not_built_at_all() {
+        // The exit criterion the plan names, and the distinction it insists on:
+        // not built, rather than built and covered up. A stack of ten routes
+        // behind an opaque one should cost nothing per frame.
+        let (mut tree, handle) = mounted_overlay();
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        handle
+            .insert_entry(OverlayEntry::new(0).with_opaque(true), || counted_entry(2))
+            .expect("inserted");
+        tree.rebuild_dirty();
+        tree.build_render_tree();
+
+        assert_eq!(
+            entry_builds(),
+            vec![2],
+            "only the opaque one; the entry beneath it was never asked"
+        );
+        assert_eq!(theatre_entry_count(&mut tree), 1);
+    }
+
+    #[test]
+    fn unless_it_asked_to_keep_its_state() {
+        let (mut tree, handle) = mounted_overlay();
+        handle
+            .insert_entry(OverlayEntry::new(0).with_maintain_state(true), || {
+                counted_entry(1)
+            })
+            .expect("inserted");
+        handle
+            .insert_entry(OverlayEntry::new(0).with_opaque(true), || counted_entry(2))
+            .expect("inserted");
+        tree.rebuild_dirty();
+        tree.build_render_tree();
+
+        assert_eq!(
+            entry_builds(),
+            vec![1, 2],
+            "kept alive underneath, and still beneath in paint order"
+        );
+    }
+
+    #[test]
+    fn the_handle_compares_equal_across_frames() {
+        // The performance trap the plan warns about: inherited() registers a
+        // dependency, and publish() marks every dependent dirty when the value
+        // differs. A handle that changed every frame would dirty every
+        // descendant that had ever asked for the overlay, every frame.
+        let (mut tree, first) = mounted_overlay();
+        tree.rebuild_dirty();
+        tree.build_render_tree();
+
+        let second = OverlayHandle {
+            handle: first.handle.clone(),
+            stage: OverlayStage::new(),
+        };
+        assert!(
+            *first == second,
+            "a fresh stage does not make it a different overlay"
+        );
+    }
+
+    #[test]
+    fn a_portal_beneath_the_overlay_reaches_the_same_theatre_as_an_entry() {
+        let (mut tree, handle) = mounted_overlay();
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        tree.rebuild_dirty();
+
+        // The portal stages onto the overlay's own stage.
+        let staged = StagedEntry {
+            render: RenderRef::new(RenderConstrainedBox::tight(5.0, 5.0)),
+            z_order: 0,
+            stage_id: 0,
+        };
+        handle.stage().stage(staged);
+
+        assert_eq!(
+            theatre_entry_count(&mut tree),
+            2,
+            "the inserted entry and the staged portal child"
+        );
+    }
+
+    #[test]
+    fn a_portal_stacks_above_every_inserted_entry() {
+        // An entry is put up by the application; a portal is opened by the
+        // widget it belongs to. A tooltip over a dialog is right; a dialog over
+        // its own tooltip is not.
+        let (mut tree, handle) = mounted_overlay();
+        handle.insert(|| counted_entry(1)).expect("inserted");
+        handle.insert(|| counted_entry(2)).expect("inserted");
+        tree.rebuild_dirty();
+        handle.stage().stage(StagedEntry {
+            render: RenderRef::new(RenderConstrainedBox::tight(5.0, 5.0)),
+            z_order: 0,
+            stage_id: 0,
+        });
+
+        let root = tree.build_render_tree().expect("a mounted root");
+        let orders = find_theatre(&root, |theatre| {
+            theatre
+                .entries
+                .iter()
+                .map(|entry| entry.z_order)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(orders.len(), 3);
+        assert!(
+            orders[2] > orders[1] && orders[1] > orders[0],
+            "the portal is on top: {orders:?}"
+        );
+    }
+
+    #[test]
+    fn under_unbounded_constraints_the_topmost_volunteer_sizes_the_overlay() {
+        // A stack cannot decide its own size with nothing to inherit, so
+        // upstream lets an entry that offered answer instead.
+        let page = RenderRef::new(RenderConstrainedBox::tight(10.0, 10.0));
+        let entries = vec![
+            StagedEntry {
+                render: RenderRef::new(RenderConstrainedBox::tight(50.0, 40.0)),
+                z_order: 0,
+                stage_id: 0,
+            },
+            StagedEntry {
+                render: RenderRef::new(RenderConstrainedBox::tight(70.0, 60.0)),
+                z_order: 1,
+                stage_id: 0,
+            },
+        ];
+        let mut theatre = RenderTheatre::new(page, entries);
+        theatre.entry_can_size = vec![true, true];
+
+        let size = theatre.layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, f32::INFINITY));
+        assert_eq!(
+            size,
+            Size::new(70.0, 60.0),
+            "the topmost volunteer, not the first"
+        );
+    }
+
+    #[test]
+    fn and_with_bounded_constraints_the_page_still_decides() {
+        let page = RenderRef::new(RenderConstrainedBox::tight(10.0, 10.0));
+        let entries = vec![StagedEntry {
+            render: RenderRef::new(RenderConstrainedBox::tight(70.0, 60.0)),
+            z_order: 0,
+            stage_id: 0,
+        }];
+        let mut theatre = RenderTheatre::new(page, entries);
+        theatre.entry_can_size = vec![true];
+
+        assert_eq!(
+            theatre.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0)),
+            Size::new(10.0, 10.0),
+            "an overlay that grew to fit an entry would move the page under it"
+        );
     }
 }

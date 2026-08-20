@@ -549,7 +549,15 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
             // A resize goes through here rather than through `publish` because
             // the application's own `build` is handed the size: whatever it
             // decides from that has to be decided again.
-            let root = crate::media_query::MediaQuery::new(data, self.app.build(context));
+            // The overlay goes *inside* the MediaQuery and *outside* the
+            // application, which is where upstream's `WidgetsApp` puts its
+            // `Navigator`'s `Overlay`: an entry needs to know how big the view
+            // is as much as the page does, and a dialog put up by the
+            // application has to land above everything the application built.
+            let root = crate::media_query::MediaQuery::new(
+                data,
+                crate::theatre::overlay(self.app.build(context)),
+            );
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
             true
