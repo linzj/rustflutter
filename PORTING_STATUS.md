@@ -164,6 +164,68 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 顶部栏并不在页面上方,所以冒泡永远到不了它(2026-08-20)
+
+新模块 `scroll_plumbing.rs`,一次收掉六个文件八个类:`ScrollBehavior`、`ScrollConfiguration`、
+`TrackingScrollController`、`ViewportElementMixin`、`ScrollNotificationObserver`、
+`ScrollNotificationObserverState`、`ScrollMetricsNotification`、`PrimaryScrollController`。覆盖率
+1671/1888(88.5%)。
+
+**贯穿这一组的是两个问题。**
+
+**「这是哪一种滚动?」** 由 `ScrollBehavior` 回答——一捆平台判断(物理、滚动条、辉光、哪些输入设备可
+以拖)顺着树传下去,好让整个应用滚起来是一致的,而不必挨个告诉每个滚动视图。
+
+**「谁在听?」** 被刻意回答了两次:通知沿树往上冒,任何祖先都能接住;而 `ScrollNotificationObserver`
+持有一份**扁平的**监听器名单,那些监听器根本不必是祖先。**一个在页面滚动时抬起阴影的顶部栏,并不在
+那个页面的上方——冒泡永远到不了它。**
+
+**`ScrollBehavior` 的每个方法都是一次平台 switch,而每个方法都带着同一句注释**:「when modifying this
+function, consider modifying the implementation in the Material and Cupertino subclasses as well」。这
+句重复的话本身就是对形状的说明:**基类是一个完整的答案,而设计库是覆写而不是扩展**,于是每一份都得靠
+人手保持同步。
+
+* **滚动条只在桌面上建。** 触摸平台的滚动条是滚动时短暂画出来的东西,不是控件;在手机上常驻会为一个
+  谁都抓不住的东西占掉一条屏幕。而它在那些平台上**断言 controller 存在**——滚动条要读一个位置,没有位
+  置就没有可画的东西。
+* **辉光正好去了拉伸没去的那些平台。** 不给辉光的,恰是物理本身已经用拉伸表现越界的那些。**两个一起
+  做等于把同一件事说两遍。**
+* **苹果平台按最外侧手指取平均,其余平台跟最新那根。** 区别在滚动途中第二根手指落下时显出来:iOS 上
+  内容继续平滑移动,别处会跳到新手指那里。
+* **三种物理都包在 `RangeMaintainingScrollPhysics` 外面**,而那是调用方从不主动要、却总是想要的一
+  层:**内容变尺寸时保住读者的位置,不是平台偏好,而是到处都对的事。**
+* **`shouldNotify` 默认 false。** `ScrollConfiguration` 会随上面任何东西一起重建,而它的 behavior 通
+  常是每次都一模一样的 const 对象;默认通知会让整个应用的每个滚动视图,在任何触及祖先的帧上都重建一
+  次。
+
+**`PrimaryScrollController.shouldInherit` 那两个条件都重要:**
+
+* **平台检查**是桌面列表不会悄悄挂上去的原因:桌面滚动视图有滚动条,而滚动条需要一个自己的
+  controller——一个被隐式共享的,会去驱动最后挂上的那个。
+* **轴向检查**是竖直页面里的横向轮播不会抢走页面 controller 的原因。**一个 primary controller 是给一
+  个方向的,而轮播不往那个方向去。**
+
+**`TrackingScrollController` 的 detach 里那两处清理是不一样的,而这正是它存在的意义:** **位置**一
+detach 就忘掉(一个指向已经没了的位置的引用,比没有引用更糟);而**偏移量留到最后一个位置也 detach
+才丢**。这恰好就是 tab 视图那个场景:列表滚走了,而下一个到来的列表仍然从它原来的位置开始——**这是
+「切换标签页」和「丢失阅读位置」之间的区别。**
+
+**`ScrollMetricsNotification` 和 `ScrollUpdateNotification` 的区别就是这个类的全部:** 前者在**内容或
+视口尺寸**变了、而偏移没动时触发(列表变长了、键盘弹出来了)。画滚动条的监听者两个都要;数「读者滚了
+多远」的只要后者。
+
+而 **depth 是监听者分辨「我自己的滚动」和「我里面某个嵌套滚动」的手段**——嵌套滚动视图的内层列表会穿
+过外层冒上来,对每一条都动作的监听者会动作两次。`ViewportElementMixin` 的 `onNotification` 返回
+**false**:通知被修改后继续传,从不被消费——**视口是途经点,不是终点。**
+
+**观察者派发时那条「还在不在名单上」的检查值得单独说:光迭代一份拷贝是不够的。** 一个在派发过程中把
+另一个监听器摘掉的监听器,否则会让那个已经被告知「你已经没了」的监听器仍然被调用一次。回归行专门构造
+了这个情形。
+
+验证:`cargo test --lib` 2743 绿,GN `rustflutter_unittests` 2743 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1671 accounted / 217 MISSING(88.5%)。
+
 ### 一个类一个文件,通常意味着一个被写下来的判断(2026-08-20)
 
 新模块 `small_widgets.rs`,一次收掉六个单类文件:`ImageFiltered`、`GridPaper`、
