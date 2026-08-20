@@ -164,6 +164,78 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 同一句话说了三遍,三处都没法检查它(2026-08-20)
+
+新模块 `cupertino_tabs.rs`,收掉 `cupertino/tab_scaffold.dart` 的 `CupertinoTabController`、
+`RestorableCupertinoTabController` 与 `cupertino/tab_view.dart` 的 `CupertinoTabView`。覆盖率
+1852/1888(98.1%)。测试 3579。
+
+**`CupertinoTabController` 的文档写着:**
+
+> The value must be greater than or equal to 0, **and less than the total number of tabs.**
+
+**而 assert 只有 `assert(initialIndex >= 0)`。** 没有上界——**因为这个类根本不知道上界是多少。** 它不像
+Material 的 `TabController` 那样收一个 `length`;标签在那个将要拿着它的 `CupertinoTabScaffold` 里。
+
+这句话在三个地方出现:构造器的文档、`index` setter 的文档,以及 `RestorableCupertinoTabController` 的构造
+器文档。**三处声明这条契约,三处都检查不了它。**
+
+**和第 84 轮那条正好构成一对。** 那边 `TabController` 的文档和 assert 也对不上,**但那边是 assert 上有个
+洞(`length == 0 ||` 把范围检查关掉了);这边是这个类没有那个信息。** 同一种形状的分歧,成因正相反——而
+这一边是诚实的:它检查了它看得见的那一半。
+
+**真正检查上界的地方在 scaffold 里:**
+
+```dart
+assert(
+  _controller.index >= 0 && _controller.index < widget.tabBar.items.length,
+  "The $runtimeType's current index ${_controller.index} is "
+  'out of bounds for the tab bar with ${widget.tabBar.items.length} tabs',
+);
+```
+
+**契约被劈成两半放在两个类里**——controller 管它看得见的那半,scaffold 管它看得见的那半——**而错误消息是
+从 scaffold 这一侧写的,把两个数都点了出来,因为这是唯一同时知道这两个数的地方。**
+
+---
+
+**而 `didUpdateWidget` 里那个分支的形状要紧:**
+
+```dart
+if (widget.controller != oldWidget.controller) {
+  _updateTabController(oldWidget.controller);
+} else if (_controller.index >= widget.tabBar.items.length) {
+  // If a new [tabBar] with less than (_controller.index + 1) items is provided,
+  // clamp the current index.
+  _controller.index = widget.tabBar.items.length - 1;
+}
+```
+
+**是 `else if`,不是第二个 `if`。** 变短了的标签栏会把选中项拽回范围内——**但只在 controller 自己没同时
+换掉的时候。** 两个一起换,这个夹取就被跳过,越界的下标会一直活到下一次变更时撞上上面那条 assert。回归行
+把两种情形分别钉住了。
+
+---
+
+其余几条:
+
+* `_updateTabController` 里那句 `if (oldWidgetController?._isDisposed == false)`——**那个 `== false` 干
+  的是判空的活,不是布尔比较。** `?.` 遇到 null 得到 null,而 `null == false` 是 false,所以这一个判断的
+  意思是**「存在,并且没被销毁」**。一个已销毁的 `ChangeNotifier` 碰它的监听器就会抛,而**被留下的那个
+  controller,恰恰就是调用者可能已经销毁掉的那个。** 注意只有摘监听器这一侧有守卫,挂上去那一侧没有。
+* `RestorableCupertinoTabController.toPrimitives()` 就是 `value.index`——**一个光秃秃的整数。** 和第 91
+  轮那个 `RestorableTimeOfDay` 摆在一起看:那个存的是 `[minute, hour]`,专等着有人把顺序「理顺」成坏的。
+  **只有一个值,就没有顺序可弄错。**
+* `CupertinoTabView` 的 `_navigatorKey`:**只在没被给的时候才造一个**,然后一直用那个。这是「只清理自己
+  造的那个」那条规矩的另一半——**只造没人给你的那个。**
+* 而 `_onUnknownRoute` 抛的 `FlutterError` 把四个路由来源**按尝试顺序**列了出来(`builder` 管 "/",然后
+  `routes`,然后 `onGenerateRoute`,最后 `onUnknownRoute`)。**一条在失败的当口顺便把查找顺序教给你的错误
+  消息。**
+
+验证:`cargo test --lib` 3579 绿,GN `rustflutter_unittests` 3579 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1852 accounted / 36 MISSING(98.1%)。
+
 ### 三份同一个函数,每份上面都写着「改这儿记得改另外那份」,而它们已经不一样了(2026-08-20)
 
 新模块 `cupertino_app.rs`,收掉 `cupertino/app.dart` 的 `CupertinoApp`、`CupertinoScrollBehavior` 与

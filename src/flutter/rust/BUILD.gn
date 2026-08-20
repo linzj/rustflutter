@@ -114,6 +114,7 @@ if (enable_unittests) {
       "rustflutter/src/cupertino.rs",
       "rustflutter/src/cupertino_app.rs",
       "rustflutter/src/cupertino_route.rs",
+      "rustflutter/src/cupertino_tabs.rs",
       "rustflutter/src/cupertino_theme.rs",
       "rustflutter/src/elevation_overlay.rs",
       "rustflutter/src/engine.rs",
