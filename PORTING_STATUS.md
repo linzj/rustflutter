@@ -164,6 +164,69 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 刘海应用一次,而两侧的内边距要发给每一行(2026-08-20)
+
+新模块 `scroll_view.rs`,收掉 `scroll_view.dart` 的 `ScrollView`、`CustomScrollView`、`BoxScrollView`,
+以及 `single_child_scroll_view.dart` 的 `SingleChildScrollView`。**`widgets/scroll_view.dart` 全覆盖。**
+覆盖率 1713/1888(90.7%)。测试 3006。
+
+**这两个文件是同一个问题的两个答案,而它们为什么都存在,只有一行:**
+**`SingleChildScrollView` 每一帧都把全部内容布局一遍;`CustomScrollView` 只布局屏幕上那些。** 上游关于
+「别把长列表放进前者」的所有说法,都是这一行的推论。
+
+而这一点不在孩子的**数量**上,在**布局**上:`_getInnerConstraints` **把滚动轴上的约束整个丢掉**,只把
+交叉轴传下去。于是孩子按自己的自然尺寸展开,全部展开。而 `size = constraints.constrain(child.size)`
+——**一个矮孩子会得到一个矮的滚动视图:它不用被要求就在 shrink-wrap。**
+
+---
+
+**`BoxScrollView.buildSlivers` 在没给 padding 时做的事,值得读两遍:它把环境里的 `MediaQuery` padding
+沿两条轴劈成两半。主轴那一半被滚动视图自己吃掉(变成一个 `SliverPadding`),交叉轴那一半留在
+`MediaQuery` 里给孩子们。**
+
+在一台有刘海和 home indicator 的手机上,这恰好是对的:**竖直列表要的是把上下内边距用一次,用在滚动的两
+端**——第一行从刘海下面开始,最后一行在指示条上面结束。**把它加到每一行上,会在列表中间留下一道道空
+隙。** 而**左右内边距必须发给每一行**,因为每一行都横跨整个宽度。
+
+**而只要显式给了 padding,这一整套就关掉了**——写了 padding 的调用方是想过的。
+
+---
+
+**`ScrollView` 里最有后果的默认值是物理:**
+
+```dart
+physics = physics ?? ((primary ?? false) || (primary == null && controller == null && scrollDirection == Axis.vertical)
+    ? const AlwaysScrollableScrollPhysics() : null);
+```
+
+**一个没有自己 controller 的竖直滚动视图,拿到的是「永远可滚动」——它在内容装得下时也会回弹。** 这看着
+像浪费,直到你注意到这样一个视图通常是什么:**它是页面。而一个被拉动却不动的页面,不管里面装了什么都像
+是坏了。** 而一个横向轮播、或者一个自带 controller 的视图,是一个组件而不是页面,**短的就干脆不动。**
+
+注意条件的第一支**根本不看轴**:一个显式要 primary 的横向视图,照样拿到「永远可滚动」。回归行把这一支
+单独钉住了。
+
+其余几条:
+
+* **拿走 primary controller 的视图,同时把它对下面挡住**(`PrimaryScrollController.none`)。上游把理由写
+  在注释里:**否则里面嵌的滚动视图会继承同一个,两个列表驱动一个 controller。**
+* **`shrinkWrap` 和 `center` 互斥**:一个 shrink-wrap 的视口没有固定尺寸,**而「居中」是一句关于固定尺寸
+  的话。**
+* **「primary 且带 controller」的报错信息说清了矛盾在哪:** primary 视图是**靠继承**拿 controller 的,同
+  时又递一个进来,这个问题没有答案。
+* **键盘收起有三级回退**(widget → scrollBehavior → `ScrollConfiguration`),而 `onDrag` 检查的是
+  `dragDetails != null`——**只有手指还在玻璃上才算。一次列表还在替读者惯性滑行的甩动,不收键盘。**
+* **`performLayout` 会在偏移越界时修正它:** 一个在读者滚到底时缩短了的孩子,会把偏移拉回来,**而不是留
+  给读者一片空白。**
+
+**另外,这一轮开头先执行了上一轮定下的新规矩:落盘之前 `ls` 了一眼 `scroll_view.rs`。** 它不存在,可以
+写;而 `scrollable.rs` 那三个类下一轮再说——`Scrollable` 在账本里已经映射到 `scrolling::Scroll`,那一族
+得先读清楚再动。
+
+验证:`cargo test --lib` 3006 绿,GN `rustflutter_unittests` 3006 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1713 accounted / 175 MISSING(90.7%)。
+
 ### 差点把一个已经存在的模块整个覆盖掉(2026-08-20)
 
 `scrollbar.dart` 的三个类补齐:`ScrollbarPainter`、`RawScrollbar`、`RawScrollbarState`。覆盖率

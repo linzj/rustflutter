@@ -121,6 +121,7 @@ pub mod routes;
 pub mod scaffold_messenger;
 pub mod scroll_physics;
 pub mod scroll_plumbing;
+pub mod scroll_view;
 pub mod scrollable_helpers;
 pub mod scrollbar;
 pub mod scrolling;
