@@ -304,6 +304,7 @@ if (enable_unittests) {
       "rustflutter/src/undo_history.rs",
       "rustflutter/src/view.rs",
       "rustflutter/src/widget_inspector.rs",
+      "rustflutter/src/widget_previews.rs",
       "rustflutter/src/widgets_app.rs",
       "rustflutter/src/widget_state.rs",
       "rustflutter/src/widgets.rs",

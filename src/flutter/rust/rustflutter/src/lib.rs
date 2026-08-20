@@ -210,6 +210,7 @@ pub mod two_dimensional;
 pub mod undo_history;
 pub mod view;
 pub mod widget_inspector;
+pub mod widget_previews;
 pub mod widget_state;
 pub mod widgets;
 pub mod widgets_app;
@@ -349,6 +350,10 @@ pub use theatre::{
     dismiss_topmost_modal, modal_barrier, overlay, overlay_portal, show_modal,
 };
 pub use tooltip::{Tooltip, tooltip};
+pub use widget_previews::{
+    MultiPreview, MultiPreviewThemeData, Preview, PreviewBuilder, PreviewLocalizationsData,
+    PreviewThemeData,
+};
 pub use widgets::{
     Baseline, BoxedWidget, Center, Column, Constraints, Container, EdgeInsets, FittedBox,
     FractionallySizedBox, IndexedStack, LimitedBox, Offset, OverflowBox, Size, SizedOverflowBox,
