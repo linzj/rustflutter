@@ -130,6 +130,7 @@ if (enable_unittests) {
       "rustflutter/src/adapter.rs",
       "rustflutter/src/animated_icons.rs",
       "rustflutter/src/animation.rs",
+      "rustflutter/src/annotated_region.rs",
       "rustflutter/src/autocomplete_view.rs",
       "rustflutter/src/autofill.rs",
       "rustflutter/src/bottom_bars.rs",

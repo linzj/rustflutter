@@ -30,6 +30,7 @@ pub mod adapter;
 pub mod animated_icons;
 pub mod animated_scroll_view;
 pub mod animation;
+pub mod annotated_region;
 pub mod app;
 pub mod app_bar;
 pub mod arc;
@@ -228,6 +229,9 @@ pub use animation::{
     OffsetTween, ProxyAnimation, RectTween, Repeat, ReverseAnimation, ReverseTween, SizeTween,
     StepTween, Tween, TweenSequence, TweenSequenceItem,
 };
+pub use annotated_region::{
+    AnnotatedRegion, AnnotatedRegionLayer, AnnotatedRegions, AnnotationEntry, AnnotationResult,
+};
 #[cfg(not(test))]
 pub use app::run;
 pub use app::{
@@ -279,8 +283,9 @@ pub use engine::{
     TextStyle,
 };
 pub use focus::{
-    Focus, FocusScope, KeyResult, first_focusable_in, focus_scope_widget, focusable, focused_child,
-    is_scope,
+    ActionListener, DetectorState, Focus, FocusHighlightMode, FocusHighlightStrategy, FocusScope,
+    FocusableActionDetector, KeyResult, NavigationMode, first_focusable_in, focus_scope_widget,
+    focusable, focused_child, highlight_mode, is_scope,
 };
 pub use foundation::{
     ChangeNotifier, Listenable, ListenableMerge, ValueNotifier, keys as foundation_keys,

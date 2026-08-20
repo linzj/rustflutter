@@ -29,7 +29,7 @@
 //! What survives a frame is the *focused id*, not the node: a widget that
 //! rebuilds keeps focus because it registers the same id again.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::framework::{
@@ -444,6 +444,425 @@ pub fn reset_scopes() {
     SCOPE_MEMORY.with(|memory| memory.borrow_mut().clear());
 }
 
+// -- Whether to draw the focus ring --------------------------------------------
+
+/// Upstream `FocusHighlightMode`: whether the focused control should look
+/// focused.
+///
+/// A focus ring is right on a keyboard and wrong on a touchscreen. On a phone
+/// the reader taps the thing they want and there is no "where am I" to answer,
+/// so a persistent ring on the last-tapped button is visual noise -- and worse,
+/// it looks like something is selected when nothing is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusHighlightMode {
+    /// No ring. Upstream's exception is worth keeping in mind: controls that
+    /// bring up the soft keyboard still show one, because there the ring is
+    /// answering "where will I be typing".
+    Touch,
+    /// A ring. Keyboards and mice.
+    Traditional,
+}
+
+/// Upstream `FocusHighlightStrategy`: whether the mode follows the input device
+/// or is pinned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FocusHighlightStrategy {
+    /// Follow the last interaction. The default.
+    #[default]
+    Automatic,
+    AlwaysTouch,
+    AlwaysTraditional,
+}
+
+thread_local! {
+    static HIGHLIGHT_STRATEGY: Cell<FocusHighlightStrategy> =
+        const { Cell::new(FocusHighlightStrategy::Automatic) };
+    /// Upstream's `_lastInteractionRequiresTraditionalHighlights`, `None` until
+    /// something has happened. See [`highlight_mode`] for the name.
+    static LAST_INTERACTION_WAS_TOUCH: Cell<Option<bool>> = const { Cell::new(None) };
+    static HIGHLIGHT_LISTENERS: RefCell<Vec<Option<Rc<dyn Fn(FocusHighlightMode)>>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
+    /// The opening guess, before anything has been touched or typed.
+    static DEFAULT_HIGHLIGHT: Cell<FocusHighlightMode> =
+        const { Cell::new(FocusHighlightMode::Traditional) };
+}
+
+/// Sets the opening guess, before anything has been touched or typed.
+///
+/// Upstream works this out itself, from `defaultTargetPlatform` **and** whether
+/// a mouse is connected: a mobile platform with no mouse starts at touch, and
+/// everything else at traditional. This crate has
+/// [`TargetPlatform::is_mobile`](crate::editable_text::TargetPlatform::is_mobile)
+/// -- the same grouping -- but no query for the *current* platform and none at
+/// all for mouse presence, so the guess is the host's to state rather than
+/// something to infer from half the inputs.
+///
+/// It only affects the first moments: upstream says so too, and the value is
+/// replaced as soon as any key or touch arrives.
+pub fn set_default_highlight_mode(mode: FocusHighlightMode) {
+    let before = highlight_mode();
+    DEFAULT_HIGHLIGHT.with(|d| d.set(mode));
+    announce_highlight(before);
+}
+
+/// What [`set_default_highlight_mode`] was told, or `Traditional`.
+fn default_mode_for_platform() -> FocusHighlightMode {
+    DEFAULT_HIGHLIGHT.with(|d| d.get())
+}
+
+/// Upstream `FocusManager.highlightMode`.
+///
+/// # Upstream's flag is named the opposite of what it does
+///
+/// The state behind this is `_lastInteractionRequiresTraditionalHighlights`,
+/// and in `updateMode` a **true** produces `FocusHighlightMode.touch`. A field
+/// whose name says "traditional" answers "touch". Kept as a fact about
+/// upstream rather than tidied away, because anybody reading the two files side
+/// by side will hit it; the flag here is named for what it holds.
+pub fn highlight_mode() -> FocusHighlightMode {
+    match HIGHLIGHT_STRATEGY.with(|s| s.get()) {
+        FocusHighlightStrategy::AlwaysTouch => FocusHighlightMode::Touch,
+        FocusHighlightStrategy::AlwaysTraditional => FocusHighlightMode::Traditional,
+        FocusHighlightStrategy::Automatic => match LAST_INTERACTION_WAS_TOUCH.with(|s| s.get()) {
+            None => default_mode_for_platform(),
+            Some(true) => FocusHighlightMode::Touch,
+            Some(false) => FocusHighlightMode::Traditional,
+        },
+    }
+}
+
+/// Upstream `FocusManager.highlightStrategy`.
+pub fn set_highlight_strategy(strategy: FocusHighlightStrategy) {
+    let before = highlight_mode();
+    HIGHLIGHT_STRATEGY.with(|s| s.set(strategy));
+    announce_highlight(before);
+}
+
+/// A touch or stylus went down. Upstream's `handlePointerEvent`, which reacts
+/// to `touch`, `stylus` and `invertedStylus`.
+///
+/// **A mouse or trackpad changes nothing**, which is upstream's deliberate
+/// omission -- those kinds fall through its switch with no statement. A mouse
+/// moving across a tablet does not mean the reader stopped touching it, and the
+/// thing that does say "keyboard and mouse" is a key.
+pub fn note_touch_interaction() {
+    let before = highlight_mode();
+    LAST_INTERACTION_WAS_TOUCH.with(|s| s.set(Some(true)));
+    announce_highlight(before);
+}
+
+/// A key was pressed. Upstream sets the flag the other way here.
+pub fn note_key_interaction() {
+    let before = highlight_mode();
+    LAST_INTERACTION_WAS_TOUCH.with(|s| s.set(Some(false)));
+    announce_highlight(before);
+}
+
+/// An assistive technology performed an action. Upstream treats this as touch:
+/// a reader driving the interface through a screen reader is not looking for a
+/// focus ring.
+pub fn note_semantics_interaction() {
+    note_touch_interaction();
+}
+
+/// Upstream's `addListener` on the highlight manager. Answers a token, for the
+/// reason [`SemanticsBinding::add_enabled_listener`] does.
+///
+/// [`SemanticsBinding::add_enabled_listener`]: crate::semantics::SemanticsBinding::add_enabled_listener
+pub fn add_highlight_listener(listener: impl Fn(FocusHighlightMode) + 'static) -> usize {
+    HIGHLIGHT_LISTENERS.with(|listeners| {
+        let mut listeners = listeners.borrow_mut();
+        listeners.push(Some(Rc::new(listener)));
+        listeners.len() - 1
+    })
+}
+
+pub fn remove_highlight_listener(token: usize) -> bool {
+    HIGHLIGHT_LISTENERS.with(|listeners| {
+        let mut listeners = listeners.borrow_mut();
+        match listeners.get_mut(token) {
+            Some(slot) => slot.take().is_some(),
+            None => false,
+        }
+    })
+}
+
+/// Upstream's `if (highlightMode != oldMode) notifyListeners()`: the edge, not
+/// every interaction. A listener that heard every keystroke would repaint every
+/// focus ring on every keystroke.
+fn announce_highlight(before: FocusHighlightMode) {
+    let now = highlight_mode();
+    if now == before {
+        return;
+    }
+    let listeners: Vec<Rc<dyn Fn(FocusHighlightMode)>> =
+        HIGHLIGHT_LISTENERS.with(|l| l.borrow().iter().flatten().cloned().collect());
+    for listener in listeners {
+        listener(now);
+    }
+}
+
+/// Forgets the highlight state. For tests, as [`reset`] is.
+pub fn reset_highlight() {
+    HIGHLIGHT_STRATEGY.with(|s| s.set(FocusHighlightStrategy::Automatic));
+    LAST_INTERACTION_WAS_TOUCH.with(|s| s.set(None));
+    DEFAULT_HIGHLIGHT.with(|d| d.set(FocusHighlightMode::Traditional));
+    HIGHLIGHT_LISTENERS.with(|l| l.borrow_mut().clear());
+}
+
+// -- Watching an action, and the detector built on it --------------------------
+
+/// Upstream `ActionListener`: told whenever an action is invoked, without being
+/// the one that invoked it.
+///
+/// Upstream is a widget whose `State` adds a listener in `initState`, swaps it
+/// in `didUpdateWidget` and removes it in `dispose`. Those three hooks are the
+/// two `State` members this crate's ledger records as absent, so this is the
+/// registry that would sit behind them: a caller adds and removes, and holds
+/// the token.
+///
+/// What it is *for* is a control that draws itself differently while its action
+/// runs -- a button that stays pressed for as long as the thing it started is
+/// still going -- without that control owning the action.
+#[derive(Default)]
+pub struct ActionListener {
+    listeners: Vec<Option<Rc<dyn Fn(&crate::actions::Intent)>>>,
+}
+
+impl ActionListener {
+    pub fn new() -> ActionListener {
+        ActionListener::default()
+    }
+
+    /// Upstream's `Action.addActionListener`.
+    pub fn add(&mut self, listener: impl Fn(&crate::actions::Intent) + 'static) -> usize {
+        self.listeners.push(Some(Rc::new(listener)));
+        self.listeners.len() - 1
+    }
+
+    /// Upstream's `Action.removeActionListener`. A token, and a hole rather
+    /// than a shift, so the tokens after it keep meaning what they meant.
+    pub fn remove(&mut self, token: usize) -> bool {
+        match self.listeners.get_mut(token) {
+            Some(slot) => slot.take().is_some(),
+            None => false,
+        }
+    }
+
+    /// Upstream's `Action.notifyActionListeners`, called around an invocation.
+    ///
+    /// The list is copied before it is walked, which is upstream's habit
+    /// throughout and is load-bearing here: a listener is entitled to remove
+    /// itself, and a walk over the live list would be iterating something being
+    /// changed underneath it.
+    pub fn notify(&self, intent: &crate::actions::Intent) {
+        let listeners: Vec<Rc<dyn Fn(&crate::actions::Intent)>> =
+            self.listeners.iter().flatten().cloned().collect();
+        for listener in listeners {
+            listener(intent);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.listeners.iter().flatten().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Upstream `FocusableActionDetector`: focus, hover and shortcuts in one place,
+/// which is what every Material control is built on.
+///
+/// # Its whole content is when *not* to call back
+///
+/// The two callbacks -- `onShowFocusHighlight` and `onShowHoverHighlight` --
+/// are not "you were focused" and "you were hovered". They are "the answer to
+/// *should a highlight be drawn* changed", and upstream computes that answer
+/// before and after every state change and fires only on the difference. A
+/// control that acted on the raw events would light up while disabled, and
+/// light up on a touchscreen where a highlight means nothing.
+///
+/// The two answers, verbatim from upstream's `_mayTriggerCallback`:
+///
+/// * **hover**: hovering **and** enabled **and** highlights are allowed at all;
+/// * **focus**: focused **and** highlights are allowed **and** focus can be
+///   requested -- which under directional navigation is always true, because a
+///   d-pad user needs to see where they are even on a disabled control they are
+///   passing over.
+///
+/// "Highlights are allowed at all" is [`highlight_mode`], and it is why this
+/// class needed that machinery first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DetectorState {
+    pub hovering: bool,
+    pub focused: bool,
+    pub enabled: bool,
+}
+
+/// Upstream `NavigationMode`, which decides the focus half.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavigationMode {
+    /// Keyboard and mouse. A disabled control cannot take focus.
+    #[default]
+    Traditional,
+    /// A d-pad or remote. **Everything can take focus**, including disabled
+    /// controls -- upstream's reason is that a reader moving through a screen
+    /// with a directional pad has no other way to know a disabled control is
+    /// there, and skipping it silently loses them.
+    Directional,
+}
+
+/// Upstream `FocusableActionDetector`, as the decision it makes.
+///
+/// The widget assembly around it -- the `Focus`, the `MouseRegion`, the
+/// `Shortcuts` and `Actions` -- is composition this crate's caller does with
+/// [`Focus`] and the pointer handlers directly. What has no counterpart
+/// elsewhere is the gating, so that is what this is.
+pub struct FocusableActionDetector {
+    state: DetectorState,
+    /// Upstream's `_canShowHighlight`, and it is **cached rather than read
+    /// live** for a reason that only shows up when the mode itself changes:
+    /// `update` compares the answer before and after a change, and a live read
+    /// would see the new mode on both sides and conclude nothing moved.
+    /// Upstream's `_updateHighlightMode` passes the cache update *as* the task
+    /// for exactly this.
+    can_show_highlight: bool,
+    navigation_mode: NavigationMode,
+    on_show_focus_highlight: Option<Rc<dyn Fn(bool)>>,
+    on_show_hover_highlight: Option<Rc<dyn Fn(bool)>>,
+}
+
+impl FocusableActionDetector {
+    pub fn new(enabled: bool) -> FocusableActionDetector {
+        FocusableActionDetector {
+            state: DetectorState {
+                enabled,
+                ..DetectorState::default()
+            },
+            can_show_highlight: highlight_mode() == FocusHighlightMode::Traditional,
+            navigation_mode: NavigationMode::Traditional,
+            on_show_focus_highlight: None,
+            on_show_hover_highlight: None,
+        }
+    }
+
+    pub fn with_navigation_mode(mut self, mode: NavigationMode) -> Self {
+        self.navigation_mode = mode;
+        self
+    }
+
+    pub fn with_on_show_focus_highlight(mut self, on: impl Fn(bool) + 'static) -> Self {
+        self.on_show_focus_highlight = Some(Rc::new(on));
+        self
+    }
+
+    pub fn with_on_show_hover_highlight(mut self, on: impl Fn(bool) + 'static) -> Self {
+        self.on_show_hover_highlight = Some(Rc::new(on));
+        self
+    }
+
+    pub fn state(&self) -> DetectorState {
+        self.state
+    }
+
+    /// Upstream's `shouldShowHoverHighlight`.
+    pub fn should_show_hover_highlight(&self) -> bool {
+        self.state.hovering && self.state.enabled && self.highlights_allowed()
+    }
+
+    /// Upstream's `shouldShowFocusHighlight`.
+    pub fn should_show_focus_highlight(&self) -> bool {
+        self.state.focused && self.highlights_allowed() && self.can_request_focus()
+    }
+
+    /// Upstream's `canRequestFocus`.
+    fn can_request_focus(&self) -> bool {
+        match self.navigation_mode {
+            NavigationMode::Traditional => self.state.enabled,
+            NavigationMode::Directional => true,
+        }
+    }
+
+    fn highlights_allowed(&self) -> bool {
+        self.can_show_highlight
+    }
+
+    /// Upstream's `_mayTriggerCallback`: make the change, and fire only the
+    /// callbacks whose answer moved.
+    pub fn update(&mut self, change: impl FnOnce(&mut DetectorState)) {
+        let hover_before = self.should_show_hover_highlight();
+        let focus_before = self.should_show_focus_highlight();
+        change(&mut self.state);
+        let hover_now = self.should_show_hover_highlight();
+        let focus_now = self.should_show_focus_highlight();
+        // Upstream fires focus first, then hover.
+        if focus_before != focus_now {
+            if let Some(on) = &self.on_show_focus_highlight {
+                on(focus_now);
+            }
+        }
+        if hover_before != hover_now {
+            if let Some(on) = &self.on_show_hover_highlight {
+                on(hover_now);
+            }
+        }
+    }
+
+    /// The pointer arrived. Upstream's `_handleMouseEnter`, including its guard
+    /// -- an enter while already hovering is not a change and does not go
+    /// through the callback machinery at all.
+    pub fn hover(&mut self, hovering: bool) {
+        if self.state.hovering == hovering {
+            return;
+        }
+        self.update(|state| state.hovering = hovering);
+    }
+
+    /// Upstream's `_handleFocusChange`, with the same guard.
+    pub fn focus(&mut self, focused: bool) {
+        if self.state.focused == focused {
+            return;
+        }
+        self.update(|state| state.focused = focused);
+    }
+
+    /// Upstream's `didUpdateWidget` path, which runs the same comparison
+    /// against the *old* widget when `enabled` changes.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.state.enabled == enabled {
+            return;
+        }
+        self.update(|state| state.enabled = enabled);
+    }
+
+    /// The highlight mode changed under it. Upstream's `_updateHighlightMode`,
+    /// which is registered as a listener on the focus manager and whose task is
+    /// the cache update -- see [`FocusableActionDetector::can_show_highlight`].
+    pub fn highlight_mode_changed(&mut self) {
+        let now = highlight_mode() == FocusHighlightMode::Traditional;
+        let hover_before = self.should_show_hover_highlight();
+        let focus_before = self.should_show_focus_highlight();
+        self.can_show_highlight = now;
+        let hover_now = self.should_show_hover_highlight();
+        let focus_now = self.should_show_focus_highlight();
+        if focus_before != focus_now {
+            if let Some(on) = &self.on_show_focus_highlight {
+                on(focus_now);
+            }
+        }
+        if hover_before != hover_now {
+            if let Some(on) = &self.on_show_hover_highlight {
+                on(hover_now);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn reset() {
     MANAGER.with(|manager| *manager.borrow_mut() = FocusManager::default());
@@ -692,6 +1111,9 @@ fn step(direction: isize) -> bool {
 /// reason: a shortcut belongs to a region of the screen, and the region is the
 /// ancestor of whatever is focused inside it.
 pub fn dispatch_key(event: &KeyEvent) -> bool {
+    // Upstream registers a global key handler for exactly this; here the one
+    // place every key already passes through is this function.
+    note_key_interaction();
     let chain: Vec<KeyHandler> = MANAGER.with(|manager| {
         let manager = manager.borrow();
         let Some(focused) = manager.focused else {
@@ -1513,5 +1935,298 @@ mod tests {
         assert_eq!(first_focusable_in(100), first_by_tab);
         drop(tree);
         reset_scopes();
+    }
+
+    // -- The highlight mode -----------------------------------------------------------
+
+    #[test]
+    fn typing_says_keyboard_and_touching_says_touch() {
+        reset_highlight();
+        assert_eq!(
+            highlight_mode(),
+            FocusHighlightMode::Traditional,
+            "the opening guess, before anything has happened"
+        );
+
+        note_touch_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Touch);
+        note_key_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Traditional);
+        reset_highlight();
+    }
+
+    #[test]
+    fn a_screen_reader_action_counts_as_touch() {
+        // A reader driving the interface through an assistive technology is not
+        // looking for a focus ring.
+        reset_highlight();
+        note_key_interaction();
+        note_semantics_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Touch);
+        reset_highlight();
+    }
+
+    #[test]
+    fn a_pinned_strategy_ignores_what_the_reader_is_doing() {
+        reset_highlight();
+        set_highlight_strategy(FocusHighlightStrategy::AlwaysTraditional);
+        note_touch_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Traditional);
+
+        set_highlight_strategy(FocusHighlightStrategy::AlwaysTouch);
+        note_key_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Touch);
+
+        // And going back to automatic reveals what was recorded meanwhile.
+        set_highlight_strategy(FocusHighlightStrategy::Automatic);
+        assert_eq!(highlight_mode(), FocusHighlightMode::Traditional);
+        reset_highlight();
+    }
+
+    #[test]
+    fn the_opening_guess_only_holds_until_something_happens() {
+        reset_highlight();
+        set_default_highlight_mode(FocusHighlightMode::Touch);
+        assert_eq!(highlight_mode(), FocusHighlightMode::Touch);
+
+        note_key_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Traditional);
+        set_default_highlight_mode(FocusHighlightMode::Touch);
+        assert_eq!(
+            highlight_mode(),
+            FocusHighlightMode::Traditional,
+            "the guess is past its usefulness once there is a real answer"
+        );
+        reset_highlight();
+    }
+
+    #[test]
+    fn a_highlight_listener_hears_the_edges_and_not_every_keystroke() {
+        reset_highlight();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let recorder = Rc::clone(&heard);
+        let token = add_highlight_listener(move |mode| recorder.borrow_mut().push(mode));
+
+        note_key_interaction();
+        note_key_interaction();
+        note_key_interaction();
+        assert!(heard.borrow().is_empty(), "already traditional");
+
+        note_touch_interaction();
+        note_touch_interaction();
+        assert_eq!(*heard.borrow(), vec![FocusHighlightMode::Touch], "one edge");
+
+        remove_highlight_listener(token);
+        note_key_interaction();
+        assert_eq!(heard.borrow().len(), 1, "and a removed listener is quiet");
+        reset_highlight();
+    }
+
+    #[test]
+    fn dispatching_a_key_is_what_records_the_keyboard() {
+        // Upstream hooks the global key handler; here the one place every key
+        // already passes through is `dispatch_key`.
+        reset();
+        reset_highlight();
+        note_touch_interaction();
+        assert_eq!(highlight_mode(), FocusHighlightMode::Touch);
+
+        dispatch_key(&key(LogicalKey::TAB));
+        assert_eq!(highlight_mode(), FocusHighlightMode::Traditional);
+        reset_highlight();
+    }
+
+    // -- FocusableActionDetector ---------------------------------------------------------
+
+    fn detector(heard: &Rc<RefCell<Vec<(&'static str, bool)>>>) -> FocusableActionDetector {
+        let focus = Rc::clone(heard);
+        let hover = Rc::clone(heard);
+        FocusableActionDetector::new(true)
+            .with_on_show_focus_highlight(move |on| focus.borrow_mut().push(("focus", on)))
+            .with_on_show_hover_highlight(move |on| hover.borrow_mut().push(("hover", on)))
+    }
+
+    #[test]
+    fn a_disabled_control_does_not_light_up_under_the_pointer() {
+        reset_highlight();
+        note_key_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = FocusableActionDetector::new(false).with_on_show_hover_highlight({
+            let heard = Rc::clone(&heard);
+            move |on| heard.borrow_mut().push(("hover", on))
+        });
+        d.hover(true);
+        assert!(d.state().hovering, "it knows the pointer is there");
+        assert!(!d.should_show_hover_highlight(), "and says not to draw it");
+        assert!(heard.borrow().is_empty(), "so nothing was announced");
+        reset_highlight();
+    }
+
+    #[test]
+    fn nothing_lights_up_on_a_touchscreen() {
+        // The other half of "should a highlight be drawn": a ring on the
+        // last-tapped button is noise, and looks like something is selected.
+        reset_highlight();
+        note_touch_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = detector(&heard);
+        d.hover(true);
+        d.focus(true);
+        assert!(!d.should_show_hover_highlight());
+        assert!(!d.should_show_focus_highlight());
+        assert!(heard.borrow().is_empty());
+        reset_highlight();
+    }
+
+    #[test]
+    fn the_callbacks_fire_on_the_answer_changing_and_not_on_the_event() {
+        reset_highlight();
+        note_key_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = detector(&heard);
+
+        d.hover(true);
+        assert_eq!(*heard.borrow(), vec![("hover", true)]);
+
+        // A second enter is not a change and never reaches the machinery.
+        d.hover(true);
+        assert_eq!(heard.borrow().len(), 1);
+
+        d.focus(true);
+        assert_eq!(heard.borrow()[1], ("focus", true));
+        reset_highlight();
+    }
+
+    #[test]
+    fn disabling_a_hovered_control_puts_its_highlight_out() {
+        // The state did not change -- the pointer is still there -- but the
+        // *answer* did, which is what the callback is about.
+        reset_highlight();
+        note_key_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = detector(&heard);
+        d.hover(true);
+        heard.borrow_mut().clear();
+
+        d.set_enabled(false);
+        assert_eq!(*heard.borrow(), vec![("hover", false)]);
+        assert!(d.state().hovering, "and the pointer is still over it");
+        reset_highlight();
+    }
+
+    #[test]
+    fn a_focused_control_lights_up_when_the_reader_reaches_for_the_keyboard() {
+        // Nothing about the control changed; the mode did.
+        reset_highlight();
+        note_touch_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = detector(&heard);
+        d.focus(true);
+        assert!(heard.borrow().is_empty(), "touch: no ring");
+
+        note_key_interaction();
+        d.highlight_mode_changed();
+        assert_eq!(*heard.borrow(), vec![("focus", true)]);
+        reset_highlight();
+    }
+
+    #[test]
+    fn directional_navigation_shows_the_ring_even_on_a_disabled_control() {
+        // Upstream's reason: a reader moving through a screen with a d-pad has
+        // no other way to know a disabled control is there, and skipping it
+        // silently loses them.
+        reset_highlight();
+        note_key_interaction();
+
+        let mut traditional = FocusableActionDetector::new(false);
+        traditional.focus(true);
+        assert!(!traditional.should_show_focus_highlight());
+
+        let mut directional =
+            FocusableActionDetector::new(false).with_navigation_mode(NavigationMode::Directional);
+        directional.focus(true);
+        assert!(directional.should_show_focus_highlight());
+
+        // Hover is *not* excused the same way -- it stays gated on enabled.
+        directional.hover(true);
+        assert!(!directional.should_show_hover_highlight());
+        reset_highlight();
+    }
+
+    #[test]
+    fn focus_is_announced_before_hover() {
+        // Upstream's order. Both change at once when a control is enabled while
+        // hovered and focused.
+        reset_highlight();
+        note_key_interaction();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut d = FocusableActionDetector::new(false)
+            .with_on_show_focus_highlight({
+                let heard = Rc::clone(&heard);
+                move |on| heard.borrow_mut().push(("focus", on))
+            })
+            .with_on_show_hover_highlight({
+                let heard = Rc::clone(&heard);
+                move |on| heard.borrow_mut().push(("hover", on))
+            });
+        d.hover(true);
+        d.focus(true);
+        heard.borrow_mut().clear();
+
+        d.set_enabled(true);
+        assert_eq!(
+            *heard.borrow(),
+            vec![("focus", true), ("hover", true)],
+            "focus first"
+        );
+        reset_highlight();
+    }
+
+    // -- ActionListener --------------------------------------------------------------------
+
+    #[test]
+    fn every_listener_hears_an_invocation() {
+        let heard = Rc::new(RefCell::new(0));
+        let mut listeners = ActionListener::new();
+        for _ in 0..3 {
+            let counter = Rc::clone(&heard);
+            listeners.add(move |_| *counter.borrow_mut() += 1);
+        }
+        listeners.notify(&crate::actions::Intent::DoNothing);
+        assert_eq!(*heard.borrow(), 3);
+    }
+
+    #[test]
+    fn a_removed_listener_stops_hearing_and_the_tokens_after_it_still_work() {
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let mut listeners = ActionListener::new();
+        let a = {
+            let heard = Rc::clone(&heard);
+            listeners.add(move |_| heard.borrow_mut().push("a"))
+        };
+        let b = {
+            let heard = Rc::clone(&heard);
+            listeners.add(move |_| heard.borrow_mut().push("b"))
+        };
+        let c = {
+            let heard = Rc::clone(&heard);
+            listeners.add(move |_| heard.borrow_mut().push("c"))
+        };
+
+        assert!(listeners.remove(a));
+        assert!(listeners.remove(c), "c's token still finds c");
+        assert!(!listeners.remove(a), "and removing one twice finds nothing");
+
+        listeners.notify(&crate::actions::Intent::DoNothing);
+        assert_eq!(*heard.borrow(), vec!["b"]);
+        assert_eq!(listeners.len(), 1);
+        let _ = b;
+    }
+
+    #[test]
+    fn an_empty_listener_list_is_not_an_error() {
+        let listeners = ActionListener::new();
+        assert!(listeners.is_empty());
+        listeners.notify(&crate::actions::Intent::DoNothing);
     }
 }
