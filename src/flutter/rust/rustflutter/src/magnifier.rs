@@ -174,11 +174,16 @@ impl RawMagnifier {
 
 /// Upstream `MagnifierController`: who owns the loupe while it is up.
 ///
-/// The part worth porting is [`MagnifierController::shift_within_bounds`],
-/// which is where the loupe's position is actually decided; the rest of
-/// upstream's controller is an `OverlayEntry`'s lifetime -- see
-/// [`crate::overlay`] for the entry rules; nothing hosts the widget yet (the
-/// gap [`crate::material`] records for `Material.of`).
+/// The part worth porting *here* is
+/// [`MagnifierController::shift_within_bounds`], which is where the loupe's
+/// position is actually decided. The rest of upstream's controller is an
+/// `OverlayEntry`'s lifetime, and that is
+/// [`crate::magnifier_host::MagnifierHost`]: it holds the entry, moves it as
+/// the gesture moves, hides it when the platform says to, and takes it down.
+///
+/// What the host still cannot do is *magnify* -- that needs a backdrop read
+/// with a scale and the paint bridge has only a blur. The loupe's body is
+/// drawn; what shows through it is not.
 pub struct MagnifierController;
 
 impl MagnifierController {

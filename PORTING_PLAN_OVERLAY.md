@@ -221,20 +221,27 @@ L0–L3 就位后，以下全是纯增量、每件独立可交付、每件都能
 
 | 消费者 | 现状 | 补的是 | 上游锚点 |
 | --- | --- | --- | --- |
-| Tooltip | `raw_tooltip.rs` 时钟状态机已完整 | portal + 定位 | `Tooltip`、`RawTooltip` |
-| SnackBar / ScaffoldMessenger | 已 port，未接线 | 宿主 | `ScaffoldMessengerState.showSnackBar` |
-| PopupMenu | `menu.rs` 显式删掉 300ms 开合 | owner 有了，动画可回 | `_PopupMenuRoute` |
-| Drawer | `drawer.rs` 显式删掉 246ms 滑入 | 同上 | `DrawerController` |
-| showDialog / show*Picker | 现在 return `AnyWidget` | 改真正的命令式 API | `showDialog`、`showDatePicker` |
-| Autocomplete options view | 逻辑已 port | portal | `RawAutocomplete` 的 `OverlayPortal` |
-| 文本选择手柄 / 工具条 | `text_selection*.rs` 已 port | portal + L0 坐标 | `TextSelectionOverlay` |
-| Magnifier | 已 port | portal + L0 坐标 | `MagnifierController` |
-| DragTarget feedback | 已 port | portal | `Draggable` 的 overlay entry |
-| Hero | `heroes.rs` 已 port | overlay + Navigator | `HeroController` |
+| ✅ Tooltip | `tooltip.rs` | portal + 定位 | `Tooltip`、`RawTooltip` |
+| ✅ SnackBar / ScaffoldMessenger | `messenger.rs` | 宿主 | `ScaffoldMessengerState.showSnackBar` |
+| ✅ PopupMenu | `popup.rs`；`menu.rs` 那段「没有 owner」已删 | owner 有了，动画回来了 | `_PopupMenuRoute` |
+| ✅ Drawer | `drawer_host.rs`；`drawer.rs` 那段已删 | 246ms 滑入回来了 | `DrawerController` |
+| ✅ showDialog / show*Picker | `dialogs.rs` | 已是命令式 API | `showDialog`、`showDatePicker` |
+| ✅ Autocomplete options view | `autocomplete_view.rs` | portal | `RawAutocomplete` 的 `OverlayPortal` |
+| ✅ 文本选择手柄 / 工具条 | `selection_host.rs` | 三个 entry + L0 坐标 | `TextSelectionOverlay` |
+| ✅ Magnifier | `magnifier_host.rs` | entry + L0 坐标；放大本身待引擎 | `MagnifierController` |
+| ✅ DragTarget feedback | `drag_feedback.rs` | entry + L0 坐标 | `Draggable` 的 overlay entry |
+| ⏸ Hero | `heroes.rs` 已 port | overlay + **Navigator** | `HeroController` |
 
 **回填顺序建议**：Tooltip 第一（最小闭环，验证 L0+L1+L2 三层同时正确）→
 PopupMenu（验证 `popup_menu_offset` 与 L0 对接）→ SnackBar → Dialog 函数族 →
 其余按需。
+
+**实际回填完毕**：按上面的顺序走完，九件全部落地；Hero 按 §8 留给 Navigator 那
+条线。三个「portal + L0 坐标」的消费者共用同一条缝——全局进、overlay 局部出——
+为此补齐了 L0 缺的那一半 `RenderRef::global_to_local`。过程中挖出两个真缺陷：
+`RenderMetaData` 缺上游 `MetaData.behavior`（`deferToChild` 之下 `DragTarget`
+的注解永远读不到），以及宿主写共享 cell 不会让 entry 重建（`EntryRefresh`）。
+详见 `PORTING_STATUS.md`。
 
 ---
 

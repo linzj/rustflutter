@@ -26,15 +26,18 @@
 //!   `contextMenuBuilder`, so this refuses every toolbar question while
 //!   leaving the handles alone.
 //!
-//! # What is not ported
+//! # What is here and what is next door
 //!
 //! `buildHandle` and `buildToolbar` return widgets built from a
 //! `TextSelectionDelegate`, a `ClipboardStatusNotifier` and a list of
-//! `TextSelectionPoint`s -- the overlay machinery of
-//! `widgets/text_selection.dart`, which this crate does not have. What is here
-//! is the part that decides *whether* and *where*: the handle sizes and
-//! anchors, and the four `can*` rules. Those are the answers the rest is built
-//! on, and they are the half that is testable without an overlay.
+//! `TextSelectionPoint`s. What is here is the part that decides *whether* and
+//! *where*: the handle sizes and anchors, and the four `can*` rules. Those are
+//! the answers the rest is built on, and they are the half that is testable
+//! without an overlay.
+//!
+//! The overlay machinery those answers feed is [`crate::selection_host`],
+//! which puts the handles and the toolbar on the screen. This section used to
+//! say it did not exist.
 
 use crate::engine::Rect;
 use crate::render::{EdgeInsets, Offset, Size};

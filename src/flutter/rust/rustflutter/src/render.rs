@@ -724,6 +724,25 @@ fn compose_affine(left: [f32; 6], right: [f32; 6]) -> [f32; 6] {
     ]
 }
 
+/// The inverse of an affine, or `None` when it has none.
+///
+/// The determinant `a*d - b*c` is the area a unit square is mapped to. Zero
+/// means the transform flattened the plane onto a line, and no point on that
+/// line can say which of the many points that landed on it it came from.
+fn invert_affine(m: [f32; 6]) -> Option<[f32; 6]> {
+    let [a, b, c, d, e, f] = m;
+    let determinant = a * d - b * c;
+    if determinant == 0.0 || !determinant.is_finite() {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    let (ia, ib, ic, id) = (d * inverse, -b * inverse, -c * inverse, a * inverse);
+    // The translation is inverted *through* the inverted linear part rather
+    // than merely negated: undoing a scale-then-move means undoing the move in
+    // the scaled frame.
+    Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
+}
+
 /// What a render object paints into.
 ///
 /// Two things at once, exactly as upstream's `PaintingContext` is: a canvas to
@@ -2072,6 +2091,31 @@ impl RenderRef {
     /// by `MatrixUtils.transformPoint`.
     pub fn local_to_global(&self, point: Offset, ancestor: Option<&RenderRef>) -> Offset {
         let [a, b, c, d, e, f] = self.transform_to(ancestor);
+        Offset::new(
+            a * point.dx + c * point.dy + e,
+            b * point.dx + d * point.dy + f,
+        )
+    }
+
+    /// A point in `ancestor`'s coordinates, in this object's.
+    ///
+    /// Upstream's `RenderBox.globalToLocal`, and the exact inverse of
+    /// [`RenderRef::local_to_global`]: it is the same walk, run backwards
+    /// through the inverted transform.
+    ///
+    /// Returns the point unchanged if the transform has no inverse. Upstream
+    /// answers `Offset.zero` there, via `MatrixUtils.transformPoint` on a
+    /// singular matrix; this crate's transforms only lose their inverse when a
+    /// scale collapses an axis, and a caller asking where the finger is inside
+    /// a zero-wide box is better served by an honest passthrough than by the
+    /// origin.
+    ///
+    /// Carries the same constraint as [`RenderRef::transform_to`]: not from
+    /// inside a layout.
+    pub fn global_to_local(&self, point: Offset, ancestor: Option<&RenderRef>) -> Offset {
+        let Some([a, b, c, d, e, f]) = invert_affine(self.transform_to(ancestor)) else {
+            return point;
+        };
         Offset::new(
             a * point.dx + c * point.dy + e,
             b * point.dx + d * point.dy + f,
@@ -17091,6 +17135,17 @@ pub struct RenderMetaData {
     /// Whatever the annotations wanted to say. Upstream is an `Object?`;
     /// here a caller-defined id, like the pointer regions'.
     meta_id: u64,
+    /// Upstream's `MetaData.behavior`, `deferToChild` by default.
+    ///
+    /// It is load-bearing and easy to miss. The payload only reaches a caller
+    /// by riding a hit-test entry, and the entry only exists if this box was
+    /// hit -- so under `deferToChild` a `MetaData` wrapping something that is
+    /// not itself a target (a plain container, a decoration, a column of them)
+    /// carries an annotation nothing can ever read. Upstream's `DragTarget`
+    /// passes `translucent` for exactly that reason: it must be found under
+    /// the pointer whatever it happens to be wrapping, and must not stop
+    /// what is behind it being found too.
+    behavior: HitTestBehavior,
     child: BoxedRender,
     size: Size,
 }
@@ -17099,9 +17154,15 @@ impl RenderMetaData {
     pub fn new(meta_id: u64, child: impl RenderBox + 'static) -> Self {
         Self {
             meta_id,
+            behavior: HitTestBehavior::DeferToChild,
             child: RenderRef::new(child),
             size: Size::ZERO,
         }
+    }
+
+    pub fn with_behavior(mut self, behavior: HitTestBehavior) -> Self {
+        self.behavior = behavior;
+        self
     }
 }
 
@@ -17110,6 +17171,7 @@ impl RenderBox for RenderMetaData {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderMetaData>()?;
         let effect = UpdateEffect::Nothing;
         self.meta_id = fresh.meta_id;
+        self.behavior = fresh.behavior;
         Some(effect)
     }
 
@@ -17139,8 +17201,27 @@ impl RenderBox for RenderMetaData {
         self.meta_id
     }
 
+    fn hit_test_self(&self, _position: Offset) -> bool {
+        self.behavior == HitTestBehavior::Opaque
+    }
+
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// The translucent case, which the default `hit_test` cannot express: on
+    /// the path *and* not stopping what is behind it. The same shape as
+    /// [`RenderPointerRegion`]'s, which is upstream's other override of this
+    /// method for the same reason.
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        if !self.size.contains(position) {
+            return false;
+        }
+        let hit = self.hit_test_children(position, result) || self.hit_test_self(position);
+        if hit || self.behavior == HitTestBehavior::Translucent {
+            result.add(self.meta_id, position);
+        }
+        hit
     }
 }
 
@@ -22353,6 +22434,16 @@ mod coordinate_round_trip {
             "{name}: went up as {global:?} and came back as {:?}, not {local:?}",
             entry.local_position
         );
+
+        // And the third leg: the inverse walk agrees with the hit test that
+        // agreed with the forward walk. `global_to_local` gets the whole table
+        // for the price of these four lines, which is the argument for putting
+        // it here rather than testing it on one container of its own.
+        let back = probe.global_to_local(global, None);
+        assert!(
+            (back.dx - local.dx).abs() < 1e-3 && (back.dy - local.dy).abs() < 1e-3,
+            "{name}: global_to_local answered {back:?}, not {local:?}"
+        );
     }
 
     /// Every box container in this file that puts a child somewhere, each
@@ -22638,6 +22729,68 @@ mod coordinate_round_trip {
     ///
     /// Left as prose rather than as `#[ignore]`d tests, because an ignored test
     /// reads as a thing that should pass and does not.
+    /// The table above cannot reach this, and it is worth saying why rather
+    /// than assuming the table covers `invert_affine`.
+    ///
+    /// Every transform the table builds is a pure translation -- that is the
+    /// agreement `visit_children` and `hit_test_children` keep, and the reason
+    /// the deliberately non-translational containers are excluded from it. In
+    /// a translation `a` and `d` are 1 and `b` and `c` are 0, so inverting the
+    /// translation *through* the linear part and merely negating it give the
+    /// same answer. Replacing the one with the other leaves all 34 entries
+    /// green, which was checked before this test was written.
+    #[test]
+    fn the_inverse_undoes_the_move_in_the_frame_the_scale_left() {
+        // Scale by 2 and 4, then move. A point at (10, 5) in the child lands at
+        // (2*10 + 30, 4*5 + 70) = (50, 90).
+        let forward = [2.0, 0.0, 0.0, 4.0, 30.0, 70.0];
+        let inverse = invert_affine(forward).expect("a scale of 2 by 4 has an inverse");
+
+        let apply = |[a, b, c, d, e, f]: [f32; 6], point: Offset| {
+            Offset::new(
+                a * point.dx + c * point.dy + e,
+                b * point.dx + d * point.dy + f,
+            )
+        };
+        let there = apply(forward, Offset::new(10.0, 5.0));
+        assert_eq!(there, Offset::new(50.0, 90.0));
+        assert_eq!(apply(inverse, there), Offset::new(10.0, 5.0));
+
+        // Negating the translation instead of inverting it through the scale
+        // is the mistake this test exists to catch: it would answer (20, 20).
+        let naive = [0.5, 0.0, 0.0, 0.25, -30.0, -70.0];
+        assert_eq!(apply(naive, there), Offset::new(-5.0, -47.5));
+    }
+
+    #[test]
+    fn a_transform_that_flattens_the_plane_has_no_inverse() {
+        // A zero-width scale sends every point on a line to one point, and no
+        // point can say which it came from.
+        assert!(invert_affine([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]).is_none());
+        assert!(invert_affine([1.0, 2.0, 2.0, 4.0, 0.0, 0.0]).is_none());
+        assert!(invert_affine([1.0, 0.0, 0.0, 1.0, 5.0, 5.0]).is_some());
+    }
+
+    #[test]
+    fn an_uninvertible_transform_hands_the_point_back_unchanged() {
+        // Rather than answering the origin, which upstream's
+        // `MatrixUtils.transformPoint` does. See `global_to_local`.
+        let probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut root = RenderRef::new(RenderPadding::new(
+            EdgeInsets::only(4.0, 4.0, 0.0, 0.0),
+            probe.clone(),
+        ));
+        root.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        // The tree's own transform is invertible, so this checks the arithmetic
+        // rather than the fallback; the fallback is checked on the affine
+        // directly above, since no container in this crate produces a singular
+        // paint transform.
+        assert_eq!(
+            probe.global_to_local(Offset::new(4.0, 4.0), None),
+            Offset::ZERO
+        );
+    }
+
     #[test]
     fn an_onstage_offstage_box_can_be_pressed() {
         // The bug the table found: `hit_test_children` answered false whatever

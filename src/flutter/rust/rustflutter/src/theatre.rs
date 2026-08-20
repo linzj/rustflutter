@@ -1245,6 +1245,71 @@ pub fn overlay_portal(
     })
 }
 
+/// The link between a host that keeps its geometry in cells and the overlay
+/// entry that draws it.
+///
+/// A host moves a tooltip, a loupe, a selection handle or a drag feedback by
+/// writing a new offset into a shared cell. That alone changes nothing on the
+/// screen: **the entry's component is not dirty, so it does not rebuild, so the
+/// new offset is never read**. Found by watching a magnifier's entry report the
+/// right position and draw nothing.
+///
+/// So the entry hands its [`StateHandle`] to one of these during its build, and
+/// the host calls [`EntryRefresh::refresh`] after every write. The state itself
+/// is a counter and carries no meaning -- it exists because `set_state` needs
+/// something to change.
+///
+/// One of these may serve **several** entries -- a selection overlay is three,
+/// which move together -- so it keeps a handle each rather than a single slot.
+/// A single slot looks right and silently wakes only whichever entry built
+/// last.
+#[derive(Clone, Default)]
+pub struct EntryRefresh {
+    handles: Rc<RefCell<Vec<StateHandle<u64>>>>,
+    revision: Rc<Cell<u64>>,
+}
+
+impl EntryRefresh {
+    pub fn new() -> EntryRefresh {
+        EntryRefresh::default()
+    }
+
+    /// Called from the entry's `build`. Idempotent per entry: a rebuilt
+    /// component gets a fresh handle, and the stale one it replaces would
+    /// answer false for the rest of the run.
+    pub fn attach(&self, handle: StateHandle<u64>) {
+        let mut handles = self.handles.borrow_mut();
+        match handles.iter_mut().find(|kept| kept.id == handle.id) {
+            Some(kept) => *kept = handle,
+            None => handles.push(handle),
+        }
+    }
+
+    /// How many entries are listening, for tests.
+    pub fn listeners(&self) -> usize {
+        self.handles.borrow().len()
+    }
+
+    /// The counter the entry uses as its initial state.
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    /// Says the geometry changed. Answers whether the entry heard -- false
+    /// before it has built once, which is the ordinary case for a host that
+    /// places itself before the first frame.
+    pub fn refresh(&self) -> bool {
+        let next = self.revision.get() + 1;
+        self.revision.set(next);
+        let handles = self.handles.borrow().clone();
+        let mut heard = false;
+        for handle in handles {
+            heard |= handle.set_state(move |state| *state = next);
+        }
+        heard
+    }
+}
+
 // -- L3: modal semantics ------------------------------------------------------
 
 /// The scrim itself: fills whatever it is given, paints a colour if it has one,

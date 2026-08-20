@@ -9518,6 +9518,61 @@ isComplex/getClipPath(circle→内切椭圆、radius→rrect)/scale(颜色 alpha
 
 ---
 
+### 弹层线 L4 收尾：文本选择手柄/工具条、Magnifier、DragTarget feedback
+
+`PORTING_PLAN_OVERLAY.md` §7 表里最后三个消费者。三个都是「逻辑早已 port、缺一个
+活的宿主」，补的东西一模一样：**一个 overlay entry，加一次坐标换算**。
+
+- `selection_host.rs` —— 上游 `SelectionOverlay`。**三个 entry 而不是一个**：
+  `hideToolbar` 留着手柄、collapsed 选区只有一个手柄，两件事各自来去，一人一个
+  entry 才表达得了。手柄放 overlay 的理由是上游自己的：手柄要画到字段边界**外面**
+  ——选区贴着字段左边时，左手柄的盒子越过字段左沿，画在字段里就被裁掉，而裁掉的
+  正好是读者要抓的那块。
+- `magnifier_host.rs` —— 上游 `MagnifierController` 的 entry 生命周期。位置、
+  隐藏阈值、焦点内收全在 `magnifier.rs` 里没动。**放大本身做不了**：放大是带缩放
+  的 backdrop 采样，paint bridge 只有一个 backdrop 算子而且是模糊。镜身（尺寸、
+  圆角、描边、阴影）画得出来，透过它看到的东西没被放大。
+- `drag_feedback.rs` —— 上游 `_DragAvatar`。feedback 跟着指针，目标靠命中测试找。
+
+**三个模块共同的那条线：全局进，overlay 局部出。** 上游 `updateDrag` 同时留两个
+偏移，这是最值得写下来的一处：
+
+```dart
+_lastOffset = globalPosition - dragStartPoint;              // 全局，回调听这个
+_overlayOffset = box.globalToLocal(globalPosition) - dragStartPoint;  // overlay 局部，画这个
+```
+
+两者只在 overlay 铺满窗口时相等。用错了，满屏 overlay 上看不出来，任何别的
+overlay 上就是一个固定错位——「只在别人机器上复现」的那种。为此补了 L0 缺的那
+一半：`RenderRef::global_to_local` 与 `invert_affine`，`local_to_global` 的严格
+逆。差分表 34 个容器全都顺带跑了逆向那一程。
+
+**顺手挖出来的两个真缺陷**：
+
+1. `RenderMetaData` 没有上游 `MetaData.behavior`。payload 只能搭命中记录出来，
+   记录只在这个盒子被命中时才有——`deferToChild` 之下，包着非命中目标（一个普通
+   容器、一层装饰）的 `MetaData` 携带的注解**永远读不到**。上游 `DragTarget` 传
+   `translucent` 正是为此。补上字段与 translucent 分支。
+2. `invert_affine` 的平移必须**穿过**逆线性部分回推，不是取负。表里 34 个容器全
+   是纯平移（这正是 `visit_children` 与 `hit_test_children` 的约定），两种写法在
+   平移下同解——换掉仍然全绿，验证过。所以另写了带缩放的直接单测。
+
+**一处不可证伪的防御，明说**：`MagnifierHost` 只记住「显示中」的位置。今天没有
+任何测试能因为去掉这个 guard 而变红——唯一会隐藏的是 Cupertino，而 Cupertino 的
+placement 永远 `animate: false`。留着，因为那是今天这两个平台的巧合，不是规则。
+
+**`EntryRefresh`（`theatre.rs`）**：宿主把几何写进共享 cell 并不会让屏幕变化——
+entry 的组件不脏、不重建、读不到新值。是看着 magnifier 报出正确坐标却什么都不画
+才发现的。它还要**每个 entry 存一个 handle**：选择层是三个 entry 一起动，单槽位
+写法看着对，实际只唤醒最后 build 的那一个。
+
+**台账**：§11 列的 11 个上游类（`Overlay`…`ScaffoldMessengerState`）本来就是按名
+计入的，`coverage_ledger.json` 里从来没有它们的例外条目——所以「改判」这一步是空
+的，不是漏了。`applyPaintTransform` / `getTransformTo` / `localToGlobal` 是方法不
+是类，coverage.py 从不追踪。
+
+---
+
 ## 三、不要弄坏的(这些已经逐条比过,是对的)
 
 改任何一条时,这些是回归线:

@@ -1255,7 +1255,7 @@ impl Shared {
 /// marked dirty and a frame is requested; the rebuild happens on that frame,
 /// not inside `set_state`.
 pub struct StateHandle<S> {
-    id: ElementId,
+    pub(crate) id: ElementId,
     generation: u64,
     shared: Weak<Shared>,
     marker: PhantomData<fn(&mut S)>,

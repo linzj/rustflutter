@@ -15,6 +15,10 @@
 //! original stays behind, and which gestures count as a lift at all. Those are
 //! the decisions that make a drag feel like moving an object rather than like
 //! a widget appearing under a cursor.
+//!
+//! The half that needs a live tree -- the feedback drawn in the overlay,
+//! following the pointer, and the targets under it found by hit testing -- is
+//! [`crate::drag_feedback`], which is upstream's `_DragAvatar`.
 
 use crate::render::{Axis, Offset};
 
@@ -108,6 +112,12 @@ impl<T> DragTargetDetails<T> {
 }
 
 /// Upstream `Draggable`: something that can be picked up.
+///
+/// `Clone` because a drag in progress keeps the configuration it was started
+/// with -- the axis lock and the feedback offset are consulted on every move,
+/// and a drag that read them off a widget that has since rebuilt would change
+/// its rules mid-gesture. See [`crate::drag_feedback::DragAvatar`].
+#[derive(Clone)]
 pub struct Draggable {
     pub anchor_strategy: DragAnchorStrategy,
     /// Upstream's `axis`: constrains the feedback's movement to one axis, for

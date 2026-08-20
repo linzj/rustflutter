@@ -12,12 +12,17 @@
 //! arrives, and another on every return from the background -- because the
 //! reader may have copied something in another application while away.
 //!
-//! ## What is not here
+//! ## Where the handles and the toolbar are
 //!
 //! [`TextSelectionOverlay`] and [`SelectionOverlay`] position handles and a
-//! toolbar in an `Overlay`, which this crate does not have; what is ported is
-//! their configuration. The gesture builder's own recognisers are the
+//! toolbar in an `Overlay`, and [`crate::selection_host`] is that overlay --
+//! three entries, placed against the field through
+//! [`crate::render::RenderRef::global_to_local`]. What stays here is the
+//! configuration and the visibility rules, which is the half that decides
+//! rather than draws. The gesture builder's own recognisers are the
 //! `tap_and_drag` family, already ported.
+//!
+//! This paragraph used to end "which this crate does not have".
 
 use crate::render::Offset;
 
@@ -424,8 +429,9 @@ impl<D: TextSelectionGestureDetectorBuilderDelegate> TextSelectionGestureDetecto
 /// Upstream puts them in an `Overlay` so they can be drawn over anything,
 /// including outside the field's own bounds -- a handle below the last line of
 /// a field would otherwise be clipped away. [`crate::overlay`] carries the
-/// entry list and its ordering; nothing hosts the widgets yet, so what is
-/// ported here is the configuration and the visibility rules.
+/// entry list and its ordering, and [`crate::selection_host`] hosts the
+/// widgets; what is here is the configuration and the visibility rules it
+/// reads.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct SelectionOverlay {
     /// Upstream's `handlesVisible`.
