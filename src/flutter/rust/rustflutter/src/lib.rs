@@ -60,6 +60,7 @@ pub mod cupertino_sheet;
 pub mod cupertino_tabs;
 pub mod cupertino_text_field;
 pub mod cupertino_theme;
+pub mod curves2d;
 pub mod decoration;
 pub mod diagnostics;
 pub mod dialogs;
@@ -260,6 +261,7 @@ pub use cupertino::{
     CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar, CupertinoTabItem,
     CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
 };
+pub use curves2d::{CatmullRomCurve, CatmullRomSpline, Curve2D, Curve2DSample, Interval, Split};
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
 pub use dialogs::{
     DialogCloser, show_date_picker, show_date_range_picker, show_dialog, show_dialog_with,

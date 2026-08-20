@@ -449,10 +449,6 @@
       "rust": "semantics.rs 的注解集合",
       "note": "语义注解在语义桥内承载"
     },
-    "DiagnosticsDebugCreator": {
-      "rust": "-",
-      "note": "debug 诊断树专用，P10 终裁"
-    },
     "Layer": {
       "rust": "engine::RetainedLayer + LayerTree push/pop 序列",
       "note": "框架侧 Layer 类层级在此侧即引擎 layer ABI；PORTING_STATUS\"clip/transform 恒真 layer 由留存层复用\""
@@ -509,10 +505,6 @@
       "rust": "rf_layer_tree_push_blur",
       "note": "引擎 filter 位只有 blur——同 BackdropFilter 分歧"
     },
-    "PerformanceOverlayLayer": {
-      "rust": "-",
-      "note": "引擎栅格统计未过 ABI（同 RenderPerformanceOverlay）"
-    },
     "AnnotationEntry": {
       "rust": "hit_test 的 HitTestEntry",
       "note": "注解查找即命中测试"
@@ -520,10 +512,6 @@
     "AnnotationResult": {
       "rust": "render::HitTestResult",
       "note": "同一结果对象"
-    },
-    "AnnotatedRegionLayer": {
-      "rust": "P4 波次",
-      "note": "注解区域随 widget 层 AnnotatedRegion 一并"
     },
     "ColorFilterLayer": {
       "rust": "Canvas::save_layer + with_blend_mode 的 Paint",
@@ -569,14 +557,6 @@
       "rust": "app.rs::run",
       "note": "入口即 run"
     },
-    "RenderErrorBox": {
-      "rust": "-",
-      "note": "debug 错误绘制，P10 终裁"
-    },
-    "DebugOverflowIndicatorMixin": {
-      "rust": "-",
-      "note": "debug 溢出指示器，P10 终裁"
-    },
     "RenderTreeRootElement": {
       "rust": "ElementTree",
       "note": "根元素即 ElementTree 自身"
@@ -593,18 +573,6 @@
       "rust": "app.rs 帧序的根装配",
       "note": "RenderView 的装配/绘制职责在 App::render"
     },
-    "CustomPainterSemantics": {
-      "rust": "-",
-      "note": "语义波（E3）——semanticsBuilder 半边"
-    },
-    "ImageFilterContext": {
-      "rust": "-",
-      "note": "引擎 filter 位只有 blur（同 BackdropFilter 分歧）"
-    },
-    "ImageFilterConfig": {
-      "rust": "-",
-      "note": "同上"
-    },
     "MouseTracker": {
       "rust": "gestures.rs 的逐设备 hover 跟踪",
       "note": "hover 位移与 in/out 已在 PointerRegion；无独立 tracker 对象"
@@ -612,10 +580,6 @@
     "TextParentData": {
       "rust": "容器持有",
       "note": "同 ParentData 账"
-    },
-    "PlaceholderSpanIndexSemanticsTag": {
-      "rust": "-",
-      "note": "语义波"
     },
     "RenderInlineChildrenContainerDefaults": {
       "rust": "paragraph 命中路径",
@@ -636,30 +600,6 @@
     "ChildLayoutHelper": {
       "rust": "layout_child 调用点",
       "note": "debugPaintSize 即 debug 断言"
-    },
-    "TextSelectionPoint": {
-      "rust": "P7 文本选择波",
-      "note": "随 selection 一并"
-    },
-    "VerticalCaretMovementRun": {
-      "rust": "P7 文本选择波",
-      "note": "同上"
-    },
-    "RenderEditablePainter": {
-      "rust": "P7 文本选择波",
-      "note": "同上"
-    },
-    "ListWheelChildManager": {
-      "rust": "P6 滚动波（3D 轮盘）",
-      "note": "list_wheel 整族待立项"
-    },
-    "ListWheelParentData": {
-      "rust": "P6",
-      "note": "同上"
-    },
-    "RenderListWheelViewport": {
-      "rust": "P6",
-      "note": "同上——perspective 投射布局"
     },
     "Animation": {
       "rust": "animation::Animation trait",
@@ -700,10 +640,6 @@
     "CompoundAnimation": {
       "rust": "Mean/Max/Min 三型即其具体形",
       "note": "抽象基类由三具体承载"
-    },
-    "TrainHoppingAnimation": {
-      "rust": "-",
-      "note": "Material 换弧瞬时切换用;本 crate 曲线可在 ProxyAnimation::set_parent 处直接换——留待首个消费者"
     },
     "AnimationLazyListenerMixin": {
       "rust": "AnimationListeners 的 add/remove",
@@ -797,10 +733,6 @@
       "rust": "Curve::transform(t)",
       "note": "参数曲线即 transform"
     },
-    "Interval": {
-      "rust": "P5 余量：TweenSequenceItem 的权重段即其等价",
-      "note": "局部 t 映射同 _evaluate；待 AnimatedBuilder 波次接 widget 面"
-    },
     "Threshold": {
       "rust": "StepTween 的 0/1 特例",
       "note": "t<t?0:1 即 StepTween(begin:0,end:1) 的两步"
@@ -808,26 +740,6 @@
     "SawTooth": {
       "rust": "Repeat::Loop + value 取模",
       "note": "锯齿即重复取余；widget 面待接"
-    },
-    "Curve2D": {
-      "rust": "P5 余量",
-      "note": "2D 路径曲线（CatmullRom 一族）——无消费者，留待首个使用"
-    },
-    "Curve2DSample": {
-      "rust": "P5 余量",
-      "note": "同上"
-    },
-    "CatmullRomSpline": {
-      "rust": "P5 余量",
-      "note": "同上"
-    },
-    "CatmullRomCurve": {
-      "rust": "P5 余量",
-      "note": "同上"
-    },
-    "Split": {
-      "rust": "P5 余量",
-      "note": "Split 曲线无消费者"
     },
     "StatelessWidget": {
       "rust": "framework::Component trait",
@@ -913,10 +825,6 @@
       "rust": "framework::ErrorPlaceholder",
       "note": "错误占位"
     },
-    "DebugCreator": {
-      "rust": "-",
-      "note": "debug 诊断树，P10 终裁"
-    },
     "Intent": {
       "rust": "actions::Intent 枚举",
       "note": "封闭集:上游具体 intent 即变体(VoidCallback/DoNothing×2/Activate/ButtonActivate/Select/Dismiss/Prioritized)"
@@ -997,14 +905,6 @@
       "rust": "ActionDispatcher 的 actions map",
       "note": "widget 作用域形态随 widget 波;map 即作用域内容"
     },
-    "ActionListener": {
-      "rust": "P4 余量",
-      "note": "action 生命周期监听——首个消费者出现时落"
-    },
-    "FocusableActionDetector": {
-      "rust": "P4 余量",
-      "note": "focus+hover 合成检测器,随 material 按钮波"
-    },
     "KeySet": {
       "rust": "shortcuts::LogicalKeySet",
       "note": "无序集合,排序去重"
@@ -1044,14 +944,6 @@
     "CallbackShortcuts": {
       "rust": "shortcuts::CallbackShortcuts",
       "note": "最小拼写:激活器→回调"
-    },
-    "ShortcutMapProperty": {
-      "rust": "-",
-      "note": "诊断树专用,P10"
-    },
-    "MenuSerializableShortcut": {
-      "rust": "-",
-      "note": "菜单序列化接口,随 menu 波"
     },
     "ShortcutRegistrar": {
       "rust": "ShortcutRegistry::with（构建器）",
@@ -1225,21 +1117,9 @@
       "rust": "TextStyle Lerp + animated",
       "note": "同上"
     },
-    "DefaultSelectionStyle": {
-      "rust": "P7 文本选择波",
-      "note": "随 selection"
-    },
     "DefaultTextEditingShortcuts": {
       "rust": "shortcuts::default_traversal_registry",
       "note": "Tab/Shift-Tab 已在;文本编辑系快捷键随 editable 扩展"
-    },
-    "DoNothingAndStopPropagationTextIntent": {
-      "rust": "P7 editable 波",
-      "note": "文本编辑 intent 族"
-    },
-    "DesktopTextSelectionToolbarLayoutDelegate": {
-      "rust": "P7",
-      "note": "同上"
     },
     "DisposableBuildContext": {
       "rust": "整树重装配——无挂卸生命周期",
@@ -1279,14 +1159,6 @@
       "rust": "focusable 的可聚焦开关",
       "note": "Focus 字段"
     },
-    "AutofillGroup": {
-      "rust": "P7（引擎通道位）",
-      "note": "随 editable"
-    },
-    "AnnotatedRegion": {
-      "rust": "P4 余量：注解区域查找",
-      "note": "随 AnnotatedRegionLayer"
-    },
     "AbstractLayoutBuilder": {
       "rust": "RenderSizeReporter（记录在案替身）",
       "note": "PORTING_STATUS 形态差异条"
@@ -1306,10 +1178,6 @@
     "AppLifecycleListener": {
       "rust": "platform.rs 的 lifecycle 回调",
       "note": "AppLifecycleState 已在 services"
-    },
-    "AccessibilityInspector": {
-      "rust": "-",
-      "note": "debug 工具,P10"
     },
     "FractionalOffsetTween": {
       "rust": "transitions::AlignmentTween",
@@ -1923,7 +1791,10 @@
     "UiKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
     "AppKitViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
     "PlatformViewController": "无 platform view 通路（同 PlatformViewSurface 账）",
-    "InkSparkle": "要 dart:ui 的 FragmentProgram/FragmentShader（`ui.FragmentProgram.fromAsset(\"shaders/ink_sparkle.frag\")`），整个效果就是那支片元着色器；渲染 ABI 没有着色器通路"
+    "InkSparkle": "要 dart:ui 的 FragmentProgram/FragmentShader（`ui.FragmentProgram.fromAsset(\"shaders/ink_sparkle.frag\")`），整个效果就是那支片元着色器；渲染 ABI 没有着色器通路",
+    "PerformanceOverlayLayer": "引擎栅格统计未过 ABI（同 RenderPerformanceOverlay）",
+    "ImageFilterContext": "引擎 filter 位只有 blur（同 BackdropFilter 分歧）",
+    "ImageFilterConfig": "引擎 filter 位只有 blur（同 ImageFilterContext）"
   },
   "out_of_scope_files": {
     "raw_keyboard.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",

@@ -112,6 +112,7 @@ if (enable_unittests) {
       "rustflutter/src/borders.rs",
       "rustflutter/src/crossfade.rs",
       "rustflutter/src/cupertino.rs",
+      "rustflutter/src/curves2d.rs",
       "rustflutter/src/cupertino_app.rs",
       "rustflutter/src/cupertino_controls.rs",
       "rustflutter/src/cupertino_pickers.rs",
