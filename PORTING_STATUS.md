@@ -164,6 +164,57 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 竖直在外、水平在内,而这个顺序不是随手定的(2026-08-20)
+
+新模块 `scrollable.rs`,补上 `scrollable.dart` 的三个状态类:`ScrollableState`、
+`TwoDimensionalScrollable`、`TwoDimensionalScrollableState`。**这兑现了第 60 轮欠下的那句话**——当时说
+`Scrollable` 已经在账本里映射到 `scrolling::Scroll`,那一族得先读清楚再动。覆盖率 1728/1888(91.5%)。
+测试 3091。
+
+**`deltaToScrollOrigin` 的符号值得单独写下来:滚动偏移永远沿轴向增长,但屏幕偏移只在 `down` 和
+`right` 上和它一致。** 一个向上生长的列表,把内容在 y 上搬的是**负的**同样多的像素。四个方向都钉住了。
+
+**`ensureVisible` 不在最近的那个滚动视图停下。** 它一路往外走,穿过它上面的每一个——**一个列表里的行,列
+表在页面里,三层都得动,才有人看得见它。**
+
+而其中的微妙处是 `targetRenderObject`:**它只被记录一次,然后在整趟走里保持不变。** 上游把理由连同 issue
+链接写在注释里:**最内层的目标被尽可能地露出来,只有当它已经露出来了,外层才轮到去最大化「内层那个滚动
+视图」的可见度。** 没有这条,每一层都会重新瞄准一个更大的东西,而调用方真正问的那个可能反而跑到屏幕外
+去。
+
+**这里我自己先写错了一次:** 第一版把「这一步瞄的是不是原目标」写成了 `index == 0 || true`——一个两臂都为
+真的重言式,和之前那次 tooltip 的错法一模一样。**在写成断言之前它看着像在表达一条规则。** 改成如实的两个
+字段(最内层瞄调用方给的对象、且此时还没有记录下任何目标;之后每一层瞄下面那个滚动视图、并带着已记录的
+目标),回归行才真的分得开这两种情况。
+
+---
+
+**`TwoDimensionalScrollableState` 就是两个普通的 `Scrollable`,一个套在另一个的视口里——而顺序不是随手
+定的:竖直在外,水平在内。** 上游连键的名字都这么写:`_verticalOuterScrollableKey` 和
+`_horizontalInnerScrollableKey`。**嵌套顺序决定了哪条轴先看见手势。**
+
+**而两个各自被交给了对方的键,上游给这行加的注释是「for gesture forwarding」。** 一次斜着来的拖动到了其
+中一个手里,得能去动另一个;**一个只能动自己的滚动视图,会让对角拖动根本不可能。**
+
+**回退 controller 的那套账在两个方向上都做了:** 调用方给了 controller,就没有自己要拥有的;没给,就必须
+自己造一个。`didUpdateWidget` 两边都处理——**而上游对两半都写了断言,不是只断言那个会崩的一半。** 回归行
+把「后来给了 controller」和「后来把 controller 收走了」两种转换分别钉住,`dispose` 也只销毁自己造的那些。
+
+**还有两条小的:**
+
+* **那两个 `assert` 拦的是「细节报错了自己的轴」**——一个指向左边的 `verticalDetails`,否则会造出一个和旁
+  边那个悄悄不一致的滚动视图。而**反向的轴仍然是同一条轴**(`up` 还是竖直的),回归行把这一点也分开了。
+* **`_TwoDimensionalScrollableScope.updateShouldNotify` 返回 false**,理由写在类上面的注释里:`build`
+  每次都会重建这个 scope,**于是依赖它的东西是通过那次重建被重建的,再返回 true 就是把同一件事做两遍。**
+
+**工具上也栽了一下:** 这一轮的测试用 `cat <<'EOF'` 写时被 shell 的引号解析顶回来了(报 unexpected
+EOF)。这正是之前记下过的那条规矩——**内容一旦同时穿过 shell、Python 和 Rust 三层引号,就写文件、用编辑工
+具**。换成 Write 工具一次过。
+
+验证:`cargo test --lib` 3091 绿,GN `rustflutter_unittests` 3091 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1728 accounted / 160 MISSING(91.5%)。
+
 ### 摩擦和弹簧接在一个算出来的瞬间上(2026-08-20)
 
 两个新模块 `scroll_simulation.rs`(`BouncingScrollSimulation`)与

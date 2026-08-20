@@ -200,6 +200,7 @@ if (enable_unittests) {
       "rustflutter/src/scroll_plumbing.rs",
       "rustflutter/src/scroll_simulation.rs",
       "rustflutter/src/scroll_view.rs",
+      "rustflutter/src/scrollable.rs",
       "rustflutter/src/scrollable_helpers.rs",
       "rustflutter/src/router.rs",
       "rustflutter/src/routes.rs",

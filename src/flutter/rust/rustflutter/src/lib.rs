@@ -123,6 +123,7 @@ pub mod scroll_physics;
 pub mod scroll_plumbing;
 pub mod scroll_simulation;
 pub mod scroll_view;
+pub mod scrollable;
 pub mod scrollable_helpers;
 pub mod scrollbar;
 pub mod scrolling;
