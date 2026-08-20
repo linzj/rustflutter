@@ -176,6 +176,71 @@ pub struct SemanticsFlags {
     pub is_focused: bool,
 }
 
+impl SemanticsFlags {
+    /// Upstream's `SemanticsFlags.merge`: the union.
+    ///
+    /// A flag is a claim -- "this is a button", "this is checked" -- and two
+    /// things folded into one node make both claims. Nothing here has an
+    /// off-beats-on rule, so the union is the whole of it.
+    pub fn merge(&self, other: &SemanticsFlags) -> SemanticsFlags {
+        SemanticsFlags {
+            is_button: self.is_button || other.is_button,
+            is_text_field: self.is_text_field || other.is_text_field,
+            is_header: self.is_header || other.is_header,
+            is_image: self.is_image || other.is_image,
+            is_link: self.is_link || other.is_link,
+            is_slider: self.is_slider || other.is_slider,
+            is_obscured: self.is_obscured || other.is_obscured,
+            is_read_only: self.is_read_only || other.is_read_only,
+            is_live_region: self.is_live_region || other.is_live_region,
+            has_checked_state: self.has_checked_state || other.has_checked_state,
+            is_checked: self.is_checked || other.is_checked,
+            has_enabled_state: self.has_enabled_state || other.has_enabled_state,
+            is_enabled: self.is_enabled || other.is_enabled,
+            is_selected: self.is_selected || other.is_selected,
+            is_focused: self.is_focused || other.is_focused,
+        }
+    }
+
+    /// Upstream's `SemanticsFlags.hasConflictingFlags`: whether merging these
+    /// two would describe something that cannot exist.
+    ///
+    /// **The rule is the same flag on both sides**, not two different flags.
+    /// Two buttons cannot merge into one node, because the result would be one
+    /// thing a reader can press where there were two. A button and a text
+    /// field *can*, and upstream lets them -- what stops the pairs that should
+    /// not merge is the separate role check,
+    /// [`SemanticsConfiguration::has_explicit_role`].
+    ///
+    /// This is worth stating because the plausible reading is the other one. I
+    /// wrote a test asserting a button and a text field conflict, and it was
+    /// the test that was wrong.
+    ///
+    /// Upstream's list also has an inequality at the end --
+    /// `isAccessibilityFocusBlocked != other.isAccessibilityFocusBlocked` --
+    /// which has no counterpart here because that flag is not modelled.
+    pub fn conflicts_with(&self, other: &SemanticsFlags) -> bool {
+        let both = |mine: bool, theirs: bool| mine && theirs;
+        both(self.is_button, other.is_button)
+            || both(self.is_text_field, other.is_text_field)
+            || both(self.is_header, other.is_header)
+            || both(self.is_obscured, other.is_obscured)
+            || both(self.is_image, other.is_image)
+            || both(self.is_live_region, other.is_live_region)
+            || both(self.is_read_only, other.is_read_only)
+            || both(self.is_link, other.is_link)
+            || both(self.is_slider, other.is_slider)
+            // The tri-state ones: upstream's `hasConflict` on a flag that can
+            // be unset, set true or set false. Here they are plain bools, so
+            // "unset" and "false" cannot be told apart and the conflict is the
+            // same both-true test as the rest.
+            || both(self.is_checked, other.is_checked)
+            || both(self.is_selected, other.is_selected)
+            || both(self.is_enabled, other.is_enabled)
+            || both(self.is_focused, other.is_focused)
+    }
+}
+
 /// Everything said about one thing on screen.
 ///
 /// Upstream's `SemanticsProperties`, narrowed to what the bridges below
@@ -2127,6 +2192,340 @@ impl SemanticsLabelBuilder {
 impl Default for SemanticsLabelBuilder {
     fn default() -> SemanticsLabelBuilder {
         SemanticsLabelBuilder::new()
+    }
+}
+
+// -- Accumulating what one render object has to say ---------------------------
+
+/// Upstream's `_concatAttributedString`: joins two labels, wrapping the second
+/// if it reads the other way.
+///
+/// # Not the same rules as [`SemanticsLabelBuilder`], and they live in the same
+/// upstream file
+///
+/// Both join text and put directional marks around the pieces that need them,
+/// and they disagree in three places. Worth having side by side, because
+/// reaching for the wrong one produces a label that is subtly misread:
+///
+/// | | `SemanticsLabelBuilder` | this |
+/// | --- | --- | --- |
+/// | separator | `" "` by default | always `"\n"` |
+/// | wraps when | both directions known **and** differ | they differ **and the other's is known** |
+/// | the lone/first piece | never wrapped | wrapped, then returned |
+///
+/// The second row is the one that bites: here a piece with a direction joined
+/// onto a piece with *none* counts as differing, so it is wrapped. The builder
+/// requires both to be known and so leaves it bare.
+///
+/// The third follows from where the check sits -- upstream wraps `other`
+/// *before* testing whether `this` is empty, so an empty `this` returns the
+/// already-wrapped `other`.
+fn concat_attributed_string(
+    this_string: &AttributedString,
+    this_direction: Option<TextDirection>,
+    other_string: &AttributedString,
+    other_direction: Option<TextDirection>,
+) -> AttributedString {
+    if other_string.string().is_empty() {
+        return this_string.clone();
+    }
+    let mut other = other_string.clone();
+    if this_direction != other_direction && other_direction.is_some() {
+        let embedding = match other_direction {
+            Some(TextDirection::Rtl) => crate::licenses::Unicode::RLE,
+            // `is_some` above, and the two-variant enum, leave only Ltr.
+            _ => crate::licenses::Unicode::LRE,
+        };
+        other = &(&AttributedString::new(embedding.to_string()) + &other)
+            + &AttributedString::new(crate::licenses::Unicode::PDF.to_string());
+    }
+    if this_string.string().is_empty() {
+        return other;
+    }
+    &(&this_string.clone() + &AttributedString::new("\n")) + &other
+}
+
+/// The actions a node keeps even while it is blocking user actions.
+///
+/// Upstream's `_kUnblockedUserActions`: the two accessibility-focus
+/// notifications. A blocked node still has to be *told* the reader moved onto
+/// and off it -- blocking is about refusing to act, not about refusing to know
+/// where the reader is.
+pub const UNBLOCKED_USER_ACTIONS: &[SemanticsAction] = &[
+    SemanticsAction::DidGainAccessibilityFocus,
+    SemanticsAction::DidLoseAccessibilityFocus,
+];
+
+/// Upstream `SemanticsConfiguration`: what one render object has to say, before
+/// it is decided whether it gets a node of its own.
+///
+/// # This is the accumulator, and [`SemanticsProperties`] is the result
+///
+/// A render object fills one of these in; the walk then either gives it a node
+/// or folds it into its parent's with [`absorb`]. The two types carry nearly
+/// the same fields for that reason, and the difference is that this one knows
+/// how to be merged.
+///
+/// # The field set is this crate's, not upstream's
+///
+/// Upstream's carries about forty fields, most of which describe things this
+/// port has no counterpart for -- platform view ids, link URLs, validation
+/// results, roles, input types, traversal identifiers. What is here is the set
+/// [`SemanticsProperties`] already models, which is what the bridges below
+/// actually deliver. The **merge rules** are the part worth porting, and they
+/// are the same rules whatever the field list is:
+///
+/// * a singular value is **first-wins** -- the parent's own beats the child's,
+///   because the parent is the one being described;
+/// * a string is first-wins spelled for strings, on emptiness rather than
+///   nullness;
+/// * a label or a hint **concatenates** rather than choosing, because two
+///   things merged into one node have two things to say and a reader should
+///   hear both;
+/// * flags merge and actions union.
+///
+/// [`absorb`]: SemanticsConfiguration::absorb
+#[derive(Clone, Debug, Default)]
+pub struct SemanticsConfiguration {
+    /// Upstream's `isSemanticBoundary`: whether this gets a node of its own
+    /// whatever its parent wanted.
+    pub is_semantic_boundary: bool,
+    /// Upstream's `explicitChildNodes`: children get their own nodes rather
+    /// than being folded in. [`absorb`](SemanticsConfiguration::absorb) asserts
+    /// against being called on one of these.
+    pub explicit_child_nodes: bool,
+    /// Upstream's `isMergingSemanticsOfDescendants`.
+    pub is_merging_semantics_of_descendants: bool,
+    /// Upstream's `isBlockingUserActions`: this node refuses to act, but still
+    /// hears where the reader is. See [`UNBLOCKED_USER_ACTIONS`].
+    pub is_blocking_user_actions: bool,
+    /// Upstream's `hasBeenAnnotated`: whether anything was actually said.
+    ///
+    /// The whole merge turns on it -- an un-annotated config is skipped by
+    /// [`absorb`](SemanticsConfiguration::absorb) and accepted by
+    /// [`is_compatible_with`](SemanticsConfiguration::is_compatible_with)
+    /// without further questions, because there is nothing in it to conflict.
+    pub has_been_annotated: bool,
+
+    pub label: AttributedString,
+    pub value: AttributedString,
+    pub hint: AttributedString,
+    pub increased_value: AttributedString,
+    pub decreased_value: AttributedString,
+    pub tooltip: String,
+    /// Upstream's `identifier`, whose "unset" is the empty string rather than
+    /// null -- which is why the merge tests it against `""`.
+    pub identifier: String,
+    pub text_direction: Option<TextDirection>,
+    pub flags: SemanticsFlags,
+    pub actions: Vec<SemanticsAction>,
+    pub sort_key: Option<OrdinalSortKey>,
+    pub hint_overrides: Option<SemanticsHintOverrides>,
+    pub scroll_position: Option<f32>,
+    pub scroll_extent_max: Option<f32>,
+    pub scroll_extent_min: Option<f32>,
+    pub scroll_index: Option<i32>,
+    pub scroll_child_count: Option<i32>,
+    pub index_in_parent: Option<i32>,
+    /// Upstream's `tagsForChildren`, added to with
+    /// [`add_tag_for_children`](SemanticsConfiguration::add_tag_for_children).
+    pub tags_for_children: Vec<SemanticsTag>,
+}
+
+impl SemanticsConfiguration {
+    pub fn new() -> SemanticsConfiguration {
+        SemanticsConfiguration::default()
+    }
+
+    /// Upstream's `addTagForChildren`.
+    pub fn add_tag_for_children(&mut self, tag: SemanticsTag) {
+        self.tags_for_children.push(tag);
+    }
+
+    /// The actions this config will hand over, which is not always the ones it
+    /// has. Upstream's `_effectiveActionsAsBits`.
+    fn effective_actions(&self) -> Vec<SemanticsAction> {
+        if self.is_blocking_user_actions {
+            self.actions
+                .iter()
+                .copied()
+                .filter(|action| UNBLOCKED_USER_ACTIONS.contains(action))
+                .collect()
+        } else {
+            self.actions.clone()
+        }
+    }
+
+    /// Upstream's `_hasExplicitRole`: whether this config claims to *be*
+    /// something, as opposed to merely having a trait.
+    ///
+    /// The membership is upstream's and the omission is the interesting part:
+    /// **`isButton` is not a role.** A button is a trait a node can have
+    /// alongside being something else, which is why two configs one of which is
+    /// a button are allowed to merge.
+    ///
+    /// `isHeader` is a role only on the web -- upstream guards it with
+    /// `kIsWeb`, and on every other platform a header is a trait. This crate's
+    /// hosts are Windows, Android and macOS, so it is left out.
+    pub fn has_explicit_role(&self) -> bool {
+        self.flags.is_text_field
+            || self.flags.is_slider
+            || self.flags.is_link
+            || self.flags.is_image
+    }
+
+    /// Upstream's `isCompatibleWith`: whether `other` can be folded into this
+    /// without either losing something.
+    ///
+    /// Every check is the same question in a different slot -- **would both
+    /// configs want to fill the same singular field?** Two labels can merge
+    /// because labels concatenate; two *values* cannot, because a node has one
+    /// value and a reader would hear only one of them.
+    ///
+    /// An un-annotated `other` is always compatible, and so is an un-annotated
+    /// self: nothing in an empty config can conflict with anything.
+    pub fn is_compatible_with(&self, other: Option<&SemanticsConfiguration>) -> bool {
+        let Some(other) = other else {
+            return true;
+        };
+        if !other.has_been_annotated || !self.has_been_annotated {
+            return true;
+        }
+        // Two nodes that both handle the same action would give the reader one
+        // gesture with two meanings.
+        if self
+            .actions
+            .iter()
+            .any(|action| other.actions.contains(action))
+        {
+            return false;
+        }
+        if self.flags.conflicts_with(&other.flags) {
+            return false;
+        }
+        // Two things that each claim to *be* something. Separate from the flag
+        // conflict above, and it is this check -- not that one -- that stops a
+        // text field merging with a slider.
+        if self.has_explicit_role() && other.has_explicit_role() {
+            return false;
+        }
+        // A node has one value, one set of hint overrides, one position in its
+        // parent. Two of any of those is one too many.
+        if !self.value.string().is_empty() && !other.value.string().is_empty() {
+            return false;
+        }
+        if self.hint_overrides.is_some() && other.hint_overrides.is_some() {
+            return false;
+        }
+        if self.index_in_parent.is_some() && other.index_in_parent.is_some() {
+            return false;
+        }
+        true
+    }
+
+    /// Upstream's `absorb`: folds `child` into this config.
+    ///
+    /// Assumes [`is_compatible_with`](SemanticsConfiguration::is_compatible_with)
+    /// already said yes -- upstream does too, and what happens otherwise is that
+    /// the parent's value quietly wins, which is the first-wins rule doing
+    /// exactly what it says and not what the caller meant.
+    pub fn absorb(&mut self, child: &SemanticsConfiguration) {
+        debug_assert!(
+            !self.explicit_child_nodes,
+            "a config whose children get their own nodes has nothing to absorb"
+        );
+        if !child.has_been_annotated {
+            return;
+        }
+
+        for action in child.effective_actions() {
+            if !self.actions.contains(&action) {
+                self.actions.push(action);
+            }
+        }
+        self.flags = self.flags.merge(&child.flags);
+
+        // First-wins, one slot at a time. The parent asked first.
+        self.sort_key = self.sort_key.clone().or_else(|| child.sort_key.clone());
+        self.hint_overrides = self
+            .hint_overrides
+            .clone()
+            .or_else(|| child.hint_overrides.clone());
+        self.scroll_position = self.scroll_position.or(child.scroll_position);
+        self.scroll_extent_max = self.scroll_extent_max.or(child.scroll_extent_max);
+        self.scroll_extent_min = self.scroll_extent_min.or(child.scroll_extent_min);
+        self.scroll_index = self.scroll_index.or(child.scroll_index);
+        self.scroll_child_count = self.scroll_child_count.or(child.scroll_child_count);
+        self.index_in_parent = self.index_in_parent.or(child.index_in_parent);
+
+        // **Before the labels**, because the labels are joined in this
+        // direction and it may be the child's. Upstream's line order, and
+        // moving it below the concatenation would wrap the child's label
+        // against a direction that was about to become its own.
+        self.text_direction = self.text_direction.or(child.text_direction);
+
+        if self.identifier.is_empty() {
+            self.identifier = child.identifier.clone();
+        }
+
+        self.label = concat_attributed_string(
+            &self.label,
+            self.text_direction,
+            &child.label,
+            child.text_direction,
+        );
+        // Values do not concatenate -- a node has one. First non-empty wins.
+        if self.value.string().is_empty() {
+            self.value = child.value.clone();
+        }
+        if self.increased_value.string().is_empty() {
+            self.increased_value = child.increased_value.clone();
+        }
+        if self.decreased_value.string().is_empty() {
+            self.decreased_value = child.decreased_value.clone();
+        }
+        self.hint = concat_attributed_string(
+            &self.hint,
+            self.text_direction,
+            &child.hint,
+            child.text_direction,
+        );
+        if self.tooltip.is_empty() {
+            self.tooltip = child.tooltip.clone();
+        }
+
+        self.has_been_annotated = self.has_been_annotated || child.has_been_annotated;
+    }
+
+    /// Upstream's `copy()`. A plain clone here, because nothing in this field
+    /// set is shared by reference -- upstream's copies the maps by hand for
+    /// exactly that reason.
+    pub fn copy(&self) -> SemanticsConfiguration {
+        self.clone()
+    }
+
+    /// What the walk hands on once it has decided this config gets a node.
+    ///
+    /// Not upstream's -- upstream's `SemanticsNode.updateWith` takes the config
+    /// directly. This is the seam to the [`SemanticsProperties`] this crate's
+    /// collector already speaks.
+    pub fn to_properties(&self) -> SemanticsProperties {
+        SemanticsProperties {
+            label: self.label.string().to_string(),
+            value: self.value.string().to_string(),
+            hint: self.hint.string().to_string(),
+            increased_value: self.increased_value.string().to_string(),
+            decreased_value: self.decreased_value.string().to_string(),
+            text_direction: self.text_direction,
+            flags: self.flags,
+            actions: self
+                .actions
+                .iter()
+                .fold(0, |bits, action| bits | *action as i32),
+            scroll_position: self.scroll_position.unwrap_or(f32::NAN),
+            scroll_extent_max: self.scroll_extent_max.unwrap_or(f32::NAN),
+            scroll_extent_min: self.scroll_extent_min.unwrap_or(f32::NAN),
+        }
     }
 }
 
@@ -4131,5 +4530,378 @@ mod tests {
         );
         SemanticsBinding::remove_enabled_listener(b);
         SemanticsBinding::reset_for_tests();
+    }
+
+    // -- SemanticsConfiguration: the merge ----------------------------------------
+
+    fn said(label: &str) -> SemanticsConfiguration {
+        SemanticsConfiguration {
+            label: AttributedString::new(label),
+            has_been_annotated: true,
+            ..SemanticsConfiguration::new()
+        }
+    }
+
+    #[test]
+    fn absorbing_an_unannotated_child_changes_nothing() {
+        // There is nothing in it to take. Upstream's first line.
+        let mut parent = said("Submit");
+        let before = parent.label.string().to_string();
+        parent.absorb(&SemanticsConfiguration::new());
+        assert_eq!(parent.label.string(), before);
+    }
+
+    #[test]
+    fn labels_are_joined_rather_than_chosen_between() {
+        // Two things merged into one node have two things to say, and a reader
+        // should hear both. The separator is a newline, which is upstream's.
+        let mut parent = said("Submit");
+        parent.absorb(&said("disabled"));
+        assert_eq!(parent.label.string(), "Submit\ndisabled");
+    }
+
+    #[test]
+    fn a_value_is_taken_only_when_the_parent_has_none() {
+        // A node has one value; the parent asked first.
+        let mut parent = said("Volume");
+        parent.value = AttributedString::new("7");
+        let mut child = said("");
+        child.value = AttributedString::new("9");
+        parent.absorb(&child);
+        assert_eq!(parent.value.string(), "7", "the parent's own stands");
+
+        let mut empty_parent = said("Volume");
+        empty_parent.absorb(&child);
+        assert_eq!(empty_parent.value.string(), "9", "and is taken when absent");
+    }
+
+    #[test]
+    fn a_singular_number_is_first_wins() {
+        let mut parent = said("List");
+        parent.scroll_index = Some(3);
+        let mut child = said("Row");
+        child.scroll_index = Some(9);
+        child.scroll_child_count = Some(40);
+
+        parent.absorb(&child);
+        assert_eq!(parent.scroll_index, Some(3), "the parent's own");
+        assert_eq!(
+            parent.scroll_child_count,
+            Some(40),
+            "and the child's where the parent had none"
+        );
+    }
+
+    #[test]
+    fn an_identifiers_unset_is_the_empty_string_and_not_an_absence() {
+        // Upstream's field is a plain String, so the merge tests it against
+        // `""` rather than null -- which means an identifier deliberately set
+        // to empty cannot be told from one never set.
+        let mut parent = said("a");
+        let mut child = said("b");
+        child.identifier = "row-3".to_string();
+        parent.absorb(&child);
+        assert_eq!(parent.identifier, "row-3");
+
+        let mut named = said("a");
+        named.identifier = "mine".to_string();
+        named.absorb(&child);
+        assert_eq!(named.identifier, "mine");
+    }
+
+    #[test]
+    fn the_direction_is_settled_before_the_labels_are_joined() {
+        // Upstream's line order, and it matters: the child's label is wrapped
+        // against the direction the *result* will have. Taking the child's
+        // direction after joining would compare its label against a direction
+        // that was about to become its own, and leave the marks off.
+        let mut parent = said("");
+        // Parent has no direction of its own; the child's becomes the node's.
+        let mut child = said("hello");
+        child.text_direction = Some(TextDirection::Rtl);
+
+        parent.absorb(&child);
+        assert_eq!(parent.text_direction, Some(TextDirection::Rtl));
+        assert_eq!(
+            parent.label.string(),
+            "hello",
+            "no marks: by the time the labels joined, the directions agreed"
+        );
+    }
+
+    #[test]
+    fn a_child_that_reads_the_other_way_is_wrapped_into_the_label() {
+        let mut parent = said("Welcome");
+        parent.text_direction = Some(TextDirection::Ltr);
+        let mut child = said("\u{645}\u{631}\u{62d}\u{628}\u{627}");
+        child.text_direction = Some(TextDirection::Rtl);
+
+        parent.absorb(&child);
+        assert!(parent.label.string().contains(Unicode::RLE));
+        assert!(parent.label.string().contains(Unicode::PDF));
+        assert!(parent.label.string().starts_with("Welcome\n"));
+    }
+
+    #[test]
+    fn flags_merge_and_actions_union() {
+        let mut parent = said("Row");
+        parent.flags.has_checked_state = true;
+        parent.actions.push(SemanticsAction::Tap);
+
+        let mut child = said("Check");
+        child.flags.is_checked = true;
+        child.actions.push(SemanticsAction::LongPress);
+        child.actions.push(SemanticsAction::Tap);
+
+        parent.absorb(&child);
+        assert!(parent.flags.has_checked_state && parent.flags.is_checked);
+        assert_eq!(parent.actions.len(), 2, "Tap was not added twice");
+        assert!(parent.actions.contains(&SemanticsAction::LongPress));
+    }
+
+    #[test]
+    fn a_blocked_child_hands_over_only_its_focus_notifications() {
+        // Blocking is about refusing to *act*, not about refusing to know where
+        // the reader is -- so the two accessibility-focus actions survive and
+        // nothing else does.
+        let mut parent = said("Behind a barrier");
+        let mut child = said("Button");
+        child.is_blocking_user_actions = true;
+        child.actions.push(SemanticsAction::Tap);
+        child
+            .actions
+            .push(SemanticsAction::DidGainAccessibilityFocus);
+        child
+            .actions
+            .push(SemanticsAction::DidLoseAccessibilityFocus);
+
+        parent.absorb(&child);
+        assert!(!parent.actions.contains(&SemanticsAction::Tap), "refused");
+        assert!(
+            parent
+                .actions
+                .contains(&SemanticsAction::DidGainAccessibilityFocus)
+        );
+        assert!(
+            parent
+                .actions
+                .contains(&SemanticsAction::DidLoseAccessibilityFocus)
+        );
+    }
+
+    // -- SemanticsConfiguration: compatibility ------------------------------------
+
+    #[test]
+    fn anything_is_compatible_with_nothing() {
+        let config = said("a");
+        assert!(config.is_compatible_with(None));
+        assert!(config.is_compatible_with(Some(&SemanticsConfiguration::new())));
+        assert!(SemanticsConfiguration::new().is_compatible_with(Some(&config)));
+    }
+
+    #[test]
+    fn two_labels_may_merge_and_two_values_may_not() {
+        // The distinction the whole check is built on: labels concatenate, so
+        // two of them are fine; a node has one value, and a reader would hear
+        // only one of two.
+        assert!(said("a").is_compatible_with(Some(&said("b"))));
+
+        let mut one = said("a");
+        one.value = AttributedString::new("7");
+        let mut two = said("b");
+        two.value = AttributedString::new("9");
+        assert!(!one.is_compatible_with(Some(&two)));
+    }
+
+    #[test]
+    fn two_handlers_for_one_gesture_cannot_merge() {
+        let mut one = said("a");
+        one.actions.push(SemanticsAction::Tap);
+        let mut two = said("b");
+        two.actions.push(SemanticsAction::Tap);
+        assert!(!one.is_compatible_with(Some(&two)));
+
+        two.actions = vec![SemanticsAction::LongPress];
+        assert!(
+            one.is_compatible_with(Some(&two)),
+            "different gestures are fine"
+        );
+    }
+
+    #[test]
+    fn a_button_and_a_text_field_may_merge_because_a_button_is_not_a_role() {
+        // The plausible reading is that they cannot, and that is what I wrote
+        // first. Upstream's `hasConflictingFlags` tests the *same* flag on both
+        // sides, and `isButton` is absent from `_hasExplicitRole` -- a button
+        // is a trait a node can have alongside being something else.
+        let mut button = said("Send");
+        button.flags.is_button = true;
+        let mut field = said("Message");
+        field.flags.is_text_field = true;
+        assert!(button.is_compatible_with(Some(&field)));
+        assert!(!button.has_explicit_role(), "a button claims no role");
+        assert!(field.has_explicit_role());
+    }
+
+    #[test]
+    fn two_of_the_same_kind_cannot_merge() {
+        let mut one = said("Send");
+        one.flags.is_button = true;
+        let mut two = said("Cancel");
+        two.flags.is_button = true;
+        assert!(
+            !one.is_compatible_with(Some(&two)),
+            "one thing to press where there were two"
+        );
+    }
+
+    #[test]
+    fn two_things_that_each_claim_a_role_cannot_merge_even_when_the_roles_differ() {
+        // This is the check that does the work the flag conflict is often
+        // assumed to do.
+        let mut field = said("Message");
+        field.flags.is_text_field = true;
+        let mut slider = said("Volume");
+        slider.flags.is_slider = true;
+        assert!(
+            !field.flags.conflicts_with(&slider.flags),
+            "different flags"
+        );
+        assert!(
+            !field.is_compatible_with(Some(&slider)),
+            "but both claim a role"
+        );
+    }
+
+    #[test]
+    fn state_flags_do_not_conflict_the_way_kind_flags_do() {
+        // One node contributing "checkable" and another "focused" describes a
+        // thing that is both, which is a real thing.
+        let mut checkable = said("a");
+        checkable.flags.has_checked_state = true;
+        let mut focused = said("b");
+        focused.flags.is_focused = true;
+        assert!(checkable.is_compatible_with(Some(&focused)));
+        assert!(!checkable.flags.conflicts_with(&focused.flags));
+    }
+
+    #[test]
+    fn two_positions_in_one_parent_cannot_merge() {
+        let mut one = said("a");
+        one.index_in_parent = Some(1);
+        let mut two = said("b");
+        two.index_in_parent = Some(2);
+        assert!(!one.is_compatible_with(Some(&two)));
+    }
+
+    // -- concat_attributed_string, against its sibling -----------------------------
+
+    #[test]
+    fn joining_labels_uses_a_newline_where_the_label_builder_uses_a_space() {
+        // Two functions in the same upstream file that both join text with
+        // direction marks, and they disagree. Reaching for the wrong one gives
+        // a label that is subtly misread.
+        let joined = concat_attributed_string(
+            &AttributedString::new("one"),
+            None,
+            &AttributedString::new("two"),
+            None,
+        );
+        assert_eq!(joined.string(), "one\ntwo");
+
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part("one");
+        builder.add_part("two");
+        assert_eq!(builder.build(), "one two");
+    }
+
+    #[test]
+    fn a_known_direction_joined_onto_an_unknown_one_counts_as_differing() {
+        // The row that bites. The label builder needs *both* directions known
+        // before it wraps; this one wraps whenever they differ and the other's
+        // is known -- and `None != Some(Ltr)`.
+        let joined = concat_attributed_string(
+            &AttributedString::new("one"),
+            None,
+            &AttributedString::new("two"),
+            Some(TextDirection::Ltr),
+        );
+        assert!(
+            joined.string().contains(Unicode::LRE),
+            "{}",
+            joined.string()
+        );
+
+        let mut builder = SemanticsLabelBuilder::new();
+        builder.add_part("one");
+        builder.add_part_in("two", TextDirection::Ltr);
+        assert!(
+            !builder.build().contains(Unicode::LRE),
+            "the builder leaves it bare in the same situation"
+        );
+    }
+
+    #[test]
+    fn a_lone_contrary_string_is_wrapped_here_and_bare_in_the_builder() {
+        // Upstream wraps `other` *before* testing whether `this` is empty, so
+        // an empty `this` returns the already-wrapped `other`. The builder
+        // returns its single part untouched.
+        let joined = concat_attributed_string(
+            &AttributedString::new(""),
+            Some(TextDirection::Ltr),
+            &AttributedString::new("\u{645}"),
+            Some(TextDirection::Rtl),
+        );
+        assert_eq!(
+            joined.string(),
+            format!("{}{}{}", Unicode::RLE, "\u{645}", Unicode::PDF)
+        );
+
+        let mut builder = SemanticsLabelBuilder::new().with_text_direction(TextDirection::Ltr);
+        builder.add_part_in("\u{645}", TextDirection::Rtl);
+        assert_eq!(builder.build(), "\u{645}");
+    }
+
+    #[test]
+    fn joining_an_empty_other_hands_back_this_one() {
+        let joined = concat_attributed_string(
+            &AttributedString::new("one"),
+            None,
+            &AttributedString::new(""),
+            Some(TextDirection::Rtl),
+        );
+        assert_eq!(joined.string(), "one", "no separator, no marks");
+    }
+
+    // -- The seam to the collector -------------------------------------------------
+
+    #[test]
+    fn a_config_becomes_the_properties_the_collector_already_speaks() {
+        let mut config = said("Volume");
+        config.value = AttributedString::new("7");
+        config.actions.push(SemanticsAction::Increase);
+        config.actions.push(SemanticsAction::Decrease);
+        config.flags.is_slider = true;
+        config.scroll_position = Some(12.0);
+
+        let properties = config.to_properties();
+        assert_eq!(properties.label, "Volume");
+        assert_eq!(properties.value, "7");
+        assert!(properties.flags.is_slider);
+        assert_eq!(
+            properties.actions,
+            SemanticsAction::Increase as i32 | SemanticsAction::Decrease as i32
+        );
+        assert_eq!(properties.scroll_position, 12.0);
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_about_scrolling_reports_the_not_an_answer() {
+        // `NaN` is what this crate's `SemanticsProperties` uses for "does not
+        // scroll", so an absent position has to become one rather than a zero
+        // that reads as "scrolled to the top".
+        let properties = said("Button").to_properties();
+        assert!(properties.scroll_position.is_nan());
+        assert!(properties.scroll_extent_max.is_nan());
     }
 }
