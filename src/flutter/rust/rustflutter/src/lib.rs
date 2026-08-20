@@ -87,6 +87,7 @@ pub mod keep_alive;
 pub mod keyboard;
 pub mod layout_builder;
 pub mod licenses;
+pub mod list_tiles;
 pub mod list_wheel;
 pub mod localizations;
 pub mod magnifier;

@@ -164,6 +164,47 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 那个枚举值按错了的那条轴命名(2026-08-20)
+
+新模块 `list_tiles.rs`,一次收掉 `CheckboxListTile`、`RadioListTile`、`SwitchListTile`。覆盖率
+1799/1888(95.3%)。测试 3336。
+
+**三个一起读,读出了一件它们各自都不会说的事。**
+
+`ListTileControlAffinity` 有三个值:leading、trailing、**platform**。而 platform 的文档写着「position
+the control relative to the text in the fashion that is typical for the **current platform**」。
+
+**没有任何一个实现看过平台。** 它们看的是自己包着哪种控件:
+
+```dart
+// checkbox_list_tile.dart 和 switch_list_tile.dart
+ListTileControlAffinity.trailing || ListTileControlAffinity.platform => (secondary, control),
+// radio_list_tile.dart
+ListTileControlAffinity.leading  || ListTileControlAffinity.platform => (control, secondary),
+```
+
+**所以这个值是有意义的——它的意思是「这类控件习惯待的位置」:单选惯常在前,复选和开关惯常在后。它只是按错
+了的那条轴命名:它随控件变,不随平台变。**
+
+按它实际的行为移植了,名字保留上游给的。回归行把三种控件在 `Platform` 下的落位分别钉住,并断言另外两个显
+式值**完全不随控件变**——那才是 platform 那一条的对照。
+
+---
+
+其余几条:
+
+* **`assert(tristate || value != null)`**——和第 61 轮那个 toggleable 是同一条规则:**只有三态控件可以是
+  null。**
+* **`assert(isThreeLine != true || subtitle != null)`**——**第三行总得从哪儿来。**
+* **整个瓦片被包在 `MergeSemantics` 里。** 这既是「对读屏器来说它是**一个**东西,而不是一个复选框旁边有段
+  无关的文字」,**也正是点标签能起作用的原因:标签不是第二个控件,它是这一个的一部分。**
+* 而 affinity 的回退链是三层:widget → ListTileTheme → `platform`。**一个主题能一次把一整列的控件挪到另
+  一边。**
+
+验证:`cargo test --lib` 3336 绿,GN `rustflutter_unittests` 3336 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。覆盖率 1799 accounted / 89 MISSING(95.3%)。
+
 ### 等一秒,是因为不等的话读者什么都听不见(2026-08-20)
 
 新模块 `expansion.rs`,收掉 `ExpansionTile`(`expansion_tile.dart`)与 `ExpandIcon`

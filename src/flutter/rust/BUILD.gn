@@ -167,6 +167,7 @@ if (enable_unittests) {
       "rustflutter/src/lib.rs",
       "rustflutter/src/layout_builder.rs",
       "rustflutter/src/licenses.rs",
+      "rustflutter/src/list_tiles.rs",
       "rustflutter/src/list_wheel.rs",
       "rustflutter/src/localizations.rs",
       "rustflutter/src/magnifier.rs",
