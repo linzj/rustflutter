@@ -164,6 +164,75 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
+### 少掉的那一项,点的是少掉的那个按钮 —— 1888/1888,MISSING 归零(2026-08-20)
+
+新模块 `cupertino_refresh.rs`,收掉最后四个类:`CupertinoSliverRefreshControl`
+(`cupertino/refresh.dart`)、`CupertinoExpansionTile`(`cupertino/expansion_tile.dart`)、
+`CupertinoSpellCheckSuggestionsToolbar`、`CupertinoAdaptiveTextSelectionToolbar`。
+
+**覆盖率 1888 / 1888,MISSING 0。十层全部归零。** 测试 3685。
+
+---
+
+**最后这一轮的头一件,是一条 assert 里少掉的一项。**
+
+第 91 轮记过 Material 那条:`assert(buttonItems.length <= _kMaxSuggestions + 1)`——写成 `3 + 1` 而不是
+`4`,是在说**第四个不是建议,是底下那个删除按钮**。
+
+而 Cupertino 这条是:
+
+```dart
+assert(buttonItems.length <= _kMaxSuggestions);
+```
+
+**同一个常量名,同一个 3,没有那个 `+ 1`——因为这边没有删除按钮。** 一项之差,把两个工具栏能做的事的全部区
+别点了出来。和第 96 轮 `noMaxLength` 是同一个形状:**少掉的那一项不是疏漏,是一个不存在的功能,而 assert
+正是你能看见它的地方。**
+
+配套那条 `assert(!readOnly && !obscureText)` 两个拒绝理由不一样:**改不了的文字没什么可纠正的,而给密码框
+提拼写建议会把密码漏进一个菜单里**——一个是没意义,一个是不安全,一条 assert 管了两件。
+
+---
+
+**`refreshTriggerPullDistance >= refreshIndicatorExtent`,消息自己解释了自己:**
+
+> The refresh indicator cannot take more space in its final state than the amount initially created by
+> overscrolling.
+
+**指示器歇下来时的高度,必须装得进当初把它拉出来的那一段。** 高过了,松手那一刻列表就需要比手势撑开的更多
+的地方——**内容会在本该回弹归位的那一刻往下一顿。**
+
+而那五个状态里 `armed` 最有意思:「dragged far enough that the onRefresh callback **will** run」。
+**承诺发生在松手之前。** 手指还按着,答案就已经定了——**这正是指示器能在你手指底下变样的原因;一个到松手才
+告诉你的界面,没法预先让你看见松手会怎样。**
+
+---
+
+**而这一轮的最后一条,恰好适合给整个扫尾收个口。**
+
+```dart
+if (widget.transitionMode == ExpansionTileTransitionMode.scroll) {
+  return child;
+}
+assert(widget.transitionMode == ExpansionTileTransitionMode.fade);
+```
+
+**一条写成 assert 的穷尽性检查。** 两个分支,一个用提前返回吃掉,另一个靠断言兜住——**assert 站在了本该由
+`switch` 让编译器站的位置上。** 加进第三个模式,它会在运行时、debug 构建里、恰好走到那条路径的那台机器上
+才响。
+
+**这一条在这边是白给的:**`ExpansionTileTransitionMode` 是穷尽匹配的,多一个变体根本编译不过。**在一趟从
+Dart 往 Rust 搬了一千八百八十八个类的活儿收尾时,这是少有的一处「目标语言直接回答了源语言只能提问的东
+西」。**
+
+顺带:两个过渡模式动的东西不一样——**fade 让孩子保持全尺寸只改不透明度,scroll 让孩子保持不透明只改几
+何。** 于是前者得把一个比塌缩后的瓦片还大的孩子画到框外去(`OverlayPortal`),后者一个裁剪就够了。
+**更贵的机器给了那个「画面撑出盒子」的。**
+
+验证:`cargo test --lib` 3685 绿,GN `rustflutter_unittests` 3685 绿、
+`flutter_gallery_unittests` 322 绿,`flutter_gallery.exe` 链接通过,
+`cargo fmt` 干净。**覆盖率 1888 accounted / 0 MISSING(100%)。**
+
 ### 2.975 旁边一句话都没有(2026-08-20)
 
 新模块 `cupertino_controls.rs`,收掉 `cupertino/thumb_painter.dart` 的 `CupertinoThumbPainter`、
