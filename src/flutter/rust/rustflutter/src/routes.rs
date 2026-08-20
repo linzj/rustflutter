@@ -967,8 +967,189 @@ impl WillPopScope {
     }
 }
 
+/// Upstream `PageRoute`: a modal route that fills the screen.
+///
+/// Its two transition rules are a matched pair, and both say the same thing:
+/// **a page route only animates alongside another page route.** A dialog
+/// appearing over a page must not make the page slide, and a page arriving
+/// under a dialog must not make the dialog move. Anything that is not a full
+/// screen of content is not part of the same movement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageRoute {
+    pub modal: ModalRoute,
+    /// Upstream's `fullscreenDialog`, which changes two things: the transition
+    /// (up from the bottom rather than in from the side) and whether the back
+    /// swipe works at all.
+    pub fullscreen_dialog: bool,
+    pub allow_snapshotting: bool,
+    /// Whether the platform offers a back swipe for this route at all.
+    pub platform_pop_gesture_available: bool,
+}
+
+impl Default for PageRoute {
+    fn default() -> PageRoute {
+        PageRoute::new()
+    }
+}
+
+impl PageRoute {
+    pub fn new() -> PageRoute {
+        PageRoute {
+            modal: ModalRoute::new(),
+            fullscreen_dialog: false,
+            allow_snapshotting: true,
+            platform_pop_gesture_available: true,
+        }
+    }
+
+    pub fn with_fullscreen_dialog(mut self, fullscreen: bool) -> Self {
+        self.fullscreen_dialog = fullscreen;
+        self
+    }
+
+    /// Upstream's `opaque`, which is **always true** for a page route: it
+    /// fills the screen, so nothing behind it needs building.
+    pub fn opaque(&self) -> bool {
+        true
+    }
+
+    /// Upstream's `canTransitionTo` and `canTransitionFrom`, which are the
+    /// same test in both directions.
+    pub fn can_transition_with_page_route(&self, other_is_page_route: bool) -> bool {
+        other_is_page_route
+    }
+
+    /// Upstream's `popGestureEnabled` override, with its comment attached:
+    /// "Fullscreen dialogs aren't dismissible by back swipe."
+    ///
+    /// They come up from the bottom, so there is no edge a swipe would start
+    /// from that means anything -- and a dialog is usually a question that
+    /// wants an answer rather than a page to wander back out of.
+    pub fn pop_gesture_enabled(&self) -> bool {
+        !self.fullscreen_dialog && self.platform_pop_gesture_available
+    }
+}
+
+/// Upstream `PageRouteBuilder`: a page route defined by callbacks instead of a
+/// subclass.
+///
+/// Its defaults are the interesting part, because they are the answers a
+/// caller gets for saying nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageRouteBuilder {
+    pub page: PageRoute,
+    pub transition_micros: i64,
+    pub reverse_transition_micros: i64,
+    pub opaque: bool,
+    pub barrier_dismissible: bool,
+    pub maintain_state: bool,
+    /// Whether a `transitionsBuilder` was supplied.
+    pub has_transitions_builder: bool,
+}
+
+impl Default for PageRouteBuilder {
+    fn default() -> PageRouteBuilder {
+        PageRouteBuilder::new()
+    }
+}
+
+impl PageRouteBuilder {
+    /// Upstream's default transition, in both directions: 300ms.
+    pub const DEFAULT_TRANSITION_MICROS: i64 = 300_000;
+
+    pub fn new() -> PageRouteBuilder {
+        PageRouteBuilder {
+            page: PageRoute::new(),
+            transition_micros: Self::DEFAULT_TRANSITION_MICROS,
+            reverse_transition_micros: Self::DEFAULT_TRANSITION_MICROS,
+            opaque: true,
+            // Upstream's default is **false**, unlike a dialog's: a page fills
+            // the screen, so there is no outside to tap.
+            barrier_dismissible: false,
+            maintain_state: true,
+            has_transitions_builder: false,
+        }
+    }
+
+    /// Upstream's `_defaultTransitionsBuilder`, which returns the child
+    /// **unchanged**.
+    ///
+    /// So a `PageRouteBuilder` with no transitions builder does not fade or
+    /// slide -- it appears. That is a deliberate default for a class whose
+    /// point is one-off routes: a caller who wanted a transition would have
+    /// said which.
+    pub fn default_transition(child: u64) -> u64 {
+        child
+    }
+
+    pub fn with_transitions_builder(mut self) -> Self {
+        self.has_transitions_builder = true;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_page_route_only_animates_alongside_another_page_route() {
+        // A dialog over a page must not make the page slide, and a page under
+        // a dialog must not make the dialog move.
+        let route = PageRoute::new();
+        assert!(route.can_transition_with_page_route(true));
+        assert!(!route.can_transition_with_page_route(false));
+    }
+
+    #[test]
+    fn a_page_route_is_always_opaque_because_it_fills_the_screen() {
+        assert!(PageRoute::new().opaque());
+        assert!(PageRoute::new().with_fullscreen_dialog(true).opaque());
+    }
+
+    #[test]
+    fn a_fullscreen_dialog_is_not_dismissible_by_back_swipe() {
+        // It comes up from the bottom, so there is no edge a swipe would start
+        // from that means anything.
+        assert!(PageRoute::new().pop_gesture_enabled());
+        assert!(
+            !PageRoute::new()
+                .with_fullscreen_dialog(true)
+                .pop_gesture_enabled()
+        );
+    }
+
+    #[test]
+    fn a_platform_with_no_back_swipe_disables_it_for_every_page() {
+        let mut route = PageRoute::new();
+        route.platform_pop_gesture_available = false;
+        assert!(!route.pop_gesture_enabled());
+    }
+
+    #[test]
+    fn a_route_builder_with_no_transition_makes_the_page_appear() {
+        // A deliberate default for a class whose point is one-off routes: a
+        // caller who wanted a transition would have said which.
+        let builder = PageRouteBuilder::new();
+        assert!(!builder.has_transitions_builder);
+        assert_eq!(PageRouteBuilder::default_transition(7), 7, "unchanged");
+    }
+
+    #[test]
+    fn a_page_has_no_outside_to_tap_so_its_barrier_is_not_dismissible() {
+        // Unlike a dialog's, which is.
+        let builder = PageRouteBuilder::new();
+        assert!(!builder.barrier_dismissible);
+        assert!(RawDialogRoute::new().popup.modal.barrier_dismissible);
+    }
+
+    #[test]
+    fn the_route_builder_uses_the_same_duration_in_both_directions() {
+        let builder = PageRouteBuilder::new();
+        assert_eq!(builder.transition_micros, 300_000);
+        assert_eq!(builder.reverse_transition_micros, 300_000);
+        assert!(builder.maintain_state && builder.opaque);
+    }
+
     #[test]
     fn a_will_pop_scope_registers_when_dependencies_resolve_and_not_before() {
         // The enclosing route is found through the context, and the context

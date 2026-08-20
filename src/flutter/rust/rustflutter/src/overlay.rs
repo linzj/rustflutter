@@ -629,8 +629,207 @@ impl OverlayPortal {
     }
 }
 
+/// Upstream `ContextMenuController`: shows a context menu, one at a time.
+///
+/// The one-at-a-time rule is enforced by **static** state -- upstream keeps a
+/// single `_shownInstance` and a single `_menuOverlayEntry` for the whole
+/// application -- and its comment says why plainly: "only one context menu can
+/// be displayed at one time". Two would be two answers to one right-click.
+///
+/// It goes into the **root** overlay rather than the nearest one, so a menu
+/// raised from inside a dialog is not clipped by the dialog.
+#[derive(Debug, Default)]
+pub struct ContextMenuController {
+    pub id: u64,
+    removals: usize,
+}
+
+/// The application-wide slot the controllers share.
+#[derive(Debug, Default)]
+pub struct ContextMenuSlot {
+    shown: Option<u64>,
+    entry: Option<u64>,
+    builds: usize,
+    next_entry: u64,
+}
+
+impl ContextMenuSlot {
+    pub fn new() -> ContextMenuSlot {
+        ContextMenuSlot {
+            shown: None,
+            entry: None,
+            builds: 0,
+            next_entry: 1,
+        }
+    }
+
+    pub fn shown(&self) -> Option<u64> {
+        self.shown
+    }
+
+    pub fn entry(&self) -> Option<u64> {
+        self.entry
+    }
+
+    /// How many times the overlay entry was asked to rebuild.
+    pub fn builds(&self) -> usize {
+        self.builds
+    }
+}
+
+impl ContextMenuController {
+    pub fn new(id: u64) -> ContextMenuController {
+        ContextMenuController { id, removals: 0 }
+    }
+
+    /// How many times upstream's `onRemove` would have fired.
+    pub fn removals(&self) -> usize {
+        self.removals
+    }
+
+    pub fn is_shown(&self, slot: &ContextMenuSlot) -> bool {
+        slot.shown == Some(self.id)
+    }
+
+    /// Upstream's `show`, and the early return is the careful part: showing a
+    /// menu **that is already shown** swaps the builder and rebuilds the
+    /// existing entry rather than tearing it down and putting a new one up.
+    ///
+    /// Rebuilding in place is what lets a menu update -- a paste button
+    /// becoming available when the clipboard answers -- without the menu
+    /// blinking out and back.
+    pub fn show(&self, slot: &mut ContextMenuSlot, others: &mut [&mut ContextMenuController]) {
+        if self.is_shown(slot) {
+            slot.builds += 1;
+            return;
+        }
+        Self::remove_any(slot, others);
+        slot.entry = Some(slot.next_entry);
+        slot.next_entry += 1;
+        slot.shown = Some(self.id);
+    }
+
+    /// Upstream's static `removeAny`, which takes down whichever menu is up --
+    /// including somebody else's.
+    pub fn remove_any(slot: &mut ContextMenuSlot, others: &mut [&mut ContextMenuController]) {
+        slot.entry = None;
+        if let Some(shown) = slot.shown.take() {
+            for controller in others.iter_mut() {
+                if controller.id == shown {
+                    controller.removals += 1;
+                }
+            }
+        }
+    }
+
+    /// Upstream's instance `remove`, which does **nothing if another menu is
+    /// currently shown**.
+    ///
+    /// The difference from `removeAny` is the whole reason both exist: a
+    /// widget tearing down should take its own menu with it, and must not take
+    /// down the one that replaced it.
+    pub fn remove(&mut self, slot: &mut ContextMenuSlot) {
+        if !self.is_shown(slot) {
+            return;
+        }
+        slot.entry = None;
+        slot.shown = None;
+        self.removals += 1;
+    }
+
+    /// Upstream's `markNeedsBuild`, which **asserts the menu is shown**.
+    /// Rebuilding a menu that is not up is a caller error rather than a no-op.
+    pub fn mark_needs_build(&self, slot: &mut ContextMenuSlot) {
+        debug_assert!(self.is_shown(slot), "the context menu is not shown");
+        if self.is_shown(slot) {
+            slot.builds += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_one_context_menu_can_be_up_at_a_time() {
+        // Two would be two answers to one right-click.
+        let mut slot = ContextMenuSlot::new();
+        let first = ContextMenuController::new(1);
+        let mut first_owned = ContextMenuController::new(1);
+        let second = ContextMenuController::new(2);
+
+        first.show(&mut slot, &mut []);
+        assert!(first.is_shown(&slot));
+
+        second.show(&mut slot, &mut [&mut first_owned]);
+        assert!(second.is_shown(&slot));
+        assert!(!first.is_shown(&slot));
+        assert_eq!(
+            first_owned.removals(),
+            1,
+            "and the one it replaced was told"
+        );
+    }
+
+    #[test]
+    fn showing_a_menu_that_is_already_up_rebuilds_it_in_place() {
+        // Which is what lets a paste button appear when the clipboard answers,
+        // without the menu blinking out and back.
+        let mut slot = ContextMenuSlot::new();
+        let controller = ContextMenuController::new(1);
+        controller.show(&mut slot, &mut []);
+        let entry = slot.entry();
+
+        controller.show(&mut slot, &mut []);
+        assert_eq!(slot.entry(), entry, "the same overlay entry");
+        assert_eq!(slot.builds(), 1, "rebuilt rather than replaced");
+    }
+
+    #[test]
+    fn removing_your_own_menu_does_not_take_down_the_one_that_replaced_it() {
+        // Which is the whole reason remove and removeAny both exist: a widget
+        // tearing down should take its own menu, and only its own.
+        let mut slot = ContextMenuSlot::new();
+        let mut first = ContextMenuController::new(1);
+        let second = ContextMenuController::new(2);
+
+        first.show(&mut slot, &mut []);
+        second.show(&mut slot, &mut []);
+
+        first.remove(&mut slot);
+        assert!(second.is_shown(&slot), "untouched");
+        assert_eq!(first.removals(), 0, "and its onRemove did not fire");
+    }
+
+    #[test]
+    fn remove_any_takes_down_whichever_menu_is_up() {
+        let mut slot = ContextMenuSlot::new();
+        let mut owned = ContextMenuController::new(1);
+        let controller = ContextMenuController::new(1);
+        controller.show(&mut slot, &mut []);
+
+        ContextMenuController::remove_any(&mut slot, &mut [&mut owned]);
+        assert_eq!(slot.shown(), None);
+        assert_eq!(slot.entry(), None);
+        assert_eq!(owned.removals(), 1);
+    }
+
+    #[test]
+    fn removing_when_nothing_is_up_is_harmless() {
+        let mut slot = ContextMenuSlot::new();
+        let mut controller = ContextMenuController::new(1);
+        controller.remove(&mut slot);
+        ContextMenuController::remove_any(&mut slot, &mut []);
+        assert_eq!(slot.shown(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "the context menu is not shown")]
+    fn rebuilding_a_menu_that_is_not_up_is_a_caller_error() {
+        let mut slot = ContextMenuSlot::new();
+        ContextMenuController::new(1).mark_needs_build(&mut slot);
+    }
+
     use super::*;
 
     fn overlay_with(entries: Vec<OverlayEntry>) -> OverlayState {

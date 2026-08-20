@@ -808,8 +808,135 @@ impl NavigationNotification {
     }
 }
 
+/// Upstream `NavigatorPopHandler`: lets a nested navigator handle the back
+/// press before the outer one does.
+///
+/// The whole widget is one inversion, and it reads backwards until it is
+/// named:
+///
+/// ```dart
+/// canPop: !widget.enabled || _canPop,
+/// // and, from the notification:
+/// final bool nextCanPop = !notification.canHandlePop;
+/// ```
+///
+/// **When the subtree says it *can* handle a pop, this scope reports that it
+/// *cannot* pop.** Refusing here is what stops the outer navigator taking the
+/// press, which leaves the nested one free to take it instead. Saying "yes I
+/// can pop" would pop this whole route and take the nested navigator's entire
+/// history with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavigatorPopHandler {
+    /// Upstream's `enabled`, true by default. When false the handler stands
+    /// aside entirely -- `canPop` is true and the outer navigator behaves as
+    /// though the handler were not there.
+    pub enabled: bool,
+    /// Upstream's `_canPop`, derived from the last notification seen.
+    can_pop: bool,
+    pops: usize,
+}
+
+impl Default for NavigatorPopHandler {
+    fn default() -> NavigatorPopHandler {
+        NavigatorPopHandler::new()
+    }
+}
+
+impl NavigatorPopHandler {
+    pub fn new() -> NavigatorPopHandler {
+        NavigatorPopHandler {
+            enabled: true,
+            can_pop: true,
+            pops: 0,
+        }
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// How many times upstream's `onPop` would have fired.
+    pub fn pops(&self) -> usize {
+        self.pops
+    }
+
+    /// What the enclosing `PopScope` reports.
+    pub fn can_pop(&self) -> bool {
+        !self.enabled || self.can_pop
+    }
+
+    /// Upstream's `NotificationListener<NavigationNotification>` callback.
+    ///
+    /// Note it returns **false** -- the notification keeps bubbling. A handler
+    /// further out needs to hear the same thing, since it has the same
+    /// decision to make about the navigator between them.
+    pub fn on_navigation_notification(&mut self, notification: NavigationNotification) -> bool {
+        self.can_pop = !notification.can_handle_pop;
+        false
+    }
+
+    /// Upstream's `onPopInvokedWithResult`, which **returns early when the pop
+    /// went through**.
+    ///
+    /// `onPop` is for the case where the pop was refused: that refusal is this
+    /// widget saying "the nested navigator will take it", and the callback is
+    /// where the caller makes it do so.
+    pub fn on_pop_invoked(&mut self, did_pop: bool) {
+        if did_pop {
+            return;
+        }
+        self.pops += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_subtree_that_can_handle_a_pop_makes_this_scope_refuse_to_pop() {
+        // The inversion: refusing here is what stops the outer navigator
+        // taking the press, leaving the nested one free to take it.
+        let mut handler = NavigatorPopHandler::new();
+        assert!(handler.can_pop(), "nothing nested has spoken yet");
+
+        handler.on_navigation_notification(NavigationNotification::new(true));
+        assert!(
+            !handler.can_pop(),
+            "the nested navigator can handle it, so we say we cannot"
+        );
+
+        handler.on_navigation_notification(NavigationNotification::new(false));
+        assert!(handler.can_pop(), "and now the outer one should have it");
+    }
+
+    #[test]
+    fn a_disabled_handler_stands_aside_entirely() {
+        let mut handler = NavigatorPopHandler::new().with_enabled(false);
+        handler.on_navigation_notification(NavigationNotification::new(true));
+        assert!(handler.can_pop(), "as though it were not there");
+    }
+
+    #[test]
+    fn the_notification_keeps_bubbling_past_this_handler() {
+        // A handler further out has the same decision to make about the
+        // navigator between them.
+        let mut handler = NavigatorPopHandler::new();
+        assert!(!handler.on_navigation_notification(NavigationNotification::new(true)));
+    }
+
+    #[test]
+    fn on_pop_fires_only_when_the_pop_was_refused() {
+        // The refusal is this widget saying "the nested navigator will take
+        // it", and the callback is where the caller makes it do so.
+        let mut handler = NavigatorPopHandler::new();
+        handler.on_pop_invoked(true);
+        assert_eq!(handler.pops(), 0, "it popped; nothing to arrange");
+
+        handler.on_pop_invoked(false);
+        assert_eq!(handler.pops(), 1);
+    }
+
     use super::*;
 
     fn decisions(records: &[RouteTransitionRecord]) -> Vec<(u64, Option<TransitionDecision>)> {
