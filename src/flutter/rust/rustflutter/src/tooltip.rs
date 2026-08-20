@@ -52,6 +52,85 @@ pub fn tooltip_placement(vertical_offset: f32, prefer_below: bool) -> Placement 
     )
 }
 
+impl crate::framework::Component for Tooltip {
+    /// Upstream's `Tooltip.build`, which is where the three-step chain runs.
+    ///
+    /// This is the path that consults the theme; [`Tooltip::build`] is the same
+    /// assembly on upstream's bare defaults, for a caller with no context in
+    /// hand.
+    fn build(&self, context: &mut crate::framework::BuildContext) -> AnyWidget {
+        let resolved = crate::component_themes::ResolvedTooltip::of(context);
+        let (vertical_offset, prefer_below) = self.placement_from(&resolved);
+
+        let bubble: Rc<dyn Fn() -> AnyWidget> = match &self.message {
+            // Upstream's standard bubble: the decoration, the padding, the
+            // text style and a *minimum* height -- a floor, so a long message
+            // wraps and grows rather than being squeezed into it.
+            Some(message) => {
+                let message = message.clone();
+                let style = resolved.text_style.clone();
+                let align = resolved.text_align;
+                let padding = resolved.padding;
+                let margin = resolved.margin;
+                let height = resolved.height;
+                let decoration = resolved.decoration.clone();
+                let scheme = crate::theme::ThemeData::of(context).color_scheme;
+                Rc::new(move || {
+                    let message = message.clone();
+                    let style = style.clone();
+                    let decoration = decoration.clone();
+                    crate::framework::leaf(move || {
+                        let mut text = crate::widgets::Text::new(message.clone()).with_align(align);
+                        if let Some(style) = &style {
+                            text = text.with_style(style.clone());
+                        } else {
+                            // Upstream's default is the theme's body text in
+                            // the *inverse* surface colour: the bubble is a
+                            // dark card on a light app and the other way
+                            // round, so its text has to be the inverse too.
+                            text = text.with_color(scheme.on_inverse_surface());
+                        }
+                        let mut container = crate::widgets::Container::new()
+                            .with_padding(padding)
+                            .with_margin(margin)
+                            .with_child(text);
+                        match &decoration {
+                            Some(decoration) => {
+                                container = container.with_decoration(decoration.clone());
+                            }
+                            None => {
+                                container = container
+                                    .with_color(scheme.inverse_surface())
+                                    .with_corner_radius(4.0);
+                            }
+                        }
+                        crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                            min_width: 0.0,
+                            max_width: f32::INFINITY,
+                            min_height: height,
+                            max_height: f32::INFINITY,
+                        })
+                        .with_child(container)
+                    })
+                })
+            }
+            None => Rc::clone(&self.bubble),
+        };
+
+        Tooltip {
+            id: self.id,
+            controller: self.controller.clone(),
+            anchor: self.anchor.clone(),
+            child: RefCell::new(self.child.borrow_mut().take()),
+            bubble,
+            vertical_offset: self.vertical_offset,
+            prefer_below: self.prefer_below,
+            message: None,
+        }
+        .assemble(vertical_offset, prefer_below)
+    }
+}
+
 /// A tooltip: `child` as it was, and `bubble` above it while the pointer rests
 /// on it.
 ///
@@ -64,8 +143,21 @@ pub struct Tooltip {
     anchor: Anchor,
     child: RefCell<Option<AnyWidget>>,
     bubble: Rc<dyn Fn() -> AnyWidget>,
-    vertical_offset: f32,
-    prefer_below: bool,
+    /// `None` defers to the tooltip theme, then to upstream's default. Both
+    /// are three-step chains -- widget, theme, default -- and holding the
+    /// widget's step as an `Option` is what makes the first step tellable from
+    /// the third.
+    vertical_offset: Option<f32>,
+    prefer_below: Option<bool>,
+    /// Upstream's `message`: the text of a *standard* tooltip, built from the
+    /// theme rather than by the caller.
+    ///
+    /// `Tooltip::new` takes a closure and builds nothing itself, which is the
+    /// right shape for a caller with something unusual to show and the wrong
+    /// one for the ordinary case -- a caller who wants what every other tooltip
+    /// looks like should not have to rebuild it, and would get the padding and
+    /// the colours slightly wrong if they did.
+    message: Option<String>,
 }
 
 impl Tooltip {
@@ -76,18 +168,19 @@ impl Tooltip {
             anchor: Anchor::new(),
             child: RefCell::new(Some(child)),
             bubble: Rc::new(bubble),
-            vertical_offset: DEFAULT_VERTICAL_OFFSET,
-            prefer_below: true,
+            vertical_offset: None,
+            prefer_below: None,
+            message: None,
         }
     }
 
     pub fn with_vertical_offset(mut self, offset: f32) -> Self {
-        self.vertical_offset = offset;
+        self.vertical_offset = Some(offset);
         self
     }
 
     pub fn with_prefer_below(mut self, prefer_below: bool) -> Self {
-        self.prefer_below = prefer_below;
+        self.prefer_below = Some(prefer_below);
         self
     }
 
@@ -106,15 +199,56 @@ impl Tooltip {
         self.id
     }
 
+    /// The tooltip on upstream's defaults, for a caller with no theme to read
+    /// -- `component(tooltip)` is the one that consults it.
     pub fn build(self) -> AnyWidget {
+        let vertical_offset = self
+            .vertical_offset
+            .unwrap_or(crate::component_themes::ResolvedTooltip::VERTICAL_OFFSET);
+        let prefer_below = self
+            .prefer_below
+            .unwrap_or(crate::component_themes::ResolvedTooltip::PREFER_BELOW);
+        self.assemble(vertical_offset, prefer_below)
+    }
+
+    /// Upstream's `Tooltip(message:)`: the ordinary tooltip, whose bubble this
+    /// builds from the theme. Only reachable through the `Component`
+    /// implementation, because the theme needs a context to be read from.
+    pub fn message(id: u64, child: AnyWidget, message: impl Into<String>) -> Tooltip {
+        let mut tooltip = Tooltip::new(id, child, || {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        });
+        tooltip.message = Some(message.into());
+        tooltip
+    }
+
+    /// The widget's step of the three-step chain: its own numbers where it has
+    /// them, the resolution's where it does not.
+    ///
+    /// A method rather than two lines inside `build` so that it can be asked as
+    /// well as used -- where a bubble ends up is decided inside an overlay this
+    /// harness cannot reach into, and a test of `build` alone could only check
+    /// that it did not crash.
+    pub fn placement_from(
+        &self,
+        resolved: &crate::component_themes::ResolvedTooltip,
+    ) -> (f32, bool) {
+        (
+            self.vertical_offset.unwrap_or(resolved.vertical_offset),
+            self.prefer_below.unwrap_or(resolved.prefer_below),
+        )
+    }
+
+    /// The tooltip with its placement decided. `build` and the `Component`
+    /// implementation differ only in where the two numbers come from.
+    fn assemble(self, vertical_offset: f32, prefer_below: bool) -> AnyWidget {
         let Tooltip {
             id,
             controller,
             anchor,
             child,
             bubble,
-            vertical_offset,
-            prefer_below,
+            ..
         } = self;
         let child = child.borrow_mut().take().expect("a tooltip has a child");
 
@@ -351,5 +485,191 @@ mod tests {
         assert!(!should_show_after(100.0, 500.0));
         assert!(should_show_after(500.0, 500.0));
         assert!(should_show_after(900.0, 500.0));
+    }
+}
+
+#[cfg(test)]
+mod tooltip_theme_tests {
+    use super::*;
+    use crate::component_themes::{ResolvedTooltip, TooltipTheme, TooltipThemeData};
+    use crate::editable_text::TargetPlatform;
+    use crate::framework::{BuildContext, Component, ElementTree, component, provide};
+    use crate::theme::ThemeData;
+
+    struct Reader(Rc<RefCell<Option<ResolvedTooltip>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(ResolvedTooltip::of(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve_on(platform: TargetPlatform, data: TooltipThemeData) -> ResolvedTooltip {
+        let seen = Rc::new(RefCell::new(None));
+        let mut theme = ThemeData::light();
+        theme.platform = platform;
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TooltipTheme::new(data, component(Reader(Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn resolve(data: TooltipThemeData) -> ResolvedTooltip {
+        resolve_on(TargetPlatform::Windows, data)
+    }
+
+    #[test]
+    fn a_touch_tooltip_is_taller_and_wider_than_a_desktop_one() {
+        // Not generosity: the same tooltip at the distance it will actually be
+        // read from. A desktop one is summoned by a mouse resting exactly on
+        // something; a touch one appears under a hand and is read at arm's
+        // length.
+        let desktop = resolve_on(TargetPlatform::Windows, TooltipThemeData::new());
+        let touch = resolve_on(TargetPlatform::Android, TooltipThemeData::new());
+        assert_eq!(desktop.height, 24.0);
+        assert_eq!(touch.height, 32.0);
+        assert_eq!(desktop.padding.left, 8.0);
+        assert_eq!(touch.padding.left, 16.0);
+    }
+
+    #[test]
+    fn only_the_horizontal_padding_changes_with_the_platform() {
+        // The height is what gives a touch tooltip its room; vertical padding
+        // on top of that would fight it.
+        for platform in [TargetPlatform::Windows, TargetPlatform::IOS] {
+            assert_eq!(
+                resolve_on(platform, TooltipThemeData::new()).padding.top,
+                4.0
+            );
+        }
+    }
+
+    #[test]
+    fn every_desktop_agrees_and_so_does_every_phone() {
+        for platform in [
+            TargetPlatform::Windows,
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+        ] {
+            assert_eq!(resolve_on(platform, TooltipThemeData::new()).height, 24.0);
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::IOS,
+            TargetPlatform::Fuchsia,
+        ] {
+            assert_eq!(resolve_on(platform, TooltipThemeData::new()).height, 32.0);
+        }
+    }
+
+    #[test]
+    fn a_theme_that_sets_the_height_takes_the_platform_out_of_it() {
+        let mut data = TooltipThemeData::new();
+        data.height = Some(50.0);
+        assert_eq!(
+            resolve_on(TargetPlatform::Windows, data.clone()).height,
+            50.0
+        );
+        assert_eq!(resolve_on(TargetPlatform::Android, data).height, 50.0);
+    }
+
+    #[test]
+    fn the_defaults_are_upstreams_and_not_invented() {
+        let resolved = resolve(TooltipThemeData::new());
+        assert_eq!(resolved.vertical_offset, 24.0);
+        assert!(resolved.prefer_below, "below unless there is no room");
+        assert_eq!(
+            resolved.margin,
+            crate::render::EdgeInsets::ZERO,
+            "a tooltip is placed against its target; a margin is a second \
+             opinion about where that is"
+        );
+        assert_eq!(
+            resolved.wait_duration,
+            std::time::Duration::ZERO,
+            "a tooltip summoned by a long press has already been waited for"
+        );
+        assert_eq!(
+            resolved.show_duration,
+            std::time::Duration::from_millis(1500)
+        );
+        assert!(!resolved.exclude_from_semantics);
+    }
+
+    #[test]
+    fn the_theme_beats_every_default_it_sets() {
+        let mut data = TooltipThemeData::new();
+        data.vertical_offset = Some(9.0);
+        data.prefer_below = Some(false);
+        data.show_duration = Some(std::time::Duration::from_secs(9));
+        let resolved = resolve(data);
+        assert_eq!(resolved.vertical_offset, 9.0);
+        assert!(!resolved.prefer_below);
+        assert_eq!(resolved.show_duration, std::time::Duration::from_secs(9));
+        assert_eq!(
+            resolved.wait_duration,
+            std::time::Duration::ZERO,
+            "and leaves alone what it did not set"
+        );
+    }
+
+    #[test]
+    fn the_widgets_own_numbers_beat_the_themes() {
+        // Three steps, and the widget is the first. Asked through the method
+        // `build` itself calls.
+        let mut data = TooltipThemeData::new();
+        data.vertical_offset = Some(100.0);
+        data.prefer_below = Some(false);
+        let resolved = resolve(data);
+
+        let plain = Tooltip::new(1, crate::framework::leaf(|| crate::widgets::Empty), || {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        });
+        assert_eq!(plain.placement_from(&resolved), (100.0, false));
+
+        let mine = Tooltip::new(1, crate::framework::leaf(|| crate::widgets::Empty), || {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        })
+        .with_vertical_offset(5.0)
+        .with_prefer_below(true);
+        assert_eq!(mine.placement_from(&resolved), (5.0, true));
+    }
+
+    #[test]
+    fn an_unset_widget_offset_is_told_apart_from_one_set_to_the_default() {
+        // Which is the whole reason the widget's step is an Option: a caller
+        // asking for exactly 24 must not be overruled by a theme.
+        let plain = Tooltip::new(1, crate::framework::leaf(|| crate::widgets::Empty), || {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        });
+        assert_eq!(plain.vertical_offset, None);
+
+        let explicit = Tooltip::new(1, crate::framework::leaf(|| crate::widgets::Empty), || {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        })
+        .with_vertical_offset(ResolvedTooltip::VERTICAL_OFFSET);
+        assert_eq!(
+            explicit.vertical_offset,
+            Some(ResolvedTooltip::VERTICAL_OFFSET)
+        );
+    }
+
+    #[test]
+    fn a_message_tooltip_builds_its_own_bubble_and_a_closure_one_does_not() {
+        assert!(
+            Tooltip::message(1, crate::framework::leaf(|| crate::widgets::Empty), "Copy")
+                .message
+                .is_some()
+        );
+        assert!(
+            Tooltip::new(1, crate::framework::leaf(|| crate::widgets::Empty), || {
+                crate::framework::leaf(|| crate::widgets::Empty)
+            })
+            .message
+            .is_none()
+        );
     }
 }

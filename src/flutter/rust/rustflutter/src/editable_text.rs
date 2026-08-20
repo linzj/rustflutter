@@ -53,6 +53,27 @@ impl TargetPlatform {
     /// briefly reveal a password character. A desktop keyboard gives real
     /// feedback -- the reader can feel the keys -- so the reveal is a phone
     /// affordance and stays one.
+    /// The platform this build is actually running on.
+    ///
+    /// Upstream's `defaultTargetPlatform`, which reads the host at run time;
+    /// here it is decided at compile time, because a Rust binary is built for
+    /// one host and cannot be asked to be another. A caller who wants another
+    /// answer sets [`crate::theme::ThemeData::platform`], which is the same
+    /// override upstream offers.
+    pub const fn host() -> TargetPlatform {
+        if cfg!(target_os = "windows") {
+            TargetPlatform::Windows
+        } else if cfg!(target_os = "macos") {
+            TargetPlatform::MacOS
+        } else if cfg!(target_os = "android") {
+            TargetPlatform::Android
+        } else if cfg!(target_os = "ios") {
+            TargetPlatform::IOS
+        } else {
+            TargetPlatform::Linux
+        }
+    }
+
     pub fn is_mobile(self) -> bool {
         matches!(
             self,

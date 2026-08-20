@@ -34,6 +34,7 @@ use crate::animation::Tween;
 use crate::borders::{BorderRadiusGeometry, BorderSide, EdgeInsetsGeometry, ShapeBorder};
 use crate::color_scheme::ColorScheme;
 use crate::controls::TooltipTriggerMode;
+use crate::editable_text::TargetPlatform;
 use crate::engine::{Color, TextAlign, TextStyle};
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::painting::StrokeCap;
@@ -1026,6 +1027,93 @@ impl ResolvedBadge {
                 Offset::new(asked.dx, asked.dy + 8.0)
             },
             text_style: data.text_style.clone(),
+        }
+    }
+}
+
+/// What a tooltip is drawn and placed with, once the widget, the theme and the
+/// defaults have each had their say -- upstream's `Tooltip.build`.
+///
+/// # Half the defaults depend on the platform
+///
+/// A tooltip is 24 tall with 8 of horizontal padding on a desktop and 32 with
+/// 16 on a phone, and that is not arbitrary. A desktop tooltip is summoned by a
+/// mouse resting exactly on something and read from a foot away; a touch one is
+/// summoned by a long press, appears under a hand, and is read at arm's length.
+/// The bigger one is not more generous, it is the same tooltip at the distance
+/// it will actually be read from.
+///
+/// Upstream reads `Theme.of(context).platform` for this, which is why
+/// [`ThemeData::platform`] exists and is overridable: it is the switch, and a
+/// developer previewing another platform expects the tooltip to follow.
+pub struct ResolvedTooltip {
+    /// The minimum height. Upstream's `height`, which is a floor and not a
+    /// fixed size -- a long message wraps and grows.
+    pub height: f32,
+    pub padding: EdgeInsets,
+    pub margin: EdgeInsets,
+    pub vertical_offset: f32,
+    pub prefer_below: bool,
+    pub exclude_from_semantics: bool,
+    pub decoration: Option<crate::decoration::Decoration>,
+    pub text_style: Option<TextStyle>,
+    pub text_align: TextAlign,
+    pub wait_duration: std::time::Duration,
+    pub show_duration: std::time::Duration,
+}
+
+impl ResolvedTooltip {
+    /// Upstream's `_defaultVerticalOffset`.
+    pub const VERTICAL_OFFSET: f32 = 24.0;
+    /// Upstream's `_defaultPreferBelow`.
+    pub const PREFER_BELOW: bool = true;
+    /// Upstream's `_defaultShowDuration`.
+    pub const SHOW_DURATION: std::time::Duration = std::time::Duration::from_millis(1500);
+    /// Upstream's `_defaultWaitDuration`, which is **zero**: a tooltip summoned
+    /// by a long press has already been waited for.
+    pub const WAIT_DURATION: std::time::Duration = std::time::Duration::ZERO;
+
+    /// Upstream's `_getDefaultTooltipHeight`.
+    pub fn default_height(platform: TargetPlatform) -> f32 {
+        if platform.is_mobile() { 32.0 } else { 24.0 }
+    }
+
+    /// Upstream's `_getDefaultPadding`. Only the horizontal half changes: the
+    /// vertical padding is 4 everywhere, because the height is what gives a
+    /// touch tooltip its room and padding on top of that would fight it.
+    pub fn default_padding(platform: TargetPlatform) -> EdgeInsets {
+        EdgeInsets::symmetric(if platform.is_mobile() { 16.0 } else { 8.0 }, 4.0)
+    }
+
+    pub fn of(context: &mut BuildContext) -> ResolvedTooltip {
+        let data = TooltipTheme::of(context);
+        let platform = ThemeData::of(context).platform;
+        let direction = crate::direction::current_direction();
+        ResolvedTooltip {
+            height: data
+                .height
+                .unwrap_or_else(|| ResolvedTooltip::default_height(platform)),
+            padding: data
+                .padding
+                .map(|padding| padding.resolve(direction))
+                .unwrap_or_else(|| ResolvedTooltip::default_padding(platform)),
+            // Upstream's `_defaultMargin` is `EdgeInsets.zero`: a tooltip is
+            // placed against its target, and a margin would be a second opinion
+            // about where that is.
+            margin: data
+                .margin
+                .map(|margin| margin.resolve(direction))
+                .unwrap_or(EdgeInsets::ZERO),
+            vertical_offset: data
+                .vertical_offset
+                .unwrap_or(ResolvedTooltip::VERTICAL_OFFSET),
+            prefer_below: data.prefer_below.unwrap_or(ResolvedTooltip::PREFER_BELOW),
+            exclude_from_semantics: data.exclude_from_semantics.unwrap_or(false),
+            decoration: data.decoration.clone(),
+            text_style: data.text_style.clone(),
+            text_align: data.text_align.unwrap_or(TextAlign::Start),
+            wait_duration: data.wait_duration.unwrap_or(ResolvedTooltip::WAIT_DURATION),
+            show_duration: data.show_duration.unwrap_or(ResolvedTooltip::SHOW_DURATION),
         }
     }
 }

@@ -60,6 +60,7 @@ use crate::component_themes::{
     ToggleButtonsThemeData, TooltipThemeData, Typography,
 };
 use crate::components::Theme;
+use crate::editable_text::TargetPlatform;
 use crate::engine::Color;
 use crate::framework::{AnyWidget, BuildContext, provide};
 use crate::platform::Brightness;
@@ -172,6 +173,15 @@ impl Default for VisualDensity {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThemeData {
     pub brightness: Brightness,
+    /// Upstream's `platform`, which is what the *adaptive* defaults are read
+    /// against.
+    ///
+    /// It is on the theme rather than read from the host directly because
+    /// upstream lets it be overridden: a developer showing what an app looks
+    /// like on another platform sets this, and everything that adapts follows.
+    /// [`crate::component_themes::ResolvedTooltip`] is the case in hand -- a
+    /// tooltip is shorter and tighter on a desktop.
+    pub platform: TargetPlatform,
     pub color_scheme: ColorScheme,
     pub visual_density: VisualDensity,
 
@@ -290,6 +300,7 @@ impl ThemeData {
         };
         ThemeData {
             brightness,
+            platform: TargetPlatform::host(),
             color_scheme,
             visual_density: VisualDensity::STANDARD,
             canvas_color: color_scheme.surface,
@@ -623,6 +634,7 @@ impl ThemeData {
         let nearer = if t < 0.5 { a } else { b };
         ThemeData {
             brightness: nearer.brightness,
+            platform: nearer.platform,
             color_scheme: ColorScheme::lerp(&a.color_scheme, &b.color_scheme, t),
             visual_density: VisualDensity::lerp(a.visual_density, b.visual_density, t),
             canvas_color: mix(a.canvas_color, b.canvas_color),
@@ -833,6 +845,47 @@ impl ThemeData {
             .inherited::<ThemeData>()
             .map(|data| (*data).clone())
             .unwrap_or_else(ThemeData::fallback)
+    }
+}
+
+#[cfg(test)]
+mod platform_field_tests {
+    use super::*;
+
+    #[test]
+    fn lerping_two_themes_keeps_a_platform_rather_than_inventing_one() {
+        // The platform is not a number and cannot be interpolated, so it comes
+        // from whichever end is nearer -- the same rule the rest of the
+        // non-numeric fields follow. Taking a fixed one would make every
+        // theme transition briefly claim to be running somewhere else, and
+        // everything adaptive would flicker.
+        let mut light = ThemeData::light();
+        light.platform = TargetPlatform::Android;
+        let mut dark = ThemeData::dark();
+        dark.platform = TargetPlatform::MacOS;
+
+        assert_eq!(
+            ThemeData::lerp(&light, &dark, 0.1).platform,
+            TargetPlatform::Android
+        );
+        assert_eq!(
+            ThemeData::lerp(&light, &dark, 0.9).platform,
+            TargetPlatform::MacOS
+        );
+    }
+
+    #[test]
+    fn a_theme_defaults_to_the_host_it_is_running_on() {
+        // One machine cannot tell `host()` from that machine's own name, so
+        // this pins the *chain* -- the default is whatever `host()` says --
+        // and not the value. What `host()` maps each target to is decided at
+        // compile time and would need a second target to check.
+        assert_eq!(ThemeData::light().platform, TargetPlatform::host());
+        assert_eq!(
+            ThemeData::dark().platform,
+            ThemeData::light().platform,
+            "and both brightnesses agree, which is checkable here"
+        );
     }
 }
 
