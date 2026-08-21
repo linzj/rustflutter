@@ -10502,3 +10502,24 @@ selection_color），28 → 16。
 
 剩下 16 条是队列，各在 `cupertino_refresh`、`paginated_data_table`、`render`、
 `semantics`、`services/system` 里，都是同一形状：merge/回退链的方向没人测。
+
+## 顺序扫查清零，以及一条**因为什么都没发生而通过**的测试（2026-08-21）
+
+把上一轮那 16 条清完了：`AnimationStyle::at_most` 四个字段、
+`CupertinoAdaptiveTextSelectionToolbar::is_empty` 的 `children ?? buttonItems`、
+`PaginatedDataTable` 的行高两条、`RenderSliverList::seed_extent`、
+`SemanticsConfiguration::absorb` 五个滚动字段、`SystemUiOverlayStyle::copy_with`。
+**`python tools/order_sweep.py` 现在报 0。**
+
+写这批测试的时候自己踩了一个更深的坑。`SemanticsConfiguration::absorb` 开头有
+`if !child.has_been_annotated { return; }`，而我构造 child 时没设那个标志——于是
+**absorb 什么都没做**，而我那条测试断言的是 parent 自己的值，所以它**照样通过**。
+`absorb` 就算是个空函数它也通过。是姊妹测试（「只有 child 有的字段要浮上来」）
+炸了才把它揪出来。
+
+这跟工具的立意是同一件事：一条测试单看很完整，而它成立的理由可能和被测的东西
+毫无关系。**测「什么被保留了」的测试，在什么都没发生时最容易通过。**
+
+顺带记下工具的一个盲点：`copy_with` 里八个字段只有两个被扫到——另外六个的接收者
+换了行，而 `x.field.or(y.field)` 这个模式只匹配同一行上的接收者和字段。补的测试
+把八个都覆盖了，但**工具只看得见其中两个**。

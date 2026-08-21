@@ -10320,7 +10320,12 @@ impl RenderSliverList {
 
     /// The extent each child may be assumed to take: the exact one when there
     /// is one, otherwise the estimate.
-    fn seed_extent(&self) -> f32 {
+    ///
+    /// `pub(crate)` so the direction can be asserted: with only one of the two
+    /// ever set, which is asked first is invisible, and
+    /// `tools/order_sweep.py` found it by swapping them and watching nothing
+    /// fail.
+    pub(crate) fn seed_extent(&self) -> f32 {
         self.item_extent
             .or(self.estimated_extent)
             .unwrap_or(crate::scrolling::DEFAULT_ITEM_ESTIMATE)
@@ -23154,5 +23159,32 @@ mod custom_painter_semantics_tests {
             .with_tag(SemanticsTag::new("marked"));
         assert!(dressed.transform.is_some());
         assert_eq!(dressed.tags.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod seed_extent_direction_tests {
+    use super::*;
+
+    fn list() -> RenderSliverList {
+        RenderSliverList::new(0, |_| RenderRef::new(crate::widgets::Empty))
+    }
+
+    #[test]
+    fn an_exact_item_extent_is_used_ahead_of_the_estimate() {
+        // A list told what its children measure does not guess, even when it
+        // was also given a guess to fall back on.
+        let list = list().with_item_extent(40.0).with_estimated_extent(90.0);
+        assert_eq!(list.seed_extent(), 40.0);
+    }
+
+    #[test]
+    fn the_estimate_answers_only_when_there_is_no_exact_extent() {
+        assert_eq!(list().with_estimated_extent(90.0).seed_extent(), 90.0);
+        assert_eq!(
+            list().seed_extent(),
+            crate::scrolling::DEFAULT_ITEM_ESTIMATE,
+            "and neither given falls through to the port's own"
+        );
     }
 }

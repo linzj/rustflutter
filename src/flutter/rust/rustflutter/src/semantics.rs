@@ -6233,3 +6233,57 @@ mod placeholder_tag_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod merge_first_wins_tests {
+    use super::*;
+
+    /// A configuration with every scroll field set, so each `or` has something
+    /// on both sides and its direction is visible.
+    ///
+    /// `has_been_annotated` matters: `absorb` returns early without it, so a
+    /// child built without it is absorbed as nothing at all -- and a test that
+    /// then checked the parent's own values would pass whatever `absorb` did.
+    /// The first draft of these tests did exactly that.
+    fn filled(base: f32) -> SemanticsConfiguration {
+        let mut config = SemanticsConfiguration::new();
+        config.has_been_annotated = true;
+        config.scroll_position = Some(base);
+        config.scroll_extent_max = Some(base + 1.0);
+        config.scroll_extent_min = Some(base + 2.0);
+        config.scroll_index = Some(base as i32 + 3);
+        config.scroll_child_count = Some(base as i32 + 4);
+        config.index_in_parent = Some(base as i32 + 5);
+        config
+    }
+
+    #[test]
+    fn the_parent_wins_every_scroll_field_and_not_just_the_indexed_one() {
+        // First-wins, one slot at a time: the parent asked first. Two of these
+        // six were tested and four were not, because each test set the field on
+        // one side only -- which shows that *something* comes through, not
+        // which side it came from.
+        let mut parent = filled(100.0);
+        parent.absorb(&filled(200.0));
+
+        assert_eq!(parent.scroll_position, Some(100.0));
+        assert_eq!(parent.scroll_extent_max, Some(101.0));
+        assert_eq!(parent.scroll_extent_min, Some(102.0));
+        assert_eq!(parent.scroll_index, Some(103));
+        assert_eq!(parent.scroll_child_count, Some(104));
+        assert_eq!(parent.index_in_parent, Some(105));
+    }
+
+    #[test]
+    fn a_field_only_the_child_has_still_comes_up() {
+        // The other half of "first wins": an empty slot is filled by whoever
+        // has something for it.
+        let mut parent = SemanticsConfiguration::new();
+        parent.scroll_position = Some(1.0);
+        parent.absorb(&filled(200.0));
+
+        assert_eq!(parent.scroll_position, Some(1.0), "its own");
+        assert_eq!(parent.scroll_extent_max, Some(201.0), "and the child's");
+        assert_eq!(parent.index_in_parent, Some(205));
+    }
+}

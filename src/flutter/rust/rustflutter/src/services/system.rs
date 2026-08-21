@@ -1158,7 +1158,13 @@ impl SystemUiOverlayStyle {
         system_status_bar_contrast_enforced: None,
     };
 
-    /// Upstream `copyWith`.
+    /// Upstream `copyWith`: the argument's fields where it has them, this
+    /// one's where it does not.
+    ///
+    /// The direction is the opposite of a `merge` and it is worth saying so:
+    /// `copyWith` is *this style, amended*, so the amendment wins. Every field
+    /// is `other.x.or(self.x)`, and a test that sets a field on one side only
+    /// cannot tell the two apart.
     pub fn copy_with(&self, other: &SystemUiOverlayStyle) -> SystemUiOverlayStyle {
         SystemUiOverlayStyle {
             system_navigation_bar_color: other
@@ -1788,5 +1794,65 @@ mod cursor_tests {
         assert!(session.is_activated());
         session.dispose();
         assert!(session.is_disposed());
+    }
+}
+
+#[cfg(test)]
+mod copy_with_direction_tests {
+    use super::*;
+
+    /// Every field set, so each `or` has something on both sides.
+    fn all(nav: u32, bright: Brightness) -> SystemUiOverlayStyle {
+        SystemUiOverlayStyle {
+            system_navigation_bar_color: Some(Color(nav)),
+            system_navigation_bar_divider_color: Some(Color(nav + 1)),
+            system_navigation_bar_icon_brightness: Some(bright),
+            system_navigation_bar_contrast_enforced: Some(true),
+            status_bar_color: Some(Color(nav + 2)),
+            status_bar_brightness: Some(bright),
+            status_bar_icon_brightness: Some(bright),
+            system_status_bar_contrast_enforced: Some(true),
+        }
+    }
+
+    #[test]
+    fn the_amendment_wins_every_field_and_not_just_the_first() {
+        // `copyWith` is *this style, amended*, so the argument wins -- the
+        // opposite direction from a `merge`, which is why it is worth a test
+        // of its own. `tools/order_sweep.py` found two of these eight; the
+        // other six it could not see, because their receivers span lines and
+        // its pattern only matches a receiver and its field on one line.
+        let base = all(0x1000_0000, Brightness::Dark);
+        let amended = all(0x2000_0000, Brightness::Light);
+        let result = base.copy_with(&amended);
+
+        assert_eq!(result.system_navigation_bar_color, Some(Color(0x2000_0000)));
+        assert_eq!(
+            result.system_navigation_bar_divider_color,
+            Some(Color(0x2000_0001))
+        );
+        assert_eq!(
+            result.system_navigation_bar_icon_brightness,
+            Some(Brightness::Light)
+        );
+        assert_eq!(result.status_bar_color, Some(Color(0x2000_0002)));
+        assert_eq!(result.status_bar_brightness, Some(Brightness::Light));
+        assert_eq!(result.status_bar_icon_brightness, Some(Brightness::Light));
+    }
+
+    #[test]
+    fn a_field_the_amendment_leaves_alone_keeps_what_it_had() {
+        let base = all(0x1000_0000, Brightness::Dark);
+        let sparse = SystemUiOverlayStyle {
+            status_bar_color: Some(Color(0x3000_0000)),
+            ..SystemUiOverlayStyle::default()
+        };
+        let result = base.copy_with(&sparse);
+        assert_eq!(result.status_bar_color, Some(Color(0x3000_0000)), "amended");
+        assert_eq!(
+            result.system_navigation_bar_color,
+            Some(Color(0x1000_0000)),
+            "and the rest is as it was"
+        );
     }
 }

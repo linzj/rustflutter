@@ -446,3 +446,43 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod empty_direction_tests {
+    use super::*;
+
+    #[test]
+    fn children_are_consulted_before_button_items() {
+        // `(children ?? buttonItems)` -- with only one of the two set, which
+        // one is asked first cannot be seen. A sheet given an empty list of
+        // children and a non-empty list of button items is empty: the caller
+        // said children, and an empty list is an answer.
+        let mut sheet = CupertinoAdaptiveTextSelectionToolbar::new(0);
+        sheet.child_count = Some(0);
+        sheet.button_item_count = Some(3);
+        assert!(
+            sheet.is_empty(),
+            "an empty children list is still the answer"
+        );
+
+        sheet.child_count = Some(3);
+        sheet.button_item_count = Some(0);
+        assert!(!sheet.is_empty());
+    }
+
+    #[test]
+    fn button_items_answer_only_when_there_are_no_children_at_all() {
+        let mut sheet = CupertinoAdaptiveTextSelectionToolbar::new(0);
+        sheet.child_count = None;
+        sheet.button_item_count = Some(2);
+        assert!(!sheet.is_empty());
+
+        sheet.button_item_count = Some(0);
+        assert!(sheet.is_empty());
+    }
+
+    #[test]
+    fn neither_given_is_empty() {
+        assert!(CupertinoAdaptiveTextSelectionToolbar::new(0).is_empty());
+    }
+}

@@ -2506,3 +2506,58 @@ mod train_hopping_tests {
         assert_eq!(*heard.borrow(), 0);
     }
 }
+
+#[cfg(test)]
+mod animation_style_direction_tests {
+    use super::*;
+
+    fn near() -> AnimationStyle {
+        AnimationStyle {
+            curve: Some(Curve::Linear),
+            reverse_curve: Some(Curve::EASE_IN),
+            duration: Some(Duration::from_millis(100)),
+            reverse_duration: Some(Duration::from_millis(200)),
+        }
+    }
+
+    fn far() -> AnimationStyle {
+        AnimationStyle {
+            curve: Some(Curve::EASE_OUT),
+            reverse_curve: Some(Curve::EASE_IN_OUT),
+            duration: Some(Duration::from_millis(300)),
+            reverse_duration: Some(Duration::from_millis(400)),
+        }
+    }
+
+    #[test]
+    fn the_nearer_style_wins_every_field_and_not_just_the_first() {
+        // Written with both sides fully set: a field set on one side only
+        // shows that *something* comes through and not which side it came
+        // from. `tools/order_sweep.py` found all four of these by swapping the
+        // sides and watching nothing fail.
+        let merged = near().at_most(&far());
+        assert_eq!(merged.curve, Some(Curve::Linear));
+        assert_eq!(merged.reverse_curve, Some(Curve::EASE_IN));
+        assert_eq!(merged.duration, Some(Duration::from_millis(100)));
+        assert_eq!(merged.reverse_duration, Some(Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn the_other_way_round_gives_the_other_answer_everywhere() {
+        let merged = far().at_most(&near());
+        assert_eq!(merged.curve, Some(Curve::EASE_OUT));
+        assert_eq!(merged.duration, Some(Duration::from_millis(300)));
+        assert_eq!(merged.reverse_duration, Some(Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn a_field_only_the_far_style_has_still_comes_through() {
+        let sparse = AnimationStyle {
+            curve: Some(Curve::Linear),
+            ..AnimationStyle::default()
+        };
+        let merged = sparse.at_most(&far());
+        assert_eq!(merged.curve, Some(Curve::Linear));
+        assert_eq!(merged.duration, Some(Duration::from_millis(300)));
+    }
+}

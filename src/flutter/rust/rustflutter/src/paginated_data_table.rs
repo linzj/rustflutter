@@ -441,3 +441,36 @@ mod tests {
         assert_eq!(state.first_row_index, 0);
     }
 }
+
+#[cfg(test)]
+mod row_height_direction_tests {
+    use super::*;
+
+    #[test]
+    fn the_exact_height_wins_over_both_bounds() {
+        // `dataRowHeight ?? dataRowMinHeight` and `?? dataRowMaxHeight`. With
+        // only one of the two set on either line, which side is asked first
+        // cannot be seen -- `tools/order_sweep.py` found both by swapping them.
+        let mut table = PaginatedDataTable::new(0);
+        table.data_row_height = Some(50.0);
+        table.data_row_min_height = Some(10.0);
+        table.data_row_max_height = Some(90.0);
+        assert_eq!(table.resolved_row_heights(), (Some(50.0), Some(50.0)));
+    }
+
+    #[test]
+    fn without_an_exact_height_the_two_bounds_answer_separately() {
+        let mut table = PaginatedDataTable::new(0);
+        table.data_row_min_height = Some(10.0);
+        table.data_row_max_height = Some(90.0);
+        assert_eq!(table.resolved_row_heights(), (Some(10.0), Some(90.0)));
+    }
+
+    #[test]
+    fn an_exact_height_makes_the_two_equal_which_is_what_the_assert_relies_on() {
+        let mut table = PaginatedDataTable::new(0);
+        table.data_row_height = Some(50.0);
+        let (min, max) = table.resolved_row_heights();
+        assert_eq!(min, max);
+    }
+}
