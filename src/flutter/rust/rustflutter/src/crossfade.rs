@@ -797,6 +797,11 @@ mod icon_theme_tests {
         data.optical_size = Some(22.0);
         data.color = Some(Color::argb(0xFF, 2, 2, 2));
 
+        // The two sides must *disagree* on every field, not merely both be
+        // set: a flag that is `Some(true)` on both sides makes the swap
+        // invisible, which is how `apply_text_scaling` stayed untested here.
+        data.apply_text_scaling = Some(false);
+
         let mut icon = Icon::new();
         icon.size = Some(1.0);
         icon.fill = Some(0.1);
@@ -804,8 +809,13 @@ mod icon_theme_tests {
         icon.grade = Some(10.0);
         icon.optical_size = Some(11.0);
         icon.color = Some(Color::argb(0xFF, 1, 1, 1));
+        icon.apply_text_scaling = Some(true);
 
         let resolved = resolve(icon, data);
+        assert!(
+            resolved.apply_text_scaling,
+            "the icon's own, over the theme's"
+        );
         assert_eq!(resolved.size, 1.0);
         assert_eq!(resolved.fill, 0.1);
         assert_eq!(resolved.weight, 100.0);

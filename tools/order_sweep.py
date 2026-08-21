@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 r"""Mutates the *order* of a decision, and reports the swaps nothing catches.
 
-Two ticks in a row lost time to the same shape of gap: a resolver picks one of
-several values, the tests set one field at a time, and the order between them is
-invisible to every one of those tests.  Each test looks complete on its own,
-which is why reading them does not turn it up.
+Two ticks running lost time to the same shape: a resolver picks by some order,
+every test sets one field at a time, and the order between fields is invisible
+to all of them.  Each test looks complete on its own, which is exactly why
+reading them does not turn it up.
 
-So this asks the question mechanically, in the two places order lives:
+So this asks mechanically, in the two places order lives:
 
   * `if states.contains(WidgetState::A) { ... } else if states.contains(B)` --
     swap the two conditions and leave the bodies alone, which is exactly a
@@ -14,7 +14,19 @@ So this asks the question mechanically, in the two places order lives:
   * `x.field.or(y.field)` -- swap the two sides of a fallback chain.
 
 A survivor is a question, not a verdict: either the order genuinely cannot
-matter (two branches that cannot both be true) or nothing is testing it.
+matter, or nothing is testing it.
+
+# What it cannot see
+
+Matches inside comments are skipped -- a doc comment quoting the expression it
+explains would otherwise be "mutated" to no effect and reported as a survivor,
+which happened three times on the first run.
+
+The chain pattern allows a newline between a receiver, its field and the `.or`,
+because rustfmt breaks long chains and the first version could only see the
+ones that fit on a line: of `SystemUiOverlayStyle::copy_with`'s eight fields it
+saw two.  It still cannot see a chain whose sides are anything but
+`receiver.field` -- a method call, an index, a longer path.
 
 Usage:
   python tools/order_sweep.py                # every file with either shape
@@ -31,11 +43,14 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATE = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter')
 
+BREAK = r'\s*(?:\r?\n\s*)?'
+
 BRANCH = re.compile(
     r'(if|\}\s*else if)\s+states\.contains\(WidgetState::(\w+)\)\s*\{')
 
 CHAIN = re.compile(
-    r'\b(\w+)\.(\w+)\s*(?:\r?\n\s*)?\.or\((\w+)\.(\w+)\)')
+    r'\b(\w+)' + BREAK + r'\.(\w+)' + BREAK + r'\.or\(' + BREAK
+    + r'(\w+)' + BREAK + r'\.(\w+)' + BREAK + r'\)')
 
 
 def branch_pairs(text):
@@ -46,14 +61,7 @@ def branch_pairs(text):
 
 
 def in_comment(text, at):
-    """Whether `at` falls after a `//` on its own line.
-
-    Without this the sweep mutates prose: a doc comment that *quotes* the
-    expression it is explaining matches the same pattern, swapping it changes
-    nothing, and the swap is reported as a survivor. Three of the first run's
-    twenty-eight were comments of mine describing the very rule the sweep was
-    checking.
-    """
+    """Whether `at` falls after a `//` on its own line."""
     line_start = text.rfind(chr(10), 0, at) + 1
     marker = text.find('//', line_start)
     return 0 <= marker < at
@@ -94,7 +102,7 @@ def run(paths):
                            + original[b.end(2):])
                 failures += check(
                     path, swapped, f'{a.group(2)} <-> {b.group(2)}',
-                    original[:a.start()].count('\n') + 1)
+                    original[:a.start()].count(chr(10)) + 1)
             for match in chains:
                 swapped = (
                     original[:match.start()]
@@ -105,7 +113,7 @@ def run(paths):
                     path, swapped,
                     f'{match.group(1)}.{match.group(2)} <-> '
                     f'{match.group(3)}.{match.group(4)}',
-                    original[:match.start()].count('\n') + 1)
+                    original[:match.start()].count(chr(10)) + 1)
         finally:
             shutil.copyfile(backup, path)
             os.remove(backup)

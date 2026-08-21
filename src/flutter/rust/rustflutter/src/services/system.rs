@@ -1801,17 +1801,21 @@ mod cursor_tests {
 mod copy_with_direction_tests {
     use super::*;
 
-    /// Every field set, so each `or` has something on both sides.
-    fn all(nav: u32, bright: Brightness) -> SystemUiOverlayStyle {
+    /// Every field set, and set *differently* on the two sides.
+    ///
+    /// The first draft gave both styles `Some(true)` for the two contrast
+    /// flags, so swapping their sides produced the same value and the swap was
+    /// invisible -- both sides set is not enough, they have to disagree.
+    fn all(nav: u32, bright: Brightness, contrast: bool) -> SystemUiOverlayStyle {
         SystemUiOverlayStyle {
             system_navigation_bar_color: Some(Color(nav)),
             system_navigation_bar_divider_color: Some(Color(nav + 1)),
             system_navigation_bar_icon_brightness: Some(bright),
-            system_navigation_bar_contrast_enforced: Some(true),
+            system_navigation_bar_contrast_enforced: Some(contrast),
             status_bar_color: Some(Color(nav + 2)),
             status_bar_brightness: Some(bright),
             status_bar_icon_brightness: Some(bright),
-            system_status_bar_contrast_enforced: Some(true),
+            system_status_bar_contrast_enforced: Some(!contrast),
         }
     }
 
@@ -1822,8 +1826,8 @@ mod copy_with_direction_tests {
         // of its own. `tools/order_sweep.py` found two of these eight; the
         // other six it could not see, because their receivers span lines and
         // its pattern only matches a receiver and its field on one line.
-        let base = all(0x1000_0000, Brightness::Dark);
-        let amended = all(0x2000_0000, Brightness::Light);
+        let base = all(0x1000_0000, Brightness::Dark, false);
+        let amended = all(0x2000_0000, Brightness::Light, true);
         let result = base.copy_with(&amended);
 
         assert_eq!(result.system_navigation_bar_color, Some(Color(0x2000_0000)));
@@ -1838,11 +1842,17 @@ mod copy_with_direction_tests {
         assert_eq!(result.status_bar_color, Some(Color(0x2000_0002)));
         assert_eq!(result.status_bar_brightness, Some(Brightness::Light));
         assert_eq!(result.status_bar_icon_brightness, Some(Brightness::Light));
+        assert_eq!(
+            result.system_navigation_bar_contrast_enforced,
+            Some(true),
+            "and the flags too, which need the two sides to disagree"
+        );
+        assert_eq!(result.system_status_bar_contrast_enforced, Some(false));
     }
 
     #[test]
     fn a_field_the_amendment_leaves_alone_keeps_what_it_had() {
-        let base = all(0x1000_0000, Brightness::Dark);
+        let base = all(0x1000_0000, Brightness::Dark, false);
         let sparse = SystemUiOverlayStyle {
             status_bar_color: Some(Color(0x3000_0000)),
             ..SystemUiOverlayStyle::default()
