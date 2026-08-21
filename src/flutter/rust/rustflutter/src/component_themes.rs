@@ -5579,6 +5579,12 @@ impl IconThemeData {
 
     /// Upstream `merge`: this one's fields where it has them, the other's
     /// where it does not.
+    ///
+    /// Every field is `self.x.or(other.x)` and the direction matters on every
+    /// one of them -- a nearer `IconTheme` overrides a further one, which is
+    /// the whole reason themes nest. A test that sets a field on one side only
+    /// cannot see the direction; `tools/order_sweep.py` found eight of these
+    /// here, one per field.
     pub fn merge(&self, other: &IconThemeData) -> IconThemeData {
         IconThemeData {
             size: self.size.or(other.size),
@@ -8592,5 +8598,76 @@ mod tests {
         assert_eq!(themed.alignment, Some(MainAxisAlignment::End));
         assert_eq!(themed.button_min_width, Some(64.0));
         assert_eq!(themed.overflow_direction, Some(VerticalDirection::Up));
+    }
+}
+
+#[cfg(test)]
+mod merge_direction_tests {
+    use super::*;
+
+    /// Two data values with *every* field set, so that each `or` has something
+    /// on both sides and its direction is visible.
+    fn near() -> IconThemeData {
+        let mut data = IconThemeData::new();
+        data.size = Some(1.0);
+        data.fill = Some(0.1);
+        data.weight = Some(100.0);
+        data.grade = Some(10.0);
+        data.optical_size = Some(11.0);
+        data.color = Some(Color::argb(0xFF, 1, 1, 1));
+        data.apply_text_scaling = Some(true);
+        data.with_opacity(0.25)
+    }
+
+    fn far() -> IconThemeData {
+        let mut data = IconThemeData::new();
+        data.size = Some(2.0);
+        data.fill = Some(0.2);
+        data.weight = Some(200.0);
+        data.grade = Some(20.0);
+        data.optical_size = Some(22.0);
+        data.color = Some(Color::argb(0xFF, 2, 2, 2));
+        data.apply_text_scaling = Some(false);
+        data.with_opacity(0.75)
+    }
+
+    #[test]
+    fn a_nearer_icon_theme_wins_every_field_and_not_just_the_first() {
+        // Which is the whole reason themes nest. Written with both sides fully
+        // set, because a field set on one side only cannot show a direction --
+        // that is what let eight of these go untested.
+        let merged = near().merge(&far());
+        assert_eq!(merged.size, Some(1.0));
+        assert_eq!(merged.fill, Some(0.1));
+        assert_eq!(merged.weight, Some(100.0));
+        assert_eq!(merged.grade, Some(10.0));
+        assert_eq!(merged.optical_size, Some(11.0));
+        assert_eq!(merged.color, Some(Color::argb(0xFF, 1, 1, 1)));
+        assert_eq!(merged.apply_text_scaling, Some(true));
+        assert_eq!(merged.opacity(), Some(0.25));
+    }
+
+    #[test]
+    fn merging_the_other_way_round_gives_the_other_answer_everywhere() {
+        // The pair of the test above: if either were passing by accident the
+        // two would agree.
+        let merged = far().merge(&near());
+        assert_eq!(merged.size, Some(2.0));
+        assert_eq!(merged.fill, Some(0.2));
+        assert_eq!(merged.weight, Some(200.0));
+        assert_eq!(merged.grade, Some(20.0));
+        assert_eq!(merged.optical_size, Some(22.0));
+        assert_eq!(merged.color, Some(Color::argb(0xFF, 2, 2, 2)));
+        assert_eq!(merged.apply_text_scaling, Some(false));
+        assert_eq!(merged.opacity(), Some(0.75));
+    }
+
+    #[test]
+    fn a_field_only_the_far_theme_has_still_comes_through() {
+        let mut sparse = IconThemeData::new();
+        sparse.size = Some(1.0);
+        let merged = sparse.merge(&far());
+        assert_eq!(merged.size, Some(1.0), "its own");
+        assert_eq!(merged.weight, Some(200.0), "and the other's for the rest");
     }
 }

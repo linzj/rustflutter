@@ -10474,3 +10474,31 @@ FAB 的五个高度里有一条上游写法值得记：**`hoverElevation ?? elev
 都设）是同一个教训的第二次。
 
 主题 24 → 23。
+
+## 第四把尺子：把「顺序」这件事机械地问一遍（2026-08-21）
+
+连着两轮栽在同一个形状上：解析器按某个顺序挑值，而每条测试只设一个字段，于是
+**字段之间的顺序对所有测试都是不可见的**。每条测试单看都很完整——这正是读测试
+读不出来的原因。
+
+所以写了 `tools/order_sweep.py`，把这个问题机械地问一遍。它只改顺序、不改别的：
+
+* `if states.contains(A) { … } else if states.contains(B)`——**只对调两个条件、
+  保留两段函数体**，那正好就是一次重排；
+* `x.field.or(y.field)`——对调回退链的两端。
+
+**第一次跑：7 个分支对、39 条 or 链，28 个swap 没有任何测试察觉。** 分支那 7 个
+全被抓住（上一轮刚补的），28 个全在 or 链上——绝大多数是三步链和 merge 函数的
+方向：`self.x.or(other.x)` 这种，只要有一边没设，方向就看不见。
+
+这轮补了 9 处的测试（`IconThemeData::merge` 八个字段、`Icon` 六条轴、
+FAB 三条状态高度回落、SnackBar 的 width、`DefaultSelectionStyle::merge` 的
+selection_color），28 → 16。
+
+**工具自己也报了三个假阳性**：它把**我写的注释**里引用的表达式也当成代码改了——
+比如 `// \`bar.width.or(data.width)\` -- 只设一边看不见方向`，改完当然什么都不
+变，于是报「存活」。三条里有三条是我在解释这条规则时顺手引用它自己造成的。加了
+跳过注释的判断。
+
+剩下 16 条是队列，各在 `cupertino_refresh`、`paginated_data_table`、`render`、
+`semantics`、`services/system` 里，都是同一形状：merge/回退链的方向没人测。

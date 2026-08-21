@@ -1339,6 +1339,24 @@ mod selection_pieces_tests {
     }
 
     #[test]
+    fn merging_two_styles_that_both_set_a_colour_takes_the_nearer_one() {
+        // The test above sets the selection colour on the parent only, so it
+        // shows that the parent's survives -- not that the child's would win.
+        // With both set the direction is visible, and `tools/order_sweep.py`
+        // found it by swapping the two sides and watching nothing fail.
+        let form = DefaultSelectionStyle::new()
+            .with_cursor_color(Color::argb(0xFF, 1, 0, 0))
+            .with_selection_color(Color::argb(0xFF, 0, 1, 0));
+        let subtree = DefaultSelectionStyle::new()
+            .with_cursor_color(Color::argb(0xFF, 0, 0, 1))
+            .with_selection_color(Color::argb(0xFF, 0, 0, 2));
+
+        let merged = subtree.merge(&form);
+        assert_eq!(merged.cursor_color, Some(Color::argb(0xFF, 0, 0, 1)));
+        assert_eq!(merged.selection_color, Some(Color::argb(0xFF, 0, 0, 2)));
+    }
+
+    #[test]
     fn both_colours_fall_back_to_the_one_default() {
         let (cursor, selection) = DefaultSelectionStyle::new().resolved();
         assert_eq!(cursor, DefaultSelectionStyle::DEFAULT_COLOR);

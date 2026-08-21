@@ -665,6 +665,21 @@ mod snack_bar_theme_tests {
     }
 
     #[test]
+    fn a_width_set_on_both_sides_takes_the_bars() {
+        // `bar.width.or(data.width)` -- with only one side set the direction is
+        // invisible, which is how it went untested.
+        let mut data = SnackBarThemeData::new();
+        data.behavior = Some(SnackBarBehavior::Floating);
+        data.width = Some(100.0);
+
+        assert_eq!(resolve(SnackBar::new(), data.clone()).0.width, Some(100.0));
+
+        let mut bar = SnackBar::new();
+        bar.width = Some(400.0);
+        assert_eq!(resolve(bar, data).0.width, Some(400.0));
+    }
+
+    #[test]
     fn the_widget_beats_the_theme_beats_the_default_for_the_rest_too() {
         let mut data = SnackBarThemeData::new();
         data.elevation = Some(3.0);

@@ -683,6 +683,37 @@ mod fab_theme_tests {
     }
 
     #[test]
+    fn a_state_specific_height_beats_the_resting_one_it_falls_back_to() {
+        // `self.hover_elevation.or(self.elevation)` -- setting only one of the
+        // two cannot show which wins.
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        mine.hover_elevation = Some(30.0);
+        mine.focus_elevation = Some(40.0);
+        mine.disabled_elevation = Some(50.0);
+        let data = FloatingActionButtonThemeData::new();
+
+        assert_eq!(
+            resolve(mine, data.clone(), none().with(WidgetState::Hovered)).elevation,
+            30.0
+        );
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        mine.focus_elevation = Some(40.0);
+        assert_eq!(
+            resolve(mine, data.clone(), none().with(WidgetState::Focused)).elevation,
+            40.0
+        );
+        let mut mine = FloatingActionButton::new();
+        mine.elevation = Some(20.0);
+        mine.disabled_elevation = Some(50.0);
+        assert_eq!(
+            resolve(mine, data, none().with(WidgetState::Disabled)).elevation,
+            50.0
+        );
+    }
+
+    #[test]
     fn a_held_button_does_not_fall_back_to_the_resting_height() {
         // Upstream's highlight branch has no `?? elevation`: being pressed is
         // the one state whose height is *lower relative to the finger*, and

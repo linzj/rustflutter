@@ -786,6 +786,35 @@ mod icon_theme_tests {
     }
 
     #[test]
+    fn every_axis_prefers_the_icons_own_value_over_the_themes() {
+        // Each axis is `icon.x.or(theme.x)`, and with only one side set the
+        // direction cannot be seen. Set on both, on every axis at once.
+        let mut data = IconThemeData::new();
+        data.size = Some(2.0);
+        data.fill = Some(0.2);
+        data.weight = Some(200.0);
+        data.grade = Some(20.0);
+        data.optical_size = Some(22.0);
+        data.color = Some(Color::argb(0xFF, 2, 2, 2));
+
+        let mut icon = Icon::new();
+        icon.size = Some(1.0);
+        icon.fill = Some(0.1);
+        icon.weight = Some(100.0);
+        icon.grade = Some(10.0);
+        icon.optical_size = Some(11.0);
+        icon.color = Some(Color::argb(0xFF, 1, 1, 1));
+
+        let resolved = resolve(icon, data);
+        assert_eq!(resolved.size, 1.0);
+        assert_eq!(resolved.fill, 0.1);
+        assert_eq!(resolved.weight, 100.0);
+        assert_eq!(resolved.grade, 10.0);
+        assert_eq!(resolved.optical_size, 11.0);
+        assert_eq!(resolved.color, Color::argb(0xFF, 1, 1, 1));
+    }
+
+    #[test]
     fn each_axis_is_its_own_three_step_chain() {
         let mut data = IconThemeData::new();
         data.weight = Some(700.0);
