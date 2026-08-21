@@ -262,6 +262,27 @@ impl ToggleButtons {
         }
     }
 
+    /// What the button at `index` is drawn with, given the theme.
+    ///
+    /// `enabled` is upstream's `onPressed != null`, which is a property of the
+    /// row and not of the button; `render_border` likewise. Both are passed in
+    /// rather than stored, because this port's `ToggleButtons` is the geometry
+    /// and the caller owns the callbacks.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        index: usize,
+        enabled: bool,
+        render_border: bool,
+    ) -> crate::component_themes::ResolvedToggleButton {
+        crate::component_themes::ResolvedToggleButton::of(
+            context,
+            enabled,
+            self.is_selected.get(index).copied().unwrap_or(false),
+            render_border,
+        )
+    }
+
     /// Upstream `assert(children.length == isSelected.length)`.
     pub fn lengths_match(&self) -> bool {
         self.child_count == self.is_selected.len()
@@ -546,5 +567,174 @@ mod tests {
         assert!(buttons.focus_nodes_match());
         buttons.focus_node_count = Some(2);
         assert!(!buttons.focus_nodes_match());
+    }
+}
+
+#[cfg(test)]
+mod toggle_button_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ResolvedToggleButton, ToggleButtonsTheme, ToggleButtonsThemeData,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader {
+        row: ToggleButtons,
+        index: usize,
+        enabled: bool,
+        render_border: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedToggleButton>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() =
+                Some(
+                    self.row
+                        .resolved(context, self.index, self.enabled, self.render_border),
+                );
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(
+        data: ToggleButtonsThemeData,
+        index: usize,
+        enabled: bool,
+        render_border: bool,
+    ) -> ResolvedToggleButton {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            ToggleButtonsTheme::new(
+                data,
+                component(Reader {
+                    // Index 0 selected, index 1 not.
+                    row: ToggleButtons::new(vec![true, false]),
+                    index,
+                    enabled,
+                    render_border,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn scheme() -> crate::color_scheme::ColorScheme {
+        crate::theme::ThemeData::fallback().color_scheme
+    }
+
+    #[test]
+    fn the_three_border_colours_default_to_the_same_one() {
+        // Not a redundancy: the fields exist so a theme *can* tell the three
+        // apart, and by default a row is one outlined block whose divisions do
+        // not move as the selection does. A default that differed would make
+        // the row flicker as the reader clicked along it.
+        let shared = scheme()
+            .on_surface
+            .with_alpha(ResolvedToggleButton::BORDER_ALPHA);
+        let data = ToggleButtonsThemeData::new();
+        assert_eq!(resolve(data.clone(), 0, true, true).border.color, shared);
+        assert_eq!(resolve(data.clone(), 1, true, true).border.color, shared);
+        assert_eq!(resolve(data, 0, false, true).border.color, shared);
+    }
+
+    #[test]
+    fn the_three_label_colours_do_differ_by_default_because_that_is_the_signal() {
+        let data = ToggleButtonsThemeData::new();
+        let selected = resolve(data.clone(), 0, true, true).label_color;
+        let plain = resolve(data.clone(), 1, true, true).label_color;
+        let off = resolve(data, 0, false, true).label_color;
+
+        assert_eq!(selected, scheme().primary);
+        assert_eq!(plain.alpha(), ResolvedToggleButton::LABEL_ALPHA);
+        assert_eq!(off.alpha(), ResolvedToggleButton::DISABLED_ALPHA);
+        assert_ne!(selected, plain);
+        assert_ne!(plain, off);
+    }
+
+    #[test]
+    fn a_theme_can_tell_the_three_borders_apart() {
+        let mut data = ToggleButtonsThemeData::new();
+        data.selected_border_color = Some(Color::argb(0xFF, 1, 0, 0));
+        data.border_color = Some(Color::argb(0xFF, 0, 1, 0));
+        data.disabled_border_color = Some(Color::argb(0xFF, 0, 0, 1));
+
+        assert_eq!(
+            resolve(data.clone(), 0, true, true).border.color,
+            Color::argb(0xFF, 1, 0, 0)
+        );
+        assert_eq!(
+            resolve(data.clone(), 1, true, true).border.color,
+            Color::argb(0xFF, 0, 1, 0)
+        );
+        assert_eq!(
+            resolve(data, 0, false, true).border.color,
+            Color::argb(0xFF, 0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn a_disabled_selected_button_is_drawn_disabled_and_not_selected() {
+        // Upstream's branches are `onPressed != null && isSelected` first: the
+        // selection only counts while the row can be used.
+        let mut data = ToggleButtonsThemeData::new();
+        data.selected_color = Some(Color::argb(0xFF, 1, 0, 0));
+        data.disabled_color = Some(Color::argb(0xFF, 0, 0, 1));
+        assert_eq!(
+            resolve(data, 0, false, true).label_color,
+            Color::argb(0xFF, 0, 0, 1),
+            "index 0 is the selected one, and it is disabled"
+        );
+    }
+
+    #[test]
+    fn turning_the_border_off_gives_no_border_and_not_a_zero_width_one() {
+        // Upstream returns `BorderSide.none` before resolving a width, so a
+        // caller who set a width and turned the border off gets neither.
+        let mut data = ToggleButtonsThemeData::new();
+        data.border_width = Some(9.0);
+        let off = resolve(data.clone(), 0, true, false);
+        assert_eq!(off.border, crate::borders::BorderSide::NONE);
+        assert_eq!(off.border.width, 0.0, "not nine");
+
+        assert_eq!(resolve(data, 0, true, true).border.width, 9.0);
+    }
+
+    #[test]
+    fn only_a_selected_and_usable_button_is_filled() {
+        // An unselected one has nothing to fill, and a disabled one is not
+        // showing a selection.
+        let mut data = ToggleButtonsThemeData::new();
+        data.fill_color = Some(Color::argb(0xFF, 7, 7, 7));
+        assert_eq!(
+            resolve(data.clone(), 0, true, true).fill,
+            Some(Color::argb(0xFF, 7, 7, 7))
+        );
+        assert_eq!(resolve(data.clone(), 1, true, true).fill, None);
+        assert_eq!(resolve(data, 0, false, true).fill, None);
+    }
+
+    #[test]
+    fn the_border_width_is_one_by_default_and_shared_by_all_three_states() {
+        let data = ToggleButtonsThemeData::new();
+        for (index, enabled) in [(0, true), (1, true), (0, false)] {
+            assert_eq!(
+                resolve(data.clone(), index, enabled, true).border.width,
+                ResolvedToggleButton::BORDER_WIDTH
+            );
+        }
+    }
+
+    #[test]
+    fn an_index_past_the_end_is_treated_as_unselected() {
+        let data = ToggleButtonsThemeData::new();
+        assert_eq!(
+            resolve(data.clone(), 9, true, true).label_color,
+            resolve(data, 1, true, true).label_color
+        );
     }
 }

@@ -1728,6 +1728,108 @@ impl ResolvedExpansionTile {
     }
 }
 
+/// What one button of a `ToggleButtons` row is drawn with -- upstream's
+/// `_getBorderSide` and the `currentColor` chain in `toggle_buttons.dart`.
+///
+/// # Three states and three fields, defaulting to the same colour
+///
+/// Selected, enabled-and-unselected, and disabled each have their own theme
+/// field for the label and their own for the border. All three border defaults
+/// are `onSurface` at twelve per cent -- **the same colour** -- which is not a
+/// redundancy: the fields exist so a theme *can* tell the three apart, and by
+/// default a row of toggle buttons is one outlined block whose divisions do not
+/// move as the selection does. A default that differed would make the row
+/// flicker as the reader clicked along it.
+///
+/// The labels do differ by default, and that is the whole signal: the primary
+/// when selected, `onSurface` at 87% when not, and 38% when disabled.
+///
+/// # `render_border: false` short-circuits before the width
+///
+/// Upstream returns `BorderSide.none` first thing, so a row with no border
+/// never resolves a width at all -- a caller who set `borderWidth` and turned
+/// the border off gets no border, not a zero-width one, and the two differ in
+/// what they cost.
+pub struct ResolvedToggleButton {
+    pub label_color: Color,
+    pub border: BorderSide,
+    pub fill: Option<Color>,
+    pub text_style: Option<TextStyle>,
+    pub constraints: Option<BoxConstraints>,
+    pub border_radius: Option<crate::borders::BorderRadius>,
+}
+
+impl ResolvedToggleButton {
+    /// Upstream's `_defaultBorderWidth`.
+    pub const BORDER_WIDTH: f32 = 1.0;
+    /// Upstream's shared border default: `onSurface` at twelve per cent.
+    pub const BORDER_ALPHA: u8 = 0x1F;
+    /// The unselected label: `onSurface` at eighty-seven per cent.
+    pub const LABEL_ALPHA: u8 = 0xDE;
+    /// The disabled label: thirty-eight per cent.
+    pub const DISABLED_ALPHA: u8 = 0x61;
+
+    pub fn of(
+        context: &mut BuildContext,
+        enabled: bool,
+        selected: bool,
+        render_border: bool,
+    ) -> ResolvedToggleButton {
+        let data = ToggleButtonsTheme::of(context);
+        let scheme = ThemeData::of(context).color_scheme;
+        let shared_border = scheme
+            .on_surface
+            .with_alpha(ResolvedToggleButton::BORDER_ALPHA);
+
+        let label_color = if enabled && selected {
+            data.selected_color.unwrap_or(scheme.primary)
+        } else if enabled {
+            data.color.unwrap_or_else(|| {
+                scheme
+                    .on_surface
+                    .with_alpha(ResolvedToggleButton::LABEL_ALPHA)
+            })
+        } else {
+            data.disabled_color.unwrap_or_else(|| {
+                scheme
+                    .on_surface
+                    .with_alpha(ResolvedToggleButton::DISABLED_ALPHA)
+            })
+        };
+
+        let border = if !render_border {
+            // Before the width, as upstream's `_getBorderSide` does.
+            BorderSide::NONE
+        } else {
+            let color = if enabled && selected {
+                data.selected_border_color.unwrap_or(shared_border)
+            } else if enabled {
+                data.border_color.unwrap_or(shared_border)
+            } else {
+                data.disabled_border_color.unwrap_or(shared_border)
+            };
+            BorderSide {
+                color,
+                width: data
+                    .border_width
+                    .unwrap_or(ResolvedToggleButton::BORDER_WIDTH),
+                ..BorderSide::NONE
+            }
+        };
+
+        ResolvedToggleButton {
+            label_color,
+            border,
+            // Only a selected button is filled, and only then is the theme's
+            // fill colour consulted: an unselected one has nothing to fill.
+            fill: (enabled && selected).then_some(data.fill_color).flatten(),
+            text_style: data.text_style.clone(),
+            constraints: data.constraints,
+            border_radius: data.border_radius,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
