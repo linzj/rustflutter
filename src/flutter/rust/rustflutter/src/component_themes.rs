@@ -1926,6 +1926,112 @@ impl ResolvedNavigationRail {
     }
 }
 
+/// What a data table is drawn with -- upstream's `DataTable.build` reading
+/// `DataTableTheme.of` and then its own constants.
+///
+/// # Both row heights default to the same number, so a default row is fixed
+///
+/// `dataRowMinHeight` and `dataRowMaxHeight` both fall back to
+/// `kMinInteractiveDimension`, which is 48. A table nobody configured therefore
+/// has rows of exactly 48 -- the two fields exist to make a row *flexible*, and
+/// until one of them is moved there is no flexibility to have.
+///
+/// The consequence is worth stating because it is easy to get wrong from the
+/// outside: raising only the minimum leaves it above the maximum. Upstream
+/// asserts `dataRowMinHeight <= dataRowMaxHeight`, and the assert is on what
+/// the caller wrote rather than on what resolved, so a caller who raises the
+/// minimum and lets the maximum default has written a contradiction --
+/// [`ResolvedDataTable::check`] reports it.
+///
+/// # A heading row is taller than a data row and is not a data row
+///
+/// 56 against 48. The heading is read once and the rows are read many times;
+/// the extra eight points are what stop the header reading as the first entry.
+pub struct ResolvedDataTable {
+    pub decoration: Option<crate::decoration::Decoration>,
+    pub data_row_min_height: f32,
+    pub data_row_max_height: f32,
+    pub heading_row_height: f32,
+    pub horizontal_margin: f32,
+    pub column_spacing: f32,
+    pub divider_thickness: f32,
+    pub checkbox_horizontal_margin: Option<f32>,
+    pub data_text_style: Option<TextStyle>,
+    pub heading_text_style: Option<TextStyle>,
+    pub heading_row_alignment: crate::render::MainAxisAlignment,
+}
+
+impl ResolvedDataTable {
+    /// Upstream's `kMinInteractiveDimension`, which is both row-height default.
+    pub const ROW_HEIGHT: f32 = 48.0;
+    /// Upstream's `_headingRowHeight`.
+    pub const HEADING_ROW_HEIGHT: f32 = 56.0;
+    /// Upstream's `_horizontalMargin`.
+    pub const HORIZONTAL_MARGIN: f32 = 24.0;
+    /// Upstream's `_columnSpacing`.
+    pub const COLUMN_SPACING: f32 = 56.0;
+    /// Upstream's `_dividerThickness`.
+    pub const DIVIDER_THICKNESS: f32 = 1.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedDataTable {
+        let data = DataTableTheme::of(context);
+        ResolvedDataTable {
+            decoration: data.decoration.clone(),
+            data_row_min_height: data
+                .data_row_min_height
+                .unwrap_or(ResolvedDataTable::ROW_HEIGHT),
+            data_row_max_height: data
+                .data_row_max_height
+                .unwrap_or(ResolvedDataTable::ROW_HEIGHT),
+            heading_row_height: data
+                .heading_row_height
+                .unwrap_or(ResolvedDataTable::HEADING_ROW_HEIGHT),
+            horizontal_margin: data
+                .horizontal_margin
+                .unwrap_or(ResolvedDataTable::HORIZONTAL_MARGIN),
+            column_spacing: data
+                .column_spacing
+                .unwrap_or(ResolvedDataTable::COLUMN_SPACING),
+            divider_thickness: data
+                .divider_thickness
+                .unwrap_or(ResolvedDataTable::DIVIDER_THICKNESS),
+            // No default: upstream leaves it null and the checkbox falls back
+            // to the horizontal margin, which is a different rule from having
+            // a margin of its own.
+            checkbox_horizontal_margin: data.checkbox_horizontal_margin,
+            data_text_style: data.data_text_style.clone(),
+            heading_text_style: data.heading_text_style.clone(),
+            heading_row_alignment: data
+                .heading_row_alignment
+                .unwrap_or(crate::render::MainAxisAlignment::Start),
+        }
+    }
+
+    /// Upstream's `assert(dataRowMinHeight <= dataRowMaxHeight)`.
+    ///
+    /// Run against the resolution rather than the caller's own two values,
+    /// because the case that bites is raising the minimum and letting the
+    /// maximum default -- both fall back to the same 48, so a caller who moved
+    /// one of them has written a contradiction without setting two fields.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.data_row_min_height > self.data_row_max_height {
+            return Err(
+                "dataRowMinHeight is above dataRowMaxHeight -- both default to \
+                 the same height, so raising one alone leaves them crossed",
+            );
+        }
+        Ok(())
+    }
+
+    /// Where a checkbox column's margin comes from. Upstream falls back to the
+    /// table's horizontal margin rather than to a constant: the checkbox is in
+    /// the same gutter as everything else unless it is given one of its own.
+    pub fn checkbox_margin(&self) -> f32 {
+        self.checkbox_horizontal_margin
+            .unwrap_or(self.horizontal_margin)
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

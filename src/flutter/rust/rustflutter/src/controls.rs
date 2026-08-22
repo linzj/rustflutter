@@ -1323,6 +1323,14 @@ pub struct DataTable {
 }
 
 impl DataTable {
+    /// This table's metrics, with the theme and the defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedDataTable {
+        crate::component_themes::ResolvedDataTable::of(context)
+    }
+
     pub fn new(headers: Vec<String>) -> DataTable {
         DataTable {
             headers,
@@ -4044,5 +4052,116 @@ mod navigation_rail_theme_tests {
         assert_eq!(resolved.indicator_color, None);
         assert_eq!(resolved.selected_label_style, None);
         assert_eq!(resolved.selected_icon_theme, None);
+    }
+}
+
+#[cfg(test)]
+mod data_table_theme_tests {
+    use super::*;
+    use crate::component_themes::{DataTableTheme, DataTableThemeData, ResolvedDataTable};
+    use crate::framework::{ElementTree, component, provide};
+
+    struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedDataTable>>>);
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(DataTable::new(Vec::new()).resolved(context));
+            leaf(|| Empty)
+        }
+    }
+
+    fn resolve(data: DataTableThemeData) -> ResolvedDataTable {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            DataTableTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn a_default_row_is_fixed_because_both_bounds_are_the_same_number() {
+        // The two fields exist to make a row flexible; until one of them moves
+        // there is no flexibility to have.
+        let resolved = resolve(DataTableThemeData::new());
+        assert_eq!(resolved.data_row_min_height, ResolvedDataTable::ROW_HEIGHT);
+        assert_eq!(resolved.data_row_max_height, ResolvedDataTable::ROW_HEIGHT);
+        assert_eq!(resolved.data_row_min_height, resolved.data_row_max_height);
+        assert!(resolved.check().is_ok());
+    }
+
+    #[test]
+    fn raising_only_the_minimum_leaves_the_two_crossed() {
+        // The case that bites from outside: both default to the same height, so
+        // moving one alone is a contradiction written with a single field.
+        let mut data = DataTableThemeData::new();
+        data.data_row_min_height = Some(80.0);
+        assert!(resolve(data.clone()).check().is_err());
+
+        data.data_row_max_height = Some(120.0);
+        assert!(resolve(data).check().is_ok(), "moving both is fine");
+    }
+
+    #[test]
+    fn raising_only_the_maximum_is_what_makes_a_row_flexible() {
+        let mut data = DataTableThemeData::new();
+        data.data_row_max_height = Some(120.0);
+        let resolved = resolve(data);
+        assert_eq!(resolved.data_row_min_height, ResolvedDataTable::ROW_HEIGHT);
+        assert_eq!(resolved.data_row_max_height, 120.0);
+        assert!(resolved.check().is_ok());
+    }
+
+    #[test]
+    fn a_heading_row_is_taller_than_a_data_row() {
+        // Fifty-six against forty-eight. The heading is read once and the rows
+        // many times; the extra eight are what stop the header reading as the
+        // first entry.
+        let resolved = resolve(DataTableThemeData::new());
+        assert_eq!(resolved.heading_row_height, 56.0);
+        assert!(resolved.heading_row_height > resolved.data_row_min_height);
+    }
+
+    #[test]
+    fn a_checkbox_sits_in_the_tables_own_gutter_unless_given_one() {
+        // Upstream falls back to the horizontal margin rather than a constant.
+        let mut data = DataTableThemeData::new();
+        data.horizontal_margin = Some(40.0);
+        let resolved = resolve(data.clone());
+        assert_eq!(resolved.checkbox_horizontal_margin, None);
+        assert_eq!(resolved.checkbox_margin(), 40.0, "the table's own");
+
+        data.checkbox_horizontal_margin = Some(4.0);
+        assert_eq!(resolve(data).checkbox_margin(), 4.0);
+    }
+
+    #[test]
+    fn the_spacing_defaults_are_upstreams() {
+        let resolved = resolve(DataTableThemeData::new());
+        assert_eq!(resolved.horizontal_margin, 24.0);
+        assert_eq!(resolved.column_spacing, 56.0);
+        assert_eq!(resolved.divider_thickness, 1.0);
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults_field_by_field() {
+        let mut data = DataTableThemeData::new();
+        data.column_spacing = Some(8.0);
+        let resolved = resolve(data);
+        assert_eq!(resolved.column_spacing, 8.0);
+        assert_eq!(
+            resolved.horizontal_margin,
+            ResolvedDataTable::HORIZONTAL_MARGIN,
+            "and what it did not set is untouched"
+        );
+    }
+
+    #[test]
+    fn nothing_is_invented_for_the_styles_upstream_leaves_null() {
+        let resolved = resolve(DataTableThemeData::new());
+        assert_eq!(resolved.data_text_style, None);
+        assert_eq!(resolved.heading_text_style, None);
+        assert_eq!(resolved.decoration, None);
     }
 }
