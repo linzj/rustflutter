@@ -43,6 +43,12 @@ pub struct BottomNavigationBar {
     pub bar_type: Option<BottomNavigationBarType>,
     pub has_selected_item_color: bool,
     pub has_fixed_color: bool,
+    /// `None` defers to the theme, then to `true`.
+    pub show_selected_labels: Option<bool>,
+    /// `None` defers to the theme, then to a default computed from the
+    /// *resolved* type -- see
+    /// [`crate::component_themes::ResolvedBottomNavigationBar`].
+    pub show_unselected_labels: Option<bool>,
 }
 
 impl BottomNavigationBar {
@@ -54,7 +60,17 @@ impl BottomNavigationBar {
             bar_type: None,
             has_selected_item_color: false,
             has_fixed_color: false,
+            show_selected_labels: None,
+            show_unselected_labels: None,
         }
+    }
+
+    /// This bar's appearance, with the theme and the defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedBottomNavigationBar {
+        crate::component_themes::ResolvedBottomNavigationBar::of(context, self)
     }
 
     /// Upstream's constructor asserts.
@@ -355,6 +371,172 @@ mod tests {
         assert_ne!(
             BottomNavigationBarLandscapeLayout::Linear,
             BottomNavigationBarLandscapeLayout::Centered
+        );
+    }
+}
+
+#[cfg(test)]
+mod bottom_bar_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        BottomNavigationBarTheme, BottomNavigationBarThemeData, ResolvedBottomNavigationBar,
+    };
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader {
+        bar: BottomNavigationBar,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedBottomNavigationBar>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.bar.resolved(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(
+        bar: BottomNavigationBar,
+        data: BottomNavigationBarThemeData,
+    ) -> ResolvedBottomNavigationBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            BottomNavigationBarTheme::new(
+                data,
+                component(Reader {
+                    bar,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn the_unselected_label_default_is_computed_from_the_type_and_the_selected_one_is_not() {
+        // The asymmetry is the design: the selected label tells the reader
+        // where they are and is never hidden; the unselected ones are hidden
+        // exactly when there is no room, which is what shifting means.
+        let three = resolve(
+            BottomNavigationBar::new(3, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        assert_eq!(three.bar_type, BottomNavigationBarType::Fixed);
+        assert!(three.show_selected_labels);
+        assert!(three.show_unselected_labels, "fixed: there is room");
+
+        let four = resolve(
+            BottomNavigationBar::new(4, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        assert_eq!(four.bar_type, BottomNavigationBarType::Shifting);
+        assert!(four.show_selected_labels, "still never hidden");
+        assert!(!four.show_unselected_labels, "shifting: there is not");
+    }
+
+    #[test]
+    fn a_theme_that_asks_for_shifting_changes_what_the_labels_do_without_touching_them() {
+        // The default is computed from the *resolved* type, so a theme that
+        // only set the type has moved the labels too.
+        let mut data = BottomNavigationBarThemeData::new();
+        data.bar_type = Some(BottomNavigationBarType::Shifting);
+        let bar = resolve(BottomNavigationBar::new(3, 0), data);
+        assert_eq!(bar.bar_type, BottomNavigationBarType::Shifting);
+        assert!(
+            !bar.show_unselected_labels,
+            "three items, and still no unselected labels"
+        );
+    }
+
+    #[test]
+    fn the_widgets_own_type_beats_the_themes() {
+        let mut data = BottomNavigationBarThemeData::new();
+        data.bar_type = Some(BottomNavigationBarType::Shifting);
+        let mut bar = BottomNavigationBar::new(4, 0);
+        bar.bar_type = Some(BottomNavigationBarType::Fixed);
+        let resolved = resolve(bar, data);
+        assert_eq!(resolved.bar_type, BottomNavigationBarType::Fixed);
+        assert!(
+            resolved.show_unselected_labels,
+            "and the labels follow the type that won"
+        );
+    }
+
+    #[test]
+    fn saying_so_outright_beats_the_computed_default() {
+        let mut bar = BottomNavigationBar::new(4, 0);
+        bar.show_unselected_labels = Some(true);
+        assert!(
+            resolve(bar, BottomNavigationBarThemeData::new()).show_unselected_labels,
+            "shifting would have hidden them"
+        );
+
+        let mut bar = BottomNavigationBar::new(3, 0);
+        bar.show_selected_labels = Some(false);
+        assert!(!resolve(bar, BottomNavigationBarThemeData::new()).show_selected_labels);
+    }
+
+    #[test]
+    fn the_theme_sits_between_the_widget_and_the_computed_default() {
+        let mut data = BottomNavigationBarThemeData::new();
+        data.show_unselected_labels = Some(true);
+        // Four items would compute false; the theme says otherwise.
+        assert!(resolve(BottomNavigationBar::new(4, 0), data.clone()).show_unselected_labels);
+
+        let mut bar = BottomNavigationBar::new(4, 0);
+        bar.show_unselected_labels = Some(false);
+        assert!(
+            !resolve(bar, data).show_unselected_labels,
+            "and the widget over it"
+        );
+    }
+
+    #[test]
+    fn the_widget_beats_the_theme_on_the_selected_label_too() {
+        // Both sides set and *disagreeing*: the theme's own tests set one side
+        // at a time, which shows that something comes through and not which
+        // side it came from. `tools/order_sweep.py` found this one.
+        let mut data = BottomNavigationBarThemeData::new();
+        data.show_selected_labels = Some(false);
+        assert!(
+            !resolve(BottomNavigationBar::new(3, 0), data.clone()).show_selected_labels,
+            "the theme's, with the widget silent"
+        );
+
+        let mut bar = BottomNavigationBar::new(3, 0);
+        bar.show_selected_labels = Some(true);
+        assert!(
+            resolve(bar, data).show_selected_labels,
+            "and the widget over it"
+        );
+    }
+
+    #[test]
+    fn nothing_is_invented_for_the_colours_upstream_leaves_null() {
+        // The widget falls back to the primary and to the caption colour;
+        // a colour made up here is one it could not tell from an answer.
+        let resolved = resolve(
+            BottomNavigationBar::new(3, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        assert_eq!(resolved.selected_item_color, None);
+        assert_eq!(resolved.unselected_item_color, None);
+        assert_eq!(resolved.background_color, None);
+    }
+
+    #[test]
+    fn the_defaults_are_upstreams() {
+        let resolved = resolve(
+            BottomNavigationBar::new(3, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        assert_eq!(resolved.elevation, 8.0);
+        assert!(resolved.enable_feedback);
+        assert_eq!(
+            resolved.landscape_layout,
+            BottomNavigationBarLandscapeLayout::Spread
         );
     }
 }

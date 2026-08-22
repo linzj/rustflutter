@@ -10602,3 +10602,33 @@ NavigationRail 那两条是同一形状：断言必须看解析结果，因为�
 某个常量：复选框和别的东西在同一条边槽里，除非专门给它一个。
 
 9 条测试、7 条变异全红。主题 21 → 20。
+
+## 未接线队列之十六：一个默认值由另一个**解析后**的值算出来（2026-08-23）
+
+先顺着前三轮那条线查了一遍：「断言要看解析后的值」这条规矩，**只在主题也能提供
+被断言的那个字段时才成立**。`BottomNavigationBar`/`NavigationBar`/`Carousel`/`Chip`
+那几个 `validate` 断的都是构造参数（项数、当前下标、elevation ≥ 0），主题碰不到，
+所以对 widget 字段断言是对的。这条规矩现在有了准确的边界，不是「所有断言都要改」。
+
+然后接 `BottomNavigationBarTheme`。**`showSelectedLabels` 默认恒为 true，而
+`showUnselectedLabels` 的默认由 `_defaultShowUnselected` 算出来——shifting 时 false、
+fixed 时 true**，也就是说它的默认取决于**解析后的类型**，而类型又取决于项数。
+
+这不对称就是设计：选中的标签是告诉读者「你在哪」的东西，永远不藏；未选中的标签
+恰恰在没地方放的时候才藏，而「没地方放」正是 shifting 的意思。两个给同一个默认，
+要么让四项的 bar 挤成一团，要么让三项的 bar 没有标签。
+
+后果之一：**主题只设了 type，就已经动了标签**——因为默认是从解析后的类型算的。
+
+**又撞见一个「同一个东西移植了两遍」**：`BottomNavigationBarType` 和
+`BottomNavigationBarLandscapeLayout` 在 `component_themes.rs` 和 `bottom_bars.rs`
+各有一份，同名、同变体、同一个上游原型。它是在主题的解析想把自己那份交给
+`BottomNavigationBar::effective_type` 时才暴露的——编译器拒绝得对。删掉主题里那份，
+改成 re-export。**两个模块必须保持一致的类型不属于其中任何一个**，和
+`ButtonVariant::default_colors` 那次是同一条规矩。
+
+8 条测试、7 条变异全红。**外加顺序扫查在提交前抓到一条新写的**：
+`bar.show_selected_labels.or(data.show_selected_labels)` 两边只设过一边。补上
+「两边都设且相反」才清零——工具在这一轮已经开始在提交前挡下东西，而不是事后。
+
+主题 20 → 19。

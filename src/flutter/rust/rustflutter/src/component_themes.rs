@@ -2032,6 +2032,93 @@ impl ResolvedDataTable {
     }
 }
 
+/// What a bottom navigation bar is drawn with -- upstream's
+/// `_BottomNavigationBarState.build` reading `BottomNavigationBarTheme.of`.
+///
+/// # One default is a constant and the other is computed from a resolved value
+///
+/// `showSelectedLabels` falls back to `true` flat. `showUnselectedLabels` falls
+/// back to `_defaultShowUnselected`, which is **false when shifting and true
+/// when fixed** -- so its default depends on the *resolved* type, which in turn
+/// depends on the item count.
+///
+/// The asymmetry is the design: the selected label is what tells the reader
+/// where they are and is never hidden, while the unselected ones are hidden
+/// exactly when there is no room for them, which is what shifting means. Giving
+/// both the same default would either crowd a four-item bar or leave a
+/// three-item one unlabelled.
+///
+/// # Selected and unselected item colours are not a pair with one default
+///
+/// Upstream leaves both null here and lets the widget fall back to the theme's
+/// primary and to `textTheme.caption.color`; nothing is invented in the
+/// resolution, because a colour made up here is one the widget could not tell
+/// from an answer.
+pub struct ResolvedBottomNavigationBar {
+    pub bar_type: BottomNavigationBarType,
+    pub background_color: Option<Color>,
+    pub elevation: f32,
+    pub selected_item_color: Option<Color>,
+    pub unselected_item_color: Option<Color>,
+    pub selected_label_style: Option<TextStyle>,
+    pub unselected_label_style: Option<TextStyle>,
+    pub selected_icon_theme: Option<IconThemeData>,
+    pub unselected_icon_theme: Option<IconThemeData>,
+    pub show_selected_labels: bool,
+    pub show_unselected_labels: bool,
+    pub enable_feedback: bool,
+    pub landscape_layout: BottomNavigationBarLandscapeLayout,
+}
+
+impl ResolvedBottomNavigationBar {
+    /// Upstream's default elevation.
+    pub const ELEVATION: f32 = 8.0;
+
+    /// Upstream's `_defaultShowUnselected`.
+    pub fn default_show_unselected(bar_type: BottomNavigationBarType) -> bool {
+        match bar_type {
+            BottomNavigationBarType::Shifting => false,
+            BottomNavigationBarType::Fixed => true,
+        }
+    }
+
+    pub fn of(
+        context: &mut BuildContext,
+        bar: &crate::bottom_bars::BottomNavigationBar,
+    ) -> ResolvedBottomNavigationBar {
+        let data = BottomNavigationBarTheme::of(context);
+        // The type first, because one of the label defaults is computed from
+        // it -- and from the *resolved* one, so a theme that asks for shifting
+        // changes what the unselected labels do without touching them.
+        let bar_type = bar.effective_type(data.bar_type);
+        ResolvedBottomNavigationBar {
+            bar_type,
+            background_color: data.background_color,
+            elevation: data
+                .elevation
+                .unwrap_or(ResolvedBottomNavigationBar::ELEVATION),
+            selected_item_color: data.selected_item_color,
+            unselected_item_color: data.unselected_item_color,
+            selected_label_style: data.selected_label_style.clone(),
+            unselected_label_style: data.unselected_label_style.clone(),
+            selected_icon_theme: data.selected_icon_theme.clone(),
+            unselected_icon_theme: data.unselected_icon_theme.clone(),
+            show_selected_labels: bar
+                .show_selected_labels
+                .or(data.show_selected_labels)
+                .unwrap_or(true),
+            show_unselected_labels: bar
+                .show_unselected_labels
+                .or(data.show_unselected_labels)
+                .unwrap_or_else(|| ResolvedBottomNavigationBar::default_show_unselected(bar_type)),
+            enable_feedback: data.enable_feedback.unwrap_or(true),
+            landscape_layout: data
+                .landscape_layout
+                .unwrap_or(BottomNavigationBarLandscapeLayout::Spread),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
@@ -3309,26 +3396,16 @@ impl NavigationRailTheme {
 
 // -- Bottom navigation bar (upstream `bottom_navigation_bar_theme.dart`) ------
 
-/// Upstream `BottomNavigationBarType`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BottomNavigationBarType {
-    /// Every destination the same width, all labels shown.
-    Fixed,
-    /// The selected destination grows and the others shrink.
-    Shifting,
-}
-
-/// Upstream `BottomNavigationBarLandscapeLayout`: how the destinations are
-/// arranged when the bar is wider than it is tall.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BottomNavigationBarLandscapeLayout {
-    /// Spread across the whole bar.
-    Spread,
-    /// Grouped in the middle.
-    Centered,
-    /// Icon and label side by side rather than stacked.
-    Linear,
-}
+/// Upstream `BottomNavigationBarType` and `BottomNavigationBarLandscapeLayout`.
+///
+/// Defined with the widget in [`crate::bottom_bars`] and re-exported here
+/// rather than declared twice. They were declared twice, and the second copy
+/// only announced itself when the theme's resolution tried to hand one to
+/// `BottomNavigationBar::effective_type` -- two types with the same name, the
+/// same variants and the same upstream original, which the compiler is right
+/// to refuse. A type two modules have to agree on belongs to neither of them,
+/// which is the same rule `ButtonVariant::default_colors` was moved for.
+pub use crate::bottom_bars::{BottomNavigationBarLandscapeLayout, BottomNavigationBarType};
 
 /// Upstream `BottomNavigationBarThemeData`.
 #[derive(Clone, Debug, Default, PartialEq)]
