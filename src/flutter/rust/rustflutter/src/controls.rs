@@ -625,6 +625,20 @@ pub struct NavigationRail {
 }
 
 impl NavigationRail {
+    /// This rail's appearance, with the theme and the M3 defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedNavigationRail {
+        crate::component_themes::ResolvedNavigationRail::of(context)
+    }
+
+    /// Upstream's constructor assert, run against the resolved label type --
+    /// see [`crate::component_themes::ResolvedNavigationRail::check`].
+    pub fn check(&self, context: &mut crate::framework::BuildContext) -> Result<(), &'static str> {
+        self.resolved(context).check(self.extended)
+    }
+
     pub fn new(first_id: u64, destinations: Vec<Destination>, selected: usize) -> Self {
         NavigationRail {
             first_id,
@@ -3895,5 +3909,140 @@ mod tab_bar_theme_tests {
         });
         let resolved = resolve(data);
         assert_eq!(resolved.label_style.expect("kept").font_size, 22.0);
+    }
+}
+
+#[cfg(test)]
+mod navigation_rail_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        NavigationRailLabelType, NavigationRailTheme, NavigationRailThemeData,
+        ResolvedNavigationRail,
+    };
+    use crate::framework::{ElementTree, component, provide};
+
+    struct Reader {
+        extended: bool,
+        seen: std::rc::Rc<
+            std::cell::RefCell<Option<(ResolvedNavigationRail, Result<(), &'static str>)>>,
+        >,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let rail = NavigationRail::new(1, Vec::new(), 0).extended(self.extended);
+            let resolved = rail.resolved(context);
+            let checked = rail.check(context);
+            *self.seen.borrow_mut() = Some((resolved, checked));
+            leaf(|| Empty)
+        }
+    }
+
+    fn resolve(
+        data: NavigationRailThemeData,
+        extended: bool,
+    ) -> (ResolvedNavigationRail, Result<(), &'static str>) {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            NavigationRailTheme::new(
+                data,
+                component(Reader {
+                    extended,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn an_extended_rail_may_not_also_ask_for_labels() {
+        // It puts every label beside its icon by definition, so "selected only"
+        // on top of that is a contradiction rather than a preference.
+        let mut data = NavigationRailThemeData::new();
+        data.label_type = Some(NavigationRailLabelType::Selected);
+
+        assert!(resolve(data.clone(), false).1.is_ok(), "not extended, fine");
+        assert!(resolve(data, true).1.is_err());
+    }
+
+    #[test]
+    fn the_check_runs_against_the_resolved_type_and_not_the_widgets_own() {
+        // A rail that was extended and left the label type alone is still
+        // wrong when the *theme* asks for labels -- and that is the case a
+        // caller cannot see for themselves.
+        let plain = NavigationRailThemeData::new();
+        assert!(resolve(plain, true).1.is_ok(), "the default is none");
+
+        let mut asking = NavigationRailThemeData::new();
+        asking.label_type = Some(NavigationRailLabelType::All);
+        assert!(resolve(asking, true).1.is_err());
+    }
+
+    #[test]
+    fn the_group_alignment_is_the_top_and_not_the_middle() {
+        // A rail is a list read downwards from the first item; centring it
+        // would leave that item somewhere different on every screen height.
+        assert_eq!(
+            resolve(NavigationRailThemeData::new(), false)
+                .0
+                .group_alignment,
+            -1.0
+        );
+    }
+
+    #[test]
+    fn the_two_widths_are_separate_numbers_and_not_one_scaled() {
+        // Eighty is an icon with room around it; two hundred and fifty-six is a
+        // column of text.
+        let (resolved, _) = resolve(NavigationRailThemeData::new(), false);
+        assert_eq!(resolved.width(false), 80.0);
+        assert_eq!(resolved.width(true), 256.0);
+
+        let mut data = NavigationRailThemeData::new();
+        data.min_width = Some(100.0);
+        let (resolved, _) = resolve(data, false);
+        assert_eq!(resolved.width(false), 100.0);
+        assert_eq!(
+            resolved.width(true),
+            256.0,
+            "setting one leaves the other alone"
+        );
+    }
+
+    #[test]
+    fn labels_are_off_by_default_because_the_indicator_already_says_which() {
+        let (resolved, _) = resolve(NavigationRailThemeData::new(), false);
+        assert_eq!(resolved.label_type, NavigationRailLabelType::None);
+        assert!(resolved.use_indicator, "and it is on");
+    }
+
+    #[test]
+    fn the_theme_beats_the_defaults_field_by_field() {
+        let mut data = NavigationRailThemeData::new();
+        data.use_indicator = Some(false);
+        data.group_alignment = Some(0.0);
+        let (resolved, _) = resolve(data, false);
+        assert!(!resolved.use_indicator);
+        assert_eq!(resolved.group_alignment, 0.0);
+        assert_eq!(
+            resolved.min_width,
+            ResolvedNavigationRail::MIN_WIDTH,
+            "and what it did not set is untouched"
+        );
+    }
+
+    #[test]
+    fn nothing_is_invented_for_the_fields_upstream_leaves_null() {
+        // A background, an indicator colour and the label styles that nobody
+        // set stay unset: the widget above decides, and a value made up here
+        // would be one it could not tell from a real answer.
+        let (resolved, _) = resolve(NavigationRailThemeData::new(), false);
+        assert_eq!(resolved.background_color, None);
+        assert_eq!(resolved.indicator_color, None);
+        assert_eq!(resolved.selected_label_style, None);
+        assert_eq!(resolved.selected_icon_theme, None);
     }
 }

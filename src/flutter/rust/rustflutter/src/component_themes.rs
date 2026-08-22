@@ -1830,6 +1830,102 @@ impl ResolvedToggleButton {
     }
 }
 
+/// What a navigation rail is drawn with -- upstream's `_NavigationRailState.build`
+/// reading `NavigationRailTheme.of` and then `_NavigationRailDefaultsM3`.
+///
+/// # An extended rail may not also have a label type
+///
+/// Upstream's constructor asserts
+/// `!extended || (labelType == null || labelType == none)`. An extended rail
+/// puts every label beside its icon by definition, so asking for "selected
+/// only" or "all" on top of that is a contradiction rather than a preference --
+/// there is no arrangement that satisfies both. See
+/// [`ResolvedNavigationRail::check`].
+///
+/// # The group alignment is -1, which is the top and not the middle
+///
+/// It is a fraction from -1 to 1 down the rail's free space, and the default
+/// puts the destinations against the top. A rail is a list you read downwards
+/// from the first item; centring it would leave the first destination in a
+/// different place on every screen height.
+pub struct ResolvedNavigationRail {
+    pub background_color: Option<Color>,
+    pub elevation: f32,
+    pub selected_label_style: Option<TextStyle>,
+    pub unselected_label_style: Option<TextStyle>,
+    pub selected_icon_theme: Option<IconThemeData>,
+    pub unselected_icon_theme: Option<IconThemeData>,
+    pub group_alignment: f32,
+    pub label_type: NavigationRailLabelType,
+    pub use_indicator: bool,
+    pub indicator_color: Option<Color>,
+    pub indicator_shape: Option<ShapeBorder>,
+    pub min_width: f32,
+    pub min_extended_width: f32,
+}
+
+impl ResolvedNavigationRail {
+    /// Upstream's `_NavigationRailDefaultsM3`.
+    pub const GROUP_ALIGNMENT: f32 = -1.0;
+    pub const MIN_WIDTH: f32 = 80.0;
+    pub const MIN_EXTENDED_WIDTH: f32 = 256.0;
+    pub const ELEVATION: f32 = 0.0;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedNavigationRail {
+        let data = NavigationRailTheme::of(context);
+        ResolvedNavigationRail {
+            background_color: data.background_color,
+            elevation: data.elevation.unwrap_or(ResolvedNavigationRail::ELEVATION),
+            selected_label_style: data.selected_label_text_style.clone(),
+            unselected_label_style: data.unselected_label_text_style.clone(),
+            selected_icon_theme: data.selected_icon_theme.clone(),
+            unselected_icon_theme: data.unselected_icon_theme.clone(),
+            group_alignment: data
+                .group_alignment
+                .unwrap_or(ResolvedNavigationRail::GROUP_ALIGNMENT),
+            // Upstream's M3 default is `none`: an indicator already says which
+            // destination is current, so the labels are for when there is no
+            // indicator to read.
+            label_type: data.label_type.unwrap_or(NavigationRailLabelType::None),
+            use_indicator: data.use_indicator.unwrap_or(true),
+            indicator_color: data.indicator_color,
+            indicator_shape: data.indicator_shape.clone(),
+            min_width: data.min_width.unwrap_or(ResolvedNavigationRail::MIN_WIDTH),
+            min_extended_width: data
+                .min_extended_width
+                .unwrap_or(ResolvedNavigationRail::MIN_EXTENDED_WIDTH),
+        }
+    }
+
+    /// Upstream's constructor assert, against the resolved label type.
+    ///
+    /// Returned rather than asserted so it can be checked. It has to be run
+    /// against the *resolved* type and not the widget's own: a rail that was
+    /// extended and left the label type alone is still wrong when the theme
+    /// asks for labels, and that is the case a caller cannot see for
+    /// themselves.
+    pub fn check(&self, extended: bool) -> Result<(), &'static str> {
+        if extended && self.label_type != NavigationRailLabelType::None {
+            return Err(
+                "an extended NavigationRail already shows every label, so a \
+                 labelType other than none has no arrangement that satisfies both",
+            );
+        }
+        Ok(())
+    }
+
+    /// The rail's width in either form. Upstream picks between the two by
+    /// whether it is extended, and they are separate numbers rather than one
+    /// scaled: 80 is an icon with room around it, 256 is a column of text.
+    pub fn width(&self, extended: bool) -> f32 {
+        if extended {
+            self.min_extended_width
+        } else {
+            self.min_width
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
