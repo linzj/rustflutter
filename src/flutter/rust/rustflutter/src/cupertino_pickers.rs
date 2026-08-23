@@ -143,6 +143,78 @@ impl CupertinoDatePicker {
     }
 }
 
+/// One column of a [`CupertinoTimerPicker`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerPickerUnit {
+    Hour,
+    Minute,
+    Second,
+}
+
+/// Upstream `CupertinoTimerPickerMode`: which units the timer shows.
+///
+/// **The minute is in all three.** Upstream's `initState` says so by leaving
+/// it unconditional and guarding only the other two:
+///
+/// ```dart
+/// selectedMinute = widget.initialTimerDuration.inMinutes % 60;
+/// if (widget.mode != CupertinoTimerPickerMode.ms) { selectedHour = ...; }
+/// if (widget.mode != CupertinoTimerPickerMode.hm) { selectedSecond = ...; }
+/// ```
+///
+/// So the three modes are not three lists of units; they are **which of the
+/// hour and the second keep the minute company.**
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CupertinoTimerPickerMode {
+    /// Hours and minutes: "16 hours | 14 min".
+    Hm,
+    /// Minutes and seconds: "14 min | 43 sec".
+    Ms,
+    /// All three. Upstream's default.
+    #[default]
+    Hms,
+}
+
+impl CupertinoTimerPickerMode {
+    pub const ALL: [CupertinoTimerPickerMode; 3] = [
+        CupertinoTimerPickerMode::Hm,
+        CupertinoTimerPickerMode::Ms,
+        CupertinoTimerPickerMode::Hms,
+    ];
+
+    /// The columns, left to right. Everything else here is read off this.
+    pub fn columns(self) -> &'static [TimerPickerUnit] {
+        match self {
+            CupertinoTimerPickerMode::Hm => &[TimerPickerUnit::Hour, TimerPickerUnit::Minute],
+            CupertinoTimerPickerMode::Ms => &[TimerPickerUnit::Minute, TimerPickerUnit::Second],
+            CupertinoTimerPickerMode::Hms => &[
+                TimerPickerUnit::Hour,
+                TimerPickerUnit::Minute,
+                TimerPickerUnit::Second,
+            ],
+        }
+    }
+
+    /// Upstream divides the width by `mode == hms ? 3 : 2`.
+    pub fn column_count(self) -> usize {
+        self.columns().len()
+    }
+
+    pub fn shows(self, unit: TimerPickerUnit) -> bool {
+        self.columns().contains(&unit)
+    }
+
+    /// Where a unit sits, counting from the left.
+    ///
+    /// Upstream writes this out per unit at each call site -- the minute's
+    /// off-axis fraction is `mode == ms ? 0 : 1`, the second's is
+    /// `mode == ms ? 1 : 2`. **Both are just this index**, and deriving it
+    /// keeps the two from disagreeing when a mode is added.
+    pub fn index_of(self, unit: TimerPickerUnit) -> Option<usize> {
+        self.columns().iter().position(|held| *held == unit)
+    }
+}
+
 /// Upstream `CupertinoTimerPicker`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CupertinoTimerPicker {
@@ -150,6 +222,7 @@ pub struct CupertinoTimerPicker {
     pub initial_timer_duration_secs: i64,
     pub minute_interval: u32,
     pub second_interval: u32,
+    pub mode: CupertinoTimerPickerMode,
 }
 
 impl CupertinoTimerPicker {
@@ -162,6 +235,7 @@ impl CupertinoTimerPicker {
             initial_timer_duration_secs,
             minute_interval: 1,
             second_interval: 1,
+            mode: CupertinoTimerPickerMode::Hms,
         }
     }
 
@@ -729,5 +803,118 @@ mod cupertino_menu_item_tests {
         ] {
             assert!(!item.is_divider());
         }
+    }
+}
+
+#[cfg(test)]
+mod timer_picker_mode_tests {
+    use super::{CupertinoTimerPicker, CupertinoTimerPickerMode, TimerPickerUnit};
+
+    #[test]
+    fn the_minute_is_in_every_mode() {
+        // Upstream sets selectedMinute unconditionally and guards only the
+        // other two, so the modes are which of the hour and the second keep
+        // the minute company.
+        for mode in CupertinoTimerPickerMode::ALL {
+            assert!(mode.shows(TimerPickerUnit::Minute), "{mode:?}");
+        }
+        assert!(!CupertinoTimerPickerMode::Ms.shows(TimerPickerUnit::Hour));
+        assert!(!CupertinoTimerPickerMode::Hm.shows(TimerPickerUnit::Second));
+        assert!(CupertinoTimerPickerMode::Hms.shows(TimerPickerUnit::Hour));
+        assert!(CupertinoTimerPickerMode::Hms.shows(TimerPickerUnit::Second));
+    }
+
+    #[test]
+    fn and_the_minute_sits_in_a_different_column_depending_on_the_mode() {
+        // Upstream computes this inline as `mode == ms ? 0 : 1` for the
+        // minute's off-axis fraction, and `mode == ms ? 1 : 2` for the
+        // second's. Both are the column index.
+        for mode in CupertinoTimerPickerMode::ALL {
+            let expected = if mode == CupertinoTimerPickerMode::Ms {
+                0
+            } else {
+                1
+            };
+            assert_eq!(
+                mode.index_of(TimerPickerUnit::Minute),
+                Some(expected),
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            CupertinoTimerPickerMode::Ms.index_of(TimerPickerUnit::Second),
+            Some(1)
+        );
+        assert_eq!(
+            CupertinoTimerPickerMode::Hms.index_of(TimerPickerUnit::Second),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn and_a_unit_that_is_not_shown_has_no_column() {
+        assert_eq!(
+            CupertinoTimerPickerMode::Ms.index_of(TimerPickerUnit::Hour),
+            None
+        );
+        assert_eq!(
+            CupertinoTimerPickerMode::Hm.index_of(TimerPickerUnit::Second),
+            None
+        );
+        // Which agrees with `shows`, since both read the same list.
+        for mode in CupertinoTimerPickerMode::ALL {
+            for unit in [
+                TimerPickerUnit::Hour,
+                TimerPickerUnit::Minute,
+                TimerPickerUnit::Second,
+            ] {
+                assert_eq!(
+                    mode.index_of(unit).is_some(),
+                    mode.shows(unit),
+                    "{mode:?} {unit:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_full_mode_has_three_columns() {
+        // Upstream divides the width by `mode == hms ? 3 : 2`.
+        assert_eq!(CupertinoTimerPickerMode::Hms.column_count(), 3);
+        assert_eq!(CupertinoTimerPickerMode::Hm.column_count(), 2);
+        assert_eq!(CupertinoTimerPickerMode::Ms.column_count(), 2);
+    }
+
+    #[test]
+    fn the_units_never_change_places() {
+        // Whatever the mode leaves out, what remains stays in hour, minute,
+        // second order -- a timer reading "43 sec | 14 min" would be nonsense,
+        // and nothing else here would catch it.
+        for mode in CupertinoTimerPickerMode::ALL {
+            let order: Vec<usize> = mode
+                .columns()
+                .iter()
+                .map(|unit| match unit {
+                    TimerPickerUnit::Hour => 0,
+                    TimerPickerUnit::Minute => 1,
+                    TimerPickerUnit::Second => 2,
+                })
+                .collect();
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            assert_eq!(order, sorted, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_timer_picker_shows_everything_unless_told_otherwise() {
+        assert_eq!(
+            CupertinoTimerPicker::new(0).mode,
+            CupertinoTimerPickerMode::Hms
+        );
+        assert_eq!(
+            CupertinoTimerPickerMode::default(),
+            CupertinoTimerPickerMode::Hms
+        );
     }
 }

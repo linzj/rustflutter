@@ -13673,3 +13673,39 @@ smartDashesType ?? (obscureText ? SmartDashesType.disabled : SmartDashesType.ena
 比较在平移之前做，答案会反过来。
 
 五个变异全红。coverage 2102 / 2008 记账 / **13 MISSING**。
+
+---
+
+## 三种模式不是三张单子，是「谁来陪着分钟」（2026-08-24）
+
+`CupertinoTimerPickerMode` 三个值。上游的 `initState` 把话说清楚了：
+
+```dart
+selectedMinute = widget.initialTimerDuration.inMinutes % 60;
+if (widget.mode != CupertinoTimerPickerMode.ms) { selectedHour = ...; }
+if (widget.mode != CupertinoTimerPickerMode.hm) { selectedSecond = ...; }
+```
+
+**分钟是无条件的**，只有另外两个带守卫。
+所以这三种模式不是三张单位清单，而是**小时和秒各自要不要来陪分钟**。
+
+### 于是分钟所在的列号会变
+
+上游在每个调用点各自内联算一次：
+分钟的 off-axis fraction 是 `mode == ms ? 0 : 1`，秒的是 `mode == ms ? 1 : 2`。
+**两个都是列下标。**移植把它们从那张列表里推出来，
+将来加一种模式，两处不会各说各话。
+
+列数也一样：上游写 `mode == hms ? 3 : 2`，这里是 `columns().len()`。
+
+### 一条不会有别的东西替我抓住的不变量
+
+无论哪种模式漏掉谁，剩下的**必须保持 时·分·秒 的顺序**。
+一个读作「43 sec | 14 min」的计时器是荒唐的，
+而这件事**没有任何别的测试会发现**——列数对、单位齐、下标自洽，全都对得上。
+所以单写了一条。
+
+六个变异全红（其中三条第一次跑时锚点没对上：`cargo fmt`
+把 match 臂折成了单行，这是老毛病了）。
+
+coverage 2102 / 2009 记账 / **12 MISSING**。
