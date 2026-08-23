@@ -13571,3 +13571,42 @@ Caps lock 和 scroll lock 改变的是一个键**产出什么**，不是它**是
 补完之后六个变异全红。
 
 coverage 2102 / 2003 记账 / **18 MISSING**。
+
+---
+
+## `Defunct` 是这一次尝试结束了，不是这个识别器结束了（2026-08-24）
+
+`GestureRecognizerState` 三个值，转移只有三条，而**两条上都有守卫**：
+
+- `addAllowedPointer` 整个函数体在 `if (state == ready)` 里面。
+  **第二根手指按下来不会变成 primary**，也不会重启这次尝试。
+  没有这条守卫，识别器就会跟着最后按下的那根手指走，
+  双指触摸会**悄悄换掉**这个手势的目标。
+- `rejectGesture` 同时守 pointer 和 state：
+  `if (pointer == primaryPointer && state == possible)`。
+  别的指针在竞技场里输了，和这个手势没关系；
+  已经 `defunct` 的识别器也没有什么可以再放弃的。
+- `didStopTrackingLastPointer` 开头是 `assert(state != ready)`——
+  **没开始过就没法停止跟踪**。而它从 `defunct` 和从 `possible` 都回到 `ready`，
+  这正是被拒绝过的识别器还能接着用的原因。
+
+所以 `Defunct` 的意思是「我等的那个手势没有发生」，
+**不是「这个对象完了」**。测试直接钉这一条：拒绝之后停止跟踪，
+再按一根新手指，它照样被收为 primary。
+
+五个变异全红。
+
+### 顺带清掉一个退休的枚举，和一个我记错的前提
+
+`KeyDataTransitMode` 上游自己标了 `@Deprecated`：
+「Transit mode is always key data only.」它区分的是 raw key data 和 key data
+两条投递路径，而 raw 那一族文件（`raw_keyboard.dart` 加七个平台变体）
+**本台账早就记成 out_of_scope_files 了**。只剩一个取值有意义的枚举，
+移过来就是个死名字。记账。
+
+而我这一轮本来要移 `ModifierKey`，理由是「上游标了 deprecated，
+所以要记账而不是移植」——查下来**它根本不在 MISSING 里**：
+`raw_keyboard.dart` 整族早就出了范围，`ModifierKey` 从来没被报缺过。
+**是我记错了前提，不是台账漏了。**
+
+coverage 2102 / 2005 记账 / **16 MISSING**。

@@ -1853,7 +1853,8 @@
     "RenderingServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
     "WidgetsServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
     "WidgetInspectorServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
-    "AccessibilityServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。"
+    "AccessibilityServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "KeyDataTransitMode": "上游自己标了 @Deprecated：「No longer supported. Transit mode is always key data only.」它区分的是 raw key data 与 key data 两条投递路径，而 raw 那条整族文件（raw_keyboard.dart 及其七个平台变体）本台账早已记为 out_of_scope_files。一个只剩一个取值有意义的枚举，移过来就是个死名字。"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"

@@ -969,3 +969,176 @@ mod tests {
         );
     }
 }
+
+/// Upstream `GestureRecognizerState`: where a primary-pointer recogniser is in
+/// its attempt at a gesture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GestureRecognizerState {
+    /// Not attempting anything. **The only state that will take a new primary
+    /// pointer** -- see [`PrimaryPointerTracking::add_allowed_pointer`].
+    #[default]
+    Ready,
+    /// Watching a pointer, with the arena undecided.
+    Possible,
+    /// This attempt is over, and **the recogniser is not.** Upstream returns
+    /// to `Ready` from here, so `Defunct` means "the gesture I was watching
+    /// for did not happen", not "this object is finished".
+    Defunct,
+}
+
+/// Upstream `PrimaryPointerGestureRecognizer`'s state, less the timers and the
+/// arena: the three transitions and the two guards on them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PrimaryPointerTracking {
+    state: GestureRecognizerState,
+    primary: Option<i64>,
+}
+
+impl PrimaryPointerTracking {
+    pub fn new() -> PrimaryPointerTracking {
+        PrimaryPointerTracking::default()
+    }
+
+    pub fn state(&self) -> GestureRecognizerState {
+        self.state
+    }
+
+    pub fn primary_pointer(&self) -> Option<i64> {
+        self.primary
+    }
+
+    /// Upstream's `addAllowedPointer`, whose whole body is inside
+    /// `if (state == GestureRecognizerState.ready)`.
+    ///
+    /// **A second finger arriving while the first is being watched does not
+    /// become primary**, and does not restart the attempt. That guard is what
+    /// makes "primary" mean anything: without it the recogniser would follow
+    /// whichever pointer touched down most recently, and a two-finger touch
+    /// would silently retarget the gesture.
+    ///
+    /// Returns whether this pointer was taken as the primary one.
+    pub fn add_allowed_pointer(&mut self, pointer: i64) -> bool {
+        if self.state != GestureRecognizerState::Ready {
+            return false;
+        }
+        self.state = GestureRecognizerState::Possible;
+        self.primary = Some(pointer);
+        true
+    }
+
+    /// Upstream's `rejectGesture`, guarded on **both** the pointer and the
+    /// state: `if (pointer == primaryPointer && state == possible)`.
+    ///
+    /// Another pointer losing the arena says nothing about this gesture, and a
+    /// recogniser already `Defunct` has nothing left to give up.
+    pub fn reject(&mut self, pointer: i64) -> bool {
+        if self.primary != Some(pointer) || self.state != GestureRecognizerState::Possible {
+            return false;
+        }
+        self.state = GestureRecognizerState::Defunct;
+        true
+    }
+
+    /// Upstream's `didStopTrackingLastPointer`, which opens with
+    /// `assert(state != GestureRecognizerState.ready)`.
+    ///
+    /// You cannot stop tracking what you never started, so this reports the
+    /// assert rather than quietly doing nothing -- and it returns to `Ready`
+    /// from `Defunct` as well as from `Possible`, which is what keeps a
+    /// rejected recogniser usable for the next touch.
+    pub fn stop_tracking_last_pointer(&mut self) -> bool {
+        if self.state == GestureRecognizerState::Ready {
+            return false;
+        }
+        self.state = GestureRecognizerState::Ready;
+        self.primary = None;
+        true
+    }
+}
+
+#[cfg(test)]
+mod primary_pointer_tests {
+    use super::{GestureRecognizerState, PrimaryPointerTracking};
+
+    #[test]
+    fn a_second_finger_does_not_become_the_primary_one() {
+        // Upstream's whole addAllowedPointer body sits inside `if (state ==
+        // ready)`. Without that guard the recogniser would follow whichever
+        // pointer touched down last, and a two-finger touch would retarget the
+        // gesture without saying so.
+        let mut tracking = PrimaryPointerTracking::new();
+        assert!(tracking.add_allowed_pointer(1));
+        assert_eq!(tracking.primary_pointer(), Some(1));
+        assert_eq!(tracking.state(), GestureRecognizerState::Possible);
+
+        assert!(!tracking.add_allowed_pointer(2), "the second is not taken");
+        assert_eq!(tracking.primary_pointer(), Some(1), "and the first is kept");
+    }
+
+    #[test]
+    fn only_the_primary_pointer_can_make_it_defunct() {
+        // Another pointer losing the arena says nothing about this gesture.
+        let mut tracking = PrimaryPointerTracking::new();
+        tracking.add_allowed_pointer(1);
+        assert!(!tracking.reject(2), "a stranger's rejection");
+        assert_eq!(tracking.state(), GestureRecognizerState::Possible);
+        assert!(tracking.reject(1));
+        assert_eq!(tracking.state(), GestureRecognizerState::Defunct);
+    }
+
+    #[test]
+    fn and_rejecting_twice_changes_nothing() {
+        // A recogniser already defunct has nothing left to give up.
+        let mut tracking = PrimaryPointerTracking::new();
+        tracking.add_allowed_pointer(1);
+        assert!(tracking.reject(1));
+        assert!(!tracking.reject(1));
+        assert_eq!(tracking.state(), GestureRecognizerState::Defunct);
+    }
+
+    #[test]
+    fn defunct_is_the_end_of_the_attempt_and_not_of_the_recogniser() {
+        // didStopTrackingLastPointer returns to ready from defunct as well as
+        // from possible, which is what keeps a rejected recogniser usable for
+        // the next touch.
+        let mut tracking = PrimaryPointerTracking::new();
+        tracking.add_allowed_pointer(1);
+        tracking.reject(1);
+        assert!(tracking.stop_tracking_last_pointer());
+        assert_eq!(tracking.state(), GestureRecognizerState::Ready);
+        assert_eq!(tracking.primary_pointer(), None);
+
+        // And it really is usable: a new pointer is taken as primary again.
+        assert!(tracking.add_allowed_pointer(7));
+        assert_eq!(tracking.primary_pointer(), Some(7));
+    }
+
+    #[test]
+    fn and_it_comes_back_from_possible_too() {
+        let mut tracking = PrimaryPointerTracking::new();
+        tracking.add_allowed_pointer(1);
+        assert_eq!(tracking.state(), GestureRecognizerState::Possible);
+        assert!(tracking.stop_tracking_last_pointer());
+        assert_eq!(tracking.state(), GestureRecognizerState::Ready);
+    }
+
+    #[test]
+    fn you_cannot_stop_tracking_what_you_never_started() {
+        // Upstream asserts `state != ready` here. Reported rather than
+        // silently ignored, so a caller that got its order wrong finds out.
+        let mut tracking = PrimaryPointerTracking::new();
+        assert_eq!(tracking.state(), GestureRecognizerState::Ready);
+        assert!(!tracking.stop_tracking_last_pointer());
+    }
+
+    #[test]
+    fn a_fresh_recogniser_is_watching_nothing() {
+        let tracking = PrimaryPointerTracking::new();
+        assert_eq!(tracking.state(), GestureRecognizerState::Ready);
+        assert_eq!(tracking.primary_pointer(), None);
+        assert_eq!(
+            GestureRecognizerState::default(),
+            GestureRecognizerState::Ready
+        );
+    }
+}
