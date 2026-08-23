@@ -12082,3 +12082,65 @@ Material 那边默认也是 true。
 
 10 个变异，10 个全红。
 
+## 千分位、十二点，和一个没加的枚举（2026-08-23）
+
+### 先说没加的：`TextWidthBasis`
+
+`RichText`（2/16）缺 `TextWidthBasis`。上游的规则很利落——两个分支
+**夹的是同一个范围，只差夹的是哪个测量值**：
+
+```
+longestLine => clamp(longestLine, minWidth, maxWidth)
+parent      => clamp(maxIntrinsicLineExtent, minWidth, maxWidth)
+```
+
+`longestLine` 是排完版之后最长那一行的**墨迹宽度**（最左字形左边到最右字形右边）；
+`maxIntrinsicLineExtent` 是「再加宽也不会更矮」的那个宽度，而且**算上行尾空格**。
+
+**但本移植加不了这个枚举**：`TextPainter::max_intrinsic_width` 现在返回的就是
+`longest_line()`——引擎桥只报一个宽度。两个分支会算出同一个数，
+**那就是一个不切换任何东西的开关**，正是这一整轮我一直在挑的那种东西
+（tick 51 的 `use_material3`、底部动作栏的死默认、没有东西可挑的界面层级）。
+
+所以没加，把理由和解锁条件记在这里：等引擎的 intrinsic-width ABI 落地，
+`max_intrinsic_width` 能独立回答之后，这个枚举才有意义。
+（另：`min_intrinsic_width` 现在也返回 `longest_line()`——即**最大值**，
+那条已有文档记着；后果是一个段落声称自己不能比最长的一行更窄，
+于是在按 intrinsic 宽度布局时永远不会换行。）
+
+### `formatDecimal`：一千以下的都从前门走
+
+`if (number > -1000 && number < 1000) return number.toString();`
+这条早退不只是快——**一千以下根本没有组可分**，走通用路径只是绕远路写同一个串。
+
+分组**锚在个位**：上游从左往右走，但判据是 `(maxDigitIndex - i) % 3 == 0`，
+量的是**从右边数**。所以 1234 是 `1,234` 不是 `123,4`——
+一共几位数，永远不影响逗号落在哪。
+
+负号在看任何数字之前就写好了，之后全部来自 `abs()`，
+所以**减号永远不参与分组**，`-1000` 不会变成 `-,1000`。
+而那个 `abs()` 正是 Dart 和 Rust 分手的地方：Dart 的是不陷阱的 64 位整数，
+Rust 的在 `i64::MIN` 上 debug 会 panic。这里用 `unsigned_abs` 显式处理了——
+**一个永远不会有人去格式化的数，仍然不构成中止的理由。**
+
+### `formatHour`：十二小时制没有零
+
+`hourOfPeriod == 0 ? 12 : hourOfPeriod`。**午夜和正午都写作 12**——
+那个本该是零的钟点，正是表盘顶上的那一个。
+
+而 `DefaultMaterialLocalizations` **只支持六种 `TimeOfDayFormat` 里的两种**，
+其余四种直接抛 `AssertionError('$runtimeType does not support $format')`。
+它是英语那一份，不是通用的那一份：`frenchCanadian`、`HH_dot_mm` 之类
+属于说那些语言的 localization。这里返回 `Err` 而不是抛，好让这个拒绝能被测。
+
+### 而这些为什么不走日期格式化器
+
+上游在本该调用 `DateFormat` 的地方写明了两条理由，第二条有意思：
+`DateFormat`「操作的是 DateTime，而它对纪元和时区敏感；
+可这里我们要的是一天之内的时和分，**不管这一天落在哪个日期上**」。
+
+**一个 time of day 不是一个时刻。** 把它塞进日期类型，
+会拖进一个它没有的日期，和一个它从来不在的时区。
+
+11 个变异，11 个全红。
+

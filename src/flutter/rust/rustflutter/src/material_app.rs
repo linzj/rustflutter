@@ -220,6 +220,104 @@ impl DefaultMaterialLocalizations {
     /// Upstream `_formatTwoDigitZeroPad`, which asserts its own range:
     /// *"Formats `number` using two digits, assuming it's in the 0-99 inclusive
     /// range. Not designed to format values outside this range."*
+    /// Upstream `formatDecimal`: thousands separators, and nothing else.
+    ///
+    /// # Everything under a thousand leaves by the front door
+    ///
+    /// `if (number > -1000 && number < 1000) return number.toString();` -- and
+    /// that early return is not only speed. Below a thousand there is no group
+    /// to separate, so the general path would be building the same string the
+    /// long way round.
+    ///
+    /// # The grouping is anchored at the units digit, not at the front
+    ///
+    /// Upstream walks left to right but tests `(maxDigitIndex - i) % 3 == 0`,
+    /// which measures from the **right**. So 1234 groups as `1,234` and not
+    /// `123,4`: how many digits there are in total never moves where the
+    /// commas fall.
+    ///
+    /// # The sign is written before the digits are looked at
+    ///
+    /// The buffer opens with `number < 0 ? '-' : ''` and everything after it
+    /// comes from `number.abs()`, so the minus sign is never part of the
+    /// grouping and `-1000` cannot come out as `-,1000`.
+    ///
+    /// That `abs()` is where Dart and Rust part company: Dart's is on a 64-bit
+    /// int that has no trapping, and Rust's would panic in debug on
+    /// [`i64::MIN`], whose absolute value does not fit. Handled here rather
+    /// than inherited, since a number nobody will ever format is still not a
+    /// reason to abort.
+    pub fn format_decimal(number: i64) -> String {
+        if number > -1000 && number < 1000 {
+            return number.to_string();
+        }
+        // `unsigned_abs` rather than `abs`: the minimum has no positive
+        // counterpart in the signed range and upstream's `abs()` is on a type
+        // that does not trap.
+        let digits = number.unsigned_abs().to_string();
+        let mut result = String::new();
+        if number < 0 {
+            result.push('-');
+        }
+        let last = digits.len() - 1;
+        for (index, digit) in digits.chars().enumerate() {
+            result.push(digit);
+            if index < last && (last - index) % 3 == 0 {
+                result.push(',');
+            }
+        }
+        result
+    }
+
+    /// Upstream `formatHour`, for the two formats this localization supports.
+    ///
+    /// # A twelve-hour clock has no zero
+    ///
+    /// `hourOfPeriod == 0 ? 12 : hourOfPeriod`. Midnight and noon are written
+    /// **12**, and the hour that would be zero is the one the clock face puts
+    /// at the top.
+    ///
+    /// # And it supports two of the six formats, refusing the rest
+    ///
+    /// Upstream's switch throws `AssertionError('$runtimeType does not support
+    /// $format')` for the other four. `DefaultMaterialLocalizations` is the
+    /// English one, not a general one: `a_space_h_colon_mm`, `frenchCanadian`,
+    /// `H_colon_mm` and `HH_dot_mm` belong to localizations that speak those
+    /// languages. Returned as an error here rather than thrown, so the refusal
+    /// can be tested.
+    ///
+    /// # Why none of this goes through a date formatter
+    ///
+    /// Upstream says so where `formatTimeOfDay` would have called one, and the
+    /// second reason is the interesting one: `DateFormat` "operates on
+    /// DateTime, which is sensitive to time eras and time zones, while here we
+    /// want to format hour and minute within one day no matter what date the
+    /// day falls on."
+    ///
+    /// **A time of day is not a moment.** Putting one through a date type
+    /// would drag in a date it does not have, and a zone it was never in.
+    ///
+    /// The first reason is about consistency rather than correctness:
+    /// `DateFormat` "supports more formats than our material time picker
+    /// does", and the picker and the string had better agree.
+    pub fn format_hour(hour: u32, always_use_24_hour_format: bool) -> Result<String, &'static str> {
+        if hour > 23 {
+            return Err("an hour of the day is 0 to 23");
+        }
+        if always_use_24_hour_format {
+            return DefaultMaterialLocalizations::format_two_digit_zero_pad(hour)
+                .ok_or("two digits only");
+        }
+        let hour_of_period = hour % 12;
+        Ok(DefaultMaterialLocalizations::format_decimal(
+            if hour_of_period == 0 {
+                12
+            } else {
+                hour_of_period as i64
+            },
+        ))
+    }
+
     pub fn format_two_digit_zero_pad(number: u32) -> Option<String> {
         if number >= 100 {
             return None;
@@ -481,5 +579,164 @@ mod tests {
     fn localizations_are_fetched_through_a_check_rather_than_a_null() {
         assert!(MaterialLocalizations::of(true).is_some());
         assert!(MaterialLocalizations::of(false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod decimal_and_hour_tests {
+    use super::*;
+
+    #[test]
+    fn everything_under_a_thousand_is_left_alone() {
+        // Not only speed: below a thousand there is no group to separate, so
+        // the general path would build the same string the long way round.
+        assert_eq!(DefaultMaterialLocalizations::format_decimal(0), "0");
+        assert_eq!(DefaultMaterialLocalizations::format_decimal(999), "999");
+        assert_eq!(DefaultMaterialLocalizations::format_decimal(-999), "-999");
+    }
+
+    #[test]
+    fn and_a_thousand_is_the_first_one_that_is_not() {
+        // The boundary is exclusive on both sides, so 1000 and -1000 take the
+        // general path and are the shortest strings with a comma in them.
+        assert_eq!(DefaultMaterialLocalizations::format_decimal(1000), "1,000");
+        assert_eq!(
+            DefaultMaterialLocalizations::format_decimal(-1000),
+            "-1,000"
+        );
+    }
+
+    #[test]
+    fn the_grouping_is_anchored_at_the_units_digit() {
+        // Upstream walks left to right but measures `(maxDigitIndex - i) % 3`
+        // from the right, so how many digits there are never moves where the
+        // commas fall.
+        assert_eq!(DefaultMaterialLocalizations::format_decimal(1234), "1,234");
+        assert_eq!(
+            DefaultMaterialLocalizations::format_decimal(12345),
+            "12,345"
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_decimal(123456),
+            "123,456"
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_decimal(1234567),
+            "1,234,567"
+        );
+    }
+
+    #[test]
+    fn a_number_that_is_exactly_a_group_gets_no_leading_comma() {
+        // The `i < maxDigitIndex` half of the condition: the last digit never
+        // gets a comma after it, and the first never gets one before it.
+        assert_eq!(
+            DefaultMaterialLocalizations::format_decimal(1000000),
+            "1,000,000"
+        );
+        assert!(!DefaultMaterialLocalizations::format_decimal(123456).starts_with(','));
+    }
+
+    #[test]
+    fn the_sign_is_never_part_of_the_grouping() {
+        // Written before any digit is looked at, and everything after comes
+        // from the absolute value -- so `-1000` cannot come out as `-,1000`.
+        for number in [-1000i64, -12345, -1234567] {
+            let formatted = DefaultMaterialLocalizations::format_decimal(number);
+            assert!(formatted.starts_with('-'), "{formatted}");
+            assert!(!formatted.starts_with("-,"), "{formatted}");
+            assert_eq!(
+                formatted[1..],
+                DefaultMaterialLocalizations::format_decimal(-number),
+                "the digits are the same either side of zero"
+            );
+        }
+    }
+
+    #[test]
+    fn the_smallest_integer_formats_instead_of_aborting() {
+        // Dart's `abs()` is on a type that does not trap; Rust's would panic
+        // in debug on a value whose absolute value does not fit. A number
+        // nobody will format is still not a reason to abort.
+        let formatted = DefaultMaterialLocalizations::format_decimal(i64::MIN);
+        assert!(formatted.starts_with("-9,223,372,036,854,775,808"));
+    }
+
+    // -- The hour ---------------------------------------------------------------
+
+    #[test]
+    fn a_twelve_hour_clock_has_no_zero() {
+        // Midnight and noon are written 12 -- the hour that would be zero is
+        // the one the clock face puts at the top.
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(0, false),
+            Ok(String::from("12"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(12, false),
+            Ok(String::from("12"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(13, false),
+            Ok(String::from("1"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(23, false),
+            Ok(String::from("11"))
+        );
+    }
+
+    #[test]
+    fn and_a_twenty_four_hour_one_pads_instead() {
+        // Two digits always, so a column of times lines up.
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(0, true),
+            Ok(String::from("00"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(9, true),
+            Ok(String::from("09"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(23, true),
+            Ok(String::from("23"))
+        );
+    }
+
+    #[test]
+    fn the_two_formats_disagree_about_midnight_in_both_directions() {
+        // Which is the whole of the difference: one writes the largest number
+        // on the face, the other the smallest.
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(0, false),
+            Ok(String::from("12"))
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour(0, true),
+            Ok(String::from("00"))
+        );
+        assert_ne!(
+            DefaultMaterialLocalizations::format_hour(0, false),
+            DefaultMaterialLocalizations::format_hour(0, true)
+        );
+    }
+
+    #[test]
+    fn an_hour_outside_the_day_is_refused_rather_than_wrapped() {
+        // Wrapping would turn a caller's mistake into a plausible time.
+        assert!(DefaultMaterialLocalizations::format_hour(24, false).is_err());
+        assert!(DefaultMaterialLocalizations::format_hour(99, true).is_err());
+    }
+
+    #[test]
+    fn the_hour_goes_through_the_decimal_formatter_and_never_needs_it() {
+        // Upstream writes `formatDecimal(hourOfPeriod == 0 ? 12 : ...)`, and
+        // every value it can be given is under a thousand -- so the call is
+        // always the early return. Pinned because it looks like a place a
+        // comma could appear and is not one.
+        for hour in 0..24u32 {
+            let formatted = DefaultMaterialLocalizations::format_hour(hour, false).unwrap();
+            assert!(!formatted.contains(','), "{hour}: {formatted}");
+        }
     }
 }
