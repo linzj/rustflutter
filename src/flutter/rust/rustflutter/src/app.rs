@@ -831,6 +831,14 @@ impl AppInstance {
         };
         let background = application.background();
 
+        // Build, layout and paint all reach the element tree through the same
+        // `RefCell`s, and hold them out on loan while they run. A task resumed
+        // in the middle would arrive at cells that are already borrowed, so the
+        // drain is forbidden for the length of this and happens between the
+        // phases instead -- see `task::run_until_stalled` and the
+        // `rf_app_run_tasks` between begin_frame and draw_frame.
+        let _phase = crate::task::FramePhase::enter();
+
         let started = FrameTimings::now();
         let root = application.build(&context);
         let built = FrameTimings::now();

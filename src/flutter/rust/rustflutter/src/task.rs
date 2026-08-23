@@ -178,21 +178,25 @@ thread_local! {
 /// element tree checked out. A task resumed there would reach the same cells
 /// through a different path and fail the borrow -- so the drain happens between
 /// the phases, never inside one, and this is what says so out loud.
-pub struct FramePhase(());
+pub struct FramePhase {
+    /// What the flag was on the way in. Restored rather than cleared, so a
+    /// guard nested inside another -- one around layout inside the one around
+    /// the whole of `draw_view`, say -- does not reopen the drain when it ends
+    /// while the outer phase is still running.
+    previous: bool,
+}
 
 impl FramePhase {
-    /// Enters the phase. Nested entries are allowed and only the outermost
-    /// matters, which is what makes it safe to put one around each of layout
-    /// and paint as well as around the build.
+    /// Enters the phase. Nesting is allowed and only the outermost matters.
     pub fn enter() -> FramePhase {
-        IN_FRAME_PHASE.with(|flag| flag.set(true));
-        FramePhase(())
+        let previous = IN_FRAME_PHASE.with(|flag| flag.replace(true));
+        FramePhase { previous }
     }
 }
 
 impl Drop for FramePhase {
     fn drop(&mut self) {
-        IN_FRAME_PHASE.with(|flag| flag.set(false));
+        IN_FRAME_PHASE.with(|flag| flag.set(self.previous));
     }
 }
 
@@ -756,5 +760,22 @@ mod tests {
         // And the drain is fine once the phase is over.
         assert!(!run_until_stalled());
         detach();
+    }
+
+    #[test]
+    fn a_nested_frame_phase_does_not_reopen_the_drain() {
+        // The inner guard ends while the outer is still running -- layout
+        // finishing inside a build, say. The phase has not ended.
+        let outer = FramePhase::enter();
+        {
+            let _inner = FramePhase::enter();
+            assert!(IN_FRAME_PHASE.with(Cell::get));
+        }
+        assert!(
+            IN_FRAME_PHASE.with(Cell::get),
+            "the outer phase is still open"
+        );
+        drop(outer);
+        assert!(!IN_FRAME_PHASE.with(Cell::get));
     }
 }
