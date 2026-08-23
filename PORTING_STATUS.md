@@ -14152,3 +14152,51 @@ void onTapTrackReset() { _isShiftPressed = false; }
 
 三个变异全红，其中一个是「tracker 不再触发 reset 钩子」——
 所以这条规则挂着的那个钩子是真的会响。
+
+---
+
+## 五个数在，挑哪一个的规则不在（2026-08-24）
+
+`MaterialButton` 5/34。移植有 `ButtonElevations` 的五个值
+（resting/focus/hover/highlight/disabled）和「都得非负」的断言，
+**但没有「什么时候用哪个」**。
+
+上游那段自己带着警告：
+
+```dart
+// These conditionals are in order of precedence, so be careful about
+// reorganizing them.
+if (isDisabled) return widget.disabledElevation;
+if (isPressed)  return widget.highlightElevation;
+if (isHovered)  return widget.hoverElevation;
+if (isFocused)  return widget.focusElevation;
+return widget.elevation;
+```
+
+**这些状态几乎总是重叠的**——按下的按钮几乎必然也悬停着，
+禁用的按钮两者都可能——所以这不是五种情况，是**一条次序**，
+而且每一对都在说事：
+
+- **禁用压过按下**：一个不会响应的按钮，不该为了迎接这次点击而抬起来。
+- **按下压过悬停**：用鼠标按下时两者同时为真，悬停要是先赢，
+  highlight 那一级用指针根本到不了。
+- **悬停压过聚焦**：焦点可以在指针不在的地方，而指针是更即时的那个。
+
+四个变异——**相邻两级每一次对调**——全红。
+
+### 一条测试是防另一条空过的
+
+上游默认里 hover 和 focus **都是 4**。
+所以拿默认值去测「悬停压过聚焦」，把这两臂对调也照样绿。
+钉次序的那条测试因此用了五个互不相同的值，
+另有一条把「默认下这两个相等」单独写出来——**那是巧合，不是规则**。
+
+### 顺带删掉第三个空谓词
+
+```rust
+pub fn is_superseded() -> bool { true }
+```
+
+这次它**不是错的**（`MaterialButton` 确实被取代了），只是空的——
+而且类型自己的文档注释上一行就写着同一句话。删掉，
+那条测试改成断言它真正在验的东西：它的五个抬升就是 raw button 的五个。

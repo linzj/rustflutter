@@ -39,6 +39,47 @@ impl ButtonElevations {
         }
     }
 
+    /// Upstream's `_effectiveElevation`, which carries its own warning:
+    ///
+    /// ```dart
+    /// // These conditionals are in order of precedence, so be careful about
+    /// // reorganizing them.
+    /// if (isDisabled) return widget.disabledElevation;
+    /// if (isPressed)  return widget.highlightElevation;
+    /// if (isHovered)  return widget.hoverElevation;
+    /// if (isFocused)  return widget.focusElevation;
+    /// return widget.elevation;
+    /// ```
+    ///
+    /// The states overlap constantly -- a pressed button is nearly always
+    /// hovered, and a disabled one can be both -- so this is not five cases
+    /// but **one ordering**, and every pair of it says something:
+    ///
+    /// * **Disabled beats pressed.** A disabled button being clicked stays
+    ///   flat; it must not rise to meet a press it is going to ignore.
+    /// * **Pressed beats hovered.** Pushing down is a larger statement than
+    ///   the pointer merely being there, and the two are true together for
+    ///   almost every mouse press.
+    /// * **Hovered beats focused.** Focus can be somewhere the pointer is not,
+    ///   and the pointer is the more immediate of the two.
+    ///
+    /// Rewriting it as a match on a state enum would need the same ordering
+    /// anyway, and would hide that the inputs are independent booleans rather
+    /// than one state.
+    pub fn for_state(&self, disabled: bool, pressed: bool, hovered: bool, focused: bool) -> f32 {
+        if disabled {
+            self.disabled
+        } else if pressed {
+            self.highlight
+        } else if hovered {
+            self.hover
+        } else if focused {
+            self.focus
+        } else {
+            self.resting
+        }
+    }
+
     /// Upstream asserts each is non-negative. A negative elevation would be a
     /// shadow cast upwards.
     pub fn is_valid(&self) -> bool {
@@ -142,11 +183,6 @@ impl MaterialButton {
             elevations: ButtonElevations::new(),
             has_on_pressed: true,
         }
-    }
-
-    /// Whether upstream's own documentation points somewhere else for new work.
-    pub fn is_superseded() -> bool {
-        true
     }
 }
 
@@ -504,9 +540,11 @@ mod tests {
     // -- The one upstream tells you not to use ------------------------------------
 
     #[test]
-    fn the_material_button_documents_its_own_replacement() {
-        // Kept because applications were written against it.
-        assert!(MaterialButton::is_superseded());
+    fn the_material_button_is_the_raw_one_with_a_theme_over_it() {
+        // This used to open by asserting `MaterialButton::is_superseded()`,
+        // which returned `true` and took no arguments -- the fact is real and
+        // the type's own doc comment already says it, so the assertion only
+        // gave a constant a second place to live.
         assert_eq!(
             MaterialButton::new().elevations,
             RawMaterialButton::new().elevations,
@@ -1367,6 +1405,96 @@ mod material_button_color_tests {
                 &scheme()
             ),
             Some(themed)
+        );
+    }
+}
+
+#[cfg(test)]
+mod elevation_precedence_tests {
+    use super::ButtonElevations;
+
+    fn five() -> ButtonElevations {
+        ButtonElevations::new()
+    }
+
+    #[test]
+    fn a_disabled_button_stays_flat_however_it_is_poked() {
+        // Disabled wins over everything: it must not rise to meet a press it
+        // is going to ignore.
+        let e = five();
+        for pressed in [false, true] {
+            for hovered in [false, true] {
+                for focused in [false, true] {
+                    assert_eq!(
+                        e.for_state(true, pressed, hovered, focused),
+                        e.disabled,
+                        "{pressed} {hovered} {focused}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pressing_beats_hovering_which_they_almost_always_are_together() {
+        // Nearly every mouse press is also a hover, so if hover won first the
+        // highlight elevation would be unreachable with a pointer.
+        let e = five();
+        assert_eq!(e.for_state(false, true, true, false), e.highlight);
+        assert_ne!(e.highlight, e.hover, "or this would prove nothing");
+    }
+
+    #[test]
+    fn and_hovering_beats_focus_because_the_pointer_is_the_nearer_thing() {
+        let e = five();
+        assert_eq!(e.for_state(false, false, true, true), e.hover);
+    }
+
+    #[test]
+    fn and_a_button_nobody_is_touching_rests() {
+        let e = five();
+        assert_eq!(e.for_state(false, false, false, false), e.resting);
+        assert_eq!(e.for_state(false, false, false, true), e.focus);
+    }
+
+    #[test]
+    fn the_order_is_the_content_not_the_five_values() {
+        // Give every state a distinguishable elevation and walk the ladder:
+        // each state in turn must win over all the ones below it.
+        let e = ButtonElevations {
+            resting: 1.0,
+            focus: 2.0,
+            hover: 3.0,
+            highlight: 4.0,
+            disabled: 5.0,
+        };
+        // (disabled, pressed, hovered, focused) -> expected
+        let ladder = [
+            ((true, true, true, true), 5.0),
+            ((false, true, true, true), 4.0),
+            ((false, false, true, true), 3.0),
+            ((false, false, false, true), 2.0),
+            ((false, false, false, false), 1.0),
+        ];
+        for ((disabled, pressed, hovered, focused), expected) in ladder {
+            assert_eq!(
+                e.for_state(disabled, pressed, hovered, focused),
+                expected,
+                "{disabled} {pressed} {hovered} {focused}"
+            );
+        }
+    }
+
+    #[test]
+    fn hover_and_focus_share_a_number_by_default_and_not_by_rule() {
+        // Upstream's defaults give both 4, which would let a reordering of
+        // those two arms pass unnoticed -- which is why the test above uses
+        // five distinct values rather than the defaults.
+        let e = five();
+        assert_eq!(e.hover, e.focus);
+        assert_eq!(
+            e.for_state(false, false, true, false),
+            e.for_state(false, false, false, true)
         );
     }
 }
