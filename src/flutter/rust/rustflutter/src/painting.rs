@@ -4440,6 +4440,95 @@ mod clip_context_tests {
     }
 }
 
+/// Upstream `RenderComparison` (`painting/basic_types.dart`): how badly two
+/// objects differ, from the render tree's point of view.
+///
+/// **The variants are ordered, and the order is the whole of it.** Upstream
+/// compares `.index` rather than the values -- `comparison.index >=
+/// RenderComparison.layout.index` asks for a relayout, `>= paint.index` for a
+/// repaint -- so this is a four-rung ladder, not four names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum RenderComparison {
+    /// Deeply equal. Upstream's doc is careful to say this does not mean
+    /// `identical()` in the Dart sense.
+    #[default]
+    Identical,
+    /// The same for layout and for paint, different in some other way --
+    /// upstream's example is "maybe some event handlers changed".
+    ///
+    /// **Nothing in this port produces it yet.** Upstream reaches it from
+    /// `TextSpan.compareTo`, where a differing `recognizer` is a difference
+    /// that neither moves nor recolours anything; this port's spans carry no
+    /// recognizer. The rung is kept because the ladder's numbering is
+    /// upstream's: taking it out would make `paint` the second rung here and
+    /// the third there.
+    Metadata,
+    /// Different in ways that affect paint but not layout -- "only the colour
+    /// is changed".
+    Paint,
+    /// Different in ways that affect layout, and so paint as well. Upstream
+    /// calls this "the most drastic level of change possible", which is what
+    /// licenses the early exit in [`RenderComparison::worse_of`]'s callers.
+    Layout,
+}
+
+impl RenderComparison {
+    /// The worst change there is. Upstream says so in prose; the callers rely
+    /// on it in code.
+    pub const WORST: RenderComparison = RenderComparison::Layout;
+
+    /// Upstream's `.index`.
+    pub fn rank(self) -> u8 {
+        match self {
+            RenderComparison::Identical => 0,
+            RenderComparison::Metadata => 1,
+            RenderComparison::Paint => 2,
+            RenderComparison::Layout => 3,
+        }
+    }
+
+    /// The running maximum upstream keeps while walking a span's style and
+    /// then its children:
+    ///
+    /// ```dart
+    /// if (candidate.index > result.index) { result = candidate; }
+    /// if (result == RenderComparison.layout) { return result; }
+    /// ```
+    ///
+    /// Two differences do not add up to something worse than either; the
+    /// answer is whichever demands more work.
+    pub fn worse_of(self, other: RenderComparison) -> RenderComparison {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// Whether upstream would stop walking here.
+    ///
+    /// **Sound only because `Layout` is the top of the ladder.** The early
+    /// return is not an approximation: no remaining child could raise the
+    /// answer, so reading them would cost work and change nothing.
+    pub fn is_final(self) -> bool {
+        self == RenderComparison::WORST
+    }
+
+    /// `comparison.index >= RenderComparison.layout.index`.
+    pub fn needs_layout(self) -> bool {
+        self.rank() >= RenderComparison::Layout.rank()
+    }
+
+    /// `comparison.index >= RenderComparison.paint.index`.
+    ///
+    /// Note this is true of `Layout` as well, which is why upstream's consumer
+    /// can write `if (needs layout) ... else if (needs paint)` and be right:
+    /// the layout branch already covers the repaint.
+    pub fn needs_paint(self) -> bool {
+        self.rank() >= RenderComparison::Paint.rank()
+    }
+}
+
 #[cfg(test)]
 mod image_size_tests {
     use super::*;
@@ -4489,5 +4578,177 @@ mod image_size_tests {
         let small = info((100.0, 100.0), (50.0, 50.0));
         assert!(!small.is_oversized());
         assert_eq!(small.wasted_bytes(), 0, "saturating, not negative");
+    }
+}
+
+#[cfg(test)]
+mod render_comparison_tests {
+    use crate::engine::{Color, TextAlign, TextDecoration, TextStyle};
+    use crate::painting::RenderComparison;
+
+    const LADDER: [RenderComparison; 4] = [
+        RenderComparison::Identical,
+        RenderComparison::Metadata,
+        RenderComparison::Paint,
+        RenderComparison::Layout,
+    ];
+
+    #[test]
+    fn the_four_are_a_ladder_and_layout_is_the_top() {
+        for (rung, comparison) in LADDER.iter().enumerate() {
+            assert_eq!(comparison.rank() as usize, rung, "{comparison:?}");
+        }
+        for comparison in LADDER {
+            assert!(comparison.rank() <= RenderComparison::WORST.rank());
+        }
+        assert_eq!(RenderComparison::WORST, RenderComparison::Layout);
+    }
+
+    #[test]
+    fn two_differences_do_not_add_up_to_a_worse_one() {
+        // The walk keeps a running maximum, not a total.
+        for a in LADDER {
+            for b in LADDER {
+                let worse = a.worse_of(b);
+                assert!(worse == a || worse == b, "{a:?} {b:?}");
+                assert!(worse.rank() >= a.rank() && worse.rank() >= b.rank());
+                assert_eq!(worse, b.worse_of(a), "order should not matter");
+            }
+            assert_eq!(a.worse_of(a), a);
+            assert_eq!(a.worse_of(RenderComparison::Identical), a);
+            assert_eq!(
+                a.worse_of(RenderComparison::Layout),
+                RenderComparison::Layout
+            );
+        }
+    }
+
+    #[test]
+    fn the_early_exit_is_sound_because_nothing_beats_layout() {
+        // Upstream stops walking children the moment it reaches layout. That
+        // is exact rather than approximate: no later child could raise it.
+        assert!(RenderComparison::Layout.is_final());
+        for comparison in LADDER {
+            assert_eq!(
+                RenderComparison::Layout.worse_of(comparison),
+                RenderComparison::Layout,
+                "{comparison:?} could not have raised it"
+            );
+            if comparison != RenderComparison::Layout {
+                assert!(!comparison.is_final(), "{comparison:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn needing_layout_already_means_needing_paint() {
+        // Which is why upstream's consumer can write `if layout ... else if
+        // paint` and not lose the repaint.
+        assert!(RenderComparison::Layout.needs_layout());
+        assert!(RenderComparison::Layout.needs_paint());
+        assert!(!RenderComparison::Paint.needs_layout());
+        assert!(RenderComparison::Paint.needs_paint());
+        for comparison in LADDER {
+            if comparison.needs_layout() {
+                assert!(comparison.needs_paint(), "{comparison:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn and_the_two_quiet_rungs_ask_for_no_work() {
+        // Metadata is the interesting one: a real difference that costs
+        // nothing to draw. Nothing in this port produces it yet.
+        for quiet in [RenderComparison::Identical, RenderComparison::Metadata] {
+            assert!(!quiet.needs_layout(), "{quiet:?}");
+            assert!(!quiet.needs_paint(), "{quiet:?}");
+        }
+        // But it is still a difference, and it still outranks identical.
+        assert!(RenderComparison::Metadata.rank() > RenderComparison::Identical.rank());
+    }
+
+    #[test]
+    fn a_colour_is_a_repaint_and_a_size_is_a_relayout() {
+        let base = TextStyle::default();
+        assert_eq!(base.compare_to(&base), RenderComparison::Identical);
+
+        let recoloured = TextStyle {
+            color: Color(0xFF00_FF00),
+            ..TextStyle::default()
+        };
+        assert_ne!(recoloured.color, base.color);
+        assert_eq!(base.compare_to(&recoloured), RenderComparison::Paint);
+
+        let resized = TextStyle {
+            font_size: base.font_size + 1.0,
+            ..TextStyle::default()
+        };
+        assert_eq!(base.compare_to(&resized), RenderComparison::Layout);
+    }
+
+    #[test]
+    fn and_a_style_differing_both_ways_answers_with_the_worse() {
+        let base = TextStyle::default();
+        let both = TextStyle {
+            color: Color(0xFF00_FF00),
+            font_size: base.font_size + 1.0,
+            ..TextStyle::default()
+        };
+        assert_eq!(base.compare_to(&both), RenderComparison::Layout);
+        // And it is genuinely different in the paint way too, so this is the
+        // maximum doing its job rather than the layout test firing alone.
+        let colour_only = TextStyle {
+            color: both.color,
+            ..TextStyle::default()
+        };
+        assert_eq!(base.compare_to(&colour_only), RenderComparison::Paint);
+    }
+
+    #[test]
+    fn every_layout_field_really_is_a_layout_field() {
+        let base = TextStyle::default();
+        let variants = [
+            TextStyle {
+                font_family: Some("Serif".into()),
+                ..TextStyle::default()
+            },
+            TextStyle {
+                font_weight: 700,
+                ..TextStyle::default()
+            },
+            TextStyle {
+                italic: true,
+                ..TextStyle::default()
+            },
+            TextStyle {
+                letter_spacing: Some(1.0),
+                ..TextStyle::default()
+            },
+            TextStyle {
+                word_spacing: Some(1.0),
+                ..TextStyle::default()
+            },
+            TextStyle {
+                height: Some(2.0),
+                ..TextStyle::default()
+            },
+            TextStyle {
+                align: TextAlign::Center,
+                ..TextStyle::default()
+            },
+        ];
+        for variant in variants {
+            assert_eq!(
+                base.compare_to(&variant),
+                RenderComparison::Layout,
+                "{variant:?}"
+            );
+        }
+        // And the decoration is on the other side of the line.
+        let underlined = TextStyle {
+            decoration: TextDecoration::UNDERLINE,
+            ..TextStyle::default()
+        };
+        assert_eq!(base.compare_to(&underlined), RenderComparison::Paint);
     }
 }

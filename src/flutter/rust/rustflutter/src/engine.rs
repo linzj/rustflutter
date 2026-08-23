@@ -732,6 +732,56 @@ pub struct TextStyle {
     pub align: TextAlign,
 }
 
+impl TextStyle {
+    /// Upstream's `TextStyle.compareTo`: how badly this style differs from
+    /// another, in [`crate::painting::RenderComparison`]'s terms.
+    ///
+    /// # Two buckets, and the boundary is not where it looks
+    ///
+    /// Upstream tests the layout-affecting fields first and returns `layout`
+    /// if any differs; then the paint-affecting ones for `paint`; otherwise
+    /// `identical`. What is worth knowing is which side things fall on.
+    ///
+    /// **`color` is paint. `foreground` is layout.** They are the same ink
+    /// expressed two ways, and they land in different buckets, because a
+    /// `Paint` may carry a stroke width and stroking a glyph widens it --
+    /// upstream cannot see inside a `Paint`, so it assumes the worst. A plain
+    /// colour cannot move anything and is known not to.
+    ///
+    /// `shadows` is on the layout side too, for the same conservatism: a
+    /// shadow does not change metrics, but upstream groups it with the fields
+    /// it will not reason about.
+    ///
+    /// This port's `TextStyle` carries neither `foreground` nor `shadows`, so
+    /// the rule is recorded rather than exercised; what it does carry splits
+    /// as upstream splits it.
+    ///
+    /// `align` is this port's own addition to the struct -- upstream keeps
+    /// text alignment on the painter, not the style -- so it appears in
+    /// neither of upstream's lists. It is treated as layout here, which is
+    /// where upstream would have put it: alignment moves glyphs.
+    pub fn compare_to(&self, other: &TextStyle) -> crate::painting::RenderComparison {
+        use crate::painting::RenderComparison;
+        if self.font_family != other.font_family
+            || self.font_family_fallback != other.font_family_fallback
+            || self.font_size != other.font_size
+            || self.font_weight != other.font_weight
+            || self.italic != other.italic
+            || self.letter_spacing != other.letter_spacing
+            || self.word_spacing != other.word_spacing
+            || self.height != other.height
+            || self.font_features != other.font_features
+            || self.align != other.align
+        {
+            return RenderComparison::Layout;
+        }
+        if self.color != other.color || self.decoration != other.decoration {
+            return RenderComparison::Paint;
+        }
+        RenderComparison::Identical
+    }
+}
+
 impl Default for TextStyle {
     fn default() -> Self {
         TextStyle {

@@ -12892,3 +12892,54 @@ return widget.themeMode == ThemeMode.dark ||
 其余每个（mode，platform）组合两种拼写都必须一致。
 
 六个变异全红。coverage 2102 / 1988 记账 / **33 MISSING**。
+
+---
+
+## 同一份墨水，两个桶（2026-08-24）
+
+`RenderComparison` 也在新暴露的 MISSING 里。四个变体，**而顺序就是它的全部**：
+上游比的是 `.index`，不是值——
+
+```dart
+if (comparison.index >= RenderComparison.layout.index) {  markNeedsLayout(); }
+else if (comparison.index >= RenderComparison.paint.index) { /* 只重画 */ }
+```
+
+`TextSpan.compareTo` 沿着 style 和每个孩子走，**保留一个跑动的最大值**，
+并且**一到 layout 就提前返回**：
+
+```dart
+if (candidate.index > result.index) { result = candidate; }
+if (result == RenderComparison.layout) { return result; }
+```
+
+这个提前返回**不是近似，是精确的**——因为 layout 是梯子的顶，
+后面的孩子不可能把答案抬得更高。测试直接钉这一条：
+`Layout.worse_of(任何一个) == Layout`。
+
+### 而 `TextStyle.compareTo` 的那条分界线不在看上去的地方
+
+- **`color` 算 paint。`foreground` 算 layout。**
+
+同一份墨水的两种写法，落在两个桶里。因为 `Paint` 可以带描边宽度，
+而**描边会把字形撑宽**；上游看不进一个 `Paint` 里面，就按最坏的算。
+一个纯颜色动不了任何东西，而且这一点是known的。
+
+`shadows` 也在 layout 那边，同样的保守：阴影不改度量，
+但上游把它归到「我不打算推理的字段」那一堆里。
+
+本移植的 `TextStyle` 既没有 `foreground` 也没有 `shadows`，
+所以这条规则是**记下来的，不是跑出来的**；它有的那些字段按上游的分法分。
+
+`align` 是本移植自己加在结构体上的（上游把对齐放在 painter 上而不是 style 上），
+两张表里都没有它。这里算 layout——对齐会挪字形，上游要放也会放那边。
+
+### Metadata 这一级本移植还产生不出来
+
+上游从 `TextSpan.compareTo` 里 `recognizer` 不同的时候得到它——
+**一个既不挪也不重上色的差别**。本移植的 span 不带 recognizer。
+
+那一级**照样留着**，因为梯子的编号是上游的：拿掉它，
+`paint` 在这边就成了第二级、在那边还是第三级。
+
+六个变异全红。coverage 2102 / 1989 记账 / **32 MISSING**。
