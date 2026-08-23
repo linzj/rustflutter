@@ -14240,3 +14240,63 @@ pub fn is_superseded() -> bool { true }
 
 枚举在 crate 里（`component_themes.rs`），主题也带着它，只有 bar 自己没读。
 四个变异全红，其中 M1 就是原来那个 bug。
+
+## 第 119-120 轮：空洞谓词队列清完，剩下的两个真错
+
+### 收了参数却不看：6 个里 2 个是真错的
+
+上一轮修掉 `shows_label` 之后还剩五个。四个是诚实的：
+
+* `TransitionRoute::can_transition_to` 就是上游基类的默认值
+  （`=> true`），而**三个收窄它的子类全都已经移植了**——
+  Material 的 mixin、Cupertino 的、还有 `PageRoute` 的
+  `nextRoute is PageRoute`（在这里叫 `can_transition_with_page_route`）。
+* `license_count_is_valid` 是个 `assert(licenseCount >= 0)`，
+  在 Dart 里是检查，在这里是类型。
+* Cupertino 那两个（`overscroll_indicator`/`bounces`）上游本来就是无条件的。
+
+第五个不是。
+
+### `ScrollBehavior::should_notify` 收了 old 却不看
+
+上游的基类也答 `false`——但它**担得起**，因为上游把这里合起来的东西拆开了：
+`ScrollBehavior` 本身没有任何可配置状态，所以常量 `false` 是诚实的；
+而 `copyWith` 返回一个私有的 `_WrappedScrollBehavior` 拿着那些旋钮，
+**那个**是逐字段比较的。
+
+这个移植把旋钮折进了同一个结构体，于是同时继承了
+包装类的数据和基类的答案。后果：一个关掉滚动条的 `ScrollConfiguration`
+什么也不通知，下面的滚动视图继续画滚动条，直到别的东西碰巧重建它们。
+
+原有两个测试都是拿一个配置和它自己比——这恰好是无论 `shouldNotify`
+怎么写都保持沉默的那一种。所以这个谓词有两个测试，两个都看不见它。
+
+上游的中间那一项没有照抄，并且注释里写了为什么：
+`behavior != oldWidget.behavior` 在 Dart 里是**同一性**比较
+（两个类都没有重载 `==`），用来廉价地跳过「同一个对象又传了一遍」；
+这里的相等是结构性的、覆盖同样那些字段，所以那个守卫永远改变不了结果。
+**一行永远改变不了结果的代码，比它不存在更糟。**
+
+### 最后一个：常量是对的，但它撑着一个没人测的不变量
+
+`ItemWindow::is_empty` 恒为 `false`。这是真的——空的情况写作 `None`，
+而不是一个盖住零个元素的 window。但这个事实哪儿也没写，
+而它正是 `len` 能写成 `last + 1 - first`（usize）的前提。
+
+两个构造函数都用 `last: last.max(first)` 守着，**两个 clamp 都没有测试**。
+拆掉哪个都没人吭声。需要它们的是退化情形：
+视口高度为零时 `last` 算作 `end / extent - 1`，落在 `first` 下面一格；
+以及偏移滚过列表末尾时，走查一个元素也没找到，
+`first` 回退到 `count - 1` 而 `last` 还停在 0——
+`0 + 1 - 9` 在 usize 上是下溢，不只是读起来奇怪。
+
+### 顺带：让 hollow.py 别再报 dispatch 的叶子
+
+`is_rounded` 在四个圆角轨道形状上都是 `true`，没有第五个实现答 `false`，
+因为那个 `false` 是上面枚举里的一条 match 分支。问题是真的，答案按类型分——
+这是一门没有继承可以挂的语言里，「类型级事实」的样子。
+
+第一版规则只按函数名分组，一下子吞掉十三条，**包括真正要看的那条**：
+`is_empty` 在十几个不相干的类型上都有实现。改成按 `(文件, 名字)` 分组，
+因为负责 dispatch 的枚举就住在它的叶子旁边。76 → 65，未解释的 6 → 3。
+
