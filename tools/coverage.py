@@ -53,11 +53,32 @@ LAYERS = [
 # ruler every `abstract interface class` in the tree -- a blind spot that hides
 # work rather than flattering it, which is the worse of the two failures: a
 # class the ruler cannot see can never be reported MISSING.
+#
+# `enum` was missing for the same reason and for longer. It cost 42 public
+# types -- `ThemeMode`, `ImageRepeat`, `DeviceOrientation`, `WrapCrossAlignment`
+# -- none of which could ever be reported, so the ruler said 0 MISSING while
+# they were absent. An enum is not a lesser kind of class here: it is a named
+# public type that the rest of the API branches on, which makes it exactly the
+# kind of thing this ledger exists to count.
+#
+# `extension type` is included on the same grounds -- a named public type.
+#
+# Deliberately NOT counted, and this is a judgment rather than an oversight:
+# `typedef` (411 of them) names a function signature, not a type to port, and
+# `extension X on Y` adds methods to somebody else's type rather than
+# introducing one. Counting either would inflate the denominator with things
+# that have no Rust counterpart to be missing.
 CLASS_RE = re.compile(
     r'^(?:abstract\s+|base\s+|final\s+|interface\s+|sealed\s+|mixin\s+)*'
-    r'(?:class|mixin)\s+([A-Za-z0-9_]+)',
+    r'(?:class|mixin|enum|extension\s+type)\s+(?:const\s+)?([A-Za-z0-9_]+)',
     re.M,
 )
+# The `const` is optional and goes *after* `extension type`, not before it:
+# `extension type const BaselineOffset(double? offset)`. Without that group the
+# ruler captured `const` as the type's name -- and then, since `const` has no
+# leading underscore, it sailed past the private filter and was reported
+# MISSING four times, once per private extension type in the tree. A ruler's
+# first run is worth exactly as much as the audit of its first run.
 
 
 def strip_dart_comments(text):
@@ -217,7 +238,92 @@ def load_ledger():
     return json.load(open(LEDGER, encoding='utf-8'))
 
 
-def classify(classes_by_file, rust_ids, ledger):
+def rust_module_names():
+    """Every module and file name in the crate.
+
+    Kept apart from [`rust_identifiers`], which excludes `mod` on purpose: the
+    snake-case fold that lets `text_theme` answer for `TextTheme` also let `mod
+    actions` answer for upstream's `Actions` widget, and a module is a file
+    rather than a type.
+
+    But that rule is about an *accident* -- a name colliding on its own. A
+    ledger entry that deliberately writes `painting::matrix_utils` is a person
+    saying where the port lives, and a module is a perfectly good answer to
+    that question when upstream's class is a bag of static methods. Two
+    different questions, so two different sets.
+    """
+    names = set()
+    for root, _dirs, files in os.walk(CRATE):
+        for name in files:
+            if name.endswith('.rs'):
+                names.add(name[:-3])
+        names.add(os.path.basename(root))
+    for root, _dirs, files in os.walk(CRATE):
+        for name in files:
+            if not name.endswith('.rs'):
+                continue
+            text = strip_rust_comments(
+                open(os.path.join(root, name), encoding='utf-8', errors='ignore').read())
+            names.update(re.findall(r'^\s*(?:pub\s+)?mod\s+([a-z0-9_]+)', text, re.M))
+    return names
+
+
+def mapping_resolves(entry, rust_ids):
+    """Whether a ledger `equivalent` entry names something the crate has.
+
+    Until this existed the `rust:` field was never read. An `equivalent` entry
+    counted as accounted purely because the key was present, so 444 of the
+    2102 upstream types -- a fifth of the ledger -- were resting on an
+    assertion in a JSON file that nothing compared against the code. The same
+    species as the invented `_kFoo` citations, at the largest scale in the
+    tree: a claim of correspondence that no reader and no tool ever checked.
+
+    What this checks is **presence, not correctness**. The entries name paths
+    like `render::FlexChild::tight`, whose last segment is a struct field and
+    not a declared symbol, so requiring the leaf would reject good mappings.
+    Requiring *some* segment to be a declared symbol catches the failure that
+    matters -- a mapping pointing at nothing at all, because the Rust side was
+    renamed or never written -- and does not pretend to verify that the thing
+    it points at means what the note says it means. That part is still a human
+    judgment, and the note is where it lives.
+    """
+    if isinstance(entry, str):
+        target = entry
+    else:
+        target = entry.get('rust', '')
+    if not target:
+        return False
+    # The `rust:` values are prose, not strict paths -- `animation::Animation
+    # trait`, `render::FlexChild::tight`, `painting::matrix_utils`. Splitting on
+    # `::` was the first cut and it reported 225 of 444 mappings as naming
+    # nothing, because `Animation trait` is not an identifier and `animation` is
+    # a module, which `rust_identifiers` deliberately excludes. Pulling every
+    # identifier-shaped token out of the string is what actually asks the
+    # question: does the crate contain *anything* this entry names.
+    tokens = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', target)
+    return any(t in rust_ids or snake(t) in rust_ids for t in tokens)
+
+
+def mapping_names_anything(entry, rust_ids, module_names):
+    """Whether the entry names anything, ignoring its leading path component.
+
+    The leading component is context, not the claim. Letting it count was the
+    first cut, and a mutation caught it: pointing `GestureDisposition` at
+    `gestures::NoSuchTypeAnywhere` still resolved, because `gestures` is a
+    module and that alone satisfied the check. Every entry in the ledger begins
+    with a layer name, so the test would have passed for all of them no matter
+    what followed.
+    """
+    target = entry if isinstance(entry, str) else entry.get('rust', '')
+    tokens = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', target or '')
+    if len(tokens) > 1 and (tokens[0] in module_names or snake(tokens[0]) in module_names):
+        tokens = tokens[1:]
+    return any(t in rust_ids or snake(t) in rust_ids
+               or t in module_names or snake(t) in module_names
+               for t in tokens)
+
+
+def classify(classes_by_file, rust_ids, ledger, module_names):
     """Yield (layer, file, class, state) rows."""
     eq = ledger.get('equivalent', {})
     blocked = ledger.get('blocked_engine', {})
@@ -232,7 +338,10 @@ def classify(classes_by_file, rust_ids, ledger):
                 continue
             for c in classes:
                 if c in eq:
-                    yield layer, fname, c, 'mapped'
+                    yield layer, fname, c, (
+                        'mapped'
+                        if mapping_names_anything(eq[c], rust_ids, module_names)
+                        else 'mapping-unresolved')
                 elif c in blocked:
                     yield layer, fname, c, 'blocked-engine'
                 elif c in oos_classes or f'{file_key}:{c}' in oos_classes:
@@ -243,7 +352,10 @@ def classify(classes_by_file, rust_ids, ledger):
                     yield layer, fname, c, 'MISSING'
 
 
-ORDER = ['covered', 'mapped', 'blocked-engine', 'out-of-scope', 'MISSING']
+ORDER = ['covered', 'mapped', 'blocked-engine', 'out-of-scope',
+         'mapping-unresolved', 'MISSING']
+# `mapping-unresolved` is not accounted. A ledger entry that names a Rust
+# symbol the crate does not have is a claim, not a port.
 
 
 def main():
@@ -252,7 +364,8 @@ def main():
     ap.add_argument('--missing-only', action='store_true')
     args = ap.parse_args()
 
-    rows = list(classify(upstream_classes(), rust_identifiers(), load_ledger()))
+    rows = list(classify(upstream_classes(), rust_identifiers(), load_ledger(),
+                         rust_module_names()))
     if args.filter:
         rows = [r for r in rows if args.filter in f'{r[0]}/{r[1]}']
     if args.missing_only:
@@ -265,7 +378,7 @@ def main():
         by_file.setdefault((layer, fname), {s: [] for s in ORDER})[state].append(cls)
 
     total = len(rows)
-    accounted = total - by_state['MISSING']
+    accounted = total - by_state['MISSING'] - by_state['mapping-unresolved']
     print(f'{total} public classes across {len(by_file)} files '
           f'({accounted} accounted, {by_state["MISSING"]} MISSING)\n')
     for state in ORDER:
@@ -278,6 +391,8 @@ def main():
             for s in ('mapped', 'blocked-engine', 'out-of-scope'):
                 if states[s]:
                     print(f'    [{s}] {", ".join(states[s])}')
+        if states['mapping-unresolved']:
+            print(f'    MAPPING NAMES NOTHING: {", ".join(states["mapping-unresolved"])}')
         if states['MISSING']:
             print(f'    MISSING: {", ".join(states["MISSING"])}')
     return 0

@@ -12636,3 +12636,96 @@ let mut row = ...; row.has_prefix = true; assert!(row.has_prefix);
 被报成不存在，只因为我扫的是 `packages/`，而它在
 `bin/cache/pkg/sky_engine/lib/ui/painting.dart` 里——**引用是对的，我的扫描范围是错的**。
 和 `constants.py` 头两次栽的是同一个跟头：**工具错了，报成移植错了。**
+
+---
+
+## 「0 MISSING」是尺子看不见 enum（2026-08-24）
+
+这一轮本来是去看 `CupertinoLocalizations`（depth 2/46）够不够格移。
+翻的时候发现上游 `localizations.dart` 里有两个公共枚举
+——`DatePickerDateOrder`、`DatePickerDateTimeOrder`——移植里一个都没有。
+而 `coverage.py` 对这个文件的报告是 **2 个类，0 MISSING**。
+
+因为 `CLASS_RE` 只认 `class` 和 `mixin`。**`enum` 从来没被数过。**
+
+```
+(?:class|mixin)\s+([A-Za-z0-9_]+)
+```
+
+这个正则上面本来就有一段注释，记着**同一个毛病的上一次**：
+`interface` 曾经漏在修饰符里，害尺子看不见每一个
+`abstract interface class`，注释里写着「**尺子看不见的类，永远不可能被报成
+MISSING**」。写下那句话的时候，`enum` 就在同一行的旁边漏着。
+
+### 真实的数字
+
+| | 原报 | 实际 |
+|---|---|---|
+| 公共类型 | 1930 | **2102** |
+| MISSING | **0** | **49**（三轮台账分类后 37） |
+
+漏掉的 172 个里，49 个移植里根本没有：`ThemeMode`、`ImageRepeat`、
+`DeviceOrientation`、`SchedulerPhase`、`TimeOfDayFormat`、`WrapCrossAlignment`、
+`SmartDashesType`……**全是 API 用来分支的那种类型**。
+枚举在这里不是「次一等的类」，恰恰是这本台账最该数的东西。
+
+反向验过：把 `enum` 从正则里拿掉，输出**一字不差地回到 `1930 / 0 MISSING`**。
+
+### 头一次跑，尺子又错了一次
+
+新正则把 `extension type const BaselineOffset(double? offset)` 的名字
+读成了 `const`——`const` 在 `extension type` 和名字**之间**。
+而 `const` 没有前导下划线，于是溜过了私有过滤，
+被报成 MISSING 四次，每个私有 extension type 一次。
+
+**一把尺子头一次跑的结果，只值它那次跑的审计。**这一条已经是这个会话里的第三次了。
+
+### 而更大的一件事：`rust:` 字段从来没有被读过
+
+台账的 `equivalent` 是这样的：
+
+```json
+"GestureDisposition": {"rust": "gestures::Disposition", "note": "..."}
+```
+
+`classify()` 里写的是 `if c in eq: yield 'mapped'`——**只看键在不在**。
+那个 `rust:` 从来没有和代码比对过。
+448 条对应关系，占全部类型的两成，**靠的是一个 JSON 文件里的断言**。
+
+这和这个会话里反复撞见的是同一个物种——**一句没人核对的出处**——
+只是规模最大的一次。
+
+加上核对之后，**81 条指着 crate 里不存在的东西**。已经查实的两条：
+
+| 台账写的 | 实际 |
+|---|---|
+| `SingleChildRenderObjectWidget` → `SingleWidget` | 那个名字早没了，现在是 `framework::single` |
+| `MultiChildRenderObjectWidget` → `ManyWidget` | 同上，`framework::many` |
+
+**改名之后没有任何东西发现台账过时了**，因为没有任何东西在读它。
+
+### 这个核对本身也被变异过两次
+
+第一版按 `::` 切，报 225 条不存在——因为 `animation::Animation trait`
+切出来的 `Animation trait` 不是标识符，而 `animation` 是模块，
+`rust_identifiers` **故意**不收 `mod`。改成抓标识符 token，降到 91。
+
+第二版让模块名也能坐实一条映射（`painting::matrix_utils` 是正当的写法：
+上游那个类本来就是一袋静态方法）。这一条要分清楚：
+**排除 `mod` 是防「`mod actions` 碰巧盖住 `Actions`」这种意外，
+而台账里写 `painting::matrix_utils` 是一个人在说端口在哪——两个问题，两套规则。**
+
+第三版是变异逼出来的：把 `GestureDisposition` 指向
+`gestures::NoSuchTypeAnywhere`，**居然还是绿的**——因为 `gestures` 是模块名，
+光这一个就满足了检查。而台账里**每一条**都以层名开头，
+于是这个检查对所有条目都会通过，无论后面写什么。
+改成**开头那一段是上下文、不是主张**（有多段时丢掉第一段），
+再变异，81 → 82。
+
+### 这一轮没做的
+
+37 个 MISSING 和 81 条空映射都留着，没有硬塞进这一轮。
+一次补 49 个枚举，和当初那个 0 是一类错误——**看起来完成了**。
+`WrapCrossAlignment` 尤其要单独一轮：它只有 start/end/center 三个变体，
+而移植的 `RenderWrap` 用的是 `CrossAxisAlignment`（五个，多出 stretch 和 baseline），
+**移植能表达上游表达不了的状态**，这不是改名，是变宽，不能当映射记。

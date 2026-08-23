@@ -35,7 +35,14 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-23）：1930 accounted / 0 MISSING（100%，第四次归零）；`unwired.py` 48 个主题 / **0 个无读者**（另 1 个上游已废弃，不计）；`order_sweep.py` 0；`unvaried.py` 0；cargo 4628 passed，gallery 333 passed。**
+**进度（2026-08-24）：2102 个公共类型 / 1984 记账 / **37 MISSING** / 81 条映射指向不存在的东西；`unwired.py` 48 个主题 / 0 个无读者（另 1 个上游已废弃，不计）；`constants.py` 158/0/0；`order_sweep.py` 0；`unvaried.py` 0；cargo 4786 passed，gallery 333 passed。**
+
+> **2026-08-24 更正**：上一行原本写的是「1930 accounted / 0 MISSING（100%，第四次归零）」。
+> 那个 0 是尺子的盲点造成的——`CLASS_RE` 只认 `class` 和 `mixin`，
+> **看不见 `enum`**，于是 172 个公共类型从来没被数过，其中 49 个根本不在移植里。
+> 把 `enum`/`extension type` 加进去之后，真实的数字是上面那一行。
+> 另外 `equivalent` 台账的 `rust:` 字段**从来没有被读过**：一条映射只要键在就算记账，
+> 于是 448 条对应关系里有 81 条指着 crate 里不存在的东西。详见 PORTING_STATUS.md。
 **四个桶全部审计过了。** 最后一个 `out_of_scope`（59 条）这轮审计完：9 条理由
 不成立，改判回 MISSING 并已补齐——三个 `DiagnosticsProperty` 子类记的「诊断树
 未移植」在 `diagnostics.rs` 存在之后就是**假的**；`ClipContext` 记的「仅 debug

@@ -40,10 +40,12 @@
       "rust": "LeafWidget"
     },
     "SingleChildRenderObjectWidget": {
-      "rust": "SingleWidget"
+      "rust": "framework::single",
+      "note": "这个 crate 用自由函数而不是基类：single(child, build) 把一个孩子交给一个构建闭包。台账原来写的是 `SingleWidget`，那个名字已经不存在了——coverage.py 从不读 rust: 字段，所以改名之后没有任何东西发现它过时了。"
     },
     "MultiChildRenderObjectWidget": {
-      "rust": "ManyWidget"
+      "rust": "framework::many",
+      "note": "同上，many(children, build)。台账原来写的是 `ManyWidget`。"
     },
     "OutlinedBorder": {
       "rust": "ShapeBorder",
@@ -1749,6 +1751,22 @@
     "State": {
       "rust": "framework::StatefulComponent::State（关联类型）+ StateHandle",
       "note": "上游 State<T> 是持有可变状态、带 initState/didUpdateWidget/dispose/setState 生命周期的类。此侧状态是 StatefulComponent 的关联类型（一个 Default 值），生命周期由 ElementTree 持有，setState 是 StateHandle::set_state。逐项：initState≙StatefulComponent::initial_state、build≙build(&state, handle, context)、setState≙StateHandle::set_state、每帧回调≙advance(&mut state, frame_time_micros)。未 port：didUpdateWidget 与 dispose 没有对应回调——状态随元素消失而消失，没有可挂清理的钩子；需要清理的模块（drawer_host、messenger 等）把它挂在自己持有的句柄上。"
+    },
+    "FlexFit": {
+      "rust": "render::FlexChild::tight",
+      "note": "两个变体的枚举收成一个 bool：tight=true 是 FlexFit.tight，false 是 loose。FlexChild 上的注释本来就写着「Upstream this is `FlexFit`」。"
+    },
+    "GestureDisposition": {
+      "rust": "gestures::Disposition",
+      "note": "纯改名，两个变体一一对应（Accepted/Rejected）。"
+    },
+    "SchedulerPhase": {
+      "rust": "layout_builder::SchedulerPhaseForRebuild",
+      "note": "同五个变体、同顺序（idle/transientCallbacks/midFrameMicrotasks/persistentCallbacks/postFrameCallbacks）。名字加了 ForRebuild 是因为这个 crate 只在「现在能不能重建」这一个问题上用它。"
+    },
+    "WrapAlignment": {
+      "rust": "render::MainAxisAlignment",
+      "note": "合并：上游 WrapAlignment 和 MainAxisAlignment 的六个变体逐一相同（start/end/center/spaceBetween/spaceAround/spaceEvenly），RenderWrap 的 alignment 与 run_alignment 都用它。注意 WrapCrossAlignment **不能**照此办理，见 PORTING_STATUS.md。"
     }
   },
   "blocked_engine": {
@@ -1794,7 +1812,8 @@
     "InkSparkle": "要 dart:ui 的 FragmentProgram/FragmentShader（`ui.FragmentProgram.fromAsset(\"shaders/ink_sparkle.frag\")`），整个效果就是那支片元着色器；渲染 ABI 没有着色器通路",
     "PerformanceOverlayLayer": "引擎栅格统计未过 ABI（同 RenderPerformanceOverlay）",
     "ImageFilterContext": "引擎 filter 位只有 blur（同 BackdropFilter 分歧）",
-    "ImageFilterConfig": "引擎 filter 位只有 blur（同 ImageFilterContext）"
+    "ImageFilterConfig": "引擎 filter 位只有 blur（同 ImageFilterContext）",
+    "TextWidthBasis": "引擎的 intrinsic-width ABI 只回一个宽度，max_intrinsic_width 与 longest_line() 算出的是同一个数，两条臂分不开——这个判断是几轮前做的，但当时 coverage.py 看不见 enum，所以只写进了 PORTING_STATUS.md，没进台账。"
   },
   "out_of_scope_files": {
     "raw_keyboard.dart": "上游 v3.18 起整族 @Deprecated，被 HardwareKeyboard/KeyEvent 取代；此侧只移植新的一路",
@@ -1823,7 +1842,14 @@
     "LiveText": "iOS 专属（Live Text 取词）",
     "Category": "文档生成用的注解，无运行期行为",
     "DocumentationIcon": "文档生成用的注解，无运行期行为",
-    "Summary": "文档生成用的注解，无运行期行为"
+    "Summary": "文档生成用的注解，无运行期行为",
+    "FoundationServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "ServicesServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "SchedulerServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "RenderingServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "WidgetsServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "WidgetInspectorServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
+    "AccessibilityServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"
