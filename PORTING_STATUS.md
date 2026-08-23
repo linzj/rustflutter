@@ -13001,3 +13001,41 @@ if (repeat != ImageRepeat.noRepeat && destinationSize == outputSize) {
 改成把默认挪到 `Repeat` 才算数）。
 
 coverage 2102 / 1990 记账 / **31 MISSING**。
+
+---
+
+## 那个默认值只在两种单位里的一种下存在（2026-08-24）
+
+`CacheExtentStyle` 两个变体，`pixel` 和 `viewport`。
+差别不是「一个是另一个的特例」——**像素那一支根本不看视口**：
+
+```dart
+// _PixelScrollCacheExtent
+double _calculateCacheOffset(double mainAxisExtent) => pixels;
+// _ViewportScrollCacheExtent
+double _calculateCacheOffset(double mainAxisExtent) => value * mainAxisExtent;
+```
+
+上游把数值和单位**绑在一个值里**（一个 sealed class，两个构造函数），
+因为**两半单独拿出来都没有意义**：250 在手机上是一屏，在桌面窗口上是一条边；
+0.5 是半个视口还是半个像素。绑在一起，那个错配的组合就写不出来。
+
+### 而缺省只有一种单位说得通
+
+```dart
+assert(cacheExtent != null || cacheExtentStyle == CacheExtentStyle.pixel)
+```
+
+不给数值，在像素下没问题——`defaultCacheExtent = 250` 差不多是一屏。
+**同一个 250 当乘数就是「缓存 250 个视口」**，
+所以上游**拒绝这个组合**，而不是另编一个没人写下来的第二默认值。
+
+移植里 `ScrollCacheExtent::defaulted` 因此返回 `Option`：
+像素少了数值有救，视口少了数值没救。
+
+### 一条防「两条臂碰巧相等」的测试
+
+乘数是 1 的时候，两种单位**在恰好一个视口尺寸上相等**，而那个尺寸就是数值本身。
+所以测试同时断言：600 时相等，601 时不等。
+
+六个变异全红。coverage 2102 / 1991 记账 / **30 MISSING**。

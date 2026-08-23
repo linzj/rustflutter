@@ -777,6 +777,95 @@ impl Scroll {
 /// a screen's worth of margin at each end costs a few items and removes that.
 pub const DEFAULT_CACHE_EXTENT: f32 = 250.0;
 
+/// Upstream `CacheExtentStyle` (`rendering/viewport.dart`): what unit a
+/// viewport's cache extent is written in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CacheExtentStyle {
+    /// Logical pixels, taken literally.
+    #[default]
+    Pixel,
+    /// A multiplier of the viewport's own main-axis extent.
+    Viewport,
+}
+
+/// Upstream `ScrollCacheExtent`: a cache extent together with the unit it is
+/// written in.
+///
+/// The two are kept in one value because **neither half means anything
+/// alone**. `250` is a screenful on a phone and a sliver of a desktop window;
+/// `0.5` is half a viewport or half a pixel. Upstream models this as a sealed
+/// class with a `pixels` and a `viewport` constructor rather than as a pair of
+/// loose parameters, which is what makes the mismatched combination
+/// unwritable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollCacheExtent {
+    pub value: f32,
+    pub style: CacheExtentStyle,
+}
+
+impl ScrollCacheExtent {
+    /// Upstream's `ScrollCacheExtent.pixels`.
+    pub fn pixels(value: f32) -> ScrollCacheExtent {
+        ScrollCacheExtent {
+            value,
+            style: CacheExtentStyle::Pixel,
+        }
+    }
+
+    /// Upstream's `ScrollCacheExtent.viewport`.
+    pub fn viewport(value: f32) -> ScrollCacheExtent {
+        ScrollCacheExtent {
+            value,
+            style: CacheExtentStyle::Viewport,
+        }
+    }
+
+    /// Upstream's `_calculateCacheOffset`: the extent in logical pixels, once
+    /// the viewport's size is known.
+    ///
+    /// The pixel form **ignores the argument entirely** -- that is the
+    /// difference between the two, not a special case of it.
+    pub fn in_pixels(&self, main_axis_extent: f32) -> f32 {
+        match self.style {
+            CacheExtentStyle::Pixel => self.value,
+            CacheExtentStyle::Viewport => self.value * main_axis_extent,
+        }
+    }
+
+    /// Upstream's assert:
+    ///
+    /// ```dart
+    /// assert(cacheExtent != null || cacheExtentStyle == CacheExtentStyle.pixel)
+    /// ```
+    ///
+    /// **The default only exists in one of the two units.** Leaving the extent
+    /// out is fine in pixels, where [`DEFAULT_CACHE_EXTENT`] means a screenful
+    /// or so; as a multiplier the same number would ask for 250 viewports of
+    /// cache, so upstream refuses the combination rather than inventing a
+    /// second default nobody wrote down.
+    pub fn is_legal(value: Option<f32>, style: CacheExtentStyle) -> bool {
+        value.is_some() || style == CacheExtentStyle::Pixel
+    }
+
+    /// What a viewport ends up with when no extent was given.
+    pub fn defaulted(value: Option<f32>, style: CacheExtentStyle) -> Option<ScrollCacheExtent> {
+        match (value, style) {
+            (Some(value), style) => Some(ScrollCacheExtent { value, style }),
+            (None, CacheExtentStyle::Pixel) => {
+                Some(ScrollCacheExtent::pixels(DEFAULT_CACHE_EXTENT))
+            }
+            (None, CacheExtentStyle::Viewport) => None,
+        }
+    }
+}
+
+impl Default for ScrollCacheExtent {
+    /// `ScrollCacheExtent.pixels(RenderAbstractViewport.defaultCacheExtent)`.
+    fn default() -> ScrollCacheExtent {
+        ScrollCacheExtent::pixels(DEFAULT_CACHE_EXTENT)
+    }
+}
+
 /// Which items a fixed-extent list needs to have built.
 ///
 /// The whole point of a fixed extent: the answer is arithmetic rather than
@@ -2999,5 +3088,91 @@ mod tests {
             before,
             "the window is the same size, so is the tree"
         );
+    }
+}
+
+#[cfg(test)]
+mod cache_extent_tests {
+    use super::{CacheExtentStyle, DEFAULT_CACHE_EXTENT, ScrollCacheExtent};
+
+    #[test]
+    fn pixels_ignore_the_viewport_and_a_multiplier_does_not() {
+        let fixed = ScrollCacheExtent::pixels(250.0);
+        // The same answer on a phone and on a desktop window: that is what
+        // "pixel" means, not a special case of the other.
+        assert_eq!(fixed.in_pixels(600.0), 250.0);
+        assert_eq!(fixed.in_pixels(2000.0), 250.0);
+
+        let relative = ScrollCacheExtent::viewport(0.5);
+        assert_eq!(relative.in_pixels(600.0), 300.0);
+        assert_eq!(relative.in_pixels(2000.0), 1000.0);
+        assert_ne!(relative.in_pixels(600.0), relative.in_pixels(2000.0));
+    }
+
+    #[test]
+    fn and_the_same_number_means_two_different_things() {
+        // Which is why the value and the unit travel together. One is a
+        // screenful; the other is 250 screenfuls.
+        let extent = 250.0;
+        let as_pixels = ScrollCacheExtent::pixels(extent).in_pixels(800.0);
+        let as_viewports = ScrollCacheExtent::viewport(extent).in_pixels(800.0);
+        assert_eq!(as_pixels, 250.0);
+        assert_eq!(as_viewports, 200_000.0);
+        assert_ne!(as_pixels, as_viewports);
+    }
+
+    #[test]
+    fn a_viewport_multiple_must_be_given_and_a_pixel_count_need_not() {
+        // Upstream: assert(cacheExtent != null || style == pixel).
+        assert!(ScrollCacheExtent::is_legal(None, CacheExtentStyle::Pixel));
+        assert!(!ScrollCacheExtent::is_legal(
+            None,
+            CacheExtentStyle::Viewport
+        ));
+        for style in [CacheExtentStyle::Pixel, CacheExtentStyle::Viewport] {
+            assert!(ScrollCacheExtent::is_legal(Some(1.0), style), "{style:?}");
+        }
+    }
+
+    #[test]
+    fn and_the_default_only_exists_in_pixels() {
+        assert_eq!(
+            ScrollCacheExtent::defaulted(None, CacheExtentStyle::Pixel),
+            Some(ScrollCacheExtent::pixels(DEFAULT_CACHE_EXTENT))
+        );
+        assert_eq!(
+            ScrollCacheExtent::defaulted(None, CacheExtentStyle::Viewport),
+            None,
+            "250 viewports of cache is not a default anybody wrote down"
+        );
+        // A value given is kept whichever unit it is in.
+        assert_eq!(
+            ScrollCacheExtent::defaulted(Some(2.0), CacheExtentStyle::Viewport),
+            Some(ScrollCacheExtent::viewport(2.0))
+        );
+        assert_eq!(
+            ScrollCacheExtent::defaulted(Some(2.0), CacheExtentStyle::Pixel),
+            Some(ScrollCacheExtent::pixels(2.0))
+        );
+    }
+
+    #[test]
+    fn a_viewport_caches_a_screenful_or_so_unless_told_otherwise() {
+        let default = ScrollCacheExtent::default();
+        assert_eq!(default, ScrollCacheExtent::pixels(DEFAULT_CACHE_EXTENT));
+        assert_eq!(default.style, CacheExtentStyle::Pixel);
+        assert_eq!(DEFAULT_CACHE_EXTENT, 250.0);
+        assert_eq!(CacheExtentStyle::default(), CacheExtentStyle::Pixel);
+    }
+
+    #[test]
+    fn the_two_styles_are_not_interchangeable_at_any_viewport_size() {
+        // Guards the tests above from passing because the arms happen to
+        // agree: for a multiplier of 1 they agree at exactly one size, and
+        // that size is the value itself.
+        let relative = ScrollCacheExtent::viewport(1.0);
+        let fixed = ScrollCacheExtent::pixels(600.0);
+        assert_eq!(relative.in_pixels(600.0), fixed.in_pixels(600.0));
+        assert_ne!(relative.in_pixels(601.0), fixed.in_pixels(601.0));
     }
 }
