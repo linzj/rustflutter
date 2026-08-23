@@ -11290,3 +11290,51 @@ defaults 类的 `overlayColor` 兜底返回 **null**；几行之下 `resolveStat
 
 无读者主题 4 → 3（另 1 个上游已废弃，不计）。
 
+## 时间选择器：透明和「同一个颜色」不是一回事（2026-08-23）
+
+### entry mode 是 defaults 的第三个输入，而它只动一个字段
+
+`_TimePickerDefaultsM3(context, {entryMode})` 接住那个模式，
+方式和搜索视图的 defaults 接住 `isFullScreen` 一样——**既不是主题也不是 widget
+的一个参数**。而且和那边一样，它**只改一个默认值**：
+`hourMinuteTextStyle` 在表盘上是 `displayLarge`，在输入框里是 `displayMedium`。
+
+**可编辑的时候小一号。** 表盘上的小时是个你点的目标；输入框里的是你打的字，
+里面有个光标，`displayLarge` 会给它一个拇指那么高的光标。
+
+### 输入态的框是表盘态的框减八，只减高
+
+`hourMinuteInputSize` 是 `Size(width, height - 8)`，上游还附了一句：
+规范里写的是八，但**还没有对应的 token**。宽度不动——一个输入框仍然得放下两位数字，
+减掉的只是数字周围的余地。
+
+### 24 小时的框更宽，高度一样
+
+114 对 96。那个模式下旁边没有 AM/PM 选择器了，它原本占的宽度归了数字，
+而不是归了边距。两处调整**互不相干、可以叠加**：一个动宽，一个动高。
+
+### 未选中的 AM/PM 是透明，而不是对话框的颜色
+
+上游在注释里给了理由，而这句话读起来像是多此一举，直到你看见原因：
+*「Making it transparent enables that without being redundant and allows the
+optional elevation overlay for dark mode to be visible.」*
+
+在 `surfaceContainerHigh` 上再画一层 `surfaceContainerHigh`，**和什么都不画不是一回事**，
+因为深色模式下对话框的 elevation overlay 就夹在这两层中间。
+**透明与同色，恰恰在下面还垫着东西的地方分道扬镳。**
+
+### 时分文字又是八条臂两个答案
+
+选中的四条臂全返回 `onPrimaryContainer`，未选中的四条全返回 `onSurface`，
+和 [`ResolvedSegmentedButton`] 一样。交互在 `hourMinuteColor` 里——
+一层遮罩混在 `surfaceContainerHighest` 上，还是那三个浓度
+（按下 0.1、悬停 0.08、聚焦 0.1）。
+
+14 个变异，14 个全红。**其中六条第一次锚点没对上**——
+`component_themes.rs` 已经大到 `ELEVATION`、`HOVERED_OVERLAY` 这些常量名
+在多个 `Resolved*` 里重名（`ELEVATION` 出现 6 次）。
+把锚点限定在 `impl ResolvedTimePicker` 的范围内重跑，六条也都是红的。
+**变异工具的「锚点必须唯一」这条断言又一次挡住了一次假通过。**
+
+每条新测试都单独跑过一遍。无读者主题 3 → 2（另 1 个上游已废弃，不计）。
+

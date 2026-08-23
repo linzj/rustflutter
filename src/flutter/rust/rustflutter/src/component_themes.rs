@@ -4174,6 +4174,170 @@ impl ResolvedDropdownMenu {
     }
 }
 
+/// What a time picker is drawn with -- upstream's `_TimePickerDefaultsM3`
+/// under `TimePickerTheme.of`.
+///
+/// # The entry mode is a third input to the defaults, and it moves one field
+///
+/// `_TimePickerDefaultsM3(context, {entryMode})` takes the mode the way the
+/// search view's defaults take `isFullScreen` -- an argument that is neither
+/// the theme nor the widget. And as there, it changes **exactly one** default:
+/// `hourMinuteTextStyle` is `displayLarge` on a dial and `displayMedium` in a
+/// field.
+///
+/// One size smaller when it is editable. A dial's hour is a target you tap; an
+/// input's is text you type into, with a caret in it, and `displayLarge` would
+/// give it a caret the height of a thumb.
+///
+/// # The input boxes are the dial boxes minus eight, in height only
+///
+/// `hourMinuteInputSize` is `Size(width, height - 8)`, with upstream's note
+/// that the spec says eight and there is no token for it yet. The width does
+/// not move: a field still has to hold two digits, and only the room around
+/// them comes down.
+///
+/// # A 24-hour clock's boxes are wider at the same height
+///
+/// 114 against 96. There is no AM/PM selector beside them in that mode, and
+/// the width it was taking goes to the numbers rather than to the margins.
+///
+/// # An unselected day period is transparent rather than the dialog's colour
+///
+/// Upstream says why in a comment, and it is the kind of thing that reads as a
+/// redundancy until you see the reason: *"Making it transparent enables that
+/// without being redundant and allows the optional elevation overlay for dark
+/// mode to be visible."*
+///
+/// Painting `surfaceContainerHigh` over `surfaceContainerHigh` is not the same
+/// as painting nothing, because the dialog's elevation overlay sits between
+/// them in the dark. **Transparent and same-colour differ exactly where
+/// something is layered underneath.**
+///
+/// # And the hour/minute text ladder is eight arms with two answers again
+///
+/// Selected returns `onPrimaryContainer` from all four of its arms and
+/// unselected returns `onSurface` from all four, as
+/// [`ResolvedSegmentedButton`]'s does. The interaction is in
+/// `hourMinuteColor`, which blends an overlay over `surfaceContainerHighest`
+/// at the usual 0.1 pressed, 0.08 hovered, 0.1 focused.
+pub struct ResolvedTimePicker {
+    pub background_color: Color,
+    pub elevation: f32,
+    pub day_period_border: BorderSide,
+    pub entry_mode_icon_color: Color,
+    pub hour_minute_size: Size,
+    pub hour_minute_text_is_large: bool,
+    pub hour_minute_shape_radius: f32,
+}
+
+impl ResolvedTimePicker {
+    /// Upstream's `hourMinuteSize`.
+    pub const HOUR_MINUTE_SIZE: Size = Size::new(96.0, 80.0);
+    /// Upstream's `hourMinuteSize24Hour` width, which is the only thing that
+    /// differs from [`ResolvedTimePicker::HOUR_MINUTE_SIZE`].
+    pub const HOUR_MINUTE_WIDTH_24_HOUR: f32 = 114.0;
+    /// Upstream's "eight pixels smaller than the regular size in the spec, but
+    /// there's no token for it yet".
+    pub const INPUT_HEIGHT_REDUCTION: f32 = 8.0;
+    /// Upstream's `hourMinuteShape` radius.
+    pub const HOUR_MINUTE_RADIUS: f32 = 8.0;
+    /// Upstream's `elevation`.
+    pub const ELEVATION: f32 = 6.0;
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// The hour and minute box, by the two things that change it.
+    ///
+    /// Twenty-four hours widens it; input shortens it. The two are independent
+    /// and compose, because one moves the width and the other the height.
+    pub fn hour_minute_size(twenty_four_hour: bool, is_input: bool) -> Size {
+        let width = if twenty_four_hour {
+            ResolvedTimePicker::HOUR_MINUTE_WIDTH_24_HOUR
+        } else {
+            ResolvedTimePicker::HOUR_MINUTE_SIZE.width
+        };
+        let height = if is_input {
+            ResolvedTimePicker::HOUR_MINUTE_SIZE.height - ResolvedTimePicker::INPUT_HEIGHT_REDUCTION
+        } else {
+            ResolvedTimePicker::HOUR_MINUTE_SIZE.height
+        };
+        Size::new(width, height)
+    }
+
+    /// Whether the hour/minute text is `displayLarge` rather than
+    /// `displayMedium` -- the one default the entry mode moves.
+    pub fn hour_minute_text_is_large(mode: crate::pickers::TimePickerEntryMode) -> bool {
+        use crate::pickers::TimePickerEntryMode;
+        matches!(
+            mode,
+            TimePickerEntryMode::Dial | TimePickerEntryMode::DialOnly
+        )
+    }
+
+    /// Upstream's `dayPeriodColor`: the scheme's container when selected, and
+    /// **transparent** otherwise -- not the dialog's colour. See the type's
+    /// docs.
+    pub fn day_period_color(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Selected) {
+            scheme.tertiary_container()
+        } else {
+            Color::TRANSPARENT
+        }
+    }
+
+    /// Upstream's `_hourMinuteTextColor`, whose eight arms give two answers.
+    pub fn hour_minute_text_color(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Selected) {
+            scheme.on_primary_container()
+        } else {
+            scheme.on_surface
+        }
+    }
+
+    /// Upstream's `hourMinuteColor`: an overlay blended over
+    /// `surfaceContainerHighest`, which is where the interaction shows.
+    pub fn hour_minute_color(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedTimePicker::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedTimePicker::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedTimePicker::PRESSED_OVERLAY
+        } else {
+            return scheme.surface_container_highest();
+        };
+        crate::elevation_overlay::alpha_blend(
+            crate::elevation_overlay::with_opacity(scheme.on_surface, opacity),
+            scheme.surface_container_highest(),
+        )
+    }
+
+    pub fn of(
+        context: &mut BuildContext,
+        mode: crate::pickers::TimePickerEntryMode,
+        twenty_four_hour: bool,
+    ) -> ResolvedTimePicker {
+        let scheme = ThemeData::of(context).color_scheme;
+        let data = TimePickerTheme::of(context);
+        let is_input = !ResolvedTimePicker::hour_minute_text_is_large(mode);
+        ResolvedTimePicker {
+            background_color: data
+                .background_color
+                .unwrap_or_else(|| scheme.surface_container_high()),
+            elevation: data.elevation.unwrap_or(ResolvedTimePicker::ELEVATION),
+            day_period_border: data.day_period_border_side.unwrap_or(BorderSide {
+                color: scheme.outline(),
+                width: 1.0,
+                ..BorderSide::NONE
+            }),
+            entry_mode_icon_color: data.entry_mode_icon_color.unwrap_or(scheme.on_surface),
+            hour_minute_size: ResolvedTimePicker::hour_minute_size(twenty_four_hour, is_input),
+            hour_minute_text_is_large: !is_input,
+            hour_minute_shape_radius: ResolvedTimePicker::HOUR_MINUTE_RADIUS,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

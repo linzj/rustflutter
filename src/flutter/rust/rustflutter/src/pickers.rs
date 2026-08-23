@@ -2742,6 +2742,20 @@ pub struct TimePickerDialog {
     on_cancel: Option<Rc<dyn Fn()>>,
 }
 
+impl TimePickerDialog {
+    /// This dialog's appearance -- see
+    /// [`crate::component_themes::ResolvedTimePicker`]. The entry mode is an
+    /// input to the *defaults*, not only to the layout.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        mode: TimePickerEntryMode,
+        twenty_four_hour: bool,
+    ) -> crate::component_themes::ResolvedTimePicker {
+        crate::component_themes::ResolvedTimePicker::of(context, mode, twenty_four_hour)
+    }
+}
+
 /// What a [`TimePickerDialog`] remembers between frames.
 ///
 /// Anchor: `_TimePickerDialogState`.
@@ -5453,5 +5467,271 @@ mod restorable_time_tests {
         let restorable = RestorableTimeOfDay::new(TimeOfDay { hour: 9, minute: 5 });
         assert_eq!(restorable.value(), TimeOfDay { hour: 9, minute: 5 });
         assert_eq!(restorable.create_default_value(), restorable.value());
+    }
+}
+
+#[cfg(test)]
+mod time_picker_theme_tests {
+    use super::*;
+    use crate::component_themes::{ResolvedTimePicker, TimePickerTheme, TimePickerThemeData};
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::Size;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        mode: TimePickerEntryMode,
+        twenty_four_hour: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedTimePicker>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(ResolvedTimePicker::of(
+                context,
+                self.mode,
+                self.twenty_four_hour,
+            ));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(
+        data: TimePickerThemeData,
+        mode: TimePickerEntryMode,
+        twenty_four_hour: bool,
+    ) -> ResolvedTimePicker {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(TimePickerTheme::new(
+            data,
+            component(Reader {
+                mode,
+                twenty_four_hour,
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain(mode: TimePickerEntryMode, twenty_four_hour: bool) -> ResolvedTimePicker {
+        resolve(TimePickerThemeData::new(), mode, twenty_four_hour)
+    }
+
+    #[test]
+    fn the_entry_mode_moves_exactly_one_default() {
+        // It is a third input to the defaults class, like the search view's
+        // `isFullScreen` -- and like that one, it changes one thing.
+        for (mode, large) in [
+            (TimePickerEntryMode::Dial, true),
+            (TimePickerEntryMode::DialOnly, true),
+            (TimePickerEntryMode::Input, false),
+            (TimePickerEntryMode::InputOnly, false),
+        ] {
+            assert_eq!(
+                ResolvedTimePicker::hour_minute_text_is_large(mode),
+                large,
+                "{mode:?}"
+            );
+        }
+
+        let dial = plain(TimePickerEntryMode::Dial, false);
+        let input = plain(TimePickerEntryMode::Input, false);
+        assert_ne!(
+            dial.hour_minute_text_is_large,
+            input.hour_minute_text_is_large
+        );
+        assert_eq!(dial.background_color, input.background_color);
+        assert_eq!(dial.elevation, input.elevation);
+        assert_eq!(dial.day_period_border, input.day_period_border);
+        assert_eq!(dial.entry_mode_icon_color, input.entry_mode_icon_color);
+        assert_eq!(
+            dial.hour_minute_shape_radius,
+            input.hour_minute_shape_radius
+        );
+    }
+
+    #[test]
+    fn one_size_smaller_when_it_is_editable() {
+        // A dial's hour is a target you tap; an input's is text with a caret in
+        // it, and `displayLarge` would give it a caret the height of a thumb.
+        assert!(ResolvedTimePicker::hour_minute_text_is_large(
+            TimePickerEntryMode::Dial
+        ));
+        assert!(!ResolvedTimePicker::hour_minute_text_is_large(
+            TimePickerEntryMode::InputOnly
+        ));
+    }
+
+    #[test]
+    fn the_input_box_is_the_dial_box_minus_eight_in_height_only() {
+        let dial = ResolvedTimePicker::hour_minute_size(false, false);
+        let input = ResolvedTimePicker::hour_minute_size(false, true);
+        assert_eq!(dial, Size::new(96.0, 80.0));
+        assert_eq!(input.height, dial.height - 8.0);
+        assert_eq!(
+            input.width, dial.width,
+            "a field still has to hold two digits"
+        );
+    }
+
+    #[test]
+    fn a_twenty_four_hour_box_is_wider_at_the_same_height() {
+        // There is no AM/PM selector beside it in that mode, and the width it
+        // was taking goes to the numbers.
+        let twelve = ResolvedTimePicker::hour_minute_size(false, false);
+        let twenty_four = ResolvedTimePicker::hour_minute_size(true, false);
+        assert_eq!(twenty_four.width, 114.0);
+        assert!(twenty_four.width > twelve.width);
+        assert_eq!(twenty_four.height, twelve.height);
+    }
+
+    #[test]
+    fn the_two_adjustments_are_independent_and_compose() {
+        // One moves the width and the other the height, so a 24-hour input box
+        // gets both.
+        let both = ResolvedTimePicker::hour_minute_size(true, true);
+        assert_eq!(both.width, 114.0);
+        assert_eq!(both.height, 72.0);
+        assert_eq!(
+            both,
+            Size::new(
+                ResolvedTimePicker::hour_minute_size(true, false).width,
+                ResolvedTimePicker::hour_minute_size(false, true).height
+            )
+        );
+    }
+
+    #[test]
+    fn an_unselected_day_period_is_transparent_and_not_the_dialogs_colour() {
+        // Upstream's comment: transparent "allows the optional elevation
+        // overlay for dark mode to be visible". Painting the same colour over
+        // the same colour is not the same as painting nothing, because the
+        // overlay sits between them.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedTimePicker::day_period_color(WidgetStates::NONE, &scheme),
+            Color::TRANSPARENT
+        );
+        assert_ne!(
+            ResolvedTimePicker::day_period_color(WidgetStates::NONE, &scheme),
+            plain(TimePickerEntryMode::Dial, false).background_color,
+            "which is what it would have been if 'match the dialog' meant painting it"
+        );
+        assert_eq!(
+            ResolvedTimePicker::day_period_color(
+                WidgetStates::of(&[WidgetState::Selected]),
+                &scheme
+            ),
+            scheme.tertiary_container()
+        );
+    }
+
+    #[test]
+    fn the_hour_and_minute_text_answers_to_selection_and_nothing_else() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let resting = ResolvedTimePicker::hour_minute_text_color(WidgetStates::NONE, &scheme);
+        for touch in [
+            WidgetState::Pressed,
+            WidgetState::Hovered,
+            WidgetState::Focused,
+        ] {
+            assert_eq!(
+                ResolvedTimePicker::hour_minute_text_color(WidgetStates::of(&[touch]), &scheme),
+                resting,
+                "{touch:?}"
+            );
+        }
+        assert_eq!(resting, scheme.on_surface);
+        assert_eq!(
+            ResolvedTimePicker::hour_minute_text_color(
+                WidgetStates::of(&[WidgetState::Selected]),
+                &scheme
+            ),
+            scheme.on_primary_container()
+        );
+    }
+
+    #[test]
+    fn and_the_interaction_is_in_the_box_behind_it() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let resting = ResolvedTimePicker::hour_minute_color(WidgetStates::NONE, &scheme);
+        assert_eq!(resting, scheme.surface_container_highest());
+
+        let pressed = ResolvedTimePicker::hour_minute_color(
+            WidgetStates::of(&[WidgetState::Pressed]),
+            &scheme,
+        );
+        let hovered = ResolvedTimePicker::hour_minute_color(
+            WidgetStates::of(&[WidgetState::Hovered]),
+            &scheme,
+        );
+        let focused = ResolvedTimePicker::hour_minute_color(
+            WidgetStates::of(&[WidgetState::Focused]),
+            &scheme,
+        );
+        assert_ne!(pressed, resting);
+        assert_ne!(hovered, pressed, "hovering is the lighter one again");
+        assert_eq!(focused, pressed);
+    }
+
+    #[test]
+    fn pressing_beats_hovering_beats_being_focused_here_too() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let both = ResolvedTimePicker::hour_minute_color(
+            WidgetStates::of(&[WidgetState::Pressed, WidgetState::Hovered]),
+            &scheme,
+        );
+        assert_eq!(
+            both,
+            ResolvedTimePicker::hour_minute_color(
+                WidgetStates::of(&[WidgetState::Pressed]),
+                &scheme
+            )
+        );
+        let pair = ResolvedTimePicker::hour_minute_color(
+            WidgetStates::of(&[WidgetState::Hovered, WidgetState::Focused]),
+            &scheme,
+        );
+        assert_eq!(
+            pair,
+            ResolvedTimePicker::hour_minute_color(
+                WidgetStates::of(&[WidgetState::Hovered]),
+                &scheme
+            )
+        );
+        assert_ne!(
+            pair,
+            ResolvedTimePicker::hour_minute_color(
+                WidgetStates::of(&[WidgetState::Focused]),
+                &scheme
+            )
+        );
+    }
+
+    #[test]
+    fn a_theme_is_asked_before_any_of_the_defaults() {
+        let mine = Color(0xFFABCDEF);
+        let mut data = TimePickerThemeData::new();
+        data.background_color = Some(mine);
+        data.elevation = Some(11.0);
+        data.entry_mode_icon_color = Some(mine);
+        let resolved = resolve(data, TimePickerEntryMode::Dial, false);
+        assert_eq!(resolved.background_color, mine);
+        assert_eq!(resolved.elevation, 11.0);
+        assert_eq!(resolved.entry_mode_icon_color, mine);
+    }
+
+    #[test]
+    fn the_surface_defaults_are_the_dialogs() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let resolved = plain(TimePickerEntryMode::Dial, false);
+        assert_eq!(resolved.background_color, scheme.surface_container_high());
+        assert_eq!(resolved.elevation, 6.0);
+        assert_eq!(resolved.day_period_border.color, scheme.outline());
+        assert_eq!(resolved.entry_mode_icon_color, scheme.on_surface);
+        assert_eq!(resolved.hour_minute_shape_radius, 8.0);
     }
 }
