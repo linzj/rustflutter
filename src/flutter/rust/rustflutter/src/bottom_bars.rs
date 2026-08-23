@@ -133,11 +133,25 @@ impl BottomNavigationBar {
 pub struct NavigationBar {
     pub destination_count: usize,
     pub selected_index: usize,
-    /// `None` uses the theme's, and the theme's default is 500ms.
+    /// `None` is 500ms.
+    ///
+    /// **Not from the theme.** Upstream reads
+    /// `animationDuration ?? const Duration(milliseconds: 500)` and
+    /// `NavigationBarThemeData` has no duration field, so there is nothing in
+    /// between to consult. This used to claim the theme supplied it and gave a
+    /// default for a step that exists on neither side.
     pub animation_duration_ms: Option<u32>,
 }
 
 impl NavigationBar {
+    /// This bar's appearance, with the theme and the defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedNavigationBar {
+        crate::component_themes::ResolvedNavigationBar::of(context, self)
+    }
+
     pub const DEFAULT_ANIMATION_MS: u32 = 500;
 
     pub fn new(destination_count: usize, selected_index: usize) -> NavigationBar {
@@ -538,5 +552,114 @@ mod bottom_bar_theme_tests {
             resolved.landscape_layout,
             BottomNavigationBarLandscapeLayout::Spread
         );
+    }
+}
+
+#[cfg(test)]
+mod navigation_bar_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        NavigationBarTheme, NavigationBarThemeData, NavigationDestinationLabelBehavior,
+        ResolvedNavigationBar,
+    };
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+
+    struct Reader {
+        bar: NavigationBar,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedNavigationBar>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.bar.resolved(context));
+            crate::framework::leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    fn resolve(bar: NavigationBar, data: NavigationBarThemeData) -> ResolvedNavigationBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            crate::components::Theme::dark(),
+            NavigationBarTheme::new(
+                data,
+                component(Reader {
+                    bar,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn the_duration_is_the_one_field_the_theme_has_no_say_in() {
+        // Upstream reads `animationDuration ?? 500ms` and the theme has no
+        // duration field at all -- two steps where every other field has
+        // three. This port's doc used to claim the theme supplied it.
+        let plain = resolve(NavigationBar::new(3, 0), NavigationBarThemeData::new());
+        assert_eq!(plain.animation_duration_ms, 500);
+
+        let mut bar = NavigationBar::new(3, 0);
+        bar.animation_duration_ms = Some(120);
+        assert_eq!(
+            resolve(bar, NavigationBarThemeData::new()).animation_duration_ms,
+            120,
+            "and the widget's own is the only thing that moves it"
+        );
+    }
+
+    #[test]
+    fn every_other_field_does_go_through_the_theme() {
+        // The contrast that makes the duration worth remarking on.
+        let mut data = NavigationBarThemeData::new();
+        data.height = Some(64.0);
+        data.elevation = Some(9.0);
+        let resolved = resolve(NavigationBar::new(3, 0), data);
+        assert_eq!(resolved.height, 64.0);
+        assert_eq!(resolved.elevation, 9.0);
+    }
+
+    #[test]
+    fn the_label_behaviour_is_a_constant_where_the_older_bars_was_computed() {
+        // The M3 bar does not shift, so there is no count at which the labels
+        // stop fitting -- `BottomNavigationBar` had to work its default out
+        // from the item count and this one does not.
+        for count in [2, 3, 4, 7] {
+            assert_eq!(
+                resolve(NavigationBar::new(count, 0), NavigationBarThemeData::new()).label_behavior,
+                NavigationDestinationLabelBehavior::AlwaysShow
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_can_still_ask_for_the_labels_to_come_and_go() {
+        let mut data = NavigationBarThemeData::new();
+        data.label_behavior = Some(NavigationDestinationLabelBehavior::OnlyShowSelected);
+        assert_eq!(
+            resolve(NavigationBar::new(3, 0), data).label_behavior,
+            NavigationDestinationLabelBehavior::OnlyShowSelected
+        );
+    }
+
+    #[test]
+    fn the_default_height_is_the_indicators_height() {
+        // A bar height chosen independently would leave the indicator floating
+        // in it or clipped by it.
+        assert_eq!(
+            resolve(NavigationBar::new(3, 0), NavigationBarThemeData::new()).height,
+            ResolvedNavigationBar::HEIGHT
+        );
+        assert_eq!(ResolvedNavigationBar::HEIGHT, 32.0);
+    }
+
+    #[test]
+    fn nothing_is_invented_for_the_colours_upstream_leaves_null() {
+        let resolved = resolve(NavigationBar::new(3, 0), NavigationBarThemeData::new());
+        assert_eq!(resolved.background_color, None);
+        assert_eq!(resolved.indicator_color, None);
+        assert_eq!(resolved.shadow_color, None);
+        assert_eq!(resolved.label_padding, crate::render::EdgeInsets::ZERO);
     }
 }

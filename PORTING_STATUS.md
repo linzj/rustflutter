@@ -10665,3 +10665,28 @@ NotSensitive=2）；而 `sensitive_content.rs` 那份是 `Sensitive` 打头。�
 东西同名**，改名是另一码事，记下来不动。
 
 主题仍是 19——这轮做的是去重，不是接线。
+
+## M3 导航栏：动画时长是主题唯一插不上话的字段（2026-08-23）
+
+`NavigationBarTheme` 接上读者，与上一轮的 `BottomNavigationBarTheme` 成对。
+`ResolvedNavigationBar` 里每个字段都是 `widget ?? theme ?? default` 三步——
+**只有一个不是**。
+
+上游读的是 `animationDuration ?? const Duration(milliseconds: 500)`，
+而 `NavigationBarThemeData` **根本没有时长字段**：中间那一步在两边都不存在。
+本移植的 `NavigationBar::animation_duration_ms` 原本写着「`None` 用主题的，
+主题的默认是 500ms」——**给一个不存在的步骤写了默认值**。文档改掉了：
+两步，主题被跳过，不是链条漏了一环，而是没有可链的东西。
+
+另一处对照：`label_behavior` 的默认是**常量** `AlwaysShow`，而
+`BottomNavigationBar` 的 `show_unselected_labels` 默认要**算**出来
+（shifting 时 false）。M3 的栏不 shift，就没有「标签放不下了」的那个数量，
+所以这里的默认没有可算的东西——两个栏的差别正在于此。
+
+默认高度 32 = `_kIndicatorHeight`，与指示器共用同一个常量：栏高若独立选定，
+指示器就会浮在里面或被切掉。
+
+6 个变异，6 个全红（时长走主题、时长默认改 300、高度默认改 80、
+主题高度不生效、标签默认改 OnlyShowSelected、给未设的背景编个值）。
+无读者主题 19 → 18。
+

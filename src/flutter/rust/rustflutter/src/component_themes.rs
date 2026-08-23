@@ -2119,6 +2119,80 @@ impl ResolvedBottomNavigationBar {
     }
 }
 
+/// What a Material 3 navigation bar is drawn with -- upstream's
+/// `_NavigationBarState.build` reading `NavigationBarTheme.of`.
+///
+/// # The animation duration is the one field the theme has no say in
+///
+/// Every other field is `widget ?? theme ?? default`. The duration is
+/// `animationDuration ?? const Duration(milliseconds: 500)` -- **two steps, and
+/// the theme is skipped**, because `NavigationBarThemeData` has no such field
+/// to consult. It is not an oversight in the chain; there is nothing to chain
+/// to.
+///
+/// This port's `NavigationBar` used to say "`None` uses the theme's, and the
+/// theme's default is 500ms", which described a step that does not exist on
+/// either side.
+///
+/// # The height is the indicator's height and not a bar height
+///
+/// `_kIndicatorHeight` is 32, and it is the same constant the destination
+/// indicator uses. A bar whose height was chosen independently would leave the
+/// indicator floating in it or clipped by it.
+pub struct ResolvedNavigationBar {
+    pub height: f32,
+    pub background_color: Option<Color>,
+    pub elevation: f32,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub indicator_color: Option<Color>,
+    pub indicator_shape: Option<ShapeBorder>,
+    pub label_behavior: NavigationDestinationLabelBehavior,
+    pub label_padding: EdgeInsets,
+    /// Milliseconds. Never from the theme -- see the type's docs.
+    pub animation_duration_ms: u32,
+}
+
+impl ResolvedNavigationBar {
+    /// Upstream's `_kIndicatorHeight`, which is also the bar's default height.
+    pub const HEIGHT: f32 = 32.0;
+    /// Upstream's default elevation for the M3 bar.
+    pub const ELEVATION: f32 = 3.0;
+    /// Upstream's `const Duration(milliseconds: 500)`, reached without
+    /// consulting the theme.
+    pub const ANIMATION_MS: u32 = 500;
+
+    pub fn of(
+        context: &mut BuildContext,
+        bar: &crate::bottom_bars::NavigationBar,
+    ) -> ResolvedNavigationBar {
+        let data = NavigationBarTheme::of(context);
+        ResolvedNavigationBar {
+            height: data.height.unwrap_or(ResolvedNavigationBar::HEIGHT),
+            background_color: data.background_color,
+            elevation: data.elevation.unwrap_or(ResolvedNavigationBar::ELEVATION),
+            shadow_color: data.shadow_color,
+            surface_tint_color: data.surface_tint_color,
+            indicator_color: data.indicator_color,
+            indicator_shape: data.indicator_shape.clone(),
+            // Upstream's M3 default: every destination keeps its label. The
+            // M3 bar does not shift, so there is no count at which the labels
+            // stop fitting -- which is why this default is a constant where
+            // `BottomNavigationBar`'s was computed.
+            label_behavior: data
+                .label_behavior
+                .unwrap_or(NavigationDestinationLabelBehavior::AlwaysShow),
+            label_padding: data
+                .label_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::ZERO),
+            animation_duration_ms: bar
+                .animation_duration_ms
+                .unwrap_or(ResolvedNavigationBar::ANIMATION_MS),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
