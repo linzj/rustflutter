@@ -13133,3 +13133,56 @@ alignmentPolicy: forward
 真正接进 `step()` 要等作用域树，那是另一轮。
 
 六个变异全红。coverage 2102 / 1994 记账 / **27 MISSING**。
+
+---
+
+## 状态机是全的，走过它的测试只有一半（2026-08-24）
+
+`RenderAnimatedSizeState` 在 MISSING 名单里，去看的时候发现
+**移植早就把整台状态机写好了**，只是叫 `AnimatedSizeState`。
+四个 `layout_*` 函数和上游 `_layoutStart/_layoutStable/_layoutChanged/_layoutUnstable`
+**逐臂一致**。所以这是一条映射，不是缺口。
+
+但映射只值它背后那次核对。核对的时候顺手问了一句：
+**这台机器有多少是被测试走过的？**
+
+两个探针，都活着：
+
+- 把 `layout_changed` 里 `-> Unstable` 改成 `-> Stable`：**全绿**。
+- 把 `unstable -> stable` 的 `controller.stop()` 改成 `forward()`：**全绿**。
+
+`Unstable` 那一半**一次都没有被走过**。
+
+### 而原来那条测试根本没驱动任何东西
+
+```rust
+child_cell.set(Size::new(100.0, 100.0));
+animated.layout(BoxConstraints::loose(200.0, 200.0));
+assert!(animated.size().width < 100.0);
+```
+
+`layout_child` 在「孩子不脏且约束没变」时**直接返回缓存的尺寸**。
+测试换了 cell 里的值却没有 `mark_needs_layout`，
+于是孩子从来没有重新布局，盒子也从来没看见变化——
+**那条断言成立，是因为什么都没发生。**
+
+这已经是这个会话里第七轮同一个物种了：*一条不走它所说的那条路的测试*。
+
+### 补上之后，两条微妙的规则才真的被钉住
+
+**一、`stable -> changed` 是追，`changed -> unstable` 是贴。**
+
+第一次变化：`begin = 当前尺寸`、`end = 孩子尺寸`——从眼睛看到的地方动过去。
+第二次变化：`begin = end = 孩子尺寸`——**两端相同，等于不动画，直接贴住**。
+上游的文档写得明白：「Instead of chasing the child's size in this state,
+the render object tightly tracks the child's size until it stabilizes.」
+追一个每帧都在跑的目标，比跟着它还难看。
+
+**二、`unstable -> stable` 停表，`changed -> stable` 续跑。**
+
+同一个目的地，相反的动作。理由就是上一条：
+`changed` 一直在动画，还有一段没放完；
+`unstable` 一直只是在贴，没有任何东西在跑。
+
+六个变异全红（含最早那两个探针）。
+coverage 2102 / 1995 记账 / **26 MISSING**。

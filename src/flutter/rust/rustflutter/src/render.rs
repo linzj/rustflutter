@@ -22631,49 +22631,162 @@ mod animated_size_tests {
 
     #[test]
     fn a_stable_child_that_grows_starts_an_animation() {
-        let child = Resizable {
-            size: Cell::new(Size::new(50.0, 50.0)),
-        };
-        let shared = Rc::new(child);
-        // The child as a render ref sharing one resizable cell.
-        let child_cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
-        struct Resizing {
-            cell: Rc<Cell<Size>>,
-        }
-        impl RenderBox for Resizing {
-            fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
-                None
-            }
-            fn layout(&mut self, constraints: BoxConstraints) -> Size {
-                let size = constraints.constrain(self.cell.get());
-                self.cell.set(size);
-                size
-            }
-            fn size(&self) -> Size {
-                self.cell.get()
-            }
-            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
-            fn hit_test_self(&self, _position: Offset) -> bool {
-                true
-            }
-        }
-        let _ = shared;
-        let mut animated = RenderAnimatedSize::new(
-            Alignment::CENTER,
-            Resizing {
-                cell: Rc::clone(&child_cell),
-            },
-        );
-        animated.layout(BoxConstraints::loose(200.0, 200.0));
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        let mut animated = tracking(&cell);
         // Start -> Stable at the child's own 50x50.
         assert_eq!(animated.size(), Size::new(50.0, 50.0));
 
-        // The child grows to 100x100: the box animates from 50 toward 100.
-        child_cell.set(Size::new(100.0, 100.0));
-        animated.layout(BoxConstraints::loose(200.0, 200.0));
-        // The tween restarted from zero, so the box still paints ~50 -- and
-        // the state has moved to Changed.
+        resize(&mut animated, &cell, Size::new(100.0, 100.0));
+        // The tween restarted from zero, so the box still paints near 50 --
+        // and the state has moved to Changed.
+        assert_eq!(animated.state, AnimatedSizeState::Changed);
         assert!(animated.size().width < 100.0);
+        // Which is only worth asserting because the child really did grow:
+        // this test used to swap the cell without marking the child, so the
+        // box was still 50 wide for the dull reason that nothing had happened.
+        assert_eq!(animated.tween_end, Size::new(100.0, 100.0));
+    }
+
+    /// A child driven from one cell, so a test can resize it between layouts.
+    struct Tracked {
+        cell: Rc<Cell<Size>>,
+    }
+    impl RenderBox for Tracked {
+        fn update_from(&mut self, _fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+            None
+        }
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(self.cell.get())
+        }
+        fn size(&self) -> Size {
+            self.cell.get()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        fn hit_test_self(&self, _position: Offset) -> bool {
+            true
+        }
+    }
+
+    /// Resize the child and lay the box out again.
+    ///
+    /// The `mark_needs_layout` is not ceremony. `layout_child` returns the
+    /// cached size when the child is clean and the constraints are unchanged,
+    /// so a child that quietly swaps its own size is never laid out again and
+    /// the box never sees the change. A test that skips this drives nothing --
+    /// which is what the older test beside this one was doing, asserting the
+    /// box was still under 100 wide when it had never moved at all.
+    fn resize(animated: &mut RenderAnimatedSize, cell: &Rc<Cell<Size>>, to: Size) {
+        cell.set(to);
+        animated
+            .child
+            .as_ref()
+            .expect("a child")
+            .mark_needs_layout();
+        animated.layout(BoxConstraints::loose(400.0, 400.0));
+    }
+
+    /// A box whose child is `cell`, laid out once so it is past `Start`.
+    fn tracking(cell: &Rc<Cell<Size>>) -> RenderAnimatedSize {
+        let mut animated = RenderAnimatedSize::new(
+            Alignment::CENTER,
+            Tracked {
+                cell: Rc::clone(cell),
+            },
+        );
+        animated.layout(BoxConstraints::loose(400.0, 400.0));
+        assert_eq!(animated.state, AnimatedSizeState::Stable, "Start -> Stable");
+        animated
+    }
+
+    #[test]
+    fn a_child_that_keeps_changing_drives_the_box_to_unstable() {
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        let mut animated = tracking(&cell);
+
+        resize(&mut animated, &cell, Size::new(100.0, 100.0));
+        assert_eq!(animated.state, AnimatedSizeState::Changed);
+
+        // Changing again, before it settled, is what upstream calls unstable.
+        resize(&mut animated, &cell, Size::new(150.0, 150.0));
+        assert_eq!(animated.state, AnimatedSizeState::Unstable);
+
+        // And it stays there while the child keeps moving.
+        resize(&mut animated, &cell, Size::new(200.0, 200.0));
+        assert_eq!(animated.state, AnimatedSizeState::Unstable);
+    }
+
+    #[test]
+    fn an_unstable_box_tracks_the_child_instead_of_animating_after_it() {
+        // The distinction upstream's doc draws: "Instead of chasing the child's
+        // size in this state, the render object tightly tracks the child's
+        // size until it stabilizes." Chasing a target that moves every frame
+        // looks worse than following it.
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        let mut animated = tracking(&cell);
+
+        // Stable -> Changed animates *from where the box visually is* toward
+        // the child, so the two ends of the tween differ.
+        resize(&mut animated, &cell, Size::new(100.0, 100.0));
+        assert_ne!(
+            animated.tween_begin, animated.tween_end,
+            "a first change is animated"
+        );
+        assert_eq!(animated.tween_end, Size::new(100.0, 100.0));
+
+        // Changed -> Unstable snaps: both ends become the child's size, so
+        // there is nothing left to animate across.
+        resize(&mut animated, &cell, Size::new(150.0, 150.0));
+        assert_eq!(animated.tween_begin, animated.tween_end, "a second is not");
+        assert_eq!(animated.tween_begin, Size::new(150.0, 150.0));
+
+        // And it keeps snapping while unstable.
+        resize(&mut animated, &cell, Size::new(200.0, 200.0));
+        assert_eq!(animated.tween_begin, animated.tween_end);
+        assert_eq!(animated.tween_end, Size::new(200.0, 200.0));
+    }
+
+    #[test]
+    fn settling_from_unstable_stops_the_clock_where_settling_from_changed_keeps_it() {
+        // Opposite actions on the way into the same state, and the reason is
+        // the test above: `changed` was animating and has an animation left to
+        // finish, while `unstable` was only tracking and has nothing to run.
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+
+        // Changed -> Stable.
+        let mut from_changed = tracking(&cell);
+        resize(&mut from_changed, &cell, Size::new(100.0, 100.0));
+        assert_eq!(from_changed.state, AnimatedSizeState::Changed);
+        from_changed.layout(BoxConstraints::loose(400.0, 400.0));
+        assert_eq!(from_changed.state, AnimatedSizeState::Stable);
+        assert!(
+            from_changed.controller.is_running(),
+            "an animation was under way and is left to finish"
+        );
+
+        // Unstable -> Stable.
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        let mut from_unstable = tracking(&cell);
+        resize(&mut from_unstable, &cell, Size::new(100.0, 100.0));
+        resize(&mut from_unstable, &cell, Size::new(150.0, 150.0));
+        assert_eq!(from_unstable.state, AnimatedSizeState::Unstable);
+        from_unstable.layout(BoxConstraints::loose(400.0, 400.0));
+        assert_eq!(from_unstable.state, AnimatedSizeState::Stable);
+        assert!(
+            !from_unstable.controller.is_running(),
+            "tracking had nothing running to leave running"
+        );
+    }
+
+    #[test]
+    fn and_a_settled_child_stays_settled() {
+        // The state machine only leaves Stable when the child actually moves,
+        // so repeated identical layouts are not a change.
+        let cell = Rc::new(Cell::new(Size::new(50.0, 50.0)));
+        let mut animated = tracking(&cell);
+        for _ in 0..3 {
+            animated.layout(BoxConstraints::loose(400.0, 400.0));
+            assert_eq!(animated.state, AnimatedSizeState::Stable);
+        }
     }
 }
 

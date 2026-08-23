@@ -1767,6 +1767,10 @@
     "WrapAlignment": {
       "rust": "render::MainAxisAlignment",
       "note": "合并：上游 WrapAlignment 和 MainAxisAlignment 的六个变体逐一相同（start/end/center/spaceBetween/spaceAround/spaceEvenly），RenderWrap 的 alignment 与 run_alignment 都用它。注意 WrapCrossAlignment **不能**照此办理，见 PORTING_STATUS.md。"
+    },
+    "RenderAnimatedSizeState": {
+      "rust": "render::AnimatedSizeState",
+      "note": "纯改名，四个状态一一对应（start/stable/changed/unstable）。第 90 轮**逐条比对过转移**才记进来：layout_start/stable/changed/unstable 四个函数与上游 _layoutStart/_layoutStable/_layoutChanged/_layoutUnstable 逐臂一致，包括 changed->unstable 是「贴住孩子」而不是「追孩子」、以及 unstable->stable 停表而 changed->stable 续跑这两条。比对之前 Unstable 那一半是完全没有测试走过的。"
     }
   },
   "blocked_engine": {
