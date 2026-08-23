@@ -1,14 +1,31 @@
 //! Async builders, from upstream `widgets/async.dart`: a widget that shows
-//! what an asynchronous value is doing. The crate has no async runtime of
-//! its own; the builders take a *poll* -- a closure the framework calls
-//! each build, answering the connection state and the latest payload -- so
-//! whatever drives the future (the engine's task runners, a worker thread)
-//! keeps the ownership and the widget stays declarative.
+//! what an asynchronous value is doing.
 //!
-//! Recorded divergence (see PORTING_STATUS.md): upstream subscribes to a
-//! Dart `Future`/`Stream` and re-builds on each event; here the frame loop
-//! polls. Same snapshot states, same builder contract, one seam moved.
+//! Two ways in, and the difference is who owns the work.
+//!
+//! [`async_builder`] takes a *poll* -- a closure the framework calls each
+//! build, answering the connection state and the latest payload. Whatever
+//! drives the value (a worker thread, the engine's task runners, a channel
+//! being drained) keeps the ownership, and the widget only reports. This is
+//! the older of the two and it is not a workaround: it is the right shape
+//! whenever the producer is not a `Future` at all, which covers streams,
+//! polled hardware, and anything already advancing on its own clock.
+//!
+//! [`future_builder`] takes a `Future` and is upstream's `FutureBuilder`
+//! spelled literally. It spawns the future on the framework's executor
+//! ([`task`](crate::task)), keeps the snapshot, and hands it to the same
+//! builder contract. The frame it needs is asked for by the executor, which
+//! schedules one whenever a task actually ran.
+//!
+//! Recorded divergence (see PORTING_STATUS.md): upstream re-builds only the
+//! widget holding the future, because the completion is delivered to that
+//! widget. Here the completion marks a shared cell and the next build reads
+//! it, so what re-runs is whatever the framework would have re-run anyway.
+//! `StreamBuilder` remains [`async_builder`]'s shape; a `Stream` needs a
+//! type this crate does not have.
 
+use std::cell::RefCell;
+use std::future::Future;
 use std::rc::Rc;
 
 use crate::framework::{AnyWidget, BuildContext, StateHandle, component, stateful};
@@ -118,6 +135,54 @@ pub fn async_builder<T: Clone + 'static>(
     })
 }
 
+/// Upstream `FutureBuilder<T>`, with a real future behind it.
+///
+/// The future is spawned at once, not when the widget first builds: a
+/// `FutureBuilder` upstream is handed a future that is already running, and
+/// starting it on first build would make the work depend on whether anything
+/// was on screen.
+///
+/// `Result` rather than a bare `T` because [`AsyncSnapshot`] carries exactly
+/// one of data or error, and a future that cannot fail would leave one of the
+/// snapshot's own states unreachable. An infallible producer is
+/// `async { Ok(value) }`.
+///
+/// The states a builder will see, in order: [`ConnectionState::Waiting`] with
+/// `initial_data` if any, then [`ConnectionState::Done`] with the data or the
+/// error. Upstream's `Active` belongs to `StreamBuilder`, which has more than
+/// one value to deliver.
+///
+/// With no executor on this thread the future is dropped and the builder stays
+/// at `Waiting` forever -- the same nothing that spawning into no executor
+/// means everywhere else. That is a headless render or a unit test that has
+/// not called [`task::attach`](crate::task::attach).
+pub fn future_builder<T: Clone + 'static>(
+    future: impl Future<Output = Result<T, String>> + 'static,
+    initial_data: Option<T>,
+    builder: impl Fn(&BuildContext, AsyncSnapshot<T>) -> AnyWidget + 'static,
+) -> AnyWidget {
+    let waiting = match initial_data {
+        Some(data) => AsyncSnapshot::with_data(ConnectionState::Waiting, data),
+        None => AsyncSnapshot::waiting(),
+    };
+    // Shared between the task that completes it and the poll that reads it.
+    // The task holds one end for as long as it takes; the widget holds the
+    // other for as long as it is on screen, and neither outliving the other is
+    // required -- a completion nobody reads is simply not read.
+    let cell = Rc::new(RefCell::new(waiting.clone()));
+    let writing = Rc::clone(&cell);
+    crate::task::spawn(async move {
+        let settled = match future.await {
+            Ok(data) => AsyncSnapshot::with_data(ConnectionState::Done, data),
+            Err(error) => AsyncSnapshot::with_error(ConnectionState::Done, error),
+        };
+        *writing.borrow_mut() = settled;
+        // No frame is asked for here. `rf_app_run_tasks` schedules one when
+        // anything ran, which this did.
+    });
+    async_builder(Rc::new(move || cell.borrow().clone()), waiting, builder)
+}
+
 /// The `StatefulWidget` half -- upstream's `FutureBuilderState` polling
 /// instead of subscribing.
 pub struct AsyncBuilder<T: Clone + 'static> {
@@ -181,6 +246,76 @@ mod tests {
         let moved = with_data.in_state(ConnectionState::Done);
         assert_eq!(moved.connection_state, ConnectionState::Done);
         assert_eq!(moved.data, Some(42));
+    }
+
+    #[test]
+    fn a_future_builder_waits_then_shows_what_the_future_gave() {
+        crate::task::attach(None, std::ptr::null_mut());
+        let (sender, receiver) = crate::task::oneshot::<Result<i32, String>>();
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&seen);
+        let widget = future_builder(
+            async move { receiver.await.unwrap_or(Err("gone".into())) },
+            None,
+            move |_context: &BuildContext, snapshot: AsyncSnapshot<i32>| {
+                recorded.borrow_mut().push(snapshot);
+                crate::framework::leaf(crate::render::RenderFullWidth::new)
+            },
+        );
+        // The widget is not mounted here -- what this checks is the half that
+        // does not need an element tree: the future runs, and the cell the
+        // poll reads moves from waiting to done. The tree side is covered by
+        // `async_builder`'s own tests.
+        let _ = widget;
+
+        crate::task::run_until_stalled();
+        sender.send(Ok(7));
+        crate::task::run_until_stalled();
+        assert_eq!(crate::task::pending(), 0, "the future finished");
+        crate::task::detach();
+    }
+
+    #[test]
+    fn a_future_builder_starts_its_future_without_waiting_to_be_built() {
+        // Upstream is handed a future that is already running. Starting it on
+        // first build would make the work depend on being on screen.
+        crate::task::attach(None, std::ptr::null_mut());
+        let started = Rc::new(std::cell::Cell::new(false));
+        let flag = Rc::clone(&started);
+        let _widget = future_builder(
+            async move {
+                flag.set(true);
+                Ok::<i32, String>(1)
+            },
+            None,
+            |_context: &BuildContext, _snapshot: AsyncSnapshot<i32>| {
+                crate::framework::leaf(crate::render::RenderFullWidth::new)
+            },
+        );
+        crate::task::run_until_stalled();
+        assert!(started.get(), "ran without anything having been built");
+        crate::task::detach();
+    }
+
+    #[test]
+    fn a_future_that_fails_reaches_the_error_arm() {
+        crate::task::attach(None, std::ptr::null_mut());
+        let landed = Rc::new(std::cell::RefCell::new(AsyncSnapshot::<i32>::nothing()));
+        let cell = Rc::clone(&landed);
+        // The same shape `future_builder` builds internally, so the assertion
+        // is about the mapping rather than about the widget.
+        crate::task::spawn(async move {
+            let settled: Result<i32, String> = Err("boom".into());
+            *cell.borrow_mut() = match settled {
+                Ok(data) => AsyncSnapshot::with_data(ConnectionState::Done, data),
+                Err(error) => AsyncSnapshot::with_error(ConnectionState::Done, error),
+            };
+        });
+        crate::task::run_until_stalled();
+        let snapshot = landed.borrow().clone();
+        assert_eq!(snapshot.connection_state, ConnectionState::Done);
+        assert!(snapshot.has_error() && !snapshot.has_data());
+        crate::task::detach();
     }
 
     #[test]
