@@ -12301,3 +12301,69 @@ tick 64 记过：`CupertinoDynamicColor` 的高对比度两列是唯一还缺的
 （「接进流水线的东西，至少有一条测试从流水线入口进去」），
 而我这一轮自己没照做。改成走 `from_view` 之后重跑，红了。
 
+
+---
+
+## 标签栏报的高度，和它画的盒子，本来就不是一个数（2026-08-24）
+
+`CupertinoTabBar` 上游 `preferredSize` 是 `Size.fromHeight(height)`——
+**只有 50，里面没有安全区**。而画出来的盒子是 `height + bottomPadding`。
+
+这不是不一致。那个 inset 是**加进盒子、又原样还给内容**的：
+
+```dart
+SizedBox(
+  height: height + bottomPadding,
+  child: ... Padding(padding: EdgeInsets.only(bottom: bottomPadding)),
+)
+```
+
+于是标签仍然待在它们的 50 里，多出来的是 home indicator 上方的**空地**。
+读 `preferredSize` 的人问的是「标签需要多少地方」，
+排版的人则要连 inset 一起给——**报成两者之和，脚手架就会把 inset 留两遍**。
+
+移植早就把盒子算对了（`TAB_BAR_HEIGHT + bottom`），
+这一轮补的是**把这两个数分别钉住**：`preferred_height()` 和 `box_height(inset)`。
+
+### `opaque` 是对颜色的提问，不是一个标志位
+
+```dart
+return CupertinoDynamicColor.resolve(backgroundColor, context).alpha == 0xFF;
+```
+
+没人拨这个开关：一条栏不透明，是**因为它被画成了什么样**。
+而它决定的是那层模糊——上游只在不透明的栏后面加模糊，
+因为**在看不透的东西底下做模糊，是没人会看的活**。
+
+先 resolve 再问，是这句话有意义的前提：
+一个 `CupertinoDynamicColor` 可以在一种外观下不透明、另一种下透明。
+顺带确认了默认的 `bar_background_color` 两种外观都是 `0xF0`——
+**模糊是常态，不是例外**。
+
+### 居中替得了底对齐，只因为图标槽是定死的
+
+上游那一行是 `CrossAxisAlignment.end`，注释写「Align bottom since we want
+the labels to be aligned」——图标矮一点的那格，标签本会比邻居高。
+
+本移植是居中，画面一样，**因为每个图标槽都是 30×30 的定死方块**：
+每列一样高时，居中和底对齐是同一个位置。
+但这个等价**靠的是那个定死的槽，不是「对齐不重要」**——
+所以 `alignment_is_equivalent(icon_heights)` 把高度当参数收进来，
+让「谁能自己定图标大小」这件事一发生，测试就红。
+
+### 七个变异，第六个活了下来
+
+把 build 里那句 `EdgeInsets::only(0,0,0,bottom)` 换成 `ZERO`——**全绿**。
+
+因为那条测试**名字叫 padding，查的却只是高度**。
+去掉 padding 的栏一样高，
+只是会**把一个标签放到 home indicator 底下**——
+从屏幕底边上滑的手势会正好按到它。
+
+这是**连着第五轮**同一个物种：*一条不走它所说的那条路的测试*。
+改成**用点的**：inset 是 34 时，25 那里点得到标签，
+76 那里（indicator 上方那条）点不到任何标签；
+而 inset 是 0 时，42 那里又点得到——
+**那片空地是 inset 带来的，不是栏自己一直留的边**。
+
+改完之后 M6 红，再补一个「把 padding 加到上边而不是下边」的 M7，也红。

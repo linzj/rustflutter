@@ -2147,6 +2147,64 @@ pub struct CupertinoTabBar {
 }
 
 impl CupertinoTabBar {
+    /// Upstream's `iconSize`, the tile's icon slot.
+    pub const ICON_SIZE: f32 = 30.0;
+
+    /// Upstream's `preferredSize`, which is `Size.fromHeight(height)` -- **the
+    /// bar's own height and not the box it draws.**
+    ///
+    /// The box is `height + bottomPadding`, so a bar over a home indicator
+    /// occupies more than it reports. That is not an inconsistency: the
+    /// padding is added to the box and immediately handed back to the content
+    /// as bottom padding, so the items still live in their 50 and the extra is
+    /// empty space over the indicator.
+    ///
+    /// What reads `preferredSize` wants to know how much room the *tabs* need;
+    /// what lays the bar out gives it the inset as well. Reporting the sum
+    /// would make a scaffold reserve the inset twice.
+    pub fn preferred_height() -> f32 {
+        TAB_BAR_HEIGHT
+    }
+
+    /// What the bar actually occupies, given the view's bottom inset.
+    pub fn box_height(bottom_inset: f32) -> f32 {
+        TAB_BAR_HEIGHT + bottom_inset
+    }
+
+    /// Upstream's `opaque`: whether anything shows through.
+    ///
+    /// It is decided by the **resolved** background colour's alpha being
+    /// exactly `0xFF`, not by a flag anybody set. And what it decides is the
+    /// blur: upstream puts one behind a bar that is not opaque, and none
+    /// behind one that is -- because a blur under something you cannot see
+    /// through is work nobody will look at.
+    ///
+    /// Resolved first, because a `CupertinoDynamicColor` can be opaque in one
+    /// appearance and not the other, and the question is about the colour that
+    /// will be painted.
+    pub fn is_opaque(resolved_background: Color) -> bool {
+        resolved_background.alpha() == 0xFF
+    }
+
+    /// Whether centring an item's column and bottom-aligning it come to the
+    /// same thing here.
+    ///
+    /// Upstream's row is `CrossAxisAlignment.end`, with the comment "Align
+    /// bottom since we want the labels to be aligned" -- a tile with a shorter
+    /// icon would otherwise sit its label higher than its neighbour's.
+    ///
+    /// This port centres instead, and gets the same picture, because the icon
+    /// slot is a fixed [`CupertinoTabBar::ICON_SIZE`] square for every item:
+    /// with every column the same height, centred and bottom-aligned are the
+    /// same position. **The equivalence rests on the fixed slot, not on the
+    /// alignment being unimportant** -- an item allowed to size its own icon
+    /// would break it, and the row would need upstream's `end`.
+    pub fn alignment_is_equivalent(icon_heights: &[f32]) -> bool {
+        icon_heights
+            .iter()
+            .all(|height| *height == CupertinoTabBar::ICON_SIZE)
+    }
+
     /// `first_id` is the hit-test identity of the first item; the rest follow
     /// consecutively, as with [`crate::controls::TabBar`].
     pub fn new(first_id: u64, items: Vec<CupertinoTabItem>, selected: usize) -> CupertinoTabBar {
@@ -5724,5 +5782,176 @@ mod switch_on_off_label_tests {
             ..crate::media_query::MediaQueryData::default()
         };
         assert!(SwitchOnOffLabels::resolve(asked.on_off_switch_labels, None, None).is_some());
+    }
+}
+
+#[cfg(test)]
+mod tab_bar_tests {
+    use super::*;
+    use crate::framework::{ElementTree, component, provide};
+    use crate::media_query::{MediaQuery, MediaQueryData};
+    use crate::render::HitTestResult;
+
+    /// Build and lay the bar out for real, under a view whose bottom inset is
+    /// `inset`. Returns the laid-out root, so a caller can hit-test it.
+    fn lay_out_bar(inset: f32) -> (RenderRef, Size) {
+        let bar = CupertinoTabBar::new(
+            1,
+            vec![
+                CupertinoTabItem::new("Home", "H"),
+                CupertinoTabItem::new("Settings", "S"),
+            ],
+            0,
+        );
+        let data = MediaQueryData {
+            view_padding: EdgeInsets::only(0.0, 0.0, 0.0, inset),
+            ..MediaQueryData::default()
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            MediaQuery::new(data, component(bar)),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = root.layout(BoxConstraints::loose(400.0, 300.0));
+        (root, size)
+    }
+
+    fn bar_height(inset: f32) -> f32 {
+        lay_out_bar(inset).1.height
+    }
+
+    /// The ids of the tabs a tap at `y` reaches, given the bar was built with
+    /// `first_id` 1 and two items.
+    fn tabs_under(inset: f32, y: f32) -> Vec<u64> {
+        let (root, _) = lay_out_bar(inset);
+        let mut result = HitTestResult::new();
+        root.hit_test(Offset::new(100.0, y), &mut result);
+        result
+            .path
+            .iter()
+            .map(|entry| entry.target)
+            .filter(|target| *target == 1 || *target == 2)
+            .collect()
+    }
+
+    #[test]
+    fn the_bar_reports_its_own_height_and_draws_a_taller_box() {
+        // `preferredSize` is `Size.fromHeight(height)` -- the tabs' 50, with no
+        // inset in it. The box drawn is `height + bottomPadding`. Run through
+        // the build, not the arithmetic: a home indicator makes the box grow
+        // and leaves the reported height alone.
+        assert_eq!(CupertinoTabBar::preferred_height(), 50.0);
+        assert_eq!(bar_height(0.0), 50.0);
+        assert_eq!(bar_height(34.0), 84.0);
+        assert_eq!(
+            CupertinoTabBar::preferred_height(),
+            50.0,
+            "what a scaffold asks does not move with the inset"
+        );
+    }
+
+    #[test]
+    fn and_the_inset_is_given_straight_back_as_padding() {
+        // Which is what keeps the two consistent: the box grows by the inset
+        // and the content is pushed up by the same inset, so the items stay in
+        // their 50 and the extra is empty space over the home indicator.
+        //
+        // Checked by tapping rather than by measuring, because the height is
+        // the same either way -- a bar that dropped the padding would be just
+        // as tall and would put a tab under the indicator, where a swipe up
+        // from the bottom edge would tap it. So: a tap in the tabs' 50 finds a
+        // tab, and a tap in the strip below finds none.
+        let inset = 34.0;
+        assert!(
+            !tabs_under(inset, 25.0).is_empty(),
+            "a tap in the tabs' own 50 hits a tab"
+        );
+        assert!(
+            tabs_under(inset, 84.0 - 8.0).is_empty(),
+            "but the strip over the home indicator is empty space"
+        );
+        // And with no indicator to avoid, the bottom of the bar is a tab
+        // again -- the emptiness above is the inset's doing, not a margin the
+        // bar always keeps.
+        assert!(!tabs_under(0.0, 50.0 - 8.0).is_empty());
+    }
+
+    #[test]
+    fn and_the_box_grows_by_exactly_the_inset() {
+        for inset in [0.0, 8.0, 34.0] {
+            assert_eq!(
+                bar_height(inset),
+                CupertinoTabBar::box_height(inset),
+                "at inset {inset}"
+            );
+            assert_eq!(
+                CupertinoTabBar::box_height(inset) - inset,
+                CupertinoTabBar::preferred_height(),
+                "the room left for tabs at inset {inset}"
+            );
+        }
+    }
+
+    #[test]
+    fn opacity_is_a_question_about_the_colour() {
+        // Upstream resolves the background and asks whether its alpha is
+        // `0xFF`. Nobody sets a flag; a bar is opaque because of what it was
+        // painted, and a translucent one gets the blur.
+        assert!(CupertinoTabBar::is_opaque(Color(0xFF00_0000)));
+        assert!(!CupertinoTabBar::is_opaque(Color(0xF000_0000)));
+        assert!(!CupertinoTabBar::is_opaque(Color(0x0000_0000)));
+        // Nearly opaque is not opaque: the test is equality, not a threshold.
+        assert!(!CupertinoTabBar::is_opaque(Color(0xFE00_0000)));
+    }
+
+    #[test]
+    fn and_it_is_asked_of_the_resolved_colour_not_the_dynamic_one() {
+        // A `CupertinoDynamicColor` can be opaque in one appearance and not in
+        // the other, so resolving first is what makes the answer meaningful --
+        // upstream's default bar colour is one of these, translucent in both.
+        let half_dark =
+            CupertinoDynamicColor::with_brightness(Color(0xFFFF_FFFF), Color(0xCC00_0000));
+        assert!(CupertinoTabBar::is_opaque(
+            half_dark.resolve(Brightness::Light, BASE)
+        ));
+        assert!(!CupertinoTabBar::is_opaque(
+            half_dark.resolve(Brightness::Dark, BASE)
+        ));
+
+        // And the default really is see-through, in both appearances -- which
+        // is why the blur is the ordinary case rather than the exception.
+        // (The theme carries the colour already resolved for its brightness,
+        // so these are the values that reach the paint.)
+        assert!(!CupertinoTabBar::is_opaque(
+            CupertinoTheme::light().bar_background_color
+        ));
+        assert!(!CupertinoTabBar::is_opaque(
+            CupertinoTheme::dark().bar_background_color
+        ));
+    }
+
+    #[test]
+    fn centring_stands_in_for_the_bottom_alignment_only_while_icons_agree() {
+        // Upstream's row is `CrossAxisAlignment.end` so labels line up when
+        // icons differ in height. Here every icon slot is a fixed square, so
+        // the columns are the same height and centring puts them in the same
+        // place -- but that is a consequence of the fixed slot, not a licence
+        // to ignore the alignment.
+        let size = CupertinoTabBar::ICON_SIZE;
+        assert_eq!(size, 30.0);
+        assert!(CupertinoTabBar::alignment_is_equivalent(&[
+            size, size, size
+        ]));
+        // Let one item size its own icon and the two alignments part company.
+        assert!(!CupertinoTabBar::alignment_is_equivalent(&[
+            size,
+            size - 6.0,
+            size
+        ]));
+        assert!(!CupertinoTabBar::alignment_is_equivalent(&[
+            size,
+            size + 6.0
+        ]));
     }
 }
