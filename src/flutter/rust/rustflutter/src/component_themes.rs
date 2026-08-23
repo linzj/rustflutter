@@ -5343,8 +5343,13 @@ pub struct ResolvedListTile {
 }
 
 impl ResolvedListTile {
-    /// Upstream's `_kMinTileHeight`-ish constants, which the Material 3
-    /// defaults spell as 56 for a one-line tile and 48 when dense.
+    /// The one-line tile height.
+    ///
+    /// Upstream has **no constant for this**. `ListTile.minTileHeight` is a
+    /// nullable parameter, and the numbers live in its doc comment: "default
+    /// tile heights are 56.0, 72.0, and 88.0 for one, two, three lines" and,
+    /// dense, "48.0, 64.0, and 76.0". So this is one of six, and the other
+    /// five are not carried here.
     pub const MIN_TILE_HEIGHT: f32 = 56.0;
     pub const DENSE_MIN_TILE_HEIGHT: f32 = 48.0;
     /// Upstream's default `horizontalTitleGap`.
@@ -6289,7 +6294,11 @@ pub struct ResolvedDrawer {
 impl ResolvedDrawer {
     /// Upstream's `_kWidth`.
     pub const WIDTH: f32 = 304.0;
-    /// Upstream's `_kScrimColor` -- black at 54 per cent.
+    /// The scrim behind an open drawer: black at 54 per cent.
+    ///
+    /// Upstream names no constant for it either -- `Drawer.scrimColor` is
+    /// nullable and its doc says the fallback "defaults to `Colors.black54`",
+    /// so the number comes from the palette rather than from drawer.dart.
     pub const SCRIM: Color = Color(0x8a000000);
 
     pub fn of(context: &mut BuildContext) -> ResolvedDrawer {
@@ -7633,7 +7642,11 @@ impl ResolvedFloatingActionButton {
     pub const ELEVATION: f32 = 6.0;
     /// Upstream's `_defaultHighlightElevation`.
     pub const HIGHLIGHT_ELEVATION: f32 = 12.0;
-    /// Upstream's `_kSizeConstraints`.
+    /// The regular button's side.
+    ///
+    /// Upstream resolves a `BoxConstraints sizeConstraints` from the theme and
+    /// the M2/M3 defaults rather than declaring a constant; 56 is what its
+    /// class doc states ("width of 56.0 logical pixels").
     pub const SIZE: f32 = 56.0;
 
     pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedFloatingActionButton {

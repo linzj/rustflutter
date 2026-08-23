@@ -83,8 +83,12 @@ impl VisualDensity {
     pub const MINIMUM: f32 = -4.0;
     /// Upstream `VisualDensity.maximumDensity`.
     pub const MAXIMUM: f32 = 4.0;
-    /// One density unit, in logical pixels -- upstream's
-    /// `_kDensityAmountPerUnit`, applied as `4 * density`.
+    /// One density unit, in logical pixels, applied as `4 * density`.
+    ///
+    /// Upstream's is a **local** `const interval = 4.0` inside
+    /// `VisualDensity.baseSizeAdjustment`, not a top-level constant, with the
+    /// comment that Material "guidelines say to increment/decrement sizes in
+    /// terms of four pixel increments".
     pub const PIXELS_PER_UNIT: f32 = 4.0;
 
     /// Upstream `VisualDensity.standard`: the default, and the density every

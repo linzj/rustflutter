@@ -12367,3 +12367,64 @@ the labels to be aligned」——图标矮一点的那格，标签本会比邻�
 **那片空地是 inset 带来的，不是栏自己一直留的边**。
 
 改完之后 M6 红，再补一个「把 padding 加到上边而不是下边」的 M7，也红。
+
+---
+
+## 第六把尺子：注释说这个数出自上游，那上游还这么说吗（2026-08-24）
+
+移植的注释里到处是这种断言：
+
+```rust
+/// Upstream's `_kTabBarHeight`.
+pub const TAB_BAR_HEIGHT: f32 = 50.0;
+```
+
+**从来没有任何东西核对过这两半。**一个 2026 抄对、2027 上游改掉的数，
+留下的注释指着一个已经不那么说的常量——而这份对应关系
+**只写在注释里**，所以别的东西也不会发现。
+
+`tools/constants.py` 把这句话读出来，两边比。
+
+### 头一次跑，它自己错了两次
+
+七条报告，审下来**两条是尺子的错**：
+
+- `THUMB_RADIUS = 7.0` 报和 `_kThumbRadius = 14.0` 不符。
+  上游有**两个**同名常量：`switch.dart` 的 `const double = 14.0`，
+  和 `sliding_segmented_control.dart` 的 `const Radius = Radius.circular(7)`。
+  移植的 7 是后者，是对的。尺子只看得见标量那个。
+  **改法不是「挑看起来更近的那个文件」**——那又是拿名字当行为的判断，
+  `unwired.py` 已经在这上面栽过四次。诚实的答案是：
+  一个名字有多种声明形式时，这把尺子判不了，记作 unchecked。
+
+- `_kDefaultBorderRadius` 报「上游已不再定义」。它在
+  `search_field.dart` 里，写作 `final BorderRadius _kDefaultBorderRadius = ...`
+  ——是**字段**，不是 `const`。加上 `final` 就认得了。
+
+而修第一条时又写坏一次：把「结构化」按名字集合算，
+于是每个标量也都进了结构化集合，**158 条全判成 unchecked、一条没查**,
+却照样打印出让人放心的 `0 disagreeing`。
+按声明起始位置分辨才对——标量声明在同一个位置被两个模式同时匹配。
+
+### 剩下五条是真的：数对，出处是编的
+
+| 处 | 引的名字 | 上游实际 |
+|---|---|---|
+| `ResolvedListTile::MIN_TILE_HEIGHT` | `_kMinTileHeight`-ish | 没有常量；`ListTile.minTileHeight` 的**文档注释**里写着 56/72/88，dense 48/64/76 |
+| `ResolvedDrawer::SCRIM` | `_kScrimColor` | 没有；`Drawer.scrimColor` 文档说 fallback 是 `Colors.black54` |
+| `ResolvedFloatingActionButton::SIZE` | `_kSizeConstraints` | 没有；是个局部变量 `BoxConstraints sizeConstraints`，56 出自类文档 |
+| `GridTileBar::ONE_LINE_HEIGHT` | `_kOneLineHeight` | 没有；上游把 68 和 48 就地写着，两个都没命名 |
+| `VisualDensity::PIXELS_PER_UNIT` | `_kDensityAmountPerUnit` | 没有；是 `baseSizeAdjustment` 里的**局部** `const interval = 4.0` |
+
+五条是同一个形状：**上游用散文、文档注释或局部变量说出来的数，
+被安上了一个像模像样的 `_kFoo` 私有常量名。**数全是对的，出处全是不存在的。
+
+这比数抄错更难发现：将来有人问「56 是哪来的」，
+去上游搜 `_kSizeConstraints`，搜不到，
+**而他分不清是数过时了还是名字过时了**。
+
+五条都改成上游实际的说法。尺子归零：153 条引用，0 不符，0 失效
+（另 54 条是结构化常量，声明为不比）。
+
+反向验过两头：把 `TAB_BAR_HEIGHT` 改成 51 → 报 MISMATCH；
+把一条引用改成 `_kInventedName` → 报 MISSING。

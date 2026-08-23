@@ -493,8 +493,10 @@ pub struct GridTileBar {
 }
 
 impl GridTileBar {
-    /// Upstream's `_kOneLineHeight`, spelt out there rather than named: a bar
-    /// with both a title and a subtitle is 68 tall, and anything else 48.
+    /// A bar with a title or a subtitle, but not both.
+    ///
+    /// Upstream writes the two heights inline and names neither: a bar
+    /// carrying both is 68 tall, anything else 48.
     pub const ONE_LINE_HEIGHT: f32 = 48.0;
     pub const TWO_LINE_HEIGHT: f32 = 68.0;
 
