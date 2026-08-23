@@ -13818,3 +13818,35 @@ final bottomScrollOffset = widget.bottomMode == always ? 0.0 : _bottomHeight;
 矛盾的后果不是抽象的：要么这条栏把自己的一部分吃了两次，要么留下一道缝。
 
 五个变异全红。coverage 2102 / 2012 记账 / **9 MISSING**。
+
+---
+
+## 三个值，两套机制（2026-08-24）
+
+`DropdownMenuCloseBehavior` 三个值，而上游**不是在一处 switch 三次**，
+是在**两个关闭不同东西的地方各读一次**：
+
+```dart
+closeOnActivate: widget.closeBehavior == DropdownMenuCloseBehavior.all,
+...
+if (widget.closeBehavior == DropdownMenuCloseBehavior.self) {
+  _controller.close();
+}
+```
+
+第一处把活交给菜单系统，它会往上走、把找到的都关掉。
+第二处关的是**这一个**菜单的 controller，到此为止。
+
+所以两个问题是「菜单系统关不关全部」和「这个菜单关不关自己」，
+三个值是这两个布尔的四种组合里的三种。
+**第四种——两个都做——不是一个值**，也不该是：
+让菜单系统关掉一切、然后再关自己一次，是在要求一件已经发生的事。
+
+`all` 和 `self` 从**这个**菜单看是一样的结果，
+区别只有**站在外层菜单上**才看得见。测试把这一点单列了一条。
+
+这已经是这个会话里第三次遇到「两个问题、三个答案、第四种组合无人使用」了
+（`PlatformViewHitTestBehavior`、`MultitouchDragStrategy`、这个）。
+每次那个空缺的组合都不是疏漏，而是**不想要的那件事**。
+
+五个变异全红。coverage 2102 / 2013 记账 / **8 MISSING**。

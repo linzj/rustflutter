@@ -295,6 +295,66 @@ impl DropdownMenuEntry {
     }
 }
 
+/// Upstream `DropdownMenuCloseBehavior`: what shuts when an entry is chosen.
+///
+/// # Three values over two separate mechanisms
+///
+/// Upstream does not switch on this once. It reads it twice, in two places
+/// that close different things:
+///
+/// ```dart
+/// closeOnActivate: widget.closeBehavior == DropdownMenuCloseBehavior.all,
+/// ...
+/// if (widget.closeBehavior == DropdownMenuCloseBehavior.self) {
+///   _controller.close();
+/// }
+/// ```
+///
+/// The first hands the job to the menu system, which walks up and shuts
+/// everything it finds. The second closes **this** menu's controller and
+/// nothing above it. So the two questions are *does the menu system close
+/// everything* and *does this menu close itself*, and the three values are
+/// three of their four combinations.
+///
+/// The fourth -- doing both -- is not a value, and would not want to be:
+/// telling the menu system to close everything and then closing yourself as
+/// well is asking twice for something that has already happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DropdownMenuCloseBehavior {
+    /// Every open menu in the tree. Upstream's default, and the only value
+    /// that reaches menus this one did not open.
+    #[default]
+    All,
+    /// This menu only, leaving an enclosing menu open.
+    SelfOnly,
+    /// Nothing closes; the menu stays up after a choice.
+    None,
+}
+
+impl DropdownMenuCloseBehavior {
+    pub const ALL: [DropdownMenuCloseBehavior; 3] = [
+        DropdownMenuCloseBehavior::All,
+        DropdownMenuCloseBehavior::SelfOnly,
+        DropdownMenuCloseBehavior::None,
+    ];
+
+    /// Upstream's `closeOnActivate` on the item button: the menu system's own
+    /// closing, which does not stop at this menu.
+    pub fn closes_the_whole_tree(self) -> bool {
+        matches!(self, DropdownMenuCloseBehavior::All)
+    }
+
+    /// Upstream's explicit `_controller.close()` in `onPressed`.
+    pub fn closes_this_menu_itself(self) -> bool {
+        matches!(self, DropdownMenuCloseBehavior::SelfOnly)
+    }
+
+    /// Whether this menu ends up shut, by either route.
+    pub fn leaves_this_menu_open(self) -> bool {
+        !self.closes_the_whole_tree() && !self.closes_this_menu_itself()
+    }
+}
+
 /// Upstream `DropdownMenu`, the Material 3 one.
 ///
 /// It is a text field with a menu attached, and the difference from
@@ -312,6 +372,8 @@ pub struct DropdownMenu {
     pub enable_filter: bool,
     /// Whether the field can be typed in freely, or only chosen from.
     pub enable_search: bool,
+    /// Upstream's `closeBehavior`.
+    pub close_behavior: DropdownMenuCloseBehavior,
     selection: Option<i32>,
 }
 
@@ -322,6 +384,7 @@ impl DropdownMenu {
             entries,
             enable_filter: false,
             enable_search: true,
+            close_behavior: DropdownMenuCloseBehavior::All,
             selection: None,
         }
     }
@@ -1042,6 +1105,79 @@ mod dropdown_menu_theme_tests {
                 .and_then(|p| p.resolve(WidgetStates::NONE))
                 .map(|size| size.width),
             Some(500.0)
+        );
+    }
+}
+
+#[cfg(test)]
+mod close_behavior_tests {
+    use super::{DropdownMenu, DropdownMenuCloseBehavior};
+
+    #[test]
+    fn only_all_reaches_menus_this_one_did_not_open() {
+        // closeOnActivate hands the job to the menu system, which walks up.
+        assert!(DropdownMenuCloseBehavior::All.closes_the_whole_tree());
+        assert!(!DropdownMenuCloseBehavior::SelfOnly.closes_the_whole_tree());
+        assert!(!DropdownMenuCloseBehavior::None.closes_the_whole_tree());
+    }
+
+    #[test]
+    fn and_only_self_closes_this_controller_by_hand() {
+        // The explicit _controller.close() in onPressed, which stops here.
+        assert!(DropdownMenuCloseBehavior::SelfOnly.closes_this_menu_itself());
+        assert!(!DropdownMenuCloseBehavior::All.closes_this_menu_itself());
+        assert!(!DropdownMenuCloseBehavior::None.closes_this_menu_itself());
+    }
+
+    #[test]
+    fn the_two_mechanisms_are_never_both_used() {
+        // Three values over two booleans, and the fourth combination is not a
+        // value: telling the menu system to shut everything and then shutting
+        // yourself as well asks twice for what has already happened.
+        for behavior in DropdownMenuCloseBehavior::ALL {
+            assert!(
+                !(behavior.closes_the_whole_tree() && behavior.closes_this_menu_itself()),
+                "{behavior:?} uses both"
+            );
+        }
+        // And the three values really are three different pairs of answers.
+        let mut answers: Vec<(bool, bool)> = DropdownMenuCloseBehavior::ALL
+            .iter()
+            .map(|b| (b.closes_the_whole_tree(), b.closes_this_menu_itself()))
+            .collect();
+        answers.sort();
+        answers.dedup();
+        assert_eq!(answers.len(), 3);
+    }
+
+    #[test]
+    fn two_of_the_three_leave_this_menu_shut() {
+        // Different routes, same outcome for this menu -- which is why the
+        // difference between all and self is only visible from an enclosing
+        // menu.
+        assert!(!DropdownMenuCloseBehavior::All.leaves_this_menu_open());
+        assert!(!DropdownMenuCloseBehavior::SelfOnly.leaves_this_menu_open());
+        assert!(DropdownMenuCloseBehavior::None.leaves_this_menu_open());
+    }
+
+    #[test]
+    fn and_none_is_the_only_one_that_leaves_a_choice_showing() {
+        let staying: Vec<DropdownMenuCloseBehavior> = DropdownMenuCloseBehavior::ALL
+            .into_iter()
+            .filter(|b| b.leaves_this_menu_open())
+            .collect();
+        assert_eq!(staying, vec![DropdownMenuCloseBehavior::None]);
+    }
+
+    #[test]
+    fn a_dropdown_shuts_everything_unless_told_otherwise() {
+        assert_eq!(
+            DropdownMenu::new(Vec::new()).close_behavior,
+            DropdownMenuCloseBehavior::All
+        );
+        assert_eq!(
+            DropdownMenuCloseBehavior::default(),
+            DropdownMenuCloseBehavior::All
         );
     }
 }
