@@ -885,3 +885,73 @@ mod tests {
         assert!(controller.value().is_empty());
     }
 }
+
+#[cfg(test)]
+mod state_bit_tests {
+    use super::{WidgetState, WidgetStates, WidgetStatesConstraint};
+
+    #[test]
+    fn no_two_states_share_a_bit() {
+        // A variant sweep found three arms of `WidgetState::bit` could answer
+        // as the arm above them with nothing noticing -- Selected taking
+        // Dragged's bit, ScrolledUnder taking Selected's, Disabled taking
+        // ScrolledUnder's. Two states on one bit means a set cannot tell them
+        // apart: asking for one would answer yes because the other is there.
+        //
+        // Asserted as a property over every pair rather than as eight separate
+        // values, so a ninth state added later is covered without anybody
+        // remembering to extend this.
+        for held in WidgetState::ALL {
+            let only = WidgetStates::NONE.with(held);
+            assert!(only.contains(held), "{held:?}");
+            for other in WidgetState::ALL {
+                if other != held {
+                    assert!(
+                        !only.contains(other),
+                        "a set holding only {held:?} answers yes to {other:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn and_eight_states_fit_in_eight_bits_without_overlapping() {
+        // The other half of the same rule: every state can be held at once,
+        // and holding all of them is not the same as holding any subset.
+        let all = WidgetState::ALL
+            .into_iter()
+            .fold(WidgetStates::NONE, |states, state| states.with(state));
+        for state in WidgetState::ALL {
+            assert!(all.contains(state), "{state:?}");
+            // And removing one removes exactly one.
+            let missing = all.without(state);
+            assert!(!missing.contains(state));
+            for other in WidgetState::ALL {
+                if other != state {
+                    assert!(missing.contains(other), "{state:?} took {other:?}");
+                }
+            }
+        }
+        assert!(!all.is_empty());
+        assert!(WidgetStates::NONE.is_empty());
+    }
+
+    #[test]
+    fn a_constraint_reads_the_same_set_the_same_way() {
+        // Through the public route, since that is what a theme resolution
+        // actually calls.
+        for held in WidgetState::ALL {
+            let only = WidgetStates::of(&[held]);
+            assert!(WidgetStatesConstraint::state(held).is_satisfied_by(only));
+            for other in WidgetState::ALL {
+                if other != held {
+                    assert!(
+                        !WidgetStatesConstraint::state(other).is_satisfied_by(only),
+                        "{held:?} satisfied a constraint on {other:?}"
+                    );
+                }
+            }
+        }
+    }
+}

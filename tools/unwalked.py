@@ -12,10 +12,17 @@ collapsing `ConstraintsTransform::MaxWidthUnconstrained` into a no-op and
 swapping `HapticFeedbackType::Heavy`'s payload for the light one both left the
 whole suite green.
 
-It is deliberately not an acceptance gate. 262 entries is a queue to work
-through beside the MISSING list, not a number to drive to zero in a hurry --
-and some of them will turn out to be reached after all, which is the answer a
-screen is allowed to give.
+It is deliberately not an acceptance gate, and its precision has now been
+measured rather than guessed at. Of the first three entries sampled by hand,
+two were real (`ConstraintsTransform::MaxWidthUnconstrained`,
+`HapticFeedbackType::Heavy`) and one -- `WidgetStatesConstraint`, flagged in
+all five of its arms -- was **entirely false**: every arm is exercised, through
+`.and()`, `.or()` and `.not()` rather than by naming the variant. So the count
+this prints is a place to look, not a defect count, and reading it as one would
+overstate the gap by some unknown factor.
+
+Use [`variant_sweep.py`] to settle any entry. That one changes what an arm does
+and runs the suite, which is the question this was standing in for.
 
 Its own first run was wrong, in the way these always are: it compared each
 file against that file's own test modules, so `TextAlign`'s variants came back

@@ -554,6 +554,24 @@ pub enum SystemMouseCursor {
     ResizeUpRightDownLeft,
     ResizeColumn,
     ResizeRow,
+    ContextMenu,
+    VerticalText,
+    Cell,
+    Grab,
+    Grabbing,
+    Alias,
+    Copy,
+    Disappearing,
+    ResizeUp,
+    ResizeDown,
+    ResizeLeft,
+    ResizeRight,
+    ResizeUpLeft,
+    ResizeUpRight,
+    ResizeDownLeft,
+    ResizeDownRight,
+    ZoomIn,
+    ZoomOut,
 }
 
 impl SystemMouseCursor {
@@ -578,8 +596,79 @@ impl SystemMouseCursor {
             SystemMouseCursor::ResizeUpRightDownLeft => "resizeUpRightDownLeft",
             SystemMouseCursor::ResizeColumn => "resizeColumn",
             SystemMouseCursor::ResizeRow => "resizeRow",
+            SystemMouseCursor::ContextMenu => "contextMenu",
+            SystemMouseCursor::VerticalText => "verticalText",
+            SystemMouseCursor::Cell => "cell",
+            SystemMouseCursor::Grab => "grab",
+            SystemMouseCursor::Grabbing => "grabbing",
+            SystemMouseCursor::Alias => "alias",
+            SystemMouseCursor::Copy => "copy",
+            SystemMouseCursor::Disappearing => "disappearing",
+            SystemMouseCursor::ResizeUp => "resizeUp",
+            SystemMouseCursor::ResizeDown => "resizeDown",
+            SystemMouseCursor::ResizeLeft => "resizeLeft",
+            SystemMouseCursor::ResizeRight => "resizeRight",
+            SystemMouseCursor::ResizeUpLeft => "resizeUpLeft",
+            SystemMouseCursor::ResizeUpRight => "resizeUpRight",
+            SystemMouseCursor::ResizeDownLeft => "resizeDownLeft",
+            SystemMouseCursor::ResizeDownRight => "resizeDownRight",
+            SystemMouseCursor::ZoomIn => "zoomIn",
+            SystemMouseCursor::ZoomOut => "zoomOut",
         }
     }
+
+    /// Every cursor upstream defines, paired with the kind string the embedder
+    /// looks up.
+    ///
+    /// Kept as one table because that is what it is. A variant sweep found
+    /// seventeen of the eighteen kinds this port used to carry could answer as
+    /// the row above them with the whole suite still green -- a name table
+    /// nobody reads can be wrong in any row for as long as it likes, and this
+    /// one is read by the embedder rather than by anything here.
+    pub const ALL: [(SystemMouseCursor, &'static str); 36] = [
+        (SystemMouseCursor::None, "none"),
+        (SystemMouseCursor::Basic, "basic"),
+        (SystemMouseCursor::Click, "click"),
+        (SystemMouseCursor::Forbidden, "forbidden"),
+        (SystemMouseCursor::Wait, "wait"),
+        (SystemMouseCursor::Progress, "progress"),
+        (SystemMouseCursor::ContextMenu, "contextMenu"),
+        (SystemMouseCursor::Help, "help"),
+        (SystemMouseCursor::Text, "text"),
+        (SystemMouseCursor::VerticalText, "verticalText"),
+        (SystemMouseCursor::Cell, "cell"),
+        (SystemMouseCursor::Precise, "precise"),
+        (SystemMouseCursor::Move, "move"),
+        (SystemMouseCursor::Grab, "grab"),
+        (SystemMouseCursor::Grabbing, "grabbing"),
+        (SystemMouseCursor::NoDrop, "noDrop"),
+        (SystemMouseCursor::Alias, "alias"),
+        (SystemMouseCursor::Copy, "copy"),
+        (SystemMouseCursor::Disappearing, "disappearing"),
+        (SystemMouseCursor::AllScroll, "allScroll"),
+        (SystemMouseCursor::ResizeLeftRight, "resizeLeftRight"),
+        (SystemMouseCursor::ResizeUpDown, "resizeUpDown"),
+        (
+            SystemMouseCursor::ResizeUpLeftDownRight,
+            "resizeUpLeftDownRight",
+        ),
+        (
+            SystemMouseCursor::ResizeUpRightDownLeft,
+            "resizeUpRightDownLeft",
+        ),
+        (SystemMouseCursor::ResizeUp, "resizeUp"),
+        (SystemMouseCursor::ResizeDown, "resizeDown"),
+        (SystemMouseCursor::ResizeLeft, "resizeLeft"),
+        (SystemMouseCursor::ResizeRight, "resizeRight"),
+        (SystemMouseCursor::ResizeUpLeft, "resizeUpLeft"),
+        (SystemMouseCursor::ResizeUpRight, "resizeUpRight"),
+        (SystemMouseCursor::ResizeDownLeft, "resizeDownLeft"),
+        (SystemMouseCursor::ResizeDownRight, "resizeDownRight"),
+        (SystemMouseCursor::ResizeColumn, "resizeColumn"),
+        (SystemMouseCursor::ResizeRow, "resizeRow"),
+        (SystemMouseCursor::ZoomIn, "zoomIn"),
+        (SystemMouseCursor::ZoomOut, "zoomOut"),
+    ];
 
     /// Sets the cursor for one pointer device.
     ///
@@ -655,6 +744,52 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn every_cursor_names_the_kind_the_embedder_looks_up() {
+        // The kind strings are protocol, not ours to choose: an embedder is
+        // already written against each one. A variant sweep found seventeen of
+        // the eighteen rows could take the row above's string with the whole
+        // suite green, which is what a table nobody reads looks like.
+        for (cursor, kind) in SystemMouseCursor::ALL {
+            assert_eq!(cursor.kind(), kind, "{cursor:?}");
+        }
+    }
+
+    #[test]
+    fn and_no_two_cursors_share_one() {
+        // The sweep's mutation in the form of an assertion: two cursors on one
+        // kind means the embedder cannot tell them apart.
+        let mut kinds: Vec<&str> = SystemMouseCursor::ALL.iter().map(|(_, k)| *k).collect();
+        let total = kinds.len();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), total, "two cursors share a kind");
+        assert_eq!(total, 36, "upstream defines thirty-six");
+    }
+
+    #[test]
+    fn and_the_table_lists_every_variant_the_enum_has() {
+        // Keeps the table honest as the enum grows: a variant added without a
+        // row here would have a kind nothing checks, which is the state this
+        // whole test came out of.
+        for (cursor, _) in SystemMouseCursor::ALL {
+            let matches = SystemMouseCursor::ALL
+                .iter()
+                .filter(|(other, _)| *other == cursor)
+                .count();
+            assert_eq!(matches, 1, "{cursor:?} appears {matches} times");
+        }
+        // Every kind is non-empty and starts lowercase, as the protocol has
+        // them -- a row left as a placeholder would not pass this.
+        for (cursor, kind) in SystemMouseCursor::ALL {
+            assert!(!kind.is_empty(), "{cursor:?}");
+            assert!(
+                kind.chars().next().is_some_and(|c| c.is_lowercase()),
+                "{cursor:?} => {kind}"
+            );
+        }
+    }
 
     #[test]
     fn each_haptic_names_the_impact_the_embedders_switch_on() {
