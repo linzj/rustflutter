@@ -346,6 +346,68 @@ impl SemanticsProperties {
     }
 }
 
+/// Upstream `AccessibilityFocusBlockType`: how far a node keeps a screen
+/// reader's focus out.
+///
+/// Upstream's doc is careful to say this "does not affect the actual keyboard
+/// focus handled by [FocusNode]" -- it is only about the focus a reader moves
+/// with its own gestures.
+///
+/// # A ladder, and merging takes the higher rung
+///
+/// Two nodes that merge have to end up with one answer, and upstream's
+/// `_merge` is three ifs that come to "the stronger of the two":
+/// `blockSubtree` beats everything, then `blockNode`, and otherwise both were
+/// `none`. So this is the same shape as
+/// [`crate::painting::RenderComparison`] -- a total order where merging is the
+/// maximum, `None` is the identity and the top is absorbing.
+///
+/// The rung between the two blocking values is the one worth having: blocking
+/// a node is not blocking its children. A container that should not itself be
+/// stopped on, whose contents should still be reachable, is a real thing --
+/// and a two-valued version of this type could not say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AccessibilityFocusBlockType {
+    /// Not blocked.
+    #[default]
+    None,
+    /// This node cannot take accessibility focus; its descendants still can.
+    BlockNode,
+    /// Neither this node nor anything under it.
+    BlockSubtree,
+}
+
+impl AccessibilityFocusBlockType {
+    pub const ALL: [AccessibilityFocusBlockType; 3] = [
+        AccessibilityFocusBlockType::None,
+        AccessibilityFocusBlockType::BlockNode,
+        AccessibilityFocusBlockType::BlockSubtree,
+    ];
+
+    /// How much this blocks, as a number. `blockSubtree` is the top.
+    pub fn strength(self) -> u8 {
+        match self {
+            AccessibilityFocusBlockType::None => 0,
+            AccessibilityFocusBlockType::BlockNode => 1,
+            AccessibilityFocusBlockType::BlockSubtree => 2,
+        }
+    }
+
+    /// Upstream's `_merge`, which two nodes use when they become one.
+    ///
+    /// Written as the maximum rather than as upstream's three ifs, because
+    /// that is what the three ifs say and it cannot be got half right: an
+    /// ordering has one maximum, where three conditions can be edited into
+    /// disagreeing with each other.
+    pub fn merge(self, other: AccessibilityFocusBlockType) -> AccessibilityFocusBlockType {
+        if other.strength() > self.strength() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 /// Upstream `DebugSemanticsDumpOrder`: which order a semantics dump walks a
 /// node's children in.
 ///
@@ -6628,5 +6690,89 @@ mod dump_order_tests {
             DebugSemanticsDumpOrder::default(),
             DebugSemanticsDumpOrder::TraversalOrder
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_block_tests {
+    use super::AccessibilityFocusBlockType;
+
+    #[test]
+    fn merging_takes_the_stronger_of_the_two() {
+        // Upstream's three ifs, said once: blockSubtree beats everything, then
+        // blockNode, otherwise both were none.
+        for a in AccessibilityFocusBlockType::ALL {
+            for b in AccessibilityFocusBlockType::ALL {
+                let merged = a.merge(b);
+                assert!(merged == a || merged == b, "{a:?} {b:?}");
+                assert!(merged.strength() >= a.strength());
+                assert!(merged.strength() >= b.strength());
+            }
+        }
+    }
+
+    #[test]
+    fn and_it_does_not_matter_which_node_is_asked_first() {
+        // Two nodes merging is symmetric; an order-dependent answer would make
+        // the result depend on which happened to be the parent.
+        for a in AccessibilityFocusBlockType::ALL {
+            for b in AccessibilityFocusBlockType::ALL {
+                assert_eq!(a.merge(b), b.merge(a), "{a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn not_blocking_is_the_identity_and_blocking_a_subtree_is_the_end() {
+        for value in AccessibilityFocusBlockType::ALL {
+            assert_eq!(value.merge(AccessibilityFocusBlockType::None), value);
+            assert_eq!(
+                value.merge(AccessibilityFocusBlockType::BlockSubtree),
+                AccessibilityFocusBlockType::BlockSubtree,
+                "{value:?} could not undo a blocked subtree"
+            );
+            assert_eq!(value.merge(value), value, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn blocking_a_node_is_not_blocking_its_children() {
+        // The middle rung, and the reason the type has three values rather
+        // than two: a container that should not be stopped on, whose contents
+        // should still be reachable, is a real thing.
+        assert!(
+            AccessibilityFocusBlockType::BlockNode.strength()
+                < AccessibilityFocusBlockType::BlockSubtree.strength()
+        );
+        assert_ne!(
+            AccessibilityFocusBlockType::BlockNode,
+            AccessibilityFocusBlockType::BlockSubtree
+        );
+        // And merging the two keeps the stronger, so a subtree block anywhere
+        // in a merge wins.
+        assert_eq!(
+            AccessibilityFocusBlockType::BlockNode.merge(AccessibilityFocusBlockType::BlockSubtree),
+            AccessibilityFocusBlockType::BlockSubtree
+        );
+    }
+
+    #[test]
+    fn the_three_rungs_are_three_different_heights() {
+        let mut strengths: Vec<u8> = AccessibilityFocusBlockType::ALL
+            .iter()
+            .map(|value| value.strength())
+            .collect();
+        strengths.sort_unstable();
+        strengths.dedup();
+        assert_eq!(strengths, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_node_blocks_nothing_unless_told_to() {
+        assert_eq!(
+            AccessibilityFocusBlockType::default(),
+            AccessibilityFocusBlockType::None
+        );
+        assert_eq!(AccessibilityFocusBlockType::None.strength(), 0);
     }
 }
