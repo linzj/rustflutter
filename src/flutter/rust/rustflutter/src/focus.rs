@@ -986,6 +986,68 @@ fn enclosing_group(ancestors: &[u64]) -> Option<u64> {
     })
 }
 
+/// Upstream `ExcludeFocus`: a subtree that cannot be reached by the keyboard.
+///
+/// Upstream builds it as a `Focus` with four flags off at once, and each one
+/// closes a different way in:
+///
+/// * `canRequestFocus: false` -- the node itself is not a stop.
+/// * `skipTraversal: true` -- nor is it visited on the way past.
+/// * `descendantsAreFocusable: !excluding` -- and neither is anything under it.
+/// * `includeSemantics: false` -- and it adds no semantics node of its own,
+///   which matters wherever something above is already merging them.
+///
+/// Upstream is careful to say what it does **not** do: it "does not affect the
+/// value of `FocusNode.canRequestFocus` on the descendants". The descendants
+/// keep their own answer and simply cannot be reached while this is excluding,
+/// so turning it off again leaves them able to take focus -- though, upstream
+/// notes, anything that was focused when it came on is unfocused and **not
+/// refocused** when it goes off. Exclusion is not a pause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcludeFocus {
+    /// Upstream's `excluding`, true by default.
+    pub excluding: bool,
+}
+
+impl Default for ExcludeFocus {
+    fn default() -> ExcludeFocus {
+        ExcludeFocus::new()
+    }
+}
+
+impl ExcludeFocus {
+    pub fn new() -> ExcludeFocus {
+        ExcludeFocus { excluding: true }
+    }
+
+    pub fn excluding(excluding: bool) -> ExcludeFocus {
+        ExcludeFocus { excluding }
+    }
+
+    /// Upstream's `canRequestFocus: false`. Constant.
+    pub fn can_request_focus(&self) -> bool {
+        false
+    }
+
+    /// Upstream's `skipTraversal: true`. Constant.
+    pub fn skips_traversal(&self) -> bool {
+        true
+    }
+
+    /// Upstream's `includeSemantics: false`. Constant.
+    pub fn includes_semantics(&self) -> bool {
+        false
+    }
+
+    /// Upstream's `descendantsAreFocusable: !excluding` -- **the only one of
+    /// the four the flag decides.** An `ExcludeFocus` that is not excluding is
+    /// still not itself a focus stop; it has simply stopped blocking what is
+    /// under it.
+    pub fn descendants_are_focusable(&self) -> bool {
+        !self.excluding
+    }
+}
+
 /// The traversal order: every stop, in the order Tab visits them.
 ///
 /// Upstream's `FocusTraversalPolicy._sortAllDescendants`, in the shape this

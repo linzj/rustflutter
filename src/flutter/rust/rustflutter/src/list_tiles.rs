@@ -6,8 +6,10 @@
 
 use std::cell::RefCell;
 
+use crate::editable_text::TargetPlatform;
 use crate::framework::{AnyWidget, BuildContext, Component, component};
 use crate::gestures::PointerHandlers;
+use crate::widget_state::MaterialTapTargetSize;
 
 /// Upstream `ListTileControlAffinity`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +89,13 @@ pub struct ControlListTile {
     /// `None` falls through to the list tile theme's, then to `Platform`.
     pub control_affinity: Option<ListTileControlAffinity>,
     pub has_secondary: bool,
+    /// `None` is `ShrinkWrap` here, which is **not** a bare control's default
+    /// -- see [`ControlListTile::control_tap_target`].
+    pub material_tap_target_size: Option<MaterialTapTargetSize>,
+    /// Upstream's `.adaptive` constructor, which is the one thing about these
+    /// tiles that does consult the platform -- see
+    /// [`ControlListTile::adapts_away_the_theme`].
+    pub adaptive: bool,
 }
 
 impl ControlListTile {
@@ -99,6 +108,8 @@ impl ControlListTile {
             is_three_line: false,
             control_affinity: None,
             has_secondary: false,
+            material_tap_target_size: None,
+            adaptive: false,
         }
     }
 
@@ -136,6 +147,52 @@ impl ControlListTile {
     /// label is not a second control, it is part of this one.
     pub fn merges_semantics() -> bool {
         true
+    }
+
+    /// Upstream wraps the control in `ExcludeFocus`, in all three tiles and in
+    /// both branches of each.
+    ///
+    /// The tile is the focus stop; the control inside it is not. Without this
+    /// Tab would stop twice on one row -- once on the row and once on the
+    /// switch in it -- and the second stop would do the same thing as the
+    /// first.
+    pub fn control_excludes_focus() -> bool {
+        true
+    }
+
+    /// Upstream's `materialTapTargetSize ?? MaterialTapTargetSize.shrinkWrap`.
+    ///
+    /// A bare `Switch` defaults to `Padded`, growing itself to the
+    /// 48-pixel minimum. Inside a tile that default is **overridden**, because
+    /// the tile is the tap target and a second 48-high target inside a 48-high
+    /// row buys nothing while making the row taller.
+    ///
+    /// Upstream's own default differs from this one, so the tile is not
+    /// deferring to the control here -- it is contradicting it.
+    pub fn control_tap_target(&self) -> MaterialTapTargetSize {
+        self.material_tap_target_size
+            .unwrap_or(MaterialTapTargetSize::ShrinkWrap)
+    }
+
+    /// Whether an adaptive control on this platform throws the switch theme
+    /// away.
+    ///
+    /// Upstream's `_SwitchThemeAdaptation.adapt` returns the theme unchanged
+    /// on Android, Fuchsia, Linux and Windows, and **`const SwitchThemeData()`
+    /// -- an empty one -- on iOS and macOS**. So "adaptive" here does not mean
+    /// "use a different theme on Apple platforms"; it means *forget the one
+    /// you were given*.
+    ///
+    /// And it reads `ThemeData.platform`, not the device. A caller who sets
+    /// the theme's platform moves this with it, which is the point of that
+    /// field existing.
+    ///
+    /// The contrast worth keeping: [`ListTileControlAffinity::Platform`] is
+    /// named for the platform and never asks
+    /// ([`ListTileControlAffinity::consults_the_platform`] is false), while
+    /// this is not named for it and always does.
+    pub fn adapts_away_the_theme(&self, platform: TargetPlatform) -> bool {
+        self.adaptive && matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS)
     }
 }
 
@@ -761,5 +818,167 @@ mod tests {
         let tile = CheckboxListTile::tristate(None);
         assert!(tile.0.tristate);
         assert_eq!(tile.0.value, None);
+    }
+}
+
+#[cfg(test)]
+mod the_tile_is_the_control_tests {
+    use super::*;
+    use crate::focus::ExcludeFocus;
+
+    fn tile(control: TileControl) -> ControlListTile {
+        ControlListTile::new(control, Some(true))
+    }
+
+    // -- Three ways of saying the same thing -----------------------------------
+
+    #[test]
+    fn the_control_is_reachable_by_nothing_the_reader_has() {
+        // Keyboard, finger and screen reader, each closed a different way, and
+        // all three saying that the row is the control and the switch in it is
+        // a picture of the control's state.
+        assert!(ControlListTile::control_excludes_focus(), "keyboard");
+        assert_eq!(
+            tile(TileControl::Switch).control_tap_target(),
+            MaterialTapTargetSize::ShrinkWrap,
+            "finger"
+        );
+        assert!(ControlListTile::merges_semantics(), "screen reader");
+    }
+
+    #[test]
+    fn and_the_tap_target_default_is_a_contradiction_of_the_controls_own() {
+        // A bare control defaults to `Padded` -- it grows itself to the
+        // 48-pixel minimum. Inside a tile that is overridden, so the tile is
+        // not deferring to the control here, it is disagreeing with it.
+        assert_eq!(
+            MaterialTapTargetSize::default(),
+            MaterialTapTargetSize::Padded
+        );
+        assert_ne!(
+            tile(TileControl::Switch).control_tap_target(),
+            MaterialTapTargetSize::default()
+        );
+    }
+
+    #[test]
+    fn a_caller_can_still_ask_for_the_padded_one() {
+        // It is a default, not a rule: `materialTapTargetSize ?? shrinkWrap`.
+        let mut padded = tile(TileControl::Switch);
+        padded.material_tap_target_size = Some(MaterialTapTargetSize::Padded);
+        assert_eq!(padded.control_tap_target(), MaterialTapTargetSize::Padded);
+    }
+
+    #[test]
+    fn all_three_tiles_agree_about_all_of_it() {
+        // Upstream writes it out three times, in both branches of each.
+        for control in [
+            TileControl::Checkbox,
+            TileControl::Radio,
+            TileControl::Switch,
+        ] {
+            assert_eq!(
+                tile(control).control_tap_target(),
+                MaterialTapTargetSize::ShrinkWrap,
+                "{control:?}"
+            );
+        }
+    }
+
+    // -- Excluding focus --------------------------------------------------------
+
+    #[test]
+    fn excluding_focus_closes_four_doors_and_only_one_is_the_flag() {
+        // `canRequestFocus: false`, `skipTraversal: true` and
+        // `includeSemantics: false` are constant; only
+        // `descendantsAreFocusable` is what `excluding` decides.
+        let excluding = ExcludeFocus::new();
+        let not = ExcludeFocus::excluding(false);
+
+        assert!(excluding.skips_traversal() && not.skips_traversal());
+        assert!(!excluding.includes_semantics() && !not.includes_semantics());
+        assert!(!excluding.can_request_focus());
+        assert!(
+            !not.can_request_focus(),
+            "not excluding is still not itself a stop"
+        );
+
+        assert!(!excluding.descendants_are_focusable());
+        assert!(not.descendants_are_focusable());
+    }
+
+    #[test]
+    fn it_defaults_to_excluding() {
+        assert!(ExcludeFocus::new().excluding);
+        assert!(ExcludeFocus::default().excluding);
+    }
+
+    // -- The one place these tiles ask about the platform ----------------------
+
+    #[test]
+    fn the_affinity_named_for_the_platform_never_asks_and_adaptive_always_does() {
+        // The contrast worth keeping. One is called `platform` and resolves
+        // from the control; the other is not, and reads `ThemeData.platform`.
+        assert!(!ListTileControlAffinity::Platform.consults_the_platform());
+
+        let mut adaptive = tile(TileControl::Switch);
+        adaptive.adaptive = true;
+        assert!(adaptive.adapts_away_the_theme(TargetPlatform::IOS));
+        assert!(!adaptive.adapts_away_the_theme(TargetPlatform::Android));
+    }
+
+    #[test]
+    fn a_tile_that_is_not_adaptive_ignores_the_platform_entirely() {
+        let plain = tile(TileControl::Switch);
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::Fuchsia,
+        ] {
+            assert!(!plain.adapts_away_the_theme(platform), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_two_apple_platforms_are_the_two_that_throw_the_theme_away() {
+        // `_SwitchThemeAdaptation.adapt` returns the theme unchanged on
+        // Android, Fuchsia, Linux and Windows and an empty one on iOS and
+        // macOS -- "adaptive" means forget what you were given, not use
+        // something else.
+        let mut adaptive = tile(TileControl::Switch);
+        adaptive.adaptive = true;
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(adaptive.adapts_away_the_theme(platform), "{platform:?}");
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(!adaptive.adapts_away_the_theme(platform), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_affinity_still_resolves_from_the_control_and_not_from_the_platform() {
+        // Which is the half of the contrast that was already ported, checked
+        // here so the two halves sit together.
+        assert!(
+            ListTileControlAffinity::Platform
+                .resolve(TileControl::Radio)
+                .control_is_leading
+        );
+        for control in [TileControl::Checkbox, TileControl::Switch] {
+            assert!(
+                !ListTileControlAffinity::Platform
+                    .resolve(control)
+                    .control_is_leading,
+                "{control:?}"
+            );
+        }
     }
 }

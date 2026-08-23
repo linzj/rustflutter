@@ -11545,3 +11545,53 @@ elevation 默认 **0**。对话框、菜单、搜索栏、时间选择器都是 
 这件事连着撞见三次才造出来的；它当时报 38 个无读者，中途因为四个
 **名字形状冒充行为判定**的毛病被修过四次，现在到底了。
 
+## 三个控件磁贴：磁贴才是控件，里面那个不是（2026-08-23）
+
+主题队列清空后转到 `depth.py` 的队列。头三个是三兄弟：
+`SwitchListTile`（3/46）、`RadioListTile`（3/43）、`CheckboxListTile`（5/42）。
+
+### 先核对，再动手：那个比值是本工具自己承认的高报
+
+本移植把三者抽成了一个共享的 `ControlListTile`，`depth.py` 数的是
+`SwitchListTile` 自己身上的成员，所以报「3 of 46」——**正是它文档里写明的那种
+高报**。而且我第一件想找的东西已经在了：
+
+`ListTileControlAffinity::Platform` 在 checkbox 和 switch 上是 **trailing**，
+在 radio 上是 **leading**（上游三个文件的 `switch` 表达式确实不一样：
+radio 那份是 `platform => (control, secondary)`）。**同一个枚举值、同一个默认、
+相反的边。** 本移植的 `resolve` 已经写对了，还带着一个
+`consults_the_platform()` 明说它从不问平台。
+
+### 真正缺的三样，说的是同一件事
+
+1. **`ExcludeFocus`** 包着控件——三个磁贴、每个的两条分支里都有。
+   **磁贴才是焦点停靠点，里面那个控件不是。** 否则 Tab 会在一行上停两次，
+   而第二次停下来做的事和第一次一样。
+2. **`materialTapTargetSize ?? shrinkWrap`**——一个裸的控件默认是 `Padded`，
+   会把自己撑到 48 的最小值；在磁贴里这个默认被**推翻**，因为磁贴才是点击目标，
+   在一个 48 高的行里再套一个 48 高的目标什么也没买到，只是把行变高。
+   **磁贴在这里不是顺从控件，是在和它唱反调。**
+3. **`MergeSemantics`**（早已移植）——对读屏器来说是**一个**东西。
+
+三种机制，一句话：**一个控件放进列表磁贴，就在读者能够到它的每一条路上
+——键盘、手指、读屏器——不再是一个独立的控件，而只剩下「把状态画出来」这一件事。**
+
+顺带记下 `ExcludeFocus` 关的是**四扇门**，而只有一扇归那个 flag 管：
+`canRequestFocus: false`、`skipTraversal: true`、`includeSemantics: false`
+是常量，只有 `descendantsAreFocusable: !excluding` 跟着走。
+上游还特意说明它**不**改后代自己的 `canRequestFocus`，
+而且被它挡掉焦点的东西在它关掉之后**不会被重新聚焦**——排除不是暂停。
+
+### 而 `.adaptive` 正是这些磁贴唯一问平台的地方
+
+`_SwitchThemeAdaptation.adapt` 读的是 **`ThemeData.platform`，不是设备**，
+而它在 iOS/macOS 上返回的是 `const SwitchThemeData()`——**一个空主题**。
+所以这里的「adaptive」不是「在苹果平台上换一套主题」，
+而是**「把你拿到的那套忘掉」**。
+
+对照留在文档里：`ListTileControlAffinity::Platform` **名字里带 platform，
+却从不问**；`.adaptive` **名字里没有，却总是问**。
+
+13 个变异，13 个全红（其中三条因 `cargo fmt` 重排锚点失效，改对后重跑也是红的）。
+每条新测试都单独跑过。
+
