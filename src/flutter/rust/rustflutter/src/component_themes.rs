@@ -3541,6 +3541,267 @@ impl ResolvedIconButton {
     }
 }
 
+/// Which of `InputDecoration`'s five named borders a field is drawn with.
+///
+/// Six states -- enabled or not, focused or not, in error or not -- and five
+/// borders to cover them, because one of the five covers two of the cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputBorderSlot {
+    Error,
+    Disabled,
+    FocusedError,
+    Focused,
+    Enabled,
+}
+
+/// Where the *side* of a resolved input border comes from, once its shape is
+/// settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputBorderSide {
+    /// The caller's own, kept as given -- see [`ResolvedInputBorder`] for the
+    /// two ways that happens.
+    AsGiven,
+    /// A filled field's rule, from `activeIndicatorBorder`.
+    ActiveIndicator,
+    /// An unfilled field's outline, from `outlineBorder`.
+    Outline,
+    /// Material 2, which computes a width rather than reading a side.
+    MaterialTwo,
+}
+
+/// How an input decoration's border is arrived at -- upstream's
+/// `_InputDecoratorState._getDefaultBorder` and the five-way pick above it.
+///
+/// # A border's shape and its side come from different places
+///
+/// `_getDefaultBorder` takes the border for its **shape** -- underline, outline,
+/// whatever the caller asked for -- and then calls `copyWith(borderSide: ...)`
+/// with a side from somewhere else entirely. The caller says what outline the
+/// field has; the theme says what colour and width it is drawn in.
+///
+/// # Error beats disabled
+///
+/// The five-way pick reads
+/// `!enabled ? (error ? errorBorder : disabledBorder) : focused ? (error ?
+/// focusedErrorBorder : focusedBorder) : (error ? errorBorder : enabledBorder)`.
+/// `errorBorder` appears in two of the three arms, and the disabled arm is one
+/// of them: **a field you cannot edit still tells you it is wrong.** Being
+/// unable to fix something is not a reason to stop being told about it.
+///
+/// # Two ways to keep the side you were given
+///
+/// * The border is a `WidgetStateProperty<InputBorder>`. A caller answering per
+///   state is already doing what the code below would do, so it steps aside
+///   rather than resolving twice.
+/// * The border's side is `BorderSide.none`. Replacing it would put a line back
+///   on a border that asked for none -- and, as
+///   [`crate::input_decorator::ShapedInputBorder`] records, a border with no
+///   side still has a shape, so asking for none is a decision and not an
+///   absence.
+///
+/// # Filled and unfilled read different fields, and only one reads the theme
+///
+/// Filled fields take the side from
+/// `InputDecorationTheme.of(context).activeIndicatorBorder ??
+/// defaults.activeIndicatorBorder`. Unfilled fields take it from
+/// `defaults.outlineBorder` **alone**.
+///
+/// `defaults` is `_InputDecoratorDefaultsM3(context)`, not the ambient theme,
+/// and `applyDefaults` -- which folds the theme into the decoration higher up
+/// -- carries neither field, because neither has an `InputDecoration`
+/// counterpart. So `InputDecorationThemeData.outlineBorder` is a public,
+/// documented field whose value the decorator never reads: it appears once more
+/// in the file, inside a `??` chain that only asks whether *any* field is
+/// non-null.
+///
+/// The filled branch reaching for `InputDecorationTheme.of(context)` a second
+/// time, when the theme is already folded into `decoration`, is the tell --
+/// somebody needed a theme field `applyDefaults` does not carry and went and
+/// got it. They did that for the active indicator and not for the outline.
+///
+/// # The two default ladders are the same ladder, two values apart
+///
+/// `_InputDecoratorDefaultsM3.activeIndicatorBorder` and `.outlineBorder` have
+/// the same six arms in the same order -- disabled, error+focused, error+hovered,
+/// error, focused, hovered, resting -- and differ in exactly two of them:
+///
+/// * **disabled**: `onSurface` at 0.38 for the indicator, at **0.12** for the
+///   outline. Three times fainter for the shape that encloses more. A single
+///   rule under the text has to stay legible as a line; a box drawn all the way
+///   round a dead field at that strength would read as a live one.
+/// * **resting**: `onSurfaceVariant` for the indicator, `outline` for the
+///   outline. The indicator is nearly content and takes a text role; the
+///   outline is a container edge and takes the role named for it.
+///
+/// Everything else -- both error widths, the focused 2.0, the hover -- is
+/// shared. And within the error arm focused still wins the width: **the colour
+/// says what is wrong and the width says where you are.**
+pub struct ResolvedInputBorder {
+    pub slot: InputBorderSlot,
+    pub side: InputBorderSide,
+}
+
+impl ResolvedInputBorder {
+    /// Upstream's focused width, in both ladders and in Material 2.
+    pub const FOCUSED_WIDTH: f32 = 2.0;
+    /// Upstream's resting width.
+    pub const RESTING_WIDTH: f32 = 1.0;
+    /// The width for a field with no line to draw -- collapsed, borderless or
+    /// disabled, which Material 2 folds into one case.
+    pub const NO_WIDTH: f32 = 0.0;
+    /// Upstream's disabled opacity for a filled field's indicator.
+    pub const DISABLED_INDICATOR_OPACITY: f32 = 0.38;
+    /// Upstream's disabled opacity for an unfilled field's outline, which is
+    /// the fainter of the two.
+    pub const DISABLED_OUTLINE_OPACITY: f32 = 0.12;
+
+    /// The five-way pick. See the type's docs: error beats disabled.
+    pub fn slot_for(enabled: bool, focused: bool, has_error: bool) -> InputBorderSlot {
+        if !enabled {
+            return if has_error {
+                InputBorderSlot::Error
+            } else {
+                InputBorderSlot::Disabled
+            };
+        }
+        if focused {
+            return if has_error {
+                InputBorderSlot::FocusedError
+            } else {
+                InputBorderSlot::Focused
+            };
+        }
+        if has_error {
+            InputBorderSlot::Error
+        } else {
+            InputBorderSlot::Enabled
+        }
+    }
+
+    /// Where the side comes from, or that it is kept as given.
+    ///
+    /// `border_is_state_property` and `side_is_none` are the two early returns.
+    pub fn side_for(
+        border_is_state_property: bool,
+        side_is_none: bool,
+        use_material3: bool,
+        filled: bool,
+    ) -> InputBorderSide {
+        if border_is_state_property || side_is_none {
+            return InputBorderSide::AsGiven;
+        }
+        if !use_material3 {
+            return InputBorderSide::MaterialTwo;
+        }
+        if filled {
+            InputBorderSide::ActiveIndicator
+        } else {
+            InputBorderSide::Outline
+        }
+    }
+
+    /// Upstream's Material 2 width: zero when there is nothing to draw, two
+    /// when focused, one otherwise.
+    ///
+    /// The zero case folds three different reasons together -- a collapsed
+    /// field, a border explicitly set to none, and a disabled field -- because
+    /// the drawn result is the same and only the reason differs.
+    pub fn material_two_width(
+        is_collapsed: bool,
+        border_is_none: bool,
+        enabled: bool,
+        focused: bool,
+    ) -> f32 {
+        if is_collapsed || border_is_none || !enabled {
+            return ResolvedInputBorder::NO_WIDTH;
+        }
+        if focused {
+            ResolvedInputBorder::FOCUSED_WIDTH
+        } else {
+            ResolvedInputBorder::RESTING_WIDTH
+        }
+    }
+
+    /// The colour of a Material 3 side, by state, for whichever of the two
+    /// ladders is in play. They share every arm but two.
+    pub fn side_color(
+        side: InputBorderSide,
+        states: WidgetStates,
+        scheme: &ColorScheme,
+    ) -> Option<Color> {
+        let outline = match side {
+            InputBorderSide::ActiveIndicator => false,
+            InputBorderSide::Outline => true,
+            _ => return None,
+        };
+        if states.contains(WidgetState::Disabled) {
+            // The one arm where the two ladders differ by more than a role.
+            return Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                if outline {
+                    ResolvedInputBorder::DISABLED_OUTLINE_OPACITY
+                } else {
+                    ResolvedInputBorder::DISABLED_INDICATOR_OPACITY
+                },
+            ));
+        }
+        if states.contains(WidgetState::Error) {
+            if states.contains(WidgetState::Focused) {
+                return Some(scheme.error);
+            }
+            if states.contains(WidgetState::Hovered) {
+                return Some(scheme.on_error_container());
+            }
+            return Some(scheme.error);
+        }
+        if states.contains(WidgetState::Focused) {
+            return Some(scheme.primary);
+        }
+        if states.contains(WidgetState::Hovered) {
+            return Some(scheme.on_surface);
+        }
+        Some(if outline {
+            scheme.outline()
+        } else {
+            scheme.on_surface_variant()
+        })
+    }
+
+    /// The width of a Material 3 side: two when focused, one otherwise, in
+    /// both ladders and whether or not there is an error.
+    pub fn side_width(states: WidgetStates) -> f32 {
+        if states.contains(WidgetState::Focused) {
+            ResolvedInputBorder::FOCUSED_WIDTH
+        } else {
+            ResolvedInputBorder::RESTING_WIDTH
+        }
+    }
+
+    pub fn of(
+        context: &mut BuildContext,
+        enabled: bool,
+        focused: bool,
+        has_error: bool,
+        border_is_state_property: bool,
+        side_is_none: bool,
+    ) -> ResolvedInputBorder {
+        let theme = ThemeData::of(context);
+        // Read for the same reason upstream reads it: `filled` is one of the
+        // fields `applyDefaults` folds into the decoration, so the theme is
+        // what decides it when the caller did not.
+        let filled = InputDecorationTheme::of(context).filled;
+        ResolvedInputBorder {
+            slot: ResolvedInputBorder::slot_for(enabled, focused, has_error),
+            side: ResolvedInputBorder::side_for(
+                border_is_state_property,
+                side_is_none,
+                theme.use_material3,
+                filled,
+            ),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

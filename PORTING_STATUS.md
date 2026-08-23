@@ -11111,3 +11111,67 @@ grep 包装类而不看它承载的 data 类、以及这次的 `wrappers()`。
 主题总数 49 → 48（`TextTheme` 本就不该在名单上），
 无读者 8 → 6（另 1 个上游已废弃，不计）。
 
+## 输入框的边：形状和边线来自两个不同的地方（2026-08-23）
+
+`InputDecorationTheme` 接上读者，也是队列里最大的一个。
+
+### 形状是调用者的，边线是主题的
+
+`_getDefaultBorder` 拿 border 只为它的**形状**（下划线、外框、随便什么），
+然后 `copyWith(borderSide: ...)` 用一个来自别处的边线把它换掉。
+**调用者说这个框长什么样，主题说它用什么颜色多粗画出来。**
+
+### 报错压过禁用
+
+五选一写的是
+`!enabled ? (error ? errorBorder : disabledBorder) : focused ? (...) : (...)`。
+`errorBorder` 出现在三条臂中的**两条**，其中一条就是禁用那条：
+**一个你改不了的字段，仍然会告诉你它是错的。**
+改不了不是停止被告知的理由。
+
+六个格子五个名字，唯一共用一个名字的就是那两个 error 格；
+而 focused+error 反倒有自己的 `focusedErrorBorder`。
+
+### 两种「保留你给的边」
+
+* border 是个 `WidgetStateProperty<InputBorder>`——调用者已经在按状态回答了，
+  下面那套（也按状态解析）再来一遍就是在替他改主意。
+* border 的边是 `BorderSide.none`——换掉它就是给一个说了不要线的边框
+  把线放回去。而**没有边的 border 仍然定义一个形状**，所以那是个决定，不是缺失。
+
+### filled 与否读不同的字段，而只有一个读主题
+
+filled 走
+`InputDecorationTheme.of(context).activeIndicatorBorder ?? defaults.activeIndicatorBorder`；
+不 filled 走 `defaults.outlineBorder`**一个**。
+
+`defaults` 是 `_InputDecoratorDefaultsM3(context)`，不是环境主题；
+而上面那句把主题折进 decoration 的 `applyDefaults` **两个字段都不带**
+（两者都没有 `InputDecoration` 里的对应项）。所以
+**`InputDecorationThemeData.outlineBorder` 是一个公开、有文档、而 decorator
+从不读其值的字段**——它在文件里另一次出现是在一条只问「有没有任何字段非空」
+的 `??` 链里。
+
+filled 那条分支**又去 `InputDecorationTheme.of(context)` 拿了一次**
+（明明主题已经折进 `decoration` 了）就是那个破绽：有人需要一个
+`applyDefaults` 不带的主题字段，就直接去取了。他为 active indicator 取了，
+没为 outline 取。
+
+### 两条默认梯子是同一条梯子，差两个值
+
+`activeIndicatorBorder` 和 `outlineBorder` 六条臂顺序完全相同，只差两处：
+
+* **禁用**：indicator 是 `onSurface@0.38`，outline 是 **`@0.12`**。
+  **围得越多的形状，死掉时越淡三倍。** 文字下面一条横线得还看得出是条线；
+  绕着一个死字段画一整圈还那么浓，会读成活的。
+* **静息**：indicator 是 `onSurfaceVariant`（近乎内容，取文字角色），
+  outline 是 `outline`（容器边，取给它起的那个角色）。
+
+其余全共享。而 error 臂里 focused 仍然决定宽度：
+**颜色说哪里错了，宽度说你在哪。**
+
+M2 那条宽度梯子把三个不同的理由折成一个零：collapsed、border 为 none、
+禁用——画出来一样，只是理由不同。
+
+14 个变异，14 个全红。无读者主题 6 → 5（另 1 个上游已废弃，不计）。
+

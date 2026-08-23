@@ -112,6 +112,10 @@ pub struct InputDecoration {
     pub error_text: Option<String>,
     pub counter_text: Option<String>,
     pub floating_label_behavior: FloatingLabelBehavior,
+    /// Upstream's `enabled`, true by default. A disabled field is still
+    /// decorated -- and still shows its error border if it has one, which is
+    /// [`crate::component_themes::ResolvedInputBorder`]'s business.
+    pub enabled: bool,
     pub filled: bool,
     pub is_dense: bool,
     /// Upstream's `isCollapsed`, which the `collapsed` constructor sets
@@ -136,6 +140,7 @@ impl InputDecoration {
             error_text: None,
             counter_text: None,
             floating_label_behavior: FloatingLabelBehavior::Auto,
+            enabled: true,
             filled: false,
             is_dense: false,
             is_collapsed: false,
@@ -250,6 +255,24 @@ impl InputDecorator {
         } else {
             LabelPlacement::Inline
         }
+    }
+
+    /// Which named border applies, and where its side comes from -- see
+    /// [`crate::component_themes::ResolvedInputBorder`].
+    pub fn resolved_border(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        border: &ShapedInputBorder,
+        border_is_state_property: bool,
+    ) -> crate::component_themes::ResolvedInputBorder {
+        crate::component_themes::ResolvedInputBorder::of(
+            context,
+            self.decoration.enabled,
+            self.is_focused,
+            self.decoration.error_text.is_some(),
+            border_is_state_property,
+            !border.has_side,
+        )
     }
 
     /// Upstream substitutes its own `borderSide` based on the theme and whether
@@ -419,5 +442,350 @@ mod tests {
         let ordinary = InputDecoration::new();
         assert!(!ordinary.is_collapsed);
         assert!(!ordinary.content_padding_is_zero);
+    }
+}
+
+#[cfg(test)]
+mod input_border_tests {
+    use super::*;
+    use crate::component_themes::{
+        InputBorderSide, InputBorderSlot, InputDecorationTheme, InputDecorationThemeData,
+        ResolvedInputBorder,
+    };
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, provide,
+    };
+    use crate::theme::ThemeData;
+    use crate::widget_state::{WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        decorator: InputDecorator,
+        border: ShapedInputBorder,
+        state_property: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedInputBorder>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.decorator.resolved_border(
+                context,
+                &self.border,
+                self.state_property,
+            ));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(
+        theme: ThemeData,
+        data: InputDecorationThemeData,
+        decorator: InputDecorator,
+        border: ShapedInputBorder,
+        state_property: bool,
+    ) -> ResolvedInputBorder {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            theme,
+            InputDecorationTheme::new(
+                data,
+                component(Reader {
+                    decorator,
+                    border,
+                    state_property,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn field(enabled: bool, focused: bool, error: bool) -> InputDecorator {
+        let mut decoration = InputDecoration::new();
+        decoration.enabled = enabled;
+        if error {
+            decoration.error_text = Some("no".to_string());
+        }
+        let mut decorator = InputDecorator::new(decoration);
+        decorator.is_focused = focused;
+        decorator
+    }
+
+    fn slot(enabled: bool, focused: bool, error: bool) -> InputBorderSlot {
+        resolve(
+            ThemeData::fallback(),
+            InputDecorationThemeData::new(),
+            field(enabled, focused, error),
+            ShapedInputBorder::new(),
+            false,
+        )
+        .slot
+    }
+
+    // -- Which of the five ------------------------------------------------------
+
+    #[test]
+    fn a_field_you_cannot_edit_still_tells_you_it_is_wrong() {
+        // `errorBorder` covers two of the six cells, and the disabled one is
+        // among them. Being unable to fix something is not a reason to stop
+        // being told about it.
+        assert_eq!(slot(false, false, true), InputBorderSlot::Error);
+        assert_eq!(slot(false, false, false), InputBorderSlot::Disabled);
+        assert_ne!(slot(false, false, true), slot(false, false, false));
+    }
+
+    #[test]
+    fn and_being_disabled_outranks_being_focused() {
+        // A disabled field cannot hold focus, but the pick is written with
+        // `!enabled` first, so if it somehow did the disabled answer wins.
+        assert_eq!(slot(false, true, false), InputBorderSlot::Disabled);
+        assert_eq!(slot(false, true, true), InputBorderSlot::Error);
+    }
+
+    #[test]
+    fn focus_and_error_together_have_a_border_of_their_own() {
+        // Five names for six cells: the only pair that shares one is the two
+        // error cells, and this is the cell that got its own name instead.
+        assert_eq!(slot(true, true, true), InputBorderSlot::FocusedError);
+        assert_eq!(slot(true, true, false), InputBorderSlot::Focused);
+        assert_eq!(slot(true, false, true), InputBorderSlot::Error);
+        assert_eq!(slot(true, false, false), InputBorderSlot::Enabled);
+    }
+
+    // -- Where the side comes from ---------------------------------------------
+
+    #[test]
+    fn a_border_that_asked_for_no_side_keeps_none() {
+        // Replacing it would put a line back on a border that said it wanted
+        // none -- and a border with no side still has a shape, so that was a
+        // decision rather than an absence.
+        let resolved = resolve(
+            ThemeData::fallback(),
+            InputDecorationThemeData::new(),
+            field(true, false, false),
+            ShapedInputBorder::without_side(),
+            false,
+        );
+        assert_eq!(resolved.side, InputBorderSide::AsGiven);
+    }
+
+    #[test]
+    fn a_state_dependent_border_is_left_to_answer_for_itself() {
+        // The caller is already resolving per state; doing it again below
+        // would be second-guessing them.
+        let resolved = resolve(
+            ThemeData::fallback(),
+            InputDecorationThemeData::new(),
+            field(true, false, false),
+            ShapedInputBorder::new(),
+            true,
+        );
+        assert_eq!(resolved.side, InputBorderSide::AsGiven);
+    }
+
+    #[test]
+    fn filled_and_unfilled_read_different_fields() {
+        let mut filled = InputDecorationThemeData::new();
+        filled.filled = true;
+        assert_eq!(
+            resolve(
+                ThemeData::fallback(),
+                filled,
+                field(true, false, false),
+                ShapedInputBorder::new(),
+                false
+            )
+            .side,
+            InputBorderSide::ActiveIndicator
+        );
+        assert_eq!(
+            resolve(
+                ThemeData::fallback(),
+                InputDecorationThemeData::new(),
+                field(true, false, false),
+                ShapedInputBorder::new(),
+                false
+            )
+            .side,
+            InputBorderSide::Outline
+        );
+    }
+
+    #[test]
+    fn material_two_computes_a_width_instead_of_reading_a_side() {
+        let two = ThemeData {
+            use_material3: false,
+            ..ThemeData::fallback()
+        };
+        for filled in [false, true] {
+            let mut data = InputDecorationThemeData::new();
+            data.filled = filled;
+            assert_eq!(
+                resolve(
+                    two.clone(),
+                    data,
+                    field(true, false, false),
+                    ShapedInputBorder::new(),
+                    false
+                )
+                .side,
+                InputBorderSide::MaterialTwo,
+                "filled: {filled}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_early_returns_beat_the_material_version_too() {
+        // They are returns, not branches: neither Material 3 nor Material 2
+        // gets as far as choosing a source.
+        for material3 in [false, true] {
+            let theme = ThemeData {
+                use_material3: material3,
+                ..ThemeData::fallback()
+            };
+            assert_eq!(
+                resolve(
+                    theme,
+                    InputDecorationThemeData::new(),
+                    field(true, false, false),
+                    ShapedInputBorder::without_side(),
+                    false
+                )
+                .side,
+                InputBorderSide::AsGiven
+            );
+        }
+    }
+
+    // -- The widths and the two ladders ----------------------------------------
+
+    #[test]
+    fn material_twos_zero_folds_three_different_reasons_together() {
+        // A collapsed field, a border set to none and a disabled field all
+        // draw nothing, and upstream writes them as one case because the
+        // result is the same and only the reason differs.
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(true, false, true, false),
+            0.0
+        );
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(false, true, true, false),
+            0.0
+        );
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(false, false, false, false),
+            0.0
+        );
+        // And the zero wins even while focused, which would otherwise be 2.
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(false, false, false, true),
+            0.0
+        );
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(false, false, true, true),
+            2.0
+        );
+        assert_eq!(
+            ResolvedInputBorder::material_two_width(false, false, true, false),
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_two_ladders_agree_everywhere_but_disabled_and_resting() {
+        // The claim the type's docs make, checked arm by arm.
+        let scheme = ThemeData::fallback().color_scheme;
+        let shared = [
+            WidgetStates::of(&[WidgetState::Error, WidgetState::Focused]),
+            WidgetStates::of(&[WidgetState::Error, WidgetState::Hovered]),
+            WidgetStates::of(&[WidgetState::Error]),
+            WidgetStates::of(&[WidgetState::Focused]),
+            WidgetStates::of(&[WidgetState::Hovered]),
+        ];
+        for states in shared {
+            assert_eq!(
+                ResolvedInputBorder::side_color(InputBorderSide::ActiveIndicator, states, &scheme),
+                ResolvedInputBorder::side_color(InputBorderSide::Outline, states, &scheme),
+                "{states:?}"
+            );
+        }
+
+        for states in [
+            WidgetStates::of(&[WidgetState::Disabled]),
+            WidgetStates::NONE,
+        ] {
+            assert_ne!(
+                ResolvedInputBorder::side_color(InputBorderSide::ActiveIndicator, states, &scheme),
+                ResolvedInputBorder::side_color(InputBorderSide::Outline, states, &scheme),
+                "{states:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_outline_is_the_fainter_of_the_two_when_the_field_is_dead() {
+        // Three times fainter, for the shape that encloses more: a box drawn
+        // all the way round a dead field at the indicator's strength would
+        // read as a live one.
+        let scheme = ThemeData::fallback().color_scheme;
+        let disabled = WidgetStates::of(&[WidgetState::Disabled]);
+        assert_eq!(
+            ResolvedInputBorder::side_color(InputBorderSide::Outline, disabled, &scheme),
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.12
+            ))
+        );
+        assert_eq!(
+            ResolvedInputBorder::side_color(InputBorderSide::ActiveIndicator, disabled, &scheme),
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.38
+            ))
+        );
+    }
+
+    #[test]
+    fn the_colour_says_what_is_wrong_and_the_width_says_where_you_are() {
+        // Error outranks focus for the colour, and focus still sets the width.
+        let scheme = ThemeData::fallback().color_scheme;
+        let error_focused = WidgetStates::of(&[WidgetState::Error, WidgetState::Focused]);
+        assert_eq!(
+            ResolvedInputBorder::side_color(InputBorderSide::Outline, error_focused, &scheme),
+            Some(scheme.error),
+            "not the primary, which plain focus would give"
+        );
+        assert_ne!(
+            ResolvedInputBorder::side_color(InputBorderSide::Outline, error_focused, &scheme),
+            ResolvedInputBorder::side_color(
+                InputBorderSide::Outline,
+                WidgetStates::of(&[WidgetState::Focused]),
+                &scheme
+            )
+        );
+        assert_eq!(ResolvedInputBorder::side_width(error_focused), 2.0);
+        assert_eq!(ResolvedInputBorder::side_width(WidgetStates::NONE), 1.0);
+    }
+
+    #[test]
+    fn a_side_that_was_kept_as_given_has_no_colour_to_report() {
+        // `AsGiven` and `MaterialTwo` are not ladder positions -- one keeps the
+        // caller's side and the other computes a width, so asking either for a
+        // ladder colour is asking the wrong question.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedInputBorder::side_color(InputBorderSide::AsGiven, WidgetStates::NONE, &scheme),
+            None
+        );
+        assert_eq!(
+            ResolvedInputBorder::side_color(
+                InputBorderSide::MaterialTwo,
+                WidgetStates::NONE,
+                &scheme
+            ),
+            None
+        );
     }
 }
