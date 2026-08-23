@@ -12428,3 +12428,75 @@ pub const TAB_BAR_HEIGHT: f32 = 50.0;
 
 反向验过两头：把 `TAB_BAR_HEIGHT` 改成 51 → 报 MISMATCH；
 把一条引用改成 `_kInventedName` → 报 MISSING。
+
+---
+
+## 「没有 leading」不等于「不加那一份」（2026-08-24）
+
+`CupertinoListSection` 的分隔线起点是两个数相加：
+`dividerMargin + additionalDividerMargin`。后者由 `hasLeading` 决定，
+而**诱人的模型是错的**：
+
+| | dividerMargin | 有 leading | **没有 leading** |
+|---|---|---|---|
+| base | 20.0 | 44.0 | **0.0** |
+| inset grouped | 14.0 | 42.0 | **14.0** |
+
+「有图标就加、没图标就不加」在 base 上对，**在 inset 上错**——
+inset 没有 leading 时仍然加 14。
+按布尔开关来实现的移植，会把每一条 inset 分隔线画偏 14。
+
+而且**这四个数之间推不出彼此**。上游的注释各自写着是从
+**不同的已发布 app 量出来的**：base 那一对来自 Settings，
+inset 有 leading 的来自 Reminders，inset 没有的来自 Notes。
+是对 iOS 行为的测量，不是一个体系。所以四个都得带着。
+
+### `hasLeading` 的默认是 true，`derive` 会写成 false
+
+上游两个构造函数都写 `bool hasLeading = true`：带图标的行是寻常的 iOS 列表，
+不带的那种才是要声明的例外。于是 `Default` 得手写——
+和 `PanZoomEvent` 的 `scale` 是同一个坑。
+
+### 而这一轮真正的收获，是改掉了一句自己写错的注释
+
+移植原来这么写 `CupertinoFormSection::INSET_GROUPED_ROWS_MARGIN`：
+
+> 一个**零上边距**，不像 list section 的 20，因为表单的行跟在一个
+> 已经给它们让开了距离的头部下面——**表单永远是 inset-grouped 那个形状，
+> 也永远有东西在上面。**
+
+**两半都是错的**，而且当初就能查：
+
+1. `CupertinoFormSection` **有 base 构造函数**，`margin = EdgeInsets.zero`。
+   表单不是永远 inset-grouped。
+2. 零上边距的原因不是「头部已经让开了」——**表单可以没有头部**。
+   真正的原因平淡得多：`CupertinoListSection.insetGrouped` 按有没有头部
+   挑边距（没有时上边 20，有时 0），而 `CupertinoFormSection` **总是把
+   自己的边距传下去**，那个选择于是从不发生。
+   一个**没有头部的表单拿到零上边**，而同样没有头部的 list section 拿到 20
+   ——恰好和那句注释预测的相反。
+
+上游也根本没推导这个数，注释写的是「determined from SwiftUI's Forms in
+iOS 14.2 SDK」。
+
+**这条是靠着「去查一句听起来很有把握的断言」找出来的**，
+和 tick 55 那次 `MenuItemButton` 是同一个办法。
+上一轮刚加的 `constants.py` 查的是数，这条查的是理由——
+**编出来的因果和编出来的常量名是同一个物种**。
+
+### 另外两处真实差异
+
+- `clipBehavior`：`CupertinoListSection.insetGrouped` 默认 `Clip.hardEdge`，
+  而 `CupertinoFormSection` 两个构造函数都默认 `Clip.none` 并往下传。
+  **inset 的表单不裁到圆角卡片，inset 的 list section 裁。**
+- assert 不一样：list section 收 `children.length > 0 || header != null`
+  ——**光有一个头部、底下什么都没有，是合法的 list section**；
+  表单要求有行。分组可以最后一行都被筛掉；表单是拿来填的，没得填是错误。
+
+九个变异全红。
+
+### 一句该说清楚的话
+
+移植里的 `CupertinoListSection` / `CupertinoFormSection` **是台账类型，
+不是搭出来的 widget**——没有哪个 widget 读 `divider_start()` 去画线。
+这一轮对齐的是**记下来的规则**，不是画面。真正把它搭出来是后面的事。

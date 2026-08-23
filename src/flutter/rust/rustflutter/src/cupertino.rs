@@ -4087,10 +4087,34 @@ impl CupertinoListTileChevron {
 }
 
 /// Upstream `CupertinoListSection`: a run of rows under a header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CupertinoListSection {
     pub section_type: CupertinoListSectionType,
     pub has_header: bool,
+    /// Whether the rows carry a leading widget -- an icon or a switch at the
+    /// start of the row.
+    ///
+    /// It is not about painting the leading widget, which each row does for
+    /// itself. It is about **where the divider starts**: a divider should
+    /// begin under the text, not under the icon, so a section whose rows have
+    /// icons pushes its dividers further in.
+    pub has_leading: bool,
+}
+
+impl Default for CupertinoListSection {
+    /// Hand-written, because `has_leading` defaults to **true** and `derive`
+    /// would make it false.
+    ///
+    /// Upstream writes `bool hasLeading = true` in both constructors: rows
+    /// with icons are the ordinary iOS list, and a section without them is the
+    /// exception that says so.
+    fn default() -> CupertinoListSection {
+        CupertinoListSection {
+            section_type: CupertinoListSectionType::Base,
+            has_header: false,
+            has_leading: true,
+        }
+    }
 }
 
 impl CupertinoListSection {
@@ -4108,9 +4132,86 @@ impl CupertinoListSection {
         }
     }
 
+    /// list_section.dart's `_kBaseDividerMargin`.
+    pub const BASE_DIVIDER_MARGIN: f32 = 20.0;
+    /// `_kBaseAdditionalDividerMargin`.
+    pub const BASE_ADDITIONAL_DIVIDER_MARGIN: f32 = 44.0;
+    /// `_kInsetDividerMargin`.
+    pub const INSET_DIVIDER_MARGIN: f32 = 14.0;
+    /// `_kInsetAdditionalDividerMargin`.
+    pub const INSET_ADDITIONAL_DIVIDER_MARGIN: f32 = 42.0;
+    /// `_kInsetAdditionalDividerMarginWithoutLeading`, which is **not zero**.
+    pub const INSET_ADDITIONAL_DIVIDER_MARGIN_WITHOUT_LEADING: f32 = 14.0;
+
     pub fn with_header(mut self) -> Self {
         self.has_header = true;
         self
+    }
+
+    pub fn without_leading(mut self) -> Self {
+        self.has_leading = false;
+        self
+    }
+
+    /// Upstream's `dividerMargin`: how far in the divider starts before the
+    /// leading widget is accounted for.
+    pub fn divider_margin(&self) -> f32 {
+        match self.section_type {
+            CupertinoListSectionType::Base => CupertinoListSection::BASE_DIVIDER_MARGIN,
+            CupertinoListSectionType::InsetGrouped => CupertinoListSection::INSET_DIVIDER_MARGIN,
+        }
+    }
+
+    /// Upstream's `additionalDividerMargin`, which is **four numbers, not a
+    /// switch on one**.
+    ///
+    /// The tempting model is "add the extra when there is a leading widget,
+    /// add nothing when there is not". That is right for a base section and
+    /// **wrong for an inset one**, where no leading still adds 14. A port that
+    /// treated the flag as a gate would put every inset divider 14 too far
+    /// out.
+    ///
+    /// There is no formula to recover the numbers from: upstream's comments
+    /// say each was *estimated from* a different shipped app -- the base pair
+    /// from Settings, inset-with-leading from Reminders, inset-without from
+    /// Notes. They are measurements of what iOS does, so all four are carried
+    /// rather than derived.
+    pub fn additional_divider_margin(&self) -> f32 {
+        match (self.section_type, self.has_leading) {
+            (CupertinoListSectionType::Base, true) => {
+                CupertinoListSection::BASE_ADDITIONAL_DIVIDER_MARGIN
+            }
+            (CupertinoListSectionType::Base, false) => 0.0,
+            (CupertinoListSectionType::InsetGrouped, true) => {
+                CupertinoListSection::INSET_ADDITIONAL_DIVIDER_MARGIN
+            }
+            (CupertinoListSectionType::InsetGrouped, false) => {
+                CupertinoListSection::INSET_ADDITIONAL_DIVIDER_MARGIN_WITHOUT_LEADING
+            }
+        }
+    }
+
+    /// Where the divider actually begins: upstream adds the two.
+    pub fn divider_start(&self) -> f32 {
+        self.divider_margin() + self.additional_divider_margin()
+    }
+
+    /// Whether the section clips its rows to the rounded card.
+    ///
+    /// `Clip.hardEdge` for an inset-grouped section -- the corners are the
+    /// point of the shape, and a row painting into them would square them off.
+    /// A base section runs edge to edge with nothing to clip against.
+    pub fn clips_rows(&self) -> bool {
+        matches!(self.section_type, CupertinoListSectionType::InsetGrouped)
+    }
+
+    /// Upstream's assert: `children.length > 0 || header != null`.
+    ///
+    /// **A header with nothing under it is a legal list section** -- a group
+    /// whose rows have all been filtered away still shows its title. Compare
+    /// [`CupertinoFormSection::is_legal`], which requires rows.
+    pub fn is_legal(rows: usize, has_header: bool) -> bool {
+        rows > 0 || has_header
     }
 
     /// Upstream's header margins.
@@ -4167,17 +4268,91 @@ impl CupertinoFormRow {
 }
 
 /// Upstream `CupertinoFormSection`: a run of form rows.
+///
+/// It is a [`CupertinoListSection`] with three things decided differently, and
+/// the differences are the whole of it -- upstream's `build` styles the header
+/// and footer and then hands everything to a list section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct CupertinoFormSection;
+pub struct CupertinoFormSection {
+    pub section_type: CupertinoListSectionType,
+}
 
 impl CupertinoFormSection {
-    /// Upstream's `_kFormDefaultInsetGroupedRowsMargin`, with its comment:
-    /// determined from SwiftUI's Forms in the iOS 14.2 SDK.
-    ///
-    /// A **zero top margin**, unlike a list section's 20, because a form's
-    /// rows follow a header that has already spaced them -- a form is always
-    /// the inset-grouped shape and always has something above it.
+    /// Upstream's `_kFormDefaultInsetGroupedRowsMargin`: determined, its
+    /// comment says, from SwiftUI's Forms in the iOS 14.2 SDK.
     pub const INSET_GROUPED_ROWS_MARGIN: EdgeInsets = EdgeInsets::only(20.0, 0.0, 20.0, 10.0);
+
+    /// The base constructor's `margin`, which is simply zero.
+    pub const BASE_ROWS_MARGIN: EdgeInsets = EdgeInsets::ZERO;
+
+    /// The size both the header and the footer are set in, with
+    /// `CupertinoColors.secondaryLabel`.
+    ///
+    /// Upstream writes the same `TextStyle` out twice rather than sharing it;
+    /// the two are one rule, and a form that styled its footer differently
+    /// from its header would look like two sections.
+    pub const HEADER_FOOTER_FONT_SIZE: f32 = 13.0;
+
+    pub fn inset_grouped() -> CupertinoFormSection {
+        CupertinoFormSection {
+            section_type: CupertinoListSectionType::InsetGrouped,
+        }
+    }
+
+    /// The form's rows margin -- **the same either way, header or not.**
+    ///
+    /// This is where a form parts company with a list section.
+    /// [`CupertinoListSection::rows_margin`] picks by whether there is a
+    /// header (20 at the top without one, 0 with), but a form **always passes
+    /// its own margin down**, so that choice never runs. A form with no header
+    /// gets a zero top where a list section would get 20.
+    ///
+    /// So the zero top is not "the header already made that gap" -- there may
+    /// be no header. It is a number measured off SwiftUI, applied
+    /// unconditionally.
+    pub fn rows_margin(&self) -> EdgeInsets {
+        match self.section_type {
+            CupertinoListSectionType::Base => CupertinoFormSection::BASE_ROWS_MARGIN,
+            CupertinoListSectionType::InsetGrouped => {
+                CupertinoFormSection::INSET_GROUPED_ROWS_MARGIN
+            }
+        }
+    }
+
+    /// The list section a form builds: the same shape, **without leading**.
+    ///
+    /// `hasLeading: false` is the substantive difference. A form's rows are a
+    /// label and a field; there is no icon column, so the divider starts at
+    /// the plain margin instead of clearing one.
+    pub fn section(&self) -> CupertinoListSection {
+        CupertinoListSection {
+            section_type: self.section_type,
+            has_header: false,
+            has_leading: false,
+        }
+    }
+
+    /// Whether the form clips its rows -- **`Clip.none`, unlike a list
+    /// section's `Clip.hardEdge`.**
+    ///
+    /// Both form constructors default to no clipping and pass it down, so an
+    /// inset-grouped *form* does not clip to its rounded card where an
+    /// inset-grouped *list section* does. A form row is a text field, and a
+    /// text field wants its focus ring and its selection handles to be allowed
+    /// out past the corner.
+    pub fn clips_rows(&self) -> bool {
+        false
+    }
+
+    /// Upstream's assert: `children.length > 0`.
+    ///
+    /// **Rows are required**, where [`CupertinoListSection::is_legal`] accepts
+    /// a header with nothing under it. A list section is a group that may turn
+    /// out empty; a form is a thing to fill in, and one with nothing to fill
+    /// in is a mistake rather than an empty state.
+    pub fn is_legal(rows: usize, _has_header: bool) -> bool {
+        rows > 0
+    }
 }
 
 /// Upstream `CupertinoUserInterfaceLevelData` (`cupertino/interface_level.dart`).
@@ -5953,5 +6128,156 @@ mod tab_bar_tests {
             size,
             size + 6.0
         ]));
+    }
+}
+
+#[cfg(test)]
+mod form_section_tests {
+    use super::*;
+
+    #[test]
+    fn a_section_has_leading_until_it_says_otherwise() {
+        // Upstream writes `bool hasLeading = true` in both constructors, so
+        // the derive would have got this backwards.
+        assert!(CupertinoListSection::new().has_leading);
+        assert!(CupertinoListSection::inset_grouped().has_leading);
+        assert!(!CupertinoListSection::new().without_leading().has_leading);
+    }
+
+    #[test]
+    fn no_leading_does_not_mean_no_extra_margin() {
+        // The tempting model -- add the extra with a leading widget, add
+        // nothing without -- is right for base and wrong for inset.
+        assert_eq!(
+            CupertinoListSection::new()
+                .without_leading()
+                .additional_divider_margin(),
+            0.0
+        );
+        assert_eq!(
+            CupertinoListSection::inset_grouped()
+                .without_leading()
+                .additional_divider_margin(),
+            14.0,
+            "an inset section still clears 14 with no icon to clear"
+        );
+        assert_ne!(
+            CupertinoListSection::inset_grouped()
+                .without_leading()
+                .additional_divider_margin(),
+            CupertinoListSection::new()
+                .without_leading()
+                .additional_divider_margin()
+        );
+    }
+
+    #[test]
+    fn and_the_four_numbers_are_four_numbers() {
+        // Measured off three different shipped apps, so nothing here is
+        // derivable from anything else here.
+        let starts = [
+            (CupertinoListSection::new(), 20.0 + 44.0),
+            (CupertinoListSection::new().without_leading(), 20.0),
+            (CupertinoListSection::inset_grouped(), 14.0 + 42.0),
+            (
+                CupertinoListSection::inset_grouped().without_leading(),
+                14.0 + 14.0,
+            ),
+        ];
+        for (section, expected) in starts {
+            assert_eq!(section.divider_start(), expected, "{section:?}");
+        }
+        // All four land in different places -- no pair collapses.
+        let mut seen: Vec<f32> = starts.iter().map(|(s, _)| s.divider_start()).collect();
+        seen.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        seen.dedup();
+        assert_eq!(seen.len(), 4);
+    }
+
+    #[test]
+    fn a_form_always_passes_its_own_margin_down() {
+        // A list section picks its top margin by whether it has a header; a
+        // form never lets that choice run. So the header-less cases disagree.
+        let list_without_header = CupertinoListSection::inset_grouped().rows_margin();
+        let list_with_header = CupertinoListSection::inset_grouped()
+            .with_header()
+            .rows_margin();
+        assert_ne!(
+            list_without_header, list_with_header,
+            "the list section's margin does turn on the header"
+        );
+
+        let form = CupertinoFormSection::inset_grouped();
+        assert_eq!(
+            form.rows_margin(),
+            CupertinoFormSection::INSET_GROUPED_ROWS_MARGIN
+        );
+        assert_eq!(
+            form.rows_margin(),
+            list_with_header,
+            "which happens to match the with-header case"
+        );
+        assert_ne!(
+            form.rows_margin(),
+            list_without_header,
+            "and that is the one that shows the difference: no header, and the \
+             form still has a zero top where the list section has 20"
+        );
+    }
+
+    #[test]
+    fn and_a_base_form_has_no_margin_at_all() {
+        assert_eq!(
+            CupertinoFormSection::default().rows_margin(),
+            EdgeInsets::ZERO,
+            "a form is not always the inset-grouped shape"
+        );
+    }
+
+    #[test]
+    fn the_form_builds_a_section_without_leading() {
+        for form in [
+            CupertinoFormSection::default(),
+            CupertinoFormSection::inset_grouped(),
+        ] {
+            let section = form.section();
+            assert!(!section.has_leading);
+            assert_eq!(section.section_type, form.section_type);
+            // Which is the whole point: the divider starts at the plain
+            // margin rather than clearing an icon column that is not there.
+            assert_eq!(
+                section.divider_start(),
+                section.divider_margin() + section.additional_divider_margin()
+            );
+        }
+        // A form's inset divider therefore starts well short of a list
+        // section's.
+        assert!(
+            CupertinoFormSection::inset_grouped()
+                .section()
+                .divider_start()
+                < CupertinoListSection::inset_grouped().divider_start()
+        );
+    }
+
+    #[test]
+    fn a_form_does_not_clip_where_a_list_section_does() {
+        // Both form constructors default to `Clip.none` and pass it down.
+        assert!(CupertinoListSection::inset_grouped().clips_rows());
+        assert!(!CupertinoFormSection::inset_grouped().clips_rows());
+        // And neither clips when there is no card to clip against.
+        assert!(!CupertinoListSection::new().clips_rows());
+        assert!(!CupertinoFormSection::default().clips_rows());
+    }
+
+    #[test]
+    fn a_header_alone_is_a_list_section_but_not_a_form() {
+        assert!(CupertinoListSection::is_legal(0, true));
+        assert!(!CupertinoFormSection::is_legal(0, true));
+        // Rows make both legal; nothing makes either legal.
+        assert!(CupertinoListSection::is_legal(1, false));
+        assert!(CupertinoFormSection::is_legal(1, false));
+        assert!(!CupertinoListSection::is_legal(0, false));
+        assert!(!CupertinoFormSection::is_legal(0, false));
     }
 }
