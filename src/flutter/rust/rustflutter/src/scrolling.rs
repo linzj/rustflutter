@@ -888,6 +888,17 @@ impl ItemWindow {
         self.last + 1 - self.first
     }
 
+    /// Always false, and that is a fact about the type rather than a stub.
+    ///
+    /// A window is a closed range of indices to build, and there is no such
+    /// thing as one covering nothing: the builder returns `Option<ItemWindow>`
+    /// and says so with `None` -- no items, or an extent that cannot divide a
+    /// scroll offset. What it returns instead clamps `last` up to `first`, so
+    /// `first <= last` holds by construction.
+    ///
+    /// Which is also what makes [`ItemWindow::len`] safe to write as
+    /// `last + 1 - first` over `usize`: the one arrangement that would
+    /// underflow is the one the constructor cannot produce.
     pub fn is_empty(&self) -> bool {
         false
     }
@@ -943,6 +954,38 @@ pub fn item_window(
         first,
         last: last.max(first),
     })
+}
+
+#[cfg(test)]
+mod item_window_emptiness_tests {
+    use super::item_window;
+
+    #[test]
+    fn no_items_is_no_window_rather_than_an_empty_one() {
+        // Emptiness lives in the Option, which is why is_empty can answer a
+        // constant false without lying.
+        assert_eq!(item_window(0, 50.0, 0.0, 500.0, 0.0), None);
+        assert_eq!(item_window(10, 0.0, 0.0, 500.0, 0.0), None);
+    }
+
+    #[test]
+    fn and_every_window_that_does_exist_holds_at_least_one_item() {
+        // Including the degenerate arrangements: a viewport of nothing, and an
+        // offset scrolled past the end of a short list.
+        for (count, extent, offset, viewport) in [
+            (1usize, 50.0f32, 0.0f32, 0.0f32),
+            (1, 50.0, 0.0, 500.0),
+            (3, 50.0, 10_000.0, 100.0),
+            (10, 50.0, 100.0, 0.0),
+            (100, 50.0, 0.0, 500.0),
+        ] {
+            let window = item_window(count, extent, offset, viewport, 0.0)
+                .expect("a list with items has a window");
+            assert!(window.first <= window.last, "{count} {offset}");
+            assert!(window.len() >= 1, "{count} {offset}");
+            assert!(!window.is_empty(), "{count} {offset}");
+        }
+    }
 }
 
 /// A list that builds only the items it is showing.
@@ -2894,6 +2937,29 @@ mod tests {
     fn an_empty_variable_list_has_no_window() {
         let book = ExtentBook::new();
         assert!(book.window(0, 0.0, 800.0, 250.0, 50.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_walked_window_holds_at_least_one_item_however_far_past_the_end_it_starts() {
+        // The same invariant the fixed-extent window keeps, and the walk
+        // reaches it by a different road: when no item ends after the window
+        // starts, `first` falls back to the last index while `last` is still
+        // sitting at zero. Unclamped that is a window running backwards, and
+        // `len` is `last + 1 - first` over usize -- so the arrangement does not
+        // merely read oddly, it underflows.
+        let book = ExtentBook::new();
+        for (offset, what) in [
+            (10_000.0, "scrolled far past the end"),
+            (500.0, "scrolled to exactly the end"),
+            (0.0, "at the top with no viewport"),
+        ] {
+            let window = book
+                .window(10, offset, 0.0, 0.0, 50.0, 0.0)
+                .expect("a list with items has a window");
+            assert!(window.first <= window.last, "{what}");
+            assert!(window.len() >= 1, "{what}");
+            assert!(!window.is_empty(), "{what}");
+        }
     }
 
     #[test]
