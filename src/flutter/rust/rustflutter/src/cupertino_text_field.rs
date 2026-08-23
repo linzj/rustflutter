@@ -20,6 +20,51 @@ pub enum CupertinoTextFieldError {
     NonPositiveMaxLength,
 }
 
+/// Upstream `OverlayVisibilityMode`: when a prefix, a suffix or the clear
+/// button is on screen.
+///
+/// # `Editing` is about content, not about activity
+///
+/// The name reads as "while the reader is typing" and upstream's own doc says
+/// otherwise: it appears "when the current text entry is not empty. This
+/// includes prefilled text that the user did not type in manually."
+///
+/// So a field that opens with a value already in it is *editing* before
+/// anybody has touched it, and a field the reader is focused on but has not
+/// typed into is not. The mode asks what is in the field, not what is
+/// happening to it.
+///
+/// # And a placeholder is not text
+///
+/// Both content modes say so: `editing` "does not include text in
+/// placeholders", `notEditing` ignores them too. Which follows -- a
+/// placeholder is the field telling you it is empty, so counting it as
+/// content would make "empty" impossible to reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OverlayVisibilityMode {
+    /// Never, whatever the field holds.
+    Never,
+    /// Only while the field holds text.
+    Editing,
+    /// Only while it does not.
+    NotEditing,
+    /// Always.
+    #[default]
+    Always,
+}
+
+impl OverlayVisibilityMode {
+    /// Upstream's `_shouldShowAttachment`.
+    pub fn shows(self, has_text: bool) -> bool {
+        match self {
+            OverlayVisibilityMode::Never => false,
+            OverlayVisibilityMode::Always => true,
+            OverlayVisibilityMode::Editing => has_text,
+            OverlayVisibilityMode::NotEditing => !has_text,
+        }
+    }
+}
+
 /// Upstream `CupertinoTextField`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CupertinoTextField {
@@ -33,6 +78,18 @@ pub struct CupertinoTextField {
     /// Upstream's `.borderless` named constructor, which repeats the plain
     /// one's asserts verbatim.
     pub borderless: bool,
+    pub has_placeholder: bool,
+    pub has_prefix: bool,
+    pub has_suffix: bool,
+    /// Upstream's `prefixMode`/`suffixMode`, **`always`** by default.
+    pub prefix_mode: OverlayVisibilityMode,
+    pub suffix_mode: OverlayVisibilityMode,
+    /// Upstream's `clearButtonMode`, **`never`** by default -- the one of the
+    /// three that starts off.
+    pub clear_button_mode: OverlayVisibilityMode,
+    /// `None` is upstream's null, which is where the rule in
+    /// [`CupertinoTextField::text_align_vertical`] applies.
+    pub text_align_vertical: Option<crate::render::TextAlignVertical>,
 }
 
 impl CupertinoTextField {
@@ -46,6 +103,13 @@ impl CupertinoTextField {
             max_length: None,
             max_length_enforcement: MaxLengthEnforcement::Enforced,
             borderless: false,
+            has_placeholder: false,
+            has_prefix: false,
+            has_suffix: false,
+            prefix_mode: OverlayVisibilityMode::Always,
+            suffix_mode: OverlayVisibilityMode::Always,
+            clear_button_mode: OverlayVisibilityMode::Never,
+            text_align_vertical: None,
         }
     }
 
@@ -107,6 +171,73 @@ impl CupertinoTextField {
     }
 
     /// Whether typing past the limit is actually prevented.
+    /// Upstream's `_hasDecoration`.
+    ///
+    /// # A clear button counts before it appears
+    ///
+    /// The test is `clearButtonMode != never`, not "the clear button is
+    /// showing". A field whose button only appears once there is text is
+    /// decorated while it is still empty -- because otherwise the field would
+    /// change alignment the moment the reader typed a character, and the text
+    /// they were looking at would jump.
+    ///
+    /// The other three are plain presence: a placeholder, a prefix, a suffix.
+    pub fn has_decoration(&self) -> bool {
+        self.has_placeholder
+            || self.clear_button_mode != OverlayVisibilityMode::Never
+            || self.has_prefix
+            || self.has_suffix
+    }
+
+    /// Upstream's `_textAlignVertical`, with its comment: "CupertinoTextField
+    /// has top alignment by default, unless it has decoration like a prefix or
+    /// suffix, in which case it's aligned to the center."
+    ///
+    /// A bare field starts its text at the top, so a growing multiline field
+    /// grows downward from where the first line already is. A decorated one
+    /// centres, so the text sits on the same line as the icons beside it.
+    pub fn text_align_vertical(&self) -> crate::render::TextAlignVertical {
+        if let Some(alignment) = self.text_align_vertical {
+            return alignment;
+        }
+        if self.has_decoration() {
+            crate::render::TextAlignVertical::CENTER
+        } else {
+            crate::render::TextAlignVertical::TOP
+        }
+    }
+
+    /// Whether each of the three attachments is on screen, given the text.
+    pub fn shows_prefix(&self, has_text: bool) -> bool {
+        self.has_prefix && self.prefix_mode.shows(has_text)
+    }
+
+    pub fn shows_suffix(&self, has_text: bool) -> bool {
+        self.has_suffix && self.suffix_mode.shows(has_text)
+    }
+
+    pub fn shows_clear_button(&self, has_text: bool) -> bool {
+        self.clear_button_mode.shows(has_text)
+    }
+
+    /// Upstream's `_onClearButtonTapped`: whether tapping it should reach
+    /// `onChanged`.
+    ///
+    /// Only when there was text to clear -- clearing an empty field changed
+    /// nothing, and reporting a change that did not happen would be a lie to
+    /// anything counting keystrokes.
+    ///
+    /// And upstream says what the report means: "Tapping the clear button is
+    /// also considered a 'user initiated' change (instead of a programmatical
+    /// one)". The same line
+    /// [`crate::services::text_input::TextInputClient::update_editing_value`]
+    /// draws -- a value the reader caused goes through the formatters and the
+    /// callbacks, one the application set does not -- and the clear button is
+    /// on the reader's side of it despite being the field's own widget.
+    pub fn clearing_reports_a_change(had_text: bool) -> bool {
+        had_text
+    }
+
     pub fn limits_input(&self) -> bool {
         self.max_length.is_some() && self.max_length_enforcement != MaxLengthEnforcement::None
     }
@@ -381,5 +512,146 @@ mod tests {
         let mut row = CupertinoTextFormFieldRow::new();
         row.has_prefix = true;
         assert!(row.has_prefix);
+    }
+}
+
+#[cfg(test)]
+mod overlay_visibility_tests {
+    use super::*;
+    use crate::render::TextAlignVertical;
+
+    fn decorated() -> CupertinoTextField {
+        CupertinoTextField {
+            has_prefix: true,
+            ..CupertinoTextField::new()
+        }
+    }
+
+    #[test]
+    fn editing_asks_what_is_in_the_field_not_what_is_happening_to_it() {
+        // Upstream: "includes prefilled text that the user did not type in
+        // manually". A field that opens with a value is *editing* before
+        // anybody has touched it.
+        assert!(OverlayVisibilityMode::Editing.shows(true));
+        assert!(!OverlayVisibilityMode::Editing.shows(false));
+        assert!(!OverlayVisibilityMode::NotEditing.shows(true));
+        assert!(OverlayVisibilityMode::NotEditing.shows(false));
+    }
+
+    #[test]
+    fn the_two_content_modes_are_exact_opposites() {
+        // Which is worth pinning: they are one question asked twice, so a
+        // field showing a prefix while editing and a suffix while not shows
+        // exactly one of them at any moment.
+        for has_text in [false, true] {
+            assert_ne!(
+                OverlayVisibilityMode::Editing.shows(has_text),
+                OverlayVisibilityMode::NotEditing.shows(has_text)
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_two_constant_modes_ignore_the_text_entirely() {
+        for has_text in [false, true] {
+            assert!(!OverlayVisibilityMode::Never.shows(has_text));
+            assert!(OverlayVisibilityMode::Always.shows(has_text));
+        }
+    }
+
+    #[test]
+    fn the_three_attachments_do_not_share_a_default() {
+        // Prefix and suffix are `always`; the clear button is `never`. The
+        // one that can delete the reader's text is the one that is off until
+        // asked for.
+        let field = CupertinoTextField::new();
+        assert_eq!(field.prefix_mode, OverlayVisibilityMode::Always);
+        assert_eq!(field.suffix_mode, OverlayVisibilityMode::Always);
+        assert_eq!(field.clear_button_mode, OverlayVisibilityMode::Never);
+    }
+
+    #[test]
+    fn an_attachment_needs_both_a_widget_and_a_mode() {
+        // `always` on a prefix nobody supplied still shows nothing.
+        let bare = CupertinoTextField::new();
+        assert!(!bare.shows_prefix(true), "no prefix widget to show");
+        assert!(decorated().shows_prefix(true));
+    }
+
+    // -- Decoration -------------------------------------------------------------
+
+    #[test]
+    fn a_clear_button_counts_as_decoration_before_it_appears() {
+        // `clearButtonMode != never`, not "is showing". Otherwise the field
+        // would change alignment the moment the reader typed a character and
+        // the text they were looking at would jump.
+        let mut field = CupertinoTextField::new();
+        field.clear_button_mode = OverlayVisibilityMode::Editing;
+        assert!(!field.shows_clear_button(false), "not showing while empty");
+        assert!(field.has_decoration(), "and decorated anyway");
+    }
+
+    #[test]
+    fn a_field_with_nothing_attached_is_not_decorated() {
+        assert!(!CupertinoTextField::new().has_decoration());
+    }
+
+    #[test]
+    fn any_one_of_the_four_is_enough() {
+        for field in [
+            CupertinoTextField {
+                has_placeholder: true,
+                ..CupertinoTextField::new()
+            },
+            CupertinoTextField {
+                has_prefix: true,
+                ..CupertinoTextField::new()
+            },
+            CupertinoTextField {
+                has_suffix: true,
+                ..CupertinoTextField::new()
+            },
+            CupertinoTextField {
+                clear_button_mode: OverlayVisibilityMode::Always,
+                ..CupertinoTextField::new()
+            },
+        ] {
+            assert!(field.has_decoration());
+        }
+    }
+
+    // -- Vertical alignment -----------------------------------------------------
+
+    #[test]
+    fn a_bare_field_starts_its_text_at_the_top_and_a_decorated_one_centres() {
+        // So a growing multiline field grows downward from where its first
+        // line already is, while a decorated one sits on the line of the
+        // icons beside it.
+        assert_eq!(
+            CupertinoTextField::new().text_align_vertical(),
+            TextAlignVertical::TOP
+        );
+        assert_eq!(decorated().text_align_vertical(), TextAlignVertical::CENTER);
+    }
+
+    #[test]
+    fn and_an_alignment_someone_asked_for_beats_both() {
+        let mut field = decorated();
+        field.text_align_vertical = Some(TextAlignVertical::BOTTOM);
+        assert_eq!(field.text_align_vertical(), TextAlignVertical::BOTTOM);
+
+        let mut bare = CupertinoTextField::new();
+        bare.text_align_vertical = Some(TextAlignVertical::BOTTOM);
+        assert_eq!(bare.text_align_vertical(), TextAlignVertical::BOTTOM);
+    }
+
+    // -- Clearing ---------------------------------------------------------------
+
+    #[test]
+    fn clearing_an_empty_field_reports_nothing() {
+        // Reporting a change that did not happen would be a lie to anything
+        // counting keystrokes.
+        assert!(!CupertinoTextField::clearing_reports_a_change(false));
+        assert!(CupertinoTextField::clearing_reports_a_change(true));
     }
 }
