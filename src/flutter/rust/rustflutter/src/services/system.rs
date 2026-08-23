@@ -657,6 +657,70 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
+    fn each_haptic_names_the_impact_the_embedders_switch_on() {
+        // Five values, five payloads, and nothing in the crate was reading
+        // any of them: swapping heavyImpact for lightImpact left the suite
+        // green. A lookup table nobody checks is a table that can be wrong in
+        // one row forever.
+        let expected = [
+            (HapticFeedbackType::Standard, Value::Null),
+            (
+                HapticFeedbackType::Light,
+                Value::from("HapticFeedbackType.lightImpact"),
+            ),
+            (
+                HapticFeedbackType::Medium,
+                Value::from("HapticFeedbackType.mediumImpact"),
+            ),
+            (
+                HapticFeedbackType::Heavy,
+                Value::from("HapticFeedbackType.heavyImpact"),
+            ),
+            (
+                HapticFeedbackType::Selection,
+                Value::from("HapticFeedbackType.selectionClick"),
+            ),
+        ];
+        for (kind, argument) in expected {
+            let recorder = install();
+            HapticFeedback::vibrate(kind);
+            let (channel, bytes, _) = recorder.sent().remove(0);
+            assert_eq!(channel, "flutter/platform");
+            let call = JsonMethodCodec.decode_method_call(&bytes).unwrap();
+            assert_eq!(call.method, "HapticFeedback.vibrate", "{kind:?}");
+            assert_eq!(call.arguments, argument, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn and_the_plain_buzz_carries_no_argument_where_the_others_do() {
+        // Upstream calls `HapticFeedback.vibrate` with no argument for the
+        // standard buzz and with one for the four named impacts. The embedders
+        // switch on exactly that, so the absence is part of the protocol.
+        let recorder = install();
+        HapticFeedback::vibrate(HapticFeedbackType::Standard);
+        let (_, bytes, _) = recorder.sent().remove(0);
+        assert_eq!(
+            JsonMethodCodec
+                .decode_method_call(&bytes)
+                .unwrap()
+                .arguments,
+            Value::Null
+        );
+
+        let recorder = install();
+        HapticFeedback::vibrate(HapticFeedbackType::Light);
+        let (_, bytes, _) = recorder.sent().remove(0);
+        assert_ne!(
+            JsonMethodCodec
+                .decode_method_call(&bytes)
+                .unwrap()
+                .arguments,
+            Value::Null
+        );
+    }
+
+    #[test]
     fn the_clipboard_speaks_the_protocol_the_embedders_implement() {
         // The bare string "text/plain" as the argument and a map with one key
         // as the answer. Neither is ours to choose: every embedder is already

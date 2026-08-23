@@ -23766,3 +23766,102 @@ mod centre_slice_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod constraints_transform_tests {
+    use super::*;
+
+    /// A box constrained on all four sides, so every transform has something
+    /// to remove and the removals are distinguishable.
+    fn bounded() -> BoxConstraints {
+        BoxConstraints {
+            min_width: 10.0,
+            max_width: 100.0,
+            min_height: 20.0,
+            max_height: 200.0,
+        }
+    }
+
+    #[test]
+    fn unconstraining_a_width_drops_its_minimum_too() {
+        // Upstream's `widthUnconstrained` is `constraints.heightConstraints()`
+        // -- it keeps the height and throws the whole width away, minimum
+        // included.
+        let out = ConstraintsTransform::WidthUnconstrained.apply(bounded());
+        assert_eq!(out.min_width, 0.0);
+        assert_eq!(out.max_width, f32::INFINITY);
+        assert_eq!(out.min_height, 20.0);
+        assert_eq!(out.max_height, 200.0);
+    }
+
+    #[test]
+    fn and_unconstraining_only_the_maximum_keeps_it() {
+        // `maxWidthUnconstrained` is `copyWith(maxWidth: infinity)`. The
+        // minimum survives, which is the whole difference from the transform
+        // above -- a child that must still be at least 10 wide.
+        let out = ConstraintsTransform::MaxWidthUnconstrained.apply(bounded());
+        assert_eq!(out.max_width, f32::INFINITY);
+        assert_eq!(
+            out.min_width, 10.0,
+            "this is what makes it a different transform"
+        );
+        assert_ne!(
+            out,
+            ConstraintsTransform::WidthUnconstrained.apply(bounded())
+        );
+    }
+
+    #[test]
+    fn the_height_pair_differ_the_same_way() {
+        let full = ConstraintsTransform::HeightUnconstrained.apply(bounded());
+        let max_only = ConstraintsTransform::MaxHeightUnconstrained.apply(bounded());
+        assert_eq!(full.min_height, 0.0);
+        assert_eq!(max_only.min_height, 20.0);
+        assert_eq!(full.max_height, f32::INFINITY);
+        assert_eq!(max_only.max_height, f32::INFINITY);
+        assert_ne!(full, max_only);
+    }
+
+    #[test]
+    fn max_unconstrained_frees_both_ceilings_and_neither_floor() {
+        let out = ConstraintsTransform::MaxUnconstrained.apply(bounded());
+        assert_eq!(out.max_width, f32::INFINITY);
+        assert_eq!(out.max_height, f32::INFINITY);
+        assert_eq!(out.min_width, 10.0);
+        assert_eq!(out.min_height, 20.0);
+    }
+
+    #[test]
+    fn and_unconstrained_frees_everything_while_unmodified_frees_nothing() {
+        let free = ConstraintsTransform::Unconstrained.apply(bounded());
+        assert_eq!(free.min_width, 0.0);
+        assert_eq!(free.min_height, 0.0);
+        assert_eq!(free.max_width, f32::INFINITY);
+        assert_eq!(free.max_height, f32::INFINITY);
+
+        assert_eq!(ConstraintsTransform::Unmodified.apply(bounded()), bounded());
+    }
+
+    #[test]
+    fn the_six_transforms_are_six_different_answers() {
+        // Guards every test above from passing while two arms quietly agree.
+        let all = [
+            ConstraintsTransform::Unmodified,
+            ConstraintsTransform::Unconstrained,
+            ConstraintsTransform::WidthUnconstrained,
+            ConstraintsTransform::HeightUnconstrained,
+            ConstraintsTransform::MaxWidthUnconstrained,
+            ConstraintsTransform::MaxHeightUnconstrained,
+            ConstraintsTransform::MaxUnconstrained,
+        ];
+        for (index, left) in all.iter().enumerate() {
+            for right in &all[index + 1..] {
+                assert_ne!(
+                    left.apply(bounded()),
+                    right.apply(bounded()),
+                    "{left:?} and {right:?}"
+                );
+            }
+        }
+    }
+}

@@ -13186,3 +13186,53 @@ the render object tightly tracks the child's size until it stabilizes.」
 
 六个变异全红（含最早那两个探针）。
 coverage 2102 / 1995 记账 / **26 MISSING**。
+
+---
+
+## 一张没人查的对照表，可以错一行错到底（2026-08-24）
+
+上一轮发现 `Unstable` 那半台状态机从没被走过。**那就该问：还有多少？**
+
+`tools/unwalked.py` 数了一下：**1332 个公共枚举变体，252 个从没在任何测试里被写出来。**
+
+### 但这是筛子，不是尺子
+
+写出来 ≠ 走到过，没写出来 ≠ 没走到——
+一个变体可以经由 `Default`、经由对 `ALL` 数组的遍历、
+或者被两个模块以外的调用方碰到。所以**每一条都要用变异确认过才算数**，
+和当初那个引用探针一样。
+
+它**不做验收门**。252 条是一个和 MISSING 并排的待办队列，
+不是一个要赶紧清零的数字；而且里面一定有一些查下去其实是走到了的——
+那正是筛子被允许给出的答案。
+
+它自己头一次跑也是错的：**只拿每个文件和它自己的测试模块比**，
+于是 `TextAlign` 的变体被报成没测——它们是在 `painting.rs` 的测试里被用的，
+不在 `engine.rs` 的。**探针错了，不是移植错了**，
+和当初只扫 `packages/` 而漏掉 `dart:ui` 是同一个形状。
+
+### 抽查两条，两条都是真的
+
+- 把 `ConstraintsTransform::MaxWidthUnconstrained` 改成什么都不做：**全绿**。
+- 把 `HapticFeedbackType::Heavy` 的载荷换成 `lightImpact`：**全绿**。
+
+第二条尤其难看：那是一张发给宿主的字符串对照表，
+**错一行没有任何东西会发现**。
+
+### 补上之后，两处真正的区别才被钉住
+
+**`WidthUnconstrained` 连下限一起扔，`MaxWidthUnconstrained` 只扔上限。**
+
+上游 `widthUnconstrained` 是 `constraints.heightConstraints()`——
+整个宽度都不要了；`maxWidthUnconstrained` 是
+`copyWith(maxWidth: infinity)`——**下限还在**。
+一个把两者并起来的移植，会让本该至少 10 宽的孩子可以缩到 0。
+
+另配一条测试：七个 transform 两两作用在同一组约束上，
+**结果必须互不相同**，防止上面每一条都在「两条臂碰巧相等」的情况下通过。
+
+**而「标准震动不带参数」也是协议的一部分**：
+上游对普通那一下调 `HapticFeedback.vibrate` 不给参数，
+四个具名的给一个——宿主就是照这个分支的。
+
+五个变异全红。
