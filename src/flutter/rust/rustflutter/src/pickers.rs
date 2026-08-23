@@ -429,6 +429,105 @@ pub enum DayPeriod {
     Pm,
 }
 
+/// Upstream `TimeOfDayFormat` (`material/time.dart`): which of the six ICU
+/// patterns a locale lays a time out in.
+///
+/// Five are named for what they look like -- `HH_colon_mm` is ICU `HH:mm`.
+/// **One is named for who uses it**: `frenchCanadian` is ICU `HH 'h' mm`,
+/// which would have been `HH_h_mm` under the others' rule. The odd name is
+/// upstream's and is kept, because a reader searching for `frenchCanadian` in
+/// either tree should find both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum TimeOfDayFormat {
+    /// ICU `HH:mm`.
+    HH_colon_mm,
+    /// ICU `HH.mm`.
+    HH_dot_mm,
+    /// ICU `HH 'h' mm`, Canadian French.
+    FrenchCanadian,
+    /// ICU `H:mm`.
+    H_colon_mm,
+    /// ICU `h:mm a`.
+    h_colon_mm_space_a,
+    /// ICU `a h:mm`.
+    a_space_h_colon_mm,
+}
+
+/// Upstream `HourFormat`: how the hour itself is written, once the pattern
+/// around it is set aside.
+///
+/// Three, where there are six patterns -- the separator and the day period's
+/// side are the pattern's business, not the hour's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum HourFormat {
+    /// Zero-padded two-digit 24-hour, "00" to "23".
+    HH,
+    /// Non-padded variable-length 24-hour, "0" to "23".
+    H,
+    /// Non-padded variable-length hour in a day period, "1" to "12".
+    h,
+}
+
+impl TimeOfDayFormat {
+    pub const ALL: [TimeOfDayFormat; 6] = [
+        TimeOfDayFormat::HH_colon_mm,
+        TimeOfDayFormat::HH_dot_mm,
+        TimeOfDayFormat::FrenchCanadian,
+        TimeOfDayFormat::H_colon_mm,
+        TimeOfDayFormat::h_colon_mm_space_a,
+        TimeOfDayFormat::a_space_h_colon_mm,
+    ];
+
+    /// Upstream's free function `hourFormat({required TimeOfDayFormat of})`.
+    ///
+    /// Six patterns collapse onto three hours: the two twelve-hour patterns
+    /// differ only in **which side the day period sits on**, and the three
+    /// zero-padded ones differ only in **what separates the hour from the
+    /// minutes**. Neither of those is a fact about the hour.
+    pub fn hour_format(self) -> HourFormat {
+        match self {
+            TimeOfDayFormat::h_colon_mm_space_a | TimeOfDayFormat::a_space_h_colon_mm => {
+                HourFormat::h
+            }
+            TimeOfDayFormat::H_colon_mm => HourFormat::H,
+            TimeOfDayFormat::HH_dot_mm
+            | TimeOfDayFormat::HH_colon_mm
+            | TimeOfDayFormat::FrenchCanadian => HourFormat::HH,
+        }
+    }
+
+    /// Whether the pattern carries a day period, and so runs 1 to 12.
+    pub fn uses_day_period(self) -> bool {
+        matches!(self.hour_format(), HourFormat::h)
+    }
+
+    /// What stands between the hour and the minutes.
+    ///
+    /// The one place `frenchCanadian` earns a name of its own: a letter, where
+    /// every other pattern uses punctuation.
+    pub fn separator(self) -> &'static str {
+        match self {
+            TimeOfDayFormat::HH_dot_mm => ".",
+            TimeOfDayFormat::FrenchCanadian => "h",
+            _ => ":",
+        }
+    }
+}
+
+impl HourFormat {
+    /// Whether the hour is padded to two digits.
+    pub fn is_zero_padded(self) -> bool {
+        matches!(self, HourFormat::HH)
+    }
+
+    /// Whether the hour runs 0 to 23 rather than 1 to 12.
+    pub fn is_twenty_four_hour(self) -> bool {
+        !matches!(self, HourFormat::h)
+    }
+}
+
 /// A time of day, independent of a date.
 ///
 /// Anchor: `TimeOfDay` in `time.dart`.

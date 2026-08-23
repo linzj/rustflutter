@@ -12782,3 +12782,60 @@ WrapCrossAlignment get _flipped => switch (this) { start => end, end => start, c
 补完之后七个变异全红。
 
 coverage 2102 / 1985 记账 / **36 MISSING**（少一个）/ 81 条空映射。
+
+---
+
+## 六个格式塌成三个小时，而默认本地化只认得其中两个（2026-08-24）
+
+`TimeOfDayFormat`（6 个）和 `HourFormat`（3 个）都在上一轮新暴露的
+MISSING 里。它们不是两张名字表，中间有一个真正的推导：
+
+```dart
+HourFormat hourFormat({required TimeOfDayFormat of}) => switch (of) {
+  h_colon_mm_space_a || a_space_h_colon_mm => HourFormat.h,
+  H_colon_mm                               => HourFormat.H,
+  HH_dot_mm || HH_colon_mm || frenchCanadian => HourFormat.HH,
+};
+```
+
+**两个十二小时的格式只差「上午下午标记在哪一边」，
+三个补零的只差「小时和分钟之间放什么」——两件事都不是关于小时的。**
+
+顺带一个命名上的不一致：六个里五个按自己的样子命名
+（`HH_colon_mm` 就是 ICU `HH:mm`），**只有 `frenchCanadian` 按用它的人命名**，
+按前五个的规矩它该叫 `HH_h_mm`。名字照抄上游——
+两边搜 `frenchCanadian` 都该搜得到。
+
+### 而 `formatHour` 只在六个里的两个上是全函数
+
+```dart
+case TimeOfDayFormat.a_space_h_colon_mm:
+case TimeOfDayFormat.frenchCanadian:
+case TimeOfDayFormat.H_colon_mm:
+case TimeOfDayFormat.HH_dot_mm:
+  throw AssertionError('$runtimeType does not support $format.');
+```
+
+这不是需要被抹平的疏漏。子类的 `timeOfDayFormat` 可以返回六个里的任何一个，
+而 `DefaultMaterialLocalizations` 只写得出两个；
+**拒绝就是它说这件事的方式**，好过挑个最接近的、然后在四个语言里安静地错。
+
+### 移植原来把两步压成了一个布尔
+
+`format_hour(hour, always_use_24_hour_format)` 直接走，
+**从来不构造 `TimeOfDayFormat`**。答案是对的——
+因为它能到达的两个格式，恰好就是能写出来的那两个。
+
+**于是那条拒绝没有地方可以存在。**
+
+把格式变成参数（`format_hour_in(format, hour)`），
+另外四个才重新回到调用方和测试够得着的范围里。
+`format_hour` 保留成两步的复合，并有一条测试钉住它答得和从前一模一样。
+
+### 一条防「两条臂算出同一个数」的测试
+
+`hour_format` 把 `HH_colon_mm` 和 `HH_dot_mm` 映到同一个 `HourFormat`。
+要是这两个格式本身也没差别，这个「塌缩」就什么都没塌。
+所以专门断言：**同一个 hour format，分隔符必须不同。**
+
+六个变异全红。coverage 2102 / 1987 记账 / **34 MISSING**。

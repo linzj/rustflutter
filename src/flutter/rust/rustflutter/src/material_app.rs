@@ -3,6 +3,8 @@
 //! The application at the top of a Material tree, the scroll behaviour it
 //! installs, and the strings it falls back to.
 
+use crate::pickers::TimeOfDayFormat;
+
 /// Upstream `ScrollPlatform`, declared with the thing it describes in
 /// [`crate::scroll_plumbing`] and re-exported here.
 ///
@@ -301,21 +303,70 @@ impl DefaultMaterialLocalizations {
     /// `DateFormat` "supports more formats than our material time picker
     /// does", and the picker and the string had better agree.
     pub fn format_hour(hour: u32, always_use_24_hour_format: bool) -> Result<String, &'static str> {
+        DefaultMaterialLocalizations::format_hour_in(
+            DefaultMaterialLocalizations::time_of_day_format(always_use_24_hour_format),
+            hour,
+        )
+    }
+
+    /// Upstream's `timeOfDayFormat`: which of the six patterns **these**
+    /// localizations produce.
+    ///
+    /// Two of six, and that is the whole of it -- `alwaysUse24HourFormat
+    /// ? HH_colon_mm : h_colon_mm_space_a`. `DefaultMaterialLocalizations` is
+    /// US English only, so the dot, the Canadian `h`, the unpadded 24-hour and
+    /// the leading day period all belong to locales it does not speak.
+    pub fn time_of_day_format(always_use_24_hour_format: bool) -> TimeOfDayFormat {
+        if always_use_24_hour_format {
+            TimeOfDayFormat::HH_colon_mm
+        } else {
+            TimeOfDayFormat::h_colon_mm_space_a
+        }
+    }
+
+    /// Upstream's `formatHour`, which **is total on only two of the six
+    /// formats** and throws an `AssertionError` for the rest.
+    ///
+    /// That is not an oversight to be smoothed over. A localizations subclass
+    /// is free to return any of the six from `timeOfDayFormat`, and this one
+    /// can only write two of them; refusing is how it says so, rather than
+    /// picking the nearest and being quietly wrong in four locales.
+    ///
+    /// The port took `always_use_24_hour_format` straight through and never
+    /// formed the `TimeOfDayFormat` at all -- which happened to give the right
+    /// answer, because the only two formats it can reach are the two that
+    /// work, **and so the refusal had nowhere to live.** Taking the format as
+    /// an argument puts the other four back within reach of a caller and of a
+    /// test.
+    ///
+    /// The twelve-hour arm's `hourOfPeriod == 0 ? 12 : hourOfPeriod` is why
+    /// midnight and noon read as 12 rather than 0.
+    pub fn format_hour_in(format: TimeOfDayFormat, hour: u32) -> Result<String, &'static str> {
         if hour > 23 {
             return Err("an hour of the day is 0 to 23");
         }
-        if always_use_24_hour_format {
-            return DefaultMaterialLocalizations::format_two_digit_zero_pad(hour)
-                .ok_or("two digits only");
+        match format {
+            TimeOfDayFormat::HH_colon_mm => {
+                DefaultMaterialLocalizations::format_two_digit_zero_pad(hour)
+                    .ok_or("two digits only")
+            }
+            TimeOfDayFormat::h_colon_mm_space_a => {
+                let hour_of_period = hour % 12;
+                Ok(DefaultMaterialLocalizations::format_decimal(
+                    if hour_of_period == 0 {
+                        12
+                    } else {
+                        hour_of_period as i64
+                    },
+                ))
+            }
+            TimeOfDayFormat::a_space_h_colon_mm
+            | TimeOfDayFormat::FrenchCanadian
+            | TimeOfDayFormat::H_colon_mm
+            | TimeOfDayFormat::HH_dot_mm => {
+                Err("DefaultMaterialLocalizations does not support this format")
+            }
         }
-        let hour_of_period = hour % 12;
-        Ok(DefaultMaterialLocalizations::format_decimal(
-            if hour_of_period == 0 {
-                12
-            } else {
-                hour_of_period as i64
-            },
-        ))
     }
 
     pub fn format_two_digit_zero_pad(number: u32) -> Option<String> {
@@ -738,5 +789,169 @@ mod decimal_and_hour_tests {
             let formatted = DefaultMaterialLocalizations::format_hour(hour, false).unwrap();
             assert!(!formatted.contains(','), "{hour}: {formatted}");
         }
+    }
+}
+
+#[cfg(test)]
+mod time_format_tests {
+    use crate::material_app::DefaultMaterialLocalizations;
+    use crate::pickers::{HourFormat, TimeOfDayFormat};
+
+    #[test]
+    fn six_patterns_collapse_onto_three_hours() {
+        // The two twelve-hour patterns differ only in which side the day
+        // period sits on, and the three padded ones only in the separator --
+        // neither is a fact about the hour.
+        assert_eq!(
+            TimeOfDayFormat::h_colon_mm_space_a.hour_format(),
+            HourFormat::h
+        );
+        assert_eq!(
+            TimeOfDayFormat::a_space_h_colon_mm.hour_format(),
+            HourFormat::h
+        );
+        assert_eq!(TimeOfDayFormat::H_colon_mm.hour_format(), HourFormat::H);
+        for padded in [
+            TimeOfDayFormat::HH_colon_mm,
+            TimeOfDayFormat::HH_dot_mm,
+            TimeOfDayFormat::FrenchCanadian,
+        ] {
+            assert_eq!(padded.hour_format(), HourFormat::HH, "{padded:?}");
+        }
+        // And every one of the six lands somewhere: no pattern is unaccounted.
+        assert_eq!(TimeOfDayFormat::ALL.len(), 6);
+    }
+
+    #[test]
+    fn and_the_collapse_really_loses_something() {
+        // Guards against the arms agreeing: patterns that share an hour format
+        // must still differ, or `hour_format` would not be collapsing anything.
+        assert_eq!(
+            TimeOfDayFormat::HH_colon_mm.hour_format(),
+            TimeOfDayFormat::HH_dot_mm.hour_format()
+        );
+        assert_ne!(
+            TimeOfDayFormat::HH_colon_mm.separator(),
+            TimeOfDayFormat::HH_dot_mm.separator()
+        );
+        assert_ne!(TimeOfDayFormat::HH_colon_mm, TimeOfDayFormat::HH_dot_mm);
+    }
+
+    #[test]
+    fn only_the_canadian_one_separates_with_a_letter() {
+        assert_eq!(TimeOfDayFormat::FrenchCanadian.separator(), "h");
+        assert_eq!(TimeOfDayFormat::HH_dot_mm.separator(), ".");
+        for colon in [
+            TimeOfDayFormat::HH_colon_mm,
+            TimeOfDayFormat::H_colon_mm,
+            TimeOfDayFormat::h_colon_mm_space_a,
+            TimeOfDayFormat::a_space_h_colon_mm,
+        ] {
+            assert_eq!(colon.separator(), ":", "{colon:?}");
+        }
+    }
+
+    #[test]
+    fn a_day_period_is_what_makes_an_hour_run_to_twelve() {
+        for format in TimeOfDayFormat::ALL {
+            assert_eq!(
+                format.uses_day_period(),
+                !format.hour_format().is_twenty_four_hour(),
+                "{format:?}"
+            );
+        }
+        // Padding and the day period are separate questions: HH pads and runs
+        // to 23, H does neither, h does not pad and runs to 12.
+        assert!(HourFormat::HH.is_zero_padded());
+        assert!(!HourFormat::H.is_zero_padded());
+        assert!(!HourFormat::h.is_zero_padded());
+        assert!(HourFormat::H.is_twenty_four_hour());
+        assert!(!HourFormat::h.is_twenty_four_hour());
+    }
+
+    #[test]
+    fn the_default_localizations_reach_only_two_of_the_six() {
+        assert_eq!(
+            DefaultMaterialLocalizations::time_of_day_format(false),
+            TimeOfDayFormat::h_colon_mm_space_a
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::time_of_day_format(true),
+            TimeOfDayFormat::HH_colon_mm
+        );
+    }
+
+    #[test]
+    fn and_refuse_the_other_four_rather_than_guess() {
+        // Upstream throws an AssertionError. A subclass may return any of the
+        // six, and this one can write two; refusing is how it says so instead
+        // of being quietly wrong in four locales.
+        for unsupported in [
+            TimeOfDayFormat::a_space_h_colon_mm,
+            TimeOfDayFormat::FrenchCanadian,
+            TimeOfDayFormat::H_colon_mm,
+            TimeOfDayFormat::HH_dot_mm,
+        ] {
+            assert!(
+                DefaultMaterialLocalizations::format_hour_in(unsupported, 9).is_err(),
+                "{unsupported:?}"
+            );
+        }
+        // The two it does reach work for every hour of the day.
+        for hour in 0..24 {
+            for supported in [
+                TimeOfDayFormat::h_colon_mm_space_a,
+                TimeOfDayFormat::HH_colon_mm,
+            ] {
+                assert!(
+                    DefaultMaterialLocalizations::format_hour_in(supported, hour).is_ok(),
+                    "{supported:?} {hour}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn midnight_and_noon_read_as_twelve() {
+        let twelve_hour = TimeOfDayFormat::h_colon_mm_space_a;
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour_in(twelve_hour, 0),
+            Ok("12".to_string())
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour_in(twelve_hour, 12),
+            Ok("12".to_string())
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour_in(twelve_hour, 13),
+            Ok("1".to_string())
+        );
+        // Where the padded 24-hour one writes the hour it was given.
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour_in(TimeOfDayFormat::HH_colon_mm, 0),
+            Ok("00".to_string())
+        );
+        assert_eq!(
+            DefaultMaterialLocalizations::format_hour_in(TimeOfDayFormat::HH_colon_mm, 13),
+            Ok("13".to_string())
+        );
+    }
+
+    #[test]
+    fn and_the_old_boolean_entry_point_still_agrees() {
+        // `format_hour` is now the composition of the two steps, so it must
+        // answer exactly as it did before the format came between them.
+        for hour in 0..24 {
+            for always in [false, true] {
+                assert_eq!(
+                    DefaultMaterialLocalizations::format_hour(hour, always),
+                    DefaultMaterialLocalizations::format_hour_in(
+                        DefaultMaterialLocalizations::time_of_day_format(always),
+                        hour
+                    )
+                );
+            }
+        }
+        assert!(DefaultMaterialLocalizations::format_hour(24, false).is_err());
     }
 }
