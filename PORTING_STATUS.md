@@ -12839,3 +12839,56 @@ case TimeOfDayFormat.HH_dot_mm:
 所以专门断言：**同一个 hour format，分隔符必须不同。**
 
 六个变异全红。coverage 2102 / 1987 记账 / **34 MISSING**。
+
+---
+
+## 第三条臂不问天黑没黑（2026-08-24）
+
+`ThemeMode` 也在上一轮暴露出来的 MISSING 里。三个变体是小事，
+挂在它上面的 `_themeBuilder` 不是：
+
+```dart
+if (useDarkTheme && highContrast && widget.highContrastDarkTheme != null) {
+  theme = widget.highContrastDarkTheme;
+} else if (useDarkTheme && widget.darkTheme != null) {
+  theme = widget.darkTheme;
+} else if (highContrast && widget.highContrastTheme != null) {   // <-- 没有 useDarkTheme
+  theme = widget.highContrastTheme;
+}
+theme ??= widget.theme ?? ThemeData();
+```
+
+**「先定亮暗、再在里面挑对比度」这种显然的重写是错的。**
+第三条臂根本不问 `useDarkTheme`。于是一个应用：暗色模式、开着高对比度、
+给了 `highContrastTheme` 但没给 `highContrastDarkTheme` 也没给 `darkTheme`
+——**拿到的是亮色的高对比度主题**。
+
+这几条臂是**按顺序试、先合适的赢**，不是一棵关于（亮暗，对比度）的决策树。
+这是不是有意为之是另一个问题；代码就是这么跑的，
+而一个只给了四个主题里一部分的应用看得见。
+
+### 而 `_isDarkTheme` 和 `_themeBuilder` 把同一件事拼写了两遍
+
+```dart
+// _themeBuilder
+final ThemeMode mode = widget.themeMode ?? ThemeMode.system;
+// _isDarkTheme
+return widget.themeMode == ThemeMode.dark ||
+    widget.themeMode == ThemeMode.system && ...;
+```
+
+**后者没有 `?? ThemeMode.system`。**而 `themeMode` 的类型是 `ThemeMode?`
+（构造函数默认给的是 `system`，但显式传 null 是合法的）。
+
+于是：显式传 null、平台是暗色时，
+`_themeBuilder` 把 null 读成 system 从而选了暗色主题，
+`_isDarkTheme` 返回 **false**——
+**一个暗色的应用，把「你在亮色主题上」告诉了文本选择控件。**
+
+照上游的样子移，不改。理由和 `CupertinoFormRow::error_color` 那次一样：
+**故意照抄的差异是看得见、对得上的。**
+
+另配一条测试防它变成噪音：除了「显式 null + 暗色平台」这一个格子，
+其余每个（mode，platform）组合两种拼写都必须一致。
+
+六个变异全红。coverage 2102 / 1988 记账 / **33 MISSING**。

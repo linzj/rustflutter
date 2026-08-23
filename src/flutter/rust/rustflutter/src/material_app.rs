@@ -4,6 +4,7 @@
 //! installs, and the strings it falls back to.
 
 use crate::pickers::TimeOfDayFormat;
+use crate::platform::Brightness;
 
 /// Upstream `ScrollPlatform`, declared with the thing it describes in
 /// [`crate::scroll_plumbing`] and re-exported here.
@@ -110,6 +111,43 @@ impl MaterialScrollBehavior {
     }
 }
 
+/// Upstream `ThemeMode`: which of an app's themes applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    /// Follow the platform.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    /// Upstream's `isSystem` / `isLight` / `isDark` getters.
+    pub fn is_system(self) -> bool {
+        matches!(self, ThemeMode::System)
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(self, ThemeMode::Light)
+    }
+
+    pub fn is_dark(self) -> bool {
+        matches!(self, ThemeMode::Dark)
+    }
+}
+
+/// Which of an app's five theme candidates `_themeBuilder` settles on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    HighContrastDark,
+    Dark,
+    HighContrast,
+    /// The app's ordinary `theme`.
+    Given,
+    /// `ThemeData()`, when the app gave none at all.
+    Fallback,
+}
+
 /// Upstream `MaterialApp`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialApp {
@@ -121,6 +159,15 @@ pub struct MaterialApp {
     /// Upstream's `debugShowMaterialGrid`.
     pub debug_show_material_grid: bool,
     pub debug_show_checked_mode_banner: bool,
+    /// Upstream's `themeMode`, which is **nullable** even though the
+    /// constructor defaults it to `system`. Passing null explicitly is legal
+    /// and is not the same as passing `system` -- see
+    /// [`MaterialApp::dark_flag_agrees_with_the_theme`].
+    pub theme_mode: Option<ThemeMode>,
+    pub has_theme: bool,
+    pub has_dark_theme: bool,
+    pub has_high_contrast_theme: bool,
+    pub has_high_contrast_dark_theme: bool,
 }
 
 impl MaterialApp {
@@ -136,7 +183,87 @@ impl MaterialApp {
             has_router_config: false,
             debug_show_material_grid: false,
             debug_show_checked_mode_banner: true,
+            theme_mode: Some(ThemeMode::System),
+            has_theme: false,
+            has_dark_theme: false,
+            has_high_contrast_theme: false,
+            has_high_contrast_dark_theme: false,
         }
+    }
+
+    /// Upstream's `useDarkTheme` inside `_themeBuilder`.
+    ///
+    /// Dark mode always, or system mode on a dark platform. **Light mode never
+    /// goes dark**, whatever the platform says -- an app that asked for light
+    /// asked for light.
+    pub fn uses_dark_theme(&self, platform: Brightness) -> bool {
+        let mode = self.theme_mode.unwrap_or(ThemeMode::System);
+        mode == ThemeMode::Dark || (mode == ThemeMode::System && platform == Brightness::Dark)
+    }
+
+    /// Upstream's `_themeBuilder` cascade.
+    ///
+    /// # The third arm does not ask whether it is dark
+    ///
+    /// The obvious rewrite -- decide the brightness, then pick the contrast
+    /// within it -- gets this wrong. Upstream's third arm is
+    ///
+    /// ```dart
+    /// } else if (highContrast && widget.highContrastTheme != null) {
+    /// ```
+    ///
+    /// with **no test for `useDarkTheme`**. So an app in dark mode, with high
+    /// contrast on, that supplied a `highContrastTheme` but no
+    /// `highContrastDarkTheme` and no `darkTheme`, gets the **light**
+    /// high-contrast theme. The arms are tried in order and the first that
+    /// fits wins; they are not a decision tree over (brightness, contrast).
+    ///
+    /// Whether that is what anyone intended is a separate question. It is what
+    /// the code does, and an app that supplies only some of the four can
+    /// observe it.
+    pub fn choose_theme(&self, platform: Brightness, high_contrast: bool) -> ThemeChoice {
+        let dark = self.uses_dark_theme(platform);
+        if dark && high_contrast && self.has_high_contrast_dark_theme {
+            ThemeChoice::HighContrastDark
+        } else if dark && self.has_dark_theme {
+            ThemeChoice::Dark
+        } else if high_contrast && self.has_high_contrast_theme {
+            ThemeChoice::HighContrast
+        } else if self.has_theme {
+            ThemeChoice::Given
+        } else {
+            ThemeChoice::Fallback
+        }
+    }
+
+    /// Upstream's `_isDarkTheme`, which is handed to the text-selection
+    /// controls as `isDarkTheme`.
+    ///
+    /// It computes the same idea as [`MaterialApp::uses_dark_theme`] and
+    /// **spells it differently**:
+    ///
+    /// ```dart
+    /// return widget.themeMode == ThemeMode.dark ||
+    ///     widget.themeMode == ThemeMode.system &&
+    ///         MediaQuery.platformBrightnessOf(context) == Brightness.dark;
+    /// ```
+    ///
+    /// No `?? ThemeMode.system`. So with `themeMode` explicitly null on a dark
+    /// platform, `_themeBuilder` reads the null as system and picks the dark
+    /// theme, while this returns **false** -- a dark app whose selection
+    /// handles are told they are on a light one.
+    ///
+    /// Ported as it is rather than corrected, for the reason
+    /// [`crate::cupertino::CupertinoFormRow::error_color`] gives: a difference
+    /// copied on purpose stays comparable.
+    pub fn is_dark_theme_flag(&self, platform: Brightness) -> bool {
+        self.theme_mode == Some(ThemeMode::Dark)
+            || (self.theme_mode == Some(ThemeMode::System) && platform == Brightness::Dark)
+    }
+
+    /// Whether the two spellings agree, for this app and this platform.
+    pub fn dark_flag_agrees_with_the_theme(&self, platform: Brightness) -> bool {
+        self.is_dark_theme_flag(platform) == self.uses_dark_theme(platform)
     }
 
     /// Upstream's `MaterialApp.router` constructor:
@@ -953,5 +1080,175 @@ mod time_format_tests {
             }
         }
         assert!(DefaultMaterialLocalizations::format_hour(24, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod theme_mode_tests {
+    use super::{MaterialApp, ThemeChoice, ThemeMode};
+    use crate::platform::Brightness;
+
+    /// An app with every theme supplied, so the cascade is free to pick any.
+    fn fully_themed() -> MaterialApp {
+        MaterialApp {
+            has_theme: true,
+            has_dark_theme: true,
+            has_high_contrast_theme: true,
+            has_high_contrast_dark_theme: true,
+            ..MaterialApp::new()
+        }
+    }
+
+    #[test]
+    fn light_mode_stays_light_on_a_dark_platform() {
+        let mut app = fully_themed();
+        app.theme_mode = Some(ThemeMode::Light);
+        assert!(!app.uses_dark_theme(Brightness::Dark));
+        // And dark mode stays dark on a light one.
+        app.theme_mode = Some(ThemeMode::Dark);
+        assert!(app.uses_dark_theme(Brightness::Light));
+    }
+
+    #[test]
+    fn and_system_mode_is_the_only_one_the_platform_moves() {
+        let mut app = fully_themed();
+        app.theme_mode = Some(ThemeMode::System);
+        assert!(!app.uses_dark_theme(Brightness::Light));
+        assert!(app.uses_dark_theme(Brightness::Dark));
+        // Which is what `isSystem` is for.
+        assert!(ThemeMode::System.is_system());
+        assert!(!ThemeMode::Light.is_system());
+        assert!(ThemeMode::Light.is_light());
+        assert!(ThemeMode::Dark.is_dark());
+    }
+
+    #[test]
+    fn the_high_contrast_light_theme_can_win_in_dark_mode() {
+        // The third arm does not test useDarkTheme. An app in dark mode with
+        // high contrast on, carrying a highContrastTheme but neither
+        // highContrastDarkTheme nor darkTheme, gets the light one.
+        let app = MaterialApp {
+            has_theme: true,
+            has_dark_theme: false,
+            has_high_contrast_theme: true,
+            has_high_contrast_dark_theme: false,
+            theme_mode: Some(ThemeMode::Dark),
+            ..MaterialApp::new()
+        };
+        assert!(app.uses_dark_theme(Brightness::Light));
+        assert_eq!(
+            app.choose_theme(Brightness::Light, true),
+            ThemeChoice::HighContrast,
+            "a decision tree over (brightness, contrast) would have said Given"
+        );
+        // Give it a dark theme and the second arm takes it first.
+        let with_dark = MaterialApp {
+            has_dark_theme: true,
+            ..app
+        };
+        assert_eq!(
+            with_dark.choose_theme(Brightness::Light, true),
+            ThemeChoice::Dark
+        );
+    }
+
+    #[test]
+    fn and_the_arms_are_tried_in_order() {
+        let app = fully_themed();
+        // Dark and high contrast: the first arm.
+        assert_eq!(
+            app.choose_theme(Brightness::Dark, true),
+            ThemeChoice::HighContrastDark
+        );
+        // Dark without contrast: the second.
+        assert_eq!(app.choose_theme(Brightness::Dark, false), ThemeChoice::Dark);
+        // Light with contrast: the third.
+        assert_eq!(
+            app.choose_theme(Brightness::Light, true),
+            ThemeChoice::HighContrast
+        );
+        // Light without: the ordinary theme.
+        assert_eq!(
+            app.choose_theme(Brightness::Light, false),
+            ThemeChoice::Given
+        );
+    }
+
+    #[test]
+    fn an_app_with_no_themes_falls_all_the_way_through() {
+        let bare = MaterialApp::new();
+        for platform in [Brightness::Light, Brightness::Dark] {
+            for contrast in [false, true] {
+                assert_eq!(
+                    bare.choose_theme(platform, contrast),
+                    ThemeChoice::Fallback,
+                    "{platform:?} {contrast}"
+                );
+            }
+        }
+        // Dark mode with no dark theme falls back to the light one, rather
+        // than to anything dark.
+        let light_only = MaterialApp {
+            has_theme: true,
+            theme_mode: Some(ThemeMode::Dark),
+            ..MaterialApp::new()
+        };
+        assert!(light_only.uses_dark_theme(Brightness::Light));
+        assert_eq!(
+            light_only.choose_theme(Brightness::Light, false),
+            ThemeChoice::Given
+        );
+    }
+
+    #[test]
+    fn a_null_theme_mode_is_not_the_same_as_system() {
+        // `_themeBuilder` reads null as system; `_isDarkTheme` does not read
+        // it at all. On a dark platform the two disagree, and the selection
+        // controls are told they are on a light theme while the app is dark.
+        let app = MaterialApp {
+            has_theme: true,
+            has_dark_theme: true,
+            theme_mode: None,
+            ..MaterialApp::new()
+        };
+        assert!(app.uses_dark_theme(Brightness::Dark));
+        assert!(!app.is_dark_theme_flag(Brightness::Dark));
+        assert!(!app.dark_flag_agrees_with_the_theme(Brightness::Dark));
+        assert_eq!(app.choose_theme(Brightness::Dark, false), ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn and_they_agree_everywhere_else() {
+        // Which is what makes the disagreement above worth pinning rather than
+        // being noise: it happens for exactly one value of themeMode, and only
+        // on a dark platform.
+        for mode in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+            for platform in [Brightness::Light, Brightness::Dark] {
+                let app = MaterialApp {
+                    theme_mode: Some(mode),
+                    ..MaterialApp::new()
+                };
+                assert!(
+                    app.dark_flag_agrees_with_the_theme(platform),
+                    "{mode:?} {platform:?}"
+                );
+            }
+        }
+        let null_mode = MaterialApp {
+            theme_mode: None,
+            ..MaterialApp::new()
+        };
+        assert!(
+            null_mode.dark_flag_agrees_with_the_theme(Brightness::Light),
+            "on a light platform even null agrees, because both say false"
+        );
+    }
+
+    #[test]
+    fn the_constructor_default_is_system_rather_than_null() {
+        // Upstream writes `this.themeMode = ThemeMode.system`, so the
+        // disagreement above needs someone to pass null on purpose.
+        assert_eq!(MaterialApp::new().theme_mode, Some(ThemeMode::System));
+        assert_eq!(ThemeMode::default(), ThemeMode::System);
     }
 }
