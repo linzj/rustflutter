@@ -13082,3 +13082,54 @@ case DatePickerDateOrder.ydm:
 `TimeDayPeriodDate` 在后），否则「永远在一头」可以是空话。
 
 六个变异全红。coverage 2102 / 1993 记账 / **28 MISSING**。
+
+---
+
+## 两个都答「没处理」，只有一个松开了焦点（2026-08-24）
+
+`TraversalEdgeBehavior` 四个值，落到边界上时：
+
+| | 松开焦点 | 报告「我移动了」 |
+|---|---|---|
+| `closedLoop` | 否 | 是（绕到另一头） |
+| `leaveFlutterView` | **是** | 否 |
+| `parentScope`（有父作用域） | 是 | 交给父的结果 |
+| `parentScope`（没有） | 否 | 是——**回落到 closedLoop** |
+| `stop` | **否** | 否 |
+
+### `leaveFlutterView` 和 `stop` 的全部区别，就是那一列
+
+两个都 `return false`。**只有前者先 `focusedChild.unfocus()`。**
+把它们并成一个，就会出现「浏览器接走了下一个 tab，
+而一个 widget 上还留着焦点框」。
+
+### 而 `parentScope` 走投无路时是绕，不是停
+
+上游注释写着：「No valid parent scope. Fallback to closed loop behavior.」
+而且「有效」**不包括根作用域**——所以顶层的 `parentScope` 没处可去。
+
+它这时的行为是**绕回另一头**。一个本打算把焦点交出去的作用域，
+发现外面没人接，于是变成一个环，**不是一堵墙**。
+测试同时断言它此时等于 `closedLoop`、且不等于 `stop`。
+
+### 滚动对齐跟的是走的方向，不是落脚点
+
+```dart
+alignmentPolicy: forward
+    ? ScrollPositionAlignmentPolicy.keepVisibleAtEnd
+    : ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+```
+
+普通一步和绕回去那一步**传的是同一个表达式**。
+于是往前绕、落在**第一个**节点上时，要的仍然是 `keepVisibleAtEnd`——
+「落在第一个，所以对齐到开头」这种直觉读法，正是上游没有做的事。
+这个策略问的是**用户在往哪边走**，不是**停在了哪里**。
+
+### 这一轮没做的
+
+本 crate 的 `focus::next()` 目前就是硬写死的 `ClosedLoop`——
+它没有作用域树，没有父作用域可交。所以这一轮加的是**那个判断**
+（把「有没有有效父作用域」当参数收进来），并把现状写在注释里。
+真正接进 `step()` 要等作用域树，那是另一轮。
+
+六个变异全红。coverage 2102 / 1994 记账 / **27 MISSING**。

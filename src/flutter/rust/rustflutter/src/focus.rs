@@ -959,6 +959,106 @@ pub fn unfocus() {
     }
 }
 
+/// Upstream `TraversalEdgeBehavior`: what a focus scope does when traversal
+/// runs off its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TraversalEdgeBehavior {
+    /// Wrap to the other end, so the scope is a ring. Upstream's default and
+    /// what this crate's [`next`] and [`previous`] do today.
+    #[default]
+    ClosedLoop,
+    /// Drop focus and let the embedder have the keystroke -- on the web, the
+    /// browser gets the tab and the user can reach the address bar.
+    LeaveFlutterView,
+    /// Hand the move to the enclosing scope.
+    ParentScope,
+    /// Refuse the move and leave focus where it is.
+    Stop,
+}
+
+/// What actually happens at the edge, once the scope's behaviour has been
+/// resolved against whether there is a parent scope to hand off to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeOutcome {
+    /// Focus the node at the far end.
+    Wrap,
+    /// Unfocus, and report the move as not handled.
+    Unfocus,
+    /// Unfocus and ask the enclosing scope to move instead.
+    DelegateToParent,
+    /// Report the move as not handled, and leave the focus alone.
+    Stay,
+}
+
+impl TraversalEdgeBehavior {
+    pub const ALL: [TraversalEdgeBehavior; 4] = [
+        TraversalEdgeBehavior::ClosedLoop,
+        TraversalEdgeBehavior::LeaveFlutterView,
+        TraversalEdgeBehavior::ParentScope,
+        TraversalEdgeBehavior::Stop,
+    ];
+
+    /// Resolve the behaviour at an edge.
+    ///
+    /// `has_parent_scope` is upstream's `parentScope != null && parentScope !=
+    /// FocusManager.instance.rootScope`. **The root scope does not count as a
+    /// parent**, so a top-level `ParentScope` has nowhere to go.
+    ///
+    /// And what it does then is the part worth pinning: upstream's comment
+    /// says "No valid parent scope. Fallback to closed loop behavior." It
+    /// **wraps** -- it does not stop. A scope that asked to defer outward and
+    /// finds nothing outward behaves like a ring, not like a wall.
+    pub fn at_edge(self, has_parent_scope: bool) -> EdgeOutcome {
+        match self {
+            TraversalEdgeBehavior::ClosedLoop => EdgeOutcome::Wrap,
+            TraversalEdgeBehavior::LeaveFlutterView => EdgeOutcome::Unfocus,
+            TraversalEdgeBehavior::ParentScope if has_parent_scope => EdgeOutcome::DelegateToParent,
+            TraversalEdgeBehavior::ParentScope => EdgeOutcome::Wrap,
+            TraversalEdgeBehavior::Stop => EdgeOutcome::Stay,
+        }
+    }
+}
+
+impl EdgeOutcome {
+    /// Whether the focused node is cleared.
+    ///
+    /// This is the **whole difference** between `LeaveFlutterView` and `Stop`:
+    /// both report the move as not handled, and only one of them lets go of
+    /// the focus first. Collapsing them would leave a focus ring sitting on a
+    /// widget while the browser took the next tab.
+    pub fn unfocuses(self) -> bool {
+        matches!(self, EdgeOutcome::Unfocus | EdgeOutcome::DelegateToParent)
+    }
+
+    /// Whether the traversal reports that it moved focus itself.
+    ///
+    /// `Unfocus` and `Stay` both answer no -- the first because it deliberately
+    /// gave the keystroke away, the second because it refused it.
+    /// `DelegateToParent` answers whatever the parent's move answered, which
+    /// upstream checks rather than assumes: `return
+    /// focusedChild.enclosingScope?.focusedChild != focusedChild`.
+    pub fn definitely_handled(self) -> bool {
+        matches!(self, EdgeOutcome::Wrap)
+    }
+}
+
+/// The scroll alignment a tab traversal asks for.
+///
+/// Keyed to the **direction of travel, not to the destination**: upstream
+/// writes `forward ? keepVisibleAtEnd : keepVisibleAtStart` in the ordinary
+/// step and passes the very same thing through the wrap. So wrapping forward
+/// -- to the *first* node -- still asks for `keepVisibleAtEnd`, which reads
+/// backwards until you notice the policy is about which way the user is
+/// moving through the list rather than about where they landed.
+pub fn tab_alignment(forward: bool) -> crate::directional_traversal::ScrollPositionAlignmentPolicy {
+    use crate::directional_traversal::ScrollPositionAlignmentPolicy;
+    if forward {
+        ScrollPositionAlignmentPolicy::KeepVisibleAtEnd
+    } else {
+        ScrollPositionAlignmentPolicy::KeepVisibleAtStart
+    }
+}
+
 /// Moves focus to the next traversable node, wrapping at the end.
 ///
 /// Upstream's `NextFocusIntent`, resolved by the traversal policy. Returns
@@ -2290,5 +2390,134 @@ mod tests {
         let listeners = ActionListener::new();
         assert!(listeners.is_empty());
         listeners.notify(&crate::actions::Intent::DoNothing);
+    }
+}
+
+#[cfg(test)]
+mod traversal_edge_tests {
+    use super::{EdgeOutcome, TraversalEdgeBehavior, tab_alignment};
+    use crate::directional_traversal::ScrollPositionAlignmentPolicy;
+
+    #[test]
+    fn leaving_the_view_and_stopping_both_refuse_the_move() {
+        // They agree on the answer they report, which is why it is easy to
+        // treat them as one.
+        let leave = TraversalEdgeBehavior::LeaveFlutterView.at_edge(false);
+        let stop = TraversalEdgeBehavior::Stop.at_edge(false);
+        assert!(!leave.definitely_handled());
+        assert!(!stop.definitely_handled());
+    }
+
+    #[test]
+    fn but_only_one_of_them_lets_go_of_the_focus() {
+        // The whole difference. Collapsing them leaves a focus ring sitting on
+        // a widget while the browser takes the next tab.
+        assert!(
+            TraversalEdgeBehavior::LeaveFlutterView
+                .at_edge(false)
+                .unfocuses()
+        );
+        assert!(!TraversalEdgeBehavior::Stop.at_edge(false).unfocuses());
+        assert_ne!(
+            TraversalEdgeBehavior::LeaveFlutterView.at_edge(false),
+            TraversalEdgeBehavior::Stop.at_edge(false)
+        );
+    }
+
+    #[test]
+    fn a_parent_scope_with_nowhere_to_go_wraps_rather_than_stops() {
+        // Upstream: "No valid parent scope. Fallback to closed loop behavior."
+        assert_eq!(
+            TraversalEdgeBehavior::ParentScope.at_edge(false),
+            EdgeOutcome::Wrap
+        );
+        assert_eq!(
+            TraversalEdgeBehavior::ParentScope.at_edge(false),
+            TraversalEdgeBehavior::ClosedLoop.at_edge(false),
+            "at the top level the two are the same behaviour"
+        );
+        assert_ne!(
+            TraversalEdgeBehavior::ParentScope.at_edge(false),
+            TraversalEdgeBehavior::Stop.at_edge(false),
+            "a scope that meant to defer outward is a ring, not a wall"
+        );
+    }
+
+    #[test]
+    fn and_with_somewhere_to_go_it_defers() {
+        assert_eq!(
+            TraversalEdgeBehavior::ParentScope.at_edge(true),
+            EdgeOutcome::DelegateToParent
+        );
+        // ParentScope is the only behaviour the parent's existence changes.
+        for behavior in TraversalEdgeBehavior::ALL {
+            if behavior == TraversalEdgeBehavior::ParentScope {
+                assert_ne!(behavior.at_edge(true), behavior.at_edge(false));
+            } else {
+                assert_eq!(
+                    behavior.at_edge(true),
+                    behavior.at_edge(false),
+                    "{behavior:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn delegating_lets_go_but_does_not_claim_to_have_moved_anything() {
+        // Upstream verifies rather than assumes: it re-reads the focused child
+        // and compares. So delegation is an unfocus whose outcome is the
+        // parent's to report.
+        let delegate = TraversalEdgeBehavior::ParentScope.at_edge(true);
+        assert!(delegate.unfocuses());
+        assert!(!delegate.definitely_handled());
+    }
+
+    #[test]
+    fn only_wrapping_reports_the_move_as_its_own() {
+        let outcomes = [
+            EdgeOutcome::Wrap,
+            EdgeOutcome::Unfocus,
+            EdgeOutcome::DelegateToParent,
+            EdgeOutcome::Stay,
+        ];
+        let handled: Vec<EdgeOutcome> = outcomes
+            .into_iter()
+            .filter(|o| o.definitely_handled())
+            .collect();
+        assert_eq!(handled, vec![EdgeOutcome::Wrap]);
+        // And wrapping is the one that keeps a focus.
+        assert!(!EdgeOutcome::Wrap.unfocuses());
+    }
+
+    #[test]
+    fn the_scroll_alignment_follows_the_direction_and_not_the_destination() {
+        // Wrapping forward lands on the *first* node and still asks to keep it
+        // visible at the end, because the policy is about which way the user
+        // is moving. The naive reading -- first node, so align at the start --
+        // is what upstream does not do.
+        assert_eq!(
+            tab_alignment(true),
+            ScrollPositionAlignmentPolicy::KeepVisibleAtEnd
+        );
+        assert_eq!(
+            tab_alignment(false),
+            ScrollPositionAlignmentPolicy::KeepVisibleAtStart
+        );
+        assert_ne!(tab_alignment(true), tab_alignment(false));
+    }
+
+    #[test]
+    fn a_scope_is_a_ring_unless_it_says_otherwise() {
+        assert_eq!(
+            TraversalEdgeBehavior::default(),
+            TraversalEdgeBehavior::ClosedLoop
+        );
+        // Which is what this crate's `next` and `previous` do today: they wrap
+        // and have no scope to defer to.
+        assert_eq!(
+            TraversalEdgeBehavior::default().at_edge(false),
+            EdgeOutcome::Wrap
+        );
     }
 }
