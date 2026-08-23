@@ -131,6 +131,10 @@ impl BottomNavigationBar {
 /// the count, which is the design deciding one way rather than adapting.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationBar {
+    /// Upstream's `labelBehavior`, which decides whether
+    /// [`NavigationBar::shows_label`] answers about the bar or about the
+    /// destination.
+    pub label_behavior: crate::component_themes::NavigationDestinationLabelBehavior,
     pub destination_count: usize,
     pub selected_index: usize,
     /// `None` is 500ms.
@@ -159,6 +163,8 @@ impl NavigationBar {
             destination_count,
             selected_index,
             animation_duration_ms: None,
+            // Upstream's default is alwaysShow.
+            label_behavior: crate::component_themes::NavigationDestinationLabelBehavior::AlwaysShow,
         }
     }
 
@@ -172,10 +178,25 @@ impl NavigationBar {
         Ok(())
     }
 
-    /// Whether a destination's label is drawn. Always -- there is no shifting
-    /// mode to hide it in.
-    pub fn shows_label(&self, _index: usize) -> bool {
-        true
+    /// Whether a destination's label is drawn.
+    ///
+    /// This answered `true` and ignored the index, on the grounds that "there
+    /// is no shifting mode to hide it in". That reasoning belongs to Material
+    /// 2's `BottomNavigationBarType.shifting`; **this is the Material 3 bar**,
+    /// and it has `labelBehavior`, whose three values include one that hides
+    /// every label and one that hides all but the selected one.
+    ///
+    /// So the answer was wrong under two of three behaviours, and the ignored
+    /// argument was the tell: `onlyShowSelected` is exactly the case where
+    /// which destination is being asked about decides the answer.
+    pub fn shows_label(&self, index: usize) -> bool {
+        match self.label_behavior {
+            crate::component_themes::NavigationDestinationLabelBehavior::AlwaysShow => true,
+            crate::component_themes::NavigationDestinationLabelBehavior::AlwaysHide => false,
+            crate::component_themes::NavigationDestinationLabelBehavior::OnlyShowSelected => {
+                index == self.selected_index
+            }
+        }
     }
 }
 
@@ -646,7 +667,7 @@ mod navigation_bar_theme_tests {
         for count in [2, 3, 4, 7] {
             assert_eq!(
                 resolve(NavigationBar::new(count, 0), NavigationBarThemeData::new()).label_behavior,
-                NavigationDestinationLabelBehavior::AlwaysShow
+                crate::component_themes::NavigationDestinationLabelBehavior::AlwaysShow
             );
         }
     }
@@ -654,10 +675,11 @@ mod navigation_bar_theme_tests {
     #[test]
     fn a_theme_can_still_ask_for_the_labels_to_come_and_go() {
         let mut data = NavigationBarThemeData::new();
-        data.label_behavior = Some(NavigationDestinationLabelBehavior::OnlyShowSelected);
+        data.label_behavior =
+            Some(crate::component_themes::NavigationDestinationLabelBehavior::OnlyShowSelected);
         assert_eq!(
             resolve(NavigationBar::new(3, 0), data).label_behavior,
-            NavigationDestinationLabelBehavior::OnlyShowSelected
+            crate::component_themes::NavigationDestinationLabelBehavior::OnlyShowSelected
         );
     }
 
@@ -997,5 +1019,78 @@ mod bottom_app_bar_theme_tests {
             hand_coloured.color,
             "a colour someone chose is left alone even in the dark"
         );
+    }
+}
+
+#[cfg(test)]
+mod label_behavior_tests {
+    use super::NavigationBar;
+    use crate::component_themes::NavigationDestinationLabelBehavior;
+
+    fn bar(behavior: NavigationDestinationLabelBehavior) -> NavigationBar {
+        let mut bar = NavigationBar::new(4, 2);
+        bar.label_behavior = behavior;
+        bar
+    }
+
+    #[test]
+    fn only_show_selected_is_the_one_that_reads_the_index() {
+        // The ignored argument was the tell. Under the other two behaviours
+        // every destination answers alike; under this one the answer is about
+        // the destination rather than about the bar.
+        let selective = bar(NavigationDestinationLabelBehavior::OnlyShowSelected);
+        assert!(selective.shows_label(2), "the selected one");
+        for other in [0, 1, 3] {
+            assert!(!selective.shows_label(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn and_the_other_two_answer_the_same_for_every_destination() {
+        for (behavior, expected) in [
+            (NavigationDestinationLabelBehavior::AlwaysShow, true),
+            (NavigationDestinationLabelBehavior::AlwaysHide, false),
+        ] {
+            let bar = bar(behavior);
+            for index in 0..4 {
+                assert_eq!(bar.shows_label(index), expected, "{behavior:?} {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn hiding_every_label_is_a_thing_this_bar_can_do() {
+        // shows_label answered true unconditionally, on reasoning borrowed
+        // from Material 2's shifting mode. This is the Material 3 bar, and two
+        // of its three behaviours hide labels.
+        assert!(!bar(NavigationDestinationLabelBehavior::AlwaysHide).shows_label(2));
+        assert!(
+            !bar(NavigationDestinationLabelBehavior::OnlyShowSelected).shows_label(0),
+            "and this one hides all but one"
+        );
+    }
+
+    #[test]
+    fn moving_the_selection_moves_which_label_shows() {
+        // Through the field rather than by constructing two bars, so the
+        // answer is shown to follow the selection rather than the fixture.
+        let mut selective = bar(NavigationDestinationLabelBehavior::OnlyShowSelected);
+        assert!(selective.shows_label(2));
+        assert!(!selective.shows_label(3));
+        selective.selected_index = 3;
+        assert!(!selective.shows_label(2));
+        assert!(selective.shows_label(3));
+    }
+
+    #[test]
+    fn a_bar_shows_every_label_unless_told_otherwise() {
+        let plain = NavigationBar::new(4, 2);
+        assert_eq!(
+            plain.label_behavior,
+            NavigationDestinationLabelBehavior::AlwaysShow
+        );
+        for index in 0..4 {
+            assert!(plain.shows_label(index), "{index}");
+        }
     }
 }

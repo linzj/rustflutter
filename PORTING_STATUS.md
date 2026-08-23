@@ -14200,3 +14200,43 @@ pub fn is_superseded() -> bool { true }
 这次它**不是错的**（`MaterialButton` 确实被取代了），只是空的——
 而且类型自己的文档注释上一行就写着同一句话。删掉，
 那条测试改成断言它真正在验的东西：它的五个抬升就是 raw button 的五个。
+
+---
+
+## 把「空谓词」当成一个可搜的形状（2026-08-24）
+
+这个会话里已经撞见三个了——`labels_beside_rather_than_inside`、
+`has_standard_key`、`is_superseded`，其中一个还是**错的**。
+这个形状可以搜：**参数里没有能变的东西，函数体是一个字面量。**
+
+`tools/hollow.py` 扫出 **76 个**。
+
+### 但 76 不是缺陷数——抽查三个，三个都对
+
+- `FabMiniOffsetAdjustment::is_mini() -> true`：上游那个 mixin 的整个函数体
+  就是 `isMini() => true`。**忠实移植。**
+- `ActionButton::is_enabled() -> true`：文档解释了那个反转——
+  这里 `onPressed` 为空**不会**禁用按钮，和普通 IconButton 相反。
+- `CupertinoFormSection::clips_rows() -> false`：第 78 轮写的，有理由。
+
+**把 76 当成缺陷数报出去，就是重犯上一次「81 条未解析」的错。**
+
+### 真正的信号窄得多：**76 里 70 个有文档**
+
+常量答案配一段解释，说明它被检查过。什么都没写的那 6 个才是没被看过的。
+另外 6 个是更坏的一种：**收了参数却不看**——签名承诺了一个问题。
+
+### 而那 6 个里第一个就是真错的
+
+`NavigationBar::shows_label(&self, _index) -> true`，
+注释写「Always——没有 shifting 模式可以藏它」。
+**那个理由属于 Material 2 的 `BottomNavigationBarType.shifting`。
+这是 Material 3 的 bar**，它有 `labelBehavior`，三个取值里
+`alwaysHide` 藏掉全部、`onlyShowSelected` 只留选中的那个。
+
+于是这个答案在三分之二的情况下是错的，
+而**被忽略的那个参数就是线索**：`onlyShowSelected` 正是
+「问的是哪个目的地」决定答案的那种情形。
+
+枚举在 crate 里（`component_themes.rs`），主题也带着它，只有 bar 自己没读。
+四个变异全红，其中 M1 就是原来那个 bug。
