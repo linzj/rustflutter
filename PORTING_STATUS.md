@@ -11824,3 +11824,52 @@ autofill。」
 
 7 个变异，7 个全红。每条新测试都单独跑过。
 
+## 触控板手势：解码了，却没有人能订阅（2026-08-23）
+
+从 `Listener`（`depth.py` 报 2/13）查起。本移植的 `PointerHandlers`
+其实比上游的 `Listener` **更宽**——它把 `MouseRegion` 和 `GestureDetector`
+一并合了进来（点击、拖拽、长按、双击、缩放）。所以那个比值又是高报。
+
+**但有一处是真的缺**：`PanZoomStart/Update/End` 三种事件从线上**解码出来了**
+（`7 => PanZoomStart` 等），却没有任何字段可以订阅它们——
+而且有一条测试正**断言它们哪儿也到不了**。
+
+那条测试的注释把它们和 hover、add 归成一类：「那些是 router 的」。
+**两件事被混成了一句话。** hover 和 add 确实是 router 的（它跟踪鼠标在哪些区域里，
+上游也一样）；而 pan-zoom 在上游**是 `Listener` 的回调**，在这里却落在地上。
+
+### 触控板的平移是一条流，滚轮不是
+
+上游 `_handlePointerEventImmediately` 对 signal、hover、down **和**
+pan-zoom start 都做命中测试，但**只为 down 和 pan-zoom start 存下结果**：
+
+```
+if (event is PointerDownEvent || event is PointerPanZoomStartEvent) {
+  _hitTests[event.pointer] = hitTestResult;
+}
+```
+
+**所以滚轮每一个事件都重新命中测试，而触控板手势被开始时它下面的那个东西捕获住。**
+两个从外面看很像的手势，一个按「按压」路由，一个按「一次性」路由——而且是对的：
+两根手指滑出了它正在驱动的控件，应该继续驱动那个控件，就像拖拽一样；
+而滚轮滑到别的控件上，那就是别的控件的滚动。
+
+### update 同时带总量和步长
+
+上游的 `PointerPanZoomUpdateEvent` 既带 `pan`（自手势开始的总量）
+又带 `panDelta`（自上一次的步长），**所以监听者永远不必去积分或求导**：
+做平移的要步长，显示「已移动 40 点」的要总量，
+而从其中一个算另一个，一边丢精度，一边丢历史。
+
+### 而 scale 的静息值是 1，不是 0
+
+三个构造器里 `scale = 1.0`、`rotation = 0.0`。所以 `PanZoomEvent` 的
+`Default` 是**手写的**而不是 derive 的——derive 会给出 `scale: 0.0`，
+那是一个塌成一点的视图。
+
+（另：三个 pan-zoom 事件的 `kind` 都被上游写死成 `trackpad`，
+不是参数——这种手势不可能来自鼠标或手指。）
+
+9 个变异，9 个全红。顺带把那条把 pan-zoom 和 hover 归成一类的注释改了：
+现在分开写清楚两个不同的理由。
+

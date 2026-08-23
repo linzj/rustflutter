@@ -781,6 +781,41 @@ impl std::ops::DerefMut for MacOSScrollViewFlingVelocityTracker {
     }
 }
 
+/// What a trackpad pan/zoom gesture is doing, at one moment of it.
+///
+/// Upstream's `PointerPanZoomUpdateEvent` carries **both** the total since the
+/// gesture began and the step since the last update, so a listener never has
+/// to integrate or differentiate: a view that pans wants the delta, and a view
+/// that shows "moved 40 points" wants the total, and computing either from the
+/// other loses precision one way and history the other.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanZoomEvent {
+    /// Upstream's `pan`: how far the gesture has moved in total.
+    pub pan: Offset,
+    /// Upstream's `panDelta`: how far since the previous update.
+    pub pan_delta: Offset,
+    /// Upstream's `scale`, whose identity is **1.0** and not zero.
+    pub scale: f64,
+    /// Upstream's `rotation`, in radians, whose identity *is* zero.
+    pub rotation: f64,
+    /// Where the gesture is, in the coordinates of the object it began over.
+    pub local_position: Offset,
+}
+
+impl Default for PanZoomEvent {
+    fn default() -> PanZoomEvent {
+        PanZoomEvent {
+            pan: Offset::ZERO,
+            pan_delta: Offset::ZERO,
+            // Not `Default::default()`: a scale of zero is a collapsed view,
+            // where the resting value of a scale is one.
+            scale: 1.0,
+            rotation: 0.0,
+            local_position: Offset::ZERO,
+        }
+    }
+}
+
 /// The callbacks a [`crate::render::RenderPointerRegion`] can carry.
 ///
 /// Every one is `Rc<dyn Fn>`: hit testing walks the tree behind a shared
@@ -844,6 +879,33 @@ pub struct PointerHandlers {
     pub on_hover_change: Option<Rc<dyn Fn(bool)>>,
     /// Fired as a mouse moves inside this region.
     pub on_hover: Option<Rc<dyn Fn(HoverEvent)>>,
+    /// A trackpad gesture began over this region -- upstream's
+    /// `Listener.onPointerPanZoomStart`.
+    ///
+    /// # A trackpad pan is a stream, and a scroll wheel is not
+    ///
+    /// Upstream's `_handlePointerEventImmediately` hit-tests for a signal, a
+    /// hover, a down **and** a pan-zoom start -- but only stores the result
+    /// for the down and the pan-zoom start:
+    ///
+    /// ```text
+    /// if (event is PointerDownEvent || event is PointerPanZoomStartEvent) {
+    ///   _hitTests[event.pointer] = hitTestResult;
+    /// }
+    /// ```
+    ///
+    /// So a wheel scroll re-hit-tests on every event and a trackpad pan is
+    /// **captured by whatever was under it when it began**. Two gestures that
+    /// look alike from the outside are routed like a press and like a
+    /// one-shot respectively -- and rightly: two fingers that drift off the
+    /// widget they started on should keep driving it, the way a drag does,
+    /// while a wheel over a different widget is a different widget's scroll.
+    pub on_pan_zoom_start: Option<Rc<dyn Fn(PanZoomEvent)>>,
+    /// Upstream's `Listener.onPointerPanZoomUpdate`, delivered to whatever the
+    /// start captured.
+    pub on_pan_zoom_update: Option<Rc<dyn Fn(PanZoomEvent)>>,
+    /// Upstream's `Listener.onPointerPanZoomEnd`.
+    pub on_pan_zoom_end: Option<Rc<dyn Fn(PanZoomEvent)>>,
 }
 
 impl PointerHandlers {
@@ -898,6 +960,22 @@ impl PointerHandlers {
 
     pub fn with_press_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
         self.on_press_change = Some(Rc::new(handler));
+        self
+    }
+
+    /// Hears a trackpad gesture that began over this region -- see the field.
+    pub fn with_pan_zoom_start(mut self, handler: impl Fn(PanZoomEvent) + 'static) -> Self {
+        self.on_pan_zoom_start = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_pan_zoom_update(mut self, handler: impl Fn(PanZoomEvent) + 'static) -> Self {
+        self.on_pan_zoom_update = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn with_pan_zoom_end(mut self, handler: impl Fn(PanZoomEvent) + 'static) -> Self {
+        self.on_pan_zoom_end = Some(Rc::new(handler));
         self
     }
 
@@ -1276,6 +1354,16 @@ struct ActiveScale {
 ///
 /// One per view. It holds no borrow of the tree between calls; each dispatch is
 /// given the tree that was painted last.
+/// A trackpad gesture and the region it began over.
+struct ActivePanZoom {
+    device: i64,
+    handlers: Rc<PointerHandlers>,
+    local_origin: Offset,
+    /// The running total, since upstream's update carries both it and the
+    /// step and the wire gives only the step.
+    pan: Offset,
+}
+
 pub struct GestureRouter {
     active: Vec<(i64, ActivePointer)>,
     /// One arena per pressed pointer, upstream's `_arenas` map. Removed as
@@ -1288,6 +1376,12 @@ pub struct GestureRouter {
     pending_tap: Option<PendingTap>,
     /// The two-finger gesture in progress, if there is one.
     scale: Option<ActiveScale>,
+    /// The trackpad gesture in progress and what it was captured over.
+    ///
+    /// Held because a pan-zoom start stores its hit-test result the way a
+    /// pointer down does -- see [`PointerHandlers::on_pan_zoom_start`]. A
+    /// scroll keeps nothing, which is the difference.
+    pan_zoom: Option<ActivePanZoom>,
     /// Which regions the mouse is currently inside, innermost first, and what
     /// to tell them when it leaves.
     ///
@@ -1304,6 +1398,7 @@ impl GestureRouter {
             arenas: Vec::new(),
             pending_tap: None,
             scale: None,
+            pan_zoom: None,
             hovered: Vec::new(),
         }
     }
@@ -1695,6 +1790,13 @@ impl GestureRouter {
             return self.on_scroll(root, event);
         }
         match event.change {
+            // Captured on start, like a press -- see
+            // `PointerHandlers::on_pan_zoom_start`. The update and the end go
+            // where the start landed rather than re-hit-testing, which is what
+            // lets two fingers drift off the widget they are driving.
+            PointerChange::PanZoomStart => self.on_pan_zoom_start(root, event),
+            PointerChange::PanZoomUpdate => self.on_pan_zoom_update(event),
+            PointerChange::PanZoomEnd => self.on_pan_zoom_end(event),
             PointerChange::Down => self.on_down(root, event),
             PointerChange::Move => self.on_move(event),
             PointerChange::Up => self.on_up(event),
@@ -1774,6 +1876,84 @@ impl GestureRouter {
     /// Innermost-first, so a scrollable inside a scrollable takes the wheel;
     /// falling outward is what lets the page scroll when the wheel is over a
     /// row that does not scroll itself.
+    /// A trackpad gesture begins: hit-test once and keep the result.
+    fn on_pan_zoom_start(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
+        let mut result = HitTestResult::new();
+        root.hit_test(event.position, &mut result);
+        for entry in &result.path {
+            let Some(handlers) = entry.handlers.clone() else {
+                continue;
+            };
+            if handlers.on_pan_zoom_start.is_none()
+                && handlers.on_pan_zoom_update.is_none()
+                && handlers.on_pan_zoom_end.is_none()
+            {
+                continue;
+            }
+            let moment = PanZoomEvent {
+                local_position: entry.local_position,
+                ..PanZoomEvent::default()
+            };
+            if let Some(start) = &handlers.on_pan_zoom_start {
+                start(moment);
+            }
+            self.pan_zoom = Some(ActivePanZoom {
+                device: event.device,
+                handlers,
+                local_origin: entry.local_position,
+                pan: Offset::ZERO,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// A step of it, delivered where the start landed.
+    fn on_pan_zoom_update(&mut self, event: &PointerEvent) -> bool {
+        let Some(active) = self.pan_zoom.as_mut() else {
+            return false;
+        };
+        if active.device != event.device {
+            return false;
+        }
+        active.pan = Offset::new(
+            active.pan.dx + event.delta.dx,
+            active.pan.dy + event.delta.dy,
+        );
+        let moment = PanZoomEvent {
+            pan: active.pan,
+            pan_delta: event.delta,
+            scale: 1.0,
+            rotation: 0.0,
+            local_position: active.local_origin,
+        };
+        if let Some(update) = &active.handlers.on_pan_zoom_update {
+            update(moment);
+        }
+        true
+    }
+
+    /// And its end, which forgets the capture.
+    fn on_pan_zoom_end(&mut self, event: &PointerEvent) -> bool {
+        let Some(active) = self.pan_zoom.as_ref() else {
+            return false;
+        };
+        if active.device != event.device {
+            return false;
+        }
+        let active = self.pan_zoom.take().expect("checked just above");
+        if let Some(end) = &active.handlers.on_pan_zoom_end {
+            end(PanZoomEvent {
+                pan: active.pan,
+                pan_delta: Offset::ZERO,
+                scale: 1.0,
+                rotation: 0.0,
+                local_position: active.local_origin,
+            });
+        }
+        true
+    }
+
     fn on_scroll(&mut self, root: &dyn RenderBox, event: &PointerEvent) -> bool {
         let mut result = HitTestResult::new();
         root.hit_test(event.position, &mut result);
@@ -4069,8 +4249,14 @@ mod tests {
         }
         assert_eq!(*seen.borrow(), vec!["down", "move", "up", "cancel"]);
 
-        // And a hover or an add is not one of them: those are the router's,
-        // which tracks which regions the mouse is inside.
+        // And a hover, an add or a pan-zoom is not one of them -- but for two
+        // different reasons, which this used to run together.
+        //
+        // Hover and add are the router's because it tracks which regions the
+        // mouse is inside. A pan-zoom is the router's because it has to be
+        // *captured*: the start hit-tests and the rest of the gesture goes
+        // where the start landed, which a per-event handler like this one has
+        // no way to remember. See `GestureRouter::on_pan_zoom_start`.
         seen.borrow_mut().clear();
         for change in [
             PointerChange::Hover,
@@ -4303,5 +4489,237 @@ mod tests {
         }
         let now = (IOSScrollViewFlingVelocityTracker::SAMPLE_SIZE as i64 + 4) * 10_000;
         assert!((macos.velocity_estimate(now).pixels_per_second.dy - 500.0).abs() < 1.0);
+    }
+}
+
+#[cfg(test)]
+mod pan_zoom_tests {
+    use super::*;
+    use crate::render::{BoxConstraints, RenderBox, RenderPointerRegion};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Seen {
+        starts: Vec<Offset>,
+        updates: Vec<PanZoomEvent>,
+        ends: Vec<PanZoomEvent>,
+        scrolls: usize,
+    }
+
+    fn region(id: u64, seen: &Rc<RefCell<Seen>>, size: f32) -> RenderPointerRegion {
+        let for_start = Rc::clone(seen);
+        let for_update = Rc::clone(seen);
+        let for_end = Rc::clone(seen);
+        let handlers = PointerHandlers::new()
+            .with_pan_zoom_start(move |event| {
+                for_start.borrow_mut().starts.push(event.local_position);
+            })
+            .with_pan_zoom_update(move |event| for_update.borrow_mut().updates.push(event))
+            .with_pan_zoom_end(move |event| for_end.borrow_mut().ends.push(event));
+        RenderPointerRegion::new(id, crate::widgets::SizedBox::new(size, size))
+            .with_handlers(handlers)
+    }
+
+    fn laid_out(mut root: RenderPointerRegion) -> RenderPointerRegion {
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        root
+    }
+
+    fn at(change: PointerChange, x: f32, y: f32, dx: f32, dy: f32) -> PointerEvent {
+        PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            // Upstream hard-codes the kind on all three pan-zoom events: a
+            // gesture like this cannot come from a mouse or a finger.
+            kind: PointerKind::Trackpad,
+            signal_kind: SignalKind::None,
+            buttons: 0,
+            time_stamp_micros: 0,
+            position: Offset::new(x, y),
+            delta: Offset::new(dx, dy),
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: Offset::new(x, y),
+        }
+    }
+
+    #[test]
+    fn a_trackpad_gesture_reaches_the_region_it_began_over() {
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 100.0));
+        let mut router = GestureRouter::new();
+
+        assert!(router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0)
+        ));
+        assert_eq!(seen.borrow().starts, vec![Offset::new(10.0, 10.0)]);
+    }
+
+    #[test]
+    fn and_keeps_reaching_it_after_the_fingers_leave_it() {
+        // The whole point of capturing on start: two fingers that drift off
+        // the widget they are driving keep driving it, the way a drag does.
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 40.0));
+        let mut router = GestureRouter::new();
+
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0),
+        );
+        // Well outside the forty-pixel region.
+        assert!(router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 500.0, 500.0, 5.0, 5.0)
+        ));
+        assert_eq!(seen.borrow().updates.len(), 1);
+    }
+
+    #[test]
+    fn a_scroll_over_the_same_region_re_hit_tests_instead() {
+        // The contrast that makes the capture worth having. A wheel over a
+        // different widget is a different widget's scroll; the router keeps
+        // nothing between one and the next.
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let scrolls = Rc::clone(&seen);
+        let handlers = PointerHandlers::new().with_scroll(move |_| {
+            scrolls.borrow_mut().scrolls += 1;
+        });
+        let mut root = RenderPointerRegion::new(1, crate::widgets::SizedBox::new(40.0, 40.0))
+            .with_handlers(handlers);
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        let mut router = GestureRouter::new();
+
+        let mut inside = at(PointerChange::Hover, 10.0, 10.0, 0.0, 0.0);
+        inside.signal_kind = SignalKind::Scroll;
+        assert!(router.dispatch(&root, &inside));
+
+        let mut outside = at(PointerChange::Hover, 500.0, 500.0, 0.0, 0.0);
+        outside.signal_kind = SignalKind::Scroll;
+        assert!(
+            !router.dispatch(&root, &outside),
+            "nothing was remembered from the first one"
+        );
+        assert_eq!(seen.borrow().scrolls, 1);
+    }
+
+    #[test]
+    fn the_update_carries_the_total_and_the_step() {
+        // Upstream sends both so a listener never has to integrate or
+        // differentiate: panning wants the step, a readout wants the total.
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 100.0));
+        let mut router = GestureRouter::new();
+
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0),
+        );
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 12.0, 10.0, 2.0, 0.0),
+        );
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 15.0, 10.0, 3.0, 0.0),
+        );
+
+        let seen = seen.borrow();
+        assert_eq!(seen.updates[0].pan_delta, Offset::new(2.0, 0.0));
+        assert_eq!(seen.updates[0].pan, Offset::new(2.0, 0.0));
+        assert_eq!(seen.updates[1].pan_delta, Offset::new(3.0, 0.0));
+        assert_eq!(
+            seen.updates[1].pan,
+            Offset::new(5.0, 0.0),
+            "the total is the steps added up, not the last step"
+        );
+    }
+
+    #[test]
+    fn a_scales_resting_value_is_one_and_not_zero() {
+        // `PanZoomEvent::default()` cannot be derived: a scale of zero is a
+        // collapsed view where the identity of a scale is one.
+        let resting = PanZoomEvent::default();
+        assert_eq!(resting.scale, 1.0);
+        assert_eq!(resting.rotation, 0.0, "and rotation's identity *is* zero");
+        assert_eq!(resting.pan, Offset::ZERO);
+    }
+
+    #[test]
+    fn the_end_forgets_the_capture() {
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 100.0));
+        let mut router = GestureRouter::new();
+
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0),
+        );
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 12.0, 10.0, 2.0, 0.0),
+        );
+        assert!(router.dispatch(&root, &at(PointerChange::PanZoomEnd, 12.0, 10.0, 0.0, 0.0)));
+        assert_eq!(seen.borrow().ends.len(), 1);
+        assert_eq!(
+            seen.borrow().ends[0].pan,
+            Offset::new(2.0, 0.0),
+            "the end reports the total the gesture reached"
+        );
+
+        // A stray update after the end has nothing to go to.
+        assert!(!router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 14.0, 10.0, 2.0, 0.0)
+        ));
+        assert_eq!(seen.borrow().updates.len(), 1);
+    }
+
+    #[test]
+    fn an_update_with_no_start_before_it_goes_nowhere() {
+        // There is nothing captured, and re-hit-testing here would be the
+        // scroll rule applied to a gesture that is not one.
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 100.0));
+        let mut router = GestureRouter::new();
+        assert!(!router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomUpdate, 10.0, 10.0, 2.0, 0.0)
+        ));
+        assert!(seen.borrow().updates.is_empty());
+    }
+
+    #[test]
+    fn a_region_that_wants_none_of_it_does_not_capture_the_gesture() {
+        // Or a widget with no trackpad handling would swallow gestures meant
+        // for whatever is behind it.
+        let mut root = RenderPointerRegion::new(1, crate::widgets::SizedBox::new(100.0, 100.0))
+            .with_handlers(PointerHandlers::new());
+        root.layout(BoxConstraints::loose(200.0, 200.0));
+        let mut router = GestureRouter::new();
+        assert!(!router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn another_device_cannot_drive_someone_elses_gesture() {
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let root = laid_out(region(1, &seen, 100.0));
+        let mut router = GestureRouter::new();
+
+        router.dispatch(
+            &root,
+            &at(PointerChange::PanZoomStart, 10.0, 10.0, 0.0, 0.0),
+        );
+        let mut other = at(PointerChange::PanZoomUpdate, 12.0, 10.0, 2.0, 0.0);
+        other.device = 9;
+        assert!(!router.dispatch(&root, &other));
+        assert!(seen.borrow().updates.is_empty());
     }
 }
