@@ -13437,3 +13437,34 @@ sliver 走的是 `sliver_hit_test`，而 `RenderSliverPersistentHeader`
 于是我"恢复"完文件之后它又写了一次，测试红在一个我以为已经修好的地方。
 `variant_sweep.py` 现在开跑前会检查残留的 `.sweep` 备份并先恢复——
 `finally` 在进程被杀时是不跑的，而扫描正是那种会被人中途叫停的长活。
+
+---
+
+## 孩子溢出，盒子不溢出（2026-08-24）
+
+`OverflowBoxFit` 两个值。孩子**两种情况下都是按溢出约束量的**——
+那正是这个盒子叫 overflow box 的原因，也是孩子可以比装它的盒子大的原因。
+这个枚举决定的是**盒子自己**的尺寸。
+
+- `Max`：父允许多大就多大，**完全不提孩子**。
+  正因为不提，上游才能把它标成 `sizedByParent`——
+  尺寸里没有孩子，那么给孩子布局就不可能改变它。
+- `DeferToChild`：`constraints.constrain(child.size)`。
+
+第二条那个 `constrain` 是关键。孩子按溢出约束量出来可能是 300，
+而盒子只允许 100——**于是孩子溢出，盒子不溢出**。
+要是直接取孩子的尺寸，这个 widget 就没意义了：
+它存在的全部理由就是让孩子超出自己而不超出父亲。
+
+上游明确写「`deferToChild` ... 因此不能是 sizedByParent」。
+移植把它当成事实带着（`sized_by_parent()`），
+而不是当成一个钩子——这个 crate 的 `RenderBox` 没有把 resize 和 layout 分开。
+真正依赖它的是 `compute_dry_layout` 要不要问孩子。
+
+### 和上一轮的对比
+
+上一轮 `SliverPaintOrder` 的接线被撤掉了，因为没有测试能分辨两个值。
+这一轮不一样：`Max` 和 `DeferToChild` 在一个 20×20 的孩子上就给出不同的盒子尺寸，
+干布局和实际布局都测了，五个变异全红。**同样的标准，不同的结果。**
+
+coverage 2102 / 1998 记账 / **23 MISSING**。

@@ -7405,6 +7405,27 @@ impl RenderBox for RenderFractionallySizedBox {
     }
 }
 
+/// Upstream `OverflowBoxFit`: whether an overflow box takes its own size from
+/// its parent or from its child.
+///
+/// The child is laid out under the overflow constraints either way -- that is
+/// what makes it an overflow box, and it is why the child may be larger than
+/// the box holding it. What this decides is the **box's** size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OverflowBoxFit {
+    /// As large as the parent allows, whatever the child did.
+    ///
+    /// Upstream's default, and the reason it can be `sizedByParent`: the size
+    /// does not mention the child, so laying the child out cannot change it.
+    #[default]
+    Max,
+    /// The child's size, brought back inside the parent's constraints.
+    ///
+    /// Upstream notes this "cannot be sizedByParent", and that note is the
+    /// whole difference: a size that follows the child has to wait for it.
+    DeferToChild,
+}
+
 /// Imposes different constraints on its child than it got, letting the child
 /// overflow.
 ///
@@ -7420,6 +7441,7 @@ pub struct RenderOverflowBox {
     min_height: Option<f32>,
     max_height: Option<f32>,
     alignment: Alignment,
+    fit: OverflowBoxFit,
     size: Size,
     child_offset: Offset,
 }
@@ -7433,6 +7455,7 @@ impl RenderOverflowBox {
             min_height: None,
             max_height: None,
             alignment: Alignment::CENTER,
+            fit: OverflowBoxFit::Max,
             size: Size::ZERO,
             child_offset: Offset::ZERO,
         }
@@ -7446,9 +7469,26 @@ impl RenderOverflowBox {
             min_height: None,
             max_height: None,
             alignment: Alignment::CENTER,
+            fit: OverflowBoxFit::Max,
             size: Size::ZERO,
             child_offset: Offset::ZERO,
         }
+    }
+
+    /// Upstream's `fit`.
+    pub fn with_fit(mut self, fit: OverflowBoxFit) -> RenderOverflowBox {
+        self.fit = fit;
+        self
+    }
+
+    /// Upstream's `sizedByParent`, which is exactly this switch.
+    ///
+    /// Not a method on this crate's `RenderBox` -- nothing here splits sizing
+    /// from layout the way upstream's `performResize` does -- so it is carried
+    /// as the fact rather than as a hook, and what turns on it is whether
+    /// [`RenderOverflowBox::compute_dry_layout`] has to ask the child.
+    pub fn sized_by_parent(&self) -> bool {
+        matches!(self.fit, OverflowBoxFit::Max)
     }
 
     pub fn with_min_width(mut self, min_width: f32) -> Self {
@@ -7519,7 +7559,15 @@ impl RenderBox for RenderOverflowBox {
         let child_size = self
             .child
             .layout_child(self.inner_constraints(constraints), true);
-        self.size = constraints.biggest();
+        // The child was measured against the overflow constraints, so it may
+        // be larger than anything this box is allowed to be. Under
+        // `DeferToChild` upstream writes `constraints.constrain(child.size)`:
+        // the box follows the child *back inside its own limits*, so the child
+        // still overflows and the box still does not.
+        self.size = match self.fit {
+            OverflowBoxFit::Max => constraints.biggest(),
+            OverflowBoxFit::DeferToChild => constraints.constrain(child_size),
+        };
         self.child_offset = self.alignment.inscribe(child_size, self.size);
         self.size
     }
@@ -7528,10 +7576,19 @@ impl RenderBox for RenderOverflowBox {
         self.size
     }
 
-    /// `sizedByParent` upstream: the dry answer is the constraints', with no
-    /// reference to the child at all.
+    /// Upstream's `computeDryLayout`, the same switch as the real one: the
+    /// constraints' biggest under `Max`, the child's own dry answer under
+    /// `DeferToChild`.
+    ///
+    /// Only the first is `sizedByParent`. A dry layout that has to ask the
+    /// child is one that can change when the child does.
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
-        constraints.biggest()
+        match self.fit {
+            OverflowBoxFit::Max => constraints.biggest(),
+            OverflowBoxFit::DeferToChild => {
+                constraints.constrain(self.child.dry_layout(self.inner_constraints(constraints)))
+            }
+        }
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -24010,5 +24067,98 @@ mod sliver_paint_order_tests {
     #[test]
     fn a_viewport_puts_the_first_sliver_on_top_unless_told_otherwise() {
         assert_eq!(SliverPaintOrder::default(), SliverPaintOrder::FirstIsTop);
+    }
+}
+
+#[cfg(test)]
+mod overflow_box_fit_tests {
+    use super::tests::FixedBox;
+    use super::*;
+
+    /// An overflow box whose child is told it may be 300 wide in a window that
+    /// allows at most 100, so the child genuinely overflows.
+    fn overflowing(fit: OverflowBoxFit, child: Size) -> RenderOverflowBox {
+        RenderOverflowBox::new(FixedBox::new(child.width, child.height))
+            .with_fit(fit)
+            .with_max_width(300.0)
+            .with_max_height(300.0)
+    }
+
+    fn laid_out(fit: OverflowBoxFit, child: Size) -> Size {
+        let mut box_ = overflowing(fit, child);
+        box_.layout(BoxConstraints::loose(100.0, 100.0))
+    }
+
+    #[test]
+    fn max_takes_the_whole_window_whatever_the_child_did() {
+        // The size does not mention the child, which is why upstream can call
+        // it sizedByParent.
+        assert_eq!(
+            laid_out(OverflowBoxFit::Max, Size::new(20.0, 20.0)),
+            Size::new(100.0, 100.0)
+        );
+        assert_eq!(
+            laid_out(OverflowBoxFit::Max, Size::new(300.0, 300.0)),
+            Size::new(100.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn and_defer_to_child_follows_the_child_instead() {
+        // A small child makes a small box, which max would never do.
+        assert_eq!(
+            laid_out(OverflowBoxFit::DeferToChild, Size::new(20.0, 20.0)),
+            Size::new(20.0, 20.0)
+        );
+        assert_ne!(
+            laid_out(OverflowBoxFit::DeferToChild, Size::new(20.0, 20.0)),
+            laid_out(OverflowBoxFit::Max, Size::new(20.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn but_the_box_is_still_brought_back_inside_its_own_limits() {
+        // `constraints.constrain(child.size)`. The child was measured against
+        // the overflow constraints and came back at 300; the box may be 100.
+        // So the child overflows and the box does not -- which is the point of
+        // the widget, and would be lost if the size were simply the child's.
+        let mut box_ = overflowing(OverflowBoxFit::DeferToChild, Size::new(300.0, 300.0));
+        let size = box_.layout(BoxConstraints::loose(100.0, 100.0));
+        assert_eq!(size, Size::new(100.0, 100.0));
+        assert_eq!(
+            box_.child.size(),
+            Size::new(300.0, 300.0),
+            "the child did overflow"
+        );
+    }
+
+    #[test]
+    fn the_dry_answer_agrees_with_the_real_one_either_way() {
+        for fit in [OverflowBoxFit::Max, OverflowBoxFit::DeferToChild] {
+            for child in [Size::new(20.0, 20.0), Size::new(300.0, 300.0)] {
+                let dry =
+                    overflowing(fit, child).compute_dry_layout(BoxConstraints::loose(100.0, 100.0));
+                assert_eq!(dry, laid_out(fit, child), "{fit:?} {child:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_one_of_the_two_can_answer_without_the_child() {
+        // Which is upstream's `sizedByParent`, and it is not a free label:
+        // the dry layout under DeferToChild has to lay the child out to
+        // answer, and the one under Max does not.
+        assert!(RenderOverflowBox::new(FixedBox::new(1.0, 1.0)).sized_by_parent());
+        assert!(
+            !RenderOverflowBox::new(FixedBox::new(1.0, 1.0))
+                .with_fit(OverflowBoxFit::DeferToChild)
+                .sized_by_parent()
+        );
+    }
+
+    #[test]
+    fn an_overflow_box_takes_the_window_unless_told_otherwise() {
+        assert_eq!(OverflowBoxFit::default(), OverflowBoxFit::Max);
+        assert!(RenderOverflowBox::new(FixedBox::new(1.0, 1.0)).sized_by_parent());
     }
 }
