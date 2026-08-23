@@ -11235,3 +11235,58 @@ defaults 类的 `overlayColor` 兜底返回 **null**；几行之下 `resolveStat
 
 无读者主题 5 → 4（另 1 个上游已废弃，不计）。
 
+## 下拉菜单：一个几乎全由别人的主题组成的主题（2026-08-23）
+
+### 这个主题本身就是别的组件的主题
+
+`DropdownMenuThemeData` 四个字段里有三个是别人的类型：一个 `TextStyle`、
+一个 `MenuStyle`、一个 `InputDecorationThemeData`。这个文件里其他每个主题都在
+描述**它自己那个 widget** 长什么样；这一个说的是
+**「当这些组件出现在一个下拉菜单里时，它们改成什么」**。
+
+### 于是包在下拉菜单外面的 `MenuTheme` 够不到它的菜单
+
+菜单样式是以 `MenuAnchor(style: effectiveMenuStyle)` 送进去的，
+那是 [`ResolvedMenuPanel`] 链条上的 **widget 那一步**——在 `MenuTheme` 之上。
+而 `effectiveMenuStyle` 永远非空（defaults 类会给一个）。
+
+### 每个子主题都是**整块**取的，而这正是那个区分的另一端
+
+`widget.menuStyle ?? theme.menuStyle ?? defaults.menuStyle`，
+文字样式和输入装饰主题同样如此。**第一个非空的对象整块赢。**
+
+[`ResolvedIconButton`] 记的是另一端：那里上游写 `merge`，逐字段合并。
+这里是 `??`，所以一个为了改一件事而设了 `DropdownMenuTheme.menuStyle` 的调用者，
+**连 `_kMinimumWidth`、最大尺寸和视觉密度一起悄悄丢掉了**。
+
+### 菜单至少和开它的那个输入框一样宽
+
+活下来的那个 `minimumSize` 随后被 `min(anchorWidth, maximumWidth)` 覆盖掉
+（给了 `width` 就用给的那个）。比自己的输入框还窄的下拉菜单，
+看起来像是开出了另一个控件。
+
+于是 defaults 的菜单样式带的三个字段里：`minimumSize` 只要 anchor 量过就被换掉，
+`maximumSize` 只要给了 `menuHeight` 就被换掉，**只有 `visualDensity`
+是原样到达面板的**。
+
+### 那个下限的夹取，读的是最后定下来的上限
+
+上游把下限写成一个闭包，闭包捕获的是**变量** `effectiveMenuStyle`，
+而这个变量在之后又被 `menuHeight` 重新赋值。Dart 的闭包捕获变量而不是值，
+所以闭包真正运行时读到的是被重新赋值之后的上限。
+
+后果：给一个 `menuHeight`——它把上限整个换成 `Size(infinity, height)`——
+**同时也把下限本来要夹的那个宽度上限抹掉了**，于是下限变成不设夹的 anchor 宽度。
+**一个高度悄悄把菜单变宽了。** 本移植按「读发生的顺序」而不是「写发生的顺序」
+写出来，就是 `minimum_width`。
+
+### 下拉框的输入框默认是外框，普通输入框不是
+
+`defaults.inputDecorationTheme` 是 `border: OutlineInputBorder()`，
+而 `_getDefaultBorder` 的兜底是 `const UnderlineInputBorder()`。
+下拉框是一个「按」的成分不亚于「打字」的字段，而一个框比一条线更像可按的。
+
+14 个变异，14 个全红。每条新测试都单独跑过一遍，不只是在群里跑。
+
+无读者主题 4 → 3（另 1 个上游已废弃，不计）。
+

@@ -326,6 +326,17 @@ impl DropdownMenu {
         }
     }
 
+    /// This menu's appearance -- see
+    /// [`crate::component_themes::ResolvedDropdownMenu`], most of which is
+    /// other components' themes.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        enabled: bool,
+    ) -> crate::component_themes::ResolvedDropdownMenu {
+        crate::component_themes::ResolvedDropdownMenu::of(context, enabled)
+    }
+
     pub fn with_initial_selection(mut self, value: i32) -> Self {
         self.initial_selection = Some(value);
         self.selection = Some(value);
@@ -764,5 +775,273 @@ mod aligned_dropdown_tests {
             assert_eq!(resolved.menu_margin.top, 0.0);
             assert_eq!(resolved.menu_margin.bottom, 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod dropdown_menu_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        DropdownMenuTheme, DropdownMenuThemeData, InputDecorationThemeData, MenuStyle,
+        ResolvedDropdownMenu,
+    };
+    use crate::engine::{Color, TextStyle};
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::Size;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        enabled: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDropdownMenu>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() =
+                Some(DropdownMenu::new(Vec::new()).resolved(context, self.enabled));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(data: DropdownMenuThemeData, enabled: bool) -> ResolvedDropdownMenu {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(DropdownMenuTheme::new(
+            data,
+            component(Reader {
+                enabled,
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain(enabled: bool) -> ResolvedDropdownMenu {
+        resolve(DropdownMenuThemeData::new(), enabled)
+    }
+
+    #[test]
+    fn a_theme_style_replaces_the_defaults_whole_rather_than_field_by_field() {
+        // The `??` end of the distinction `ResolvedIconButton` records the
+        // other end of. Setting one thing discards everything the defaults
+        // were carrying.
+        let mut mine = MenuStyle::new();
+        mine.visual_density = Some(crate::theme::VisualDensity::STANDARD);
+        let resolved = resolve(
+            DropdownMenuThemeData {
+                menu_style: Some(mine),
+                ..DropdownMenuThemeData::new()
+            },
+            true,
+        );
+        assert_eq!(
+            resolved.menu_style.minimum_size, None,
+            "the 112 floor went with it"
+        );
+        assert_eq!(resolved.menu_style.maximum_size, None);
+
+        // Where the defaults do carry all three.
+        let defaults = plain(true).menu_style;
+        assert!(defaults.minimum_size.is_some());
+        assert!(defaults.maximum_size.is_some());
+        assert!(defaults.visual_density.is_some());
+    }
+
+    #[test]
+    fn the_default_menu_style_carries_the_width_floor() {
+        let style = ResolvedDropdownMenu::default_menu_style();
+        assert_eq!(
+            style
+                .minimum_size
+                .as_ref()
+                .and_then(|p| p.resolve(WidgetStates::NONE))
+                .map(|size| size.width),
+            Some(112.0)
+        );
+        assert_eq!(
+            style
+                .minimum_size
+                .as_ref()
+                .and_then(|p| p.resolve(WidgetStates::NONE))
+                .map(|size| size.height),
+            Some(0.0),
+            "a width floor and no height floor -- the entries decide that"
+        );
+    }
+
+    // -- The width, in the order the reads happen ------------------------------
+
+    #[test]
+    fn the_menu_is_at_least_as_wide_as_the_field_that_opened_it() {
+        // A dropdown narrower than its own field would look like a different
+        // control opening.
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(None, Some(300.0), None, None),
+            Some(300.0)
+        );
+    }
+
+    #[test]
+    fn a_given_width_beats_the_anchors() {
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(Some(200.0), Some(300.0), None, None),
+            Some(200.0)
+        );
+    }
+
+    #[test]
+    fn and_either_is_clamped_by_the_maximum() {
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(None, Some(900.0), None, Some(400.0)),
+            Some(400.0)
+        );
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(Some(900.0), None, None, Some(400.0)),
+            Some(400.0)
+        );
+    }
+
+    #[test]
+    fn a_menu_height_silently_removes_that_clamp() {
+        // The resolver closes over the *variable*, and the maximum is
+        // reassigned after it is written, so the clamp reads the maximum that
+        // ends up final -- `Size(infinity, height)`, which has no width in it.
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(None, Some(900.0), Some(240.0), Some(400.0)),
+            Some(900.0),
+            "the 400 cap is gone because a height replaced the whole maximum"
+        );
+        assert_ne!(
+            ResolvedDropdownMenu::minimum_width(None, Some(900.0), Some(240.0), Some(400.0)),
+            ResolvedDropdownMenu::minimum_width(None, Some(900.0), None, Some(400.0)),
+            "which is only visible because the two differ"
+        );
+    }
+
+    #[test]
+    fn with_neither_a_width_nor_an_anchor_there_is_nothing_to_say() {
+        // Before the anchor has been measured there is no width to floor to,
+        // and the style's own minimum stands.
+        assert_eq!(
+            ResolvedDropdownMenu::minimum_width(None, None, None, Some(400.0)),
+            None
+        );
+    }
+
+    // -- The other three fields -------------------------------------------------
+
+    #[test]
+    fn a_disabled_menu_gets_a_text_style_even_with_no_base_to_recolour() {
+        // `baseTextStyle?.copyWith(...) ?? TextStyle(color: disabledColor)`.
+        let grey = Color(0xFF888888);
+        let from_nothing = ResolvedDropdownMenu::text_style_for(None, false, grey);
+        assert_eq!(from_nothing.map(|style| style.color), Some(grey));
+
+        assert_eq!(
+            ResolvedDropdownMenu::text_style_for(None, true, grey),
+            None,
+            "where an enabled one with no base has no style at all"
+        );
+    }
+
+    #[test]
+    fn and_a_disabled_one_keeps_the_rest_of_the_style_it_recoloured() {
+        let grey = Color(0xFF888888);
+        let base = TextStyle {
+            font_size: 31.0,
+            color: Color(0xFF000000),
+            ..TextStyle::default()
+        };
+        let recoloured =
+            ResolvedDropdownMenu::text_style_for(Some(base.clone()), false, grey).unwrap();
+        assert_eq!(recoloured.color, grey);
+        assert_eq!(recoloured.font_size, 31.0, "the size survived");
+
+        assert_eq!(
+            ResolvedDropdownMenu::text_style_for(Some(base.clone()), true, grey),
+            Some(base),
+            "and an enabled one is left alone"
+        );
+    }
+
+    #[test]
+    fn the_disabled_colour_is_the_same_fade_as_everywhere_else() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            plain(true).disabled_color,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.38)
+        );
+        assert_eq!(
+            plain(false).text_style.map(|style| style.color),
+            Some(plain(true).disabled_color)
+        );
+    }
+
+    #[test]
+    fn a_dropdowns_field_is_outlined_where_a_bare_ones_is_not() {
+        // `defaults.inputDecorationTheme` is `border: OutlineInputBorder()`,
+        // against `_getDefaultBorder`'s `?? const UnderlineInputBorder()`.
+        assert!(plain(true).input_border_is_outline);
+        assert!(
+            !resolve(
+                DropdownMenuThemeData {
+                    input_decoration_theme: Some(InputDecorationThemeData::new()),
+                    ..DropdownMenuThemeData::new()
+                },
+                true
+            )
+            .input_border_is_outline,
+            "and a theme that supplies one takes that default with it, whole"
+        );
+    }
+
+    #[test]
+    fn the_theme_supplies_the_text_style_over_the_typography() {
+        let mine = TextStyle {
+            font_size: 41.0,
+            ..TextStyle::default()
+        };
+        let resolved = resolve(
+            DropdownMenuThemeData {
+                text_style: Some(mine),
+                ..DropdownMenuThemeData::new()
+            },
+            true,
+        );
+        assert_eq!(resolved.text_style.map(|style| style.font_size), Some(41.0));
+        assert_eq!(
+            plain(true).text_style.map(|style| style.font_size),
+            ThemeData::fallback()
+                .text_theme
+                .body_large
+                .map(|style| style.font_size),
+            "and with none, the typography's bodyLarge"
+        );
+    }
+
+    #[test]
+    fn a_menu_style_from_the_theme_reaches_the_panel_as_the_widget_step() {
+        // Which is why a `MenuTheme` around a dropdown cannot move these: the
+        // dropdown hands them in above it.
+        let mut mine = MenuStyle::new();
+        mine.minimum_size = Some(StateProperty::all(Some(Size::new(500.0, 0.0))));
+        let resolved = resolve(
+            DropdownMenuThemeData {
+                menu_style: Some(mine),
+                ..DropdownMenuThemeData::new()
+            },
+            true,
+        );
+        assert_eq!(
+            resolved
+                .menu_style
+                .minimum_size
+                .as_ref()
+                .and_then(|p| p.resolve(WidgetStates::NONE))
+                .map(|size| size.width),
+            Some(500.0)
+        );
     }
 }

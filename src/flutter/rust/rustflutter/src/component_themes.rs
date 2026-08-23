@@ -4007,6 +4007,173 @@ impl ResolvedSegmentedButton {
     }
 }
 
+/// What a dropdown menu is drawn with -- upstream's `_DropdownMenuState.build`
+/// reading `DropdownMenuTheme.of` and `_DropdownMenuDefaultsM3`.
+///
+/// # This theme is mostly other components' themes
+///
+/// Three of `DropdownMenuThemeData`'s four fields are somebody else's type: a
+/// `TextStyle`, a [`MenuStyle`] and an `InputDecorationThemeData`. Every other
+/// theme in this file describes how its own widget looks; this one says **what
+/// those components are instead, when they appear inside a dropdown menu**.
+///
+/// # So a `MenuTheme` around a dropdown does not reach its menu
+///
+/// The menu style arrives as `MenuAnchor(style: effectiveMenuStyle)`, which is
+/// the *widget* step of [`ResolvedMenuPanel`]'s chain -- the step above
+/// `MenuTheme`. And `effectiveMenuStyle` is never null, because the defaults
+/// class supplies one. So a `MenuTheme` can only contribute fields the
+/// dropdown's own style left null, and the fields the defaults fill are not
+/// among them.
+///
+/// # Each sub-theme is taken whole, and this is the `??` end of a distinction
+///
+/// `widget.menuStyle ?? theme.menuStyle ?? defaults.menuStyle`, and the same
+/// shape for the text style and the input decoration theme. **The first
+/// non-null object wins entirely.**
+///
+/// [`ResolvedIconButton`] records the other choice, where upstream writes
+/// `merge` and combines field by field. Here it is `??`, so a caller who sets
+/// `DropdownMenuTheme.menuStyle` to change one thing has silently discarded
+/// `_kMinimumWidth`, the maximum size and the visual density along with it --
+/// the whole of what the defaults were carrying.
+///
+/// # The menu is at least as wide as the field that opened it
+///
+/// Whatever `minimumSize` survived the ladder is then overwritten with
+/// `min(anchorWidth, maximumWidth)` -- or `min(widget.width, maximumWidth)`
+/// when a width was given. A dropdown narrower than its own field would look
+/// like a different control opening.
+///
+/// Of the three fields the defaults' menu style carries, that leaves
+/// `minimumSize` replaced on any build where the anchor has been measured,
+/// `maximumSize` replaced whenever a `menuHeight` is given, and only
+/// `visualDensity` reaching the panel as written.
+///
+/// # The minimum's clamp reads the maximum that ends up final
+///
+/// Upstream builds the minimum as a resolver closing over the **variable**
+/// `effectiveMenuStyle`, and then reassigns that variable when `menuHeight` is
+/// set. Dart closures capture variables rather than values, so by the time the
+/// resolver runs it reads the reassigned maximum.
+///
+/// The consequence is that giving a `menuHeight` -- which replaces the maximum
+/// with `Size(infinity, height)` -- also removes the width cap the minimum was
+/// clamping against, so the minimum becomes the anchor's width unclamped. A
+/// height silently widens the menu. Written in the order the reads happen
+/// rather than the order the writes do, which is what
+/// [`ResolvedDropdownMenu::minimum_width`] does.
+///
+/// # A dropdown's field is outlined and a bare text field's is not
+///
+/// `defaults.inputDecorationTheme` is `InputDecorationThemeData(border:
+/// OutlineInputBorder())`, where `_getDefaultBorder` falls back to
+/// `const UnderlineInputBorder()` for everything else. A dropdown is a field
+/// you press as much as one you type in, and a box reads as pressable where a
+/// rule does not.
+pub struct ResolvedDropdownMenu {
+    pub text_style: Option<TextStyle>,
+    pub disabled_color: Color,
+    pub menu_style: MenuStyle,
+    pub input_border_is_outline: bool,
+}
+
+impl ResolvedDropdownMenu {
+    /// Upstream's `_kMinimumWidth`, the floor the defaults' menu style carries
+    /// -- and that a caller replacing that style loses.
+    pub const MINIMUM_WIDTH: f32 = 112.0;
+    /// Upstream's `disabledColor`, the same 0.38 as everywhere else.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+
+    /// Upstream's `defaults.menuStyle`: a width floor, no ceiling, and the
+    /// standard density.
+    pub fn default_menu_style() -> MenuStyle {
+        let mut style = MenuStyle::new();
+        style.minimum_size = Some(StateProperty::all(Some(Size::new(
+            ResolvedDropdownMenu::MINIMUM_WIDTH,
+            0.0,
+        ))));
+        style.maximum_size = Some(StateProperty::all(Some(Size::new(
+            f32::INFINITY,
+            f32::INFINITY,
+        ))));
+        style.visual_density = Some(VisualDensity::STANDARD);
+        style
+    }
+
+    /// Upstream's `effectiveTextStyle`: the base, and a disabled menu's is that
+    /// base recoloured -- or a style carrying nothing but the colour, if there
+    /// was no base to recolour.
+    pub fn text_style_for(
+        base: Option<TextStyle>,
+        enabled: bool,
+        disabled: Color,
+    ) -> Option<TextStyle> {
+        if enabled {
+            return base;
+        }
+        Some(match base {
+            Some(style) => TextStyle {
+                color: disabled,
+                ..style
+            },
+            None => TextStyle {
+                color: disabled,
+                ..TextStyle::default()
+            },
+        })
+    }
+
+    /// The menu's minimum width, written in the order the reads happen.
+    ///
+    /// The caller's width beats the anchor's, and either is clamped by the
+    /// **final** maximum -- which is `None` once a `menuHeight` has replaced
+    /// it, so a height removes the clamp. See the type's docs.
+    pub fn minimum_width(
+        given_width: Option<f32>,
+        anchor_width: Option<f32>,
+        menu_height: Option<f32>,
+        style_maximum_width: Option<f32>,
+    ) -> Option<f32> {
+        let wanted = given_width.or(anchor_width)?;
+        let maximum = if menu_height.is_some() {
+            // `Size(infinity, height)` -- the width ceiling went with it.
+            None
+        } else {
+            style_maximum_width
+        };
+        Some(match maximum {
+            Some(cap) => wanted.min(cap),
+            None => wanted,
+        })
+    }
+
+    pub fn of(context: &mut BuildContext, enabled: bool) -> ResolvedDropdownMenu {
+        let theme = ThemeData::of(context);
+        let data = DropdownMenuTheme::of(context);
+        let disabled_color = data.disabled_color.unwrap_or_else(|| {
+            crate::elevation_overlay::with_opacity(
+                theme.color_scheme.on_surface,
+                ResolvedDropdownMenu::DISABLED_OPACITY,
+            )
+        });
+        let base = data
+            .text_style
+            .clone()
+            .or(theme.text_theme.body_large.clone());
+        ResolvedDropdownMenu {
+            text_style: ResolvedDropdownMenu::text_style_for(base, enabled, disabled_color),
+            disabled_color,
+            // Whole or not at all -- see the type's docs.
+            menu_style: data
+                .menu_style
+                .clone()
+                .unwrap_or_else(ResolvedDropdownMenu::default_menu_style),
+            input_border_is_outline: data.input_decoration_theme.is_none(),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
