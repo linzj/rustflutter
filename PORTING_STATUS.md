@@ -13850,3 +13850,31 @@ if (widget.closeBehavior == DropdownMenuCloseBehavior.self) {
 每次那个空缺的组合都不是疏漏，而是**不想要的那件事**。
 
 五个变异全红。coverage 2102 / 2013 记账 / **8 MISSING**。
+
+---
+
+## 又一次「画的和摸的互为倒序」，这回从语义树那头来（2026-08-24）
+
+`DebugSemanticsDumpOrder` 两个值，各自对着一个不同的问题：
+
+- `traversalOrder`：读者用「下一个 / 上一个」走过界面的顺序。上游到处的默认值。
+- `inverseHitTest`：孩子**被问「你要不要这次触摸」**的顺序——最后一个先问。
+  因为后画的盖在先画的上面，最后那个在最上面，就得先问它。
+
+**两者互为倒序，是因为画和摸互为倒序**——
+和 `SliverPaintOrder` 带着的是同一条规则，只是这次从语义树那一头撞上。
+移植里 `children` 本来就按遍历序存着，所以另一个是它的**反转**，
+不是第二张表——加一个孩子时两者不会各走各的。
+
+四个变异全红。
+
+### 顺带记账一个映射
+
+`RepeatMode`（restart / reverse）对上本移植的 `animation::Repeat`。
+逐条核过：上游 `_controller.repeat(reverse: mode == reverse)`，
+于是 restart ↔ `Loop`（`rem_euclid(1.0)`，绕回 0），
+reverse ↔ `PingPong`（折到 [0,2) 再镜像，并翻转方向）。
+`Repeat::Once` 没有对应值——**只跑一次的 RepeatingAnimationBuilder 就不叫 repeating 了**，
+那个值属于通用的 Controller，不属于这个 builder。
+
+coverage 2102 / 2015 记账 / **6 MISSING**。

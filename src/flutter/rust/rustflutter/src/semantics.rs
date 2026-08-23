@@ -346,6 +346,51 @@ impl SemanticsProperties {
     }
 }
 
+/// Upstream `DebugSemanticsDumpOrder`: which order a semantics dump walks a
+/// node's children in.
+///
+/// The two are reverses of one another, and each is the right one for a
+/// different question:
+///
+/// * `traversalOrder` is the order a reader moves through the interface with
+///   "next" and "previous". It is what a dump is usually read against, and
+///   upstream's default everywhere `toStringDeep` and friends take this.
+/// * `inverseHitTest` is the order children are *asked* whether they want a
+///   touch: the last child first, then the second last, until one takes it.
+///   Later children are drawn over earlier ones, so the last is on top and
+///   has to be offered the touch first.
+///
+/// **They are reverses because painting and hit-testing are reverses** -- the
+/// same rule [`crate::render::SliverPaintOrder`] carries for slivers, arriving
+/// here from the other end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DebugSemanticsDumpOrder {
+    /// The order a reader navigates in. Upstream's default.
+    #[default]
+    TraversalOrder,
+    /// The order a touch is offered around, last child first.
+    InverseHitTest,
+}
+
+impl DebugSemanticsDumpOrder {
+    pub const ALL: [DebugSemanticsDumpOrder; 2] = [
+        DebugSemanticsDumpOrder::TraversalOrder,
+        DebugSemanticsDumpOrder::InverseHitTest,
+    ];
+
+    /// A node's children in this order.
+    ///
+    /// `children` is kept in traversal order, so the other one is its reverse
+    /// rather than a second list -- which is what keeps the two from drifting
+    /// apart when a child is added.
+    pub fn children_of(self, children: &[i32]) -> Vec<i32> {
+        match self {
+            DebugSemanticsDumpOrder::TraversalOrder => children.to_vec(),
+            DebugSemanticsDumpOrder::InverseHitTest => children.iter().rev().copied().collect(),
+        }
+    }
+}
+
 /// One node of the tree that goes to the platform.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticsNode {
@@ -6505,5 +6550,83 @@ mod semantics_node_visibility_tests {
     fn a_gap_in_the_middle_survives_too() {
         // Not just a dropped prefix: a scrollable can drop from anywhere.
         assert_eq!(SemanticsNode::indices_in_parent(&[0, 3, 7]), vec![0, 3, 7]);
+    }
+}
+
+#[cfg(test)]
+mod dump_order_tests {
+    use super::DebugSemanticsDumpOrder;
+
+    #[test]
+    fn the_two_orders_are_reverses_of_one_another() {
+        // Painting and hit-testing are reverses, so a dump in the order
+        // children are offered a touch is a dump in the reverse of the order
+        // a reader navigates them.
+        let children = [1, 2, 3, 4];
+        let traversal = DebugSemanticsDumpOrder::TraversalOrder.children_of(&children);
+        let mut hit_test = DebugSemanticsDumpOrder::InverseHitTest.children_of(&children);
+        hit_test.reverse();
+        assert_eq!(traversal, hit_test);
+    }
+
+    #[test]
+    fn traversal_order_is_the_order_they_are_kept_in() {
+        let children = [7, 8, 9];
+        assert_eq!(
+            DebugSemanticsDumpOrder::TraversalOrder.children_of(&children),
+            vec![7, 8, 9]
+        );
+        assert_eq!(
+            DebugSemanticsDumpOrder::InverseHitTest.children_of(&children),
+            vec![9, 8, 7]
+        );
+    }
+
+    #[test]
+    fn the_last_child_is_offered_the_touch_first() {
+        // Later children are painted over earlier ones, so the last is on top
+        // and has to be asked first.
+        let children = [1, 2, 3];
+        let offered = DebugSemanticsDumpOrder::InverseHitTest.children_of(&children);
+        assert_eq!(offered.first(), children.last());
+        assert_eq!(
+            DebugSemanticsDumpOrder::TraversalOrder
+                .children_of(&children)
+                .first(),
+            children.first()
+        );
+    }
+
+    #[test]
+    fn and_neither_order_loses_or_repeats_a_child() {
+        let children = [4, 5, 6, 7, 8];
+        for order in DebugSemanticsDumpOrder::ALL {
+            let mut walked = order.children_of(&children);
+            assert_eq!(walked.len(), children.len(), "{order:?}");
+            walked.sort_unstable();
+            assert_eq!(walked, children.to_vec(), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_single_child_reads_the_same_either_way() {
+        // Which is why the tests above use four and five: with one child the
+        // two orders agree and would prove nothing.
+        for order in DebugSemanticsDumpOrder::ALL {
+            assert_eq!(order.children_of(&[42]), vec![42]);
+            assert!(order.children_of(&[]).is_empty());
+        }
+        assert_ne!(
+            DebugSemanticsDumpOrder::TraversalOrder.children_of(&[1, 2]),
+            DebugSemanticsDumpOrder::InverseHitTest.children_of(&[1, 2])
+        );
+    }
+
+    #[test]
+    fn a_dump_reads_in_navigation_order_unless_told_otherwise() {
+        assert_eq!(
+            DebugSemanticsDumpOrder::default(),
+            DebugSemanticsDumpOrder::TraversalOrder
+        );
     }
 }

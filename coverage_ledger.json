@@ -1771,6 +1771,10 @@
     "RenderAnimatedSizeState": {
       "rust": "render::AnimatedSizeState",
       "note": "纯改名，四个状态一一对应（start/stable/changed/unstable）。第 90 轮**逐条比对过转移**才记进来：layout_start/stable/changed/unstable 四个函数与上游 _layoutStart/_layoutStable/_layoutChanged/_layoutUnstable 逐臂一致，包括 changed->unstable 是「贴住孩子」而不是「追孩子」、以及 unstable->stable 停表而 changed->stable 续跑这两条。比对之前 Unstable 那一半是完全没有测试走过的。"
+    },
+    "RepeatMode": {
+      "rust": "animation::Repeat",
+      "note": "上游 RepeatMode 两个值，本移植的 Repeat 三个，多的那个是 Once。第 109 轮逐条核对过：上游 `_controller.repeat(reverse: mode == reverse)`，于是 restart ↔ Repeat::Loop（`value.rem_euclid(1.0)`，绕回 0 重来），reverse ↔ Repeat::PingPong（折叠到 [0,2) 再镜像，并翻转 direction）。Once 没有 RepeatMode 对应值，因为 RepeatingAnimationBuilder 只跑一次就不是\"repeating\"了——那个值属于通用的 Controller，不属于这个 builder。"
     }
   },
   "blocked_engine": {
