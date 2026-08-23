@@ -123,6 +123,19 @@ impl CarouselView {
         }
     }
 
+    /// How one of this carousel's items is drawn -- see
+    /// [`crate::component_themes::ResolvedCarouselView`], the only component
+    /// in that file with no defaults class behind it.
+    ///
+    /// Upstream resolves this inside `_buildCarouselItem`, so it runs once per
+    /// visible item rather than once per build.
+    pub fn resolved_item(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedCarouselView {
+        crate::component_themes::ResolvedCarouselView::of(context)
+    }
+
     /// Upstream's `CarouselView.weighted`.
     pub fn weighted(flex_weights: Vec<i32>, item_count: usize) -> CarouselView {
         CarouselView {
@@ -388,5 +401,194 @@ mod tests {
             controller.initial_item, 2,
             "and where it began is still where it began"
         );
+    }
+}
+
+#[cfg(test)]
+mod carousel_view_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        CarouselViewTheme, CarouselViewThemeData, ResolvedCarouselView, ResolvedDatePicker,
+        ResolvedSearchView,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::EdgeInsets;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedCarouselView>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(CarouselView::uniform(100.0, 3).resolved_item(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(data: CarouselViewThemeData) -> ResolvedCarouselView {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(CarouselViewTheme::new(
+            data,
+            component(Reader {
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain() -> ResolvedCarouselView {
+        resolve(CarouselViewThemeData::new())
+    }
+
+    fn of(list: &[WidgetState]) -> WidgetStates {
+        WidgetStates::of(list)
+    }
+
+    #[test]
+    fn a_carousel_item_is_flat_where_everything_else_here_is_raised() {
+        // It is already separated from its neighbours by the padding, and
+        // lifting it would be saying the same thing twice.
+        assert_eq!(plain().elevation, 0.0);
+        assert_ne!(plain().elevation, ResolvedDatePicker::ELEVATION);
+        assert_eq!(ResolvedDatePicker::ELEVATION, 6.0);
+    }
+
+    #[test]
+    fn its_padding_is_on_all_four_sides_where_the_others_are_on_one_axis() {
+        // A carousel scrolls one way but its items have to clear the
+        // container's edge in both.
+        let padding = plain().padding;
+        assert_eq!(padding, EdgeInsets::all(4.0));
+        assert!(padding.top > 0.0 && padding.left > 0.0);
+        assert_eq!(padding.top, padding.left);
+    }
+
+    #[test]
+    fn and_its_corners_are_the_twenty_eight_the_dialogs_use() {
+        assert_eq!(plain().shape_radius, 28.0);
+        assert_eq!(plain().shape_radius, ResolvedSearchView::RADIUS);
+        assert_eq!(plain().shape_radius, ResolvedDatePicker::RADIUS);
+    }
+
+    #[test]
+    fn the_overlay_falls_through_to_null_rather_than_transparent() {
+        // The other of the two spellings of nothing. A caller reading this as
+        // a colour gets `None`, not a colour that happens to paint nothing.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedCarouselView::overlay_for(WidgetStates::NONE, &scheme),
+            None
+        );
+        assert_ne!(
+            ResolvedCarouselView::overlay_for(WidgetStates::NONE, &scheme),
+            Some(Color::TRANSPARENT)
+        );
+    }
+
+    #[test]
+    fn without_a_splash_an_item_is_tappable_but_silent() {
+        // `effectiveOverlayColor` is computed before the branch that picks
+        // between an `InkWell` and a bare `GestureDetector`, and the detector
+        // has nowhere to put it. The tap still arrives; nothing is painted.
+        let scheme = ThemeData::fallback().color_scheme;
+        for states in [
+            of(&[WidgetState::Pressed]),
+            of(&[WidgetState::Hovered]),
+            of(&[WidgetState::Focused]),
+        ] {
+            assert!(
+                ResolvedCarouselView::overlay_for(states, &scheme).is_some(),
+                "the overlay does resolve: {states:?}"
+            );
+            assert_eq!(
+                ResolvedCarouselView::painted_overlay(false, states, &scheme),
+                None,
+                "and is then not painted: {states:?}"
+            );
+            assert_eq!(
+                ResolvedCarouselView::painted_overlay(true, states, &scheme),
+                ResolvedCarouselView::overlay_for(states, &scheme)
+            );
+        }
+    }
+
+    #[test]
+    fn the_overlay_ladder_is_the_usual_three_opacities() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let pressed = ResolvedCarouselView::overlay_for(of(&[WidgetState::Pressed]), &scheme);
+        let hovered = ResolvedCarouselView::overlay_for(of(&[WidgetState::Hovered]), &scheme);
+        assert_eq!(
+            pressed,
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.1
+            ))
+        );
+        assert_eq!(
+            hovered,
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.08
+            ))
+        );
+        assert_eq!(
+            ResolvedCarouselView::overlay_for(of(&[WidgetState::Focused]), &scheme),
+            pressed
+        );
+        assert_ne!(hovered, pressed);
+    }
+
+    #[test]
+    fn pressing_beats_hovering_beats_being_focused_here_as_everywhere() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedCarouselView::overlay_for(
+                of(&[WidgetState::Pressed, WidgetState::Hovered]),
+                &scheme
+            ),
+            ResolvedCarouselView::overlay_for(of(&[WidgetState::Pressed]), &scheme)
+        );
+        assert_eq!(
+            ResolvedCarouselView::overlay_for(
+                of(&[WidgetState::Hovered, WidgetState::Focused]),
+                &scheme
+            ),
+            ResolvedCarouselView::overlay_for(of(&[WidgetState::Hovered]), &scheme)
+        );
+        assert_ne!(
+            ResolvedCarouselView::overlay_for(
+                of(&[WidgetState::Hovered, WidgetState::Focused]),
+                &scheme
+            ),
+            ResolvedCarouselView::overlay_for(of(&[WidgetState::Focused]), &scheme)
+        );
+    }
+
+    #[test]
+    fn an_item_sits_on_the_plain_surface_and_not_on_a_container_role() {
+        // `colorScheme.surface`, where the dialogs in this file take one of
+        // the `surfaceContainer` roles. A carousel item is content on the
+        // page rather than a thing floating over it.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(plain().background_color, scheme.surface);
+        assert_ne!(plain().background_color, scheme.surface_container_high());
+    }
+
+    #[test]
+    fn a_theme_is_asked_before_any_of_the_inline_defaults() {
+        let mine = Color(0xFFABCDEF);
+        let mut data = CarouselViewThemeData::new();
+        data.background_color = Some(mine);
+        data.elevation = Some(7.0);
+        data.padding = Some(EdgeInsets::all(11.0));
+        let resolved = resolve(data);
+        assert_eq!(resolved.background_color, mine);
+        assert_eq!(resolved.elevation, 7.0);
+        assert_eq!(resolved.padding, EdgeInsets::all(11.0));
     }
 }

@@ -4521,6 +4521,116 @@ impl ResolvedDatePicker {
     }
 }
 
+/// What one item of a carousel is drawn with -- upstream's
+/// `_CarouselViewState._buildCarouselItem` reading `CarouselViewTheme.of`.
+///
+/// # The only component here with no defaults class
+///
+/// Every other theme in this file ends its chain in a generated
+/// `_XDefaultsM3`. The carousel has none: all six defaults are `??` constants
+/// written by hand in the build method.
+///
+/// That absence is why none of this session's recurring defaults-class
+/// findings apply to it. There are no dead defaults to inherit, as the bottom
+/// app bar has four of; no default reading another, as
+/// [`ResolvedDatePicker`]'s toggle button reads its sub-header; and no third
+/// constructor input, as [`ResolvedSearchView`] and [`ResolvedTimePicker`]
+/// take. There is nothing for `gen_defaults` to regenerate, so there is
+/// nothing it can leave behind.
+///
+/// # And they are resolved per item rather than per build
+///
+/// The chain runs inside `_buildCarouselItem(index)`, so every visible item
+/// resolves the theme again. Nothing here depends on the index, so the answers
+/// agree -- but they are six ladders per item rather than six per frame.
+///
+/// # A carousel item is flat, where everything else in this file is raised
+///
+/// The elevation default is **0**. A dialog, a menu, a search bar and a time
+/// picker are all 3 or 6; an item in a carousel is already separated from its
+/// neighbours by the padding, and lifting it would be saying the same thing
+/// twice.
+///
+/// # The padding is on all four sides, and every other one here is on one axis
+///
+/// `EdgeInsets.all(4)`, against the menu's 8 vertical, the menu bar's 4
+/// horizontal, the popup item's 12 horizontal and the search bar's 8
+/// horizontal. A carousel scrolls one way but its items have to clear the
+/// container's edge in both.
+///
+/// # The overlay is resolved whether or not anything will use it
+///
+/// `effectiveOverlayColor` is computed before the branch that decides between
+/// an `InkWell` and a bare `GestureDetector`, and the `GestureDetector` has
+/// nowhere to put it. So `enableSplash: false` gives an item that is
+/// **tappable but silent** -- the tap still arrives, and nothing is painted to
+/// say so.
+///
+/// Its fall-through returns `null` rather than transparent -- the same two
+/// spellings of nothing that [`ResolvedSegmentedButton`] carries both of, and
+/// this is the null one.
+pub struct ResolvedCarouselView {
+    pub padding: EdgeInsets,
+    pub background_color: Color,
+    pub elevation: f32,
+    pub shape_radius: f32,
+}
+
+impl ResolvedCarouselView {
+    /// Upstream's inline `EdgeInsets.all(4.0)`.
+    pub const PADDING: f32 = 4.0;
+    /// Upstream's inline elevation, which is flat.
+    pub const ELEVATION: f32 = 0.0;
+    /// Upstream's inline corner radius -- the same 28 the date picker's dialog
+    /// and the docked search view use.
+    pub const RADIUS: f32 = 28.0;
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// Upstream's inline `overlayColor` resolver, whose fall-through is
+    /// `null` and not transparent.
+    pub fn overlay_for(states: WidgetStates, scheme: &ColorScheme) -> Option<Color> {
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedCarouselView::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedCarouselView::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedCarouselView::PRESSED_OVERLAY
+        } else {
+            return None;
+        };
+        Some(crate::elevation_overlay::with_opacity(
+            scheme.on_surface,
+            opacity,
+        ))
+    }
+
+    /// What the item actually paints for these states, which is nothing at all
+    /// without a splash -- see the type's docs.
+    pub fn painted_overlay(
+        enable_splash: bool,
+        states: WidgetStates,
+        scheme: &ColorScheme,
+    ) -> Option<Color> {
+        enable_splash
+            .then(|| ResolvedCarouselView::overlay_for(states, scheme))
+            .flatten()
+    }
+
+    pub fn of(context: &mut BuildContext) -> ResolvedCarouselView {
+        let scheme = ThemeData::of(context).color_scheme;
+        let data = CarouselViewTheme::of(context);
+        ResolvedCarouselView {
+            padding: data
+                .padding
+                .unwrap_or(EdgeInsets::all(ResolvedCarouselView::PADDING)),
+            background_color: data.background_color.unwrap_or(scheme.surface),
+            elevation: data.elevation.unwrap_or(ResolvedCarouselView::ELEVATION),
+            shape_radius: ResolvedCarouselView::RADIUS,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
