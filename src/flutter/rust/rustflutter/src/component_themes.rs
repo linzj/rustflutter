@@ -4338,6 +4338,189 @@ impl ResolvedTimePicker {
     }
 }
 
+/// What a date picker is drawn with -- upstream's `_DatePickerDefaultsM3`
+/// under `DatePickerTheme.of`.
+///
+/// # The one component where selected beats disabled
+///
+/// `dayForegroundColor` checks `selected` **first** and `disabled` second.
+/// Every other ladder in this file goes the other way:
+/// [`ResolvedSegmentedButton`], [`ResolvedMenuButton`],
+/// [`ResolvedInputBorder`] and [`ResolvedNavigationDrawer`] all let disabled
+/// win, and this one does not.
+///
+/// So a selected day that is also disabled is drawn **as selected** -- filled,
+/// in `onPrimary` -- rather than faded. That is the right way round here
+/// because a picker's selection is the answer it currently holds. A day is
+/// disabled when it falls outside the selectable range, which is exactly the
+/// case where the caller most needs to see what the picker has: fading it
+/// would hide the value while leaving the picker holding it.
+///
+/// A disabled segment or menu line is merely unavailable, and nothing is lost
+/// by dimming it. A disabled *selection* is a state someone has to resolve.
+///
+/// # A day is a circle and a year is a stadium
+///
+/// `dayShape` is `CircleBorder` and `yearShape` is `StadiumBorder`. One or two
+/// digits fit in a circle; four do not, and a pill is a circle that gave up on
+/// being one. The shape follows how wide the content is rather than a
+/// preference.
+///
+/// # Today has no fill of its own
+///
+/// `todayBackgroundColor` **is** `dayBackgroundColor` -- upstream returns the
+/// other getter, not a copy of it. Today is marked by its border and its text
+/// colour, so there is no fill to conflict with the selected one, and
+/// selecting today can simply reuse the day's.
+///
+/// The two foreground ladders say the same thing from the other side: today is
+/// `primary` where a day is `onSurface`, and `primary` at 0.38 where a day is
+/// `onSurface` at 0.38 -- **but both are `onPrimary` when selected**, because
+/// at that point both are sitting on the same primary-coloured circle. The
+/// ladders converge exactly at the arm where the background changed.
+///
+/// # The range picker is the same rule the search view states as a branch
+///
+/// The dialog is elevation 6 with a 28-radius shape; `rangePickerElevation` is
+/// **0** and `rangePickerShape` a plain `RoundedRectangleBorder()`. A range
+/// picker is full screen, and a full-screen surface has no corners to round
+/// and nothing to float above.
+///
+/// [`ResolvedSearchView`] reaches the same conclusion by branching on
+/// `isFullScreen` inside one default. Here it is two separate fields instead.
+/// One rule, two encodings -- and the second is why the theme has twenty-odd
+/// `rangePicker`-prefixed fields.
+///
+/// # One default reads another
+///
+/// `toggleButtonTextStyle` is `titleSmall.apply(color: subHeaderForegroundColor)`,
+/// and `subHeaderForegroundColor` is another getter on the same class. Moving
+/// the sub-header's colour moves the toggle button's text with it, which is
+/// what you want from two things that sit in the same strip -- and is a
+/// dependency between defaults rather than between a default and the theme.
+pub struct ResolvedDatePicker {
+    pub background_color: Color,
+    pub elevation: f32,
+    pub shape_radius: f32,
+    pub header_background_color: Color,
+    pub header_foreground_color: Color,
+    pub sub_header_foreground_color: Color,
+    pub today_border: BorderSide,
+    pub range_picker_elevation: f32,
+    pub range_picker_shape_radius: f32,
+}
+
+impl ResolvedDatePicker {
+    /// Upstream's dialog `elevation`.
+    pub const ELEVATION: f32 = 6.0;
+    /// Upstream's dialog corner radius.
+    pub const RADIUS: f32 = 28.0;
+    /// Upstream's `rangePickerElevation`, which is not the dialog's.
+    pub const RANGE_ELEVATION: f32 = 0.0;
+    /// Upstream's `rangePickerShape` radius: a plain rectangle.
+    pub const RANGE_RADIUS: f32 = 0.0;
+    /// Upstream's `subHeaderForegroundColor` opacity -- a third number in the
+    /// family, beside 0.38 for disabled and 0.12 for a dead outline.
+    pub const SUB_HEADER_OPACITY: f32 = 0.60;
+    pub const DISABLED_OPACITY: f32 = 0.38;
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// Upstream's `dayForegroundColor`. **Selected is checked before
+    /// disabled** -- see the type's docs for why this one goes the other way.
+    pub fn day_foreground(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Selected) {
+            return scheme.on_primary;
+        }
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedDatePicker::DISABLED_OPACITY,
+            );
+        }
+        scheme.on_surface
+    }
+
+    /// Upstream's `todayForegroundColor`: the same ladder in the primary, and
+    /// the same `onPrimary` at the arm where the circle appears underneath.
+    pub fn today_foreground(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Selected) {
+            return scheme.on_primary;
+        }
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                scheme.primary,
+                ResolvedDatePicker::DISABLED_OPACITY,
+            );
+        }
+        scheme.primary
+    }
+
+    /// Upstream's `dayBackgroundColor`, which `todayBackgroundColor` returns
+    /// rather than copies: only the chosen day is filled, and disabled does
+    /// not take that away.
+    pub fn day_background(states: WidgetStates, scheme: &ColorScheme) -> Option<Color> {
+        states
+            .contains(WidgetState::Selected)
+            .then_some(scheme.primary)
+    }
+
+    /// Upstream's `dayOverlayColor`: `onPrimary` over a filled day and
+    /// `onSurfaceVariant` over an empty one, at the usual three opacities.
+    pub fn day_overlay(states: WidgetStates, scheme: &ColorScheme) -> Option<Color> {
+        let base = if states.contains(WidgetState::Selected) {
+            scheme.on_primary
+        } else {
+            scheme.on_surface_variant()
+        };
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedDatePicker::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedDatePicker::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedDatePicker::PRESSED_OVERLAY
+        } else {
+            return None;
+        };
+        Some(crate::elevation_overlay::with_opacity(base, opacity))
+    }
+
+    pub fn of(context: &mut BuildContext) -> ResolvedDatePicker {
+        let scheme = ThemeData::of(context).color_scheme;
+        let data = DatePickerTheme::of(context);
+        let sub_header = data.sub_header_foreground_color.unwrap_or_else(|| {
+            crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedDatePicker::SUB_HEADER_OPACITY,
+            )
+        });
+        ResolvedDatePicker {
+            background_color: data
+                .background_color
+                .unwrap_or_else(|| scheme.surface_container_high()),
+            elevation: data.elevation.unwrap_or(ResolvedDatePicker::ELEVATION),
+            shape_radius: ResolvedDatePicker::RADIUS,
+            // Transparent, and for the reason the time picker's day period is:
+            // the header sits on the dialog and painting it again would hide
+            // what is between them.
+            header_background_color: data.header_background_color.unwrap_or(Color::TRANSPARENT),
+            header_foreground_color: data
+                .header_foreground_color
+                .unwrap_or_else(|| scheme.on_surface_variant()),
+            sub_header_foreground_color: sub_header,
+            today_border: data.today_border.unwrap_or(BorderSide {
+                color: scheme.primary,
+                width: 1.0,
+                ..BorderSide::NONE
+            }),
+            range_picker_elevation: data
+                .range_picker_elevation
+                .unwrap_or(ResolvedDatePicker::RANGE_ELEVATION),
+            range_picker_shape_radius: ResolvedDatePicker::RANGE_RADIUS,
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

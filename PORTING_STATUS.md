@@ -11426,3 +11426,75 @@ optional elevation overlay for dark mode to be visible.」*
 
 每条新测试都单独跑过一遍。无读者主题 3 → 2（另 1 个上游已废弃，不计）。
 
+## 日期选择器：唯一一个「选中压过禁用」的组件（2026-08-23）
+
+### 这一个反过来了
+
+`dayForegroundColor` **先**查 `selected`，**后**查 `disabled`。
+本文件里其他每一条阶梯都是反着来的——[`ResolvedSegmentedButton`]、
+[`ResolvedMenuButton`]、[`ResolvedInputBorder`]、[`ResolvedNavigationDrawer`]
+全是禁用赢，只有这一个不是。
+
+所以一个既被选中又被禁用的日子，画出来**仍然是选中的样子**：有底、`onPrimary`，
+而不是变淡。这里这样才对，因为**选择器的选中项就是它当前持有的答案**。
+一个日子被禁用，恰恰是它落在可选范围之外的时候——那正是调用者最需要看见
+选择器里装着什么的时候：把它变淡，就是把值藏起来，而选择器还拿着它。
+
+一个禁用的分段或菜单行只是「用不了」，调暗它不损失什么。
+而一个禁用的**选中项**是一个需要有人去解决的状态。
+
+### 日子是圆的，年份是胶囊
+
+`dayShape` 是 `CircleBorder`，`yearShape` 是 `StadiumBorder`。
+一两位数字塞得进圆，四位塞不进——胶囊就是一个放弃了当圆的圆。
+**形状跟着内容有多宽走**，不是偏好。
+
+### 今天没有自己的底
+
+`todayBackgroundColor` **就是** `dayBackgroundColor`——上游返回的是另一个 getter，
+不是它的副本。今天是靠**边框和文字颜色**标出来的，所以没有一个自己的底
+去和选中的底打架，选中今天时直接复用日子的底就行。
+
+两条前景阶梯从另一面说了同一件事：今天是 `primary` 而普通日是 `onSurface`，
+禁用时是 `primary@0.38` 而普通日是 `onSurface@0.38`——
+**但选中时两者都是 `onPrimary`**，因为那时两者都坐在同一个主色圆上。
+**两条阶梯恰好在背景变了的那一条臂上汇合。**
+
+### 范围选择器：搜索视图写成分支的那条规则
+
+对话框是 elevation 6、28 圆角；`rangePickerElevation` 是 **0**，
+`rangePickerShape` 是个平直矩形。范围选择器是全屏的，
+而全屏的表面没有角可以圆，也没有东西可以浮在上面。
+
+[`ResolvedSearchView`] 是在**一个默认值内部**对 `isFullScreen` 分支得出同一个结论；
+这里换成了**另一整套字段**。一条规则，两种编码——
+而后者正是这个主题为什么有二十来个 `rangePicker` 前缀字段。
+
+### 一个默认值读另一个默认值
+
+`toggleButtonTextStyle` 是 `titleSmall.apply(color: subHeaderForegroundColor)`，
+而 `subHeaderForegroundColor` 是同一个类上的另一个 getter。
+副标题的颜色一动，切换按钮的文字跟着动——这是两个默认值之间的依赖，
+而不是默认值与主题之间的。副标题那档浓度是 **0.60**，
+和禁用的 0.38、死外框的 0.12 并列，是这个家族里的第三个数：
+它不是被禁用，是**从属**，那是另一句话。
+
+14 个变异，14 个全红。每条新测试都单独跑过。
+
+### 顺带发现：这个仓库有另一条工作线在并行提交
+
+`master` 上我的上一轮提交 `9380c1f` 后面已经压了 **10 个我没写的提交**
+（一条 async 线：唤醒通道、`FutureBuilder`、第二个时钟、park 住的任务、
+`docs/ASYNC_FLOW.md`），还有一个 `async-gn-verify` 分支。
+
+这解释了几件之前对不上的事：`cargo test --lib` 在同一轮里从 4588 跳到 4619；
+工作区里有一处我没做过的 `BUILD.gn` 改动（给 `debug_rendering.rs` 和 `task.rs`
+补 `sources` 条目）。
+
+**查过了：我这 6 个提交里没有一个夹带了别人的文件**，每个都只含
+`component_themes.rs` + 对应 widget 模块 + 我自己改的 tools/文档。
+这一轮改成只 `git add` 我自己的两个文件，那处 `BUILD.gn` 留给它的作者。
+以往提交信息里的测试总数，是当时那棵树上的真实数字。
+
+无读者主题 2 → 1（另 1 个上游已废弃，不计）。
+

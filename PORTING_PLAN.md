@@ -35,7 +35,7 @@ python tools/coverage.py --missing-only
 **基线（2026-08-17）：1,873 个公共类，covered 161 / mapped 7 /
 blocked 11 / MISSING 1,694（90%）。**
 
-**进度（2026-08-23）：1930 accounted / 0 MISSING（100%，第四次归零）；`unwired.py` 48 个主题 / 2 个无读者（另 1 个上游已废弃，不计）；`order_sweep.py` 0；`unvaried.py` 0；cargo 4576 passed，gallery 333 passed。**
+**进度（2026-08-23）：1930 accounted / 0 MISSING（100%，第四次归零）；`unwired.py` 48 个主题 / 1 个无读者（另 1 个上游已废弃，不计）；`order_sweep.py` 0；`unvaried.py` 0；cargo 4619 passed，gallery 333 passed。**
 **四个桶全部审计过了。** 最后一个 `out_of_scope`（59 条）这轮审计完：9 条理由
 不成立，改判回 MISSING 并已补齐——三个 `DiagnosticsProperty` 子类记的「诊断树
 未移植」在 `diagnostics.rs` 存在之后就是**假的**；`ClipContext` 记的「仅 debug

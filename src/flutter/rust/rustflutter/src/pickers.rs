@@ -1787,6 +1787,18 @@ pub struct DatePickerDialog {
     on_cancel: Option<Rc<dyn Fn()>>,
 }
 
+impl DatePickerDialog {
+    /// This dialog's appearance -- see
+    /// [`crate::component_themes::ResolvedDatePicker`], where a selected day
+    /// beats a disabled one, unlike everywhere else.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedDatePicker {
+        crate::component_themes::ResolvedDatePicker::of(context)
+    }
+}
+
 /// What a [`DatePickerDialog`] remembers between frames.
 ///
 /// Anchor: `_DatePickerDialogState`.
@@ -5733,5 +5745,274 @@ mod time_picker_theme_tests {
         assert_eq!(resolved.day_period_border.color, scheme.outline());
         assert_eq!(resolved.entry_mode_icon_color, scheme.on_surface);
         assert_eq!(resolved.hour_minute_shape_radius, 8.0);
+    }
+}
+
+#[cfg(test)]
+mod date_picker_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        DatePickerTheme, DatePickerThemeData, ResolvedDatePicker, ResolvedSearchView,
+        ResolvedSegmentedButton,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::theme::ThemeData;
+    use crate::widget_state::{WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDatePicker>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(ResolvedDatePicker::of(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(data: DatePickerThemeData) -> ResolvedDatePicker {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(DatePickerTheme::new(
+            data,
+            component(Reader {
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain() -> ResolvedDatePicker {
+        resolve(DatePickerThemeData::new())
+    }
+
+    fn of(list: &[WidgetState]) -> WidgetStates {
+        WidgetStates::of(list)
+    }
+
+    const SELECTED: WidgetState = WidgetState::Selected;
+    const DISABLED: WidgetState = WidgetState::Disabled;
+
+    #[test]
+    fn a_selected_day_stays_selected_when_it_is_also_disabled() {
+        // The one component in this port where selected is checked before
+        // disabled. A picker's selection is the answer it holds, and a day is
+        // disabled exactly when it falls outside the range -- the case where
+        // the caller most needs to see what the picker has.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedDatePicker::day_foreground(of(&[SELECTED, DISABLED]), &scheme),
+            scheme.on_primary
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_foreground(of(&[SELECTED]), &scheme),
+            ResolvedDatePicker::day_foreground(of(&[SELECTED, DISABLED]), &scheme),
+            "being disabled changes nothing once it is the selection"
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_background(of(&[SELECTED, DISABLED]), &scheme),
+            Some(scheme.primary),
+            "and it keeps its fill"
+        );
+    }
+
+    #[test]
+    fn where_a_disabled_segment_loses_everything() {
+        // The contrast that makes the reversal worth stating. Same two states,
+        // opposite answers, and the reason is what the selection means.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedSegmentedButton::background_for(of(&[SELECTED, DISABLED]), &scheme),
+            None
+        );
+        assert_ne!(
+            ResolvedSegmentedButton::foreground_for(of(&[SELECTED, DISABLED]), &scheme),
+            ResolvedSegmentedButton::foreground_for(of(&[SELECTED]), &scheme)
+        );
+    }
+
+    #[test]
+    fn and_an_ordinary_disabled_day_does_fade() {
+        // Or the test above would only show that nothing fades anywhere.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedDatePicker::day_foreground(of(&[DISABLED]), &scheme),
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.38)
+        );
+        assert_ne!(
+            ResolvedDatePicker::day_foreground(of(&[DISABLED]), &scheme),
+            ResolvedDatePicker::day_foreground(WidgetStates::NONE, &scheme)
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_background(of(&[DISABLED]), &scheme),
+            None
+        );
+    }
+
+    #[test]
+    fn the_two_foreground_ladders_converge_where_the_circle_appears() {
+        // Today is the primary where a day is the on-surface, at both the
+        // resting and the disabled arm -- and both are `onPrimary` once
+        // selected, because both are then sitting on the same fill.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_ne!(
+            ResolvedDatePicker::today_foreground(WidgetStates::NONE, &scheme),
+            ResolvedDatePicker::day_foreground(WidgetStates::NONE, &scheme)
+        );
+        assert_ne!(
+            ResolvedDatePicker::today_foreground(of(&[DISABLED]), &scheme),
+            ResolvedDatePicker::day_foreground(of(&[DISABLED]), &scheme)
+        );
+        assert_eq!(
+            ResolvedDatePicker::today_foreground(of(&[SELECTED]), &scheme),
+            ResolvedDatePicker::day_foreground(of(&[SELECTED]), &scheme),
+            "the one arm where the background is the same"
+        );
+
+        assert_eq!(
+            ResolvedDatePicker::today_foreground(WidgetStates::NONE, &scheme),
+            scheme.primary
+        );
+        assert_eq!(
+            ResolvedDatePicker::today_foreground(of(&[DISABLED]), &scheme),
+            crate::elevation_overlay::with_opacity(scheme.primary, 0.38)
+        );
+    }
+
+    #[test]
+    fn today_is_marked_by_its_border_and_not_by_a_fill() {
+        // `todayBackgroundColor` *is* `dayBackgroundColor`, so there is no
+        // fill of its own to conflict with the selected one.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedDatePicker::day_background(WidgetStates::NONE, &scheme),
+            None
+        );
+        assert_eq!(plain().today_border.color, scheme.primary);
+        assert!(plain().today_border.width > 0.0);
+    }
+
+    #[test]
+    fn the_range_picker_is_flat_and_square_where_the_dialog_is_raised_and_round() {
+        // A range picker is full screen, and a full-screen surface has no
+        // corners to round and nothing to float above.
+        let resolved = plain();
+        assert_eq!(resolved.elevation, 6.0);
+        assert_eq!(resolved.shape_radius, 28.0);
+        assert_eq!(resolved.range_picker_elevation, 0.0);
+        assert_eq!(resolved.range_picker_shape_radius, 0.0);
+    }
+
+    #[test]
+    fn which_is_the_rule_the_search_view_writes_as_a_branch() {
+        // One rule, two encodings: there a conditional inside one default,
+        // here a second set of fields.
+        assert_eq!(
+            plain().range_picker_shape_radius,
+            0.0,
+            "flat corners full screen"
+        );
+        assert_eq!(
+            ResolvedSearchView::RADIUS,
+            28.0,
+            "and the docked search view rounds to the same 28 the dialog does"
+        );
+    }
+
+    #[test]
+    fn the_day_overlay_takes_its_colour_from_whether_there_is_a_fill_under_it() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(of(&[SELECTED, WidgetState::Pressed]), &scheme),
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_primary,
+                0.1
+            ))
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(of(&[WidgetState::Pressed]), &scheme),
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface_variant(),
+                0.1
+            ))
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(WidgetStates::NONE, &scheme),
+            None
+        );
+    }
+
+    #[test]
+    fn pressing_beats_hovering_beats_being_focused_here_as_well() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let pressed = ResolvedDatePicker::day_overlay(of(&[WidgetState::Pressed]), &scheme);
+        let hovered = ResolvedDatePicker::day_overlay(of(&[WidgetState::Hovered]), &scheme);
+        assert_ne!(pressed, hovered);
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(of(&[WidgetState::Focused]), &scheme),
+            pressed
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(
+                of(&[WidgetState::Pressed, WidgetState::Hovered]),
+                &scheme
+            ),
+            pressed
+        );
+        assert_eq!(
+            ResolvedDatePicker::day_overlay(
+                of(&[WidgetState::Hovered, WidgetState::Focused]),
+                &scheme
+            ),
+            hovered
+        );
+    }
+
+    #[test]
+    fn the_sub_header_has_an_opacity_of_its_own() {
+        // 0.60, beside 0.38 for disabled and 0.12 for a dead outline. It is
+        // not disabled -- it is subordinate, which is a different statement.
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            plain().sub_header_foreground_color,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.60)
+        );
+        assert_ne!(
+            plain().sub_header_foreground_color,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.38)
+        );
+    }
+
+    #[test]
+    fn the_header_paints_nothing_and_the_dialog_shows_through() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let resolved = plain();
+        assert_eq!(resolved.header_background_color, Color::TRANSPARENT);
+        assert_ne!(
+            resolved.header_background_color, resolved.background_color,
+            "which is not the same as painting the dialog's colour again"
+        );
+        assert_eq!(
+            resolved.header_foreground_color,
+            scheme.on_surface_variant()
+        );
+        assert_eq!(resolved.background_color, scheme.surface_container_high());
+    }
+
+    #[test]
+    fn a_theme_is_asked_before_any_of_the_defaults() {
+        let mine = Color(0xFFABCDEF);
+        let mut data = DatePickerThemeData::new();
+        data.background_color = Some(mine);
+        data.elevation = Some(11.0);
+        data.range_picker_elevation = Some(3.0);
+        data.sub_header_foreground_color = Some(mine);
+        let resolved = resolve(data);
+        assert_eq!(resolved.background_color, mine);
+        assert_eq!(resolved.elevation, 11.0);
+        assert_eq!(resolved.range_picker_elevation, 3.0);
+        assert_eq!(resolved.sub_header_foreground_color, mine);
     }
 }
