@@ -11,12 +11,33 @@ place, and the widget reading none of it.  A theme nobody reads is worse than
 one that is absent: it looks finished, it type-checks, and a caller who sets it
 watches nothing happen.
 
-A theme counts as consumed when `XTheme::of` or `ResolvedX::of` is called
-anywhere outside the file that defines them.  That is deliberately generous --
-a resolver called by one widget marks the whole theme consumed even if that
-widget reads two of its fifteen fields -- so a name on this list is a theme
-with *no* reader at all, not a theme with a lazy one.  The lazier case is
-`depth.py`'s to find.
+A theme counts as consumed when `XTheme::of`, or any associated function of a
+resolver that reads it, is called anywhere outside the file that defines them.
+That is deliberately generous -- a resolver called by one widget marks the
+whole theme consumed even if that widget reads two of its fifteen fields -- so
+a name on this list is a theme with *no* reader at all, not a theme with a lazy
+one.  The lazier case is `depth.py`'s to find.
+
+The call-site pattern was `Resolver::of(` and is now `Resolver::<anything>(`.
+`DropdownAlignment` reads `ButtonTheme` from a `from_theme` constructor and its
+`of` takes plain flags, so the narrower pattern missed a resolver that was
+being called -- the same blind spot the tool already carried once, when it
+looked for a resolver name derived from the theme's instead of following the
+resolvers it could see.
+
+Deprecated upstream
+-------------------
+
+Not every unread theme is a gap.  `ButtonBarTheme` has exactly one reader
+upstream, `ButtonBar`, and upstream marks **both** of them
+`@Deprecated("Use OverflowBar instead")`; this port maps `ButtonBar` to
+`OverflowBar`, which has never consulted a theme.  Writing a reader for it
+would be a resolver for a widget that does not exist -- dead code added to
+satisfy a ruler, which is the failure the ruler is supposed to prevent.
+
+So the report separates themes whose upstream declaration carries
+`@Deprecated` from the rest.  Those are listed and excluded from the count,
+because the count is meant to be a queue and they are not work.
 
 Usage:
   python tools/unwired.py            # the themes with no reader
@@ -32,6 +53,37 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATE = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
 THEMES = os.path.join(CRATE, 'component_themes.rs')
+UPSTREAM = os.path.join(
+    os.path.dirname(REPO), 'flutter', 'packages', 'flutter', 'lib', 'src')
+
+
+def deprecated_upstream():
+    """Theme wrappers whose upstream `class X` carries an `@Deprecated`.
+
+    Read from the declaration rather than from a list here, so the answer
+    follows upstream instead of following a note somebody wrote once.
+    """
+    if not os.path.isdir(UPSTREAM):
+        return set()
+    out = set()
+    for root, _dirs, files in os.walk(UPSTREAM):
+        for name in files:
+            if not name.endswith('.dart'):
+                continue
+            text = io.open(os.path.join(root, name),
+                           encoding='utf-8', errors='replace').read()
+            for match in re.finditer(r'^class (\w+Theme(?:Data)?)\b', text, re.M):
+                head = text[max(0, match.start() - 240):match.start()]
+                if '@Deprecated' not in head.rsplit('///', 1)[-1]:
+                    continue
+                # A wrapper exists to carry its data, so a deprecated
+                # `XThemeData` retires `XTheme` whether or not upstream said
+                # so. It did not say so for `ButtonBarTheme`: the data class
+                # and the widget that reads it are both marked and the
+                # `InheritedWidget` between them is not, so grepping the
+                # wrapper alone would call it live.
+                out.add(match.group(1).removesuffix('Data'))
+    return out
 
 
 def wrappers():
@@ -88,7 +140,7 @@ def main():
     # A resolver called from outside marks every theme it reads as read.
     through = {}
     for resolver, themes in resolvers().items():
-        pattern = re.compile(re.escape(resolver) + r'::of\(')
+        pattern = re.compile(re.escape(resolver) + r'::\w+\(')
         where = sorted(name for name, text in sources.items() if pattern.search(text))
         for theme in themes:
             through.setdefault(theme, []).extend(
@@ -101,14 +153,33 @@ def main():
         where += sorted(through.get(theme, []))
         rows.append((theme, where))
 
-    unwired = [(theme, where) for theme, where in rows if not where]
-    print(f'{len(rows)} themes, {len(unwired)} with no reader anywhere')
+    retired = deprecated_upstream()
+    # A scan that finds nothing looks exactly like a scan with nothing to find.
+    # This one found nothing for a while because a mangled `` in its regex
+    # asked for a literal backspace after the class name, and the report simply
+    # listed one more theme than it should have. Say what was seen.
+    if os.path.isdir(UPSTREAM) and not retired:
+        print(f'warning: no @Deprecated theme found under {UPSTREAM} -- '
+              f'upstream has at least one, so the scan is broken')
+    unwired = [(theme, where) for theme, where in rows
+               if not where and theme not in retired]
+    dead = [theme for theme, where in rows if not where and theme in retired]
+
+    print(f'{len(rows)} themes, {len(unwired)} with no reader anywhere'
+          f' ({len(retired)} retired upstream and not counted)')
     print()
     for theme, where in rows:
         if where and not args.all:
             continue
+        if theme in retired:
+            continue
         note = ', '.join(where) if where else '-- nothing reads it'
         print(f'  {theme:<28} {note}')
+    if dead:
+        print()
+        print('Deprecated upstream, so not a queue entry:')
+        for theme in dead:
+            print(f'  {theme:<28} -- upstream marks it @Deprecated')
     return 1 if unwired else 0
 
 

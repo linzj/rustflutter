@@ -104,6 +104,19 @@ impl DropdownButton {
         self
     }
 
+    /// Where this dropdown's insets sit, which the ambient `ButtonTheme`
+    /// decides -- see [`crate::component_themes::DropdownAlignment`].
+    ///
+    /// `in_input_decorator` is upstream's `widget._inputDecoration == null`,
+    /// and it conditions only half the answer.
+    pub fn alignment(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        in_input_decorator: bool,
+    ) -> crate::component_themes::DropdownAlignment {
+        crate::component_themes::DropdownAlignment::from_theme(context, in_input_decorator)
+    }
+
     pub fn selected_index(&self) -> usize {
         self.value
             .and_then(|value| self.items.iter().position(|item| item.value == value))
@@ -625,5 +638,131 @@ mod tests {
 
         let menu_field = DropdownMenuFormField::new(menu().with_initial_selection(2));
         assert_eq!(menu_field.value(), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod aligned_dropdown_tests {
+    use super::*;
+    use crate::component_themes::{ButtonTheme, ButtonThemeData, DropdownAlignment};
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::EdgeInsetsDirectional;
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        in_input_decorator: bool,
+        seen: std::rc::Rc<std::cell::RefCell<Option<DropdownAlignment>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() =
+                Some(DropdownButton::new(Vec::new()).alignment(context, self.in_input_decorator));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn under_theme(aligned: bool, in_input_decorator: bool) -> DropdownAlignment {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        let mut data = ButtonThemeData::new();
+        data.aligned_dropdown = aligned;
+        tree.rebuild(ButtonTheme::new(
+            data,
+            component(Reader {
+                in_input_decorator,
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    #[test]
+    fn the_start_inset_changes_hands_between_the_button_and_the_menu() {
+        // Exactly one of the two carries it, and it is the same 16 either way.
+        let aligned = DropdownAlignment::of(true, false);
+        let unaligned = DropdownAlignment::of(false, false);
+
+        assert_eq!(aligned.button_padding.start, 16.0);
+        assert_eq!(aligned.menu_margin.start, 0.0);
+        assert_eq!(unaligned.button_padding.start, 0.0);
+        assert_eq!(unaligned.menu_margin.start, 16.0);
+
+        assert_eq!(
+            aligned.button_padding.start + aligned.menu_margin.start,
+            unaligned.button_padding.start + unaligned.menu_margin.start,
+            "the same inset, on whichever of the two is carrying it"
+        );
+    }
+
+    #[test]
+    fn but_the_end_inset_does_not_transfer_at_all() {
+        // 4 against 24. Reading the flag as "move the insets across" would get
+        // the start right and the end wrong by twenty pixels: the aligned
+        // button's 4 is room beside the arrow, and the unaligned menu's 24 is
+        // clearance from what it is not lined up with. Different jobs.
+        let aligned = DropdownAlignment::of(true, false);
+        let unaligned = DropdownAlignment::of(false, false);
+        assert_eq!(aligned.button_padding.end, 4.0);
+        assert_eq!(unaligned.menu_margin.end, 24.0);
+        assert_ne!(aligned.button_padding.end, unaligned.menu_margin.end);
+    }
+
+    #[test]
+    fn a_dropdown_in_a_decorator_still_moves_its_menu_but_not_its_padding() {
+        // The flag half-applies, and which half depends on something the flag
+        // has never heard of: upstream picks the menu margin on
+        // `alignedDropdown` alone and the button padding on
+        // `alignedDropdown && _inputDecoration == null`.
+        let bare = DropdownAlignment::of(true, false);
+        let decorated = DropdownAlignment::of(true, true);
+
+        assert_eq!(
+            decorated.menu_margin, bare.menu_margin,
+            "the menu does not care about the decoration"
+        );
+        assert_ne!(decorated.button_padding, bare.button_padding);
+        assert_eq!(
+            decorated.button_padding,
+            EdgeInsetsDirectional::ZERO,
+            "the decoration's own padding is what applies instead"
+        );
+    }
+
+    #[test]
+    fn and_a_decorator_changes_nothing_when_the_dropdown_is_not_aligned() {
+        // The second condition is an `&&`, so it can only take away something
+        // the first was giving.
+        assert_eq!(
+            DropdownAlignment::of(false, true),
+            DropdownAlignment::of(false, false)
+        );
+    }
+
+    #[test]
+    fn the_flag_comes_from_the_ambient_button_theme() {
+        // Which is why `ButtonTheme` is still alive: `ButtonTheme.of` is read
+        // three times upstream, and two of them are this, in a widget that is
+        // not a button.
+        assert_eq!(under_theme(true, false), DropdownAlignment::of(true, false));
+        assert_eq!(
+            under_theme(false, false),
+            DropdownAlignment::of(false, false)
+        );
+        assert_ne!(under_theme(true, false), under_theme(false, false));
+    }
+
+    #[test]
+    fn nothing_is_inset_on_the_cross_axis_either_way() {
+        // Both constants are `EdgeInsetsDirectional.only(start:, end:)`: the
+        // flag moves a horizontal inset and never touches the vertical, which
+        // is the row height's business.
+        for (aligned, decorated) in [(true, false), (false, false), (true, true)] {
+            let resolved = DropdownAlignment::of(aligned, decorated);
+            assert_eq!(resolved.button_padding.top, 0.0);
+            assert_eq!(resolved.button_padding.bottom, 0.0);
+            assert_eq!(resolved.menu_margin.top, 0.0);
+            assert_eq!(resolved.menu_margin.bottom, 0.0);
+        }
     }
 }

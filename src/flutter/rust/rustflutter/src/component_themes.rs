@@ -3327,6 +3327,90 @@ impl ResolvedSearchView {
     }
 }
 
+/// Where a dropdown's insets sit, which is the whole of what
+/// `ButtonThemeData.alignedDropdown` decides.
+///
+/// # One flag is why this Material 2 theme is still alive
+///
+/// `ButtonTheme.of` is read in exactly three places upstream: once by
+/// `ButtonBar`, and twice by `DropdownButton` -- both times for
+/// `alignedDropdown` and nothing else. Every other field of `ButtonThemeData`
+/// reaches a widget only through the `copyWith` in `ButtonBar.build`. A whole
+/// theme kept for one boolean, and the boolean is read by a widget that is not
+/// a button.
+///
+/// # The start inset changes hands; the end inset does not
+///
+/// Aligned, the button is padded `start 16, end 4` and the menu's margin is
+/// zero. Unaligned, the button's padding is zero and the menu's margin is
+/// `start 16, end 24`.
+///
+/// The 16 is the same on both sides of the switch: it moves from the menu to
+/// the button and back, so exactly one of the two carries it. The end value
+/// does **not** transfer -- 4 against 24 -- because the two ends are doing
+/// different jobs. The aligned button's 4 is room beside the arrow; the
+/// unaligned menu's 24 is clearance from what it is not lined up with.
+///
+/// # And the button half of it has a second condition
+///
+/// The menu margin is chosen on `alignedDropdown` alone. The button padding is
+/// chosen on `alignedDropdown && _inputDecoration == null` -- a dropdown inside
+/// an `InputDecorator` takes the decoration's padding and ignores this, while
+/// still moving its *menu*. The flag half-applies, and which half depends on
+/// something the flag has never heard of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropdownAlignment {
+    pub button_padding: crate::render::EdgeInsetsDirectional,
+    pub menu_margin: crate::render::EdgeInsetsDirectional,
+}
+
+impl DropdownAlignment {
+    /// The inset that changes hands between the button and the menu.
+    pub const SHARED_START: f32 = 16.0;
+    /// The aligned button's end padding: room beside the arrow.
+    pub const ALIGNED_END: f32 = 4.0;
+    /// The unaligned menu's end margin: clearance, which is a different job
+    /// and a different number.
+    pub const UNALIGNED_END: f32 = 24.0;
+
+    /// Upstream's two pairs of constants.
+    ///
+    /// `in_input_decorator` is the second condition on the button half only --
+    /// see the type's docs.
+    pub fn of(aligned: bool, in_input_decorator: bool) -> DropdownAlignment {
+        DropdownAlignment {
+            button_padding: if aligned && !in_input_decorator {
+                crate::render::EdgeInsetsDirectional {
+                    start: DropdownAlignment::SHARED_START,
+                    top: 0.0,
+                    end: DropdownAlignment::ALIGNED_END,
+                    bottom: 0.0,
+                }
+            } else {
+                crate::render::EdgeInsetsDirectional::ZERO
+            },
+            menu_margin: if aligned {
+                crate::render::EdgeInsetsDirectional::ZERO
+            } else {
+                crate::render::EdgeInsetsDirectional {
+                    start: DropdownAlignment::SHARED_START,
+                    top: 0.0,
+                    end: DropdownAlignment::UNALIGNED_END,
+                    bottom: 0.0,
+                }
+            },
+        }
+    }
+
+    /// What a `DropdownButton` gets from the ambient `ButtonTheme`.
+    pub fn from_theme(context: &mut BuildContext, in_input_decorator: bool) -> DropdownAlignment {
+        DropdownAlignment::of(
+            ButtonTheme::of(context).aligned_dropdown,
+            in_input_decorator,
+        )
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
@@ -8254,6 +8338,41 @@ impl Typography {
 /// Material 2's, like [`ButtonThemeData`] which it echoes -- upstream keeps
 /// both for the widgets that predate the Material 3 button family.
 #[derive(Clone, Debug, Default, PartialEq)]
+/// Upstream `ButtonBarThemeData`, which upstream marks
+/// `@Deprecated("Use OverflowBar instead")` -- as it does `ButtonBar`, the only
+/// widget that ever read it.
+///
+/// # Nothing reads it here, and nothing should
+///
+/// `tools/unwired.py` lists this as a theme with no reader. That is true and it
+/// is not a gap: this port maps `ButtonBar` to
+/// [`crate::overflow_bar::OverflowBar`], which is what upstream's deprecation
+/// notice says to use, and `OverflowBar` has never consulted a theme. A reader
+/// invented for this type would be a resolver for a widget that does not exist.
+///
+/// # What it used to decide, since the type is here to say so
+///
+/// `ButtonBar.build` took `ButtonTheme.of(context)` and called `copyWith` on it
+/// with six fields, each `own argument ?? barTheme.field ?? constant`. The
+/// parent theme was a **base to copy onto rather than a step in a chain**: the
+/// six -- text theme, minimum width, height, padding, aligned dropdown, layout
+/// behaviour -- were overwritten whatever it said, and what survived was
+/// everything `ButtonBarThemeData` has no field for. A bar re-measured its
+/// buttons and did not recolour them.
+///
+/// The spacing came out of one line, `paddingUnit = padding.horizontal / 4`.
+/// Upstream's comment explains the four as "half of the average of the left and
+/// right padding" -- `horizontal` is left plus right, so one division averages
+/// and the other halves. The halving is what made the arithmetic close: each
+/// child was wrapped in `symmetric(horizontal: unit)`, so between two
+/// neighbours there were two halves and the gap was the whole 8; at the ends
+/// the bar added its own `unit` to the `unit` the end child already carried,
+/// making that 8 too; and the vertical was `2 * unit`, 8 again. One number in
+/// four places, and the four in the divisor is what put it there.
+///
+/// The minimum width is the one number that is not `ButtonThemeData`'s own:
+/// 64 against 88, because a button in a row is already read as part of a group
+/// and does not have to hold its own width to be found.
 pub struct ButtonBarThemeData {
     pub alignment: Option<crate::render::MainAxisAlignment>,
     pub main_axis_size: Option<crate::render::MainAxisSize>,

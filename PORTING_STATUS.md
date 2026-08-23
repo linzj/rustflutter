@@ -10978,3 +10978,73 @@ elevation 时才有意义。
 
 无读者主题 12 → 10。
 
+## 一个主题不该有读者，另一个只为一个布尔值活着（2026-08-23）
+
+这一轮本来打算把 `ButtonTheme` 和 `ButtonBarTheme` 一起接上，
+结果是**其中一个接不得**。
+
+### `ButtonBarTheme`：不接才是对的
+
+写完 `ResolvedButtonBar` 之后去核账本里那句「`ButtonBar` 已 `@Deprecated`，
+对应到 `OverflowBar`」——**账本是对的**：上游
+`@Deprecated('Use OverflowBar instead')` 同时标在 `ButtonBar` 和
+`ButtonBarThemeData` 上。而唯一读这个主题的就是 `ButtonBar`。
+
+所以给它造一个读者，就是**给一个本移植故意不要的 widget 写解析器**——
+正是我一直在挑上游毛病的那种死代码。已写的 `ResolvedButtonBar` 删掉
+（6179 字符），它记的东西挪进 `ButtonBarThemeData` 自己的文档里：
+类型还在，就由它来说明为什么没人读它。
+
+顺带记下它当年决定的事，因为这是真的：
+`ButtonBar.build` 拿 `ButtonTheme.of` 做**底子去 copyWith**，
+而不是把它当链上的一步——六个字段无条件盖掉，
+活下来的是 `ButtonBarThemeData` 没有字段的那些。**一个 bar 重新量它的按钮，
+但不重新给它们上色。**
+而间距全出自 `paddingUnit = padding.horizontal / 4`：上游注释说那个 4 是
+「左右内边距平均值的一半」——`horizontal` 是左加右，一次除法求平均，
+另一次取一半。取一半才让算式合上：每个孩子裹 `symmetric(horizontal: unit)`，
+**两个相邻孩子之间是两个一半，也就是整个 8**；两端 bar 再补自己的 unit，
+加上端头孩子已有的 unit，也是 8；纵向是 `2 * unit`，还是 8。
+**一个数出现在四个地方，而除数里的 4 就是把它放到那儿的东西。**
+
+### `ButtonTheme`：整个主题为一个布尔值活着
+
+`ButtonTheme.of` 上游只被读三次：一次在 `ButtonBar`，另两次在
+**`DropdownButton`**，且两次都只为 `alignedDropdown`。
+一个完整的主题为一个布尔值留着，而读它的 widget 不是按钮。
+
+那个布尔值做的事，比「把内边距从菜单挪到按钮」要精确一点：
+aligned 时按钮 `start 16, end 4`、菜单 margin 为零；
+unaligned 时按钮为零、菜单 `start 16, end 24`。
+**start 那 16 确实在换手**（永远只有一边扛着），
+**end 完全不换**——4 对 24。因为两个 end 在干不同的事：
+aligned 按钮那 4 是箭头旁边的余地，unaligned 菜单那 24 是与没对齐的东西之间的
+净空。按「整体搬家」去理解，start 会对，end 会错二十个像素。
+
+还有一层不对称：菜单 margin 只看 `alignedDropdown`，
+按钮 padding 看 `alignedDropdown && _inputDecoration == null`。
+**这面旗子只生效一半，而是哪一半，取决于旗子从没听说过的东西。**
+
+9 个变异，9 个全红。
+
+### 尺子第三次修：`unwired.py`
+
+**一、调用点模式太窄。** 原来找 `Resolver::of(`；`DropdownAlignment`
+从 `from_theme` 读主题、`of` 只收纯参数，于是一个**正在被调用**的解析器
+看不见。放宽成 `Resolver::<任意>(`。这和它当初漏掉 `ResolvedButton`
+是同一类盲点。
+
+**二、不是每个没人读的主题都是缺口。** 加了「上游已废弃」一档，
+单独列出、不计入队列。而且判定要**跟着 data 类走**：上游把
+`ButtonBarThemeData` 和 `ButtonBar` 都标了废弃，**中间那个
+`ButtonBarTheme` 这个 `InheritedWidget` 却没标**——只 grep 包装类
+会把它当活的。
+
+**三、又一次「找不到」和「没得找」长得一模一样。** 新扫描一开始返回空集，
+报告只是安静地多列了一个主题。原因是 heredoc 把正则里的 `` 变成了一个
+真的退格符（这个坑我知道，还是踩了；教训仍是正则密集的 Python 用 Write/Edit 写）。
+修好之后加了一句守卫：上游目录在、却一个废弃主题都没找到，就明说扫描坏了。
+把正则再弄坏一次验过，它会喊。
+
+无读者主题 10 → 8（另有 1 个上游已废弃，不计）。
+
