@@ -4265,6 +4265,64 @@ impl CupertinoFormRow {
     /// down the column, while the field itself runs out to near the edge, so
     /// there is little to reserve at that end.
     pub const PADDING: EdgeInsets = EdgeInsets::only(20.0, 6.0, 6.0, 6.0);
+
+    /// The weight upstream gives an error label: `FontWeight.w500`.
+    pub const ERROR_WEIGHT: u16 = 500;
+
+    /// The colour of the `helper` label: the theme's text colour, **resolved**.
+    ///
+    /// Upstream builds the row's style as
+    /// `theme.textTheme.textStyle.copyWith(color:
+    /// CupertinoDynamicColor.maybeResolve(..., context))`, so the helper
+    /// follows the appearance like everything else on the page.
+    pub fn helper_color(brightness: Brightness) -> Color {
+        CupertinoColors::LABEL.resolve(brightness, BASE)
+    }
+
+    /// The colour of the `error` label -- **one colour, in both appearances.**
+    ///
+    /// Three lines below the helper, upstream writes
+    ///
+    /// ```dart
+    /// style: const TextStyle(
+    ///   color: CupertinoColors.destructiveRed,
+    ///   fontWeight: FontWeight.w500,
+    /// ),
+    /// ```
+    ///
+    /// and `const` is the whole story: resolving a `CupertinoDynamicColor`
+    /// needs a `BuildContext` at run time, so a compile-time style can only
+    /// carry the colour unresolved. An unresolved dynamic colour paints as its
+    /// base value, and nothing downstream can fix that -- the widgets layer
+    /// has no code dependency on cupertino at all, so `Text` and
+    /// `DefaultTextStyle` see a plain `Color` and paint it.
+    ///
+    /// `destructiveRed` **is** `systemRed`, which is (255, 59, 48) light and
+    /// (255, 69, 58) dark. So an error label in dark mode is drawn in the
+    /// light red, immediately under a helper label that was carefully
+    /// resolved.
+    ///
+    /// This is ported as upstream has it rather than quietly corrected: an
+    /// inconsistency copied on purpose stays visible and stays comparable,
+    /// where a local fix would make the port disagree with upstream for a
+    /// reason nobody reading either would find.
+    pub fn error_color() -> Color {
+        CupertinoColors::DESTRUCTIVE_RED.resolve(Brightness::Light, BASE)
+    }
+
+    /// What the error label would be if it resolved the way the helper does.
+    pub fn error_color_if_resolved(brightness: Brightness) -> Color {
+        CupertinoColors::DESTRUCTIVE_RED.resolve(brightness, BASE)
+    }
+
+    /// Whether upstream's error colour happens to agree with the appearance.
+    ///
+    /// True in light -- the base value *is* the light value, so the two agree
+    /// by coincidence rather than by resolution -- and false in dark, which is
+    /// where the difference shows.
+    pub fn error_color_agrees(brightness: Brightness) -> bool {
+        CupertinoFormRow::error_color() == CupertinoFormRow::error_color_if_resolved(brightness)
+    }
 }
 
 /// Upstream `CupertinoFormSection`: a run of form rows.
@@ -6279,5 +6337,75 @@ mod form_section_tests {
         assert!(CupertinoFormSection::is_legal(1, false));
         assert!(!CupertinoListSection::is_legal(0, false));
         assert!(!CupertinoFormSection::is_legal(0, false));
+    }
+}
+
+#[cfg(test)]
+mod form_row_tests {
+    use super::*;
+
+    #[test]
+    fn the_helper_follows_the_appearance() {
+        // Upstream resolves the row's text colour with `maybeResolve`, so the
+        // helper is a different grey in the two appearances.
+        assert_ne!(
+            CupertinoFormRow::helper_color(Brightness::Light),
+            CupertinoFormRow::helper_color(Brightness::Dark)
+        );
+    }
+
+    #[test]
+    fn and_the_error_does_not() {
+        // A `const TextStyle` cannot resolve anything -- resolution wants a
+        // context at run time -- so the error carries the base value into both
+        // appearances.
+        assert!(CupertinoFormRow::error_color_agrees(Brightness::Light));
+        assert!(
+            !CupertinoFormRow::error_color_agrees(Brightness::Dark),
+            "the error label is drawn in the light red on a dark page"
+        );
+    }
+
+    #[test]
+    fn and_the_two_reds_really_are_two_reds() {
+        // Without this the previous test would pass for the wrong reason: an
+        // inconsistency between arms that compute the same colour is not an
+        // inconsistency anybody can see.
+        let light = CupertinoFormRow::error_color_if_resolved(Brightness::Light);
+        let dark = CupertinoFormRow::error_color_if_resolved(Brightness::Dark);
+        assert_ne!(light, dark);
+        assert_eq!(light, Color::rgb(255, 59, 48));
+        assert_eq!(dark, Color::rgb(255, 69, 58));
+        // And the one upstream actually paints is the light one, either way.
+        assert_eq!(CupertinoFormRow::error_color(), light);
+    }
+
+    #[test]
+    fn the_helper_and_the_error_disagree_only_on_a_dark_page() {
+        // Which is what makes this hard to notice: in light mode the two
+        // labels are consistent, and the port would look right.
+        for brightness in [Brightness::Light, Brightness::Dark] {
+            let helper_moved = CupertinoFormRow::helper_color(brightness)
+                != CupertinoFormRow::helper_color(Brightness::Light);
+            let error_moved = CupertinoFormRow::error_color()
+                != CupertinoFormRow::error_color_if_resolved(Brightness::Light);
+            assert!(!error_moved, "the error never moves");
+            if matches!(brightness, Brightness::Dark) {
+                assert!(helper_moved, "but the helper next to it does");
+            }
+        }
+    }
+
+    #[test]
+    fn an_error_is_set_in_medium() {
+        assert_eq!(CupertinoFormRow::ERROR_WEIGHT, 500);
+    }
+
+    #[test]
+    fn the_row_reserves_far_more_at_the_start_than_the_end() {
+        // The label reads down a column; the field runs out to near the edge.
+        let padding = CupertinoFormRow::PADDING;
+        assert_eq!(padding, EdgeInsets::only(20.0, 6.0, 6.0, 6.0));
+        assert!(padding.left > padding.right * 3.0);
     }
 }

@@ -12500,3 +12500,62 @@ iOS 14.2 SDK」。
 移植里的 `CupertinoListSection` / `CupertinoFormSection` **是台账类型，
 不是搭出来的 widget**——没有哪个 widget 读 `divider_start()` 去画线。
 这一轮对齐的是**记下来的规则**，不是画面。真正把它搭出来是后面的事。
+
+---
+
+## 错误标签的红色，两种外观下是同一个红（2026-08-24）
+
+`CupertinoFormRow` 的 `build` 里，相隔三行：
+
+```dart
+final TextStyle textStyle = theme.textTheme.textStyle.copyWith(
+  color: CupertinoDynamicColor.maybeResolve(theme.textTheme.textStyle.color, context),
+);
+...
+if (helper != null) ... DefaultTextStyle(style: textStyle, child: helper!),
+if (error  != null) ... DefaultTextStyle(
+      style: const TextStyle(
+        color: CupertinoColors.destructiveRed,
+        fontWeight: FontWeight.w500,
+      ),
+```
+
+`helper` 拿到的是**解析过颜色**的主题样式。
+`error` 拿到的是一个 `const` 样式——而 `const` 就是全部原因：
+解析一个 `CupertinoDynamicColor` 需要运行时的 `BuildContext`，
+**编译期的样式只能把它原样带着**。
+
+没解析的 dynamic color 画出来就是它的基准值，
+而且下游**修不了**：widgets 层对 cupertino **没有代码依赖**
+（`basic.dart` 里只有一行 `@docImport`），
+`Text` 和 `DefaultTextStyle` 看见的就是一个普通 `Color`，照画。
+
+`destructiveRed` 就是 `systemRed`：亮 (255,59,48)，暗 (255,69,58)。
+所以**暗色页面上的错误标签，画的是亮色的红**，
+就在一个刚被仔细解析过的 helper 标签下面。
+
+### 照上游的样子移，不悄悄修
+
+一个**故意照抄的不一致，是看得见、也对得上的**；
+本地修一下，移植就和上游不一样了，
+而这个不一样的理由，读哪一边的人都找不到。
+
+于是 `error_color()` 返回基准值，`error_color_if_resolved(brightness)`
+返回「要是像 helper 那样解析会是什么」，
+`error_color_agrees(brightness)` 是两者是否相同——
+**亮色下相同（基准值恰好就是亮色值，是巧合不是解析），暗色下不同。**
+
+### 一条防「两条臂算出同一个数」的测试
+
+单有上面那条还不够：如果两个红本来就一样，
+「不一致」就是没人看得见的不一致——就是上一次拒绝 `TextWidthBasis` 的理由。
+所以专门有一条测试断言两个红**确实是两个红**，并把两个值都钉住。
+
+五个变异全红。
+
+### 这一轮没做的
+
+`CupertinoFormRow` 的排布也读了：prefix 在起点，child 是
+`Flexible` + `centerEnd`（`spaceBetween`），helper 和 error 在下面
+`centerStart` 并把行撑高。**没有为它们编谓词**——
+这一轮能验的是颜色，排布只记在注释里。
