@@ -176,6 +176,25 @@ typedef struct RfAppHost {
                            int64_t view_id,
                            const RfSemanticsNode* nodes,
                            size_t count);
+
+  // Asks for rf_app_run_tasks to be called on the UI thread, soon.
+  //
+  // This is the one callback that may be invoked from ANY thread, and the
+  // reason it exists rather than reusing schedule_frame: a Waker handed to a
+  // decode worker has to be able to say "come back and poll me", and
+  // schedule_frame cannot be called from off the UI thread -- it reaches
+  // Animator::RequestFrame, which touches UI-thread-only state.
+  // fml::TaskRunner::PostTask is thread-safe, which is exactly what this needs.
+  //
+  // The framework coalesces: between one post_task and the rf_app_run_tasks
+  // that answers it, further wakes queue rather than post again. An embedder
+  // that drops the request instead of posting it stalls every waiting task, so
+  // this is not optional once it is non-NULL.
+  //
+  // NULL is allowed and means "no task runner here": the framework falls back
+  // to draining tasks at the top of the next frame, which is correct but
+  // quantised to the vsync and cannot serve cross-thread wakes.
+  void (*post_task)(void* user_data);
 } RfAppHost;
 
 // -- Lifecycle ----------------------------------------------------------------
@@ -232,6 +251,23 @@ void rf_app_begin_frame(RfApp* app,
 
 // Build / layout / paint phase, ending in one RfAppHost::render per dirty view.
 void rf_app_draw_frame(RfApp* app);
+
+// -- Tasks --------------------------------------------------------------------
+
+// Polls every task the framework has ready, until none is.
+//
+// Upstream's counterpart is FlushMicrotasksNow, and this is called from the
+// two places upstream calls that one: between the animation phase and the
+// build phase of a frame, and in answer to a RfAppHost::post_task request.
+//
+// The position inside a frame is load-bearing, not incidental: a task that
+// completes during the animation phase must be visible to the build that
+// follows it, the same way an animation started in onBeginFrame must be.
+// dart:ui's own scheduleWarmUpFrame uses two timers rather than one "to ensure
+// that microtasks flush in between".
+//
+// Must be called on the UI thread. Cheap when nothing is ready.
+void rf_app_run_tasks(RfApp* app);
 
 // -- Input --------------------------------------------------------------------
 

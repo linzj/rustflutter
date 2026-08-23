@@ -199,6 +199,7 @@ pub mod table;
 pub mod tabs;
 pub mod tap_and_drag;
 pub mod tap_region;
+pub mod task;
 pub mod text_editing_intents;
 pub mod text_selection;
 pub mod text_selection_controls;

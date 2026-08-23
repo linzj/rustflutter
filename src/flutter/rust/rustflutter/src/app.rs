@@ -139,7 +139,28 @@ struct RfAppHost {
     respond_to_platform_message: Option<unsafe extern "C" fn(*mut c_void, i64, *const u8, usize)>,
     send_channel_update: Option<unsafe extern "C" fn(*mut c_void, *const c_char, bool)>,
     update_semantics: Option<unsafe extern "C" fn(*mut c_void, i64, *const RfSemanticsNode, usize)>,
+    /// Asks for `rf_app_run_tasks` on the UI thread. The one callback here that
+    /// may be invoked from any thread, and the only reason `task` can wake a
+    /// future from a decode worker: `schedule_frame` cannot be called from off
+    /// the UI thread, and `fml::TaskRunner::PostTask` can.
+    ///
+    /// `None` from an embedder that predates the field -- `RfAppHost` is zero
+    /// initialised on the C++ side and this was added at the end, so an
+    /// unaware host degrades to draining tasks once per frame rather than
+    /// crashing.
+    post_task: Option<unsafe extern "C" fn(*mut c_void)>,
 }
+
+/// This struct and `RfAppHost` in `runtime/rust_app_api.h` are two hand-written
+/// mirrors of one ABI, and nothing but a reader keeps them in step. The count
+/// is the cheap half of that: one `user_data` and seven callbacks, all pointer
+/// sized. `runtime_controller.cc` carries the matching `static_assert`, so a
+/// field added to one side and not the other fails to build rather than
+/// reading the next field's bytes.
+const _: () = assert!(
+    size_of::<RfAppHost>() == size_of::<*mut c_void>() * 8,
+    "RfAppHost has drifted from rust_app_api.h"
+);
 
 /// One semantics node, as the C ABI carries it. Mirrors `RfSemanticsNode` in
 /// `rust_app_api.h`; the two have to agree field for field.
@@ -361,6 +382,7 @@ impl Default for FrameScheduler {
                 respond_to_platform_message: None,
                 send_channel_update: None,
                 update_semantics: None,
+                post_task: None,
             },
         }
     }
@@ -1144,6 +1166,11 @@ mod abi {
         // up. Buffering catches those, but only once there is somewhere to
         // buffer them.
         services::attach(sink);
+        // On this thread, which is the UI thread and the only one that will
+        // ever hold futures. `host` is copied into the poster, so a worker
+        // waking a task later reaches the shell through the same pointer the
+        // rest of this file uses.
+        crate::task::attach(host.post_task, host.user_data);
 
         Box::into_raw(instance) as *mut RfApp
     }
@@ -1163,6 +1190,15 @@ mod abi {
         // cannot be asked to run against a half-torn-down instance, and so that
         // anything still waiting on a reply is failed rather than left waiting.
         services::detach();
+        // After the messenger, never before: `services::detach` answers every
+        // outstanding reply with `None`, and that is what settles the oneshot a
+        // waiting task is parked on. Dropping the tasks first would take their
+        // receivers with them and the answers would arrive nowhere.
+        //
+        // It also clears the poster under its lock, so that once this returns
+        // no thread is inside `post_task` and none can enter -- which is what
+        // makes the shell safe to tear down behind it.
+        crate::task::detach();
         // Thread-local as well, and for the same reason: a second app on this
         // thread must not start out believing the first one's platform state.
         platform::reset();
@@ -1338,6 +1374,25 @@ mod abi {
             });
         }
         instance.advance_ms = FrameTimings::now().duration_since(started).as_secs_f64() * 1000.0;
+    }
+
+    /// Drains the framework's task queue. Upstream's `FlushMicrotasksNow`.
+    ///
+    /// Called from two places, both on the UI thread: once inside every frame,
+    /// between the animation phase and the build phase, and once for each
+    /// `RfAppHost::post_task` the framework asked for.
+    ///
+    /// A frame is asked for only when something actually ran. A task parked on
+    /// a platform reply must not keep the engine drawing -- frames are on
+    /// demand here, and waiting is not a reason to draw.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rf_app_run_tasks(app: *mut RfApp) {
+        let Some(instance) = instance(app) else {
+            return;
+        };
+        if crate::task::run_until_stalled() {
+            instance.schedule_frame();
+        }
     }
 
     #[unsafe(no_mangle)]

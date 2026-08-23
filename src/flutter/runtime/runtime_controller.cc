@@ -108,6 +108,12 @@ RuntimeController::~RuntimeController() {
   }
 }
 
+// The other half of the check in `rust/rustflutter/src/app.rs`. Two
+// hand-written mirrors of one ABI; a field added to one side and not the other
+// would otherwise be read as the next field's bytes.
+static_assert(sizeof(RfAppHost) == sizeof(void*) * 8,
+              "RfAppHost has drifted from its Rust mirror in app.rs");
+
 bool RuntimeController::LaunchApplication() {
   if (app_ != nullptr) {
     FML_LOG(ERROR) << "The application is already running.";
@@ -123,6 +129,11 @@ bool RuntimeController::LaunchApplication() {
       &RuntimeController::OnRespondToPlatformMessage;
   host.send_channel_update = &RuntimeController::OnSendChannelUpdate;
   host.update_semantics = &RuntimeController::OnUpdateSemantics;
+  host.post_task = &RuntimeController::OnPostTask;
+
+  // Taken here, on the UI thread, because OnPostTask may run on any other one
+  // and the factory is not thread-safe to ask. Copying the result is.
+  weak_for_tasks_ = weak_factory_.GetWeakPtr();
 
   app_ = rf_app_create(&host);
   if (app_ == nullptr) {
@@ -358,9 +369,11 @@ bool RuntimeController::BeginFrame(fml::TimePoint frame_time,
   // Upstream drains the microtask queue between the two (FlushMicrotasksNow),
   // and that position is load-bearing: dart:ui's own scheduleWarmUpFrame uses
   // two timers rather than one "to ensure that microtasks flush in between".
-  // There is no async runtime here yet, so nothing is queued and nothing is
-  // drained -- but this is where it would go.
+  // rf_app_run_tasks is that drain -- a task that completes while tickers are
+  // advancing has to be visible to the build that follows it, for the same
+  // reason an animation started in onBeginFrame does.
   rf_app_begin_frame(app_, frame_micros, frame_number);
+  rf_app_run_tasks(app_);
   rf_app_draw_frame(app_);
 
   frame_in_progress_ = false;
@@ -737,6 +750,21 @@ void RuntimeController::OnRender(void* user_data,
 void RuntimeController::OnScheduleFrame(void* user_data) {
   auto* self = static_cast<RuntimeController*>(user_data);
   self->client_.ScheduleFrame(true);
+}
+
+void RuntimeController::OnPostTask(void* user_data) {
+  auto* self = static_cast<RuntimeController*>(user_data);
+  auto ui_task_runner = self->task_runners_.GetUITaskRunner();
+  if (!ui_task_runner) {
+    return;
+  }
+  // The copy is taken here and dereferenced there: this function may be on a
+  // decode worker, and the task runs on the UI thread where the factory lives.
+  ui_task_runner->PostTask([weak = self->weak_for_tasks_]() {
+    if (weak && weak->app_ != nullptr) {
+      rf_app_run_tasks(weak->app_);
+    }
+  });
 }
 
 void RuntimeController::CheckIfAllViewsRendered() {

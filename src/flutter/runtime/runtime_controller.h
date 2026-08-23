@@ -157,6 +157,18 @@ class RuntimeController {
                                   const char* channel,
                                   bool listening);
 
+  //----------------------------------------------------------------------------
+  /// The one trampoline that may arrive on any thread: a Waker asking for the
+  /// framework's task queue to be drained.
+  ///
+  /// The framework guarantees `user_data` is live for the duration of this
+  /// call -- it holds the poster under a lock that its own teardown takes, and
+  /// its teardown runs inside `rf_app_destroy`, which is the first thing this
+  /// controller's destructor does. What is *not* guaranteed is that the
+  /// controller survives until the posted task runs, which is what the weak
+  /// pointer below is for.
+  static void OnPostTask(void* user_data);
+
   // Fires RuntimeDelegate::OnAllViewsRendered once every view that has metrics
   // has produced a layer tree this frame. The rasterizer waits on this to know
   // a multi-view frame is complete.
@@ -205,6 +217,17 @@ class RuntimeController {
   // earlier than the one before it. See BeginFrame.
   int64_t last_frame_micros_ = std::numeric_limits<int64_t>::min();
   uint64_t last_frame_number_ = 0;
+
+  //----------------------------------------------------------------------------
+  /// Handed to every task-drain request, and taken from the factory once on the
+  /// UI thread rather than per call.
+  ///
+  /// `OnPostTask` runs on whatever thread woke a task, and copying a WeakPtr is
+  /// one of the operations weak_ptr.h documents as thread-friendly "subject to
+  /// additional synchronization" -- the framework's poster lock is that
+  /// synchronization. Only the posted task dereferences it, back on the UI
+  /// thread the factory belongs to.
+  fml::WeakPtr<RuntimeController> weak_for_tasks_;
 
   // Last, so that it is destroyed first and no reply that is still in flight
   // finds a half-torn-down controller. Handed to every outbound message's
