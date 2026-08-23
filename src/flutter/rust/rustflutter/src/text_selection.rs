@@ -25,7 +25,9 @@
 //! This paragraph used to end "which this crate does not have".
 
 use crate::direction::TextDirection;
+use crate::editable_text::TargetPlatform;
 use crate::engine::Color;
+use crate::gestures::PointerKind;
 use crate::render::{Offset, PaintContext, Size};
 
 /// Upstream `ClipboardStatus`.
@@ -378,6 +380,120 @@ impl TextSelectionGestureDetector {
     /// Whether a tap that changed nothing should still reach `onUserTap`.
     pub fn reports_tap(&self, changed_something: bool) -> bool {
         self.on_user_tap_always_called || changed_something
+    }
+}
+
+/// When a tap moves the caret -- upstream's `onTapDown` against
+/// `onSingleTapUp`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretMovesOn {
+    /// Desktop: the instant the button goes down, so a drag from there
+    /// extends the selection.
+    TapDown,
+    /// Mobile: not until the finger lifts, so a scroll that begins with a
+    /// touch does not move the caret on the way past.
+    TapUp,
+}
+
+/// Where the caret lands within a word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretLands {
+    /// Exactly where the pointer was.
+    Precisely,
+    /// At the nearer edge of the word -- a fingertip is wider than a letter,
+    /// so the precise position it reports is a guess, and the word's edge is
+    /// somewhere the reader can actually have meant.
+    AtTheWordEdge,
+}
+
+/// The platform rules a text field's gestures follow, which upstream keeps in
+/// `TextSelectionGestureDetectorBuilder` so that a field writing its own would
+/// not get some of them wrong.
+pub struct TextSelectionGestures;
+
+impl TextSelectionGestures {
+    /// Upstream's `_shouldShowSelectionToolbar = kind == null || kind == touch
+    /// || kind == stylus`.
+    ///
+    /// The toolbar and the handles are for a **finger or a stylus**. A mouse
+    /// has a right-click menu and a keyboard; a fingertip has neither, so the
+    /// controls have to be on screen.
+    ///
+    /// An unknown kind counts as touch, which is the safe way round: showing a
+    /// toolbar nobody needed is a nuisance, and withholding one from someone
+    /// with no other way to copy is a dead end.
+    ///
+    /// Upstream is not sure this is right, and says so in a comment above it:
+    /// what about "a Windows device with a touchscreen"
+    /// (flutter/flutter#106586)? The rule is by device kind and not by
+    /// platform, so such a device gets the toolbar -- the open question is
+    /// whether it should also keep the desktop behaviours.
+    pub fn shows_selection_toolbar(kind: PointerKind) -> bool {
+        matches!(
+            kind,
+            PointerKind::Touch | PointerKind::Stylus | PointerKind::Unknown
+        )
+    }
+
+    /// Whether the handles follow the toolbar. Upstream assigns one from the
+    /// other on the next line, so they cannot disagree.
+    pub fn shows_selection_handles(kind: PointerKind) -> bool {
+        TextSelectionGestures::shows_selection_toolbar(kind)
+    }
+
+    /// Upstream's two comments, each pointing at the other:
+    /// "on mobile platforms the selection is set on tap up" in `onTapDown`,
+    /// and "on desktop platforms the selection is set on tap down" in
+    /// `onSingleTapUp`.
+    ///
+    /// A desktop moves the caret under the button because a press there is the
+    /// start of a possible drag-select, and the caret has to be at one end of
+    /// it already. A touch cannot commit that early: a finger going down might
+    /// be the beginning of a scroll, and moving the caret for every scroll
+    /// would make a list of text unreadable.
+    pub fn caret_moves_on(platform: TargetPlatform) -> CaretMovesOn {
+        match platform {
+            TargetPlatform::Android | TargetPlatform::IOS | TargetPlatform::Fuchsia => {
+                CaretMovesOn::TapUp
+            }
+            TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows => {
+                CaretMovesOn::TapDown
+            }
+        }
+    }
+
+    /// Upstream's "a shift-tapped unfocused field expands from 0, not from the
+    /// previous selection", written once for macOS and once for iOS.
+    ///
+    /// **Both Apple platforms and neither of the others.** A field that has
+    /// never been focused has a previous selection that belongs to nobody, so
+    /// expanding from it would extend a range the reader never made; expanding
+    /// from the start is at least a range they can see the whole of.
+    pub fn shift_tap_expands_from_zero_when_unfocused(platform: TargetPlatform) -> bool {
+        matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS)
+    }
+
+    /// Where a tap puts the caret, which on iOS depends on **what you touched
+    /// it with**.
+    ///
+    /// Upstream's comment on the macOS arm draws the contrast itself: "On
+    /// macOS, a tap/click places the selection in a precise position. This
+    /// differs from iOS/iPadOS, where if the gesture is done by a touch then
+    /// the selection moves to the closest word edge, instead of a precise
+    /// position."
+    ///
+    /// And iOS's own arm splits by kind: a mouse, a trackpad or a stylus gets
+    /// the precise position, a touch or an unknown device gets the word edge.
+    /// So a mouse on an iPad behaves like a desktop, because the reason for
+    /// the word edge is the fingertip and not the operating system.
+    pub fn caret_lands(platform: TargetPlatform, kind: PointerKind) -> CaretLands {
+        match platform {
+            TargetPlatform::IOS => match kind {
+                PointerKind::Touch | PointerKind::Unknown => CaretLands::AtTheWordEdge,
+                _ => CaretLands::Precisely,
+            },
+            _ => CaretLands::Precisely,
+        }
     }
 }
 
@@ -1571,5 +1687,191 @@ mod selection_theme_tests {
             "setting one does not move the others"
         );
         assert_eq!(resolved.selection.alpha(), 102);
+    }
+}
+
+#[cfg(test)]
+mod selection_gesture_rule_tests {
+    use super::*;
+
+    const DESKTOP: [TargetPlatform; 3] = [
+        TargetPlatform::Linux,
+        TargetPlatform::MacOS,
+        TargetPlatform::Windows,
+    ];
+    const MOBILE: [TargetPlatform; 3] = [
+        TargetPlatform::Android,
+        TargetPlatform::IOS,
+        TargetPlatform::Fuchsia,
+    ];
+
+    #[test]
+    fn the_toolbar_is_for_a_finger_or_a_stylus_and_not_for_a_mouse() {
+        // A mouse has a right-click menu and a keyboard; a fingertip has
+        // neither, so the controls have to be on screen.
+        assert!(TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::Touch
+        ));
+        assert!(TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::Stylus
+        ));
+        assert!(!TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::Mouse
+        ));
+        assert!(!TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::Trackpad
+        ));
+    }
+
+    #[test]
+    fn an_unknown_device_counts_as_a_finger() {
+        // The safe way round: a toolbar nobody needed is a nuisance,
+        // withholding one from someone with no other way to copy is a dead
+        // end.
+        assert!(TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::Unknown
+        ));
+    }
+
+    #[test]
+    fn an_inverted_stylus_is_not_on_upstreams_list() {
+        // `kind == null || kind == touch || kind == stylus`, and an inverted
+        // stylus is its own kind. Pinned because it is the one that looks like
+        // an oversight and might be one -- upstream has an open question about
+        // this rule (flutter/flutter#106586) and this is what it does today.
+        assert!(!TextSelectionGestures::shows_selection_toolbar(
+            PointerKind::InvertedStylus
+        ));
+    }
+
+    #[test]
+    fn the_handles_cannot_disagree_with_the_toolbar() {
+        // Upstream assigns one from the other on the next line.
+        for kind in [
+            PointerKind::Touch,
+            PointerKind::Mouse,
+            PointerKind::Stylus,
+            PointerKind::InvertedStylus,
+            PointerKind::Trackpad,
+            PointerKind::Unknown,
+        ] {
+            assert_eq!(
+                TextSelectionGestures::shows_selection_handles(kind),
+                TextSelectionGestures::shows_selection_toolbar(kind),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_desktop_moves_the_caret_under_the_button_and_a_phone_waits_for_the_lift() {
+        // A press on a desktop is the start of a possible drag-select, so the
+        // caret has to be at one end of it already. A finger going down might
+        // be the beginning of a scroll.
+        for platform in DESKTOP {
+            assert_eq!(
+                TextSelectionGestures::caret_moves_on(platform),
+                CaretMovesOn::TapDown,
+                "{platform:?}"
+            );
+        }
+        for platform in MOBILE {
+            assert_eq!(
+                TextSelectionGestures::caret_moves_on(platform),
+                CaretMovesOn::TapUp,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shift_tapping_an_unfocused_field_expands_from_zero_on_both_apple_platforms() {
+        // Written twice upstream, once in the macOS arm and once in the iOS
+        // one, and nowhere else.
+        assert!(
+            TextSelectionGestures::shift_tap_expands_from_zero_when_unfocused(TargetPlatform::IOS)
+        );
+        assert!(
+            TextSelectionGestures::shift_tap_expands_from_zero_when_unfocused(
+                TargetPlatform::MacOS
+            )
+        );
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !TextSelectionGestures::shift_tap_expands_from_zero_when_unfocused(platform),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mouse_on_an_ipad_behaves_like_a_desktop() {
+        // The reason for the word edge is the fingertip, not the operating
+        // system -- so iOS asks what you touched it with.
+        assert_eq!(
+            TextSelectionGestures::caret_lands(TargetPlatform::IOS, PointerKind::Touch),
+            CaretLands::AtTheWordEdge
+        );
+        for precise in [
+            PointerKind::Mouse,
+            PointerKind::Trackpad,
+            PointerKind::Stylus,
+            PointerKind::InvertedStylus,
+        ] {
+            assert_eq!(
+                TextSelectionGestures::caret_lands(TargetPlatform::IOS, precise),
+                CaretLands::Precisely,
+                "{precise:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_a_finger_on_a_mac_still_lands_precisely() {
+        // The contrast upstream's own comment draws: macOS places the caret
+        // precisely where iOS would go to the word edge. So it is the
+        // platform *and* the kind, not either alone.
+        assert_eq!(
+            TextSelectionGestures::caret_lands(TargetPlatform::MacOS, PointerKind::Touch),
+            CaretLands::Precisely
+        );
+        assert_ne!(
+            TextSelectionGestures::caret_lands(TargetPlatform::MacOS, PointerKind::Touch),
+            TextSelectionGestures::caret_lands(TargetPlatform::IOS, PointerKind::Touch)
+        );
+    }
+
+    #[test]
+    fn an_unknown_device_on_ios_is_treated_as_a_finger_there_too() {
+        // The same way round as the toolbar rule: when in doubt, assume the
+        // less precise input.
+        assert_eq!(
+            TextSelectionGestures::caret_lands(TargetPlatform::IOS, PointerKind::Unknown),
+            CaretLands::AtTheWordEdge
+        );
+    }
+
+    #[test]
+    fn every_other_platform_ignores_the_device_kind_entirely() {
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            for kind in [PointerKind::Touch, PointerKind::Mouse, PointerKind::Unknown] {
+                assert_eq!(
+                    TextSelectionGestures::caret_lands(platform, kind),
+                    CaretLands::Precisely,
+                    "{platform:?} {kind:?}"
+                );
+            }
+        }
     }
 }
