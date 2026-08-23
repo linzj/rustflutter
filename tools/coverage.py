@@ -327,6 +327,7 @@ def classify(classes_by_file, rust_ids, ledger, module_names):
     """Yield (layer, file, class, state) rows."""
     eq = ledger.get('equivalent', {})
     blocked = ledger.get('blocked_engine', {})
+    blocked_work = ledger.get('blocked_unported_dependency', {})
     oos_files = ledger.get('out_of_scope_files', {})
     oos_classes = ledger.get('out_of_scope_classes', {})
     for layer, files in classes_by_file.items():
@@ -342,6 +343,8 @@ def classify(classes_by_file, rust_ids, ledger, module_names):
                         'mapped'
                         if mapping_names_anything(eq[c], rust_ids, module_names)
                         else 'mapping-unresolved')
+                elif c in blocked_work:
+                    yield layer, fname, c, 'blocked-work'
                 elif c in blocked:
                     yield layer, fname, c, 'blocked-engine'
                 elif c in oos_classes or f'{file_key}:{c}' in oos_classes:
@@ -352,7 +355,13 @@ def classify(classes_by_file, rust_ids, ledger, module_names):
                     yield layer, fname, c, 'MISSING'
 
 
-ORDER = ['covered', 'mapped', 'blocked-engine', 'out-of-scope',
+# `blocked-work` is not `out-of-scope`, and the difference is a claim about
+# intent rather than a shade of meaning. Out-of-scope says this port will
+# never want the thing -- web-only, iOS-only, a debug channel it has no
+# counterpart for. Blocked-work says it wants it and has not built what it
+# stands on. Filing the second under the first would put a false statement
+# in the ledger and quietly retire work that is merely not done yet.
+ORDER = ['covered', 'mapped', 'blocked-engine', 'blocked-work', 'out-of-scope',
          'mapping-unresolved', 'MISSING']
 # `mapping-unresolved` is not accounted. A ledger entry that names a Rust
 # symbol the crate does not have is a claim, not a port.
@@ -388,7 +397,7 @@ def main():
         counts = ' '.join(f'{s.split("-")[0]}:{len(v)}' for s, v in states.items() if v)
         print(f'{layer}/{fname}: {counts}')
         if not args.missing_only:
-            for s in ('mapped', 'blocked-engine', 'out-of-scope'):
+            for s in ('mapped', 'blocked-engine', 'blocked-work', 'out-of-scope'):
                 if states[s]:
                     print(f'    [{s}] {", ".join(states[s])}')
         if states['mapping-unresolved']:

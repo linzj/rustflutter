@@ -1864,5 +1864,8 @@
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"
+  },
+  "blocked_unported_dependency": {
+    "DynamicSchemeVariant": "它是 `ColorScheme.fromSeed` 的参数：九个取值各自选一个 `Scheme*` 类，而那九个类在 `material_color_utilities` 包里，不在 packages/flutter/lib/src 下——coverage.py 因此根本没数过它们。本移植没有 fromSeed，color_scheme.rs 的模块注释早就把理由写下了：HCT/CAM16 那套色调板算法是独立的一大块活。**没有 fromSeed，这个选择器没有东西可选。**记在 blocked_unported_dependency 而不是 out_of_scope：本移植是想要它的，只是还没有把它踩着的东西建起来。"
   }
 }

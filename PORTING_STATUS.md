@@ -13985,3 +13985,38 @@ coverage 2102 / 2019 记账 / **2 MISSING**。
 就是在错误的位置摆东西**而且一声不吭**。
 
 四个变异全红。coverage 2102 / 2020 记账 / **1 MISSING**。
+
+---
+
+## MISSING 归零，而这不等于完成（2026-08-24）
+
+最后一个是 `DynamicSchemeVariant`。它是 `ColorScheme.fromSeed` 的参数：
+九个取值各选一个 `Scheme*` 类，而**那九个类在 `material_color_utilities` 包里**，
+不在 `packages/flutter/lib/src` 下——所以 `coverage.py` 根本没数过它们，
+`DynamicSchemeVariant` 才会孤零零地剩在最后。
+
+本移植没有 `fromSeed`。`color_scheme.rs` 的模块注释早写下了理由：
+HCT/CAM16 那套色调板算法是独立的一大块活。
+**没有 fromSeed，这个选择器没有东西可选**——移过来就是又一个背后什么都没有的名字。
+
+### 于是加了一个新的记账类别，而不是塞进旧的
+
+塞进 `out_of_scope` 会在台账里写下一句**假话**。
+「out of scope」说的是「这个移植永远不会要它」——web-only、iOS-only、
+一个根本没有对应物的调试通道。
+而这个是「想要，只是还没把它踩着的东西建起来」。
+
+新类别 `blocked_unported_dependency`（报告里显示为 `blocked-work`）
+单占一行，**不和 out-of-scope 混在一起**：
+把「还没做」悄悄归进「不做」，就是把活退休掉。
+
+反向验过：把这条记账删掉，MISSING 立刻回到 1。
+
+### 而真正剩下的队列是 81 条空映射
+
+`coverage.py` 现在报 **0 MISSING**，但同一份报告里还有
+**81 条 `mapping-unresolved`**——台账里 `rust:` 指着 crate 里不存在的东西。
+第 81 轮加的那个检查就是为它们准备的。
+
+**「0 MISSING」不是「完成」。**它是「每一个上游公共类型都有一条记录」，
+而其中 81 条记录还没被证明指向真东西。下一段活在那里。
