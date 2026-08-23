@@ -13961,3 +13961,27 @@ EndDrawerButton : super(icon: const EndDrawerButtonIcon());   // ← 没有
   而 platform view 一族在本台账里已是 blocked_engine，UIGestureRecognizer 这边根本不存在。
 
 coverage 2102 / 2019 记账 / **2 MISSING**。
+
+---
+
+## 三个数，两个坐标系，只有一样东西把它们连起来（2026-08-24）
+
+`OverlayChildLayoutInfo` 是个三元组
+`(childSize, childPaintTransform, overlaySize)`，
+交给 `OverlayPortal.overlayChildLayoutBuilder`。
+上游的文档对**每一个在哪个坐标系里**都写得很小心，而三者并不一致：
+
+- `childSize` 在**孩子自己的**坐标里；
+- `overlaySize` 在**overlay 自己的**坐标里;
+- `childPaintTransform` 在 **overlay 的**坐标里。
+
+于是三个里有两个各量各的、根本没法比，**第三个是唯一把它们关联起来的东西**。
+一个要决定自己坐哪的 overlay child 三样都需要：
+锚点多大、锚点落在 overlay 的什么位置、overlay 有多大地方。
+
+而它不是一个 offset：**中间可能有东西把锚点缩放或旋转过**，offset 说不出这件事。
+所以 `child_rect_in_overlay()` 在变换不是纯平移时返回 `None`——
+那时候四个角构不成一个轴对齐矩形，硬给一个出去，
+就是在错误的位置摆东西**而且一声不吭**。
+
+四个变异全红。coverage 2102 / 2020 记账 / **1 MISSING**。

@@ -2769,3 +2769,155 @@ mod tests {
         outer.dismiss();
     }
 }
+
+/// Upstream `OverlayChildLayoutInfo`: what an overlay child is told about the
+/// thing it is covering.
+///
+/// Upstream is an `extension type` over the triple
+/// `(childSize, childPaintTransform, overlaySize)`, handed to
+/// `OverlayPortal.overlayChildLayoutBuilder`.
+///
+/// # Three pieces in two coordinate spaces
+///
+/// The doc comments are precise about which space each one is in, and they do
+/// not all agree:
+///
+/// * `childSize` is the anchor child's size **in its own coordinates**.
+/// * `overlaySize` is the overlay's size **in its own coordinates**.
+/// * `childPaintTransform` is the anchor child's paint transform **in the
+///   overlay's coordinates**.
+///
+/// So two of the three are measured where they live and cannot be compared,
+/// and the third is the only thing that relates them. An overlay child
+/// deciding where to sit needs all three: how big the anchor is, where the
+/// anchor landed in the overlay, and how much overlay there is to sit in.
+///
+/// Dropping the transform would leave two sizes in unrelated spaces, which is
+/// why it is not simply an offset -- the anchor may be scaled or rotated by
+/// something between it and the overlay, and an offset could not say so.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayChildLayoutInfo {
+    /// The anchor child's size, in the child's own coordinates.
+    pub child_size: Size,
+    /// The anchor child's paint transform, in the overlay's coordinates.
+    pub child_paint_transform: crate::painting::Matrix4,
+    /// The overlay's size, in the overlay's own coordinates.
+    pub overlay_size: Size,
+}
+
+impl OverlayChildLayoutInfo {
+    pub fn new(
+        child_size: Size,
+        child_paint_transform: crate::painting::Matrix4,
+        overlay_size: Size,
+    ) -> OverlayChildLayoutInfo {
+        OverlayChildLayoutInfo {
+            child_size,
+            child_paint_transform,
+            overlay_size,
+        }
+    }
+
+    /// Where the anchor child's origin falls in the overlay.
+    ///
+    /// The transform applied to the child's own origin -- which is the only
+    /// way to get from the child's space into the overlay's.
+    pub fn child_origin_in_overlay(&self) -> Offset {
+        crate::painting::matrix_utils::transform_point(self.child_paint_transform, Offset::ZERO)
+    }
+
+    /// The anchor child's rectangle in the overlay, for the common case where
+    /// nothing between them rotated or scaled it.
+    ///
+    /// Returns `None` when the transform is not a plain translation, because
+    /// then the child's four corners do not make an axis-aligned rectangle and
+    /// a caller that treated them as one would be placing things wrongly and
+    /// silently.
+    pub fn child_rect_in_overlay(&self) -> Option<crate::engine::Rect> {
+        let translation =
+            crate::painting::matrix_utils::get_as_translation(self.child_paint_transform)?;
+        Some(crate::engine::Rect {
+            left: translation.dx,
+            top: translation.dy,
+            right: translation.dx + self.child_size.width,
+            bottom: translation.dy + self.child_size.height,
+        })
+    }
+}
+
+#[cfg(test)]
+mod overlay_child_layout_info_tests {
+    use super::OverlayChildLayoutInfo;
+    use crate::painting::Matrix4;
+    use crate::render::{Offset, Size};
+
+    fn translated(dx: f32, dy: f32) -> Matrix4 {
+        let mut transform = Matrix4::IDENTITY;
+        transform.storage[12] = dx;
+        transform.storage[13] = dy;
+        transform
+    }
+
+    fn info(transform: Matrix4) -> OverlayChildLayoutInfo {
+        OverlayChildLayoutInfo::new(Size::new(30.0, 20.0), transform, Size::new(400.0, 800.0))
+    }
+
+    #[test]
+    fn the_transform_is_the_only_thing_relating_the_two_sizes() {
+        // childSize is in the child's coordinates and overlaySize in the
+        // overlay's, so neither says where the child sits. The transform does.
+        let placed = info(translated(50.0, 90.0));
+        assert_eq!(placed.child_origin_in_overlay(), Offset::new(50.0, 90.0));
+        // Two children of the same size land in different places under
+        // different transforms, which is what makes the field load-bearing.
+        assert_ne!(
+            info(translated(50.0, 90.0)).child_origin_in_overlay(),
+            info(translated(10.0, 10.0)).child_origin_in_overlay()
+        );
+    }
+
+    #[test]
+    fn the_rectangle_combines_the_size_with_the_transform() {
+        let rect = info(translated(50.0, 90.0))
+            .child_rect_in_overlay()
+            .expect("a plain translation");
+        assert_eq!(rect.left, 50.0);
+        assert_eq!(rect.top, 90.0);
+        assert_eq!(rect.right, 80.0, "the child's own width, moved");
+        assert_eq!(rect.bottom, 110.0);
+    }
+
+    #[test]
+    fn and_a_rotated_or_scaled_anchor_has_no_rectangle_to_give() {
+        // Its four corners are not an axis-aligned rectangle, so answering
+        // with one would place things wrongly and say nothing about it.
+        let mut scaled = Matrix4::IDENTITY;
+        scaled.storage[0] = 2.0;
+        assert_eq!(info(scaled).child_rect_in_overlay(), None);
+        // The origin is still answerable, because a point transforms whatever
+        // the matrix does.
+        assert_eq!(
+            info(scaled).child_origin_in_overlay(),
+            Offset::new(0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn an_untransformed_child_sits_at_the_overlays_origin() {
+        let at_origin = info(Matrix4::IDENTITY);
+        assert_eq!(at_origin.child_origin_in_overlay(), Offset::new(0.0, 0.0));
+        let rect = at_origin.child_rect_in_overlay().expect("identity");
+        assert_eq!(rect.left, 0.0);
+        assert_eq!(rect.right, 30.0);
+    }
+
+    #[test]
+    fn and_the_overlay_size_is_not_the_child_size() {
+        // The two are in different spaces and different units of meaning; a
+        // port that conflated them would still compile.
+        let placed = info(translated(50.0, 90.0));
+        assert_eq!(placed.child_size, Size::new(30.0, 20.0));
+        assert_eq!(placed.overlay_size, Size::new(400.0, 800.0));
+        assert_ne!(placed.child_size, placed.overlay_size);
+    }
+}
