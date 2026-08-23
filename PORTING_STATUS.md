@@ -13709,3 +13709,45 @@ if (widget.mode != CupertinoTimerPickerMode.hm) { selectedSecond = ...; }
 把 match 臂折成了单行，这是老毛病了）。
 
 coverage 2102 / 2009 记账 / **12 MISSING**。
+
+---
+
+## 第三个值不是改名，是因为平台视图没有孩子（2026-08-24）
+
+`HitTestBehavior` 是 `deferToChild / opaque / translucent`；
+`PlatformViewHitTestBehavior` 是 `opaque / translucent / **transparent**`。
+
+**换掉的那个不是改名。**平台视图没有 Flutter 的孩子可以「交给」——
+它是别人的一块画面。所以第三个选项不可能是「问我的孩子」，
+只能是「我不在这儿」。
+
+### 两个问题，不是三种情况
+
+上游整个实现就两行：
+
+```dart
+if (behavior == transparent || !size.contains(position!)) return false;
+result.add(BoxHitTestEntry(this, position));
+return behavior == opaque;
+```
+
+问的是两件独立的事：**这个视图收不收这个事件**，和**它拦不拦后面的搜索**。
+`translucent` 正是把两者分开的那个值——它**既把自己记进路径，又返回 false**，
+于是它收到这次触摸，它背后的东西也收到。
+
+第四种组合——不收事件却拦住搜索——**没有任何值产生**，
+因为「挡住一个自己都不用的东西」不是谁想要的。测试把这条也断言了。
+
+而边界检查在**读取 behavior 之前**：`opaque` 不等于「到处都是」。
+
+### 移了判断，没有它要驱动的那块画面
+
+读这个值的那些 render object 在本树里是 `blocked_engine`——没有平台视图通道，
+`AndroidView` 那一族没地方发东西。但**这个判断不受此阻**：
+它是对枚举做的算术，不是对一块外来画面做的，
+和 `SmartDashesType::resolve` 不需要键盘就能测是同一个道理。
+
+（这一点要和第 96 轮分清楚：那次是**接线**没法被测试分辨，所以撤掉了；
+这次没有声称接了任何线，谓词本身就是全部内容。）
+
+五个变异全红。coverage 2102 / 2010 记账 / **11 MISSING**。

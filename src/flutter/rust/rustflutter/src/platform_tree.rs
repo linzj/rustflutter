@@ -118,6 +118,88 @@ impl Default for RenderTreeSliver {
     }
 }
 
+/// Upstream `PlatformViewHitTestBehavior`: how a platform view answers a
+/// touch.
+///
+/// # Not the same three as `HitTestBehavior`
+///
+/// [`crate::render::HitTestBehavior`] offers `deferToChild`, `opaque` and
+/// `translucent`. This one offers `opaque`, `translucent` and **`transparent`**
+/// -- and the swap is not a rename. A platform view has no Flutter children to
+/// defer to; it is somebody else's surface. So the third option cannot be "ask
+/// my children", and is instead "I am not here".
+///
+/// # Two questions, not three cases
+///
+/// Upstream's whole implementation is two lines:
+///
+/// ```dart
+/// bool hitTest(result, {position}) {
+///   if (behavior == transparent || !size.contains(position!)) return false;
+///   result.add(BoxHitTestEntry(this, position));
+///   return behavior == opaque;
+/// }
+/// bool hitTestSelf(position) => behavior != transparent;
+/// ```
+///
+/// Which asks two separate things: **does this view take the event**, and
+/// **does it stop the search**. `translucent` is the one that separates them
+/// -- it records itself *and* returns false, so it receives the touch and what
+/// is behind it receives the touch too.
+///
+/// The fourth combination -- refusing the event but stopping the search --
+/// would be a view that blocks what it will not use, and there is no value for
+/// it.
+///
+/// # Ported without the surface it would drive
+///
+/// The render objects that read this are `blocked_engine` in this tree: there
+/// is no platform-view channel, so `AndroidView` and its family have nowhere
+/// to send anything. The decision here is not blocked by that, because it is
+/// arithmetic on the enum rather than on a foreign surface -- the same reason
+/// `SmartDashesType::resolve` is testable without a keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PlatformViewHitTestBehavior {
+    /// Takes the event and stops the search.
+    #[default]
+    Opaque,
+    /// Takes the event and lets the search go on behind it.
+    Translucent,
+    /// Takes nothing and stops nothing.
+    Transparent,
+}
+
+impl PlatformViewHitTestBehavior {
+    pub const ALL: [PlatformViewHitTestBehavior; 3] = [
+        PlatformViewHitTestBehavior::Opaque,
+        PlatformViewHitTestBehavior::Translucent,
+        PlatformViewHitTestBehavior::Transparent,
+    ];
+
+    /// Upstream's `hitTestSelf`: `behavior != transparent`.
+    pub fn takes_the_event(self) -> bool {
+        !matches!(self, PlatformViewHitTestBehavior::Transparent)
+    }
+
+    /// Upstream's `hitTest` return: `behavior == opaque`.
+    pub fn stops_the_search(self) -> bool {
+        matches!(self, PlatformViewHitTestBehavior::Opaque)
+    }
+
+    /// Upstream's `hitTest` in full, including the bounds check that comes
+    /// before the behaviour is consulted at all.
+    ///
+    /// Returns `(recorded, stop)`: whether this view is added to the path, and
+    /// whether the hit test stops here. A touch outside the bounds is neither,
+    /// **whatever the behaviour is** -- `opaque` does not mean "everywhere".
+    pub fn hit_test(self, within_bounds: bool) -> (bool, bool) {
+        if !within_bounds || !self.takes_the_event() {
+            return (false, false);
+        }
+        (true, self.stops_the_search())
+    }
+}
+
 /// Upstream `PlatformViewCreationParams`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlatformViewCreationParams {
@@ -371,5 +453,77 @@ mod tests {
     #[test]
     fn the_docs_say_plainly_that_choosing_this_one_buys_nothing_but_work() {
         assert!(AndroidViewSurface::is_the_verbose_option());
+    }
+}
+
+#[cfg(test)]
+mod platform_view_hit_test_tests {
+    use super::PlatformViewHitTestBehavior;
+
+    #[test]
+    fn translucent_takes_the_event_and_still_lets_it_through() {
+        // The value that separates the two questions: it records itself and
+        // returns false, so it receives the touch and so does what is behind.
+        let behavior = PlatformViewHitTestBehavior::Translucent;
+        assert!(behavior.takes_the_event());
+        assert!(!behavior.stops_the_search());
+        assert_eq!(behavior.hit_test(true), (true, false));
+    }
+
+    #[test]
+    fn opaque_takes_it_and_keeps_it() {
+        let behavior = PlatformViewHitTestBehavior::Opaque;
+        assert!(behavior.takes_the_event());
+        assert!(behavior.stops_the_search());
+        assert_eq!(behavior.hit_test(true), (true, true));
+    }
+
+    #[test]
+    fn and_transparent_takes_nothing_and_stops_nothing() {
+        let behavior = PlatformViewHitTestBehavior::Transparent;
+        assert!(!behavior.takes_the_event());
+        assert!(!behavior.stops_the_search());
+        assert_eq!(behavior.hit_test(true), (false, false));
+    }
+
+    #[test]
+    fn the_two_questions_tell_the_three_apart() {
+        // Neither question alone separates all three: taking groups opaque
+        // with translucent, stopping groups translucent with transparent.
+        let mut answers: Vec<(bool, bool)> = PlatformViewHitTestBehavior::ALL
+            .iter()
+            .map(|b| (b.takes_the_event(), b.stops_the_search()))
+            .collect();
+        answers.sort();
+        answers.dedup();
+        assert_eq!(answers.len(), 3);
+        // And the missing fourth combination -- refusing the event while
+        // stopping the search -- is one no value produces, because a view that
+        // blocks what it will not use is not a thing anyone wants.
+        assert!(!answers.contains(&(false, true)));
+    }
+
+    #[test]
+    fn a_touch_outside_the_bounds_is_nothing_whatever_the_behaviour() {
+        // The bounds check comes before the behaviour is consulted at all, so
+        // opaque does not mean everywhere.
+        for behavior in PlatformViewHitTestBehavior::ALL {
+            assert_eq!(behavior.hit_test(false), (false, false), "{behavior:?}");
+        }
+        // Inside the bounds they differ, or the test above would be empty.
+        let inside: Vec<(bool, bool)> = PlatformViewHitTestBehavior::ALL
+            .iter()
+            .map(|b| b.hit_test(true))
+            .collect();
+        assert_eq!(inside.len(), 3);
+        assert!(inside.iter().any(|answer| *answer != (false, false)));
+    }
+
+    #[test]
+    fn a_platform_view_blocks_what_is_behind_it_unless_told_otherwise() {
+        assert_eq!(
+            PlatformViewHitTestBehavior::default(),
+            PlatformViewHitTestBehavior::Opaque
+        );
     }
 }
