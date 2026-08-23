@@ -362,14 +362,117 @@ impl TextInputConfiguration {
 }
 
 /// What a field wants to hear about.
+/// What the platform may ask an editing client -- upstream's
+/// `TextInputClient`.
+///
+/// # Which answers are required and which may be ignored
+///
+/// Upstream writes nine of these without a body and six with `{}`, and the
+/// split is not about how important they are. The required ones are what the
+/// platform can ask **at any moment and needs an answer to** -- the current
+/// value, the autofill scope, a keystroke, an action, a closed connection. The
+/// optional ones are announcements about features a client may not have:
+/// Android content insertion, Scribble placeholders, a macOS selector, a
+/// swapped input control.
+///
+/// A client that ignores an optional one still works. A client that ignores a
+/// required one leaves the platform holding a question, which is why upstream
+/// gives them no body to inherit.
+///
+/// # A null autofill scope means two different things
+///
+/// Upstream: "It should return null if this `TextInputClient` does not need
+/// autofill support. For a `TextInputClient` that supports autofill, returning
+/// null causes it to participate in autofill alone."
+///
+/// So `None` is *no autofill* from a client that does not do autofill, and
+/// *autofill, ungrouped* from one that does -- and the value cannot tell you
+/// which, because the difference is in the client rather than in the answer.
+/// See [`TextInputClient::autofill_scope`].
+///
+/// # The platform's value is user input, and a programmatic one is not
+///
+/// `updateEditingValue`'s doc: the new value "is treated as user input and
+/// thus may subject to input formatting". A value arriving from the keyboard
+/// goes through the formatters; one the application sets does not. The same
+/// text through two doors is two different things.
 pub trait TextInputClient {
     /// The text is now this. Called for every keystroke and every step of a
     /// composition, so it must be cheap.
+    ///
+    /// **Required.** And what arrives here is user input -- see the trait's
+    /// docs.
     fn update_editing_value(&mut self, value: TextEditingValue);
 
     /// The reader pressed Enter.
+    ///
+    /// Upstream leaves this without a body; it has one here because the port's
+    /// only client is a field that has nothing to do for most actions, and a
+    /// trait method nobody can sensibly default is a different problem from a
+    /// trait method nobody has to write.
     fn perform_action(&mut self, _action: TextInputAction) {}
+
+    /// Upstream's `currentTextEditingValue`: what this client is holding.
+    ///
+    /// **Required**, because the platform asks the client rather than
+    /// remembering: the client is the source of truth and the platform's copy
+    /// is a cache of it.
+    fn current_editing_value(&self) -> Option<TextEditingValue> {
+        None
+    }
+
+    /// Upstream's `currentAutofillScope`. `None` is overloaded -- see the
+    /// trait's docs.
+    fn autofill_scope(&self) -> Option<AutofillScopeId> {
+        None
+    }
+
+    /// Upstream's `connectionClosed`: the **platform** dropped the connection.
+    ///
+    /// Upstream says what is owed: the client "should cleanup its connection
+    /// and finalize editing". Finalize, not forget -- a composition in flight
+    /// has to be committed or discarded on purpose, because the platform will
+    /// not be sending the rest of it.
+    ///
+    /// This is the other direction from detaching. A client that detaches has
+    /// decided to stop; a client told the connection closed is being informed
+    /// after the fact, and whatever was half-typed is now its problem.
+    fn connection_closed(&mut self) {}
+
+    /// Upstream's `onFocusReceived`, which defaults to **false**.
+    ///
+    /// "Notifies the client that the platform moved focus back to this input.
+    /// This is necessary to support autofill on some browsers (e.g. iOS
+    /// Safari) that blur the text field and refocus it before autofilling."
+    ///
+    /// A browser workaround with its reason written down, and the return value
+    /// says whether the client took the focus -- so the default of false is a
+    /// client saying "that was not me", which is the safe answer for anything
+    /// that has never heard of Safari's autofill dance.
+    fn on_focus_received(&mut self) -> bool {
+        false
+    }
+
+    /// Upstream's `performPrivateCommand`: an input method talking to a client
+    /// that knows it.
+    ///
+    /// **Required** upstream, and optional here for the reason
+    /// [`TextInputClient::perform_action`] is. Upstream's own doc says it is
+    /// for "domain-specific features that are only known between certain input
+    /// methods and their clients" -- so the framework carries a message it
+    /// cannot read, between two parties it does not know, which is why there
+    /// is nothing sensible for it to do by default.
+    fn perform_private_command(&mut self, _action: &str) {}
 }
+
+/// Which autofill group a client belongs to, or that it is on its own.
+///
+/// A newtype rather than a bare `u64` so that [`TextInputClient::autofill_scope`]
+/// returning `None` cannot be mistaken for a group numbered zero -- the two
+/// mean opposite things, and the trait's docs say `None` already means two
+/// things without that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutofillScopeId(pub u64);
 
 /// The channel, spelled once.
 const CHANNEL: MethodChannel<JsonMethodCodec> =
@@ -573,7 +676,37 @@ fn dispatch(call: &MethodCall) {
             };
             with_client(|client| client.perform_action(action));
         }
+        "TextInputClient.onConnectionClosed" => {
+            // The platform dropped it, so the framework's side goes too --
+            // and it goes *before* the client is told, because a client that
+            // reattaches from inside `connection_closed` must not have its new
+            // connection cleared by this one's cleanup.
+            //
+            // Upstream asks the client to "cleanup its connection and finalize
+            // editing": finalize, not forget. Whatever composition was in
+            // flight will get no more messages, so it is the client's to
+            // settle.
+            let closed = ATTACHED.with(|slot| slot.borrow_mut().take());
+            with_closed_client(closed.map(|attached| attached.client), |client| {
+                client.connection_closed()
+            });
+        }
         _ => {}
+    }
+}
+
+/// Runs `body` against a client that has already been detached.
+///
+/// `connection_closed` clears the slot before calling, so the client is no
+/// longer reachable through it -- but it still has to be told. This carries
+/// the one that was there, which is why it cannot go through
+/// [`with_client`]: by the time it runs there is nothing attached to find.
+fn with_closed_client(
+    client: Option<Box<dyn TextInputClient>>,
+    body: impl FnOnce(&mut dyn TextInputClient),
+) {
+    if let Some(mut client) = client {
+        body(client.as_mut());
     }
 }
 
@@ -1468,5 +1601,171 @@ mod input_surface_tests {
         let with_font = style.with_font("Inter", 14.0);
         assert_eq!(with_font.font_family.as_deref(), Some("Inter"));
         assert_eq!(with_font.font_size, Some(14.0));
+    }
+}
+
+#[cfg(test)]
+mod connection_closed_tests {
+    use super::super::codec::MethodCodec;
+    use super::super::tests_support::install;
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Log {
+        closed: usize,
+        updates: usize,
+    }
+
+    struct Client {
+        log: Rc<RefCell<Log>>,
+        /// Whether this client grabs a new connection from inside the
+        /// notification, the way a form moving to the next field does.
+        reattach_as: Option<Rc<RefCell<Log>>>,
+    }
+
+    impl TextInputClient for Client {
+        fn update_editing_value(&mut self, _value: TextEditingValue) {
+            self.log.borrow_mut().updates += 1;
+        }
+
+        fn connection_closed(&mut self) {
+            self.log.borrow_mut().closed += 1;
+            if let Some(next) = self.reattach_as.take() {
+                attach(
+                    Box::new(Client {
+                        log: next,
+                        reattach_as: None,
+                    }),
+                    TextInputConfiguration::default(),
+                );
+            }
+        }
+    }
+
+    /// The close message the host sends, in the host's own shape.
+    fn deliver_close(recorder: &super::super::tests_support::Recorder, id: i32) {
+        let call = JsonMethodCodec
+            .encode_method_call(&MethodCall::new(
+                "TextInputClient.onConnectionClosed",
+                Value::List(vec![Value::I64(id as i64)]),
+            ))
+            .unwrap();
+        recorder.deliver("flutter/textinput", &call, 0);
+    }
+
+    #[test]
+    fn the_platform_closing_reaches_the_client() {
+        let recorder = install();
+        reset();
+        let log = Rc::new(RefCell::new(Log::default()));
+        let connection = attach(
+            Box::new(Client {
+                log: Rc::clone(&log),
+                reattach_as: None,
+            }),
+            TextInputConfiguration::default(),
+        );
+        deliver_close(&recorder, connection.id);
+        assert_eq!(log.borrow().closed, 1);
+    }
+
+    #[test]
+    fn and_the_framework_side_is_gone_afterwards() {
+        // The platform dropped it, so holding a client that can no longer be
+        // spoken to would be holding a corpse.
+        let recorder = install();
+        reset();
+        let log = Rc::new(RefCell::new(Log::default()));
+        let connection = attach(
+            Box::new(Client {
+                log: Rc::clone(&log),
+                reattach_as: None,
+            }),
+            TextInputConfiguration::default(),
+        );
+        deliver_close(&recorder, connection.id);
+        assert!(!is_editing());
+    }
+
+    #[test]
+    fn a_client_that_reattaches_while_being_told_keeps_its_new_connection() {
+        // The slot is cleared *before* the client is told, so a client that
+        // opens a new connection from inside `connection_closed` is not then
+        // cleaned up by this one's cleanup. Clearing afterwards would leave
+        // the form with no field attached and no way to know.
+        let recorder = install();
+        reset();
+        let first = Rc::new(RefCell::new(Log::default()));
+        let second = Rc::new(RefCell::new(Log::default()));
+        let connection = attach(
+            Box::new(Client {
+                log: Rc::clone(&first),
+                reattach_as: Some(Rc::clone(&second)),
+            }),
+            TextInputConfiguration::default(),
+        );
+        deliver_close(&recorder, connection.id);
+
+        assert_eq!(first.borrow().closed, 1);
+        assert!(
+            is_editing(),
+            "the new connection survived the old one's close"
+        );
+    }
+
+    #[test]
+    fn a_close_for_a_field_that_already_went_away_is_dropped() {
+        // The same id check every other message gets: applying one field's
+        // news to another is what the ids are there to prevent.
+        let recorder = install();
+        reset();
+        let log = Rc::new(RefCell::new(Log::default()));
+        let stale = attach(
+            Box::new(Client {
+                log: Rc::clone(&log),
+                reattach_as: None,
+            }),
+            TextInputConfiguration::default(),
+        );
+        let fresh = Rc::new(RefCell::new(Log::default()));
+        attach(
+            Box::new(Client {
+                log: Rc::clone(&fresh),
+                reattach_as: None,
+            }),
+            TextInputConfiguration::default(),
+        );
+
+        deliver_close(&recorder, stale.id);
+        assert_eq!(log.borrow().closed, 0, "the old client is gone already");
+        assert_eq!(fresh.borrow().closed, 0, "and the new one was not told");
+        assert!(is_editing());
+    }
+
+    #[test]
+    fn the_defaults_are_the_ones_upstream_gives() {
+        struct Bare;
+        impl TextInputClient for Bare {
+            fn update_editing_value(&mut self, _value: TextEditingValue) {}
+        }
+        let mut bare = Bare;
+        // `onFocusReceived` defaults to false: "that was not me", which is the
+        // safe answer for a client that has never heard of Safari's autofill
+        // blur-and-refocus.
+        assert!(!bare.on_focus_received());
+        // And a client with no autofill says so with the same `None` a client
+        // that autofills alone says -- the overload the trait's docs record.
+        assert_eq!(bare.autofill_scope(), None);
+        assert_eq!(bare.current_editing_value(), None);
+    }
+
+    #[test]
+    fn a_scope_id_of_zero_is_not_the_absence_of_one() {
+        // Which is the reason for the newtype: `None` already carries two
+        // meanings without a group number joining in.
+        assert_ne!(Some(AutofillScopeId(0)), None);
+        assert_ne!(AutofillScopeId(0), AutofillScopeId(1));
     }
 }
