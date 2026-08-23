@@ -121,6 +121,14 @@ pub type Text = RenderParagraph;
 pub struct TextSpan {
     pub text: String,
     pub style: TextStyle,
+    /// Upstream's `semanticsLabel`: what a reader hears where the text is what
+    /// a reader *sees*.
+    ///
+    /// Upstream's own example is `TextSpan(text: r'$$', semanticsLabel:
+    /// 'Double dollars')`. The two strings are not two spellings of one thing;
+    /// they are what the glyphs are and what the words are, and a screen
+    /// reader given `$$` says "dollar dollar".
+    pub semantics_label: Option<String>,
 }
 
 impl TextSpan {
@@ -128,7 +136,33 @@ impl TextSpan {
         TextSpan {
             text: text.into(),
             style,
+            semantics_label: None,
         }
+    }
+
+    /// What a reader hears for this span: its label where it has one, and its
+    /// text where it does not.
+    pub fn semantics_text(&self) -> &str {
+        self.semantics_label.as_deref().unwrap_or(&self.text)
+    }
+
+    /// Upstream's `assert(!(text == null && semanticsLabel != null))`.
+    ///
+    /// A label with no text under it is not a label of anything. Upstream's
+    /// `text` is nullable and a span may be children-only; here the empty
+    /// string stands for that, so the rule reads the same: **you cannot
+    /// rename nothing.**
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.text.is_empty() && self.semantics_label.is_some() {
+            return Err("a semanticsLabel needs text to stand in for");
+        }
+        Ok(())
+    }
+
+    /// The same span, saying something else to a reader.
+    pub fn spoken_as(mut self, label: impl Into<String>) -> TextSpan {
+        self.semantics_label = Some(label.into());
+        self
     }
 
     /// The same text in a bolder weight, which is what a run inside a sentence
@@ -156,7 +190,19 @@ impl RenderParagraph {
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn rich_spans(spans: Vec<TextSpan>) -> RenderParagraph {
+        // Built only if some span asked to be heard differently -- see
+        // `RenderParagraph::with_semantics_content`.
+        let spoken = spans
+            .iter()
+            .any(|span| span.semantics_label.is_some())
+            .then(|| {
+                spans
+                    .iter()
+                    .map(|span| span.semantics_text())
+                    .collect::<String>()
+            });
         RenderParagraph::rich(spans.into_iter().map(|s| (s.text, s.style)).collect())
+            .with_semantics_content(spoken)
     }
 
     pub fn with_size(mut self, font_size: f32) -> Self {
@@ -3114,5 +3160,153 @@ mod tests {
         );
         tree.rebuild_dirty();
         assert_eq!(builds.get(), 2, "the handle asked for the rebuild");
+    }
+}
+
+#[cfg(test)]
+mod spoken_text_tests {
+    use super::*;
+    use crate::painting::InlineSpanSemanticsInformation;
+
+    fn body() -> TextStyle {
+        TextStyle::default()
+    }
+
+    // -- Two strings from one paragraph ----------------------------------------
+
+    #[test]
+    fn a_paragraph_is_painted_as_one_thing_and_heard_as_another() {
+        // Upstream's own example. `$$` is what the glyphs are; "Double
+        // dollars" is what the words are, and a reader given the glyphs says
+        // "dollar dollar".
+        let paragraph = RenderParagraph::rich_spans(vec![
+            TextSpan::new("Costs ", body()),
+            TextSpan::new("$$", body()).spoken_as("Double dollars"),
+        ]);
+        assert_eq!(paragraph.content(), "Costs $$");
+        assert_eq!(paragraph.spoken(), "Costs Double dollars");
+    }
+
+    #[test]
+    fn and_a_paragraph_nobody_relabelled_carries_no_second_string() {
+        // Built only when some span asks, so the ordinary case costs nothing.
+        let paragraph = RenderParagraph::rich_spans(vec![
+            TextSpan::new("Hold ", body()),
+            TextSpan::bold("Shift", &body()),
+        ]);
+        assert_eq!(paragraph.content(), "Hold Shift");
+        assert_eq!(paragraph.spoken(), "Hold Shift");
+        assert!(!paragraph.has_separate_spoken_text());
+    }
+
+    #[test]
+    fn one_relabelled_span_relabels_only_itself() {
+        let paragraph = RenderParagraph::rich_spans(vec![
+            TextSpan::new("a", body()).spoken_as("alpha"),
+            TextSpan::new("b", body()),
+            TextSpan::new("c", body()).spoken_as("charlie"),
+        ]);
+        assert_eq!(paragraph.content(), "abc");
+        assert_eq!(paragraph.spoken(), "alphabcharlie");
+    }
+
+    #[test]
+    fn a_span_speaks_its_text_where_it_has_no_label() {
+        assert_eq!(TextSpan::new("plain", body()).semantics_text(), "plain");
+        assert_eq!(
+            TextSpan::new("$$", body())
+                .spoken_as("dollars")
+                .semantics_text(),
+            "dollars"
+        );
+    }
+
+    #[test]
+    fn you_cannot_rename_nothing() {
+        // Upstream's `assert(!(text == null && semanticsLabel != null))`. A
+        // label with no text under it is not a label of anything.
+        assert!(TextSpan::new("", body()).check().is_ok());
+        assert!(TextSpan::new("x", body()).spoken_as("ex").check().is_ok());
+        assert!(TextSpan::new("", body()).spoken_as("ex").check().is_err());
+    }
+
+    // -- When a span becomes its own node --------------------------------------
+
+    #[test]
+    fn a_label_does_not_split_the_run_and_being_reachable_does() {
+        // Renaming a stretch of a sentence leaves it one sentence; making a
+        // stretch of it tappable does not.
+        let renamed = InlineSpanSemanticsInformation::text("$$").spoken_as("Double dollars");
+        assert!(!renamed.requires_own_node());
+        assert_eq!(renamed.spoken(), "Double dollars");
+
+        assert!(
+            InlineSpanSemanticsInformation::text("terms")
+                .with_recognizer()
+                .requires_own_node()
+        );
+        assert!(
+            InlineSpanSemanticsInformation::text("terms")
+                .with_identifier("tos")
+                .requires_own_node()
+        );
+        assert!(InlineSpanSemanticsInformation::placeholder().requires_own_node());
+    }
+
+    #[test]
+    fn plain_text_is_not_its_own_node() {
+        // Or every word would be a separate stop for a reader.
+        assert!(!InlineSpanSemanticsInformation::text("ordinary").requires_own_node());
+    }
+
+    #[test]
+    fn a_placeholder_is_exactly_one_character() {
+        let placeholder = InlineSpanSemanticsInformation::placeholder();
+        assert_eq!(placeholder.text.chars().count(), 1);
+        assert_eq!(
+            placeholder.text.chars().next(),
+            Some(InlineSpanSemanticsInformation::PLACEHOLDER_CHARACTER)
+        );
+        assert!(placeholder.check().is_ok());
+
+        let mut wrong = InlineSpanSemanticsInformation::placeholder();
+        wrong.text = String::from("an image");
+        assert!(wrong.check().is_err());
+
+        let mut two = InlineSpanSemanticsInformation::placeholder();
+        two.text
+            .push(InlineSpanSemanticsInformation::PLACEHOLDER_CHARACTER);
+        assert!(two.check().is_err(), "two of them is not one of them");
+    }
+
+    #[test]
+    fn and_says_nothing_of_its_own() {
+        // The widget in that slot brings its own semantics; a second label
+        // over the top would be the text layer talking about something it
+        // cannot see.
+        assert!(
+            InlineSpanSemanticsInformation::placeholder()
+                .spoken_as("a picture")
+                .check()
+                .is_err()
+        );
+        assert!(
+            InlineSpanSemanticsInformation::placeholder()
+                .with_recognizer()
+                .check()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn but_ordinary_text_may_carry_both_of_those() {
+        // The rule is the placeholder's, not everyone's.
+        assert!(
+            InlineSpanSemanticsInformation::text("terms")
+                .spoken_as("terms of service")
+                .with_recognizer()
+                .check()
+                .is_ok()
+        );
     }
 }

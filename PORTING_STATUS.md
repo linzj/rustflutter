@@ -11873,3 +11873,55 @@ if (event is PointerDownEvent || event is PointerPanZoomStartEvent) {
 9 个变异，9 个全红。顺带把那条把 pan-zoom 和 hover 归成一类的注释改了：
 现在分开写清楚两个不同的理由。
 
+## 一个段落有两个字符串，不是一个（2026-08-23）
+
+`TextSpan`（`depth.py` 报 4/22）。本移植的 `TextSpan` 只有 `{ text, style }`。
+
+### 画出来的和读出来的是两个串
+
+上游用 `computeToPlainText` 造画出来的那个，用 `computeSemanticsInformation`
+造读出来的那个，**从同一棵树**。两者在任何一个 span 带了 `semanticsLabel`
+的地方分岔——上游自己的例子是
+`TextSpan(text: r'$$', semanticsLabel: 'Double dollars')`：
+**`$$` 是画出来的，"Double dollars" 是听到的。**
+
+本移植原来一个 `content` 兼两职，这在没有 span 想被读成别的样子之前都对。
+第二个串**只在有人要求时才造**，所以从不要求的段落一点额外开销也没有。
+
+### 「label 让 span 独立成节点」是错的
+
+上游在构造器里算：
+
+```
+requiresOwnNode = isPlaceholder || recognizer != null || semanticsIdentifier != null;
+```
+
+三条路，**`semanticsLabel` 不在其中**。label 改的是这一段话说什么，
+它不把这段话切开。切开它的是**能被单独够到**：
+placeholder 是文字里的一个 widget，读者得能落到它上面；
+带 recognizer 的 span 能被激活，读者得能激活它；
+identifier 是测试或工具要单独找到的东西。
+
+**给一句话里的一截改个名字，它还是一句话；把那一截变成可点的，就不是了。**
+
+### placeholder 恰好一个字符，而且自己什么也不说
+
+```
+assert(!isPlaceholder || (text == '￼' && semanticsLabel == null && recognizer == null));
+```
+
+它的文本就是那个对象替换符，不多不少；而且既不能带 label 也不能带
+recognizer——因为占着那个位置的 widget **自带语义**，
+再盖一层 label 就成了文字层在谈论它看不见的东西。
+
+### 又是同一个物种，第四次
+
+12 个变异，**一个活下来**：把 `describe_semantics` 改回读画出来的那个串，全绿。
+因为那两条关于「两个串」的测试**直接查 `spoken()`，从没跑过语义遍历**。
+
+这已经是连续第四轮同一类存活变异了——**测试没有真的执行被测的那条路径**。
+补了一条走 `describe_tree` 的测试（断言读者听见 "Costs Double dollars"，
+且**永远听不到 `$$`**），重跑变红。
+
+四次都是变异测试抓到的，每次代价是多跑一轮。
+

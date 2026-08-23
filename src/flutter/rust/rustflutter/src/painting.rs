@@ -3082,26 +3082,122 @@ impl Accumulator {
 }
 
 /// Upstream `InlineSpanSemanticsInformation`: what semantics says about one
-/// span -- its text, and optional gesture meaning.
+/// span.
+///
+/// # When a span becomes its own thing to a reader
+///
+/// Upstream computes it in the constructor:
+///
+/// ```text
+/// requiresOwnNode = isPlaceholder || recognizer != null || semanticsIdentifier != null;
+/// ```
+///
+/// Three ways in, and a **`semanticsLabel` is not one of them.** A label
+/// changes what the surrounding run of text says; it does not split it. What
+/// splits it is being separately *reachable*: a placeholder is a widget in the
+/// text and a reader must be able to land on it, a span with a recognizer can
+/// be activated and a reader must be able to activate it, and an identifier is
+/// something a test or a tool means to find on its own.
+///
+/// Renaming a stretch of a sentence leaves it one sentence. Making a stretch
+/// of it tappable does not.
+///
+/// # A placeholder is exactly one character, and may say nothing of its own
+///
+/// The other half of upstream's constructor:
+///
+/// ```text
+/// assert(!isPlaceholder || (text == '\uFFFC' && semanticsLabel == null && recognizer == null));
+/// ```
+///
+/// Its text is the object-replacement character and nothing else, and it can
+/// carry neither a label nor a recognizer -- because the widget standing in
+/// that slot brings its own semantics, and a second label over the top would
+/// be the text layer talking about something it cannot see.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InlineSpanSemanticsInformation {
     pub text: String,
     pub is_placeholder: bool,
+    /// Upstream's `semanticsLabel`: what is said instead of [`Self::text`].
+    pub semantics_label: Option<String>,
+    /// Upstream's `semanticsIdentifier`, which a test or a tool looks it up by.
+    pub semantics_identifier: Option<String>,
+    /// Whether a gesture recognizer is attached. The recognizer itself does
+    /// not live here -- what semantics needs to know is that there is one.
+    pub has_recognizer: bool,
 }
 
 impl InlineSpanSemanticsInformation {
+    /// Upstream's `PlaceholderSpan.placeholderCodeUnit`, U+FFFC.
+    pub const PLACEHOLDER_CHARACTER: char = '\u{FFFC}';
+
     pub fn text(text: impl Into<String>) -> InlineSpanSemanticsInformation {
         InlineSpanSemanticsInformation {
             text: text.into(),
-            is_placeholder: false,
+            ..Default::default()
         }
     }
 
     pub fn placeholder() -> InlineSpanSemanticsInformation {
         InlineSpanSemanticsInformation {
-            text: String::new(),
+            text: InlineSpanSemanticsInformation::PLACEHOLDER_CHARACTER.to_string(),
             is_placeholder: true,
+            ..Default::default()
         }
+    }
+
+    /// The same, saying something else.
+    pub fn spoken_as(mut self, label: impl Into<String>) -> InlineSpanSemanticsInformation {
+        self.semantics_label = Some(label.into());
+        self
+    }
+
+    /// The same, with something a reader can activate on it.
+    pub fn with_recognizer(mut self) -> InlineSpanSemanticsInformation {
+        self.has_recognizer = true;
+        self
+    }
+
+    /// The same, findable by name.
+    pub fn with_identifier(
+        mut self,
+        identifier: impl Into<String>,
+    ) -> InlineSpanSemanticsInformation {
+        self.semantics_identifier = Some(identifier.into());
+        self
+    }
+
+    /// Upstream's `requiresOwnNode` -- see the type's docs for why a label is
+    /// not on this list.
+    pub fn requires_own_node(&self) -> bool {
+        self.is_placeholder || self.has_recognizer || self.semantics_identifier.is_some()
+    }
+
+    /// What a reader hears: the label where there is one.
+    pub fn spoken(&self) -> &str {
+        self.semantics_label.as_deref().unwrap_or(&self.text)
+    }
+
+    /// Upstream's placeholder assert, returned rather than panicked so it can
+    /// be checked.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if !self.is_placeholder {
+            return Ok(());
+        }
+        let mut characters = self.text.chars();
+        let one = characters.next();
+        if one != Some(InlineSpanSemanticsInformation::PLACEHOLDER_CHARACTER)
+            || characters.next().is_some()
+        {
+            return Err("a placeholder's text is U+FFFC and nothing else");
+        }
+        if self.semantics_label.is_some() || self.has_recognizer {
+            return Err(
+                "a placeholder carries neither a label nor a recognizer -- the \
+                 widget in that slot brings its own",
+            );
+        }
+        Ok(())
     }
 }
 

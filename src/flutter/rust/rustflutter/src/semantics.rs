@@ -3156,6 +3156,38 @@ mod tests {
     }
 
     #[test]
+    fn the_walk_reports_what_a_paragraph_says_and_not_what_it_paints() {
+        // A mutation making `describe_semantics` read the painted string
+        // survived: the tests for the two strings checked `spoken()` directly
+        // and never ran the walk. Checked here, where it runs.
+        set_enabled(true);
+        let nodes = describe_tree(
+            leaf(|| {
+                crate::render::RenderParagraph::rich_spans(vec![
+                    crate::widgets::TextSpan::new("Costs ", crate::engine::TextStyle::default()),
+                    crate::widgets::TextSpan::new("$$", crate::engine::TextStyle::default())
+                        .spoken_as("Double dollars"),
+                ])
+            }),
+            Size::new(400.0, 100.0),
+        );
+        set_enabled(false);
+
+        let labels: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .collect();
+        assert!(
+            labels.iter().any(|label| *label == "Costs Double dollars"),
+            "a reader hears the words, not the glyphs: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("$$")),
+            "and never hears the glyphs: {labels:?}"
+        );
+    }
+
+    #[test]
     fn the_walk_does_not_invent_an_index_in_parent() {
         // It cannot know one: by the time a node reaches the walk its dropped
         // siblings are gone, and their positions with them. Upstream sets

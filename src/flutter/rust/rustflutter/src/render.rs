@@ -3532,6 +3532,9 @@ pub enum TextOverflow {
 /// A run of text, shaped by the engine's `txt` / skparagraph stack.
 pub struct RenderParagraph {
     content: String,
+    /// See [`RenderParagraph::with_semantics_content`]. `None` means the
+    /// painted string is also the spoken one, which is the ordinary case.
+    semantics_content: Option<String>,
     style: TextStyle,
     /// The styled runs, when there is more than one. Empty for the ordinary
     /// case of a single style, which keeps `content` and `style` as the whole
@@ -3594,6 +3597,7 @@ impl RenderParagraph {
     pub fn new(content: impl Into<String>) -> RenderParagraph {
         RenderParagraph {
             content: content.into(),
+            semantics_content: None,
             style: TextStyle::default(),
             runs: Vec::new(),
             max_lines: None,
@@ -3616,6 +3620,41 @@ impl RenderParagraph {
     /// were the start of a new paragraph. Upstream this is `Text.rich` over a
     /// tree of `TextSpan`s; the tree is flat here because a nested span's
     /// style is resolved against its parent's before shaping anyway.
+    /// What a reader hears, where that differs from what is painted.
+    ///
+    /// # A paragraph has two strings, not one
+    ///
+    /// Upstream builds the painted text with `computeToPlainText` and the
+    /// spoken text with `computeSemanticsInformation`, from the same span
+    /// tree. They differ wherever a span carries a `semanticsLabel`: `$$` is
+    /// painted and "Double dollars" is heard.
+    ///
+    /// This port had one `content` doing both jobs, which is right until a
+    /// span asks to be read as something other than what it is drawn as. The
+    /// second string is built only when some span asks, so a paragraph that
+    /// never does carries nothing extra.
+    /// The painted string.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// The spoken string, which is the painted one unless a span asked
+    /// otherwise.
+    pub fn spoken(&self) -> &str {
+        self.semantics_content.as_deref().unwrap_or(&self.content)
+    }
+
+    /// Whether the two differ at all, which is what the second string exists
+    /// to record.
+    pub fn has_separate_spoken_text(&self) -> bool {
+        self.semantics_content.is_some()
+    }
+
+    pub fn with_semantics_content(mut self, spoken: Option<String>) -> RenderParagraph {
+        self.semantics_content = spoken;
+        self
+    }
+
     pub fn rich(runs: Vec<(String, TextStyle)>) -> RenderParagraph {
         let content = runs
             .iter()
@@ -3627,6 +3666,7 @@ impl RenderParagraph {
             .unwrap_or_default();
         RenderParagraph {
             content,
+            semantics_content: None,
             style,
             runs,
             max_lines: None,
@@ -3959,8 +3999,13 @@ impl RenderBox for RenderParagraph {
         // wherever the semantics walk runs -- the field is upstream's
         // paragraph-style `textDirection`, and a reader is told the same.
         Some(
-            crate::semantics::SemanticsAnnotation::text(self.semantics_id.get(), &self.content)
-                .with_text_direction(self.text_direction),
+            crate::semantics::SemanticsAnnotation::text(
+                self.semantics_id.get(),
+                // The spoken string where the spans asked for one; the painted
+                // string otherwise. See `RenderParagraph::rich_spans`.
+                self.semantics_content.as_deref().unwrap_or(&self.content),
+            )
+            .with_text_direction(self.text_direction),
         )
     }
 
