@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn a_future_builder_waits_then_shows_what_the_future_gave() {
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let (sender, receiver) = crate::task::oneshot::<Result<i32, String>>();
         let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
@@ -279,7 +279,7 @@ mod tests {
     fn a_future_builder_starts_its_future_without_waiting_to_be_built() {
         // Upstream is handed a future that is already running. Starting it on
         // first build would make the work depend on being on screen.
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let started = Rc::new(std::cell::Cell::new(false));
         let flag = Rc::clone(&started);
         let _widget = future_builder(
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_future_that_fails_reaches_the_error_arm() {
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let landed = Rc::new(std::cell::RefCell::new(AsyncSnapshot::<i32>::nothing()));
         let cell = Rc::clone(&landed);
         // The same shape `future_builder` builds internally, so the assertion

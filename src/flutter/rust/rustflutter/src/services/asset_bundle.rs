@@ -386,7 +386,7 @@ mod tests {
         // The two halves upstream's Future fuses together, in the order they
         // actually happen: wait for the platform, then read synchronously.
         let recorder = crate::services::tests_support::install();
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let bundle = PlatformAssetBundle::new();
 
         let found = Rc::new(std::cell::Cell::new(None));
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn an_awaited_prefetch_of_a_missing_asset_resolves_false() {
         let recorder = crate::services::tests_support::install();
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let bundle = PlatformAssetBundle::new();
         let found = Rc::new(std::cell::Cell::new(None));
         let out = Rc::clone(&found);

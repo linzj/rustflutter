@@ -195,6 +195,21 @@ typedef struct RfAppHost {
   // to draining tasks at the top of the next frame, which is correct but
   // quantised to the vsync and cannot serve cross-thread wakes.
   void (*post_task)(void* user_data);
+
+  // The same, but not before `delay_micros` have passed. Also callable from
+  // any thread.
+  //
+  // This is the framework's only clock other than the frame's. Everything the
+  // port turned into a frame-clock deadline -- a long press, a tooltip, a
+  // snackbar -- stays on the frame clock, where it belongs: a tooltip that
+  // expires between two frames cannot be drawn until the next one anyway. What
+  // needs this is application code that wants to wait without drawing.
+  //
+  // The embedder may fire late and may coalesce; the framework re-checks its
+  // own deadlines when it drains, so an early call is harmless and a late one
+  // costs only lateness. NULL means no clock, and a task waiting on one then
+  // advances no sooner than the next frame that happens for another reason.
+  void (*post_delayed_task)(void* user_data, int64_t delay_micros);
 } RfAppHost;
 
 // -- Lifecycle ----------------------------------------------------------------

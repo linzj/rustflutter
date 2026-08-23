@@ -149,16 +149,20 @@ struct RfAppHost {
     /// unaware host degrades to draining tasks once per frame rather than
     /// crashing.
     post_task: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// The delayed twin, and the framework's only clock other than the frame's.
+    /// See [`task::sleep`](crate::task::sleep) for why the framework's own
+    /// deadlines do not use it.
+    post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
 }
 
 /// This struct and `RfAppHost` in `runtime/rust_app_api.h` are two hand-written
 /// mirrors of one ABI, and nothing but a reader keeps them in step. The count
-/// is the cheap half of that: one `user_data` and seven callbacks, all pointer
+/// is the cheap half of that: one `user_data` and eight callbacks, all pointer
 /// sized. `runtime_controller.cc` carries the matching `static_assert`, so a
 /// field added to one side and not the other fails to build rather than
 /// reading the next field's bytes.
 const _: () = assert!(
-    size_of::<RfAppHost>() == size_of::<*mut c_void>() * 8,
+    size_of::<RfAppHost>() == size_of::<*mut c_void>() * 9,
     "RfAppHost has drifted from rust_app_api.h"
 );
 
@@ -383,6 +387,7 @@ impl Default for FrameScheduler {
                 send_channel_update: None,
                 update_semantics: None,
                 post_task: None,
+                post_delayed_task: None,
             },
         }
     }
@@ -1182,7 +1187,7 @@ mod abi {
         // ever hold futures. `host` is copied into the poster, so a worker
         // waking a task later reaches the shell through the same pointer the
         // rest of this file uses.
-        crate::task::attach(host.post_task, host.user_data);
+        crate::task::attach(host.post_task, host.post_delayed_task, host.user_data);
 
         Box::into_raw(instance) as *mut RfApp
     }

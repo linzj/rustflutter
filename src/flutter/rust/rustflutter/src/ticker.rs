@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn an_awaited_ticker_future_resolves_with_how_it_settled() {
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let (ticker, _seen) = recording();
         let settled = Rc::new(Cell::new(None));
 
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn an_awaited_ticker_future_that_was_cancelled_says_so() {
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let (ticker, _seen) = recording();
         let settled = Rc::new(Cell::new(None));
         let future = ticker.start();
@@ -580,7 +580,7 @@ mod tests {
     fn awaiting_a_future_that_has_already_settled_resolves_at_once() {
         // The property `when_complete_or_cancel` already had, carried through
         // the wrapper: awaiting something finished must not park.
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let (ticker, _seen) = recording();
         let future = ticker.start();
         future.complete();

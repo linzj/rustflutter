@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn an_awaited_call_resumes_when_the_platform_answers() {
         let recorder = install();
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let channel = MethodChannel::new("test/await", StandardMethodCodec::new());
 
         let answer = Rc::new(RefCell::new(None));
@@ -514,7 +514,7 @@ mod tests {
         // `send_with_reply` answers `None` at once when there is no embedder,
         // and the wrapper must pass that on as a value. A task parked forever
         // is the failure this guards.
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let channel = MethodChannel::new("test/nobody", StandardMethodCodec::new());
         let answer = Rc::new(RefCell::new(None));
         let recorded = Rc::clone(&answer);
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn an_awaited_message_comes_back_decoded() {
         let recorder = install();
-        crate::task::attach(None, std::ptr::null_mut());
+        crate::task::attach(None, None, std::ptr::null_mut());
         let channel = BasicMessageChannel::new("test/await-message", StandardMessageCodec::new());
 
         let answer = Rc::new(RefCell::new(None));

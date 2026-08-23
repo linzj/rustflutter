@@ -169,6 +169,11 @@ class RuntimeController {
   /// pointer below is for.
   static void OnPostTask(void* user_data);
 
+  //----------------------------------------------------------------------------
+  /// The delayed twin of OnPostTask, and the framework's only clock other than
+  /// the frame's. Same threading rules.
+  static void OnPostDelayedTask(void* user_data, int64_t delay_micros);
+
   // Fires RuntimeDelegate::OnAllViewsRendered once every view that has metrics
   // has produced a layer tree this frame. The rasterizer waits on this to know
   // a multi-view frame is complete.

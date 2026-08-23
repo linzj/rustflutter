@@ -111,7 +111,7 @@ RuntimeController::~RuntimeController() {
 // The other half of the check in `rust/rustflutter/src/app.rs`. Two
 // hand-written mirrors of one ABI; a field added to one side and not the other
 // would otherwise be read as the next field's bytes.
-static_assert(sizeof(RfAppHost) == sizeof(void*) * 8,
+static_assert(sizeof(RfAppHost) == sizeof(void*) * 9,
               "RfAppHost has drifted from its Rust mirror in app.rs");
 
 bool RuntimeController::LaunchApplication() {
@@ -130,6 +130,7 @@ bool RuntimeController::LaunchApplication() {
   host.send_channel_update = &RuntimeController::OnSendChannelUpdate;
   host.update_semantics = &RuntimeController::OnUpdateSemantics;
   host.post_task = &RuntimeController::OnPostTask;
+  host.post_delayed_task = &RuntimeController::OnPostDelayedTask;
 
   // Taken here, on the UI thread, because OnPostTask may run on any other one
   // and the factory is not thread-safe to ask. Copying the result is.
@@ -765,6 +766,21 @@ void RuntimeController::OnPostTask(void* user_data) {
       rf_app_run_tasks(weak->app_);
     }
   });
+}
+
+void RuntimeController::OnPostDelayedTask(void* user_data, int64_t delay_micros) {
+  auto* self = static_cast<RuntimeController*>(user_data);
+  auto ui_task_runner = self->task_runners_.GetUITaskRunner();
+  if (!ui_task_runner) {
+    return;
+  }
+  ui_task_runner->PostDelayedTask(
+      [weak = self->weak_for_tasks_]() {
+        if (weak && weak->app_ != nullptr) {
+          rf_app_run_tasks(weak->app_);
+        }
+      },
+      fml::TimeDelta::FromMicroseconds(delay_micros));
 }
 
 void RuntimeController::CheckIfAllViewsRendered() {

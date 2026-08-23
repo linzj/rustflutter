@@ -62,6 +62,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::ThreadId;
+use std::time::{Duration, Instant};
 
 /// Names one spawned task. Only ever compared and looked up; the numbering is
 /// not meaningful beyond being unique for the life of an executor.
@@ -79,6 +80,9 @@ pub type TaskId = u64;
 /// can be in flight once the host has gone.
 struct Poster {
     post_task: unsafe extern "C" fn(*mut c_void),
+    /// The framework's only clock other than the frame's, and `None` from a
+    /// host that has none. See [`sleep`].
+    post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
     user_data: *mut c_void,
 }
 
@@ -116,6 +120,25 @@ impl Shared {
             // host is still there. See the note on `Poster`.
             unsafe { (poster.post_task)(poster.user_data) };
         }
+    }
+
+    /// Asks for a drain no sooner than `delay`. Unlike [`request_drain`] this
+    /// does not coalesce: two sleeps with different deadlines want two.
+    ///
+    /// Answers whether a host took it. `false` means the caller is on the frame
+    /// clock, which is where every deadline in this crate was already.
+    fn request_delayed_drain(&self, delay: Duration) -> bool {
+        let poster = self.poster.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(poster) = poster.as_ref() else {
+            return false;
+        };
+        let Some(post_delayed_task) = poster.post_delayed_task else {
+            return false;
+        };
+        let micros = i64::try_from(delay.as_micros()).unwrap_or(i64::MAX);
+        // SAFETY: as `request_drain`.
+        unsafe { post_delayed_task(poster.user_data, micros) };
+        true
     }
 }
 
@@ -160,6 +183,21 @@ struct Executor {
     /// True while [`run_until_stalled`] is on the stack. A wake during a drain
     /// queues; it does not recurse.
     running: bool,
+    /// Deadlines waiting to come round, checked at the top of every drain.
+    ///
+    /// A `Vec` because there are never many: this is application code waiting,
+    /// not the framework -- every deadline the port already had (a long press,
+    /// a tooltip, a snackbar) stays on the frame clock.
+    timers: Vec<Timer>,
+}
+
+/// One [`sleep`] waiting for its deadline.
+struct Timer {
+    deadline: Instant,
+    /// Shared with the [`Sleep`], which replaces it on every poll. A future
+    /// must wake the *latest* waker it was polled with, and the future may be
+    /// moved between tasks.
+    waker: Rc<RefCell<Option<Waker>>>,
 }
 
 thread_local! {
@@ -277,12 +315,17 @@ fn reaches_the_real_state(owner: Option<ThreadId>, current: ThreadId) -> bool {
 /// for a drain, so tasks only advance when the frame loop drains them. That is
 /// the state a unit test and a headless render are in, and it is why the tests
 /// below drive [`run_until_stalled`] by hand.
-pub fn attach(post_task: Option<unsafe extern "C" fn(*mut c_void)>, user_data: *mut c_void) {
+pub fn attach(
+    post_task: Option<unsafe extern "C" fn(*mut c_void)>,
+    post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
+    user_data: *mut c_void,
+) {
     let shared = Arc::new(Shared {
         inbox: Mutex::new(Vec::new()),
         owner: std::thread::current().id(),
         poster: Mutex::new(post_task.map(|post_task| Poster {
             post_task,
+            post_delayed_task,
             user_data,
         })),
         posted: AtomicBool::new(false),
@@ -294,6 +337,7 @@ pub fn attach(post_task: Option<unsafe extern "C" fn(*mut c_void)>, user_data: *
             next_id: 1,
             shared,
             running: false,
+            timers: Vec::new(),
         });
     });
 }
@@ -404,6 +448,7 @@ pub fn run_until_stalled() -> bool {
         // Collect one batch, then let the borrow go: polling a future runs
         // application code, and that code may spawn, wake, or send on a
         // channel of its own.
+        fire_expired_timers();
         let batch = EXECUTOR.with(|executor| {
             let mut slot = executor.borrow_mut();
             let Some(executor) = slot.as_mut() else {
@@ -460,6 +505,103 @@ pub fn run_until_stalled() -> bool {
                 });
             }
         }
+    }
+}
+
+// -- Sleeping -----------------------------------------------------------------
+
+/// Wakes every timer whose deadline has passed, and drops it.
+///
+/// The wakers are taken out before any is called: waking polls a task, and that
+/// task may arm another timer.
+fn fire_expired_timers() {
+    let now = Instant::now();
+    let due = EXECUTOR.with(|executor| {
+        let mut slot = executor.borrow_mut();
+        let Some(executor) = slot.as_mut() else {
+            return Vec::new();
+        };
+        let mut due = Vec::new();
+        executor.timers.retain(|timer| {
+            if timer.deadline <= now {
+                due.push(Rc::clone(&timer.waker));
+                false
+            } else {
+                true
+            }
+        });
+        due
+    });
+    for waker in due {
+        let waker = waker.borrow_mut().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+/// Resolves once `duration` has passed. Upstream's `Future.delayed`.
+///
+/// **For application code.** Every deadline the framework itself has -- a long
+/// press deciding, a tooltip fading, a snackbar expiring -- stays on the frame
+/// clock, and should: one that comes due between two frames cannot be drawn
+/// until the next frame anyway, so a second clock would buy a wake-up with
+/// nothing to show for it.
+///
+/// The host is asked to come back at the deadline through
+/// `RfAppHost::post_delayed_task`. Without one -- a unit test, a headless
+/// render, an embedder that predates the field -- the deadline is still
+/// honoured, but only noticed at the next drain that happens for some other
+/// reason. It will not be missed; it may be late.
+pub fn sleep(duration: Duration) -> Sleep {
+    Sleep {
+        deadline: Instant::now() + duration,
+        waker: Rc::new(RefCell::new(None)),
+        armed: false,
+    }
+}
+
+/// What [`sleep`] returns.
+pub struct Sleep {
+    deadline: Instant,
+    /// Shared with the executor's timer list, and replaced on every poll so the
+    /// newest waker is the one that gets called.
+    waker: Rc<RefCell<Option<Waker>>>,
+    armed: bool,
+}
+
+impl Sleep {
+    /// When this will come due, for a caller that wants to say so.
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let now = Instant::now();
+        if self.deadline <= now {
+            return Poll::Ready(());
+        }
+        // Replaced every poll: the contract is to wake whoever polled last.
+        *self.waker.borrow_mut() = Some(context.waker().clone());
+        if !self.armed {
+            self.armed = true;
+            let deadline = self.deadline;
+            let slot = Rc::clone(&self.waker);
+            EXECUTOR.with(|executor| {
+                if let Some(executor) = executor.borrow_mut().as_mut() {
+                    executor.timers.push(Timer {
+                        deadline,
+                        waker: slot,
+                    });
+                    executor.shared.request_delayed_drain(deadline - now);
+                }
+            });
+        }
+        Poll::Pending
     }
 }
 
@@ -557,7 +699,7 @@ mod tests {
     /// Every test attaches for itself: `EXECUTOR` is a thread_local and the
     /// test harness runs tests on threads of its own.
     fn attached() {
-        attach(None, std::ptr::null_mut());
+        attach(None, None, std::ptr::null_mut());
     }
 
     #[test]
@@ -755,7 +897,7 @@ mod tests {
         }
         POSTED.store(false, Ordering::Release);
 
-        attach(Some(post), std::ptr::null_mut());
+        attach(Some(post), None, std::ptr::null_mut());
         let (sender, receiver) = oneshot::<i32>();
         spawn(async move {
             let _ = receiver.await;
@@ -787,7 +929,7 @@ mod tests {
         }
         COUNT.store(0, Ordering::Release);
 
-        attach(Some(post), std::ptr::null_mut());
+        attach(Some(post), None, std::ptr::null_mut());
         let (sender, receiver) = oneshot::<i32>();
         spawn(async move {
             let _ = receiver.await;
@@ -818,6 +960,82 @@ mod tests {
             "and the next drain re-arms it"
         );
         drop(sender);
+        detach();
+    }
+
+    #[test]
+    fn a_sleep_resolves_once_its_deadline_has_passed() {
+        attached();
+        let woke = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&woke);
+        crate::task::spawn(async move {
+            sleep(Duration::from_millis(20)).await;
+            flag.set(true);
+        });
+        run_until_stalled();
+        assert!(!woke.get(), "not yet");
+        assert_eq!(pending(), 1);
+
+        // No host clock here, so the drain has to be provoked -- which is
+        // exactly the documented degraded behaviour: honoured, possibly late.
+        std::thread::sleep(Duration::from_millis(25));
+        run_until_stalled();
+        assert!(woke.get());
+        assert_eq!(pending(), 0);
+        detach();
+    }
+
+    #[test]
+    fn a_sleep_that_is_not_due_leaves_its_timer_armed() {
+        attached();
+        crate::task::spawn(async move {
+            sleep(Duration::from_secs(60)).await;
+        });
+        run_until_stalled();
+        let armed = EXECUTOR.with(|executor| {
+            executor.borrow().as_ref().map_or(0, |ex| ex.timers.len())
+        });
+        assert_eq!(armed, 1);
+        // And a drain that finds nothing due does not report having run.
+        assert!(!run_until_stalled());
+        detach();
+    }
+
+    #[test]
+    fn a_sleep_already_past_resolves_on_the_first_poll() {
+        attached();
+        let woke = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&woke);
+        crate::task::spawn(async move {
+            sleep(Duration::ZERO).await;
+            flag.set(true);
+        });
+        run_until_stalled();
+        assert!(woke.get(), "a zero delay does not need a clock");
+        assert_eq!(pending(), 0);
+        detach();
+    }
+
+    #[test]
+    fn a_host_with_a_clock_is_asked_for_the_remaining_delay() {
+        static ASKED: std::sync::atomic::AtomicI64 =
+            std::sync::atomic::AtomicI64::new(-1);
+        unsafe extern "C" fn post(_user_data: *mut c_void) {}
+        unsafe extern "C" fn post_delayed(_user_data: *mut c_void, micros: i64) {
+            ASKED.store(micros, Ordering::Release);
+        }
+        ASKED.store(-1, Ordering::Release);
+
+        attach(Some(post), Some(post_delayed), std::ptr::null_mut());
+        crate::task::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+        });
+        run_until_stalled();
+        let asked = ASKED.load(Ordering::Acquire);
+        assert!(
+            (0..=50_000).contains(&asked),
+            "asked for the time left, not the time asked for: {asked}"
+        );
         detach();
     }
 
