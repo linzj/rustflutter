@@ -13468,3 +13468,41 @@ sliver 走的是 `sliver_hit_test`，而 `RenderSliverPersistentHeader`
 干布局和实际布局都测了，五个变异全红。**同样的标准，不同的结果。**
 
 coverage 2102 / 1998 记账 / **23 MISSING**。
+
+---
+
+## `manual` 不是第五种模式，是另一个方法（2026-08-24）
+
+`DeviceOrientation`、`SystemUiMode`、`SystemUiOverlay` 三个都在 MISSING 里，
+都出自 `system_chrome.dart`，一起补。
+
+`setEnabledSystemUIMode` **看着像一个调用带五个选项，其实是两个调用**：
+
+```dart
+if (mode != SystemUiMode.manual) {
+  invokeMethod('SystemChrome.setEnabledSystemUIMode', mode.toString());
+} else {
+  assert(mode == SystemUiMode.manual && overlays != null);
+  invokeMethod('SystemChrome.setEnabledSystemUIOverlays', _stringify(overlays!));
+}
+```
+
+另外四个是**交给平台去解释的模式**；`manual` 是「别解释了，就显示这几条」。
+把它当成第五个模式字符串发过去，宿主那边根本没有对应的分支。
+
+而且只有它需要 `overlays`——那条 assert 是这个配对的另一半。
+
+### 线上的名字是 Dart 枚举的 `toString()`
+
+上游发的是 `mode.toString()`，所以宿主读到的是 `"SystemUiMode.leanBack"`，
+不是 `"leanBack"`。**去掉前缀在这边完全看不出来，在通道那头是错的。**
+和光标那张表同一个道理：这边没有任何东西读它。
+
+### 四个朝向的声明顺序是一圈，不是一种分类
+
+`portraitUp, landscapeLeft, portraitDown, landscapeRight`——
+既不是字母序，也不是「先竖后横」，而是**每次转四分之一圈**。
+于是下标就是角度，任何一个的对面都是「往后数两个」。
+测试断言的就是这条：隔两个的那个，必须和它同为竖屏或同为横屏。
+
+六个变异全红。coverage 2102 / 2001 记账 / **20 MISSING**。

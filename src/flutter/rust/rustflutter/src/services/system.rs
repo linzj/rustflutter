@@ -1307,6 +1307,129 @@ impl ApplicationSwitcherDescription {
     }
 }
 
+/// Upstream `DeviceOrientation`: which way up the application is willing to be
+/// shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceOrientation {
+    PortraitUp,
+    LandscapeLeft,
+    PortraitDown,
+    LandscapeRight,
+}
+
+impl DeviceOrientation {
+    /// The four, in upstream's declaration order -- which is **not** a
+    /// rotation: portraitUp, landscapeLeft, portraitDown, landscapeRight walks
+    /// a quarter turn at a time, so `index` doubles as an angle.
+    pub const ALL: [DeviceOrientation; 4] = [
+        DeviceOrientation::PortraitUp,
+        DeviceOrientation::LandscapeLeft,
+        DeviceOrientation::PortraitDown,
+        DeviceOrientation::LandscapeRight,
+    ];
+
+    /// What crosses the channel: upstream sends `orientation.toString()`, the
+    /// Dart enum's own rendering, so the embedder reads
+    /// `"DeviceOrientation.portraitUp"` rather than `"portraitUp"`.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            DeviceOrientation::PortraitUp => "DeviceOrientation.portraitUp",
+            DeviceOrientation::LandscapeLeft => "DeviceOrientation.landscapeLeft",
+            DeviceOrientation::PortraitDown => "DeviceOrientation.portraitDown",
+            DeviceOrientation::LandscapeRight => "DeviceOrientation.landscapeRight",
+        }
+    }
+}
+
+/// Upstream `SystemUiOverlay`: the two bars an Android application can show or
+/// hide one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemUiOverlay {
+    Top,
+    Bottom,
+}
+
+impl SystemUiOverlay {
+    pub const ALL: [SystemUiOverlay; 2] = [SystemUiOverlay::Top, SystemUiOverlay::Bottom];
+
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            SystemUiOverlay::Top => "SystemUiOverlay.top",
+            SystemUiOverlay::Bottom => "SystemUiOverlay.bottom",
+        }
+    }
+}
+
+/// Upstream `SystemUiMode`: how much of the system interface an application
+/// leaves showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemUiMode {
+    LeanBack,
+    Immersive,
+    ImmersiveSticky,
+    EdgeToEdge,
+    /// **Not a mode at all.** See [`SystemUiMode::sets_overlays_directly`].
+    Manual,
+}
+
+impl SystemUiMode {
+    pub const ALL: [SystemUiMode; 5] = [
+        SystemUiMode::LeanBack,
+        SystemUiMode::Immersive,
+        SystemUiMode::ImmersiveSticky,
+        SystemUiMode::EdgeToEdge,
+        SystemUiMode::Manual,
+    ];
+
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            SystemUiMode::LeanBack => "SystemUiMode.leanBack",
+            SystemUiMode::Immersive => "SystemUiMode.immersive",
+            SystemUiMode::ImmersiveSticky => "SystemUiMode.immersiveSticky",
+            SystemUiMode::EdgeToEdge => "SystemUiMode.edgeToEdge",
+            SystemUiMode::Manual => "SystemUiMode.manual",
+        }
+    }
+
+    /// Whether this value sends the overlay list instead of the mode.
+    ///
+    /// `setEnabledSystemUIMode` looks like one call with five options and is
+    /// really two calls:
+    ///
+    /// ```dart
+    /// if (mode != SystemUiMode.manual) {
+    ///   ... invokeMethod('SystemChrome.setEnabledSystemUIMode', mode.toString());
+    /// } else {
+    ///   assert(mode == SystemUiMode.manual && overlays != null);
+    ///   ... invokeMethod('SystemChrome.setEnabledSystemUIOverlays', _stringify(overlays!));
+    /// }
+    /// ```
+    ///
+    /// **`manual` names a different method on the channel**, with a different
+    /// argument. The other four are a mode the platform interprets; `manual`
+    /// means "stop interpreting and show exactly these bars". A port that
+    /// treated it as a fifth mode string would send the embedder a mode it has
+    /// no branch for.
+    pub fn sets_overlays_directly(self) -> bool {
+        matches!(self, SystemUiMode::Manual)
+    }
+
+    /// The channel method this mode invokes.
+    pub fn channel_method(self) -> &'static str {
+        if self.sets_overlays_directly() {
+            "SystemChrome.setEnabledSystemUIOverlays"
+        } else {
+            "SystemChrome.setEnabledSystemUIMode"
+        }
+    }
+
+    /// Upstream's assert: the overlay list is required for `manual` and
+    /// ignored otherwise.
+    pub fn is_legal(self, has_overlays: bool) -> bool {
+        !self.sets_overlays_directly() || has_overlays
+    }
+}
+
 /// Upstream `SystemUiOverlayStyle`: how the status bar and the navigation bar
 /// should be painted over this application.
 ///
@@ -2063,5 +2186,121 @@ mod copy_with_direction_tests {
             Some(Color(0x1000_0000)),
             "and the rest is as it was"
         );
+    }
+}
+
+#[cfg(test)]
+mod system_chrome_tests {
+    use super::{DeviceOrientation, SystemUiMode, SystemUiOverlay};
+
+    #[test]
+    fn manual_names_a_different_method_rather_than_a_fifth_mode() {
+        // setEnabledSystemUIMode looks like one call with five options and is
+        // two calls. The other four are a mode the platform interprets;
+        // manual means stop interpreting and show exactly these bars.
+        assert_eq!(
+            SystemUiMode::Manual.channel_method(),
+            "SystemChrome.setEnabledSystemUIOverlays"
+        );
+        for mode in SystemUiMode::ALL {
+            if mode != SystemUiMode::Manual {
+                assert_eq!(
+                    mode.channel_method(),
+                    "SystemChrome.setEnabledSystemUIMode",
+                    "{mode:?}"
+                );
+            }
+        }
+        // Exactly one of the five is the odd one out.
+        assert_eq!(
+            SystemUiMode::ALL
+                .iter()
+                .filter(|m| m.sets_overlays_directly())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn and_only_that_one_needs_the_overlay_list() {
+        // Upstream's assert. The other four ignore it.
+        assert!(!SystemUiMode::Manual.is_legal(false));
+        assert!(SystemUiMode::Manual.is_legal(true));
+        for mode in SystemUiMode::ALL {
+            if mode != SystemUiMode::Manual {
+                assert!(mode.is_legal(false), "{mode:?}");
+                assert!(mode.is_legal(true), "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_wire_names_are_the_dart_enum_renderings() {
+        // Upstream sends `mode.toString()`, so the embedder reads the
+        // qualified name rather than the bare value. Dropping the prefix would
+        // be invisible here and wrong on the other side of the channel.
+        assert_eq!(SystemUiMode::LeanBack.wire_name(), "SystemUiMode.leanBack");
+        assert_eq!(
+            DeviceOrientation::PortraitUp.wire_name(),
+            "DeviceOrientation.portraitUp"
+        );
+        assert_eq!(SystemUiOverlay::Top.wire_name(), "SystemUiOverlay.top");
+        for name in SystemUiMode::ALL.map(|m| m.wire_name()) {
+            assert!(name.starts_with("SystemUiMode."), "{name}");
+        }
+        for name in DeviceOrientation::ALL.map(|o| o.wire_name()) {
+            assert!(name.starts_with("DeviceOrientation."), "{name}");
+        }
+        for name in SystemUiOverlay::ALL.map(|o| o.wire_name()) {
+            assert!(name.starts_with("SystemUiOverlay."), "{name}");
+        }
+    }
+
+    #[test]
+    fn and_no_two_values_share_one() {
+        // A table the embedder reads and nothing here does: two rows that
+        // collide would be invisible on this side.
+        for names in [
+            SystemUiMode::ALL.map(|m| m.wire_name()).to_vec(),
+            DeviceOrientation::ALL.map(|o| o.wire_name()).to_vec(),
+            SystemUiOverlay::ALL.map(|o| o.wire_name()).to_vec(),
+        ] {
+            let total = names.len();
+            let mut unique = names.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), total, "{names:?}");
+        }
+    }
+
+    #[test]
+    fn the_orientations_run_a_quarter_turn_at_a_time() {
+        // Upstream's declaration order is not alphabetical and not
+        // portrait-then-landscape: it walks the circle, so the index is an
+        // angle and the opposite of any orientation is two along.
+        assert_eq!(
+            DeviceOrientation::ALL,
+            [
+                DeviceOrientation::PortraitUp,
+                DeviceOrientation::LandscapeLeft,
+                DeviceOrientation::PortraitDown,
+                DeviceOrientation::LandscapeRight,
+            ]
+        );
+        for (index, orientation) in DeviceOrientation::ALL.iter().enumerate() {
+            let opposite = DeviceOrientation::ALL[(index + 2) % 4];
+            // The two upright ones are opposite each other, and so are the two
+            // on their side -- which is what "two along" has to mean.
+            let upright = matches!(
+                orientation,
+                DeviceOrientation::PortraitUp | DeviceOrientation::PortraitDown
+            );
+            let opposite_upright = matches!(
+                opposite,
+                DeviceOrientation::PortraitUp | DeviceOrientation::PortraitDown
+            );
+            assert_eq!(upright, opposite_upright, "{orientation:?}");
+            assert_ne!(*orientation, opposite);
+        }
     }
 }
