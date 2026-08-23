@@ -162,6 +162,89 @@ pressureMin=0,照上游阈值(≥0.5 起始)实现会让每次普通点击都触
 
 ---
 
+## 执行器(2026-08-23,ASYNC_PLAN.md 记账)
+
+### 那条留了很久的缝,现在接上了 —— `task.rs`
+
+`runtime_controller.cc` 里那句注释本来就写着入口在哪:
+
+> Upstream drains the microtask queue between the two (FlushMicrotasksNow), and that position is
+> load-bearing… **There is no async runtime here yet, so nothing is queued and nothing is drained
+> -- but this is where it would go.**
+
+**这条分歧关掉了一半,另一半是故意留着的。**
+
+先说清楚原来为什么没有,因为那个理由到今天仍然成立:**上游的 `Future` 不是并发原语**。Dart 的
+`async`/`await` 把续延排进同一个 isolate 的事件循环、在同一根线程上跑;真并行是 `Isolate`,而
+`packages/flutter` 几乎不用。所以上游一个 future 的全部语义是「稍后在这同一根线程上叫我」——
+**那正是回调的定义**。当初把二十来处 `Future` 译成回调,丢掉的从来不是语义,是**组合**:三段以上
+的异步序列写成嵌套回调,错误要一层层手动往回传。
+
+**缺的那一件,`core::future` 给不了。** 标准库给的是词汇——`Future` trait、`Poll`、`Waker`、
+`RawWakerVTable`,以及 `async fn` 这个连库都不需要的编译器特性。它**刻意**不给的是执行器,以及
+「`Waker::wake()` 之后该发生什么」的答案。后者只能由宿主提供,而 `RfAppHost` 那六个回调里没有一个
+能从 UI 线程之外调:`schedule_frame` 最终走到 `Animator::RequestFrame`,那里直接读写
+`regenerate_layer_trees_` 这个裸 bool。
+
+于是加了 `post_task`,**七个回调里唯一允许任意线程调用的那个**,底下是本来就线程安全的
+`fml::TaskRunner::PostTask`。
+
+**线程亲和是编译期的,不是约定。** 任务在派生它的那根线程上恢复,四条不变式说明这件事——两条编译器
+管:future 是 `Pin<Box<dyn Future>>`、不带 `+ Send`,任务表是 thread_local,把它挪走是类型错误;
+`Waker::from(Arc<W>)` 要求载荷 `Send + Sync`,这正是要的分工——**信号可以跨线程,状态不行,而跨过去
+的只有一个 `TaskId`**。另两条是断言:owner 线程,和排空不可重入。
+
+**两处顺序是承重的,都写在代码里。**
+
+* 排空点在动画相位和构建相位之间,即上游放 `FlushMicrotasksNow` 的位置。一个在 tick 期间完成的任务
+  必须被紧随其后的那次 build 看见——和「在 `onBeginFrame` 里起的动画必须被同一帧看见」是同一条理由。
+* `task::detach` 在 `services::detach` **之后**。后者会把每一个未答复的回调用 `None` 调一遍,而那正是
+  结算等待中任务所挂的 oneshot 的动作;先丢任务会把 `Receiver` 一起带走,答案就落在没人的地方。
+
+`detach` 还会在每次 `post_task` 都持有的那把锁下清掉 poster,所以它返回之后没有线程在宿主里、也没有
+线程能进去。**这才是那个裸 `user_data` 真正安全,而不只是碰巧没被观察到。**
+
+**只有真跑了东西才要帧。** 一个挂着等平台答复的任务不该让引擎一直画——帧在这里是按需的,而「在等」不是
+画的理由。有回归行盯着。
+
+### 顺手补上的两处静默失败,和 async 无关
+
+`services::MESSENGER` 与 `painting::IMAGES` 都是 thread_local,所以从解码 worker 够它们**不会 race
+——会够到另一份空的**。这比 race 更糟,因为它不像失败:worker 上 `send_with_reply` 遇到一个没有 sink 的
+messenger,当场答 `None`,读起来和「这个平台没装插件」一模一样。图片缓存更糟:`ImageCache::new` 会
+spawn worker,所以在别处碰一下就凭空多出一个解码池,长在一根永远不画的线程上。
+
+两条**本来就是承重假设**——`ImageCache` 自己的注释写着 "one pool per thread that builds, which in
+practice means one"——而**两条都没有任何东西在守**。现在都走单一入口,一行断言。断言在没有应用运行时是
+空操作,那是每个单测和每次 headless 渲染,它们本来就有权从自己那根线程驱动框架。
+
+### 记录在案的分歧
+
+* **`async_builder` 的 poll 形态留着,而且不是出于客气。** 当生产者根本不是 `Future` 时,poll 才是对的
+  形状——流、被轮询的硬件、任何已经按自己的时钟前进的东西,而这仍是这个 crate 里的多数。
+  `future_builder` 是新增的那条,即上游 `FutureBuilder` 的字面译法。
+* **`future_builder` 收 `Result<T, String>` 而不是裸 `T`。** `AsyncSnapshot` 带的是 data 与 error 中
+  恰好一个,一个不会失败的 future 会让快照自己的一个状态永远到不了。`async { Ok(v) }` 是无误 future 要
+  付的税,比一个进不去的状态便宜。
+* **`StreamBuilder` 仍是 `async_builder` 的形状。** `Stream` 需要一个这个 crate 没有的类型。
+* **`TickerFuture::settled` 是方法而不是 `IntoFuture` 实现。** 调用方手里是 `Rc<TickerFuture>`,而
+  `Rc` 不是 fundamental 类型,孤儿规则不接受 `impl IntoFuture for Rc<TickerFuture>`。
+* **`RefreshIndicator` 没有 future 门面。** 上游 `onRefresh` 返回 `Future<void>` 由框架盯着;这里状态机
+  是持有方拥有的一个值,所以接 future 就是调用点上的
+  `spawn(async { fetch().await; set_state(|s| s.indicator.refresh_complete()) })`。给它包个 API,是给
+  一行代码包个 API。
+* **`sleep` 是给应用代码的。** 框架自己的每一条 deadline——长按判定、tooltip 淡出、snackbar 到期、双击
+  等第二下——都留在帧时钟上。一个在两帧之间到期的 tooltip 反正要等下一帧才画得出来,第二个时钟只会买来
+  一次无事可做的唤醒。
+* **上游 future 不可取消,Rust future drop 即取消。** `detach` 因此是丢弃未完成任务而不是完成它们;
+  「恰好调用一次」的保证由底下那层回调 API 继续持有。
+* **`RfAppHost` 的线程断言没有单测。** 认领是进程级的,而测试框架在自己的线程上跑几千个测试,一个哪怕
+  只短暂认领过的测试都会让当时恰好碰到 messenger 的那个失败。判定被抽成一个值,在那里测。
+
+测试 4556。`[dependencies]` 仍然是空的。
+
+---
+
 ## 完全覆盖计划的第一簇(2026-08-17 起,PORTING_PLAN.md 记账)
 
 ### 少掉的那一项,点的是少掉的那个按钮 —— 1888/1888,MISSING 归零(2026-08-20)
@@ -9114,7 +9197,9 @@ u8 位集——`Copy` 且可比,控件"上帧状态 vs 本帧状态"的重绘判
 
 **记录在案的分歧**:
 
-- `TickerFuture` 不是 future(crate 无异步运行时,同 `async.rs` 的账),
+- `TickerFuture` 不是 future(当时 crate 无执行器,同 `async.rs` 的账;
+  2026-08-23 起有了,见本文件顶部的执行器一节——`settled()` 是后加的门面,
+  下面这套三态加回调仍是它的底),
   是它会落到的三态加回调;`whenCompleteOrCancel` 同名同义,`orCancel` 的
   两种结局之分即回调收到的那个 bool。
 - `Ticker.forceFrames` 与 scheduler 的 phase 无处可去:此侧"要一帧"就是
@@ -9229,7 +9314,7 @@ AutomaticKeepAlive(离窗即弃记录分歧)。widgets 层 198/722。
 
 **P4:async + implicit_animations(2026-08-18)。** `async.rs`:`ConnectionState`
 四态、`AsyncSnapshot<T>`(nothing/waiting/withData/withError/inState/
-hasData/hasError)、`async_builder`(poll 形态——crate 无异步运行时,future 的
+hasData/hasError)、`async_builder`(poll 形态——当时 crate 无执行器,future 的
 驱动方持有所有权,帧轮询;快照与 builder 契约同上游,分歧记录)。async.dart
 4/4。implicit_animations.dart 24/24 入账:基类三件≙`Animated<T>`/
 `AnimatedState<T>` 门面,tween 十件≙各类型的 Lerp/算术(BoxBorder::lerp、

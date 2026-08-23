@@ -2,6 +2,24 @@
 
 分支 `async-executor`，从 `2ee69d7` 分出。
 
+**八个阶段已全部落地**。结果记在 `PORTING_STATUS.md` 顶部的执行器一节；这份
+文件留作当时的推理记录。
+
+| 阶段 | 提交 |
+|---|---|
+| 1–3 唤醒通道、`task.rs`、帧循环 | `6fcb71c`、`beb7be9` |
+| 4 thread_local 守卫 | `6cd7bfe` |
+| 5 future 门面 | `2179f26` |
+| 6 `future_builder` | `5b34086` |
+| 7 `post_delayed_task` + `sleep` | `e2a7c0d` |
+| 8 台账 | 本次 |
+
+**唯一没验的一格：GN / ninja。** 这个环境里 `src/flutter/buildtools` 与
+`prebuilts` 是 gclient 管的，主 checkout 和 worktree 都没有，也没有 `out/`，
+所以 `runtime_controller.cc` 的改动只到 `clang -fsyntax-only` 级别（头文件干净），
+**没有真正编译过**。合并前要跑一次 `rustflutter_unittests` 与
+`rust_ffi_unittests`。
+
 上游 Flutter 的 `Future` 是同一根 UI 线程上的续延，不是并发；这个港口把它们译成了回调、
 帧轮询、帧时钟 deadline 和拆开的同步/异步缝，四种形状都记在 `PORTING_STATUS.md` 里，
 而且都是对的。缺的不是语义，是**组合**——三段以上的异步序列写成嵌套回调会难看，错误
