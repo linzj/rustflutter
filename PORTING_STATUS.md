@@ -13751,3 +13751,40 @@ return behavior == opaque;
 这次没有声称接了任何线，谓词本身就是全部内容。）
 
 五个变异全红。coverage 2102 / 2010 记账 / **11 MISSING**。
+
+---
+
+## Fuchsia 从来走不到里面那层 switch（2026-08-24）
+
+`AndroidOverscrollIndicator` 两个值。选哪个**由 `useMaterial3` 决定**，
+不是由平台决定——但**平台可以让这个决定作废**：
+
+```dart
+final indicator = Theme.of(context).useMaterial3 ? stretch : glow;
+switch (getPlatform(context)) {
+  case iOS: case linux: case macOS: case windows:
+    return child;                       // 一个都不画
+  case android:
+    switch (indicator) {
+      case stretch: return StretchingOverscrollIndicator(...);
+      case glow: break;
+    }
+  case fuchsia:
+    break;                              // ← 根本没进里面那层
+}
+return GlowingOverscrollIndicator(...);
+```
+
+**Fuchsia 直接 break 到底下的 glow。**所以它在 Material 3 下也是发光，
+那个决定种类的标志**只在 Android 上被读**。
+
+于是这个枚举叫 `AndroidOverscrollIndicator` 是**精确的，不是随口**：
+Android 是唯一一个它两个取值都可能成为答案的平台。
+
+### 顺带修一句过时的注释
+
+移植原来在 `builds_overscroll_indicator` 上写「It is the glow」——
+在 M3 的 stretch 出现之前是对的，现在 Android 上它是拉伸。
+改成只说「有没有」，把「是哪个」交给新的那个方法。
+
+四个变异全红。coverage 2102 / 2011 记账 / **10 MISSING**。

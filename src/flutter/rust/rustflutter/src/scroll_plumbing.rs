@@ -42,6 +42,17 @@ pub enum PhysicsFamily {
     Clamping,
 }
 
+/// Upstream `AndroidOverscrollIndicator`: which overscroll effect a
+/// scrollable draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AndroidOverscrollIndicator {
+    /// Transforms the contents of the view. Material 3's, on Android.
+    Stretch,
+    /// Paints a glowing semicircle over the view. Material 2's, and Fuchsia's
+    /// whatever the theme says.
+    Glow,
+}
+
 /// Upstream `MultitouchDragStrategy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultitouchDragStrategy {
@@ -140,14 +151,53 @@ impl ScrollBehavior {
 
     /// Upstream's `buildOverscrollIndicator`: **Android and Fuchsia only**.
     ///
-    /// It is the glow, and the platforms that do not get it are the ones whose
-    /// physics already show the overscroll by stretching. Doing both would say
-    /// the same thing twice.
+    /// The platforms that do not get one are those whose physics already show
+    /// the overscroll by stretching. Doing both would say the same thing
+    /// twice.
+    ///
+    /// *Which* indicator the two remaining platforms get is a separate
+    /// question -- see [`ScrollBehavior::overscroll_indicator`].
     pub fn builds_overscroll_indicator(&self) -> bool {
         matches!(
             self.platform,
             ScrollPlatform::Android | ScrollPlatform::Fuchsia
         ) && self.overscroll
+    }
+
+    /// Which indicator, once [`ScrollBehavior::builds_overscroll_indicator`]
+    /// has said there is one.
+    ///
+    /// # The kind is chosen by Material 3, and the platform overrules it
+    ///
+    /// Upstream reads `Theme.of(context).useMaterial3 ? stretch : glow` and
+    /// then switches on the platform, and the switch does not treat the two
+    /// remaining platforms alike:
+    ///
+    /// ```dart
+    /// case TargetPlatform.android:
+    ///   switch (indicator) {
+    ///     case AndroidOverscrollIndicator.stretch: return StretchingOverscrollIndicator(...);
+    ///     case AndroidOverscrollIndicator.glow: break;
+    ///   }
+    /// case TargetPlatform.fuchsia:
+    ///   break;
+    /// ```
+    ///
+    /// **Fuchsia never reaches the inner switch.** It breaks straight to the
+    /// glow at the bottom, so it glows under Material 3 as well -- the flag
+    /// that decides the kind is consulted on Android and nowhere else.
+    ///
+    /// The enum is named `AndroidOverscrollIndicator` and that turns out to be
+    /// exact rather than loose: Android is the only platform where either of
+    /// its values can be the answer.
+    pub fn overscroll_indicator(&self, use_material3: bool) -> Option<AndroidOverscrollIndicator> {
+        if !self.builds_overscroll_indicator() {
+            return None;
+        }
+        match self.platform {
+            ScrollPlatform::Android if use_material3 => Some(AndroidOverscrollIndicator::Stretch),
+            _ => Some(AndroidOverscrollIndicator::Glow),
+        }
     }
 
     /// Upstream's `getMultitouchDragStrategy`.
@@ -822,5 +872,95 @@ mod drag_strategy_tests {
         answers.sort();
         answers.dedup();
         assert_eq!(answers.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod overscroll_indicator_tests {
+    use super::{AndroidOverscrollIndicator, ScrollBehavior, ScrollPlatform};
+
+    fn behavior(platform: ScrollPlatform) -> ScrollBehavior {
+        ScrollBehavior::new(platform)
+    }
+
+    #[test]
+    fn material_three_stretches_on_android() {
+        assert_eq!(
+            behavior(ScrollPlatform::Android).overscroll_indicator(true),
+            Some(AndroidOverscrollIndicator::Stretch)
+        );
+        assert_eq!(
+            behavior(ScrollPlatform::Android).overscroll_indicator(false),
+            Some(AndroidOverscrollIndicator::Glow)
+        );
+    }
+
+    #[test]
+    fn but_fuchsia_glows_whatever_the_theme_says() {
+        // Upstream's `case TargetPlatform.fuchsia: break;` never reaches the
+        // inner switch, so the Material 3 flag is consulted on Android and
+        // nowhere else. The enum's name turns out to be exact.
+        for use_material3 in [false, true] {
+            assert_eq!(
+                behavior(ScrollPlatform::Fuchsia).overscroll_indicator(use_material3),
+                Some(AndroidOverscrollIndicator::Glow),
+                "{use_material3}"
+            );
+        }
+        // Which is a real difference from Android under the same flag, or the
+        // platform arm would be doing nothing.
+        assert_ne!(
+            behavior(ScrollPlatform::Fuchsia).overscroll_indicator(true),
+            behavior(ScrollPlatform::Android).overscroll_indicator(true)
+        );
+    }
+
+    #[test]
+    fn and_the_platforms_that_stretch_by_physics_get_nothing() {
+        for platform in [
+            ScrollPlatform::IOS,
+            ScrollPlatform::MacOS,
+            ScrollPlatform::Linux,
+            ScrollPlatform::Windows,
+        ] {
+            for use_material3 in [false, true] {
+                assert_eq!(
+                    behavior(platform).overscroll_indicator(use_material3),
+                    None,
+                    "{platform:?} {use_material3}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn and_it_agrees_with_whether_there_is_one_at_all() {
+        // The two answers cannot disagree: an indicator kind without an
+        // indicator, or an indicator with no kind, would both be nonsense.
+        for platform in [
+            ScrollPlatform::Android,
+            ScrollPlatform::Fuchsia,
+            ScrollPlatform::IOS,
+            ScrollPlatform::MacOS,
+            ScrollPlatform::Linux,
+            ScrollPlatform::Windows,
+        ] {
+            let behavior = behavior(platform);
+            for use_material3 in [false, true] {
+                assert_eq!(
+                    behavior.overscroll_indicator(use_material3).is_some(),
+                    behavior.builds_overscroll_indicator(),
+                    "{platform:?} {use_material3}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn and_turning_overscroll_off_removes_the_kind_as_well() {
+        let mut android = behavior(ScrollPlatform::Android);
+        assert!(android.overscroll_indicator(true).is_some());
+        android.overscroll = false;
+        assert_eq!(android.overscroll_indicator(true), None);
     }
 }
