@@ -363,6 +363,14 @@ pub struct PopupMenu<T> {
 }
 
 impl<T: PartialEq + 'static> PopupMenu<T> {
+    /// This menu's appearance, with the theme and the defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut BuildContext,
+    ) -> crate::component_themes::ResolvedPopupMenu {
+        crate::component_themes::ResolvedPopupMenu::of(context)
+    }
+
     pub fn new() -> PopupMenu<T> {
         PopupMenu {
             entries: RefCell::new(Vec::new()),
@@ -991,5 +999,255 @@ mod popup_state_tests {
         assert!(button.is_menu_expanded());
         button.menu_dismissed();
         assert!(!button.is_menu_expanded());
+    }
+}
+
+#[cfg(test)]
+mod popup_menu_theme_tests {
+    use super::*;
+    use crate::component_themes::{PopupMenuTheme, PopupMenuThemeData, ResolvedPopupMenu};
+    use crate::engine::{Color, TextStyle};
+    use crate::framework::{Component, ElementTree, component, leaf, provide};
+    use crate::render::EdgeInsets;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetState};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedPopupMenu>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(ResolvedPopupMenu::of(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve_under(theme: ThemeData, data: PopupMenuThemeData) -> ResolvedPopupMenu {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            theme,
+            PopupMenuTheme::new(
+                data,
+                component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn m3(data: PopupMenuThemeData) -> ResolvedPopupMenu {
+        resolve_under(ThemeData::fallback(), data)
+    }
+
+    fn m2(data: PopupMenuThemeData) -> ResolvedPopupMenu {
+        resolve_under(
+            ThemeData {
+                use_material3: false,
+                ..ThemeData::fallback()
+            },
+            data,
+        )
+    }
+
+    fn flat(color: Color) -> PopupMenuThemeData {
+        let mut data = PopupMenuThemeData::new();
+        data.text_style = Some(TextStyle {
+            color,
+            ..ThemeData::fallback().text_theme.title_medium.unwrap()
+        });
+        data
+    }
+
+    fn stateful(color: Color) -> PopupMenuThemeData {
+        let base = ThemeData::fallback().text_theme.label_large.unwrap();
+        let mut data = PopupMenuThemeData::new();
+        data.label_text_style = Some(StateProperty::all(Some(TextStyle { color, ..base })));
+        data
+    }
+
+    #[test]
+    fn the_two_style_fields_never_meet() {
+        // Not "one supersedes the other" -- `useMaterial3` picks which chain
+        // runs, and the other field is not read at all.
+        let mine = Color(0xFFAA0000);
+
+        assert_eq!(
+            m3(flat(mine)).entry_style(true).map(|style| style.color),
+            ThemeData::fallback()
+                .text_theme
+                .label_large
+                .map(|style| style.color),
+            "a flat style under Material 3 is not consulted"
+        );
+        assert_eq!(
+            m2(stateful(mine))
+                .entry_style(true)
+                .map(|style| style.color),
+            ThemeData::fallback()
+                .text_theme
+                .title_medium
+                .map(|style| style.color),
+            "and a state property under Material 2 is not either"
+        );
+
+        // Each in its own branch does land, or the test above would prove
+        // nothing more than that neither field works.
+        assert_eq!(
+            m2(flat(mine)).entry_style(true).map(|style| style.color),
+            Some(mine)
+        );
+        assert_eq!(
+            m3(stateful(mine))
+                .entry_style(true)
+                .map(|style| style.color),
+            Some(mine)
+        );
+    }
+
+    #[test]
+    fn setting_both_does_not_make_them_compete_either() {
+        // The reading the old doc invited: both set, and one wins. What
+        // actually happens is that each branch reads its own and neither sees
+        // the other.
+        let flat_colour = Color(0xFFAA0000);
+        let state_colour = Color(0xFF00AA00);
+        let mut both = flat(flat_colour);
+        both.label_text_style = stateful(state_colour).label_text_style;
+
+        assert_eq!(
+            m3(both.clone()).entry_style(true).map(|style| style.color),
+            Some(state_colour)
+        );
+        assert_eq!(
+            m2(both).entry_style(true).map(|style| style.color),
+            Some(flat_colour)
+        );
+    }
+
+    #[test]
+    fn material_two_overwrites_a_disabled_items_colour_and_material_three_does_not() {
+        // The visible consequence of where the disabled colour is applied. On
+        // Material 2 it happens after the chain, so it lands on a caller's own
+        // style; on Material 3 it happens inside the step the caller supplied.
+        let mine = Color(0xFFAA0000);
+        let disabled = ThemeData::fallback().disabled_color;
+
+        assert_eq!(
+            m2(flat(mine)).entry_style(false).map(|style| style.color),
+            Some(disabled),
+            "the caller's colour is gone"
+        );
+        assert_eq!(
+            m3(stateful(mine))
+                .entry_style(false)
+                .map(|style| style.color),
+            Some(mine),
+            "the caller's resolver is the last word"
+        );
+    }
+
+    #[test]
+    fn material_threes_own_disabled_colour_comes_out_of_the_resolution() {
+        // With no theme property, the default resolver fades it -- and it is a
+        // fade of `onSurface`, not the theme's `disabledColor`.
+        let scheme = ThemeData::fallback().color_scheme;
+        let faded = crate::elevation_overlay::with_opacity(scheme.on_surface, 0.38);
+        assert_eq!(
+            m3(PopupMenuThemeData::new())
+                .entry_style(false)
+                .map(|style| style.color),
+            Some(faded)
+        );
+        assert_ne!(faded, ThemeData::fallback().disabled_color);
+        assert_eq!(
+            m3(PopupMenuThemeData::new())
+                .entry_style(true)
+                .map(|style| style.color),
+            Some(scheme.on_surface)
+        );
+    }
+
+    #[test]
+    fn a_state_property_that_answers_per_state_is_asked_per_state() {
+        // The property is resolved with `{disabled}` or `{}`, so a resolver
+        // that distinguishes them is distinguished.
+        let enabled = Color(0xFF111111);
+        let off = Color(0xFF222222);
+        let base = ThemeData::fallback().text_theme.label_large.unwrap();
+        let mut data = PopupMenuThemeData::new();
+        data.label_text_style = Some(StateProperty::resolve_with(move |states| {
+            Some(TextStyle {
+                color: if states.contains(WidgetState::Disabled) {
+                    off
+                } else {
+                    enabled
+                },
+                ..base.clone()
+            })
+        }));
+        let resolved = m3(data);
+        assert_eq!(resolved.entry_style(true).map(|s| s.color), Some(enabled));
+        assert_eq!(resolved.entry_style(false).map(|s| s.color), Some(off));
+    }
+
+    #[test]
+    fn the_menus_padding_and_the_items_are_perpendicular() {
+        // They compose rather than fight: one pads top and bottom, the other
+        // left and right, and neither has an opinion about the other's axis.
+        let menu = m3(PopupMenuThemeData::new());
+        assert_eq!(menu.menu_padding, EdgeInsets::symmetric(0.0, 8.0));
+        assert_eq!(menu.item_padding, EdgeInsets::symmetric(12.0, 0.0));
+        assert_eq!(menu.menu_padding.left, 0.0);
+        assert_eq!(menu.item_padding.top, 0.0);
+    }
+
+    #[test]
+    fn only_one_of_the_two_paddings_has_a_theme_step() {
+        let mut data = PopupMenuThemeData::new();
+        data.menu_padding = Some(crate::EdgeInsetsGeometry::Absolute(EdgeInsets::all(3.0)));
+        let resolved = m3(data);
+        assert_eq!(resolved.menu_padding, EdgeInsets::all(3.0));
+        assert_eq!(
+            resolved.item_padding,
+            EdgeInsets::symmetric(12.0, 0.0),
+            "the item's is a static on the defaults class, with no theme field \
+             to move it"
+        );
+        assert_eq!(
+            m2(PopupMenuThemeData::new()).item_padding,
+            EdgeInsets::symmetric(16.0, 0.0),
+            "and the material version is the only thing that does"
+        );
+    }
+
+    #[test]
+    fn the_surface_defaults_differ_by_material_version() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let three = m3(PopupMenuThemeData::new());
+        let two = m2(PopupMenuThemeData::new());
+        assert_eq!(three.elevation, 3.0);
+        assert_eq!(two.elevation, 8.0);
+        assert!(three.shape.is_some());
+        assert_eq!(two.shape, None, "Material 2 has no shape default");
+        assert_eq!(three.shadow_color, Some(scheme.shadow()));
+        assert_eq!(two.shadow_color, None);
+        assert_eq!(three.surface_tint_color, Some(Color::TRANSPARENT));
+        assert_eq!(two.surface_tint_color, None);
+    }
+
+    #[test]
+    fn a_menu_opens_over_its_button_rather_than_under_it() {
+        // Upstream's default `PopupMenuPosition.over`: the menu covers the
+        // thing that opened it, so the item under the finger is where the
+        // finger already is.
+        assert_eq!(
+            m3(PopupMenuThemeData::new()).position,
+            crate::menu::PopupMenuPosition::Over
+        );
+        assert!(m3(PopupMenuThemeData::new()).enable_feedback);
     }
 }

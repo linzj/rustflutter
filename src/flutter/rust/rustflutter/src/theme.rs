@@ -182,6 +182,17 @@ pub struct ThemeData {
     /// [`crate::component_themes::ResolvedTooltip`] is the case in hand -- a
     /// tooltip is shorter and tighter on a desktop.
     pub platform: TargetPlatform,
+    /// Upstream's `useMaterial3`, which upstream defaults to true.
+    ///
+    /// It is here rather than on the widgets because upstream keeps it here:
+    /// one setting moves every defaults class at once, and two widgets each
+    /// carrying their own copy would be two switches that could disagree.
+    ///
+    /// This port had it on `BottomAppBar` as a `material3` field -- which
+    /// upstream's `BottomAppBar` does not have -- because at the time exactly
+    /// one widget branched on it. The popup menu is the second, so it moved
+    /// here, where it was upstream all along.
+    pub use_material3: bool,
     pub color_scheme: ColorScheme,
     pub visual_density: VisualDensity,
 
@@ -301,6 +312,7 @@ impl ThemeData {
         ThemeData {
             brightness,
             platform: TargetPlatform::host(),
+            use_material3: true,
             color_scheme,
             visual_density: VisualDensity::STANDARD,
             canvas_color: color_scheme.surface,
@@ -635,6 +647,8 @@ impl ThemeData {
         ThemeData {
             brightness: nearer.brightness,
             platform: nearer.platform,
+            // A bool has no midpoint either.
+            use_material3: nearer.use_material3,
             color_scheme: ColorScheme::lerp(&a.color_scheme, &b.color_scheme, t),
             visual_density: VisualDensity::lerp(a.visual_density, b.visual_density, t),
             canvas_color: mix(a.canvas_color, b.canvas_color),
@@ -851,6 +865,25 @@ impl ThemeData {
 #[cfg(test)]
 mod platform_field_tests {
     use super::*;
+
+    #[test]
+    fn lerping_two_themes_keeps_a_material_version_rather_than_assuming_one() {
+        // A mutation pinning it to `true` through the lerp survived: nothing
+        // interpolated two themes that disagreed about it. A bool has no
+        // midpoint, so it comes from the nearer end like every other
+        // non-numeric field -- and half a Material 2 transition drawn with
+        // Material 3 defaults would be a flicker in every widget at once.
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        let three = ThemeData::dark();
+
+        assert!(!ThemeData::lerp(&two, &three, 0.1).use_material3);
+        assert!(ThemeData::lerp(&two, &three, 0.9).use_material3);
+        assert!(
+            !ThemeData::lerp(&three, &two, 0.9).use_material3,
+            "and it follows the ends rather than a fixed answer"
+        );
+    }
 
     #[test]
     fn lerping_two_themes_keeps_a_platform_rather_than_inventing_one() {

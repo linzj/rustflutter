@@ -204,8 +204,6 @@ pub struct BottomAppBar {
     /// The gap left between the button and the edge of the hole, so the two do
     /// not touch.
     pub notch_margin: f32,
-    /// Material 3 pads its child; Material 2 does not.
-    pub material3: bool,
 }
 
 impl BottomAppBar {
@@ -217,7 +215,6 @@ impl BottomAppBar {
         BottomAppBar {
             shape: None,
             notch_margin: BottomAppBar::DEFAULT_NOTCH_MARGIN,
-            material3: true,
         }
     }
 
@@ -235,8 +232,11 @@ impl BottomAppBar {
         crate::component_themes::ResolvedBottomAppBar::of(context, self)
     }
 
-    pub fn default_padding(&self) -> (f32, f32) {
-        if self.material3 {
+    /// Upstream's inline padding default, which reads
+    /// [`crate::theme::ThemeData::use_material3`] rather than anything on the
+    /// bar.
+    pub fn default_padding(use_material3: bool) -> (f32, f32) {
+        if use_material3 {
             BottomAppBar::M3_PADDING
         } else {
             (0.0, 0.0)
@@ -383,11 +383,8 @@ mod tests {
 
     #[test]
     fn material_three_pads_the_child_and_material_two_does_not() {
-        assert_eq!(BottomAppBar::new().default_padding(), (16.0, 12.0));
-
-        let mut m2 = BottomAppBar::new();
-        m2.material3 = false;
-        assert_eq!(m2.default_padding(), (0.0, 0.0));
+        assert_eq!(BottomAppBar::default_padding(true), (16.0, 12.0));
+        assert_eq!(BottomAppBar::default_padding(false), (0.0, 0.0));
     }
 
     // -- Landscape --------------------------------------------------------------------
@@ -733,10 +730,11 @@ mod bottom_app_bar_theme_tests {
         seen.borrow_mut().take().expect("built once")
     }
 
-    fn m2() -> BottomAppBar {
-        BottomAppBar {
-            material3: false,
-            ..BottomAppBar::new()
+    /// A theme in the Material 2 mode, which is where the branch lives now.
+    fn m2_theme() -> ThemeData {
+        ThemeData {
+            use_material3: false,
+            ..ThemeData::fallback()
         }
     }
 
@@ -786,13 +784,21 @@ mod bottom_app_bar_theme_tests {
 
         // Material 2 resolves a real scheme colour and takes the branch that
         // never looks at it.
-        let two = resolve(m2(), BottomAppBarThemeData::new());
+        let two = resolve_under(
+            m2_theme(),
+            BottomAppBar::new(),
+            BottomAppBarThemeData::new(),
+        );
         assert_eq!(two.surface_tint_color, scheme.surface_tint());
         assert_ne!(two.surface_tint_color, Color::TRANSPARENT);
         let mut tinted = BottomAppBarThemeData::new();
         tinted.surface_tint_color = Some(Color(0xFFFF0000));
         assert_eq!(
-            resolve(m2(), tinted).effective_color(false, scheme.surface, scheme.on_surface),
+            resolve_under(m2_theme(), BottomAppBar::new(), tinted).effective_color(
+                false,
+                scheme.surface,
+                scheme.on_surface
+            ),
             two.effective_color(false, scheme.surface, scheme.on_surface),
             "a different tint entirely, and Material 2 paints the same"
         );
@@ -805,7 +811,12 @@ mod bottom_app_bar_theme_tests {
             Some(80.0)
         );
         assert_eq!(
-            resolve(m2(), BottomAppBarThemeData::new()).height,
+            resolve_under(
+                m2_theme(),
+                BottomAppBar::new(),
+                BottomAppBarThemeData::new()
+            )
+            .height,
             None,
             "`SizedBox(height: null)` is as tall as what is in it"
         );
@@ -818,7 +829,12 @@ mod bottom_app_bar_theme_tests {
         let plain = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
         assert!(matches!(plain.shape, Some(NotchedShape::Automatic { .. })));
         assert_eq!(
-            resolve(m2(), BottomAppBarThemeData::new()).shape,
+            resolve_under(
+                m2_theme(),
+                BottomAppBar::new(),
+                BottomAppBarThemeData::new()
+            )
+            .shape,
             None,
             "and a Material 2 bar does not"
         );
@@ -835,7 +851,11 @@ mod bottom_app_bar_theme_tests {
         assert!(plain.cuts_a_notch(true));
 
         // And a button with nothing to cut into is equally not a notch.
-        let two = resolve(m2(), BottomAppBarThemeData::new());
+        let two = resolve_under(
+            m2_theme(),
+            BottomAppBar::new(),
+            BottomAppBarThemeData::new(),
+        );
         assert!(!two.cuts_a_notch(true));
     }
 
@@ -865,7 +885,11 @@ mod bottom_app_bar_theme_tests {
     fn the_two_elevations_and_the_two_colours_are_not_the_same_numbers() {
         let scheme = ThemeData::fallback().color_scheme;
         let three = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
-        let two = resolve(m2(), BottomAppBarThemeData::new());
+        let two = resolve_under(
+            m2_theme(),
+            BottomAppBar::new(),
+            BottomAppBarThemeData::new(),
+        );
         assert_eq!(three.elevation, 3.0);
         assert_eq!(two.elevation, 8.0);
         assert_eq!(three.color, scheme.surface_container());
@@ -884,12 +908,28 @@ mod bottom_app_bar_theme_tests {
         // theme, so the arm was unreachable and the test suite could not tell
         // it from an empty one.
         assert_eq!(
-            resolve_under(ThemeData::dark(), m2(), BottomAppBarThemeData::new()).color,
+            resolve_under(
+                ThemeData {
+                    use_material3: false,
+                    ..ThemeData::dark()
+                },
+                BottomAppBar::new(),
+                BottomAppBarThemeData::new()
+            )
+            .color,
             ResolvedBottomAppBar::M2_DARK,
             "`Colors.grey[800]`"
         );
         assert_eq!(
-            resolve_under(ThemeData::light(), m2(), BottomAppBarThemeData::new()).color,
+            resolve_under(
+                ThemeData {
+                    use_material3: false,
+                    ..ThemeData::light()
+                },
+                BottomAppBar::new(),
+                BottomAppBarThemeData::new()
+            )
+            .color,
             ResolvedBottomAppBar::M2_LIGHT
         );
 
@@ -914,7 +954,12 @@ mod bottom_app_bar_theme_tests {
             EdgeInsets::symmetric(16.0, 12.0)
         );
         assert_eq!(
-            resolve(m2(), BottomAppBarThemeData::new()).padding,
+            resolve_under(
+                m2_theme(),
+                BottomAppBar::new(),
+                BottomAppBarThemeData::new()
+            )
+            .padding,
             EdgeInsets::ZERO
         );
         let mut data = BottomAppBarThemeData::new();
@@ -932,7 +977,7 @@ mod bottom_app_bar_theme_tests {
         let scheme = ThemeData::fallback().color_scheme;
         let mut data = BottomAppBarThemeData::new();
         data.color = Some(scheme.surface);
-        let two = resolve(m2(), data.clone());
+        let two = resolve_under(m2_theme(), BottomAppBar::new(), data.clone());
         assert_eq!(
             two.effective_color(false, scheme.surface, scheme.on_surface),
             two.color,
@@ -946,7 +991,7 @@ mod bottom_app_bar_theme_tests {
 
         let mut mine = BottomAppBarThemeData::new();
         mine.color = Some(Color(0xFF123456));
-        let hand_coloured = resolve(m2(), mine);
+        let hand_coloured = resolve_under(m2_theme(), BottomAppBar::new(), mine);
         assert_eq!(
             hand_coloured.effective_color(true, scheme.surface, scheme.on_surface),
             hand_coloured.color,

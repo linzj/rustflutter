@@ -10772,3 +10772,53 @@ padding 的默认**不在 defaults 类里**，写在使用点的三目里，两�
 
 无读者主题 17 → 16。
 
+## 弹出菜单：两个样式字段从不见面（2026-08-23）
+
+`PopupMenuTheme` 接上读者，并改掉本移植的一句错话。
+
+### `text_style` 与 `label_text_style` 不是一对后备
+
+主题里两个字段都有，很容易读成一个盖过另一个。它们不竞争：
+**`useMaterial3` 决定哪条链根本会跑**。
+
+* M3：`widget.labelTextStyle ?? theme.labelTextStyle ?? defaults.labelTextStyle`，
+  三步都按状态解析。`_PopupMenuDefaultsM3` 填 `labelTextStyle`，`textStyle` 留空。
+* M2：`widget.textStyle ?? theme.textStyle ?? defaults.textStyle`，三步都是平的。
+  `_PopupMenuDefaultsM2` 填 `textStyle`，`labelTextStyle` 留空。
+
+所以只设了 `textStyle` 的主题在 M3 下**什么都不做**，反过来也一样——
+不是「被覆盖」，是**根本没被读**。本移植的 `PopupMenuThemeData` 原本写着
+`label_text_style` 在两者都设时「supersedes」`text_style`，描述了一场
+不会发生的竞争。
+
+### 禁用色在两个不同的地方处理，而这个差别看得见
+
+M3 没有单独的一步：禁用色从状态解析里出来，所以**调用者自己的 resolver
+是最后一句话**。M2 没有状态属性可解析，上游在链跑完**之后**打一发
+`style.copyWith(color: theme.disabledColor)`——盖在赢的那个上面，
+包括调用者自己的 `textStyle`。
+
+可观察的后果：M2 下调用者**没法**给禁用项上色（覆写在他们下游），
+M3 下可以（覆写就在他们提供的那一步里面）。
+
+### 两个听起来像的 padding，只有一个可主题化
+
+`menuPadding` 是菜单自己的，`symmetric(vertical: 8)`，是主题字段。
+item 的是 `widget.padding ?? (m3 ? 12 : 16)` 横向，读的是 defaults 类上的
+一个 **static**——根本没有对应的主题字段。两者**互相垂直**，
+所以是叠加而不是打架。
+
+### `use_material3` 搬回主题上
+
+上一轮为 `BottomAppBar` 记过一条分歧：上游在 `ThemeData.useMaterial3` 上分支，
+本移植没有这个字段，而把 `material3` 挂在 widget 上；当时的理由是
+「只有一个 widget 读它，加一个没人读的主题字段等于宣传一个不切换任何东西的开关」。
+弹出菜单是第二个。**于是它搬到了主题上，也就是上游一直放它的地方**，
+`BottomAppBar::material3` 删掉（上游的 `BottomAppBar` 本来就没这个字段）。
+
+12 个变异，**一个活下来**：`ThemeData::lerp` 里把 `use_material3` 钉死成 true，
+全绿——没有任何测试插值过两个在这上面不一致的主题。补了一条，重跑变红。
+（另有三条因 `cargo fmt` 重排/常量重名而锚点失效，改对锚点后重跑，也都是红的。）
+
+无读者主题 16 → 15。
+

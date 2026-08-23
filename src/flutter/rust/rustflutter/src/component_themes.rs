@@ -2426,14 +2426,13 @@ impl ResolvedNavigationDrawer {
 /// `_BottomAppBarDefaultsM3` declares a padding. The chain is the same length;
 /// only the place the last step is written differs.
 ///
-/// # Which defaults class runs is a *theme-wide* switch upstream
+/// # Which defaults class runs is a theme-wide switch
 ///
-/// Upstream branches on `ThemeData.useMaterial3`, so one setting moves every
-/// widget at once. This port has no such field -- it is Material 3 throughout
-/// -- and `BottomAppBar::material3` rides on the widget instead. Adding a
-/// `use_material3` to `ThemeData` that exactly one widget consulted would
-/// advertise a switch that switches nothing, so the divergence is recorded here
-/// rather than papered over.
+/// [`ThemeData::use_material3`], as upstream. It used to be a `material3` field
+/// on the widget here -- a field upstream's `BottomAppBar` does not have --
+/// on the grounds that exactly one widget branched on it and a theme field
+/// nobody else read would advertise a switch that switched nothing. The popup
+/// menu is the second, so it moved to the theme, where upstream keeps it.
 pub struct ResolvedBottomAppBar {
     pub color: Color,
     pub elevation: f32,
@@ -2468,7 +2467,7 @@ impl ResolvedBottomAppBar {
         let data = BottomAppBarTheme::of(context);
         let theme = ThemeData::of(context);
         let scheme = theme.color_scheme;
-        let material3 = bar.material3;
+        let material3 = theme.use_material3;
         ResolvedBottomAppBar {
             color: data.color.unwrap_or_else(|| {
                 if material3 {
@@ -2560,6 +2559,192 @@ impl ResolvedBottomAppBar {
     /// and never uses it until a button arrives.
     pub fn cuts_a_notch(&self, has_floating_action_button: bool) -> bool {
         self.shape.is_some() && has_floating_action_button
+    }
+}
+
+/// What a popup menu and its items are drawn with -- upstream's
+/// `_PopupMenuItemState.build` and `_PopupMenuRoute` reading
+/// `PopupMenuTheme.of` and then one of two defaults classes.
+///
+/// # `text_style` and `label_text_style` are not a fallback pair
+///
+/// The theme holds both, and it is tempting to read them as one superseding the
+/// other. They do not compete: `useMaterial3` chooses **which chain runs at
+/// all**.
+///
+/// * Material 3: `widget.labelTextStyle ?? theme.labelTextStyle ?? defaults.labelTextStyle`,
+///   all three state-resolved. `_PopupMenuDefaultsM3` fills `labelTextStyle`
+///   and leaves `textStyle` null.
+/// * Material 2: `widget.textStyle ?? theme.textStyle ?? defaults.textStyle`,
+///   all three flat. `_PopupMenuDefaultsM2` fills `textStyle` and leaves
+///   `labelTextStyle` null.
+///
+/// So a theme that sets only `textStyle` does **nothing** under Material 3, and
+/// one that sets only `labelTextStyle` does nothing under Material 2 -- not
+/// "is overridden", but is never read. This port's `PopupMenuThemeData`
+/// documented `label_text_style` as superseding `text_style` "where both are
+/// set", which describes a contest that never happens.
+///
+/// # Disabled is handled in two different places, and the difference shows
+///
+/// Material 3 has no separate step: the disabled colour comes out of the state
+/// resolution itself, so a caller's own resolver has the last word. Material 2
+/// has no state property to resolve, so upstream applies
+/// `style.copyWith(color: theme.disabledColor)` **after** the chain has run --
+/// over whatever won, a caller's own `textStyle` included.
+///
+/// That is the observable difference: on Material 2 a caller cannot colour a
+/// disabled item, because the overwrite happens downstream of them; on Material
+/// 3 they can, because it happens inside the step they supplied.
+///
+/// # Two paddings that sound alike, and only one is themeable
+///
+/// `menuPadding` is the menu's own, `EdgeInsets.symmetric(vertical: 8)`, and it
+/// is a theme field. The item's padding is `widget.padding ?? (m3 ? 12 : 16)`
+/// horizontal, read from a **static** on the defaults class -- there is no
+/// theme field for it at all.
+///
+/// They are perpendicular, which is why they compose instead of fighting: the
+/// menu pads top and bottom, the item pads left and right, and neither has an
+/// opinion about the other's axis.
+pub struct ResolvedPopupMenu {
+    pub color: Color,
+    pub shape: Option<ShapeBorder>,
+    pub elevation: f32,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    /// The menu's own padding: vertical, and themeable.
+    pub menu_padding: EdgeInsets,
+    /// The item's: horizontal, and not themeable -- see the type's docs.
+    pub item_padding: EdgeInsets,
+    pub enable_feedback: bool,
+    pub position: PopupMenuPosition,
+    pub icon_color: Option<Color>,
+    pub icon_size: Option<f32>,
+    text_style: Option<TextStyle>,
+    label_text_style: Option<StateProperty<Option<TextStyle>>>,
+    title_medium: Option<TextStyle>,
+    label_large: Option<TextStyle>,
+    on_surface: Color,
+    disabled_color: Color,
+    use_material3: bool,
+}
+
+impl ResolvedPopupMenu {
+    /// Upstream `_PopupMenuDefaultsM3.elevation`.
+    pub const M3_ELEVATION: f32 = 3.0;
+    /// Upstream `_PopupMenuDefaultsM2.elevation`.
+    pub const M2_ELEVATION: f32 = 8.0;
+    /// Upstream's `menuPadding` on both defaults classes -- the one number the
+    /// two agree on.
+    pub const MENU_PADDING: f32 = 8.0;
+    /// Upstream `_PopupMenuDefaultsM3.menuItemPadding`, horizontal.
+    pub const M3_ITEM_PADDING: f32 = 12.0;
+    /// Upstream `_PopupMenuDefaultsM2.menuItemPadding`, horizontal.
+    pub const M2_ITEM_PADDING: f32 = 16.0;
+    /// Upstream's corner radius for the Material 3 menu.
+    pub const M3_RADIUS: f32 = 4.0;
+    /// Upstream's `_colors.onSurface.withOpacity(0.38)` for a disabled entry.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+
+    pub fn of(context: &mut BuildContext) -> ResolvedPopupMenu {
+        let data = PopupMenuTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let use_material3 = theme.use_material3;
+        ResolvedPopupMenu {
+            color: data.color.unwrap_or_else(|| scheme.surface_container()),
+            shape: data.shape.clone().or_else(|| {
+                use_material3.then(|| {
+                    ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                        crate::borders::BorderSide::NONE,
+                        crate::borders::BorderRadiusGeometry::circular(
+                            ResolvedPopupMenu::M3_RADIUS,
+                        ),
+                    ))
+                })
+            }),
+            elevation: data.elevation.unwrap_or(if use_material3 {
+                ResolvedPopupMenu::M3_ELEVATION
+            } else {
+                ResolvedPopupMenu::M2_ELEVATION
+            }),
+            shadow_color: data.shadow_color.or(if use_material3 {
+                Some(scheme.shadow())
+            } else {
+                None
+            }),
+            surface_tint_color: data.surface_tint_color.or(if use_material3 {
+                Some(Color::TRANSPARENT)
+            } else {
+                None
+            }),
+            menu_padding: data
+                .menu_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(0.0, ResolvedPopupMenu::MENU_PADDING)),
+            item_padding: EdgeInsets::symmetric(
+                if use_material3 {
+                    ResolvedPopupMenu::M3_ITEM_PADDING
+                } else {
+                    ResolvedPopupMenu::M2_ITEM_PADDING
+                },
+                0.0,
+            ),
+            enable_feedback: data.enable_feedback.unwrap_or(true),
+            position: data.position.unwrap_or(PopupMenuPosition::Over),
+            icon_color: data.icon_color,
+            icon_size: data.icon_size,
+            text_style: data.text_style.clone(),
+            label_text_style: data.label_text_style.clone(),
+            title_medium: theme.text_theme.title_medium.clone(),
+            label_large: theme.text_theme.label_large.clone(),
+            on_surface: scheme.on_surface,
+            disabled_color: theme.disabled_color,
+            use_material3,
+        }
+    }
+
+    /// An entry's style, by the whole of upstream's rule.
+    ///
+    /// One branch or the other, never a blend -- and Material 2's disabled
+    /// colour is applied after the chain rather than inside it. See the type's
+    /// docs for why that is visible from outside.
+    pub fn entry_style(&self, enabled: bool) -> Option<TextStyle> {
+        if self.use_material3 {
+            let states = if enabled {
+                WidgetStates::NONE
+            } else {
+                WidgetStates::NONE.with(WidgetState::Disabled)
+            };
+            if let Some(property) = &self.label_text_style {
+                return property.resolve(states);
+            }
+            return self.label_large.clone().map(|style| TextStyle {
+                color: if enabled {
+                    self.on_surface
+                } else {
+                    crate::elevation_overlay::with_opacity(
+                        self.on_surface,
+                        ResolvedPopupMenu::DISABLED_OPACITY,
+                    )
+                },
+                ..style
+            });
+        }
+
+        let style = self
+            .text_style
+            .clone()
+            .or_else(|| self.title_medium.clone());
+        if enabled {
+            return style;
+        }
+        // Material 2's overwrite, downstream of everything above it.
+        style.map(|style| TextStyle {
+            color: self.disabled_color,
+            ..style
+        })
     }
 }
 
@@ -6525,8 +6710,12 @@ pub struct PopupMenuThemeData {
     pub surface_tint_color: Option<Color>,
     /// The style of an entry, for the entries that take a plain one.
     pub text_style: Option<TextStyle>,
-    /// The style of an entry by state, which supersedes
-    /// [`PopupMenuThemeData::text_style`] where both are set.
+    /// The style of an entry by state.
+    ///
+    /// It does **not** supersede [`PopupMenuThemeData::text_style`], which is
+    /// what this used to say. The two never meet: `useMaterial3` picks which
+    /// of them is read and the other is not consulted at all. See
+    /// [`ResolvedPopupMenu`].
     pub label_text_style: Option<StateProperty<Option<TextStyle>>>,
     pub enable_feedback: Option<bool>,
     pub mouse_cursor: Option<StateProperty<Option<SystemMouseCursor>>>,
