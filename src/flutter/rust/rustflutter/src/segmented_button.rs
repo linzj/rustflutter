@@ -72,6 +72,34 @@ impl SegmentedButton {
         }
     }
 
+    /// How one of this button's segments is drawn in `states` -- see
+    /// [`crate::component_themes::ResolvedSegmentedButton`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        states: crate::widget_state::WidgetStates,
+    ) -> crate::component_themes::ResolvedSegmentedButton {
+        crate::component_themes::ResolvedSegmentedButton::of(context, states)
+    }
+
+    /// The states one segment is in, given this button's selection and whether
+    /// it is enabled.
+    pub fn states_for(
+        &self,
+        value: i32,
+        interaction: crate::widget_state::WidgetStates,
+    ) -> crate::widget_state::WidgetStates {
+        use crate::widget_state::WidgetState;
+        let mut states = interaction;
+        if self.selected.contains(&value) {
+            states = states.with(WidgetState::Selected);
+        }
+        if !self.enabled {
+            states = states.with(WidgetState::Disabled);
+        }
+        states
+    }
+
     pub fn multi_select(mut self) -> Self {
         self.multi_selection_enabled = true;
         self
@@ -360,5 +388,350 @@ mod tests {
         backwards_segments.reverse();
         let backwards = SegmentedButtonState::new(SegmentedButton::new(backwards_segments, &[1]));
         assert_eq!(forwards.press(2), backwards.press(2));
+    }
+}
+
+#[cfg(test)]
+mod segmented_button_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ButtonStyle, ResolvedInputBorder, ResolvedMenuButton, ResolvedSegmentedButton,
+        SegmentedButtonTheme, SegmentedButtonThemeData,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        states: WidgetStates,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedSegmentedButton>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(ResolvedSegmentedButton::of(context, self.states));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(data: SegmentedButtonThemeData, states: WidgetStates) -> ResolvedSegmentedButton {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(SegmentedButtonTheme::new(
+            data,
+            component(Reader {
+                states,
+                seen: std::rc::Rc::clone(&seen),
+            }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain(states: WidgetStates) -> ResolvedSegmentedButton {
+        resolve(SegmentedButtonThemeData::new(), states)
+    }
+
+    fn of(list: &[WidgetState]) -> WidgetStates {
+        WidgetStates::of(list)
+    }
+
+    const SELECTED: WidgetState = WidgetState::Selected;
+    const DISABLED: WidgetState = WidgetState::Disabled;
+
+    #[test]
+    fn the_label_answers_to_selection_and_to_being_disabled_and_to_nothing_else() {
+        // Eight written arms, two answers. The feedback is in the overlay.
+        for base in [vec![], vec![SELECTED]] {
+            let resting = plain(of(&base));
+            for touch in [
+                WidgetState::Pressed,
+                WidgetState::Hovered,
+                WidgetState::Focused,
+            ] {
+                let mut states = base.clone();
+                states.push(touch);
+                assert_eq!(
+                    plain(of(&states)).foreground,
+                    resting.foreground,
+                    "{states:?}"
+                );
+            }
+        }
+        assert_ne!(
+            plain(of(&[SELECTED])).foreground,
+            plain(WidgetStates::NONE).foreground
+        );
+        assert_ne!(
+            plain(of(&[DISABLED])).foreground,
+            plain(WidgetStates::NONE).foreground
+        );
+    }
+
+    #[test]
+    fn a_disabled_segment_has_no_container_selected_or_not() {
+        // `backgroundColor` checks disabled before selected and returns null
+        // for it. Disabling a selected segment takes the pill away rather than
+        // fading it -- the tick, the outline and the faded label already say
+        // "this one, and you cannot have it".
+        assert_eq!(plain(of(&[DISABLED, SELECTED])).background, None);
+        assert_eq!(plain(of(&[DISABLED])).background, None);
+        assert_eq!(plain(WidgetStates::NONE).background, None);
+        assert_eq!(
+            plain(of(&[SELECTED])).background,
+            Some(ThemeData::fallback().color_scheme.secondary_container()),
+            "and only an enabled selected segment is filled at all"
+        );
+    }
+
+    #[test]
+    fn the_overlay_carries_the_interaction_with_pressed_and_focused_agreeing() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(plain(WidgetStates::NONE).overlay, None);
+
+        let pressed = plain(of(&[WidgetState::Pressed])).overlay;
+        let hovered = plain(of(&[WidgetState::Hovered])).overlay;
+        let focused = plain(of(&[WidgetState::Focused])).overlay;
+        assert_eq!(
+            pressed,
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.1
+            ))
+        );
+        assert_eq!(
+            hovered,
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                0.08
+            ))
+        );
+        assert_eq!(focused, pressed, "only hovering is the lighter one");
+        assert_ne!(hovered, pressed);
+    }
+
+    #[test]
+    fn and_it_takes_its_colour_from_the_selection() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            plain(of(&[SELECTED, WidgetState::Pressed])).overlay,
+            Some(crate::elevation_overlay::with_opacity(
+                scheme.on_secondary_container(),
+                0.1
+            ))
+        );
+        assert_ne!(
+            plain(of(&[SELECTED, WidgetState::Pressed])).overlay,
+            plain(of(&[WidgetState::Pressed])).overlay
+        );
+    }
+
+    #[test]
+    fn pressing_beats_hovering_and_hovering_beats_being_focused() {
+        // The two orderings a swap could show, since pressed and focused agree.
+        let both = plain(of(&[WidgetState::Pressed, WidgetState::Hovered])).overlay;
+        assert_eq!(both, plain(of(&[WidgetState::Pressed])).overlay);
+        assert_ne!(both, plain(of(&[WidgetState::Hovered])).overlay);
+
+        let pair = plain(of(&[WidgetState::Hovered, WidgetState::Focused])).overlay;
+        assert_eq!(pair, plain(of(&[WidgetState::Hovered])).overlay);
+        assert_ne!(pair, plain(of(&[WidgetState::Focused])).overlay);
+    }
+
+    #[test]
+    fn the_outline_has_the_two_arms_the_others_only_pretend_to() {
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(plain(WidgetStates::NONE).side.color, scheme.outline());
+        assert_eq!(
+            plain(of(&[SELECTED])).side.color,
+            scheme.outline(),
+            "selection does not move it"
+        );
+        assert_eq!(
+            plain(of(&[DISABLED])).side.color,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.12)
+        );
+    }
+
+    #[test]
+    fn the_disabled_outline_is_the_number_the_input_border_uses_for_the_same_job() {
+        // Two unrelated components, one role -- a line tracing the edge of
+        // something dead -- and the same 0.12. Where the disabled *text* is
+        // 0.38 in both, because that is text.
+        assert_eq!(
+            ResolvedSegmentedButton::DISABLED_SIDE_OPACITY,
+            ResolvedInputBorder::DISABLED_OUTLINE_OPACITY
+        );
+        assert_eq!(
+            ResolvedSegmentedButton::DISABLED_FOREGROUND_OPACITY,
+            ResolvedMenuButton::DISABLED_OPACITY
+        );
+        assert_ne!(
+            ResolvedSegmentedButton::DISABLED_SIDE_OPACITY,
+            ResolvedSegmentedButton::DISABLED_FOREGROUND_OPACITY
+        );
+    }
+
+    #[test]
+    fn a_segment_is_given_a_height_and_no_width() {
+        // `Size.fromHeight`: a segment is as wide as its label and the row
+        // divides what there is.
+        assert_eq!(plain(WidgetStates::NONE).minimum_height, 40.0);
+        assert_eq!(
+            plain(WidgetStates::NONE).icon_size,
+            18.0,
+            "smaller than a button's 24 -- the tick sits beside a label"
+        );
+        assert_eq!(plain(WidgetStates::NONE).elevation, 0.0);
+        assert_eq!(plain(WidgetStates::NONE).surface_tint, Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn one_overlay_colour_stands_in_for_both_sources() {
+        // `resolveStateColor`: a caller who names an overlay has said what the
+        // interaction looks like in both states at once.
+        let mine = Color(0xFF00FF00);
+        let unselected = Color(0xFF110000);
+        let selected = Color(0xFF001100);
+        for states in [
+            of(&[WidgetState::Pressed]),
+            of(&[SELECTED, WidgetState::Pressed]),
+        ] {
+            assert_eq!(
+                ResolvedSegmentedButton::state_color(
+                    Some(unselected),
+                    Some(selected),
+                    Some(mine),
+                    states
+                ),
+                Some(crate::elevation_overlay::with_opacity(mine, 0.1)),
+                "{states:?}"
+            );
+        }
+
+        // Without it, the two sources are told apart by the selection.
+        assert_ne!(
+            ResolvedSegmentedButton::state_color(
+                Some(unselected),
+                Some(selected),
+                None,
+                of(&[WidgetState::Pressed])
+            ),
+            ResolvedSegmentedButton::state_color(
+                Some(unselected),
+                Some(selected),
+                None,
+                of(&[SELECTED, WidgetState::Pressed])
+            )
+        );
+    }
+
+    #[test]
+    fn the_helper_has_the_same_ladder_and_needed_pinning_too() {
+        // `order_sweep.py` found this: every test above exercised the ladder
+        // in `overlay_for` and none exercised the identical one in
+        // `state_color`, so swapping its hovered and focused arms went
+        // unnoticed. Upstream's `fromMap` takes the first matching entry in
+        // declaration order, and hovered is declared above focused.
+        let base = Color(0xFF112233);
+        let hovered = ResolvedSegmentedButton::state_color(
+            Some(base),
+            None,
+            None,
+            of(&[WidgetState::Hovered]),
+        );
+        let focused = ResolvedSegmentedButton::state_color(
+            Some(base),
+            None,
+            None,
+            of(&[WidgetState::Focused]),
+        );
+        assert_ne!(hovered, focused);
+        assert_eq!(
+            ResolvedSegmentedButton::state_color(
+                Some(base),
+                None,
+                None,
+                of(&[WidgetState::Hovered, WidgetState::Focused])
+            ),
+            hovered,
+            "hovered is declared above focused, so it is the one that matches"
+        );
+        assert_eq!(
+            ResolvedSegmentedButton::state_color(
+                Some(base),
+                None,
+                None,
+                of(&[WidgetState::Pressed, WidgetState::Hovered])
+            ),
+            ResolvedSegmentedButton::state_color(
+                Some(base),
+                None,
+                None,
+                of(&[WidgetState::Pressed])
+            ),
+            "and pressed is above both"
+        );
+    }
+
+    #[test]
+    fn the_helper_spells_nothing_transparent_where_the_defaults_spell_it_null() {
+        // Both mean no overlay and the painted result is the same, so nothing
+        // forces them to agree -- which is why they do not.
+        assert_eq!(
+            ResolvedSegmentedButton::overlay_for(
+                WidgetStates::NONE,
+                &ThemeData::fallback().color_scheme
+            ),
+            None
+        );
+        assert_eq!(
+            ResolvedSegmentedButton::state_color(
+                Some(Color(0xFF110000)),
+                None,
+                None,
+                WidgetStates::NONE
+            ),
+            Some(Color::TRANSPARENT)
+        );
+    }
+
+    #[test]
+    fn a_theme_style_is_asked_before_any_of_the_defaults() {
+        let mine = Color(0xFFABCDEF);
+        let mut style = ButtonStyle::new();
+        style.foreground_color = Some(StateProperty::all(Some(mine)));
+        style.background_color = Some(StateProperty::all(Some(mine)));
+        let resolved = resolve(
+            SegmentedButtonThemeData { style: Some(style) },
+            WidgetStates::NONE,
+        );
+        assert_eq!(resolved.foreground, mine);
+        assert_eq!(
+            resolved.background,
+            Some(mine),
+            "even where the default would have been None"
+        );
+    }
+
+    #[test]
+    fn a_segments_states_come_from_the_selection_and_from_the_button() {
+        let button = SegmentedButton::new(vec![ButtonSegment::new(0), ButtonSegment::new(1)], &[1]);
+        assert!(!button.states_for(0, WidgetStates::NONE).contains(SELECTED));
+        assert!(button.states_for(1, WidgetStates::NONE).contains(SELECTED));
+        assert!(!button.states_for(1, WidgetStates::NONE).contains(DISABLED));
+
+        let off = SegmentedButton {
+            enabled: false,
+            ..SegmentedButton::new(vec![ButtonSegment::new(0)], &[0])
+        };
+        let states = off.states_for(0, WidgetStates::NONE);
+        assert!(states.contains(DISABLED) && states.contains(SELECTED));
+        assert_eq!(
+            plain(states).background,
+            None,
+            "which is the pair that loses its container"
+        );
     }
 }

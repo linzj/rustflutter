@@ -3802,6 +3802,211 @@ impl ResolvedInputBorder {
     }
 }
 
+/// What one segment of a segmented button is drawn with -- upstream's
+/// `_SegmentedButtonDefaultsM3.style` under `SegmentedButtonTheme.of`.
+///
+/// # Only two states matter, and upstream writes eight arms anyway
+///
+/// `foregroundColor` has a four-arm ladder for selected and another for
+/// unselected -- pressed, hovered, focused, fall-through -- and **all four of
+/// each return the same colour**: `onSecondaryContainer` selected,
+/// `onSurface` not. Only `selected` and `disabled` change the answer.
+///
+/// So the label does not react to being touched, exactly as
+/// [`ResolvedMenuButton`]'s does not, and for the same reason: the feedback
+/// lives in the overlay. What is different here is that the ladder is
+/// *doubled* -- eight written arms collapsing to two values -- because the
+/// generator emits the full cross product whether or not the tokens differ.
+///
+/// # A disabled segment has no container, selected or not
+///
+/// `backgroundColor` checks disabled **before** selected and returns null for
+/// it, and returns null for unselected too. So a segment is filled only when
+/// it is selected *and* enabled: disabling a selected segment takes the pill
+/// away entirely rather than fading it.
+///
+/// That reads backwards until you notice what is left. The tick stays, the
+/// outline stays, and the label stays at 38 per cent -- three ways of saying
+/// "this one, and you cannot have it". A faded container would have been a
+/// fourth saying the same thing, in the one channel that also has to keep
+/// working for the segments beside it.
+///
+/// # The overlay carries the interaction, and it is the same shape twice over
+///
+/// `onSecondaryContainer` when selected and `onSurface` when not, at 0.1
+/// pressed, 0.08 hovered, 0.1 focused. Pressed and focused agree and only
+/// hovering is lighter -- the same ordering as a menu line, with the same
+/// reason: a pointer resting on something is a weaker statement than pressing
+/// it or having chosen it with a keyboard.
+///
+/// # Two spellings of nothing, in one file
+///
+/// The defaults class's `overlayColor` falls through to **null**;
+/// `resolveStateColor`'s map, a few lines below, falls through to
+/// **`Colors.transparent`**. Both mean no overlay and the painted result is the
+/// same, so nothing forces them to agree -- which is why they do not.
+///
+/// # The disabled outline is 0.12, the same number the input border uses
+///
+/// [`ResolvedInputBorder::DISABLED_OUTLINE_OPACITY`] is also
+/// `onSurface` at 0.12. Two unrelated components, the same role -- a line
+/// tracing the edge of something dead -- and the same number. Where the
+/// disabled *foreground* is 0.38 in both, because that is text.
+pub struct ResolvedSegmentedButton {
+    pub background: Option<Color>,
+    pub foreground: Color,
+    pub overlay: Option<Color>,
+    pub side: BorderSide,
+    pub surface_tint: Color,
+    pub elevation: f32,
+    pub icon_size: f32,
+    pub minimum_height: f32,
+}
+
+impl ResolvedSegmentedButton {
+    /// Upstream's `iconSize`, which is smaller than a button's usual 24 -- a
+    /// segment's tick sits beside a label rather than standing alone.
+    pub const ICON_SIZE: f32 = 18.0;
+    /// Upstream's `minimumSize`, which is `Size.fromHeight` -- a height and no
+    /// width, because a segment is as wide as its label and the row divides
+    /// what is there.
+    pub const MINIMUM_HEIGHT: f32 = 40.0;
+    /// Upstream's disabled opacity for the label.
+    pub const DISABLED_FOREGROUND_OPACITY: f32 = 0.38;
+    /// Upstream's disabled opacity for the outline -- the same 0.12 the input
+    /// border uses for the same job.
+    pub const DISABLED_SIDE_OPACITY: f32 = 0.12;
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// Upstream's `backgroundColor` resolver. Disabled is checked first, so a
+    /// disabled segment has no container whether or not it is selected.
+    pub fn background_for(states: WidgetStates, scheme: &ColorScheme) -> Option<Color> {
+        if states.contains(WidgetState::Disabled) {
+            return None;
+        }
+        if states.contains(WidgetState::Selected) {
+            return Some(scheme.secondary_container());
+        }
+        None
+    }
+
+    /// Upstream's `foregroundColor` resolver, with its eight arms collapsed to
+    /// the two answers they give.
+    pub fn foreground_for(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedSegmentedButton::DISABLED_FOREGROUND_OPACITY,
+            );
+        }
+        if states.contains(WidgetState::Selected) {
+            scheme.on_secondary_container()
+        } else {
+            scheme.on_surface
+        }
+    }
+
+    /// Upstream's `overlayColor` resolver: the same three opacities over
+    /// whichever colour the selection picked.
+    pub fn overlay_for(states: WidgetStates, scheme: &ColorScheme) -> Option<Color> {
+        let base = if states.contains(WidgetState::Selected) {
+            scheme.on_secondary_container()
+        } else {
+            scheme.on_surface
+        };
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedSegmentedButton::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedSegmentedButton::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedSegmentedButton::PRESSED_OVERLAY
+        } else {
+            // Upstream's `null`, which the helper beside it spells
+            // `Colors.transparent` -- see the type's docs.
+            return None;
+        };
+        Some(crate::elevation_overlay::with_opacity(base, opacity))
+    }
+
+    /// Upstream's `side` resolver, which has only the two arms the others
+    /// pretend to have more of.
+    pub fn side_for(states: WidgetStates, scheme: &ColorScheme) -> BorderSide {
+        let color = if states.contains(WidgetState::Disabled) {
+            crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedSegmentedButton::DISABLED_SIDE_OPACITY,
+            )
+        } else {
+            scheme.outline()
+        };
+        BorderSide {
+            color,
+            width: 1.0,
+            ..BorderSide::NONE
+        }
+    }
+
+    /// Upstream's `resolveStateColor`: one `overlayColor` stands in for both
+    /// the selected and the unselected source.
+    ///
+    /// A caller who names an overlay has said what the interaction looks like
+    /// in both states at once, so neither of the other two is consulted --
+    /// which is what makes it one knob rather than a third.
+    pub fn state_color(
+        unselected: Option<Color>,
+        selected: Option<Color>,
+        overlay: Option<Color>,
+        states: WidgetStates,
+    ) -> Option<Color> {
+        let base = if states.contains(WidgetState::Selected) {
+            overlay.or(selected)
+        } else {
+            overlay.or(unselected)
+        }?;
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedSegmentedButton::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedSegmentedButton::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedSegmentedButton::PRESSED_OVERLAY
+        } else {
+            return Some(Color::TRANSPARENT);
+        };
+        Some(crate::elevation_overlay::with_opacity(base, opacity))
+    }
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedSegmentedButton {
+        let scheme = ThemeData::of(context).color_scheme;
+        let style = SegmentedButtonTheme::of(context).style;
+        let style = style.as_ref();
+
+        macro_rules! pick {
+            ($field:ident) => {
+                style
+                    .and_then(|style| style.$field.as_ref())
+                    .and_then(|property| property.resolve(states))
+            };
+        }
+
+        ResolvedSegmentedButton {
+            background: pick!(background_color)
+                .or_else(|| ResolvedSegmentedButton::background_for(states, &scheme)),
+            foreground: pick!(foreground_color)
+                .unwrap_or_else(|| ResolvedSegmentedButton::foreground_for(states, &scheme)),
+            overlay: pick!(overlay_color)
+                .or_else(|| ResolvedSegmentedButton::overlay_for(states, &scheme)),
+            side: pick!(side).unwrap_or_else(|| ResolvedSegmentedButton::side_for(states, &scheme)),
+            surface_tint: pick!(surface_tint_color).unwrap_or(Color::TRANSPARENT),
+            elevation: pick!(elevation).unwrap_or(0.0),
+            icon_size: pick!(icon_size).unwrap_or(ResolvedSegmentedButton::ICON_SIZE),
+            minimum_height: pick!(minimum_size)
+                .map(|size| size.height)
+                .unwrap_or(ResolvedSegmentedButton::MINIMUM_HEIGHT),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
