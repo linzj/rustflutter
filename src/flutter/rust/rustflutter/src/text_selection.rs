@@ -377,10 +377,96 @@ impl TextSelectionGestureDetector {
         self
     }
 
-    /// Whether a tap that changed nothing should still reach `onUserTap`.
-    pub fn reports_tap(&self, changed_something: bool) -> bool {
-        self.on_user_tap_always_called || changed_something
+    /// Upstream `_getEffectiveConsecutiveTapCount`, whose comment says it
+    /// "should be used in all instances when `details.consecutiveTapCount`
+    /// would be used".
+    ///
+    /// The recogniser counts taps upwards without limit. What a fourth rapid
+    /// click *means* is a platform question, and the three answers are three
+    /// different arithmetics rather than three constants -- which is why this
+    /// is a function and not a table.
+    ///
+    /// Upstream's reasoning for each is observation of the native platform,
+    /// and it records that plainly: this is what Debian with GTK does, this is
+    /// what macOS does. Copied along with the shapes, because a number arrived
+    /// at by watching a platform is not one anybody can re-derive later.
+    ///
+    /// * **Android, Fuchsia, Linux** wrap. Past a triple click the count
+    ///   starts over: the fourth click moves the caret to the precise
+    ///   position, the fifth selects the word, the sixth the paragraph.
+    /// * **iOS and macOS** hold. Past a triple click the paragraph selected by
+    ///   the third stays selected.
+    /// * **Windows** alternates. After a triple click has taken a paragraph,
+    ///   the next click takes the word and the one after it the paragraph
+    ///   again -- so it oscillates between two and three and never returns to
+    ///   one.
+    ///
+    /// Note what the three have in common: **none of them keeps counting**. No
+    /// caller ever has to ask what a seventh tap means.
+    pub fn effective_consecutive_tap_count(raw: u32, platform: TargetPlatform) -> u32 {
+        match platform {
+            TargetPlatform::Android | TargetPlatform::Fuchsia | TargetPlatform::Linux => {
+                if raw <= 3 {
+                    raw
+                } else if raw % 3 == 0 {
+                    3
+                } else {
+                    raw % 3
+                }
+            }
+            TargetPlatform::IOS | TargetPlatform::MacOS => raw.min(3),
+            TargetPlatform::Windows => {
+                if raw < 2 {
+                    raw
+                } else {
+                    2 + raw % 2
+                }
+            }
+        }
     }
+
+    /// Whether a tap reaches `onUserTap`, from upstream's `_handleTapUp`.
+    ///
+    /// The argument is the **effective** count from
+    /// [`TextSelectionGestureDetector::effective_consecutive_tap_count`], not
+    /// the raw one, which is the whole reason that function exists.
+    ///
+    /// This used to take a `changed_something: bool` and document itself as
+    /// "fires only when the tap actually changed something ... including one
+    /// that landed where the caret already was". That was a misreading.
+    /// Upstream's condition is the first tap of a series, and a tap landing
+    /// exactly where the caret already sits is still a first tap -- it fires.
+    /// What does not fire is the *second* tap of a series, whether or not it
+    /// moved anything.
+    pub fn reports_tap(&self, effective_consecutive_tap_count: u32) -> bool {
+        effective_consecutive_tap_count == 1 || self.on_user_tap_always_called
+    }
+
+    /// Whether a tap reaches `onSingleTapUp`, which unlike `onUserTap` has no
+    /// flag that can widen it.
+    pub fn reports_single_tap_up(effective_consecutive_tap_count: u32) -> bool {
+        effective_consecutive_tap_count == 1
+    }
+
+    /// What a tap-down means beyond `onTapDown`, which fires for every one.
+    ///
+    /// Upstream returns early on each, so a tap-down is at most one of these.
+    pub fn multi_tap_down(effective_consecutive_tap_count: u32) -> Option<MultiTapDown> {
+        match effective_consecutive_tap_count {
+            2 => Some(MultiTapDown::Double),
+            3 => Some(MultiTapDown::Triple),
+            _ => None,
+        }
+    }
+}
+
+/// Which of upstream's two extra tap-down callbacks a tap reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiTapDown {
+    /// `onDoubleTapDown`.
+    Double,
+    /// `onTripleTapDown`.
+    Triple,
 }
 
 /// When a tap moves the caret -- upstream's `onTapDown` against
@@ -1215,15 +1301,144 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_that_changed_nothing_is_reported_only_when_asked_for() {
-        // Which is what a form that scrolls to the focused field needs.
+    fn only_the_first_tap_of_a_series_is_reported_unless_asked_otherwise() {
+        // Not "a tap that changed something", which is what this said before:
+        // a tap landing exactly where the caret already sits is still a first
+        // tap and still fires. What does not fire is the second of a series.
         let ordinary = TextSelectionGestureDetector::new();
-        assert!(ordinary.reports_tap(true));
-        assert!(!ordinary.reports_tap(false));
+        assert!(ordinary.reports_tap(1));
+        for later in 2..=3 {
+            assert!(!ordinary.reports_tap(later), "{later}");
+        }
 
+        // Which is what a form that scrolls to the focused field needs.
         let always = TextSelectionGestureDetector::new().with_on_user_tap_always_called(true);
-        assert!(always.reports_tap(true));
-        assert!(always.reports_tap(false));
+        for any in 1..=3 {
+            assert!(always.reports_tap(any), "{any}");
+        }
+    }
+
+    #[test]
+    fn the_flag_widens_only_the_user_tap_and_not_the_single_tap_up() {
+        // Two callbacks fire together on a first tap and part company after
+        // it. onSingleTapUp has no flag that can widen it.
+        let always = TextSelectionGestureDetector::new().with_on_user_tap_always_called(true);
+        assert!(always.reports_tap(2));
+        assert!(!TextSelectionGestureDetector::reports_single_tap_up(2));
+        assert!(TextSelectionGestureDetector::reports_single_tap_up(1));
+    }
+
+    #[test]
+    fn a_fourth_rapid_click_means_three_different_things() {
+        // The recogniser counts upwards without limit; what the fourth click
+        // means is a platform question, and upstream's answers come from
+        // watching the native platforms rather than from a rule.
+        use TargetPlatform::*;
+        let effective = TextSelectionGestureDetector::effective_consecutive_tap_count;
+        assert_eq!(effective(4, Linux), 1, "wraps: back to a precise caret");
+        assert_eq!(effective(4, MacOS), 3, "holds: the paragraph stays");
+        assert_eq!(effective(4, Windows), 2, "alternates: back to the word");
+    }
+
+    #[test]
+    fn and_the_first_three_clicks_mean_the_same_thing_everywhere() {
+        // The platforms differ only past the triple click, so a test that
+        // stopped at three would find them identical.
+        use TargetPlatform::*;
+        for platform in [Android, Fuchsia, Linux, IOS, MacOS, Windows] {
+            for raw in 0..=3 {
+                assert_eq!(
+                    TextSelectionGestureDetector::effective_consecutive_tap_count(raw, platform),
+                    raw,
+                    "{platform:?} {raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_wrapping_platforms_start_the_series_over() {
+        // Upstream's observation, in its own words: on the fourth click the
+        // selection moves to the precise position, on the fifth the word, on
+        // the sixth the paragraph.
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+        ] {
+            let effective =
+                |raw| TextSelectionGestureDetector::effective_consecutive_tap_count(raw, platform);
+            assert_eq!(
+                [effective(4), effective(5), effective(6)],
+                [1, 2, 3],
+                "{platform:?}"
+            );
+            assert_eq!(effective(7), 1, "{platform:?} and round again");
+            assert_eq!(
+                effective(9),
+                3,
+                "{platform:?} a multiple of three is the triple"
+            );
+        }
+    }
+
+    #[test]
+    fn the_alternating_platform_never_gets_back_to_one() {
+        // Which is the part that is not obvious from the name: past the first
+        // click Windows oscillates between the word and the paragraph, and a
+        // single tap is unreachable however long the series runs.
+        let effective = |raw| {
+            TextSelectionGestureDetector::effective_consecutive_tap_count(
+                raw,
+                TargetPlatform::Windows,
+            )
+        };
+        assert_eq!(
+            [effective(2), effective(3), effective(4), effective(5)],
+            [2, 3, 2, 3]
+        );
+        for raw in 2..20 {
+            assert_ne!(effective(raw), 1, "{raw}");
+        }
+    }
+
+    #[test]
+    fn none_of_the_three_rules_keeps_counting() {
+        // What they have in common, and the reason no caller ever has to ask
+        // what a seventh tap means.
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            for raw in 0..50 {
+                let effective =
+                    TextSelectionGestureDetector::effective_consecutive_tap_count(raw, platform);
+                assert!(effective <= 3, "{platform:?} {raw} -> {effective}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_down_reaches_at_most_one_of_the_extra_callbacks() {
+        use super::MultiTapDown;
+        assert_eq!(TextSelectionGestureDetector::multi_tap_down(1), None);
+        assert_eq!(
+            TextSelectionGestureDetector::multi_tap_down(2),
+            Some(MultiTapDown::Double)
+        );
+        assert_eq!(
+            TextSelectionGestureDetector::multi_tap_down(3),
+            Some(MultiTapDown::Triple)
+        );
+        assert_eq!(
+            TextSelectionGestureDetector::multi_tap_down(4),
+            None,
+            "and nothing above three, which is why the count is converted first"
+        );
     }
 
     #[test]
