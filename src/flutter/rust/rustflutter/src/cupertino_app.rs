@@ -150,6 +150,128 @@ impl CupertinoLocalizations {
     }
 }
 
+/// One column of a Cupertino date picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatePickerColumn {
+    Day,
+    Month,
+    Year,
+}
+
+/// Upstream `DatePickerDateOrder`: which order the date columns run in, left
+/// to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DatePickerDateOrder {
+    /// 12 | March | 1996.
+    Dmy,
+    /// March | 12 | 1996. What `DefaultCupertinoLocalizations` reports.
+    #[default]
+    Mdy,
+    /// 1996 | March | 12.
+    Ymd,
+    /// 1996 | 12 | March.
+    Ydm,
+}
+
+impl DatePickerDateOrder {
+    pub const ALL: [DatePickerDateOrder; 4] = [
+        DatePickerDateOrder::Dmy,
+        DatePickerDateOrder::Mdy,
+        DatePickerDateOrder::Ymd,
+        DatePickerDateOrder::Ydm,
+    ];
+
+    /// The three columns in order.
+    pub fn columns(self) -> [DatePickerColumn; 3] {
+        use DatePickerColumn::{Day, Month, Year};
+        match self {
+            DatePickerDateOrder::Dmy => [Day, Month, Year],
+            DatePickerDateOrder::Mdy => [Month, Day, Year],
+            DatePickerDateOrder::Ymd => [Year, Month, Day],
+            DatePickerDateOrder::Ydm => [Year, Day, Month],
+        }
+    }
+
+    /// The columns a `monthYear` picker shows.
+    ///
+    /// Upstream writes this as a second `switch` pairing the cases up --
+    /// `mdy` with `dmy` giving month|year, `ymd` with `ydm` giving year|month
+    /// -- and its doc says so outright: "both `DatePickerDateOrder.dmy` and
+    /// `DatePickerDateOrder.mdy` will result in the month|year order".
+    ///
+    /// **It is not four cases, it is the same order with the day struck
+    /// out.** Removing `Day` from `Mdy` and from `Dmy` leaves month, year
+    /// either way; from `Ymd` and `Ydm` it leaves year, month. Deriving it
+    /// rather than restating it is what makes the pairing a consequence
+    /// instead of a coincidence two lists happen to share.
+    pub fn month_year_columns(self) -> [DatePickerColumn; 2] {
+        let mut kept = self
+            .columns()
+            .into_iter()
+            .filter(|column| *column != DatePickerColumn::Day);
+        [
+            kept.next().expect("a month and a year remain"),
+            kept.next().expect("a month and a year remain"),
+        ]
+    }
+}
+
+/// One column of a Cupertino date-and-time picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateTimeColumn {
+    Date,
+    Hour,
+    Minute,
+    DayPeriod,
+}
+
+/// Upstream `DatePickerDateTimeOrder`: where the date sits relative to the
+/// time, and which side the am/pm marker takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DatePickerDateTimeOrder {
+    /// Fri Aug 31 | 02 | 08 | PM. What `DefaultCupertinoLocalizations`
+    /// reports.
+    #[default]
+    DateTimeDayPeriod,
+    /// Fri Aug 31 | PM | 02 | 08.
+    DateDayPeriodTime,
+    /// 02 | 08 | PM | Fri Aug 31.
+    TimeDayPeriodDate,
+    /// PM | 02 | 08 | Fri Aug 31.
+    DayPeriodTimeDate,
+}
+
+impl DatePickerDateTimeOrder {
+    pub const ALL: [DatePickerDateTimeOrder; 4] = [
+        DatePickerDateTimeOrder::DateTimeDayPeriod,
+        DatePickerDateTimeOrder::DateDayPeriodTime,
+        DatePickerDateTimeOrder::TimeDayPeriodDate,
+        DatePickerDateTimeOrder::DayPeriodTimeDate,
+    ];
+
+    /// The four columns in order.
+    ///
+    /// Upstream names only four of the twenty-four arrangements, and the ones
+    /// it leaves out are the point: **the hour always sits immediately before
+    /// the minute**, and **the date is always at one end or the other**. A
+    /// clock reads left to right and a date is not something to wade through
+    /// to reach the minutes.
+    pub fn columns(self) -> [DateTimeColumn; 4] {
+        use DateTimeColumn::{Date, DayPeriod, Hour, Minute};
+        match self {
+            DatePickerDateTimeOrder::DateTimeDayPeriod => [Date, Hour, Minute, DayPeriod],
+            DatePickerDateTimeOrder::DateDayPeriodTime => [Date, DayPeriod, Hour, Minute],
+            DatePickerDateTimeOrder::TimeDayPeriodDate => [Hour, Minute, DayPeriod, Date],
+            DatePickerDateTimeOrder::DayPeriodTimeDate => [DayPeriod, Hour, Minute, Date],
+        }
+    }
+
+    /// Whether the date leads. The only other place it can be is last.
+    pub fn date_comes_first(self) -> bool {
+        self.columns()[0] == DateTimeColumn::Date
+    }
+}
+
 /// Upstream `DefaultCupertinoLocalizations`, documented -- like its Material
 /// opposite number -- as being *"for US English (only)"*.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -215,6 +337,16 @@ impl DefaultCupertinoLocalizations {
             ),
             None => day_index.to_string(),
         }
+    }
+
+    /// Upstream's `datePickerDateOrder` for US English.
+    pub fn date_picker_date_order() -> DatePickerDateOrder {
+        DatePickerDateOrder::Mdy
+    }
+
+    /// Upstream's `datePickerDateTimeOrder` for US English.
+    pub fn date_picker_date_time_order() -> DatePickerDateTimeOrder {
+        DatePickerDateTimeOrder::DateTimeDayPeriod
     }
 
     /// Upstream `datePickerMediumDate`, the other use of the weekday list.
@@ -430,5 +562,154 @@ mod tests {
     fn localizations_are_fetched_through_a_check_rather_than_a_null() {
         assert!(CupertinoLocalizations::of(true).is_some());
         assert!(CupertinoLocalizations::of(false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod date_order_tests {
+    use super::{
+        DatePickerColumn, DatePickerDateOrder, DatePickerDateTimeOrder, DateTimeColumn,
+        DefaultCupertinoLocalizations,
+    };
+
+    #[test]
+    fn every_order_shows_each_column_exactly_once() {
+        for order in DatePickerDateOrder::ALL {
+            let columns = order.columns();
+            for wanted in [
+                DatePickerColumn::Day,
+                DatePickerColumn::Month,
+                DatePickerColumn::Year,
+            ] {
+                assert_eq!(
+                    columns.iter().filter(|c| **c == wanted).count(),
+                    1,
+                    "{order:?} {wanted:?}"
+                );
+            }
+        }
+        // And the four are four different arrangements.
+        let mut seen: Vec<[DatePickerColumn; 3]> = DatePickerDateOrder::ALL
+            .iter()
+            .map(|o| o.columns())
+            .collect();
+        seen.dedup();
+        assert_eq!(seen.len(), 4);
+    }
+
+    #[test]
+    fn a_month_year_picker_is_the_same_order_with_the_day_struck_out() {
+        for order in DatePickerDateOrder::ALL {
+            let expected: Vec<DatePickerColumn> = order
+                .columns()
+                .into_iter()
+                .filter(|c| *c != DatePickerColumn::Day)
+                .collect();
+            assert_eq!(order.month_year_columns().to_vec(), expected, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn and_that_is_why_two_pairs_of_orders_collapse() {
+        // Upstream's second switch pairs mdy with dmy and ymd with ydm. The
+        // pairing is a consequence of removing the day, not two lists that
+        // happen to agree.
+        assert_eq!(
+            DatePickerDateOrder::Mdy.month_year_columns(),
+            DatePickerDateOrder::Dmy.month_year_columns()
+        );
+        assert_eq!(
+            DatePickerDateOrder::Ymd.month_year_columns(),
+            DatePickerDateOrder::Ydm.month_year_columns()
+        );
+        // The two pairs are still different from each other, or the collapse
+        // would have flattened everything.
+        assert_ne!(
+            DatePickerDateOrder::Mdy.month_year_columns(),
+            DatePickerDateOrder::Ymd.month_year_columns()
+        );
+        assert_eq!(
+            DatePickerDateOrder::Mdy.month_year_columns(),
+            [DatePickerColumn::Month, DatePickerColumn::Year]
+        );
+        assert_eq!(
+            DatePickerDateOrder::Ymd.month_year_columns(),
+            [DatePickerColumn::Year, DatePickerColumn::Month]
+        );
+        // And the full orders they came from were not equal to begin with.
+        assert_ne!(
+            DatePickerDateOrder::Mdy.columns(),
+            DatePickerDateOrder::Dmy.columns()
+        );
+    }
+
+    #[test]
+    fn the_hour_always_sits_immediately_before_the_minute() {
+        // Upstream names four of the twenty-four arrangements. What it leaves
+        // out is the rule.
+        for order in DatePickerDateTimeOrder::ALL {
+            let columns = order.columns();
+            let hour = columns
+                .iter()
+                .position(|c| *c == DateTimeColumn::Hour)
+                .expect("an hour");
+            let minute = columns
+                .iter()
+                .position(|c| *c == DateTimeColumn::Minute)
+                .expect("a minute");
+            assert_eq!(minute, hour + 1, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn and_the_date_is_always_at_one_end() {
+        for order in DatePickerDateTimeOrder::ALL {
+            let columns = order.columns();
+            let date = columns
+                .iter()
+                .position(|c| *c == DateTimeColumn::Date)
+                .expect("a date");
+            assert!(date == 0 || date == columns.len() - 1, "{order:?} {date}");
+            assert_eq!(order.date_comes_first(), date == 0, "{order:?}");
+        }
+        // Both ends are actually used, so the rule is not vacuous.
+        assert!(DatePickerDateTimeOrder::DateTimeDayPeriod.date_comes_first());
+        assert!(!DatePickerDateTimeOrder::TimeDayPeriodDate.date_comes_first());
+    }
+
+    #[test]
+    fn and_every_date_time_order_shows_four_distinct_columns() {
+        for order in DatePickerDateTimeOrder::ALL {
+            let columns = order.columns();
+            for wanted in [
+                DateTimeColumn::Date,
+                DateTimeColumn::Hour,
+                DateTimeColumn::Minute,
+                DateTimeColumn::DayPeriod,
+            ] {
+                assert_eq!(
+                    columns.iter().filter(|c| **c == wanted).count(),
+                    1,
+                    "{order:?} {wanted:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn us_english_puts_the_month_first_and_the_marker_last() {
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_date_order(),
+            DatePickerDateOrder::Mdy
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_date_time_order(),
+            DatePickerDateTimeOrder::DateTimeDayPeriod
+        );
+        assert_eq!(DatePickerDateOrder::default(), DatePickerDateOrder::Mdy);
+        assert_eq!(
+            DatePickerDateTimeOrder::default(),
+            DatePickerDateTimeOrder::DateTimeDayPeriod
+        );
     }
 }

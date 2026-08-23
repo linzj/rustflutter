@@ -13039,3 +13039,46 @@ assert(cacheExtent != null || cacheExtentStyle == CacheExtentStyle.pixel)
 所以测试同时断言：600 时相等，601 时不等。
 
 六个变异全红。coverage 2102 / 1991 记账 / **30 MISSING**。
+
+---
+
+## 月年选择器不是四种情况，是把「日」划掉（2026-08-24）
+
+`DatePickerDateOrder`（dmy/mdy/ymd/ydm）和 `DatePickerDateTimeOrder`
+——就是最初那一轮去看 `CupertinoLocalizations` 时发现移植里没有、
+而 `coverage.py` 报 0 MISSING 的那两个枚举。
+
+上游在 `monthYear` 模式下另写一个 switch，把四种配成两对：
+
+```dart
+case DatePickerDateOrder.mdy:
+case DatePickerDateOrder.dmy:
+  pickerBuilders = [_buildMonthPicker, _buildYearPicker];
+case DatePickerDateOrder.ymd:
+case DatePickerDateOrder.ydm:
+  pickerBuilders = [_buildYearPicker, _buildMonthPicker];
+```
+
+文档里也直说：「both `dmy` and `mdy` will result in the month|year order」。
+
+**但这不是四种情况，是同一个顺序把「日」划掉。**
+`Mdy` 去掉 Day 剩 month, year；`Dmy` 去掉 Day 也剩 month, year；
+`Ymd` 和 `Ydm` 都剩 year, month。
+
+移植里 `month_year_columns()` 就是这么算出来的，不是又抄一遍表。
+**推导出来的配对是个后果；抄两张表出来的配对只是两张表碰巧一样。**
+测试直接断言这条推导对四个值都成立。
+
+### 而 date-time 那四个，重点在没写出来的二十个
+
+二十四种排列，上游只命名四种。漏掉的那些就是规则：
+
+- **小时永远紧挨在分钟前面**——钟点是从左往右读的；
+- **日期永远在一头或另一头**，从不夹在中间——
+  不该为了够到分钟而先趟过一个日期。
+
+两条都写成了对全部四个值的断言，而不是逐个列出来。
+再加一条防空转：两头都真的有人用（`DateTimeDayPeriod` 在前，
+`TimeDayPeriodDate` 在后），否则「永远在一头」可以是空话。
+
+六个变异全红。coverage 2102 / 1993 记账 / **28 MISSING**。
