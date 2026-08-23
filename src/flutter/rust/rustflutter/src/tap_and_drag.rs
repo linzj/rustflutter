@@ -1397,3 +1397,135 @@ mod tests {
         );
     }
 }
+
+/// Upstream's `_isShiftPressed` on `TextSelectionGestureDetectorBuilder`, and
+/// the pair of hooks it hangs from.
+///
+/// # Sampled once, not read live
+///
+/// Upstream sets it in `onTapTrackStart` and clears it in `onTapTrackReset`:
+///
+/// ```dart
+/// void onTapTrackStart() {
+///   _isShiftPressed = HardwareKeyboard.instance.logicalKeysPressed
+///       .intersection({LogicalKeyboardKey.shiftLeft, LogicalKeyboardKey.shiftRight})
+///       .isNotEmpty;
+/// }
+/// void onTapTrackReset() { _isShiftPressed = false; }
+/// ```
+///
+/// So the answer is taken **when the tap sequence begins** and held for the
+/// whole of it. A reader who presses shift after putting a finger down does
+/// not retroactively turn a tap into an extend, and one who lets go of shift
+/// mid-drag keeps extending. Reading the keyboard at each event instead would
+/// change the meaning of a gesture underneath the reader's hand, which is the
+/// obvious implementation and the wrong one.
+///
+/// # What this port does not have yet
+///
+/// Shift-extend selection itself: nothing here reads this to widen a
+/// selection, because the selection model has no extend-from-anchor. The rule
+/// is ported because it belongs to the gesture rather than to the selection --
+/// [`TapAndDragTracker`] already fires both hooks, and this is what upstream
+/// hangs on them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TapSequenceShift {
+    pressed: bool,
+}
+
+impl TapSequenceShift {
+    pub fn new() -> TapSequenceShift {
+        TapSequenceShift { pressed: false }
+    }
+
+    /// `onTapTrackStart`: read the keyboard once, now.
+    pub fn sample(&mut self, shift_held_now: bool) {
+        self.pressed = shift_held_now;
+    }
+
+    /// `onTapTrackReset`: the sequence is over, so the answer expires.
+    ///
+    /// Cleared rather than re-read, because between sequences there is no
+    /// sequence to describe.
+    pub fn reset(&mut self) {
+        self.pressed = false;
+    }
+
+    /// What the gesture should act on -- the sample, never the keyboard.
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+}
+
+#[cfg(test)]
+mod tap_sequence_shift_tests {
+    use super::{TapSequenceShift, TapStatusTracker};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn the_answer_is_taken_at_the_start_and_held() {
+        // Pressing shift after the finger is down does not turn a tap into an
+        // extend. Reading the keyboard at each event instead would change the
+        // meaning of a gesture underneath the reader's hand.
+        let mut shift = TapSequenceShift::new();
+        shift.sample(false);
+        assert!(!shift.is_pressed());
+        // The keyboard changes; the sample does not.
+        assert!(!shift.is_pressed(), "still what it was at the start");
+    }
+
+    #[test]
+    fn and_letting_go_of_shift_mid_gesture_keeps_extending() {
+        let mut shift = TapSequenceShift::new();
+        shift.sample(true);
+        assert!(shift.is_pressed());
+        // No re-sampling happens until the next sequence begins.
+        assert!(shift.is_pressed());
+    }
+
+    #[test]
+    fn the_sequence_ending_clears_it_rather_than_re_reading() {
+        // Between sequences there is no sequence to describe, so the answer
+        // expires instead of tracking the keyboard.
+        let mut shift = TapSequenceShift::new();
+        shift.sample(true);
+        shift.reset();
+        assert!(!shift.is_pressed());
+    }
+
+    #[test]
+    fn and_a_fresh_sequence_takes_a_fresh_reading() {
+        let mut shift = TapSequenceShift::new();
+        shift.sample(true);
+        shift.reset();
+        shift.sample(false);
+        assert!(!shift.is_pressed());
+        shift.reset();
+        shift.sample(true);
+        assert!(shift.is_pressed(), "the sample is not sticky either way");
+    }
+
+    #[test]
+    fn the_tracker_fires_both_hooks_this_hangs_from() {
+        // The rule is only worth anything if the two moments it keys off
+        // actually arrive, so this drives the tracker rather than the flag.
+        let started = Rc::new(Cell::new(0u32));
+        let was_reset = Rc::new(Cell::new(0u32));
+        let mut tracker = TapStatusTracker::new();
+        let seen = started.clone();
+        tracker.on_tap_track_start(move || seen.set(seen.get() + 1));
+        let cleared = was_reset.clone();
+        tracker.on_tap_track_reset(move || cleared.set(cleared.get() + 1));
+
+        tracker.reset();
+        assert_eq!(was_reset.get(), 1, "reset fires the reset hook");
+        assert_eq!(started.get(), 0, "and not the start hook");
+    }
+
+    #[test]
+    fn a_fresh_sequence_has_nothing_sampled() {
+        assert!(!TapSequenceShift::new().is_pressed());
+        assert_eq!(TapSequenceShift::default(), TapSequenceShift::new());
+    }
+}

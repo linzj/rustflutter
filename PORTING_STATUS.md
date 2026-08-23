@@ -14110,3 +14110,45 @@ start 抽屉在那边是长在右边的，开它的那一划方向就反过来�
 四个变异全红——**其中 M1 就是原来那个 bug**。
 
 coverage 2102 / 2101 记账 / 0 MISSING / 1 未解析 / 79 concept。
+
+---
+
+## 有钩子，没有挂在钩子上的那条规则（2026-08-24）
+
+`depth.py` 那份 0.20 以下的名单一共二十条，多数是它自己记录在案的高报。
+这一轮先把两条查清楚：
+
+**`RefreshIndicatorState` 0/6 是高报。**移植的状态机比上游的六态还多一个 `Idle`，
+只是方法名不同（`begin_drag`/`drag_by`/`release`/…）。
+**没有靠读，靠变异确认**：把「未武装就放手也去刷新」「拿掉武装后的下限」
+「on-edge 模式接受任何位置的拖动」「尾边溢出也算」四条各改一次——**四条全被抓**。
+
+**`TextSelectionGestureDetector` 4/24 有真东西。**
+
+### shift 是在手势开始时采一次，不是随时读
+
+```dart
+void onTapTrackStart() {
+  _isShiftPressed = HardwareKeyboard.instance.logicalKeysPressed
+      .intersection({shiftLeft, shiftRight}).isNotEmpty;
+}
+void onTapTrackReset() { _isShiftPressed = false; }
+```
+
+答案在**这一串点按开始时**取定，整串期间不变。
+手指按下之后再按 shift，不会把一次点击追认成一次扩选；
+拖到一半松开 shift，也仍然在扩选。
+**每个事件都去读键盘是显然的实现，也是错的**——
+那会在读者手底下改变这个手势的含义。
+
+### 而移植有那两个钩子，没有挂在上面的东西
+
+`TapStatusTracker` 一直在 `track_tap` 和 `reset` 里如实地触发这两个回调，
+但整个 crate 里没有 `_isShiftPressed` 的对应物——
+因为**这里的选择模型还没有「从锚点扩选」**，shift 点击扩选本身没实现。
+
+所以这一轮补的是**那条规则本身**：它属于手势，不属于选择模型，
+而承载它的机制已经在了。选择模型那一半仍然缺，如实记在类型的文档里。
+
+三个变异全红，其中一个是「tracker 不再触发 reset 钩子」——
+所以这条规则挂着的那个钩子是真的会响。
