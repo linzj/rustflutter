@@ -14,11 +14,31 @@
 | 7 `post_delayed_task` + `sleep` | `e2a7c0d` |
 | 8 台账 | 本次 |
 
-**唯一没验的一格：GN / ninja。** 这个环境里 `src/flutter/buildtools` 与
-`prebuilts` 是 gclient 管的，主 checkout 和 worktree 都没有，也没有 `out/`，
-所以 `runtime_controller.cc` 的改动只到 `clang -fsyntax-only` 级别（头文件干净），
-**没有真正编译过**。合并前要跑一次 `rustflutter_unittests` 与
-`rust_ffi_unittests`。
+**GN 验证（2026-08-23，更正）。** 先前这里写着 `buildtools` / `prebuilts` 不存在
+——那是查错了目录，它们在 `src/flutter/` 下，符号链接指向 `/k/flutter/engine/`，构建
+工具是齐的。实际跑下来：
+
+* `gn gen --unoptimized --enable-unittests` → 1042 targets from 284 files。
+* `ninja obj/flutter/runtime/runtime.runtime_controller.obj` → **通过**。这一步就
+  验了之前只靠阅读确认的几处：`static_assert(sizeof(RfAppHost) == sizeof(void*) * 9)`
+  两侧镜像对得上、`fml::TimeDelta::FromMicroseconds` 可见、`PostDelayedTask` 签名、
+  `weak->app_` 的私有访问、`rf_app_run_tasks` 声明。
+* `run_rust_tests.py` 那条 rustc 直调（`rustc --test --edition=2024` 直接编
+  `lib.rs`，不需要 C++ 引擎）→ **4607 通过，0 失败**，与同一提交的
+  `cargo test --lib` 一字不差。
+
+**一次假警报，记在这里免得下次再查一遍。** 头一次在共享 checkout 里跑 GN 时，
+`services::system::copy_with_direction_tests::the_amendment_wins_every_field_and_not_just_the_first`
+失败了。它在一个这条分支没碰过的文件里，而且在干净的 worktree 里不复现。定性的证据是
+计数：那次跑的是 4619 个测试，干净树上是 4607——多出来的 12 个是当时另一个会话未提交的
+工作。**编到的是别人改到一半的源码。** 教训是这个 checkout 有并发写入，验证要在自己的
+worktree 里做，而 worktree 需要手工补四个未跟踪的符号链接：`src/flutter/buildtools`、
+`src/flutter/prebuilts`、`src/flutter/third_party`、`src/third_party`。
+
+**顺带修掉的：`src/flutter/rust/BUILD.gn` 的 `sources` 少了两项。** `task.rs`（本分支
+新增）和 `debug_rendering.rs`（既有遗漏）。那是个要穷举的清单——列了 212 项，实际 214 个
+文件——漏项的后果是 ninja 不知道该在这些文件变化时重跑测试。只有跑 GN 才看得见，
+`cargo` 永远不会说。
 
 上游 Flutter 的 `Future` 是同一根 UI 线程上的续延，不是并发；这个港口把它们译成了回调、
 帧轮询、帧时钟 deadline 和拆开的同步/异步缝，四种形状都记在 `PORTING_STATUS.md` 里，
