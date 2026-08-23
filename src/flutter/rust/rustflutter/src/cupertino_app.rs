@@ -7,21 +7,23 @@
 
 use crate::material_app::ScrollPlatform;
 
-/// How fast a bouncing simulation gives up. Upstream's
-/// `ScrollDecelerationRate`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScrollDecelerationRate {
-    #[default]
-    Normal,
-    Fast,
-}
+/// Upstream `ScrollDecelerationRate`, declared with the thing it describes in
+/// [`crate::scroll_physics`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::scroll_physics::ScrollDecelerationRate;
 
-/// Upstream `MultitouchDragStrategy`, as far as this behaviour cares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MultitouchDragStrategy {
-    LatestPointer,
-    AverageBoundaryPointers,
-}
+/// Upstream `MultitouchDragStrategy`, declared with the thing it describes in
+/// [`crate::scroll_plumbing`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::scroll_plumbing::MultitouchDragStrategy;
 
 /// Upstream `CupertinoScrollBehavior`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

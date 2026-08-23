@@ -1447,23 +1447,14 @@ impl Component for TooltipBubble {
     }
 }
 
-/// How touch events should trigger a tooltip. Upstream's `TooltipTriggerMode`
-/// (`widgets/raw_tooltip.dart`).
+/// Upstream `TooltipTriggerMode`, declared with the thing it describes in
+/// [`crate::raw_tooltip`] and re-exported here.
 ///
-/// Whatever the mode, a hovering mouse always shows the tooltip -- upstream's
-/// `RawTooltip.triggerMode` docs say so outright ("This property does not
-/// affect mouse devices").
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TooltipTriggerMode {
-    /// Not triggered by touch; hover still works. Upstream's `manual`.
-    Manual,
-    /// Shown after a long press. Upstream's `longPress`, the default
-    /// (`_defaultTriggerMode`).
-    #[default]
-    LongPress,
-    /// Shown after a single tap. Upstream's `tap`.
-    Tap,
-}
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::raw_tooltip::TooltipTriggerMode;
 
 /// The trigger half of a tooltip: wraps a child and reports when the bubble
 /// should be visible. The bubble is [`Tooltip`]; putting the bubble over the

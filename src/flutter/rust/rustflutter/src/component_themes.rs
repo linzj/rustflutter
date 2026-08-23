@@ -2464,15 +2464,14 @@ pub enum ListTileStyle {
     Drawer,
 }
 
-/// Upstream `ListTileControlAffinity`: which end a tile's control sits at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ListTileControlAffinity {
-    Leading,
-    Trailing,
-    /// Whatever the platform does -- upstream resolves this per target.
-    #[default]
-    Platform,
-}
+/// Upstream `ListTileControlAffinity`, declared with the thing it describes in
+/// [`crate::list_tiles`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::list_tiles::ListTileControlAffinity;
 
 /// Upstream `ListTileTitleAlignment`: where the leading and trailing widgets
 /// sit against the title.
@@ -5663,17 +5662,14 @@ impl DatePickerTheme {
 
 // -- Input decoration (upstream `input_decorator.dart`) -----------------------
 
-/// Upstream `FloatingLabelBehavior`: when a field's label floats above it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum FloatingLabelBehavior {
-    /// Never -- the label is the hint, and it goes when text is typed.
-    Never,
-    /// When the field has focus or content.
-    #[default]
-    Auto,
-    /// Always, so the field is never without one.
-    Always,
-}
+/// Upstream `FloatingLabelBehavior`, declared with the thing it describes in
+/// [`crate::input_decorator`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::input_decorator::FloatingLabelBehavior;
 
 /// Upstream `FloatingLabelAlignment`: where along the top edge the floated
 /// label sits.
@@ -6065,14 +6061,14 @@ impl TextSelectionTheme {
 
 // -- Popup menu (upstream `popup_menu_theme.dart`) ----------------------------
 
-/// Upstream `PopupMenuPosition`: whether the menu covers the button that
-/// opened it or hangs below it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum PopupMenuPosition {
-    #[default]
-    Over,
-    Under,
-}
+/// Upstream `PopupMenuPosition`, declared with the thing it describes in
+/// [`crate::menu`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::menu::PopupMenuPosition;
 
 /// Upstream `PopupMenuThemeData`.
 #[derive(Clone, Debug, Default, PartialEq)]

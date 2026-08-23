@@ -10632,3 +10632,36 @@ fixed 时 true**，也就是说它的默认取决于**解析后的类型**，而
 「两边都设且相反」才清零——工具在这一轮已经开始在提交前挡下东西，而不是事后。
 
 主题 20 → 19。
+
+## 第五次机械提问：同一个类型移植了两遍，一共 15 处（2026-08-23）
+
+连着两轮撞见「同一个类型有两份」（`ButtonVariant` 的颜色表、
+`BottomNavigationBarType`），所以这轮直接数了一遍：**1917 个公开类型里，
+15 个在两个模块各声明了一份。**
+
+其中 **11 个是真重复**——同名、同变体、同一个上游原型，只是文档一份厚一份薄。
+删掉薄的那份、改成 `pub use` 从概念所属的模块 re-export：
+`ListTileControlAffinity`、`FloatingLabelBehavior`、`PopupMenuPosition`、
+`TooltipTriggerMode`、`MultitouchDragStrategy`、`ScrollDecelerationRate`、
+`ScrollAxis`、`ScrollPlatform`、`Orientation`、`TextSelectionHandleType`、
+`ContentSensitivity`。**测试数一条没变**——也就是说，从来没有任何测试碰过「这两份
+是否一致」，这正是它们能各自待着的原因。
+
+### 其中一份两边**不一致**，而且不一致的正是协议
+
+`ContentSensitivity` 在 `services/system_channels.rs` 里的那份，注释写明
+`index()` 就是上游的枚举序号、**顺序即协议**（AutoSensitive=0、Sensitive=1、
+NotSensitive=2）；而 `sensitive_content.rs` 那份是 `Sensitive` 打头。查上游：
+`autoSensitive, sensitive, notSensitive`——**services 那份是对的，widget 那份错了**。
+
+今天没有出事，因为**没有任何代码在两者之间转换**——而那恰恰是它们能不一致这么久
+的原因。统一到上游的顺序，并补了一条把序号钉死在协议上的测试。
+
+### 剩下 4 个不是重复，是重名
+
+`AutofillClient`（这边是个注册记录的 struct，services 那边是上游的 trait）、
+`BuildContext`（app 的是按 view 的构建上下文，framework 的才是真的那个）、
+`PopupMenuButton`（两个不同的控件）、`TreeSliverIndentationType`。这些是**不同的
+东西同名**，改名是另一码事，记下来不动。
+
+主题仍是 19——这轮做的是去重，不是接线。

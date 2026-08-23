@@ -3,16 +3,14 @@
 //! The application at the top of a Material tree, the scroll behaviour it
 //! installs, and the strings it falls back to.
 
-/// The platforms `MaterialScrollBehavior` distinguishes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollPlatform {
-    Android,
-    Fuchsia,
-    IOS,
-    Linux,
-    MacOS,
-    Windows,
-}
+/// Upstream `ScrollPlatform`, declared with the thing it describes in
+/// [`crate::scroll_plumbing`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::scroll_plumbing::ScrollPlatform;
 
 impl ScrollPlatform {
     /// The three upstream treats as desktop in `buildScrollbar`.
@@ -24,12 +22,14 @@ impl ScrollPlatform {
     }
 }
 
-/// Which axis a scrollable runs along.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollAxis {
-    Horizontal,
-    Vertical,
-}
+/// Upstream `ScrollAxis`, declared with the thing it describes in
+/// [`crate::scroll_plumbing`] and re-exported here.
+///
+/// It was declared twice -- same name, same variants, same upstream
+/// original -- and the two copies could not disagree loudly, because
+/// nothing made them meet. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::scroll_plumbing::ScrollAxis;
 
 /// What `buildOverscrollIndicator` wraps a scrollable in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

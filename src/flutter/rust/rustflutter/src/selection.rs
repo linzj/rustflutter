@@ -58,14 +58,13 @@ pub enum TextGranularity {
     Document,
 }
 
-/// Upstream `TextSelectionHandleType`: which of the two handles this is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TextSelectionHandleType {
-    Left,
-    Right,
-    /// Both at once -- the single handle under a collapsed selection.
-    Collapsed,
-}
+/// Upstream `TextSelectionHandleType`, declared in [`crate::text_selection_controls`] and re-exported here.
+///
+/// It was declared twice -- same variants, same upstream original --
+/// and nothing made the two copies meet, which is how they could have
+/// drifted apart unnoticed. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::text_selection_controls::TextSelectionHandleType;
 
 /// Upstream `SelectionExtendDirection`: which way a directional extension
 /// walks.

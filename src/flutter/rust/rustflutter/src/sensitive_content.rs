@@ -9,17 +9,19 @@
 //! projection. It is ported here for the same reason it is written there --
 //! the arrangement is finished even though the platform side is not.
 
-/// Upstream `ContentSensitivity`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentSensitivity {
-    /// Always hidden.
-    Sensitive,
-    /// The platform decides -- Android looks at whether the content appears to
-    /// be a password field and the like.
-    AutoSensitive,
-    /// Never hidden.
-    NotSensitive,
-}
+/// Upstream `ContentSensitivity`, declared in [`crate::services::system_channels`]
+/// and re-exported here.
+///
+/// It was declared twice, and the two copies **did not agree on the order of
+/// the variants** -- and the order is the protocol: the services copy documents
+/// its `index()` as upstream's enum index, which is what goes over the channel.
+/// Upstream's order is `autoSensitive, sensitive, notSensitive`; this module's
+/// copy began with `Sensitive`, so anything that had crossed from here to the
+/// wire would have said the opposite of what it meant.
+///
+/// Nothing did cross -- no code converted between them, which is exactly why
+/// two copies could disagree for as long as they did.
+pub use crate::services::system_channels::ContentSensitivity;
 
 /// Upstream's `_ContentSensitivitySetting`: how many widgets asked for each
 /// level, and what that adds up to.
@@ -408,5 +410,38 @@ mod tests {
         let widget = SensitiveContent::new(Sensitive, 7);
         assert_eq!(widget.build(), 7);
         assert_eq!(widget.sensitivity, Sensitive);
+    }
+}
+
+#[cfg(test)]
+mod one_order_tests {
+    use super::*;
+
+    #[test]
+    fn the_variant_order_is_upstreams_and_it_is_the_protocol() {
+        // `autoSensitive, sensitive, notSensitive`. This module used to declare
+        // a second copy of the enum beginning with `Sensitive`, and nothing
+        // made the two meet -- which is how they disagreed unnoticed. The index
+        // is what goes over the channel, so the order is not a matter of taste.
+        assert_eq!(ContentSensitivity::AutoSensitive.index(), 0);
+        assert_eq!(ContentSensitivity::Sensitive.index(), 1);
+        assert_eq!(ContentSensitivity::NotSensitive.index(), 2);
+    }
+
+    #[test]
+    fn the_counts_and_the_enum_agree_on_which_level_is_which() {
+        // The counting side names the same three levels, and a rename or a
+        // reordering on either side has to show up here: this is the one place
+        // the two halves meet, and while the enum was declared twice there was
+        // no such place at all.
+        let mut counts = ContentSensitivityCounts::default();
+        counts.add(ContentSensitivity::Sensitive);
+        assert_eq!(counts.sensitive, 1);
+        assert_eq!(counts.auto_sensitive, 0);
+
+        counts.add(ContentSensitivity::AutoSensitive);
+        counts.remove(ContentSensitivity::Sensitive);
+        assert_eq!(counts.sensitive, 0);
+        assert_eq!(counts.auto_sensitive, 1);
     }
 }

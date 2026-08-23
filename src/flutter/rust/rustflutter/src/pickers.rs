@@ -525,17 +525,13 @@ impl TimeOfDay {
 
 // -- Orientation -------------------------------------------------------------------
 
-/// Tall or wide.
+/// Upstream `Orientation`, declared in [`crate::presence`] and re-exported here.
 ///
-/// Anchor: `Orientation` in `widgets/basic.dart`. Both pickers read it from
-/// the ambient `MediaQuery` (`MediaQuery.orientationOf`), which derives it
-/// from the view's aspect; [`TimePickerDialog::with_orientation`] overrides
-/// it the way upstream's `orientation` parameter does.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Orientation {
-    Portrait,
-    Landscape,
-}
+/// It was declared twice -- same variants, same upstream original --
+/// and nothing made the two copies meet, which is how they could have
+/// drifted apart unnoticed. A type two modules have to agree on belongs
+/// to neither of them.
+pub use crate::presence::Orientation;
 
 /// What `MediaQuery.orientationOf` answers: wide is landscape, tall is not.
 fn orientation_of(context: &BuildContext) -> Orientation {
