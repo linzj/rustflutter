@@ -488,7 +488,8 @@ pub fn run_until_stalled() -> bool {
             // solves the same problem with `try_borrow_mut`.
             let checked_out = EXECUTOR.with(|executor| {
                 let mut slot = executor.borrow_mut();
-                slot.as_mut().and_then(|executor| executor.tasks.remove(&id))
+                slot.as_mut()
+                    .and_then(|executor| executor.tasks.remove(&id))
             });
             let Some(mut task) = checked_out else {
                 // Finished, or dropped by a `detach` from inside another task.
@@ -803,7 +804,14 @@ mod tests {
         // Two wakes, one drain.
         let waker = EXECUTOR.with(|executor| {
             let slot = executor.borrow();
-            slot.as_ref().unwrap().tasks.values().next().unwrap().waker.clone()
+            slot.as_ref()
+                .unwrap()
+                .tasks
+                .values()
+                .next()
+                .unwrap()
+                .waker
+                .clone()
         });
         waker.wake_by_ref();
         waker.wake();
@@ -832,7 +840,14 @@ mod tests {
 
         let waker = EXECUTOR.with(|executor| {
             let slot = executor.borrow();
-            slot.as_ref().unwrap().tasks.values().next().unwrap().waker.clone()
+            slot.as_ref()
+                .unwrap()
+                .tasks
+                .values()
+                .next()
+                .unwrap()
+                .waker
+                .clone()
         });
         std::thread::spawn(move || waker.wake()).join().unwrap();
 
@@ -882,7 +897,10 @@ mod tests {
         assert!(alive.get());
 
         detach();
-        assert!(!alive.get(), "the task was dropped, and its captures with it");
+        assert!(
+            !alive.get(),
+            "the task was dropped, and its captures with it"
+        );
         assert!(!is_attached());
         drop(sender);
     }
@@ -907,7 +925,14 @@ mod tests {
 
         let waker = EXECUTOR.with(|executor| {
             let slot = executor.borrow();
-            slot.as_ref().unwrap().tasks.values().next().unwrap().waker.clone()
+            slot.as_ref()
+                .unwrap()
+                .tasks
+                .values()
+                .next()
+                .unwrap()
+                .waker
+                .clone()
         });
         detach();
 
@@ -922,8 +947,7 @@ mod tests {
 
     #[test]
     fn one_post_task_covers_many_wakes() {
-        static COUNT: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+        static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         unsafe extern "C" fn post(_user_data: *mut c_void) {
             COUNT.fetch_add(1, Ordering::AcqRel);
         }
@@ -939,7 +963,14 @@ mod tests {
 
         let waker = EXECUTOR.with(|executor| {
             let slot = executor.borrow();
-            slot.as_ref().unwrap().tasks.values().next().unwrap().waker.clone()
+            slot.as_ref()
+                .unwrap()
+                .tasks
+                .values()
+                .next()
+                .unwrap()
+                .waker
+                .clone()
         });
         COUNT.store(0, Ordering::Release);
         for _ in 0..10 {
@@ -992,9 +1023,8 @@ mod tests {
             sleep(Duration::from_secs(60)).await;
         });
         run_until_stalled();
-        let armed = EXECUTOR.with(|executor| {
-            executor.borrow().as_ref().map_or(0, |ex| ex.timers.len())
-        });
+        let armed =
+            EXECUTOR.with(|executor| executor.borrow().as_ref().map_or(0, |ex| ex.timers.len()));
         assert_eq!(armed, 1);
         // And a drain that finds nothing due does not report having run.
         assert!(!run_until_stalled());
@@ -1018,8 +1048,7 @@ mod tests {
 
     #[test]
     fn a_host_with_a_clock_is_asked_for_the_remaining_delay() {
-        static ASKED: std::sync::atomic::AtomicI64 =
-            std::sync::atomic::AtomicI64::new(-1);
+        static ASKED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
         unsafe extern "C" fn post(_user_data: *mut c_void) {}
         unsafe extern "C" fn post_delayed(_user_data: *mut c_void, micros: i64) {
             ASKED.store(micros, Ordering::Release);

@@ -134,6 +134,10 @@ bool RuntimeController::LaunchApplication() {
 
   // Taken here, on the UI thread, because OnPostTask may run on any other one
   // and the factory is not thread-safe to ask. Copying the result is.
+  //
+  // Before rf_app_create, and that order is what makes reading it from another
+  // thread safe: the framework cannot post until it has a Waker, it cannot
+  // have one until a task is spawned, and it cannot spawn until it exists.
   weak_for_tasks_ = weak_factory_.GetWeakPtr();
 
   app_ = rf_app_create(&host);
@@ -768,7 +772,8 @@ void RuntimeController::OnPostTask(void* user_data) {
   });
 }
 
-void RuntimeController::OnPostDelayedTask(void* user_data, int64_t delay_micros) {
+void RuntimeController::OnPostDelayedTask(void* user_data,
+                                          int64_t delay_micros) {
   auto* self = static_cast<RuntimeController*>(user_data);
   auto ui_task_runner = self->task_runners_.GetUITaskRunner();
   if (!ui_task_runner) {

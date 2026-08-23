@@ -212,7 +212,6 @@ impl Future for TickerSettled {
     }
 }
 
-
 /// The part of a [`Ticker`] its handles share.
 struct TickerInner {
     on_tick: TickerCallback,

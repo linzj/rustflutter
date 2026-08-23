@@ -539,7 +539,9 @@ mod tests {
         crate::task::run_until_stalled();
 
         let (_, _, response_id) = recorder.sent().remove(0);
-        let reply = StandardMessageCodec.encode(&Value::String("pong".into())).unwrap();
+        let reply = StandardMessageCodec
+            .encode(&Value::String("pong".into()))
+            .unwrap();
         recorder.reply(response_id, Some(&reply));
         crate::task::run_until_stalled();
         assert_eq!(*answer.borrow(), Some(Some(Value::String("pong".into()))));
