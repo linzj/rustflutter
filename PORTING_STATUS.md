@@ -11097,6 +11097,12 @@ elevation 时才有意义。
 
 ### `ButtonTheme`：整个主题为一个布尔值活着
 
+> **这一节是错的，2026-08-23 更正见文末「MaterialButton」那一轮。**
+> `ButtonTheme.of` 有**第四个**调用点 `material_button.dart:394`，
+> 而那才是这个主题真正服务的 widget。下面这句话建立在一次被 `head -12`
+> 截断的 grep 上。`alignedDropdown` 那些发现本身站得住，
+> 「整个主题为一个布尔值活着」这句不站得住。
+
 `ButtonTheme.of` 上游只被读三次：一次在 `ButtonBar`，另两次在
 **`DropdownButton`**，且两次都只为 `alignedDropdown`。
 一个完整的主题为一个布尔值留着，而读它的 widget 不是按钮。
@@ -11700,4 +11706,68 @@ gallery 编译不过**。这正是那道关卡存在的理由，和当初加 `Bu
 `SizedBox` 什么也不产），重跑变红。
 
 **「测试没有真的执行被测的东西」——本轮和上一轮的存活变异是同一个物种。**
+
+## `MaterialButton`：一次被 `head -12` 截断的 grep，和一条真正的阶梯（2026-08-23）
+
+### 先更正：`ButtonTheme` 不是为一个布尔值活着的
+
+第 55 轮记过「`ButtonTheme.of` 上游只被读三次——`ButtonBar` 一次、
+`DropdownButton` 两次，都只为 `alignedDropdown`」，并由此断言
+**一整个主题为一个布尔值留着**。**这句是错的。**
+
+还有第四个：`material_button.dart:394`，而那才是这个主题真正服务的 widget——
+`MaterialButton.build` 从它身上读 `getFillColor`、`getTextColor`、
+`getFocusColor`、`getHoverColor`、四个 elevation getter、`getPadding`、
+`getConstraints`。那才是 `ButtonThemeData` 存在的理由。
+
+当时那条 grep 管道尾巴是 `head -12`，而 `material_button.dart`
+排在 `dropdown_menu.dart` 后面，**正好被截掉**。
+`alignedDropdown` 的那些发现（16 换手、end 不换手、装饰器只挡一半）
+本身独立成立，不受影响。
+
+### `getTextColor`：禁用先查，但它改变的比看上去少
+
+`getTextColor` 开头是 `if (!button.enabled) return getDisabledTextColor(button)`，
+读起来像「禁用压过调用者自己的 `textColor`」。**并不是**：
+`getDisabledTextColor` 是 `textColor ?? disabledTextColor ?? onSurface@0.38`，
+所以 `textColor` 两条路都赢。**禁用那一支唯一决定的，是没给 `textColor` 时怎么办**
+——而那正是 `disabledTextColor` 唯一有机会被读到的地方。
+
+（差点又写成「禁用压过一切」。读了 `getDisabledTextColor` 才没写错。）
+
+### primary 的标签是对着自己的填色选的，不是对着页面
+
+`normal` 和 `accent` 问的是环境亮度和配色方案；`primary`
+**估的是填充色的明暗**，只有在没有填色时才退回环境亮度。
+一个画在深色上的按钮放在浅色页面上，得到白字——问页面会答错。
+
+### 而且那两个黑不是同一个黑
+
+`normal` 返回 `black87`，`primary` 返回 `black`。
+页面上的文字是正文，取 Material 2 的正文黑；坐在色块上的标签需要整个黑。
+**那百分之八的差别，是「读一个标签」和「读一段正文」的差别。**
+
+### `getFillColor` 里有一个运行时类型判等
+
+`if (button.runtimeType == MaterialButton) return null;`——不是虚调用，是
+**精确类型比较**。一个纯粹的 `MaterialButton` 从主题拿不到任何填色，
+只有它的子类拿得到。「是一个 `MaterialButton`」和「**恰好是**一个
+`MaterialButton`」在这里是两个答案。Rust 没有对应物，
+所以它以一个按含义命名的 flag 到达。
+而且那道闸门是**第二**条子句：被明确告知颜色的按钮，什么类型都算数。
+
+### 顺带把 `Color::compute_luminance` 和 `estimateBrightnessForColor` 移植了
+
+阈值不是 WCAG 的 0.0525 而是 **0.15**，上游注释写明理由：
+「Material Design 似乎比 WCAG20 建议的更偏向使用浅色文字」，
+而 0.15「看起来接近 Material Design 规范给它的调色板所展示的效果」——
+**一个看着图定出来的数，就这么写下来了。**
+阈值抬高的效果是：更多颜色被算作**浅色**，于是更多颜色配深色文字。
+
+14 个变异，**一个活下来**：把 gamma 展开整个删掉（直接线性返回）全绿。
+因为我测的颜色**全在曲线的两端**——0 和 255——那里曲线和直线本来就重合。
+补了一个中灰：50% 灰只有约 21.6% 的光，不是 50%；
+又补了拐点以下（0.03928 以下除以 12.92 的那一段）。重跑变红。
+
+**「两边都设了但相等」的又一件新衣服：只在函数不变的地方取样。**
 

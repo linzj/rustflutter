@@ -963,3 +963,410 @@ mod icon_button_theme_tests {
         assert_eq!(resolved.icon_size(NONE), None);
     }
 }
+
+#[cfg(test)]
+mod material_button_color_tests {
+    use super::*;
+    use crate::component_themes::{
+        BRIGHTNESS_THRESHOLD, ButtonTextTheme, MaterialButtonColors, estimate_brightness_for_color,
+    };
+    use crate::engine::Color;
+    use crate::platform::Brightness;
+    use crate::theme::ThemeData;
+
+    fn scheme() -> crate::color_scheme::ColorScheme {
+        ThemeData::fallback().color_scheme
+    }
+
+    // -- The estimate ----------------------------------------------------------
+
+    #[test]
+    fn luminance_weights_green_far_above_blue() {
+        // 0.2126 / 0.7152 / 0.0722: not a colour-space convenience but how
+        // much the eye gets from each channel.
+        let red = Color::rgb(255, 0, 0).compute_luminance();
+        let green = Color::rgb(0, 255, 0).compute_luminance();
+        let blue = Color::rgb(0, 0, 255).compute_luminance();
+        assert!(green > red && red > blue);
+        assert!((green - 0.7152).abs() < 0.001);
+        assert!((blue - 0.0722).abs() < 0.001);
+        assert!((Color::WHITE.compute_luminance() - 1.0).abs() < 0.001);
+        assert!(Color::BLACK.compute_luminance() < 0.001);
+    }
+
+    #[test]
+    fn the_gamma_curve_is_what_makes_mid_grey_dark() {
+        // A mutation deleting the un-gamma'ing survived every test above,
+        // because all of them use colours at the ends of the curve -- 0 and
+        // 255 -- where the curve and a straight line agree. Half way along is
+        // where they do not: 50 per cent grey has about 21 per cent of the
+        // light, not 50.
+        let mid = Color::rgb(128, 128, 128).compute_luminance();
+        assert!(
+            (mid - 0.2158).abs() < 0.002,
+            "mid grey should be about 0.216, was {mid}"
+        );
+        assert!(mid < 0.3, "and nowhere near the 0.5 a linear reading gives");
+
+        // The other side of the knee, below 0.03928, where the curve *is* a
+        // straight line -- divided by 12.92 rather than raised to a power.
+        let very_dark = Color::rgb(5, 5, 5).compute_luminance();
+        assert!((very_dark - (5.0 / 255.0) / 12.92).abs() < 0.0001);
+    }
+
+    #[test]
+    fn alpha_takes_no_part_in_it() {
+        // Luminance is a property of the colour, not of what compositing it
+        // would produce.
+        assert_eq!(
+            Color::argb(255, 40, 90, 200).compute_luminance(),
+            Color::argb(7, 40, 90, 200).compute_luminance()
+        );
+    }
+
+    #[test]
+    fn the_threshold_is_materials_and_not_the_specs() {
+        // WCAG says 0.0525; upstream uses 0.15 because "Material Design
+        // appears to bias more towards using light text". The higher
+        // threshold makes *more* colours count as light, so more get dark
+        // text.
+        assert_eq!(BRIGHTNESS_THRESHOLD, 0.15);
+        assert!(BRIGHTNESS_THRESHOLD > 0.0525);
+
+        // A colour that the spec would call light and Material calls dark.
+        let between = (0.15f32).sqrt() - 0.05;
+        let spec = (0.0525f32).sqrt() - 0.05;
+        assert!(between > spec, "the band the two disagree over exists");
+    }
+
+    #[test]
+    fn white_is_light_and_black_is_dark() {
+        assert_eq!(
+            estimate_brightness_for_color(Color::WHITE),
+            Brightness::Light
+        );
+        assert_eq!(
+            estimate_brightness_for_color(Color::BLACK),
+            Brightness::Dark
+        );
+    }
+
+    // -- The label ladder -------------------------------------------------------
+
+    #[test]
+    fn a_primary_label_is_chosen_against_its_fill_and_not_against_the_page() {
+        // The finding: a dark button on a light page gets white text, which
+        // asking the page would have got wrong.
+        let on_dark_fill = MaterialButtonColors::text_color(
+            true,
+            None,
+            None,
+            ButtonTextTheme::Primary,
+            Some(Color::BLACK),
+            Brightness::Light,
+            &scheme(),
+        );
+        assert_eq!(on_dark_fill, Color::WHITE);
+
+        let on_light_fill = MaterialButtonColors::text_color(
+            true,
+            None,
+            None,
+            ButtonTextTheme::Primary,
+            Some(Color::WHITE),
+            Brightness::Dark,
+            &scheme(),
+        );
+        assert_eq!(on_light_fill, Color::BLACK);
+    }
+
+    #[test]
+    fn and_falls_back_to_the_page_only_when_there_is_no_fill() {
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                true,
+                None,
+                None,
+                ButtonTextTheme::Primary,
+                None,
+                Brightness::Dark,
+                &scheme()
+            ),
+            Color::WHITE
+        );
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                true,
+                None,
+                None,
+                ButtonTextTheme::Primary,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            Color::BLACK
+        );
+    }
+
+    #[test]
+    fn the_two_darks_are_different_darks() {
+        // `normal` is body text on the page and takes the Material 2 body
+        // black; `primary` sits on a fill and needs the whole of it.
+        let normal = MaterialButtonColors::text_color(
+            true,
+            None,
+            None,
+            ButtonTextTheme::Normal,
+            None,
+            Brightness::Light,
+            &scheme(),
+        );
+        let primary = MaterialButtonColors::text_color(
+            true,
+            None,
+            None,
+            ButtonTextTheme::Primary,
+            Some(Color::WHITE),
+            Brightness::Light,
+            &scheme(),
+        );
+        assert_eq!(normal, MaterialButtonColors::BLACK87);
+        assert_eq!(primary, Color::BLACK);
+        assert_ne!(normal, primary);
+    }
+
+    #[test]
+    fn accent_asks_neither_the_page_nor_the_fill() {
+        for (fill, brightness) in [
+            (Some(Color::BLACK), Brightness::Light),
+            (Some(Color::WHITE), Brightness::Dark),
+            (None, Brightness::Light),
+        ] {
+            assert_eq!(
+                MaterialButtonColors::text_color(
+                    true,
+                    None,
+                    None,
+                    ButtonTextTheme::Accent,
+                    fill,
+                    brightness,
+                    &scheme()
+                ),
+                scheme().secondary
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_button_keeps_a_text_colour_it_was_given() {
+        // `getTextColor` checks disabled first, which reads as disabled
+        // winning -- but `getDisabledTextColor` asks for `textColor` first
+        // too, so it wins either way.
+        let mine = Color(0xFFAA0000);
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                false,
+                Some(mine),
+                Some(Color(0xFF00FF00)),
+                ButtonTextTheme::Normal,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            mine
+        );
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                true,
+                Some(mine),
+                None,
+                ButtonTextTheme::Normal,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            mine,
+            "and enabled reaches it by the other route"
+        );
+    }
+
+    #[test]
+    fn all_the_disabled_branch_decides_is_what_happens_with_no_text_colour() {
+        // Which is where `disabledTextColor` gets its only chance to be read.
+        let disabled_only = Color(0xFF00FF00);
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                false,
+                None,
+                Some(disabled_only),
+                ButtonTextTheme::Normal,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            disabled_only
+        );
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                true,
+                None,
+                Some(disabled_only),
+                ButtonTextTheme::Normal,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            MaterialButtonColors::BLACK87,
+            "an enabled button never looks at it"
+        );
+
+        assert_eq!(
+            MaterialButtonColors::text_color(
+                false,
+                None,
+                None,
+                ButtonTextTheme::Normal,
+                None,
+                Brightness::Light,
+                &scheme()
+            ),
+            crate::elevation_overlay::with_opacity(scheme().on_surface, 0.38)
+        );
+    }
+
+    // -- The fill ---------------------------------------------------------------
+
+    #[test]
+    fn a_plain_material_button_gets_no_fill_from_the_theme() {
+        // Upstream's `if (button.runtimeType == MaterialButton) return null` --
+        // an exact-type test, so being a `MaterialButton` and being *exactly*
+        // one are different answers.
+        assert_eq!(
+            MaterialButtonColors::fill_color(
+                true,
+                None,
+                None,
+                true,
+                Some(Color(0xFF123456)),
+                ButtonTextTheme::Primary,
+                &scheme()
+            ),
+            None
+        );
+        assert!(
+            MaterialButtonColors::fill_color(
+                true,
+                None,
+                None,
+                false,
+                None,
+                ButtonTextTheme::Primary,
+                &scheme()
+            )
+            .is_some(),
+            "a subclass does get one"
+        );
+    }
+
+    #[test]
+    fn but_a_colour_it_was_given_beats_even_that() {
+        // The exact-type gate is the *second* clause, so a button told what
+        // colour to be is that colour whatever its type.
+        let mine = Color(0xFF123456);
+        assert_eq!(
+            MaterialButtonColors::fill_color(
+                true,
+                Some(mine),
+                None,
+                true,
+                None,
+                ButtonTextTheme::Primary,
+                &scheme()
+            ),
+            Some(mine)
+        );
+    }
+
+    #[test]
+    fn and_which_colour_it_reads_depends_on_whether_it_is_enabled() {
+        let on = Color(0xFF111111);
+        let off = Color(0xFF222222);
+        assert_eq!(
+            MaterialButtonColors::fill_color(
+                true,
+                Some(on),
+                Some(off),
+                true,
+                None,
+                ButtonTextTheme::Primary,
+                &scheme()
+            ),
+            Some(on)
+        );
+        assert_eq!(
+            MaterialButtonColors::fill_color(
+                false,
+                Some(on),
+                Some(off),
+                true,
+                None,
+                ButtonTextTheme::Primary,
+                &scheme()
+            ),
+            Some(off)
+        );
+    }
+
+    #[test]
+    fn a_disabled_subclass_fill_is_the_same_faint_grey_either_text_theme() {
+        let faint = crate::elevation_overlay::with_opacity(scheme().on_surface, 0.12);
+        for text_theme in [
+            ButtonTextTheme::Normal,
+            ButtonTextTheme::Accent,
+            ButtonTextTheme::Primary,
+        ] {
+            assert_eq!(
+                MaterialButtonColors::fill_color(
+                    false,
+                    None,
+                    None,
+                    false,
+                    None,
+                    text_theme,
+                    &scheme()
+                ),
+                Some(faint),
+                "{text_theme:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_themes_button_colour_only_applies_while_enabled() {
+        let themed = Color(0xFF654321);
+        assert_eq!(
+            MaterialButtonColors::fill_color(
+                true,
+                None,
+                None,
+                false,
+                Some(themed),
+                ButtonTextTheme::Normal,
+                &scheme()
+            ),
+            Some(themed)
+        );
+        assert_ne!(
+            MaterialButtonColors::fill_color(
+                false,
+                None,
+                None,
+                false,
+                Some(themed),
+                ButtonTextTheme::Normal,
+                &scheme()
+            ),
+            Some(themed)
+        );
+    }
+}

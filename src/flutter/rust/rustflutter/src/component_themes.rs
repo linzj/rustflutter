@@ -4631,6 +4631,202 @@ impl ResolvedCarouselView {
     }
 }
 
+/// Upstream `ThemeData.estimateBrightnessForColor`: whether text on this
+/// colour should be light or dark.
+///
+/// # The threshold is not WCAG's, and upstream says so
+///
+/// The spec's is 0.0525; upstream uses **0.15**, with the comment that
+/// "Material Design appears to bias more towards using light text than WCAG20
+/// recommends" and that 0.15 "seemed close to what the Material Design spec
+/// shows for its color palette". A number arrived at by looking at a picture,
+/// written down as such.
+///
+/// The effect of the higher threshold is that more colours count as *light*,
+/// so more of them get dark text.
+///
+/// # And it is squared before comparing
+///
+/// `(luminance + 0.05)^2 > 0.15` rather than `luminance > something`. The
+/// `+ 0.05` and the square are the shape of WCAG's contrast ratio with one
+/// side pinned to white, so the test is really "is white text worse than dark
+/// text here", asked in the units the ratio is defined in.
+pub fn estimate_brightness_for_color(color: Color) -> crate::platform::Brightness {
+    let luminance = color.compute_luminance();
+    if (luminance + 0.05) * (luminance + 0.05) > BRIGHTNESS_THRESHOLD {
+        crate::platform::Brightness::Light
+    } else {
+        crate::platform::Brightness::Dark
+    }
+}
+
+/// Upstream's `kThreshold` in `estimateBrightnessForColor` -- see there.
+pub const BRIGHTNESS_THRESHOLD: f32 = 0.15;
+
+/// What a `MaterialButton`'s label is coloured with -- upstream's
+/// `ButtonThemeData.getTextColor`, and the getters it leans on.
+///
+/// # `ButtonTheme` is not kept alive by one boolean
+///
+/// A previous tick recorded that `ButtonTheme.of` had three call sites
+/// upstream -- `ButtonBar` once and `DropdownButton` twice, both for
+/// `alignedDropdown` -- and concluded that a whole theme survived for one
+/// flag. **That was wrong.** There is a fourth, `material_button.dart:394`,
+/// and it is the one the theme is actually for: `MaterialButton.build` reads
+/// `getFillColor`, `getTextColor`, `getFocusColor`, `getHoverColor`, the four
+/// elevation getters, `getPadding` and `getConstraints` off it.
+///
+/// The grep behind that claim was piped through `head -12` and
+/// `material_button.dart` sorts after `dropdown_menu.dart`. The
+/// `alignedDropdown` findings stand on their own; the sentence about the theme
+/// living for a single bool does not.
+///
+/// # Disabled is checked first and changes less than it looks like
+///
+/// `getTextColor` opens with `if (!button.enabled) return getDisabledTextColor(button)`,
+/// which reads as disabled beating the caller's own `textColor`. It does not:
+/// `getDisabledTextColor` is `textColor ?? disabledTextColor ?? onSurface@0.38`,
+/// so a `textColor` wins either way. **All the disabled branch decides is what
+/// happens when there is none** -- and that is where `disabledTextColor` gets
+/// its only chance to be read.
+///
+/// # A primary label is chosen against its own fill, not against the page
+///
+/// `normal` and `accent` answer from the ambient brightness and the scheme.
+/// `primary` estimates the brightness **of the fill colour** and picks against
+/// that, falling back to the ambient brightness only when there is no fill. A
+/// button drawn in a dark colour on a light page gets white text, which asking
+/// the page would have got wrong.
+///
+/// # And the two darks are different darks
+///
+/// `normal` returns `black87` and `primary` returns `black`. Text on the page
+/// is body text and takes the Material 2 body black; text on a coloured fill
+/// needs the whole of it. The eight-percent difference is the difference
+/// between reading a label and reading a paragraph.
+pub struct MaterialButtonColors;
+
+impl MaterialButtonColors {
+    /// Upstream's `Colors.black87`, the body-text black.
+    pub const BLACK87: Color = Color(0xDD000000);
+    /// Upstream's disabled label opacity.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+    /// Upstream's disabled fill opacity for a primary button.
+    pub const DISABLED_FILL_OPACITY: f32 = 0.12;
+
+    /// Upstream's `getDisabledTextColor`, which still asks for `textColor`
+    /// first -- see the type's docs.
+    pub fn disabled_text_color(
+        text_color: Option<Color>,
+        disabled_text_color: Option<Color>,
+        scheme: &ColorScheme,
+    ) -> Color {
+        text_color.or(disabled_text_color).unwrap_or_else(|| {
+            crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                MaterialButtonColors::DISABLED_OPACITY,
+            )
+        })
+    }
+
+    /// Upstream's `getTextColor`.
+    pub fn text_color(
+        enabled: bool,
+        text_color: Option<Color>,
+        disabled_text_color: Option<Color>,
+        text_theme: ButtonTextTheme,
+        fill: Option<Color>,
+        brightness: crate::platform::Brightness,
+        scheme: &ColorScheme,
+    ) -> Color {
+        use crate::platform::Brightness;
+        if !enabled {
+            return MaterialButtonColors::disabled_text_color(
+                text_color,
+                disabled_text_color,
+                scheme,
+            );
+        }
+        if let Some(color) = text_color {
+            return color;
+        }
+        match text_theme {
+            ButtonTextTheme::Normal => match brightness {
+                Brightness::Dark => Color::WHITE,
+                Brightness::Light => MaterialButtonColors::BLACK87,
+            },
+            ButtonTextTheme::Accent => scheme.secondary,
+            ButtonTextTheme::Primary => {
+                // The fill decides, and the page only when there is no fill.
+                let fill_is_dark = match fill {
+                    Some(fill) => estimate_brightness_for_color(fill) == Brightness::Dark,
+                    None => brightness == Brightness::Dark,
+                };
+                if fill_is_dark {
+                    Color::WHITE
+                } else {
+                    // Not `BLACK87`: a label on a fill needs the whole black.
+                    Color::BLACK
+                }
+            }
+        }
+    }
+
+    /// Upstream's `getFillColor`, whose second clause is a **runtime-type
+    /// test**: `if (button.runtimeType == MaterialButton) return null`.
+    ///
+    /// A plain `MaterialButton` gets no fill from the theme at all -- only the
+    /// subclasses that used to sit on top of it did. It is written as an
+    /// exact-type comparison rather than a virtual call, so being a
+    /// `MaterialButton` and being *exactly* a `MaterialButton` are different
+    /// answers. There is no Rust for that, so it arrives as a flag the caller
+    /// sets, named for what it means rather than for how upstream spells it.
+    pub fn fill_color(
+        enabled: bool,
+        color: Option<Color>,
+        disabled_color: Option<Color>,
+        is_exactly_material_button: bool,
+        theme_button_color: Option<Color>,
+        text_theme: ButtonTextTheme,
+        scheme: &ColorScheme,
+    ) -> Option<Color> {
+        let own = if enabled { color } else { disabled_color };
+        if own.is_some() {
+            return own;
+        }
+        if is_exactly_material_button {
+            return None;
+        }
+        if enabled {
+            if let Some(color) = theme_button_color {
+                return Some(color);
+            }
+        }
+        Some(match text_theme {
+            ButtonTextTheme::Normal | ButtonTextTheme::Accent => {
+                if enabled {
+                    scheme.primary
+                } else {
+                    crate::elevation_overlay::with_opacity(
+                        scheme.on_surface,
+                        MaterialButtonColors::DISABLED_FILL_OPACITY,
+                    )
+                }
+            }
+            ButtonTextTheme::Primary => {
+                if enabled {
+                    theme_button_color.unwrap_or(scheme.primary)
+                } else {
+                    crate::elevation_overlay::with_opacity(
+                        scheme.on_surface,
+                        MaterialButtonColors::DISABLED_FILL_OPACITY,
+                    )
+                }
+            }
+        })
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

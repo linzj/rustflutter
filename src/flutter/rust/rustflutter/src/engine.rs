@@ -443,6 +443,30 @@ pub fn register_font(data: &[u8], family: &str) -> bool {
 pub struct Color(pub u32);
 
 impl Color {
+    /// Upstream `Color.computeLuminance`: WCAG 2.0 relative luminance.
+    ///
+    /// Each channel is un-gamma'd -- divided by 12.92 below 0.03928 and put
+    /// through `((c + 0.055) / 1.055) ^ 2.4` above it -- and then weighted
+    /// 0.2126 / 0.7152 / 0.0722. The weights are not a colour-space
+    /// convenience: they are how much the eye gets from each channel, which is
+    /// why green carries seven tenths of it and blue under a fourteenth.
+    ///
+    /// The alpha channel takes no part. Luminance is a property of the colour,
+    /// not of what compositing it would produce.
+    pub fn compute_luminance(self) -> f32 {
+        fn linearize(component: f32) -> f32 {
+            if component <= 0.03928 {
+                component / 12.92
+            } else {
+                ((component + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        let red = linearize(self.red() as f32 / 255.0);
+        let green = linearize(self.green() as f32 / 255.0);
+        let blue = linearize(self.blue() as f32 / 255.0);
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
     pub const TRANSPARENT: Color = Color(0x0000_0000);
     pub const BLACK: Color = Color(0xFF00_0000);
     pub const WHITE: Color = Color(0xFFFF_FFFF);
