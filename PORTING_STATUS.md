@@ -13788,3 +13788,33 @@ Android 是唯一一个它两个取值都可能成为答案的平台。
 改成只说「有没有」，把「是哪个」交给新的那个方法。
 
 四个变异全红。coverage 2102 / 2011 记账 / **10 MISSING**。
+
+---
+
+## 两种模式收得一样多，差别在最后剩下什么（2026-08-24）
+
+`NavigationBarBottomMode` 两个值。`maxExtent` **根本不提这个模式**——
+完全展开时，两种模式下这条栏一样高。
+差的是 `minExtent`：
+
+```dart
+double get minExtent =>
+    persistentHeight + (bottomMode == always ? bottomHeight : 0.0);
+```
+
+`always` 把底部留在收缩行程的终点，`automatic` 不留。
+于是**先被吃掉的东西也就不同**：
+`automatic` 先吃底部再让大标题滑进去，`always` 底部钉住、大标题先滑。
+
+### 而「能滚掉多少」是另一处单独写的
+
+```dart
+final bottomScrollOffset = widget.bottomMode == always ? 0.0 : _bottomHeight;
+```
+
+它和 `minExtent` 留下的那部分**是互补的**，而且**上游分两处写**——
+所以它们可以被改到互相矛盾。测试直接钉这条不变量：
+留下的 + 能滚掉的 = 底部高度，两种模式都成立。
+矛盾的后果不是抽象的：要么这条栏把自己的一部分吃了两次，要么留下一道缝。
+
+五个变异全红。coverage 2102 / 2012 记账 / **9 MISSING**。

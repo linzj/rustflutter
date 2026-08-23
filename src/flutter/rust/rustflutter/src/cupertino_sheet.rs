@@ -87,6 +87,61 @@ pub enum NavBarError {
     SearchableWithABottom,
 }
 
+/// Upstream `NavigationBarBottomMode`: whether the bar's bottom -- a search
+/// field, or whatever was given as `bottom` -- can be scrolled away.
+///
+/// Both modes consume the same total: the bar shrinks from
+/// `persistent + largeTitle + bottom` down to its minimum. **What differs is
+/// what is left at the bottom of that travel**, and therefore what gets
+/// consumed first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NavigationBarBottomMode {
+    /// The bottom goes first. Upstream: "the large title stays pinned while
+    /// the bottom resizes until it is completely consumed. Then, the large
+    /// title scrolls under the persistent navigation bar."
+    #[default]
+    Automatic,
+    /// The bottom stays. Upstream: "the bottom stays pinned while the large
+    /// title scrolls under."
+    Always,
+}
+
+impl NavigationBarBottomMode {
+    pub const ALL: [NavigationBarBottomMode; 2] = [
+        NavigationBarBottomMode::Automatic,
+        NavigationBarBottomMode::Always,
+    ];
+
+    /// Upstream's `minExtent`:
+    /// `persistentHeight + (bottomMode == always ? bottomHeight : 0.0)`.
+    pub fn min_extent(self, persistent_height: f32, bottom_height: f32) -> f32 {
+        persistent_height
+            + match self {
+                NavigationBarBottomMode::Always => bottom_height,
+                NavigationBarBottomMode::Automatic => 0.0,
+            }
+    }
+
+    /// Upstream's `maxExtent`, which **does not mention the mode**: the bar is
+    /// the same size fully expanded either way.
+    pub fn max_extent(persistent_height: f32, large_title_height: f32, bottom_height: f32) -> f32 {
+        persistent_height + large_title_height + bottom_height
+    }
+
+    /// Upstream's `bottomScrollOffset`: `always ? 0.0 : bottomHeight`.
+    ///
+    /// How much of the bottom the scroll may eat. It is the exact complement
+    /// of the part [`NavigationBarBottomMode::min_extent`] keeps, and the two
+    /// are written separately upstream -- so they can be made to disagree, and
+    /// a test here says they must not.
+    pub fn scrollable_bottom(self, bottom_height: f32) -> f32 {
+        match self {
+            NavigationBarBottomMode::Always => 0.0,
+            NavigationBarBottomMode::Automatic => bottom_height,
+        }
+    }
+}
+
 /// Upstream `CupertinoSliverNavigationBar`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CupertinoSliverNavigationBar {
@@ -95,6 +150,9 @@ pub struct CupertinoSliverNavigationBar {
     pub automatically_imply_title: bool,
     pub has_bottom: bool,
     pub has_bottom_mode: bool,
+    /// Upstream's `bottomMode`, which only means anything when there is a
+    /// bottom -- see [`NavBarError::BottomModeWithoutABottom`].
+    pub bottom_mode: NavigationBarBottomMode,
     pub searchable: bool,
     pub bottom_height: f32,
 }
@@ -107,6 +165,7 @@ impl CupertinoSliverNavigationBar {
             automatically_imply_title: true,
             has_bottom: false,
             has_bottom_mode: false,
+            bottom_mode: NavigationBarBottomMode::Automatic,
             searchable: false,
             bottom_height: 0.0,
         }
@@ -482,5 +541,91 @@ mod tests {
     fn two_screen_heights_a_second_is_the_flick_that_closes_it() {
         assert!(!CupertinoSheetTransition::dismisses_on_fling(1.9));
         assert!(CupertinoSheetTransition::dismisses_on_fling(2.0));
+    }
+}
+
+#[cfg(test)]
+mod bottom_mode_tests {
+    use super::{CupertinoSliverNavigationBar, NavigationBarBottomMode};
+
+    const PERSISTENT: f32 = 44.0;
+    const LARGE_TITLE: f32 = 52.0;
+    const BOTTOM: f32 = 35.0;
+
+    #[test]
+    fn always_keeps_the_bottom_at_the_end_of_the_travel() {
+        assert_eq!(
+            NavigationBarBottomMode::Always.min_extent(PERSISTENT, BOTTOM),
+            PERSISTENT + BOTTOM
+        );
+        assert_eq!(
+            NavigationBarBottomMode::Automatic.min_extent(PERSISTENT, BOTTOM),
+            PERSISTENT
+        );
+    }
+
+    #[test]
+    fn but_both_modes_start_from_the_same_size() {
+        // maxExtent does not mention the mode: fully expanded, the bar is the
+        // same either way, and only what survives the shrinking differs.
+        let expanded = NavigationBarBottomMode::max_extent(PERSISTENT, LARGE_TITLE, BOTTOM);
+        assert_eq!(expanded, PERSISTENT + LARGE_TITLE + BOTTOM);
+        for mode in NavigationBarBottomMode::ALL {
+            assert!(
+                mode.min_extent(PERSISTENT, BOTTOM) <= expanded,
+                "{mode:?} shrinks rather than grows"
+            );
+        }
+    }
+
+    #[test]
+    fn what_scrolls_away_and_what_stays_add_up_to_the_bottom() {
+        // Upstream writes minExtent and bottomScrollOffset separately, so they
+        // can be made to disagree. They are complements and must stay so, or
+        // the bar would either eat part of itself twice or leave a gap.
+        for mode in NavigationBarBottomMode::ALL {
+            let kept = mode.min_extent(PERSISTENT, BOTTOM) - PERSISTENT;
+            assert_eq!(kept + mode.scrollable_bottom(BOTTOM), BOTTOM, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn and_only_the_automatic_one_lets_the_bottom_go() {
+        assert_eq!(
+            NavigationBarBottomMode::Automatic.scrollable_bottom(BOTTOM),
+            BOTTOM
+        );
+        assert_eq!(
+            NavigationBarBottomMode::Always.scrollable_bottom(BOTTOM),
+            0.0
+        );
+        // Which is a real difference, or the mode would decide nothing.
+        assert_ne!(
+            NavigationBarBottomMode::Automatic.scrollable_bottom(BOTTOM),
+            NavigationBarBottomMode::Always.scrollable_bottom(BOTTOM)
+        );
+    }
+
+    #[test]
+    fn a_bar_with_no_bottom_scrolls_the_same_either_way() {
+        // With nothing there, the mode has nothing to decide -- which is why
+        // upstream asserts a bottomMode without a bottom is a mistake rather
+        // than a no-op worth allowing.
+        for mode in NavigationBarBottomMode::ALL {
+            assert_eq!(mode.min_extent(PERSISTENT, 0.0), PERSISTENT, "{mode:?}");
+            assert_eq!(mode.scrollable_bottom(0.0), 0.0, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_bar_hides_its_bottom_unless_told_otherwise() {
+        assert_eq!(
+            CupertinoSliverNavigationBar::new().bottom_mode,
+            NavigationBarBottomMode::Automatic
+        );
+        assert_eq!(
+            NavigationBarBottomMode::default(),
+            NavigationBarBottomMode::Automatic
+        );
     }
 }
