@@ -363,6 +363,17 @@ pub struct SemanticsNode {
     pub bottom: f32,
     /// In paint order, which is reading order.
     pub children: Vec<i32>,
+    /// Upstream's `isMergedIntoParent`: this node's meaning was folded into an
+    /// ancestor's by [`SemanticsConfiguration::absorb`], so it has no separate
+    /// existence for a reader.
+    ///
+    /// It is the guard in [`SemanticsNode::is_invisible`], and that is what it
+    /// is for here.
+    pub is_merged_into_parent: bool,
+    /// Upstream's `indexInParent`, which counts differently from
+    /// [`SemanticsNode::children`] -- see
+    /// [`SemanticsNode::index_counts_the_children_that_are_not_here`].
+    pub index_in_parent: Option<i32>,
 }
 
 impl SemanticsNode {
@@ -372,6 +383,49 @@ impl SemanticsNode {
 
     pub fn height(&self) -> f32 {
         self.bottom - self.top
+    }
+
+    /// Upstream's `isInvisible`:
+    /// `!isMergedIntoParent && (rect.isEmpty || transform.isZero())`.
+    ///
+    /// # It is a licence to drop, which is why the merged guard is there
+    ///
+    /// Upstream says what the predicate is *for*: "an invisible node can be
+    /// safely dropped from the semantic tree without losing semantic
+    /// information that is relevant for describing the content currently shown
+    /// on screen."
+    ///
+    /// A merged node has no geometry of its own to be judged by -- its label
+    /// is being read as part of its parent's -- so an empty rect says nothing
+    /// about whether it is on screen. Dropping it would lose the words. **The
+    /// guard is not an optimisation; it is the difference between a node with
+    /// no size and a node with no meaning.**
+    ///
+    /// The port carries no zero-transform case: geometry here is a rectangle
+    /// rather than a matrix, so a transform that collapses to nothing arrives
+    /// as an empty rect and is caught by the first clause.
+    pub fn is_invisible(&self) -> bool {
+        !self.is_merged_into_parent && (self.width() <= 0.0 || self.height() <= 0.0)
+    }
+
+    /// Upstream on `indexInParent`: it "includes all semantic nodes, not just
+    /// those currently in the child list".
+    ///
+    /// Upstream's own example: a scrollable with five children whose first two
+    /// are not visible has three nodes, and the last of them still has index
+    /// **4**. So the index is a position in the list the reader is being told
+    /// about, not a position in the array that survived clipping -- which is
+    /// what lets a screen reader say "item 5 of 5" while three nodes exist.
+    ///
+    /// Reading it off `children.len()` would say "item 3 of 3" and quietly
+    /// tell the reader the list is shorter than it is.
+    ///
+    /// `kept` is where the surviving children sat in the full list; each keeps
+    /// that position. The function is one line because the rule is -- what it
+    /// is *not* is renumbering the survivors from zero, and the two agree
+    /// whenever nothing was dropped, which is the case a careless test picks.
+    pub fn indices_in_parent(kept: &[usize]) -> Vec<i32> {
+        kept.iter().map(|&index| index as i32).collect()
     }
 }
 
@@ -1094,6 +1148,17 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
             right: rect.2,
             bottom: rect.3,
             children: Vec::new(),
+            is_merged_into_parent: false,
+            // Not knowable here. Upstream sets `indexInParent` in the *render*
+            // layer -- `RenderIndexedSemantics` and `RenderTable` put it on the
+            // `SemanticsConfiguration`, and the node reads it back off that --
+            // because by the time a node reaches this walk its dropped
+            // siblings are already gone and their positions with them.
+            //
+            // A value computed here from `children.len()` would be the
+            // renumbering the rule exists to forbid, so this stays `None`
+            // until a render object supplies one.
+            index_in_parent: None,
         });
         if let Some(parent) = collector.open.last().copied() {
             collector.nodes[parent].children.push(id);
@@ -3088,6 +3153,40 @@ mod tests {
         }
         flush(size, &root);
         (tree_or_fail(), root)
+    }
+
+    #[test]
+    fn the_walk_does_not_invent_an_index_in_parent() {
+        // It cannot know one: by the time a node reaches the walk its dropped
+        // siblings are gone, and their positions with them. Upstream sets
+        // `indexInParent` in the render layer -- `RenderIndexedSemantics` and
+        // `RenderTable` put it on the config -- where the full list is still
+        // there to count.
+        //
+        // Checked on nodes the collector produced, not on one built by hand:
+        // a mutation making the walk fill in `Some(0)` survived a test that
+        // constructed its own node, because that test never ran the walk.
+        set_enabled(true);
+        let nodes = describe_tree(
+            single(
+                semantics(
+                    7,
+                    SemanticsProperties::button("Increment"),
+                    leaf(|| SizedBox::new(80.0, 40.0)),
+                ),
+                |child| RenderPadding::new(EdgeInsets::all(10.0), child),
+            ),
+            Size::new(200.0, 100.0),
+        );
+        set_enabled(false);
+        assert!(nodes.len() >= 2, "the view's node and the annotation in it");
+        for node in &nodes {
+            assert_eq!(
+                node.index_in_parent, None,
+                "node {} was given an index the walk cannot know",
+                node.id
+            );
+        }
     }
 
     /// What the platform is holding, which had better be something.
@@ -5712,6 +5811,8 @@ mod tests {
             right: rect.2,
             bottom: rect.3,
             children,
+            is_merged_into_parent: false,
+            index_in_parent: None,
         }
     }
 
@@ -5979,6 +6080,8 @@ mod inspector_tests {
             right: 10.0,
             bottom: 10.0,
             children,
+            is_merged_into_parent: false,
+            index_in_parent: None,
         }
     }
 
@@ -6285,5 +6388,90 @@ mod merge_first_wins_tests {
         assert_eq!(parent.scroll_position, Some(1.0), "its own");
         assert_eq!(parent.scroll_extent_max, Some(201.0), "and the child's");
         assert_eq!(parent.index_in_parent, Some(205));
+    }
+}
+
+#[cfg(test)]
+mod semantics_node_visibility_tests {
+    use super::*;
+
+    fn node(width: f32, height: f32) -> SemanticsNode {
+        SemanticsNode {
+            id: 1,
+            properties: SemanticsProperties::default(),
+            left: 0.0,
+            top: 0.0,
+            right: width,
+            bottom: height,
+            children: Vec::new(),
+            is_merged_into_parent: false,
+            index_in_parent: None,
+        }
+    }
+
+    #[test]
+    fn a_node_with_no_size_is_invisible_and_may_be_dropped() {
+        // Which is what the predicate is for: upstream says an invisible node
+        // "can be safely dropped from the semantic tree without losing
+        // semantic information".
+        assert!(node(0.0, 10.0).is_invisible());
+        assert!(node(10.0, 0.0).is_invisible());
+        assert!(node(0.0, 0.0).is_invisible());
+        assert!(!node(10.0, 10.0).is_invisible());
+    }
+
+    #[test]
+    fn but_a_merged_node_is_never_invisible_however_small_it_is() {
+        // A merged node has no geometry of its own to be judged by -- its
+        // label is read as part of its parent's -- so an empty rect says
+        // nothing about whether it is on screen, and dropping it would lose
+        // the words.
+        let mut merged = node(0.0, 0.0);
+        merged.is_merged_into_parent = true;
+        assert!(!merged.is_invisible());
+
+        // The guard is what does it, not the size: the same node unmerged is
+        // invisible.
+        merged.is_merged_into_parent = false;
+        assert!(merged.is_invisible());
+    }
+
+    #[test]
+    fn and_merging_does_not_make_a_sized_node_anything_else() {
+        // The guard only ever turns the answer off, never on.
+        let mut merged = node(10.0, 10.0);
+        merged.is_merged_into_parent = true;
+        assert!(!merged.is_invisible());
+        assert!(!node(10.0, 10.0).is_invisible());
+    }
+
+    #[test]
+    fn an_index_keeps_the_position_it_had_before_its_siblings_were_dropped() {
+        // Upstream's own example: five children, the first two not visible,
+        // and the last of the three that survive still has index 4.
+        assert_eq!(SemanticsNode::indices_in_parent(&[2, 3, 4]), vec![2, 3, 4]);
+        assert_ne!(
+            SemanticsNode::indices_in_parent(&[2, 3, 4]),
+            vec![0, 1, 2],
+            "renumbering would say 'item 3 of 3' and shorten the list"
+        );
+    }
+
+    #[test]
+    fn which_is_only_visible_where_something_was_dropped() {
+        // With nothing dropped the two rules agree, so a test that only
+        // checked this case would pass against either of them.
+        assert_eq!(
+            SemanticsNode::indices_in_parent(&[0, 1, 2]),
+            vec![0, 1, 2],
+            "the case that proves nothing"
+        );
+        assert_eq!(SemanticsNode::indices_in_parent(&[]), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_gap_in_the_middle_survives_too() {
+        // Not just a dropped prefix: a scrollable can drop from anywhere.
+        assert_eq!(SemanticsNode::indices_in_parent(&[0, 3, 7]), vec![0, 3, 7]);
     }
 }
