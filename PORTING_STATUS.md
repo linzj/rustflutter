@@ -11048,3 +11048,66 @@ aligned 按钮那 4 是箭头旁边的余地，unaligned 菜单那 24 是与没�
 
 无读者主题 10 → 8（另有 1 个上游已废弃，不计）。
 
+## 图标按钮：同一个主题，两个动词，两种优先级（2026-08-23）
+
+### `IconButtonTheme` 被四个 widget 读，用了两个不同的动词
+
+`IconButton.themeStyleOf`：
+`IconButtonTheme.of(context).style?.merge(iconThemeStyle) ?? iconThemeStyle`。
+`ListTile.build` 和 `AppBar.build`：
+`IconButtonTheme.of(context).style?.copyWith(foregroundColor: ...)`。
+
+`merge` 保留自己的字段、只在自己为空处取对方的，所以**主题赢，
+环境 `IconTheme` 补空**。上游自己的文档就是这么写的：
+*「if any of the properties exist in both [IconButtonTheme] and [IconTheme],
+[IconTheme] will be overridden.」*
+`copyWith` 则是直接替换点名的字段，所以**读者赢**。
+
+同一个主题，相反的答案，而调用者拿到哪个取决于他把按钮放进了什么。
+这不是不一致：**一个裸的 `IconButton` 对身后是什么没有意见，理应让位；
+而 `ListTile` 或 `AppBar` 自己画了背景，必须压上一个在那背景上读得出来的颜色。**
+一个能把 app bar 的动作图标染到看不见的主题，就是一个能弄坏 app bar 的主题。
+
+### merge 是逐字段的，`??` 阶梯不是
+
+这个区别在这里真的起作用：只设了前景色的主题，**仍然让 `IconTheme` 的尺寸通过**，
+因为 merge 一个字段一个字段地问。写成 `themeStyle ?? iconThemeStyle`，
+第一个非空的 style 会把整块拿走，设一个字段就会**悄悄丢掉另一个**。
+
+### 环境图标主题在进门前先被过滤
+
+`iconThemeStyle` 是 `isDefaultColor ? null : iconTheme.color`（尺寸同理），
+所以 `IconTheme` **只贡献被人特意设过的东西**。这是把它 merge 在主题下面
+仍然安全的原因：它没法把主题正想替换掉的那个兜底again 顶回来。
+
+### 一处本移植跟不了上游的地方
+
+`isDefaultColor` 用的是
+`identical(iconTheme.color, kDefaultIconDarkColor)`——**对象同一性，不是相等**。
+Dart 里同值的 `const` 颜色会被规范化因而 identical，而同值的非 const 颜色不会，
+会被当成「特意设过」。也就是说行为取决于调用者那个颜色是不是 const。
+
+Rust 的 `Color` 是 `Copy`，没有同一性可比，所以本移植按值比。
+const 那种（也是有文档的、常见的那种）与上游一致；
+非 const 而恰好等于默认值的那种不一致——上游当它设过，这里当它没设。
+**记下来而不是糊过去**：这是真差别，而另一条路是给 Rust 发明一个它没有的同一性。
+
+10 个变异，10 个全红。
+
+### 尺子第四次修：`unwired.py` 的 `wrappers()`
+
+`TextTheme` 一直挂在无读者队列里。上游 `class TextTheme with Diagnosticable`
+是个**数据类，根本没有 `.of`**，靠 `Theme.of(context).textTheme` 取用——
+它被读得到处都是，而报告要求的那种读者它永远不可能有。
+
+原因是 `wrappers()` 按**名字形状**判定：「叫 `XTheme` 且不叫 `XThemeData`」。
+改成按行为判定：**impl 里有 `fn of(` 才是包装类**。
+
+这和 `resolvers()` 当初需要的修正是同一件事。把这把尺子四次出错串起来看，
+**全部都是名字形状的启发式在冒充行为形状的判定**：
+找 `Resolved<主题名去掉 Theme>`、找 `Resolver::of(`、
+grep 包装类而不看它承载的 data 类、以及这次的 `wrappers()`。
+
+主题总数 49 → 48（`TextTheme` 本就不该在名单上），
+无读者 8 → 6（另 1 个上游已废弃，不计）。
+

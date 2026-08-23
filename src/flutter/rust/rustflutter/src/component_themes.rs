@@ -3411,6 +3411,136 @@ impl DropdownAlignment {
     }
 }
 
+/// How `IconButtonTheme` reaches an icon button -- and it reaches four widgets
+/// two different ways.
+///
+/// # Two verbs, and they give opposite precedence
+///
+/// `IconButton.themeStyleOf` writes
+/// `IconButtonTheme.of(context).style?.merge(iconThemeStyle) ?? iconThemeStyle`.
+/// `ListTile.build` and `AppBar.build` write
+/// `IconButtonTheme.of(context).style?.copyWith(foregroundColor: ...)`.
+///
+/// `merge` keeps this style's fields and takes the other's only where this one
+/// is null, so **the theme wins and the ambient `IconTheme` fills its gaps**.
+/// Upstream's own doc says it: *"if any of the properties exist in both
+/// [IconButtonTheme] and [IconTheme], [IconTheme] will be overridden."*
+///
+/// `copyWith` replaces the named field outright, so **the reader wins**.
+///
+/// Same theme, opposite answer, and which one a caller gets depends on what
+/// they put the button inside. That is not an inconsistency: a bare
+/// `IconButton` has no opinion about what is behind it and should defer, while
+/// a `ListTile` or an `AppBar` painted its own background and has to impose a
+/// colour that reads against it. A theme that could recolour an app bar's
+/// actions into invisibility would be a theme that could break the app bar.
+///
+/// # A merge is per-field, which a `??` ladder is not
+///
+/// The distinction does work here. A theme that sets only the foreground still
+/// lets the `IconTheme`'s size through, because the merge asks each field
+/// separately. Written as `themeStyle ?? iconThemeStyle` the first non-null
+/// style would have taken everything, and setting one field would have silently
+/// dropped the other.
+///
+/// # The ambient icon theme is filtered before it enters
+///
+/// `iconThemeStyle` is built from `isDefaultColor ? null : iconTheme.color` and
+/// the same for the size, so the `IconTheme` contributes **only what was
+/// deliberately set**. It is a third source that has already had its defaults
+/// removed, which is why merging it under the theme is safe: it cannot
+/// re-assert a fallback the theme was trying to replace.
+///
+/// # Where this port cannot follow upstream
+///
+/// `isDefaultColor` is `identical(iconTheme.color, kDefaultIconDarkColor)` --
+/// **object identity, not equality**. In Dart a `const` colour with the same
+/// value is canonicalised and so *is* identical, while a non-const one holding
+/// the same value is not, and would count as deliberately set. The behaviour
+/// therefore turns on whether the caller's colour was const.
+///
+/// A Rust `Color` is `Copy` and has no identity to compare, so this port
+/// compares by value. That matches upstream for the const case, which is the
+/// documented and ordinary one, and differs for a non-const colour that happens
+/// to equal the default -- where upstream treats it as set and this treats it
+/// as absent. Recorded rather than papered over: it is a real difference and
+/// the alternative would be inventing an identity Rust does not have.
+pub struct ResolvedIconButton {
+    /// What the theme and the ambient icon theme make between them, before the
+    /// button's own defaults are merged under it.
+    pub style: ButtonStyle,
+}
+
+impl ResolvedIconButton {
+    /// Upstream's `kDefaultIconDarkColor`, the light-mode default.
+    pub const DEFAULT_DARK: Color = Color(0xDD000000);
+    /// Upstream's `kDefaultIconLightColor`.
+    pub const DEFAULT_LIGHT: Color = Color(0xFFFFFFFF);
+    /// Upstream's `IconThemeData.fallback().size`.
+    pub const DEFAULT_SIZE: f32 = 24.0;
+
+    /// Upstream's `iconThemeStyle`: the ambient icon theme with its defaults
+    /// removed, so only what somebody chose survives.
+    pub fn from_icon_theme(icon_theme: &IconThemeData, is_dark: bool) -> ButtonStyle {
+        let default_color = if is_dark {
+            ResolvedIconButton::DEFAULT_LIGHT
+        } else {
+            ResolvedIconButton::DEFAULT_DARK
+        };
+        let mut style = ButtonStyle::new();
+        if let Some(color) = icon_theme.color {
+            if color != default_color {
+                style.foreground_color = Some(StateProperty::all(Some(color)));
+            }
+        }
+        if let Some(size) = icon_theme.size {
+            if size != ResolvedIconButton::DEFAULT_SIZE {
+                style.icon_size = Some(StateProperty::all(Some(size)));
+            }
+        }
+        style
+    }
+
+    /// Upstream's `IconButton.themeStyleOf`: the theme merged over the filtered
+    /// icon theme, and the icon theme alone where there is no theme.
+    pub fn of(context: &mut BuildContext, icon_theme: &IconThemeData) -> ResolvedIconButton {
+        let is_dark = ThemeData::of(context).brightness == crate::platform::Brightness::Dark;
+        let from_icons = ResolvedIconButton::from_icon_theme(icon_theme, is_dark);
+        let style = match IconButtonTheme::of(context).style {
+            Some(theme_style) => theme_style.merge(&from_icons),
+            None => from_icons,
+        };
+        ResolvedIconButton { style }
+    }
+
+    /// What a `ListTile` or an `AppBar` does instead: take the theme's style if
+    /// there is one and **overwrite** the foreground, or start from nothing and
+    /// set it.
+    ///
+    /// The `copyWith` half of the two verbs -- see the type's docs.
+    pub fn forced_foreground(context: &mut BuildContext, foreground: Color) -> ResolvedIconButton {
+        let mut style = IconButtonTheme::of(context).style.unwrap_or_default();
+        style.foreground_color = Some(StateProperty::all(Some(foreground)));
+        ResolvedIconButton { style }
+    }
+
+    /// The foreground this resolution lands on, for a given state.
+    pub fn foreground(&self, states: WidgetStates) -> Option<Color> {
+        self.style
+            .foreground_color
+            .as_ref()
+            .and_then(|property| property.resolve(states))
+    }
+
+    /// The icon size this resolution lands on.
+    pub fn icon_size(&self, states: WidgetStates) -> Option<f32> {
+        self.style
+            .icon_size
+            .as_ref()
+            .and_then(|property| property.resolve(states))
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

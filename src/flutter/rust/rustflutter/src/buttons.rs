@@ -170,6 +170,18 @@ pub struct IconButton {
 impl IconButton {
     pub const DEFAULT_ICON_SIZE: f32 = 24.0;
 
+    /// This button's style, from `IconButtonTheme` merged over the ambient
+    /// icon theme -- see [`crate::component_themes::ResolvedIconButton`] for
+    /// why it is a merge here and a `copy_with` inside a list tile or an app
+    /// bar.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        icon_theme: &crate::component_themes::IconThemeData,
+    ) -> crate::component_themes::ResolvedIconButton {
+        crate::component_themes::ResolvedIconButton::of(context, icon_theme)
+    }
+
     pub fn new() -> IconButton {
         IconButton {
             icon_size: IconButton::DEFAULT_ICON_SIZE,
@@ -754,5 +766,200 @@ mod fab_theme_tests {
         assert!(!fab.is_valid());
         fab.elevation = Some(0.0);
         assert!(fab.is_valid(), "resting on the surface is allowed");
+    }
+}
+
+#[cfg(test)]
+mod icon_button_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ButtonStyle, IconButtonTheme, IconButtonThemeData, IconThemeData, ResolvedIconButton,
+    };
+    use crate::engine::Color;
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, provide,
+    };
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        read: std::rc::Rc<dyn Fn(&mut BuildContext) -> ResolvedIconButton>,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedIconButton>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some((self.read)(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn read_under(
+        data: IconButtonThemeData,
+        read: impl Fn(&mut BuildContext) -> ResolvedIconButton + 'static,
+    ) -> ResolvedIconButton {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            ThemeData::light(),
+            IconButtonTheme::new(
+                data,
+                component(Reader {
+                    read: std::rc::Rc::new(read),
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn themed(style: Option<ButtonStyle>) -> IconButtonThemeData {
+        IconButtonThemeData { style }
+    }
+
+    fn colour_and_size(color: Option<Color>, size: Option<f32>) -> ButtonStyle {
+        let mut style = ButtonStyle::new();
+        if let Some(color) = color {
+            style.foreground_color = Some(StateProperty::all(Some(color)));
+        }
+        if let Some(size) = size {
+            style.icon_size = Some(StateProperty::all(Some(size)));
+        }
+        style
+    }
+
+    fn icons(color: Option<Color>, size: Option<f32>) -> IconThemeData {
+        let mut data = IconThemeData::new();
+        data.color = color;
+        data.size = size;
+        data
+    }
+
+    const NONE: WidgetStates = WidgetStates::NONE;
+
+    #[test]
+    fn the_button_theme_wins_and_the_icon_theme_fills_its_gaps() {
+        // Upstream's own doc: "if any of the properties exist in both
+        // [IconButtonTheme] and [IconTheme], [IconTheme] will be overridden."
+        let from_theme = Color(0xFFAA0000);
+        let from_icons = Color(0xFF00AA00);
+        let resolved = read_under(
+            themed(Some(colour_and_size(Some(from_theme), None))),
+            move |context| ResolvedIconButton::of(context, &icons(Some(from_icons), Some(30.0))),
+        );
+        assert_eq!(resolved.foreground(NONE), Some(from_theme));
+        assert_eq!(
+            resolved.icon_size(NONE),
+            Some(30.0),
+            "and the size the theme said nothing about still arrives"
+        );
+    }
+
+    #[test]
+    fn which_a_null_coalescing_ladder_would_not_have_done() {
+        // The point of a merge being per-field. Written as
+        // `themeStyle ?? iconThemeStyle` the first non-null style would take
+        // everything, and setting one field would silently drop the other.
+        let resolved = read_under(
+            themed(Some(colour_and_size(Some(Color(0xFFAA0000)), None))),
+            move |context| ResolvedIconButton::of(context, &icons(None, Some(30.0))),
+        );
+        assert!(
+            resolved.foreground(NONE).is_some() && resolved.icon_size(NONE).is_some(),
+            "both sources landed in one style"
+        );
+    }
+
+    #[test]
+    fn a_list_tile_overrides_the_theme_where_the_button_deferred_to_it() {
+        // Same theme, opposite answer. A bare icon button has no opinion about
+        // what is behind it; a list tile painted its own background and has to
+        // impose a colour that reads against it.
+        let from_theme = Color(0xFFAA0000);
+        let imposed = Color(0xFF0000AA);
+        let data = themed(Some(colour_and_size(Some(from_theme), None)));
+
+        let deferring = read_under(data.clone(), move |context| {
+            ResolvedIconButton::of(context, &icons(None, None))
+        });
+        let forcing = read_under(data, move |context| {
+            ResolvedIconButton::forced_foreground(context, imposed)
+        });
+
+        assert_eq!(deferring.foreground(NONE), Some(from_theme));
+        assert_eq!(forcing.foreground(NONE), Some(imposed));
+        assert_ne!(deferring.foreground(NONE), forcing.foreground(NONE));
+    }
+
+    #[test]
+    fn but_the_forcing_reader_keeps_everything_it_did_not_name() {
+        // `copyWith(foregroundColor:)` replaces one field, not the style. A
+        // list tile imposes a colour and leaves the theme's sizing alone.
+        let resolved = read_under(
+            themed(Some(colour_and_size(Some(Color(0xFFAA0000)), Some(18.0)))),
+            move |context| ResolvedIconButton::forced_foreground(context, Color(0xFF0000AA)),
+        );
+        assert_eq!(resolved.foreground(NONE), Some(Color(0xFF0000AA)));
+        assert_eq!(resolved.icon_size(NONE), Some(18.0));
+    }
+
+    #[test]
+    fn the_ambient_icon_theme_contributes_only_what_was_chosen() {
+        // `iconThemeStyle` is built from `isDefaultColor ? null : color`, so a
+        // default-valued icon theme enters as nothing at all. That is what
+        // makes merging it under the theme safe: it cannot re-assert a
+        // fallback the theme was replacing.
+        let untouched = ResolvedIconButton::from_icon_theme(
+            &icons(Some(ResolvedIconButton::DEFAULT_DARK), Some(24.0)),
+            false,
+        );
+        assert_eq!(untouched.foreground_color, None);
+        assert_eq!(untouched.icon_size, None);
+
+        let chosen =
+            ResolvedIconButton::from_icon_theme(&icons(Some(Color(0xFF123456)), Some(31.0)), false);
+        assert!(chosen.foreground_color.is_some());
+        assert!(chosen.icon_size.is_some());
+    }
+
+    #[test]
+    fn the_default_it_is_filtered_against_follows_the_brightness() {
+        // Light mode's default is the dark ink and dark mode's is the light,
+        // so the same icon theme is "untouched" in one and "chosen" in the
+        // other.
+        let light_default = icons(Some(ResolvedIconButton::DEFAULT_DARK), None);
+        assert_eq!(
+            ResolvedIconButton::from_icon_theme(&light_default, false).foreground_color,
+            None
+        );
+        assert!(
+            ResolvedIconButton::from_icon_theme(&light_default, true)
+                .foreground_color
+                .is_some(),
+            "in the dark, that same colour was deliberate"
+        );
+    }
+
+    #[test]
+    fn with_no_theme_the_icon_theme_is_the_whole_answer() {
+        let mine = Color(0xFF00AA00);
+        let resolved = read_under(themed(None), move |context| {
+            ResolvedIconButton::of(context, &icons(Some(mine), Some(30.0)))
+        });
+        assert_eq!(resolved.foreground(NONE), Some(mine));
+        assert_eq!(resolved.icon_size(NONE), Some(30.0));
+    }
+
+    #[test]
+    fn a_forcing_reader_needs_no_theme_to_work_from() {
+        // Upstream's `?? IconButton.styleFrom(foregroundColor:)`: with nothing
+        // to copy, it builds a style around the one field it cares about.
+        let imposed = Color(0xFF0000AA);
+        let resolved = read_under(themed(None), move |context| {
+            ResolvedIconButton::forced_foreground(context, imposed)
+        });
+        assert_eq!(resolved.foreground(NONE), Some(imposed));
+        assert_eq!(resolved.icon_size(NONE), None);
     }
 }

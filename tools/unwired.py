@@ -87,10 +87,32 @@ def deprecated_upstream():
 
 
 def wrappers():
-    """`pub struct XTheme` in the themes file, minus the data types."""
+    """The theme wrappers: types in the themes file whose impl has an `of`.
+
+    Not "types named `XTheme` minus those named `XThemeData`". That test is
+    about the name, and it listed `TextTheme` -- which upstream declares as
+    `class TextTheme with Diagnosticable`, a data class with no `.of` at all,
+    reached through `Theme.of(context).textTheme`. It is consumed constantly
+    and could never have had the reader the report was asking for.
+
+    Having an `of` is what makes a type a wrapper, so that is the test. It is
+    the same correction `resolvers()` already needed: this tool's mistakes have
+    all been name-shaped heuristics standing in for behaviour-shaped ones.
+    """
     text = io.open(THEMES, encoding='utf-8', errors='replace').read()
-    found = re.findall(r'^pub struct (\w+Theme)\b', text, re.M)
-    return sorted(set(name for name in found if not name.endswith('ThemeData')))
+    out = []
+    for match in re.finditer(r'^pub struct (\w+Theme)\b', text, re.M):
+        name = match.group(1)
+        if name.endswith('ThemeData'):
+            continue
+        impl = re.search(r'^impl ' + re.escape(name) + r' \{', text, re.M)
+        if not impl:
+            continue
+        end = text.find(chr(10) + 'impl ', impl.end())
+        body = text[impl.end():end if end > 0 else len(text)]
+        if re.search(r'fn of\(', body):
+            out.append(name)
+    return sorted(set(out))
 
 
 def readers():
