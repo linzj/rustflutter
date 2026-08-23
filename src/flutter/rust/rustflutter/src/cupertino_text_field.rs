@@ -5,6 +5,8 @@
 //! has three states where you would expect two. These are the same fields in
 //! the other design language, and they have two.
 
+use crate::cupertino::CupertinoFormRow;
+use crate::render::EdgeInsets;
 use crate::services::text_formatter::MaxLengthEnforcement;
 
 /// Why a Cupertino text field's construction was refused.
@@ -272,19 +274,42 @@ pub struct CupertinoTextFormFieldRow {
     pub field: CupertinoTextField,
     pub has_initial_value: bool,
     pub has_controller: bool,
+    /// Upstream: *"iOS guidelines encourage passing a `Text` widget to
+    /// `prefix` to detail the nature of the input."* A label beside the field
+    /// rather than floating inside it, which is where Material would put it.
+    ///
+    /// This used to be a `labels_beside_rather_than_inside()` returning `true`
+    /// -- a function taking nothing, which no input could make answer
+    /// otherwise. It stated the fact without checking it, so it is stated
+    /// here, where it is not pretending to be a test.
     pub has_prefix: bool,
     /// `None` is **not** zero. See [`CupertinoTextFormFieldRow::padding`].
-    pub padding: Option<f32>,
+    pub padding: Option<EdgeInsets>,
 }
 
 impl CupertinoTextFormFieldRow {
     /// The standard iOS form row padding `CupertinoFormRow` supplies when none
-    /// is given.
-    pub const DEFAULT_PADDING: f32 = 6.0;
+    /// is given -- **the form row's own constant, not a second copy of it.**
+    ///
+    /// It was a bare `6.0` here while [`CupertinoFormRow::PADDING`] said
+    /// `(20, 6, 6, 6)`: one upstream number written down in two places,
+    /// disagreeing about the start inset. And the start inset is the one that
+    /// matters -- 20 against 6 is what makes the labels line up down a column,
+    /// and it is the only side of that rectangle a scalar could not carry.
+    ///
+    /// The two only came into contact because the form row's padding was
+    /// ported as an `EdgeInsets` in the tick before this one. Until then each
+    /// was locally plausible.
+    pub const DEFAULT_PADDING: EdgeInsets = CupertinoFormRow::PADDING;
 
     pub fn new() -> CupertinoTextFormFieldRow {
         CupertinoTextFormFieldRow {
-            field: CupertinoTextField::new(),
+            // Upstream's builder does not offer this as a choice: it
+            // builds a `CupertinoTextField.borderless` outright. The row is
+            // the visual container -- it is what draws the divider and sits
+            // inside the section's card -- so a field with a border of its own
+            // would put a second box inside the first.
+            field: CupertinoTextField::borderless(),
             has_initial_value: false,
             has_controller: false,
             has_prefix: false,
@@ -314,16 +339,9 @@ impl CupertinoTextFormFieldRow {
     /// `maxLength` (null means no limit, zero is refused). Each time the unset
     /// value and the zero value mean different things, and each time the API
     /// has to say so in prose because the type cannot.
-    pub fn padding(&self) -> f32 {
+    pub fn padding(&self) -> EdgeInsets {
         self.padding
             .unwrap_or(CupertinoTextFormFieldRow::DEFAULT_PADDING)
-    }
-
-    /// Upstream: *"iOS guidelines encourage passing a `Text` widget to `prefix`
-    /// to detail the nature of the input."* A label beside the field rather than
-    /// floating inside it, which is where Material would put it.
-    pub fn labels_beside_rather_than_inside() -> bool {
-        true
     }
 }
 
@@ -491,10 +509,61 @@ mod tests {
     fn unset_padding_means_the_standard_one_and_zero_means_none() {
         let mut row = CupertinoTextFormFieldRow::new();
         assert_eq!(row.padding(), CupertinoTextFormFieldRow::DEFAULT_PADDING);
-        assert_ne!(row.padding(), 0.0, "which is why the doc has to say so");
+        assert_ne!(
+            row.padding(),
+            EdgeInsets::ZERO,
+            "which is why the doc has to say so"
+        );
 
-        row.padding = Some(0.0);
-        assert_eq!(row.padding(), 0.0);
+        row.padding = Some(EdgeInsets::ZERO);
+        assert_eq!(row.padding(), EdgeInsets::ZERO);
+    }
+
+    #[test]
+    fn and_the_standard_one_is_the_form_rows_own() {
+        // Not a second copy of it. These were `6.0` and `(20, 6, 6, 6)`
+        // separately, and nothing compared them until the form row's padding
+        // stopped being a scalar.
+        assert_eq!(
+            CupertinoTextFormFieldRow::DEFAULT_PADDING,
+            CupertinoFormRow::PADDING
+        );
+        // The start inset is the half a scalar could not carry, and the half
+        // that does the work.
+        assert_eq!(CupertinoTextFormFieldRow::DEFAULT_PADDING.left, 20.0);
+        assert_ne!(
+            CupertinoTextFormFieldRow::DEFAULT_PADDING.left,
+            CupertinoTextFormFieldRow::DEFAULT_PADDING.right
+        );
+    }
+
+    #[test]
+    fn the_field_inside_a_form_row_is_borderless() {
+        // Upstream's builder does not take this as a parameter: it names
+        // `CupertinoTextField.borderless` outright. The row draws the box, so
+        // a bordered field would draw a second one inside it.
+        assert!(CupertinoTextFormFieldRow::new().field.borderless);
+        // And a field built on its own is not borderless, so this is the row's
+        // doing rather than the default everywhere.
+        assert!(!CupertinoTextField::new().borderless);
+    }
+
+    #[test]
+    fn a_row_still_refuses_what_the_field_refuses() {
+        // The row delegates the rest of the asserts, and being borderless does
+        // not excuse it from them. `expands` with the default line count is
+        // the sharp one: `maxLines` defaults to 1 rather than null, so
+        // `expands: true` and nothing else is already illegal upstream.
+        let mut row = CupertinoTextFormFieldRow::new();
+        assert_eq!(row.validate(), Ok(()));
+        row.field.expands = true;
+        assert_eq!(
+            row.validate(),
+            Err(CupertinoTextFieldError::ExpandsWithLineCount),
+            "because max_lines is Some(1) until someone clears it"
+        );
+        row.field.max_lines = None;
+        assert_eq!(row.validate(), Ok(()));
     }
 
     #[test]
@@ -504,14 +573,6 @@ mod tests {
         assert!(button.is_valid(), "None is the default");
         button.splash_radius = Some(0.0);
         assert!(!button.is_valid(), "and zero is not a default, it is a bug");
-    }
-
-    #[test]
-    fn a_label_sits_beside_a_cupertino_field_rather_than_inside_it() {
-        assert!(CupertinoTextFormFieldRow::labels_beside_rather_than_inside());
-        let mut row = CupertinoTextFormFieldRow::new();
-        row.has_prefix = true;
-        assert!(row.has_prefix);
     }
 }
 

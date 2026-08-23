@@ -1162,7 +1162,7 @@ impl Shared {
 
     /// [`Shared::depend`], qualified by one aspect of the value.
     ///
-    /// Upstream's `InheritedModelElementMixin.updateDependencies`: the aspect
+    /// Upstream's `InheritedModelElement.updateDependencies`: the aspect
     /// joins the set the reader is accumulating over this build -- it is
     /// rebuilt when *any* aspect it reads changes -- unless it read the value
     /// whole, in which case one part of it is not news it can afford to miss.

@@ -141,7 +141,9 @@ pub trait PlatformSink {
 
     /// Tells the embedder a channel gained or lost its handler.
     ///
-    /// Upstream this is `PlatformDispatcher.sendChannelUpdate`, and the Windows
+    /// Upstream this is `ChannelBuffers.sendChannelUpdate` -- declared on the
+    /// buffers, not on the dispatcher, which is where it looks like it should
+    /// live -- and the Windows
     /// embedder acts on it: it holds back `flutter/lifecycle` until something is
     /// listening, because a lifecycle message nobody hears is a lifecycle
     /// message lost.
@@ -159,7 +161,8 @@ pub trait PlatformSink {
 
 /// How many messages a channel holds for a handler that has not appeared yet.
 ///
-/// One, which is upstream's default (`ChannelBuffers._defaultBufferSize`). One
+/// One, which is upstream's default (`ChannelBuffers.kDefaultBufferSize`, and
+/// it is public rather than private). One
 /// is the right number for the channels that need it at all: `flutter/lifecycle`
 /// is level-triggered -- each message replaces what the last one said -- so the
 /// newest is the only one worth keeping.

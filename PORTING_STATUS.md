@@ -12559,3 +12559,80 @@ if (error  != null) ... DefaultTextStyle(
 `Flexible` + `centerEnd`（`spaceBetween`），helper 和 error 在下面
 `centerStart` 并把行撑高。**没有为它们编谓词**——
 这一轮能验的是颜色，排布只记在注释里。
+
+---
+
+## 一个上游的数，在移植里写了两遍，而且不一样（2026-08-24）
+
+`CupertinoTextFormFieldRow` 大半早就移好了：
+`padding: Option<f32>` 带着「null 不是零」的规矩，
+`validate()` 把上游八条 assert 全覆盖了，**包括最刁的那条**——
+`maxLines` 默认是 `1` 而不是 null，所以 `expands: true` 单独写就已经违规。
+移植的默认也是 `Some(1)`，这条本来就对。
+
+真正的缺口只有三个，而**头一个是被上一轮照出来的**。
+
+### `DEFAULT_PADDING = 6.0`，而 `CupertinoFormRow::PADDING = (20, 6, 6, 6)`
+
+这两个是**同一个上游的数**——表单字段行没给 padding 时，
+兜底用的就是表单行自己的那个。移植把它写了两遍，
+而且在**起始内边距**上不一致：20 对 6。
+
+偏偏起始那一侧是有用的那一侧：**20 对 6 才让一列标签对齐**，
+也是**标量唯一带不动的那一半**。
+
+上一轮之前，两处各自看都说得通，没有任何东西能把它们放到一起比。
+上一轮把表单行的 padding 移成了 `EdgeInsets`，两者才第一次碰面。
+现在 `DEFAULT_PADDING` **就是** `CupertinoFormRow::PADDING` 本身，
+测试断言的是「同一个」，不是「两个恰好相等」。
+
+### 表单行里的字段是 borderless，而且不是可选项
+
+上游的 builder 不把这个当参数——直接写死
+`CupertinoTextField.borderless`。**行本身就是那个框**：
+它画分隔线、坐在 section 的卡片里，
+字段再带一个边框，就是框里套框。移植的 `new()` 建的是带边框的。
+
+### 一个不可能为假的谓词，写在 API 里
+
+```rust
+pub fn labels_beside_rather_than_inside() -> bool { true }
+```
+
+不收参数，没有任何输入能让它答别的。**它在陈述一件事，却长得像在检查。**
+配套那条测试更空：
+
+```rust
+assert!(CupertinoTextFormFieldRow::labels_beside_rather_than_inside());
+let mut row = ...; row.has_prefix = true; assert!(row.has_prefix);
+```
+
+前半断言一个常量真，后半赋一个值再断言它等于自己。
+
+**删掉，没有换一个新的**。这件事是事实，事实该待在注释里。
+再编一条测试去替一条假测试，只是把同一件事又做一遍。
+这个物种连着五轮都是在测试里抓到的，这一次它长在 API 上。
+
+四个变异全红。
+
+### 顺带修掉三处「张冠李戴」的引用
+
+上一轮那把 `constants.py` 只管 `_kFoo`。这次手工把
+**2292 个自称出自上游的反引号符号**扫了一遍，18 个在上游找不到——
+绝大多数是移植自己的 Rust 类型名出现在带 "upstream" 的句子里
+（`RefCell`、`BTreeMap`、`RenderRef`）。**这把尺子不值得自动化**：
+0.8% 的命中率，且要逐条判断，正是尺子给不了的东西。
+和当初拒绝修 `depth.py` 是同一个判断。
+
+但手工审那 18 条是值的，捞出三条真的：
+
+| 移植写的 | 上游实际 |
+|---|---|
+| `InheritedModelElementMixin.updateDependencies` | 类叫 `InheritedModelElement`，`Mixin` 是编的 |
+| `PlatformDispatcher.sendChannelUpdate` | 声明在 **`ChannelBuffers`** 上，不在 dispatcher 上 |
+| `ChannelBuffers._defaultBufferSize` | 是 `kDefaultBufferSize`，公开的，不是私有 |
+
+还有一条教了我这个探针自己的毛病：`Shadow.convertRadiusToSigma`
+被报成不存在，只因为我扫的是 `packages/`，而它在
+`bin/cache/pkg/sky_engine/lib/ui/painting.dart` 里——**引用是对的，我的扫描范围是错的**。
+和 `constants.py` 头两次栽的是同一个跟头：**工具错了，报成移植错了。**
