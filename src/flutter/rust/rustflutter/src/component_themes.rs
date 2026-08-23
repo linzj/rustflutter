@@ -2193,6 +2193,196 @@ impl ResolvedNavigationBar {
     }
 }
 
+/// What a navigation drawer is drawn with -- upstream's `NavigationDrawer.build`
+/// and `_NavigationDrawerDestinationInfo`'s readers of `NavigationDrawerTheme.of`.
+///
+/// # The drawer's own surface has a two-step chain that ends in *another*
+/// widget's theme
+///
+/// `NavigationDrawer.build` writes `backgroundColor ?? theme.backgroundColor`
+/// and hands the result -- **null included** -- to a plain [`crate::drawer`]
+/// `Drawer`. Same for the shadow, the surface tint and the elevation. The third
+/// step is not skipped; it happens somewhere else, in `DrawerThemeData` and
+/// `_DrawerDefaultsM3`.
+///
+/// So a `DrawerTheme` wrapped around a `NavigationDrawer` moves its background,
+/// and a `NavigationDrawerTheme` wrapped around a plain `Drawer` does not. That
+/// asymmetry is the whole content of the finding, and it is invisible from the
+/// values: `_NavigationDrawerDefaultsM3` **also declares** those four fields,
+/// with exactly the numbers `_DrawerDefaultsM3` declares -- elevation 1,
+/// `surfaceContainerLow`, transparent, transparent. Nothing in
+/// `navigation_drawer.dart` ever reads them (`defaults.` appears eleven times
+/// there and not once for these four). They are dead copies emitted by
+/// `gen_defaults`, and they agree with the live ones, which is exactly why
+/// resolving from the wrong one would never show up.
+///
+/// This type therefore leaves them `Option` and does not invent the third step
+/// -- see [`ResolvedNavigationDrawer::surface`], which performs it by asking
+/// the drawer's own theme, the way upstream does.
+///
+/// # The destination fields do have three steps, and start at the *drawer*
+///
+/// The indicator's colour and shape come from `info.indicatorColor ??
+/// theme.indicatorColor ?? defaults.indicatorColor`, and `info` carries what
+/// the **`NavigationDrawer`** was given -- a `NavigationDrawerDestination` has
+/// no indicator field of its own to offer. The destination decides its icon and
+/// its label; where it sits in the highlight is the drawer's business.
+///
+/// # A disabled destination is not "disabled and selected"
+///
+/// Upstream resolves against `enabled ? selectedState : disabledState` where
+/// `disabledState` is `{disabled}` **alone**. The selection is dropped, not
+/// added to. The consequence is that a disabled destination's selected and
+/// unselected icons resolve to the same thing, so the crossfade between them
+/// has nothing left to show -- which is the point: a destination you cannot
+/// reach should not advertise that it is the one you are on.
+pub struct ResolvedNavigationDrawer {
+    /// Two steps only -- see the type's docs. `None` here means "ask the
+    /// `Drawer`", not "no background".
+    pub background_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub elevation: Option<f32>,
+    pub tile_height: f32,
+    pub indicator_color: Color,
+    pub indicator_shape: ShapeBorder,
+    pub indicator_size: Size,
+    /// The theme's, if it has one. `None` falls to the M3 default computed in
+    /// [`ResolvedNavigationDrawer::label_style`].
+    pub label_text_style: Option<StateProperty<Option<TextStyle>>>,
+    pub icon_theme: Option<StateProperty<Option<IconThemeData>>>,
+    /// The drawer widget's, with no theme step at all: `NavigationDrawerThemeData`
+    /// has no `tilePadding` field, so `EdgeInsets.symmetric(horizontal: 12)` is
+    /// the widget's own default and the only source.
+    pub tile_padding: EdgeInsets,
+    label_large: Option<TextStyle>,
+    on_surface_variant: Color,
+    on_secondary_container: Color,
+}
+
+impl ResolvedNavigationDrawer {
+    /// Upstream `_NavigationDrawerDefaultsM3.tileHeight`.
+    pub const TILE_HEIGHT: f32 = 56.0;
+    /// Upstream `_NavigationDrawerDefaultsM3.indicatorSize`. The width is a
+    /// flat 336 rather than the drawer's width less its padding: the indicator
+    /// is a fixed pill the destinations sit inside, so it is the same length
+    /// whatever the drawer is.
+    pub const INDICATOR_SIZE: Size = Size::new(336.0, 56.0);
+    /// Upstream's `_colors.onSurfaceVariant.withOpacity(0.38)` for a disabled
+    /// destination, as an alpha.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+
+    /// Upstream's three state sets: `{selected}`, `{}`, `{disabled}`.
+    ///
+    /// Disabled wins outright and takes the selection with it -- see the type's
+    /// docs.
+    pub fn states(enabled: bool, selected: bool) -> WidgetStates {
+        if !enabled {
+            return WidgetStates::NONE.with(WidgetState::Disabled);
+        }
+        if selected {
+            WidgetStates::NONE.with(WidgetState::Selected)
+        } else {
+            WidgetStates::NONE
+        }
+    }
+
+    pub fn of(
+        context: &mut BuildContext,
+        drawer: &crate::navigation_destinations::NavigationDrawer,
+    ) -> ResolvedNavigationDrawer {
+        let data = NavigationDrawerTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        ResolvedNavigationDrawer {
+            // Two steps. The third is `Drawer`'s -- do not add one here.
+            background_color: drawer.background_color.or(data.background_color),
+            shadow_color: data.shadow_color,
+            surface_tint_color: data.surface_tint_color,
+            elevation: data.elevation,
+            tile_height: data
+                .tile_height
+                .unwrap_or(ResolvedNavigationDrawer::TILE_HEIGHT),
+            indicator_color: drawer
+                .indicator_color
+                .or(data.indicator_color)
+                .unwrap_or(scheme.secondary_container()),
+            indicator_shape: data.indicator_shape.clone().unwrap_or(ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            )),
+            indicator_size: data
+                .indicator_size
+                .unwrap_or(ResolvedNavigationDrawer::INDICATOR_SIZE),
+            label_text_style: data.label_text_style.clone(),
+            icon_theme: data.icon_theme.clone(),
+            tile_padding: drawer.tile_padding,
+            label_large: theme.text_theme.label_large.clone(),
+            on_surface_variant: scheme.on_surface_variant(),
+            on_secondary_container: scheme.on_secondary_container(),
+        }
+    }
+
+    /// Upstream's per-state colour for a destination's label and icon:
+    /// disabled is the variant at 38 per cent, selected is the colour that
+    /// reads against the indicator, and everything else is the variant.
+    ///
+    /// The selected colour is `onSecondaryContainer` and not a brighter version
+    /// of the unselected one, because the selected destination is the one
+    /// sitting on the indicator -- it is a different background, not more
+    /// emphasis on the same one.
+    pub fn foreground(&self, states: WidgetStates) -> Color {
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                self.on_surface_variant,
+                ResolvedNavigationDrawer::DISABLED_OPACITY,
+            );
+        }
+        if states.contains(WidgetState::Selected) {
+            self.on_secondary_container
+        } else {
+            self.on_surface_variant
+        }
+    }
+
+    /// The theme's label style for these states, or the M3 default:
+    /// `labelLarge` recoloured by [`ResolvedNavigationDrawer::foreground`].
+    pub fn label_style(&self, states: WidgetStates) -> Option<TextStyle> {
+        if let Some(property) = &self.label_text_style {
+            return property.resolve(states);
+        }
+        self.label_large.clone().map(|style| TextStyle {
+            color: self.foreground(states),
+            ..style
+        })
+    }
+
+    /// The theme's icon theme for these states, or the M3 default: size 24 in
+    /// the same foreground.
+    pub fn icon_theme(&self, states: WidgetStates) -> IconThemeData {
+        if let Some(property) = &self.icon_theme {
+            if let Some(data) = property.resolve(states) {
+                return data;
+            }
+        }
+        IconThemeData {
+            size: Some(24.0),
+            color: Some(self.foreground(states)),
+            ..IconThemeData::default()
+        }
+    }
+
+    /// The third step for the surface fields: hand what this resolved -- nulls
+    /// and all -- to the drawer's own theme, which is where upstream's null
+    /// goes.
+    pub fn surface(&self, context: &mut BuildContext) -> ResolvedDrawer {
+        let mut drawer = ResolvedDrawer::of(context);
+        if let Some(color) = self.background_color {
+            drawer.background = color;
+        }
+        drawer
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

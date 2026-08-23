@@ -337,6 +337,16 @@ impl NavigationDrawer {
         self
     }
 
+    /// This drawer's appearance, with the theme and the M3 defaults folded in
+    /// -- except for the surface fields, which have only two steps here; see
+    /// [`crate::component_themes::ResolvedNavigationDrawer`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedNavigationDrawer {
+        crate::component_themes::ResolvedNavigationDrawer::of(context, self)
+    }
+
     /// Upstream's `totalNumberOfDestinations`: how many of the children are
     /// destinations. Passed to each of them upstream so a screen reader can
     /// say "3 of 5".
@@ -514,5 +524,255 @@ mod tests {
                 .with_border_radius(BorderRadius::circular(24.0))
                 .is_stadium()
         );
+    }
+}
+
+#[cfg(test)]
+mod navigation_drawer_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        DrawerTheme, DrawerThemeData, NavigationDrawerTheme, NavigationDrawerThemeData,
+        ResolvedDrawer, ResolvedNavigationDrawer,
+    };
+    use crate::framework::{BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::Size;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader<T> {
+        read: std::rc::Rc<dyn Fn(&mut BuildContext) -> T>,
+        seen: std::rc::Rc<std::cell::RefCell<Option<T>>>,
+    }
+
+    impl<T: 'static> Component for Reader<T> {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some((self.read)(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    /// Build `wrap(reader)` and hand back what the reader saw.
+    fn read_under<T: 'static>(
+        wrap: impl FnOnce(AnyWidget) -> AnyWidget,
+        read: impl Fn(&mut BuildContext) -> T + 'static,
+    ) -> T {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(wrap(component(Reader {
+            read: std::rc::Rc::new(read),
+            seen: std::rc::Rc::clone(&seen),
+        })));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn drawer() -> NavigationDrawer {
+        NavigationDrawer::new(vec![])
+    }
+
+    fn resolve(
+        drawer: NavigationDrawer,
+        data: NavigationDrawerThemeData,
+    ) -> ResolvedNavigationDrawer {
+        let drawer = std::rc::Rc::new(drawer);
+        read_under(
+            |child| NavigationDrawerTheme::new(data, child),
+            move |context| drawer.resolved(context),
+        )
+    }
+
+    #[test]
+    fn the_surface_fields_stop_after_two_steps() {
+        // Upstream writes `backgroundColor ?? theme.backgroundColor` and hands
+        // the result -- null included -- to a plain `Drawer`. Filling these in
+        // here would be resolving a step that happens in another widget.
+        let plain = resolve(drawer(), NavigationDrawerThemeData::new());
+        assert_eq!(plain.background_color, None);
+        assert_eq!(plain.shadow_color, None);
+        assert_eq!(plain.surface_tint_color, None);
+        assert_eq!(
+            plain.elevation, None,
+            "`_NavigationDrawerDefaultsM3` declares elevation 1, and \
+             navigation_drawer.dart never reads it"
+        );
+    }
+
+    #[test]
+    fn a_drawer_theme_moves_a_navigation_drawers_background() {
+        // The consequence of the two-step chain, and the only way to see it:
+        // the third step lives in `DrawerThemeData`, so this is the theme that
+        // decides -- even though the widget is a `NavigationDrawer`.
+        let mine = Color(0xFF00FF00);
+        let mut drawer_theme = DrawerThemeData::default();
+        drawer_theme.background_color = Some(mine);
+
+        let surface = read_under(
+            move |child| DrawerTheme::new(drawer_theme.clone(), child),
+            move |context| {
+                std::rc::Rc::new(NavigationDrawer::new(vec![]))
+                    .resolved(context)
+                    .surface(context)
+            },
+        );
+        assert_eq!(surface.background, mine);
+    }
+
+    #[test]
+    fn and_a_navigation_drawer_theme_does_not_move_a_plain_drawers() {
+        // The other half of the asymmetry. If this passed, the two themes
+        // would be interchangeable and the finding would be nothing.
+        let mut data = NavigationDrawerThemeData::new();
+        data.background_color = Some(Color(0xFF00FF00));
+        let surface = read_under(
+            move |child| NavigationDrawerTheme::new(data.clone(), child),
+            ResolvedDrawer::of,
+        );
+        assert_ne!(surface.background, Color(0xFF00FF00));
+    }
+
+    #[test]
+    fn the_widgets_own_background_still_wins_over_the_drawers_theme() {
+        // The two-step chain starts at the widget, so a `NavigationDrawer`
+        // given a colour keeps it even where a `DrawerTheme` would otherwise
+        // have the last word.
+        let mine = Color(0xFF0000FF);
+        let mut drawer_theme = DrawerThemeData::default();
+        drawer_theme.background_color = Some(Color(0xFF00FF00));
+        let surface = read_under(
+            move |child| DrawerTheme::new(drawer_theme.clone(), child),
+            move |context| {
+                std::rc::Rc::new(NavigationDrawer::new(vec![]).with_background_color(mine))
+                    .resolved(context)
+                    .surface(context)
+            },
+        );
+        assert_eq!(surface.background, mine);
+    }
+
+    #[test]
+    fn the_widget_is_the_first_step_and_the_navigation_drawer_theme_the_second() {
+        // `order_sweep.py` found this one: every other test set at most one
+        // side of `drawer.background_color.or(data.background_color)`, so
+        // swapping the two went unnoticed. Both set, and disagreeing.
+        let mine = Color(0xFF112233);
+        let mut data = NavigationDrawerThemeData::new();
+        data.background_color = Some(Color(0xFF445566));
+        assert_eq!(
+            resolve(drawer().with_background_color(mine), data.clone()).background_color,
+            Some(mine)
+        );
+        assert_eq!(
+            resolve(drawer(), data).background_color,
+            Some(Color(0xFF445566)),
+            "and with the widget silent the theme is what carries on to the Drawer"
+        );
+    }
+
+    #[test]
+    fn the_indicator_starts_at_the_drawer_and_not_at_the_destination() {
+        // `info.indicatorColor` is what the *drawer* was given; a destination
+        // has no indicator field to offer.
+        let mine = Color(0xFFFF0000);
+        let mut data = NavigationDrawerThemeData::new();
+        data.indicator_color = Some(Color(0xFF00FF00));
+        assert_eq!(
+            resolve(drawer().with_indicator_color(mine), data.clone()).indicator_color,
+            mine
+        );
+        assert_eq!(
+            resolve(drawer(), data).indicator_color,
+            Color(0xFF00FF00),
+            "and the theme is the step below it"
+        );
+    }
+
+    #[test]
+    fn a_disabled_destination_is_not_also_a_selected_one() {
+        // Upstream's `disabledState` is `{disabled}` alone -- the selection is
+        // dropped rather than added to.
+        let states = ResolvedNavigationDrawer::states(false, true);
+        assert!(states.contains(WidgetState::Disabled));
+        assert!(!states.contains(WidgetState::Selected));
+        assert_eq!(states, ResolvedNavigationDrawer::states(false, false));
+    }
+
+    #[test]
+    fn so_a_disabled_destinations_two_icons_have_nothing_to_fade_between() {
+        // The consequence, which is the reason the state set is worth pinning:
+        // selected and unselected resolve to one colour, so the crossfade has
+        // nothing to show.
+        let resolved = resolve(drawer(), NavigationDrawerThemeData::new());
+        let selected = resolved.foreground(ResolvedNavigationDrawer::states(false, true));
+        let unselected = resolved.foreground(ResolvedNavigationDrawer::states(false, false));
+        assert_eq!(selected, unselected);
+
+        // And while enabled they do differ, or the fade would be pointless
+        // everywhere rather than only where it is meant to be.
+        assert_ne!(
+            resolved.foreground(ResolvedNavigationDrawer::states(true, true)),
+            resolved.foreground(ResolvedNavigationDrawer::states(true, false))
+        );
+    }
+
+    #[test]
+    fn the_selected_foreground_is_the_indicators_partner_and_not_a_brighter_variant() {
+        let resolved = resolve(drawer(), NavigationDrawerThemeData::new());
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_eq!(
+            resolved.foreground(ResolvedNavigationDrawer::states(true, true)),
+            scheme.on_secondary_container()
+        );
+        assert_eq!(
+            resolved.foreground(ResolvedNavigationDrawer::states(true, false)),
+            scheme.on_surface_variant()
+        );
+        assert_eq!(
+            resolved.foreground(ResolvedNavigationDrawer::states(false, false)),
+            crate::elevation_overlay::with_opacity(scheme.on_surface_variant(), 0.38)
+        );
+    }
+
+    #[test]
+    fn the_tile_padding_has_no_theme_step_at_all() {
+        // `NavigationDrawerThemeData` has no `tilePadding` field, so the
+        // widget's own default is the only source there is.
+        let plain = resolve(drawer(), NavigationDrawerThemeData::new());
+        assert_eq!(plain.tile_padding, NavigationDrawer::TILE_PADDING);
+        let mine = EdgeInsets::symmetric(4.0, 0.0);
+        assert_eq!(
+            resolve(
+                drawer().with_tile_padding(mine),
+                NavigationDrawerThemeData::new()
+            )
+            .tile_padding,
+            mine
+        );
+    }
+
+    #[test]
+    fn the_destination_defaults_are_the_m3_ones() {
+        let plain = resolve(drawer(), NavigationDrawerThemeData::new());
+        assert_eq!(plain.tile_height, 56.0);
+        assert_eq!(plain.indicator_size, Size::new(336.0, 56.0));
+        assert!(matches!(
+            plain.indicator_shape,
+            crate::borders::ShapeBorder::Stadium(_)
+        ));
+        assert_eq!(plain.icon_theme(WidgetStates::NONE).size, Some(24.0));
+    }
+
+    #[test]
+    fn a_theme_that_supplies_a_property_is_asked_instead_of_the_default() {
+        let mine = Color(0xFFABCDEF);
+        let mut data = NavigationDrawerThemeData::new();
+        data.icon_theme = Some(crate::widget_state::StateProperty::all(Some(
+            crate::component_themes::IconThemeData::new()
+                .with_size(11.0)
+                .with_color(mine),
+        )));
+        let resolved = resolve(drawer(), data);
+        let icons = resolved.icon_theme(WidgetStates::NONE);
+        assert_eq!(icons.size, Some(11.0));
+        assert_eq!(icons.color, Some(mine));
     }
 }

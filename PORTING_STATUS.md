@@ -10690,3 +10690,39 @@ NotSensitive=2）；而 `sensitive_content.rs` 那份是 `Sensitive` 打头。�
 主题高度不生效、标签默认改 OnlyShowSelected、给未设的背景编个值）。
 无读者主题 19 → 18。
 
+## 导航抽屉：表面那条链在别的 widget 的主题里收尾（2026-08-23）
+
+`NavigationDrawerTheme` 接上读者。这一轮的发现不在数值上，在**链条的长度**。
+
+`NavigationDrawer.build` 写的是 `backgroundColor ?? theme.backgroundColor`，
+然后把结果——**包括 null**——交给一个普通的 `Drawer`。阴影、表面着色、
+elevation 都一样。**第三步不是被跳过了，是发生在别处**：在 `DrawerThemeData`
+和 `_DrawerDefaultsM3` 里。
+
+后果是一条不对称：包在 `NavigationDrawer` 外面的 `DrawerTheme` 能改它的背景，
+而包在普通 `Drawer` 外面的 `NavigationDrawerTheme` 不能。
+
+**而这条不对称从数值上完全看不出来**：`_NavigationDrawerDefaultsM3`
+**也声明了**这四个字段，数值与 `_DrawerDefaultsM3` 一模一样——elevation 1、
+`surfaceContainerLow`、transparent、transparent。`navigation_drawer.dart` 里
+`defaults.` 出现 11 次，**没有一次是这四个**。它们是 `gen_defaults` 生成的
+死副本，而且与活的那份一致——所以从错误的那份取值，永远不会有人发现。
+真正会露出来的只有那条不对称。
+
+另外三条：指示器的颜色和形状从 **drawer** 起步（`info.indicatorColor`），
+destination 自己没有这个字段可给；`tilePadding` **一步都不走主题**
+（`NavigationDrawerThemeData` 没有这个字段）；`disabledState` 是
+`{disabled}` **单独一个**，选中被丢掉而不是加上去——所以一个禁用的
+destination 的选中图标和未选中图标解析成同一个颜色，那个交叉淡入没有东西可淡。
+
+11 个变异，11 个全红。**顺序扫描在提交前又抓到一条**：
+`drawer.background_color.or(data.background_color)` 两边从没被同时设过
+（那条「widget 胜出」的测试设的是 *DrawerTheme*，不是这条链的第二步），
+交换无人察觉。补了一条两边都设且相反的。
+
+顺手改掉两个测试脚手架里 `provide(components::Theme::dark(), ...)`——
+`components::Theme` 不是 `ThemeData`，那个 provide 什么也没做，
+却让人以为主题参与了答案。
+
+无读者主题 18 → 17。
+

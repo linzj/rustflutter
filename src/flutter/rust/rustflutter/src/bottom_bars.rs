@@ -395,7 +395,7 @@ mod bottom_bar_theme_tests {
     use crate::component_themes::{
         BottomNavigationBarTheme, BottomNavigationBarThemeData, ResolvedBottomNavigationBar,
     };
-    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component};
 
     struct Reader {
         bar: BottomNavigationBar,
@@ -415,15 +415,15 @@ mod bottom_bar_theme_tests {
     ) -> ResolvedBottomNavigationBar {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
         let mut tree = ElementTree::new();
-        tree.rebuild(provide(
-            crate::components::Theme::dark(),
-            BottomNavigationBarTheme::new(
-                data,
-                component(Reader {
-                    bar,
-                    seen: std::rc::Rc::clone(&seen),
-                }),
-            ),
+        // No `Theme` above it: `BottomNavigationBarTheme::of` falls back to
+        // `ThemeData::of`, which has its own fallback. Wrapping one here would
+        // suggest it took part in the answer.
+        tree.rebuild(BottomNavigationBarTheme::new(
+            data,
+            component(Reader {
+                bar,
+                seen: std::rc::Rc::clone(&seen),
+            }),
         ));
         seen.borrow_mut().take().expect("built once")
     }
@@ -562,7 +562,7 @@ mod navigation_bar_theme_tests {
         NavigationBarTheme, NavigationBarThemeData, NavigationDestinationLabelBehavior,
         ResolvedNavigationBar,
     };
-    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, provide};
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component};
 
     struct Reader {
         bar: NavigationBar,
@@ -579,15 +579,15 @@ mod navigation_bar_theme_tests {
     fn resolve(bar: NavigationBar, data: NavigationBarThemeData) -> ResolvedNavigationBar {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
         let mut tree = ElementTree::new();
-        tree.rebuild(provide(
-            crate::components::Theme::dark(),
-            NavigationBarTheme::new(
-                data,
-                component(Reader {
-                    bar,
-                    seen: std::rc::Rc::clone(&seen),
-                }),
-            ),
+        // No `Theme` above it: `NavigationBarTheme::of` falls back to
+        // `ThemeData::of`, which has its own fallback. Wrapping one here would
+        // suggest it took part in the answer.
+        tree.rebuild(NavigationBarTheme::new(
+            data,
+            component(Reader {
+                bar,
+                seen: std::rc::Rc::clone(&seen),
+            }),
         ));
         seen.borrow_mut().take().expect("built once")
     }
