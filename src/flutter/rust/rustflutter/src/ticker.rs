@@ -31,11 +31,13 @@
 //!
 //! # Recorded divergences
 //!
-//! * [`TickerFuture`] is not a future -- the crate has no async runtime (see
-//!   [`crate::r#async`]). It is the same three states a future would have
-//!   settled into, with callbacks instead of `await`: upstream's
-//!   `whenCompleteOrCancel` is a method here too, and `orCancel`'s
-//!   distinction between the two outcomes is the flag the callback is given.
+//! * [`TickerFuture`] is a settled-state machine first and a future second.
+//!   Upstream's `whenCompleteOrCancel` is a method here too, and `orCancel`'s
+//!   distinction between the two outcomes is the flag the callback is given;
+//!   `.await` is layered on top of that (see [`TickerFuture::settled`])
+//!   rather than
+//!   underneath it, because the callback form has to keep working where there
+//!   is no executor -- a unit test, a headless render.
 //! * `Ticker.forceFrames` and the scheduler phases have nowhere to go: a
 //!   frame here is asked for by returning true from `advance`, and there is
 //!   no phase to be in when it is not.
@@ -45,7 +47,10 @@
 //!   which is the same saving with the assertion built into the type.
 
 use std::cell::{Cell, RefCell};
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// What a ticker calls every frame: how long it has been running.
@@ -142,6 +147,33 @@ impl TickerFuture {
         self.canceled.borrow().clone()
     }
 
+    /// The awaitable twin of
+    /// [`when_complete_or_cancel`](Self::when_complete_or_cancel):
+    /// `controller.forward().settled().await` is upstream's
+    /// `await controller.forward()`.
+    ///
+    /// A method rather than an `IntoFuture` impl because what a caller holds is
+    /// an `Rc<TickerFuture>`, and `Rc` is not a fundamental type -- the orphan
+    /// rule will not have `impl IntoFuture for Rc<TickerFuture>`. Spelling the
+    /// step out is the smaller price.
+    ///
+    /// The hard half is already done underneath: a ticker that has *already*
+    /// settled tells its callback at once, so awaiting a settled future
+    /// resolves on the first poll rather than parking forever.
+    pub fn settled(&self) -> TickerSettled {
+        let (sender, receiver) = crate::task::oneshot();
+        // `RefCell<Option<Sender>>` because the callback list is `Fn`, not
+        // `FnOnce`, and `Sender::send` consumes. Settling happens once, so the
+        // take succeeds once and any later call finds `None`.
+        let sender = RefCell::new(Some(sender));
+        self.when_complete_or_cancel(Rc::new(move |completed| {
+            if let Some(sender) = sender.borrow_mut().take() {
+                sender.send(completed);
+            }
+        }));
+        TickerSettled(receiver)
+    }
+
     /// Upstream `whenCompleteOrCancel`: told either way, with which it was.
     ///
     /// A future that has already settled tells the callback at once, which is
@@ -153,6 +185,33 @@ impl TickerFuture {
         }
     }
 }
+
+/// What awaiting a [`TickerFuture`] gives you: `true` if the ticker ran to its
+/// end, `false` if it was cancelled.
+///
+/// Upstream's `TickerFuture` completes for one and raises `TickerCanceled` for
+/// the other, and `orCancel` is the switch between them. A `bool` says the same
+/// thing without a second error type, and [`TickerFuture::canceled`] still has
+/// the details for a caller that wants them.
+pub struct TickerSettled(crate::task::Receiver<bool>);
+
+impl Future for TickerSettled {
+    type Output = bool;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<bool> {
+        // `Receiver` holds an `Rc`, so it is `Unpin` and can be re-pinned here
+        // rather than projected.
+        match Pin::new(&mut self.0).poll(context) {
+            // The sender is held by the callback list, which lives as long as
+            // the `TickerFuture`. It is dropped without sending only if the
+            // ticker itself goes away unsettled, and a ticker that will never
+            // settle did not complete.
+            Poll::Ready(settled) => Poll::Ready(settled.unwrap_or(false)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 
 /// The part of a [`Ticker`] its handles share.
 struct TickerInner {
@@ -479,6 +538,61 @@ mod tests {
         let sink = Rc::clone(&seen);
         let ticker = Ticker::new(Rc::new(move |elapsed| sink.borrow_mut().push(elapsed)));
         (ticker, seen)
+    }
+
+    #[test]
+    fn an_awaited_ticker_future_resolves_with_how_it_settled() {
+        crate::task::attach(None, std::ptr::null_mut());
+        let (ticker, _seen) = recording();
+        let settled = Rc::new(Cell::new(None));
+
+        let future = ticker.start();
+        let out = Rc::clone(&settled);
+        let awaited = future.settled();
+        crate::task::spawn(async move { out.set(Some(awaited.await)) });
+        crate::task::run_until_stalled();
+        assert_eq!(settled.get(), None, "still ticking");
+
+        future.complete();
+        crate::task::run_until_stalled();
+        assert_eq!(settled.get(), Some(true), "ran to its end");
+        crate::task::detach();
+    }
+
+    #[test]
+    fn an_awaited_ticker_future_that_was_cancelled_says_so() {
+        crate::task::attach(None, std::ptr::null_mut());
+        let (ticker, _seen) = recording();
+        let settled = Rc::new(Cell::new(None));
+        let future = ticker.start();
+        let out = Rc::clone(&settled);
+        let awaited = future.settled();
+        crate::task::spawn(async move { out.set(Some(awaited.await)) });
+        crate::task::run_until_stalled();
+
+        ticker.stop(true);
+        crate::task::run_until_stalled();
+        assert_eq!(settled.get(), Some(false));
+        crate::task::detach();
+    }
+
+    #[test]
+    fn awaiting_a_future_that_has_already_settled_resolves_at_once() {
+        // The property `when_complete_or_cancel` already had, carried through
+        // the wrapper: awaiting something finished must not park.
+        crate::task::attach(None, std::ptr::null_mut());
+        let (ticker, _seen) = recording();
+        let future = ticker.start();
+        future.complete();
+
+        let settled = Rc::new(Cell::new(None));
+        let out = Rc::clone(&settled);
+        let awaited = future.settled();
+        crate::task::spawn(async move { out.set(Some(awaited.await)) });
+        crate::task::run_until_stalled();
+        assert_eq!(settled.get(), Some(true), "resolved on the first poll");
+        assert_eq!(crate::task::pending(), 0);
+        crate::task::detach();
     }
 
     #[test]

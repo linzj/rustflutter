@@ -33,6 +33,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
 use std::rc::Rc;
 
 use crate::engine::register_font;
@@ -138,6 +139,25 @@ impl PlatformAssetBundle {
                 done(found);
             }),
         );
+    }
+
+    /// [`prefetch`](Self::prefetch), awaited instead of called back: resolves
+    /// to whether the asset was there, by which point
+    /// [`load`](AssetBundle::load) will answer with it.
+    ///
+    /// This is as close as the crate gets to upstream's `AssetBundle.load`,
+    /// and the difference is worth keeping in view. Upstream returns the
+    /// bytes; this returns whether the cache now has them, because
+    /// [`AssetImage`](crate::image::AssetImage) still reads that cache
+    /// synchronously from inside a build and always will. The seam described
+    /// at the top of this file has not moved -- it has grown a way to wait on
+    /// the far side of it.
+    pub fn prefetch_awaiting(&self, key: &str) -> impl Future<Output = bool> + use<> {
+        let (sender, receiver) = crate::task::oneshot();
+        self.prefetch(key, move |found| sender.send(found));
+        // The callback always runs, so the `None` arm is unreachable; "not
+        // there" is the honest answer for it either way.
+        async move { receiver.await.unwrap_or(false) }
     }
 }
 
@@ -359,6 +379,49 @@ mod tests {
         let bundle = PlatformAssetBundle::new();
         assert_eq!(bundle.load("a.png"), None);
         assert_eq!(PlatformAssetBundle::CHANNEL, "flutter/assets");
+    }
+
+    #[test]
+    fn an_awaited_prefetch_resolves_and_then_load_answers() {
+        // The two halves upstream's Future fuses together, in the order they
+        // actually happen: wait for the platform, then read synchronously.
+        let recorder = crate::services::tests_support::install();
+        crate::task::attach(None, std::ptr::null_mut());
+        let bundle = PlatformAssetBundle::new();
+
+        let found = Rc::new(std::cell::Cell::new(None));
+        let out = Rc::clone(&found);
+        let waiting = bundle.prefetch_awaiting("a.png");
+        crate::task::spawn(async move { out.set(Some(waiting.await)) });
+        crate::task::run_until_stalled();
+        assert_eq!(found.get(), None, "the platform has not answered");
+
+        let (channel, _, response_id) = recorder.sent().remove(0);
+        assert_eq!(channel, PlatformAssetBundle::CHANNEL);
+        recorder.reply(response_id, Some(&[1, 2, 3]));
+        crate::task::run_until_stalled();
+
+        assert_eq!(found.get(), Some(true));
+        assert_eq!(bundle.load("a.png"), Some(vec![1, 2, 3]));
+        crate::task::detach();
+    }
+
+    #[test]
+    fn an_awaited_prefetch_of_a_missing_asset_resolves_false() {
+        let recorder = crate::services::tests_support::install();
+        crate::task::attach(None, std::ptr::null_mut());
+        let bundle = PlatformAssetBundle::new();
+        let found = Rc::new(std::cell::Cell::new(None));
+        let out = Rc::clone(&found);
+        let waiting = bundle.prefetch_awaiting("gone.png");
+        crate::task::spawn(async move { out.set(Some(waiting.await)) });
+        crate::task::run_until_stalled();
+
+        let (_, _, response_id) = recorder.sent().remove(0);
+        recorder.reply(response_id, None);
+        crate::task::run_until_stalled();
+        assert_eq!(found.get(), Some(false), "a miss is an answer, not a wait");
+        crate::task::detach();
     }
 
     #[test]

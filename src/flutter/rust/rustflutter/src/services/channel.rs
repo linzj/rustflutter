@@ -20,6 +20,7 @@
 //! used, and a plugin would need a handle to something.
 
 use std::borrow::Cow;
+use std::future::Future;
 
 use super::Responder;
 use super::codec::{MessageCodec, MethodCall, MethodCodec, MethodError, MethodResult, Value};
@@ -97,6 +98,28 @@ impl<C: MessageCodec + Copy + 'static> BasicMessageChannel<C> {
             &bytes,
             Box::new(move |reply| callback(reply.and_then(|bytes| codec.decode(bytes).ok()))),
         );
+    }
+
+    /// [`send_with_reply`](Self::send_with_reply), awaited instead of called
+    /// back.
+    ///
+    /// The message goes out when this is called, not when the future is first
+    /// polled -- there is no lazy future here, only a reply that has not
+    /// arrived. Dropping the returned future therefore cancels nothing; it
+    /// discards an answer, exactly as passing a callback that ignores its
+    /// argument would.
+    ///
+    /// Awaiting it needs a task, and a task needs
+    /// [`task::spawn`](crate::task::spawn).
+    pub fn send_awaiting(&self, message: &Value) -> impl Future<Output = ValueReply> + use<C> {
+        let (sender, receiver) = crate::task::oneshot();
+        self.send_with_reply(message, move |reply| sender.send(reply));
+        // The sender is always called -- `ReplyCallback` guarantees it -- so
+        // the `None` arm is unreachable in practice. It is spelled out rather
+        // than unwrapped because "nobody answered" is already a value this
+        // channel has, and inventing a panic for it would be inventing a
+        // failure mode.
+        async move { receiver.await.flatten() }
     }
 
     /// Handles messages arriving on this channel.
@@ -234,6 +257,26 @@ impl<C: MethodCodec + Copy + 'static> MethodChannel<C> {
                 })
             }),
         );
+    }
+
+    /// [`invoke_with_reply`](Self::invoke_with_reply), awaited instead of
+    /// called back. Upstream's `invokeMethod`, which is the one that returns a
+    /// `Future`.
+    ///
+    /// The call goes out at once, not when the future is first polled. See
+    /// [`BasicMessageChannel::send_awaiting`] for what that means for dropping
+    /// it.
+    pub fn invoke_awaiting(
+        &self,
+        method: &str,
+        arguments: Value,
+    ) -> impl Future<Output = MethodReply> + use<C> {
+        let (sender, receiver) = crate::task::oneshot();
+        self.invoke_with_reply(method, arguments, move |reply| sender.send(reply));
+        // `Ok(None)` is what an unanswered call already decodes to here, so the
+        // unreachable arm answers the same thing rather than a second kind of
+        // nothing.
+        async move { receiver.await.unwrap_or(Ok(None)) }
     }
 
     /// Handles calls arriving on this channel.
@@ -432,6 +475,75 @@ mod tests {
             .unwrap();
         recorder.reply(response_id, Some(&envelope));
         assert_eq!(*answer.borrow(), Some(Ok(Some(Value::I32(2)))));
+    }
+
+    #[test]
+    fn an_awaited_call_resumes_when_the_platform_answers() {
+        let recorder = install();
+        crate::task::attach(None, std::ptr::null_mut());
+        let channel = MethodChannel::new("test/await", StandardMethodCodec::new());
+
+        let answer = Rc::new(RefCell::new(None));
+        let recorded = Rc::clone(&answer);
+        let call = channel.invoke_awaiting("add", Value::map([("a", Value::I32(1))]));
+        crate::task::spawn(async move { *recorded.borrow_mut() = Some(call.await) });
+
+        // The call went out when `invoke_awaiting` was called, not when the
+        // task first polled it.
+        let (name, bytes, response_id) = recorder.sent().remove(0);
+        assert_eq!(name, "test/await");
+        assert_eq!(
+            StandardMethodCodec.decode_method_call(&bytes).unwrap(),
+            MethodCall::new("add", Value::map([("a", Value::I32(1))]))
+        );
+
+        crate::task::run_until_stalled();
+        assert_eq!(*answer.borrow(), None, "parked until the platform answers");
+
+        let envelope = StandardMethodCodec
+            .encode_success_envelope(&Value::I32(2))
+            .unwrap();
+        recorder.reply(response_id, Some(&envelope));
+        crate::task::run_until_stalled();
+        assert_eq!(*answer.borrow(), Some(Ok(Some(Value::I32(2)))));
+        crate::task::detach();
+    }
+
+    #[test]
+    fn an_awaited_call_with_nobody_listening_resolves_rather_than_hangs() {
+        // `send_with_reply` answers `None` at once when there is no embedder,
+        // and the wrapper must pass that on as a value. A task parked forever
+        // is the failure this guards.
+        crate::task::attach(None, std::ptr::null_mut());
+        let channel = MethodChannel::new("test/nobody", StandardMethodCodec::new());
+        let answer = Rc::new(RefCell::new(None));
+        let recorded = Rc::clone(&answer);
+        let call = channel.invoke_awaiting("go", Value::Null);
+        crate::task::spawn(async move { *recorded.borrow_mut() = Some(call.await) });
+        crate::task::run_until_stalled();
+        assert_eq!(*answer.borrow(), Some(Ok(None)));
+        assert_eq!(crate::task::pending(), 0);
+        crate::task::detach();
+    }
+
+    #[test]
+    fn an_awaited_message_comes_back_decoded() {
+        let recorder = install();
+        crate::task::attach(None, std::ptr::null_mut());
+        let channel = BasicMessageChannel::new("test/await-message", StandardMessageCodec::new());
+
+        let answer = Rc::new(RefCell::new(None));
+        let recorded = Rc::clone(&answer);
+        let sent = channel.send_awaiting(&Value::String("ping".into()));
+        crate::task::spawn(async move { *recorded.borrow_mut() = Some(sent.await) });
+        crate::task::run_until_stalled();
+
+        let (_, _, response_id) = recorder.sent().remove(0);
+        let reply = StandardMessageCodec.encode(&Value::String("pong".into())).unwrap();
+        recorder.reply(response_id, Some(&reply));
+        crate::task::run_until_stalled();
+        assert_eq!(*answer.borrow(), Some(Some(Value::String("pong".into()))));
+        crate::task::detach();
     }
 
     #[test]
