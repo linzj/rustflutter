@@ -7855,6 +7855,57 @@ impl RenderBox for RenderSizeReporter {
 /// Upstream's `RenderWrap`. A `Row` overflows; this one wraps, which is what
 /// anything made of an unknown number of small things wants -- a bag of chips,
 /// a set of tags, a keyboard.
+/// Upstream `WrapCrossAlignment` (`rendering/wrap.dart`): how a child sits
+/// across its run.
+///
+/// **Three variants, where [`CrossAxisAlignment`] has five.** A wrap has no
+/// `stretch` and no `baseline`, and that is not an omission upstream forgot to
+/// fill: stretching a child across a run would fight the run's height, which
+/// is set by the tallest child in it, and a baseline needs every child in the
+/// line measured against the others' text, which a wrap does not do.
+///
+/// This port used to reuse `CrossAxisAlignment` here and fold the two extra
+/// variants onto `Start`. That let a caller ask a wrap for `Stretch` and
+/// quietly get `Start` -- **a state upstream's type will not let you write at
+/// all.** A narrower type is the fix: the two impossible requests stop being
+/// answerable rather than being answered wrongly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WrapCrossAlignment {
+    #[default]
+    Start,
+    End,
+    Center,
+}
+
+impl WrapCrossAlignment {
+    /// Upstream's `_flipped`: what this means when the cross axis runs the
+    /// other way.
+    ///
+    /// Start and end trade places; centre is its own opposite.
+    pub fn flipped(self) -> WrapCrossAlignment {
+        match self {
+            WrapCrossAlignment::Start => WrapCrossAlignment::End,
+            WrapCrossAlignment::End => WrapCrossAlignment::Start,
+            WrapCrossAlignment::Center => WrapCrossAlignment::Center,
+        }
+    }
+
+    /// Upstream's `_alignment`: the share of the leftover room that goes
+    /// *before* the child -- 0, 1, or one half.
+    ///
+    /// Upstream keeps the whole rule as this one number, so placing a child is
+    /// a single multiply and the flip happens before it. The port had six
+    /// match arms doing the same arithmetic, with the flip tested inside each
+    /// one; six arms can disagree with each other, and one number cannot.
+    pub fn alignment(self) -> f32 {
+        match self {
+            WrapCrossAlignment::Start => 0.0,
+            WrapCrossAlignment::End => 1.0,
+            WrapCrossAlignment::Center => 0.5,
+        }
+    }
+}
+
 pub struct RenderWrap {
     direction: Axis,
     /// Between children in a line, and between the lines themselves.
@@ -7865,7 +7916,7 @@ pub struct RenderWrap {
     /// thicker than they fill. Upstream's `runAlignment`, stacking the lines
     /// from the start edge by default.
     run_alignment: MainAxisAlignment,
-    cross_alignment: CrossAxisAlignment,
+    cross_alignment: WrapCrossAlignment,
     /// Which way a horizontal wrap runs: upstream's `textDirection`, from the
     /// ambient `Directionality` at construction.
     text_direction: TextDirection,
@@ -7886,7 +7937,7 @@ impl RenderWrap {
             run_spacing: 0.0,
             alignment: MainAxisAlignment::Start,
             run_alignment: MainAxisAlignment::Start,
-            cross_alignment: CrossAxisAlignment::Start,
+            cross_alignment: WrapCrossAlignment::Start,
             text_direction: crate::direction::current_direction(),
             vertical_direction: VerticalDirection::Down,
             children: Vec::new(),
@@ -7924,7 +7975,7 @@ impl RenderWrap {
     }
 
     /// How a child sits inside its line, when the line is taller than it is.
-    pub fn with_cross_alignment(mut self, alignment: CrossAxisAlignment) -> Self {
+    pub fn with_cross_alignment(mut self, alignment: WrapCrossAlignment) -> Self {
         self.cross_alignment = alignment;
         self
     }
@@ -8224,30 +8275,15 @@ impl RenderBox for RenderWrap {
                 let child_cross = self.cross(size);
                 // Upstream flips `crossAxisAlignment` itself when the cross
                 // axis is (`_flipped`), which is start and end trading places.
-                let within = match self.cross_alignment {
-                    // Baseline alignment needs every child in the line
-                    // measured against one another's text, which a wrap does
-                    // not do -- upstream's `Wrap` has no baseline option
-                    // either, and stretch no counterpart, so both sit where
-                    // start does.
-                    CrossAxisAlignment::Start
-                    | CrossAxisAlignment::Stretch
-                    | CrossAxisAlignment::Baseline => {
-                        if flip_cross {
-                            run.cross - child_cross
-                        } else {
-                            0.0
-                        }
-                    }
-                    CrossAxisAlignment::Center => (run.cross - child_cross) / 2.0,
-                    CrossAxisAlignment::End => {
-                        if flip_cross {
-                            0.0
-                        } else {
-                            run.cross - child_cross
-                        }
-                    }
+                // Upstream flips the alignment itself when the cross axis
+                // runs the other way, and then spends the leftover room by
+                // that one fraction. Flip first, multiply once.
+                let alignment = if flip_cross {
+                    self.cross_alignment.flipped()
+                } else {
+                    self.cross_alignment
                 };
+                let within = (run.cross - child_cross) * alignment.alignment();
                 self.offsets[index] = match self.direction {
                     Axis::Horizontal => Offset::new(main_offset, cross_offset + within),
                     Axis::Vertical => Offset::new(cross_offset + within, main_offset),
@@ -14286,6 +14322,153 @@ mod tests {
             wrap = wrap.push(FixedBox::new(40.0, 20.0));
         }
         wrap
+    }
+
+    /// One line, two children of different heights: the run is as tall as the
+    /// taller one, so the shorter has exactly that difference to be placed in.
+    /// Every cross-alignment case below reads off the short child's `dy`.
+    fn one_uneven_line(cross: WrapCrossAlignment) -> RenderWrap {
+        RenderWrap::horizontal()
+            .with_cross_alignment(cross)
+            .push(FixedBox::new(30.0, 40.0))
+            .push(FixedBox::new(30.0, 20.0))
+    }
+
+    /// Where the short child sits *within its run*.
+    ///
+    /// Measured against the tall child rather than against the wrap, because
+    /// the tall one fills the run and so always sits at its edge, whichever way
+    /// up the wrap is. Reversing the cross axis moves the run itself as well as
+    /// the child inside it, and only the second of those is what
+    /// `WrapCrossAlignment` decides.
+    fn short_child_dy(cross: WrapCrossAlignment) -> f32 {
+        let mut wrap = one_uneven_line(cross);
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        wrap.offsets[1].dy - wrap.offsets[0].dy
+    }
+
+    #[test]
+    fn a_wrap_places_a_short_child_by_one_fraction_of_the_room_left() {
+        // 40 tall run, 20 tall child: 20 to spend. Upstream spends it by
+        // `_alignment` alone -- 0, a half, or all of it.
+        assert_eq!(short_child_dy(WrapCrossAlignment::Start), 0.0);
+        assert_eq!(short_child_dy(WrapCrossAlignment::Center), 10.0);
+        assert_eq!(short_child_dy(WrapCrossAlignment::End), 20.0);
+    }
+
+    #[test]
+    fn and_the_three_fractions_are_the_three_upstream_names() {
+        assert_eq!(WrapCrossAlignment::Start.alignment(), 0.0);
+        assert_eq!(WrapCrossAlignment::Center.alignment(), 0.5);
+        assert_eq!(WrapCrossAlignment::End.alignment(), 1.0);
+        // The placement really is that number times the room, rather than
+        // three cases that happen to agree with it at these sizes.
+        for cross in [
+            WrapCrossAlignment::Start,
+            WrapCrossAlignment::Center,
+            WrapCrossAlignment::End,
+        ] {
+            assert_eq!(short_child_dy(cross), 20.0 * cross.alignment(), "{cross:?}");
+        }
+    }
+
+    #[test]
+    fn flipping_trades_the_ends_and_leaves_the_middle_alone() {
+        assert_eq!(WrapCrossAlignment::Start.flipped(), WrapCrossAlignment::End);
+        assert_eq!(WrapCrossAlignment::End.flipped(), WrapCrossAlignment::Start);
+        assert_eq!(
+            WrapCrossAlignment::Center.flipped(),
+            WrapCrossAlignment::Center
+        );
+        // Twice is a no-op, which is what makes it a flip rather than a shift.
+        for cross in [
+            WrapCrossAlignment::Start,
+            WrapCrossAlignment::Center,
+            WrapCrossAlignment::End,
+        ] {
+            assert_eq!(cross.flipped().flipped(), cross, "{cross:?}");
+        }
+    }
+
+    #[test]
+    fn and_flipping_is_the_same_as_taking_the_other_end_of_the_room() {
+        // The two derivations have to agree, or the flip would move a child
+        // somewhere neither name describes: flipping then spending must equal
+        // spending from the far side.
+        for cross in [
+            WrapCrossAlignment::Start,
+            WrapCrossAlignment::Center,
+            WrapCrossAlignment::End,
+        ] {
+            assert_eq!(
+                cross.flipped().alignment(),
+                1.0 - cross.alignment(),
+                "{cross:?}"
+            );
+        }
+    }
+
+    fn short_child_dy_upwards(cross: WrapCrossAlignment) -> f32 {
+        // A horizontal wrap whose vertical direction runs up: the cross axis
+        // is reversed, which is the only thing that makes `flipped()` fire
+        // during layout.
+        let mut wrap = RenderWrap::horizontal()
+            .with_vertical_direction(VerticalDirection::Up)
+            .with_cross_alignment(cross)
+            .push(FixedBox::new(30.0, 40.0))
+            .push(FixedBox::new(30.0, 20.0));
+        wrap.layout(BoxConstraints::tight(100.0, 100.0));
+        wrap.offsets[1].dy - wrap.offsets[0].dy
+    }
+
+    #[test]
+    fn and_a_reversed_cross_axis_puts_start_where_end_was() {
+        // Written because a mutation survived: deleting the flip from layout
+        // altogether left every test green, since all of them ran a wrap whose
+        // cross axis was the ordinary way round. `flipped()` was tested on its
+        // own and never through the thing that calls it.
+        assert_eq!(short_child_dy_upwards(WrapCrossAlignment::Start), 20.0);
+        assert_eq!(short_child_dy_upwards(WrapCrossAlignment::End), 0.0);
+        // And the middle is the middle either way, which is what makes the
+        // other two worth checking separately.
+        assert_eq!(short_child_dy_upwards(WrapCrossAlignment::Center), 10.0);
+    }
+
+    #[test]
+    fn and_reversing_it_really_does_move_the_child() {
+        // Guards the test above from passing because the two directions agree:
+        // start and end must each land somewhere different when flipped.
+        for cross in [WrapCrossAlignment::Start, WrapCrossAlignment::End] {
+            assert_ne!(
+                short_child_dy(cross),
+                short_child_dy_upwards(cross),
+                "{cross:?} should not sit in the same place both ways up"
+            );
+        }
+        assert_eq!(
+            short_child_dy(WrapCrossAlignment::Center),
+            short_child_dy_upwards(WrapCrossAlignment::Center)
+        );
+    }
+
+    #[test]
+    fn a_wrap_cannot_be_asked_to_stretch_or_to_use_a_baseline() {
+        // There is nothing to assert at run time here: the point is that
+        // `WrapCrossAlignment` has three variants and no more, so the two
+        // requests upstream refuses are not expressible rather than being
+        // quietly answered as `start`. What can be checked is that the type
+        // really is that narrow.
+        let all = [
+            WrapCrossAlignment::Start,
+            WrapCrossAlignment::Center,
+            WrapCrossAlignment::End,
+        ];
+        let mut fractions: Vec<f32> = all.iter().map(|c| c.alignment()).collect();
+        fractions.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        fractions.dedup();
+        assert_eq!(fractions, vec![0.0, 0.5, 1.0]);
+        // And the default is `start`, as upstream's constructor has it.
+        assert_eq!(WrapCrossAlignment::default(), WrapCrossAlignment::Start);
     }
 
     /// `runAlignment` defaults to `start` (upstream's `WrapAlignment.start`),

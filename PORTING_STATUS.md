@@ -12729,3 +12729,56 @@ MISSING**」。写下那句话的时候，`enum` 就在同一行的旁边漏着�
 `WrapCrossAlignment` 尤其要单独一轮：它只有 start/end/center 三个变体，
 而移植的 `RenderWrap` 用的是 `CrossAxisAlignment`（五个，多出 stretch 和 baseline），
 **移植能表达上游表达不了的状态**，这不是改名，是变宽，不能当映射记。
+
+---
+
+## 三个变体的枚举，被当成五个变体的那个用了（2026-08-24）
+
+上一轮把 `WrapCrossAlignment` 留了下来，理由是它**不是漏移，是变宽**。
+这一轮补上。
+
+上游 `WrapCrossAlignment` 只有 start / end / center。
+`CrossAxisAlignment` 有五个——多出 `stretch` 和 `baseline`。
+少的这两个不是上游忘了填：**把孩子拉满一行会和「行高由最高的那个孩子定」打架**，
+而基线要拿一行里每个孩子的文字互相量，wrap 不做这件事。
+
+移植原来在 `RenderWrap` 上直接用 `CrossAxisAlignment`，
+并且把多出来的两个**折到 `Start` 上**——注释里写得明明白白。
+于是调用方可以向 wrap 要 `Stretch`，安静地拿到 `Start`：
+**一个上游的类型根本不让你写出来的状态。**
+
+修法是把类型收窄，不是把折叠写得更清楚：
+那两个要不到的东西，应该是**问不出口**，而不是问了给个别的答案。
+收窄之后 4786 条测试一条没动——这个宽度从来没被用过，
+是个潜伏的口子，不是在用的功能。
+
+### 顺手把六条分支换成上游的一个数
+
+上游把整条规则放在一个分数里：
+
+```dart
+double get _alignment => switch (this) { start => 0, end => 1, center => 0.5 };
+WrapCrossAlignment get _flipped => switch (this) { start => end, end => start, center => center };
+```
+
+摆一个孩子就是一次乘法，翻转在乘之前发生。
+移植原来是六条 match 分支，每条里面各自判一次 `flip_cross`。
+**六条分支可以互相矛盾，一个数不能。**
+
+### 变异又抓到同一个物种
+
+七个变异，第一轮**活了一个**：把 layout 里的翻转整段删掉，全绿。
+因为我所有测试用的都是横向、垂直方向朝下的 wrap，`flip_cross` 一直是 false——
+`flipped()` 被单独测过，**却从来没有从调用它的那条路上走过一遍**。
+
+补测试时又撞到一层：`VerticalDirection::Up` 不只翻转孩子在行内的位置，
+**也把行本身挪到了另一头**，所以孩子的绝对 `dy` 里混着行原点的移动。
+改成量「孩子相对于同行那个最高的孩子」——最高的那个填满整行，
+无论哪头朝上都贴着行的边——才是 `WrapCrossAlignment` 真正决定的那个量。
+
+再加一条测试防它白过：start 和 end 翻转前后**必须落在不同的地方**，
+而 center 必须落在同一个地方。
+
+补完之后七个变异全红。
+
+coverage 2102 / 1985 记账 / **36 MISSING**（少一个）/ 81 条空映射。
