@@ -229,14 +229,29 @@ impl ScrollBehavior {
         }
     }
 
-    /// Upstream's `shouldNotify`, whose default is **false**.
+    /// Upstream's `shouldNotify`.
     ///
-    /// A `ScrollConfiguration` is rebuilt whenever anything above it is, and
-    /// its behaviour is usually a `const` object that is identical each time.
-    /// Notifying by default would rebuild every scroll view in the
-    /// application on every frame that touched an ancestor.
-    pub fn should_notify(&self, _old: &ScrollBehavior) -> bool {
-        false
+    /// The base class answers **false**, and the reason it can is that the
+    /// base class has nothing to compare: upstream splits what this struct
+    /// joins. `ScrollBehavior` itself holds no configurable state, so a
+    /// constant `false` is honest there -- while `copyWith` returns a private
+    /// `_WrappedScrollBehavior` that carries the knobs, and *that* one
+    /// compares them field by field.
+    ///
+    /// This port folds the knobs into the one struct, and so inherited the
+    /// wrapped class's data together with the base class's answer. The
+    /// argument was accepted and ignored, which was the tell. A configuration
+    /// that turned scrollbars off announced nothing, and the scroll views
+    /// below went on drawing scrollbars until something unrelated rebuilt
+    /// them.
+    ///
+    /// The fields compared are exactly the fields the struct has: a field
+    /// added above without a line added here is a setting that changes
+    /// silently.
+    pub fn should_notify(&self, old: &ScrollBehavior) -> bool {
+        old.platform != self.platform
+            || old.scrollbars != self.scrollbars
+            || old.overscroll != self.overscroll
     }
 }
 
@@ -257,6 +272,17 @@ impl ScrollConfiguration {
     /// Two behaviours of different types are always a change, because there is
     /// no meaningful comparison between them; the same type asks
     /// `shouldNotify`, which knows what its own fields mean.
+    ///
+    /// # Upstream's middle term is a short-circuit, not a test
+    ///
+    /// Upstream reads `behavior != oldWidget.behavior && behavior.shouldNotify(...)`,
+    /// and neither `ScrollBehavior` nor `_WrappedScrollBehavior` overrides
+    /// `==` -- so that `!=` is **identity**, cheaply skipping the common case
+    /// where the very same object is handed down a second time. Here equality
+    /// is structural and covers the same fields
+    /// [`ScrollBehavior::should_notify`] compares, so the guard would answer
+    /// exactly what the comparison answers. It is left out rather than
+    /// written as a line that can never change the result.
     pub fn update_should_notify(&self, old: &ScrollConfiguration, same_type: bool) -> bool {
         if !same_type {
             return true;
@@ -674,6 +700,57 @@ mod tests {
         // There is no meaningful comparison between two different types.
         let config = ScrollConfiguration::new(ScrollBehavior::new(ScrollPlatform::Android));
         assert!(config.update_should_notify(&config, false));
+    }
+
+    #[test]
+    fn but_turning_the_scrollbars_off_is_news_worth_carrying() {
+        // The two tests above compare a configuration against itself, which is
+        // the one case that stays quiet however shouldNotify is written. This
+        // is the case that was silently wrong: the port folded copyWith's
+        // knobs into the struct and kept the base class's constant `false`, so
+        // a setting could change and reach nobody.
+        let before = ScrollConfiguration::new(ScrollBehavior::new(ScrollPlatform::Android));
+        let mut behavior = ScrollBehavior::new(ScrollPlatform::Android);
+        behavior.scrollbars = false;
+        let after = ScrollConfiguration::new(behavior);
+        assert!(
+            after.update_should_notify(&before, true),
+            "the scroll views below are still drawing a scrollbar"
+        );
+    }
+
+    #[test]
+    fn and_so_is_each_of_the_other_settings_the_struct_carries() {
+        // One case per field, because a shouldNotify that compares some of its
+        // fields reads exactly like one that compares all of them.
+        let base = ScrollBehavior::new(ScrollPlatform::Android);
+        let mut overscroll = base;
+        overscroll.overscroll = false;
+        let mut platform = base;
+        platform.platform = ScrollPlatform::IOS;
+        for (changed, what) in [(overscroll, "overscroll"), (platform, "platform")] {
+            assert!(
+                ScrollConfiguration::new(changed)
+                    .update_should_notify(&ScrollConfiguration::new(base), true),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_behaviour_handed_down_again_unchanged_still_says_nothing() {
+        // The point of the whole predicate: a ScrollConfiguration is rebuilt
+        // whenever anything above it is, and answering yes each time would
+        // rebuild every scroll view in the application on every frame that
+        // touched an ancestor.
+        let behavior = ScrollBehavior::new(ScrollPlatform::Android);
+        let before = ScrollConfiguration::new(behavior);
+        let after = ScrollConfiguration::new(ScrollBehavior::new(ScrollPlatform::Android));
+        assert_ne!(
+            &before as *const _, &after as *const _,
+            "two objects, not one handed down twice"
+        );
+        assert!(!after.update_should_notify(&before, true));
     }
 
     // -- The primary controller --------------------------------------------
