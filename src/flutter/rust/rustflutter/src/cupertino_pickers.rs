@@ -198,10 +198,140 @@ pub trait CupertinoMenuEntry {
     fn is_divider(&self) -> bool;
 }
 
+/// What colour a menu item's label is drawn in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItemLabel {
+    /// `CupertinoColors.systemGrey`, for an item that cannot be pressed.
+    Disabled,
+    /// `CupertinoColors.systemRed`, for one that will destroy something.
+    Destructive,
+    /// The ordinary label colour.
+    Ordinary,
+}
+
 /// Upstream `CupertinoMenuItem`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// # Disabled beats destructive
+///
+/// `_resolveDefaultTextStyle` asks in this order:
+///
+/// ```text
+/// if (onPressed == null)      color = systemGrey;
+/// else if (isDestructiveAction) color = systemRed;
+/// else                          color = _kDefaultTextColor;
+/// ```
+///
+/// So a disabled destructive item is **grey and not red**. The warning colour
+/// is withdrawn along with the ability to act: there is nothing to warn about
+/// in a button that cannot be pressed, and a red one that does nothing would
+/// be alarming for no reason.
+///
+/// # Pressing closes the menu before it runs the callback
+///
+/// `_handleSelect` closes first and calls `onPressed` after, so the callback
+/// runs with the menu already going. A callback that pushes a route is not
+/// then fighting the menu's own dismissal for the same frame.
+///
+/// And `requestCloseOnActivate: false` stops the closing, not the callback --
+/// the two are separate steps and only the first is optional.
+///
+/// # The subtitle's colour is a blend, and an approximation of one
+///
+/// Upstream sets `foreground: Paint()..blendMode = isDark ? BlendMode.plus :
+/// BlendMode.hardLight`, with its own note that iOS uses `linearDodge` in the
+/// dark and `plusDarker` in the light, and that these are approximations of
+/// those. The whole style is marked "approximated from the iOS and iPadOS 18.5
+/// simulators".
+///
+/// Recorded because a port that reproduced these two modes exactly would be
+/// reproducing an approximation, not the platform -- worth knowing before
+/// anybody tunes them against a screenshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CupertinoMenuItem {
     pub leading: bool,
+    /// Upstream's `onPressed == null`, which is what "disabled" means here.
+    pub enabled: bool,
+    /// Upstream's `isDestructiveAction`, **false** by default.
+    pub is_destructive_action: bool,
+    /// Upstream's `requestCloseOnActivate`, **true** by default.
+    pub request_close_on_activate: bool,
+    /// Upstream's `requestFocusOnHover`, **true** by default -- the same as
+    /// Material's `MenuItemButton.requestFocusOnHover`.
+    ///
+    /// I wrote the opposite here first, on the strength of this port having it
+    /// false on the Material side. Checking upstream showed the port was
+    /// wrong, not the platforms: both default to true, and the Material one
+    /// has been corrected.
+    pub request_focus_on_hover: bool,
+}
+
+impl Default for CupertinoMenuItem {
+    fn default() -> CupertinoMenuItem {
+        CupertinoMenuItem::new()
+    }
+}
+
+impl CupertinoMenuItem {
+    pub fn new() -> CupertinoMenuItem {
+        CupertinoMenuItem {
+            leading: false,
+            enabled: true,
+            is_destructive_action: false,
+            request_close_on_activate: true,
+            request_focus_on_hover: true,
+        }
+    }
+
+    pub fn destructive() -> CupertinoMenuItem {
+        CupertinoMenuItem {
+            is_destructive_action: true,
+            ..CupertinoMenuItem::new()
+        }
+    }
+
+    pub fn disabled(mut self) -> CupertinoMenuItem {
+        self.enabled = false;
+        self
+    }
+
+    /// Upstream's `_resolveDefaultTextStyle` colour ladder -- see the type's
+    /// docs for why disabled is asked first.
+    pub fn label(&self) -> MenuItemLabel {
+        if !self.enabled {
+            return MenuItemLabel::Disabled;
+        }
+        if self.is_destructive_action {
+            return MenuItemLabel::Destructive;
+        }
+        MenuItemLabel::Ordinary
+    }
+
+    /// The colour that label resolves to.
+    pub fn label_color(&self) -> crate::cupertino::CupertinoDynamicColor {
+        match self.label() {
+            MenuItemLabel::Disabled => crate::cupertino::CupertinoColors::SYSTEM_GREY,
+            MenuItemLabel::Destructive => crate::cupertino::CupertinoColors::SYSTEM_RED,
+            MenuItemLabel::Ordinary => crate::cupertino::CupertinoColors::LABEL,
+        }
+    }
+
+    /// Upstream's `_handleSelect`, as the two things it does and their order.
+    ///
+    /// Closing is conditional and calling is not, so an item that keeps the
+    /// menu open still does its work.
+    pub fn activation(&self) -> (bool, bool) {
+        (self.request_close_on_activate, self.enabled)
+    }
+
+    /// Upstream's subtitle blend: `plus` in the dark, `hardLight` in the
+    /// light. Both are approximations -- see the type's docs.
+    pub fn subtitle_blend(is_dark: bool) -> crate::painting::BlendMode {
+        if is_dark {
+            crate::painting::BlendMode::Plus
+        } else {
+            crate::painting::BlendMode::HardLight
+        }
+    }
 }
 
 impl CupertinoMenuEntry for CupertinoMenuItem {
@@ -425,8 +555,11 @@ mod tests {
 
     #[test]
     fn one_item_with_an_icon_indents_all_the_others() {
-        let plain = CupertinoMenuItem { leading: false };
-        let with_icon = CupertinoMenuItem { leading: true };
+        let plain = CupertinoMenuItem::new();
+        let with_icon = CupertinoMenuItem {
+            leading: true,
+            ..CupertinoMenuItem::new()
+        };
 
         let all_plain: [&dyn CupertinoMenuEntry; 2] = [&plain, &plain];
         assert!(!CupertinoMenuAnchor::aligns_leading_edges(&all_plain));
@@ -492,5 +625,109 @@ mod tests {
 
         anchor.enable_long_press_to_open = false;
         assert!(anchor.is_valid(), "and turning both off is fine");
+    }
+}
+
+#[cfg(test)]
+mod cupertino_menu_item_tests {
+    use super::*;
+    use crate::cupertino::CupertinoColors;
+    use crate::painting::BlendMode;
+
+    #[test]
+    fn a_disabled_destructive_item_is_grey_and_not_red() {
+        // The warning colour is withdrawn along with the ability to act:
+        // there is nothing to warn about in a button that cannot be pressed.
+        let off = CupertinoMenuItem::destructive().disabled();
+        assert_eq!(off.label(), MenuItemLabel::Disabled);
+        assert_eq!(off.label_color(), CupertinoColors::SYSTEM_GREY);
+
+        // And it *is* red while it can be pressed, or the test above would
+        // only show that nothing is ever red.
+        assert_eq!(
+            CupertinoMenuItem::destructive().label(),
+            MenuItemLabel::Destructive
+        );
+        assert_eq!(
+            CupertinoMenuItem::destructive().label_color(),
+            CupertinoColors::SYSTEM_RED
+        );
+    }
+
+    #[test]
+    fn an_ordinary_disabled_item_is_the_same_grey() {
+        // Disabled is one answer, not two: the destructive flag stops
+        // mattering entirely rather than tinting the grey.
+        assert_eq!(
+            CupertinoMenuItem::new().disabled().label_color(),
+            CupertinoMenuItem::destructive().disabled().label_color()
+        );
+    }
+
+    #[test]
+    fn and_an_enabled_ordinary_item_is_neither() {
+        let plain = CupertinoMenuItem::new();
+        assert_eq!(plain.label(), MenuItemLabel::Ordinary);
+        assert_ne!(plain.label_color(), CupertinoColors::SYSTEM_GREY);
+        assert_ne!(plain.label_color(), CupertinoColors::SYSTEM_RED);
+    }
+
+    #[test]
+    fn closing_is_optional_and_calling_is_not() {
+        // `_handleSelect` closes first and calls after, and only the closing
+        // is behind a flag -- an item that keeps the menu open still works.
+        let mut keeps_open = CupertinoMenuItem::new();
+        keeps_open.request_close_on_activate = false;
+        assert_eq!(keeps_open.activation(), (false, true));
+        assert_eq!(CupertinoMenuItem::new().activation(), (true, true));
+    }
+
+    #[test]
+    fn the_three_defaults_are_upstreams() {
+        let item = CupertinoMenuItem::new();
+        assert!(item.enabled);
+        assert!(!item.is_destructive_action, "destructive is opt-in");
+        assert!(item.request_close_on_activate, "pressing closes the menu");
+        assert!(item.request_focus_on_hover, "the pointer carries the focus");
+    }
+
+    #[test]
+    fn and_the_material_item_agrees_about_hovering() {
+        // Both platforms default `requestFocusOnHover` to true. This port had
+        // the Material one false, which is the bug this tick found: moving the
+        // mouse and then pressing Enter would have acted on whatever the
+        // keyboard had left behind.
+        assert!(crate::menu_anchor::MenuItemButton::new().request_focus_on_hover);
+        assert_eq!(
+            crate::menu_anchor::MenuItemButton::new().request_focus_on_hover,
+            CupertinoMenuItem::new().request_focus_on_hover
+        );
+    }
+
+    #[test]
+    fn the_subtitle_blends_differently_in_the_dark() {
+        // Both are upstream's own approximations of iOS's `linearDodge` and
+        // `plusDarker`, which is why they are worth pinning as *these two*
+        // rather than tuned against a screenshot.
+        assert_eq!(CupertinoMenuItem::subtitle_blend(true), BlendMode::Plus);
+        assert_eq!(
+            CupertinoMenuItem::subtitle_blend(false),
+            BlendMode::HardLight
+        );
+        assert_ne!(
+            CupertinoMenuItem::subtitle_blend(true),
+            CupertinoMenuItem::subtitle_blend(false)
+        );
+    }
+
+    #[test]
+    fn a_menu_item_is_not_a_divider_whatever_else_it_is() {
+        for item in [
+            CupertinoMenuItem::new(),
+            CupertinoMenuItem::destructive(),
+            CupertinoMenuItem::new().disabled(),
+        ] {
+            assert!(!item.is_divider());
+        }
     }
 }

@@ -252,7 +252,12 @@ impl MenuBar {
 /// Upstream `MenuItemButton`: one line of a menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct MenuItemButton {
-    /// Upstream's `requestFocusOnHover`.
+    /// Upstream's `requestFocusOnHover`, **true** by default.
+    ///
+    /// This port had it false. A pointer moving down a menu carries the focus
+    /// with it upstream, so the item under the cursor is the one a keyboard
+    /// would act on -- and with the default inverted, moving the mouse and
+    /// then pressing Enter acted on whatever the keyboard had left behind.
     pub request_focus_on_hover: bool,
     /// Upstream's `closeOnActivate`, true by default: pressing an item is
     /// normally the end of the interaction.
@@ -273,7 +278,7 @@ impl MenuItemButton {
 
     pub fn new() -> MenuItemButton {
         MenuItemButton {
-            request_focus_on_hover: false,
+            request_focus_on_hover: true,
             close_on_activate: true,
             enabled: true,
         }

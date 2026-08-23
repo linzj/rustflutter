@@ -12030,3 +12030,55 @@ inputSize   = inputSize - sliceBorder * scale;
 
 10 个变异，10 个全红（其中一个第一次写成了不编译的形状，补齐遗漏臂后重跑也是红的）。
 
+## 一句差点写出去的错话，钓出了一个真 bug（2026-08-23）
+
+### 先说没做的事：没有去改 `depth.py`
+
+连着三次高报（三个列表磁贴、`Listener`、`FocusTraversalGroup`），
+原因都一样：**本移植把成员分解进了名字不同的类型，而 `depth.py` 按上游的名字数。**
+它的 `companion_body` 找的是 `X`/`XData`/`XState`/`ResolvedX`/`RenderX`——
+**又一个名字形状的启发式**，正是把 `unwired.py` 坑了四次的那一类。
+
+想过改成按行为判定：数那些文档里写着 `Upstream \`X\`` 的 Rust 类型。
+**先去查了一下这个约定靠不靠谱——不靠谱**：`PointerHandlers` 的文档里
+一次都没提 `Listener`，`ControlListTile` 的文档也没点三个磁贴的名字。
+一把三次里对两次的尺子比一把老实的高报尺子更糟，**因为我会开始信它**。
+所以没改。真正管用的是这三轮做的事：**动手前先 grep 一下**——一条命令，可靠。
+
+### `CupertinoMenuItem`：禁用压过危险
+
+`_resolveDefaultTextStyle` 的问法是
+`onPressed == null → systemGrey`，`else isDestructiveAction → systemRed`，
+`else 默认色`。所以**一个被禁用的危险项是灰的，不是红的**。
+**能力没了，警告也跟着撤掉**：一个按不下去的按钮没什么可警告的，
+而一个什么也不做的红按钮只会无缘无故地吓人。
+
+### 按下先关菜单，再调回调
+
+`_handleSelect` 先关后调，所以回调运行时菜单已经在关了——
+一个 push 路由的回调不会和菜单自己的消失抢同一帧。
+而 `requestCloseOnActivate: false` 只停掉关闭那一步，**不停掉回调**：
+两件事是分开的，只有第一件可选。
+
+### 副标题的颜色是个混合模式，而且是个近似
+
+上游 `blendMode = isDark ? BlendMode.plus : BlendMode.hardLight`，
+自己注明 iOS 用的是 `linearDodge` 和 `plusDarker`，这两个是它们的近似；
+整套样式还标着「approximated from the iOS and iPadOS 18.5 simulators」。
+**记下来，是因为照抄这两个模式等于在复刻一个近似而不是平台本身**——
+在有人对着截图去调它们之前，值得先知道这件事。
+
+### 而这一轮真正的收获，是一句差点写出去的错话
+
+我在文档里写了「`requestFocusOnHover` 默认 true——这和 Material 不一样，
+`MenuItemButton.requestFocusOnHover` 是 false」。**去核了一下上游：错的。**
+Material 那边默认也是 true。
+
+但核这一下**钓出了一个真 bug**：本移植的 `MenuItemButton::new()`
+把它设成了 `false`。后果是：**鼠标划过菜单、再按回车，动作会落在键盘
+之前留下的那一项上**，而不是指针底下这一项。已改成 true。
+
+**我以为的平台差异，其实是我自己的移植错误。**
+
+10 个变异，10 个全红。
+
