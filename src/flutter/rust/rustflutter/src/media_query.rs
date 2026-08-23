@@ -81,6 +81,17 @@ pub struct MediaQueryData {
     pub text_scale_factor: f32,
     /// Whether the platform is in light or dark mode.
     pub platform_brightness: Brightness,
+    /// Upstream's `MediaQueryData.onOffSwitchLabels`: whether switches draw
+    /// the I and O marks beside the thumb.
+    ///
+    /// An iOS accessibility setting, off by default, and **the platform bridge
+    /// cannot report it yet** -- there is a
+    /// `Binding::did_change_accessibility_features` hook and nothing behind
+    /// it. It is carried here anyway because a `MediaQuery` is a widget: an
+    /// application that knows the setting, or a test that wants the marks, can
+    /// put one in the tree and everything below sees it. That is a different
+    /// thing from a flag nobody can move.
+    pub on_off_switch_labels: bool,
 }
 
 impl Default for MediaQueryData {
@@ -93,6 +104,7 @@ impl Default for MediaQueryData {
             view_insets: EdgeInsets::ZERO,
             text_scale_factor: 1.0,
             platform_brightness: Brightness::Light,
+            on_off_switch_labels: false,
         }
     }
 }
@@ -112,6 +124,10 @@ impl MediaQueryData {
             view_insets: metrics.view_insets(),
             text_scale_factor: crate::platform::text_scale_factor() as f32,
             platform_brightness: crate::platform::brightness(),
+            // Not from the view and not from the platform either -- see the
+            // field. The bridge has nowhere to read it from, so a view's data
+            // says no and a `MediaQuery` above can say otherwise.
+            on_off_switch_labels: false,
         }
     }
 
@@ -594,6 +610,20 @@ mod tests {
             view_inset_bottom: inset_bottom,
             view_inset_left: 0.0,
         }
+    }
+
+    #[test]
+    fn a_view_reports_the_on_off_labels_off_because_it_cannot_read_them() {
+        // The bridge has a `did_change_accessibility_features` hook and
+        // nothing behind it, so a view's data says no and a `MediaQuery` above
+        // is the only thing that can say otherwise.
+        //
+        // Checked through `from_view` rather than `default()`: a mutation
+        // making the view report `true` survived a test that built the data
+        // the other way -- which is the gate the plan added last tick, not
+        // obeyed here the first time.
+        assert!(!MediaQueryData::from_view(&metrics(84.0, 0.0)).on_off_switch_labels);
+        assert!(!MediaQueryData::from_view(&metrics(0.0, 600.0)).on_off_switch_labels);
     }
 
     #[test]

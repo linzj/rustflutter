@@ -827,6 +827,70 @@ const THUMB_EXTENSION: f32 = 7.0;
 const DRAG_COMMIT_THRESHOLD: f32 = 0.7;
 const DRAG_REVERSE_THRESHOLD: f32 = 0.2;
 
+/// The accessibility marks an iOS switch draws beside its thumb, when the
+/// reader has asked for them.
+///
+/// # They are not letters, they are the power symbols
+///
+/// Upstream draws the "on" mark as a rectangle `_kOnLabelWidth = 1` by
+/// `_kOnLabelHeight = 10`, and the "off" mark with `drawCircle` at
+/// `_kOffLabelRadius = 5`. A one-by-ten bar and a circle: **the I and the O**
+/// of the international power marks, drawn as primitives rather than set as
+/// text.
+///
+/// Which is why they need no font and no localization -- a bar and a ring mean
+/// the same thing in every script, and a switch that spelled "on" would have
+/// to be translated and would stop fitting.
+///
+/// # And they appear only when the setting is on
+///
+/// `MediaQuery.onOffSwitchLabelsOf(context)` gates the whole pair: upstream
+/// builds `(onColor, offColor)` or **null**, so with the setting off there is
+/// nothing to draw rather than something drawn transparently.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwitchOnOffLabels {
+    pub on_color: Color,
+    pub off_color: Color,
+}
+
+impl SwitchOnOffLabels {
+    /// switch.dart's `_kOnLabelWidth` and `_kOnLabelHeight`: the bar.
+    pub const ON_SIZE: (f32, f32) = (1.0, 10.0);
+    /// switch.dart's `_kOffLabelRadius`: the ring.
+    pub const OFF_RADIUS: f32 = 5.0;
+    /// switch.dart's `_kOnLabelPaddingHorizontal`.
+    pub const ON_PADDING: f32 = 11.0;
+    /// switch.dart's `_kOffLabelPaddingHorizontal`, which is **not** the on
+    /// one: a circle of radius five and a bar one wide do not sit at the same
+    /// inset if they are to look equally far in.
+    pub const OFF_PADDING: f32 = 12.0;
+
+    /// Upstream's `_kOffLabelColor` in its ordinary contrast.
+    ///
+    /// The high-contrast value is white, and this port cannot express the
+    /// difference: `CupertinoDynamicColor`'s high-contrast columns are the one
+    /// pair still missing, for the reason the module docs give -- the platform
+    /// bridge carries no contrast setting. So the mark is drawn in the
+    /// ordinary grey even for a reader who asked for high contrast, which is
+    /// the same gap seen from a new place.
+    pub const OFF_COLOR: Color = Color::argb(255, 179, 179, 179);
+
+    /// Upstream's pair, or `None` when the reader has not asked for the marks.
+    pub fn resolve(
+        on_off_switch_labels: bool,
+        on_color: Option<Color>,
+        off_color: Option<Color>,
+    ) -> Option<SwitchOnOffLabels> {
+        if !on_off_switch_labels {
+            return None;
+        }
+        Some(SwitchOnOffLabels {
+            on_color: on_color.unwrap_or(Color::WHITE),
+            off_color: off_color.unwrap_or(SwitchOnOffLabels::OFF_COLOR),
+        })
+    }
+}
+
 /// switch.dart's `_kDisabledOpacity`.
 const SWITCH_DISABLED_OPACITY: f32 = 0.5;
 
@@ -5565,5 +5629,100 @@ mod dynamic_color_elevation_tests {
         );
         assert_eq!(corners.resolve(Brightness::Light, UP), Color::rgb(3, 3, 3));
         assert_eq!(corners.resolve(Brightness::Dark, UP), Color::rgb(4, 4, 4));
+    }
+}
+
+#[cfg(test)]
+mod switch_on_off_label_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_drawn_unless_the_reader_asked() {
+        // Upstream builds the pair or null, so with the setting off there is
+        // nothing to draw rather than something drawn transparently.
+        assert_eq!(SwitchOnOffLabels::resolve(false, None, None), None);
+        assert!(SwitchOnOffLabels::resolve(true, None, None).is_some());
+    }
+
+    #[test]
+    fn and_a_colour_someone_chose_does_not_turn_them_on() {
+        // The setting gates the pair, not the colours: naming one while the
+        // reader has not asked still draws nothing.
+        assert_eq!(
+            SwitchOnOffLabels::resolve(false, Some(Color::WHITE), Some(Color::BLACK)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_marks_are_a_bar_and_a_ring() {
+        // A one-by-ten rectangle and a circle of radius five: the I and the O
+        // of the power marks, drawn as primitives rather than set as text --
+        // so they need no font and no translation.
+        assert_eq!(SwitchOnOffLabels::ON_SIZE, (1.0, 10.0));
+        assert_eq!(SwitchOnOffLabels::OFF_RADIUS, 5.0);
+
+        // The bar is ten times as tall as it is wide, which is what makes it
+        // read as a stroke rather than a dot.
+        assert!(SwitchOnOffLabels::ON_SIZE.1 / SwitchOnOffLabels::ON_SIZE.0 >= 10.0);
+        // And the ring is as tall as the bar, so the pair look like one size.
+        assert_eq!(
+            SwitchOnOffLabels::OFF_RADIUS * 2.0,
+            SwitchOnOffLabels::ON_SIZE.1
+        );
+    }
+
+    #[test]
+    fn the_two_insets_are_not_the_same_inset() {
+        // A circle of radius five and a bar one wide do not sit equally far in
+        // at the same padding, so upstream gives them different numbers.
+        assert_eq!(SwitchOnOffLabels::ON_PADDING, 11.0);
+        assert_eq!(SwitchOnOffLabels::OFF_PADDING, 12.0);
+        assert_ne!(
+            SwitchOnOffLabels::ON_PADDING,
+            SwitchOnOffLabels::OFF_PADDING
+        );
+
+        // And the difference is the ring's overhang: the bar's inset plus half
+        // its width lands where the ring's inset less its radius would not.
+        assert_eq!(
+            SwitchOnOffLabels::OFF_PADDING - SwitchOnOffLabels::ON_PADDING,
+            1.0
+        );
+    }
+
+    #[test]
+    fn the_defaults_are_white_and_a_grey() {
+        let labels = SwitchOnOffLabels::resolve(true, None, None).unwrap();
+        assert_eq!(labels.on_color, Color::WHITE);
+        assert_eq!(labels.off_color, Color::argb(255, 179, 179, 179));
+        assert_ne!(
+            labels.off_color,
+            Color::WHITE,
+            "which is what the high-contrast value would have been"
+        );
+    }
+
+    #[test]
+    fn and_either_can_be_overridden_on_its_own() {
+        let mine = Color(0xFF00FF00);
+        let on_only = SwitchOnOffLabels::resolve(true, Some(mine), None).unwrap();
+        assert_eq!(on_only.on_color, mine);
+        assert_eq!(on_only.off_color, SwitchOnOffLabels::OFF_COLOR);
+
+        let off_only = SwitchOnOffLabels::resolve(true, None, Some(mine)).unwrap();
+        assert_eq!(off_only.on_color, Color::WHITE);
+        assert_eq!(off_only.off_color, mine);
+    }
+
+    #[test]
+    fn but_a_media_query_above_can_still_say_otherwise() {
+        // Which is why the field is carried: an application that knows the
+        // setting, or a test that wants the marks, puts one in the tree.
+        let asked = crate::media_query::MediaQueryData {
+            on_off_switch_labels: true,
+            ..crate::media_query::MediaQueryData::default()
+        };
+        assert!(SwitchOnOffLabels::resolve(asked.on_off_switch_labels, None, None).is_some());
     }
 }
