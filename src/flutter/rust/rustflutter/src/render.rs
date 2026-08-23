@@ -4161,15 +4161,127 @@ fn image_paint(opacity: Option<f32>) -> Option<Paint> {
     opacity.map(|o| Paint::new(Color::argb((o * 255.0).round() as u8, 0, 0, 0)))
 }
 
+/// Upstream's nine-patch rule: which part of an image stretches and which part
+/// does not.
+///
+/// A centre slice names the rectangle that may be stretched. Everything
+/// outside it -- the four corners and the four edges -- keeps its size, so a
+/// rounded button drawn from a small bitmap can be made any width without its
+/// corners going oval.
+///
+/// # The fit is computed on the stretchable part alone
+///
+/// Upstream's three lines are the whole idea:
+///
+/// ```text
+/// sliceBorder = inputSize / scale - centerSlice.size;
+/// outputSize = outputSize - sliceBorder;
+/// inputSize = inputSize - sliceBorder * scale;
+/// ```
+///
+/// The border -- everything the slice does not cover -- is taken off **both**
+/// sides before the fit runs, and added back afterwards. So the fit never sees
+/// the corners, and the corners never see the fit.
+///
+/// # Two fits are forbidden, and every fit but one is pointless
+///
+/// `assert(centerSlice == null || (fit != BoxFit.none && fit != BoxFit.cover))`
+/// rules out two. What rules out the rest is quieter, and upstream states it
+/// in prose rather than an assert: "Values of `BoxFit` which do not distort the
+/// destination image size will result in `centerSlice` having no effect (since
+/// the nine regions of the image will be rendered with the same scaling, as if
+/// it wasn't specified)."
+///
+/// A fit that keeps the aspect ratio scales all nine regions equally, and nine
+/// regions at one scale is one region. So the only fit a centre slice does
+/// anything with is [`BoxFit::Fill`] -- **which is exactly the fit you get by
+/// not asking for one**, since `fit ??= centerSlice == null ? scaleDown :
+/// fill`. The feature is designed to be used by leaving it alone.
+///
+/// # And a cropping fit is refused for a reason that is not about design
+///
+/// `assert(sourceSize == inputSize, 'centerSlice was used with a BoxFit that
+/// does not guarantee that the image is fully visible.')`, above which upstream
+/// writes: "We don't have the ability to draw a subset of the image at the same
+/// time as we apply a nine-patch stretch."
+///
+/// It is a capability the canvas does not have, said plainly, rather than a
+/// rule about what would look right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CentreSliceVerdict {
+    /// It will stretch the middle and leave the corners alone.
+    Stretches,
+    /// Allowed, and does nothing: the fit scales all nine regions equally.
+    NoEffect,
+    /// `BoxFit::None` or `BoxFit::Cover`, which upstream asserts against.
+    Forbidden,
+}
+
+/// What a centre slice does under a given fit -- see [`CentreSliceVerdict`].
+pub fn centre_slice_under(fit: BoxFit) -> CentreSliceVerdict {
+    match fit {
+        BoxFit::None | BoxFit::Cover => CentreSliceVerdict::Forbidden,
+        BoxFit::Fill => CentreSliceVerdict::Stretches,
+        // Aspect-preserving, so the nine regions share one scale.
+        BoxFit::Contain | BoxFit::FitWidth | BoxFit::FitHeight | BoxFit::ScaleDown => {
+            CentreSliceVerdict::NoEffect
+        }
+    }
+}
+
+/// Upstream's `fit ??= centerSlice == null ? BoxFit.scaleDown : BoxFit.fill`.
+///
+/// The default changes with the slice, which is what makes "leave the fit
+/// alone" the right way to use one.
+pub fn fit_for(fit: Option<BoxFit>, has_centre_slice: bool) -> BoxFit {
+    fit.unwrap_or(if has_centre_slice {
+        BoxFit::Fill
+    } else {
+        BoxFit::ScaleDown
+    })
+}
+
+/// Upstream's `sliceBorder`: the part of the image that will not stretch.
+///
+/// The width is everything to the left and right of the slice, added together,
+/// and the height everything above and below -- not four numbers but two,
+/// because opposite borders are never scaled independently.
+pub fn slice_border(image: Size, scale: f32, centre_slice: Size) -> Size {
+    Size::new(
+        image.width / scale - centre_slice.width,
+        image.height / scale - centre_slice.height,
+    )
+}
+
 pub struct RenderImage {
     image: Rc<Image>,
     fit: BoxFit,
     alignment: Alignment,
     opacity: Option<f32>,
     size: Size,
+    /// Upstream's `centerSlice`: the rectangle that may stretch. `None` is an
+    /// image scaled whole -- see [`centre_slice_under`] for what it does and
+    /// what it does not.
+    centre_slice: Option<Rect>,
 }
 
 impl RenderImage {
+    /// The rectangle that may stretch. Setting one also changes what an
+    /// unspecified fit means -- see [`fit_for`].
+    pub fn with_centre_slice(mut self, centre_slice: Rect) -> RenderImage {
+        self.centre_slice = Some(centre_slice);
+        self
+    }
+
+    pub fn centre_slice(&self) -> Option<Rect> {
+        self.centre_slice
+    }
+
+    /// What this image's centre slice will actually do, given its fit.
+    pub fn centre_slice_verdict(&self) -> Option<CentreSliceVerdict> {
+        self.centre_slice.map(|_| centre_slice_under(self.fit))
+    }
+
     /// Shared rather than owned, because a render tree is rebuilt every frame
     /// and decoding a PNG sixty times a second to draw the same picture is not
     /// a thing anyone wants. The caller decodes once and keeps the handle.
@@ -4186,6 +4298,7 @@ impl RenderImage {
     pub fn new(image: Rc<Image>) -> RenderImage {
         RenderImage {
             image,
+            centre_slice: None,
             fit: BoxFit::ScaleDown,
             alignment: Alignment::CENTER,
             opacity: None,
@@ -23230,6 +23343,130 @@ mod seed_extent_direction_tests {
             list().seed_extent(),
             crate::scrolling::DEFAULT_ITEM_ESTIMATE,
             "and neither given falls through to the port's own"
+        );
+    }
+}
+
+#[cfg(test)]
+mod centre_slice_tests {
+    use super::*;
+
+    #[test]
+    fn the_only_fit_a_centre_slice_does_anything_with_is_the_default_one() {
+        // `fit ??= centerSlice == null ? scaleDown : fill`, and `fill` is the
+        // one fit that distorts -- so the feature is designed to be used by
+        // leaving the fit alone.
+        assert_eq!(fit_for(None, true), BoxFit::Fill);
+        assert_eq!(
+            centre_slice_under(fit_for(None, true)),
+            CentreSliceVerdict::Stretches
+        );
+    }
+
+    #[test]
+    fn and_without_one_the_default_is_the_other_end_of_the_enum() {
+        // Scale-down paints at natural size wherever there is room and only
+        // ever shrinks; fill stretches to the box. The default flips between
+        // them on one field being present.
+        assert_eq!(fit_for(None, false), BoxFit::ScaleDown);
+        assert_ne!(fit_for(None, false), fit_for(None, true));
+    }
+
+    #[test]
+    fn a_fit_someone_asked_for_is_not_overridden_either_way() {
+        for has_slice in [false, true] {
+            assert_eq!(fit_for(Some(BoxFit::Contain), has_slice), BoxFit::Contain);
+        }
+    }
+
+    #[test]
+    fn an_aspect_preserving_fit_makes_a_centre_slice_do_nothing() {
+        // Nine regions at one scale is one region. Upstream says so in prose
+        // rather than an assert, which is why it is easy to miss.
+        for fit in [
+            BoxFit::Contain,
+            BoxFit::FitWidth,
+            BoxFit::FitHeight,
+            BoxFit::ScaleDown,
+        ] {
+            assert_eq!(
+                centre_slice_under(fit),
+                CentreSliceVerdict::NoEffect,
+                "{fit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_two_fits_are_refused_outright() {
+        // `assert(centerSlice == null || (fit != BoxFit.none && fit != BoxFit.cover))`.
+        assert_eq!(
+            centre_slice_under(BoxFit::None),
+            CentreSliceVerdict::Forbidden
+        );
+        assert_eq!(
+            centre_slice_under(BoxFit::Cover),
+            CentreSliceVerdict::Forbidden
+        );
+    }
+
+    #[test]
+    fn refused_and_pointless_are_not_the_same_answer() {
+        // A cropping fit is refused because the canvas cannot draw a subset
+        // and stretch at once -- a capability, not a judgement. An
+        // aspect-preserving fit is allowed and simply achieves nothing.
+        assert_ne!(
+            centre_slice_under(BoxFit::Cover),
+            centre_slice_under(BoxFit::Contain)
+        );
+    }
+
+    #[test]
+    fn the_border_is_everything_the_slice_does_not_cover() {
+        // Two numbers rather than four: opposite borders are never scaled
+        // independently, so only their sum matters.
+        let border = slice_border(Size::new(100.0, 60.0), 1.0, Size::new(80.0, 40.0));
+        assert_eq!(border, Size::new(20.0, 20.0));
+    }
+
+    #[test]
+    fn and_it_is_measured_in_the_images_own_pixels_divided_by_its_scale() {
+        // `inputSize / scale - centerSlice.size`: a two-times image is half
+        // the logical size, so the border it contributes is half as well.
+        let single = slice_border(Size::new(100.0, 60.0), 1.0, Size::new(80.0, 40.0));
+        let double = slice_border(Size::new(100.0, 60.0), 2.0, Size::new(30.0, 20.0));
+        assert_eq!(double, Size::new(20.0, 10.0));
+        assert_ne!(double, single);
+    }
+
+    #[test]
+    fn a_slice_covering_the_whole_image_leaves_no_border() {
+        // Which is the degenerate case: everything stretches, so it is an
+        // ordinary fill.
+        assert_eq!(
+            slice_border(Size::new(100.0, 60.0), 1.0, Size::new(100.0, 60.0)),
+            Size::new(0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn an_image_reports_what_its_own_slice_will_do() {
+        let image = Rc::new(
+            Image::from_pixels(&[0, 0, 0, 0], 1, 1).expect("the stub engine hands one back"),
+        );
+        let plain = RenderImage::new(Rc::clone(&image));
+        assert_eq!(plain.centre_slice(), None);
+        assert_eq!(plain.centre_slice_verdict(), None, "no slice, no verdict");
+
+        let sliced =
+            RenderImage::new(Rc::clone(&image)).with_centre_slice(Rect::ltrb(1.0, 1.0, 9.0, 9.0));
+        assert!(sliced.centre_slice().is_some());
+        // The constructor's fit is `ScaleDown`, which is aspect-preserving --
+        // so a slice added to a default image achieves nothing, and this is
+        // the trap the doc is about.
+        assert_eq!(
+            sliced.centre_slice_verdict(),
+            Some(CentreSliceVerdict::NoEffect)
         );
     }
 }

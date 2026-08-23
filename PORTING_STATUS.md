@@ -11978,3 +11978,55 @@ selection is set on tap down」。
 **这一轮如果把什么接进了某条既有流水线，就必须有一条测试从那条流水线的
 公开入口走一遍**，否则「接线」那一半根本没被测过。
 
+## 九宫格：唯一让中心切片起作用的 fit，正是你不指定时得到的那个（2026-08-23）
+
+这一轮先查后做，省了两次重复劳动：
+
+* **`FocusTraversalGroup`（2/11）是高报**——方向遍历早已整个移植在
+  `src/directional_traversal.rs` 里（924 行、25 条测试、自己的提交
+  「"To the right" is not a question with one right answer」）。
+  差点又写一遍。
+* **`Listener`（上一轮）同理**。
+
+`RawImage`/`RenderImage`（2/20）是真的缺，而且**本移植的文档里已经写着
+一条关于它没有的字段的规则**：`RenderImage::new` 的注释解释默认 fit 时引用了
+`fit ??= centerSlice == null ? BoxFit.scaleDown : BoxFit.fill`——
+而 `RenderImage` 根本没有 `center_slice`。
+（和 `CupertinoUserInterfaceLevel` 那次同一个物种：文档描述了一个不存在的东西。）
+
+### fit 只作用在会拉伸的那部分上
+
+上游三行就是九宫格的全部想法：
+
+```
+sliceBorder = inputSize / scale - centerSlice.size;
+outputSize  = outputSize - sliceBorder;
+inputSize   = inputSize - sliceBorder * scale;
+```
+
+切片盖不到的部分——四角和四边——在 fit 跑之前从**两边**都扣掉，跑完再加回来。
+**所以 fit 从来看不见四角，四角也从来看不见 fit。**
+
+而且 border 是**两个数不是四个**：左右加在一起、上下加在一起，
+因为相对的两条边从不各自缩放。
+
+### 两个 fit 被禁，其余的 fit 全都白搭
+
+`assert(centerSlice == null || (fit != BoxFit.none && fit != BoxFit.cover))`
+挡掉两个。挡掉其余的那条更安静，上游写在散文里而不是断言里：
+「不会让目标尺寸变形的那些 `BoxFit` 值会导致 `centerSlice` 毫无效果
+（因为九个区域会用同一个缩放渲染，就像没指定过一样）。」
+
+保比例的 fit 让九个区域同一个缩放，而**九个同缩放的区域就是一个区域**。
+所以唯一让中心切片起作用的 fit 是 `Fill`——
+**而那正是你不指定 fit 时得到的那个**（`fit ??= ... : BoxFit.fill`）。
+**这个特性的设计用法就是别去动它。**
+
+### 「被禁」和「白搭」不是同一个答案
+
+裁剪型的 fit 被拒，理由不是审美：
+「我们没有能力在做九宫格拉伸的同时只画图片的一个子集。」
+——**是画布没有这个能力，直说了**。而保比例的 fit 是允许的，只是什么也没做成。
+
+10 个变异，10 个全红（其中一个第一次写成了不编译的形状，补齐遗漏臂后重跑也是红的）。
+
