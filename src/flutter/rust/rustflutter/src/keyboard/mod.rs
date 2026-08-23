@@ -213,6 +213,13 @@ impl KeyboardLockMode {
 #[derive(Default, Debug)]
 pub struct Keyboard {
     pressed: HashMap<PhysicalKey, LogicalKey>,
+    /// Upstream's `HardwareKeyboard.lockModesEnabled`.
+    ///
+    /// Not derived from `pressed`, and it cannot be: a lock is on when nobody
+    /// is touching its key. That is the whole difference between a lock and a
+    /// modifier, so it needs a second piece of state rather than another
+    /// question about the first.
+    locks: Vec<KeyboardLockMode>,
 }
 
 impl Keyboard {
@@ -226,6 +233,17 @@ impl Keyboard {
         match event.change {
             KeyChange::Down => {
                 self.pressed.insert(event.physical, event.logical);
+                // Upstream: "The status of the mode is toggled with each key
+                // down of its corresponding logical key." A key down, not a
+                // key up, and not a repeat -- holding num lock does not
+                // flicker the mode.
+                if let Some(mode) = KeyboardLockMode::find_by_logical_key(event.logical) {
+                    if let Some(at) = self.locks.iter().position(|held| *held == mode) {
+                        self.locks.remove(at);
+                    } else {
+                        self.locks.push(mode);
+                    }
+                }
             }
             KeyChange::Repeat => {
                 // A repeat without a press means the key went down while
@@ -238,6 +256,11 @@ impl Keyboard {
                 }
             }
         }
+    }
+
+    /// Whether a lock mode is currently on.
+    pub fn is_locked(&self, mode: KeyboardLockMode) -> bool {
+        self.locks.contains(&mode)
     }
 
     pub fn is_pressed(&self, key: PhysicalKey) -> bool {

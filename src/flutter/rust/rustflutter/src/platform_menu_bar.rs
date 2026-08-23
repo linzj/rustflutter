@@ -15,7 +15,7 @@
 //! what carries the decisions, and it is here in full.
 
 use crate::keyboard::LogicalKey;
-use crate::shortcuts::ShortcutActivator;
+use crate::shortcuts::{LockState, ShortcutActivator};
 
 /// Upstream's channel keys, which are the wire format and therefore not free
 /// to rename.
@@ -965,6 +965,11 @@ impl MenuSerializableShortcut for ShortcutActivator {
                 shift,
                 alt,
                 meta,
+                // The menu serialization has no field for a lock demand: the
+                // platform draws "Ctrl+C" and has nowhere to say "with num
+                // lock off". Upstream's `serializeForMenu` drops it the same
+                // way, by never reading it.
+                ..
             } => ShortcutSerialization::Modifier {
                 trigger: LogicalKey(*key),
                 control: *control,
@@ -996,6 +1001,7 @@ mod menu_serializable_tests {
             shift: false,
             alt: false,
             meta: true,
+            num_lock: LockState::Ignored,
         };
         assert_eq!(
             save.serialize_for_menu(),
@@ -1061,6 +1067,7 @@ mod menu_serializable_tests {
             shift: false,
             alt: false,
             meta: false,
+            num_lock: LockState::Ignored,
         };
         assert!(matches!(
             ask(&escape),

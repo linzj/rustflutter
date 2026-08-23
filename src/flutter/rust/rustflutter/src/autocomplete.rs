@@ -31,7 +31,7 @@
 
 use crate::foundation::ValueNotifier;
 use crate::keyboard::LogicalKey;
-use crate::shortcuts::ShortcutActivator;
+use crate::shortcuts::{LockState, ShortcutActivator};
 use std::rc::Rc;
 
 /// Upstream `OptionsViewOpenDirection`: which way the list of options grows.
@@ -191,6 +191,7 @@ pub fn apple_shortcuts() -> Vec<(ShortcutActivator, AutocompleteIntent)> {
                 shift: false,
                 alt: false,
                 meta: true,
+                num_lock: LockState::Ignored,
             },
             AutocompleteIntent::First,
         ),
@@ -201,6 +202,7 @@ pub fn apple_shortcuts() -> Vec<(ShortcutActivator, AutocompleteIntent)> {
                 shift: false,
                 alt: false,
                 meta: true,
+                num_lock: LockState::Ignored,
             },
             AutocompleteIntent::Last,
         ),
@@ -217,6 +219,7 @@ pub fn non_apple_shortcuts() -> Vec<(ShortcutActivator, AutocompleteIntent)> {
                 shift: false,
                 alt: false,
                 meta: false,
+                num_lock: LockState::Ignored,
             },
             AutocompleteIntent::First,
         ),
@@ -227,6 +230,7 @@ pub fn non_apple_shortcuts() -> Vec<(ShortcutActivator, AutocompleteIntent)> {
                 shift: false,
                 alt: false,
                 meta: false,
+                num_lock: LockState::Ignored,
             },
             AutocompleteIntent::Last,
         ),
@@ -241,6 +245,7 @@ pub fn common_shortcuts() -> Vec<(ShortcutActivator, AutocompleteIntent)> {
         shift: false,
         alt: false,
         meta: false,
+        num_lock: LockState::Ignored,
     };
     vec![
         (plain(LogicalKey::ARROW_UP), AutocompleteIntent::Previous),
@@ -773,6 +778,7 @@ mod tests {
                 shift: false,
                 alt: false,
                 meta: true,
+                num_lock: LockState::Ignored,
             }
         );
         assert_eq!(
@@ -783,6 +789,7 @@ mod tests {
                 shift: false,
                 alt: false,
                 meta: false,
+                num_lock: LockState::Ignored,
             }
         );
 

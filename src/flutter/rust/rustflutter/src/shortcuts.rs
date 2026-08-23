@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use crate::actions::Intent;
 use crate::focus::KeyResult;
+use crate::keyboard::KeyboardLockMode;
 use crate::keyboard::{KeyEvent, Keyboard, LogicalKey};
 
 /// Upstream `KeySet<LogicalKeyboardKey>`: the set of logical keys an
@@ -42,6 +43,38 @@ impl LogicalKeySet {
     }
 }
 
+/// Upstream `LockState`: what a shortcut asks of a lock key.
+///
+/// Three answers to a yes-or-no question, and the third one is the reason the
+/// type exists: **`Ignored` is not `Unlocked`.** A shortcut that does not care
+/// fires either way; one that says `Unlocked` refuses while the lock is on. A
+/// port that modelled this as a `bool` would have to pick which of those two
+/// the absent case meant, and would be wrong for half the shortcuts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum LockState {
+    /// The lock is not consulted. Upstream's default.
+    #[default]
+    Ignored,
+    /// The lock must be on.
+    Locked,
+    /// The lock must be off.
+    Unlocked,
+}
+
+impl LockState {
+    pub const ALL: [LockState; 3] = [LockState::Ignored, LockState::Locked, LockState::Unlocked];
+
+    /// Upstream's `_shouldAcceptNumLock`, which is this switch and nothing
+    /// else.
+    pub fn matches(self, is_locked: bool) -> bool {
+        match self {
+            LockState::Ignored => true,
+            LockState::Locked => is_locked,
+            LockState::Unlocked => !is_locked,
+        }
+    }
+}
+
 /// Upstream `ShortcutActivator`: the thing that says whether a key event is
 /// the one it means. The closed set -- the two activators upstream's
 /// widgets actually use.
@@ -56,6 +89,15 @@ pub enum ShortcutActivator {
         shift: bool,
         alt: bool,
         meta: bool,
+        /// Upstream's `numLock`, and **only num lock**.
+        ///
+        /// `SingleActivator` gives a `LockState` to this one lock and to
+        /// neither of the others, which looks arbitrary until you ask what
+        /// each lock does. Num lock changes **what the number-pad keys are**
+        /// -- `1` or `End` -- so a shortcut bound to one of them has to say
+        /// which meaning it wants. Caps lock and scroll lock change what a key
+        /// produces, not which key it is, and a shortcut is bound to the key.
+        num_lock: LockState,
     },
     /// `CharacterActivator`: a character, with optional control and single
     /// modifier demands.
@@ -92,12 +134,14 @@ impl ShortcutActivator {
                 shift,
                 alt,
                 meta,
+                num_lock,
             } => {
                 event.logical.0 == *key
                     && keyboard.control() == *control
                     && keyboard.shift() == *shift
                     && keyboard.alt() == *alt
                     && keyboard.meta() == *meta
+                    && num_lock.matches(keyboard.is_locked(KeyboardLockMode::NumLock))
             }
             ShortcutActivator::Character {
                 character,
@@ -262,6 +306,7 @@ mod tests {
             shift: false,
             alt: false,
             meta: false,
+            num_lock: LockState::Ignored,
         };
         let ctrl_s = event(LogicalKey::KEY_S.0, None);
         assert!(activator.accepts(
@@ -351,6 +396,7 @@ impl ShortcutActivator {
                 shift,
                 alt,
                 meta,
+                ..
             } => {
                 let mut parts = Vec::new();
                 if *control {
@@ -547,6 +593,7 @@ mod shortcut_property_tests {
             shift: false,
             alt: false,
             meta: false,
+            num_lock: LockState::Ignored,
         };
         assert_eq!(copy.debug_describe_keys(), "Control + C");
     }
@@ -561,6 +608,7 @@ mod shortcut_property_tests {
             shift: true,
             alt: true,
             meta: true,
+            num_lock: LockState::Ignored,
         };
         assert_eq!(
             all.debug_describe_keys(),
@@ -601,6 +649,7 @@ mod shortcut_property_tests {
             shift: false,
             alt: false,
             meta: false,
+            num_lock: LockState::Ignored,
         };
         assert_eq!(unknown.debug_describe_keys(), "0x12345678");
     }
@@ -620,6 +669,7 @@ mod shortcut_property_tests {
                         shift: false,
                         alt: false,
                         meta: false,
+                        num_lock: LockState::Ignored,
                     },
                     "CopySelectionTextIntent",
                 ),
@@ -630,6 +680,7 @@ mod shortcut_property_tests {
                         shift: false,
                         alt: false,
                         meta: false,
+                        num_lock: LockState::Ignored,
                     },
                     "DismissIntent",
                 ),
@@ -648,5 +699,143 @@ mod shortcut_property_tests {
             ShortcutMapProperty::new("shortcuts", Vec::new()).value_to_string(),
             "{}"
         );
+    }
+}
+
+#[cfg(test)]
+mod lock_state_tests {
+    use super::{LockState, ShortcutActivator};
+    use crate::keyboard::{
+        KeyChange, KeyEvent, Keyboard, KeyboardLockMode, LogicalKey, PhysicalKey,
+    };
+
+    fn down(physical: PhysicalKey, logical: LogicalKey) -> KeyEvent {
+        KeyEvent {
+            physical,
+            logical,
+            change: KeyChange::Down,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        }
+    }
+
+    /// A keyboard with num lock pressed `times` times.
+    fn after_num_lock(times: usize) -> Keyboard {
+        let mut keyboard = Keyboard::new();
+        for _ in 0..times {
+            let mut press = down(PhysicalKey::NUM_LOCK, LogicalKey::NUM_LOCK);
+            keyboard.record(&mut press);
+            let mut release = KeyEvent {
+                change: KeyChange::Up,
+                ..down(PhysicalKey::NUM_LOCK, LogicalKey::NUM_LOCK)
+            };
+            keyboard.record(&mut release);
+        }
+        keyboard
+    }
+
+    #[test]
+    fn ignored_is_not_the_same_as_unlocked() {
+        // The reason the type is three-valued. A shortcut that does not care
+        // fires either way; one that says Unlocked refuses while the lock is
+        // on. A bool would have to pick which of those the absent case meant.
+        assert!(LockState::Ignored.matches(true));
+        assert!(LockState::Ignored.matches(false));
+        assert!(!LockState::Unlocked.matches(true));
+        assert!(LockState::Unlocked.matches(false));
+        assert!(LockState::Locked.matches(true));
+        assert!(!LockState::Locked.matches(false));
+        // Ignored agrees with both of the others, and they agree with nothing.
+        assert_ne!(
+            LockState::Locked.matches(true),
+            LockState::Unlocked.matches(true)
+        );
+    }
+
+    #[test]
+    fn a_lock_stays_on_with_nothing_held_down() {
+        // The whole difference from a modifier, and why the keyboard needs a
+        // second piece of state rather than another question about `pressed`.
+        let keyboard = after_num_lock(1);
+        assert!(keyboard.is_locked(KeyboardLockMode::NumLock));
+        assert!(!keyboard.is_pressed(PhysicalKey::NUM_LOCK), "and released");
+    }
+
+    #[test]
+    fn and_pressing_it_again_turns_it_off() {
+        assert!(!after_num_lock(0).is_locked(KeyboardLockMode::NumLock));
+        assert!(after_num_lock(1).is_locked(KeyboardLockMode::NumLock));
+        assert!(!after_num_lock(2).is_locked(KeyboardLockMode::NumLock));
+        assert!(after_num_lock(3).is_locked(KeyboardLockMode::NumLock));
+    }
+
+    #[test]
+    fn and_an_ordinary_key_toggles_nothing() {
+        // Written because a mutation survived: making every key down toggle
+        // num lock left the suite green, since no test recorded a key that was
+        // not the lock itself. `accepts` reads the keyboard, it does not feed
+        // it, so pressing A through an activator never reached `record`.
+        let mut keyboard = Keyboard::new();
+        for _ in 0..3 {
+            let mut press = down(PhysicalKey::KEY_A, LogicalKey::KEY_A);
+            keyboard.record(&mut press);
+        }
+        assert!(!keyboard.is_locked(KeyboardLockMode::NumLock));
+        assert!(!keyboard.is_locked(KeyboardLockMode::CapsLock));
+        assert!(!keyboard.is_locked(KeyboardLockMode::ScrollLock));
+    }
+
+    #[test]
+    fn and_a_lock_key_release_toggles_nothing_either() {
+        // "Toggled with each key down" -- a press and its release are one
+        // toggle, not two, or the lock would never appear to change at all.
+        let mut keyboard = Keyboard::new();
+        let mut release = KeyEvent {
+            change: KeyChange::Up,
+            ..down(PhysicalKey::NUM_LOCK, LogicalKey::NUM_LOCK)
+        };
+        keyboard.record(&mut release);
+        assert!(!keyboard.is_locked(KeyboardLockMode::NumLock));
+    }
+
+    #[test]
+    fn and_the_other_locks_are_left_alone() {
+        // Toggling one lock must not touch another -- they are separate modes
+        // that happen to share a mechanism.
+        let keyboard = after_num_lock(1);
+        assert!(!keyboard.is_locked(KeyboardLockMode::CapsLock));
+        assert!(!keyboard.is_locked(KeyboardLockMode::ScrollLock));
+    }
+
+    #[test]
+    fn a_shortcut_can_demand_the_lock_be_off() {
+        let activator = |num_lock| ShortcutActivator::Single {
+            key: LogicalKey::KEY_A.0,
+            control: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            num_lock,
+        };
+        let mut press_a = down(PhysicalKey::KEY_A, LogicalKey::KEY_A);
+
+        let unlocked = after_num_lock(0);
+        assert!(activator(LockState::Unlocked).accepts(&press_a, &unlocked));
+        assert!(!activator(LockState::Locked).accepts(&press_a, &unlocked));
+
+        let locked = after_num_lock(1);
+        assert!(!activator(LockState::Unlocked).accepts(&press_a, &locked));
+        assert!(activator(LockState::Locked).accepts(&press_a, &locked));
+
+        // And the default asks nothing of it, so it fires either way.
+        assert!(activator(LockState::Ignored).accepts(&press_a, &unlocked));
+        assert!(activator(LockState::Ignored).accepts(&press_a, &locked));
+        let _ = &mut press_a;
+    }
+
+    #[test]
+    fn a_shortcut_asks_nothing_of_the_lock_unless_told_to() {
+        assert_eq!(LockState::default(), LockState::Ignored);
     }
 }
