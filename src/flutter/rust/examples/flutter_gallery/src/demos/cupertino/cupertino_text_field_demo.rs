@@ -552,13 +552,22 @@ mod tests {
     fn the_border_color_is_text_field_darts() {
         // `_kBorderColor`: 20% black in the light appearance, 20% white in
         // the dark one.
+        use rustflutter::CupertinoUserInterfaceLevelData::Base;
         assert_eq!(
-            FIELD_BORDER_COLOR.resolve(Brightness::Light),
+            FIELD_BORDER_COLOR.resolve(Brightness::Light, Base),
             Color(0x3300_0000)
         );
         assert_eq!(
-            FIELD_BORDER_COLOR.resolve(Brightness::Dark),
+            FIELD_BORDER_COLOR.resolve(Brightness::Dark, Base),
             Color(0x33FF_FFFF)
+        );
+        // A field's border is not a surface, so raising it changes nothing.
+        assert_eq!(
+            FIELD_BORDER_COLOR.resolve(
+                Brightness::Dark,
+                rustflutter::CupertinoUserInterfaceLevelData::Elevated
+            ),
+            FIELD_BORDER_COLOR.resolve(Brightness::Dark, Base)
         );
     }
 }

@@ -265,7 +265,8 @@ pub use cupertino::{
     CupertinoContextMenuSheet, CupertinoDynamicColor, CupertinoNavigationBar,
     CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar, CupertinoSearchTextField,
     CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar, CupertinoTabItem,
-    CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
+    CupertinoTabScaffold, CupertinoTheme, CupertinoUserInterfaceLevel,
+    CupertinoUserInterfaceLevelData, cupertino_theme_of,
 };
 pub use curves2d::{CatmullRomCurve, CatmullRomSpline, Curve2D, Curve2DSample, Interval, Split};
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};

@@ -33,8 +33,16 @@
 //! - **`CupertinoDynamicColor`'s high-contrast variants are dropped.** The
 //!   platform bridge carries brightness but no contrast setting, so the
 //!   `highContrastColor`/`darkHighContrastColor` columns of
-//!   `cupertino/colors.dart` have nothing to resolve against; the light/dark
-//!   pair is kept.
+//!   `cupertino/colors.dart` have nothing to resolve against.
+//!
+//!   This note used to cover the **elevated** columns as well, under the same
+//!   reason, and the reason does not reach them: elevation does not come from
+//!   the platform at all. `CupertinoUserInterfaceLevel` is a widget in the
+//!   tree -- a sheet raises the level for what it lays over -- and this crate
+//!   has had it all along, documented as existing to pick between a dynamic
+//!   colour's base and elevated values while there was no elevated value to
+//!   pick. Four of the eight columns are carried now; only high contrast is
+//!   still missing, and it is missing for a reason that is actually about it.
 //! - **The corner radius is `Radius.circular`, not `RSuperellipse`.** The
 //!   paint bridge has no superellipse; upstream itself falls back to `RRect`
 //!   "since this shape is really small" in several of these widgets.
@@ -65,29 +73,146 @@ use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, Text
 //
 // Anchor: cupertino/colors.dart, `class CupertinoColors`.
 
-/// A color with a light and a dark variant. Upstream's `CupertinoDynamicColor`
-/// minus its high-contrast columns (see the module docs).
+/// The base interface level, spelled out at the call sites below that have no
+/// ambient level to consult.
+///
+/// Upstream's `resolveFrom` reaches the level through the tree; these sites
+/// resolve from a brightness they were handed and have no context, so they
+/// pass the base explicitly. Naming it keeps the gap visible: it is a value
+/// somebody chose, not a default that filled itself in.
+const BASE: CupertinoUserInterfaceLevelData = CupertinoUserInterfaceLevelData::Base;
+
+/// Upstream `CupertinoDynamicColor`: four of its eight columns.
+///
+/// Upstream resolves a colour against three independent things -- platform
+/// brightness, interface elevation and high contrast -- which is 2x2x2 = eight
+/// values. This carries the four that are not high contrast; see the module
+/// docs for why that one column is missing and this one is not.
+///
+/// # Elevation never moves the light value
+///
+/// Across all eighteen of upstream's system colours that declare an elevated
+/// variant, `color == elevatedColor` **every time**. Only the dark side ever
+/// moves, and then only for the six background roles and `separator`.
+///
+/// It follows from what raising something means: in the dark you lift a
+/// surface by lightening it, and in the light there is nowhere lighter than
+/// white to go. See [`CupertinoDynamicColor::elevation_only_moves_the_dark`].
+///
+/// # And only the surface moves, not what is on it
+///
+/// `label`, the fills and `link` do not move under elevation; the backgrounds
+/// do. Content does not change when the surface under it rises -- the surface
+/// does. `separator` moves and `opaqueSeparator` does not, which is the same
+/// rule seen from the other end: a translucent separator shows what is behind
+/// it and has to follow it, and an opaque one has nothing to follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CupertinoDynamicColor {
     /// The light-appearance value. Upstream's `color`.
     pub color: Color,
     /// The dark-appearance value. Upstream's `darkColor`.
     pub dark_color: Color,
+    /// Upstream's `elevatedColor`: the light value on a raised surface, which
+    /// in upstream's whole table is always the light value.
+    pub elevated_color: Color,
+    /// Upstream's `darkElevatedColor`, the one of the four that actually
+    /// carries elevation.
+    pub dark_elevated_color: Color,
 }
 
 impl CupertinoDynamicColor {
-    /// Upstream's `CupertinoDynamicColor.withBrightness`.
+    /// Upstream's `CupertinoDynamicColor.withBrightness`: a colour that does
+    /// not vary with elevation, so both levels are the base value.
     pub const fn with_brightness(color: Color, dark_color: Color) -> CupertinoDynamicColor {
-        CupertinoDynamicColor { color, dark_color }
+        CupertinoDynamicColor {
+            color,
+            dark_color,
+            elevated_color: color,
+            dark_elevated_color: dark_color,
+        }
     }
 
-    /// Upstream's `CupertinoDynamicColor.resolve`, given the appearance
-    /// directly rather than a context.
-    pub const fn resolve(&self, brightness: Brightness) -> Color {
-        match brightness {
-            Brightness::Light => self.color,
-            Brightness::Dark => self.dark_color,
+    /// A colour that also varies with elevation. The light elevated value is
+    /// taken rather than assumed, even though upstream's own table never
+    /// moves it -- a rule that holds everywhere is still a rule and not a law.
+    pub const fn with_elevation(
+        color: Color,
+        dark_color: Color,
+        dark_elevated_color: Color,
+    ) -> CupertinoDynamicColor {
+        CupertinoDynamicColor {
+            color,
+            dark_color,
+            elevated_color: color,
+            dark_elevated_color,
         }
+    }
+
+    /// Upstream's resolution table, given the traits directly rather than a
+    /// context.
+    pub const fn resolve(
+        &self,
+        brightness: Brightness,
+        level: CupertinoUserInterfaceLevelData,
+    ) -> Color {
+        match (brightness, level) {
+            (Brightness::Light, CupertinoUserInterfaceLevelData::Base) => self.color,
+            (Brightness::Light, CupertinoUserInterfaceLevelData::Elevated) => self.elevated_color,
+            (Brightness::Dark, CupertinoUserInterfaceLevelData::Base) => self.dark_color,
+            (Brightness::Dark, CupertinoUserInterfaceLevelData::Elevated) => {
+                self.dark_elevated_color
+            }
+        }
+    }
+
+    /// Upstream's `_isPlatformBrightnessDependent`.
+    ///
+    /// A colour whose light and dark halves agree does not consult the
+    /// brightness -- and upstream's point is not the saved comparison. Not
+    /// consulting it means **not depending on it**, so a widget drawn in such
+    /// a colour is not rebuilt when the appearance changes. The flag is a
+    /// dependency decision wearing an optimisation's clothes.
+    pub const fn is_platform_brightness_dependent(&self) -> bool {
+        !(self.color.0 == self.dark_color.0 && self.elevated_color.0 == self.dark_elevated_color.0)
+    }
+
+    /// Upstream's `_isInterfaceElevationDependent`, the same idea on the other
+    /// axis.
+    pub const fn is_interface_elevation_dependent(&self) -> bool {
+        !(self.color.0 == self.elevated_color.0 && self.dark_color.0 == self.dark_elevated_color.0)
+    }
+
+    /// Whether elevation, where this colour has any, moves only its dark half
+    /// -- the rule that holds across upstream's entire table.
+    pub const fn elevation_only_moves_the_dark(&self) -> bool {
+        self.color.0 == self.elevated_color.0
+    }
+
+    /// Upstream's `resolveFrom`: the brightness from the Cupertino theme and
+    /// the level from whatever laid this subtree over something, each
+    /// consulted only if this colour varies along it.
+    ///
+    /// Both fall back the way upstream's do -- `Brightness.light` and
+    /// `CupertinoUserInterfaceLevelData.base` -- which is why this uses
+    /// [`CupertinoUserInterfaceLevel::maybe_of`] and not `of`: resolving a
+    /// colour outside any level is ordinary, where *asking* for the level
+    /// outside one is a mistake.
+    pub fn resolve_from(&self, context: &BuildContext) -> Color {
+        let brightness = if self.is_platform_brightness_dependent() {
+            context
+                .inherited::<CupertinoTheme>()
+                .map(|theme| theme.brightness)
+                .unwrap_or(Brightness::Light)
+        } else {
+            Brightness::Light
+        };
+        let level = if self.is_interface_elevation_dependent() {
+            CupertinoUserInterfaceLevel::maybe_of(context)
+                .unwrap_or(CupertinoUserInterfaceLevelData::Base)
+        } else {
+            CupertinoUserInterfaceLevelData::Base
+        };
+        self.resolve(brightness, level)
     }
 }
 
@@ -190,26 +315,103 @@ impl CupertinoColors {
         Color::argb(76, 60, 60, 67),
         Color::argb(76, 235, 235, 245),
     );
+    /// The seven colours below are the only ones in upstream's table whose
+    /// value moves under elevation, and the six backgrounds all move the same
+    /// way: **a raised surface takes the value of the next role down the
+    /// ladder.**
+    ///
+    /// `systemBackground` elevated is `secondarySystemBackground`'s dark;
+    /// secondary elevated is tertiary's; tertiary elevated is one step further
+    /// again, past the end of the three that have names. The grouped trio
+    /// repeats it with the same greys.
+    ///
+    /// So iOS's two ways of saying "this is layered over that" -- the numbered
+    /// role and the elevation trait -- arrive at the same colour. See
+    /// [`CupertinoColors::elevating_is_one_step_down`].
     pub const SYSTEM_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::WHITE, Color::BLACK);
+        CupertinoDynamicColor::with_elevation(Color::WHITE, Color::BLACK, Color::rgb(28, 28, 30));
     pub const SECONDARY_SYSTEM_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::rgb(242, 242, 247), Color::rgb(28, 28, 30));
+        CupertinoDynamicColor::with_elevation(
+            Color::rgb(242, 242, 247),
+            Color::rgb(28, 28, 30),
+            Color::rgb(44, 44, 46),
+        );
     pub const TERTIARY_SYSTEM_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::WHITE, Color::rgb(44, 44, 46));
+        CupertinoDynamicColor::with_elevation(
+            Color::WHITE,
+            Color::rgb(44, 44, 46),
+            Color::rgb(58, 58, 60),
+        );
     pub const SYSTEM_GROUPED_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::rgb(242, 242, 247), Color::BLACK);
+        CupertinoDynamicColor::with_elevation(
+            Color::rgb(242, 242, 247),
+            Color::BLACK,
+            Color::rgb(28, 28, 30),
+        );
     pub const SECONDARY_SYSTEM_GROUPED_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::WHITE, Color::rgb(28, 28, 30));
+        CupertinoDynamicColor::with_elevation(
+            Color::WHITE,
+            Color::rgb(28, 28, 30),
+            Color::rgb(44, 44, 46),
+        );
     pub const TERTIARY_SYSTEM_GROUPED_BACKGROUND: CupertinoDynamicColor =
-        CupertinoDynamicColor::with_brightness(Color::rgb(242, 242, 247), Color::rgb(44, 44, 46));
-    pub const SEPARATOR: CupertinoDynamicColor = CupertinoDynamicColor::with_brightness(
+        CupertinoDynamicColor::with_elevation(
+            Color::rgb(242, 242, 247),
+            Color::rgb(44, 44, 46),
+            Color::rgb(58, 58, 60),
+        );
+    /// The one non-background that moves, and it moves much further: 84,84,88
+    /// to 210,210,210 at the same alpha. A translucent separator shows the
+    /// surface through it, so when that surface lightens the separator has to
+    /// outrun it to stay a line. [`CupertinoColors::OPAQUE_SEPARATOR`] hides
+    /// what is behind it and therefore has nothing to follow -- which is the
+    /// same rule read from the other end.
+    pub const SEPARATOR: CupertinoDynamicColor = CupertinoDynamicColor::with_elevation(
         Color::argb(73, 60, 60, 67),
         Color::argb(153, 84, 84, 88),
+        Color::argb(153, 210, 210, 210),
     );
     pub const OPAQUE_SEPARATOR: CupertinoDynamicColor =
         CupertinoDynamicColor::with_brightness(Color::rgb(198, 198, 200), Color::rgb(56, 56, 58));
     pub const LINK: CupertinoDynamicColor =
         CupertinoDynamicColor::with_brightness(Color::rgb(0, 122, 255), Color::rgb(9, 132, 255));
+
+    /// The six backgrounds, in the order the ladder runs, as
+    /// `(role, the role below it)`.
+    ///
+    /// Elevating either trio by one level lands on the dark value of the next
+    /// entry -- see [`CupertinoColors::SYSTEM_BACKGROUND`].
+    pub const BACKGROUND_LADDER: [(CupertinoDynamicColor, CupertinoDynamicColor); 4] = [
+        (Self::SYSTEM_BACKGROUND, Self::SECONDARY_SYSTEM_BACKGROUND),
+        (
+            Self::SECONDARY_SYSTEM_BACKGROUND,
+            Self::TERTIARY_SYSTEM_BACKGROUND,
+        ),
+        (
+            Self::SYSTEM_GROUPED_BACKGROUND,
+            Self::SECONDARY_SYSTEM_GROUPED_BACKGROUND,
+        ),
+        (
+            Self::SECONDARY_SYSTEM_GROUPED_BACKGROUND,
+            Self::TERTIARY_SYSTEM_GROUPED_BACKGROUND,
+        ),
+    ];
+
+    /// Whether raising each role by one level gives the role below it.
+    ///
+    /// Takes the ladder rather than reading
+    /// [`CupertinoColors::BACKGROUND_LADDER`] itself, because a predicate over
+    /// a constant cannot be shown to work: a mutation making it check only its
+    /// first pair survived every test, since `all` over a prefix of a correct
+    /// list is still true and nothing could hand it an incorrect one. Passing
+    /// the ladder in is what makes the claim falsifiable.
+    pub fn elevating_is_one_step_down(
+        ladder: &[(CupertinoDynamicColor, CupertinoDynamicColor)],
+    ) -> bool {
+        ladder
+            .iter()
+            .all(|(role, below)| role.dark_elevated_color == below.dark_color)
+    }
 }
 
 // -- Theme --------------------------------------------------------------------
@@ -238,13 +440,13 @@ impl CupertinoTheme {
         let brightness = Brightness::Light;
         CupertinoTheme {
             brightness,
-            primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness),
+            primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness, BASE),
             primary_contrasting_color: CupertinoColors::WHITE,
             // `_CupertinoThemeDefaults.barBackgroundColor`. The dark value is
             // the navigation bar's; upstream notes the toolbar/tab bar dark
             // value is 0xF0161616, a distinction only the nav bar keeps.
             bar_background_color: Color(0xF0F9_F9F9),
-            scaffold_background_color: CupertinoColors::SYSTEM_BACKGROUND.resolve(brightness),
+            scaffold_background_color: CupertinoColors::SYSTEM_BACKGROUND.resolve(brightness, BASE),
         }
     }
 
@@ -253,10 +455,10 @@ impl CupertinoTheme {
         let brightness = Brightness::Dark;
         CupertinoTheme {
             brightness,
-            primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness),
+            primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness, BASE),
             primary_contrasting_color: CupertinoColors::WHITE,
             bar_background_color: Color(0xF01D_1D1D),
-            scaffold_background_color: CupertinoColors::SYSTEM_BACKGROUND.resolve(brightness),
+            scaffold_background_color: CupertinoColors::SYSTEM_BACKGROUND.resolve(brightness, BASE),
         }
     }
 
@@ -264,7 +466,7 @@ impl CupertinoTheme {
     /// `CupertinoDynamicColor.resolve(color, context)` with the context's
     /// brightness.
     pub fn resolve(&self, color: CupertinoDynamicColor) -> Color {
-        color.resolve(self.brightness)
+        color.resolve(self.brightness, BASE)
     }
 
     /// text_theme.dart's `_kDefaultTextStyle` (17pt, -0.41 tracking) in the
@@ -1919,7 +2121,7 @@ impl Component for CupertinoTabBar {
         let inactive = theme.resolve(CupertinoColors::INACTIVE_GRAY);
         // bottom_tab_bar.dart's `_kDefaultTabBarBorderColor`.
         let border = CupertinoDynamicColor::with_brightness(Color(0x4C00_0000), Color(0x29FF_FFFF))
-            .resolve(theme.brightness);
+            .resolve(theme.brightness, BASE);
         // The bar grows by whatever the gesture bar covers, the same rule
         // [`crate::controls::BottomNavigation`] follows.
         let bottom = crate::media_query::media_query_of(context)
@@ -4338,8 +4540,8 @@ mod tests {
     #[test]
     fn dynamic_colors_resolve_against_the_appearance() {
         let label = CupertinoColors::LABEL;
-        assert_eq!(label.resolve(Brightness::Light), Color(0xFF00_0000));
-        assert_eq!(label.resolve(Brightness::Dark), Color(0xFFFF_FFFF));
+        assert_eq!(label.resolve(Brightness::Light, BASE), Color(0xFF00_0000));
+        assert_eq!(label.resolve(Brightness::Dark, BASE), Color(0xFFFF_FFFF));
     }
 
     #[test]
@@ -5159,5 +5361,209 @@ mod tests {
             .with_on_pressed(|| {});
         assert!(!ordinary.assembled);
         assert_eq!(ordinary.previous_page_title.as_deref(), Some("Inbox"));
+    }
+}
+
+#[cfg(test)]
+mod dynamic_color_elevation_tests {
+    use super::*;
+
+    const BASE_LEVEL: CupertinoUserInterfaceLevelData = CupertinoUserInterfaceLevelData::Base;
+    const UP: CupertinoUserInterfaceLevelData = CupertinoUserInterfaceLevelData::Elevated;
+
+    #[test]
+    fn elevating_a_background_gives_the_role_below_it() {
+        // iOS's two ways of saying "this is layered over that" -- the numbered
+        // role and the elevation trait -- arrive at the same grey.
+        assert!(CupertinoColors::elevating_is_one_step_down(
+            &CupertinoColors::BACKGROUND_LADDER
+        ));
+        // And the predicate can say no, which a version reading the constant
+        // itself could never be shown to do.
+        // The broken pair goes second on purpose: with it first, a predicate
+        // that checked only its first pair would still answer no, and the
+        // test would pass while proving nothing about the rest.
+        let broken = [
+            (
+                CupertinoColors::SYSTEM_BACKGROUND,
+                CupertinoColors::SECONDARY_SYSTEM_BACKGROUND,
+            ),
+            (
+                CupertinoColors::SYSTEM_BACKGROUND,
+                CupertinoColors::TERTIARY_SYSTEM_BACKGROUND,
+            ),
+        ];
+        assert!(!CupertinoColors::elevating_is_one_step_down(&broken));
+        // `order_sweep`'s cousin: a mutation making the helper check only its
+        // first pair survived, because the helper's `all` over a list is true
+        // of any prefix. Pin the length and walk the pairs here.
+        assert_eq!(CupertinoColors::BACKGROUND_LADDER.len(), 4);
+        for (role, below) in CupertinoColors::BACKGROUND_LADDER {
+            assert_eq!(
+                role.resolve(Brightness::Dark, UP),
+                below.resolve(Brightness::Dark, BASE_LEVEL)
+            );
+        }
+
+        assert_eq!(
+            CupertinoColors::SYSTEM_BACKGROUND.resolve(Brightness::Dark, UP),
+            CupertinoColors::SECONDARY_SYSTEM_BACKGROUND.resolve(Brightness::Dark, BASE_LEVEL)
+        );
+        assert_eq!(
+            CupertinoColors::SECONDARY_SYSTEM_GROUPED_BACKGROUND.resolve(Brightness::Dark, UP),
+            CupertinoColors::TERTIARY_SYSTEM_GROUPED_BACKGROUND
+                .resolve(Brightness::Dark, BASE_LEVEL)
+        );
+    }
+
+    #[test]
+    fn and_the_tertiary_step_runs_past_the_end_of_the_named_three() {
+        // There is no quaternary background, so the last rung is a value with
+        // no role of its own.
+        assert_eq!(
+            CupertinoColors::TERTIARY_SYSTEM_BACKGROUND.resolve(Brightness::Dark, UP),
+            Color::rgb(58, 58, 60)
+        );
+        assert_eq!(
+            CupertinoColors::TERTIARY_SYSTEM_GROUPED_BACKGROUND.resolve(Brightness::Dark, UP),
+            Color::rgb(58, 58, 60)
+        );
+    }
+
+    #[test]
+    fn elevation_never_moves_the_light_value() {
+        // True of all eighteen of upstream's colours that have an elevated
+        // variant: in the dark you raise a surface by lightening it, and in
+        // the light there is nowhere lighter than white to go.
+        for color in [
+            CupertinoColors::SYSTEM_BACKGROUND,
+            CupertinoColors::SECONDARY_SYSTEM_BACKGROUND,
+            CupertinoColors::TERTIARY_SYSTEM_BACKGROUND,
+            CupertinoColors::SYSTEM_GROUPED_BACKGROUND,
+            CupertinoColors::SECONDARY_SYSTEM_GROUPED_BACKGROUND,
+            CupertinoColors::TERTIARY_SYSTEM_GROUPED_BACKGROUND,
+            CupertinoColors::SEPARATOR,
+            CupertinoColors::LABEL,
+            CupertinoColors::LINK,
+        ] {
+            assert!(color.elevation_only_moves_the_dark());
+            assert_eq!(
+                color.resolve(Brightness::Light, UP),
+                color.resolve(Brightness::Light, BASE_LEVEL)
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_surface_moves_and_not_what_is_drawn_on_it() {
+        // Content does not change when the surface under it rises.
+        for content in [
+            CupertinoColors::LABEL,
+            CupertinoColors::SECONDARY_LABEL,
+            CupertinoColors::LINK,
+            CupertinoColors::OPAQUE_SEPARATOR,
+        ] {
+            assert!(
+                !content.is_interface_elevation_dependent(),
+                "content should not depend on elevation"
+            );
+            assert_eq!(
+                content.resolve(Brightness::Dark, UP),
+                content.resolve(Brightness::Dark, BASE_LEVEL)
+            );
+        }
+
+        assert!(CupertinoColors::SYSTEM_BACKGROUND.is_interface_elevation_dependent());
+    }
+
+    #[test]
+    fn a_translucent_separator_follows_the_surface_and_an_opaque_one_does_not() {
+        // The same rule from the other end: one shows what is behind it, the
+        // other hides it, so only one has anything to follow.
+        assert!(CupertinoColors::SEPARATOR.is_interface_elevation_dependent());
+        assert!(!CupertinoColors::OPAQUE_SEPARATOR.is_interface_elevation_dependent());
+
+        // And it outruns the surface: 84,84,88 to 210,210,210, further than
+        // any background moves, because it has to stay a line over a lighter
+        // ground.
+        assert_eq!(
+            CupertinoColors::SEPARATOR.resolve(Brightness::Dark, UP),
+            Color::argb(153, 210, 210, 210)
+        );
+    }
+
+    // -- The dependency flags ---------------------------------------------------
+
+    #[test]
+    fn a_colour_that_does_not_vary_does_not_depend() {
+        // Upstream's point is not the saved comparison: not consulting a trait
+        // means not depending on it, so a widget drawn in such a colour is not
+        // rebuilt when that trait changes.
+        let flat = CupertinoDynamicColor::from(Color::rgb(1, 2, 3));
+        assert!(!flat.is_platform_brightness_dependent());
+        assert!(!flat.is_interface_elevation_dependent());
+
+        assert!(CupertinoColors::LABEL.is_platform_brightness_dependent());
+        assert!(!CupertinoColors::LABEL.is_interface_elevation_dependent());
+    }
+
+    #[test]
+    fn the_two_flags_are_independent_of_each_other() {
+        // A colour can vary along one axis and not the other, in either
+        // combination -- the flags are not two names for one thing.
+        let brightness_only =
+            CupertinoDynamicColor::with_brightness(Color::rgb(1, 1, 1), Color::rgb(2, 2, 2));
+        assert!(brightness_only.is_platform_brightness_dependent());
+        assert!(!brightness_only.is_interface_elevation_dependent());
+
+        let elevation_only = CupertinoDynamicColor {
+            color: Color::rgb(1, 1, 1),
+            dark_color: Color::rgb(1, 1, 1),
+            elevated_color: Color::rgb(3, 3, 3),
+            dark_elevated_color: Color::rgb(3, 3, 3),
+        };
+        assert!(!elevation_only.is_platform_brightness_dependent());
+        assert!(elevation_only.is_interface_elevation_dependent());
+    }
+
+    #[test]
+    fn a_flat_colour_resolves_to_itself_at_every_corner_of_the_table() {
+        let flat = CupertinoDynamicColor::from(Color::rgb(7, 7, 7));
+        for brightness in [Brightness::Light, Brightness::Dark] {
+            for level in [BASE_LEVEL, UP] {
+                assert_eq!(flat.resolve(brightness, level), Color::rgb(7, 7, 7));
+            }
+        }
+    }
+
+    #[test]
+    fn with_brightness_leaves_a_colour_flat_along_elevation() {
+        // Which is what makes it the right constructor for the colours that
+        // upstream declares without elevated variants.
+        let pair = CupertinoDynamicColor::with_brightness(Color::WHITE, Color::BLACK);
+        assert_eq!(pair.elevated_color, pair.color);
+        assert_eq!(pair.dark_elevated_color, pair.dark_color);
+        assert!(!pair.is_interface_elevation_dependent());
+    }
+
+    #[test]
+    fn the_four_corners_of_the_table_are_four_different_answers() {
+        // Or the resolution could be ignoring one of its two arguments.
+        let corners = CupertinoDynamicColor {
+            color: Color::rgb(1, 1, 1),
+            dark_color: Color::rgb(2, 2, 2),
+            elevated_color: Color::rgb(3, 3, 3),
+            dark_elevated_color: Color::rgb(4, 4, 4),
+        };
+        assert_eq!(
+            corners.resolve(Brightness::Light, BASE_LEVEL),
+            Color::rgb(1, 1, 1)
+        );
+        assert_eq!(
+            corners.resolve(Brightness::Dark, BASE_LEVEL),
+            Color::rgb(2, 2, 2)
+        );
+        assert_eq!(corners.resolve(Brightness::Light, UP), Color::rgb(3, 3, 3));
+        assert_eq!(corners.resolve(Brightness::Dark, UP), Color::rgb(4, 4, 4));
     }
 }
