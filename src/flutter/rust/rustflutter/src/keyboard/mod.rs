@@ -146,6 +146,59 @@ impl KeyEvent {
     }
 }
 
+/// Upstream `KeyboardLockMode`: a keyboard mode that stays on until its key is
+/// pressed again.
+///
+/// Upstream's own summary is the useful part: "A lock mode locks some of a
+/// keyboard's keys into a distinct mode of operation ... The status of the
+/// mode is toggled with each key down of its corresponding logical key."
+///
+/// So a lock mode is not a key and not a modifier. A modifier is held; a lock
+/// is **switched**, and it stays switched with nothing held down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardLockMode {
+    /// The number pad types numbers rather than acting as arrows and page
+    /// keys.
+    NumLock,
+    /// The cursor keys scroll the document rather than moving the caret.
+    ScrollLock,
+    /// The letter keys type capitals.
+    CapsLock,
+}
+
+impl KeyboardLockMode {
+    pub const ALL: [KeyboardLockMode; 3] = [
+        KeyboardLockMode::NumLock,
+        KeyboardLockMode::ScrollLock,
+        KeyboardLockMode::CapsLock,
+    ];
+
+    /// The key that toggles this mode. Upstream carries it on the enum value
+    /// itself -- `numLock._(LogicalKeyboardKey.numLock)`.
+    pub fn logical_key(self) -> LogicalKey {
+        match self {
+            KeyboardLockMode::NumLock => LogicalKey::NUM_LOCK,
+            KeyboardLockMode::ScrollLock => LogicalKey::SCROLL_LOCK,
+            KeyboardLockMode::CapsLock => LogicalKey::CAPS_LOCK,
+        }
+    }
+
+    /// Upstream's `findLockByLogicalKey`, which reads its `_knownLockModes`
+    /// map. **Derived from the pairing above rather than kept as a second
+    /// table**, so the two cannot come to disagree about which key works which
+    /// lock.
+    ///
+    /// `None` for every other key, which is most of them: upstream's doc says
+    /// the pool is fixed and "manual constructing of this class is
+    /// prohibited", so a key that is not one of the three has no lock mode
+    /// rather than an unknown one.
+    pub fn find_by_logical_key(key: LogicalKey) -> Option<KeyboardLockMode> {
+        KeyboardLockMode::ALL
+            .into_iter()
+            .find(|mode| mode.logical_key() == key)
+    }
+}
+
 /// Which keys are held down.
 ///
 /// The same job as upstream's `HardwareKeyboard`: an event says what changed,
@@ -348,5 +401,72 @@ mod tests {
         let up = event(KeyChange::Up, PhysicalKey::KEY_A, LogicalKey::KEY_A);
         assert!(repeat.is_down());
         assert!(!up.is_down());
+    }
+}
+
+#[cfg(test)]
+mod lock_mode_tests {
+    use super::{KeyboardLockMode, LogicalKey};
+
+    #[test]
+    fn each_lock_is_worked_by_its_own_key() {
+        assert_eq!(
+            KeyboardLockMode::NumLock.logical_key(),
+            LogicalKey::NUM_LOCK
+        );
+        assert_eq!(
+            KeyboardLockMode::ScrollLock.logical_key(),
+            LogicalKey::SCROLL_LOCK
+        );
+        assert_eq!(
+            KeyboardLockMode::CapsLock.logical_key(),
+            LogicalKey::CAPS_LOCK
+        );
+        // Three modes, three different keys -- a shared key would make the
+        // lookup ambiguous and one of the locks unreachable.
+        let mut keys: Vec<u64> = KeyboardLockMode::ALL
+            .iter()
+            .map(|mode| mode.logical_key().0)
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn the_lookup_is_the_inverse_of_that_pairing() {
+        // Derived rather than a second table, so it cannot drift: whatever
+        // key a mode names must find that mode again.
+        for mode in KeyboardLockMode::ALL {
+            assert_eq!(
+                KeyboardLockMode::find_by_logical_key(mode.logical_key()),
+                Some(mode),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_any_other_key_works_no_lock_at_all() {
+        // Upstream's pool is fixed and construction is prohibited, so a key
+        // outside it has no lock mode rather than an unknown one.
+        for key in [
+            LogicalKey::KEY_A,
+            LogicalKey::SHIFT_LEFT,
+            LogicalKey::ENTER,
+            LogicalKey::DIGIT_9,
+        ] {
+            assert_eq!(KeyboardLockMode::find_by_logical_key(key), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_lock_key_is_not_a_modifier_key() {
+        // The distinction the type is for: a modifier is held, a lock is
+        // switched and stays switched with nothing held down. Shift is the
+        // near miss -- it changes the letters like caps lock does, and it is
+        // not a lock.
+        assert!(KeyboardLockMode::find_by_logical_key(LogicalKey::CAPS_LOCK).is_some());
+        assert!(KeyboardLockMode::find_by_logical_key(LogicalKey::SHIFT_LEFT).is_none());
     }
 }
