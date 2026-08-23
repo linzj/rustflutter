@@ -13393,3 +13393,47 @@ final bool opensUp = switch (direction) {
 把比例从 tick 里删掉那条变异是红的，所以这根线是真的。
 
 六个变异全红。coverage 2102 / 1996 记账 / **25 MISSING**。
+
+---
+
+## 画的顺序和摸的顺序，永远互为倒序（2026-08-24）
+
+`SliverPaintOrder` 两个值。上游把那条不变量**在两个 getter 上各写了一遍**：
+`childrenInPaintOrder`「应当是 `childrenInHitTestOrder` 的倒序」，反过来也一样。
+
+**这不是巧合，是要求。**画是从后往前，所以最后画的在最上面；
+命中测试是从前往后，所以最先问的赢。两者一旦不再互为倒序，
+手指就会点到读者看不见的东西上。
+
+于是 `hit_test_walk` 是**从 `walk` 推出来的**，不是另抄一遍，两者不可能各自漂移。
+
+### 而接进 viewport 的那部分，写了又撤了
+
+`RenderSliverViewport` 仍然无条件按 `firstIsTop` 画和命中。
+接线代码写完了，**又拿掉了，因为没有测试能把两种顺序区分开**：
+
+viewport 里的 sliver 是一个接一个排的，两个普通 sliver 永远不覆盖同一个像素。
+唯一会重叠的是 pinned header——而那条测试在给它的时间里没做出来。
+两个变异（画忽略顺序、命中忽略顺序）**都活着**。
+
+一个 setter 喂两个循环、而没有任何测试能分辨它们，
+**就是「一个背后什么都没有的名字」**——正是上一轮把
+`ScrollPositionAlignmentPolicy::explicit` 挡在外面的那条理由。
+**这条规矩也得管我刚写的代码。**
+
+要改变这一点，需要一条 viewport 测试：pinned header 和它下面的内容同时被命中，
+由顺序决定谁来应答。
+
+### 这一轮我错了两次，都是自己查出来的
+
+**一、说 pinned header 的命中测试「缺失」，是错的。**
+我去看 `hit_test_children`（box 那一层）没找到重写，就下了结论。
+sliver 走的是 `sliver_hit_test`，而 `RenderSliverPersistentHeader`
+**早就正确实现了它**——加第二个的时候编译器报了重复定义才发现。
+移植没有这个 bug。
+
+**二、又一次在后台扫的时候动了树。**
+`TaskStop` 杀掉的是外层 shell，python 还活着，
+于是我"恢复"完文件之后它又写了一次，测试红在一个我以为已经修好的地方。
+`variant_sweep.py` 现在开跑前会检查残留的 `.sweep` 备份并先恢复——
+`finally` 在进程被杀时是不跑的，而扫描正是那种会被人中途叫停的长活。

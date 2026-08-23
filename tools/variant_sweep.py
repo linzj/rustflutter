@@ -84,6 +84,19 @@ def sweep(relative):
 
     print(f'--- {relative}: {len(pairs)} arm pairs', flush=True)
     backup = path + '.sweep'
+    # A leftover backup means a previous run was killed between applying a
+    # mutation and restoring it, so the file on disk is a mutant and the backup
+    # is the truth. `finally` does not run when the process is killed, and a
+    # sweep is exactly the kind of long job somebody stops early -- so recover
+    # here rather than sweeping a corrupted file and reporting on it.
+    if os.path.exists(backup):
+        print(f'    recovering {relative} from a killed run', flush=True)
+        shutil.copyfile(backup, path)
+        original = io.open(path, encoding='utf-8', newline='').read()
+        arms = list(ARM.finditer(original))
+        pairs = [(a, b) for a, b in zip(arms, arms[1:])
+                 if a.end() + 1 >= b.start()
+                 and a.group('body').strip() != b.group('body').strip()]
     shutil.copyfile(path, backup)
     survived = 0
     try:

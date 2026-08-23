@@ -9814,6 +9814,64 @@ struct SliverChild {
 /// * paint by each child's `paintOffset`, in reverse list order so the first
 ///   sliver is on top, clipped to the viewport when any sliver overflowed.
 ///
+/// Upstream `SliverPaintOrder`: which end of a viewport's sliver list is on
+/// top where they overlap.
+///
+/// # Painting and hit-testing are always opposites
+///
+/// Upstream says so twice, once in each direction: `childrenInPaintOrder`
+/// "should be the reverse order of `childrenInHitTestOrder`", and the same
+/// sentence appears the other way up on the other getter.
+///
+/// **That is a requirement rather than a coincidence.** Painting runs back to
+/// front, so whatever is drawn last is on top; hit-testing runs front to back,
+/// so whatever is asked first wins the touch. If the two orders were not
+/// reverses, a finger would land on something the reader cannot see.
+///
+/// # Carried, and not yet wired into the viewport
+///
+/// [`RenderSliverViewport`] still paints and hit-tests `firstIsTop`
+/// unconditionally. Wiring this in was written and then taken back out,
+/// because **no test could tell the two orders apart**: slivers in a viewport
+/// are laid out one after another, so two ordinary ones never cover the same
+/// pixel, and the pinned-header case that does overlap did not come out right
+/// in the time it was given. Both mutations -- paint ignoring the order, and
+/// hit-testing ignoring it -- survived the whole suite.
+///
+/// A setter feeding two loops that no test can distinguish is a name with
+/// nothing behind it, which is the objection that kept
+/// `ScrollPositionAlignmentPolicy::explicit` out one tick earlier. The rule
+/// has to apply to code I have just written as well. What would change it is a
+/// viewport test where a pinned header and the content under it are both hit,
+/// and the order decides which answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SliverPaintOrder {
+    /// The first sliver is on top. Painted last-to-first, hit-tested
+    /// first-to-last. Upstream's default.
+    #[default]
+    FirstIsTop,
+    /// The last sliver is on top. The two orders swap.
+    LastIsTop,
+}
+
+impl SliverPaintOrder {
+    /// The indices in painting order, back to front.
+    pub fn walk(self, count: usize) -> Box<dyn Iterator<Item = usize>> {
+        match self {
+            SliverPaintOrder::FirstIsTop => Box::new((0..count).rev()),
+            SliverPaintOrder::LastIsTop => Box::new(0..count),
+        }
+    }
+
+    /// The indices in hit-testing order, front to back -- the reverse of
+    /// [`SliverPaintOrder::walk`], and derived from it rather than written out
+    /// again, so the two cannot drift apart.
+    pub fn hit_test_walk(self, count: usize) -> Box<dyn Iterator<Item = usize>> {
+        let painted: Vec<usize> = self.walk(count).collect();
+        Box::new(painted.into_iter().rev())
+    }
+}
+
 /// The existing [`RenderViewport`] -- upstream's `_RenderSingleChildViewport`
 /// -- is untouched; the lists move onto this one when the slivers they need
 /// exist.
@@ -10193,7 +10251,10 @@ impl RenderSliverViewport {
     fn paint_contents(&self, context: &mut PaintContext, offset: Offset) {
         // childrenInPaintOrder, the default `firstIsTop`: the last sliver
         // paints first, so where slivers overlap the first one is on top.
-        for child in self.children.iter().rev() {
+        // Not read from [`SliverPaintOrder`] -- see that type's note on why
+        // the setting is carried but not yet wired.
+        for index in (0..self.children.len()).rev() {
+            let child = &self.children[index];
             if child.render.sliver_geometry().visible {
                 context.paint_child(&child.render, offset.plus(child.parent_data.paint_offset));
             }
@@ -10348,6 +10409,9 @@ impl RenderBox for RenderSliverViewport {
             Axis::Vertical => (position.dy, position.dx),
             Axis::Horizontal => (position.dx, position.dy),
         };
+        // `childrenInHitTestOrder`, front to back: the reverse of the order
+        // the same slivers were painted in, so a touch reaches whatever the
+        // reader can actually see.
         for index in 0..self.children.len() {
             let child = &self.children[index];
             if !child.render.sliver_geometry().visible {
@@ -23863,5 +23927,88 @@ mod constraints_transform_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sliver_paint_order_tests {
+    use super::SliverPaintOrder;
+
+    const BOTH: [SliverPaintOrder; 2] = [SliverPaintOrder::FirstIsTop, SliverPaintOrder::LastIsTop];
+
+    fn paint(order: SliverPaintOrder, count: usize) -> Vec<usize> {
+        order.walk(count).collect()
+    }
+
+    fn hit(order: SliverPaintOrder, count: usize) -> Vec<usize> {
+        order.hit_test_walk(count).collect()
+    }
+
+    #[test]
+    fn hit_testing_is_always_the_reverse_of_painting() {
+        // Upstream states this twice, once on each getter, and it is a
+        // requirement rather than a coincidence: painting runs back to front
+        // so the last drawn is on top, and hit-testing runs front to back so
+        // the first asked wins. If the two ever stopped being reverses, a
+        // finger would land on something the reader cannot see.
+        for order in BOTH {
+            for count in [0, 1, 2, 5] {
+                let mut painted = paint(order, count);
+                painted.reverse();
+                assert_eq!(painted, hit(order, count), "{order:?} of {count}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sliver_on_top_is_the_one_painted_last() {
+        // firstIsTop paints last-to-first, so index 0 goes down last and ends
+        // up over the others.
+        assert_eq!(paint(SliverPaintOrder::FirstIsTop, 3), vec![2, 1, 0]);
+        assert_eq!(paint(SliverPaintOrder::LastIsTop, 3), vec![0, 1, 2]);
+        // Whichever painted last is asked first.
+        for order in BOTH {
+            let painted = paint(order, 3);
+            assert_eq!(
+                hit(order, 3).first(),
+                painted.last(),
+                "{order:?}: the top sliver is hit-tested first"
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_two_orders_really_are_two_orders() {
+        // Guards the tests above from holding because both values agree: they
+        // must disagree wherever there is more than one sliver.
+        assert_eq!(
+            paint(SliverPaintOrder::FirstIsTop, 1),
+            paint(SliverPaintOrder::LastIsTop, 1),
+            "one sliver has only one order"
+        );
+        for count in [2, 3, 8] {
+            assert_ne!(
+                paint(SliverPaintOrder::FirstIsTop, count),
+                paint(SliverPaintOrder::LastIsTop, count),
+                "{count} slivers"
+            );
+        }
+    }
+
+    #[test]
+    fn every_sliver_is_visited_exactly_once_either_way() {
+        for order in BOTH {
+            for count in [0, 1, 4] {
+                let mut painted = paint(order, count);
+                assert_eq!(painted.len(), count, "{order:?}");
+                painted.sort_unstable();
+                assert_eq!(painted, (0..count).collect::<Vec<usize>>());
+            }
+        }
+    }
+
+    #[test]
+    fn a_viewport_puts_the_first_sliver_on_top_unless_told_otherwise() {
+        assert_eq!(SliverPaintOrder::default(), SliverPaintOrder::FirstIsTop);
     }
 }
