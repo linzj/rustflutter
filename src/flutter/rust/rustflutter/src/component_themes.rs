@@ -9410,9 +9410,152 @@ impl TextTheme {
 /// distinction is upstream's and returns the moment the baseline can be
 /// carried; collapsing them into one would bake the limitation into the
 /// API.
+/// Upstream `ScriptCategory`: which of a typography's three geometries a
+/// locale reads with.
+///
+/// # It is a line-height requirement, not a list of languages
+///
+/// Upstream describes `dense` and `tall` with the same phrase -- both "require
+/// extra line height to accommodate larger glyphs" -- and separates them only
+/// by which languages they cover. What the category names is what the writing
+/// needs, and the language list is how you find it.
+///
+/// # Which is why Vietnamese is `tall` and not `englishLike`
+///
+/// Upstream calls it out: Vietnamese "uses a localized form of the Latin
+/// writing system", so an alphabet-based rule would file it with English --
+/// but "its accented glyphs can be much taller than those found in Western
+/// European languages", and the glyph heights are what the geometry is about.
+/// **The category follows the ink, not the alphabet.**
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScriptCategory {
+    /// Latin, Greek and Cyrillic.
+    #[default]
+    EnglishLike,
+    /// Chinese, Japanese, Korean.
+    Dense,
+    /// South and Southeast Asian and Middle-Eastern languages, and Vietnamese.
+    Tall,
+}
+
 pub struct Typography;
 
 impl Typography {
+    /// Upstream's `geometryThemeFor`, which in Material 3 returns the same
+    /// theme whichever way it goes.
+    ///
+    /// # The three geometries are one geometry now
+    ///
+    /// `englishLike2021`, `dense2021` and `tall2021` are the same fifteen
+    /// styles with the same sizes and the same heights. So this switch has
+    /// three arms and one answer, and a Material 3 application renders Thai
+    /// and English through identical metrics.
+    ///
+    /// It was not always so. In `Typography.material2014` the three genuinely
+    /// differ, and `ScriptCategory`'s documentation still describes that
+    /// difference -- "font sizes for tall and dense scripts, for text styles
+    /// that are smaller than the title style, are one unit larger".
+    ///
+    /// Two things about that sentence are worth pinning, because it is the
+    /// documentation of a behaviour the default typography no longer has:
+    ///
+    /// * The **title styles move too**, so "smaller than the title style"
+    ///   understates it -- `titleLarge` goes 20 to 21 along with everything
+    ///   below it.
+    /// * **`labelMedium` does not move**, alone among the eight styles at
+    ///   title level and below, while `labelLarge` and `labelSmall` on either
+    ///   side of it both do. It reads as an oversight in the 2014 table
+    ///   rather than a decision, and it is pinned here as what upstream says
+    ///   rather than what the rule would predict.
+    ///
+    /// # And this switch is worth having where `TextWidthBasis`'s was not
+    ///
+    /// A previous tick declined to add `TextWidthBasis` because this port's
+    /// two measurements would compute the same number, making its arms
+    /// indistinguishable. This one is also indistinguishable today, and the
+    /// difference is where the sameness comes from: there it was **a
+    /// limitation of the engine bridge**, and here it is **upstream's own
+    /// design**, which `material2014` shows can be un-made. A switch that is
+    /// currently trivial because the values happen to agree is still a switch;
+    /// one that is trivial because we cannot see the values is a pretence.
+    pub fn geometry_for(category: ScriptCategory) -> TextTheme {
+        Typography::select(
+            category,
+            Typography::english_like(),
+            Typography::dense(),
+            Typography::tall(),
+        )
+    }
+
+    /// The routing on its own, taking the three rather than reading them.
+    ///
+    /// Written this way because it cannot be shown to work otherwise: with the
+    /// three constants identical, a mutation collapsing every arm onto
+    /// `english_like` passes every test that can be written against
+    /// [`Typography::geometry_for`]. The same remedy as
+    /// [`CupertinoColors::elevating_is_one_step_down`] -- **a function over
+    /// constants that happen to agree cannot be shown to tell them apart, so
+    /// the values come in as arguments.**
+    pub fn select(
+        category: ScriptCategory,
+        english_like: TextTheme,
+        dense: TextTheme,
+        tall: TextTheme,
+    ) -> TextTheme {
+        match category {
+            ScriptCategory::EnglishLike => english_like,
+            ScriptCategory::Dense => dense,
+            ScriptCategory::Tall => tall,
+        }
+    }
+
+    /// Whether the three geometries currently differ at all.
+    ///
+    /// False under Material 3, and the reason to have the question is that it
+    /// was true under Material 2 and could be again.
+    pub fn geometries_differ() -> bool {
+        Typography::any_geometry_differs(
+            &Typography::english_like(),
+            &Typography::dense(),
+            &Typography::tall(),
+        )
+    }
+
+    /// The comparison on its own, for the reason [`Typography::select`] takes
+    /// its themes: over three constants that agree, a version checking only
+    /// one of the two pairs is indistinguishable from one checking both.
+    pub fn any_geometry_differs(
+        english_like: &TextTheme,
+        dense: &TextTheme,
+        tall: &TextTheme,
+    ) -> bool {
+        english_like != dense || english_like != tall
+    }
+
+    /// Upstream's colour half: `black` for a light theme, `white` for a dark
+    /// one, merged with the geometry the locale chose.
+    ///
+    /// # A text theme is two themes, chosen by two different things
+    ///
+    /// Upstream: the theme "is created by merging a color text theme -- black
+    /// for Brightness.light themes and white for Brightness.dark themes --
+    /// and a geometry text theme, one of englishLike, dense, or tall,
+    /// depending on the locale."
+    ///
+    /// **The brightness picks the ink and the language picks the metrics**,
+    /// and neither knows about the other. A Japanese application in the dark
+    /// takes one from each.
+    pub fn for_theme(
+        brightness: crate::platform::Brightness,
+        category: ScriptCategory,
+    ) -> TextTheme {
+        let geometry = Typography::geometry_for(category);
+        geometry.apply_color(match brightness {
+            crate::platform::Brightness::Light => Color::BLACK,
+            crate::platform::Brightness::Dark => Color::WHITE,
+        })
+    }
+
     /// Upstream `Typography.englishLike2021`.
     pub fn english_like() -> TextTheme {
         TextTheme {
@@ -11793,5 +11936,165 @@ mod merge_direction_tests {
         let merged = sparse.merge(&far());
         assert_eq!(merged.size, Some(1.0), "its own");
         assert_eq!(merged.weight, Some(200.0), "and the other's for the rest");
+    }
+}
+
+#[cfg(test)]
+mod script_category_tests {
+    use super::*;
+    use crate::platform::Brightness;
+
+    #[test]
+    fn material_threes_three_geometries_are_one_geometry() {
+        // The same fifteen styles with the same sizes and heights, so a
+        // Material 3 application renders Thai and English through identical
+        // metrics.
+        assert_eq!(Typography::english_like(), Typography::dense());
+        assert_eq!(Typography::english_like(), Typography::tall());
+        assert!(!Typography::geometries_differ());
+    }
+
+    #[test]
+    fn so_the_switch_has_three_arms_and_one_answer() {
+        let english = Typography::geometry_for(ScriptCategory::EnglishLike);
+        for category in [
+            ScriptCategory::EnglishLike,
+            ScriptCategory::Dense,
+            ScriptCategory::Tall,
+        ] {
+            assert_eq!(Typography::geometry_for(category), english, "{category:?}");
+        }
+    }
+
+    /// Three themes that are visibly different, so the routing has something
+    /// to get wrong.
+    fn distinct() -> (TextTheme, TextTheme, TextTheme) {
+        let sized = |size: f32| TextTheme {
+            body_medium: Some(TextStyle {
+                font_size: size,
+                ..TextStyle::default()
+            }),
+            ..TextTheme::default()
+        };
+        (sized(1.0), sized(2.0), sized(3.0))
+    }
+
+    #[test]
+    fn the_routing_sends_each_category_to_its_own_theme() {
+        // Checked against three distinct themes, because against the real
+        // three -- which are identical -- collapsing every arm onto
+        // `english_like` passes.
+        let (english, dense, tall) = distinct();
+        for (category, expected) in [
+            (ScriptCategory::EnglishLike, 1.0),
+            (ScriptCategory::Dense, 2.0),
+            (ScriptCategory::Tall, 3.0),
+        ] {
+            assert_eq!(
+                Typography::select(category, english.clone(), dense.clone(), tall.clone())
+                    .body_medium
+                    .map(|style| style.font_size),
+                Some(expected),
+                "{category:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_difference_check_looks_at_both_pairs() {
+        // A version comparing only english against dense would miss a tall
+        // that had drifted, which is exactly what a future typography could
+        // do to one of the three.
+        let (english, dense, tall) = distinct();
+        assert!(Typography::any_geometry_differs(&english, &dense, &tall));
+        assert!(
+            Typography::any_geometry_differs(&english, &english, &tall),
+            "dense matching is not enough"
+        );
+        assert!(
+            Typography::any_geometry_differs(&english, &dense, &english),
+            "nor is tall matching"
+        );
+        assert!(!Typography::any_geometry_differs(
+            &english, &english, &english
+        ));
+    }
+
+    #[test]
+    fn and_english_like_is_the_one_a_locale_falls_back_to() {
+        assert_eq!(ScriptCategory::default(), ScriptCategory::EnglishLike);
+    }
+
+    // -- The two axes -----------------------------------------------------------
+
+    #[test]
+    fn the_brightness_picks_the_ink_and_the_language_picks_the_metrics() {
+        // Neither knows about the other: a Japanese application in the dark
+        // takes one from each.
+        let light = Typography::for_theme(Brightness::Light, ScriptCategory::Dense);
+        let dark = Typography::for_theme(Brightness::Dark, ScriptCategory::Dense);
+        assert_eq!(
+            light.body_medium.as_ref().map(|style| style.color),
+            Some(Color::BLACK)
+        );
+        assert_eq!(
+            dark.body_medium.as_ref().map(|style| style.color),
+            Some(Color::WHITE)
+        );
+    }
+
+    #[test]
+    fn and_the_two_choices_do_not_interfere() {
+        // The same brightness gives the same ink whatever the script, and the
+        // same script gives the same metrics whatever the brightness.
+        for category in [ScriptCategory::EnglishLike, ScriptCategory::Tall] {
+            assert_eq!(
+                Typography::for_theme(Brightness::Light, category)
+                    .body_medium
+                    .as_ref()
+                    .map(|style| style.color),
+                Some(Color::BLACK)
+            );
+            assert_eq!(
+                Typography::for_theme(Brightness::Dark, category)
+                    .body_medium
+                    .as_ref()
+                    .map(|style| style.font_size),
+                Typography::for_theme(Brightness::Light, category)
+                    .body_medium
+                    .as_ref()
+                    .map(|style| style.font_size)
+            );
+        }
+    }
+
+    #[test]
+    fn the_colour_reaches_every_style_that_is_set() {
+        let dark = Typography::for_theme(Brightness::Dark, ScriptCategory::EnglishLike);
+        for style in [
+            &dark.display_large,
+            &dark.title_medium,
+            &dark.body_small,
+            &dark.label_small,
+        ] {
+            assert_eq!(style.as_ref().map(|style| style.color), Some(Color::WHITE));
+        }
+    }
+
+    #[test]
+    fn a_geometry_carries_no_colour_of_its_own_yet() {
+        // Which is why the merge is a merge: the geometry is metrics and the
+        // colour arrives separately.
+        let plain = Typography::english_like();
+        let inked = Typography::for_theme(Brightness::Dark, ScriptCategory::EnglishLike);
+        assert_ne!(
+            plain.body_medium.as_ref().map(|style| style.color),
+            inked.body_medium.as_ref().map(|style| style.color)
+        );
+        assert_eq!(
+            plain.body_medium.as_ref().map(|style| style.font_size),
+            inked.body_medium.as_ref().map(|style| style.font_size),
+            "and the metrics survive the inking"
+        );
     }
 }
