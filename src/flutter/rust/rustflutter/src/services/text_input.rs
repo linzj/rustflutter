@@ -1298,7 +1298,17 @@ pub enum SelectionChangedCause {
     Keyboard,
     Toolbar,
     Drag,
-    ScribbleUpdate,
+    /// Upstream renamed this from `scribble` and keeps the old spelling
+    /// only as a deprecated alias:
+    ///
+    /// ```dart
+    /// static const SelectionChangedCause scribble = stylusHandwriting;
+    /// ```
+    ///
+    /// This port was still on the retired name. The alias is not carried --
+    /// it exists upstream so that code written before the rename keeps
+    /// compiling, and there is no such code here.
+    StylusHandwriting,
 }
 
 /// Upstream `DeltaTextInputClient`: a field that wants the edits rather than

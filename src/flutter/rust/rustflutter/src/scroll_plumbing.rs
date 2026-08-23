@@ -49,6 +49,37 @@ pub enum MultitouchDragStrategy {
     LatestPointer,
     /// The average of the outermost fingers moves the content.
     AverageBoundaryPointers,
+    /// Every finger's movement is added together.
+    SumAllPointers,
+}
+
+impl MultitouchDragStrategy {
+    /// Upstream's `_shouldTrackMoveEvent`: whether a pointer that is not the
+    /// active one still moves the content.
+    ///
+    /// ```dart
+    /// case MultitouchDragStrategy.sumAllPointers:
+    /// case MultitouchDragStrategy.averageBoundaryPointers:
+    ///   result = true;
+    /// case MultitouchDragStrategy.latestPointer:
+    ///   result = _activePointer == null || pointer == _activePointer;
+    /// ```
+    pub fn tracks_every_pointer(self) -> bool {
+        !matches!(self, MultitouchDragStrategy::LatestPointer)
+    }
+
+    /// Upstream's `_recordMoveDeltaForMultitouch`, which opens by returning
+    /// unless the strategy is `averageBoundaryPointers`.
+    ///
+    /// **This is what separates the two strategies that both track every
+    /// pointer.** Averaging the boundary fingers needs each finger's movement
+    /// kept per frame so the outermost pair can be found; summing needs no
+    /// such bookkeeping, because a sum does not care which finger contributed
+    /// what. Two questions, and the three strategies answer them in three
+    /// different combinations.
+    pub fn records_per_frame_deltas(self) -> bool {
+        matches!(self, MultitouchDragStrategy::AverageBoundaryPointers)
+    }
 }
 
 /// Upstream `ScrollBehavior`: how scrolling feels, per platform.
@@ -749,5 +780,47 @@ mod tests {
         let mut observer = ScrollNotificationObserverState::new();
         observer.dispose();
         observer.add_listener(1);
+    }
+}
+
+#[cfg(test)]
+mod drag_strategy_tests {
+    use super::MultitouchDragStrategy;
+
+    const ALL: [MultitouchDragStrategy; 3] = [
+        MultitouchDragStrategy::LatestPointer,
+        MultitouchDragStrategy::AverageBoundaryPointers,
+        MultitouchDragStrategy::SumAllPointers,
+    ];
+
+    #[test]
+    fn two_of_the_three_watch_every_finger() {
+        assert!(!MultitouchDragStrategy::LatestPointer.tracks_every_pointer());
+        assert!(MultitouchDragStrategy::AverageBoundaryPointers.tracks_every_pointer());
+        assert!(MultitouchDragStrategy::SumAllPointers.tracks_every_pointer());
+    }
+
+    #[test]
+    fn but_only_one_keeps_a_note_of_what_each_did() {
+        // The difference between the two that watch everything. Averaging the
+        // outermost fingers needs each finger's movement kept per frame to
+        // find the pair; a sum does not care which finger contributed what.
+        assert!(MultitouchDragStrategy::AverageBoundaryPointers.records_per_frame_deltas());
+        assert!(!MultitouchDragStrategy::SumAllPointers.records_per_frame_deltas());
+        assert!(!MultitouchDragStrategy::LatestPointer.records_per_frame_deltas());
+    }
+
+    #[test]
+    fn and_the_two_questions_tell_the_three_apart() {
+        // Neither question alone separates all three -- tracking groups sum
+        // with average, recording groups sum with latest -- so the pair of
+        // answers is what identifies a strategy.
+        let mut answers: Vec<(bool, bool)> = ALL
+            .iter()
+            .map(|s| (s.tracks_every_pointer(), s.records_per_frame_deltas()))
+            .collect();
+        answers.sort();
+        answers.dedup();
+        assert_eq!(answers.len(), 3);
     }
 }

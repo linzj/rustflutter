@@ -13285,3 +13285,68 @@ coverage 2102 / 1995 记账 / **26 MISSING**。
 报成缺失（那是我自己两轮前加的）；
 另一个没过滤上游的私有值，把 `ContentSensitivity._unknown` 当成了缺口。
 **三分之一的「发现」一查就没了**——先审后动的理由。
+
+---
+
+## 一个上游已经改掉的名字，和两个「问题」而不是「答案」的值（2026-08-24）
+
+上一轮那个只读对照报了四个真缺口，这一轮补完，剩一个。
+
+### `SelectionChangedCause` 停在了退休的名字上
+
+上游把 `scribble` 改名成了 `stylusHandwriting`，
+旧名只留成一个 deprecated 别名：
+
+```dart
+static const SelectionChangedCause scribble = stylusHandwriting;
+```
+
+移植还叫 `ScribbleUpdate`。改成 `StylusHandwriting`。
+**别名不带**——它在上游存在是为了让改名前写的代码还能编译，这边没有那种代码。
+
+### `OptionsViewOpenDirection::MostSpace` 是个问题，不是一个方向
+
+```dart
+final bool opensUp = switch (direction) {
+  up => true,
+  down => false,
+  mostSpace => spaceAbove > spaceBelow,
+};
+```
+
+`Up` 和 `Down` 是答案，**这个是提问**：哪边地方大往哪边开。
+而且那两个固定方向**根本不看两个参数**——
+一个被要求朝上开的字段，上面没地方也照样朝上开，上游由它。
+
+比较是**严格的**，所以两边一样大时朝下开。
+这不是随手偏一边：`Down` 是默认值，而平手正是「没学到任何该离开默认的理由」。
+
+本来以为这个枚举在移植里没有消费者（只被存着），
+结果**编译器指出 `autocomplete_view.rs` 的摆放函数就在 match 它**——
+于是 `MostSpace` 接进了真正的摆放，而不是挂一个空变体。
+测试也从那个闭包走：字段贴近顶部时它和 `Down` 一致，
+贴近底部时和 `Up` 一致，而这两个答案本身必须不同
+（否则上面两条对任何实现都成立）。
+
+### `MultitouchDragStrategy::SumAllPointers`，和两个问题
+
+上游用两处代码把三种策略分开，**而单独任何一处都分不开三种**：
+
+- `_shouldTrackMoveEvent`：sum 和 average 都跟所有手指，latest 只跟当前那根；
+- `_recordMoveDeltaForMultitouch`：开头就 return，**除非**是 average。
+
+**求平均要知道每根手指每帧动了多少**（才找得出最外侧那一对），
+求和不在乎是谁贡献的。于是两个问题、三种组合。
+测试直接断言这三组答案两两不同。
+
+### 剩下那一个，是记下来的减法
+
+`ScrollPositionAlignmentPolicy` 少一个 `explicit`。
+上游那个值的意思是「用 `ensureVisible` 的 `alignment` 参数决定」——
+它不是第三种滚法，**是把决定权让给一个本移植根本不带的数**。
+这边每个调用方都是遍历要求把下一个节点带进视野，正好就是那两个 keep-visible。
+
+把理由从「as much of it as the pop needs」改写成了上面这段：
+**加第三个变体就会是一个背后什么都没有的名字**，和当初拒绝 `TextWidthBasis` 是同一条理由。
+
+七个变异全红。130 个共有枚举里少值的从 4 降到 1。

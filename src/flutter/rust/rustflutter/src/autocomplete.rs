@@ -42,6 +42,47 @@ pub enum OptionsViewOpenDirection {
     Down,
     /// Above it -- what a field near the bottom of the screen needs.
     Up,
+    /// Whichever side has more room, decided when the overlay is laid out.
+    ///
+    /// The odd one of the three: `Up` and `Down` are answers, and this is a
+    /// question. See [`OptionsViewOpenDirection::opens_upward`].
+    MostSpace,
+}
+
+impl OptionsViewOpenDirection {
+    /// Upstream's `opensUp`, from `_RawAutocompleteState`'s overlay layout:
+    ///
+    /// ```dart
+    /// final bool opensUp = switch (widget.optionsViewOpenDirection) {
+    ///   OptionsViewOpenDirection.up => true,
+    ///   OptionsViewOpenDirection.down => false,
+    ///   OptionsViewOpenDirection.mostSpace => spaceAbove > spaceBelow,
+    /// };
+    /// ```
+    ///
+    /// The two fixed directions ignore both arguments -- a field told to open
+    /// upward opens upward with nowhere to put the list, and upstream lets it.
+    ///
+    /// The comparison is **strict**, so equal room opens downward. That is not
+    /// a coin toss going one way: `Down` is the default, and a tie is the case
+    /// where nothing has been learned to move away from it.
+    pub fn opens_upward(self, space_above: f32, space_below: f32) -> bool {
+        match self {
+            OptionsViewOpenDirection::Up => true,
+            OptionsViewOpenDirection::Down => false,
+            OptionsViewOpenDirection::MostSpace => space_above > space_below,
+        }
+    }
+
+    /// Upstream's `optionsViewMaxHeight`: the room on whichever side was
+    /// chosen.
+    pub fn max_height(self, space_above: f32, space_below: f32) -> f32 {
+        if self.opens_upward(space_above, space_below) {
+            space_above
+        } else {
+            space_below
+        }
+    }
 }
 
 /// Upstream `AutocompletePreviousOptionIntent`: move the highlight up one.

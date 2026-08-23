@@ -35,7 +35,19 @@ impl TraversalDirection {
     }
 }
 
-/// Upstream `ScrollPositionAlignmentPolicy`, as much of it as the pop needs.
+/// Upstream `ScrollPositionAlignmentPolicy`, less its `explicit` value.
+///
+/// Upstream has three. `explicit` means "use the `alignment` argument of
+/// `ScrollPosition.ensureVisible` to decide where to put the object", so it is
+/// not a third way of scrolling -- it is the value that **defers to a number
+/// this port does not carry**. Nothing here takes an alignment argument; every
+/// caller is a traversal asking for the next node to be brought into view, and
+/// those are exactly the two keep-visible cases.
+///
+/// So the missing value is a deliberate subset rather than a gap, and what
+/// would change that is plumbing `ensureVisible`'s `alignment` through. Until
+/// then a third variant would be a name with nothing behind it, which is the
+/// same objection that kept `TextWidthBasis` out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollPositionAlignmentPolicy {
     KeepVisibleAtStart,

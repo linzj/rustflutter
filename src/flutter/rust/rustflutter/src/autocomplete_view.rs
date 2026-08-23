@@ -43,9 +43,17 @@ pub fn options_placement(direction: OptionsViewOpenDirection, max_height: f32) -
         move |field: crate::engine::Rect, list: Size, overlay: Size| {
             let height = list.height.min(max_height);
             let x = field.left.clamp(0.0, (overlay.width - list.width).max(0.0));
-            let y = match direction {
-                OptionsViewOpenDirection::Down => field.bottom,
-                OptionsViewOpenDirection::Up => field.top - height,
+            // Upstream measures the room in the field's own coordinates --
+            // `spaceAbove = -overlayRectInField.top` and `spaceBelow =
+            // overlayRectInField.bottom - fieldSize.height`. In this port's
+            // overlay coordinates those are the gap above the field and the
+            // gap below it, which is what `MostSpace` compares.
+            let space_above = field.top;
+            let space_below = overlay.height - field.bottom;
+            let y = if direction.opens_upward(space_above, space_below) {
+                field.top - height
+            } else {
+                field.bottom
             };
             // Kept on screen either way. A list that ran off the bottom would show
             // the caller the one completion they could already see.
@@ -335,6 +343,103 @@ mod tests {
         assert!(
             !state.can_show_options_view(),
             "focus alone is not enough -- there has to be something in the list"
+        );
+    }
+}
+
+#[cfg(test)]
+mod open_direction_tests {
+    use super::options_placement;
+    use crate::autocomplete::OptionsViewOpenDirection;
+    use crate::engine::Rect;
+    use crate::render::Size;
+
+    /// A field 20 tall sitting `top` down a 400-tall overlay.
+    fn field_at(top: f32) -> Rect {
+        Rect {
+            left: 0.0,
+            top,
+            right: 100.0,
+            bottom: top + 20.0,
+        }
+    }
+
+    fn place(direction: OptionsViewOpenDirection, top: f32) -> f32 {
+        let placement = options_placement(direction, 200.0);
+        placement(
+            field_at(top),
+            Size::new(100.0, 80.0),
+            Size::new(400.0, 400.0),
+        )
+        .dy
+    }
+
+    #[test]
+    fn the_two_fixed_directions_ignore_the_room_entirely() {
+        // A field told to open upward opens upward with nothing above it, and
+        // upstream lets it: `up => true` reads neither argument.
+        assert!(OptionsViewOpenDirection::Up.opens_upward(0.0, 400.0));
+        assert!(!OptionsViewOpenDirection::Down.opens_upward(400.0, 0.0));
+    }
+
+    #[test]
+    fn and_most_space_is_a_question_rather_than_an_answer() {
+        assert!(OptionsViewOpenDirection::MostSpace.opens_upward(300.0, 100.0));
+        assert!(!OptionsViewOpenDirection::MostSpace.opens_upward(100.0, 300.0));
+    }
+
+    #[test]
+    fn an_even_split_opens_downward() {
+        // The comparison is strict, so a tie keeps the default rather than
+        // being decided by nothing.
+        assert!(!OptionsViewOpenDirection::MostSpace.opens_upward(150.0, 150.0));
+        assert_eq!(
+            OptionsViewOpenDirection::MostSpace.opens_upward(150.0, 150.0),
+            OptionsViewOpenDirection::Down.opens_upward(150.0, 150.0)
+        );
+    }
+
+    #[test]
+    fn the_height_is_the_room_on_the_side_that_won() {
+        assert_eq!(
+            OptionsViewOpenDirection::MostSpace.max_height(300.0, 100.0),
+            300.0
+        );
+        assert_eq!(
+            OptionsViewOpenDirection::MostSpace.max_height(100.0, 300.0),
+            300.0
+        );
+        // Which is to say: most space really does get the most space.
+        for (above, below) in [(10.0, 90.0), (90.0, 10.0), (50.0, 50.0)] {
+            assert_eq!(
+                OptionsViewOpenDirection::MostSpace.max_height(above, below),
+                above.max(below),
+                "{above} {below}"
+            );
+        }
+        // A fixed direction takes what its side has, however little.
+        assert_eq!(OptionsViewOpenDirection::Up.max_height(10.0, 390.0), 10.0);
+    }
+
+    #[test]
+    fn and_the_placement_follows_it() {
+        // Through the real placement closure, not the predicate alone.
+        // A field near the top has more room below, so MostSpace drops the
+        // list below it and agrees with Down.
+        assert_eq!(
+            place(OptionsViewOpenDirection::MostSpace, 10.0),
+            place(OptionsViewOpenDirection::Down, 10.0)
+        );
+        // Near the bottom it agrees with Up instead.
+        assert_eq!(
+            place(OptionsViewOpenDirection::MostSpace, 370.0),
+            place(OptionsViewOpenDirection::Up, 370.0)
+        );
+        // And those two answers are not the same answer, or the test above
+        // would hold for any implementation at all.
+        assert_ne!(
+            place(OptionsViewOpenDirection::MostSpace, 10.0),
+            place(OptionsViewOpenDirection::MostSpace, 370.0)
         );
     }
 }
