@@ -13610,3 +13610,38 @@ coverage 2102 / 2003 记账 / **18 MISSING**。
 **是我记错了前提，不是台账漏了。**
 
 coverage 2102 / 2005 记账 / **16 MISSING**。
+
+---
+
+## 密码框里不能有智能替换（2026-08-24）
+
+`SmartDashesType` 和 `SmartQuotesType` 各两个值，
+而**默认值由 `obscureText` 推出来**——同一行写法在三处出现
+（`EditableText`、`TextField`、`CupertinoTextField`）：
+
+```dart
+smartDashesType ?? (obscureText ? SmartDashesType.disabled : SmartDashesType.enabled)
+```
+
+这不是装饰性的：**智能替换会改写已经键入的内容**。
+两个连字符变成破折号，直引号变成弯引号——在散文里无害，
+**在密码框里就是悄悄改掉了读者以为自己输入的字符。**
+
+### 而「没设」不等于两个值里的任何一个
+
+参数在上游是可空的，第三种状态正是默认值得以存在的原因：
+没设 = 「从 `obscureText` 决定」。
+所以一个**确实想在密码框里要智能破折号**的字段，
+仍然可以明写 `Enabled` 并拿到它。移植保留 `Option`。
+
+这已经是这个会话里第四次遇到同一个形状了：
+`LockState::Ignored`、`padding` 的 null 不是零、
+`cacheExtent` 的没给不是零、这一个。
+**每次都是「未设」和某个具体值长得像，而含义不同。**
+
+### 两个参数是两个参数
+
+上游分开写，移植也分开写：一个字段可以要破折号、不要弯引号。
+一个「智能替换」总开关表达不了这件事。
+
+四个变异全红。coverage 2102 / 2007 记账 / **14 MISSING**。

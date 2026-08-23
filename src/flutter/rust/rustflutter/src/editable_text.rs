@@ -363,11 +363,72 @@ impl ContentInsertionConfiguration {
     }
 }
 
+/// Upstream `SmartDashesType`: whether the platform rewrites `--` as an
+/// em dash while the reader types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmartDashesType {
+    Disabled,
+    Enabled,
+}
+
+/// Upstream `SmartQuotesType`: whether the platform rewrites `"` as typographic
+/// quotes while the reader types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmartQuotesType {
+    Disabled,
+    Enabled,
+}
+
+impl SmartDashesType {
+    /// Upstream's default, written the same way in `EditableText`,
+    /// `TextField` and `CupertinoTextField`:
+    ///
+    /// ```dart
+    /// smartDashesType ?? (obscureText ? SmartDashesType.disabled : SmartDashesType.enabled)
+    /// ```
+    ///
+    /// **An obscured field turns it off**, and the reason is not cosmetic:
+    /// smart substitution rewrites what was typed. Two hyphens become an em
+    /// dash and a straight quote becomes a curly one -- harmless in prose, and
+    /// in a password field it silently changes the characters the reader
+    /// believes they entered.
+    ///
+    /// The parameter is nullable upstream and stays `Option` here, because
+    /// **unset is not the same as either value**: unset means "decide from
+    /// `obscureText`", and a field that wanted smart dashes in a password box
+    /// can still say `Enabled` and get them.
+    pub fn resolve(given: Option<SmartDashesType>, obscure_text: bool) -> SmartDashesType {
+        given.unwrap_or(if obscure_text {
+            SmartDashesType::Disabled
+        } else {
+            SmartDashesType::Enabled
+        })
+    }
+}
+
+impl SmartQuotesType {
+    /// The same rule as [`SmartDashesType::resolve`], written separately
+    /// upstream and separately here, because they are separate parameters: a
+    /// field may take one and refuse the other.
+    pub fn resolve(given: Option<SmartQuotesType>, obscure_text: bool) -> SmartQuotesType {
+        given.unwrap_or(if obscure_text {
+            SmartQuotesType::Disabled
+        } else {
+            SmartQuotesType::Enabled
+        })
+    }
+}
+
 /// Upstream `EditableText`: the field's configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditableText {
     pub read_only: bool,
     pub obscure_text: bool,
+    /// Upstream's `smartDashesType`, nullable so that unset can mean "follow
+    /// `obscure_text`". See [`SmartDashesType::resolve`].
+    pub smart_dashes_type: Option<SmartDashesType>,
+    /// Upstream's `smartQuotesType`.
+    pub smart_quotes_type: Option<SmartQuotesType>,
     /// Upstream's `obscuringCharacter`, asserted to be exactly one character.
     /// The default is a bullet.
     pub obscuring_character: char,
@@ -392,6 +453,8 @@ impl EditableText {
         EditableText {
             read_only: false,
             obscure_text: false,
+            smart_dashes_type: None,
+            smart_quotes_type: None,
             obscuring_character: '\u{2022}',
             enable_interactive_selection: true,
             toolbar_options: ToolbarOptions::EMPTY,
@@ -409,6 +472,26 @@ impl EditableText {
     pub fn with_obscure_text(mut self, obscure: bool) -> Self {
         self.obscure_text = obscure;
         self
+    }
+
+    pub fn with_smart_dashes(mut self, smart: SmartDashesType) -> Self {
+        self.smart_dashes_type = Some(smart);
+        self
+    }
+
+    pub fn with_smart_quotes(mut self, smart: SmartQuotesType) -> Self {
+        self.smart_quotes_type = Some(smart);
+        self
+    }
+
+    /// What the platform is actually told, once the default has been resolved
+    /// against `obscure_text`.
+    pub fn smart_dashes(&self) -> SmartDashesType {
+        SmartDashesType::resolve(self.smart_dashes_type, self.obscure_text)
+    }
+
+    pub fn smart_quotes(&self) -> SmartQuotesType {
+        SmartQuotesType::resolve(self.smart_quotes_type, self.obscure_text)
     }
 
     pub fn with_toolbar_options(mut self, options: ToolbarOptions) -> Self {
@@ -1271,5 +1354,87 @@ mod tests {
         assert!(!field.batch_edits_are_balanced());
         field.end_batch_edit();
         assert!(field.batch_edits_are_balanced());
+    }
+}
+
+#[cfg(test)]
+mod smart_substitution_tests {
+    use super::{EditableText, SmartDashesType, SmartQuotesType};
+
+    #[test]
+    fn an_obscured_field_turns_smart_substitution_off() {
+        // Not cosmetic: smart substitution rewrites what was typed. Two
+        // hyphens become an em dash and a straight quote becomes a curly one,
+        // which in a password field silently changes the characters the reader
+        // believes they entered.
+        let password = EditableText::new().with_obscure_text(true);
+        assert_eq!(password.smart_dashes(), SmartDashesType::Disabled);
+        assert_eq!(password.smart_quotes(), SmartQuotesType::Disabled);
+    }
+
+    #[test]
+    fn and_an_ordinary_one_leaves_it_on() {
+        let prose = EditableText::new();
+        assert!(!prose.obscure_text);
+        assert_eq!(prose.smart_dashes(), SmartDashesType::Enabled);
+        assert_eq!(prose.smart_quotes(), SmartQuotesType::Enabled);
+    }
+
+    #[test]
+    fn unset_is_not_the_same_as_either_value() {
+        // The parameter is nullable upstream, and the third state is what
+        // makes the default possible: unset means decide from obscureText.
+        // A field that wants smart dashes in a password box can still ask.
+        let asked = EditableText::new()
+            .with_obscure_text(true)
+            .with_smart_dashes(SmartDashesType::Enabled);
+        assert_eq!(asked.smart_dashes(), SmartDashesType::Enabled);
+
+        let refused = EditableText::new().with_smart_dashes(SmartDashesType::Disabled);
+        assert!(!refused.obscure_text);
+        assert_eq!(refused.smart_dashes(), SmartDashesType::Disabled);
+    }
+
+    #[test]
+    fn and_the_two_are_separate_parameters() {
+        // Written separately upstream and separately here: a field may take
+        // one and refuse the other, which a single "smart substitution" flag
+        // could not express.
+        let mixed = EditableText::new()
+            .with_smart_dashes(SmartDashesType::Disabled)
+            .with_smart_quotes(SmartQuotesType::Enabled);
+        assert_eq!(mixed.smart_dashes(), SmartDashesType::Disabled);
+        assert_eq!(mixed.smart_quotes(), SmartQuotesType::Enabled);
+    }
+
+    #[test]
+    fn the_resolution_reads_both_of_its_arguments() {
+        // Every combination, so neither argument can be quietly ignored.
+        for obscure in [false, true] {
+            assert_eq!(
+                SmartDashesType::resolve(None, obscure),
+                if obscure {
+                    SmartDashesType::Disabled
+                } else {
+                    SmartDashesType::Enabled
+                }
+            );
+            for given in [SmartDashesType::Disabled, SmartDashesType::Enabled] {
+                assert_eq!(
+                    SmartDashesType::resolve(Some(given), obscure),
+                    given,
+                    "a value given wins over the default, {obscure}"
+                );
+            }
+            for given in [SmartQuotesType::Disabled, SmartQuotesType::Enabled] {
+                assert_eq!(SmartQuotesType::resolve(Some(given), obscure), given);
+            }
+        }
+        // And the two defaults really differ, or the obscure argument would be
+        // doing nothing.
+        assert_ne!(
+            SmartDashesType::resolve(None, true),
+            SmartDashesType::resolve(None, false)
+        );
     }
 }
