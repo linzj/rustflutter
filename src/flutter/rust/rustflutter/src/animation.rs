@@ -499,6 +499,79 @@ pub enum Repeat {
     PingPong,
 }
 
+/// Upstream `AnimationBehavior`: what an animation does when the reader has
+/// asked the platform to stop animating things.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AnimationBehavior {
+    /// Shorten the animation when `AccessibilityFeatures.disableAnimations` is
+    /// set. `AnimationController`'s default.
+    #[default]
+    Normal,
+    /// Run as written, whatever the setting says.
+    ///
+    /// **`AnimationController.unbounded`'s default**, and upstream says why:
+    /// it is the repeating case, "in order to prevent them from flashing
+    /// rapidly on the screen if the widget does not take the
+    /// [AccessibilityFeatures.disableAnimations] flag into account". So the
+    /// setting is honoured by default *except* where honouring it would look
+    /// worse than ignoring it.
+    Preserve,
+}
+
+impl AnimationBehavior {
+    /// Upstream's `_enableAnimations`.
+    ///
+    /// The flag arrives as an argument rather than being read from a binding,
+    /// because this crate has no bridge for it: nothing reports
+    /// `disableAnimations` from the platform yet. Taking it as a parameter is
+    /// what keeps both arms of this reachable -- a switch that can only ever
+    /// answer one way is not a switch, it is a constant with a longer name.
+    pub fn enables_animations(self, disable_animations: bool) -> bool {
+        match self {
+            AnimationBehavior::Normal => !disable_animations,
+            AnimationBehavior::Preserve => true,
+        }
+    }
+
+    /// Upstream's `scale` in `_animateToInternal`: **five per cent, not zero.**
+    ///
+    /// Its comment gives the reason, and it is not about taste: "Ideally, the
+    /// framework would be able to handle zero duration animations; however,
+    /// the common pattern of an eternally repeating animation might cause an
+    /// endless loop if it weren't delayed for at least one frame. Instead,
+    /// it's run at 5% of the normal duration to limit most animations to a
+    /// single frame."
+    pub const DISABLED_DURATION_SCALE: f32 = 0.05;
+
+    /// Upstream's `scale` in `fling`: the velocity is multiplied, not the
+    /// duration divided.
+    ///
+    /// A spring has no duration to shorten -- it runs until it settles -- so
+    /// the way to make one arrive at once is to throw it two hundred times as
+    /// hard. Same intent as [`AnimationBehavior::DISABLED_DURATION_SCALE`],
+    /// opposite arithmetic, because the two mechanisms have nothing to divide
+    /// in common.
+    pub const DISABLED_FLING_VELOCITY_SCALE: f32 = 200.0;
+
+    /// What to multiply a duration by.
+    pub fn duration_scale(self, disable_animations: bool) -> f32 {
+        if self.enables_animations(disable_animations) {
+            1.0
+        } else {
+            AnimationBehavior::DISABLED_DURATION_SCALE
+        }
+    }
+
+    /// What to multiply a fling's velocity by.
+    pub fn fling_velocity_scale(self, disable_animations: bool) -> f32 {
+        if self.enables_animations(disable_animations) {
+            1.0
+        } else {
+            AnimationBehavior::DISABLED_FLING_VELOCITY_SCALE
+        }
+    }
+}
+
 /// Turns elapsed time into a value between 0 and 1.
 ///
 /// A controller does not know what frame it is on; it is told, by
@@ -508,6 +581,11 @@ pub enum Repeat {
 #[derive(Clone, Debug)]
 pub struct Controller {
     duration: Duration,
+    /// Upstream's `animationBehavior`, and the flag it is weighed against.
+    /// The flag lives here rather than in a binding because nothing bridges
+    /// it; a caller that knows the setting sets it.
+    behavior: AnimationBehavior,
+    disable_animations: bool,
     value: f32,
     direction: Direction,
     repeat: Repeat,
@@ -519,6 +597,8 @@ impl Controller {
     pub fn new(duration: Duration) -> Controller {
         Controller {
             duration,
+            behavior: AnimationBehavior::Normal,
+            disable_animations: false,
             value: 0.0,
             direction: Direction::Forward,
             repeat: Repeat::Once,
@@ -607,6 +687,25 @@ impl Controller {
 
     /// Advances by `elapsed`. Returns whether the animation is still running,
     /// which the caller uses to decide whether to ask for another frame.
+    /// Upstream's `animationBehavior` constructor argument.
+    pub fn with_behavior(mut self, behavior: AnimationBehavior) -> Controller {
+        self.behavior = behavior;
+        self
+    }
+
+    /// What `SemanticsBinding.instance.disableAnimations` would answer.
+    ///
+    /// Set by whoever knows, since nothing bridges the platform's
+    /// accessibility features into this crate yet.
+    pub fn with_disable_animations(mut self, disable_animations: bool) -> Controller {
+        self.disable_animations = disable_animations;
+        self
+    }
+
+    pub fn behavior(&self) -> AnimationBehavior {
+        self.behavior
+    }
+
     pub fn tick(&mut self, elapsed: Duration) -> bool {
         if !self.running {
             return false;
@@ -620,7 +719,12 @@ impl Controller {
             return false;
         }
 
-        let step = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        // Upstream scales the *simulation's* duration rather than the step,
+        // which comes to the same thing: a fifth of a twentieth of the way
+        // through per tick is twenty times as far.
+        let scaled =
+            self.duration.as_secs_f32() * self.behavior.duration_scale(self.disable_animations);
+        let step = elapsed.as_secs_f32() / scaled;
         match self.direction {
             Direction::Forward => self.value += step,
             Direction::Reverse => self.value -= step,
@@ -2559,5 +2663,93 @@ mod animation_style_direction_tests {
         let merged = sparse.at_most(&far());
         assert_eq!(merged.curve, Some(Curve::Linear));
         assert_eq!(merged.duration, Some(Duration::from_millis(300)));
+    }
+}
+
+#[cfg(test)]
+mod animation_behavior_tests {
+    use super::{AnimationBehavior, Controller};
+    use std::time::Duration;
+
+    #[test]
+    fn only_the_normal_behavior_listens_to_the_setting() {
+        assert!(AnimationBehavior::Normal.enables_animations(false));
+        assert!(!AnimationBehavior::Normal.enables_animations(true));
+        // Preserve ignores the argument, which is the whole of what it is for.
+        assert!(AnimationBehavior::Preserve.enables_animations(false));
+        assert!(AnimationBehavior::Preserve.enables_animations(true));
+    }
+
+    #[test]
+    fn a_shortened_animation_is_shortened_and_not_skipped() {
+        // Five per cent rather than zero, and upstream says why: a zero
+        // duration risks an endless loop for an eternally repeating animation,
+        // so this limits most of them to a single frame instead.
+        assert_eq!(AnimationBehavior::DISABLED_DURATION_SCALE, 0.05);
+        assert!(AnimationBehavior::DISABLED_DURATION_SCALE > 0.0);
+        assert_eq!(AnimationBehavior::Normal.duration_scale(true), 0.05);
+        assert_eq!(AnimationBehavior::Normal.duration_scale(false), 1.0);
+        assert_eq!(AnimationBehavior::Preserve.duration_scale(true), 1.0);
+    }
+
+    #[test]
+    fn and_a_spring_is_thrown_harder_instead_of_run_shorter() {
+        // Opposite arithmetic for the same intent: a spring has no duration to
+        // divide, so the velocity is multiplied.
+        assert_eq!(AnimationBehavior::DISABLED_FLING_VELOCITY_SCALE, 200.0);
+        assert_eq!(AnimationBehavior::Normal.fling_velocity_scale(true), 200.0);
+        assert_eq!(AnimationBehavior::Normal.fling_velocity_scale(false), 1.0);
+        assert_eq!(AnimationBehavior::Preserve.fling_velocity_scale(true), 1.0);
+        // One shrinks and the other grows, so they cannot be the same number
+        // reached two ways.
+        assert!(AnimationBehavior::Normal.duration_scale(true) < 1.0);
+        assert!(AnimationBehavior::Normal.fling_velocity_scale(true) > 1.0);
+    }
+
+    #[test]
+    fn the_scale_really_reaches_the_clock() {
+        // Through `tick`, not through the predicate: a controller told the
+        // reader wants no animations covers in one frame what it would have
+        // taken twenty to cover.
+        let mut ordinary = Controller::new(Duration::from_millis(1000));
+        ordinary.forward();
+        ordinary.tick(Duration::from_millis(50));
+        assert!(
+            (ordinary.value() - 0.05).abs() < 1e-5,
+            "{}",
+            ordinary.value()
+        );
+
+        let mut hurried =
+            Controller::new(Duration::from_millis(1000)).with_disable_animations(true);
+        hurried.forward();
+        hurried.tick(Duration::from_millis(50));
+        assert!(hurried.value() >= 1.0, "{}", hurried.value());
+    }
+
+    #[test]
+    fn and_preserve_keeps_its_pace_with_the_setting_on() {
+        let mut kept = Controller::new(Duration::from_millis(1000))
+            .with_behavior(AnimationBehavior::Preserve)
+            .with_disable_animations(true);
+        kept.forward();
+        kept.tick(Duration::from_millis(50));
+        assert!((kept.value() - 0.05).abs() < 1e-5, "{}", kept.value());
+        // Which is a different answer from Normal under the same setting --
+        // otherwise this test would hold with the behaviour ignored entirely.
+        let mut hurried =
+            Controller::new(Duration::from_millis(1000)).with_disable_animations(true);
+        hurried.forward();
+        hurried.tick(Duration::from_millis(50));
+        assert_ne!(kept.value(), hurried.value());
+    }
+
+    #[test]
+    fn a_controller_animates_normally_until_told_otherwise() {
+        assert_eq!(
+            Controller::new(Duration::from_millis(1)).behavior(),
+            AnimationBehavior::Normal
+        );
+        assert_eq!(AnimationBehavior::default(), AnimationBehavior::Normal);
     }
 }
