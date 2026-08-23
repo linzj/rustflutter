@@ -862,6 +862,43 @@ mod tests {
     }
 
     #[test]
+    fn a_drain_polls_only_what_was_woken() {
+        // What the `Waker` abstraction is for. A naive executor polls every
+        // task every tick; this one is handed the ids of the tasks that can
+        // actually advance, so a hundred parked tasks cost nothing.
+        attached();
+        let polls = Rc::new(Cell::new(0usize));
+        let mut senders = Vec::new();
+        for _ in 0..100 {
+            let (sender, receiver) = oneshot::<()>();
+            senders.push(sender);
+            let counted = Rc::clone(&polls);
+            spawn(async move {
+                counted.set(counted.get() + 1);
+                let _ = receiver.await;
+                counted.set(counted.get() + 1);
+            });
+        }
+        run_until_stalled();
+        assert_eq!(polls.get(), 100, "each ran once to reach its await");
+        assert_eq!(pending(), 100);
+
+        // A drain with nothing woken touches none of them.
+        polls.set(0);
+        assert!(!run_until_stalled());
+        assert_eq!(polls.get(), 0, "a hundred parked tasks, zero polls");
+
+        // Waking exactly one polls exactly one.
+        senders.remove(50).send(());
+        assert!(run_until_stalled());
+        assert_eq!(polls.get(), 1);
+        assert_eq!(pending(), 99);
+
+        drop(senders);
+        detach();
+    }
+
+    #[test]
     fn a_thread_without_an_executor_refuses_to_spawn() {
         // Not an error to reach here -- a decode worker has no executor by
         // design -- but the task must not be silently accepted and never run.
