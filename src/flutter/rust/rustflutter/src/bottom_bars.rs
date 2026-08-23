@@ -185,11 +185,22 @@ impl NavigationBar {
 /// is the notch. A floating action button docked over this bar has a hole cut
 /// for it, and the hole is the bar's job because only the bar knows its own
 /// outline.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BottomAppBar {
-    /// `None` gives a rectangle with no notch. A bar with no floating button
-    /// over it has nothing to cut around.
-    pub has_notched_shape: bool,
+    /// The outline the notch is cut from, or `None` to defer.
+    ///
+    /// `None` does **not** mean "no notch": under Material 3 the chain
+    /// continues to `_BottomAppBarDefaultsM3.shape`, which is an
+    /// `AutomaticNotchedShape`, so a bar nobody configured still carries one.
+    /// Whether a hole is actually cut needs a floating action button as well --
+    /// see [`crate::component_themes::ResolvedBottomAppBar::cuts_a_notch`].
+    ///
+    /// This used to be a `bool` defaulting to false, with a `cuts_a_notch`
+    /// that answered from it alone. That was wrong twice over: it said a
+    /// default Material 3 bar never notches, where upstream's always has a
+    /// shape, and it never looked for the button, where upstream cuts nothing
+    /// without one.
+    pub shape: Option<crate::borders::NotchedShape>,
     /// The gap left between the button and the edge of the hole, so the two do
     /// not touch.
     pub notch_margin: f32,
@@ -204,20 +215,24 @@ impl BottomAppBar {
 
     pub fn new() -> BottomAppBar {
         BottomAppBar {
-            has_notched_shape: false,
+            shape: None,
             notch_margin: BottomAppBar::DEFAULT_NOTCH_MARGIN,
             material3: true,
         }
     }
 
+    /// Upstream's usual shape, `CircularNotchedRectangle`.
     pub fn with_notch(mut self) -> Self {
-        self.has_notched_shape = true;
+        self.shape = Some(crate::borders::NotchedShape::Circular { inverted: false });
         self
     }
 
-    /// Whether a hole is cut in the bar's outline.
-    pub fn cuts_a_notch(&self) -> bool {
-        self.has_notched_shape
+    /// This bar's appearance, with the theme and the defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::component_themes::ResolvedBottomAppBar {
+        crate::component_themes::ResolvedBottomAppBar::of(context, self)
     }
 
     pub fn default_padding(&self) -> (f32, f32) {
@@ -340,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn its_animation_falls_back_to_the_themes_half_second() {
+    fn its_animation_falls_back_to_a_half_second_with_no_theme_in_between() {
         assert_eq!(NavigationBar::new(3, 0).animation_duration_ms, None);
         assert_eq!(NavigationBar::DEFAULT_ANIMATION_MS, 500);
     }
@@ -348,10 +363,16 @@ mod tests {
     // -- The bar that holds actions ---------------------------------------------------
 
     #[test]
-    fn a_bar_with_no_floating_button_over_it_has_nothing_to_cut_around() {
-        let plain = BottomAppBar::new();
-        assert!(!plain.cuts_a_notch());
-        assert!(BottomAppBar::new().with_notch().cuts_a_notch());
+    fn asking_for_a_notch_names_upstreams_usual_shape() {
+        // What the widget can say on its own. Whether a hole is cut is a
+        // question for the resolution and the Scaffold -- this test used to be
+        // called "a bar with no floating button over it has nothing to cut
+        // around" while checking a flag that had never heard of a button.
+        assert_eq!(BottomAppBar::new().shape, None);
+        assert_eq!(
+            BottomAppBar::new().with_notch().shape,
+            Some(crate::borders::NotchedShape::Circular { inverted: false })
+        );
     }
 
     #[test]
@@ -661,5 +682,275 @@ mod navigation_bar_theme_tests {
         assert_eq!(resolved.indicator_color, None);
         assert_eq!(resolved.shadow_color, None);
         assert_eq!(resolved.label_padding, crate::render::EdgeInsets::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod bottom_app_bar_theme_tests {
+    use super::*;
+    use crate::EdgeInsetsGeometry;
+    use crate::borders::NotchedShape;
+    use crate::component_themes::{BottomAppBarTheme, BottomAppBarThemeData, ResolvedBottomAppBar};
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::EdgeInsets;
+    use crate::theme::ThemeData;
+    use crate::widgets::SizedBox;
+
+    struct Reader {
+        bar: BottomAppBar,
+        seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedBottomAppBar>>>,
+    }
+
+    impl Component for Reader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some(self.bar.resolved(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn resolve(bar: BottomAppBar, data: BottomAppBarThemeData) -> ResolvedBottomAppBar {
+        resolve_under(ThemeData::fallback(), bar, data)
+    }
+
+    fn resolve_under(
+        theme: ThemeData,
+        bar: BottomAppBar,
+        data: BottomAppBarThemeData,
+    ) -> ResolvedBottomAppBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::provide(
+            theme,
+            BottomAppBarTheme::new(
+                data,
+                component(Reader {
+                    bar,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn m2() -> BottomAppBar {
+        BottomAppBar {
+            material3: false,
+            ..BottomAppBar::new()
+        }
+    }
+
+    #[test]
+    fn the_elevation_is_an_input_to_the_colour_and_not_only_to_the_shadow() {
+        // `effectiveColor` is `applySurfaceTint(color, tint, elevation)`. The
+        // resolved colour is never what gets painted.
+        let tint = Color(0xFF00FF00);
+        let mut data = BottomAppBarThemeData::new();
+        data.surface_tint_color = Some(tint);
+        data.color = Some(Color(0xFF000000));
+
+        let mut low = data.clone();
+        low.elevation = Some(0.0);
+        let mut high = data.clone();
+        high.elevation = Some(24.0);
+
+        let scheme = ThemeData::fallback().color_scheme;
+        let painted = |data: BottomAppBarThemeData| {
+            let resolved = resolve(BottomAppBar::new(), data);
+            resolved.effective_color(false, scheme.surface, scheme.on_surface)
+        };
+        assert_ne!(
+            painted(low.clone()),
+            painted(high.clone()),
+            "same colour, same tint, different elevation -- different paint"
+        );
+        assert_eq!(
+            resolve(BottomAppBar::new(), low).color,
+            resolve(BottomAppBar::new(), high).color,
+            "and the resolved colour itself did not move, which is the point"
+        );
+    }
+
+    #[test]
+    fn neither_default_tints_anything_and_they_fail_to_for_opposite_reasons() {
+        let scheme = ThemeData::fallback().color_scheme;
+
+        // Material 3 consults the tint and defaults it to transparent.
+        let m3 = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
+        assert_eq!(m3.surface_tint_color, Color::TRANSPARENT);
+        assert_eq!(
+            m3.effective_color(false, scheme.surface, scheme.on_surface),
+            m3.color,
+            "a transparent tint is short-circuited"
+        );
+
+        // Material 2 resolves a real scheme colour and takes the branch that
+        // never looks at it.
+        let two = resolve(m2(), BottomAppBarThemeData::new());
+        assert_eq!(two.surface_tint_color, scheme.surface_tint());
+        assert_ne!(two.surface_tint_color, Color::TRANSPARENT);
+        let mut tinted = BottomAppBarThemeData::new();
+        tinted.surface_tint_color = Some(Color(0xFFFF0000));
+        assert_eq!(
+            resolve(m2(), tinted).effective_color(false, scheme.surface, scheme.on_surface),
+            two.effective_color(false, scheme.surface, scheme.on_surface),
+            "a different tint entirely, and Material 2 paints the same"
+        );
+    }
+
+    #[test]
+    fn material_two_leaves_the_height_to_the_child_and_material_three_pins_it() {
+        assert_eq!(
+            resolve(BottomAppBar::new(), BottomAppBarThemeData::new()).height,
+            Some(80.0)
+        );
+        assert_eq!(
+            resolve(m2(), BottomAppBarThemeData::new()).height,
+            None,
+            "`SizedBox(height: null)` is as tall as what is in it"
+        );
+    }
+
+    #[test]
+    fn a_material_three_bar_carries_a_notch_nobody_asked_for() {
+        // The finding that corrected this port: the widget's shape defaults to
+        // null, and the chain does not stop there.
+        let plain = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
+        assert!(matches!(plain.shape, Some(NotchedShape::Automatic { .. })));
+        assert_eq!(
+            resolve(m2(), BottomAppBarThemeData::new()).shape,
+            None,
+            "and a Material 2 bar does not"
+        );
+    }
+
+    #[test]
+    fn carrying_a_shape_is_not_cutting_a_hole() {
+        // Upstream's `notchedShape != null && hasFab`. With no floating action
+        // button the clipper is a plain rounded rectangle, whatever shape
+        // resolved.
+        let plain = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
+        assert!(plain.shape.is_some());
+        assert!(!plain.cuts_a_notch(false));
+        assert!(plain.cuts_a_notch(true));
+
+        // And a button with nothing to cut into is equally not a notch.
+        let two = resolve(m2(), BottomAppBarThemeData::new());
+        assert!(!two.cuts_a_notch(true));
+    }
+
+    #[test]
+    fn the_widget_is_the_first_step_for_the_shape_and_the_theme_the_second() {
+        let mine = NotchedShape::Circular { inverted: true };
+        let mut data = BottomAppBarThemeData::new();
+        data.shape = Some(NotchedShape::Circular { inverted: false });
+        assert_eq!(
+            resolve(
+                BottomAppBar {
+                    shape: Some(mine.clone()),
+                    ..BottomAppBar::new()
+                },
+                data.clone()
+            )
+            .shape,
+            Some(mine)
+        );
+        assert_eq!(
+            resolve(BottomAppBar::new(), data).shape,
+            Some(NotchedShape::Circular { inverted: false })
+        );
+    }
+
+    #[test]
+    fn the_two_elevations_and_the_two_colours_are_not_the_same_numbers() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let three = resolve(BottomAppBar::new(), BottomAppBarThemeData::new());
+        let two = resolve(m2(), BottomAppBarThemeData::new());
+        assert_eq!(three.elevation, 3.0);
+        assert_eq!(two.elevation, 8.0);
+        assert_eq!(three.color, scheme.surface_container());
+        assert_eq!(
+            two.color,
+            ResolvedBottomAppBar::M2_LIGHT,
+            "Material 2 is plain white in the light, from before the scheme"
+        );
+        assert_eq!(three.shadow_color, Color::TRANSPARENT);
+        assert_eq!(two.shadow_color, Color(0xFF000000));
+    }
+
+    #[test]
+    fn material_twos_colour_is_the_only_thing_here_that_reads_the_brightness() {
+        // A mutation deleting this branch survived: nothing built under a dark
+        // theme, so the arm was unreachable and the test suite could not tell
+        // it from an empty one.
+        assert_eq!(
+            resolve_under(ThemeData::dark(), m2(), BottomAppBarThemeData::new()).color,
+            ResolvedBottomAppBar::M2_DARK,
+            "`Colors.grey[800]`"
+        );
+        assert_eq!(
+            resolve_under(ThemeData::light(), m2(), BottomAppBarThemeData::new()).color,
+            ResolvedBottomAppBar::M2_LIGHT
+        );
+
+        // Material 3 takes its colour from the scheme, which the brightness
+        // has already moved -- it does not look at the brightness itself.
+        let dark = resolve_under(
+            ThemeData::dark(),
+            BottomAppBar::new(),
+            BottomAppBarThemeData::new(),
+        );
+        assert_eq!(
+            dark.color,
+            ThemeData::dark().color_scheme.surface_container()
+        );
+        assert_ne!(dark.color, ResolvedBottomAppBar::M2_DARK);
+    }
+
+    #[test]
+    fn the_padding_default_lives_at_the_use_site_and_still_has_a_theme_step() {
+        assert_eq!(
+            resolve(BottomAppBar::new(), BottomAppBarThemeData::new()).padding,
+            EdgeInsets::symmetric(16.0, 12.0)
+        );
+        assert_eq!(
+            resolve(m2(), BottomAppBarThemeData::new()).padding,
+            EdgeInsets::ZERO
+        );
+        let mut data = BottomAppBarThemeData::new();
+        data.padding = Some(EdgeInsetsGeometry::Absolute(EdgeInsets::all(7.0)));
+        assert_eq!(
+            resolve(BottomAppBar::new(), data).padding,
+            EdgeInsets::all(7.0),
+            "a theme still gets its say even though the default is written elsewhere"
+        );
+    }
+
+    #[test]
+    fn material_twos_overlay_only_fires_in_the_dark_and_only_on_the_surface() {
+        // The two transforms are not two spellings of one idea.
+        let scheme = ThemeData::fallback().color_scheme;
+        let mut data = BottomAppBarThemeData::new();
+        data.color = Some(scheme.surface);
+        let two = resolve(m2(), data.clone());
+        assert_eq!(
+            two.effective_color(false, scheme.surface, scheme.on_surface),
+            two.color,
+            "in the light it does nothing at all"
+        );
+        assert_ne!(
+            two.effective_color(true, scheme.surface, scheme.on_surface),
+            two.color,
+            "and in the dark it lightens the surface by its elevation"
+        );
+
+        let mut mine = BottomAppBarThemeData::new();
+        mine.color = Some(Color(0xFF123456));
+        let hand_coloured = resolve(m2(), mine);
+        assert_eq!(
+            hand_coloured.effective_color(true, scheme.surface, scheme.on_surface),
+            hand_coloured.color,
+            "a colour someone chose is left alone even in the dark"
+        );
     }
 }

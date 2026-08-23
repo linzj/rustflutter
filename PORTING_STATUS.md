@@ -10726,3 +10726,49 @@ destination 的选中图标和未选中图标解析成同一个颜色，那个�
 
 无读者主题 18 → 17。
 
+## 底部动作栏：高度参与颜色，而两条默认的着色都白算了（2026-08-23）
+
+`BottomAppBarTheme` 接上读者，顺带修掉本移植的一处真错。
+
+### elevation 是颜色的输入，不只是阴影的
+
+上游把 `color` 走完三步之后**根本不画它**：
+`effectiveColor = isMaterial3 ? applySurfaceTint(color, tint, elevation)
+: applyOverlay(context, color, elevation)`。两条分支都吃 elevation。
+所以抬高一个栏的 elevation 就是在改它的颜色，分别设了颜色和 elevation 的调用者
+其实把颜色设了两遍。
+
+### 两条分支的默认着色都不着色，理由正好相反
+
+M3 走**用** tint 的那条分支，而把 tint 默认成**透明**——`applySurfaceTint`
+在透明上短路。M2 把 tint 默认成一个真颜色 `colorScheme.surfaceTint`，
+却走**不看** tint 的那条分支。两边都不着色；这个字段只有在
+调用者显式设了它**并且**处在 M3 时才起作用。
+
+值得写下来是因为两边看着都活：M2 每次 build 重算一个配色方案里的颜色然后丢掉，
+M3 留着一个它确实会读的字段、递给它一个意思是「别读」的值。
+
+### 顺手修的真错：M3 的栏自带一个没人要的缺口
+
+上游 `widget.shape ?? babTheme.shape ?? defaults.shape`，而
+`_BottomAppBarDefaultsM3.shape` 是 `AutomaticNotchedShape(RoundedRectangleBorder())`
+——**非空**。本移植把 widget 的 shape 建模成一个 `has_notched_shape: bool`，
+默认 false，`cuts_a_notch()` 就返回它。**两处都错**：说默认 M3 栏永不开缺口
+（上游的总是带着形状），而且完全没找那个悬浮按钮（上游
+`notchedShape != null && hasFab`，没有按钮就不挖）。
+
+字段改成 `shape: Option<NotchedShape>`（与上游同型），`cuts_a_notch` 移到
+resolved 上并要一个 `has_floating_action_button`。原来那条测试的**名字**
+写的是对的规则——「a bar with no floating button over it has nothing to cut
+around」——**body 检查的却是一个从没听说过按钮的 flag**。名字和身体不一致的测试。
+
+另两条：M2 不定高度（`SizedBox(height: null)`，多高看孩子），M3 定死 80；
+padding 的默认**不在 defaults 类里**，写在使用点的三目里，两个 defaults 类
+都没有 padding 字段——链一样长，只是最后一步写在别处。
+
+13 个变异，**一个活下来**：删掉 M2 的深色底色分支，全绿。
+没有任何测试在深色 `ThemeData` 下构建过，那条臂根本到不了。补了一条
+`resolve_under(ThemeData::dark(), ...)`，重跑变红。
+
+无读者主题 17 → 16。
+

@@ -2383,6 +2383,186 @@ impl ResolvedNavigationDrawer {
     }
 }
 
+/// What a bottom app bar is drawn with -- upstream's `_BottomAppBarState.build`
+/// reading `BottomAppBarTheme.of` and then one of two defaults classes.
+///
+/// # The elevation is an input to the colour, not just to the shadow
+///
+/// Upstream resolves `color` through three steps and then never paints it:
+/// `effectiveColor` is `applySurfaceTint(color, surfaceTintColor, elevation)`
+/// under Material 3 and `applyOverlay(context, color, elevation)` under
+/// Material 2. Both take the elevation. So raising a bar's elevation changes
+/// what colour it is, and a caller who set the colour and the elevation
+/// separately has set the colour twice. See
+/// [`ResolvedBottomAppBar::effective_color`].
+///
+/// # By default that transform does nothing -- in both branches, for opposite
+/// reasons
+///
+/// Material 3 takes the branch that uses the surface tint and defaults the tint
+/// to **transparent**, which `applySurfaceTint` short-circuits on. Material 2
+/// defaults the tint to a real colour, `colorScheme.surfaceTint`, and takes the
+/// branch that **ignores it**. Neither default tints anything; the field only
+/// ever acts when a caller sets it *and* is on Material 3.
+///
+/// It is worth writing down because the resolution looks alive from either
+/// side: M2 recomputes a scheme colour on every build and throws it away, and
+/// M3 keeps a field it does consult and hands it a value that means "don't".
+///
+/// # Two things Material 2 leaves null that Material 3 pins
+///
+/// `height` and `shape`. An M2 bar has no height of its own and is as tall as
+/// its child; an M3 bar is 80 whatever is in it. An M2 bar has no notch unless
+/// asked; an M3 bar defaults to `AutomaticNotchedShape(RoundedRectangleBorder())`,
+/// so it **cuts a hole for a floating action button without being told to** --
+/// but only when there is one to cut for; see
+/// [`ResolvedBottomAppBar::cuts_a_notch`].
+///
+/// # The padding's default is not in the defaults class
+///
+/// Every other field's third step is `defaults.field`. The padding's is written
+/// inline at the use site as `isMaterial3 ? EdgeInsets.symmetric(...) :
+/// EdgeInsets.zero`, and neither `_BottomAppBarDefaultsM2` nor
+/// `_BottomAppBarDefaultsM3` declares a padding. The chain is the same length;
+/// only the place the last step is written differs.
+///
+/// # Which defaults class runs is a *theme-wide* switch upstream
+///
+/// Upstream branches on `ThemeData.useMaterial3`, so one setting moves every
+/// widget at once. This port has no such field -- it is Material 3 throughout
+/// -- and `BottomAppBar::material3` rides on the widget instead. Adding a
+/// `use_material3` to `ThemeData` that exactly one widget consulted would
+/// advertise a switch that switches nothing, so the divergence is recorded here
+/// rather than papered over.
+pub struct ResolvedBottomAppBar {
+    pub color: Color,
+    pub elevation: f32,
+    /// `None` under Material 2: the bar is as tall as its child.
+    pub height: Option<f32>,
+    /// `None` means no notch is possible; `Some` means one is possible, not
+    /// that one is cut -- see [`ResolvedBottomAppBar::cuts_a_notch`].
+    pub shape: Option<crate::borders::NotchedShape>,
+    pub surface_tint_color: Color,
+    pub shadow_color: Color,
+    pub padding: EdgeInsets,
+    material3: bool,
+}
+
+impl ResolvedBottomAppBar {
+    /// Upstream `_BottomAppBarDefaultsM3.elevation`.
+    pub const M3_ELEVATION: f32 = 3.0;
+    /// Upstream `_BottomAppBarDefaultsM2.elevation`.
+    pub const M2_ELEVATION: f32 = 8.0;
+    /// Upstream `_BottomAppBarDefaultsM3.height`. Material 2 has none.
+    pub const M3_HEIGHT: f32 = 80.0;
+    /// Upstream's Material 2 light-mode colour: plain white, from before the
+    /// bar took its colour from a scheme.
+    pub const M2_LIGHT: Color = Color(0xFFFFFFFF);
+    /// Upstream's `Colors.grey[800]` for Material 2 in the dark.
+    pub const M2_DARK: Color = Color(0xFF424242);
+
+    pub fn of(
+        context: &mut BuildContext,
+        bar: &crate::bottom_bars::BottomAppBar,
+    ) -> ResolvedBottomAppBar {
+        let data = BottomAppBarTheme::of(context);
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = bar.material3;
+        ResolvedBottomAppBar {
+            color: data.color.unwrap_or_else(|| {
+                if material3 {
+                    scheme.surface_container()
+                } else if theme.brightness == crate::platform::Brightness::Dark {
+                    ResolvedBottomAppBar::M2_DARK
+                } else {
+                    ResolvedBottomAppBar::M2_LIGHT
+                }
+            }),
+            elevation: data.elevation.unwrap_or(if material3 {
+                ResolvedBottomAppBar::M3_ELEVATION
+            } else {
+                ResolvedBottomAppBar::M2_ELEVATION
+            }),
+            height: data.height.or(if material3 {
+                Some(ResolvedBottomAppBar::M3_HEIGHT)
+            } else {
+                None
+            }),
+            shape: bar.shape.clone().or(data.shape.clone()).or_else(|| {
+                // Unconditional under Material 3: the bar carries a shape
+                // whether or not anyone asked for one.
+                material3.then(|| crate::borders::NotchedShape::Automatic {
+                    host: crate::borders::ShapeBorder::Rounded(
+                        crate::borders::RoundedRectangleBorder::default(),
+                    ),
+                    guest: None,
+                })
+            }),
+            surface_tint_color: data.surface_tint_color.unwrap_or(if material3 {
+                Color::TRANSPARENT
+            } else {
+                scheme.surface_tint()
+            }),
+            shadow_color: data.shadow_color.unwrap_or(if material3 {
+                Color::TRANSPARENT
+            } else {
+                Color(0xFF000000)
+            }),
+            // The one default written at the use site rather than in a
+            // defaults class -- see the type's docs.
+            padding: data
+                .padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(if material3 {
+                    EdgeInsets::symmetric(
+                        crate::bottom_bars::BottomAppBar::M3_PADDING.0,
+                        crate::bottom_bars::BottomAppBar::M3_PADDING.1,
+                    )
+                } else {
+                    EdgeInsets::ZERO
+                }),
+            material3,
+        }
+    }
+
+    /// What actually gets painted: the colour with the elevation folded in.
+    ///
+    /// Two different transforms, and they are not two spellings of one idea.
+    /// The Material 3 one blends a tint over the colour and applies to any
+    /// colour. The Material 2 one only fires in the dark, and only when the
+    /// colour is already the surface -- a bar someone coloured by hand keeps
+    /// its colour there, and the same bar under Material 3 does not.
+    pub fn effective_color(&self, is_dark: bool, surface: Color, on_surface: Color) -> Color {
+        if self.material3 {
+            crate::elevation_overlay::ElevationOverlay::apply_surface_tint(
+                self.color,
+                Some(self.surface_tint_color),
+                self.elevation,
+            )
+        } else {
+            crate::elevation_overlay::ElevationOverlay::apply_overlay(
+                self.color,
+                self.elevation,
+                true,
+                is_dark,
+                surface,
+                on_surface,
+            )
+        }
+    }
+
+    /// Whether a hole is cut, which needs a shape **and** something to cut for.
+    ///
+    /// Upstream's `notchedShape != null && hasFab`. A resolved shape is not a
+    /// notch: with no floating action button in the `Scaffold` the clipper is a
+    /// plain rounded rectangle, so an M3 bar carries its default notch around
+    /// and never uses it until a button arrives.
+    pub fn cuts_a_notch(&self, has_floating_action_button: bool) -> bool {
+        self.shape.is_some() && has_floating_action_button
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
