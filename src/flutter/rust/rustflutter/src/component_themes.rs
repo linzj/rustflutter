@@ -2748,6 +2748,347 @@ impl ResolvedPopupMenu {
     }
 }
 
+/// Which way a menu panel runs, which is also which theme it reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuPanelAxis {
+    /// A row of menus along the top of a window: `MenuBarTheme`.
+    Horizontal,
+    /// A column of items hanging off an anchor: `MenuTheme`.
+    Vertical,
+}
+
+/// What a menu panel is drawn with -- upstream's `_MenuPanelState.build`.
+///
+/// # The axis picks the theme, not the widget
+///
+/// Upstream writes
+/// `switch (widget.orientation) { horizontal => MenuBarTheme.of(context),
+/// vertical => MenuTheme.of(context) }`. It is the **same `_MenuPanel`** in
+/// both cases. Being a `MenuBar` is not what makes `MenuBarTheme` apply; being
+/// horizontal is, and a `MenuBar` is horizontal.
+///
+/// So the two themes are not "the bar's" and "the menu's" in the sense of
+/// belonging to two widgets. They are one widget's two orientations, themed
+/// separately because a row and a column want different things -- which is
+/// exactly what the two defaults classes turn out to say.
+///
+/// # The two defaults differ in two fields, and both differences are the axis
+///
+/// `_MenuBarDefaultsM3` and `_MenuDefaultsM3` agree on elevation 3, the
+/// four-radius border, `surfaceContainer`, the scheme's shadow, a transparent
+/// tint and the theme's visual density. They disagree on exactly two things:
+///
+/// * **alignment** -- the bar's is `bottomStart`, the menu's is `topEnd`. A
+///   bar's submenu drops below it; a menu's flies out beside it. There is
+///   nowhere else for either to go.
+/// * **padding** -- the bar's is 4 **horizontal**, the menu's is 8
+///   **vertical**. A row is padded at its ends and a column at its ends, and
+///   the ends are on different axes.
+///
+/// Both differences fall out of the one fact. Nothing else about a row of
+/// menus differs from a column of them.
+///
+/// # Every state property is resolved against no states at all
+///
+/// `_MenuPanelState.build`'s `resolve` calls `getProperty(style)?.resolve(<WidgetState>{})`
+/// -- the empty set, unconditionally. A panel is a surface, not a control: it
+/// is not hovered or pressed or focused, its items are. So a `MenuStyle` whose
+/// background answers differently when hovered is asked as though nothing were
+/// happening, and only ever gives its no-state answer.
+///
+/// # `elevation ?? 0` cannot fire
+///
+/// The line reads `resolve(...elevation) ?? 0`, a fourth step after the three.
+/// It is unreachable: the chain's last step is the defaults class, both of them
+/// supply `WidgetStatePropertyAll(3.0)`, and a widget or theme style whose
+/// elevation resolves to null falls through to that same default rather than
+/// out of the chain. The zero is what would happen if a defaults class ever
+/// stopped supplying one.
+pub struct ResolvedMenuPanel {
+    pub axis: MenuPanelAxis,
+    pub background_color: Option<Color>,
+    pub shadow_color: Option<Color>,
+    pub surface_tint_color: Option<Color>,
+    pub elevation: f32,
+    pub padding: EdgeInsets,
+    pub minimum_size: Option<Size>,
+    pub fixed_size: Option<Size>,
+    pub maximum_size: Option<Size>,
+    pub side: Option<BorderSide>,
+    pub shape: Option<ShapeBorder>,
+    pub visual_density: VisualDensity,
+    pub alignment: AlignmentGeometry,
+}
+
+impl ResolvedMenuPanel {
+    /// Upstream's `elevation` on both defaults classes.
+    pub const ELEVATION: f32 = 3.0;
+    /// Upstream's `_defaultMenuBorder` radius, on both.
+    pub const RADIUS: f32 = 4.0;
+    /// Upstream's `_kTopLevelMenuHorizontalMinPadding`.
+    pub const BAR_PADDING: f32 = 4.0;
+    /// Upstream's `_kMenuVerticalMinPadding`.
+    pub const MENU_PADDING: f32 = 8.0;
+    /// The `?? 0` after the chain, which cannot be reached -- see the type's
+    /// docs. Named so the claim has something to point at.
+    pub const UNREACHABLE_ELEVATION: f32 = 0.0;
+
+    /// The defaults for an axis: everything the two share, plus the two things
+    /// they do not.
+    pub fn defaults(axis: MenuPanelAxis, scheme: &ColorScheme) -> ResolvedMenuPanel {
+        ResolvedMenuPanel {
+            axis,
+            background_color: Some(scheme.surface_container()),
+            shadow_color: Some(scheme.shadow()),
+            surface_tint_color: Some(Color::TRANSPARENT),
+            elevation: ResolvedMenuPanel::ELEVATION,
+            padding: match axis {
+                MenuPanelAxis::Horizontal => {
+                    EdgeInsets::symmetric(ResolvedMenuPanel::BAR_PADDING, 0.0)
+                }
+                MenuPanelAxis::Vertical => {
+                    EdgeInsets::symmetric(0.0, ResolvedMenuPanel::MENU_PADDING)
+                }
+            },
+            minimum_size: None,
+            fixed_size: None,
+            maximum_size: None,
+            side: None,
+            shape: Some(ShapeBorder::Rounded(
+                crate::borders::RoundedRectangleBorder::new(
+                    crate::borders::BorderSide::NONE,
+                    crate::borders::BorderRadiusGeometry::circular(ResolvedMenuPanel::RADIUS),
+                ),
+            )),
+            visual_density: VisualDensity::STANDARD,
+            alignment: match axis {
+                MenuPanelAxis::Horizontal => AlignmentGeometry::Directional(
+                    crate::render::AlignmentDirectional::BOTTOM_START,
+                ),
+                MenuPanelAxis::Vertical => {
+                    AlignmentGeometry::Directional(crate::render::AlignmentDirectional::TOP_END)
+                }
+            },
+        }
+    }
+
+    pub fn of(
+        context: &mut BuildContext,
+        axis: MenuPanelAxis,
+        widget_style: Option<&MenuStyle>,
+    ) -> ResolvedMenuPanel {
+        let theme = ThemeData::of(context);
+        // The axis chooses the theme. Reading both and picking afterwards
+        // would give the same answer by accident; upstream does not consult
+        // the one it is not using.
+        let theme_style = match axis {
+            MenuPanelAxis::Horizontal => MenuBarTheme::of(context).style,
+            MenuPanelAxis::Vertical => MenuTheme::of(context).style,
+        };
+        let theme_style = theme_style.as_ref();
+
+        let mut resolved = ResolvedMenuPanel::defaults(axis, &theme.color_scheme);
+        resolved.visual_density = theme.visual_density;
+
+        // Upstream's `resolve`: the empty state set, every time.
+        let states = WidgetStates::NONE;
+
+        macro_rules! pick {
+            ($field:ident) => {
+                widget_style
+                    .and_then(|style| style.$field.as_ref())
+                    .and_then(|property| property.resolve(states))
+                    .or_else(|| {
+                        theme_style
+                            .and_then(|style| style.$field.as_ref())
+                            .and_then(|property| property.resolve(states))
+                    })
+            };
+        }
+
+        if let Some(color) = pick!(background_color) {
+            resolved.background_color = Some(color);
+        }
+        if let Some(color) = pick!(shadow_color) {
+            resolved.shadow_color = Some(color);
+        }
+        if let Some(color) = pick!(surface_tint_color) {
+            resolved.surface_tint_color = Some(color);
+        }
+        if let Some(elevation) = pick!(elevation) {
+            resolved.elevation = elevation;
+        }
+        if let Some(padding) = pick!(padding) {
+            resolved.padding = padding.resolve(crate::direction::current_direction());
+        }
+        if let Some(shape) = pick!(shape) {
+            resolved.shape = Some(shape);
+        }
+        resolved.minimum_size = pick!(minimum_size);
+        resolved.fixed_size = pick!(fixed_size);
+        resolved.maximum_size = pick!(maximum_size);
+        resolved.side = pick!(side);
+
+        // Not state properties: a plain `Option` each, two steps and then the
+        // default already in place.
+        if let Some(density) = widget_style
+            .and_then(|style| style.visual_density)
+            .or_else(|| theme_style.and_then(|style| style.visual_density))
+        {
+            resolved.visual_density = density;
+        }
+        if let Some(alignment) = widget_style
+            .and_then(|style| style.alignment)
+            .or_else(|| theme_style.and_then(|style| style.alignment))
+        {
+            resolved.alignment = alignment;
+        }
+        resolved
+    }
+}
+
+/// What one line of a menu is drawn with -- upstream's `_MenuButtonDefaultsM3`
+/// under `MenuButtonTheme.of`.
+///
+/// # Two widgets, one theme -- the mirror image of the panel
+///
+/// `MenuItemButton` and `SubmenuButton` both return `_MenuButtonDefaultsM3`
+/// from `defaultStyleOf` and both read `MenuButtonTheme` in `themeStyleOf`.
+/// Where [`ResolvedMenuPanel`] is one widget reading two themes chosen by its
+/// axis, this is two widgets reading one theme. In neither case does the
+/// theme's name name a widget, which is the thing both are easy to get wrong.
+///
+/// # The label and the icon do not react at all; the overlay is the whole of
+/// the feedback
+///
+/// `foregroundColor` has four arms -- pressed, hovered, focused and the
+/// fall-through -- and **all four return `onSurface`**. `iconColor` has the
+/// same four, all returning `onSurfaceVariant`. Only `disabled` differs, and it
+/// differs by fading.
+///
+/// `overlayColor` is where the interaction lives: `onSurface` at 0.1 pressed,
+/// 0.08 hovered, 0.1 focused, transparent otherwise. So a menu line tells a
+/// reader it is under the pointer **by what is painted behind it**, never by
+/// recolouring its text. Text that moved would make a menu flicker as the
+/// pointer crossed it.
+///
+/// This is worth stating because it is a case where swapping the order of the
+/// pressed, hovered and focused arms of `foregroundColor` is unobservable --
+/// not because nothing checks it, but because there is nothing to check. The
+/// values are equal. `tools/order_sweep.py` looks for the opposite case, an
+/// order that matters and that nothing pins; this is an order that does not
+/// matter, and no test can make it.
+///
+/// Even in `overlayColor` the three are not all distinct: pressed and focused
+/// are both 0.1 and only hovered is lighter. A pointer resting on a line is a
+/// weaker statement than one pressing it or a keyboard having chosen it.
+///
+/// # The label is stronger than the icon
+///
+/// `onSurface` against `onSurfaceVariant`. Both are readable; the label is what
+/// is read.
+pub struct ResolvedMenuButton {
+    pub background: Color,
+    pub foreground: Color,
+    pub icon_color: Color,
+    pub icon_size: f32,
+    pub overlay: Color,
+    pub elevation: f32,
+    pub minimum_size: Size,
+    pub maximum_size: Size,
+    pub alignment: AlignmentGeometry,
+    pub enable_feedback: bool,
+}
+
+impl ResolvedMenuButton {
+    /// Upstream's `minimumSize`.
+    pub const MINIMUM_SIZE: Size = Size::new(64.0, 48.0);
+    /// Upstream's `iconSize`.
+    pub const ICON_SIZE: f32 = 24.0;
+    /// Upstream's disabled fade, on both the label and the icon.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+    /// Upstream's overlay opacity when pressed, and when focused.
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    /// Upstream's overlay opacity when hovered, which is the lighter one.
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// Upstream's `foregroundColor` resolver: one colour for every state that
+    /// is not disabled.
+    pub fn foreground_for(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedMenuButton::DISABLED_OPACITY,
+            );
+        }
+        scheme.on_surface
+    }
+
+    /// Upstream's `iconColor` resolver, which is the same shape in a weaker
+    /// colour.
+    pub fn icon_color_for(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        if states.contains(WidgetState::Disabled) {
+            return crate::elevation_overlay::with_opacity(
+                scheme.on_surface_variant(),
+                ResolvedMenuButton::DISABLED_OPACITY,
+            );
+        }
+        scheme.on_surface_variant()
+    }
+
+    /// Upstream's `overlayColor` resolver, where the interaction actually
+    /// shows.
+    pub fn overlay_for(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedMenuButton::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedMenuButton::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            ResolvedMenuButton::PRESSED_OVERLAY
+        } else {
+            return Color::TRANSPARENT;
+        };
+        crate::elevation_overlay::with_opacity(scheme.on_surface, opacity)
+    }
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedMenuButton {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let style = MenuButtonTheme::of(context).style;
+        let style = style.as_ref();
+
+        macro_rules! pick {
+            ($field:ident) => {
+                style
+                    .and_then(|style| style.$field.as_ref())
+                    .and_then(|property| property.resolve(states))
+            };
+        }
+
+        ResolvedMenuButton {
+            // Transparent, not the surface: a menu line sits on the panel's
+            // background and painting its own would draw the panel twice.
+            background: pick!(background_color).unwrap_or(Color::TRANSPARENT),
+            foreground: pick!(foreground_color)
+                .unwrap_or_else(|| ResolvedMenuButton::foreground_for(states, &scheme)),
+            icon_color: pick!(icon_color)
+                .unwrap_or_else(|| ResolvedMenuButton::icon_color_for(states, &scheme)),
+            icon_size: pick!(icon_size).unwrap_or(ResolvedMenuButton::ICON_SIZE),
+            overlay: pick!(overlay_color)
+                .unwrap_or_else(|| ResolvedMenuButton::overlay_for(states, &scheme)),
+            elevation: pick!(elevation).unwrap_or(0.0),
+            minimum_size: pick!(minimum_size).unwrap_or(ResolvedMenuButton::MINIMUM_SIZE),
+            maximum_size: pick!(maximum_size).unwrap_or(Size::new(f32::INFINITY, f32::INFINITY)),
+            alignment: style.and_then(|style| style.alignment).unwrap_or(
+                AlignmentGeometry::Directional(crate::render::AlignmentDirectional::CENTER_START),
+            ),
+            enable_feedback: style
+                .and_then(|style| style.enable_feedback)
+                .unwrap_or(true),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.

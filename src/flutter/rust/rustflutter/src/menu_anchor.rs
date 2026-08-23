@@ -197,6 +197,20 @@ impl MenuAnchor {
         self.animated = animated;
         self
     }
+
+    /// This anchor's panel, resolved. An anchored menu is the vertical case,
+    /// which is what makes `MenuTheme` the one consulted.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        style: Option<&crate::component_themes::MenuStyle>,
+    ) -> crate::component_themes::ResolvedMenuPanel {
+        crate::component_themes::ResolvedMenuPanel::of(
+            context,
+            crate::component_themes::MenuPanelAxis::Vertical,
+            style,
+        )
+    }
 }
 
 /// Upstream `MenuBar`: a row of menus along the top of a window.
@@ -218,6 +232,21 @@ impl MenuBar {
         self.clip = clip;
         self
     }
+
+    /// This bar's panel, resolved. A bar is the horizontal case, which is what
+    /// makes `MenuBarTheme` the one consulted -- see
+    /// [`crate::component_themes::ResolvedMenuPanel`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        style: Option<&crate::component_themes::MenuStyle>,
+    ) -> crate::component_themes::ResolvedMenuPanel {
+        crate::component_themes::ResolvedMenuPanel::of(
+            context,
+            crate::component_themes::MenuPanelAxis::Horizontal,
+            style,
+        )
+    }
 }
 
 /// Upstream `MenuItemButton`: one line of a menu.
@@ -232,6 +261,16 @@ pub struct MenuItemButton {
 }
 
 impl MenuItemButton {
+    /// This line's appearance, with `MenuButtonTheme` and the M3 defaults
+    /// folded in -- see [`crate::component_themes::ResolvedMenuButton`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        states: crate::widget_state::WidgetStates,
+    ) -> crate::component_themes::ResolvedMenuButton {
+        crate::component_themes::ResolvedMenuButton::of(context, states)
+    }
+
     pub fn new() -> MenuItemButton {
         MenuItemButton {
             request_focus_on_hover: false,
@@ -351,6 +390,16 @@ pub struct SubmenuButton {
 }
 
 impl SubmenuButton {
+    /// This line's appearance, with `MenuButtonTheme` and the M3 defaults
+    /// folded in -- see [`crate::component_themes::ResolvedMenuButton`].
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        states: crate::widget_state::WidgetStates,
+    ) -> crate::component_themes::ResolvedMenuButton {
+        crate::component_themes::ResolvedMenuButton::of(context, states)
+    }
+
     pub fn new() -> SubmenuButton {
         SubmenuButton {
             alignment_offset: Offset::ZERO,
@@ -596,5 +645,353 @@ mod tests {
             Some(3),
             "toggleable or not"
         );
+    }
+}
+
+#[cfg(test)]
+mod menu_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ButtonStyle, MenuBarTheme, MenuBarThemeData, MenuButtonTheme, MenuButtonThemeData,
+        MenuPanelAxis, MenuStyle, MenuTheme, MenuThemeData, ResolvedMenuButton, ResolvedMenuPanel,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::{AlignmentDirectional, AlignmentGeometry, EdgeInsets, Size};
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader<T> {
+        read: std::rc::Rc<dyn Fn(&mut BuildContext) -> T>,
+        seen: std::rc::Rc<std::cell::RefCell<Option<T>>>,
+    }
+
+    impl<T: 'static> Component for Reader<T> {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some((self.read)(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn read_under<T: 'static>(
+        wrap: impl FnOnce(AnyWidget) -> AnyWidget,
+        read: impl Fn(&mut BuildContext) -> T + 'static,
+    ) -> T {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(wrap(component(Reader {
+            read: std::rc::Rc::new(read),
+            seen: std::rc::Rc::clone(&seen),
+        })));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn panel(axis: MenuPanelAxis) -> ResolvedMenuPanel {
+        read_under(
+            |child| child,
+            move |context| ResolvedMenuPanel::of(context, axis, None),
+        )
+    }
+
+    // -- The axis picks the theme ----------------------------------------------
+
+    #[test]
+    fn a_bar_theme_moves_the_horizontal_panel_and_not_the_vertical_one() {
+        // Upstream switches on the orientation, so it never consults the theme
+        // it is not using. Both wrapped at once, disagreeing, so the switch is
+        // what decides and not which one happens to be present.
+        let bar_colour = Color(0xFF110000);
+        let menu_colour = Color(0xFF001100);
+        let mut bar = MenuStyle::new();
+        bar.background_color = Some(StateProperty::all(Some(bar_colour)));
+        let mut menu = MenuStyle::new();
+        menu.background_color = Some(StateProperty::all(Some(menu_colour)));
+
+        let wrap = move |child: AnyWidget| {
+            MenuBarTheme::new(
+                MenuBarThemeData {
+                    style: Some(bar.clone()),
+                },
+                MenuTheme::new(
+                    MenuThemeData {
+                        style: Some(menu.clone()),
+                    },
+                    child,
+                ),
+            )
+        };
+        assert_eq!(
+            read_under(wrap.clone(), |context| ResolvedMenuPanel::of(
+                context,
+                MenuPanelAxis::Horizontal,
+                None
+            ))
+            .background_color,
+            Some(bar_colour)
+        );
+        assert_eq!(
+            read_under(wrap, |context| ResolvedMenuPanel::of(
+                context,
+                MenuPanelAxis::Vertical,
+                None
+            ))
+            .background_color,
+            Some(menu_colour)
+        );
+    }
+
+    #[test]
+    fn the_two_defaults_differ_in_exactly_two_fields() {
+        // The claim the type's docs make, checked field by field rather than
+        // asserted in prose.
+        let bar = panel(MenuPanelAxis::Horizontal);
+        let menu = panel(MenuPanelAxis::Vertical);
+
+        assert_eq!(bar.background_color, menu.background_color);
+        assert_eq!(bar.shadow_color, menu.shadow_color);
+        assert_eq!(bar.surface_tint_color, menu.surface_tint_color);
+        assert_eq!(bar.elevation, menu.elevation);
+        assert_eq!(bar.shape, menu.shape);
+        assert_eq!(bar.visual_density, menu.visual_density);
+        assert_eq!(bar.minimum_size, menu.minimum_size);
+        assert_eq!(bar.fixed_size, menu.fixed_size);
+        assert_eq!(bar.maximum_size, menu.maximum_size);
+        assert_eq!(bar.side, menu.side);
+
+        assert_ne!(bar.alignment, menu.alignment);
+        assert_ne!(bar.padding, menu.padding);
+    }
+
+    #[test]
+    fn and_both_differences_are_the_axis() {
+        // A row is padded at the ends of a row; a column at the ends of a
+        // column. A bar's submenu drops below it; a menu's flies out beside it.
+        let bar = panel(MenuPanelAxis::Horizontal);
+        let menu = panel(MenuPanelAxis::Vertical);
+
+        assert_eq!(bar.padding, EdgeInsets::symmetric(4.0, 0.0));
+        assert_eq!(bar.padding.top, 0.0, "a bar is not padded across its run");
+        assert_eq!(menu.padding, EdgeInsets::symmetric(0.0, 8.0));
+        assert_eq!(menu.padding.left, 0.0, "nor is a menu");
+
+        assert_eq!(
+            bar.alignment,
+            AlignmentGeometry::Directional(AlignmentDirectional::BOTTOM_START)
+        );
+        assert_eq!(
+            menu.alignment,
+            AlignmentGeometry::Directional(AlignmentDirectional::TOP_END)
+        );
+    }
+
+    #[test]
+    fn a_panel_is_asked_as_though_nothing_were_happening() {
+        // Upstream resolves with `<WidgetState>{}` unconditionally. A panel is
+        // a surface: it is not hovered, its items are.
+        let resting = Color(0xFF010101);
+        let hovered = Color(0xFF020202);
+        let mut style = MenuStyle::new();
+        style.background_color = Some(StateProperty::resolve_with(move |states| {
+            Some(if states.contains(WidgetState::Hovered) {
+                hovered
+            } else {
+                resting
+            })
+        }));
+        let resolved = read_under(
+            move |child| {
+                MenuTheme::new(
+                    MenuThemeData {
+                        style: Some(style.clone()),
+                    },
+                    child,
+                )
+            },
+            |context| ResolvedMenuPanel::of(context, MenuPanelAxis::Vertical, None),
+        );
+        assert_eq!(resolved.background_color, Some(resting));
+        assert_ne!(resolved.background_color, Some(hovered));
+    }
+
+    #[test]
+    fn the_zero_after_the_elevation_chain_cannot_be_reached() {
+        // `resolve(...elevation) ?? 0` is a fourth step the chain never falls
+        // out of: the defaults supply 3, and a style whose elevation resolves
+        // to null falls through to that rather than past it.
+        let mut style = MenuStyle::new();
+        style.elevation = Some(StateProperty::all(None));
+        for axis in [MenuPanelAxis::Horizontal, MenuPanelAxis::Vertical] {
+            let resolved = read_under(
+                {
+                    let style = style.clone();
+                    move |child| MenuTheme::new(MenuThemeData { style: Some(style) }, child)
+                },
+                move |context| ResolvedMenuPanel::of(context, axis, None),
+            );
+            assert_eq!(resolved.elevation, ResolvedMenuPanel::ELEVATION);
+            assert_ne!(resolved.elevation, ResolvedMenuPanel::UNREACHABLE_ELEVATION);
+        }
+    }
+
+    #[test]
+    fn the_widget_is_the_first_step_and_the_theme_the_second() {
+        let mine = Color(0xFF123456);
+        let theirs = Color(0xFF654321);
+        let mut widget = MenuStyle::new();
+        widget.background_color = Some(StateProperty::all(Some(mine)));
+        let mut themed = MenuStyle::new();
+        themed.background_color = Some(StateProperty::all(Some(theirs)));
+
+        let wrap = move |child: AnyWidget| {
+            MenuTheme::new(
+                MenuThemeData {
+                    style: Some(themed.clone()),
+                },
+                child,
+            )
+        };
+        assert_eq!(
+            read_under(wrap.clone(), move |context| {
+                ResolvedMenuPanel::of(context, MenuPanelAxis::Vertical, Some(&widget))
+            })
+            .background_color,
+            Some(mine)
+        );
+        assert_eq!(
+            read_under(wrap, |context| ResolvedMenuPanel::of(
+                context,
+                MenuPanelAxis::Vertical,
+                None
+            ))
+            .background_color,
+            Some(theirs)
+        );
+    }
+
+    // -- One line of a menu ----------------------------------------------------
+
+    fn line(states: WidgetStates) -> ResolvedMenuButton {
+        read_under(
+            |child| child,
+            move |context| ResolvedMenuButton::of(context, states),
+        )
+    }
+
+    fn states(list: &[WidgetState]) -> WidgetStates {
+        WidgetStates::of(list)
+    }
+
+    #[test]
+    fn neither_the_label_nor_the_icon_reacts_to_anything_but_being_disabled() {
+        // Four arms upstream, all returning the same colour. A menu line that
+        // recoloured its text would flicker as the pointer crossed it.
+        let resting = line(WidgetStates::NONE);
+        for interaction in [
+            states(&[WidgetState::Pressed]),
+            states(&[WidgetState::Hovered]),
+            states(&[WidgetState::Focused]),
+            states(&[WidgetState::Hovered, WidgetState::Focused]),
+        ] {
+            let touched = line(interaction);
+            assert_eq!(touched.foreground, resting.foreground);
+            assert_eq!(touched.icon_color, resting.icon_color);
+        }
+
+        let off = line(states(&[WidgetState::Disabled]));
+        assert_ne!(off.foreground, resting.foreground);
+        assert_ne!(off.icon_color, resting.icon_color);
+    }
+
+    #[test]
+    fn the_overlay_is_the_whole_of_the_feedback() {
+        // And it does move -- otherwise the test above would only prove that
+        // nothing anywhere reacts.
+        let resting = line(WidgetStates::NONE);
+        assert_eq!(resting.overlay, Color::TRANSPARENT);
+
+        let scheme = ThemeData::fallback().color_scheme;
+        let pressed = line(states(&[WidgetState::Pressed]));
+        let hovered = line(states(&[WidgetState::Hovered]));
+        let focused = line(states(&[WidgetState::Focused]));
+
+        assert_eq!(
+            pressed.overlay,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.1)
+        );
+        assert_eq!(
+            hovered.overlay,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.08)
+        );
+        assert_ne!(
+            hovered.overlay, pressed.overlay,
+            "hovering is the lighter one"
+        );
+        assert_eq!(
+            focused.overlay, pressed.overlay,
+            "pressed and focused agree; only hovering is weaker"
+        );
+    }
+
+    #[test]
+    fn pressing_beats_hovering_when_both_are_true() {
+        // The order of the arms, which is only visible where the values differ
+        // -- and a pointer that presses is always also hovering.
+        let both = line(states(&[WidgetState::Pressed, WidgetState::Hovered]));
+        assert_eq!(both.overlay, line(states(&[WidgetState::Pressed])).overlay);
+        assert_ne!(both.overlay, line(states(&[WidgetState::Hovered])).overlay);
+    }
+
+    #[test]
+    fn hovering_beats_being_focused_when_both_are_true() {
+        // The other order in the ladder. Pressed and focused agree, so this is
+        // the only pair below the top that a swap could show.
+        let both = line(states(&[WidgetState::Hovered, WidgetState::Focused]));
+        assert_eq!(both.overlay, line(states(&[WidgetState::Hovered])).overlay);
+        assert_ne!(both.overlay, line(states(&[WidgetState::Focused])).overlay);
+    }
+
+    #[test]
+    fn the_label_is_stronger_than_the_icon() {
+        let scheme = ThemeData::fallback().color_scheme;
+        let resting = line(WidgetStates::NONE);
+        assert_eq!(resting.foreground, scheme.on_surface);
+        assert_eq!(resting.icon_color, scheme.on_surface_variant());
+        assert_ne!(resting.foreground, resting.icon_color);
+    }
+
+    #[test]
+    fn a_line_paints_no_background_of_its_own() {
+        // It sits on the panel's; painting one would draw the panel twice.
+        let resting = line(WidgetStates::NONE);
+        assert_eq!(resting.background, Color::TRANSPARENT);
+        assert_eq!(resting.elevation, 0.0);
+        assert_eq!(resting.minimum_size, Size::new(64.0, 48.0));
+        assert_eq!(resting.icon_size, 24.0);
+    }
+
+    #[test]
+    fn both_kinds_of_line_read_the_one_theme() {
+        // `MenuItemButton` and `SubmenuButton` share `MenuButtonTheme` and
+        // `_MenuButtonDefaultsM3` -- two widgets, one theme, the mirror of the
+        // panel's one widget and two themes.
+        let mine = Color(0xFF00FFFF);
+        let mut style = ButtonStyle::new();
+        style.foreground_color = Some(StateProperty::all(Some(mine)));
+        let data = MenuButtonThemeData { style: Some(style) };
+
+        let item = read_under(
+            {
+                let data = data.clone();
+                move |child| MenuButtonTheme::new(data, child)
+            },
+            |context| MenuItemButton::new().resolved(context, WidgetStates::NONE),
+        );
+        let submenu = read_under(
+            move |child| MenuButtonTheme::new(data, child),
+            |context| SubmenuButton::new().resolved(context, WidgetStates::NONE),
+        );
+        assert_eq!(item.foreground, mine);
+        assert_eq!(submenu.foreground, mine);
     }
 }

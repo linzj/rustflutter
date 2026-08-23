@@ -10861,3 +10861,68 @@ item 的是 `widget.padding ?? (m3 ? 12 : 16)` 横向，读的是 defaults 类�
 
 **会做决定的字段里，0 个是测试集不变的。** 这是这把尺子的归零。
 
+## 菜单三件套：主题的名字都没在指 widget（2026-08-23）
+
+`MenuTheme`、`MenuBarTheme`、`MenuButtonTheme` 一次接上三个，
+因为**有意思的正是它们之间的关系**。
+
+### 挑主题的是轴，不是 widget
+
+上游写的是
+`switch (widget.orientation) { horizontal => MenuBarTheme.of, vertical => MenuTheme.of }`。
+两种情况下是**同一个 `_MenuPanel`**。让 `MenuBarTheme` 生效的不是「它是个
+`MenuBar`」，而是「它是横的」——`MenuBar` 恰好是横的。
+
+所以这两个主题并不分属两个 widget，而是**一个 widget 的两种朝向**。
+
+### 两份默认只差两个字段，而这两个差别都是那根轴
+
+`_MenuBarDefaultsM3` 和 `_MenuDefaultsM3` 在 elevation 3、四角半径、
+`surfaceContainer`、scheme 的 shadow、透明着色、主题的 visual density 上
+全都一致。只差两处：
+
+* **alignment**：bar 是 `bottomStart`，menu 是 `topEnd`。bar 的子菜单往下掉，
+  menu 的往旁边飞——两者都没有别的地方可去。
+* **padding**：bar 是 4 **横向**，menu 是 8 **纵向**。一行的两端和一列的两端
+  不在同一根轴上。
+
+两个差别都是同一件事的后果。**一行菜单和一列菜单之间没有别的区别。**
+
+### 菜单行：两个 widget 共用一个主题——正好反过来
+
+`MenuItemButton` 和 `SubmenuButton` 都返回 `_MenuButtonDefaultsM3`，
+都读 `MenuButtonTheme`。面板是**一个 widget 读两个主题**，
+菜单行是**两个 widget 读一个主题**。两边都是「主题的名字看起来在指一个
+widget，其实没有」。
+
+### 面板永远按「什么都没发生」解析
+
+`_MenuPanelState.build` 的 `resolve` 无条件传 `<WidgetState>{}`。
+面板是个**表面**，不是控件：被悬停的是它的行，不是它。所以一个
+「悬停时换背景」的 `MenuStyle` 只会给出它的无状态答案。
+
+### `elevation ?? 0` 够不到
+
+那是三步之后的第四步。链的最后一步是 defaults 类，两份都给
+`WidgetStatePropertyAll(3.0)`；而一个 elevation 解析成 null 的 style
+会**落到那份默认上**，不是落出链外。那个 0 只在某份 defaults 不再给
+elevation 时才有意义。
+
+### 一个反例：不可观察的顺序不是测试的错
+
+`foregroundColor` 有四条臂——pressed、hovered、focused 和兜底——
+**四条全返回 `onSurface`**；`iconColor` 同样四条全返回 `onSurfaceVariant`。
+只有 disabled 不同。所以把 pressed/hovered/focused 的顺序打乱**不可观察**，
+不是因为没人检查，而是因为**没有东西可检查**——值相等。
+`order_sweep.py` 找的是相反的情况（顺序要紧、却没人钉住）。
+
+真正的反馈全在 `overlayColor` 上：pressed 0.1、hovered 0.08、focused 0.1、
+其余透明。**一行菜单靠它背后画的东西告诉读者指针在它上面，从不靠改字的颜色。**
+而且三者里 pressed 和 focused 相等，只有 hovered 更淡——
+指针停在一行上，比按下它或键盘选中它，是更弱的一句话。
+
+13 个变异，13 个全红。**提交前顺序扫描抓到两条新写的**
+（`Pressed <-> Hovered`、`Hovered <-> Focused` 无人察觉），补了两条测试。
+
+无读者主题 15 → 12。
+
