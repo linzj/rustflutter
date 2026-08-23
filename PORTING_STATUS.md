@@ -12943,3 +12943,61 @@ if (result == RenderComparison.layout) { return result; }
 `paint` 在这边就成了第二级、在那边还是第三级。
 
 六个变异全红。coverage 2102 / 1989 记账 / **32 MISSING**。
+
+---
+
+## 平铺的两端，不是从同一条边量的（2026-08-24）
+
+`ImageRepeat` 四个变体，而上游的铺砖器**从不按四种情况分支**——
+它分别问两个轴：
+
+```dart
+if (repeat == ImageRepeat.repeat || repeat == ImageRepeat.repeatX) { ...x... }
+if (repeat == ImageRepeat.repeat || repeat == ImageRepeat.repeatY) { ...y... }
+```
+
+`Repeat` 只是那个两边都答「是」的值。
+
+### 起点和终点量的是不同的边
+
+```dart
+startX = ((outputRect.left  - fundamentalRect.left ) / strideX).floor();
+stopX  = ((outputRect.right - fundamentalRect.right) / strideX).ceil();
+```
+
+**起点用 left−left，终点用 right−right**，各自对着砖的同侧边。
+两端都从砖的近边量（也就是写成 `outputRect.width / stride`）
+会在砖有悬出的时候**多出一块**。
+
+500 宽的盒子、50 宽的砖：`(500−50)/50 = 9`，于是 0..=9 十块，正好 500。
+按错的写法是 `ceil(500/50) = 10`，0..=10 十一块。
+测试把这两个数**都写出来**，断言它们不同——
+不然「对」只是碰巧和另一种算法一致。
+
+### 区间是闭的，所以不平铺也还是一块
+
+不重复的轴返回 `(0, 0)`，是**一块，不是零块**。
+`noRepeat` 是「画一次」，不是「不画」。
+
+### 而正好填满时，重复会被提前关掉
+
+```dart
+if (repeat != ImageRepeat.noRepeat && destinationSize == outputSize) {
+  repeat = ImageRepeat.noRepeat;
+}
+```
+
+图片已经把盒子填满，铺格子什么也得不到。这个降级**是看得见的**：
+它是「生成一块」和「先把一整个网格算出来再生成一块」的区别。
+
+### 一次我自己算错
+
+`a_tile_starting_before_the_box_gets_a_negative_index` 头一次是红的，
+**错的是我写在测试里的期望值，不是代码**：
+`floor((0 − (−25)) / 50) = 0`，我写了 1。
+把三块砖的位置（−25、25、75）写进注释之后改对。
+
+七个变异全红（其中一个先写成了删 `#[default]`，那是编译错误不是变异，
+改成把默认挪到 `Repeat` 才算数）。
+
+coverage 2102 / 1990 记账 / **31 MISSING**。

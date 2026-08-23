@@ -3206,6 +3206,90 @@ impl InlineSpanSemanticsInformation {
 use crate::image::{ImageConfiguration, ImageProvider};
 use crate::render::{AlignmentGeometry as RenderAlignmentGeometry, BoxFit, Size, apply_box_fit};
 
+/// Upstream `ImageRepeat` (`painting/decoration_image.dart`): which axes an
+/// image tiles along to fill its box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ImageRepeat {
+    /// Tile both ways until the box is full.
+    Repeat,
+    /// Tile across only; leave the rest uncovered.
+    RepeatX,
+    /// Tile down only.
+    RepeatY,
+    /// Draw it once and leave the uncovered part transparent. Upstream's
+    /// default, and the one every constructor starts from.
+    #[default]
+    NoRepeat,
+}
+
+impl ImageRepeat {
+    /// The two questions upstream's tiler actually asks. It never matches on
+    /// the enum as four cases -- it asks each axis separately, and `Repeat` is
+    /// simply the value that answers yes to both.
+    pub fn repeats_x(self) -> bool {
+        matches!(self, ImageRepeat::Repeat | ImageRepeat::RepeatX)
+    }
+
+    pub fn repeats_y(self) -> bool {
+        matches!(self, ImageRepeat::Repeat | ImageRepeat::RepeatY)
+    }
+
+    /// Upstream's collapse at the top of `paintImage`:
+    ///
+    /// ```dart
+    /// if (repeat != ImageRepeat.noRepeat && destinationSize == outputSize) {
+    ///   // There's no need to repeat the image because we're exactly filling
+    ///   // the output rect with the image.
+    ///   repeat = ImageRepeat.noRepeat;
+    /// }
+    /// ```
+    ///
+    /// An image that already fills its box exactly gains nothing from tiling,
+    /// and the collapse is observable rather than cosmetic: it is the
+    /// difference between generating one tile rect and generating one *after*
+    /// doing the arithmetic for a grid.
+    pub fn collapsed_when_exactly_filled(self, exactly_fills: bool) -> ImageRepeat {
+        if exactly_fills {
+            ImageRepeat::NoRepeat
+        } else {
+            self
+        }
+    }
+
+    /// Upstream's `_generateImageTileRects` index range for one axis.
+    ///
+    /// The two ends are **not** measured from the same edge: the start is
+    /// `outputRect.left - fundamentalRect.left` and the stop is
+    /// `outputRect.right - fundamentalRect.right`, each against the matching
+    /// edge of the tile. Measuring both from the tile's near edge would give a
+    /// range one too long whenever the tile overhangs.
+    ///
+    /// Returns an **inclusive** `(start, stop)`, so an axis that does not
+    /// repeat still yields `(0, 0)` -- one tile, not none. `noRepeat` draws
+    /// the image; it does not skip it.
+    pub fn tile_range(
+        repeats: bool,
+        output_near: f32,
+        output_far: f32,
+        tile_near: f32,
+        tile_far: f32,
+        stride: f32,
+    ) -> (i32, i32) {
+        if !repeats || stride <= 0.0 {
+            return (0, 0);
+        }
+        (
+            ((output_near - tile_near) / stride).floor() as i32,
+            ((output_far - tile_far) / stride).ceil() as i32,
+        )
+    }
+
+    /// How many tiles a range covers. Inclusive on both ends.
+    pub fn tile_count(range: (i32, i32)) -> i32 {
+        (range.1 - range.0 + 1).max(0)
+    }
+}
+
 /// Upstream `DecorationImage`: an image painted into a decoration's shape,
 /// fitted and aligned. Painting resolves the provider synchronously -- the
 /// headless render's path; a widget-facing resolve arrives with the image
@@ -3215,6 +3299,7 @@ pub struct DecorationImage {
     pub provider: ImageProvider,
     pub fit: Option<BoxFit>,
     pub alignment: RenderAlignmentGeometry,
+    pub repeat: ImageRepeat,
 }
 
 impl DecorationImage {
@@ -3223,6 +3308,7 @@ impl DecorationImage {
             provider,
             fit: None,
             alignment: RenderAlignmentGeometry::CENTER,
+            repeat: ImageRepeat::NoRepeat,
         }
     }
 
@@ -4750,5 +4836,135 @@ mod render_comparison_tests {
             ..TextStyle::default()
         };
         assert_eq!(base.compare_to(&underlined), RenderComparison::Paint);
+    }
+}
+
+#[cfg(test)]
+mod image_repeat_tests {
+    use crate::painting::{DecorationImage, ImageRepeat};
+
+    const ALL: [ImageRepeat; 4] = [
+        ImageRepeat::Repeat,
+        ImageRepeat::RepeatX,
+        ImageRepeat::RepeatY,
+        ImageRepeat::NoRepeat,
+    ];
+
+    #[test]
+    fn the_tiler_asks_each_axis_separately() {
+        // Upstream never matches on four cases; it asks `repeat == repeat ||
+        // repeat == repeatX` and the same for y. `Repeat` is just the value
+        // that answers yes twice.
+        assert!(ImageRepeat::Repeat.repeats_x() && ImageRepeat::Repeat.repeats_y());
+        assert!(ImageRepeat::RepeatX.repeats_x() && !ImageRepeat::RepeatX.repeats_y());
+        assert!(!ImageRepeat::RepeatY.repeats_x() && ImageRepeat::RepeatY.repeats_y());
+        assert!(!ImageRepeat::NoRepeat.repeats_x() && !ImageRepeat::NoRepeat.repeats_y());
+        // And the four values are exactly the four (x, y) answers -- no two
+        // of them agree on both axes.
+        let mut answers: Vec<(bool, bool)> =
+            ALL.iter().map(|r| (r.repeats_x(), r.repeats_y())).collect();
+        answers.sort();
+        answers.dedup();
+        assert_eq!(answers.len(), 4);
+    }
+
+    #[test]
+    fn an_axis_that_does_not_repeat_still_draws_one_tile() {
+        // The range is inclusive, so (0, 0) is one tile rather than none.
+        // noRepeat draws the image; it does not skip it.
+        let still = ImageRepeat::tile_range(false, 0.0, 500.0, 0.0, 50.0, 50.0);
+        assert_eq!(still, (0, 0));
+        assert_eq!(ImageRepeat::tile_count(still), 1);
+        assert_eq!(ImageRepeat::tile_count((0, 0)), 1);
+    }
+
+    #[test]
+    fn the_two_ends_are_measured_from_different_edges() {
+        // Upstream: start from (output.left - tile.left), stop from
+        // (output.right - tile.right). A tile sitting at the box's origin,
+        // 50 wide, in a 500-wide box: the far end is (500 - 50) / 50 = 9, so
+        // tiles 0..=9, which is ten -- exactly covering 500.
+        let range = ImageRepeat::tile_range(true, 0.0, 500.0, 0.0, 50.0, 50.0);
+        assert_eq!(range, (0, 9));
+        assert_eq!(ImageRepeat::tile_count(range), 10);
+
+        // Measuring both ends from the tile's near edge would have given
+        // (0, 10) -- eleven tiles, one more than the box can show.
+        let wrong_way = (0, (500.0f32 / 50.0).ceil() as i32);
+        assert_eq!(wrong_way, (0, 10));
+        assert_ne!(range, wrong_way);
+    }
+
+    #[test]
+    fn and_a_box_that_does_not_divide_evenly_gets_a_tile_that_overhangs() {
+        // 500 wide, 60-wide tiles: (500 - 60) / 60 = 7.33, ceil 8, so 0..=8 is
+        // nine tiles covering 540. The last one hangs over, which is what the
+        // ceiling is for -- a floor would leave a gap.
+        let range = ImageRepeat::tile_range(true, 0.0, 500.0, 0.0, 60.0, 60.0);
+        assert_eq!(range, (0, 8));
+        assert_eq!(ImageRepeat::tile_count(range) * 60, 540);
+        assert!(ImageRepeat::tile_count(range) * 60 >= 500, "no gap left");
+    }
+
+    #[test]
+    fn a_tile_starting_before_the_box_gets_a_negative_index() {
+        // The image is centred, so its rect starts left of the box. The floor
+        // then runs the index negative rather than clipping to zero.
+        let range = ImageRepeat::tile_range(true, 0.0, 100.0, -25.0, 25.0, 50.0);
+        // floor((0 - -25) / 50) = 0 and ceil((100 - 25) / 50) = 2: three tiles
+        // at -25, 25 and 75, the first and last overhanging the box.
+        assert_eq!(range, (0, 2));
+        assert_eq!(ImageRepeat::tile_count(range), 3);
+        let leftwards = ImageRepeat::tile_range(true, -100.0, 100.0, 0.0, 50.0, 50.0);
+        assert_eq!(leftwards, (-2, 1));
+        assert_eq!(ImageRepeat::tile_count(leftwards), 4);
+    }
+
+    #[test]
+    fn filling_the_box_exactly_turns_repeating_off() {
+        // Upstream downgrades to noRepeat before generating anything, because
+        // an image already filling its box gains nothing from a grid.
+        for repeat in ALL {
+            assert_eq!(
+                repeat.collapsed_when_exactly_filled(true),
+                ImageRepeat::NoRepeat,
+                "{repeat:?}"
+            );
+            assert_eq!(repeat.collapsed_when_exactly_filled(false), repeat);
+        }
+        // And the collapse is observable: it is one tile instead of a grid.
+        let collapsed = ImageRepeat::Repeat.collapsed_when_exactly_filled(true);
+        assert_eq!(
+            ImageRepeat::tile_count(ImageRepeat::tile_range(
+                collapsed.repeats_x(),
+                0.0,
+                500.0,
+                0.0,
+                50.0,
+                50.0
+            )),
+            1
+        );
+    }
+
+    #[test]
+    fn a_decoration_image_does_not_tile_unless_asked() {
+        // Upstream's constructors all start from `ImageRepeat.noRepeat`.
+        assert_eq!(ImageRepeat::default(), ImageRepeat::NoRepeat);
+        let image = DecorationImage::new(crate::image::ImageProvider::Asset {
+            key: "x".into(),
+            scale: 1.0,
+            bundle: None,
+        });
+        assert_eq!(image.repeat, ImageRepeat::NoRepeat);
+    }
+
+    #[test]
+    fn a_zero_stride_cannot_be_tiled() {
+        // Guards the division: an empty tile would repeat forever.
+        assert_eq!(
+            ImageRepeat::tile_range(true, 0.0, 500.0, 0.0, 0.0, 0.0),
+            (0, 0)
+        );
     }
 }
