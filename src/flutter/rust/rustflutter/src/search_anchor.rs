@@ -129,6 +129,17 @@ impl SearchAnchor {
         }
     }
 
+    /// The view's appearance. Full screen is an input to the defaults and not
+    /// only to the layout -- see
+    /// [`crate::component_themes::ResolvedSearchView`].
+    pub fn resolved_view(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        platform: ScrollPlatform,
+    ) -> crate::component_themes::ResolvedSearchView {
+        crate::component_themes::ResolvedSearchView::of(context, self.resolve_full_screen(platform))
+    }
+
     /// Opening the view pushes a route, so the system back gesture closes it
     /// without the anchor arranging anything.
     pub fn view_is_a_route() -> bool {
@@ -161,6 +172,15 @@ pub struct SearchBar {
 impl SearchBar {
     pub fn new() -> SearchBar {
         SearchBar::default()
+    }
+
+    /// This bar's appearance, with the theme and the M3 defaults folded in.
+    pub fn resolved(
+        &self,
+        context: &mut crate::framework::BuildContext,
+        states: crate::widget_state::WidgetStates,
+    ) -> crate::component_themes::ResolvedSearchBar {
+        crate::component_themes::ResolvedSearchBar::of(context, states)
     }
 
     /// Whether the anchor has to wire up a tap itself.
@@ -390,5 +410,273 @@ mod tests {
         let mut abandoned = SearchDelegate::new();
         abandoned.close(None);
         assert!(!abandoned.is_closed(), "nothing chosen is not a result");
+    }
+}
+
+#[cfg(test)]
+mod search_theme_tests {
+    use super::*;
+    use crate::component_themes::{
+        ResolvedMenuButton, ResolvedSearchBar, ResolvedSearchView, SearchBarTheme,
+        SearchBarThemeData, SearchViewTheme, SearchViewThemeData,
+    };
+    use crate::engine::Color;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::EdgeInsets;
+    use crate::theme::ThemeData;
+    use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+    use crate::widgets::SizedBox;
+
+    struct Reader<T> {
+        read: std::rc::Rc<dyn Fn(&mut BuildContext) -> T>,
+        seen: std::rc::Rc<std::cell::RefCell<Option<T>>>,
+    }
+
+    impl<T: 'static> Component for Reader<T> {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.seen.borrow_mut() = Some((self.read)(context));
+            leaf(|| SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn read_under<T: 'static>(
+        wrap: impl FnOnce(AnyWidget) -> AnyWidget,
+        read: impl Fn(&mut BuildContext) -> T + 'static,
+    ) -> T {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(wrap(component(Reader {
+            read: std::rc::Rc::new(read),
+            seen: std::rc::Rc::clone(&seen),
+        })));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn bar(states: WidgetStates) -> ResolvedSearchBar {
+        read_under(
+            |child| child,
+            move |context| ResolvedSearchBar::of(context, states),
+        )
+    }
+
+    fn view(is_full_screen: bool) -> ResolvedSearchView {
+        read_under(
+            |child| child,
+            move |context| ResolvedSearchView::of(context, is_full_screen),
+        )
+    }
+
+    fn states(list: &[WidgetState]) -> WidgetStates {
+        WidgetStates::of(list)
+    }
+
+    // -- A bar is a control, a view is a surface -------------------------------
+
+    #[test]
+    fn a_search_bar_does_not_react_to_being_focused_and_a_menu_line_does() {
+        // Upstream writes `focused => Colors.transparent` on the bar,
+        // identical to the fall-through, where `_MenuButtonDefaultsM3` gives
+        // focused the same weight as pressed. A focused bar has a caret in it
+        // saying so; a focused menu line has only the highlight.
+        let resting = bar(WidgetStates::NONE);
+        let focused = bar(states(&[WidgetState::Focused]));
+        assert_eq!(focused.overlay, resting.overlay);
+        assert_eq!(focused.overlay, Color::TRANSPARENT);
+
+        let scheme = ThemeData::fallback().color_scheme;
+        assert_ne!(
+            ResolvedMenuButton::overlay_for(states(&[WidgetState::Focused]), &scheme),
+            ResolvedMenuButton::overlay_for(WidgetStates::NONE, &scheme),
+            "the menu line's focused arm is not its fall-through"
+        );
+    }
+
+    #[test]
+    fn but_it_does_react_to_being_pressed_and_hovered() {
+        // Or the test above would only show that nothing reaches the overlay.
+        let scheme = ThemeData::fallback().color_scheme;
+        let pressed = bar(states(&[WidgetState::Pressed]));
+        let hovered = bar(states(&[WidgetState::Hovered]));
+        assert_eq!(
+            pressed.overlay,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.1)
+        );
+        assert_eq!(
+            hovered.overlay,
+            crate::elevation_overlay::with_opacity(scheme.on_surface, 0.08)
+        );
+        assert_ne!(pressed.overlay, hovered.overlay);
+    }
+
+    #[test]
+    fn pressing_beats_hovering_on_the_bar_too() {
+        // The order of the two arms that differ. A pointer that presses is
+        // always also hovering, so the ladder's order is what decides.
+        let both = bar(states(&[WidgetState::Pressed, WidgetState::Hovered]));
+        assert_eq!(both.overlay, bar(states(&[WidgetState::Pressed])).overlay);
+        assert_ne!(both.overlay, bar(states(&[WidgetState::Hovered])).overlay);
+    }
+
+    #[test]
+    fn a_bars_theme_answers_by_state_and_a_views_cannot() {
+        // The distinction upstream draws in the *types*: every
+        // `SearchBarThemeData` field is a state property and every
+        // `SearchViewThemeData` field is a plain nullable.
+        let resting = Color(0xFF010101);
+        let pressed = Color(0xFF020202);
+        let mut data = SearchBarThemeData::new();
+        data.background_color = Some(StateProperty::resolve_with(move |states| {
+            Some(if states.contains(WidgetState::Pressed) {
+                pressed
+            } else {
+                resting
+            })
+        }));
+        let wrap = move |child: AnyWidget| SearchBarTheme::new(data.clone(), child);
+        assert_eq!(
+            read_under(wrap.clone(), |context| ResolvedSearchBar::of(
+                context,
+                WidgetStates::NONE
+            ))
+            .background_color,
+            resting
+        );
+        assert_eq!(
+            read_under(wrap, |context| ResolvedSearchBar::of(
+                context,
+                WidgetStates::of(&[WidgetState::Pressed])
+            ))
+            .background_color,
+            pressed
+        );
+
+        // The view has no states to be given, so the two calls cannot differ.
+        assert_eq!(view(false).background_color, view(false).background_color);
+    }
+
+    // -- The view is the bar, grown --------------------------------------------
+
+    #[test]
+    fn the_views_bar_padding_is_the_bars_padding() {
+        // A header that padded its field differently from the bar that opened
+        // it would read as a second, unrelated field appearing in its place.
+        assert_eq!(view(false).bar_padding, bar(WidgetStates::NONE).padding);
+        assert_eq!(view(false).bar_padding, EdgeInsets::symmetric(8.0, 0.0));
+    }
+
+    #[test]
+    fn and_shares_its_surface_its_elevation_and_its_two_text_colours() {
+        let plain_bar = bar(WidgetStates::NONE);
+        let docked = view(false);
+        assert_eq!(docked.background_color, plain_bar.background_color);
+        assert_eq!(docked.elevation, plain_bar.elevation);
+        assert_eq!(docked.surface_tint_color, plain_bar.surface_tint_color);
+        assert_eq!(
+            docked.header_text_style.map(|style| style.color),
+            plain_bar.text_style.map(|style| style.color)
+        );
+        assert_eq!(
+            docked.header_hint_style.map(|style| style.color),
+            plain_bar.hint_style.map(|style| style.color)
+        );
+    }
+
+    #[test]
+    fn the_bar_is_capped_at_a_readable_width_and_the_view_is_not() {
+        let plain_bar = bar(WidgetStates::NONE);
+        assert_eq!(plain_bar.constraints.max_width, 800.0);
+        assert_eq!(view(false).constraints.max_width, f32::INFINITY);
+
+        // The same statement in the other direction: a line against a place.
+        assert_eq!(plain_bar.constraints.min_height, 56.0);
+        assert_eq!(view(false).constraints.min_height, 240.0);
+        assert_eq!(
+            plain_bar.constraints.min_width,
+            view(false).constraints.min_width,
+            "they start at the same width and only the ceiling differs"
+        );
+    }
+
+    #[test]
+    fn going_full_screen_takes_the_corners_off() {
+        // Rounding a full-screen view would draw a card floating on a
+        // background that is not there.
+        let docked = view(false);
+        let full = view(true);
+        assert_ne!(docked.shape, full.shape);
+        match (&docked.shape, &full.shape) {
+            (
+                crate::borders::ShapeBorder::Rounded(docked),
+                crate::borders::ShapeBorder::Rounded(full),
+            ) => {
+                let direction = crate::direction::current_direction();
+                assert_eq!(docked.resolved_radius(direction).top_left.x, 28.0);
+                assert_eq!(full.resolved_radius(direction).top_left.x, 0.0);
+            }
+            other => panic!("expected two rounded rectangles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_screen_changes_nothing_else_about_the_view() {
+        // It is the shape and only the shape -- everything else a full-screen
+        // view is, a docked one is too.
+        let docked = view(false);
+        let full = view(true);
+        assert_eq!(docked.background_color, full.background_color);
+        assert_eq!(docked.elevation, full.elevation);
+        assert_eq!(docked.divider_color, full.divider_color);
+        assert_eq!(docked.bar_padding, full.bar_padding);
+        assert_eq!(docked.constraints.min_height, full.constraints.min_height);
+        assert_eq!(docked.shrink_wrap, full.shrink_wrap);
+    }
+
+    #[test]
+    fn a_theme_that_names_a_shape_keeps_it_full_screen_or_not() {
+        // The full-screen branch is the *default*, so a caller who chose a
+        // shape has already answered the question it was asking.
+        let mine = crate::borders::ShapeBorder::Stadium(Default::default());
+        let mut data = SearchViewThemeData::new();
+        data.shape = Some(mine.clone());
+        for full in [false, true] {
+            let resolved = read_under(
+                {
+                    let data = data.clone();
+                    move |child| SearchViewTheme::new(data, child)
+                },
+                move |context| ResolvedSearchView::of(context, full),
+            );
+            assert_eq!(resolved.shape, mine);
+        }
+    }
+
+    #[test]
+    fn the_view_leaves_its_header_height_and_its_padding_unanswered() {
+        // Upstream has no default for either: the header is as tall as what is
+        // in it, and the padding is the caller's business.
+        let docked = view(false);
+        assert_eq!(docked.header_height, None);
+        assert_eq!(docked.padding, None);
+        assert_eq!(docked.side, None);
+        assert!(!docked.shrink_wrap);
+        assert_eq!(
+            docked.divider_color,
+            ThemeData::fallback().color_scheme.outline()
+        );
+    }
+
+    #[test]
+    fn a_bar_is_told_from_its_background_by_colour_and_not_by_an_outline() {
+        let plain = bar(WidgetStates::NONE);
+        assert_eq!(plain.side, None, "no default side");
+        assert_ne!(
+            plain.background_color,
+            ThemeData::fallback().color_scheme.surface,
+            "which only works because the surface it sits on is a different one"
+        );
+        assert!(matches!(
+            plain.shape,
+            crate::borders::ShapeBorder::Stadium(_)
+        ));
     }
 }

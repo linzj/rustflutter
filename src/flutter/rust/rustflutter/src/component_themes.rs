@@ -3089,6 +3089,244 @@ impl ResolvedMenuButton {
     }
 }
 
+/// What a search bar is drawn with -- upstream's `_SearchBarDefaultsM3` under
+/// `SearchBarTheme.of`.
+///
+/// # A bar is a control and a view is a surface, said in the theme's types
+///
+/// Every field of `SearchBarThemeData` is a `WidgetStateProperty`; every field
+/// of `SearchViewThemeData` is a plain nullable. The bar can be pressed and
+/// hovered; the view is the thing the results sit on and cannot be.
+///
+/// That is the same fact [`ResolvedMenuPanel`] carries, and upstream spells it
+/// two different ways. There the panel's fields *are* state properties and the
+/// build resolves every one of them against the empty set. Here there is
+/// nothing to resolve, because the theme was never given state properties to
+/// hold. Both say a surface has no states; only one of them can be got wrong by
+/// passing the wrong set.
+///
+/// # A search bar does not react to being focused, and a menu line does
+///
+/// `overlayColor` is `onSurface` at 0.1 pressed, 0.08 hovered, and
+/// **`Colors.transparent` focused** -- identical to the fall-through, and
+/// written out anyway. `_MenuButtonDefaultsM3` gives focused the same weight as
+/// pressed.
+///
+/// The difference is what else is on screen to say so. A focused search bar has
+/// a caret blinking in it and a keyboard aimed at it; a focused menu line has
+/// nothing but the highlight. So one needs the overlay to show the keyboard's
+/// position and the other would be saying it twice.
+pub struct ResolvedSearchBar {
+    pub background_color: Color,
+    pub elevation: f32,
+    pub shadow_color: Color,
+    pub surface_tint_color: Color,
+    pub overlay: Color,
+    pub side: Option<BorderSide>,
+    pub shape: ShapeBorder,
+    pub padding: EdgeInsets,
+    pub text_style: Option<TextStyle>,
+    pub hint_style: Option<TextStyle>,
+    pub constraints: BoxConstraints,
+    pub text_capitalization: TextCapitalization,
+}
+
+impl ResolvedSearchBar {
+    /// Upstream's `elevation`, which the view shares.
+    pub const ELEVATION: f32 = 6.0;
+    /// Upstream's horizontal `padding`, which the view's `barPadding` also is.
+    pub const PADDING: f32 = 8.0;
+    pub const MIN_WIDTH: f32 = 360.0;
+    /// Upstream's `maxWidth`. **The view has none** -- see
+    /// [`ResolvedSearchView`].
+    pub const MAX_WIDTH: f32 = 800.0;
+    pub const MIN_HEIGHT: f32 = 56.0;
+    pub const PRESSED_OVERLAY: f32 = 0.1;
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+
+    /// Upstream's `overlayColor` resolver. Focused is transparent, which is
+    /// the fall-through -- see the type's docs for why that is deliberate.
+    pub fn overlay_for(states: WidgetStates, scheme: &ColorScheme) -> Color {
+        let opacity = if states.contains(WidgetState::Pressed) {
+            ResolvedSearchBar::PRESSED_OVERLAY
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedSearchBar::HOVERED_OVERLAY
+        } else {
+            return Color::TRANSPARENT;
+        };
+        crate::elevation_overlay::with_opacity(scheme.on_surface, opacity)
+    }
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedSearchBar {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let data = SearchBarTheme::of(context);
+
+        macro_rules! pick {
+            ($field:ident) => {
+                data.$field
+                    .as_ref()
+                    .and_then(|property| property.resolve(states))
+            };
+        }
+
+        ResolvedSearchBar {
+            background_color: pick!(background_color)
+                .unwrap_or_else(|| scheme.surface_container_high()),
+            elevation: pick!(elevation).unwrap_or(ResolvedSearchBar::ELEVATION),
+            shadow_color: pick!(shadow_color).unwrap_or_else(|| scheme.shadow()),
+            surface_tint_color: pick!(surface_tint_color).unwrap_or(Color::TRANSPARENT),
+            overlay: pick!(overlay_color)
+                .unwrap_or_else(|| ResolvedSearchBar::overlay_for(states, &scheme)),
+            // No default side: a bar is told apart from its background by
+            // being a different colour, not by being outlined.
+            side: pick!(side),
+            shape: pick!(shape).unwrap_or(ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            )),
+            padding: pick!(padding)
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(ResolvedSearchBar::PADDING, 0.0)),
+            text_style: pick!(text_style).or_else(|| {
+                theme.text_theme.body_large.clone().map(|style| TextStyle {
+                    color: scheme.on_surface,
+                    ..style
+                })
+            }),
+            hint_style: pick!(hint_style).or_else(|| {
+                theme.text_theme.body_large.clone().map(|style| TextStyle {
+                    color: scheme.on_surface_variant(),
+                    ..style
+                })
+            }),
+            constraints: data.constraints.unwrap_or(BoxConstraints {
+                min_width: ResolvedSearchBar::MIN_WIDTH,
+                max_width: ResolvedSearchBar::MAX_WIDTH,
+                min_height: ResolvedSearchBar::MIN_HEIGHT,
+                max_height: f32::INFINITY,
+            }),
+            text_capitalization: data.text_capitalization.unwrap_or(TextCapitalization::None),
+        }
+    }
+}
+
+/// What the view a search bar opens is drawn with -- upstream's
+/// `_SearchViewDefaultsM3` under `SearchViewTheme.of`.
+///
+/// # The view's bar padding is the bar's padding
+///
+/// Both are `EdgeInsets.symmetric(horizontal: 8)`. The view's header *is* a
+/// search bar, and a header that padded its field differently from the bar
+/// that opened it would read as a second, unrelated field appearing where the
+/// first one was.
+///
+/// The two also share `surfaceContainerHigh`, elevation 6, a transparent tint,
+/// and `bodyLarge` on `onSurface` for the text with `onSurfaceVariant` for the
+/// hint. The view is the bar, grown.
+///
+/// # Except that the bar is capped and the view is not
+///
+/// The bar is `minWidth 360, maxWidth 800, minHeight 56`; the view is
+/// `minWidth 360, minHeight 240` and **no maximum width at all**. A line of
+/// text stops being readable past a certain width, so the bar is capped. A
+/// region holding results does not, so it is not. And 56 against 240 is the
+/// same statement twice: one is a line, the other is a place.
+///
+/// # Full screen takes the corners off
+///
+/// The shape is 28-radius when docked and a plain rectangle when full screen.
+/// A full-screen view has no corners to round -- rounding them would draw a
+/// card floating on a background that is not there.
+///
+/// This is the one default that depends on something that is neither the theme
+/// nor the widget: `isFullScreen` is a constructor argument of the defaults
+/// class itself, the way `context` is.
+pub struct ResolvedSearchView {
+    pub background_color: Color,
+    pub elevation: f32,
+    pub surface_tint_color: Color,
+    pub side: Option<BorderSide>,
+    pub shape: ShapeBorder,
+    pub header_height: Option<f32>,
+    pub header_text_style: Option<TextStyle>,
+    pub header_hint_style: Option<TextStyle>,
+    pub constraints: BoxConstraints,
+    pub padding: Option<EdgeInsets>,
+    pub bar_padding: EdgeInsets,
+    pub shrink_wrap: bool,
+    pub divider_color: Color,
+}
+
+impl ResolvedSearchView {
+    /// Upstream's `elevation`, shared with the bar.
+    pub const ELEVATION: f32 = 6.0;
+    /// Upstream's docked corner radius.
+    pub const RADIUS: f32 = 28.0;
+    /// Upstream's `fullScreenBarHeight`, which is not the docked one.
+    pub const FULL_SCREEN_BAR_HEIGHT: f32 = 72.0;
+    pub const MIN_WIDTH: f32 = 360.0;
+    /// Upstream's `minHeight`, against the bar's 56.
+    pub const MIN_HEIGHT: f32 = 240.0;
+
+    pub fn of(context: &mut BuildContext, is_full_screen: bool) -> ResolvedSearchView {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let data = SearchViewTheme::of(context);
+        let body_large = |color: Color| {
+            theme
+                .text_theme
+                .body_large
+                .clone()
+                .map(|style| TextStyle { color, ..style })
+        };
+        ResolvedSearchView {
+            background_color: data
+                .background_color
+                .unwrap_or_else(|| scheme.surface_container_high()),
+            elevation: data.elevation.unwrap_or(ResolvedSearchView::ELEVATION),
+            surface_tint_color: data.surface_tint_color.unwrap_or(Color::TRANSPARENT),
+            side: data.side,
+            shape: data.shape.clone().unwrap_or_else(|| {
+                ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                    crate::borders::BorderSide::NONE,
+                    crate::borders::BorderRadiusGeometry::circular(if is_full_screen {
+                        0.0
+                    } else {
+                        ResolvedSearchView::RADIUS
+                    }),
+                ))
+            }),
+            // No default: the header is as tall as what is in it unless a
+            // theme says otherwise.
+            header_height: data.header_height,
+            header_text_style: data
+                .header_text_style
+                .clone()
+                .or_else(|| body_large(scheme.on_surface)),
+            header_hint_style: data
+                .header_hint_style
+                .clone()
+                .or_else(|| body_large(scheme.on_surface_variant())),
+            constraints: data.constraints.unwrap_or(BoxConstraints {
+                min_width: ResolvedSearchView::MIN_WIDTH,
+                // No maximum: see the type's docs.
+                max_width: f32::INFINITY,
+                min_height: ResolvedSearchView::MIN_HEIGHT,
+                max_height: f32::INFINITY,
+            }),
+            padding: data
+                .padding
+                .map(|padding| padding.resolve(crate::direction::current_direction())),
+            bar_padding: data
+                .bar_padding
+                .map(|padding| padding.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::symmetric(ResolvedSearchBar::PADDING, 0.0)),
+            shrink_wrap: data.shrink_wrap.unwrap_or(false),
+            divider_color: data.divider_color.unwrap_or_else(|| scheme.outline()),
+        }
+    }
+}
+
 // -- App bar (upstream `app_bar_theme.dart`) ----------------------------------
 
 /// Upstream `AppBarThemeData`.
