@@ -7426,6 +7426,58 @@ pub enum OverflowBoxFit {
     DeferToChild,
 }
 
+/// Upstream `BaselineOffset` (`rendering/box.dart`): a distance to a
+/// baseline, or the absence of one.
+///
+/// # The two operations treat absence oppositely
+///
+/// Upstream's whole `extension type` is two operators, and the interesting
+/// thing about them is that they disagree about what `null` means:
+///
+/// * `+` is **absorbing**. `BaselineOffset(null) + 10` is still absent: a box
+///   with no baseline does not acquire one by being moved. Shifting nothing
+///   leaves nothing.
+/// * `minOf` is **neutral**. Combining a real baseline with an absent one
+///   gives the real one, because a child that has no baseline should not stop
+///   its siblings from having one.
+///
+/// Getting the second wrong is easy and quiet. Rust's own `Option` ordering
+/// puts `None` *below* every `Some`, so reaching for a plain minimum would
+/// make absence win every comparison and no baseline would ever survive a row
+/// of children. The rule here is not "the smallest"; it is "the smallest of
+/// those that exist".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BaselineOffset(pub Option<f32>);
+
+impl BaselineOffset {
+    /// Upstream's `noBaseline`.
+    pub const NO_BASELINE: BaselineOffset = BaselineOffset(None);
+
+    /// Upstream's `operator +`.
+    pub fn shifted_by(self, offset: f32) -> BaselineOffset {
+        BaselineOffset(self.0.map(|value| value + offset))
+    }
+
+    /// Upstream's `minOf`.
+    pub fn min_of(self, other: BaselineOffset) -> BaselineOffset {
+        match (self.0, other.0) {
+            (Some(mine), Some(theirs)) => {
+                if mine >= theirs {
+                    other
+                } else {
+                    self
+                }
+            }
+            (Some(mine), None) => BaselineOffset(Some(mine)),
+            (None, _) => other,
+        }
+    }
+
+    pub fn is_absent(self) -> bool {
+        self.0.is_none()
+    }
+}
+
 /// Imposes different constraints on its child than it got, letting the child
 /// overflow.
 ///
@@ -8466,13 +8518,11 @@ impl RenderBox for RenderWrap {
         self.children
             .iter()
             .zip(&self.offsets)
-            .filter_map(|(child, offset)| child.distance_to_baseline().map(|b| b + offset.dy))
-            .fold(None, |best: Option<f32>, candidate| {
-                Some(match best {
-                    Some(best) => best.min(candidate),
-                    None => candidate,
-                })
+            .map(|(child, offset)| {
+                BaselineOffset(child.distance_to_baseline()).shifted_by(offset.dy)
             })
+            .fold(BaselineOffset::NO_BASELINE, BaselineOffset::min_of)
+            .0
     }
 }
 
@@ -24160,5 +24210,102 @@ mod overflow_box_fit_tests {
     fn an_overflow_box_takes_the_window_unless_told_otherwise() {
         assert_eq!(OverflowBoxFit::default(), OverflowBoxFit::Max);
         assert!(RenderOverflowBox::new(FixedBox::new(1.0, 1.0)).sized_by_parent());
+    }
+}
+
+#[cfg(test)]
+mod baseline_offset_tests {
+    use super::BaselineOffset;
+
+    #[test]
+    fn shifting_an_absent_baseline_leaves_it_absent() {
+        // A box with no baseline does not acquire one by being moved.
+        assert!(BaselineOffset::NO_BASELINE.shifted_by(10.0).is_absent());
+        assert_eq!(
+            BaselineOffset::NO_BASELINE.shifted_by(10.0),
+            BaselineOffset::NO_BASELINE
+        );
+        // Where a real one does move.
+        assert_eq!(
+            BaselineOffset(Some(4.0)).shifted_by(10.0),
+            BaselineOffset(Some(14.0))
+        );
+    }
+
+    #[test]
+    fn but_the_minimum_treats_absence_as_nothing_at_all() {
+        // The opposite convention in the same little type, and the one that is
+        // easy to get wrong: a child without a baseline must not stop its
+        // siblings from having one.
+        assert_eq!(
+            BaselineOffset(Some(4.0)).min_of(BaselineOffset::NO_BASELINE),
+            BaselineOffset(Some(4.0))
+        );
+        assert_eq!(
+            BaselineOffset::NO_BASELINE.min_of(BaselineOffset(Some(4.0))),
+            BaselineOffset(Some(4.0))
+        );
+        // Which is the reverse of how Option orders itself: None sorts below
+        // every Some, so reaching for a plain minimum would let absence win
+        // every comparison and no baseline would survive a row of children.
+        assert!(Option::<i32>::None < Some(4));
+    }
+
+    #[test]
+    fn and_two_real_baselines_give_the_nearer_one() {
+        assert_eq!(
+            BaselineOffset(Some(4.0)).min_of(BaselineOffset(Some(9.0))),
+            BaselineOffset(Some(4.0))
+        );
+        assert_eq!(
+            BaselineOffset(Some(9.0)).min_of(BaselineOffset(Some(4.0))),
+            BaselineOffset(Some(4.0))
+        );
+    }
+
+    #[test]
+    fn and_two_absent_ones_stay_absent() {
+        assert!(
+            BaselineOffset::NO_BASELINE
+                .min_of(BaselineOffset::NO_BASELINE)
+                .is_absent()
+        );
+    }
+
+    #[test]
+    fn absence_is_the_identity_of_the_fold() {
+        // Which is what lets a row start from NO_BASELINE and fold: an empty
+        // row has no baseline, and adding children can only supply one.
+        let children = [
+            BaselineOffset::NO_BASELINE,
+            BaselineOffset(Some(7.0)),
+            BaselineOffset::NO_BASELINE,
+            BaselineOffset(Some(3.0)),
+        ];
+        let folded = children
+            .into_iter()
+            .fold(BaselineOffset::NO_BASELINE, BaselineOffset::min_of);
+        assert_eq!(folded, BaselineOffset(Some(3.0)));
+
+        // And a row of children that all lack one has none, rather than zero.
+        let none = [BaselineOffset::NO_BASELINE; 3]
+            .into_iter()
+            .fold(BaselineOffset::NO_BASELINE, BaselineOffset::min_of);
+        assert!(none.is_absent());
+        assert_ne!(none, BaselineOffset(Some(0.0)));
+    }
+
+    #[test]
+    fn shifting_happens_before_comparing() {
+        // The order matters: a child low in the box with a small baseline can
+        // still sit below one higher up with a larger one.
+        let high = BaselineOffset(Some(8.0)).shifted_by(0.0);
+        let low = BaselineOffset(Some(2.0)).shifted_by(50.0);
+        assert_eq!(high.min_of(low), BaselineOffset(Some(8.0)));
+        // Compared before shifting, the answer would have been the other one.
+        assert_eq!(
+            BaselineOffset(Some(8.0)).min_of(BaselineOffset(Some(2.0))),
+            BaselineOffset(Some(2.0))
+        );
     }
 }
