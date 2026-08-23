@@ -1858,7 +1858,9 @@
     "WidgetsServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
     "WidgetInspectorServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
     "AccessibilityServiceExtensions": "只是 VM service protocol 里 ext.flutter.* 扩展的名字表；本 crate 没有 VM service，没有东西去注册这些名字。",
-    "KeyDataTransitMode": "上游自己标了 @Deprecated：「No longer supported. Transit mode is always key data only.」它区分的是 raw key data 与 key data 两条投递路径，而 raw 那条整族文件（raw_keyboard.dart 及其七个平台变体）本台账早已记为 out_of_scope_files。一个只剩一个取值有意义的枚举，移过来就是个死名字。"
+    "KeyDataTransitMode": "上游自己标了 @Deprecated：「No longer supported. Transit mode is always key data only.」它区分的是 raw key data 与 key data 两条投递路径，而 raw 那条整族文件（raw_keyboard.dart 及其七个平台变体）本台账早已记为 out_of_scope_files。一个只剩一个取值有意义的枚举，移过来就是个死名字。",
+    "WebHtmlElementStrategy": "web-only。注意不是「类型只在 web 上存在」——它在 _network_image_io.dart 里也有字段，但那边**只出现在构造函数、字段声明和 toString 三处，从不分支**（grep 到 0 处 switch/==）。也就是说非 web 下它按构造就是惰性的：上游带着它是为了两套实现的 API 一致，而本移植只有一套。带过来就是一个没人读的字段。",
+    "UiKitViewGestureBlockingPolicy": "iOS 专属，且双重够不着：它管的是 UIKit 平台视图上 UIGestureRecognizer 的拦截时机，而 platform view 那一族在本台账里已经是 blocked_engine（没有 platform view 通道），UIGestureRecognizer 这边则根本不存在。本移植目标为 Windows/Android/macOS，和 IOSSystemContextMenuItemData 一族同一个理由。"
   },
   "equivalent_extra": {
     "_comment": "InlineSpan/PlaceholderSpan/AssetImage 等并入枚举或 trait 的映射记录在 equivalent 主表"

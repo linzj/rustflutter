@@ -95,8 +95,27 @@ impl ActionButton {
 
     /// Upstream tags these with a `StandardComponentType` key, so a test or a
     /// tool can find "the back button" without knowing what the app called it.
+    ///
+    /// **Three of the four, not four.** `BackButton`, `CloseButton` and
+    /// `DrawerButton` each pass a `standardComponent:` to their superclass;
+    /// `EndDrawerButton` passes none, and there is no
+    /// `StandardComponentType.endDrawerButton` for it to pass. So a test can
+    /// find the drawer button and cannot find the end-drawer one.
+    ///
+    /// This used to return `true` unconditionally -- a predicate no input
+    /// could make answer otherwise, and wrong as well as hollow.
     pub fn has_standard_key(&self) -> bool {
-        true
+        self.standard_component().is_some()
+    }
+
+    /// Which [`StandardComponentType`] this button carries, if any.
+    pub fn standard_component(&self) -> Option<StandardComponentType> {
+        match self.kind {
+            ActionButtonKind::Back => Some(StandardComponentType::BackButton),
+            ActionButtonKind::Close => Some(StandardComponentType::CloseButton),
+            ActionButtonKind::Drawer => Some(StandardComponentType::DrawerButton),
+            ActionButtonKind::EndDrawer => None,
+        }
     }
 }
 
@@ -471,5 +490,155 @@ mod tests {
     #[test]
     fn each_button_carries_a_key_a_test_can_find_it_by() {
         assert!(BackButton::new().0.has_standard_key());
+    }
+}
+
+/// Upstream `StandardComponentType`: a name a test can find a widget by.
+///
+/// Upstream's doc says what it is for: "attach a key to a widget identifying
+/// it as a standard UI component for testing and discovery purposes ... used
+/// by the testing infrastructure (e.g. the `find` object)".
+///
+/// # Not the same four as [`ActionButtonKind`]
+///
+/// The overlap is three -- back, close, drawer -- and then they part.
+/// `ActionButtonKind` has `EndDrawer`, because there are two drawers and a
+/// button for each. This has `More`, the popup menu's overflow button, which
+/// is not an action button at all.
+///
+/// They are different questions. `ActionButtonKind` asks **which of the four
+/// action buttons this is**; this asks **which well-known component a test is
+/// looking for**, and the components it names come from three different
+/// families -- an action button, a popup menu, a text selection toolbar.
+/// Merging them would put `EndDrawer` in front of tests looking for a
+/// component upstream has no key for, and hide `More` from the ones that want
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandardComponentType {
+    BackButton,
+    CloseButton,
+    MoreButton,
+    DrawerButton,
+}
+
+impl StandardComponentType {
+    pub const ALL: [StandardComponentType; 4] = [
+        StandardComponentType::BackButton,
+        StandardComponentType::CloseButton,
+        StandardComponentType::MoreButton,
+        StandardComponentType::DrawerButton,
+    ];
+
+    /// Upstream's `key` getter, which is `ValueKey<StandardComponentType>(this)`.
+    ///
+    /// **The key is made from the value itself**, which is the whole design:
+    /// two components cannot collide on a key without being the same
+    /// component, and a key read back names the component it came from. A
+    /// hand-written table of key strings could drift into either failure --
+    /// two components sharing a name, or a name that matches nothing.
+    pub fn key(self) -> StandardComponentType {
+        self
+    }
+
+    /// The name the key carries, for a test to search on.
+    pub fn key_name(self) -> &'static str {
+        match self {
+            StandardComponentType::BackButton => "backButton",
+            StandardComponentType::CloseButton => "closeButton",
+            StandardComponentType::MoreButton => "moreButton",
+            StandardComponentType::DrawerButton => "drawerButton",
+        }
+    }
+
+    /// Which action button, where this names one at all.
+    ///
+    /// `More` names none: the overflow button belongs to a popup menu. And
+    /// [`ActionButtonKind::EndDrawer`] has no standard component, so the two
+    /// enums are not a renaming of one another in either direction.
+    pub fn action_button(self) -> Option<ActionButtonKind> {
+        match self {
+            StandardComponentType::BackButton => Some(ActionButtonKind::Back),
+            StandardComponentType::CloseButton => Some(ActionButtonKind::Close),
+            StandardComponentType::DrawerButton => Some(ActionButtonKind::Drawer),
+            StandardComponentType::MoreButton => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod standard_component_tests {
+    use super::{ActionButton, ActionButtonKind, StandardComponentType};
+
+    #[test]
+    fn the_end_drawer_button_has_no_standard_key() {
+        // Upstream's BackButton, CloseButton and DrawerButton each pass a
+        // standardComponent: to their superclass. EndDrawerButton passes none,
+        // and there is no StandardComponentType for it to pass. So a test can
+        // find the drawer button and cannot find the end-drawer one.
+        assert!(!ActionButton::new(ActionButtonKind::EndDrawer).has_standard_key());
+        for kind in [
+            ActionButtonKind::Back,
+            ActionButtonKind::Close,
+            ActionButtonKind::Drawer,
+        ] {
+            assert!(ActionButton::new(kind).has_standard_key(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn and_the_two_enums_are_not_a_renaming_of_each_other() {
+        // Three overlap, and each has one the other lacks: ActionButtonKind
+        // has EndDrawer because there are two drawers, and
+        // StandardComponentType has MoreButton, which is a popup menu's
+        // overflow and not an action button at all.
+        assert_eq!(StandardComponentType::MoreButton.action_button(), None);
+        assert_eq!(
+            ActionButton::new(ActionButtonKind::EndDrawer).standard_component(),
+            None
+        );
+        // And the three that do correspond, correspond both ways.
+        for (component, kind) in [
+            (StandardComponentType::BackButton, ActionButtonKind::Back),
+            (StandardComponentType::CloseButton, ActionButtonKind::Close),
+            (
+                StandardComponentType::DrawerButton,
+                ActionButtonKind::Drawer,
+            ),
+        ] {
+            assert_eq!(component.action_button(), Some(kind));
+            assert_eq!(
+                ActionButton::new(kind).standard_component(),
+                Some(component)
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_is_made_from_the_component_and_so_cannot_collide() {
+        // Upstream's key is ValueKey<StandardComponentType>(this): two
+        // components cannot share a key without being the same component, and
+        // a key read back names the component it came from.
+        for component in StandardComponentType::ALL {
+            assert_eq!(component.key(), component);
+        }
+        let mut names: Vec<&str> = StandardComponentType::ALL
+            .iter()
+            .map(|c| c.key_name())
+            .collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "two components share a key name");
+    }
+
+    #[test]
+    fn and_every_component_names_itself() {
+        assert_eq!(StandardComponentType::BackButton.key_name(), "backButton");
+        assert_eq!(StandardComponentType::CloseButton.key_name(), "closeButton");
+        assert_eq!(StandardComponentType::MoreButton.key_name(), "moreButton");
+        assert_eq!(
+            StandardComponentType::DrawerButton.key_name(),
+            "drawerButton"
+        );
     }
 }

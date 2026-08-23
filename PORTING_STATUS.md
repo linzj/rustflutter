@@ -13902,3 +13902,62 @@ coverage 2102 / 2015 记账 / **6 MISSING**。
 就变成了「取决于谁碰巧是父节点」。
 
 五个变异全红。coverage 2102 / 2016 记账 / **5 MISSING**。
+
+---
+
+## 四个按钮里三个有标准键（2026-08-24）
+
+移 `StandardComponentType` 的时候，撞见移植里这个：
+
+```rust
+pub fn has_standard_key(&self) -> bool {
+    true
+}
+```
+
+不收参数、没有任何输入能让它答别的——**又是那个物种**。
+而且这次它**还是错的**。
+
+上游四个 action button，只有三个往父类传 `standardComponent:`：
+
+```dart
+BackButton   : super(icon: ..., standardComponent: StandardComponentType.backButton);
+CloseButton  : super(icon: ..., standardComponent: StandardComponentType.closeButton);
+DrawerButton : super(icon: ..., standardComponent: StandardComponentType.drawerButton);
+EndDrawerButton : super(icon: const EndDrawerButtonIcon());   // ← 没有
+```
+
+而且**根本没有 `StandardComponentType.endDrawerButton` 可传**。
+于是测试找得到抽屉按钮，找不到右抽屉按钮。
+
+原来那条测试只断言了「后退按钮有标准键」——是真的，所以它一直绿着。
+
+### 两个枚举不是彼此的改名
+
+三个重合，然后各有一个对方没有的：
+`ActionButtonKind` 多 `EndDrawer`（两个抽屉各一个按钮），
+`StandardComponentType` 多 `MoreButton`（弹出菜单的溢出按钮，根本不是 action button）。
+
+它们问的是不同的问题：一个问「这是四个 action button 里的哪个」，
+另一个问「测试要找的是哪个众所周知的部件」——
+而后者点名的部件来自三个不同的家族（action button、popup menu、文本选择工具栏）。
+
+### 键是从值本身造出来的
+
+上游 `ValueKey<StandardComponentType>(this)`：
+**两个部件不可能撞键，除非它们是同一个部件**，而一个键读回来就指名它的来处。
+手写一张键名表两头都能漂：两个部件共用一个名字，或者一个名字谁也匹配不上。
+测试把「四个名字互不相同」单列了一条。
+
+五个变异全红。
+
+### 顺带两个记账
+
+- `WebHtmlElementStrategy`：web-only。**不是「类型只在 web 上有」**——
+  `_network_image_io.dart` 里也有这个字段，但**只出现在构造函数、字段声明和 toString 三处，
+  从不分支**。非 web 下它按构造就是惰性的；上游带着它是为了两套实现 API 一致，本移植只有一套。
+- `UiKitViewGestureBlockingPolicy`：iOS 专属，且双重够不着——
+  它管 UIKit 平台视图上 UIGestureRecognizer 的拦截时机，
+  而 platform view 一族在本台账里已是 blocked_engine，UIGestureRecognizer 这边根本不存在。
+
+coverage 2102 / 2019 记账 / **2 MISSING**。
