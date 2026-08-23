@@ -217,7 +217,9 @@ def main():
     rust = rust_bodies()
 
     covered = {}
-    for layer, fname, name, state in coverage.classify(classes_by_file, rust_ids, ledger):
+    for layer, fname, name, state in coverage.classify(
+        classes_by_file, rust_ids, ledger, coverage.rust_module_names()
+    ):
         if state == 'covered':
             covered.setdefault(f'{layer}/{fname}', []).append(name)
 

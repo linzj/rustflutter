@@ -330,13 +330,35 @@ impl DrawerController {
         self
     }
 
-    /// Which way a positive drag moves the drawer. An end-aligned drawer opens
-    /// the other way, so its velocities are flipped before the controller sees
-    /// them.
-    pub fn direction_factor(&self) -> f32 {
-        match self.alignment {
-            DrawerAlignment::Start => 1.0,
-            DrawerAlignment::End => -1.0,
+    /// Which way a positive drag moves the drawer.
+    ///
+    /// Upstream switches on **both** the reading direction and the alignment:
+    ///
+    /// ```dart
+    /// return switch ((Directionality.of(context), widget.alignment)) {
+    ///   (TextDirection.rtl, DrawerAlignment.start) => -1,
+    ///   (TextDirection.rtl, DrawerAlignment.end)   => 1,
+    ///   (TextDirection.ltr, DrawerAlignment.start) => 1,
+    ///   (TextDirection.ltr, DrawerAlignment.end)   => -1,
+    /// };
+    /// ```
+    ///
+    /// **This read the alignment alone**, which is right in a left-to-right
+    /// reading and inverted in a right-to-left one: a start-aligned drawer
+    /// lives on the right there, so the drag that opens it goes the other way.
+    /// Every gesture on both drawers was backwards in RTL, and the drawer
+    /// would have opened on a swipe meant to close it.
+    ///
+    /// The two arguments matter equally and only together -- flipping either
+    /// one flips the answer, and flipping both leaves it alone, which is what
+    /// makes this an exclusive-or rather than two separate rules.
+    pub fn direction_factor(&self, text_direction: TextDirection) -> f32 {
+        let start_aligned = matches!(self.alignment, DrawerAlignment::Start);
+        let left_to_right = matches!(text_direction, TextDirection::Ltr);
+        if start_aligned == left_to_right {
+            1.0
+        } else {
+            -1.0
         }
     }
 
@@ -347,8 +369,13 @@ impl DrawerController {
     /// drawer's job, and it is the drawer's width that sets the exchange rate.
     /// A wider drawer moves through the same animation more slowly for the
     /// same finger speed, which is what makes a wide one feel heavy.
-    pub fn visual_velocity(&self, pixel_velocity: f32, width: f32) -> f32 {
-        pixel_velocity / width * self.direction_factor()
+    pub fn visual_velocity(
+        &self,
+        pixel_velocity: f32,
+        width: f32,
+        text_direction: TextDirection,
+    ) -> f32 {
+        pixel_velocity / width * self.direction_factor(text_direction)
     }
 
     /// Upstream `_settle`.
@@ -358,14 +385,19 @@ impl DrawerController {
     /// flicked shut, closes; released gently at the same place, it opens. Below
     /// the threshold there is nothing to read into the movement, so the halfway
     /// point decides.
-    pub fn settle(&self, pixel_velocity: f32, width: f32) -> SettleOutcome {
+    pub fn settle(
+        &self,
+        pixel_velocity: f32,
+        width: f32,
+        text_direction: TextDirection,
+    ) -> SettleOutcome {
         if self.value == 0.0 {
             // Upstream returns when the controller is dismissed: a drag that
             // never opened anything has nothing to settle.
             return SettleOutcome::NothingToSettle;
         }
         if pixel_velocity.abs() >= MIN_FLING_VELOCITY {
-            let visual = self.visual_velocity(pixel_velocity, width);
+            let visual = self.visual_velocity(pixel_velocity, width, text_direction);
             return SettleOutcome::Flung {
                 opening: visual > 0.0,
             };
@@ -549,11 +581,11 @@ mod tests {
         // the same place, it opens.
         let nearly_open = DrawerController::new(DrawerAlignment::Start).with_value(0.9);
         assert_eq!(
-            nearly_open.settle(-MIN_FLING_VELOCITY - 1.0, DRAWER_WIDTH),
+            nearly_open.settle(-MIN_FLING_VELOCITY - 1.0, DRAWER_WIDTH, TextDirection::Ltr),
             SettleOutcome::Flung { opening: false }
         );
         assert_eq!(
-            nearly_open.settle(-MIN_FLING_VELOCITY + 1.0, DRAWER_WIDTH),
+            nearly_open.settle(-MIN_FLING_VELOCITY + 1.0, DRAWER_WIDTH, TextDirection::Ltr),
             SettleOutcome::SettledToNearest { opening: true }
         );
     }
@@ -562,15 +594,19 @@ mod tests {
     fn below_the_threshold_the_halfway_point_decides() {
         let start = DrawerAlignment::Start;
         assert_eq!(
-            DrawerController::new(start)
-                .with_value(0.49)
-                .settle(0.0, DRAWER_WIDTH),
+            DrawerController::new(start).with_value(0.49).settle(
+                0.0,
+                DRAWER_WIDTH,
+                TextDirection::Ltr
+            ),
             SettleOutcome::SettledToNearest { opening: false }
         );
         assert_eq!(
-            DrawerController::new(start)
-                .with_value(0.5)
-                .settle(0.0, DRAWER_WIDTH),
+            DrawerController::new(start).with_value(0.5).settle(
+                0.0,
+                DRAWER_WIDTH,
+                TextDirection::Ltr
+            ),
             SettleOutcome::SettledToNearest { opening: true }
         );
     }
@@ -579,7 +615,7 @@ mod tests {
     fn a_drag_that_never_opened_anything_has_nothing_to_settle() {
         let closed = DrawerController::new(DrawerAlignment::Start);
         assert_eq!(
-            closed.settle(-1000.0, DRAWER_WIDTH),
+            closed.settle(-1000.0, DRAWER_WIDTH, TextDirection::Ltr),
             SettleOutcome::NothingToSettle
         );
     }
@@ -591,11 +627,11 @@ mod tests {
         let rightwards = MIN_FLING_VELOCITY + 100.0;
 
         assert_eq!(
-            start.settle(rightwards, DRAWER_WIDTH),
+            start.settle(rightwards, DRAWER_WIDTH, TextDirection::Ltr),
             SettleOutcome::Flung { opening: true }
         );
         assert_eq!(
-            end.settle(rightwards, DRAWER_WIDTH),
+            end.settle(rightwards, DRAWER_WIDTH, TextDirection::Ltr),
             SettleOutcome::Flung { opening: false },
             "the same swipe closes the one on the other side"
         );
@@ -606,8 +642,8 @@ mod tests {
         // Which is what makes a wide one feel heavy: the controller works in
         // 0..1, and the width is the exchange rate.
         let controller = DrawerController::new(DrawerAlignment::Start);
-        let narrow = controller.visual_velocity(1000.0, 200.0);
-        let wide = controller.visual_velocity(1000.0, 400.0);
+        let narrow = controller.visual_velocity(1000.0, 200.0, TextDirection::Ltr);
+        let wide = controller.visual_velocity(1000.0, 400.0, TextDirection::Ltr);
         assert!(wide < narrow);
         assert_eq!(wide * 2.0, narrow);
     }
@@ -682,5 +718,82 @@ mod tests {
         let end = DrawerController::new(DrawerAlignment::End);
         assert_eq!(end.outer_alignment(), DrawerAlignment::End);
         assert_eq!(end.inner_alignment(), DrawerAlignment::Start);
+    }
+}
+
+#[cfg(test)]
+mod drawer_direction_tests {
+    use super::{DrawerAlignment, DrawerController, MIN_FLING_VELOCITY, SettleOutcome};
+    use crate::direction::TextDirection;
+
+    const WIDTH: f32 = 304.0;
+
+    #[test]
+    fn a_start_drawer_reverses_in_a_right_to_left_reading() {
+        // It lives on the right there, so the drag that opens it goes the
+        // other way. This read the alignment alone and was inverted for every
+        // gesture on both drawers in RTL.
+        let start = DrawerController::new(DrawerAlignment::Start);
+        assert_eq!(start.direction_factor(TextDirection::Ltr), 1.0);
+        assert_eq!(start.direction_factor(TextDirection::Rtl), -1.0);
+    }
+
+    #[test]
+    fn and_so_does_an_end_drawer_the_other_way() {
+        let end = DrawerController::new(DrawerAlignment::End);
+        assert_eq!(end.direction_factor(TextDirection::Ltr), -1.0);
+        assert_eq!(end.direction_factor(TextDirection::Rtl), 1.0);
+    }
+
+    #[test]
+    fn the_two_arguments_matter_only_together() {
+        // Flipping either flips the answer; flipping both leaves it alone.
+        // That is what makes it one exclusive-or rather than two rules, and a
+        // port that read one argument could not be right for more than half
+        // the four cases.
+        for alignment in [DrawerAlignment::Start, DrawerAlignment::End] {
+            let controller = DrawerController::new(alignment);
+            let ltr = controller.direction_factor(TextDirection::Ltr);
+            let rtl = controller.direction_factor(TextDirection::Rtl);
+            assert_eq!(ltr, -rtl, "{alignment:?}");
+        }
+        let start = DrawerController::new(DrawerAlignment::Start);
+        let end = DrawerController::new(DrawerAlignment::End);
+        assert_eq!(
+            start.direction_factor(TextDirection::Ltr),
+            end.direction_factor(TextDirection::Rtl),
+            "both flipped is no flip at all"
+        );
+    }
+
+    #[test]
+    fn a_fling_opens_the_drawer_the_finger_moved_toward() {
+        // Through settle, not the factor alone: the same push opens a start
+        // drawer in one reading and closes it in the other.
+        let half_open = DrawerController::new(DrawerAlignment::Start).with_value(0.5);
+        let push = MIN_FLING_VELOCITY + 100.0;
+        assert_eq!(
+            half_open.settle(push, WIDTH, TextDirection::Ltr),
+            SettleOutcome::Flung { opening: true }
+        );
+        assert_eq!(
+            half_open.settle(push, WIDTH, TextDirection::Rtl),
+            SettleOutcome::Flung { opening: false },
+            "the same push, the other way round"
+        );
+    }
+
+    #[test]
+    fn but_a_gentle_release_settles_by_position_in_either_reading() {
+        // Below the fling threshold the direction never enters into it, so
+        // both readings agree -- which is why the test above uses a fling.
+        let nearly_open = DrawerController::new(DrawerAlignment::Start).with_value(0.9);
+        for direction in [TextDirection::Ltr, TextDirection::Rtl] {
+            assert_eq!(
+                nearly_open.settle(1.0, WIDTH, direction),
+                SettleOutcome::SettledToNearest { opening: true },
+                "{direction:?}"
+            );
+        }
     }
 }

@@ -14065,3 +14065,48 @@ LeastSquaresSolver  -> gestures::fit_quadratic    ← 符号，私有
 留着这一条看得见的未解析，比让二十五条看不见强。
 
 coverage 2102 / 2101 记账 / 0 MISSING / **1 条未解析** / 79 条 concept。
+
+---
+
+## 抽屉在 RTL 下所有手势都是反的（2026-08-24）
+
+MISSING 归零之后，队列回到 `depth.py`。跑它，**它是坏的**——
+第 81 轮我改了 `coverage.classify` 的签名，`depth.py` 是调用方，
+而我此后三十来轮没再跑过它。**改了共享函数、留了个坏掉的调用方，三十轮没人发现。**
+先修好。
+
+修好之后看第一屏，大部分是它自己那个已经记录在案的高报模式
+（`Icons` 8826 个图标常量、三个 list tile、`RichText`/`RawImage`）。
+但 `DrawerControllerState` 0/6 是真的。
+
+### `_directionFactor` 是一个 2×2
+
+```dart
+return switch ((Directionality.of(context), widget.alignment)) {
+  (TextDirection.rtl, DrawerAlignment.start) => -1,
+  (TextDirection.rtl, DrawerAlignment.end)   => 1,
+  (TextDirection.ltr, DrawerAlignment.start) => 1,
+  (TextDirection.ltr, DrawerAlignment.end)   => -1,
+};
+```
+
+移植**只读了 alignment**：
+
+```rust
+match self.alignment {
+    DrawerAlignment::Start => 1.0,
+    DrawerAlignment::End => -1.0,
+}
+```
+
+在从左往右的阅读方向下是对的，**在从右往左的阅读方向下两个抽屉全反**。
+start 抽屉在那边是长在右边的，开它的那一划方向就反过来——
+于是一个想关抽屉的滑动会把它打开。
+
+两个参数**只在一起才有意义**：翻转任何一个都翻转答案，两个都翻转则不变。
+这是一个异或，不是两条规则；只读一个参数的实现，四种情形里最多对一半。
+测试直接钉这条结构，而不是把四个值列一遍。
+
+四个变异全红——**其中 M1 就是原来那个 bug**。
+
+coverage 2102 / 2101 记账 / 0 MISSING / 1 未解析 / 79 concept。
