@@ -307,12 +307,22 @@ def mapping_resolves(entry, rust_ids):
 def mapping_names_anything(entry, rust_ids, module_names):
     """Whether the entry names anything, ignoring its leading path component.
 
+    A row naming a *private* item -- `gestures::fit_quadratic` is one -- cannot
+    be verified here and is reported unresolved. Widening the sets to include
+    private declarations was tried and made the measurement worse, not better:
+    the leading-component rule drops the first token when it looks like
+    context, and once every declared name counts as context, real claims like
+    `Decoration::paint` lose the half that carries the claim. One unresolved
+    row became twenty-five. Better to leave the row visible and say in its note
+    why it cannot be checked.
+
     The leading component is context, not the claim. Letting it count was the
     first cut, and a mutation caught it: pointing `GestureDisposition` at
     `gestures::NoSuchTypeAnywhere` still resolved, because `gestures` is a
     module and that alone satisfied the check. Every entry in the ledger begins
     with a layer name, so the test would have passed for all of them no matter
-    what followed.
+    what followed -- which is also why widening the context set is exactly the
+    wrong repair.
     """
     target = entry if isinstance(entry, str) else entry.get('rust', '')
     tokens = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', target or '')
@@ -339,10 +349,22 @@ def classify(classes_by_file, rust_ids, ledger, module_names):
                 continue
             for c in classes:
                 if c in eq:
-                    yield layer, fname, c, (
-                        'mapped'
-                        if mapping_names_anything(eq[c], rust_ids, module_names)
-                        else 'mapping-unresolved')
+                    entry = eq[c]
+                    claims_symbol = (
+                        not isinstance(entry, dict) or 'rust' in entry)
+                    if not claims_symbol:
+                        # The row says outright that no single symbol answers
+                        # for this upstream type -- `ParentData` is stored in
+                        # each container's own fields, `RenderProxyBox` is
+                        # inlined into everything that would have extended it.
+                        # Counted apart rather than as `mapped`, so that
+                        # dropping the `rust:` field to silence the check is
+                        # visible in the summary instead of being a way out.
+                        yield layer, fname, c, 'mapped-concept'
+                    elif mapping_names_anything(entry, rust_ids, module_names):
+                        yield layer, fname, c, 'mapped'
+                    else:
+                        yield layer, fname, c, 'mapping-unresolved'
                 elif c in blocked_work:
                     yield layer, fname, c, 'blocked-work'
                 elif c in blocked:
@@ -361,7 +383,8 @@ def classify(classes_by_file, rust_ids, ledger, module_names):
 # counterpart for. Blocked-work says it wants it and has not built what it
 # stands on. Filing the second under the first would put a false statement
 # in the ledger and quietly retire work that is merely not done yet.
-ORDER = ['covered', 'mapped', 'blocked-engine', 'blocked-work', 'out-of-scope',
+ORDER = ['covered', 'mapped', 'mapped-concept', 'blocked-engine', 'blocked-work',
+         'out-of-scope',
          'mapping-unresolved', 'MISSING']
 # `mapping-unresolved` is not accounted. A ledger entry that names a Rust
 # symbol the crate does not have is a claim, not a port.
@@ -397,7 +420,8 @@ def main():
         counts = ' '.join(f'{s.split("-")[0]}:{len(v)}' for s, v in states.items() if v)
         print(f'{layer}/{fname}: {counts}')
         if not args.missing_only:
-            for s in ('mapped', 'blocked-engine', 'blocked-work', 'out-of-scope'):
+            for s in ('mapped', 'mapped-concept', 'blocked-engine', 'blocked-work',
+                      'out-of-scope'):
                 if states[s]:
                     print(f'    [{s}] {", ".join(states[s])}')
         if states['mapping-unresolved']:

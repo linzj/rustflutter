@@ -60,8 +60,8 @@
       "note": "borders.rs；path difference 挂账见 PORTING_STATUS"
     },
     "BoxPainter": {
-      "rust": "Decoration::paint",
-      "note": "无 painter 对象——直接绘制（decoration.rs），缓存位由引擎留存层承担"
+      "rust": "decoration::BoxDecoration::paint",
+      "note": "没有 painter 对象——直接绘制（decoration.rs），定位与描边都在里面。台账原来写的是 `Decoration::paint`，那个类型在本 crate 里不存在：真正对应上游 `_BoxDecorationPainter.paint` 的是 `BoxDecoration::paint`。第 114 轮把 rust: 字段和散文分开之后，这条才从 81 条噪声里露出来。"
     },
     "FractionalOffset": {
       "rust": "render::Alignment",
@@ -124,8 +124,7 @@
       "note": "占位数据已立，嵌入富文本待引擎 shaper 位——分歧见 PORTING_STATUS"
     },
     "PaintingBinding": {
-      "rust": "线程本地惰性初始化",
-      "note": "IMAGES/SHAPED 缓存与字体注册按需起，无显式 binding 单例"
+      "note": "线程本地惰性初始化。IMAGES/SHAPED 缓存与字体注册按需起，无显式 binding 单例"
     },
     "ValueKey": {
       "rust": "Option<u64>（foundation::keys::value）",
@@ -160,11 +159,9 @@
       "note": "crate 无 parentData 对象——子位置由容器持有（同 Stack/Wrap 的既有形态）"
     },
     "RenderProxyBox": {
-      "rust": "各具体代理盒（render.rs）",
-      "note": "crate 无代理基类——每个代理盒自带 child/size；RenderRef 即协议"
+      "note": "各具体代理盒（render.rs）。crate 无代理基类——每个代理盒自带 child/size；RenderRef 即协议"
     },
     "RenderProxyBoxMixin": {
-      "rust": "同上",
       "note": "基类机械件与基类一体"
     },
     "RenderProxyBoxWithHitTestBehavior": {
@@ -172,15 +169,13 @@
       "note": "hit-test behavior 已是 PointerRegion 的字段"
     },
     "RenderIgnoreBaseline": {
-      "rust": "代理盒默认基线路径（返回 None 的变体无消费者）",
-      "note": "需要时按 child 基线置 None 一行可加"
+      "note": "代理盒默认基线路径（返回 None 的变体无消费者）。需要时按 child 基线置 None 一行可加"
     },
     "RenderAnimatedOpacity": {
       "rust": "RenderOpacity + implicit::Animated",
       "note": "动画侧由 Animated<T> 驱动 opacity，fade 已走此路"
     },
     "RenderAnimatedOpacityMixin": {
-      "rust": "同上",
       "note": "mixin 与类一体"
     },
     "TableCellParentData": {
@@ -240,20 +235,17 @@
       "note": "PORTING_STATUS sliver 侧自陈的记录在案分歧"
     },
     "RenderSliverWithKeepAliveMixin": {
-      "rust": "同上",
       "note": "同上"
     },
     "RenderSliverBoxChildManager": {
-      "rust": "child_count+build_child 闭包",
-      "note": "管理器即计数与构建器（RenderSliverList 文档自陈）"
+      "note": "child_count+build_child 闭包。管理器即计数与构建器（RenderSliverList 文档自陈）"
     },
     "RenderSliverFixedExtentList": {
       "rust": "RenderSliverList::with_item_extent",
       "note": "widgets 层拼写到渲染层定长模式的同一路径"
     },
     "SliverMultiBoxAdaptorParentData": {
-      "rust": "SliverListItem.layout_offset",
-      "note": "索引与偏移由容器持有"
+      "note": "SliverListItem.layout_offset。索引与偏移由容器持有"
     },
     "RenderSliverMultiBoxAdaptor": {
       "rust": "RenderSliverList 的窗口机制",
@@ -284,8 +276,7 @@
       "note": "子取 min(maxExtent, incoming),geometry 同报"
     },
     "SliverGridParentData": {
-      "rust": "geometry_for_child_index 的逐子现算",
-      "note": "无 parentData 对象——tile 几何按索引推导"
+      "note": "geometry_for_child_index 的逐子现算。无 parentData 对象——tile 几何按索引推导"
     },
     "SliverGridLayout": {
       "rust": "SliverGridRegularTileLayout",
@@ -364,20 +355,16 @@
       "note": "枚举在此侧为常量"
     },
     "_PixelScrollCacheExtent/_ViewportScrollCacheExtent": {
-      "rust": "同上",
       "note": "私有变体不入账"
     },
     "ViewportOffset": {
-      "rust": "已入账",
-      "note": ""
+      "note": "已入账"
     },
     "RenderShiftedBox": {
-      "rust": "各具体位移盒（render.rs）",
-      "note": "crate 无基类——位移盒各自持有 child+child_offset"
+      "note": "各具体位移盒（render.rs）。crate 无基类——位移盒各自持有 child+child_offset"
     },
     "RenderAligningShiftedBox": {
-      "rust": "alignment.inscribe 的对齐位移",
-      "note": "对齐职责以 Alignment::inscribe 承载"
+      "note": "alignment.inscribe 的对齐位移。对齐职责以 Alignment::inscribe 承载"
     },
     "SingleChildLayoutDelegate": {
       "rust": "render::SingleChildLayoutDelegate trait",
@@ -396,8 +383,7 @@
       "note": "逐符号（_getInnerConstraints 的因子收紧）"
     },
     "MultiChildLayoutParentData": {
-      "rust": "已入账",
-      "note": ""
+      "note": "已入账"
     },
     "MultiChildLayoutDelegate": {
       "rust": "render::MultiChildLayoutDelegate trait + MultiChildLayoutContext",
@@ -412,8 +398,7 @@
       "note": "渲染协议即 trait 本身（layout/size/paint/update_from）；sliver 以 trait 方法扩展"
     },
     "ParentData": {
-      "rust": "各容器自有存储（offsets/parent_data 字段）",
-      "note": "无 parentData 对象——容器持有，ListBody/Stack/Table 等同形态"
+      "note": "各容器自有存储（offsets/parent_data 字段）。无 parentData 对象——容器持有，ListBody/Stack/Table 等同形态"
     },
     "PaintingContext": {
       "rust": "render::PaintContext",
@@ -424,7 +409,6 @@
       "note": "flushLayout/Paint 的等价物：布局脏列表从边界起帧、paint 脏列表 boundary 粒度（PORTING_STATUS\"这张表原先各项都已补上\"）"
     },
     "PipelineManifold": {
-      "rust": "同上",
       "note": "管线流形职责并入帧序"
     },
     "RenderObjectWithChildMixin": {
@@ -432,24 +416,20 @@
       "note": "单子容器即一个 Option"
     },
     "RenderObjectWithLayoutCallbackMixin": {
-      "rust": "未单独承载",
-      "note": "layout callback 面无消费者；随 LayoutBuilder 波次(E2)"
+      "note": "未单独承载。layout callback 面无消费者；随 LayoutBuilder 波次(E2)"
     },
     "ContainerParentDataMixin": {
-      "rust": "容器持有 children Vec",
-      "note": "与 ParentData 同账"
+      "note": "容器持有 children Vec。与 ParentData 同账"
     },
     "ContainerRenderObjectMixin": {
       "rust": "children: Vec<BoxedRender>",
       "note": "多子容器即 Vec"
     },
     "RelayoutWhenSystemFontsChangeMixin": {
-      "rust": "字体变更走整树重建",
-      "note": "crate 每帧重装配,无需字体变更脏标记"
+      "note": "字体变更走整树重建。crate 每帧重装配,无需字体变更脏标记"
     },
     "SemanticsAnnotationsMixin": {
-      "rust": "semantics.rs 的注解集合",
-      "note": "语义注解在语义桥内承载"
+      "note": "semantics.rs 的注解集合。语义注解在语义桥内承载"
     },
     "Layer": {
       "rust": "engine::RetainedLayer + LayerTree push/pop 序列",
@@ -544,16 +524,13 @@
       "note": "同一 entry"
     },
     "ContainerBoxParentData": {
-      "rust": "容器持有",
-      "note": "与 ParentData 同账"
+      "note": "容器持有。与 ParentData 同账"
     },
     "BoxParentData": {
-      "rust": "容器持有的 offset",
-      "note": "同上"
+      "note": "容器持有的 offset。同上"
     },
     "RendererBinding": {
-      "rust": "app.rs 帧序",
-      "note": "绑定职责在帧序（同 PipelineOwner 账）"
+      "note": "app.rs 帧序。绑定职责在帧序（同 PipelineOwner 账）"
     },
     "RenderingFlutterBinding": {
       "rust": "app.rs::run",
@@ -572,20 +549,16 @@
       "note": "devicePixelRatio/尺寸在视口度量里"
     },
     "RenderView": {
-      "rust": "app.rs 帧序的根装配",
-      "note": "RenderView 的装配/绘制职责在 App::render"
+      "note": "app.rs 帧序的根装配。RenderView 的装配/绘制职责在 App::render"
     },
     "MouseTracker": {
-      "rust": "gestures.rs 的逐设备 hover 跟踪",
-      "note": "hover 位移与 in/out 已在 PointerRegion；无独立 tracker 对象"
+      "note": "gestures.rs 的逐设备 hover 跟踪。hover 位移与 in/out 已在 PointerRegion；无独立 tracker 对象"
     },
     "TextParentData": {
-      "rust": "容器持有",
-      "note": "同 ParentData 账"
+      "note": "容器持有。同 ParentData 账"
     },
     "RenderInlineChildrenContainerDefaults": {
-      "rust": "paragraph 命中路径",
-      "note": "mixin 职责并入 RenderParagraph"
+      "note": "paragraph 命中路径。mixin 职责并入 RenderParagraph"
     },
     "layout_helper": {
       "rust": "RenderDecoratedBox 等的内联算法",
@@ -596,20 +569,17 @@
       "note": "sliver 装饰即 adapter 包装饰盒"
     },
     "RenderBoxContainerDefaultsMixin": {
-      "rust": "defaultPaint/defaultHitTestChildren 的内联形态",
-      "note": "各容器的 paint/hit_test_children 即此 mixin 的两个方法的展开"
+      "note": "defaultPaint/defaultHitTestChildren 的内联形态。各容器的 paint/hit_test_children 即此 mixin 的两个方法的展开"
     },
     "ChildLayoutHelper": {
-      "rust": "layout_child 调用点",
-      "note": "debugPaintSize 即 debug 断言"
+      "note": "layout_child 调用点。debugPaintSize 即 debug 断言"
     },
     "Animation": {
       "rust": "animation::Animation trait",
       "note": "value/status/addListener/removeListener 四面"
     },
     "AnimationWithParentMixin": {
-      "rust": "trait 默认实现",
-      "note": "mixin 并入 trait"
+      "note": "trait 默认实现。mixin 并入 trait"
     },
     "ProxyAnimation": {
       "rust": "animation::ProxyAnimation",
@@ -640,15 +610,13 @@
       "note": "恒值恒 Dismissed"
     },
     "CompoundAnimation": {
-      "rust": "Mean/Max/Min 三型即其具体形",
-      "note": "抽象基类由三具体承载"
+      "note": "Mean/Max/Min 三型即其具体形。抽象基类由三具体承载"
     },
     "AnimationLazyListenerMixin": {
       "rust": "AnimationListeners 的 add/remove",
       "note": "懒/急挂载 mixin 并入共用簿记"
     },
     "AnimationEagerListenerMixin": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimationLocalListenersMixin": {
@@ -756,8 +724,7 @@
       "note": "代理即 Provider 家族"
     },
     "ParentDataWidget": {
-      "rust": "容器自持 parent 数据（无独立 widget）",
-      "note": "Positioned/Flexible 等在容器参数里"
+      "note": "容器自持 parent 数据（无独立 widget）。Positioned/Flexible 等在容器参数里"
     },
     "InheritedWidget": {
       "rust": "framework::Provider + provide()",
@@ -768,7 +735,6 @@
       "note": "枚举分支即元素类别"
     },
     "StatelessElement": {
-      "rust": "同上",
       "note": "Component 分支"
     },
     "StatefulElement": {
@@ -784,8 +750,7 @@
       "note": "Provider 的下游"
     },
     "ParentDataElement": {
-      "rust": "容器持有",
-      "note": "同 ParentDataWidget"
+      "note": "容器持有。同 ParentDataWidget"
     },
     "RenderObjectElement": {
       "rust": "WidgetKind::Render 分支",
@@ -796,12 +761,10 @@
       "note": "分支之一"
     },
     "SingleChildRenderObjectElement": {
-      "rust": "SingleWidget 装配路径",
-      "note": "分支之一"
+      "note": "SingleWidget 装配路径。分支之一"
     },
     "MultiChildRenderObjectElement": {
-      "rust": "ManyWidget + update_children 六步",
-      "note": "分支之一——六步算法已逐符号对齐（PORTING_STATUS 回归线）"
+      "note": "ManyWidget + update_children 六步。分支之一——六步算法已逐符号对齐（PORTING_STATUS 回归线）"
     },
     "RootRenderObjectElement": {
       "rust": "ElementTree 自身",
@@ -812,8 +775,7 @@
       "note": "根装配职责在 mount"
     },
     "BuildScope": {
-      "rust": "整树重装配（每帧）",
-      "note": "无 build 脏区——crate 形态"
+      "note": "整树重装配（每帧）。无 build 脏区——crate 形态"
     },
     "BuildOwner": {
       "rust": "ElementTree 的帧序",
@@ -884,7 +846,6 @@
       "note": "变体"
     },
     "SelectAction": {
-      "rust": "同 ActivateAction",
       "note": "同上"
     },
     "DismissIntent": {
@@ -892,7 +853,6 @@
       "note": "变体"
     },
     "DismissAction": {
-      "rust": "同上",
       "note": "同上"
     },
     "PrioritizedIntents": {
@@ -900,8 +860,7 @@
       "note": "变体;dispatcher 逐个试"
     },
     "PrioritizedAction": {
-      "rust": "dispatcher 的 first_enabled 回退",
-      "note": "逐个试逻辑在 dispatcher"
+      "note": "dispatcher 的 first_enabled 回退。逐个试逻辑在 dispatcher"
     },
     "Actions": {
       "rust": "ActionDispatcher 的 actions map",
@@ -932,7 +891,6 @@
       "note": "registry+manager 并一:插入序匹配首中"
     },
     "ShortcutRegistry": {
-      "rust": "同上",
       "note": "同上"
     },
     "ShortcutRegistryEntry": {
@@ -956,11 +914,9 @@
       "note": "poll 形态——crate 无异步运行时,帧轮询;快照状态与 builder 契约同上游"
     },
     "StreamBuilder": {
-      "rust": "同上",
       "note": "同一 poll 形态"
     },
     "StreamBuilderBase": {
-      "rust": "同上",
       "note": "基类职责并入"
     },
     "AsyncSnapshot": {
@@ -980,7 +936,6 @@
       "note": "flight 记账"
     },
     "AnimatedWidgetBaseState": {
-      "rust": "同上",
       "note": "forEachTween 职责在 did_update_widget"
     },
     "BoxConstraintsTween": {
@@ -1016,47 +971,36 @@
       "note": "门面经 animated()"
     },
     "AnimatedPadding": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedAlign": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedOpacity": {
-      "rust": "同上（相册渐隐已在用）",
       "note": "同上"
     },
     "AnimatedPositioned": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedPositionedDirectional": {
-      "rust": "同上（resolve 后同路）",
       "note": "同上"
     },
     "AnimatedScale": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedRotation": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedSlide": {
-      "rust": "同上",
       "note": "同上"
     },
     "AnimatedDefaultTextStyle": {
-      "rust": "同上",
       "note": "TextStyle Lerp 接线"
     },
     "AnimatedPhysicalModel": {
-      "rust": "同上",
       "note": "RenderPhysicalModel 已在"
     },
     "AnimatedFractionallySizedBox": {
-      "rust": "同上",
       "note": "同上"
     },
     "SliverAnimatedOpacity": {
@@ -1064,8 +1008,7 @@
       "note": "两件已在,组合"
     },
     "TransitionBuilder": {
-      "rust": "build 闭包类型",
-      "note": "类型别名"
+      "note": "build 闭包类型。类型别名"
     },
     "ValueListenableBuilder": {
       "rust": "animated + ValueNotifier",
@@ -1124,31 +1067,26 @@
       "note": "Tab/Shift-Tab 已在;文本编辑系快捷键随 editable 扩展"
     },
     "DisposableBuildContext": {
-      "rust": "整树重装配——无挂卸生命周期",
-      "note": "crate 形态"
+      "note": "整树重装配——无挂卸生命周期。crate 形态"
     },
     "Form": {
       "rust": "FormState(editable.rs) 的表单聚合",
       "note": "既有"
     },
     "FormField": {
-      "rust": "editable.rs 的字段族",
-      "note": "随 TextField 已有底子"
+      "note": "editable.rs 的字段族。随 TextField 已有底子"
     },
     "FocusAttachment": {
       "rust": "focus.rs 的 Focus/focusable",
       "note": "既有"
     },
     "FocusTraversalPolicy": {
-      "rust": "focus.rs 遍历策略（NextFocusIntent 解析处）",
-      "note": "既有"
+      "note": "focus.rs 遍历策略（NextFocusIntent 解析处）。既有"
     },
     "WidgetOrderTraversalPolicy": {
-      "rust": "focus.rs 顺序遍历",
-      "note": "next()/previous() 即其实现"
+      "note": "focus.rs 顺序遍历。next()/previous() 即其实现"
     },
     "ReadingOrderTraversalPolicy": {
-      "rust": "同上（顺序即读序）",
       "note": "同上"
     },
     "NextFocusIntent": {
@@ -1166,7 +1104,6 @@
       "note": "PORTING_STATUS 形态差异条"
     },
     "LayoutBuilder": {
-      "rust": "同上",
       "note": "同上"
     },
     "SliverLayoutBuilder": {
@@ -1178,20 +1115,17 @@
       "note": "component 即其本体"
     },
     "AppLifecycleListener": {
-      "rust": "platform.rs 的 lifecycle 回调",
-      "note": "AppLifecycleState 已在 services"
+      "note": "platform.rs 的 lifecycle 回调。AppLifecycleState 已在 services"
     },
     "FractionalOffsetTween": {
       "rust": "transitions::AlignmentTween",
       "note": "FractionalOffset≙Alignment（同坐标系，已入账），其 tween 即 AlignmentTween"
     },
     "IgnoreBaseline": {
-      "rust": "代理盒默认基线路径",
-      "note": "同 RenderIgnoreBaseline 账——无消费者的返回 None 变体，需要时一行可加"
+      "note": "代理盒默认基线路径。同 RenderIgnoreBaseline 账——无消费者的返回 None 变体，需要时一行可加"
     },
     "DefaultAssetBundle": {
-      "rust": "image::root_bundle()",
-      "note": "crate 的 bundle 是全局根而非环境覆写；Localizations 波（E4）再谈按子树换 bundle"
+      "note": "image::root_bundle()。crate 的 bundle 是全局根而非环境覆写；Localizations 波（E4）再谈按子树换 bundle"
     },
     "WidgetToRenderBoxAdapter": {
       "rust": "widgets::boxed() / framework::leaf()",
@@ -1222,8 +1156,7 @@
       "note": "上游此件是\"不量测也知道 extent\"的优化；此侧量测在窗口内、窗口外按估算——与 RenderSliverList 既有的估算分歧同源"
     },
     "KeepAlive": {
-      "rust": "离窗即弃（记录在案分歧）",
-      "note": "同 AutomaticKeepAlive 账"
+      "note": "离窗即弃（记录在案分歧）。同 AutomaticKeepAlive 账"
     },
     "PointerAddedEvent": {
       "rust": "gestures::PointerEvent + PointerChange::Add",
@@ -1306,8 +1239,7 @@
       "note": "命中测试、事件分发、竞技场持有；帧序在 app.rs"
     },
     "PointerEventConverter": {
-      "rust": "app.rs 的 rf_dispatch_pointer 转换块",
-      "note": "physical→logical 按 view 的 devicePixelRatio 缩放，change/kind/signal 由 from_code 转枚举"
+      "note": "app.rs 的 rf_dispatch_pointer 转换块。physical→logical 按 view 的 devicePixelRatio 缩放，change/kind/signal 由 from_code 转枚举"
     },
     "DragDownDetails": {
       "rust": "gestures::DragEvent",
@@ -1390,11 +1322,9 @@
       "note": "此侧识别器不是对象而是路由器状态机的一支"
     },
     "OneSequenceGestureRecognizer": {
-      "rust": "同 GestureRecognizer",
       "note": "单指针序列即 ActivePointer 的生命周期"
     },
     "PrimaryPointerGestureRecognizer": {
-      "rust": "同 GestureRecognizer",
       "note": "主指针即 ActivePointer；deadline 由 GestureRouter::tick 走"
     },
     "OffsetPair": {
@@ -1415,7 +1345,7 @@
     },
     "LeastSquaresSolver": {
       "rust": "gestures::fit_quadratic",
-      "note": "Gram-Schmidt 解 solve(2)；上游的 per-sample 权重其唯一调用方恒传 1，故省去"
+      "note": "上游是个最小二乘求解器类，这里是一个二次拟合函数。**它是私有的**，而 `rust_identifiers` 故意不收非 pub 的自由函数（免得一个私有 helper `cubic` 冒充上游的曲线类）。所以这条是对的、而这把尺子验不了——和 `painting::matrix_utils` 指向模块是同一类情形。"
     },
     "PolynomialFit": {
       "rust": "fit_quadratic 的 [f32; 3] 系数",
@@ -1459,9 +1389,7 @@
       "rust": "拖拽回调直连 Scroll::scroll_by",
       "note": "手势侧的 on_drag_update 就是它，中间没有控制器对象"
     },
-    "DragScrollActivity": {
-      "rust": "同 ScrollDragController"
-    },
+    "DragScrollActivity": {},
     "ScrollContext": {
       "rust": "scrolling::Scroll + 持有它的组件",
       "note": "上游 context 提供 vsync/通知分发/setCanDrag；此侧分别是帧序、NotificationSink 与手势 handlers"
@@ -1597,20 +1525,16 @@
       "note": "此侧选区不是独立类型，是编辑值里的两个 UTF-16 下标"
     },
     "BindingBase": {
-      "rust": "app.rs 的应用实例",
-      "note": "同 RendererBinding/ServicesBinding/GestureBinding 各账——此侧没有 binding 基类，帧序与各面直接在 app.rs 装配"
+      "note": "app.rs 的应用实例。同 RendererBinding/ServicesBinding/GestureBinding 各账——此侧没有 binding 基类，帧序与各面直接在 app.rs 装配"
     },
     "AbstractNode": {
-      "rust": "无基类——各渲染对象自持 child/size",
-      "note": "同 RenderObject 账；深度/attach/detach 的簿记在 ElementTree 与 RenderRef 两侧"
+      "note": "无基类——各渲染对象自持 child/size。同 RenderObject 账；深度/attach/detach 的簿记在 ElementTree 与 RenderRef 两侧"
     },
     "ObserverList": {
       "rust": "ChangeNotifier 的 Vec<Rc<dyn Fn()>>",
       "note": "上游为\"多次 remove 也快\"而做的表；此侧列表短，retain 即可"
     },
-    "HashedObserverList": {
-      "rust": "同 ObserverList"
-    },
+    "HashedObserverList": {},
     "WriteBuffer": {
       "rust": "services::codec 的 Vec<u8> + write_value/write_size/write_alignment",
       "note": "上游把缓冲包成对象；此侧直接写进 Vec，8 字节对齐的填充规则一致"
@@ -1620,12 +1544,10 @@
       "note": "同上，读侧按偏移量前进并同样处理对齐"
     },
     "Factory": {
-      "rust": "Rust 闭包 / fn 指针",
-      "note": "上游为绕开 Dart 泛型构造器限制而设；Rust 不需要"
+      "note": "Rust 闭包 / fn 指针。上游为绕开 Dart 泛型构造器限制而设；Rust 不需要"
     },
     "CachingIterable": {
-      "rust": "Vec 物化",
-      "note": "上游缓存惰性序列的结果；此侧要复用就 collect 一次"
+      "note": "Vec 物化。上游缓存惰性序列的结果；此侧要复用就 collect 一次"
     },
     "SynchronousFuture": {
       "rust": "r#async::AsyncSnapshot::with_data",
@@ -1644,18 +1566,13 @@
       "note": "此侧手势探测器就是\"带 handlers 的命中区域\"；识别器不是对象，装配也就不需要 widget 包一层"
     },
     "RawGestureDetector": {
-      "rust": "同 GestureDetector",
       "note": "上游 raw 版的区别是自带识别器工厂，此侧识别器由 handlers 里有哪些回调决定"
     },
-    "RawGestureDetectorState": {
-      "rust": "同 GestureDetector"
-    },
+    "RawGestureDetectorState": {},
     "GestureRecognizerFactory": {
       "rust": "gestures::PointerHandlers 的 with_* 构造链"
     },
-    "GestureRecognizerFactoryWithHandlers": {
-      "rust": "同 GestureRecognizerFactory"
-    },
+    "GestureRecognizerFactoryWithHandlers": {},
     "Theme": {
       "rust": "theme::MaterialTheme",
       "note": "上游 Theme 是装 ThemeData 的 widget；此侧同名的 components::Theme 是值，故 widget 那半叫 MaterialTheme（两者一并 provide）"
@@ -1686,12 +1603,9 @@
       "note": "上游是 ShapeBorder 的抽象子类；此侧 ShapeBorder 是封闭枚举，两个具体输入边框各占一个变体，isOutline 即变体本身"
     },
     "ActionIconThemeData": {
-      "rust": "未做——四个字段全是 WidgetBuilder",
-      "note": "整个类由\"主题里放 widget 构建器\"组成，与 ButtonStyle 的两个 builder、MenuThemeData.submenuIcon 同一形态，此侧还没有这个位置。不是漏译，是同一条边界"
+      "note": "未做——四个字段全是 WidgetBuilder。整个类由\"主题里放 widget 构建器\"组成，与 ButtonStyle 的两个 builder、MenuThemeData.submenuIcon 同一形态，此侧还没有这个位置。不是漏译，是同一条边界"
     },
-    "ActionIconTheme": {
-      "rust": "同 ActionIconThemeData"
-    },
+    "ActionIconTheme": {},
     "ButtonBar": {
       "rust": "overflow_bar::OverflowBar",
       "note": "上游自己把它标了 @Deprecated(\"Use OverflowBar instead\")，并且它的 build 就是把子项交给一个会溢出成列的行——这里的对应物就是 OverflowBar 本身，不是另写一个已被弃用的壳。"
