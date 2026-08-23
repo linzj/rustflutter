@@ -36,9 +36,13 @@
 //! 4. **[`run_until_stalled`] checks both** -- the owning thread, and that it is
 //!    not already running.
 //!
-//! A thread that never called [`attach`] -- a decode worker, say -- has no
-//! executor, so [`spawn`] there answers `None` rather than parking a task
-//! nobody will ever poll.
+//! A thread that never attached has no executor, so [`spawn`] there answers
+//! `None` rather than parking a task nobody will ever poll. A worker that
+//! wants one anyway -- the `rf.image.N` decode pool, say -- gets a
+//! thread-local executor of its own from [`attach_local`] or
+//! [`attach_worker`], with the same four invariants: futures there are still
+//! `!Send` and still cannot reach the framework's `Rc` trees. That is the
+//! feature, not a limitation.
 //!
 //! # Recorded divergences
 //!
@@ -59,7 +63,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -70,25 +74,90 @@ pub type TaskId = u64;
 
 // -- Waking -------------------------------------------------------------------
 
-/// The host's "come back and drain me", and the `user_data` it takes.
+/// The host's "come back and drain me", in the two shapes it can take.
 ///
-/// Raw pointers are not `Send` and this one has to be: a decode worker
+/// `Host` is the C ABI form, and its `user_data` is why the lock matters:
+/// raw pointers are not `Send` and this one has to be -- a decode worker
 /// finishing wakes a task and must be able to ask the UI thread for a drain.
-/// Sound because the pointer is never dereferenced here -- it is handed back to
-/// the host, which owns whatever it points at -- and because [`Shared::poster`]
-/// is only read under the lock that [`detach`] takes to clear it, so no call
-/// can be in flight once the host has gone.
-struct Poster {
-    post_task: unsafe extern "C" fn(*mut c_void),
-    /// The framework's only clock other than the frame's, and `None` from a
-    /// host that has none. See [`sleep`].
-    post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
-    user_data: *mut c_void,
+/// Sound because the pointer is never dereferenced here -- it is handed back
+/// to the host, which owns whatever it points at -- and because
+/// [`Shared::poster`] is only read under the lock that [`detach`] takes to
+/// clear it, so no call can be in flight once the host has gone.
+///
+/// `Local` is the same door for a thread with no host behind it: a worker
+/// running its own executor wires [`attach_local`]'s closures in here. The
+/// closures are owned, so there is no `user_data` that could dangle -- but
+/// they are still called under the same lock, which keeps every request for
+/// a drain serialised and gives [`detach`] one guarantee to state for both
+/// shapes: after it returns, no call is in flight and none can begin.
+enum Poster {
+    /// The shell's task runner, reached through the C ABI.
+    Host {
+        post_task: unsafe extern "C" fn(*mut c_void),
+        /// The framework's only clock other than the frame's, and `None` from
+        /// a host that has none. See [`sleep`].
+        post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
+        user_data: *mut c_void,
+    },
+    /// Rust closures owned outright, for an executor with no shell behind it.
+    Local {
+        post_task: Box<dyn Fn() + Send>,
+        post_delayed_task: Option<Box<dyn Fn(Duration) + Send>>,
+    },
 }
 
 // SAFETY: see above. The pointer is opaque here and its owner outlives every
-// call, because the lock orders the last call before the clearing.
+// call, because the lock orders the last call before the clearing; the
+// closures own what they capture.
 unsafe impl Send for Poster {}
+
+impl Poster {
+    /// Asks for a drain now. Called with [`Shared::poster`] locked.
+    fn request_drain(&self) {
+        match self {
+            Poster::Host {
+                post_task,
+                user_data,
+                ..
+            } => {
+                // SAFETY: the lock is held, so `detach` cannot have run and
+                // the host is still there. See the note on `Poster`.
+                unsafe { post_task(*user_data) };
+            }
+            Poster::Local { post_task, .. } => post_task(),
+        }
+    }
+
+    /// Asks for a drain no sooner than `delay`, answering whether anyone took
+    /// it. Unlike [`Poster::request_drain`] this does not coalesce: two sleeps
+    /// with different deadlines want two.
+    fn request_delayed_drain(&self, delay: Duration) -> bool {
+        match self {
+            Poster::Host {
+                post_delayed_task,
+                user_data,
+                ..
+            } => {
+                let Some(post_delayed_task) = post_delayed_task else {
+                    return false;
+                };
+                let micros = i64::try_from(delay.as_micros()).unwrap_or(i64::MAX);
+                // SAFETY: as `request_drain`.
+                unsafe { post_delayed_task(*user_data, micros) };
+                true
+            }
+            Poster::Local {
+                post_delayed_task, ..
+            } => {
+                let Some(post_delayed_task) = post_delayed_task else {
+                    return false;
+                };
+                post_delayed_task(delay);
+                true
+            }
+        }
+    }
+}
 
 /// The part of the executor a [`Waker`] can reach, and therefore the only part
 /// that crosses threads. It carries ids; it never carries futures.
@@ -116,29 +185,19 @@ impl Shared {
         }
         let poster = self.poster.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(poster) = poster.as_ref() {
-            // SAFETY: the lock is held, so `detach` cannot have run and the
-            // host is still there. See the note on `Poster`.
-            unsafe { (poster.post_task)(poster.user_data) };
+            poster.request_drain();
         }
     }
 
-    /// Asks for a drain no sooner than `delay`. Unlike [`request_drain`] this
-    /// does not coalesce: two sleeps with different deadlines want two.
+    /// Asks for a drain no sooner than `delay`.
     ///
     /// Answers whether a host took it. `false` means the caller is on the frame
     /// clock, which is where every deadline in this crate was already.
     fn request_delayed_drain(&self, delay: Duration) -> bool {
         let poster = self.poster.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(poster) = poster.as_ref() else {
-            return false;
-        };
-        let Some(post_delayed_task) = poster.post_delayed_task else {
-            return false;
-        };
-        let micros = i64::try_from(delay.as_micros()).unwrap_or(i64::MAX);
-        // SAFETY: as `request_drain`.
-        unsafe { post_delayed_task(poster.user_data, micros) };
-        true
+        poster
+            .as_ref()
+            .map_or(false, |poster| poster.request_delayed_drain(delay))
     }
 }
 
@@ -320,14 +379,20 @@ pub fn attach(
     post_delayed_task: Option<unsafe extern "C" fn(*mut c_void, i64)>,
     user_data: *mut c_void,
 ) {
+    attach_with(post_task.map(|post_task| Poster::Host {
+        post_task,
+        post_delayed_task,
+        user_data,
+    }));
+}
+
+/// The body of [`attach`] and [`attach_local`]: an executor on this thread,
+/// with or without someone to ask for drains.
+fn attach_with(poster: Option<Poster>) {
     let shared = Arc::new(Shared {
         inbox: Mutex::new(Vec::new()),
         owner: std::thread::current().id(),
-        poster: Mutex::new(post_task.map(|post_task| Poster {
-            post_task,
-            post_delayed_task,
-            user_data,
-        })),
+        poster: Mutex::new(poster),
         posted: AtomicBool::new(false),
     });
     EXECUTOR.with(|executor| {
@@ -342,6 +407,133 @@ pub fn attach(
     });
 }
 
+// -- A worker's own executor --------------------------------------------------
+
+/// Attaches this thread's executor to Rust closures instead of the C ABI.
+///
+/// The UI thread's executor is wired to the shell's task runner through
+/// [`attach`]; any other thread has no shell behind it, and used to have no
+/// executor at all. This gives it one whose "come back and drain me" is a
+/// closure, so a worker can run async tasks the way the UI thread does. The
+/// thread-affinity invariants are unchanged: futures here are still `!Send`
+/// and resume only on this thread, so a task on this executor can no more
+/// reach the framework's `Rc` trees than one that never spawned. What may
+/// cross is what always could -- a `Waker`, carrying an id.
+///
+/// Most workers want [`attach_worker`] instead, which pre-wires this to a
+/// [`WorkerPark`].
+pub fn attach_local(
+    post_task: impl Fn() + Send + 'static,
+    post_delayed_task: impl Fn(Duration) + Send + 'static,
+) {
+    attach_with(Some(Poster::Local {
+        post_task: Box::new(post_task),
+        post_delayed_task: Some(Box::new(post_delayed_task)),
+    }));
+}
+
+/// The sleeping half of a worker's executor loop.
+///
+/// A worker has no message loop to return to, so the loop is written out
+/// longhand:
+///
+/// ```ignore
+/// let park = task::attach_worker();
+/// loop {
+///     task::run_until_stalled();
+///     match task::time_until_next_timer() {
+///         Some(delay) => park.wait_timeout(delay),
+///         None => park.wait(),
+///     };
+/// }
+/// ```
+///
+/// Both waits are on a flag set under the same mutex the poster's closure
+/// locks, so a wake that lands between "the drain found nothing" and "the
+/// wait began" is seen rather than slept through -- the lost-wakeup race the
+/// flag exists to close.
+pub struct WorkerPark {
+    /// A drain has been asked for since the last wait ended.
+    pending: Mutex<bool>,
+    cvar: Condvar,
+}
+
+impl WorkerPark {
+    /// What the poster's closure calls. The flag goes down under the lock
+    /// before the notify, which is what makes a wait unable to miss it.
+    fn poke(&self) {
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cvar.notify_one();
+    }
+
+    /// Sleeps until a drain is asked for, returning at once if one was asked
+    /// for since the last wait.
+    pub fn wait(&self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        while !*pending {
+            pending = self.cvar.wait(pending).unwrap_or_else(|e| e.into_inner());
+        }
+        *pending = false;
+    }
+
+    /// [`WorkerPark::wait`] with a deadline, for when a timer is armed.
+    /// Answers whether it woke on a signal (`true`) or on the clock (`false`);
+    /// the loop drains either way, so the distinction is for a caller that
+    /// counts.
+    pub fn wait_timeout(&self, timeout: Duration) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        while !*pending {
+            let (guard, timed_out) = self
+                .cvar
+                .wait_timeout(pending, timeout)
+                .unwrap_or_else(|e| e.into_inner());
+            pending = guard;
+            if timed_out.timed_out() {
+                break;
+            }
+        }
+        let asked = *pending;
+        *pending = false;
+        asked
+    }
+}
+
+/// Attaches a worker's executor and hands back the [`WorkerPark`] its loop
+/// sleeps on: the two closures [`attach_local`] takes, pre-wired.
+///
+/// The delayed half is deliberately a no-op. A timer can only be armed by a
+/// poll, a poll only happens on this thread inside a drain, and the loop
+/// re-reads [`time_until_next_timer`] after every one -- so by the time the
+/// loop parks, it already knows the nearest deadline, and there is no second
+/// clock to ask.
+pub fn attach_worker() -> Arc<WorkerPark> {
+    let park = Arc::new(WorkerPark {
+        pending: Mutex::new(false),
+        cvar: Condvar::new(),
+    });
+    let poster = Arc::clone(&park);
+    attach_local(move || poster.poke(), |_| {});
+    park
+}
+
+/// How long until the nearest armed timer comes due, for the worker loop's
+/// `wait_timeout`. `None` means no timer is armed and the loop may sleep
+/// until woken. A deadline already past answers `Some(Duration::ZERO)`
+/// rather than being treated as absent: the timer fires at the next drain
+/// either way, and parking is the one thing that must not happen.
+pub fn time_until_next_timer() -> Option<Duration> {
+    let now = Instant::now();
+    EXECUTOR.with(|executor| {
+        executor.borrow().as_ref().and_then(|executor| {
+            executor
+                .timers
+                .iter()
+                .map(|timer| timer.deadline.saturating_duration_since(now))
+                .min()
+        })
+    })
+}
+
 /// Clears the poster, then drops every task that has not finished.
 ///
 /// **Call this after [`services::detach`](crate::services::detach), not
@@ -351,8 +543,8 @@ pub fn attach(
 /// The order is the difference between a task that learns the platform is gone
 /// and one that simply vanishes.
 ///
-/// Clearing the poster first, and under the lock, is what makes
-/// [`Poster::user_data`] sound: after this returns, no thread is inside
+/// Clearing the poster first, and under the lock, is what makes the `Host`
+/// variant's `user_data` sound: after this returns, no thread is inside
 /// `post_task` and none can enter, so the host is free to go.
 pub fn detach() {
     let shared = EXECUTOR.with(|executor| {
@@ -1158,5 +1350,175 @@ mod tests {
         );
         drop(outer);
         assert!(!IN_FRAME_PHASE.with(Cell::get));
+    }
+
+    #[test]
+    fn a_worker_runs_a_task_on_its_own_executor() {
+        // The shape of the `rf.image.N` decode pool: a plain std thread with
+        // a local executor and no shell behind it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _park = attach_worker();
+            spawn(async move {
+                tx.send(42).unwrap();
+            });
+            assert!(run_until_stalled());
+            assert_eq!(pending(), 0, "the task finished in one drain");
+            detach();
+        })
+        .join()
+        .unwrap();
+        assert_eq!(rx.recv(), Ok(42));
+    }
+
+    #[test]
+    fn a_workers_sleep_fires_when_its_deadline_passes() {
+        // The standard loop, verbatim: drain, park until woken or the nearest
+        // timer comes due, drain again.
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let park = attach_worker();
+            let set = Arc::clone(&flag);
+            spawn(async move {
+                sleep(Duration::from_millis(20)).await;
+                set.store(true, Ordering::Release);
+            });
+            // Bounded, so a regression fails the test instead of hanging it.
+            for _ in 0..100 {
+                run_until_stalled();
+                if flag.load(Ordering::Acquire) {
+                    break;
+                }
+                match time_until_next_timer() {
+                    Some(delay) => {
+                        park.wait_timeout(delay);
+                    }
+                    None => park.wait(),
+                }
+            }
+            detach();
+        })
+        .join()
+        .unwrap();
+        assert!(done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_waker_crossing_into_a_worker_wakes_it_from_its_park() {
+        // The decode-pool case run backwards: work finishes elsewhere, and
+        // the task that awaited it is on the worker. Only the `Waker`
+        // crosses, and its wake must reach a worker that is already asleep.
+        struct Gate(Arc<AtomicBool>);
+        impl Future for Gate {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<()> {
+                if self.0.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+
+        let open = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let (waker_tx, waker_rx) = std::sync::mpsc::channel::<Waker>();
+        let worker_open = Arc::clone(&open);
+        let worker_done = Arc::clone(&done);
+        let worker = std::thread::spawn(move || {
+            let park = attach_worker();
+            let finished = Arc::new(AtomicBool::new(false));
+            let set = Arc::clone(&finished);
+            spawn(async move {
+                Gate(worker_open).await;
+                set.store(true, Ordering::Release);
+            });
+            run_until_stalled();
+            // Hand the waker out so the other thread can do the waking.
+            let waker = EXECUTOR.with(|executor| {
+                let slot = executor.borrow();
+                slot.as_ref()
+                    .unwrap()
+                    .tasks
+                    .values()
+                    .next()
+                    .unwrap()
+                    .waker
+                    .clone()
+            });
+            waker_tx.send(waker).unwrap();
+            for _ in 0..100 {
+                // Timed rather than bare, for the same reason as above.
+                park.wait_timeout(Duration::from_millis(500));
+                run_until_stalled();
+                if finished.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+            detach();
+            worker_done.store(finished.load(Ordering::Acquire), Ordering::Release);
+        });
+
+        let waker = waker_rx.recv().unwrap();
+        open.store(true, Ordering::Release);
+        waker.wake();
+        worker.join().unwrap();
+        assert!(
+            done.load(Ordering::Acquire),
+            "the wake reached the parked worker"
+        );
+    }
+
+    #[test]
+    fn a_detached_worker_stops_asking_and_refuses_new_tasks() {
+        // Same guarantee `detaching_clears_the_poster_before_the_host_goes`
+        // pins for the C shape, for the closure shape: after detach, no wake
+        // reaches the closures and no new task is accepted.
+        std::thread::spawn(|| {
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = Arc::clone(&asked);
+            attach_local(
+                move || {
+                    count.fetch_add(1, Ordering::AcqRel);
+                },
+                |_| {},
+            );
+            let (sender, receiver) = oneshot::<i32>();
+            spawn(async move {
+                let _ = receiver.await;
+            });
+            assert_eq!(
+                asked.load(Ordering::Acquire),
+                1,
+                "spawning asks for a drain"
+            );
+            run_until_stalled();
+
+            let waker = EXECUTOR.with(|executor| {
+                let slot = executor.borrow();
+                slot.as_ref()
+                    .unwrap()
+                    .tasks
+                    .values()
+                    .next()
+                    .unwrap()
+                    .waker
+                    .clone()
+            });
+            detach();
+
+            assert!(!is_attached());
+            assert_eq!(spawn(async {}), None, "no executor, no task");
+            waker.wake();
+            assert_eq!(
+                asked.load(Ordering::Acquire),
+                1,
+                "a wake after detach reaches nobody"
+            );
+            drop(sender);
+        })
+        .join()
+        .unwrap();
     }
 }

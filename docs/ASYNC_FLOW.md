@@ -238,8 +238,14 @@ snackbar 到期、双击等第二下——都留在帧时钟上：一个在两�
 
 ### 没有执行器的线程
 
-`EXECUTOR` 是 `thread_local`，worker 上是 `None`，`spawn()` 返回 `None`，future
-当场丢弃。**不是漏，是设计**——一个没人 poll 的任务是伪装成正常的泄漏。
+`EXECUTOR` 是 `thread_local`，没 attach 的线程上是 `None`，`spawn()` 返回
+`None`，future 当场丢弃。**不是漏，是设计**——一个没人 poll 的任务是伪装成正常的泄漏。
+
+worker 想要执行器现在可以自带：`attach_worker()` 在本线程装配一个，poster
+从 C 回调换成两个 Rust 闭包，配一个 `WorkerPark`（flag 与 condvar 在同一把锁下，
+「检查与等待之间丢信号」的竞态由 flag 关掉）写出标准循环——排空，睡到下一次唤醒
+或最近 timer 到期（`time_until_next_timer()`），再排空。四条线程亲和不变式原样
+成立：future 仍然 `!Send`、摸不到框架的 Rc 树；跨线程的仍然只有 `Waker`。
 
 ---
 
