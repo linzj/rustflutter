@@ -1152,15 +1152,28 @@ thread_local! {
     static IMAGES: RefCell<ImageCache> = RefCell::new(ImageCache::new());
 }
 
+/// Reaches the cache, having first checked that this is the thread that has
+/// one.
+///
+/// Worse here than for the messenger: `ImageCache::new` spawns workers, so
+/// touching this from another thread does not merely miss the cache -- it
+/// stands up a second decode pool, on a thread that will never draw. The
+/// comment on `ImageCache` states the assumption ("one pool per thread that
+/// builds, which in practice means one"); this is what enforces it.
+fn with_images<R>(body: impl FnOnce(&mut ImageCache) -> R) -> R {
+    crate::task::debug_assert_ui_thread("the image cache");
+    IMAGES.with(|images| body(&mut images.borrow_mut()))
+}
+
 /// Drops a cache entry, upstream `ImageCache.evict` narrowed to the key
 /// spellings the crate caches under. Whether anything was there.
 pub fn image_cache_evict(key: &str) -> bool {
-    IMAGES.with(|images| images.borrow_mut().entries.remove(key).is_some())
+    with_images(|images| images.entries.remove(key).is_some())
 }
 
 /// Upstream `ImageCache.statusForKey`, in the three states the slot has.
 pub fn image_cache_status(key: &str) -> crate::image::ImageCacheStatus {
-    IMAGES.with(|images| match images.borrow().entries.get(key) {
+    with_images(|images| match images.entries.get(key) {
         Some(Slot::Decoding) => crate::image::ImageCacheStatus::Pending,
         Some(Slot::Done(Some(_))) => crate::image::ImageCacheStatus::Live,
         _ => crate::image::ImageCacheStatus::Uncached,
@@ -1172,8 +1185,7 @@ pub fn image_cache_status(key: &str) -> crate::image::ImageCacheStatus {
 /// A frame that sees this true has drawn without an image it wanted and should
 /// ask for another; that is how the picture arrives once it is ready.
 pub fn images_pending() -> bool {
-    IMAGES.with(|images| {
-        let mut images = images.borrow_mut();
+    with_images(|images| {
         images.collect();
         images.outstanding > 0
     })
@@ -1190,8 +1202,7 @@ pub fn images_pending() -> bool {
 /// is calling it, which is the same machinery `InheritedWidget` dependency
 /// tracking wants.
 pub fn take_images_arrived() -> bool {
-    IMAGES.with(|images| {
-        let mut images = images.borrow_mut();
+    with_images(|images| {
         images.collect();
         std::mem::replace(&mut images.arrived, false)
     })
@@ -1203,8 +1214,7 @@ pub fn take_images_arrived() -> bool {
 /// get right -- a headless render, a golden -- can rebuild once and know the
 /// result is complete.
 pub fn wait_for_images() -> bool {
-    IMAGES.with(|images| {
-        let mut images = images.borrow_mut();
+    with_images(|images| {
         let waited = images.outstanding > 0;
         images.wait();
         waited
@@ -1289,7 +1299,7 @@ impl Image {
     /// Thread-local, because a decoded image is a raw engine handle and the UI
     /// thread is the only one that builds.
     pub fn shared(key: &str, data: &[u8]) -> Option<Rc<Image>> {
-        IMAGES.with(|images| images.borrow_mut().get_or_request(key, data))
+        with_images(|images| images.get_or_request(key, data))
     }
 
     /// Decodes `data` on this thread, blocking until it is done.
@@ -1297,7 +1307,7 @@ impl Image {
     /// For the paths that have exactly one frame to get right and no next frame
     /// to fall back on -- a headless render, a golden test.
     pub fn shared_now(key: &str, data: &[u8]) -> Option<Rc<Image>> {
-        IMAGES.with(|images| images.borrow_mut().get_or_decode(key, data))
+        with_images(|images| images.get_or_decode(key, data))
     }
 }
 

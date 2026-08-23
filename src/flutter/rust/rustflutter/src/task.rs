@@ -200,6 +200,77 @@ impl Drop for FramePhase {
     }
 }
 
+// -- The framework's thread ---------------------------------------------------
+
+/// The thread `rf_app_create` ran on, while an application is running.
+///
+/// Only compiled in debug builds: it exists to fail a test or a debug run, and
+/// a release build should not pay a lock for it.
+#[cfg(debug_assertions)]
+static UI_THREAD: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+/// Records this thread as the framework's. Called from `rf_app_create`.
+pub fn adopt_ui_thread() {
+    #[cfg(debug_assertions)]
+    {
+        *UI_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
+    }
+}
+
+/// Gives the claim up, so the next application on any thread can make it.
+/// Called from `rf_app_destroy`.
+pub fn release_ui_thread() {
+    #[cfg(debug_assertions)]
+    {
+        *UI_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Fails if called from anywhere but the framework's thread.
+///
+/// The framework's state is `Rc` and `thread_local` throughout, so reaching it
+/// from a worker does not race -- it finds a *different*, empty copy. That is
+/// worse than a race, because it does not look like a failure:
+/// [`services::send_with_reply`](crate::services::send_with_reply) on a decode
+/// worker meets a messenger with no sink and answers `None` at once, which
+/// reads exactly like a platform with no plugin installed. This turns that
+/// silence into a panic.
+///
+/// A no-op when no application is running, which is every unit test and every
+/// headless render: those legitimately drive the framework from whatever thread
+/// they are on, one thread at a time.
+pub fn debug_assert_ui_thread(what: &str) {
+    #[cfg(debug_assertions)]
+    {
+        let owner = *UI_THREAD.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            reaches_the_real_state(owner, std::thread::current().id()),
+            "{what} reached from off the framework's thread; it would have \
+             found an empty copy of the state rather than the real one"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = what;
+}
+
+/// The decision [`debug_assert_ui_thread`] makes, as a value rather than a
+/// panic.
+///
+/// Separate so it can be tested. The assertion itself cannot be: the claim is
+/// process-wide, the test harness runs thousands of tests on threads of its
+/// own, and a test that claimed the thread even briefly would fail whichever of
+/// them happened to touch the messenger at that moment. The claim is made once
+/// per application, by `rf_app_create`, and no test creates one.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn reaches_the_real_state(owner: Option<ThreadId>, current: ThreadId) -> bool {
+    match owner {
+        // No application running: whatever thread is driving is the only one,
+        // which is every unit test and every headless render.
+        None => true,
+        Some(owner) => owner == current,
+    }
+}
+
 /// Creates this thread's executor and binds it to the host's task runner.
 ///
 /// `post_task` may be `None`: the executor then still works, but nothing asks
@@ -760,6 +831,32 @@ mod tests {
         // And the drain is fine once the phase is over.
         assert!(!run_until_stalled());
         detach();
+    }
+
+    #[test]
+    fn an_unclaimed_framework_thread_lets_everyone_through() {
+        // The state the whole test suite runs in, and a headless render too.
+        let here = std::thread::current().id();
+        let elsewhere = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .unwrap();
+        assert!(reaches_the_real_state(None, here));
+        assert!(reaches_the_real_state(None, elsewhere));
+        // And the assertion agrees, since nothing has claimed it.
+        debug_assert_ui_thread("a test");
+    }
+
+    #[test]
+    fn a_claimed_framework_thread_admits_only_itself() {
+        let owner = std::thread::current().id();
+        let other = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .unwrap();
+        assert!(reaches_the_real_state(Some(owner), owner));
+        assert!(
+            !reaches_the_real_state(Some(owner), other),
+            "a decode worker reaching the messenger finds an empty one"
+        );
     }
 
     #[test]

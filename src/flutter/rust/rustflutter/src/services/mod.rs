@@ -304,6 +304,10 @@ thread_local! {
 /// `body` must not call back into this module. Everything below respects that
 /// by finishing with the messenger before running any handler or callback.
 fn with_messenger<R>(body: impl FnOnce(&mut Messenger) -> R) -> R {
+    // The one choke point, so the check costs one line rather than eleven.
+    // Off the framework's thread this thread_local is a *different* messenger
+    // with no sink, and every send would be answered `None` without a word.
+    crate::task::debug_assert_ui_thread("the platform messenger");
     MESSENGER.with(|messenger| body(&mut messenger.borrow_mut()))
 }
 

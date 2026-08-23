@@ -1173,6 +1173,10 @@ mod abi {
         // Windows embedder sends the lifecycle state as soon as the window is
         // up. Buffering catches those, but only once there is somewhere to
         // buffer them.
+        // Claimed before anything reaches the messenger or the image cache, so
+        // that the very first stray call from another thread is the one that
+        // fails rather than the tenth.
+        crate::task::adopt_ui_thread();
         services::attach(sink);
         // On this thread, which is the UI thread and the only one that will
         // ever hold futures. `host` is copied into the poster, so a worker
@@ -1207,6 +1211,9 @@ mod abi {
         // no thread is inside `post_task` and none can enter -- which is what
         // makes the shell safe to tear down behind it.
         crate::task::detach();
+        // Given up last: everything above is entitled to check it, and the next
+        // application may well come up on a different thread.
+        crate::task::release_ui_thread();
         // Thread-local as well, and for the same reason: a second app on this
         // thread must not start out believing the first one's platform state.
         platform::reset();
