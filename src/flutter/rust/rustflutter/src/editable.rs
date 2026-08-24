@@ -2191,3 +2191,153 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod painted_field_tests {
+    //! What a field puts on the glass, through what the canvas was told.
+    //!
+    //! Three of the rules here are written in comments beside the code and
+    //! were, until the stubs started recording, comments and nothing else: the
+    //! selection goes down before the glyphs, a run crossing a wrap is one
+    //! rectangle per line, and there is no caret while a run is selected.
+    //!
+    //! The glyphs themselves are a paragraph, which the recorder does not read
+    //! back. So what is pinned is where the rectangles are and in what order,
+    //! not what the text looks like.
+    //!
+    //! # What cannot be asked here yet
+    //!
+    //! Anything that depends on text having a size. `rf_paragraph_width` and
+    //! `rf_paragraph_height` in the stubs return a hard zero, so every string
+    //! measures nought by nought and nothing ever wraps -- a selection over
+    //! seventeen characters in a sixty-pixel box comes out as one rectangle
+    //! from (0,0) to (0,0).
+    //!
+    //! Two tests about wrapping were written here and taken out again. One
+    //! failed honestly. The other -- that each rectangle of a wrapped
+    //! selection sits on its own line -- **passed**, because with a single
+    //! rectangle its loop had nothing to iterate over. A test that passes by
+    //! having nothing to check is worse than the gap it conceals, so both are
+    //! gone until the stub can measure a string.
+
+    use super::{MaxLines, RenderEditable, TextEditingValue};
+    use crate::engine::{Color, LayerTree, TextStyle};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const CARET: Color = Color(0xffaa0000);
+    const SELECTION: Color = Color(0xff00aa00);
+    const TEXT: Color = Color(0xff0000aa);
+
+    fn field(text: &str, base: usize, extent: usize) -> RenderEditable {
+        let mut value = TextEditingValue::new(text);
+        value.selection_base = base as i32;
+        value.selection_extent = extent as i32;
+        let mut style = TextStyle::default();
+        style.color = TEXT;
+        RenderEditable::new(value)
+            .with_style(style)
+            .with_caret(CARET, true)
+            .with_selection_color(SELECTION)
+    }
+
+    fn painted(mut field: RenderEditable, width: f32) -> Vec<Drawn> {
+        field.layout(BoxConstraints::loose(width, 400.0));
+        let mut layers = LayerTree::new(600, 600);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(600.0, 600.0));
+            field.paint(&mut context, Offset::ZERO);
+        }
+        drawn()
+    }
+
+    fn rects(calls: &[Drawn]) -> Vec<(f32, f32, f32, f32, u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    argb,
+                } => Some((*left, *top, *right, *bottom, *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_collapsed_selection_draws_a_caret_and_no_highlight() {
+        let calls = painted(field("hello", 3, 3), 300.0);
+        let marks = rects(&calls);
+        assert_eq!(marks.len(), 1, "{calls:?}");
+        assert_eq!(marks[0].4, CARET.0);
+    }
+
+    #[test]
+    fn and_a_selected_run_draws_a_highlight_and_no_caret() {
+        // Upstream paints a caret only for a collapsed selection, and the
+        // reason is in the comment beside it: a caret at the extent of a
+        // highlighted run reads as a second, contradictory insertion point.
+        let calls = painted(field("hello", 1, 4), 300.0);
+        let marks = rects(&calls);
+        assert_eq!(marks.len(), 1, "{calls:?}");
+        assert_eq!(marks[0].4, SELECTION.0, "the highlight, and only it");
+        assert!(
+            !marks.iter().any(|mark| mark.4 == CARET.0),
+            "no caret while a run is selected"
+        );
+    }
+
+    #[test]
+    fn the_highlight_is_the_first_mark_of_the_frame() {
+        // As far as this can see. The rule beside the code is that the
+        // highlight goes down *before the glyphs*, because a filled rectangle
+        // drawn after them would cover the text it is meant to be
+        // highlighting -- and that half cannot be checked here, because
+        // paragraphs are not recorded and there is no glyph in the list to be
+        // before.
+        //
+        // What is checked is that nothing else gets in first, which is the
+        // part that would break if the block moved below the caret or the
+        // composing underline.
+        let calls = painted(field("hello", 1, 4), 300.0);
+        let highlight = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Rect { argb, .. } if *argb == SELECTION.0))
+            .expect("the highlight");
+        assert_eq!(highlight, 0, "the first thing drawn: {calls:?}");
+    }
+
+    #[test]
+    fn an_empty_field_showing_a_hint_still_draws_its_caret() {
+        // The placeholder is a paragraph and the caret is a rectangle, so the
+        // caret is the only one of the two this can see -- which is the case
+        // worth pinning anyway: a field with nothing in it still says where
+        // typing will go.
+        let calls = painted(field("", 0, 0), 300.0);
+        assert_eq!(rects(&calls).len(), 1, "{calls:?}");
+        assert_eq!(rects(&calls)[0].4, CARET.0);
+    }
+
+    #[test]
+    fn a_field_told_not_to_show_a_caret_shows_none() {
+        let hidden = field("hello", 3, 3).with_caret(CARET, false);
+        assert!(rects(&painted(hidden, 300.0)).is_empty());
+    }
+
+    #[test]
+    fn a_single_line_field_wraps_nothing_however_narrow_it_is() {
+        // MaxLines::One is upstream's `maxLines: 1`, which turns wrapping off
+        // rather than clipping it -- so the highlight stays one rectangle.
+        let narrow = field("hello world again", 0, 17);
+        // Single is the default, so this is the ordinary case.
+        let highlights = rects(&painted(narrow, 60.0))
+            .into_iter()
+            .filter(|mark| mark.4 == SELECTION.0)
+            .count();
+        assert_eq!(highlights, 1);
+    }
+}
