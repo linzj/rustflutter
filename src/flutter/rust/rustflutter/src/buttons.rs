@@ -99,10 +99,37 @@ impl Default for ButtonElevations {
 
 /// Upstream `RawMaterialButton`: `Semantics`, `Material` and `InkWell`, and
 /// nothing else. Everything Material calls a button is built on this.
+/// Upstream `MaterialTapTargetSize`: whether a control is padded out to the
+/// minimum touch target or left the size it drew itself.
+///
+/// Upstream declares it in `theme_data.dart` because it is a theme-wide
+/// default that individual controls override; it lives here because this is
+/// the first control in the crate that reads one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MaterialTapTargetSize {
+    /// Expanded to [`MIN_INTERACTIVE_DIMENSION`] in both directions, which is
+    /// upstream's default and the accessible answer: a control smaller than
+    /// forty-eight points is one a finger cannot reliably hit.
+    #[default]
+    Padded,
+    /// Left alone. For a control in a dense row where the padding would push
+    /// its neighbours apart -- upstream's own example is a button inside a
+    /// list tile that already has a tap target of its own.
+    ShrinkWrap,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RawMaterialButton {
     pub elevations: ButtonElevations,
     pub has_on_pressed: bool,
+    /// Upstream's `constraints`, whose default is
+    /// `BoxConstraints(minWidth: 88.0, minHeight: 36.0)`.
+    ///
+    /// **Not the tap target**, and the difference is the point -- see
+    /// [`RawMaterialButton::tap_target_min`].
+    pub min_width: f32,
+    pub min_height: f32,
+    pub tap_target_size: MaterialTapTargetSize,
 }
 
 impl RawMaterialButton {
@@ -110,6 +137,54 @@ impl RawMaterialButton {
         RawMaterialButton {
             elevations: ButtonElevations::new(),
             has_on_pressed: true,
+            min_width: Self::DEFAULT_MIN_WIDTH,
+            min_height: Self::DEFAULT_MIN_HEIGHT,
+            tap_target_size: MaterialTapTargetSize::Padded,
+        }
+    }
+
+    /// Upstream's default `constraints.minWidth`.
+    ///
+    /// Eighty-eight is a Material 1 number that has outlived its own
+    /// specification -- it is what a button had to be wide enough for two
+    /// words at the old type scale -- and it is still the default because
+    /// changing it would move every button in every application built on this
+    /// class.
+    pub const DEFAULT_MIN_WIDTH: f32 = 88.0;
+    /// Upstream's default `constraints.minHeight`.
+    pub const DEFAULT_MIN_HEIGHT: f32 = 36.0;
+
+    /// Upstream's `minSize`, from the switch on `materialTapTargetSize`.
+    ///
+    /// # Two minimums that are not the same minimum
+    ///
+    /// A button's `constraints` say how big it *draws*: 88 by 36 by default.
+    /// Its tap target says how big it *is to a finger*: 48 by 48. The second
+    /// is larger in one direction and smaller in the other, so neither
+    /// contains the other and a control has to carry both.
+    ///
+    /// A default button is therefore 88 wide and 36 tall with twelve points of
+    /// invisible target above and below it -- which is why two buttons in a
+    /// row can look separated and still have touch regions that meet.
+    ///
+    /// `shrinkWrap` gives up the target entirely rather than shrinking it,
+    /// which is upstream's `Size.zero` and not a smaller minimum: a control
+    /// that opts out is saying something else owns the target, not that a
+    /// smaller one will do.
+    ///
+    /// The density adjustment is added rather than multiplied, and it can be
+    /// negative -- upstream asserts the result is not, which is a real
+    /// possibility at the minimum density.
+    pub fn tap_target_min(&self, density: crate::theme::VisualDensity) -> (f32, f32) {
+        match self.tap_target_size {
+            MaterialTapTargetSize::ShrinkWrap => (0.0, 0.0),
+            MaterialTapTargetSize::Padded => {
+                let (dx, dy) = density.base_size_adjustment();
+                (
+                    (MIN_INTERACTIVE_DIMENSION + dx).max(0.0),
+                    (MIN_INTERACTIVE_DIMENSION + dy).max(0.0),
+                )
+            }
         }
     }
 
@@ -365,6 +440,7 @@ mod tests {
                 disabled: 5.0,
             },
             has_on_pressed: true,
+            ..RawMaterialButton::new()
         }
     }
 
@@ -1495,6 +1571,108 @@ mod elevation_precedence_tests {
         assert_eq!(
             e.for_state(false, false, true, false),
             e.for_state(false, false, false, true)
+        );
+    }
+}
+
+#[cfg(test)]
+mod tap_target_tests {
+    use super::{MIN_INTERACTIVE_DIMENSION, MaterialTapTargetSize, RawMaterialButton};
+    use crate::theme::VisualDensity;
+
+    #[test]
+    fn a_button_draws_at_one_minimum_and_is_touched_at_another() {
+        // 88 by 36 is what it draws; 48 by 48 is what a finger gets. Neither
+        // contains the other -- the target is wider in one direction and
+        // narrower in the other -- so a control has to carry both, and this is
+        // the assertion that says they are two numbers rather than one.
+        let button = RawMaterialButton::new();
+        assert_eq!(button.min_width, 88.0);
+        assert_eq!(button.min_height, 36.0);
+        assert_eq!(
+            button.tap_target_min(VisualDensity::default()),
+            (MIN_INTERACTIVE_DIMENSION, MIN_INTERACTIVE_DIMENSION)
+        );
+        assert!(
+            button.min_width > MIN_INTERACTIVE_DIMENSION,
+            "wider than its target"
+        );
+        assert!(
+            button.min_height < MIN_INTERACTIVE_DIMENSION,
+            "and shorter than it"
+        );
+    }
+
+    #[test]
+    fn shrink_wrap_gives_the_target_up_rather_than_shrinking_it() {
+        // Upstream's `Size.zero`, and it says something different from a
+        // smaller minimum: a control that opts out is saying something else
+        // owns the target, not that less will do.
+        let mut button = RawMaterialButton::new();
+        button.tap_target_size = MaterialTapTargetSize::ShrinkWrap;
+        assert_eq!(button.tap_target_min(VisualDensity::default()), (0.0, 0.0));
+    }
+
+    #[test]
+    fn density_moves_the_target_and_leaves_the_drawn_minimum_alone() {
+        // The adjustment is added to the tap target only. A dense button still
+        // draws no smaller than 88 by 36; what changes is how much invisible
+        // room it claims around itself.
+        let button = RawMaterialButton::new();
+        let dense = VisualDensity {
+            horizontal: -2.0,
+            vertical: -2.0,
+        };
+        let (dx, dy) = dense.base_size_adjustment();
+        assert!(dx < 0.0 && dy < 0.0, "a denser control claims less");
+        assert_eq!(
+            button.tap_target_min(dense),
+            (
+                MIN_INTERACTIVE_DIMENSION + dx,
+                MIN_INTERACTIVE_DIMENSION + dy
+            )
+        );
+        assert_eq!(button.min_width, 88.0, "the drawn minimum is untouched");
+        assert_eq!(button.min_height, 36.0);
+    }
+
+    #[test]
+    fn the_target_never_goes_negative() {
+        // Upstream asserts this rather than clamping, and at the minimum
+        // density the adjustment is large enough that the assert is doing
+        // real work -- so it is worth being a number here rather than a
+        // panic.
+        let mut button = RawMaterialButton::new();
+        for horizontal in [VisualDensity::MINIMUM, -2.0, 0.0, VisualDensity::MAXIMUM] {
+            let density = VisualDensity {
+                horizontal,
+                vertical: horizontal,
+            };
+            let (width, height) = button.tap_target_min(density);
+            assert!(
+                width >= 0.0 && height >= 0.0,
+                "{horizontal}: {width}x{height}"
+            );
+        }
+        button.tap_target_size = MaterialTapTargetSize::ShrinkWrap;
+        let (width, height) = button.tap_target_min(VisualDensity {
+            horizontal: VisualDensity::MINIMUM,
+            vertical: VisualDensity::MINIMUM,
+        });
+        assert_eq!((width, height), (0.0, 0.0), "and shrink-wrap is still zero");
+    }
+
+    #[test]
+    fn padded_is_what_a_button_does_unless_told_otherwise() {
+        // Upstream's default, and the accessible one: a control smaller than
+        // forty-eight points is one a finger cannot reliably hit.
+        assert_eq!(
+            RawMaterialButton::new().tap_target_size,
+            MaterialTapTargetSize::Padded
+        );
+        assert_eq!(
+            MaterialTapTargetSize::default(),
+            MaterialTapTargetSize::Padded
         );
     }
 }
