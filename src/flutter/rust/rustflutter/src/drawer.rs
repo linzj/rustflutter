@@ -30,6 +30,9 @@
 
 use std::cell::RefCell;
 
+use crate::animation::AnimationStatus;
+use crate::routes::LocalHistoryEntry;
+
 use crate::direction::TextDirection;
 use crate::framework::{AnyWidget, BuildContext, Component, leaf, single};
 use crate::render::{BoxConstraints, RenderConstrainedBox};
@@ -302,6 +305,28 @@ pub enum SettleOutcome {
     SettledToNearest { opening: bool },
 }
 
+/// Upstream's `open` and `close` -- the two commands a caller can give a
+/// drawer, as opposed to the drag that [`DrawerController::settle`] judges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawerCommand {
+    Open,
+    Close,
+}
+
+/// What one animation status does to the drawer's entry in the route's local
+/// history -- the thing that makes a back press close it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryEntryChange {
+    /// Upstream's `_ensureHistoryEntry`, which is idempotent: it adds one only
+    /// if there is not one already, because a drawer can be flung forward more
+    /// than once without arriving.
+    Ensure,
+    /// Drop it, and the drawer stops claiming the back button.
+    Remove,
+    /// What both terminal statuses do.
+    Nothing,
+}
+
 /// Upstream `DrawerControllerState`, as its decisions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrawerController {
@@ -405,6 +430,70 @@ impl DrawerController {
         SettleOutcome::SettledToNearest {
             opening: self.value >= 0.5,
         }
+    }
+
+    /// Upstream's `open` and `close`, as the velocity each flings with.
+    ///
+    /// `open` calls `fling()` with no argument and `close` calls
+    /// `fling(velocity: -1.0)`, so the two are one command with a sign. The
+    /// magnitude is not a speed anybody chose -- it is the unit velocity an
+    /// `AnimationController` flings with by default, and `close` names it only
+    /// because it has to write something down to put a minus in front of it.
+    pub fn fling_velocity(command: DrawerCommand) -> f32 {
+        match command {
+            DrawerCommand::Open => 1.0,
+            DrawerCommand::Close => -1.0,
+        }
+    }
+
+    /// Upstream's `_animationStatusChanged`: what a status change does to the
+    /// back-button entry.
+    ///
+    /// # Both ends of the motion are its beginning
+    ///
+    /// The two statuses that mean *arrived* -- `completed` and `dismissed` --
+    /// do nothing at all, and upstream writes them out with an empty body
+    /// rather than omitting them. Everything happens on `forward` and
+    /// `reverse`, which are the moments the drawer **starts** moving.
+    ///
+    /// That is the opposite of the obvious arrangement, and it is right. A
+    /// drawer sliding in is already covering the page, so a back press has to
+    /// dismiss it from the first frame rather than from the last. And a drawer
+    /// sliding out must stop claiming the back button immediately, or a press
+    /// during the closing animation would be swallowed to close something
+    /// already closing.
+    ///
+    /// Waiting for the terminal statuses would leave a window at each end
+    /// where what the screen shows and what the back button does disagree.
+    pub fn history_entry_change(status: AnimationStatus) -> HistoryEntryChange {
+        match status {
+            AnimationStatus::Forward => HistoryEntryChange::Ensure,
+            AnimationStatus::Reverse => HistoryEntryChange::Remove,
+            AnimationStatus::Dismissed | AnimationStatus::Completed => HistoryEntryChange::Nothing,
+        }
+    }
+
+    /// Upstream's `_handleHistoryEntryRemoved`, whose two lines are ordered
+    /// and not merely sequential:
+    ///
+    /// ```dart
+    /// _historyEntry = null;
+    /// close();
+    /// ```
+    ///
+    /// The entry is dropped **before** the close, and that is what stops the
+    /// loop. `close` flings in reverse, the reverse status asks for the entry
+    /// to be removed, and removing an entry is what called this in the first
+    /// place. Clearing the field first means the removal finds nothing to
+    /// remove and the cycle ends there.
+    ///
+    /// Written the other way round it would still terminate -- the second
+    /// removal would be of an already-removed entry -- but it would depend on
+    /// the history entry tolerating that, which is a promise from somewhere
+    /// else. This way the ordering carries the guarantee itself.
+    pub fn on_history_entry_removed(entry: &mut Option<LocalHistoryEntry>) -> DrawerCommand {
+        *entry = None;
+        DrawerCommand::Close
     }
 
     /// Upstream's `dragAreaWidth`.
@@ -795,5 +884,94 @@ mod drawer_direction_tests {
                 "{direction:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod back_button_tests {
+    use super::{DrawerCommand, DrawerController, HistoryEntryChange};
+    use crate::animation::AnimationStatus;
+    use crate::routes::LocalHistoryEntry;
+
+    #[test]
+    fn the_two_commands_are_one_fling_with_a_sign() {
+        assert_eq!(DrawerController::fling_velocity(DrawerCommand::Open), 1.0);
+        assert_eq!(DrawerController::fling_velocity(DrawerCommand::Close), -1.0);
+    }
+
+    #[test]
+    fn the_back_button_is_claimed_when_the_drawer_starts_moving_not_when_it_arrives() {
+        // A drawer sliding in already covers the page, so a back press has to
+        // dismiss it from the first frame.
+        assert_eq!(
+            DrawerController::history_entry_change(AnimationStatus::Forward),
+            HistoryEntryChange::Ensure
+        );
+        assert_eq!(
+            DrawerController::history_entry_change(AnimationStatus::Reverse),
+            HistoryEntryChange::Remove
+        );
+    }
+
+    #[test]
+    fn and_arriving_at_either_end_does_nothing_at_all() {
+        // Upstream writes both terminal statuses out with an empty body rather
+        // than omitting them, which is the shape of a decision rather than an
+        // oversight.
+        for status in [AnimationStatus::Completed, AnimationStatus::Dismissed] {
+            assert_eq!(
+                DrawerController::history_entry_change(status),
+                HistoryEntryChange::Nothing,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_status_is_answered_so_none_of_them_falls_through() {
+        // The point of the previous two together: there is no status for which
+        // the drawer has no rule.
+        let all = [
+            AnimationStatus::Forward,
+            AnimationStatus::Reverse,
+            AnimationStatus::Completed,
+            AnimationStatus::Dismissed,
+        ];
+        let changes: Vec<_> = all
+            .iter()
+            .map(|status| DrawerController::history_entry_change(*status))
+            .collect();
+        assert_eq!(
+            changes
+                .iter()
+                .filter(|c| **c == HistoryEntryChange::Ensure)
+                .count(),
+            1
+        );
+        assert_eq!(
+            changes
+                .iter()
+                .filter(|c| **c == HistoryEntryChange::Remove)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_back_press_drops_the_entry_before_it_starts_the_close() {
+        // Which is what stops the loop: close flings in reverse, reverse asks
+        // for the entry to be removed, and removing an entry is what called
+        // this. Clearing it first means that removal finds nothing.
+        let mut entry = Some(LocalHistoryEntry::new(1));
+        let command = DrawerController::on_history_entry_removed(&mut entry);
+        assert_eq!(command, DrawerCommand::Close);
+        assert!(entry.is_none(), "cleared before the close, not after");
+
+        // And the close's own status change now finds nothing to remove.
+        assert_eq!(
+            DrawerController::history_entry_change(AnimationStatus::Reverse),
+            HistoryEntryChange::Remove
+        );
+        assert!(entry.is_none(), "so the cycle ends here");
     }
 }

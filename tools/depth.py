@@ -28,13 +28,27 @@ That is the right direction for a tool whose output is a list to go and read:
 it over-reports suspects and does not hide them.  A low ratio is a question,
 never a verdict.
 
+# It has no memory of its own, which is the other half of the problem
+
+Because every way it lies makes a ratio too low, most of what it reports is
+something to read once and dismiss.  Dismissing it in your head means reading
+it again three ticks later; `depth_examined.json` is where a reading goes so
+that it counts.  A row lands there with the reason the shortfall is not a gap,
+and this tool then stops showing it.
+
+That file is a claim, not a suppression list: each row has to name the
+mechanism that answers for the missing members, and where the reasoning lives.
+
 Usage:
-  python tools/depth.py                  # the twenty shallowest, with counts
+  python tools/depth.py                  # the shallowest not yet examined
   python tools/depth.py --top 50
+  python tools/depth.py --all            # including what has been examined
   python tools/depth.py --name RenderFlex
+  python tools/depth.py --examined       # what has been read, and what it found
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -44,6 +58,21 @@ import coverage  # noqa: E402  -- the first ruler, reused whole
 
 CRATE = coverage.CRATE
 UPSTREAM = coverage.UPSTREAM
+
+EXAMINED = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'depth_examined.json')
+
+
+def load_examined():
+    """Rows already read against upstream, by class name.
+
+    Missing file is not an error -- it means nothing has been examined yet,
+    which is a true statement about a fresh checkout.
+    """
+    if not os.path.exists(EXAMINED):
+        return {}
+    with open(EXAMINED, encoding='utf-8') as handle:
+        return {row['class']: row for row in json.load(handle)['examined']}
 
 # Members that exist upstream because Dart needs them written out, and that a
 # Rust port answers with a derive or a trait impl.  Counting them would make
@@ -209,7 +238,20 @@ def main():
     parser.add_argument('--name', default=None)
     parser.add_argument('--min-members', type=int, default=6,
                         help='ignore classes too small for the ratio to mean anything')
+    parser.add_argument('--all', action='store_true',
+                        help='include classes already read against upstream')
+    parser.add_argument('--examined', action='store_true',
+                        help='print what has been read, and what the reading found')
     args = parser.parse_args()
+
+    examined = load_examined()
+    if args.examined:
+        print(f'{len(examined)} classes read against upstream member by member')
+        for name, row in sorted(examined.items()):
+            print(f'{chr(10)}  {name}  ({row["file"]}), tick {row["tick"]}')
+            print(f'    {row["finding"]}')
+            print(f'    where: {row["at"]}')
+        return
 
     classes_by_file = coverage.upstream_classes()
     rust_ids = coverage.rust_identifiers()
@@ -244,8 +286,14 @@ def main():
             rows.append((have / len(wanted), have, len(wanted), name, relative))
 
     rows.sort()
+    hidden = 0
+    if not args.all and not args.name:
+        before = len(rows)
+        rows = [row for row in rows if row[3] not in examined]
+        hidden = before - len(rows)
     shown = rows if args.name else rows[:args.top]
-    print(f'{len(rows)} covered classes with {args.min_members}+ upstream members')
+    print(f'{len(rows)} covered classes with {args.min_members}+ upstream members'
+          + (f' ({hidden} examined, hidden -- --all to see them)' if hidden else ''))
     print(f'{"ratio":>6}  {"rust":>4} {"dart":>4}  class / file')
     for ratio, have, wanted, name, relative in shown:
         print(f'{ratio:6.2f}  {have:4} {wanted:4}  {name}  ({relative})')

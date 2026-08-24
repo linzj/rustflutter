@@ -1,0 +1,42 @@
+{
+  "//": [
+    "Entries of depth.py's list that have been read against upstream, with what",
+    "the reading found. depth.py hides these unless --all is passed.",
+    "",
+    "The point is that depth.py over-reports by design -- its docstring says so",
+    "-- and an over-report that nobody records gets re-read every few ticks.",
+    "This file is the difference between a screen and a work queue.",
+    "",
+    "A row belongs here once somebody has compared the type against upstream",
+    "member by member and can say why the shortfall is not a gap. `finding` is",
+    "that reason, and it has to be checkable: name the mechanism that answers",
+    "for the missing members, not just 'looked, fine'. If the reading found a",
+    "real gap, the row goes in after the gap is closed, and `finding` says so.",
+    "",
+    "`at` points at where the reasoning lives, so a later reader can check it",
+    "rather than take this file's word."
+  ],
+  "examined": [
+    {
+      "class": "SemanticsNode",
+      "file": "semantics/semantics.dart",
+      "tick": 122,
+      "finding": "Three families, each answered by a documented architectural choice rather than missing. (1) The in-place mutation machinery -- _replaceChildren, _adoptChild, _dropChild, attach, detach, _markDirty, _redepthChildren, _updateChildMergeFlagRecursively, visitChildren -- has no counterpart because this port rebuilds the tree and diffs it against what was last sent, rather than keeping long-lived nodes and marking them dirty. (2) Upstream splits the id space at (1 << 16) - 1 so framework ids cannot collide with engine ids; this port partitions it into three explicit ranges (AUTO_BASE, TEXT_BASE) for the same purpose. (3) isInvisible's `transform.isZero()` clause is absent because geometry here is a rectangle rather than a matrix, so a collapsing transform arrives as an empty rect and the first clause catches it.",
+      "at": "src/flutter/rust/rustflutter/src/semantics.rs -- SemanticsOwner's doc comment for (1), take_text_id and TEXT_BASE for (2), SemanticsNode::is_invisible for (3)"
+    },
+    {
+      "class": "TextSelectionGestureDetector",
+      "file": "widgets/text_selection.dart",
+      "tick": 121,
+      "finding": "Twenty-one of upstream's twenty-four members are optional callback fields, which are Dart wiring rather than behaviour. The behaviour is in the state that routes gestures to them, and reading it found a real gap: _getEffectiveConsecutiveTapCount was missing entirely, along with the routing rules that consume it. Ported, with the three platform arithmetics. reports_tap was also fixed -- it had misread onUserTap's condition as 'the tap changed something' rather than 'the first tap of a series'.",
+      "at": "src/flutter/rust/rustflutter/src/text_selection.rs -- effective_consecutive_tap_count and reports_tap"
+    },
+    {
+      "class": "DrawerControllerState",
+      "file": "material/drawer.dart",
+      "tick": 122,
+      "finding": "Four of upstream's six public members are State lifecycle (initState, dispose, didUpdateWidget, build), which this port has no counterpart for by construction. The other two, open and close, were a real gap and are now ported -- along with the back-button state machine they drive, which is the part worth having: the local history entry is managed on the forward and reverse statuses, both of which are the moments the drawer STARTS moving, while completed and dismissed do nothing at all.",
+      "at": "src/flutter/rust/rustflutter/src/drawer.rs -- fling_velocity, history_entry_change, on_history_entry_removed"
+    }
+  ]
+}
