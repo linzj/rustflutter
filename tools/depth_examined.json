@@ -37,6 +37,20 @@
       "tick": 122,
       "finding": "Four of upstream's six public members are State lifecycle (initState, dispose, didUpdateWidget, build), which this port has no counterpart for by construction. The other two, open and close, were a real gap and are now ported -- along with the back-button state machine they drive, which is the part worth having: the local history entry is managed on the forward and reverse statuses, both of which are the moments the drawer STARTS moving, while completed and dismissed do nothing at all.",
       "at": "src/flutter/rust/rustflutter/src/drawer.rs -- fling_velocity, history_entry_change, on_history_entry_removed"
+    },
+    {
+      "class": "Listener",
+      "file": "widgets/basic.dart",
+      "tick": 123,
+      "finding": "A constructor facade: `pub struct Listener;` whose new() returns RenderPointerRegion, so the members are counted on neither. Checked field by field rather than assumed. Upstream declares nine callbacks plus behavior; PointerHandlers carries all nine -- down, move, up, cancel, the pan-zoom trio, on_scroll for onPointerSignal, and both halves of hovering (on_hover_change for enter/leave and on_hover for the move stream) -- and behavior lives on RenderPointerRegion with a with_behavior builder. Nothing missing.",
+      "at": "src/flutter/rust/rustflutter/src/gestures.rs -- PointerHandlers; render.rs -- RenderPointerRegion::with_behavior"
+    },
+    {
+      "class": "RichText",
+      "file": "widgets/basic.dart",
+      "tick": 123,
+      "finding": "The same facade shape, over RenderParagraph -- which is also what `pub type Text = RenderParagraph` names, and depth.py now scores that alias at 40 members against upstream Text's 18. RichText is measured against the identical body, so the 2 of 16 was the facade and not the port.",
+      "at": "src/flutter/rust/rustflutter/src/widgets.rs -- RichText::new returns RenderParagraph; `pub type Text = RenderParagraph` on the same file"
     }
   ]
 }
