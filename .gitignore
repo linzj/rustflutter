@@ -49,3 +49,6 @@ try_*.log
 
 # gclient sync 产物（真实 sync 而非 junction 时出现在仓库根）
 /third_party/
+
+# order_sweep.py 与 variant_sweep.py 变异期间的原文备份，绝不入库
+*.sweep
