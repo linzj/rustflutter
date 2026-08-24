@@ -48,6 +48,7 @@ use crate::framework::{
     AnyWidget, BuildContext, Component, DependentNotify, component, provide_model,
 };
 use crate::platform::Brightness;
+use crate::presence::Orientation;
 use crate::render::{EdgeInsets, Size};
 use crate::widgets::Empty;
 
@@ -62,6 +63,8 @@ mod aspect {
     pub(super) const PADDING: &str = "padding";
     pub(super) const VIEW_INSETS: &str = "view_insets";
     pub(super) const TEXT_SCALE: &str = "text_scale";
+    pub(super) const ALWAYS_USE_24_HOUR_FORMAT: &str = "always_use_24_hour_format";
+    pub(super) const ORIENTATION: &str = "orientation";
 }
 
 /// What the view is like, as the widgets below it see it.
@@ -92,6 +95,16 @@ pub struct MediaQueryData {
     /// put one in the tree and everything below sees it. That is a different
     /// thing from a flag nobody can move.
     pub on_off_switch_labels: bool,
+    /// Upstream's `MediaQueryData.alwaysUse24HourFormat`: whether a time is
+    /// written 13:00 rather than 1:00 PM.
+    ///
+    /// Unlike [`on_off_switch_labels`](MediaQueryData::on_off_switch_labels)
+    /// the platform **does** report this one, and has all along: it arrives on
+    /// `flutter/settings` beside the text scale and the brightness, and
+    /// [`crate::platform::UserSettings`] has stored it since that channel was
+    /// written. What was missing was the last hop -- nothing carried it from
+    /// there to a widget, so a dialog that wanted it had to be told.
+    pub always_use_24_hour_format: bool,
 }
 
 impl Default for MediaQueryData {
@@ -105,6 +118,7 @@ impl Default for MediaQueryData {
             text_scale_factor: 1.0,
             platform_brightness: Brightness::Light,
             on_off_switch_labels: false,
+            always_use_24_hour_format: false,
         }
     }
 }
@@ -128,6 +142,33 @@ impl MediaQueryData {
             // field. The bridge has nowhere to read it from, so a view's data
             // says no and a `MediaQuery` above can say otherwise.
             on_off_switch_labels: false,
+            // From the platform, like the two above it. Upstream reads it off
+            // `platformDispatcher.alwaysUse24HourFormat` in the same
+            // constructor.
+            always_use_24_hour_format: crate::platform::user_settings()
+                .always_use_24_hour_format,
+        }
+    }
+
+    /// Upstream's `MediaQueryData.orientation`, which is **derived and not
+    /// stored**: a view is landscape when it is wider than it is tall.
+    ///
+    /// A square view is portrait, because the comparison is strict. That is
+    /// upstream's and it matters more than it looks: a window dragged through
+    /// square would otherwise flicker between the two answers on the frames
+    /// where the two numbers are equal.
+    ///
+    /// It was being derived privately in two other files before it was here --
+    /// `pickers.rs` for the time picker's portrait and landscape layouts, and
+    /// `presence.rs` from constraints rather than from the view. The one in
+    /// `presence.rs` is a different question (it asks about the box a widget
+    /// was given, which is upstream's `OrientationBuilder`) and stays; this is
+    /// the one that asks about the view.
+    pub fn orientation(&self) -> Orientation {
+        if self.size.width > self.size.height {
+            Orientation::Landscape
+        } else {
+            Orientation::Portrait
         }
     }
 
@@ -211,6 +252,14 @@ impl DependentNotify for MediaQueryData {
             aspect::PADDING => old.padding != new.padding,
             aspect::VIEW_INSETS => old.view_insets != new.view_insets,
             aspect::TEXT_SCALE => old.text_scale_factor != new.text_scale_factor,
+            aspect::ALWAYS_USE_24_HOUR_FORMAT => {
+                old.always_use_24_hour_format != new.always_use_24_hour_format
+            }
+            // Derived, so the comparison is on the answer and not on the
+            // field: a view that changes size without crossing square has not
+            // changed orientation, and a reader that asked only about
+            // orientation should not hear about it.
+            aspect::ORIENTATION => old.orientation() != new.orientation(),
             _ => true,
         }
     }
@@ -372,6 +421,29 @@ pub fn text_scale_of(context: &BuildContext) -> f32 {
     context
         .inherited_aspect_or_default::<MediaQueryData>(aspect::TEXT_SCALE)
         .text_scale_factor
+}
+
+/// Whether the reader's platform writes times as 13:00 rather than 1:00 PM,
+/// and a dependence on nothing else about the view.
+///
+/// Upstream's `MediaQuery.alwaysUse24HourFormatOf`.
+pub fn always_use_24_hour_format_of(context: &BuildContext) -> bool {
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::ALWAYS_USE_24_HOUR_FORMAT)
+        .always_use_24_hour_format
+}
+
+/// Whether the view is wider than it is tall, and a dependence on nothing else
+/// about it. Upstream's `MediaQuery.orientationOf`.
+///
+/// This is not the same question as [`crate::presence::OrientationBuilder`],
+/// which asks about the box a widget was handed. A widget in a narrow column
+/// of a landscape window gets `Landscape` from this and `Portrait` from that,
+/// and each is the right answer to its own question.
+pub fn orientation_of(context: &BuildContext) -> Orientation {
+    context
+        .inherited_aspect_or_default::<MediaQueryData>(aspect::ORIENTATION)
+        .orientation()
 }
 
 /// Insets its child by whatever the system is covering.
@@ -610,6 +682,112 @@ mod tests {
             view_inset_bottom: inset_bottom,
             view_inset_left: 0.0,
         }
+    }
+
+    /// The settings message the embedder writes, with the 24-hour flag set
+    /// either way.
+    ///
+    /// Platform settings are thread-local and libtest gives each test its own
+    /// thread, so this does not leak between tests -- but a test that sends it
+    /// puts it back anyway, because `--test-threads=1` is a thing somebody
+    /// runs when a test is flaky and that is the worst moment to find out.
+    fn say_24_hour(flag: bool) {
+        crate::platform::set_user_settings(&format!(
+            r#"{{"textScaleFactor":1.0,"alwaysUse24HourFormat":{flag},"platformBrightness":"light"}}"#
+        ));
+    }
+
+    #[test]
+    fn the_platform_has_been_reporting_the_clock_all_along() {
+        // The whole hop, end to end: the embedder writes it on
+        // `flutter/settings`, `UserSettings` stores it, and `from_view` is what
+        // was missing -- so before this the setting arrived and stopped there.
+        say_24_hour(true);
+        assert!(MediaQueryData::from_view(&metrics(0.0, 0.0)).always_use_24_hour_format);
+        say_24_hour(false);
+        assert!(!MediaQueryData::from_view(&metrics(0.0, 0.0)).always_use_24_hour_format);
+    }
+
+    #[test]
+    fn a_square_view_is_portrait() {
+        // Upstream compares strictly, and the boundary is the point: a window
+        // dragged through square would otherwise have a frame where the two
+        // numbers are equal and the answer could go either way.
+        let square = MediaQueryData {
+            size: Size::new(500.0, 500.0),
+            ..MediaQueryData::default()
+        };
+        assert_eq!(square.orientation(), Orientation::Portrait);
+
+        let wider = MediaQueryData {
+            size: Size::new(500.1, 500.0),
+            ..square
+        };
+        assert_eq!(wider.orientation(), Orientation::Landscape);
+
+        let taller = MediaQueryData {
+            size: Size::new(500.0, 500.1),
+            ..square
+        };
+        assert_eq!(taller.orientation(), Orientation::Portrait);
+    }
+
+    #[test]
+    fn a_reader_of_the_orientation_hears_about_turning_and_not_about_growing() {
+        // The reason `orientation` is an aspect rather than something derived
+        // at the call site: derived from `size`, every resize is news. Asked as
+        // an aspect, only a resize that crosses square is.
+        let portrait = MediaQueryData {
+            size: Size::new(400.0, 800.0),
+            ..MediaQueryData::default()
+        };
+        let taller = MediaQueryData {
+            size: Size::new(400.0, 900.0),
+            ..portrait
+        };
+        let turned = MediaQueryData {
+            size: Size::new(800.0, 400.0),
+            ..portrait
+        };
+
+        assert!(
+            !MediaQueryData::is_aspect_stale(&portrait, &taller, aspect::ORIENTATION),
+            "taller is not turned"
+        );
+        assert!(
+            MediaQueryData::is_aspect_stale(&portrait, &taller, aspect::SIZE),
+            "and a reader of the size does hear about it"
+        );
+        assert!(MediaQueryData::is_aspect_stale(
+            &portrait,
+            &turned,
+            aspect::ORIENTATION
+        ));
+    }
+
+    #[test]
+    fn the_clock_is_its_own_aspect() {
+        let twelve = MediaQueryData::default();
+        let twenty_four = MediaQueryData {
+            always_use_24_hour_format: true,
+            ..twelve
+        };
+        assert!(MediaQueryData::is_aspect_stale(
+            &twelve,
+            &twenty_four,
+            aspect::ALWAYS_USE_24_HOUR_FORMAT
+        ));
+        // And nothing else about the view changed, so nobody else is woken.
+        assert!(!MediaQueryData::is_aspect_stale(
+            &twelve,
+            &twenty_four,
+            aspect::SIZE
+        ));
+        assert!(!MediaQueryData::is_aspect_stale(
+            &twelve,
+            &twenty_four,
+            aspect::TEXT_SCALE
+        ));
     }
 
     #[test]

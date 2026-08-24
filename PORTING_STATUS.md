@@ -14413,3 +14413,58 @@ crate 里这个枚举和它的 `merge` 早就在，还有穷举两两组合的�
 
 5137 测试通过，完整 GN 门过。`depth.py` 上 32/104 → 33/104，并记进
 `depth_examined.json`。
+
+## 第 152 轮 — 平台一直在报的那个设置，没人能看见
+
+先从上一轮的疑问出发：`coverage.py` 是不是看不见上游的 `enum`？**不是。**
+它早就数枚举了（文件头写着这条曾经的盲区）。上游 171 个枚举里 15 个 port
+从没提过，其中 12 个在 ledger 里（6 个 `*ServiceExtensions`、
+`WebHtmlElementStrategy`、`KeyDataTransitMode`、
+`UiKitViewGestureBlockingPolicy` 等），`KeyboardSide` / `ModifierKey` 属于
+`raw_keyboard.dart`（整族 out_of_scope，上游 v3.18 起 `@Deprecated`），
+`WindowPositionerAnchor` 在下划线私有文件里。尺子没问题，这条线到此为止。
+
+### `MediaQueryData` 少一个字段，而平台早就在报它
+
+`always_use_24_hour_format` 从 `flutter/settings` 通道进来，
+`platform::UserSettings` 从那个通道写好的那天起就在存它。
+`MediaQueryData::from_view` 就在旁边读 `text_scale_factor` 和
+`platform_brightness`——**唯独不读它**。
+
+后果是这一跳断了。`TimePickerDialog` 的类型文档自己把这件事写了下来：
+
+> Upstream reads the 24-hour preference from `MediaQuery.alwaysUse24HourFormatOf`,
+> which `MediaQueryData` does not carry, so it is an explicit setting here.
+
+于是 `build` 里是 `unwrap_or(false)`——**一个编译进去的 12 小时制**。
+`DefaultMaterialLocalizations::time_of_day_format(bool)` 和
+`ResolvedTimePicker::hour_minute_size(bool, bool)` 同样把它当参数收，
+而这三个参数的调用方**全是测试**：生产代码里没有一处能供给它，因为无处可取。
+一个 24 小时制国家的用户会看到 AM / PM。
+
+补上字段、aspect 和 `always_use_24_hour_format_of`，
+对话框那行改成 `unwrap_or_else(|| always_use_24_hour_format_of(context))`——
+和它上面一行 `self.orientation.unwrap_or_else(|| orientation_of(context))`
+形状一致。显式设置保留为**覆盖**而非默认，并有测试盯着它仍然优先。
+
+### `orientation` 是上游的派生 getter，port 里被各写了一遍
+
+`pickers.rs` 里有个私有的 `orientation_of(context)`，从
+`media_query_of(context).size` 现算。上游是 `MediaQueryData.orientation` 加
+`MediaQuery.orientationOf`。搬到 `MediaQueryData` 上，顺带得到一件本来没有的
+事：**它成了一个 aspect**。从 `size` 现算的话每次改变尺寸都是新闻；
+按 aspect 问，只有跨过正方形那一次才是。
+
+`presence.rs` 里那个同名函数留着——它问的是**布局约束**给的那个盒子，
+是上游的 `OrientationBuilder`，不是同一个问题。
+
+正方形归纵向，因为比较是严格的。这不只是个边界口味：一个被拖过正方形的窗口
+会有那么一帧两个数相等，`>=` 会让答案在那一帧翻面。
+
+五条变异全红且各自只打中对应的一条：`from_view` 写死 false、
+`>` 改 `>=`、orientation aspect 改成比 `size`、对话框改回 `unwrap_or(false)`、
+24 小时 aspect 改成恒 false。（`>=` 那条另外撞红三个 picker 布局测试——
+它们依赖默认 `MediaQueryData` 的 0×0 被判为纵向，这与改动前的行为一致。）
+
+5143 测试通过，完整 GN 门过（gallery 333 也过）。
+`depth.py` 上 `MediaQuery` 20/65 → 22/65。

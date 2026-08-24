@@ -59,7 +59,6 @@ use crate::framework::{
     AnyWidget, BuildContext, Key, StateHandle, StatefulComponent, component, leaf, many, stateful,
 };
 use crate::gestures::PointerHandlers;
-use crate::media_query::media_query_of;
 use crate::render::{
     Alignment, BoxConstraints, CrossAxisAlignment, EdgeInsets, FlexChild, MainAxisAlignment,
     MainAxisSize, Offset, PaintContext, RenderBox, RenderFlex, RenderRef, RenderStack, Size,
@@ -640,14 +639,12 @@ impl TimeOfDay {
 pub use crate::presence::Orientation;
 
 /// What `MediaQuery.orientationOf` answers: wide is landscape, tall is not.
-fn orientation_of(context: &BuildContext) -> Orientation {
-    let size = media_query_of(context).size;
-    if size.width > size.height {
-        Orientation::Landscape
-    } else {
-        Orientation::Portrait
-    }
-}
+// `orientation_of` was derived here privately, off `media_query_of(context).size`.
+// It is upstream's `MediaQuery.orientationOf` and now lives on
+// `MediaQueryData` beside the rest of the view's story, which also means a
+// reader of it depends on the orientation rather than on the whole size: a
+// window that gets taller without turning no longer rebuilds this dialog.
+use crate::media_query::orientation_of;
 
 // -- The calendar grid -----------------------------------------------------------
 //
@@ -2850,11 +2847,18 @@ impl RenderBox for TimeDial {
 /// 24-hour format gets the double ring.
 ///
 /// As with [`DatePickerDialog`] there is no `Navigator`: `with_on_confirm`
-/// hears the picked time on OK and `with_on_cancel` a dismissal. Upstream
-/// reads the 24-hour preference from `MediaQuery.alwaysUse24HourFormatOf`,
-/// which `MediaQueryData` does not carry, so it is an explicit setting here:
-/// [`TimePickerDialog::with_always_use_24_hour_format`], defaulting to the
-/// compiled-in en_US locale's 12-hour clock.
+/// hears the picked time on OK and `with_on_cancel` a dismissal. The 24-hour
+/// preference comes from `MediaQuery.alwaysUse24HourFormatOf`, which is
+/// upstream's source for it;
+/// [`TimePickerDialog::with_always_use_24_hour_format`] overrides it for a
+/// dialog that has a reason to, the way `orientation` overrides the one
+/// derived from the view.
+///
+/// It used to default to a compiled-in 12-hour clock, because
+/// `MediaQueryData` did not carry the setting -- although the platform had
+/// been reporting it on `flutter/settings` the whole time and
+/// `UserSettings::always_use_24_hour_format` had been storing it. The missing
+/// piece was the hop from there to a widget.
 ///
 /// Hit-test ids derive from `id`: the dial is `id * 100 + 1`, the hour and
 /// minute header boxes `+ 2` and `+ 3`, AM/PM `+ 4` and `+ 5`, the input
@@ -2981,7 +2985,8 @@ impl TimePickerDialog {
         self.on_entry_mode_changed = Some(Rc::new(changed));
         self
     }
-    /// See the type docs for why this is a setting and not a MediaQuery read.
+    /// Overrides what `MediaQuery` says, for a dialog that has a reason to
+    /// disagree with the platform.
     pub fn with_always_use_24_hour_format(mut self, always: bool) -> Self {
         self.always_use_24_hour_format = Some(always);
         self
@@ -3123,7 +3128,9 @@ impl StatefulComponent for TimePickerDialog {
     ) -> AnyWidget {
         let theme = theme_of(context);
         let orientation = self.orientation.unwrap_or_else(|| orientation_of(context));
-        let use_24h = self.always_use_24_hour_format.unwrap_or(false);
+        let use_24h = self
+            .always_use_24_hour_format
+            .unwrap_or_else(|| crate::media_query::always_use_24_hour_format_of(context));
         let entry_mode = state.entry_mode;
         let is_dial = matches!(
             entry_mode,
@@ -4933,6 +4940,7 @@ mod tests {
     use super::*;
     use crate::components::Theme;
     use crate::framework::{ElementTree, provide};
+    use crate::media_query::MediaQueryData;
     use crate::render::BoxConstraints;
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
@@ -5266,6 +5274,90 @@ mod tests {
             700.0,
         );
         assert_eq!(size, Size::new(312.0, 252.0));
+    }
+
+    /// The header boxes' widths, as the canvas was told them. 96 for a
+    /// 12-hour clock and 114 for a 24-hour one -- `HOUR_MINUTE_SIZE` against
+    /// `HOUR_MINUTE_SIZE_24H`, which is the difference between "3" and "15".
+    ///
+    /// Read off the paint rather than off the dialog's size, because the size
+    /// is a constant either way: `TIME_PICKER_PORTRAIT_SIZE` does not move
+    /// when the boxes inside it do.
+    fn header_box_widths(widget: AnyWidget, ambient: MediaQueryData) -> Vec<f32> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::media_query::MediaQuery::new(
+            ambient,
+            provide(Theme::dark(), widget),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(800.0, 700.0));
+        let mut layers = crate::engine::LayerTree::new(800, 700);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(800.0, 700.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        let mut widths: Vec<f32> = crate::engine_test_stubs::drawn()
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::RRect {
+                    left, right, top, bottom, ..
+                } if (bottom - top - HOUR_MINUTE_SIZE.1).abs() < 0.01 => Some(right - left),
+                _ => None,
+            })
+            .collect();
+        widths.sort_by(f32::total_cmp);
+        widths.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        widths
+    }
+
+    #[test]
+    fn a_dialog_that_was_told_nothing_asks_the_platform_what_clock_to_draw() {
+        // The wiring this replaced was `unwrap_or(false)` -- a compiled-in
+        // 12-hour clock, because `MediaQueryData` did not carry the setting
+        // even though the platform had been reporting it on `flutter/settings`
+        // all along. A reader in a 24-hour country got AM and PM.
+        let dialog = || stateful(TimePickerDialog::new(1, TimeOfDay::new(15, 30)));
+
+        let twenty_four = MediaQueryData {
+            always_use_24_hour_format: true,
+            ..MediaQueryData::default()
+        };
+        assert_eq!(
+            header_box_widths(dialog(), twenty_four),
+            vec![HOUR_MINUTE_SIZE_24H.0],
+            "the ambient says 24-hour, so the boxes are the wider ones"
+        );
+
+        let twelve = MediaQueryData::default();
+        assert_eq!(
+            header_box_widths(dialog(), twelve),
+            vec![HOUR_MINUTE_SIZE.0],
+            "and 12-hour gets the narrower ones"
+        );
+    }
+
+    #[test]
+    fn a_dialog_that_was_told_outranks_the_platform() {
+        // The override still wins, which is what makes it an override rather
+        // than a default. Upstream has no such setting -- its dialog reads the
+        // MediaQuery and nothing else -- so this is a way in that costs
+        // nothing as long as the fallback is the ambient and not a constant.
+        let twenty_four = MediaQueryData {
+            always_use_24_hour_format: true,
+            ..MediaQueryData::default()
+        };
+        assert_eq!(
+            header_box_widths(
+                stateful(
+                    TimePickerDialog::new(1, TimeOfDay::new(15, 30))
+                        .with_always_use_24_hour_format(false),
+                ),
+                twenty_four,
+            ),
+            vec![HOUR_MINUTE_SIZE.0],
+            "told 12-hour under a 24-hour platform"
+        );
     }
 
     #[test]
