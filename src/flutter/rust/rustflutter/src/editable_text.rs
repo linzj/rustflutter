@@ -380,6 +380,15 @@ pub enum SmartQuotesType {
 }
 
 impl SmartDashesType {
+    /// Upstream sends `smartDashesType.index.toString()`, so the wire carries
+    /// "0" and "1". The declaration order above is part of that format.
+    pub fn index_string(self) -> &'static str {
+        match self {
+            SmartDashesType::Disabled => "0",
+            SmartDashesType::Enabled => "1",
+        }
+    }
+
     /// Upstream's default, written the same way in `EditableText`,
     /// `TextField` and `CupertinoTextField`:
     ///
@@ -407,6 +416,14 @@ impl SmartDashesType {
 }
 
 impl SmartQuotesType {
+    /// The same index-as-a-string encoding as [`SmartDashesType`].
+    pub fn index_string(self) -> &'static str {
+        match self {
+            SmartQuotesType::Disabled => "0",
+            SmartQuotesType::Enabled => "1",
+        }
+    }
+
     /// The same rule as [`SmartDashesType::resolve`], written separately
     /// upstream and separately here, because they are separate parameters: a
     /// field may take one and refuse the other.

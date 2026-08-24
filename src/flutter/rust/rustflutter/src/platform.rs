@@ -57,6 +57,17 @@ pub enum Brightness {
 }
 
 impl Brightness {
+    /// Upstream's `toString()` on the enum, which is what the text input
+    /// channel carries for `keyboardAppearance`. Not the bare `light` that
+    /// `flutter/settings` uses -- two channels, two spellings of the same
+    /// value, and both are the platform's to insist on.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Brightness::Light => "Brightness.light",
+            Brightness::Dark => "Brightness.dark",
+        }
+    }
+
     /// The name `flutter/settings` uses.
     fn from_message(name: &str) -> Option<Brightness> {
         match name {

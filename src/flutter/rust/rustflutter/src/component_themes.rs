@@ -7792,6 +7792,19 @@ pub enum TextCapitalization {
     None,
 }
 
+impl TextCapitalization {
+    /// Upstream's `toString()` on the enum, which is what the text input
+    /// channel carries.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            TextCapitalization::Words => "TextCapitalization.words",
+            TextCapitalization::Sentences => "TextCapitalization.sentences",
+            TextCapitalization::Characters => "TextCapitalization.characters",
+            TextCapitalization::None => "TextCapitalization.none",
+        }
+    }
+}
+
 /// Upstream `SearchBarThemeData`: the resting bar.
 ///
 /// Every field here is a state property, which is the difference between

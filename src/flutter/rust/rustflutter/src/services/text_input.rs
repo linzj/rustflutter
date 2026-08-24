@@ -217,7 +217,13 @@ pub enum TextInputType {
     #[default]
     Text,
     Multiline,
-    Number,
+    /// Upstream's `numberWithOptions`. Carries its two flags because
+    /// `TextInputType.number` **is** `numberWithOptions()` -- see
+    /// [`TextInputType::number_options`].
+    Number {
+        signed: bool,
+        decimal: bool,
+    },
     Phone,
     Datetime,
     Email,
@@ -232,11 +238,41 @@ pub enum TextInputType {
 }
 
 impl TextInputType {
+    /// Upstream's `signed` and `decimal`, which are **not null for the number
+    /// type even when nobody asked for either**.
+    ///
+    /// `TextInputType.number` is defined as `TextInputType.numberWithOptions()`
+    /// -- the plain one is the options at their defaults rather than the
+    /// absence of options -- while every other type comes from a constructor
+    /// that sets both to null. So the wire carries `false, false` for a
+    /// number and `null, null` for the rest, and this port sent `null, null`
+    /// for all of them.
+    ///
+    /// Whether that reaches a reader depends on the embedder, which is exactly
+    /// why it is worth getting right here: nothing on this side can tell.
+    pub fn number_options(self) -> Option<(bool, bool)> {
+        match self {
+            TextInputType::Number { signed, decimal } => Some((signed, decimal)),
+            _ => None,
+        }
+    }
+
+    /// Upstream's `TextInputType.number`: the options at their defaults.
+    pub const NUMBER: TextInputType = TextInputType::Number {
+        signed: false,
+        decimal: false,
+    };
+
+    /// Upstream's `TextInputType.numberWithOptions`.
+    pub fn number_with_options(signed: bool, decimal: bool) -> TextInputType {
+        TextInputType::Number { signed, decimal }
+    }
+
     fn as_name(self) -> &'static str {
         match self {
             TextInputType::Text => "TextInputType.text",
             TextInputType::Multiline => "TextInputType.multiline",
-            TextInputType::Number => "TextInputType.number",
+            TextInputType::Number { .. } => "TextInputType.number",
             TextInputType::Phone => "TextInputType.phone",
             TextInputType::Datetime => "TextInputType.datetime",
             TextInputType::Email => "TextInputType.emailAddress",
@@ -320,16 +356,71 @@ impl TextInputAction {
 }
 
 /// How a field asks to be edited.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TextInputConfiguration {
     pub input_type: TextInputType,
     pub action: TextInputAction,
     pub obscure_text: bool,
     pub autocorrect: bool,
+    /// Upstream's `readOnly`: the field shows a caret and a selection but the
+    /// keyboard must not edit it.
+    pub read_only: bool,
+    /// Upstream's `enableInteractiveSelection`.
+    pub enable_interactive_selection: bool,
+    /// Upstream's `enableSuggestions`, which was sent as a hardcoded `true`.
+    pub enable_suggestions: bool,
+    /// Upstream's `smartDashesType`. **Sent as the index, as a string** -- see
+    /// [`TextInputConfiguration::to_value`].
+    pub smart_dashes: crate::editable_text::SmartDashesType,
+    /// Upstream's `smartQuotesType`, and the same encoding.
+    pub smart_quotes: crate::editable_text::SmartQuotesType,
+    /// Upstream's `textCapitalization`.
+    pub text_capitalization: crate::component_themes::TextCapitalization,
+    /// Upstream's `keyboardAppearance`, which is the keyboard's own light or
+    /// dark, not the application's.
+    pub keyboard_appearance: crate::platform::Brightness,
+    /// Upstream's `enableIMEPersonalizedLearning`, whose default is **true**:
+    /// a field opts out of the platform learning from it rather than in.
+    pub enable_ime_personalized_learning: bool,
+    /// Upstream's `actionLabel`, the word on the action key when the platform
+    /// lets one be chosen.
+    pub action_label: Option<String>,
     /// What the platform may fill this field with, if anything. Disabled by
     /// default: a field says what it holds, and one that has not said holds
     /// nothing the platform should guess at.
     pub autofill_configuration: crate::services::autofill::AutofillConfiguration,
+}
+
+impl Default for TextInputConfiguration {
+    /// Upstream's constructor defaults, written out rather than derived.
+    ///
+    /// A derive gave `autocorrect: false`, and upstream's default is **true** --
+    /// autocorrection is on unless a field turns it off. Four of the flags here
+    /// are like that: suggestions, interactive selection and personalised
+    /// learning all default to on, so `bool::default()` is wrong for every one
+    /// of them and right only by accident for the two that are off.
+    ///
+    /// Which is the argument against deriving this at all. A derive says "the
+    /// zero value", and what is wanted is "what upstream's constructor says",
+    /// and those agree only until they do not.
+    fn default() -> TextInputConfiguration {
+        TextInputConfiguration {
+            input_type: TextInputType::Text,
+            action: TextInputAction::Done,
+            obscure_text: false,
+            autocorrect: true,
+            read_only: false,
+            enable_interactive_selection: true,
+            enable_suggestions: true,
+            smart_dashes: crate::editable_text::SmartDashesType::Enabled,
+            smart_quotes: crate::editable_text::SmartQuotesType::Enabled,
+            text_capitalization: crate::component_themes::TextCapitalization::None,
+            keyboard_appearance: crate::platform::Brightness::Light,
+            enable_ime_personalized_learning: true,
+            action_label: None,
+            autofill_configuration: crate::services::autofill::AutofillConfiguration::default(),
+        }
+    }
 }
 
 impl TextInputConfiguration {
@@ -339,14 +430,65 @@ impl TextInputConfiguration {
                 "inputType",
                 Value::map([
                     ("name", Value::from(self.input_type.as_name())),
-                    ("signed", Value::Null),
-                    ("decimal", Value::Null),
+                    // Null for every type but the number one, which carries
+                    // them as booleans even when both are false -- see
+                    // `TextInputType::number_options`.
+                    (
+                        "signed",
+                        match self.input_type.number_options() {
+                            Some((signed, _)) => Value::Bool(signed),
+                            None => Value::Null,
+                        },
+                    ),
+                    (
+                        "decimal",
+                        match self.input_type.number_options() {
+                            Some((_, decimal)) => Value::Bool(decimal),
+                            None => Value::Null,
+                        },
+                    ),
                 ]),
             ),
             ("inputAction", Value::from(self.action.as_name())),
+            ("readOnly", Value::Bool(self.read_only)),
             ("obscureText", Value::Bool(self.obscure_text)),
             ("autocorrect", Value::Bool(self.autocorrect)),
-            ("enableSuggestions", Value::Bool(true)),
+            // **The index, written as a string.** Upstream sends
+            // `smartDashesType.index.toString()`, so the wire carries "0" and
+            // "1" rather than a name or a boolean, and the enum's declaration
+            // order is part of the format.
+            (
+                "smartDashesType",
+                Value::from(self.smart_dashes.index_string()),
+            ),
+            (
+                "smartQuotesType",
+                Value::from(self.smart_quotes.index_string()),
+            ),
+            ("enableSuggestions", Value::Bool(self.enable_suggestions)),
+            (
+                "enableInteractiveSelection",
+                Value::Bool(self.enable_interactive_selection),
+            ),
+            (
+                "actionLabel",
+                match &self.action_label {
+                    Some(label) => Value::from(label.as_str()),
+                    None => Value::Null,
+                },
+            ),
+            (
+                "textCapitalization",
+                Value::from(self.text_capitalization.as_name()),
+            ),
+            (
+                "keyboardAppearance",
+                Value::from(self.keyboard_appearance.as_name()),
+            ),
+            (
+                "enableIMEPersonalizedLearning",
+                Value::Bool(self.enable_ime_personalized_learning),
+            ),
             ("enableDeltaModel", Value::Bool(false)),
             ("viewId", Value::I64(0)),
         ]);
@@ -1005,7 +1147,7 @@ mod tests {
         let pairs = [
             (TextInputType::Text, "TextInputType.text"),
             (TextInputType::Multiline, "TextInputType.multiline"),
-            (TextInputType::Number, "TextInputType.number"),
+            (TextInputType::NUMBER, "TextInputType.number"),
             (TextInputType::Phone, "TextInputType.phone"),
             (TextInputType::Datetime, "TextInputType.datetime"),
             (TextInputType::Email, "TextInputType.emailAddress"),
@@ -1777,5 +1919,185 @@ mod connection_closed_tests {
         // meanings without a group number joining in.
         assert_ne!(Some(AutofillScopeId(0)), None);
         assert_ne!(AutofillScopeId(0), AutofillScopeId(1));
+    }
+}
+
+#[cfg(test)]
+mod configuration_wire_format_tests {
+    use super::{TextInputAction, TextInputConfiguration, TextInputType};
+    use crate::component_themes::TextCapitalization;
+    use crate::editable_text::{SmartDashesType, SmartQuotesType};
+    use crate::platform::Brightness;
+    use crate::services::codec::Value;
+
+    fn key<'a>(value: &'a Value, name: &str) -> &'a Value {
+        match value {
+            Value::Map(pairs) => pairs
+                .iter()
+                .find(|(k, _)| matches!(k, Value::String(s) if s == name))
+                .map(|(_, v)| v)
+                .unwrap_or_else(|| panic!("no {name} in {value:?}")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn autocorrection_is_on_unless_a_field_turns_it_off() {
+        // A derived Default gave false here, and upstream's constructor says
+        // true. Four of these flags are on by default, so the zero value is
+        // wrong for each of them.
+        let plain = TextInputConfiguration::default();
+        assert!(plain.autocorrect);
+        assert!(plain.enable_suggestions);
+        assert!(plain.enable_interactive_selection);
+        assert!(plain.enable_ime_personalized_learning);
+        assert!(!plain.obscure_text, "and these two are off");
+        assert!(!plain.read_only);
+    }
+
+    #[test]
+    fn a_number_field_says_false_where_others_say_nothing() {
+        // TextInputType.number IS numberWithOptions(), so the plain number
+        // type carries both flags as false. Every other type has them null.
+        let numeric = TextInputConfiguration {
+            input_type: TextInputType::NUMBER,
+            ..TextInputConfiguration::default()
+        };
+        let numeric = numeric.to_value();
+        let input_type = key(&numeric, "inputType");
+        assert_eq!(key(input_type, "signed"), &Value::Bool(false));
+        assert_eq!(key(input_type, "decimal"), &Value::Bool(false));
+
+        let text = TextInputConfiguration::default();
+        let text = text.to_value();
+        let input_type = key(&text, "inputType");
+        assert_eq!(key(input_type, "signed"), &Value::Null);
+        assert_eq!(key(input_type, "decimal"), &Value::Null);
+    }
+
+    #[test]
+    fn and_a_field_that_asked_for_a_decimal_keypad_gets_one() {
+        let decimal = TextInputConfiguration {
+            input_type: TextInputType::number_with_options(true, true),
+            ..TextInputConfiguration::default()
+        };
+        let decimal = decimal.to_value();
+        let input_type = key(&decimal, "inputType");
+        assert_eq!(key(input_type, "signed"), &Value::Bool(true));
+        assert_eq!(key(input_type, "decimal"), &Value::Bool(true));
+        assert_eq!(
+            key(input_type, "name"),
+            &Value::String("TextInputType.number".to_string()),
+            "still the number keyboard"
+        );
+    }
+
+    #[test]
+    fn the_smart_types_go_over_as_their_index_written_as_a_string() {
+        // Not a name and not a boolean. Upstream sends
+        // `smartDashesType.index.toString()`, so the declaration order of the
+        // enum is part of the wire format.
+        let off = TextInputConfiguration {
+            smart_dashes: SmartDashesType::Disabled,
+            smart_quotes: SmartQuotesType::Disabled,
+            ..TextInputConfiguration::default()
+        };
+        let value = off.to_value();
+        assert_eq!(
+            key(&value, "smartDashesType"),
+            &Value::String("0".to_string())
+        );
+        assert_eq!(
+            key(&value, "smartQuotesType"),
+            &Value::String("0".to_string())
+        );
+
+        let on = TextInputConfiguration::default();
+        let value = on.to_value();
+        assert_eq!(
+            key(&value, "smartDashesType"),
+            &Value::String("1".to_string())
+        );
+        assert_eq!(
+            key(&value, "smartQuotesType"),
+            &Value::String("1".to_string())
+        );
+    }
+
+    #[test]
+    fn the_named_enums_go_over_as_dart_would_print_them() {
+        let config = TextInputConfiguration {
+            text_capitalization: TextCapitalization::Sentences,
+            keyboard_appearance: Brightness::Dark,
+            action: TextInputAction::Search,
+            ..TextInputConfiguration::default()
+        };
+        let value = config.to_value();
+        assert_eq!(
+            key(&value, "textCapitalization"),
+            &Value::String("TextCapitalization.sentences".to_string())
+        );
+        assert_eq!(
+            key(&value, "keyboardAppearance"),
+            &Value::String("Brightness.dark".to_string())
+        );
+        assert_eq!(
+            key(&value, "inputAction"),
+            &Value::String("TextInputAction.search".to_string())
+        );
+    }
+
+    #[test]
+    fn the_keyboards_brightness_is_spelled_differently_from_the_settings_one() {
+        // Two channels, two spellings of the same value, and both are the
+        // platform's to insist on.
+        assert_eq!(Brightness::Light.as_name(), "Brightness.light");
+        let value = TextInputConfiguration::default().to_value();
+        assert_eq!(
+            key(&value, "keyboardAppearance"),
+            &Value::String("Brightness.light".to_string())
+        );
+    }
+
+    #[test]
+    fn an_action_label_is_null_rather_than_empty_when_nobody_chose_one() {
+        let value = TextInputConfiguration::default().to_value();
+        assert_eq!(key(&value, "actionLabel"), &Value::Null);
+
+        let labelled = TextInputConfiguration {
+            action_label: Some("Post".to_string()),
+            ..TextInputConfiguration::default()
+        };
+        assert_eq!(
+            key(&labelled.to_value(), "actionLabel"),
+            &Value::String("Post".to_string())
+        );
+    }
+
+    #[test]
+    fn every_flag_the_configuration_carries_reaches_the_platform() {
+        // The gap this all came from: the type existed and the value never
+        // left the process. Flipping each one has to change the message.
+        let plain = TextInputConfiguration::default().to_value();
+        let flipped = TextInputConfiguration {
+            autocorrect: false,
+            read_only: true,
+            enable_suggestions: false,
+            enable_interactive_selection: false,
+            enable_ime_personalized_learning: false,
+            obscure_text: true,
+            ..TextInputConfiguration::default()
+        }
+        .to_value();
+        for name in [
+            "autocorrect",
+            "readOnly",
+            "enableSuggestions",
+            "enableInteractiveSelection",
+            "enableIMEPersonalizedLearning",
+            "obscureText",
+        ] {
+            assert_ne!(key(&plain, name), key(&flipped, name), "{name}");
+        }
     }
 }
