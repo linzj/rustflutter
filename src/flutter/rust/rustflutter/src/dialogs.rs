@@ -46,11 +46,27 @@ pub fn show_dialog(
     overlay: Rc<OverlayHandle>,
     content: impl Fn() -> AnyWidget + 'static,
 ) -> Option<ModalHandle> {
-    show_dialog_with(
-        overlay,
-        ModalBarrier::new().with_color(DIALOG_BARRIER_COLOR),
-        content,
-    )
+    show_dialog_with(overlay, default_dialog_barrier(), content)
+}
+
+/// The barrier [`show_dialog`] puts behind a dialog.
+///
+/// Dimmed, dismissible, and **named**. Upstream's `showDialog` passes
+/// `barrierLabel ?? MaterialLocalizations.of(context).modalBarrierDismissLabel`,
+/// and the label is the whole of what a screen reader has to go on: without it
+/// the reader meets a region covering the entire screen with no name and no
+/// indication that activating it is the way out. `ModalBarrier` announces its
+/// label only when it is dismissible, so the two travel together.
+///
+/// Separate from [`show_dialog`] so that a caller building its own barrier
+/// with [`show_dialog_with`] can start from this rather than from a bare one
+/// and lose the label without noticing.
+pub fn default_dialog_barrier() -> ModalBarrier {
+    ModalBarrier::new()
+        .with_color(DIALOG_BARRIER_COLOR)
+        .with_semantics_label(
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL,
+        )
 }
 
 /// [`show_dialog`] with the barrier chosen -- `barrierDismissible: false` is
@@ -419,5 +435,42 @@ mod tests {
         let at = found.expect("the dialog's content is in the tree");
         assert_eq!(at, Offset::new(250.0, 200.0), "centred in 800 x 600");
         dialog.dismiss();
+    }
+}
+
+#[cfg(test)]
+mod barrier_label_tests {
+    use super::{DIALOG_BARRIER_COLOR, default_dialog_barrier};
+    use crate::material_app::DefaultMaterialLocalizations as L10n;
+    use crate::modal_barrier::ModalBarrier;
+
+    #[test]
+    fn the_dialog_barrier_says_how_to_leave() {
+        // Without a label a screen reader meets a region covering the whole
+        // screen with no name, and nothing saying that activating it is the
+        // way out.
+        let barrier = default_dialog_barrier();
+        assert_eq!(barrier.semantics_label.as_deref(), Some("Dismiss"));
+        assert_eq!(
+            barrier.semantics_label.as_deref(),
+            Some(L10n::MODAL_BARRIER_DISMISS_LABEL)
+        );
+    }
+
+    #[test]
+    fn and_it_is_dismissible_so_the_label_is_actually_announced() {
+        // ModalBarrier offers its label only when it can be dismissed, so a
+        // named barrier that refused taps would be a label nobody hears.
+        let barrier = default_dialog_barrier();
+        assert!(barrier.dismissible);
+        assert!(barrier.is_semantically_dismissible());
+    }
+
+    #[test]
+    fn a_bare_barrier_is_still_bare_which_is_why_the_default_has_a_name() {
+        // The shape of the bug: `ModalBarrier::new()` names nothing, and
+        // show_dialog used to build one of those directly.
+        assert_eq!(ModalBarrier::new().semantics_label, None);
+        assert_eq!(default_dialog_barrier().color, Some(DIALOG_BARRIER_COLOR));
     }
 }

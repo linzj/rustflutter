@@ -34,6 +34,7 @@ use crate::animation::AnimationStatus;
 use crate::routes::LocalHistoryEntry;
 
 use crate::direction::TextDirection;
+use crate::editable_text::TargetPlatform;
 use crate::framework::{AnyWidget, BuildContext, Component, leaf, single};
 use crate::render::{BoxConstraints, RenderConstrainedBox};
 use crate::widgets::Container;
@@ -76,6 +77,10 @@ pub struct Drawer {
     /// theme", which is upstream's null.
     width: Option<f32>,
     elevation: u32,
+    /// Upstream's `semanticLabel`. `None` does **not** mean the panel is
+    /// unnamed -- see [`Drawer::resolved_semantic_label`], where what it means
+    /// depends on the platform.
+    semantic_label: Option<String>,
 }
 
 impl Drawer {
@@ -85,6 +90,47 @@ impl Drawer {
             width: None,
             // `_DrawerDefaultsM3.elevation`.
             elevation: 1,
+            semantic_label: None,
+        }
+    }
+
+    /// Upstream's `Drawer.semanticLabel`.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Self {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// What a screen reader is told this panel is, which upstream decides with
+    /// a switch on the platform:
+    ///
+    /// ```dart
+    /// TargetPlatform.iOS || TargetPlatform.macOS => semanticLabel,
+    /// TargetPlatform.android || ... => semanticLabel ?? drawerLabel,
+    /// ```
+    ///
+    /// # The two Apple platforms get no fallback, and that is the rule
+    ///
+    /// Everywhere else an unnamed drawer is announced as "Navigation menu".
+    /// On iOS and macOS an unnamed drawer is announced as nothing, and a
+    /// caller who wants a name has to give one.
+    ///
+    /// It reads like an omission and is not. VoiceOver already says a modal
+    /// panel has appeared and that there is a way out of it; a framework
+    /// adding "Navigation menu" on top of that is a second voice saying what
+    /// the first one just said. On Android TalkBack does not, so the framework
+    /// does.
+    ///
+    /// A caller's own label wins on every platform -- the difference is only
+    /// what happens when there is none.
+    pub fn resolved_semantic_label(&self, platform: TargetPlatform) -> Option<String> {
+        match platform {
+            TargetPlatform::IOS | TargetPlatform::MacOS => self.semantic_label.clone(),
+            TargetPlatform::Android
+            | TargetPlatform::Fuchsia
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows => Some(self.semantic_label.clone().unwrap_or_else(|| {
+                crate::material_app::DefaultMaterialLocalizations::DRAWER_LABEL.to_string()
+            })),
         }
     }
 
@@ -973,5 +1019,85 @@ mod back_button_tests {
             HistoryEntryChange::Remove
         );
         assert!(entry.is_none(), "so the cycle ends here");
+    }
+}
+
+#[cfg(test)]
+mod semantic_label_tests {
+    use super::Drawer;
+    use crate::editable_text::TargetPlatform;
+    use crate::framework::leaf;
+    use crate::render::RenderConstrainedBox;
+
+    fn drawer() -> Drawer {
+        Drawer::new(leaf(|| RenderConstrainedBox::tight(10.0, 10.0)))
+    }
+
+    #[test]
+    fn an_unnamed_drawer_is_announced_as_a_navigation_menu() {
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(
+                drawer().resolved_semantic_label(platform).as_deref(),
+                Some("Navigation menu"),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn but_on_the_two_apple_platforms_it_is_announced_as_nothing() {
+        // Not an omission. VoiceOver already says a modal panel appeared and
+        // that there is a way out; the framework adding "Navigation menu" on
+        // top would be a second voice repeating the first.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                drawer().resolved_semantic_label(platform),
+                None,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_caller_that_named_it_wins_everywhere() {
+        // The platform decides the fallback, never the override.
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+        ] {
+            assert_eq!(
+                drawer()
+                    .with_semantic_label("Account switcher")
+                    .resolved_semantic_label(platform)
+                    .as_deref(),
+                Some("Account switcher"),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_platforms_disagree_only_about_the_unnamed_case() {
+        // Stated as its own test because it is the whole content of the
+        // switch: with a label every platform agrees, without one they split.
+        let named = |platform| {
+            drawer()
+                .with_semantic_label("Account switcher")
+                .resolved_semantic_label(platform)
+        };
+        assert_eq!(named(TargetPlatform::IOS), named(TargetPlatform::Android));
+        assert_ne!(
+            drawer().resolved_semantic_label(TargetPlatform::IOS),
+            drawer().resolved_semantic_label(TargetPlatform::Android)
+        );
     }
 }
