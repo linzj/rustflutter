@@ -14300,3 +14300,56 @@ pub fn is_superseded() -> bool { true }
 `is_empty` 在十几个不相干的类型上都有实现。改成按 `(文件, 名字)` 分组，
 因为负责 dispatch 的枚举就住在它的叶子旁边。76 → 65，未解释的 6 → 3。
 
+## 第 123-124 轮：尺子跟随别名，图像找回自己的尺寸
+
+### `depth.py` 现在会跟着 `pub type` 走
+
+`Text` 报 0/18——一个完整移植的类型被报成完全不存在。crate 里写的是
+`pub type Text = RenderParagraph`。**别名是恒等**，所以把目标类型的成员算给它是精确的。
+45 个别名里有 21 个点名了上游的类。`Text` 现在 40/18。
+
+facade（单元结构体的 `new` 返回真正干活的 render object）**没有**照此办理，
+而且是有意的：`Row` 和 `Column` 都构造 `RenderFlex`，
+给它们各自记上全部成员会盖住「声明了属性却从不往下传」——
+而这正是这把尺子存在的理由。
+
+### 一次并发写入的教训，形状是新的
+
+`git add -A` 在 order_sweep 跑的时候执行，把一个 12113 行的 `.sweep` 备份
+和**一行正在被测试的错误变异**一起提交了（`ResolvedSnackBar::elevation`
+的优先级被调换）。工作区本身是对的——sweep 后来恢复了文件——所以修正提交
+提交的是「恢复」而不是新的修法，并用 `git diff aaa764e` 为空来验证。
+
+前两次并发写入的教训都是「别改树」。这次我一个 `src/` 下的文件都没改。
+**`git add -A` 不是读操作。**`*.sweep` 现在进了 `.gitignore`。
+
+### `RawImage` 缺四个，先补上能补的那个
+
+`RenderImage` 有 image/fit/alignment/opacity/size/centre_slice，
+上游还声明了 `scale`、`color`、`colorBlendMode`、`filterQuality`，
+ledger 里没有任何条目为它们开脱。
+
+`scale` 补上了：它把像素数**除**成逻辑尺寸，@2x 的图因此和 1x 的图一样大。
+方向弄反不是细微错误——scale=2 会让高密度图占四倍面积。
+
+`color`/`colorBlendMode` **暂时补不了，而且我先前说错了**。我在上一条提交信息里
+写「画布已经能表达染色，因为 `draw_image_rect` 收 `Paint` 而 `Paint` 有
+`set_blend_mode`」。不对：paint 上的 blend mode 决定**图像与背景**如何合成，
+不会给图像本身染色。染色是 `ColorFilter.mode(color, srcIn)`，
+而 FFI 里没有 `rf_paint_set_color_filter`。
+FFI 是我们自己的（`src/flutter/rust/ffi/`）且底下是 `DlPaint`，它有 `setColorFilter`——
+所以这是一件要写 C++ 的活，不是被引擎挡住。
+
+### 而找 scale 的测试时，撞见一个更大的洞
+
+测试怎么写都过不了：布局出来是 0×0。原因是
+`engine_test_stubs.rs` 里的 `rf_image_width`/`rf_image_height` **恒返回 0**，
+把 `from_pixels` 收到的宽高丢掉了。
+
+于是**整条图像几何路径都是不可测的**——`natural`、box fit、destination rect、
+intrinsics 全都对着一个永远为零的尺寸测量，因此它们与**任何**实现都相容。
+原有那个图像测试只检查 `centre_slice`，正是这个缘故。
+
+stub 现在记住宽高。改完之后没有任何既有测试变红，这本身是条信息。
+把 stub 改回返回 0 作为变异：三红。
+

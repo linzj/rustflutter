@@ -4259,6 +4259,13 @@ pub struct RenderImage {
     alignment: Alignment,
     opacity: Option<f32>,
     size: Size,
+    /// Upstream's `scale`: how many image pixels go to one logical pixel.
+    ///
+    /// It is the number that makes `@2x` artwork the right size rather than
+    /// twice the right size, and it belongs to the picture rather than to the
+    /// box -- which is why it divides the natural size in
+    /// [`RenderImage::natural`] and not the destination rect.
+    scale: f32,
     /// Upstream's `centerSlice`: the rectangle that may stretch. `None` is an
     /// image scaled whole -- see [`centre_slice_under`] for what it does and
     /// what it does not.
@@ -4303,7 +4310,24 @@ impl RenderImage {
             alignment: Alignment::CENTER,
             opacity: None,
             size: Size::ZERO,
+            scale: 1.0,
         }
+    }
+
+    /// Upstream's `scale`, whose default is 1.
+    ///
+    /// A picture decoded at twice the density is twice as many pixels across
+    /// and the same size on the glass, so the layout size is the pixel count
+    /// **divided** by this. Getting the direction wrong is not a subtle error
+    /// -- a scale of 2 would make a high-density image occupy four times the
+    /// area it should.
+    pub fn with_scale(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
     }
 
     pub fn with_fit(mut self, fit: BoxFit) -> Self {
@@ -4326,9 +4350,22 @@ impl RenderImage {
         self
     }
 
+    /// The picture's size **in logical pixels**, which is upstream's
+    /// `Size(_image.width / _scale, _image.height / _scale)`.
+    ///
+    /// Everything downstream measures against this rather than against the
+    /// pixel count: the fit, the destination rect, the intrinsics. Dividing
+    /// here rather than at each of them is what keeps them agreeing.
     fn natural(&self) -> Size {
         let (w, h) = self.image.size();
-        Size::new(w as f32, h as f32)
+        if self.scale <= 0.0 {
+            // Upstream asserts a positive scale rather than defending against
+            // one; here a zero would make every size infinite and every
+            // downstream division produce a NaN, which is a worse way to find
+            // out.
+            return Size::new(w as f32, h as f32);
+        }
+        Size::new(w as f32 / self.scale, h as f32 / self.scale)
     }
 
     /// The uniform scale a picture of `natural` is painted at inside `size`
@@ -23935,6 +23972,82 @@ mod centre_slice_tests {
             sliced.centre_slice_verdict(),
             Some(CentreSliceVerdict::NoEffect)
         );
+    }
+
+    /// Four pixels across and two down, so a scale of two gives 2x1 and the
+    /// two axes stay distinguishable throughout.
+    fn four_by_two() -> Rc<Image> {
+        Rc::new(Image::from_pixels(&[0; 4 * 2 * 4], 4, 2).expect("the stub engine hands one back"))
+    }
+
+    #[test]
+    fn a_denser_picture_is_the_same_size_on_the_glass() {
+        // Which is the whole of what scale is for: @2x artwork is twice as
+        // many pixels across and occupies the same room.
+        let loose = BoxConstraints::loose(1000.0, 1000.0);
+        let mut plain = RenderImage::new(four_by_two());
+        assert_eq!(plain.layout(loose), Size::new(4.0, 2.0));
+
+        let mut dense = RenderImage::new(four_by_two()).with_scale(2.0);
+        assert_eq!(
+            dense.layout(loose),
+            Size::new(2.0, 1.0),
+            "divided by the scale, not multiplied"
+        );
+    }
+
+    #[test]
+    fn the_direction_is_the_part_worth_pinning() {
+        // A scale of two multiplying instead of dividing would give 8x4 --
+        // four times the area. Asserting it is smaller than the unscaled size
+        // catches that however the arithmetic is written.
+        let loose = BoxConstraints::loose(1000.0, 1000.0);
+        let unscaled = RenderImage::new(four_by_two()).layout(loose);
+        for scale in [2.0, 4.0] {
+            let scaled = RenderImage::new(four_by_two())
+                .with_scale(scale)
+                .layout(loose);
+            assert!(scaled.width < unscaled.width, "{scale}");
+            assert!(scaled.height < unscaled.height, "{scale}");
+        }
+        let coarse = RenderImage::new(four_by_two())
+            .with_scale(0.5)
+            .layout(loose);
+        assert!(coarse.width > unscaled.width, "and below one it grows");
+    }
+
+    #[test]
+    fn an_unscaled_image_is_what_a_caller_gets_without_asking() {
+        assert_eq!(RenderImage::new(four_by_two()).scale(), 1.0);
+    }
+
+    #[test]
+    fn a_scale_of_zero_falls_back_rather_than_making_every_size_infinite() {
+        // Upstream asserts a positive scale. Dividing by zero here would hand
+        // an infinite size to the constraint solver and a NaN to everything
+        // downstream of it, which is a worse way to find out.
+        let loose = BoxConstraints::loose(1000.0, 1000.0);
+        let size = RenderImage::new(four_by_two())
+            .with_scale(0.0)
+            .layout(loose);
+        assert_eq!(size, Size::new(4.0, 2.0));
+        assert!(size.width.is_finite() && size.height.is_finite());
+    }
+
+    #[test]
+    fn the_scale_divides_the_picture_and_not_the_box_it_is_given() {
+        // A tight box wins regardless -- scale changes what the image asks
+        // for, not what the parent grants.
+        let tight = BoxConstraints::tight(50.0, 50.0);
+        for scale in [1.0, 2.0, 8.0] {
+            assert_eq!(
+                RenderImage::new(four_by_two())
+                    .with_scale(scale)
+                    .layout(tight),
+                Size::new(50.0, 50.0),
+                "{scale}"
+            );
+        }
     }
 }
 

@@ -36,6 +36,36 @@ use crate::engine::sys::*;
 
 /// Backing allocation for a stub handle. One byte, so distinct handles have
 /// distinct addresses and a double free is caught by the allocator.
+/// What the stub remembers about an image.
+///
+/// Every other handle here is a one-byte allocation, because nothing reads
+/// anything back out of them. An image is the exception: its width and height
+/// are read by the crate itself, and returning zero for both made the whole of
+/// image geometry untestable -- `natural`, the box fit, the destination rect
+/// and the intrinsics all measure against a size that was always zero, so
+/// every one of them agreed with every possible implementation.
+///
+/// Found while adding `RenderImage::scale`, whose test could not tell a
+/// division from a multiplication when both sides were nought.
+struct StubImage {
+    width: c_int,
+    height: c_int,
+}
+
+fn stub_image(width: c_int, height: c_int) -> *mut RfImage {
+    Box::into_raw(Box::new(StubImage { width, height })) as *mut RfImage
+}
+
+/// # Safety
+/// `image` must be null or have come from `stub_image` and not been freed.
+unsafe fn stub_image_ref<'a>(image: *const RfImage) -> Option<&'a StubImage> {
+    if image.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(image as *const StubImage) })
+    }
+}
+
 fn allocate<T>() -> *mut T {
     Box::into_raw(Box::new(0u8)) as *mut T
 }
@@ -661,7 +691,10 @@ pub unsafe extern "C" fn rf_layer_free(layer: *mut RfLayer) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage {
-    allocate::<RfImage>()
+    // Nothing here decodes, so there are no dimensions to report and this is
+    // the one image handle that still measures zero. A test that needs a size
+    // builds one from pixels.
+    stub_image(0, 0)
 }
 
 #[unsafe(no_mangle)]
@@ -673,22 +706,24 @@ pub unsafe extern "C" fn rf_image_from_pixels(
     if pixels.is_null() || width <= 0 || height <= 0 {
         return std::ptr::null_mut();
     }
-    allocate::<RfImage>()
+    stub_image(width, height)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_free(image: *mut RfImage) {
-    unsafe { release(image) }
+    if !image.is_null() {
+        drop(unsafe { Box::from_raw(image as *mut StubImage) });
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_width(image: *const RfImage) -> c_int {
-    0
+    unsafe { stub_image_ref(image) }.map_or(0, |image| image.width)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_height(image: *const RfImage) -> c_int {
-    0
+    unsafe { stub_image_ref(image) }.map_or(0, |image| image.height)
 }
 
 #[unsafe(no_mangle)]
