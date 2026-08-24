@@ -24654,3 +24654,112 @@ mod baseline_offset_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod decorated_box_geometry_tests {
+    use super::{
+        BoxConstraints, Color, Fill, LayerTree, Offset, PaintContext, RenderBox,
+        RenderDecoratedBox, Size,
+    };
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+
+    /// Lays a decorated box out at 100x40 and paints it at the origin.
+    fn painted(box_: RenderDecoratedBox) -> Vec<Drawn> {
+        let mut box_ = box_;
+        box_.layout(BoxConstraints::tight(100.0, 40.0));
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            box_.paint(&mut context, Offset::ZERO);
+        }
+        drawn()
+    }
+
+    #[test]
+    fn a_filled_box_covers_exactly_the_box() {
+        assert_eq!(
+            painted(RenderDecoratedBox::new().with_fill(Fill::Solid(Color::BLACK))),
+            vec![Drawn::Rect {
+                left: 0.0,
+                top: 0.0,
+                right: 100.0,
+                bottom: 40.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_border_is_inset_by_half_its_width_on_every_side() {
+        // A stroke is centred on the path, so half of it falls outside. The
+        // inset is what keeps a border inside the box a caller sized -- and
+        // until the canvas recorded its arguments there was nothing that could
+        // tell this rectangle from the box's own.
+        let calls = painted(RenderDecoratedBox::new().with_border(8.0, Color::BLACK));
+        assert_eq!(
+            calls,
+            vec![Drawn::Rect {
+                left: 4.0,
+                top: 4.0,
+                right: 96.0,
+                bottom: 36.0,
+            }],
+            "four in from each edge, which is half of eight"
+        );
+    }
+
+    #[test]
+    fn the_inset_follows_the_width_rather_than_being_a_constant() {
+        for width in [2.0f32, 8.0, 20.0] {
+            let calls = painted(RenderDecoratedBox::new().with_border(width, Color::BLACK));
+            let half = width / 2.0;
+            assert_eq!(
+                calls,
+                vec![Drawn::Rect {
+                    left: half,
+                    top: half,
+                    right: 100.0 - half,
+                    bottom: 40.0 - half,
+                }],
+                "{width}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fill_and_a_border_are_two_rectangles_in_that_order() {
+        // The fill first, so the border is drawn over it rather than under.
+        let calls = painted(
+            RenderDecoratedBox::new()
+                .with_fill(Fill::Solid(Color::BLACK))
+                .with_border(4.0, Color::WHITE),
+        );
+        assert_eq!(
+            calls,
+            vec![
+                Drawn::Rect {
+                    left: 0.0,
+                    top: 0.0,
+                    right: 100.0,
+                    bottom: 40.0,
+                },
+                Drawn::Rect {
+                    left: 2.0,
+                    top: 2.0,
+                    right: 98.0,
+                    bottom: 38.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_box_asked_for_nothing_draws_nothing() {
+        assert_eq!(painted(RenderDecoratedBox::new()), vec![]);
+        assert_eq!(
+            painted(RenderDecoratedBox::new().with_border(0.0, Color::BLACK)),
+            vec![],
+            "a border of no width is not a border"
+        );
+    }
+}
