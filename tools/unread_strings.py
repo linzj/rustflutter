@@ -13,12 +13,28 @@ Nothing noticed, because nothing was looking. This looks.
 # What counts as a reader
 
 A mention anywhere outside `material_app.rs` -- the file the constants live in
--- and outside a `#[cfg(test)]` block. A test that names a string proves the
-string is spelled a certain way; it does not prove anything says it. That is
-the whole distinction, so the test modules are stripped before counting.
+-- that is outside a `#[cfg(test)]` block **and outside a comment**. A test
+that names a string proves the string is spelled a certain way; a doc comment
+that names it proves someone wrote its name down. Neither proves anything says
+it, which is the whole distinction, so tests and comments are both stripped
+before counting.
 
-A constant read only by another constant in the same file would slip through,
-but no such thing exists here and the shape is not one this crate reaches for.
+The comment rule was added after the reader-chain below was checked by cutting
+its only real caller and watching nothing happen: the file still mentioned the
+helper in a doc link, and that counted. It does not now.
+
+# Read at one remove
+
+Some strings are consumed by a function in `material_app.rs` rather than by a
+widget elsewhere -- `expansion_tile_hint` pairs four of them into a sentence,
+and the crossing it performs is the reason they exist.  A rule of "mentioned
+outside this file" called all four unread, which was the rule being too crude
+rather than the strings being unused.
+
+So a constant also counts as read when it is used inside a `pub fn` in this
+file whose own name appears outside it.  That is one hop and no more: the
+function has to have a caller of its own, or the chain is as unread as the
+constant was.
 
 # And what it says
 
@@ -97,6 +113,40 @@ def upstream_strings():
 STRING = re.compile(r"pub const (?P<name>[A-Z][A-Z0-9_]*): &'static str = \"(?P<value>[^\"]*)\"")
 
 
+def strip_comments(text):
+    """Line comments removed, string literals left alone.
+
+    Crude on purpose -- it walks the text once tracking whether it is inside a
+    string, so a `//` inside one survives and a comment containing a quote does
+    not confuse it.
+    """
+    out, index, in_string = [], 0, False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            if char == '\\':
+                out.append(text[index:index + 2])
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+            out.append(char)
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if text.startswith('//', index):
+            end = text.find('\n', index)
+            index = len(text) if end < 0 else end
+            continue
+        out.append(char)
+        index += 1
+    return ''.join(out)
+
+
 def strip_tests(text):
     out, index = [], 0
     for match in re.finditer(r'#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', text):
@@ -124,17 +174,46 @@ def localization_strings():
             for m in STRING.finditer(text[start:])]
 
 
+# `pub fn name(...) { ... }` in the localizations file, body included, so a
+# constant used by one can be credited to that function's own callers.
+LOCAL_FN = re.compile(
+    r'^    pub fn (?P<name>\w+)\([^)]*\)[^{]*\{(?P<body>.*?)^    \}',
+    re.M | re.S)
+
+
+def local_helpers():
+    """Which constants each `pub fn` in the localizations file mentions."""
+    text = strip_tests(open(HOME, encoding='utf-8', errors='replace').read())
+    return {m.group('name'): strip_comments(m.group('body'))
+            for m in LOCAL_FN.finditer(text)}
+
+
 readers = {}
+helper_callers = {}
 for root, _dirs, files in os.walk(CRATE):
     for name in sorted(files):
         if not name.endswith('.rs') or os.path.join(root, name) == HOME:
             continue
         path = os.path.join(root, name)
-        body = strip_tests(open(path, encoding='utf-8', errors='replace').read())
+        body = strip_comments(
+            strip_tests(open(path, encoding='utf-8', errors='replace').read()))
         where = os.path.relpath(path, CRATE).replace(os.sep, '/')
+        helper_callers[where] = body
         for constant, _value in localization_strings():
             if constant in body:
                 readers.setdefault(constant, []).append(where)
+
+# A constant used by a local helper counts as read when the helper does.
+helpers = local_helpers()
+for helper, body in helpers.items():
+    called_from = [where for where, seen in helper_callers.items()
+                   if helper in seen]
+    if not called_from:
+        continue
+    for constant, _value in localization_strings():
+        if constant in body:
+            readers.setdefault(constant, []).extend(
+                '%s (via %s)' % (where, helper) for where in called_from)
 
 strings = localization_strings()
 unread = [(name, value) for name, value in strings if name not in readers]

@@ -171,6 +171,16 @@ impl CupertinoExpansionTile {
     ///
     /// **One animates the paint and the other the layout**, and the more
     /// expensive machinery goes to the one whose picture outgrows its box.
+    /// What a screen reader is told, from upstream's pair of hints. See
+    /// [`crate::material_app::DefaultMaterialLocalizations::expansion_tile_hint`]
+    /// for why the two halves are chosen the way they are.
+    ///
+    /// Upstream attaches these on iOS and macOS only, which is this widget's
+    /// whole audience.
+    pub fn semantics_hint(&self) -> String {
+        crate::material_app::DefaultMaterialLocalizations::expansion_tile_hint(self.expanded)
+    }
+
     pub fn needs_an_overlay(&self) -> bool {
         matches!(self.transition_mode, ExpansionTileTransitionMode::Fade)
     }
@@ -484,5 +494,62 @@ mod empty_direction_tests {
     #[test]
     fn neither_given_is_empty() {
         assert!(CupertinoAdaptiveTextSelectionToolbar::new(0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod expansion_hint_tests {
+    use super::CupertinoExpansionTile;
+    use crate::material_app::DefaultMaterialLocalizations as L10n;
+
+    #[test]
+    fn the_hint_is_the_state_and_then_what_a_tap_does() {
+        let mut tile = CupertinoExpansionTile::new();
+        assert_eq!(tile.semantics_hint(), "Collapsed double tap to expand");
+        tile.expanded = true;
+        assert_eq!(tile.semantics_hint(), "Expanded double tap to collapse");
+    }
+
+    #[test]
+    fn each_sentence_agrees_with_itself() {
+        // The trap: upstream names expandedHint "Collapsed" and collapsedHint
+        // "Expanded", and crosses the pairing to match. Tidying the names into
+        // agreement with their values while keeping the obvious pairing gives
+        // two sentences that each say the opposite of the truth -- so what is
+        // worth asserting is the sentence, not the constants.
+        let mut tile = CupertinoExpansionTile::new();
+        assert!(
+            tile.semantics_hint().starts_with("Collapsed"),
+            "a shut tile says it is shut"
+        );
+        assert!(
+            tile.semantics_hint().ends_with("expand"),
+            "and that a tap opens it"
+        );
+        tile.expanded = true;
+        assert!(tile.semantics_hint().starts_with("Expanded"));
+        assert!(tile.semantics_hint().ends_with("collapse"));
+    }
+
+    #[test]
+    fn no_sentence_tells_the_reader_to_do_what_is_already_done() {
+        // Which is what the un-crossed pairing would produce.
+        for expanded in [false, true] {
+            let hint = L10n::expansion_tile_hint(expanded);
+            let says_open = hint.starts_with("Expanded");
+            let offers_open = hint.ends_with("expand");
+            assert_ne!(
+                says_open, offers_open,
+                "an open tile must not offer to open: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_constants_are_named_the_way_upstream_names_them() {
+        // Copied rather than corrected, because the crossing above depends on
+        // them being what upstream says they are.
+        assert_eq!(L10n::EXPANDED_HINT, "Collapsed");
+        assert_eq!(L10n::COLLAPSED_HINT, "Expanded");
     }
 }

@@ -573,6 +573,61 @@ impl DefaultMaterialLocalizations {
     /// two shapes: an alert interrupts and a dialog asks, and a reader is
     /// told which before hearing the contents.
     pub const DIALOG_LABEL: &'static str = "Dialog";
+    // -- An expansion tile's two sentences ---------------------------------
+    //
+    // Four strings that compose into two, and **two of the four are named the
+    // wrong way round upstream**:
+    //
+    //     expandedHint  => 'Collapsed'   /// describes the expanded state
+    //     collapsedHint => 'Expanded'    /// describes the collapsed state
+    //
+    // Read on their own they look like a straightforward bug. They are not,
+    // because the pairing is crossed to match: upstream's own doc says
+    // `expansionTileExpandedHint` is appended to `collapsedHint`, and
+    // `expansionTileCollapsedHint` to `expandedHint`. Follow both crossings
+    // and the sentences come out right --
+    //
+    //     "Expanded double tap to collapse"
+    //     "Collapsed double tap to expand"
+    //
+    // -- so a port that tidied the names into agreement with their values,
+    // and kept the obvious pairing, would produce two sentences that each say
+    // the opposite of the truth. The names are copied as they are, and
+    // [`Self::expansion_tile_hint`] is the only thing that pairs them.
+
+    /// Upstream's `expandedHint`, which describes the **expanded** state and
+    /// whose value is "Collapsed". See the note above.
+    pub const EXPANDED_HINT: &'static str = "Collapsed";
+    /// Upstream's `collapsedHint`, which describes the **collapsed** state and
+    /// whose value is "Expanded". See the note above.
+    pub const COLLAPSED_HINT: &'static str = "Expanded";
+    /// Upstream's `expansionTileExpandedHint`.
+    pub const EXPANSION_TILE_EXPANDED_HINT: &'static str = "double tap to collapse";
+    /// Upstream's `expansionTileCollapsedHint`.
+    pub const EXPANSION_TILE_COLLAPSED_HINT: &'static str = "double tap to expand";
+
+    /// The whole hint for an expansion tile on iOS and macOS, which is the
+    /// state followed by what a tap will do.
+    ///
+    /// The crossing lives here and nowhere else. `expanded` picks
+    /// `collapsedHint` for the first half and `expansionTileExpandedHint` for
+    /// the second, which reads backwards twice and comes out forwards.
+    pub fn expansion_tile_hint(expanded: bool) -> String {
+        if expanded {
+            format!(
+                "{} {}",
+                Self::COLLAPSED_HINT,
+                Self::EXPANSION_TILE_EXPANDED_HINT
+            )
+        } else {
+            format!(
+                "{} {}",
+                Self::EXPANDED_HINT,
+                Self::EXPANSION_TILE_COLLAPSED_HINT
+            )
+        }
+    }
+
     // -- The date and time pickers ----------------------------------------
     //
     // Moved here from `pickers.rs`, which held them privately because the
