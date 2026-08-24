@@ -292,16 +292,133 @@ impl Default for MaterialApp {
 
 /// Upstream `MaterialLocalizations`: the interface every Material widget reads
 /// its strings through.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MaterialLocalizations;
+///
+/// # A bundle rather than a table
+///
+/// This was an empty struct for a long time, with the strings sitting as
+/// constants on [`DefaultMaterialLocalizations`] and every widget reading them
+/// from there. That works and it is not what the class is *for*: reading a
+/// constant off the implementation means an application can never put its own
+/// bundle in front of it, which is the whole point of having an interface at
+/// all. `localizations.rs` has carried the delegate machinery for exactly that
+/// since it was written -- "an application supplying its own
+/// `MaterialLocalizations` shadows the framework's" -- and there was nothing
+/// on this side to shadow.
+///
+/// The widgets layer already had this shape. Two localization layers in one
+/// crate modelled two different ways was the thing to fix.
+///
+/// The constants stay, and are what the default implementation returns. They
+/// are the values; this is the interface, and a caller wanting the framework's
+/// English can still name either.
+pub trait MaterialLocalizations {
+    /// Upstream's `backButtonTooltip`.
+    fn back_button_tooltip(&self) -> &str;
 
-impl MaterialLocalizations {
-    /// Upstream's `of` asserts `debugCheckHasMaterialLocalizations` and then
-    /// force-unwraps, so a missing delegate is a debug error with an
-    /// explanation rather than a null in release.
-    pub fn of(present: bool) -> Option<MaterialLocalizations> {
-        present.then_some(MaterialLocalizations)
-    }
+    /// Upstream's `closeButtonTooltip`.
+    fn close_button_tooltip(&self) -> &str;
+
+    /// Upstream's `openAppDrawerTooltip`.
+    fn open_app_drawer_tooltip(&self) -> &str;
+
+    /// Upstream's `drawerLabel`.
+    fn drawer_label(&self) -> &str;
+
+    /// Upstream's `alertDialogLabel`.
+    fn alert_dialog_label(&self) -> &str;
+
+    /// Upstream's `dialogLabel`.
+    fn dialog_label(&self) -> &str;
+
+    /// Upstream's `expandedHint`.
+    fn expanded_hint(&self) -> &str;
+
+    /// Upstream's `collapsedHint`.
+    fn collapsed_hint(&self) -> &str;
+
+    /// Upstream's `expansionTileExpandedHint`.
+    fn expansion_tile_expanded_hint(&self) -> &str;
+
+    /// Upstream's `expansionTileCollapsedHint`.
+    fn expansion_tile_collapsed_hint(&self) -> &str;
+
+    /// Upstream's `invalidDateFormatLabel`.
+    fn invalid_date_format_label(&self) -> &str;
+
+    /// Upstream's `dateOutOfRangeLabel`.
+    fn date_out_of_range_label(&self) -> &str;
+
+    /// Upstream's `dateHelpText`.
+    fn date_help_text(&self) -> &str;
+
+    /// Upstream's `dateInputLabel`.
+    fn date_input_label(&self) -> &str;
+
+    /// Upstream's `datePickerHelpText`.
+    fn date_picker_help_text(&self) -> &str;
+
+    /// Upstream's `cancelButtonLabel`.
+    fn cancel_button_label(&self) -> &str;
+
+    /// Upstream's `okButtonLabel`.
+    fn ok_button_label(&self) -> &str;
+
+    /// Upstream's `saveButtonLabel`.
+    fn save_button_label(&self) -> &str;
+
+    /// Upstream's `dateRangePickerHelpText`.
+    fn date_range_picker_help_text(&self) -> &str;
+
+    /// Upstream's `invalidDateRangeLabel`.
+    fn invalid_date_range_label(&self) -> &str;
+
+    /// Upstream's `dateRangeStartLabel`.
+    fn date_range_start_label(&self) -> &str;
+
+    /// Upstream's `dateRangeEndLabel`.
+    fn date_range_end_label(&self) -> &str;
+
+    /// Upstream's `timePickerDialHelpText`.
+    fn time_picker_dial_help_text(&self) -> &str;
+
+    /// Upstream's `timePickerInputHelpText`.
+    fn time_picker_input_help_text(&self) -> &str;
+
+    /// Upstream's `invalidTimeLabel`.
+    fn invalid_time_label(&self) -> &str;
+
+    /// Upstream's `timePickerHourLabel`.
+    fn time_picker_hour_label(&self) -> &str;
+
+    /// Upstream's `timePickerMinuteLabel`.
+    fn time_picker_minute_label(&self) -> &str;
+
+    /// Upstream's `rowsPerPageTitle`.
+    fn rows_per_page_title(&self) -> &str;
+
+    /// Upstream's `refreshIndicatorSemanticLabel`.
+    fn refresh_indicator_semantic_label(&self) -> &str;
+
+    /// Upstream's `licensesPageTitle`.
+    fn licenses_page_title(&self) -> &str;
+
+    /// Upstream's `showMenuTooltip`.
+    fn show_menu_tooltip(&self) -> &str;
+
+    /// Upstream's `popupMenuLabel`.
+    fn popup_menu_label(&self) -> &str;
+
+    /// Upstream's `menuDismissLabel`.
+    fn menu_dismiss_label(&self) -> &str;
+
+    /// Upstream's `searchFieldLabel`.
+    fn search_field_label(&self) -> &str;
+
+    /// Upstream's `modalBarrierDismissLabel`.
+    fn modal_barrier_dismiss_label(&self) -> &str;
+
+    /// Upstream's `deleteButtonTooltip`.
+    fn delete_button_tooltip(&self) -> &str;
 }
 
 /// Upstream `DefaultMaterialLocalizations`, whose own doc says what it is:
@@ -315,6 +432,19 @@ impl MaterialLocalizations {
 pub struct DefaultMaterialLocalizations;
 
 impl DefaultMaterialLocalizations {
+    /// Upstream's `MaterialLocalizations.of`, which asserts
+    /// `debugCheckHasMaterialLocalizations` and then force-unwraps -- so a
+    /// missing delegate is a debug error with an explanation rather than a
+    /// null in release.
+    ///
+    /// It answers with the default bundle because that is the only one there
+    /// is: no Material delegate is registered yet, so nothing can be in front
+    /// of it. The signature is the shape upstream's has, so a lookup can
+    /// replace the body without moving the callers.
+    pub fn of(present: bool) -> Option<DefaultMaterialLocalizations> {
+        present.then_some(DefaultMaterialLocalizations)
+    }
+
     /// Upstream's `_shortWeekdays`, and above it -- twice, once for this list
     /// and once for the long one -- sits this comment:
     ///
@@ -1020,8 +1150,8 @@ mod tests {
 
     #[test]
     fn localizations_are_fetched_through_a_check_rather_than_a_null() {
-        assert!(MaterialLocalizations::of(true).is_some());
-        assert!(MaterialLocalizations::of(false).is_none());
+        assert!(DefaultMaterialLocalizations::of(true).is_some());
+        assert!(DefaultMaterialLocalizations::of(false).is_none());
     }
 }
 
@@ -1515,5 +1645,338 @@ mod theme_mode_tests {
         // disagreement above needs someone to pass null on purpose.
         assert_eq!(MaterialApp::new().theme_mode, Some(ThemeMode::System));
         assert_eq!(ThemeMode::default(), ThemeMode::System);
+    }
+}
+
+impl MaterialLocalizations for DefaultMaterialLocalizations {
+    fn back_button_tooltip(&self) -> &str {
+        Self::BACK_BUTTON_TOOLTIP
+    }
+
+    fn close_button_tooltip(&self) -> &str {
+        Self::CLOSE_BUTTON_TOOLTIP
+    }
+
+    fn open_app_drawer_tooltip(&self) -> &str {
+        Self::OPEN_APP_DRAWER_TOOLTIP
+    }
+
+    fn drawer_label(&self) -> &str {
+        Self::DRAWER_LABEL
+    }
+
+    fn alert_dialog_label(&self) -> &str {
+        Self::ALERT_DIALOG_LABEL
+    }
+
+    fn dialog_label(&self) -> &str {
+        Self::DIALOG_LABEL
+    }
+
+    fn expanded_hint(&self) -> &str {
+        Self::EXPANDED_HINT
+    }
+
+    fn collapsed_hint(&self) -> &str {
+        Self::COLLAPSED_HINT
+    }
+
+    fn expansion_tile_expanded_hint(&self) -> &str {
+        Self::EXPANSION_TILE_EXPANDED_HINT
+    }
+
+    fn expansion_tile_collapsed_hint(&self) -> &str {
+        Self::EXPANSION_TILE_COLLAPSED_HINT
+    }
+
+    fn invalid_date_format_label(&self) -> &str {
+        Self::INVALID_DATE_FORMAT_LABEL
+    }
+
+    fn date_out_of_range_label(&self) -> &str {
+        Self::DATE_OUT_OF_RANGE_LABEL
+    }
+
+    fn date_help_text(&self) -> &str {
+        Self::DATE_HELP_TEXT
+    }
+
+    fn date_input_label(&self) -> &str {
+        Self::DATE_INPUT_LABEL
+    }
+
+    fn date_picker_help_text(&self) -> &str {
+        Self::DATE_PICKER_HELP_TEXT
+    }
+
+    fn cancel_button_label(&self) -> &str {
+        Self::CANCEL_BUTTON_LABEL
+    }
+
+    fn ok_button_label(&self) -> &str {
+        Self::OK_BUTTON_LABEL
+    }
+
+    fn save_button_label(&self) -> &str {
+        Self::SAVE_BUTTON_LABEL
+    }
+
+    fn date_range_picker_help_text(&self) -> &str {
+        Self::DATE_RANGE_PICKER_HELP_TEXT
+    }
+
+    fn invalid_date_range_label(&self) -> &str {
+        Self::INVALID_DATE_RANGE_LABEL
+    }
+
+    fn date_range_start_label(&self) -> &str {
+        Self::DATE_RANGE_START_LABEL
+    }
+
+    fn date_range_end_label(&self) -> &str {
+        Self::DATE_RANGE_END_LABEL
+    }
+
+    fn time_picker_dial_help_text(&self) -> &str {
+        Self::TIME_PICKER_DIAL_HELP_TEXT
+    }
+
+    fn time_picker_input_help_text(&self) -> &str {
+        Self::TIME_PICKER_INPUT_HELP_TEXT
+    }
+
+    fn invalid_time_label(&self) -> &str {
+        Self::INVALID_TIME_LABEL
+    }
+
+    fn time_picker_hour_label(&self) -> &str {
+        Self::TIME_PICKER_HOUR_LABEL
+    }
+
+    fn time_picker_minute_label(&self) -> &str {
+        Self::TIME_PICKER_MINUTE_LABEL
+    }
+
+    fn rows_per_page_title(&self) -> &str {
+        Self::ROWS_PER_PAGE_TITLE
+    }
+
+    fn refresh_indicator_semantic_label(&self) -> &str {
+        Self::REFRESH_INDICATOR_SEMANTIC_LABEL
+    }
+
+    fn licenses_page_title(&self) -> &str {
+        Self::LICENSES_PAGE_TITLE
+    }
+
+    fn show_menu_tooltip(&self) -> &str {
+        Self::SHOW_MENU_TOOLTIP
+    }
+
+    fn popup_menu_label(&self) -> &str {
+        Self::POPUP_MENU_LABEL
+    }
+
+    fn menu_dismiss_label(&self) -> &str {
+        Self::MENU_DISMISS_LABEL
+    }
+
+    fn search_field_label(&self) -> &str {
+        Self::SEARCH_FIELD_LABEL
+    }
+
+    fn modal_barrier_dismiss_label(&self) -> &str {
+        Self::MODAL_BARRIER_DISMISS_LABEL
+    }
+
+    fn delete_button_tooltip(&self) -> &str {
+        Self::DELETE_BUTTON_TOOLTIP
+    }
+}
+
+#[cfg(test)]
+mod material_localizations_trait_tests {
+    use super::{DefaultMaterialLocalizations, MaterialLocalizations};
+
+    /// An application's own bundle, which is the whole reason the interface
+    /// exists. It answers for one string and defers to nothing -- every member
+    /// has to be written out, as upstream's `implements` forces too.
+    struct Shouty;
+
+    impl MaterialLocalizations for Shouty {
+        fn back_button_tooltip(&self) -> &str {
+            "BACK"
+        }
+
+        fn close_button_tooltip(&self) -> &str {
+            DefaultMaterialLocalizations::CLOSE_BUTTON_TOOLTIP
+        }
+
+        fn open_app_drawer_tooltip(&self) -> &str {
+            DefaultMaterialLocalizations::OPEN_APP_DRAWER_TOOLTIP
+        }
+
+        fn drawer_label(&self) -> &str {
+            DefaultMaterialLocalizations::DRAWER_LABEL
+        }
+
+        fn alert_dialog_label(&self) -> &str {
+            DefaultMaterialLocalizations::ALERT_DIALOG_LABEL
+        }
+
+        fn dialog_label(&self) -> &str {
+            DefaultMaterialLocalizations::DIALOG_LABEL
+        }
+
+        fn expanded_hint(&self) -> &str {
+            DefaultMaterialLocalizations::EXPANDED_HINT
+        }
+
+        fn collapsed_hint(&self) -> &str {
+            DefaultMaterialLocalizations::COLLAPSED_HINT
+        }
+
+        fn expansion_tile_expanded_hint(&self) -> &str {
+            DefaultMaterialLocalizations::EXPANSION_TILE_EXPANDED_HINT
+        }
+
+        fn expansion_tile_collapsed_hint(&self) -> &str {
+            DefaultMaterialLocalizations::EXPANSION_TILE_COLLAPSED_HINT
+        }
+
+        fn invalid_date_format_label(&self) -> &str {
+            DefaultMaterialLocalizations::INVALID_DATE_FORMAT_LABEL
+        }
+
+        fn date_out_of_range_label(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_OUT_OF_RANGE_LABEL
+        }
+
+        fn date_help_text(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_HELP_TEXT
+        }
+
+        fn date_input_label(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_INPUT_LABEL
+        }
+
+        fn date_picker_help_text(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_PICKER_HELP_TEXT
+        }
+
+        fn cancel_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::CANCEL_BUTTON_LABEL
+        }
+
+        fn ok_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::OK_BUTTON_LABEL
+        }
+
+        fn save_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::SAVE_BUTTON_LABEL
+        }
+
+        fn date_range_picker_help_text(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_RANGE_PICKER_HELP_TEXT
+        }
+
+        fn invalid_date_range_label(&self) -> &str {
+            DefaultMaterialLocalizations::INVALID_DATE_RANGE_LABEL
+        }
+
+        fn date_range_start_label(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_RANGE_START_LABEL
+        }
+
+        fn date_range_end_label(&self) -> &str {
+            DefaultMaterialLocalizations::DATE_RANGE_END_LABEL
+        }
+
+        fn time_picker_dial_help_text(&self) -> &str {
+            DefaultMaterialLocalizations::TIME_PICKER_DIAL_HELP_TEXT
+        }
+
+        fn time_picker_input_help_text(&self) -> &str {
+            DefaultMaterialLocalizations::TIME_PICKER_INPUT_HELP_TEXT
+        }
+
+        fn invalid_time_label(&self) -> &str {
+            DefaultMaterialLocalizations::INVALID_TIME_LABEL
+        }
+
+        fn time_picker_hour_label(&self) -> &str {
+            DefaultMaterialLocalizations::TIME_PICKER_HOUR_LABEL
+        }
+
+        fn time_picker_minute_label(&self) -> &str {
+            DefaultMaterialLocalizations::TIME_PICKER_MINUTE_LABEL
+        }
+
+        fn rows_per_page_title(&self) -> &str {
+            DefaultMaterialLocalizations::ROWS_PER_PAGE_TITLE
+        }
+
+        fn refresh_indicator_semantic_label(&self) -> &str {
+            DefaultMaterialLocalizations::REFRESH_INDICATOR_SEMANTIC_LABEL
+        }
+
+        fn licenses_page_title(&self) -> &str {
+            DefaultMaterialLocalizations::LICENSES_PAGE_TITLE
+        }
+
+        fn show_menu_tooltip(&self) -> &str {
+            DefaultMaterialLocalizations::SHOW_MENU_TOOLTIP
+        }
+
+        fn popup_menu_label(&self) -> &str {
+            DefaultMaterialLocalizations::POPUP_MENU_LABEL
+        }
+
+        fn menu_dismiss_label(&self) -> &str {
+            DefaultMaterialLocalizations::MENU_DISMISS_LABEL
+        }
+
+        fn search_field_label(&self) -> &str {
+            DefaultMaterialLocalizations::SEARCH_FIELD_LABEL
+        }
+
+        fn modal_barrier_dismiss_label(&self) -> &str {
+            DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL
+        }
+
+        fn delete_button_tooltip(&self) -> &str {
+            DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP
+        }
+    }
+
+    #[test]
+    fn an_application_can_put_its_own_bundle_in_front_of_the_frameworks() {
+        // The point of the interface, and what an empty struct could not do.
+        let framework: &dyn MaterialLocalizations = &DefaultMaterialLocalizations;
+        let theirs: &dyn MaterialLocalizations = &Shouty;
+        assert_eq!(framework.back_button_tooltip(), "Back");
+        assert_eq!(theirs.back_button_tooltip(), "BACK");
+    }
+
+    #[test]
+    fn and_the_default_bundle_answers_with_its_own_constants() {
+        // The constants are the values and the trait is the interface; a
+        // caller wanting the framework's English can still name either, and
+        // the two must not drift.
+        let bundle: &dyn MaterialLocalizations = &DefaultMaterialLocalizations;
+        assert_eq!(
+            bundle.delete_button_tooltip(),
+            DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP
+        );
+        assert_eq!(
+            bundle.menu_dismiss_label(),
+            DefaultMaterialLocalizations::MENU_DISMISS_LABEL
+        );
+    }
+
+    #[test]
+    fn of_answers_with_the_bundle_when_a_delegate_is_present() {
+        assert!(DefaultMaterialLocalizations::of(true).is_some());
+        assert!(DefaultMaterialLocalizations::of(false).is_none());
     }
 }
