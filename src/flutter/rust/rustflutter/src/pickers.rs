@@ -6144,3 +6144,190 @@ mod date_picker_theme_tests {
         assert_eq!(resolved.sub_header_foreground_color, mine);
     }
 }
+
+#[cfg(test)]
+mod dial_geometry_tests {
+    //! The dial's own drawing, through what the canvas was told.
+    //!
+    //! `_DialPainter.paint` is arithmetic over five constants and nothing in
+    //! the crate could see any of it. What is pinned here is the shape of the
+    //! picture -- where the face is, where the hand points, how long it is --
+    //! rather than the labels, which go through a paragraph the recorder does
+    //! not read back.
+
+    use super::{
+        DIAL_CENTER_RADIUS, DIAL_DOT_RADIUS, DIAL_HAND_WIDTH, DIAL_MIN_RADIUS, DIAL_PADDING,
+        TimeDial,
+    };
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const FACE: Color = Color(0xff111111);
+    const HAND: Color = Color(0xff222222);
+
+    /// A dial with no labels, so the only marks are the face, the centre dot,
+    /// the handle and the hand.
+    fn dial(theta: f32, radius: f32) -> TimeDial {
+        TimeDial {
+            labels: Vec::new(),
+            theta,
+            radius,
+            extent: Rc::new(Cell::new(0.0)),
+            background: FACE,
+            hand: HAND,
+            dot_text: Color(0xff333333),
+            label_color: Color(0xff444444),
+            label_size: 14.0,
+            size: Size::ZERO,
+        }
+    }
+
+    fn painted(mut dial: TimeDial, side: f32) -> Vec<Drawn> {
+        dial.layout(BoxConstraints::tight(side, side));
+        let mut layers = LayerTree::new(600, 600);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(600.0, 600.0));
+            dial.paint(&mut context, Offset::new(10.0, 20.0));
+        }
+        drawn()
+    }
+
+    fn circles(calls: &[Drawn]) -> Vec<(f32, f32, f32, u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Circle {
+                    cx,
+                    cy,
+                    radius,
+                    argb,
+                } => Some((*cx, *cy, *radius, *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_face_fills_the_square_and_sits_at_its_centre() {
+        // 300 across, painted at (10, 20), so the centre is (160, 170) and the
+        // face's radius is half the side.
+        let calls = painted(dial(0.0, 1.0), 300.0);
+        let face = circles(&calls)[0];
+        assert_eq!(face, (160.0, 170.0, 150.0, FACE.0));
+    }
+
+    #[test]
+    fn a_dial_squeezed_below_the_minimum_keeps_the_minimum() {
+        // Upstream clamps the radius at _kTimePickerDialMinRadius, and layout
+        // refuses to go under twice that plus the dot -- so the face stays
+        // round rather than collapsing with the box.
+        let calls = painted(dial(0.0, 1.0), 10.0);
+        let face = circles(&calls)[0];
+        assert!(
+            face.2 >= DIAL_MIN_RADIUS,
+            "radius {} fell under the minimum",
+            face.2
+        );
+    }
+
+    #[test]
+    fn the_hand_runs_from_the_centre_to_the_handle() {
+        // Three marks after the face: the centre dot, the handle at the end of
+        // the hand, and the hand itself joining them.
+        let calls = painted(dial(0.0, 1.0), 300.0);
+        let marks = circles(&calls);
+        assert_eq!(marks.len(), 3, "{calls:?}");
+        let centre = (marks[1].0, marks[1].1);
+        let handle = (marks[2].0, marks[2].1);
+        assert_eq!(marks[1].2, DIAL_CENTER_RADIUS, "the centre dot");
+        assert_eq!(marks[2].2, DIAL_DOT_RADIUS, "the handle");
+
+        match calls.last().expect("the hand") {
+            Drawn::Line { from, to } => {
+                assert_eq!(*from, centre, "starts at the centre dot");
+                assert_eq!(*to, handle, "ends at the handle");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_hand_swings_with_theta_and_keeps_its_length() {
+        // Its length is the handle radius, which theta does not change.
+        let quarter = painted(dial(std::f32::consts::FRAC_PI_2, 1.0), 300.0);
+        let half = painted(dial(std::f32::consts::PI, 1.0), 300.0);
+        let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
+            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            other => panic!("{other:?}"),
+        };
+        let ends = |calls: &[Drawn]| match calls.last().expect("the hand") {
+            Drawn::Line { to, .. } => *to,
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(ends(&quarter), ends(&half), "it moved");
+        assert!(
+            (reach(&quarter) - reach(&half)).abs() < 0.01,
+            "and kept its length: {} against {}",
+            reach(&quarter),
+            reach(&half)
+        );
+    }
+
+    #[test]
+    fn the_inner_ring_pulls_the_handle_in() {
+        // Upstream: `labelRadius - (radius < 0.5 ? 1 : 0) * (labelRadius -
+        // innerLabelRadius)`. Below half the handle rides the inner ring,
+        // above it the outer one, and there is nothing in between.
+        let outer = painted(dial(0.0, 1.0), 300.0);
+        let inner = painted(dial(0.0, 0.2), 300.0);
+        let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
+            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            reach(&inner) < reach(&outer),
+            "inner {} should be shorter than outer {}",
+            reach(&inner),
+            reach(&outer)
+        );
+        // And the step is exactly the inner-ring offset, not a proportion.
+        assert!(
+            (reach(&outer) - reach(&inner) - super::INNER_DIAL_OFFSET).abs() < 0.01,
+            "{} against {}",
+            reach(&outer) - reach(&inner),
+            super::INNER_DIAL_OFFSET
+        );
+    }
+
+    #[test]
+    fn everything_the_hand_draws_is_the_hand_colour() {
+        // The face is one colour and the three moving parts another, which is
+        // what makes the hand readable against the dial.
+        let calls = painted(dial(0.0, 1.0), 300.0);
+        let marks = circles(&calls);
+        assert_eq!(marks[0].3, FACE.0);
+        assert_eq!(marks[1].3, HAND.0);
+        assert_eq!(marks[2].3, HAND.0);
+    }
+
+    #[test]
+    fn the_padding_is_taken_off_the_face_before_the_hand_is_measured() {
+        // The hand reaches the label ring, not the rim: a 300 dial has a face
+        // of 150 and labels at 150 - DIAL_PADDING.
+        let calls = painted(dial(0.0, 1.0), 300.0);
+        let reach = match calls.last().expect("the hand") {
+            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            (reach - (150.0 - DIAL_PADDING)).abs() < 0.01,
+            "{reach} against {}",
+            150.0 - DIAL_PADDING
+        );
+        assert!(DIAL_HAND_WIDTH > 0.0);
+    }
+}
