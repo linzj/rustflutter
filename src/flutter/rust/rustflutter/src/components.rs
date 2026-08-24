@@ -3682,14 +3682,35 @@ mod tests {
         // Upstream `FilledButton`'s defaults: a `minimumSize` of
         // `Size(64, 40)` with a `StadiumBorder`, as round as it is tall. A
         // longer label widens the button past the minimum; a short one stops
-        // at it. The stubbed engine measures the label as nothing, so this is
-        // exactly the minimum-size case.
+        // at it.
+        //
+        // Only the second half used to be checkable -- the stub measured every
+        // label as nothing, so every button was at its minimum. It measures
+        // now, and the first half is below.
         let mut tree = ElementTree::new();
         tree.rebuild(component(Button::new(1, "go")));
         let mut root = tree.build_render_tree().expect("a root");
         let size = root.layout(BoxConstraints::loose(200.0, 200.0));
         assert_eq!(size.width, 64.0, "a short label stops at the minimum");
         assert_eq!(size.height, 40.0);
+
+        // And a label with more in it pushes past. The width is the stub's
+        // arithmetic rather than a font's, so what is asserted is that it grew
+        // and that the height did not: a button gets wider for a long label,
+        // never taller.
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Button::new(
+            1,
+            "a considerably longer label than that one",
+        )));
+        let mut root = tree.build_render_tree().expect("a root");
+        let wide = root.layout(BoxConstraints::loose(2000.0, 200.0));
+        assert!(
+            wide.width > 64.0,
+            "a long label widens the button: {}",
+            wide.width
+        );
+        assert_eq!(wide.height, 40.0, "and does not make it taller");
 
         let mut tree = ElementTree::new();
         tree.rebuild(component(Button::new(1, "go").with_min_width(120.0)));

@@ -666,10 +666,15 @@ mod tests {
 
     #[test]
     fn a_subtitle_is_recorded_on_the_description_the_asserts_read() {
-        // What a subtitle *does* is invisible to this harness twice over: text
-        // measures nothing in the stub engine, and the control's own height
-        // sets the row's anyway, so the tile is the same height with one and
-        // without. What is decidable is that the description knows -- which is
+        // What a subtitle *does* was invisible to this harness twice over:
+        // text measured nothing in the stub engine, and the control's own
+        // height sets the row's anyway. The first of those two reasons has
+        // gone -- the stub measures now -- and the second has not, which is
+        // the interesting half: a switch is taller than two lines of text, so
+        // the tile is the same height with a subtitle and without, and that is
+        // a fact about the tile rather than about the harness.
+        //
+        // What is decidable here is that the description knows -- which is
         // what `validate` and the three-line rule read.
         let plain = SwitchListTile::new(true).widget(TILE, "Wi-Fi");
         assert!(!plain.tile.has_subtitle);
@@ -679,6 +684,35 @@ mod tests {
             .with_subtitle("Connected to Home");
         assert!(with_one.tile.has_subtitle);
         assert_eq!(with_one.subtitle.as_deref(), Some("Connected to Home"));
+    }
+
+    #[test]
+    fn a_switch_is_taller_than_the_two_lines_beside_it() {
+        // The claim the test above leans on, checked rather than asserted in
+        // prose: the control sets the row's height, so a subtitle does not
+        // change it. Now that text has a size in tests, this can be asked --
+        // and the answer being "no change" is a fact about the tile rather
+        // than about the harness measuring nothing.
+        let height = |tile: ControlTile| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                crate::components::Theme::dark(),
+                crate::framework::component(tile),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(400.0, 400.0)).height
+        };
+
+        let plain = height(SwitchListTile::new(true).widget(TILE, "Wi-Fi"));
+        let with_subtitle = height(
+            SwitchListTile::new(true)
+                .widget(TILE, "Wi-Fi")
+                .with_subtitle("Connected to Home"),
+        );
+        assert_eq!(
+            plain, with_subtitle,
+            "the control is the taller of the two, so the subtitle costs nothing"
+        );
     }
 
     #[test]
