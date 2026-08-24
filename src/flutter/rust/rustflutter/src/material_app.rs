@@ -541,6 +541,14 @@ impl DefaultMaterialLocalizations {
         Some(format!("Tab {tab_index} of {tab_count}"))
     }
 
+    /// Upstream's `deleteButtonTooltip`: what a chip's delete affordance
+    /// says when the chip did not name something better.
+    ///
+    /// One word, and it is the only thing that tells a reader what the small
+    /// unlabelled cross does. A chip that reaches this and gets nothing has a
+    /// button a screen reader cannot describe.
+    pub const DELETE_BUTTON_TOOLTIP: &'static str = "Delete";
+
     /// Upstream `licensesPackageDetailText`'s `assert(licenseCount >= 0)`,
     /// which in Dart is a real check and here is the type.
     pub fn license_count_is_valid(_count: u32) -> bool {

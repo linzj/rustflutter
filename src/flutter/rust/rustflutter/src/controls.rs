@@ -1814,6 +1814,30 @@ pub trait DeletableChipAttributes {
     fn is_deletable(&self) -> bool {
         self.on_deleted().is_some()
     }
+
+    /// What the delete affordance actually says, which is upstream's
+    /// `deleteButtonTooltipMessage ?? MaterialLocalizations.of(context)
+    /// .deleteButtonTooltip` guarded by `_wrapWithTooltip`'s `enabled`.
+    ///
+    /// The trait doc above has said since it was written that a chip which is
+    /// deletable and says nothing about it is one a reader has to guess at.
+    /// The message was declared and the fallback never was, so every chip that
+    /// did not name its own tooltip had none -- which is the case the doc was
+    /// describing.
+    ///
+    /// Two ways to get nothing, and they are different. A chip with no
+    /// `onDeleted` shows no cross at all, so there is nothing to describe; a
+    /// disabled chip shows one and upstream deliberately drops the tooltip,
+    /// because a tooltip on something that cannot be pressed is an
+    /// explanation of an action the reader cannot take.
+    fn delete_button_tooltip(&self, is_enabled: bool) -> Option<String> {
+        if !is_enabled || !self.is_deletable() {
+            return None;
+        }
+        Some(self.delete_button_tooltip_message().unwrap_or_else(|| {
+            crate::material_app::DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP.to_string()
+        }))
+    }
 }
 
 /// Upstream `CheckmarkableChipAttributes`: a chip that shows a tick when
@@ -4154,5 +4178,84 @@ mod data_table_theme_tests {
         assert_eq!(resolved.data_text_style, None);
         assert_eq!(resolved.heading_text_style, None);
         assert_eq!(resolved.decoration, None);
+    }
+}
+
+#[cfg(test)]
+mod delete_button_tooltip_tests {
+    use super::DeletableChipAttributes;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Chip {
+        deletable: bool,
+        message: Option<String>,
+    }
+
+    impl DeletableChipAttributes for Chip {
+        fn on_deleted(&self) -> Option<Rc<dyn Fn()>> {
+            self.deletable.then(|| Rc::new(|| ()) as Rc<dyn Fn()>)
+        }
+
+        fn delete_button_tooltip_message(&self) -> Option<String> {
+            self.message.clone()
+        }
+    }
+
+    #[test]
+    fn a_deletable_chip_that_named_nothing_still_says_delete() {
+        // The gap: the message was declared and the fallback never was, so
+        // every chip that did not name its own tooltip had none at all.
+        let chip = Chip {
+            deletable: true,
+            message: None,
+        };
+        assert_eq!(chip.delete_button_tooltip(true).as_deref(), Some("Delete"));
+    }
+
+    #[test]
+    fn and_one_that_named_something_says_that_instead() {
+        let chip = Chip {
+            deletable: true,
+            message: Some("Remove filter".to_string()),
+        };
+        assert_eq!(
+            chip.delete_button_tooltip(true).as_deref(),
+            Some("Remove filter")
+        );
+    }
+
+    #[test]
+    fn the_two_ways_of_getting_nothing_are_different_reasons() {
+        // No callback: no cross is drawn, so there is nothing to describe.
+        let undeletable = Chip {
+            deletable: false,
+            message: Some("Remove filter".to_string()),
+        };
+        assert_eq!(
+            undeletable.delete_button_tooltip(true),
+            None,
+            "a chip with no onDeleted shows no cross, named message or not"
+        );
+
+        // Disabled: the cross is drawn and upstream drops the tooltip, because
+        // explaining an action the reader cannot take is worse than silence.
+        let disabled = Chip {
+            deletable: true,
+            message: Some("Remove filter".to_string()),
+        };
+        assert_eq!(disabled.delete_button_tooltip(false), None);
+    }
+
+    #[test]
+    fn enabling_a_chip_is_what_brings_the_tooltip_back() {
+        // Through the argument rather than two fixtures, so the answer is
+        // shown to follow the state rather than the construction.
+        let chip = Chip {
+            deletable: true,
+            message: None,
+        };
+        assert_eq!(chip.delete_button_tooltip(false), None);
+        assert_eq!(chip.delete_button_tooltip(true).as_deref(), Some("Delete"));
     }
 }
