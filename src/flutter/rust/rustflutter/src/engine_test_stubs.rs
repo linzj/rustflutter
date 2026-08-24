@@ -121,6 +121,17 @@ pub unsafe extern "C" fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32)
 pub unsafe extern "C" fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int) {}
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_set_color_filter(
+    paint: *mut RfPaint,
+    argb: u32,
+    blend_mode: c_int,
+) {
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paint_clear_color_filter(paint: *mut RfPaint) {}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_set_stroke_cap(paint: *mut RfPaint, cap: c_int) {}
 
 #[unsafe(no_mangle)]

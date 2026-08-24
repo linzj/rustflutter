@@ -41,6 +41,8 @@ pub(crate) mod sys {
         pub fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int);
         pub fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32);
         pub fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int);
+        pub fn rf_paint_set_color_filter(paint: *mut RfPaint, argb: u32, blend_mode: c_int);
+        pub fn rf_paint_clear_color_filter(paint: *mut RfPaint);
         pub fn rf_paint_set_stroke_cap(paint: *mut RfPaint, cap: c_int);
         pub fn rf_paint_set_stroke_join(paint: *mut RfPaint, join: c_int);
         pub fn rf_paint_set_blur(paint: *mut RfPaint, sigma: f32);

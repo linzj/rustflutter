@@ -14,6 +14,7 @@
 
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/display_list/dl_color.h"
+#include "flutter/display_list/effects/dl_color_filter.h"
 #include "flutter/display_list/dl_paint.h"
 #include "flutter/display_list/geometry/dl_geometry_types.h"
 #include "flutter/display_list/skia/dl_sk_canvas.h"
@@ -124,6 +125,35 @@ void rf_paint_set_color(RfPaint* paint, uint32_t argb) {
     return;
   }
   paint->paint.setColor(ToDlColor(argb));
+}
+
+// Tints whatever is drawn with this paint, which is not the same thing as
+// rf_paint_set_blend_mode. A blend mode decides how the drawing composites
+// against what is already there; a colour filter rewrites the drawing's own
+// pixels before any of that happens. Upstream's `Image(color:)` is the second,
+// as `ColorFilter.mode(color, colorBlendMode ?? BlendMode.srcIn)`.
+//
+// The default mode belongs to the caller, not here: srcIn is Dart's, and
+// writing it in two places is how the two stop agreeing.
+void rf_paint_set_color_filter(RfPaint* paint,
+                               uint32_t argb,
+                               int32_t blend_mode) {
+  if (paint == nullptr) {
+    return;
+  }
+  const auto last = static_cast<int32_t>(flutter::DlBlendMode::kLastMode);
+  if (blend_mode < 0 || blend_mode > last) {
+    return;
+  }
+  paint->paint.setColorFilter(flutter::DlColorFilter::MakeBlend(
+      ToDlColor(argb), static_cast<flutter::DlBlendMode>(blend_mode)));
+}
+
+void rf_paint_clear_color_filter(RfPaint* paint) {
+  if (paint == nullptr) {
+    return;
+  }
+  paint->paint.setColorFilter(nullptr);
 }
 
 void rf_paint_set_stroke(RfPaint* paint, int32_t stroke, float width) {

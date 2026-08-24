@@ -51,6 +51,13 @@
       "tick": 123,
       "finding": "The same facade shape, over RenderParagraph -- which is also what `pub type Text = RenderParagraph` names, and depth.py now scores that alias at 40 members against upstream Text's 18. RichText is measured against the identical body, so the 2 of 16 was the facade and not the port.",
       "at": "src/flutter/rust/rustflutter/src/widgets.rs -- RichText::new returns RenderParagraph; `pub type Text = RenderParagraph` on the same file"
+    },
+    {
+      "class": "RawImage",
+      "file": "widgets/basic.dart",
+      "tick": 125,
+      "finding": "A constructor facade over RenderImage, and the reading found real gaps rather than dismissing the entry. Upstream declares scale, color, colorBlendMode and filterQuality beyond what RenderImage carried; width and height are answered by `size` and debugImageLabel is debug ceremony. scale landed in tick 124, color and colorBlendMode here -- the latter needed a new rf_paint_set_color_filter in the FFI, because a tint is ColorFilter.mode(colour, srcIn) and not a blend mode on the paint. filterQuality remains open: it is a sampling hint on the draw call rather than on the paint, and nothing in the crate has a place to put it yet.",
+      "at": "src/flutter/rust/rustflutter/src/render.rs -- RenderImage::with_scale, with_colour, effective_blend_mode, source_rect; painting.rs -- Paint::with_color_filter; src/flutter/rust/ffi/rustflutter_ffi.cc -- rf_paint_set_color_filter"
     }
   ]
 }

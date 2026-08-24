@@ -50,7 +50,7 @@ use std::rc::{Rc, Weak};
 use crate::direction::TextDirection;
 use crate::engine::{Canvas, Color, LayerTree, Paint, Paragraph, Rect, Style, TextStyle};
 use crate::gestures::PointerHandlers;
-use crate::painting::{ClipBehavior, ClipOp, Gradient, Image, RenderPath};
+use crate::painting::{BlendMode, ClipBehavior, ClipOp, Gradient, Image, RenderPath};
 
 // -- Geometry -----------------------------------------------------------------
 
@@ -4157,10 +4157,6 @@ pub fn apply_box_fit(fit: BoxFit, input: Size, output: Size) -> FittedSizes {
 /// Upstream `_paintImage` (image.dart): a paint is passed to `drawImageRect`
 /// only when the image has an opacity, and it is black with the opacity as
 /// alpha, which the engine multiplies into the picture.
-fn image_paint(opacity: Option<f32>) -> Option<Paint> {
-    opacity.map(|o| Paint::new(Color::argb((o * 255.0).round() as u8, 0, 0, 0)))
-}
-
 /// Upstream's nine-patch rule: which part of an image stretches and which part
 /// does not.
 ///
@@ -4259,6 +4255,12 @@ pub struct RenderImage {
     alignment: Alignment,
     opacity: Option<f32>,
     size: Size,
+    /// Upstream's `color`: a tint applied to the picture before it is
+    /// composited, **not** a colour it is composited against.
+    colour: Option<Color>,
+    /// Upstream's `colorBlendMode`, whose absence means `SrcIn` rather than
+    /// nothing -- see [`RenderImage::image_paint`].
+    colour_blend_mode: Option<BlendMode>,
     /// Upstream's `scale`: how many image pixels go to one logical pixel.
     ///
     /// It is the number that makes `@2x` artwork the right size rather than
@@ -4311,7 +4313,41 @@ impl RenderImage {
             opacity: None,
             size: Size::ZERO,
             scale: 1.0,
+            colour: None,
+            colour_blend_mode: None,
         }
+    }
+
+    /// Upstream's `color`: the picture is tinted with this before anything
+    /// composites it. With no [`RenderImage::with_colour_blend_mode`] alongside
+    /// it the mode is `SrcIn`, which takes the picture's shape and this
+    /// colour -- a silhouette.
+    pub fn with_colour(mut self, colour: Color) -> Self {
+        self.colour = Some(colour);
+        self
+    }
+
+    /// Upstream's `colorBlendMode`. Alone it does nothing: upstream builds the
+    /// filter only when there is a colour, so a mode without one has no
+    /// colour to blend.
+    pub fn with_colour_blend_mode(mut self, mode: BlendMode) -> Self {
+        self.colour_blend_mode = Some(mode);
+        self
+    }
+
+    pub fn colour(&self) -> Option<Color> {
+        self.colour
+    }
+
+    pub fn colour_blend_mode(&self) -> Option<BlendMode> {
+        self.colour_blend_mode
+    }
+
+    /// What the tint will actually be drawn with, or nothing if there is no
+    /// tint. The `??` upstream writes inline, said where it can be tested.
+    pub fn effective_blend_mode(&self) -> Option<BlendMode> {
+        self.colour
+            .map(|_| self.colour_blend_mode.unwrap_or(BlendMode::SrcIn))
     }
 
     /// Upstream's `scale`, whose default is 1.
@@ -4356,6 +4392,56 @@ impl RenderImage {
     /// Everything downstream measures against this rather than against the
     /// pixel count: the fit, the destination rect, the intrinsics. Dividing
     /// here rather than at each of them is what keeps them agreeing.
+    /// The whole picture, as the rect `paint` reads from.
+    ///
+    /// **In image pixels**, where [`RenderImage::destination`] is in logical
+    /// ones. The two are the same number only while the scale is 1, which is
+    /// what let this be taken from the logical size and read correctly until a
+    /// scale existed to tell them apart -- at a scale of 2 that names the
+    /// top-left quarter of the picture and stretches it over the whole box.
+    ///
+    /// Separated from `paint` because nothing in this crate can observe what a
+    /// canvas was told; a decision left inline there is a decision no test can
+    /// reach.
+    fn source_rect(&self) -> Rect {
+        let pixels = self.pixels();
+        Rect::xywh(0.0, 0.0, pixels.width, pixels.height)
+    }
+
+    /// The picture's size **in image pixels**, which is what a source rect is
+    /// measured in and what the scale divides.
+    fn pixels(&self) -> Size {
+        let (w, h) = self.image.size();
+        Size::new(w as f32, h as f32)
+    }
+
+    /// The paint an image is drawn with: the opacity as before, and now the
+    /// tint if there is one.
+    ///
+    /// Upstream builds the same thing in `paintImage`, and the `??` is the part
+    /// worth carrying: a colour with no blend mode named means **srcIn**, which
+    /// keeps the picture's shape and replaces its colour -- so a tinted image
+    /// is a silhouette rather than a wash. Any other default would make
+    /// `Image(color: red)` mean something else entirely.
+    fn image_paint(&self) -> Option<Paint> {
+        let mut paint = match (self.opacity, self.colour) {
+            (None, None) => return None,
+            (opacity, _) => Paint::new(Color::argb(
+                (opacity.unwrap_or(1.0) * 255.0).round() as u8,
+                0,
+                0,
+                0,
+            )),
+        };
+        // Through effective_blend_mode rather than repeating its `??` here.
+        // Two copies of a default is how two defaults stop agreeing, and this
+        // one decides what `Image(color:)` means.
+        if let (Some(colour), Some(mode)) = (self.colour, self.effective_blend_mode()) {
+            paint = paint.with_color_filter(colour, mode);
+        }
+        Some(paint)
+    }
+
     fn natural(&self) -> Size {
         let (w, h) = self.image.size();
         if self.scale <= 0.0 {
@@ -4464,12 +4550,16 @@ impl RenderBox for RenderImage {
         if natural.width <= 0.0 || natural.height <= 0.0 {
             return;
         }
-        let source = Rect::xywh(0.0, 0.0, natural.width, natural.height);
+        // **In image pixels.** The destination is in logical ones, and the two
+        // are the same number only while the scale is 1 -- which is what made
+        // this read correctly until a scale existed to tell them apart. Taking
+        // the source from `natural` at a scale of 2 would name the top-left
+        // quarter of the picture and draw that, stretched, over the whole box.
         context.canvas().draw_image_rect(
             &self.image,
-            source,
+            self.source_rect(),
             self.destination(offset),
-            image_paint(self.opacity).as_ref(),
+            self.image_paint().as_ref(),
         );
     }
 
@@ -12137,12 +12227,87 @@ mod tests {
     use super::*;
 
     /// Upstream `_paintImage` only hands the engine a paint when the image
-    /// has an opacity, and it is black with the opacity as the alpha channel.
+    /// has something to say about it, and an opacity says it as a black paint
+    /// with the opacity in the alpha channel.
     #[test]
     fn image_opacity_becomes_a_transparent_black_paint() {
-        assert!(image_paint(None).is_none());
-        let paint = image_paint(Some(0.5)).unwrap();
+        let image = Rc::new(Image::from_pixels(&[0; 4], 1, 1).expect("the stub hands one back"));
+        assert!(
+            RenderImage::new(Rc::clone(&image)).image_paint().is_none(),
+            "nothing to say, no paint at all"
+        );
+        let paint = RenderImage::new(Rc::clone(&image))
+            .with_opacity(0.5)
+            .image_paint()
+            .expect("an opacity is something to say");
         assert_eq!(paint.color_for_test(), Color::argb(128, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_tint_is_reason_enough_for_a_paint_even_at_full_opacity() {
+        // The old rule was "a paint if there is an opacity". A colour is the
+        // second reason, and an image tinted but not faded had none before.
+        let image = Rc::new(Image::from_pixels(&[0; 4], 1, 1).expect("the stub hands one back"));
+        let tinted = RenderImage::new(image).with_colour(Color::argb(255, 255, 0, 0));
+        let paint = tinted.image_paint().expect("a colour is something to say");
+        assert_eq!(
+            paint.color_for_test(),
+            Color::argb(255, 0, 0, 0),
+            "opaque, since nothing asked for a fade"
+        );
+    }
+
+    #[test]
+    fn a_colour_with_no_mode_named_means_src_in_and_not_nothing() {
+        // Upstream's `colorBlendMode ?? BlendMode.srcIn`. srcIn keeps the
+        // picture's shape and takes the colour, so a tinted image is a
+        // silhouette; any other default would make `Image(color: red)` mean
+        // something else entirely.
+        let image = Rc::new(Image::from_pixels(&[0; 4], 1, 1).expect("the stub hands one back"));
+        let tinted = RenderImage::new(Rc::clone(&image)).with_colour(Color::argb(255, 255, 0, 0));
+        assert_eq!(tinted.effective_blend_mode(), Some(BlendMode::SrcIn));
+
+        let asked = RenderImage::new(Rc::clone(&image))
+            .with_colour(Color::argb(255, 255, 0, 0))
+            .with_colour_blend_mode(BlendMode::Multiply);
+        assert_eq!(asked.effective_blend_mode(), Some(BlendMode::Multiply));
+    }
+
+    #[test]
+    fn a_blend_mode_without_a_colour_has_nothing_to_blend() {
+        // Upstream builds the filter only when there is a colour, so a mode on
+        // its own is inert rather than a tint in some default colour.
+        let image = Rc::new(Image::from_pixels(&[0; 4], 1, 1).expect("the stub hands one back"));
+        let moded = RenderImage::new(image).with_colour_blend_mode(BlendMode::Multiply);
+        assert_eq!(moded.effective_blend_mode(), None);
+        assert!(moded.image_paint().is_none(), "and no paint either");
+    }
+
+    #[test]
+    fn a_source_rect_is_measured_in_image_pixels_and_a_destination_in_logical_ones() {
+        // The two are the same number only while the scale is 1, which is what
+        // let `paint` take its source from the logical size and read correctly
+        // until a scale existed to tell them apart. At a scale of 2 that names
+        // the top-left quarter of the picture.
+        let image =
+            Rc::new(Image::from_pixels(&[0; 4 * 2 * 4], 4, 2).expect("the stub hands one back"));
+        let dense = RenderImage::new(image).with_scale(2.0);
+        assert_eq!(dense.pixels(), Size::new(4.0, 2.0), "what the source spans");
+        assert_eq!(
+            dense.natural(),
+            Size::new(2.0, 1.0),
+            "what the box is measured in"
+        );
+        assert_ne!(
+            dense.pixels(),
+            dense.natural(),
+            "or this test could not tell the two apart"
+        );
+        assert_eq!(
+            dense.source_rect(),
+            Rect::xywh(0.0, 0.0, 4.0, 2.0),
+            "the whole picture, in its own pixels"
+        );
     }
 
     #[test]

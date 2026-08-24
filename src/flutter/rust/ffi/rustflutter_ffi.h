@@ -73,6 +73,12 @@ void rf_paint_set_opacity(RfPaint* paint, float opacity);
 // Index into flutter::DlBlendMode, in declaration order (3 = srcOver, the
 // default).
 void rf_paint_set_blend_mode(RfPaint* paint, int32_t blend_mode);
+// Tints the drawing itself, as opposed to compositing it -- see the
+// implementation for why the two are not interchangeable.
+void rf_paint_set_color_filter(RfPaint* paint,
+                               uint32_t argb,
+                               int32_t blend_mode);
+void rf_paint_clear_color_filter(RfPaint* paint);
 void rf_paint_set_stroke_cap(RfPaint* paint, int32_t cap);    // 0 butt 1 round 2 square
 void rf_paint_set_stroke_join(RfPaint* paint, int32_t join);  // 0 miter 1 round 2 bevel
 // Gaussian blur applied to the shape's coverage mask.

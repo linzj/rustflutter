@@ -187,6 +187,34 @@ impl Paint {
         self
     }
 
+    /// Upstream's `Paint.colorFilter` as `ColorFilter.mode`: every pixel this
+    /// paint draws is replaced by `colour` blended into it under `mode`.
+    ///
+    /// # Not the same thing as [`Paint::with_blend_mode`]
+    ///
+    /// A blend mode decides how the drawing composites against what is already
+    /// on the canvas. A colour filter rewrites the drawing's own pixels before
+    /// any compositing happens. Reaching for the first to tint an image is a
+    /// mistake that reads plausibly -- both take a `BlendMode`, and both change
+    /// the colours that end up on screen.
+    ///
+    /// `BlendMode::SrcIn` is the one a caller usually wants here: it keeps the
+    /// destination's shape and takes the source's colour, so an image becomes
+    /// a solid silhouette in `colour` with its own alpha preserved. That
+    /// default belongs to the caller rather than to this method, because it is
+    /// upstream's `colorBlendMode ?? BlendMode.srcIn` and writing it twice is
+    /// how two defaults stop agreeing.
+    pub fn with_color_filter(self, colour: Color, mode: BlendMode) -> Paint {
+        unsafe { sys::rf_paint_set_color_filter(self.raw, colour.0, mode as c_int) };
+        self
+    }
+
+    /// Drops any colour filter, so the paint draws what it was given.
+    pub fn without_color_filter(self) -> Paint {
+        unsafe { sys::rf_paint_clear_color_filter(self.raw) };
+        self
+    }
+
     pub fn with_blend_mode(self, mode: BlendMode) -> Paint {
         unsafe { sys::rf_paint_set_blend_mode(self.raw, mode as c_int) };
         self
