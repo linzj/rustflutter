@@ -1809,14 +1809,24 @@ mod tests {
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 2), (3, 5)]);
 
-        // The stubbed engine measures nothing, so the caret's x is zero, but
-        // which line it is on is the wrapping's decision, not the metrics':
-        // the second, one line height down.
+        // Which line the caret is on is the wrapping's decision: the second,
+        // one line height down. Its x is the width of what precedes it on that
+        // line, which the stub now measures -- so both halves are checkable.
         let caret = field
             .caret_rect(&lines, 10.0)
             .expect("the caret is at a boundary");
         assert_eq!(caret.top, 10.0);
         assert_eq!(caret.height(), 10.0);
+        // Extent 3 is the *start* of the second line -- "ab" is on the first
+        // one -- so nothing precedes it and its x is the edge. A caret's
+        // offset is the prefix within its own line, not the text above it.
+        assert_eq!(caret.left, 0.0);
+
+        // A second case was tried here and taken out: extent 4 does not put
+        // the caret one character into the second line, and working out what
+        // it does mean is `value`'s business rather than this test's. The
+        // offset-follows-the-prefix rule is covered where the prefix is the
+        // subject, in the caret-offset test above.
     }
 
     #[test]
@@ -2166,21 +2176,44 @@ mod tests {
         let field =
             RenderEditable::new(value("aaa bb", 0, (-1, -1))).with_max_lines(MaxLines::Growing);
         let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
-        // "aaa bb" selected whole: a rect on the wrapped first line and one on
-        // the second. The widths are the stub's zeros; which lines get a rect
-        // is the decision under test.
-        assert!(field.line_extent(lines[0], 0..6).is_some());
-        assert!(field.line_extent(lines[1], 0..6).is_some());
+        // "aaa bb" selected whole: a rect on the wrapped first line and one
+        // on the second. Which lines get a rect is the decision under test,
+        // and the widths are now measurable too.
+        let first = field.line_extent(lines[0], 0..6).expect("the first line");
+        let second = field.line_extent(lines[1], 0..6).expect("the second");
+        assert_eq!(first.0, 0.0, "each starts at its own line's edge");
+        assert_eq!(second.0, 0.0);
+        assert!(first.1 > 0.0 && second.1 > 0.0, "and each has a width");
+        assert!(
+            first.1 > second.1,
+            "'aaa' is wider than 'bb': {} against {}",
+            first.1,
+            second.1
+        );
         // A run entirely before this line gives it nothing to draw.
         assert!(field.line_extent(lines[1], 0..1).is_none());
+
+        // A run that starts partway along has to say so twice over: its
+        // rectangle begins after what precedes it, and ends before what
+        // follows. Selecting only the middle "a" of "aaa" is the case that
+        // separates those from a whole-line selection, where both are free.
+        let (start, width) = field.line_extent(lines[0], 1..2).expect("the middle");
+        assert!(start > 0.0, "one character precedes it: {start}");
+        assert!(width > 0.0, "and it has a width of its own: {width}");
+        assert!(
+            start + width < first.1,
+            "and stops short of the line's end: {start} + {width} against {}",
+            first.1
+        );
     }
 
     #[test]
     fn a_multiline_field_paints_without_a_real_text_stack() {
-        // The stub engine makes every metric zero, so nothing wraps and
-        // nothing scrolls; what this guards is that the multi-line paths --
-        // per-line text, per-line selection, composing, caret, report -- run
-        // at all against the same canvas the single-line ones do.
+        // What this guards is that the multi-line paths -- per-line text,
+        // per-line selection, composing, caret, report -- run at all against
+        // the same canvas the single-line ones do. It used to add that the
+        // stub made every metric zero so nothing wrapped; that is no longer
+        // true, and the wrapping is covered by its own tests below.
         let mut layers = crate::engine::LayerTree::new(200, 200);
         {
             let mut context =

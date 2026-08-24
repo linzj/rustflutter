@@ -3790,10 +3790,14 @@ mod tests {
 
     #[test]
     fn the_readers_text_size_reaches_the_shaper() {
-        // Checked through the cache rather than through a metric, because the
-        // stubbed engine every unit test shapes against reports zero for every
-        // measurement -- what can be shown is that the scale is part of the
-        // request, which is what decides the size the engine is asked for.
+        // This used to check the cache alone, because every metric the stubbed
+        // engine returned was zero and there was no width to compare. The stub
+        // models metrics now, so the claim can be made directly: a reader who
+        // asked for larger text gets a wider paragraph.
+        //
+        // The cache half stays, because it is a second and separate fact --
+        // the same words at two sizes are two shaping requests, not one
+        // answer reused.
         let style = TextStyle::default();
         let before = shaped_paragraph_count();
         let unscaled = shape("the reader's size", &style, None, false, 200.0, 1.0);
@@ -3803,6 +3807,21 @@ mod tests {
         assert!(
             !Rc::ptr_eq(&unscaled, &scaled),
             "the same text at a different size must be shaped again"
+        );
+
+        // And the larger request measures larger, which is the part that says
+        // the scale reached the engine rather than merely the cache key.
+        assert!(
+            scaled.max_intrinsic_width() > unscaled.max_intrinsic_width(),
+            "{} should be wider than {}",
+            scaled.max_intrinsic_width(),
+            unscaled.max_intrinsic_width()
+        );
+        assert!(
+            scaled.height() > unscaled.height(),
+            "and taller: {} against {}",
+            scaled.height(),
+            unscaled.height()
         );
         assert_eq!(shaped_paragraph_count(), before + 2);
 
