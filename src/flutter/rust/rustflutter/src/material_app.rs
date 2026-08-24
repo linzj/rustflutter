@@ -573,6 +573,51 @@ impl DefaultMaterialLocalizations {
     /// two shapes: an alert interrupts and a dialog asks, and a reader is
     /// told which before hearing the contents.
     pub const DIALOG_LABEL: &'static str = "Dialog";
+    // -- The date and time pickers ----------------------------------------
+    //
+    // Moved here from `pickers.rs`, which held them privately because the
+    // crate had no localization layer when that module was written.
+    //
+    // Two were wrong on arrival: upstream's `dateRangeStartLabel` and
+    // `dateRangeEndLabel` capitalise the D -- "Start Date", "End Date" -- next
+    // to a `dateInputLabel` that also does and a `datePickerHelpText` that
+    // does not. It reads like an inconsistency upstream never tidied, and
+    // tidying it here is how a port stops being one.
+    /// Upstream's `invalidDateFormatLabel`.
+    pub const INVALID_DATE_FORMAT_LABEL: &'static str = "Invalid format.";
+    /// Upstream's `dateOutOfRangeLabel`.
+    pub const DATE_OUT_OF_RANGE_LABEL: &'static str = "Out of range.";
+    /// Upstream's `dateHelpText`.
+    pub const DATE_HELP_TEXT: &'static str = "mm/dd/yyyy";
+    /// Upstream's `dateInputLabel`.
+    pub const DATE_INPUT_LABEL: &'static str = "Enter Date";
+    /// Upstream's `datePickerHelpText`.
+    pub const DATE_PICKER_HELP_TEXT: &'static str = "Select date";
+    /// Upstream's `cancelButtonLabel`.
+    pub const CANCEL_BUTTON_LABEL: &'static str = "Cancel";
+    /// Upstream's `okButtonLabel`.
+    pub const OK_BUTTON_LABEL: &'static str = "OK";
+    /// Upstream's `saveButtonLabel`.
+    pub const SAVE_BUTTON_LABEL: &'static str = "Save";
+    /// Upstream's `dateRangePickerHelpText`.
+    pub const DATE_RANGE_PICKER_HELP_TEXT: &'static str = "Select range";
+    /// Upstream's `invalidDateRangeLabel`.
+    pub const INVALID_DATE_RANGE_LABEL: &'static str = "Invalid range.";
+    /// Upstream's `dateRangeStartLabel`.
+    pub const DATE_RANGE_START_LABEL: &'static str = "Start Date";
+    /// Upstream's `dateRangeEndLabel`.
+    pub const DATE_RANGE_END_LABEL: &'static str = "End Date";
+    /// Upstream's `timePickerDialHelpText`.
+    pub const TIME_PICKER_DIAL_HELP_TEXT: &'static str = "Select time";
+    /// Upstream's `timePickerInputHelpText`.
+    pub const TIME_PICKER_INPUT_HELP_TEXT: &'static str = "Enter time";
+    /// Upstream's `invalidTimeLabel`.
+    pub const INVALID_TIME_LABEL: &'static str = "Enter a valid time";
+    /// Upstream's `timePickerHourLabel`.
+    pub const TIME_PICKER_HOUR_LABEL: &'static str = "Hour";
+    /// Upstream's `timePickerMinuteLabel`.
+    pub const TIME_PICKER_MINUTE_LABEL: &'static str = "Minute";
+
     /// Upstream's `rowsPerPageTitle`, **with its colon**.
     ///
     /// The colon is part of the string rather than something the footer adds,

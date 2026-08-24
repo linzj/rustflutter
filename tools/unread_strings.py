@@ -1,4 +1,4 @@
-"""Localization strings with nobody to say them.
+"""Localization strings with nobody to say them, or saying the wrong thing.
 
 `DefaultMaterialLocalizations` upstream has a hundred and fifty-eight members.
 Copying that table down would put a hundred and thirty unread strings in the
@@ -20,6 +20,26 @@ the whole distinction, so the test modules are stripped before counting.
 A constant read only by another constant in the same file would slip through,
 but no such thing exists here and the shape is not one this crate reaches for.
 
+# And what it says
+
+Having a reader is half of it.  Eighteen strings arrived in one go from
+`pickers.rs`, which had held them privately since before this crate had a
+localization layer, and two of them had drifted: upstream's
+`dateRangeStartLabel` and `dateRangeEndLabel` capitalise the D -- "Start Date",
+"End Date" -- and the port had lowercased it.  Nothing noticed, because no test
+named either string and there was nothing comparing them to upstream.
+
+So this also reads upstream's `DefaultMaterialLocalizations` and compares.  The
+Dart getter is derived from the Rust constant by the obvious rule --
+`DATE_RANGE_START_LABEL` to `dateRangeStartLabel` -- and a constant whose getter
+cannot be found is reported rather than skipped, because a name that does not
+resolve is usually a name that is wrong.
+
+Only the getters whose body is a plain string literal can be compared.  The
+ones upstream builds with `switch` or interpolation are listed as uncompared,
+the way `constants.py` lists its structured ones: an honest gap beats a check
+that quietly passes.
+
 Usage:
   python tools/unread_strings.py
 """
@@ -29,6 +49,27 @@ import re
 CRATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      '..', 'src', 'flutter', 'rust', 'rustflutter', 'src')
 HOME = os.path.join(CRATE, 'material_app.rs')
+UPSTREAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
+                        'flutter', 'packages', 'flutter', 'lib', 'src',
+                        'material', 'material_localizations.dart')
+
+# `String get name => 'value';` -- only the ones that are a plain literal.
+GETTER = re.compile(r"String get (?P<name>\w+) => '(?P<value>(?:[^'\\]|\\.)*)';")
+
+
+def camel(constant):
+    """`DATE_RANGE_START_LABEL` -> `dateRangeStartLabel`."""
+    head, *rest = constant.lower().split('_')
+    return head + ''.join(word.capitalize() for word in rest)
+
+
+def upstream_strings():
+    """Upstream's plain-literal getters, by name. Empty if it is not there."""
+    if not os.path.exists(UPSTREAM):
+        return None
+    text = open(UPSTREAM, encoding='utf-8', errors='replace').read()
+    return {m.group('name'): m.group('value').replace("\\'", "'")
+            for m in GETTER.finditer(text)}
 
 # `pub const NAME: &'static str = "...";` inside the localizations impl.
 STRING = re.compile(r"pub const (?P<name>[A-Z][A-Z0-9_]*): &'static str = \"(?P<value>[^\"]*)\"")
@@ -76,10 +117,34 @@ for root, _dirs, files in os.walk(CRATE):
 strings = localization_strings()
 unread = [(name, value) for name, value in strings if name not in readers]
 
-print('%d localization strings, %d with nothing to say them'
-      % (len(strings), len(unread)))
+upstream = upstream_strings()
+disagreeing, uncompared, unresolved = [], [], []
+if upstream is not None:
+    for name, value in strings:
+        getter = camel(name)
+        if getter not in upstream:
+            (uncompared if getter in open(UPSTREAM, encoding='utf-8',
+                                         errors='replace').read()
+             else unresolved).append((name, getter))
+        elif upstream[getter] != value:
+            disagreeing.append((name, value, upstream[getter]))
+
+print('%d localization strings, %d with nothing to say them, %d disagreeing '
+      'with upstream' % (len(strings), len(unread), len(disagreeing)))
+if upstream is None:
+    print('(upstream not found, so nothing was compared)')
+else:
+    print('%d not compared -- upstream builds them rather than declaring a '
+          'literal; %d whose upstream getter could not be found'
+          % (len(uncompared), len(unresolved)))
+print()
+for name, value, theirs in disagreeing:
+    print('  DISAGREES %-28s port %-22s upstream "%s"'
+          % (name, '"' + value + '"', theirs))
+for name, getter in unresolved:
+    print('  NO SUCH GETTER UPSTREAM   %-28s looked for %s' % (name, getter))
 print()
 for name, value in strings:
     where = readers.get(name)
     mark = ', '.join(sorted(set(where))) if where else '-- NOBODY SAYS THIS'
-    print('  %-30s %-22s %s' % (name, '"' + value + '"', mark))
+    print('  %-32s %-22s %s' % (name, '"' + value + '"', mark))

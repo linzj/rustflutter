@@ -23,9 +23,16 @@
 //! # Deviations that apply to the whole module
 //!
 //! - **Localization.** Upstream formats and parses through
-//!   `MaterialLocalizations`/`DateFormat`; this crate has no localization
-//!   layer, so the English (`en_US`) strings and the `mm/dd/yyyy` compact
-//!   format are compiled in. The affected spots say so where they are.
+//!   `MaterialLocalizations`/`DateFormat`. The English (`en_US`) strings this
+//!   module needs are on [`crate::material_app::DefaultMaterialLocalizations`],
+//!   where upstream keeps them; the `mm/dd/yyyy` compact format and the
+//!   date arithmetic around it are still compiled in, and the affected spots
+//!   say so where they are.
+//!
+//!   This paragraph used to say the crate had no localization layer at all,
+//!   and the strings below were private to this file because of it. It grew
+//!   one; the note did not notice for some time, and two of the strings had
+//!   drifted from upstream's by then.
 //! - **Material icons.** Upstream's chevrons, edit and calendar icons are
 //!   glyphs from the Material icons font, which this engine bridge does not
 //!   load. They are text here (`<`, `>`, `v`, `^`, `Edit`, `Calendar`), each
@@ -1437,25 +1444,47 @@ fn month_in_year(
 //
 // Anchor: `InputDatePickerFormField` in input_date_picker_form_field.dart.
 
-/// Default texts, compiled in for `en_US`. Anchors: the like-named getters
-/// of `DefaultMaterialLocalizations` in material_localizations.dart.
-const INVALID_DATE_FORMAT_LABEL: &str = "Invalid format.";
-const DATE_OUT_OF_RANGE_LABEL: &str = "Out of range.";
-const DATE_HELP_TEXT: &str = "mm/dd/yyyy";
-const DATE_INPUT_LABEL: &str = "Enter Date";
-const DATE_PICKER_HELP_TEXT: &str = "Select date";
-const CANCEL_BUTTON_LABEL: &str = "Cancel";
-const OK_BUTTON_LABEL: &str = "OK";
-const SAVE_BUTTON_LABEL: &str = "Save";
-const DATE_RANGE_PICKER_HELP_TEXT: &str = "Select range";
-const INVALID_DATE_RANGE_LABEL: &str = "Invalid range.";
-const DATE_RANGE_START_LABEL: &str = "Start date";
-const DATE_RANGE_END_LABEL: &str = "End date";
-const TIME_PICKER_DIAL_HELP_TEXT: &str = "Select time";
-const TIME_PICKER_INPUT_HELP_TEXT: &str = "Enter time";
-const INVALID_TIME_LABEL: &str = "Enter a valid time";
-const TIME_PICKER_HOUR_LABEL: &str = "Hour";
-const TIME_PICKER_MINUTE_LABEL: &str = "Minute";
+// The strings this module needs now live on
+// `DefaultMaterialLocalizations`, where upstream keeps them and where
+// `tools/unread_strings.py` can see them. They were private constants here
+// because, as the module's header said, "this crate has no localization
+// layer" -- which stopped being true while nobody was looking at this file.
+//
+// Two of them were wrong. Upstream's dateRangeStartLabel and dateRangeEndLabel
+// are "Start Date" and "End Date", with a capital D that reads like a typo and
+// is upstream's to make. Lowercasing it here was a paraphrase.
+
+const INVALID_DATE_FORMAT_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::INVALID_DATE_FORMAT_LABEL;
+const DATE_OUT_OF_RANGE_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::DATE_OUT_OF_RANGE_LABEL;
+const DATE_HELP_TEXT: &str = crate::material_app::DefaultMaterialLocalizations::DATE_HELP_TEXT;
+const DATE_INPUT_LABEL: &str = crate::material_app::DefaultMaterialLocalizations::DATE_INPUT_LABEL;
+const DATE_PICKER_HELP_TEXT: &str =
+    crate::material_app::DefaultMaterialLocalizations::DATE_PICKER_HELP_TEXT;
+const CANCEL_BUTTON_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::CANCEL_BUTTON_LABEL;
+const OK_BUTTON_LABEL: &str = crate::material_app::DefaultMaterialLocalizations::OK_BUTTON_LABEL;
+const SAVE_BUTTON_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::SAVE_BUTTON_LABEL;
+const DATE_RANGE_PICKER_HELP_TEXT: &str =
+    crate::material_app::DefaultMaterialLocalizations::DATE_RANGE_PICKER_HELP_TEXT;
+const INVALID_DATE_RANGE_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::INVALID_DATE_RANGE_LABEL;
+const DATE_RANGE_START_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::DATE_RANGE_START_LABEL;
+const DATE_RANGE_END_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::DATE_RANGE_END_LABEL;
+const TIME_PICKER_DIAL_HELP_TEXT: &str =
+    crate::material_app::DefaultMaterialLocalizations::TIME_PICKER_DIAL_HELP_TEXT;
+const TIME_PICKER_INPUT_HELP_TEXT: &str =
+    crate::material_app::DefaultMaterialLocalizations::TIME_PICKER_INPUT_HELP_TEXT;
+const INVALID_TIME_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::INVALID_TIME_LABEL;
+const TIME_PICKER_HOUR_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::TIME_PICKER_HOUR_LABEL;
+const TIME_PICKER_MINUTE_LABEL: &str =
+    crate::material_app::DefaultMaterialLocalizations::TIME_PICKER_MINUTE_LABEL;
 
 /// Parses and validates a date text, the shared body of
 /// `InputDatePickerFormField`'s `_parseDate`/`_validateDate`/
