@@ -214,11 +214,45 @@ pub struct SearchDelegate {
     pub query: String,
     body: SearchBody,
     closed_with: Option<String>,
+    /// Upstream's `searchFieldLabel`. `None` is not "no label" -- see
+    /// [`SearchDelegate::search_field_label`].
+    search_field_label: Option<String>,
 }
 
 impl SearchDelegate {
     pub fn new() -> SearchDelegate {
         SearchDelegate::default()
+    }
+
+    /// Upstream's `SearchDelegate.searchFieldLabel`.
+    pub fn with_search_field_label(mut self, label: impl Into<String>) -> Self {
+        self.search_field_label = Some(label.into());
+        self
+    }
+
+    /// The word in the empty search box, from upstream's
+    /// `delegate.searchFieldLabel ?? MaterialLocalizations.of(context)
+    /// .searchFieldLabel`.
+    ///
+    /// # One string, two jobs
+    ///
+    /// Upstream uses it as the field's `hintText` and then assigns
+    /// `routeName = searchFieldLabel`, so the same word is the placeholder a
+    /// reader sees in the empty box and the name a screen reader announces on
+    /// arriving at the page. That is why it is one string rather than a hint
+    /// and a label: they are the same answer to "what is this page for", given
+    /// to two different senses, and letting them drift apart would let a page
+    /// hinted "Search recipes" announce itself as "Search".
+    pub fn search_field_label(&self) -> String {
+        self.search_field_label.clone().unwrap_or_else(|| {
+            crate::material_app::DefaultMaterialLocalizations::SEARCH_FIELD_LABEL.to_string()
+        })
+    }
+
+    /// Upstream's `routeName`, which it assigns from the label above rather
+    /// than taking separately.
+    pub fn route_name(&self) -> String {
+        self.search_field_label()
     }
 
     pub fn body(&self) -> SearchBody {
@@ -678,5 +712,54 @@ mod search_theme_tests {
             plain.shape,
             crate::borders::ShapeBorder::Stadium(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod search_field_label_tests {
+    use super::SearchDelegate;
+
+    #[test]
+    fn an_empty_search_box_says_search() {
+        assert_eq!(SearchDelegate::new().search_field_label(), "Search");
+    }
+
+    #[test]
+    fn and_a_delegate_that_said_what_it_searches_says_that() {
+        assert_eq!(
+            SearchDelegate::new()
+                .with_search_field_label("Search recipes")
+                .search_field_label(),
+            "Search recipes"
+        );
+    }
+
+    #[test]
+    fn the_hint_and_the_route_name_are_the_same_word() {
+        // Upstream assigns `routeName = searchFieldLabel`, so the placeholder
+        // a reader sees and the announcement a reader hears are one answer to
+        // one question. Letting them drift would let a page hinted "Search
+        // recipes" announce itself as "Search".
+        let named = SearchDelegate::new().with_search_field_label("Search recipes");
+        assert_eq!(named.route_name(), named.search_field_label());
+
+        let plain = SearchDelegate::new();
+        assert_eq!(plain.route_name(), plain.search_field_label());
+        assert_eq!(plain.route_name(), "Search");
+    }
+
+    #[test]
+    fn the_label_survives_the_two_page_state_machine() {
+        // The delegate moves between suggestions and results; the word in the
+        // box is not one of the things that changes.
+        let mut delegate = SearchDelegate::new().with_search_field_label("Search recipes");
+        delegate.show_results();
+        assert_eq!(delegate.search_field_label(), "Search recipes");
+        delegate.choose_suggestion("carbonara");
+        assert_eq!(delegate.search_field_label(), "Search recipes");
+        assert_eq!(
+            delegate.query, "carbonara",
+            "the query moved, the label did not"
+        );
     }
 }
