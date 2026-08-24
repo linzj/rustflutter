@@ -14653,10 +14653,26 @@ mod tests {
             RenderParagraph::new("the same overlong sentence").with_overflow(TextOverflow::Fade);
         let faded = fade.layout(constraints);
         assert_eq!(clipped, faded, "fade and clip lay out the same box");
+
+        // One entry more, and it is the ellipsis rather than the sentence
+        // again: a fade has to know how wide the '…' is to place its band.
+        // Shaping the sentence twice is what must not happen.
+        let after = crate::painting::shaped_paragraph_count();
+        assert!(
+            after <= before + 1,
+            "fade re-shaped the sentence: {before} then {after}"
+        );
+
+        // Laying the same fade out a second time adds nothing at all, which
+        // is the part that says the sentence is being reused.
+        let settled = crate::painting::shaped_paragraph_count();
+        let mut again =
+            RenderParagraph::new("the same overlong sentence").with_overflow(TextOverflow::Fade);
+        again.layout(constraints);
         assert_eq!(
             crate::painting::shaped_paragraph_count(),
-            before,
-            "fade re-shaped a paragraph clip had already shaped"
+            settled,
+            "the second fade shaped something the first had already shaped"
         );
     }
 
@@ -14666,18 +14682,30 @@ mod tests {
         // `fadeSizePainter.width` before the right edge, rtl the same stretch
         // after the left one -- upstream's `(fadeStart, fadeEnd)` answers
         // `(fadeSizePainter.width, 0.0)` in rtl and
-        // `(size.width - fadeSizePainter.width, size.width)` in ltr. The stub
-        // shaper gives the ellipsis no width, so what there is to see is
-        // which end the band stops at.
+        // `(size.width - fadeSizePainter.width, size.width)` in ltr.
+        //
+        // This used to assert two pairs of zeroes, with a comment saying the
+        // stub shaper gave the ellipsis no width so only the end mattered.
+        // The stub measures now, so the band has a width and both halves of
+        // upstream's rule are visible -- the band is one ellipsis wide, at
+        // opposite ends.
         let mut rtl = RenderParagraph::new("overlong")
             .with_overflow(TextOverflow::Fade)
             .with_text_direction(TextDirection::Rtl);
         rtl.size = Size::new(100.0, 20.0);
-        assert_eq!(rtl.fade_shader(true), ((0.0, 0.0), (0.0, 0.0)));
+        let ((rtl_start, _), (rtl_end, _)) = rtl.fade_shader(true);
+        assert!(rtl_start > 0.0, "a band with a width");
+        assert_eq!(rtl_end, 0.0, "running to the leading edge");
 
         let mut ltr = RenderParagraph::new("overlong").with_overflow(TextOverflow::Fade);
         ltr.size = Size::new(100.0, 20.0);
-        assert_eq!(ltr.fade_shader(true), ((100.0, 0.0), (100.0, 0.0)));
+        let ((ltr_start, _), (ltr_end, _)) = ltr.fade_shader(true);
+        assert_eq!(ltr_end, 100.0, "running to the trailing edge");
+        assert_eq!(
+            100.0 - ltr_start,
+            rtl_start,
+            "the same band, measured from the other end"
+        );
     }
 
     #[test]

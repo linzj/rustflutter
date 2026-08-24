@@ -1224,12 +1224,126 @@ pub unsafe extern "C" fn rf_paragraph_new(
     ellipsis: bool,
 ) -> *mut RfParagraph {
     note_paragraph_style(text_align, text_direction);
-    allocate::<RfParagraph>()
+    let text = if text.is_null() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(text as *const u8, text_len) })
+            .into_owned()
+    };
+    Box::into_raw(Box::new(StubParagraph {
+        text,
+        font_size: if font_size > 0.0 { font_size } else { 14.0 },
+        max_lines,
+        lines: Vec::new(),
+        constraint: 0.0,
+    })) as *mut RfParagraph
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_free(paragraph: *mut RfParagraph) {
-    unsafe { release(paragraph) }
+    if !paragraph.is_null() {
+        drop(unsafe { Box::from_raw(paragraph as *mut StubParagraph) });
+    }
+}
+
+/// A paragraph, measured as if every glyph were the same width.
+///
+/// # Why there is a model here at all
+///
+/// These returned a hard zero until now, so every string in the crate measured
+/// nought by nought. Nothing wrapped, no caret had a position, no selection had
+/// an extent, and every intrinsic width of text was the same number -- which
+/// meant a test could not tell a correct line breaker from one that returned
+/// the whole string, and two were written that could not pass and one that
+/// passed by having nothing to check.
+///
+/// # What it is not
+///
+/// It is not shaping. Every character is one `ADVANCE` wide regardless of what
+/// it is, so "iii" and "WWW" measure alike, and a real font would disagree with
+/// every number here. Nothing in a test should assert a width against a number
+/// it worked out from a font.
+///
+/// What it does give is the two properties the crate's own arithmetic needs:
+/// **a longer string measures wider**, and **a string too wide for its box
+/// breaks at a space**. Those are the ones the line breaker, the caret and the
+/// selection are written against.
+///
+/// The break is greedy and by whitespace, with a word longer than the whole
+/// box left to overflow rather than split -- which is what upstream's default
+/// does with an unbreakable run.
+struct StubParagraph {
+    text: String,
+    font_size: f32,
+    max_lines: usize,
+    /// Filled in by `layout`, which the crate calls before reading anything.
+    lines: Vec<String>,
+    constraint: f32,
+}
+
+/// One character's width, as a fraction of the font size. Half is close enough
+/// to a real proportional face to keep the numbers plausible, and being wrong
+/// costs nothing as long as it is wrong consistently.
+const ADVANCE: f32 = 0.5;
+/// One line's height, likewise.
+const LINE_HEIGHT: f32 = 1.2;
+
+impl StubParagraph {
+    fn advance(&self) -> f32 {
+        self.font_size * ADVANCE
+    }
+
+    fn line_height(&self) -> f32 {
+        self.font_size * LINE_HEIGHT
+    }
+
+    fn measure(&self, text: &str) -> f32 {
+        text.chars().count() as f32 * self.advance()
+    }
+
+    /// Greedy wrapping at whitespace, then the explicit newlines the text
+    /// already had.
+    fn wrap(&mut self, max_width: f32) {
+        self.constraint = max_width;
+        let mut lines = Vec::new();
+        for hard in self.text.split('\n') {
+            let mut current = String::new();
+            for word in hard.split_inclusive(' ') {
+                let candidate = current.clone() + word;
+                if !current.is_empty() && self.measure(candidate.trim_end()) > max_width {
+                    lines.push(current.trim_end().to_string());
+                    current = word.to_string();
+                } else {
+                    current = candidate;
+                }
+            }
+            lines.push(current.trim_end().to_string());
+        }
+        if self.max_lines > 0 && lines.len() > self.max_lines {
+            lines.truncate(self.max_lines);
+        }
+        self.lines = lines;
+    }
+
+    fn longest_line(&self) -> f32 {
+        self.lines
+            .iter()
+            .map(|line| self.measure(line))
+            .fold(0.0f32, f32::max)
+    }
+}
+
+/// # Safety
+/// `paragraph` must be null or have come from `rf_paragraph_builder_build`.
+unsafe fn stub_paragraph<'a>(paragraph: *mut RfParagraph) -> Option<&'a mut StubParagraph> {
+    unsafe { (paragraph as *mut StubParagraph).as_mut() }
+}
+
+thread_local! {
+    /// The builder in progress. One at a time is enough -- the crate builds a
+    /// paragraph and consumes it before starting another.
+    static BUILDING: std::cell::RefCell<(String, f32, usize)> =
+        const { std::cell::RefCell::new((String::new(), 14.0, 0)) };
 }
 
 #[unsafe(no_mangle)]
@@ -1240,6 +1354,7 @@ pub unsafe extern "C" fn rf_paragraph_builder_new(
     ellipsis: bool,
 ) -> *mut RfParagraphBuilder {
     note_paragraph_style(text_align, text_direction);
+    BUILDING.with(|building| *building.borrow_mut() = (String::new(), 14.0, max_lines));
     allocate::<RfParagraphBuilder>()
 }
 
@@ -1267,6 +1382,11 @@ pub unsafe extern "C" fn rf_paragraph_builder_push_style(
     feature_count: usize,
     argb: u32,
 ) {
+    // The last style wins, which is enough for a model that has one advance
+    // for every glyph anyway.
+    if font_size > 0.0 {
+        BUILDING.with(|building| building.borrow_mut().1 = font_size);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1275,6 +1395,12 @@ pub unsafe extern "C" fn rf_paragraph_builder_add_text(
     text: *const c_char,
     text_len: usize,
 ) {
+    if text.is_null() {
+        return;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(text as *const u8, text_len) };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    BUILDING.with(|building| building.borrow_mut().0.push_str(&text));
 }
 
 #[unsafe(no_mangle)]
@@ -1286,40 +1412,71 @@ pub unsafe extern "C" fn rf_paragraph_builder_build(
     builder: *mut RfParagraphBuilder,
 ) -> *mut RfParagraph {
     unsafe { release(builder) };
-    allocate::<RfParagraph>()
+    let (text, font_size, max_lines) = BUILDING.with(|building| building.borrow().clone());
+    Box::into_raw(Box::new(StubParagraph {
+        text,
+        font_size,
+        max_lines,
+        lines: Vec::new(),
+        constraint: 0.0,
+    })) as *mut RfParagraph
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32) {}
+pub unsafe extern "C" fn rf_paragraph_layout(paragraph: *mut RfParagraph, max_width: f32) {
+    if let Some(paragraph) = unsafe { stub_paragraph(paragraph) } {
+        paragraph.wrap(max_width);
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_width(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    // dart:ui's `Paragraph.width` is the width it was laid out *in*, not the
+    // width of the glyphs -- `longestLine` is that. The crate's two-pass
+    // layout depends on the difference.
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |paragraph| paragraph.constraint)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_height(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |p| p.lines.len() as f32 * p.line_height())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_longest_line(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |p| p.longest_line())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_baseline(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    // Four fifths of the way down the first line, which is about where an
+    // alphabetic baseline sits and is a number no test should lean on.
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |p| p.line_height() * 0.8)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_min_intrinsic_width(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    // The widest single word: the narrowest box the text can be poured into
+    // without a word having to be broken.
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |p| {
+        p.text
+            .split_whitespace()
+            .map(|word| p.measure(word))
+            .fold(0.0f32, f32::max)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paragraph_max_intrinsic_width(paragraph: *mut RfParagraph) -> f32 {
-    0.0
+    // The longest hard line, laid out in all the room it wants -- so no
+    // wrapping, and the explicit newlines the text already had are the only
+    // breaks.
+    unsafe { stub_paragraph(paragraph) }.map_or(0.0, |p| {
+        p.text
+            .split('\n')
+            .map(|line| p.measure(line))
+            .fold(0.0f32, f32::max)
+    })
 }
 
 #[unsafe(no_mangle)]

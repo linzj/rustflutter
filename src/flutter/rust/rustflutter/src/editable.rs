@@ -1433,19 +1433,36 @@ mod tests {
 
     #[test]
     fn the_caret_is_measured_from_the_text_before_it() {
-        // What is assertable here is the *choice of prefix*. This build stubs
-        // the engine and every paragraph metric it returns is zero, so the
-        // width itself cannot be measured without a real text stack -- the
-        // example that runs against one checks that. The prefix is the part
-        // that can be wrong in an interesting way: it is where a byte offset
-        // and a UTF-16 offset get confused.
+        // What is assertable here is the *choice of prefix*: it is where a
+        // byte offset and a UTF-16 offset get confused. The width itself is
+        // the stub's model rather than a font's, so what is checked is that
+        // the caret is measured from the right substring, not that it lands
+        // on a particular number.
+        //
+        // This used to assert zero, with a comment saying every paragraph
+        // metric the stub returns is zero. They are modelled now.
         let field = RenderEditable::new(value("ab\u{4e2d}", 3, (-1, -1)));
         // Three UTF-16 units -- 'a', 'b' and one BMP character -- five bytes.
         assert_eq!(field.value.caret_bytes(), Some(5));
-        assert_eq!(field.caret_offset(), 0.0, "stubbed metrics measure nothing");
+        let after_three = field.caret_offset();
+        assert!(after_three > 0.0, "three characters have a width");
 
         let empty = RenderEditable::new(value("abc", 0, (-1, -1)));
-        assert_eq!(empty.caret_offset(), 0.0);
+        assert_eq!(empty.caret_offset(), 0.0, "nothing before it to measure");
+
+        // The prefix, and only the prefix: a caret after two characters sits
+        // short of one after three, and the text beyond it does not count.
+        let after_two = RenderEditable::new(value("ab\u{4e2d}", 2, (-1, -1))).caret_offset();
+        assert!(
+            after_two < after_three,
+            "{after_two} should be short of {after_three}"
+        );
+        let longer_tail = RenderEditable::new(value("ab\u{4e2d}defgh", 2, (-1, -1)));
+        assert_eq!(
+            longer_tail.caret_offset(),
+            after_two,
+            "what follows the caret is not in front of it"
+        );
 
         // A caret inside a surrogate pair is not a position, and measuring
         // from it would slice a string mid-character.
@@ -1982,10 +1999,15 @@ mod tests {
             Some(1),
             "the tap focused the field"
         );
-        assert_eq!(
-            last_selection(&_messenger),
-            Some((3, 3)),
-            "the caret went to the second line's start"
+        // The line the tap landed on is what this is about. The exact index
+        // within it depends on how wide the stub thinks each glyph is, so what
+        // is asserted is the line -- second, hence at or past its first
+        // character -- rather than a number that would be about the model.
+        let (base, extent) = last_selection(&_messenger).expect("a selection");
+        assert_eq!(base, extent, "a tap collapses the selection");
+        assert!(
+            base >= 3,
+            "the caret went to the second line, which starts at 3: {base}"
         );
 
         // And a tap at the top of the field is the first line's start.
@@ -1997,11 +2019,12 @@ mod tests {
             &root,
             &event(crate::gestures::PointerChange::Up, 5.0, 0.0, 0.0, 0.0),
         );
-        assert_eq!(
-            last_selection(&_messenger),
-            Some((0, 0)),
-            "the caret went to the first line's start"
-        );
+        // The first line, again by line rather than by index: five pixels in
+        // is within the first glyph or just past it depending on how wide the
+        // stub makes one, and the line is the part this test is about.
+        let (base, extent) = last_selection(&_messenger).expect("a selection");
+        assert_eq!(base, extent);
+        assert!(base < 3, "the caret went to the first line: {base}");
         drop(tree);
     }
 
@@ -2205,20 +2228,18 @@ mod painted_field_tests {
     //! back. So what is pinned is where the rectangles are and in what order,
     //! not what the text looks like.
     //!
-    //! # What cannot be asked here yet
+    //! # The wrapping ones came back
     //!
-    //! Anything that depends on text having a size. `rf_paragraph_width` and
-    //! `rf_paragraph_height` in the stubs return a hard zero, so every string
-    //! measures nought by nought and nothing ever wraps -- a selection over
-    //! seventeen characters in a sixty-pixel box comes out as one rectangle
-    //! from (0,0) to (0,0).
+    //! Two tests here were written, found unaskable, and removed a tick ago,
+    //! because the stubs measured every string as nought by nought and so
+    //! nothing ever wrapped. One failed honestly; the other passed by having
+    //! nothing to iterate over, which is worse. The stub models text metrics
+    //! now, and they are below.
     //!
-    //! Two tests about wrapping were written here and taken out again. One
-    //! failed honestly. The other -- that each rectangle of a wrapped
-    //! selection sits on its own line -- **passed**, because with a single
-    //! rectangle its loop had nothing to iterate over. A test that passes by
-    //! having nothing to check is worse than the gap it conceals, so both are
-    //! gone until the stub can measure a string.
+    //! They assert **relations** rather than numbers -- more rectangles when
+    //! narrower, each below the last -- because the model gives every glyph
+    //! the same width and a real font would disagree with any number taken
+    //! from it.
 
     use super::{MaxLines, RenderEditable, TextEditingValue};
     use crate::engine::{Color, LayerTree, TextStyle};
@@ -2239,6 +2260,12 @@ mod painted_field_tests {
             .with_style(style)
             .with_caret(CARET, true)
             .with_selection_color(SELECTION)
+    }
+
+    /// The same field allowed to wrap. `MaxLines::Single` is the default and
+    /// turns wrapping off, so a test about wrapping has to ask for it.
+    fn wrapping(text: &str, base: usize, extent: usize) -> RenderEditable {
+        field(text, base, extent).with_max_lines(MaxLines::Growing)
     }
 
     fn painted(mut field: RenderEditable, width: f32) -> Vec<Drawn> {
@@ -2320,6 +2347,61 @@ mod painted_field_tests {
         let calls = painted(field("", 0, 0), 300.0);
         assert_eq!(rects(&calls).len(), 1, "{calls:?}");
         assert_eq!(rects(&calls)[0].4, CARET.0);
+    }
+
+    #[test]
+    fn a_run_across_a_wrap_is_one_rectangle_per_line() {
+        // Upstream's getBoxesForSelection hands back a box per line, and this
+        // is the same shape: a selection spanning a wrap cannot be one
+        // rectangle, because the space between the lines is not selected.
+        let wide = painted(wrapping("hello world again", 0, 17), 4000.0);
+        let narrow = painted(wrapping("hello world again", 0, 17), 60.0);
+        let highlights = |calls: &[Drawn]| {
+            rects(calls)
+                .into_iter()
+                .filter(|mark| mark.4 == SELECTION.0)
+                .count()
+        };
+        assert_eq!(highlights(&wide), 1, "one line, one rectangle");
+        assert!(
+            highlights(&narrow) > 1,
+            "wrapped, so more than one: {narrow:?}"
+        );
+    }
+
+    #[test]
+    fn every_highlight_rectangle_sits_on_its_own_line() {
+        // Two rectangles at the same height would be one rectangle; the point
+        // of splitting is that they are not.
+        let calls = painted(wrapping("hello world again", 0, 17), 60.0);
+        let tops: Vec<f32> = rects(&calls)
+            .into_iter()
+            .filter(|mark| mark.4 == SELECTION.0)
+            .map(|mark| mark.1)
+            .collect();
+        assert!(tops.len() > 1, "nothing to compare: {tops:?}");
+        for pair in tops.windows(2) {
+            assert!(pair[1] > pair[0], "each below the last: {tops:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrower_box_wraps_more() {
+        // The relation rather than a number: the model gives every glyph the
+        // same width, so any particular count would be about the model.
+        let counts: Vec<usize> = [400.0, 120.0, 60.0]
+            .into_iter()
+            .map(|width| {
+                rects(&painted(wrapping("hello world again", 0, 17), width))
+                    .into_iter()
+                    .filter(|mark| mark.4 == SELECTION.0)
+                    .count()
+            })
+            .collect();
+        for pair in counts.windows(2) {
+            assert!(pair[1] >= pair[0], "{counts:?}");
+        }
+        assert!(counts[2] > counts[0], "{counts:?}");
     }
 
     #[test]
