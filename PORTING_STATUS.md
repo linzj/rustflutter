@@ -14353,3 +14353,63 @@ intrinsics 全都对着一个永远为零的尺寸测量，因此它们与**任�
 stub 现在记住宽高。改完之后没有任何既有测试变红，这本身是条信息。
 把 stub 改回返回 0 作为变异：三红。
 
+
+## 第 151 轮 — SemanticsConfiguration：两条上游没有的规则，和一条没人调用的规则
+
+`depth.py` 上 `SemanticsConfiguration` 32/104。上游那一百多个成员大半是
+setter/getter 成对展开，类文档早就写明"字段集是本 crate 的，**merge rules**
+才是值得移植的部分"。逐条对下来，问题恰好出在它自己声称要保留的那部分。
+
+### `is_compatible_with` 里有两条上游没有的规则
+
+上游只问六个槽：`platformViewId`、`maxValueLength`、`currentValueLength`、
+`attributedValue`、`minValue`、`maxValue`——**每一个都是渲染对象在描述自己**，
+两个声称者才真的是两个对象在互相矛盾。
+
+port 另外加了 `hintOverrides` 和 `indexInParent` 两条，理由写成"一个节点只有
+一个位置，两个就多了一个"。但这两样东西不是对象自己说的，是**祖先安排的**：
+一个索引来自给列表编号的那次遍历，一个 hint override 来自外面的 `Semantics`。
+一条合并链上出现两个，那是那次安排，不是分歧，所以上游让 `absorb` 按
+first-wins 留下外面那个。
+
+拒绝它的后果是**本该一个节点的地方裂成两个**，读屏用户听见一次多余的停顿。
+两条都删掉。原来那条 `two_positions_in_one_parent_cannot_merge` 断言的正是
+上游否认的事，改写成断言上游的实际行为（允许合并，外层取胜），
+并给 `hintOverrides` 补了独立的一条——两条规则是一起删的，一个测试会让其中
+一条悄悄回来。
+
+### `AccessibilityFocusBlockType::merge` 写好了、测过了，但没有字段带着它
+
+这是这个类里**唯一一条不是 first-wins 的规则**：最强者胜。
+`blockSubtree > blockNode > none`，因为 blocking 说的是"读屏不能到达什么"，
+而合并后的节点，凡是能到达任一半的路径都能到达它——所以子节点的承诺只有
+取更强的那个才守得住。
+
+crate 里这个枚举和它的 `merge` 早就在，还有穷举两两组合的测试，
+但 `SemanticsConfiguration` 没有这个字段，于是这条规则**永远不可能被调用**。
+补上字段，`absorb` 里接上。新测试里有一条专门打 first-wins 会答错的那个方向
+（父弱子强）。
+
+### 更大的那件事：这两个方法全 crate 没有生产调用者
+
+`absorb` 和 `is_compatible_with` 只有测试碰过。走树用的是
+`SemanticsAnnotation`，它做的事简单得多——文本节点让位给外层 label，就这些。
+
+这正是那两条错规则能安然活下来的原因：**除了测试没有任何东西能发现它们**。
+已经写进类型文档，因为这是"测试是唯一的支撑"，那是把测试看得更紧的理由，
+不是放松的理由。
+
+### 还没做的（都是规则，不是字段）
+
+- `controlsNodes` 是**并集**，不是 first-wins
+- `validationResult` 里 `invalid` 永远优先
+- `hitTestBehavior` 的兼容检查是"**任一**边不是 defer 就拒绝"，不是"两边都设了"
+- `role` / `inputType` 用 `none` 当未设，`headingLevel` 用 `0`，`identifier` 用 `''`
+  ——上游一共有四种"未设"的拼法，port 只建模了 null 和 `''` 两种
+
+变异三条，全红且各自只打中对应的一条：合并改成 first-wins（blocking 那条红）、
+把 `index_in_parent` 规则放回去（位置那条红）、把 `hint_overrides` 规则放回去
+（hint 那条红）。
+
+5137 测试通过，完整 GN 门过。`depth.py` 上 32/104 → 33/104，并记进
+`depth_examined.json`。

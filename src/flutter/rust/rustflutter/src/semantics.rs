@@ -2547,7 +2547,23 @@ pub const UNBLOCKED_USER_ACTIONS: &[SemanticsAction] = &[
 ///   hear both;
 /// * flags merge and actions union.
 ///
+/// # Nothing in the walk calls these yet
+///
+/// [`absorb`] and [`is_compatible_with`] have **no caller outside the tests**.
+/// The walk in this crate runs on [`SemanticsAnnotation`], which a render
+/// object hands back from `describe_semantics`, and it does its own much
+/// simpler thing: a text node yields to an enclosing label and that is the
+/// whole of it. So this class is the rules, written down and held by tests,
+/// waiting for a walk that consults them.
+///
+/// That is worth knowing because it is what let two rules that are **not**
+/// upstream's live here undisturbed -- `hintOverrides` and `indexInParent` were
+/// being refused a merge that upstream allows, and nothing outside a test could
+/// have noticed. The tests are the only thing holding these rules, which is a
+/// reason to be strict about them rather than a reason to relax.
+///
 /// [`absorb`]: SemanticsConfiguration::absorb
+/// [`is_compatible_with`]: SemanticsConfiguration::is_compatible_with
 #[derive(Clone, Debug, Default)]
 pub struct SemanticsConfiguration {
     /// Upstream's `isSemanticBoundary`: whether this gets a node of its own
@@ -2593,6 +2609,13 @@ pub struct SemanticsConfiguration {
     /// Upstream's `tagsForChildren`, added to with
     /// [`add_tag_for_children`](SemanticsConfiguration::add_tag_for_children).
     pub tags_for_children: Vec<SemanticsTag>,
+    /// Upstream's `accessibilityFocusBlockType`.
+    ///
+    /// Here because of its merge and not because of its readers: it is the one
+    /// field in this class whose rule is **strongest-wins** rather than
+    /// first-wins, and [`AccessibilityFocusBlockType::merge`] was written and
+    /// tested before anything carried it, so the rule had no way to be reached.
+    pub accessibility_focus_block_type: AccessibilityFocusBlockType,
 }
 
 impl SemanticsConfiguration {
@@ -2672,17 +2695,23 @@ impl SemanticsConfiguration {
         if self.has_explicit_role() && other.has_explicit_role() {
             return false;
         }
-        // A node has one value, one set of hint overrides, one position in its
-        // parent. Two of any of those is one too many.
+        // A node has one value, and two of them is one too many.
         if !self.value.string().is_empty() && !other.value.string().is_empty() {
             return false;
         }
-        if self.hint_overrides.is_some() && other.hint_overrides.is_some() {
-            return false;
-        }
-        if self.index_in_parent.is_some() && other.index_in_parent.is_some() {
-            return false;
-        }
+        // `hint_overrides` and `index_in_parent` are **not** asked about, and
+        // this port used to ask. Upstream's list is
+        // `platformViewId`, `maxValueLength`, `currentValueLength`,
+        // `attributedValue`, `minValue`, `maxValue` -- every one of them
+        // something a render object says about *itself*, where two claimants
+        // really are two objects disagreeing. A hint override and a position in
+        // a parent come from outside the object: an ancestor arranged them.
+        // Two of those in one merge chain is that arrangement, not a
+        // disagreement, and upstream lets `absorb` keep the outer one by
+        // first-wins.
+        //
+        // Refusing them made this port split into two nodes where upstream
+        // makes one, which a reader hears as an extra stop.
         true
     }
 
@@ -2707,6 +2736,14 @@ impl SemanticsConfiguration {
             }
         }
         self.flags = self.flags.merge(&child.flags);
+        // **Not** first-wins: a parent that blocks nothing still ends up
+        // blocking if the child it swallowed did. Blocking is about what a
+        // reader must not reach, and a merged node is reachable by every path
+        // that reached either half -- so the stronger of the two is the only
+        // answer that keeps the promise the child was making.
+        self.accessibility_focus_block_type = self
+            .accessibility_focus_block_type
+            .merge(child.accessibility_focus_block_type);
 
         // First-wins, one slot at a time. The parent asked first.
         self.sort_key = self.sort_key.clone().or_else(|| child.sort_key.clone());
@@ -5545,12 +5582,81 @@ mod tests {
     }
 
     #[test]
-    fn two_positions_in_one_parent_cannot_merge() {
+    fn two_positions_in_one_parent_merge_and_the_outer_one_wins() {
+        // This test used to assert the opposite, against a rule this port had
+        // and upstream does not: `isCompatibleWith` asks about
+        // `platformViewId`, `maxValueLength`, `currentValueLength`,
+        // `attributedValue`, `minValue` and `maxValue`, and about neither
+        // `indexInParent` nor `hintOverrides`.
+        //
+        // What upstream does instead is let the merge happen and drop the
+        // child's by first-wins, which is the same rule every other singular
+        // slot follows. Refusing it split one node into two.
         let mut one = said("a");
         one.index_in_parent = Some(1);
         let mut two = said("b");
         two.index_in_parent = Some(2);
-        assert!(!one.is_compatible_with(Some(&two)));
+        assert!(one.is_compatible_with(Some(&two)));
+        one.absorb(&two);
+        assert_eq!(one.index_in_parent, Some(1), "the parent asked first");
+    }
+
+    #[test]
+    fn two_sets_of_hint_overrides_merge_the_same_way() {
+        // The other rule that was here and is not upstream's. Same shape, and
+        // worth its own test because the two were removed together and a
+        // single test would let one of them come back unnoticed.
+        let mut one = said("a");
+        one.hint_overrides = Some(SemanticsHintOverrides::new().with_tap_hint("open"));
+        let mut two = said("b");
+        two.hint_overrides = Some(SemanticsHintOverrides::new().with_tap_hint("close"));
+        assert!(one.is_compatible_with(Some(&two)));
+        one.absorb(&two);
+        assert_eq!(
+            one.hint_overrides.as_ref().and_then(|h| h.on_tap_hint()),
+            Some("open")
+        );
+    }
+
+    #[test]
+    fn blocking_survives_a_merge_that_the_parent_did_not_ask_for() {
+        // The one strongest-wins rule in the class. A parent that blocks
+        // nothing swallows a child that blocks its subtree, and the merged node
+        // blocks the subtree: the child's promise was about what a reader must
+        // not reach, and after the merge every path that reached the child
+        // reaches this node.
+        let mut parent = said("a");
+        let mut child = said("b");
+        child.accessibility_focus_block_type = AccessibilityFocusBlockType::BlockSubtree;
+        parent.absorb(&child);
+        assert_eq!(
+            parent.accessibility_focus_block_type,
+            AccessibilityFocusBlockType::BlockSubtree
+        );
+
+        // And it does not weaken, which is the half a first-wins spelling
+        // would get right by accident.
+        let mut strong = said("a");
+        strong.accessibility_focus_block_type = AccessibilityFocusBlockType::BlockSubtree;
+        let mut weak = said("b");
+        weak.accessibility_focus_block_type = AccessibilityFocusBlockType::BlockNode;
+        strong.absorb(&weak);
+        assert_eq!(
+            strong.accessibility_focus_block_type,
+            AccessibilityFocusBlockType::BlockSubtree
+        );
+
+        // The case first-wins gets *wrong*: the parent's is the weaker one.
+        let mut outer = said("a");
+        outer.accessibility_focus_block_type = AccessibilityFocusBlockType::BlockNode;
+        let mut inner = said("b");
+        inner.accessibility_focus_block_type = AccessibilityFocusBlockType::BlockSubtree;
+        outer.absorb(&inner);
+        assert_eq!(
+            outer.accessibility_focus_block_type,
+            AccessibilityFocusBlockType::BlockSubtree,
+            "first-wins would have kept BlockNode here"
+        );
     }
 
     // -- concat_attributed_string, against its sibling -----------------------------

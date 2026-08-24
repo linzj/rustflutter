@@ -52,3 +52,7 @@ try_*.log
 
 # order_sweep.py 与 variant_sweep.py 变异期间的原文备份，绝不入库
 *.sweep
+
+# 手工变异期间的原文备份，同样绝不入库
+*.bak
+*.orig
