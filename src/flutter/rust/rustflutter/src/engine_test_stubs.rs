@@ -727,6 +727,21 @@ pub enum Drawn {
         x: f32,
         y: f32,
     },
+    /// A translation that went into the layer tree rather than into
+    /// coordinates.
+    ///
+    /// Recorded because it is the other way a render object can move what it
+    /// draws, and a test that only watched coordinates would call a lost
+    /// offset correct: a child painted at the origin inside an offset layer
+    /// and a child painted at the origin with the offset dropped on the floor
+    /// look identical from the canvas. Upstream puts the translation in the
+    /// layer on purpose -- it lets the compositor move a cached subtree
+    /// without re-rasterising it -- so this is a shape to check, not one to
+    /// flag.
+    OffsetLayer {
+        dx: f32,
+        dy: f32,
+    },
     /// A path, by **where it was drawn and not what shape it is** -- see
     /// `StubPath`. A rounded rectangle and a rectangle of the same extent
     /// record identically.
@@ -737,6 +752,113 @@ pub enum Drawn {
         bottom: f32,
         argb: u32,
     },
+}
+
+impl Drawn {
+    /// The same call moved by `(dx, dy)`.
+    ///
+    /// For asking whether a `paint` respects the offset it is given: paint at
+    /// the origin, paint again somewhere else, and the second should be the
+    /// first translated. A render object that ignores its offset draws in the
+    /// wrong place, which is a whole class of mistake that nothing could see
+    /// while the stubs discarded every call.
+    ///
+    /// A radius is a length and does not move.
+    #[allow(dead_code)]
+    pub fn translated(self, dx: f32, dy: f32) -> Drawn {
+        match self {
+            Drawn::Rect {
+                left,
+                top,
+                right,
+                bottom,
+                argb,
+            } => Drawn::Rect {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                argb,
+            },
+            Drawn::RRect {
+                left,
+                top,
+                right,
+                bottom,
+                radius,
+                argb,
+            } => Drawn::RRect {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                radius,
+                argb,
+            },
+            Drawn::Oval {
+                left,
+                top,
+                right,
+                bottom,
+                argb,
+            } => Drawn::Oval {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                argb,
+            },
+            Drawn::Circle {
+                cx,
+                cy,
+                radius,
+                argb,
+            } => Drawn::Circle {
+                cx: cx + dx,
+                cy: cy + dy,
+                radius,
+                argb,
+            },
+            Drawn::Line { from, to } => Drawn::Line {
+                from: (from.0 + dx, from.1 + dy),
+                to: (to.0 + dx, to.1 + dy),
+            },
+            Drawn::ImageRect {
+                source,
+                destination,
+            } => Drawn::ImageRect {
+                // The source is a window on the picture and does not move with
+                // the box; only where it lands does.
+                source,
+                destination: (
+                    destination.0 + dx,
+                    destination.1 + dy,
+                    destination.2 + dx,
+                    destination.3 + dy,
+                ),
+            },
+            Drawn::Image { x, y } => Drawn::Image {
+                x: x + dx,
+                y: y + dy,
+            },
+            Drawn::Path {
+                left,
+                top,
+                right,
+                bottom,
+                argb,
+            } => Drawn::Path {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                argb,
+            },
+            // A layer's own translation is what moves; translating it again
+            // would be counting the same movement twice.
+            Drawn::OffsetLayer { .. } => self,
+        }
+    }
 }
 
 thread_local! {
@@ -794,6 +916,7 @@ pub unsafe extern "C" fn rf_layer_tree_push_transform(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_push_offset(tree: *mut RfLayerTree, dx: f32, dy: f32) {
     note(|calls| calls.offsets += 1);
+    record(Drawn::OffsetLayer { dx, dy });
     open_container();
 }
 

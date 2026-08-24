@@ -24768,3 +24768,214 @@ mod decorated_box_geometry_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod paint_respects_its_offset_tests {
+    //! One property, asked of every render object here that draws directly.
+    //!
+    //! A `paint` is handed the position its box was placed at, and everything
+    //! it draws has to start from there. Ignoring it -- drawing at the origin,
+    //! or adding the offset to some of the coordinates and not the rest --
+    //! puts the picture in the wrong place, and it is a mistake with no other
+    //! symptom: layout still says the right size, hit testing still answers
+    //! for the right rectangle, and only the pixels are wrong.
+    //!
+    //! Nothing could ask this until the stubs kept what the canvas was told.
+    //!
+    //! # There are two ways to move, and both count
+    //!
+    //! Writing this found the second one. A render object can add the offset
+    //! to the coordinates it draws with, or it can push an offset layer and
+    //! draw at the origin inside it -- `push_clip_path` does the latter, and
+    //! upstream does it on purpose, because a translation held by a layer lets
+    //! the compositor move a cached subtree without re-rasterising it.
+    //!
+    //! So the first version of this test failed on `RenderPhysicalModel` and
+    //! the failure was the test's, not the code's. The property is not "every
+    //! coordinate moves"; it is "the movement is somewhere" -- in the
+    //! coordinates, or in a layer that carries exactly it. Checking only the
+    //! coordinates would have been wrong in one direction; checking only that
+    //! the child stayed put would be wrong in the other, since a child painted
+    //! at the origin inside an offset layer and a child painted at the origin
+    //! with the offset dropped look identical from the canvas. The layer's own
+    //! numbers are recorded so that both readings are refuted.
+
+    use super::{
+        BoxConstraints, Color, Fill, LayerTree, Offset, PaintContext, RenderBox,
+        RenderDecoratedBox, RenderImage, RenderPhysicalModel, RenderPhysicalShape, Size,
+    };
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::painting::Image;
+    use std::rc::Rc;
+
+    fn painted(subject: &mut dyn RenderBox, at: Offset) -> Vec<Drawn> {
+        subject.layout(BoxConstraints::tight(60.0, 20.0));
+        let mut layers = LayerTree::new(400, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            subject.paint(&mut context, at);
+        }
+        drawn()
+    }
+
+    /// Paints twice and returns (at the origin, moved by (17, 23)).
+    fn both(mut make: impl FnMut() -> Box<dyn RenderBox>) -> (Vec<Drawn>, Vec<Drawn>) {
+        let at_origin = painted(make().as_mut(), Offset::ZERO);
+        let moved = painted(make().as_mut(), Offset::new(17.0, 23.0));
+        (at_origin, moved)
+    }
+
+    /// Everything drawn directly moves by the offset, and everything drawn
+    /// inside an offset layer stays put because the layer moved instead.
+    ///
+    /// `translated` leaves an `OffsetLayer` alone, so the expectation built
+    /// here says: the layers are unchanged, the direct drawing has moved. What
+    /// makes that more than an assumption is the second half below, which
+    /// pins the layer's own numbers.
+    fn assert_moves(name: &str, make: impl FnMut() -> Box<dyn RenderBox>) {
+        let (at_origin, moved) = both(make);
+        assert!(!at_origin.is_empty(), "{name} drew nothing to compare");
+
+        let inside_a_layer = at_origin
+            .iter()
+            .any(|call| matches!(call, Drawn::OffsetLayer { .. }));
+        if inside_a_layer {
+            // Everything after the layer is drawn in its coordinates and does
+            // not move; the layer carries the whole translation.
+            let layers: Vec<Drawn> = moved
+                .iter()
+                .copied()
+                .filter(|call| matches!(call, Drawn::OffsetLayer { .. }))
+                .collect();
+            assert_eq!(
+                layers,
+                vec![Drawn::OffsetLayer { dx: 17.0, dy: 23.0 }],
+                "{name}: the layer holds the movement"
+            );
+            let before: Vec<Drawn> = at_origin
+                .iter()
+                .take_while(|call| !matches!(call, Drawn::OffsetLayer { .. }))
+                .map(|call| call.translated(17.0, 23.0))
+                .collect();
+            let moved_before: Vec<Drawn> = moved
+                .iter()
+                .copied()
+                .take_while(|call| !matches!(call, Drawn::OffsetLayer { .. }))
+                .collect();
+            assert_eq!(moved_before, before, "{name}: drawn before the layer");
+            return;
+        }
+
+        let expected: Vec<Drawn> = at_origin
+            .iter()
+            .map(|call| call.translated(17.0, 23.0))
+            .collect();
+        assert_eq!(moved, expected, "{name}");
+    }
+
+    fn image() -> Rc<Image> {
+        Rc::new(Image::from_pixels(&[0; 4 * 2 * 4], 4, 2).expect("the stub hands one back"))
+    }
+
+    #[test]
+    fn a_decorated_box_paints_where_it_was_put() {
+        assert_moves("fill", || {
+            Box::new(RenderDecoratedBox::new().with_fill(Fill::Solid(Color::BLACK)))
+        });
+        assert_moves("border", || {
+            Box::new(RenderDecoratedBox::new().with_border(4.0, Color::BLACK))
+        });
+        assert_moves("both", || {
+            Box::new(
+                RenderDecoratedBox::new()
+                    .with_fill(Fill::Solid(Color::BLACK))
+                    .with_border(4.0, Color::WHITE),
+            )
+        });
+    }
+
+    #[test]
+    fn an_image_paints_where_it_was_put_and_its_source_window_does_not_move() {
+        // The destination follows the box; the source is a window on the
+        // picture and has nothing to do with where the box sits.
+        assert_moves("image", || Box::new(RenderImage::new(image())));
+        assert_moves("dense image", || {
+            Box::new(RenderImage::new(image()).with_scale(2.0))
+        });
+
+        let (at_origin, moved) = both(|| Box::new(RenderImage::new(image())));
+        match (at_origin[0], moved[0]) {
+            (Drawn::ImageRect { source: first, .. }, Drawn::ImageRect { source: second, .. }) => {
+                assert_eq!(first, second, "the source window stayed put")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_child_inside_an_offset_layer_is_moved_by_the_layer_and_not_by_its_coordinates() {
+        // The distinction the first draft of this module got wrong. The model
+        // draws its shadows and its own shape at the offset; the child goes
+        // into a layer that carries the offset, and paints at the origin
+        // inside it.
+        let mut model = RenderPhysicalModel::new(
+            RenderDecoratedBox::new().with_fill(Fill::Solid(Color::BLACK)),
+        )
+        .with_color(Color::WHITE);
+        let calls = painted(&mut model, Offset::new(17.0, 23.0));
+
+        let layer = calls
+            .iter()
+            .find(|call| matches!(call, Drawn::OffsetLayer { .. }))
+            .copied();
+        assert_eq!(
+            layer,
+            Some(Drawn::OffsetLayer { dx: 17.0, dy: 23.0 }),
+            "the whole translation, in the layer"
+        );
+
+        let child = calls.last().copied().expect("the child drew something");
+        assert_eq!(
+            child,
+            Drawn::Rect {
+                left: 0.0,
+                top: 0.0,
+                right: 60.0,
+                bottom: 20.0,
+                argb: Color::BLACK.0,
+            },
+            "at the origin, in the layer's coordinates"
+        );
+    }
+
+    #[test]
+    fn a_physical_model_paints_where_it_was_put() {
+        assert_moves("physical model", || {
+            Box::new(
+                RenderPhysicalModel::new(
+                    RenderDecoratedBox::new().with_fill(Fill::Solid(Color::BLACK)),
+                )
+                .with_color(Color::WHITE)
+                .with_elevation(4.0),
+            )
+        });
+    }
+
+    #[test]
+    fn a_physical_shape_paints_where_it_was_put() {
+        assert_moves("physical shape", || {
+            Box::new(
+                RenderPhysicalShape::new(
+                    crate::borders::ShapeBorder::Circle(crate::borders::CircleBorder::new(
+                        crate::borders::BorderSide::NONE,
+                        0.0,
+                    )),
+                    RenderDecoratedBox::new().with_fill(Fill::Solid(Color::BLACK)),
+                )
+                .with_color(Color::WHITE)
+                .with_elevation(4.0),
+            )
+        });
+    }
+}
