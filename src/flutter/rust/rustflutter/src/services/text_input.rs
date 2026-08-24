@@ -385,6 +385,29 @@ pub struct TextInputConfiguration {
     /// Upstream's `actionLabel`, the word on the action key when the platform
     /// lets one be chosen.
     pub action_label: Option<String>,
+    /// Upstream's `allowedMimeTypes`, sent as `contentCommitMimeTypes`: what
+    /// the keyboard may insert besides text.
+    ///
+    /// An empty list is the default and means **nothing but text** -- a
+    /// keyboard offering a GIF has nowhere to put it. Not the same as the
+    /// field declining to say, which this cannot express and upstream does not
+    /// either.
+    pub allowed_mime_types: Vec<String>,
+    /// Upstream's `hintLocales`: which languages the reader is likely to type,
+    /// so the keyboard can offer the right one first.
+    ///
+    /// Android reads it (`EditorInfo#hintLocales`). Nullable upstream, but its
+    /// default is an **empty list** rather than null, so the common case sends
+    /// `[]` and not nothing.
+    pub hint_locales: Option<Vec<crate::platform::Locale>>,
+    /// Upstream's `enableInlinePrediction`, whose default is **null and not
+    /// false**.
+    ///
+    /// Null means "whatever the platform does", which is not the same as
+    /// asking for it to be off: upstream's own doc says inline prediction is
+    /// enabled by default on iOS, so a false here is a field overruling the
+    /// platform rather than agreeing with it.
+    pub enable_inline_prediction: Option<bool>,
     /// What the platform may fill this field with, if anything. Disabled by
     /// default: a field says what it holds, and one that has not said holds
     /// nothing the platform should guess at.
@@ -418,6 +441,12 @@ impl Default for TextInputConfiguration {
             keyboard_appearance: crate::platform::Brightness::Light,
             enable_ime_personalized_learning: true,
             action_label: None,
+            allowed_mime_types: Vec::new(),
+            // Empty rather than None: upstream's default is `const <Locale>[]`,
+            // so an ordinary field sends `[]` and only one that deliberately
+            // set null sends nothing.
+            hint_locales: Some(Vec::new()),
+            enable_inline_prediction: None,
             autofill_configuration: crate::services::autofill::AutofillConfiguration::default(),
         }
     }
@@ -488,6 +517,36 @@ impl TextInputConfiguration {
             (
                 "enableIMEPersonalizedLearning",
                 Value::Bool(self.enable_ime_personalized_learning),
+            ),
+            (
+                "contentCommitMimeTypes",
+                Value::List(
+                    self.allowed_mime_types
+                        .iter()
+                        .map(|kind| Value::from(kind.as_str()))
+                        .collect(),
+                ),
+            ),
+            (
+                "hintLocales",
+                match &self.hint_locales {
+                    // Upstream's `hintLocales?.map(...).toList()`: a language
+                    // tag each, which is the form the platform reads.
+                    Some(locales) => Value::List(
+                        locales
+                            .iter()
+                            .map(|locale| Value::from(locale.to_language_tag().as_str()))
+                            .collect(),
+                    ),
+                    None => Value::Null,
+                },
+            ),
+            (
+                "enableInlinePrediction",
+                match self.enable_inline_prediction {
+                    Some(enabled) => Value::Bool(enabled),
+                    None => Value::Null,
+                },
             ),
             ("enableDeltaModel", Value::Bool(false)),
             ("viewId", Value::I64(0)),
@@ -2098,6 +2157,137 @@ mod configuration_wire_format_tests {
             "obscureText",
         ] {
             assert_ne!(key(&plain, name), key(&flipped, name), "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod remaining_wire_keys_tests {
+    use super::TextInputConfiguration;
+    use crate::platform::Locale;
+    use crate::services::codec::Value;
+
+    fn key(value: &Value, name: &str) -> Value {
+        match value {
+            Value::Map(pairs) => pairs
+                .iter()
+                .find(|(k, _)| matches!(k, Value::String(s) if s == name))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("no {name}")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_message_now_carries_every_key_upstream_sends() {
+        // Sixteen before this, nineteen upstream. The three added here are the
+        // whole of the difference -- counted rather than estimated, because
+        // the last commit said seven and was wrong.
+        let value = TextInputConfiguration::default().to_value();
+        for name in [
+            "viewId",
+            "inputType",
+            "readOnly",
+            "obscureText",
+            "autocorrect",
+            "smartDashesType",
+            "smartQuotesType",
+            "enableSuggestions",
+            "enableInteractiveSelection",
+            "actionLabel",
+            "inputAction",
+            "textCapitalization",
+            "keyboardAppearance",
+            "enableIMEPersonalizedLearning",
+            "contentCommitMimeTypes",
+            "enableDeltaModel",
+            "hintLocales",
+            "enableInlinePrediction",
+        ] {
+            key(&value, name);
+        }
+        // The nineteenth, `autofill`, is left out when disabled -- upstream
+        // omits the key rather than sending it switched off, which the
+        // configuration already did.
+    }
+
+    #[test]
+    fn a_field_that_accepts_only_text_says_so_with_an_empty_list() {
+        assert_eq!(
+            key(
+                &TextInputConfiguration::default().to_value(),
+                "contentCommitMimeTypes"
+            ),
+            Value::List(vec![])
+        );
+        let images = TextInputConfiguration {
+            allowed_mime_types: vec!["image/png".to_string(), "image/gif".to_string()],
+            ..TextInputConfiguration::default()
+        };
+        assert_eq!(
+            key(&images.to_value(), "contentCommitMimeTypes"),
+            Value::List(vec![
+                Value::String("image/png".to_string()),
+                Value::String("image/gif".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn hint_locales_go_over_as_language_tags_and_default_to_an_empty_list() {
+        // Empty, not absent: upstream's default is `const <Locale>[]`.
+        assert_eq!(
+            key(&TextInputConfiguration::default().to_value(), "hintLocales"),
+            Value::List(vec![])
+        );
+
+        let bilingual = TextInputConfiguration {
+            hint_locales: Some(vec![
+                Locale {
+                    country_code: Some("GB".to_string()),
+                    ..Locale::new("en")
+                },
+                Locale::new("fr"),
+            ]),
+            ..TextInputConfiguration::default()
+        };
+        assert_eq!(
+            key(&bilingual.to_value(), "hintLocales"),
+            Value::List(vec![
+                Value::String("en-GB".to_string()),
+                Value::String("fr".to_string()),
+            ])
+        );
+
+        let silent = TextInputConfiguration {
+            hint_locales: None,
+            ..TextInputConfiguration::default()
+        };
+        assert_eq!(key(&silent.to_value(), "hintLocales"), Value::Null);
+    }
+
+    #[test]
+    fn inline_prediction_says_nothing_rather_than_no() {
+        // Null means "whatever the platform does". False is a field overruling
+        // it, and upstream's doc says iOS has it on -- so the two are opposite
+        // instructions, not the same one twice.
+        assert_eq!(
+            key(
+                &TextInputConfiguration::default().to_value(),
+                "enableInlinePrediction"
+            ),
+            Value::Null
+        );
+        for asked in [true, false] {
+            let config = TextInputConfiguration {
+                enable_inline_prediction: Some(asked),
+                ..TextInputConfiguration::default()
+            };
+            assert_eq!(
+                key(&config.to_value(), "enableInlinePrediction"),
+                Value::Bool(asked),
+                "{asked}"
+            );
         }
     }
 }
