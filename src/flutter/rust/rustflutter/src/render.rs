@@ -12283,6 +12283,73 @@ mod tests {
         assert!(moded.image_paint().is_none(), "and no paint either");
     }
 
+    /// Lays the image out in a 1000x1000 box and paints it, returning what the
+    /// canvas was told.
+    ///
+    /// The reset matters: the recorder is thread-local and holds whatever the
+    /// previous test painted.
+    fn painted(image: RenderImage) -> Vec<crate::engine_test_stubs::Drawn> {
+        let mut image = image;
+        image.layout(BoxConstraints::loose(1000.0, 1000.0));
+        let mut layers = LayerTree::new(1000, 1000);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(1000.0, 1000.0));
+            image.paint(&mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    #[test]
+    fn a_dense_image_is_drawn_whole_and_not_a_quarter_of_itself() {
+        // The test that could not be written a tick ago. `paint` took its
+        // source rect from the logical size, which is the pixel size only
+        // while the scale is 1 -- so at a scale of 2 it named the top-left
+        // quarter of the picture and stretched that over the whole box. The
+        // stubs dropped every draw call, so nothing could see it.
+        use crate::engine_test_stubs::Drawn;
+        let image =
+            Rc::new(Image::from_pixels(&[0; 4 * 2 * 4], 4, 2).expect("the stub hands one back"));
+
+        let calls = painted(RenderImage::new(Rc::clone(&image)).with_scale(2.0));
+        assert_eq!(
+            calls,
+            vec![Drawn::ImageRect {
+                // The whole picture, in its own pixels.
+                source: (0.0, 0.0, 4.0, 2.0),
+                // Two logical pixels by one, at the origin, because a scale of
+                // two halves what the picture asks for and ScaleDown never
+                // grows it to fill the box.
+                destination: (0.0, 0.0, 2.0, 1.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn and_an_unscaled_one_has_the_two_rectangles_agree() {
+        // Which is exactly why the mix-up was invisible: at a scale of 1 the
+        // source and the destination are the same numbers.
+        use crate::engine_test_stubs::Drawn;
+        let image =
+            Rc::new(Image::from_pixels(&[0; 4 * 2 * 4], 4, 2).expect("the stub hands one back"));
+        let calls = painted(RenderImage::new(image));
+        assert_eq!(
+            calls,
+            vec![Drawn::ImageRect {
+                source: (0.0, 0.0, 4.0, 2.0),
+                destination: (0.0, 0.0, 4.0, 2.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_with_no_pixels_is_not_drawn_at_all() {
+        // `paint` returns early on an empty picture rather than asking the
+        // canvas to draw a zero-sized rect, and now that is observable.
+        let image = Rc::new(Image::decode(&[]).expect("the stub hands one back"));
+        assert_eq!(painted(RenderImage::new(image)), vec![]);
+    }
+
     #[test]
     fn a_source_rect_is_measured_in_image_pixels_and_a_destination_in_logical_ones() {
         // The two are the same number only while the scale is 1, which is what

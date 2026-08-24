@@ -269,6 +269,10 @@ pub unsafe extern "C" fn rf_canvas_draw_line(
     y1: f32,
     paint: *const RfPaint,
 ) {
+    record(Drawn::Line {
+        from: (x0, y0),
+        to: (x1, y1),
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -280,6 +284,12 @@ pub unsafe extern "C" fn rf_canvas_draw_oval(
     bottom: f32,
     paint: *const RfPaint,
 ) {
+    record(Drawn::Oval {
+        left,
+        top,
+        right,
+        bottom,
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -312,6 +322,7 @@ pub unsafe extern "C" fn rf_canvas_draw_image(
     y: f32,
     paint: *const RfPaint,
 ) {
+    record(Drawn::Image { x, y });
 }
 
 #[unsafe(no_mangle)]
@@ -328,6 +339,10 @@ pub unsafe extern "C" fn rf_canvas_draw_image_rect(
     dst_bottom: f32,
     paint: *const RfPaint,
 ) {
+    record(Drawn::ImageRect {
+        source: (src_left, src_top, src_right, src_bottom),
+        destination: (dst_left, dst_top, dst_right, dst_bottom),
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -541,6 +556,92 @@ fn record_picture() {
 #[allow(dead_code)]
 pub fn layer_calls() -> LayerCalls {
     LAYER_CALLS.with(|calls| calls.get())
+}
+
+/// One drawing the canvas was asked to make, with the numbers it was given.
+///
+/// # Why this exists
+///
+/// Nothing in this crate could see what a canvas was told. The stubs took
+/// every `rf_canvas_draw_*` call and dropped it, so a hundred and thirteen
+/// draw calls across the crate agreed with every possible implementation of
+/// themselves -- a `paint` that drew the wrong rectangle, the wrong part of an
+/// image, or nothing at all, passed exactly as well as one that was right.
+///
+/// Found while adding `RenderImage`'s scale, where taking the source rect from
+/// the logical size instead of the pixel size drew the top-left quarter of
+/// every image stretched over the whole box, and no test could reach it.
+///
+/// Only the calls whose arguments are numbers are recorded. A path is a handle
+/// with nothing readable behind it here, and recording that it happened
+/// without recording its shape would invite a test that proves less than it
+/// appears to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum Drawn {
+    Rect {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    },
+    RRect {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        radius: f32,
+    },
+    Oval {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    },
+    Circle {
+        cx: f32,
+        cy: f32,
+        radius: f32,
+    },
+    Line {
+        from: (f32, f32),
+        to: (f32, f32),
+    },
+    /// Both rectangles, because the pair is the point: the source is in image
+    /// pixels and the destination in logical ones, and a test that sees only
+    /// one of them cannot tell a unit mix-up from a correct draw.
+    ImageRect {
+        source: (f32, f32, f32, f32),
+        destination: (f32, f32, f32, f32),
+    },
+    Image {
+        x: f32,
+        y: f32,
+    },
+}
+
+thread_local! {
+    static DRAWN: std::cell::RefCell<Vec<Drawn>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+fn record(call: Drawn) {
+    DRAWN.with(|drawn| drawn.borrow_mut().push(call));
+}
+
+/// Everything drawn since the last [`reset_drawn`], in order.
+#[allow(dead_code)]
+pub fn drawn() -> Vec<Drawn> {
+    DRAWN.with(|drawn| drawn.borrow().clone())
+}
+
+/// Starts recording again. Thread-local, so tests need not coordinate -- but
+/// a test that reads [`drawn`] must call this first, because the paint of
+/// whatever ran before it is still in the list.
+#[allow(dead_code)]
+pub fn reset_drawn() {
+    DRAWN.with(|drawn| drawn.borrow_mut().clear());
 }
 
 fn count_rect() {
@@ -760,6 +861,12 @@ pub unsafe extern "C" fn rf_canvas_draw_rect(
     paint: *const RfPaint,
 ) {
     count_rect();
+    record(Drawn::Rect {
+        left,
+        top,
+        right,
+        bottom,
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -773,6 +880,13 @@ pub unsafe extern "C" fn rf_canvas_draw_rrect(
     paint: *const RfPaint,
 ) {
     count_rect();
+    record(Drawn::RRect {
+        left,
+        top,
+        right,
+        bottom,
+        radius,
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -783,6 +897,7 @@ pub unsafe extern "C" fn rf_canvas_draw_circle(
     radius: f32,
     paint: *const RfPaint,
 ) {
+    record(Drawn::Circle { cx, cy, radius });
 }
 
 #[unsafe(no_mangle)]
