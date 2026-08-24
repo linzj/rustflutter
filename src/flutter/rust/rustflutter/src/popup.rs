@@ -57,6 +57,9 @@ pub struct PopupMenuButton {
     padding: EdgeInsets,
     direction: TextDirection,
     barrier: ModalBarrier,
+    /// Upstream's `tooltip`. `None` is not "no tooltip" -- see
+    /// [`PopupMenuButton::tooltip`].
+    tooltip: Option<String>,
 }
 
 impl PopupMenuButton {
@@ -70,8 +73,43 @@ impl PopupMenuButton {
             // A menu's barrier paints nothing: it is there to catch the tap
             // that closes the menu, and darkening the page for a menu would be
             // heavy. `modal_barrier.rs` says the same thing on the field.
-            barrier: ModalBarrier::new(),
+            //
+            // Which is exactly why it needs a name. A dialog's scrim is
+            // visibly dimmed and obviously belongs to what is in front of it;
+            // this one is invisible, so a reader meeting it has nothing to go
+            // on but the label.
+            barrier: ModalBarrier::new().with_semantics_label(
+                crate::material_app::DefaultMaterialLocalizations::MENU_DISMISS_LABEL,
+            ),
+            tooltip: None,
         }
+    }
+
+    /// Upstream's `PopupMenuButton.tooltip`.
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// What the button's glyph says it does, from upstream's
+    /// `widget.tooltip ?? MaterialLocalizations.of(context).showMenuTooltip`.
+    ///
+    /// Three dots in a corner are not self-explanatory, and this is the only
+    /// thing that explains them.
+    pub fn tooltip(&self) -> String {
+        self.tooltip.clone().unwrap_or_else(|| {
+            crate::material_app::DefaultMaterialLocalizations::SHOW_MENU_TOOLTIP.to_string()
+        })
+    }
+
+    /// What the **opened menu** is announced as, from upstream's
+    /// `semanticLabel ??= MaterialLocalizations.of(context).popupMenuLabel`.
+    ///
+    /// A different string from the button's tooltip, and a different listener
+    /// moment: the tooltip explains the glyph before it is pressed, this names
+    /// the thing that appeared after it was.
+    pub fn menu_semantic_label(&self) -> &'static str {
+        crate::material_app::DefaultMaterialLocalizations::POPUP_MENU_LABEL
     }
 
     /// The unsafe-area inset the menu keeps clear of.
@@ -102,6 +140,8 @@ impl PopupMenuButton {
             padding,
             direction,
             barrier,
+            // The tooltip is the button's own; the opener never needs it.
+            tooltip: _,
         } = self;
         let child = child
             .borrow_mut()
@@ -439,5 +479,58 @@ mod tests {
         tree.rebuild_dirty();
         assert!(crate::theatre::dismiss_topmost_modal());
         assert!(!opener.is_open());
+    }
+}
+
+#[cfg(test)]
+mod menu_label_tests {
+    use super::PopupMenuButton;
+    use crate::framework::leaf;
+    use crate::material_app::DefaultMaterialLocalizations as L10n;
+    use crate::render::RenderConstrainedBox;
+
+    fn button() -> PopupMenuButton {
+        PopupMenuButton::new(leaf(|| RenderConstrainedBox::tight(10.0, 10.0)), || {
+            leaf(|| RenderConstrainedBox::tight(10.0, 10.0))
+        })
+    }
+
+    #[test]
+    fn three_dots_in_a_corner_explain_themselves() {
+        assert_eq!(button().tooltip(), "Show menu");
+    }
+
+    #[test]
+    fn and_a_button_that_said_what_it_opens_says_that_instead() {
+        assert_eq!(
+            button().with_tooltip("Sort and filter").tooltip(),
+            "Sort and filter"
+        );
+    }
+
+    #[test]
+    fn the_menu_and_the_button_are_named_separately() {
+        // Two strings for two moments: the tooltip explains the glyph before
+        // it is pressed, the label names what appeared after it was. Even a
+        // button that renamed its tooltip leaves the menu's name alone.
+        let renamed = button().with_tooltip("Sort and filter");
+        assert_eq!(renamed.menu_semantic_label(), "Popup menu");
+        assert_ne!(renamed.tooltip(), renamed.menu_semantic_label());
+    }
+
+    #[test]
+    fn a_menus_invisible_barrier_says_which_thing_goes_away() {
+        // "Dismiss menu", not the dialog scrim's "Dismiss". A dialog's is
+        // visibly dimmed and belongs to what is in front of it; this one
+        // paints nothing, so the label is all a reader has.
+        let button = button();
+        let barrier = &button.barrier;
+        assert!(!barrier.paints(), "invisible, which is why it needs a name");
+        assert_eq!(barrier.semantics_label.as_deref(), Some("Dismiss menu"));
+        assert_ne!(
+            L10n::MENU_DISMISS_LABEL,
+            L10n::MODAL_BARRIER_DISMISS_LABEL,
+            "two different strings for two different scrims"
+        );
     }
 }

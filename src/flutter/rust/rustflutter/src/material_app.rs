@@ -573,6 +573,26 @@ impl DefaultMaterialLocalizations {
     /// two shapes: an alert interrupts and a dialog asks, and a reader is
     /// told which before hearing the contents.
     pub const DIALOG_LABEL: &'static str = "Dialog";
+    /// Upstream's `showMenuTooltip`: what a menu button's glyph says it does.
+    pub const SHOW_MENU_TOOLTIP: &'static str = "Show menu";
+    /// Upstream's `popupMenuLabel`, which the opened menu carries as its own
+    /// name -- so a reader hears what kind of thing has appeared before its
+    /// contents are read out.
+    pub const POPUP_MENU_LABEL: &'static str = "Popup menu";
+    /// Upstream's `menuDismissLabel`, and **not the same string as
+    /// [`Self::MODAL_BARRIER_DISMISS_LABEL`]**.
+    ///
+    /// A dialog's scrim says "Dismiss" and a menu's says "Dismiss menu". The
+    /// extra word earns its place: a dialog's scrim is visibly dimmed and
+    /// obviously belongs to the thing in front of it, while a menu's is
+    /// invisible, so a reader who activates it needs to be told what it is
+    /// that goes away.
+    pub const MENU_DISMISS_LABEL: &'static str = "Dismiss menu";
+    /// Upstream's `searchFieldLabel`, which is the search field's hint **and**
+    /// the search route's name -- upstream assigns `routeName =
+    /// searchFieldLabel` -- so one word does duty as the placeholder a reader
+    /// sees and the announcement a reader hears on arriving.
+    pub const SEARCH_FIELD_LABEL: &'static str = "Search";
     /// Upstream's `modalBarrierDismissLabel`: what the scrim behind a dialog
     /// announces.
     ///
