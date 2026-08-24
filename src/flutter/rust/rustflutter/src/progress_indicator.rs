@@ -309,8 +309,11 @@ pub enum RefreshIndicatorTriggerMode {
 }
 
 /// Upstream `RefreshIndicator`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RefreshIndicator {
+    /// Upstream's `semanticsLabel`. `None` is not "unnamed" -- see
+    /// [`RefreshIndicator::semantics_label`].
+    pub semantics_label: Option<String>,
     pub trigger_mode: RefreshIndicatorTriggerMode,
     /// Where the spinner comes to rest, in pixels from the edge.
     pub displacement: f32,
@@ -324,6 +327,26 @@ impl RefreshIndicator {
     /// pixels -- so a tall list and a short one both ask for "a quarter of what
     /// you can see" rather than the tall one feeling stiff.
     pub const DRAG_CONTAINER_EXTENT_PERCENTAGE: f32 = 0.25;
+
+    /// Upstream's `RefreshIndicator.semanticsLabel`.
+    pub fn with_semantics_label(mut self, label: impl Into<String>) -> Self {
+        self.semantics_label = Some(label.into());
+        self
+    }
+
+    /// What the spinner is announced as, from upstream's
+    /// `widget.semanticsLabel ?? MaterialLocalizations.of(context)
+    /// .refreshIndicatorSemanticLabel`.
+    ///
+    /// The default is the verb and not the noun -- "Refresh", not "Loading" --
+    /// because a reader meets this while the gesture is still theirs to
+    /// finish or abandon, and what matters is what letting go will do.
+    pub fn semantics_label(&self) -> String {
+        self.semantics_label.clone().unwrap_or_else(|| {
+            crate::material_app::DefaultMaterialLocalizations::REFRESH_INDICATOR_SEMANTIC_LABEL
+                .to_string()
+        })
+    }
     /// How far past the resting displacement the drag may push it.
     pub const DRAG_SIZE_FACTOR_LIMIT: f32 = 1.5;
     pub const SNAP_DURATION_MS: f32 = 150.0;
@@ -332,6 +355,7 @@ impl RefreshIndicator {
 
     pub fn new() -> RefreshIndicator {
         RefreshIndicator {
+            semantics_label: None,
             trigger_mode: RefreshIndicatorTriggerMode::OnEdge,
             displacement: RefreshIndicator::DEFAULT_DISPLACEMENT,
             status: RefreshIndicatorStatus::Idle,
@@ -858,5 +882,37 @@ mod progress_widget_tests {
             has_controller: true,
         };
         assert!(base.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod refresh_semantics_tests {
+    use super::RefreshIndicator;
+
+    #[test]
+    fn the_spinner_is_announced_as_what_letting_go_will_do() {
+        // The verb, not the noun. A reader meets this mid-gesture, with the
+        // choice still theirs.
+        assert_eq!(RefreshIndicator::new().semantics_label(), "Refresh");
+    }
+
+    #[test]
+    fn and_a_list_that_said_what_it_refreshes_says_that() {
+        assert_eq!(
+            RefreshIndicator::new()
+                .with_semantics_label("Refresh inbox")
+                .semantics_label(),
+            "Refresh inbox"
+        );
+    }
+
+    #[test]
+    fn the_label_is_not_the_trigger_mode_in_disguise() {
+        // Both are configuration on the same widget and neither touches the
+        // other: a list that only refreshes from the edge still says the same
+        // thing when it does.
+        let mut indicator = RefreshIndicator::new();
+        indicator.trigger_mode = super::RefreshIndicatorTriggerMode::Anywhere;
+        assert_eq!(indicator.semantics_label(), "Refresh");
     }
 }

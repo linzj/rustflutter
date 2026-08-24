@@ -53,6 +53,18 @@ pub fn default_application_version() -> String {
 
 /// Upstream's `_defaultApplicationName`.
 ///
+/// The heading of the page [`LicensePage`] shows, from upstream's
+/// `Text(MaterialLocalizations.of(context).licensesPageTitle)`.
+///
+/// Upstream takes no override for it. The application's own name goes in the
+/// body, above the licences, and the page's title says what the page is --
+/// which is why it is a fixed word rather than something a caller composes:
+/// two applications' licence pages should be the same page to a reader who
+/// has seen one before.
+pub fn licenses_page_title() -> &'static str {
+    crate::material_app::DefaultMaterialLocalizations::LICENSES_PAGE_TITLE
+}
+
 /// The ancestor `Title` widget's title if there is one, and otherwise the
 /// **name of the executable**. Upstream's comment explains what it does not
 /// do: a title that changes while the application runs is not tracked, because
@@ -592,5 +604,22 @@ mod tests {
         assert_eq!(page.application_name.as_deref(), Some("Notes"));
         assert_eq!(page.application_version.as_deref(), Some("2.1"));
         assert_eq!(page.application_legalese.as_deref(), Some("(c) 2026"));
+    }
+}
+
+#[cfg(test)]
+mod licenses_page_title_tests {
+    use super::{default_application_name, licenses_page_title};
+
+    #[test]
+    fn the_page_is_called_licenses_and_not_the_applications_name() {
+        // The application's name goes in the body, above the licences. The
+        // title says what the page is, so that two applications' licence pages
+        // are the same page to a reader who has seen one before.
+        assert_eq!(licenses_page_title(), "Licenses");
+        assert_ne!(
+            licenses_page_title(),
+            default_application_name(Some("Gallery"), "/bin/gallery")
+        );
     }
 }

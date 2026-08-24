@@ -573,6 +573,16 @@ impl DefaultMaterialLocalizations {
     /// two shapes: an alert interrupts and a dialog asks, and a reader is
     /// told which before hearing the contents.
     pub const DIALOG_LABEL: &'static str = "Dialog";
+    /// Upstream's `refreshIndicatorSemanticLabel`: what the spinner at the top
+    /// of a pulled-down list is called.
+    ///
+    /// It is the verb and not the noun -- "Refresh", not "Loading" -- because
+    /// a reader meets it while the gesture is still theirs to complete or
+    /// abandon, and what matters is what letting go will do.
+    pub const REFRESH_INDICATOR_SEMANTIC_LABEL: &'static str = "Refresh";
+    /// Upstream's `licensesPageTitle`, the heading of the page
+    /// `showLicensePage` opens.
+    pub const LICENSES_PAGE_TITLE: &'static str = "Licenses";
     /// Upstream's `showMenuTooltip`: what a menu button's glyph says it does.
     pub const SHOW_MENU_TOOLTIP: &'static str = "Show menu";
     /// Upstream's `popupMenuLabel`, which the opened menu carries as its own
