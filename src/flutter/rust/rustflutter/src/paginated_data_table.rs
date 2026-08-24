@@ -213,6 +213,37 @@ impl PaginatedDataTableState {
     }
 
     /// How many rows this page draws, before any empty padding.
+    /// Upstream's footer line, from
+    /// [`crate::material_app::DefaultMaterialLocalizations::page_rows_info_title`].
+    ///
+    /// The numbers a reader sees are **one-based and inclusive** -- "1–10 of
+    /// 53" for the first page of ten -- where everything this state machine
+    /// counts with is zero-based and half-open. The conversion happens here,
+    /// at the boundary between the two conventions, which is the only place it
+    /// can happen once.
+    ///
+    /// An empty table is the case that does not simply fall out of the
+    /// arithmetic: there is no zeroth row to start from, so upstream's own
+    /// footer would read "1–0 of 0". Left as upstream leaves it, because a
+    /// table with no rows shows no footer to read it in.
+    /// `row_count_approximate` is read from the state rather than passed in,
+    /// because it is a fact about the source and not about the moment: a query
+    /// that has not finished counting is still uncounted on the next page.
+    pub fn page_rows_info(&self) -> String {
+        crate::material_app::DefaultMaterialLocalizations::page_rows_info_title(
+            self.first_row_index + 1,
+            self.first_row_index + self.rows_on_this_page(),
+            self.row_count,
+            self.row_count_approximate,
+        )
+    }
+
+    /// Upstream's `rowsPerPageTitle`, which the footer puts before the
+    /// dropdown.
+    pub fn rows_per_page_title(&self) -> &'static str {
+        crate::material_app::DefaultMaterialLocalizations::ROWS_PER_PAGE_TITLE
+    }
+
     pub fn rows_on_this_page(&self) -> usize {
         self.row_count
             .saturating_sub(self.first_row_index)
@@ -472,5 +503,90 @@ mod row_height_direction_tests {
         table.data_row_height = Some(50.0);
         let (min, max) = table.resolved_row_heights();
         assert_eq!(min, max);
+    }
+}
+
+#[cfg(test)]
+mod footer_wording_tests {
+    use super::PaginatedDataTableState;
+    use crate::material_app::DefaultMaterialLocalizations as L10n;
+
+    fn table(row_count: usize, rows_per_page: usize) -> PaginatedDataTableState {
+        PaginatedDataTableState::new(row_count, rows_per_page)
+    }
+
+    #[test]
+    fn the_footer_counts_from_one_where_the_state_counts_from_zero() {
+        // "1 to 10 of 53" for the first page of ten, while first_row_index is
+        // 0 and the range is half-open. The conversion happens once, here.
+        let first = table(53, 10);
+        assert_eq!(first.first_row_index, 0);
+        assert_eq!(first.page_rows_info(), "1\u{2013}10 of 53");
+    }
+
+    #[test]
+    fn a_short_last_page_says_how_short_it_is() {
+        let mut table = table(53, 10);
+        // Guarded by can_go_next, which is what the forward button is guarded
+        // by. `next` itself does not clamp -- upstream's `pageTo` snaps to a
+        // page boundary and nothing more, so a caller that ignores the guard
+        // walks off the end into empty pages, on both sides.
+        while table.can_go_next() {
+            table.next();
+        }
+        assert_eq!(table.page_rows_info(), "51\u{2013}53 of 53");
+    }
+
+    #[test]
+    fn the_separator_is_an_en_dash_and_not_a_hyphen() {
+        // U+2013. It is a range between two numbers, which is what an en dash
+        // is for, and it is exactly what a paraphrase loses -- a test that
+        // only checked the numbers would not notice.
+        let info = table(53, 10).page_rows_info();
+        assert!(info.contains('\u{2013}'), "{info}");
+        assert!(
+            !info.contains('-'),
+            "a hyphen would read as a compound rather than a span: {info}"
+        );
+    }
+
+    #[test]
+    fn a_source_still_counting_claims_less() {
+        // "of about 300" claims less than "of 300" does, and the flag is a
+        // fact about the source rather than about the page.
+        let mut table = table(300, 10);
+        table.row_count_approximate = true;
+        assert_eq!(table.page_rows_info(), "1\u{2013}10 of about 300");
+        table.next();
+        assert_eq!(
+            table.page_rows_info(),
+            "11\u{2013}20 of about 300",
+            "still uncounted on the next page"
+        );
+    }
+
+    #[test]
+    fn the_rows_per_page_title_keeps_its_colon() {
+        // Part of the string rather than something the footer adds, so a
+        // language that puts it elsewhere changes the string and not the
+        // widget.
+        assert_eq!(table(53, 10).rows_per_page_title(), "Rows per page:");
+    }
+
+    #[test]
+    fn a_selection_is_counted_in_three_cases_and_not_two() {
+        // English has a singular, and a table that says "1 items" in its
+        // header says it every time anyone ticks a row.
+        assert_eq!(L10n::selected_row_count_title(0), "No items selected");
+        assert_eq!(L10n::selected_row_count_title(1), "1 item selected");
+        assert_eq!(L10n::selected_row_count_title(2), "2 items selected");
+        assert_eq!(L10n::selected_row_count_title(53), "53 items selected");
+    }
+
+    #[test]
+    fn and_none_is_a_word_rather_than_a_zero() {
+        // "No items selected", not "0 items selected".
+        let none = L10n::selected_row_count_title(0);
+        assert!(!none.contains('0'), "{none}");
     }
 }

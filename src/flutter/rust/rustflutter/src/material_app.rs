@@ -573,6 +573,54 @@ impl DefaultMaterialLocalizations {
     /// two shapes: an alert interrupts and a dialog asks, and a reader is
     /// told which before hearing the contents.
     pub const DIALOG_LABEL: &'static str = "Dialog";
+    /// Upstream's `rowsPerPageTitle`, **with its colon**.
+    ///
+    /// The colon is part of the string rather than something the footer adds,
+    /// which is how it has to be: a language that does not use one, or puts it
+    /// elsewhere, changes the string and not the widget.
+    pub const ROWS_PER_PAGE_TITLE: &'static str = "Rows per page:";
+
+    /// Upstream's `pageRowsInfoTitle`: which rows of how many are showing.
+    ///
+    /// # The separator is an en dash
+    ///
+    /// `'$firstRow–$lastRow of $rowCount'` uses U+2013, not a hyphen. It is a
+    /// range between two numbers, which is what an en dash is for, and it is
+    /// exactly the detail a paraphrase loses -- a hyphen would read as a
+    /// compound rather than a span, and nothing in a test that only checked
+    /// the numbers would notice.
+    ///
+    /// `approximate` is upstream's `rowCountIsApproximate`, for a source that
+    /// knows roughly how much it has -- a query that has not finished counting.
+    /// It changes the sentence rather than the number: "of about 300" claims
+    /// less than "of 300" does.
+    pub fn page_rows_info_title(
+        first_row: usize,
+        last_row: usize,
+        row_count: usize,
+        approximate: bool,
+    ) -> String {
+        if approximate {
+            format!("{first_row}\u{2013}{last_row} of about {row_count}")
+        } else {
+            format!("{first_row}\u{2013}{last_row} of {row_count}")
+        }
+    }
+
+    /// Upstream's `selectedRowCountTitle`: how many rows are ticked.
+    ///
+    /// Three cases and not two. Zero is **"No items selected"** rather than
+    /// "0 items selected", and one is **"1 item selected"** rather than
+    /// "1 items selected" -- English has a singular, and a table that says
+    /// "1 items" in its header says it every time anyone ticks a row.
+    pub fn selected_row_count_title(selected: usize) -> String {
+        match selected {
+            0 => "No items selected".to_string(),
+            1 => "1 item selected".to_string(),
+            more => format!("{more} items selected"),
+        }
+    }
+
     /// Upstream's `refreshIndicatorSemanticLabel`: what the spinner at the top
     /// of a pulled-down list is called.
     ///
