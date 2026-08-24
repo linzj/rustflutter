@@ -566,12 +566,59 @@ impl DefaultMaterialLocalizations {
     /// semantics label -- the same idea as the tooltip above, said to a
     /// different listener.
     pub const DRAWER_LABEL: &'static str = "Navigation menu";
+    /// Upstream's `alertDialogLabel`, which an `AlertDialog` announces itself
+    /// as when it was given no label of its own.
+    pub const ALERT_DIALOG_LABEL: &'static str = "Alert";
+    /// Upstream's `dialogLabel`, the same for a `SimpleDialog`. Two words for
+    /// two shapes: an alert interrupts and a dialog asks, and a reader is
+    /// told which before hearing the contents.
+    pub const DIALOG_LABEL: &'static str = "Dialog";
     /// Upstream's `modalBarrierDismissLabel`: what the scrim behind a dialog
     /// announces.
     ///
     /// Without it a screen reader meets a full-screen region with no name and
     /// no indication that tapping it is how you leave.
     pub const MODAL_BARRIER_DISMISS_LABEL: &'static str = "Dismiss";
+
+    /// Upstream's rule for a modal surface's own name, which its source
+    /// writes out three times -- for `Drawer`, for `AlertDialog` and for
+    /// `SimpleDialog` -- in the same shape each time:
+    ///
+    /// ```dart
+    /// TargetPlatform.iOS || TargetPlatform.macOS => semanticLabel,
+    /// TargetPlatform.android || ... => semanticLabel ?? theFallback,
+    /// ```
+    ///
+    /// # The two Apple platforms get no fallback, and that is the rule
+    ///
+    /// An unnamed surface is announced as its kind everywhere else, and as
+    /// nothing on iOS and macOS. It reads like an omission and is not:
+    /// VoiceOver already says that a modal surface has appeared and that there
+    /// is a way out of it, so a framework adding "Alert" on top is a second
+    /// voice saying what the first one just said. TalkBack does not, so on
+    /// Android the framework does.
+    ///
+    /// A caller's own label wins on every platform. The platforms disagree
+    /// only about the unnamed case.
+    ///
+    /// Written once here rather than three times, because three copies of a
+    /// rule are three places for it to drift, and upstream's repetition is a
+    /// consequence of where the code sits rather than a distinction between
+    /// the cases.
+    pub fn modal_surface_label(
+        platform: crate::editable_text::TargetPlatform,
+        own: Option<&str>,
+        fallback: &'static str,
+    ) -> Option<String> {
+        use crate::editable_text::TargetPlatform;
+        match platform {
+            TargetPlatform::IOS | TargetPlatform::MacOS => own.map(str::to_string),
+            TargetPlatform::Android
+            | TargetPlatform::Fuchsia
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows => Some(own.unwrap_or(fallback).to_string()),
+        }
+    }
 
     /// Upstream's `deleteButtonTooltip`: what a chip's delete affordance
     /// says when the chip did not name something better.

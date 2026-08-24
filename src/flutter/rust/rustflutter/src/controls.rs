@@ -2084,6 +2084,9 @@ pub struct SimpleDialog {
     title: Option<String>,
     children: RefCell<Vec<AnyWidget>>,
     background_color: Option<Color>,
+    /// Upstream's `semanticLabel`. What `None` means depends on the platform
+    /// -- see [`SimpleDialog::resolved_semantic_label`].
+    semantic_label: Option<String>,
 }
 
 impl SimpleDialog {
@@ -2100,7 +2103,26 @@ impl SimpleDialog {
             title: None,
             children: RefCell::new(Vec::new()),
             background_color: None,
+            semantic_label: None,
         }
+    }
+
+    /// Upstream's `SimpleDialog.semanticLabel`.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Self {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// What a screen reader is told this dialog is, by
+    /// [`crate::material_app::DefaultMaterialLocalizations::modal_surface_label`]
+    /// -- so an unnamed one is "Dialog" everywhere but iOS and macOS, where it
+    /// is nothing.
+    pub fn resolved_semantic_label(
+        &self,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Option<String> {
+        use crate::material_app::DefaultMaterialLocalizations as L10n;
+        L10n::modal_surface_label(platform, self.semantic_label.as_deref(), L10n::DIALOG_LABEL)
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -2198,6 +2220,9 @@ pub struct AlertDialog {
     actions: RefCell<Vec<AnyWidget>>,
     icon: RefCell<Option<AnyWidget>>,
     background_color: Option<Color>,
+    /// Upstream's `semanticLabel`, whose fallback is "Alert" rather than
+    /// "Dialog" -- see [`AlertDialog::resolved_semantic_label`].
+    semantic_label: Option<String>,
 }
 
 impl AlertDialog {
@@ -2215,7 +2240,30 @@ impl AlertDialog {
             actions: RefCell::new(Vec::new()),
             icon: RefCell::new(None),
             background_color: None,
+            semantic_label: None,
         }
+    }
+
+    /// Upstream's `AlertDialog.semanticLabel`.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Self {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// What a screen reader is told this dialog is. The same rule as
+    /// [`SimpleDialog::resolved_semantic_label`] with a different fallback:
+    /// **"Alert" rather than "Dialog"**, because an alert interrupts where a
+    /// dialog asks, and the reader is told which before hearing the contents.
+    pub fn resolved_semantic_label(
+        &self,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Option<String> {
+        use crate::material_app::DefaultMaterialLocalizations as L10n;
+        L10n::modal_surface_label(
+            platform,
+            self.semantic_label.as_deref(),
+            L10n::ALERT_DIALOG_LABEL,
+        )
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -4257,5 +4305,118 @@ mod delete_button_tooltip_tests {
         };
         assert_eq!(chip.delete_button_tooltip(false), None);
         assert_eq!(chip.delete_button_tooltip(true).as_deref(), Some("Delete"));
+    }
+}
+
+#[cfg(test)]
+mod modal_surface_label_tests {
+    use super::{AlertDialog, SimpleDialog};
+    use crate::drawer::Drawer;
+    use crate::editable_text::TargetPlatform;
+    use crate::framework::leaf;
+    use crate::render::RenderConstrainedBox;
+
+    const APPLE: [TargetPlatform; 2] = [TargetPlatform::IOS, TargetPlatform::MacOS];
+    const REST: [TargetPlatform; 4] = [
+        TargetPlatform::Android,
+        TargetPlatform::Fuchsia,
+        TargetPlatform::Linux,
+        TargetPlatform::Windows,
+    ];
+
+    #[test]
+    fn an_alert_is_announced_as_an_alert_and_a_dialog_as_a_dialog() {
+        // Two words for two shapes: an alert interrupts, a dialog asks, and
+        // the reader is told which before hearing the contents.
+        for platform in REST {
+            assert_eq!(
+                AlertDialog::new()
+                    .resolved_semantic_label(platform)
+                    .as_deref(),
+                Some("Alert"),
+                "{platform:?}"
+            );
+            assert_eq!(
+                SimpleDialog::new()
+                    .resolved_semantic_label(platform)
+                    .as_deref(),
+                Some("Dialog"),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_on_the_apple_platforms_neither_says_anything() {
+        for platform in APPLE {
+            assert_eq!(
+                AlertDialog::new().resolved_semantic_label(platform),
+                None,
+                "{platform:?}"
+            );
+            assert_eq!(
+                SimpleDialog::new().resolved_semantic_label(platform),
+                None,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_dialog_keeps_its_name_on_every_platform() {
+        for platform in APPLE.iter().chain(REST.iter()) {
+            assert_eq!(
+                AlertDialog::new()
+                    .with_semantic_label("Unsaved changes")
+                    .resolved_semantic_label(*platform)
+                    .as_deref(),
+                Some("Unsaved changes"),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_three_modal_surfaces_follow_the_one_rule() {
+        // Upstream writes the switch out three times. If they ever disagree
+        // about the Apple case, one of the three has drifted.
+        let drawer = || Drawer::new(leaf(|| RenderConstrainedBox::tight(10.0, 10.0)));
+        for platform in APPLE {
+            assert_eq!(drawer().resolved_semantic_label(platform), None);
+            assert_eq!(AlertDialog::new().resolved_semantic_label(platform), None);
+            assert_eq!(SimpleDialog::new().resolved_semantic_label(platform), None);
+        }
+        for platform in REST {
+            assert!(drawer().resolved_semantic_label(platform).is_some());
+            assert!(
+                AlertDialog::new()
+                    .resolved_semantic_label(platform)
+                    .is_some()
+            );
+            assert!(
+                SimpleDialog::new()
+                    .resolved_semantic_label(platform)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_three_fallbacks_are_three_different_words() {
+        // Sharing the rule must not turn into sharing the word.
+        let drawer = Drawer::new(leaf(|| RenderConstrainedBox::tight(10.0, 10.0)));
+        let words = [
+            drawer.resolved_semantic_label(TargetPlatform::Android),
+            AlertDialog::new().resolved_semantic_label(TargetPlatform::Android),
+            SimpleDialog::new().resolved_semantic_label(TargetPlatform::Android),
+        ];
+        assert_eq!(
+            words,
+            [
+                Some("Navigation menu".to_string()),
+                Some("Alert".to_string()),
+                Some("Dialog".to_string()),
+            ]
+        );
     }
 }

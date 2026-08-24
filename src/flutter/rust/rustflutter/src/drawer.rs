@@ -123,15 +123,11 @@ impl Drawer {
     /// A caller's own label wins on every platform -- the difference is only
     /// what happens when there is none.
     pub fn resolved_semantic_label(&self, platform: TargetPlatform) -> Option<String> {
-        match platform {
-            TargetPlatform::IOS | TargetPlatform::MacOS => self.semantic_label.clone(),
-            TargetPlatform::Android
-            | TargetPlatform::Fuchsia
-            | TargetPlatform::Linux
-            | TargetPlatform::Windows => Some(self.semantic_label.clone().unwrap_or_else(|| {
-                crate::material_app::DefaultMaterialLocalizations::DRAWER_LABEL.to_string()
-            })),
-        }
+        crate::material_app::DefaultMaterialLocalizations::modal_surface_label(
+            platform,
+            self.semantic_label.as_deref(),
+            crate::material_app::DefaultMaterialLocalizations::DRAWER_LABEL,
+        )
     }
 
     /// Upstream's `Drawer.width`. Left unset, the width comes from
