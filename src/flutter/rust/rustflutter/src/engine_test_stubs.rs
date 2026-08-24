@@ -222,25 +222,80 @@ pub unsafe extern "C" fn rf_paint_clear_shader(paint: *mut RfPaint) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_new() -> *mut RfPath {
-    allocate::<RfPath>()
+    Box::into_raw(Box::new(StubPath { bounds: None })) as *mut RfPath
+}
+
+/// What the stub remembers about a path: **where it is, not what it is.**
+///
+/// Twenty-seven of the crate's draw calls hand the canvas a path, and a path
+/// here is a handle with nothing readable behind it. Accumulating a bounding
+/// box from the points each command is given is cheap and true, and it catches
+/// the mistake these calls actually make -- a border or a shadow drawn at the
+/// wrong inset, offset or size.
+///
+/// It does **not** identify a shape. A rounded rectangle and a rectangle of
+/// the same extent record identically, and a test that reads these bounds is
+/// entitled to conclude where something was drawn and nothing more. That is a
+/// smaller claim than a shape comparison and it is one the recording can
+/// actually support; the alternative -- noting that *a path* was drawn and
+/// calling that coverage -- is the kind of test that proves less than it looks
+/// like it does.
+struct StubPath {
+    bounds: Option<(f32, f32, f32, f32)>,
+}
+
+impl StubPath {
+    fn include(&mut self, x: f32, y: f32) {
+        self.bounds = Some(match self.bounds {
+            None => (x, y, x, y),
+            Some((left, top, right, bottom)) => {
+                (left.min(x), top.min(y), right.max(x), bottom.max(y))
+            }
+        });
+    }
+}
+
+/// # Safety
+/// `path` must be null or have come from `rf_path_new` and not been freed.
+unsafe fn stub_path<'a>(path: *mut RfPath) -> Option<&'a mut StubPath> {
+    unsafe { (path as *mut StubPath).as_mut() }
+}
+
+/// Adds a point to a path's bounds, ignoring a null handle.
+unsafe fn extend_path(path: *mut RfPath, points: &[(f32, f32)]) {
+    if let Some(path) = unsafe { stub_path(path) } {
+        for (x, y) in points {
+            path.include(*x, *y);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_free(path: *mut RfPath) {
-    unsafe { release(path) }
+    if !path.is_null() {
+        drop(unsafe { Box::from_raw(path as *mut StubPath) });
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_set_fill_type(path: *mut RfPath, fill_type: c_int) {}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32) {}
+pub unsafe extern "C" fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32) {
+    unsafe { extend_path(path, &[(x, y)]) };
+}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32) {}
+pub unsafe extern "C" fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32) {
+    unsafe { extend_path(path, &[(x, y)]) };
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_quadratic_to(path: *mut RfPath, cx: f32, cy: f32, x: f32, y: f32) {
+    // The control point counts towards the bounds. A true curve stays inside
+    // its hull, so this over-reports rather than under-reports -- the right
+    // direction for a bound something is being compared against.
+    unsafe { extend_path(path, &[(cx, cy), (x, y)]) };
 }
 
 #[unsafe(no_mangle)]
@@ -253,6 +308,7 @@ pub unsafe extern "C" fn rf_path_cubic_to(
     x: f32,
     y: f32,
 ) {
+    unsafe { extend_path(path, &[(cx1, cy1), (cx2, cy2), (x, y)]) };
 }
 
 #[unsafe(no_mangle)]
@@ -266,6 +322,7 @@ pub unsafe extern "C" fn rf_path_add_rect(
     right: f32,
     bottom: f32,
 ) {
+    unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
 #[unsafe(no_mangle)]
@@ -276,10 +333,13 @@ pub unsafe extern "C" fn rf_path_add_oval(
     right: f32,
     bottom: f32,
 ) {
+    unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32) {}
+pub unsafe extern "C" fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32) {
+    unsafe { extend_path(path, &[(x - radius, y - radius), (x + radius, y + radius)]) };
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_add_rounded_rect(
@@ -291,6 +351,7 @@ pub unsafe extern "C" fn rf_path_add_rounded_rect(
     radius_x: f32,
     radius_y: f32,
 ) {
+    unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
 #[unsafe(no_mangle)]
@@ -332,6 +393,16 @@ pub unsafe extern "C" fn rf_canvas_draw_path(
     path: *const RfPath,
     paint: *const RfPaint,
 ) {
+    let bounds = unsafe { stub_path(path as *mut RfPath) }
+        .and_then(|path| path.bounds)
+        .unwrap_or((0.0, 0.0, 0.0, 0.0));
+    record(Drawn::Path {
+        left: bounds.0,
+        top: bounds.1,
+        right: bounds.2,
+        bottom: bounds.3,
+        argb: unsafe { paint_argb(paint) },
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -655,6 +726,16 @@ pub enum Drawn {
     Image {
         x: f32,
         y: f32,
+    },
+    /// A path, by **where it was drawn and not what shape it is** -- see
+    /// `StubPath`. A rounded rectangle and a rectangle of the same extent
+    /// record identically.
+    Path {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        argb: u32,
     },
 }
 

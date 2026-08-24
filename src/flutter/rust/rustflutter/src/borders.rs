@@ -6031,3 +6031,168 @@ mod table_border_tests {
         border.paint_with_gap(&mut canvas, rect, Some(40.0), 60.0, 0.5);
     }
 }
+
+#[cfg(test)]
+/// # What these cannot see
+///
+/// A path records as its bounding box (see `StubPath` in the stubs), so these
+/// tests pin **where** each side was drawn and how deep it reaches. They
+/// cannot see the mitre: `paintBorder` pulls each band's inner edge in by the
+/// neighbouring sides' widths so the corners meet cleanly, and that point is
+/// interior to the bounds. Replacing `l + left.width` with `l` in the top
+/// side's inner edge leaves every assertion below green -- checked, not
+/// assumed.
+///
+/// Said here rather than left for a reader to discover, because a test that
+/// looks like it covers a shape and covers only its extent is worse than no
+/// test at the same place.
+mod paint_border_geometry_tests {
+    use super::{BorderSide, BorderStyle, paint_border};
+    use crate::engine::{Color, LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{PaintContext, Size};
+
+    const RED: Color = Color(0xffff0000);
+    const BLUE: Color = Color(0xff0000ff);
+
+    fn side(width: f32, colour: Color) -> BorderSide {
+        BorderSide {
+            color: colour,
+            width,
+            style: BorderStyle::Solid,
+            stroke_align: super::STROKE_ALIGN_INSIDE,
+        }
+    }
+
+    /// Paints a border round a 100x40 box at the origin and returns what the
+    /// canvas was told.
+    fn painted(
+        top: BorderSide,
+        right: BorderSide,
+        bottom: BorderSide,
+        left: BorderSide,
+    ) -> Vec<Drawn> {
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            paint_border(
+                context.canvas(),
+                Rect::ltrb(0.0, 0.0, 100.0, 40.0),
+                top,
+                right,
+                bottom,
+                left,
+            );
+        }
+        drawn()
+    }
+
+    fn path(left: f32, top: f32, right: f32, bottom: f32, colour: Color) -> Drawn {
+        Drawn::Path {
+            left,
+            top,
+            right,
+            bottom,
+            argb: colour.0,
+        }
+    }
+
+    #[test]
+    fn each_side_is_a_band_the_full_length_of_its_edge() {
+        // Four paths, one per side, each spanning its own edge and reaching
+        // inwards by its own width.
+        let calls = painted(
+            side(4.0, RED),
+            side(4.0, RED),
+            side(4.0, RED),
+            side(4.0, RED),
+        );
+        assert_eq!(
+            calls,
+            vec![
+                path(0.0, 0.0, 100.0, 4.0, RED),
+                path(96.0, 0.0, 100.0, 40.0, RED),
+                path(0.0, 36.0, 100.0, 40.0, RED),
+                path(0.0, 0.0, 4.0, 40.0, RED),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_thicker_side_reaches_further_in_and_the_others_do_not() {
+        // The band's depth is its own width. Nothing else about the box
+        // changes because one side got thicker.
+        let calls = painted(
+            side(10.0, RED),
+            side(2.0, BLUE),
+            side(2.0, BLUE),
+            side(2.0, BLUE),
+        );
+        assert_eq!(calls[0], path(0.0, 0.0, 100.0, 10.0, RED), "ten deep");
+        assert_eq!(calls[3], path(0.0, 0.0, 2.0, 40.0, BLUE), "still two wide");
+    }
+
+    #[test]
+    fn a_side_styled_none_is_not_drawn_and_the_others_still_are() {
+        let calls = painted(
+            BorderSide::NONE,
+            side(4.0, RED),
+            side(4.0, RED),
+            side(4.0, RED),
+        );
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!(
+            calls[0],
+            path(96.0, 0.0, 100.0, 40.0, RED),
+            "the right side, first"
+        );
+    }
+
+    #[test]
+    fn a_border_of_no_sides_draws_nothing() {
+        assert_eq!(
+            painted(
+                BorderSide::NONE,
+                BorderSide::NONE,
+                BorderSide::NONE,
+                BorderSide::NONE
+            ),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_side_of_zero_width_is_a_line_rather_than_a_band() {
+        // Upstream keeps it: a zero-width side is a hairline stroke, and the
+        // path is the outer edge alone with no inner points to close a band
+        // with. So it records as a band of no depth rather than as nothing.
+        let calls = painted(
+            side(0.0, RED),
+            BorderSide::NONE,
+            BorderSide::NONE,
+            BorderSide::NONE,
+        );
+        assert_eq!(calls, vec![path(0.0, 0.0, 100.0, 0.0, RED)]);
+    }
+
+    #[test]
+    fn the_sides_are_drawn_top_right_bottom_left() {
+        // The order is a fact about overlap at the corners, where the later
+        // side is drawn over the earlier one.
+        let calls = painted(
+            side(4.0, RED),
+            side(4.0, BLUE),
+            side(4.0, RED),
+            side(4.0, BLUE),
+        );
+        let colours: Vec<u32> = calls
+            .iter()
+            .map(|call| match call {
+                Drawn::Path { argb, .. } => *argb,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(colours, vec![RED.0, BLUE.0, RED.0, BLUE.0]);
+    }
+}
