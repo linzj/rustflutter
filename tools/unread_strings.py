@@ -40,6 +40,20 @@ ones upstream builds with `switch` or interpolation are listed as uncompared,
 the way `constants.py` lists its structured ones: an honest gap beats a check
 that quietly passes.
 
+# Two tables, two upstream files
+
+`DefaultWidgetsLocalizations` is the other one, in `localizations.rs`, and it
+answers to `widgets/localizations.dart` rather than the Material file.  Keeping
+them apart matters in both directions: `scanTextButtonLabel` was declared on
+this crate's widgets trait and belongs to Material's, which nothing noticed
+because nothing read it either.
+
+The widgets side is checked for **agreement and membership** but not for
+readers.  Its strings are trait methods that exist to be implemented rather
+than constants that exist to be used, so "nobody calls it" is not the same
+finding there -- a `WidgetsLocalizations` implementation is a bundle, and a
+bundle with a hole in it is the thing that would be wrong.
+
 Usage:
   python tools/unread_strings.py
 """
@@ -52,6 +66,14 @@ HOME = os.path.join(CRATE, 'material_app.rs')
 UPSTREAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
                         'flutter', 'packages', 'flutter', 'lib', 'src',
                         'material', 'material_localizations.dart')
+WIDGETS_UPSTREAM = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..', 'flutter',
+    'packages', 'flutter', 'lib', 'src', 'widgets', 'localizations.dart')
+WIDGETS_HOME = os.path.join(CRATE, 'localizations.rs')
+
+# `fn snake_name(&self) -> &str { "Value" }`, however rustfmt laid it out.
+WIDGETS_STRING = re.compile(
+    r'fn (?P<name>[a-z_0-9]+)\(&self\)[^{]*\{\s*"(?P<value>[^"]*)"\s*\}')
 
 # `String get name => 'value';` -- only the ones that are a plain literal.
 GETTER = re.compile(r"String get (?P<name>\w+) => '(?P<value>(?:[^'\\]|\\.)*)';")
@@ -148,3 +170,44 @@ for name, value in strings:
     where = readers.get(name)
     mark = ', '.join(sorted(set(where))) if where else '-- NOBODY SAYS THIS'
     print('  %-32s %-22s %s' % (name, '"' + value + '"', mark))
+
+# -- The widgets table ------------------------------------------------------
+
+widgets_upstream = None
+if os.path.exists(WIDGETS_UPSTREAM):
+    widgets_upstream = {
+        m.group('name'): m.group('value').replace("\\'", "'")
+        for m in GETTER.finditer(
+            open(WIDGETS_UPSTREAM, encoding='utf-8', errors='replace').read())}
+
+widgets_port = {
+    m.group('name'): m.group('value')
+    for m in WIDGETS_STRING.finditer(
+        open(WIDGETS_HOME, encoding='utf-8', errors='replace').read())}
+# `resource_type` is the delegate's own tag rather than a localized string.
+widgets_port.pop('resource_type', None)
+
+print()
+if widgets_upstream is None:
+    print('DefaultWidgetsLocalizations: upstream not found, nothing compared')
+else:
+    wrong, elsewhere, absent = [], [], []
+    for snake, value in sorted(widgets_port.items()):
+        getter = camel(snake)
+        if getter not in widgets_upstream:
+            elsewhere.append((snake, getter))
+        elif widgets_upstream[getter] != value:
+            wrong.append((snake, value, widgets_upstream[getter]))
+    for getter in sorted(widgets_upstream):
+        if not any(camel(s) == getter for s in widgets_port):
+            absent.append(getter)
+    print('DefaultWidgetsLocalizations: %d strings, %d disagreeing, %d not on '
+          'upstream\'s widgets class, %d of upstream\'s missing here'
+          % (len(widgets_port), len(wrong), len(elsewhere), len(absent)))
+    for snake, ours, theirs in wrong:
+        print('  DISAGREES %-24s port "%s"  upstream "%s"' % (snake, ours, theirs))
+    for snake, getter in elsewhere:
+        print('  NOT A WIDGETS STRING      %-24s looked for %s' % (snake, getter))
+    for getter in absent:
+        print('  MISSING FROM THE BUNDLE   %-24s "%s"'
+              % (getter, widgets_upstream[getter]))

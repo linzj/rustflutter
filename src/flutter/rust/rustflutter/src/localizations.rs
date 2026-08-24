@@ -16,6 +16,20 @@
 //! loaded**, so an application's own delegate placed ahead of the framework's
 //! silently replaces it.
 //!
+//! ## What is here that upstream puts elsewhere
+//!
+//! Nothing, now. `scanTextButtonLabel` sat on this trait and belongs to
+//! `MaterialLocalizations` -- the widgets layer's selection toolbar offers
+//! copy, paste, look up, search web, share and select all, and reading text
+//! with a camera is Material's.
+//!
+//! It is simply gone rather than moved. Nothing read it, here or anywhere,
+//! which is how a string on the wrong trait went unnoticed in the first
+//! place; parking it on the right one would have kept the same problem with a
+//! better address. It arrives when the toolbar names its buttons, which this
+//! crate does not yet do -- it models which buttons may appear
+//! (`can_copy`, `can_paste` and the rest) and not what they say.
+//!
 //! ## What is not here
 //!
 //! The `Localizations` widget's element, its `_LocalizationsScope` and the
@@ -172,7 +186,27 @@ pub trait WidgetsLocalizations {
     fn look_up_button_label(&self) -> &str;
     fn search_web_button_label(&self) -> &str;
     fn share_button_label(&self) -> &str;
-    fn scan_text_button_label(&self) -> &str;
+
+    /// Upstream's `searchResultsFound`, announced when `RawAutocomplete`'s
+    /// options list goes from **empty to non-empty**.
+    ///
+    /// It is a transition and not a state. A reader typing into an
+    /// autocomplete cannot see the list appear, so the announcement is the
+    /// appearing -- which is why there is a matching one for the list
+    /// emptying, and why neither says how many.
+    fn search_results_found(&self) -> &str;
+
+    /// Upstream's `noResultsFound`, for the same list going the other way.
+    fn no_results_found(&self) -> &str;
+
+    /// Upstream's `radioButtonUnselectedLabel`: the accessibility hint for a
+    /// radio button that is **off**.
+    ///
+    /// Only the unselected one has a string. A selected radio is announced as
+    /// selected by the platform's own vocabulary for a control that is on;
+    /// an unselected one in a group of unselected ones needs saying, because
+    /// silence there is indistinguishable from the reader having missed it.
+    fn radio_button_unselected_label(&self) -> &str;
 }
 
 /// Upstream `DefaultWidgetsLocalizations`: US English, and nothing else.
@@ -232,8 +266,17 @@ impl WidgetsLocalizations for DefaultWidgetsLocalizations {
     fn share_button_label(&self) -> &str {
         "Share"
     }
-    fn scan_text_button_label(&self) -> &str {
-        "Scan text"
+
+    fn search_results_found(&self) -> &str {
+        "Search results found"
+    }
+
+    fn no_results_found(&self) -> &str {
+        "No results found"
+    }
+
+    fn radio_button_unselected_label(&self) -> &str {
+        "Not selected"
     }
 }
 
