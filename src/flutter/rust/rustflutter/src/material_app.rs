@@ -541,6 +541,38 @@ impl DefaultMaterialLocalizations {
         Some(format!("Tab {tab_index} of {tab_count}"))
     }
 
+    /// Upstream's English for the strings a widget in this crate asks for.
+    ///
+    /// # Why these and not the other hundred and thirty
+    ///
+    /// `DefaultMaterialLocalizations` has a hundred and fifty-eight members
+    /// and copying the table down would put a hundred and thirty unread
+    /// strings in the crate. Each of these was reached from the other
+    /// direction: a widget here already knew which string it wanted -- the
+    /// action buttons have carried the key names since they were written --
+    /// and there was nothing to resolve them against, so the widget did
+    /// without.
+    ///
+    /// A string arrives when something asks for it. That keeps the table
+    /// honest: every entry has a caller, and `unwired.py`'s whole argument is
+    /// that one without is indistinguishable from one that is wrong.
+    pub const BACK_BUTTON_TOOLTIP: &'static str = "Back";
+    /// Upstream's `closeButtonTooltip`.
+    pub const CLOSE_BUTTON_TOOLTIP: &'static str = "Close";
+    /// Upstream's `openAppDrawerTooltip`. **Not "Open drawer"**: the word the
+    /// reader hears is about what is inside, not about the panel.
+    pub const OPEN_APP_DRAWER_TOOLTIP: &'static str = "Open navigation menu";
+    /// Upstream's `drawerLabel`, which the drawer itself carries as its
+    /// semantics label -- the same idea as the tooltip above, said to a
+    /// different listener.
+    pub const DRAWER_LABEL: &'static str = "Navigation menu";
+    /// Upstream's `modalBarrierDismissLabel`: what the scrim behind a dialog
+    /// announces.
+    ///
+    /// Without it a screen reader meets a full-screen region with no name and
+    /// no indication that tapping it is how you leave.
+    pub const MODAL_BARRIER_DISMISS_LABEL: &'static str = "Dismiss";
+
     /// Upstream's `deleteButtonTooltip`: what a chip's delete affordance
     /// says when the chip did not name something better.
     ///

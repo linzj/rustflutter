@@ -84,6 +84,26 @@ impl ActionButton {
     /// The localisation key for the tooltip. Every one of the four has its own,
     /// because the tooltip is the only thing telling a mouse user which of two
     /// identical actions this is.
+    /// The tooltip itself, resolved through
+    /// [`crate::material_app::DefaultMaterialLocalizations`].
+    ///
+    /// The key has been here since this file was written and there was nothing
+    /// to look it up in, so every one of these buttons showed no tooltip --
+    /// which the doc on [`ActionButtonKind::tooltip_key`] already says is the
+    /// only thing telling a mouse user which of two similar glyphs does what.
+    ///
+    /// Both drawer buttons answer alike, as upstream: one opens the drawer on
+    /// the leading side and the other on the trailing side, and to a reader
+    /// being told what the button does they are the same sentence.
+    pub fn tooltip(&self) -> &'static str {
+        use crate::material_app::DefaultMaterialLocalizations as L10n;
+        match self.kind {
+            ActionButtonKind::Back => L10n::BACK_BUTTON_TOOLTIP,
+            ActionButtonKind::Close => L10n::CLOSE_BUTTON_TOOLTIP,
+            ActionButtonKind::Drawer | ActionButtonKind::EndDrawer => L10n::OPEN_APP_DRAWER_TOOLTIP,
+        }
+    }
+
     pub fn tooltip_key(&self) -> &'static str {
         match self.kind {
             ActionButtonKind::Back => "backButtonTooltip",
@@ -639,6 +659,89 @@ mod standard_component_tests {
         assert_eq!(
             StandardComponentType::DrawerButton.key_name(),
             "drawerButton"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tooltip_resolution_tests {
+    use super::{ActionButton, ActionButtonKind};
+    use crate::material_app::DefaultMaterialLocalizations as L10n;
+
+    #[test]
+    fn every_kind_resolves_its_key_to_a_word_a_reader_gets() {
+        // The key was here and the value was not, so all four showed nothing.
+        assert_eq!(ActionButton::new(ActionButtonKind::Back).tooltip(), "Back");
+        assert_eq!(
+            ActionButton::new(ActionButtonKind::Close).tooltip(),
+            "Close"
+        );
+        assert_eq!(
+            ActionButton::new(ActionButtonKind::Drawer).tooltip(),
+            "Open navigation menu",
+            "not 'Open drawer' -- the word is about what is inside"
+        );
+    }
+
+    #[test]
+    fn the_two_drawer_buttons_say_the_same_thing() {
+        // One opens the leading drawer and the other the trailing one, and to
+        // a reader being told what the button does that is one sentence.
+        assert_eq!(
+            ActionButton::new(ActionButtonKind::Drawer).tooltip(),
+            ActionButton::new(ActionButtonKind::EndDrawer).tooltip()
+        );
+        assert_eq!(
+            ActionButton::new(ActionButtonKind::Drawer).tooltip_key(),
+            ActionButton::new(ActionButtonKind::EndDrawer).tooltip_key(),
+            "and they share the key too"
+        );
+    }
+
+    #[test]
+    fn the_resolved_word_is_the_one_the_key_names() {
+        // The pair has to stay in step: a key renamed without its value, or a
+        // value moved to another key, would leave a button describing itself
+        // as something else.
+        for (kind, key, word) in [
+            (
+                ActionButtonKind::Back,
+                "backButtonTooltip",
+                L10n::BACK_BUTTON_TOOLTIP,
+            ),
+            (
+                ActionButtonKind::Close,
+                "closeButtonTooltip",
+                L10n::CLOSE_BUTTON_TOOLTIP,
+            ),
+            (
+                ActionButtonKind::Drawer,
+                "openAppDrawerTooltip",
+                L10n::OPEN_APP_DRAWER_TOOLTIP,
+            ),
+            (
+                ActionButtonKind::EndDrawer,
+                "openAppDrawerTooltip",
+                L10n::OPEN_APP_DRAWER_TOOLTIP,
+            ),
+        ] {
+            let button = ActionButton::new(kind);
+            assert_eq!(button.tooltip_key(), key, "{kind:?}");
+            assert_eq!(button.tooltip(), word, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn no_two_kinds_that_do_different_things_say_the_same_thing() {
+        // Back and Close are two glyphs a hair apart, and the tooltip is what
+        // distinguishes them.
+        assert_ne!(
+            ActionButton::new(ActionButtonKind::Back).tooltip(),
+            ActionButton::new(ActionButtonKind::Close).tooltip()
+        );
+        assert_ne!(
+            ActionButton::new(ActionButtonKind::Back).tooltip(),
+            ActionButton::new(ActionButtonKind::Drawer).tooltip()
         );
     }
 }
