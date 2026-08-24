@@ -14468,3 +14468,52 @@ crate 里这个枚举和它的 `merge` 早就在，还有穷举两两组合的�
 
 5143 测试通过，完整 GN 门过（gallery 333 也过）。
 `depth.py` 上 `MediaQuery` 20/65 → 22/65。
+
+## 第 153 轮 — 改了系统字号，画面不动
+
+顺着上一轮 `MediaQueryData` 的线往上走，问一个更基本的问题：
+**设置变了之后，谁请求下一帧？**
+
+答案是没有人。`rf_app_set_user_settings` 只调 `platform::set_user_settings`，
+C++ 那边的 `RuntimeController::SetUserSettingsData` 也不排帧。而设置真正抵达
+控件树是在**帧内**——`MediaQueryData::from_view` 加 `tree.publish(data)`，
+`app.rs` 里那段注释自己点了名：
+
+> Everything else about the view -- the keyboard arriving, the status bar
+> changing height, **the reader turning the text size up** -- goes to the
+> widgets that asked about it
+
+传播路径通着，缺的是唤醒。所以一个读者在应用静止时把系统字号调大，
+**要等到他碰一下屏幕才看得见**。上游是靠
+`_MediaQueryFromViewState.didChangeTextScaleFactor` 里的 `setState` 走到这一步的，
+而本 port 还没有那条链（`WidgetsBinding` 不是单例，平台回调够不着它）。
+
+`set_user_settings` 改成返回"有没有变"，ABI 据此排一帧。只在真的变了时排：
+壳层每次任一项变化都会重发整个设置对象，为一条什么都没说的消息渲染一帧，
+正是那个既有的相等判断存在的理由。
+
+### 顺带发现：一个 handler 应付所有变化
+
+上游 `PlatformDispatcher._updateUserSettingsData` 是**逐字段**比较、逐字段分发：
+
+- `onPlatformConfigurationChanged` —— 任何变化
+- `onTextScaleFactorChanged` —— 只在文字缩放变了时
+- `onPlatformBrightnessChanged` —— 只在明暗变了时
+- `alwaysUse24HourFormat` 变化 **不触发任何专属回调**，它只计入"有变化"
+
+port 只有一个 `on_settings_changed`，任何变化都叫它。后果是一个为了文字缩放
+去重载字体表的监听者，会被主题变暗吵醒，而且**分辨不出发生的是哪一件**。
+
+补上 `on_text_scale_factor_changed` 和 `on_platform_brightness_changed`，
+按上游的行序分发：先总的，再文字缩放，再明暗。
+24 小时制那条**故意**没有专属槽位——那是上游的形状而不是这里的遗漏，
+所以它有一条自己的测试。
+
+三条变异全红：三个 handler 都无条件叫（两条测试红）、把专属的排到总的前面
+（顺序那条红）、没变也返回 true（帧那条红）。
+
+ABI 那半行没有测试挡着，因为 `mod abi` 整个是 `#[cfg(not(test))]`——
+crate 自己的测试二进制不链接 C++ 引擎。判定本身放在了
+`platform::set_user_settings` 的返回值里，那是测得到的一半。
+
+5147 测试通过，完整 GN 门过（gallery 333 也过）。

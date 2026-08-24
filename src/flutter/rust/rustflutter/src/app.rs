@@ -1307,7 +1307,10 @@ mod abi {
         json: *const c_char,
         length: usize,
     ) {
-        if instance(app).is_none() || json.is_null() {
+        let Some(instance) = instance(app) else {
+            return;
+        };
+        if json.is_null() {
             return;
         }
         let bytes = unsafe { std::slice::from_raw_parts(json as *const u8, length) };
@@ -1316,7 +1319,22 @@ mod abi {
         let Ok(text) = std::str::from_utf8(bytes) else {
             return;
         };
-        platform::set_user_settings(text);
+        // A frame, because nothing else asks for one. The settings themselves
+        // reach the tree through `MediaQueryData::from_view` and `publish`,
+        // which happen *during* a frame -- so a reader who turns the system
+        // font size up while the application is sitting still saw nothing
+        // change until they touched the screen. `RuntimeController::
+        // SetUserSettingsData` does not schedule one either; upstream reaches
+        // it through `_MediaQueryFromViewState.didChangeTextScaleFactor`
+        // calling `setState`, which this port has no counterpart for yet.
+        //
+        // Only on an actual change, which is what the return value is for: the
+        // shell re-sends the whole settings object whenever any part of it
+        // changes, and re-rendering for a payload that says nothing new is the
+        // cost this guard exists to avoid.
+        if platform::set_user_settings(text) {
+            instance.schedule_frame();
+        }
     }
 
     /// The preferred locales, four strings each: language, country, script,

@@ -152,6 +152,7 @@ impl Locale {
 }
 
 type SettingsHandler = Box<dyn FnMut(&UserSettings)>;
+type FieldHandler = Box<dyn FnMut(&UserSettings)>;
 type LocalesHandler = Box<dyn FnMut(&[Locale])>;
 
 /// The platform state, and who is watching it.
@@ -163,6 +164,8 @@ struct Platform {
     settings: UserSettings,
     locales: Vec<Locale>,
     settings_handler: Option<SettingsHandler>,
+    text_scale_handler: Option<FieldHandler>,
+    brightness_handler: Option<FieldHandler>,
     locales_handler: Option<LocalesHandler>,
 }
 
@@ -210,15 +213,44 @@ pub fn locale() -> Locale {
     })
 }
 
-/// Called when the platform's settings change, and not for the first delivery
-/// if it is the same as what was already there.
+/// Called when **anything** in the platform's settings changes, and not for a
+/// delivery that says what was already there.
 ///
-/// One handler; registering a second replaces the first. Upstream is the same
-/// shape -- `PlatformDispatcher.onPlatformBrightnessChanged` is a single
-/// setter, and the framework installs it once.
+/// Upstream's `PlatformDispatcher.onPlatformConfigurationChanged`, which is
+/// the one that fires for every change; the two below fire for one field
+/// each. All three are single setters, upstream and here, because upstream's
+/// framework installs each once and re-broadcasts to a list of its own.
+///
+/// # Which handler hears what
+///
+/// Upstream's `_updateUserSettingsData` compares field by field and calls only
+/// the callbacks whose field moved. This one hears every change; the other two
+/// hear only their own. **A change to `always_use_24_hour_format` reaches this
+/// one and no other**, because upstream declares no callback for it: it counts
+/// towards "something changed" and stops there.
 pub fn on_settings_changed(handler: impl FnMut(&UserSettings) + 'static) {
     PLATFORM.with(|platform| {
         platform.borrow_mut().settings_handler = Some(Box::new(handler));
+    });
+}
+
+/// Called when the reader's text size setting changes, and not when anything
+/// else does. Upstream's `PlatformDispatcher.onTextScaleFactorChanged`.
+///
+/// The narrowness is the point: a listener that reloads a font table on this
+/// should not be woken by the theme going dark.
+pub fn on_text_scale_factor_changed(handler: impl FnMut(&UserSettings) + 'static) {
+    PLATFORM.with(|platform| {
+        platform.borrow_mut().text_scale_handler = Some(Box::new(handler));
+    });
+}
+
+/// Called when the platform's light-or-dark choice changes, and not when
+/// anything else does. Upstream's
+/// `PlatformDispatcher.onPlatformBrightnessChanged`.
+pub fn on_platform_brightness_changed(handler: impl FnMut(&UserSettings) + 'static) {
+    PLATFORM.with(|platform| {
+        platform.borrow_mut().brightness_handler = Some(Box::new(handler));
     });
 }
 
@@ -266,28 +298,64 @@ fn parse_settings(json: &str, previous: UserSettings) -> UserSettings {
 /// re-sends the whole settings object whenever any part of it changes, and a
 /// handler that reloaded a translation table on every theme change would do it
 /// for nothing.
-pub(crate) fn set_user_settings(json: &str) {
+pub(crate) fn set_user_settings(json: &str) -> bool {
     let previous = PLATFORM.with(|platform| platform.borrow().settings);
     let settings = parse_settings(json, previous);
     if settings == previous {
-        return;
+        return false;
     }
-    // Borrow only long enough to move the handler out. The handler may read
-    // the settings back -- that is most of what a handler is for -- and it
-    // cannot do that while this borrow is alive.
-    let handler = PLATFORM.with(|platform| {
+    PLATFORM.with(|platform| platform.borrow_mut().settings = settings);
+
+    // Upstream's order, from `_updateUserSettingsData`: the configuration
+    // callback first, then the field ones. A listener on both should see the
+    // general news before the particular.
+    call(Slot::Settings, &settings);
+    if settings.text_scale_factor != previous.text_scale_factor {
+        call(Slot::TextScale, &settings);
+    }
+    if settings.platform_brightness != previous.platform_brightness {
+        call(Slot::Brightness, &settings);
+    }
+    // `always_use_24_hour_format` has no slot of its own, which is upstream's
+    // shape and not an omission here: it counts towards the change and is
+    // heard by `on_settings_changed` alone.
+    true
+}
+
+/// Which of the three settings handlers.
+#[derive(Clone, Copy)]
+enum Slot {
+    Settings,
+    TextScale,
+    Brightness,
+}
+
+/// Runs one handler with the borrow released.
+///
+/// The handler may read the settings back -- that is most of what a handler is
+/// for -- and it cannot do that while the borrow is alive, so it is moved out
+/// and put back. It is **not** put back if it registered a different one,
+/// which is how a handler unregisters or replaces itself from inside itself.
+fn call(slot: Slot, settings: &UserSettings) {
+    let taken = PLATFORM.with(|platform| {
         let mut platform = platform.borrow_mut();
-        platform.settings = settings;
-        platform.settings_handler.take()
+        match slot {
+            Slot::Settings => platform.settings_handler.take(),
+            Slot::TextScale => platform.text_scale_handler.take(),
+            Slot::Brightness => platform.brightness_handler.take(),
+        }
     });
-    let Some(mut handler) = handler else { return };
-    handler(&settings);
+    let Some(mut handler) = taken else { return };
+    handler(settings);
     PLATFORM.with(|platform| {
         let mut platform = platform.borrow_mut();
-        // Not restored if the handler registered a different one, which is how
-        // a handler unregisters or replaces itself from inside itself.
-        if platform.settings_handler.is_none() {
-            platform.settings_handler = Some(handler);
+        let seat = match slot {
+            Slot::Settings => &mut platform.settings_handler,
+            Slot::TextScale => &mut platform.text_scale_handler,
+            Slot::Brightness => &mut platform.brightness_handler,
+        };
+        if seat.is_none() {
+            *seat = Some(handler);
         }
     });
 }
@@ -423,6 +491,78 @@ mod tests {
         assert_eq!(count.get(), 1);
         set_user_settings(r#"{"platformBrightness":"light"}"#);
         assert_eq!(count.get(), 11);
+    }
+
+    /// Registers all three handlers, each appending its own name to one log,
+    /// so both *which* fired and *in what order* are readable.
+    fn watch_all() -> std::rc::Rc<std::cell::RefCell<Vec<&'static str>>> {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (any, scale, bright) = (log.clone(), log.clone(), log.clone());
+        on_settings_changed(move |_| any.borrow_mut().push("any"));
+        on_text_scale_factor_changed(move |_| scale.borrow_mut().push("scale"));
+        on_platform_brightness_changed(move |_| bright.borrow_mut().push("bright"));
+        log
+    }
+
+    #[test]
+    fn each_handler_hears_its_own_field_and_not_the_others() {
+        // Upstream's `_updateUserSettingsData` compares field by field and
+        // calls only the callbacks whose field moved. One handler for every
+        // change means a listener that reloads a font table on the text scale
+        // is woken by the theme going dark, and cannot tell which happened.
+        clear();
+        let log = watch_all();
+
+        set_user_settings(r#"{"textScaleFactor":1.5}"#);
+        assert_eq!(*log.borrow(), vec!["any", "scale"]);
+
+        log.borrow_mut().clear();
+        set_user_settings(r#"{"platformBrightness":"dark"}"#);
+        assert_eq!(*log.borrow(), vec!["any", "bright"]);
+    }
+
+    #[test]
+    fn the_clock_wakes_the_general_handler_and_no_other() {
+        // Upstream declares no callback for `alwaysUse24HourFormat`. It counts
+        // towards "something changed" -- `onPlatformConfigurationChanged`
+        // fires -- and stops there. Absent here on purpose rather than by
+        // omission, which is why it has a test.
+        clear();
+        let log = watch_all();
+        set_user_settings(r#"{"alwaysUse24HourFormat":true}"#);
+        assert_eq!(*log.borrow(), vec!["any"]);
+    }
+
+    #[test]
+    fn one_message_that_moves_two_fields_wakes_both_in_upstreams_order() {
+        // The general news before the particular, which is upstream's line
+        // order: `onPlatformConfigurationChanged`, then the text scale, then
+        // the brightness.
+        clear();
+        let log = watch_all();
+        set_user_settings(
+            r#"{"textScaleFactor":1.5,"platformBrightness":"dark","alwaysUse24HourFormat":true}"#,
+        );
+        assert_eq!(*log.borrow(), vec!["any", "scale", "bright"]);
+    }
+
+    #[test]
+    fn a_message_that_says_nothing_new_wakes_nobody_and_asks_for_no_frame() {
+        // The return value is what the ABI schedules a frame on. The shell
+        // re-sends the whole settings object whenever any part of it changes,
+        // so a payload that repeats what is already there is ordinary -- and
+        // rendering a frame for it is the cost this guard exists to avoid.
+        clear();
+        let log = watch_all();
+        assert!(set_user_settings(r#"{"textScaleFactor":1.5}"#));
+        assert_eq!(*log.borrow(), vec!["any", "scale"]);
+
+        log.borrow_mut().clear();
+        assert!(
+            !set_user_settings(r#"{"textScaleFactor":1.5}"#),
+            "the same message twice is not a change"
+        );
+        assert!(log.borrow().is_empty());
     }
 
     #[test]
