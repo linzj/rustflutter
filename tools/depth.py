@@ -165,6 +165,29 @@ def class_bodies(path):
     return bodies
 
 
+def rust_aliases():
+    """`pub type Upstream = Whatever;`, by the name upstream would use.
+
+    `Text` is the case that found this: the crate spells it
+    `pub type Text = RenderParagraph`, so a search for a struct by that name
+    returns nothing and the ratio came out 0 of 18 for a type that is ported
+    whole. An alias is exactly the shape this ruler exists to see through --
+    the crate saying "upstream's name for this is X" in as many words.
+    """
+    aliases = {}
+    for root, _dirs, files in os.walk(CRATE):
+        for filename in files:
+            if not filename.endswith('.rs'):
+                continue
+            text = coverage.strip_rust_comments(
+                open(os.path.join(root, filename),
+                     encoding='utf-8', errors='replace').read())
+            for match in re.finditer(
+                    r'^pub type (?P<name>\w+)\s*=\s*(?P<target>\w+)', text, re.M):
+                aliases[match.group('name')] = match.group('target')
+    return aliases
+
+
 def rust_bodies():
     """Every `pub struct/enum/trait X` in the crate, by name, with its impls."""
     bodies = {}
@@ -225,11 +248,16 @@ def rust_bodies():
 # the ruler strict -- it still cannot see a member answered on a type whose name
 # shares nothing with upstream's -- but it stops it reporting the same four
 # shapes over and over.
-def companion_body(rust, name):
-    parts = [rust.get(candidate, '')
-             for candidate in (name, name + 'Data', name + 'State',
-                               'Resolved' + name, 'Render' + name)]
-    return ''.join(parts)
+def companion_body(rust, name, aliases=None):
+    candidates = [name, name + 'Data', name + 'State',
+                  'Resolved' + name, 'Render' + name]
+    # An alias is the crate naming the correspondence itself, so it outranks
+    # the guesses above -- but both are counted, because a type can be aliased
+    # *and* have a companion.
+    target = (aliases or {}).get(name)
+    if target and target not in candidates:
+        candidates.append(target)
+    return ''.join(rust.get(candidate, '') for candidate in candidates)
 
 
 def main():
@@ -257,6 +285,7 @@ def main():
     rust_ids = coverage.rust_identifiers()
     ledger = coverage.load_ledger()
     rust = rust_bodies()
+    aliases = rust_aliases()
 
     covered = {}
     for layer, fname, name, state in coverage.classify(
@@ -282,7 +311,7 @@ def main():
             wanted = dart_members(body)
             if len(wanted) < args.min_members:
                 continue
-            have = len(RUST_MEMBER.findall(companion_body(rust, name)))
+            have = len(RUST_MEMBER.findall(companion_body(rust, name, aliases)))
             rows.append((have / len(wanted), have, len(wanted), name, relative))
 
     rows.sort()

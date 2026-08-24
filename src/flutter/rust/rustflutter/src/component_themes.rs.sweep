@@ -1247,7 +1247,9 @@ impl ResolvedSnackBar {
             behavior,
             behavior_source,
             background_color: data.background_color.unwrap_or(scheme.inverse_surface()),
-            elevation: data.elevation.or(bar.elevation)
+            elevation: bar
+                .elevation
+                .or(data.elevation)
                 .unwrap_or(ResolvedSnackBar::ELEVATION),
             width: bar.width.or(data.width),
             inset_padding: data
