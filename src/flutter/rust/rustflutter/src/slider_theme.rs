@@ -575,17 +575,21 @@ impl RectangularSliderTrackShape {
         let track = geometry.track;
         let thumb = geometry.thumb_center.dx;
 
+        // Upstream's `if (!segment.isEmpty)` at each of the three. The
+        // height is already guarded above by the track-height check, but the
+        // rectangle comes from geometry a caller supplied and can be
+        // degenerate for reasons the theme knows nothing about.
         let left = Rect::ltrb(track.left, track.top, thumb, track.bottom);
-        if left.width() > 0.0 {
+        if !left.is_empty() {
             canvas.draw_rect(left, &Paint::new(leading));
         }
         let right = Rect::ltrb(thumb, track.top, track.right, track.bottom);
-        if right.width() > 0.0 {
+        if !right.is_empty() {
             canvas.draw_rect(right, &Paint::new(trailing));
         }
 
         if let Some((secondary, color)) = geometry.secondary_segment(theme, false) {
-            if secondary.width() > 0.0 {
+            if !secondary.is_empty() {
                 canvas.draw_rect(secondary, &Paint::new(color));
             }
         }

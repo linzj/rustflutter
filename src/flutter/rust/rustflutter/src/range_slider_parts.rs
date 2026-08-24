@@ -556,7 +556,10 @@ impl RectangularRangeSliderTrackShape {
                 inactive,
             ),
         ] {
-            if rect.width() > 0.0 {
+            // Upstream's `if (!segment.isEmpty)`, which is both axes. Testing
+            // the width alone let a track of no height through as three
+            // rectangles that paint nothing.
+            if !rect.is_empty() {
                 canvas.draw_rect(rect, &Paint::new(color));
             }
         }
@@ -1053,6 +1056,126 @@ mod tests {
                 50.0
             ),
             Some(Thumb::Start)
+        );
+    }
+}
+
+#[cfg(test)]
+mod rectangular_range_track_paint_tests {
+    use super::{RangeTrackPaintGeometry, RectangularRangeSliderTrackShape, SliderThemeData};
+    use crate::direction::TextDirection;
+    use crate::engine::{Color, LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{Offset, PaintContext, Size};
+
+    const ACTIVE: Color = Color(0xff112233);
+    const INACTIVE: Color = Color(0xff445566);
+
+    fn theme() -> SliderThemeData {
+        SliderThemeData::new().with_track_colors(ACTIVE, INACTIVE)
+    }
+
+    fn geometry(start: f32, end: f32, direction: TextDirection) -> RangeTrackPaintGeometry {
+        RangeTrackPaintGeometry::new(
+            Rect::ltrb(0.0, 8.0, 100.0, 12.0),
+            Offset::new(start, 10.0),
+            Offset::new(end, 10.0),
+            direction,
+            1.0,
+        )
+    }
+
+    fn painted(theme: &SliderThemeData, geometry: &RangeTrackPaintGeometry) -> Vec<Drawn> {
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            RectangularRangeSliderTrackShape::new().paint(context.canvas(), geometry, theme);
+        }
+        drawn()
+    }
+
+    fn rect(left: f32, right: f32, colour: Color) -> Drawn {
+        Drawn::Rect {
+            left,
+            top: 8.0,
+            right,
+            bottom: 12.0,
+            argb: colour.0,
+        }
+    }
+
+    #[test]
+    fn the_selected_range_is_the_middle_segment() {
+        assert_eq!(
+            painted(&theme(), &geometry(30.0, 70.0, TextDirection::Ltr)),
+            vec![
+                rect(0.0, 30.0, INACTIVE),
+                rect(30.0, 70.0, ACTIVE),
+                rect(70.0, 100.0, INACTIVE),
+            ]
+        );
+    }
+
+    #[test]
+    fn reading_right_to_left_swaps_the_thumbs_and_not_the_colours() {
+        // The opposite of the single-value track, where the colours swap and
+        // the geometry does not. Here the active part is between the thumbs
+        // whichever way round they are, so what reverses is which thumb counts
+        // as the left one.
+        assert_eq!(
+            painted(&theme(), &geometry(70.0, 30.0, TextDirection::Rtl)),
+            vec![
+                rect(0.0, 30.0, INACTIVE),
+                rect(30.0, 70.0, ACTIVE),
+                rect(70.0, 100.0, INACTIVE),
+            ],
+            "the same picture as the left-to-right case with the values swapped"
+        );
+    }
+
+    #[test]
+    fn a_range_pinned_to_one_end_leaves_two_segments() {
+        assert_eq!(
+            painted(&theme(), &geometry(0.0, 40.0, TextDirection::Ltr)),
+            vec![rect(0.0, 40.0, ACTIVE), rect(40.0, 100.0, INACTIVE)],
+            "nothing to the left of a thumb at the left edge"
+        );
+    }
+
+    #[test]
+    fn a_range_of_no_width_leaves_the_two_outer_segments() {
+        assert_eq!(
+            painted(&theme(), &geometry(50.0, 50.0, TextDirection::Ltr)),
+            vec![rect(0.0, 50.0, INACTIVE), rect(50.0, 100.0, INACTIVE)],
+            "the two thumbs together select nothing"
+        );
+    }
+
+    #[test]
+    fn a_track_of_no_height_draws_nothing() {
+        // Upstream tests `!segment.isEmpty`, which is both axes. This code
+        // tested the width alone, so a track of no height came through as
+        // three rectangles that paint nothing. Unlike the single-value shape
+        // there is no track-height guard above to catch it first.
+        let flat = RangeTrackPaintGeometry::new(
+            Rect::ltrb(0.0, 10.0, 100.0, 10.0),
+            Offset::new(30.0, 10.0),
+            Offset::new(70.0, 10.0),
+            TextDirection::Ltr,
+            1.0,
+        );
+        assert_eq!(painted(&theme(), &flat), vec![]);
+    }
+
+    #[test]
+    fn a_theme_with_no_track_colours_draws_nothing() {
+        assert_eq!(
+            painted(
+                &SliderThemeData::new(),
+                &geometry(30.0, 70.0, TextDirection::Ltr)
+            ),
+            vec![]
         );
     }
 }

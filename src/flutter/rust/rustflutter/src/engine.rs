@@ -550,6 +550,17 @@ impl Rect {
         self.right - self.left
     }
 
+    /// dart:ui's `Rect.isEmpty`: `left >= right || top >= bottom`.
+    ///
+    /// **Both axes**, which is the whole reason to have it rather than
+    /// checking a width. A rectangle as wide as the screen and no pixels tall
+    /// covers nothing, and asking a canvas to fill it is a draw call that
+    /// paints nothing -- upstream skips those, and code here that tested only
+    /// the width did not.
+    pub fn is_empty(&self) -> bool {
+        self.left >= self.right || self.top >= self.bottom
+    }
+
     pub fn height(&self) -> f32 {
         self.bottom - self.top
     }
