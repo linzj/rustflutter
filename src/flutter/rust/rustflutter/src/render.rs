@@ -24685,6 +24685,7 @@ mod decorated_box_geometry_tests {
                 top: 0.0,
                 right: 100.0,
                 bottom: 40.0,
+                argb: Color::BLACK.0,
             }]
         );
     }
@@ -24703,6 +24704,7 @@ mod decorated_box_geometry_tests {
                 top: 4.0,
                 right: 96.0,
                 bottom: 36.0,
+                argb: Color::BLACK.0,
             }],
             "four in from each edge, which is half of eight"
         );
@@ -24720,6 +24722,7 @@ mod decorated_box_geometry_tests {
                     top: half,
                     right: 100.0 - half,
                     bottom: 40.0 - half,
+                    argb: Color::BLACK.0,
                 }],
                 "{width}"
             );
@@ -24742,12 +24745,14 @@ mod decorated_box_geometry_tests {
                     top: 0.0,
                     right: 100.0,
                     bottom: 40.0,
+                    argb: Color::BLACK.0,
                 },
                 Drawn::Rect {
                     left: 2.0,
                     top: 2.0,
                     right: 98.0,
                     bottom: 38.0,
+                    argb: Color::WHITE.0,
                 },
             ]
         );

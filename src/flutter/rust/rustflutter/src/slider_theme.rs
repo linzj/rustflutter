@@ -2700,3 +2700,150 @@ mod tests {
         assert_eq!(trailing, theme.active_track_color.unwrap());
     }
 }
+
+#[cfg(test)]
+mod rectangular_track_paint_tests {
+    use super::{RectangularSliderTrackShape, SliderThemeData, TrackPaintGeometry};
+    use crate::direction::TextDirection;
+    use crate::engine::Color;
+    use crate::engine::{LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{Offset, PaintContext, Size};
+
+    const ACTIVE: Color = Color(0xff112233);
+    const INACTIVE: Color = Color(0xff445566);
+    const SECONDARY: Color = Color(0xff778899);
+
+    fn theme(height: f32) -> SliderThemeData {
+        let mut theme = SliderThemeData::new()
+            .with_track_height(height)
+            .with_track_colors(ACTIVE, INACTIVE);
+        theme.secondary_active_track_color = Some(SECONDARY);
+        theme
+    }
+
+    /// A track a hundred wide and four tall, with the thumb wherever asked.
+    fn geometry(thumb_x: f32, direction: TextDirection) -> TrackPaintGeometry {
+        TrackPaintGeometry::new(
+            Rect::ltrb(0.0, 8.0, 100.0, 12.0),
+            Offset::new(thumb_x, 10.0),
+            direction,
+            1.0,
+        )
+    }
+
+    fn painted(theme: &SliderThemeData, geometry: &TrackPaintGeometry) -> Vec<Drawn> {
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            RectangularSliderTrackShape::new().paint(context.canvas(), geometry, theme);
+        }
+        drawn()
+    }
+
+    fn rect(left: f32, right: f32, colour: Color) -> Drawn {
+        Drawn::Rect {
+            left,
+            top: 8.0,
+            right,
+            bottom: 12.0,
+            argb: colour.0,
+        }
+    }
+
+    #[test]
+    fn the_track_is_split_at_the_thumbs_centre() {
+        // Not at the value, and not at either edge of the thumb: the two
+        // segments meet exactly where the thumb's centre is.
+        assert_eq!(
+            painted(&theme(4.0), &geometry(30.0, TextDirection::Ltr)),
+            vec![rect(0.0, 30.0, ACTIVE), rect(30.0, 100.0, INACTIVE)]
+        );
+    }
+
+    #[test]
+    fn reading_right_to_left_swaps_which_side_is_active() {
+        // The leading segment is always the one left of the thumb; which of
+        // the two colours it takes is the reading direction's business. This
+        // could not be asserted until a draw call carried its own colour --
+        // with one global "last colour" there is nothing to compare.
+        assert_eq!(
+            painted(&theme(4.0), &geometry(30.0, TextDirection::Rtl)),
+            vec![rect(0.0, 30.0, INACTIVE), rect(30.0, 100.0, ACTIVE)],
+            "the same two rectangles, the colours the other way round"
+        );
+    }
+
+    #[test]
+    fn a_thumb_at_either_end_leaves_one_segment_rather_than_an_empty_one() {
+        // A zero-width rectangle is not a thinner rectangle, it is a draw call
+        // that paints nothing, and upstream skips it.
+        assert_eq!(
+            painted(&theme(4.0), &geometry(0.0, TextDirection::Ltr)),
+            vec![rect(0.0, 100.0, INACTIVE)],
+            "hard left: everything is inactive"
+        );
+        assert_eq!(
+            painted(&theme(4.0), &geometry(100.0, TextDirection::Ltr)),
+            vec![rect(0.0, 100.0, ACTIVE)],
+            "hard right: everything is active"
+        );
+    }
+
+    #[test]
+    fn a_track_of_no_height_draws_nothing_at_all() {
+        // Rather than a stack of empty rectangles.
+        assert_eq!(
+            painted(&theme(0.0), &geometry(30.0, TextDirection::Ltr)),
+            vec![]
+        );
+        assert_eq!(
+            painted(&SliderThemeData::new(), &geometry(30.0, TextDirection::Ltr)),
+            vec![],
+            "and a theme that never named a height is the same case"
+        );
+    }
+
+    #[test]
+    fn a_secondary_value_is_a_third_rectangle_beyond_the_thumb() {
+        // What a media slider draws for buffered-but-unplayed.
+        let calls = painted(
+            &theme(4.0),
+            &geometry(30.0, TextDirection::Ltr).with_secondary_offset(Offset::new(70.0, 10.0)),
+        );
+        assert_eq!(
+            calls,
+            vec![
+                rect(0.0, 30.0, ACTIVE),
+                rect(30.0, 100.0, INACTIVE),
+                rect(30.0, 70.0, SECONDARY),
+            ],
+            "from the thumb to the buffer, over the inactive segment"
+        );
+    }
+
+    #[test]
+    fn a_secondary_value_with_no_colour_for_it_is_not_drawn() {
+        // The colour is what says the theme wants one at all; upstream's
+        // enabled_color returns nothing and the segment goes with it.
+        let mut bare = theme(4.0);
+        bare.secondary_active_track_color = None;
+        let calls = painted(
+            &bare,
+            &geometry(30.0, TextDirection::Ltr).with_secondary_offset(Offset::new(70.0, 10.0)),
+        );
+        assert_eq!(calls.len(), 2, "the two ordinary segments only: {calls:?}");
+    }
+
+    #[test]
+    fn a_secondary_value_behind_the_thumb_is_not_drawn() {
+        // It has already been passed, so there is nothing buffered-but-unread
+        // to show.
+        let calls = painted(
+            &theme(4.0),
+            &geometry(70.0, TextDirection::Ltr).with_secondary_offset(Offset::new(30.0, 10.0)),
+        );
+        assert_eq!(calls.len(), 2, "the two ordinary segments only: {calls:?}");
+    }
+}

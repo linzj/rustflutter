@@ -85,17 +85,50 @@ pub unsafe extern "C" fn rf_initialize(icu_data_path: *const c_char) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_new() -> *mut RfPaint {
-    allocate::<RfPaint>()
+    Box::into_raw(Box::new(StubPaint { argb: 0 })) as *mut RfPaint
+}
+
+/// What the stub remembers about a paint.
+///
+/// The colour was already kept, but in one thread-local holding whichever
+/// paint was coloured last. That answers "what colour was the most recent
+/// thing" and not "what colour was *that* rectangle" -- and a paint method
+/// that draws two rectangles in two colours is exactly where the difference
+/// matters. `track_paints` swapping its two colours in RTL is the case that
+/// prompted this: with one global there is nothing to compare.
+struct StubPaint {
+    argb: u32,
+}
+
+/// # Safety
+/// `paint` must be null or have come from `rf_paint_new` and not been freed.
+unsafe fn stub_paint_ref<'a>(paint: *const RfPaint) -> Option<&'a StubPaint> {
+    if paint.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(paint as *const StubPaint) })
+    }
+}
+
+/// The colour a draw call's paint carried, or fully transparent for a call
+/// given no paint at all.
+unsafe fn paint_argb(paint: *const RfPaint) -> u32 {
+    unsafe { stub_paint_ref(paint) }.map_or(0, |paint| paint.argb)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_free(paint: *mut RfPaint) {
-    unsafe { release(paint) }
+    if !paint.is_null() {
+        drop(unsafe { Box::from_raw(paint as *mut StubPaint) });
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_set_color(paint: *mut RfPaint, argb: u32) {
     LAST_PAINT_COLOR.with(|c| c.set(argb));
+    if let Some(paint) = unsafe { (paint as *mut StubPaint).as_mut() } {
+        paint.argb = argb;
+    }
 }
 
 thread_local! {
@@ -289,6 +322,7 @@ pub unsafe extern "C" fn rf_canvas_draw_oval(
         top,
         right,
         bottom,
+        argb: unsafe { paint_argb(paint) },
     });
 }
 
@@ -584,6 +618,7 @@ pub enum Drawn {
         top: f32,
         right: f32,
         bottom: f32,
+        argb: u32,
     },
     RRect {
         left: f32,
@@ -591,17 +626,20 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
         radius: f32,
+        argb: u32,
     },
     Oval {
         left: f32,
         top: f32,
         right: f32,
         bottom: f32,
+        argb: u32,
     },
     Circle {
         cx: f32,
         cy: f32,
         radius: f32,
+        argb: u32,
     },
     Line {
         from: (f32, f32),
@@ -866,6 +904,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rect(
         top,
         right,
         bottom,
+        argb: unsafe { paint_argb(paint) },
     });
 }
 
@@ -886,6 +925,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rrect(
         right,
         bottom,
         radius,
+        argb: unsafe { paint_argb(paint) },
     });
 }
 
@@ -897,7 +937,12 @@ pub unsafe extern "C" fn rf_canvas_draw_circle(
     radius: f32,
     paint: *const RfPaint,
 ) {
-    record(Drawn::Circle { cx, cy, radius });
+    record(Drawn::Circle {
+        cx,
+        cy,
+        radius,
+        argb: unsafe { paint_argb(paint) },
+    });
 }
 
 #[unsafe(no_mangle)]
