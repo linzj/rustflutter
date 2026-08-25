@@ -277,7 +277,23 @@ impl StatefulComponent for Ink {
                 (splash.radius(target), splash.opacity(), splash.at)
             });
 
-            let mut stack = crate::render::RenderStack::new().push_boxed(child);
+            // **Passthrough**, not the `Stack`'s default of loose.
+            //
+            // Upstream has no stack here at all: ink features are painted by
+            // `_RenderInkFeatures`, a `RenderProxyBox`, so the constraints a
+            // button was given reach its face untouched. Stacking the splash
+            // as a real box is this port's own arrangement, and a loose stack
+            // **drops the minimum width on the way down**.
+            //
+            // What that looked like: a button with a minimum width, or one
+            // stretched by its parent, laid out to the wider box and painted
+            // its pill at the label's own width. The rest of the box stayed
+            // unpainted inside a rounded ink clip the full width, so the
+            // reader saw the button followed by a second, darker pill. The
+            // arithmetic was right and nothing drew the background.
+            let mut stack = crate::render::RenderStack::new()
+                .with_fit(crate::render::StackFit::Passthrough)
+                .push_boxed(child);
             if let Some((radius, opacity, at)) = painted {
                 if opacity > 0.0 && radius > 0.0 {
                     let circle = crate::widgets::Container::new()
@@ -1540,6 +1556,57 @@ mod tests {
     #[test]
     fn an_ink_decoration_with_nothing_to_draw_draws_nothing() {
         assert!(!InkDecoration::default().paints());
+    }
+
+    #[test]
+    fn an_ink_hands_its_child_the_constraints_it_was_given() {
+        // Upstream paints ink features from a `RenderProxyBox`, so a button's
+        // constraints reach its face untouched. Stacking the splash as a real
+        // box is this port's arrangement, and a stack loosens by default --
+        // which would drop a minimum width on the way through and leave the
+        // child painting narrower than the box it was given.
+        use crate::framework::ElementTree;
+        use crate::render::BoxConstraints;
+
+        // A child that would shrink to its content if it were allowed to,
+        // which is what makes the two fits tell each other apart: an empty
+        // container expands to the maximum either way and says nothing.
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(Ink::new(9201, || {
+            crate::framework::leaf(|| {
+                crate::widgets::Container::new()
+                    .with_color(Color(0xff00cc44))
+                    .with_child(crate::render::RenderConstrainedBox::tight(30.0, 10.0))
+            })
+        })));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::new(200.0, 400.0, 0.0, 200.0),
+        );
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let filled = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { left, right, .. } => Some((left, right)),
+                _ => None,
+            })
+            .expect("the child painted");
+        assert_eq!(
+            filled,
+            (0.0, 200.0),
+            "the minimum width reached the child rather than being loosened away"
+        );
     }
 
     // -- The shape the splash is held inside ---------------------------------

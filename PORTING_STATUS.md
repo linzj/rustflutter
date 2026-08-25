@@ -16089,3 +16089,38 @@ unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5339 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 194 次：按钮旁边那第二个更暗的胶囊
+
+下游应用（`rustflutter_album`）截图：蓝色胶囊按钮右边紧贴着一块更暗的、同样
+高、右端也是圆的形状，两者合起来像一个宽胶囊。
+
+探针把它复现得一清二楚。按钮盒子 200 宽，画出来的胶囊只有 0..60，标签停在
+x=16：
+
+    root size 200x40
+    ClipRRectLayer 0..200  radius 20
+    RRect          0..60   radius 20   <- 画出来的面
+    Paragraph "next" x=16
+
+右边 140 像素是**没有被画过的盒子**，而 ink 的圆角裁剪是按 200 宽做的，于是
+背后的东西透出来，形状恰好是一个右端带圆角的胶囊。算术全对，只是没人去画那块
+背景。
+
+最小宽度由 `ButtonBounds` 设定，然后被它和胶囊之间那个 `RenderStack` 在往下
+传时**放松掉了**——`Stack` 默认 `StackFit::Loose`。上游这条路径上根本没有
+stack：state layer 是画在孩子之上的 ink feature，不是并排的另一个盒子，所以
+没有东西会去放松任何约束。改成 `StackFit::Passthrough`。
+
+`Ink` 自己那个 stack 同样改了，理由相同：上游的 ink feature 由
+`_RenderInkFeatures`（一个 `RenderProxyBox`）绘制，约束原样穿过。
+
+默认按钮此前也有 4 像素的未绘制条（盒子 64、胶囊 60），只是宽按钮上才看得出来。
+
+变异：四条全部转红。第一轮时第三条（按下分支那个 stack）存活——测试只建了
+未按下的按钮，而读者看着的正是按下那一支。测试改成四种组合（两种宽度 × 按下
+与否）后打中。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5341 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。

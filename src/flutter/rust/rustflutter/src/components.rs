@@ -610,15 +610,31 @@ impl Component for Button {
                 }
                 // A press tints the whole button over its opaque fill, the way
                 // the splash does, rather than thinning the fill.
+                // **Passthrough**, not the stack's default of loose. This
+                // stack sits between `ButtonBounds` and the pill, so a loose
+                // one drops the minimum width `ButtonBounds` just set: the
+                // button lays out to its wider box and paints its pill at the
+                // label's own width. What is left is unpainted box inside a
+                // rounded ink clip the full width, which the reader sees as a
+                // second, darker pill beside the button.
+                //
+                // Upstream has no stack on this path -- the state layer is an
+                // ink feature painted over the child, not a sibling box -- so
+                // there is nothing there to loosen anything.
                 let body = if let Some(overlay) = press_overlay {
-                    RenderStack::new().push(container).push_positioned(
+                    RenderStack::new()
+                        .with_fit(crate::render::StackFit::Passthrough)
+                        .push(container)
+                        .push_positioned(
                         Container::new()
                             .with_color(overlay)
                             .with_corner_radius(radius),
                         StackPosition::fill(),
                     )
                 } else {
-                    RenderStack::new().push(container)
+                    RenderStack::new()
+                        .with_fit(crate::render::StackFit::Passthrough)
+                        .push(container)
                 };
                 // The least size a button may be, upstream's `minimumSize`, held
                 // by the bounds box above: a longer label still widens it, a
@@ -3149,6 +3165,87 @@ mod tests {
                 crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
             )),
             "and to nothing square: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_button_paints_its_pill_across_the_whole_box_it_was_given() {
+        // A downstream application saw a blue button with a second, darker
+        // pill beside it. The button laid out to its minimum width and painted
+        // its pill at the *label's* width; the rest of the box was unpainted,
+        // inside a rounded ink clip the full width, so whatever was behind
+        // showed through as a pill of its own.
+        //
+        // The minimum width is set by `ButtonBounds` and was then dropped by
+        // the stack between it and the pill, which loosened the constraints on
+        // the way down. Upstream has no stack there at all -- the state layer
+        // is an ink feature painted over the child, not a sibling box.
+        // Both branches: a pressed button builds a different stack -- the one
+        // with the state layer over it -- and it is the branch a reader is
+        // looking at when they see the button at all.
+        let mut label_widths: Vec<f32> = Vec::new();
+        for (min_width, pressed) in [
+            (None, false),
+            (Some(200.0f32), false),
+            (None, true),
+            (Some(200.0f32), true),
+        ] {
+            let mut tree = ElementTree::new();
+            let mut button = Button::new(1, "next").with_pressed(pressed);
+            if let Some(min_width) = min_width {
+                button = button.with_min_width(min_width);
+            }
+            tree.rebuild(provide(Theme::dark(), component(button)));
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+            crate::render::flush_layout();
+            let width = root.size().width;
+
+            let mut layers = crate::engine::LayerTree::new(600, 400);
+            crate::engine_test_stubs::reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(600.0, 400.0),
+                );
+                crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+            }
+            let calls = crate::engine_test_stubs::drawn();
+
+            let pill = calls
+                .iter()
+                .find_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::RRect { left, right, .. } => {
+                        Some((*left, *right))
+                    }
+                    _ => None,
+                })
+                .expect("the pill");
+            assert_eq!(
+                pill,
+                (0.0, width),
+                "{min_width:?} pressed={pressed}: the pill fills the box,                  leaving no strip beside it"
+            );
+
+            // And the label is centred in the box rather than parked at the
+            // leading edge, which is the other half of the same symptom.
+            let label = calls
+                .iter()
+                .find_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::Paragraph { text, x, .. } if text == "next" => {
+                        Some(*x)
+                    }
+                    _ => None,
+                })
+                .expect("the label");
+            // Centred means the two margins match, so `width - 2x` is the
+            // label's own width -- the same number whatever the box is. A
+            // label parked at the leading edge would give two different ones.
+            label_widths.push(width - label * 2.0);
+        }
+        assert!(
+            label_widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "the label is centred in the box, not parked at its leading edge:              {label_widths:?}"
         );
     }
 
