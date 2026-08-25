@@ -94,6 +94,24 @@ impl Radius {
     pub fn lerp(a: Radius, b: Radius, t: f32) -> Radius {
         Radius::elliptical(lerp_double(a.x, b.x, t), lerp_double(a.y, b.y, t))
     }
+
+    /// Upstream `Radius.lerp`'s nullable form: a missing end scales the
+    /// present one rather than holding it still, so a corner that appears
+    /// rounds out of a square rather than snapping.
+    pub fn lerp_optional(a: Option<Radius>, b: Option<Radius>, t: f32) -> Option<Radius> {
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(Radius {
+                x: b.x * t,
+                y: b.y * t,
+            }),
+            (Some(a), None) => Some(Radius {
+                x: a.x * (1.0 - t),
+                y: a.y * (1.0 - t),
+            }),
+            (Some(a), Some(b)) => Some(Radius::lerp(a, b, t)),
+        }
+    }
 }
 
 impl Add for Radius {
@@ -673,6 +691,40 @@ impl BorderRadius {
             Radius::lerp(a.bottom_right, b.bottom_right, t),
         )
     }
+
+    /// Upstream `BorderRadius.lerp`'s nullable form, whose missing end is
+    /// `b * t` -- unlike [`BorderRadiusGeometry::lerp_optional`], which
+    /// spells the same behaviour as a lerp from zero.
+    pub fn lerp_optional(
+        a: Option<BorderRadius>,
+        b: Option<BorderRadius>,
+        t: f32,
+    ) -> Option<BorderRadius> {
+        let scale = |radius: BorderRadius, factor: f32| BorderRadius {
+            top_left: Radius {
+                x: radius.top_left.x * factor,
+                y: radius.top_left.y * factor,
+            },
+            top_right: Radius {
+                x: radius.top_right.x * factor,
+                y: radius.top_right.y * factor,
+            },
+            bottom_left: Radius {
+                x: radius.bottom_left.x * factor,
+                y: radius.bottom_left.y * factor,
+            },
+            bottom_right: Radius {
+                x: radius.bottom_right.x * factor,
+                y: radius.bottom_right.y * factor,
+            },
+        };
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(scale(b, t)),
+            (Some(a), None) => Some(scale(a, 1.0 - t)),
+            (Some(a), Some(b)) => Some(BorderRadius::lerp(a, b, t)),
+        }
+    }
 }
 
 impl Add for BorderRadius {
@@ -946,6 +998,29 @@ impl BorderRadiusGeometry {
     /// Upstream `BorderRadiusGeometry.lerp`: `a.add((b.subtract(a)) * t)`.
     pub fn lerp(a: BorderRadiusGeometry, b: BorderRadiusGeometry, t: f32) -> BorderRadiusGeometry {
         a.add(b.subtract(a).scale(t))
+    }
+
+    /// The same, for the nullable pair a theme field holds.
+    ///
+    /// Upstream writes `a ??= BorderRadius.zero; b ??= BorderRadius.zero;`
+    /// -- a missing end is **zero**, not the other end scaled. The two read
+    /// differently and come to the same place: lerping from zero towards `b`
+    /// is `b * t`, which is what the sibling geometries do explicitly. Worth
+    /// knowing which spelling upstream uses, because the two stop agreeing
+    /// the moment either end stops being linear.
+    pub fn lerp_optional(
+        a: Option<BorderRadiusGeometry>,
+        b: Option<BorderRadiusGeometry>,
+        t: f32,
+    ) -> Option<BorderRadiusGeometry> {
+        if a.is_none() && b.is_none() {
+            return None;
+        }
+        Some(BorderRadiusGeometry::lerp(
+            a.unwrap_or(BorderRadiusGeometry::Zero),
+            b.unwrap_or(BorderRadiusGeometry::Zero),
+            t,
+        ))
     }
 
     /// Upstream resolve: the mix sums its two contributions per corner.
@@ -7508,6 +7583,101 @@ mod tests {
                 bottom: 30.0,
             }))
         );
+    }
+
+    // -- The nullable radius blends -----------------------------------------
+    //
+    // Added at tick 222 for the theme fields that were stepping their radii.
+    // Upstream writes the two null arms differently for the geometry and for
+    // the concrete radius, and the tests below pin both spellings.
+
+    #[test]
+    fn a_radius_that_appears_rounds_out_of_a_square() {
+        // `Radius.lerp(null, b, t)` is `b * t`, not `b` held still.
+        let corner = Radius {
+            x: 8.0,
+            y: 20.0,
+        };
+        assert_eq!(
+            Radius::lerp_optional(None, Some(corner), 0.25),
+            Some(Radius { x: 2.0, y: 5.0 })
+        );
+        assert_eq!(
+            Radius::lerp_optional(Some(corner), None, 0.25),
+            Some(Radius { x: 6.0, y: 15.0 })
+        );
+        assert_eq!(Radius::lerp_optional(None, None, 0.25), None);
+        // Both present blends each axis, and the two axes differ so a line
+        // reading the wrong one lands on the other's answer.
+        assert_eq!(
+            Radius::lerp_optional(
+                Some(Radius { x: 4.0, y: 20.0 }),
+                Some(Radius { x: 20.0, y: 4.0 }),
+                0.25
+            ),
+            Some(Radius { x: 8.0, y: 16.0 })
+        );
+    }
+
+    #[test]
+    fn a_border_radius_scales_its_missing_end_corner_by_corner() {
+        // Four different corners, so a line naming the wrong one is visible.
+        let corners = BorderRadius {
+            top_left: Radius::circular(4.0),
+            top_right: Radius::circular(8.0),
+            bottom_left: Radius::circular(12.0),
+            bottom_right: Radius::circular(16.0),
+        };
+        assert_eq!(
+            BorderRadius::lerp_optional(None, Some(corners), 0.25),
+            Some(BorderRadius {
+                top_left: Radius::circular(1.0),
+                top_right: Radius::circular(2.0),
+                bottom_left: Radius::circular(3.0),
+                bottom_right: Radius::circular(4.0),
+            })
+        );
+        assert_eq!(
+            BorderRadius::lerp_optional(Some(corners), None, 0.25),
+            Some(BorderRadius {
+                top_left: Radius::circular(3.0),
+                top_right: Radius::circular(6.0),
+                bottom_left: Radius::circular(9.0),
+                bottom_right: Radius::circular(12.0),
+            })
+        );
+        assert_eq!(BorderRadius::lerp_optional(None, None, 0.25), None);
+    }
+
+    #[test]
+    fn a_geometry_reads_its_missing_end_as_zero_which_comes_to_the_same_place() {
+        // Upstream's geometry arm writes `a ??= BorderRadius.zero` rather
+        // than scaling the other end. Lerping from zero towards `b` is
+        // `b * t`, so the two spellings agree -- which is worth a test,
+        // because they would stop agreeing the moment either end stopped
+        // being linear.
+        let corners = BorderRadiusGeometry::Absolute(BorderRadius {
+            top_left: Radius::circular(4.0),
+            top_right: Radius::circular(8.0),
+            bottom_left: Radius::circular(12.0),
+            bottom_right: Radius::circular(16.0),
+        });
+        assert_eq!(
+            BorderRadiusGeometry::lerp_optional(None, Some(corners), 0.25),
+            Some(BorderRadiusGeometry::lerp(
+                BorderRadiusGeometry::Zero,
+                corners,
+                0.25
+            ))
+        );
+        assert_eq!(
+            BorderRadiusGeometry::lerp_optional(None, Some(corners), 0.25)
+                .expect("one end is enough")
+                .resolve(TextDirection::Ltr)
+                .top_left,
+            Radius::circular(1.0)
+        );
+        assert_eq!(BorderRadiusGeometry::lerp_optional(None, None, 0.25), None);
     }
 }
 

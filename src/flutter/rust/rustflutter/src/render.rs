@@ -276,6 +276,61 @@ pub struct BoxConstraints {
 }
 
 impl BoxConstraints {
+    /// Upstream `BoxConstraints.lerp`.
+    ///
+    /// # Infinity is not a number to interpolate through
+    ///
+    /// Upstream asserts that the two ends agree per edge on being finite, and
+    /// then keeps an infinite edge infinite rather than blending it:
+    /// `a.maxWidth.isFinite ? lerpDouble(a.maxWidth, b.maxWidth, t) :
+    /// double.infinity`. Lerping infinity would give infinity anyway for any
+    /// `t` in between, but at `t = 0` it would give a NaN for the unbounded
+    /// case, and an unbounded constraint half-way to a bounded one is not a
+    /// constraint anybody can lay out against. A viewport hands its child an
+    /// unbounded axis on purpose; it is a kind, not a size.
+    ///
+    /// A missing end is `b * t` or `a * (1 - t)` -- the constraint scales
+    /// towards nothing rather than the other end being held still.
+    pub fn lerp(
+        a: Option<BoxConstraints>,
+        b: Option<BoxConstraints>,
+        t: f32,
+    ) -> Option<BoxConstraints> {
+        let scale = |c: BoxConstraints, factor: f32| BoxConstraints {
+            min_width: c.min_width * factor,
+            max_width: c.max_width * factor,
+            min_height: c.min_height * factor,
+            max_height: c.max_height * factor,
+        };
+        let edge = |first: f32, second: f32| {
+            if first.is_finite() {
+                first + (second - first) * t
+            } else {
+                f32::INFINITY
+            }
+        };
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(scale(b, t)),
+            (Some(a), None) => Some(scale(a, 1.0 - t)),
+            (Some(a), Some(b)) => {
+                debug_assert!(
+                    a.min_width.is_finite() == b.min_width.is_finite()
+                        && a.max_width.is_finite() == b.max_width.is_finite()
+                        && a.min_height.is_finite() == b.min_height.is_finite()
+                        && a.max_height.is_finite() == b.max_height.is_finite(),
+                    "cannot interpolate between finite constraints and unbounded ones"
+                );
+                Some(BoxConstraints {
+                    min_width: edge(a.min_width, b.min_width),
+                    max_width: edge(a.max_width, b.max_width),
+                    min_height: edge(a.min_height, b.min_height),
+                    max_height: edge(a.max_height, b.max_height),
+                })
+            }
+        }
+    }
+
     pub const fn new(min_width: f32, max_width: f32, min_height: f32, max_height: f32) -> Self {
         BoxConstraints {
             min_width,
@@ -16017,6 +16072,58 @@ mod tests {
             <RenderViewport as RenderAbstractViewport>::DEFAULT_CACHE_EXTENT,
             250.0
         );
+    }
+
+    // -- `BoxConstraints::lerp` ---------------------------------------------
+    //
+    // Added at tick 222, because eight theme fields were stepping their
+    // constraints where upstream blends them.
+
+    #[test]
+    fn constraints_blend_edge_by_edge() {
+        // Four different pairs, so a line reading the wrong edge lands on a
+        // number that is not its own, and a quarter of the way rather than a
+        // half so the two ends are not interchangeable.
+        let a = BoxConstraints::new(4.0, 8.0, 12.0, 16.0);
+        let b = BoxConstraints::new(20.0, 24.0, 28.0, 32.0);
+        assert_eq!(
+            BoxConstraints::lerp(Some(a), Some(b), 0.25),
+            Some(BoxConstraints::new(8.0, 12.0, 16.0, 20.0))
+        );
+        assert_eq!(
+            BoxConstraints::lerp(Some(b), Some(a), 0.25),
+            Some(BoxConstraints::new(16.0, 20.0, 24.0, 28.0))
+        );
+    }
+
+    #[test]
+    fn an_unbounded_edge_stays_unbounded_rather_than_being_interpolated() {
+        // Upstream keeps an infinite edge infinite instead of blending it.
+        // Unboundedness is a kind, not a size: a viewport hands its child an
+        // unbounded axis on purpose, and a constraint half-way between
+        // unbounded and 200 is not something anybody can lay out against.
+        let a = BoxConstraints::new(0.0, f32::INFINITY, 0.0, 10.0);
+        let b = BoxConstraints::new(0.0, f32::INFINITY, 0.0, 50.0);
+        let quarter = BoxConstraints::lerp(Some(a), Some(b), 0.25).expect("two ends is enough");
+        assert!(quarter.max_width.is_infinite());
+        // The finite edge alongside it still moves.
+        assert_eq!(quarter.max_height, 20.0);
+    }
+
+    #[test]
+    fn constraints_that_appear_scale_up_from_nothing() {
+        // Upstream is `b * t` for a missing first end and `a * (1 - t)` for a
+        // missing second, not the present end held still.
+        let only = BoxConstraints::new(4.0, 8.0, 12.0, 16.0);
+        assert_eq!(
+            BoxConstraints::lerp(None, Some(only), 0.25),
+            Some(BoxConstraints::new(1.0, 2.0, 3.0, 4.0))
+        );
+        assert_eq!(
+            BoxConstraints::lerp(Some(only), None, 0.25),
+            Some(BoxConstraints::new(3.0, 6.0, 9.0, 12.0))
+        );
+        assert_eq!(BoxConstraints::lerp(None, None, 0.25), None);
     }
 }
 

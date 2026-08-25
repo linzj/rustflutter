@@ -17082,3 +17082,48 @@ Alignment / ShapeBorder / Decoration 各族，约七十处。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5498 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 222 次：约束、尺寸、圆角、对齐、边和装饰——同一族的最后 37 处
+
+第 221 次留下的队列。仍然是逐处对着上游读，不照猜。
+
+补上四个端口里没有的混合函数：
+
+- **`BoxConstraints::lerp`**。上游把无穷保持为无穷，而不是把它插进去：
+  `a.maxWidth.isFinite ? lerpDouble(...) : double.infinity`。**无界是一种
+  "类"，不是一个尺寸**——视口是故意把某条轴放开的，"离无界四分之一路"的
+  约束没人能拿来布局。
+- **`Radius::lerp_optional`**、**`BorderRadius::lerp_optional`**、
+  **`BorderRadiusGeometry::lerp_optional`**。上游对空端有**两种写法**：前两个
+  是 `b * t`，几何那个是 `a ??= BorderRadius.zero` 再线性插值。两种写法此刻
+  同解——从零插到 `b` 就是 `b * t`——但只要哪一端不再是线性的，它们就会分家。
+  测试把两种拼写都钉住，并说明了它们为什么此刻一致。
+- **`lerp_state_size`** 与 **`lerp_state_side`**。后者是上游 `_LerpSides`：
+  缺的那端取另一端的颜色、零透明度、零宽度，于是出现的边框是淡入的。
+
+改动的 37 处（`AlignmentGeometry::lerp` 端口里本来就有，只是没人用）：
+8 处 `constraints`、6 处状态尺寸、5 处 `alignment`、3 处状态边、3 处装饰、
+2+2 处圆角、3 处 FAB 约束、2 处 Chip 约束，以及被 rustfmt 折行因而漏掉的
+8 处——其中 `unselected_label_style` 与 `time_selector_separator_text_style`
+是第 221 次那一批的漏网。
+
+**三处确认是对的，没有动。**`ListTileStyle`、`heading_row_alignment`、
+`input_decoration_theme`、`material_tap_target_size`、
+`expansion_animation_style` 与 `ButtonBarThemeData::alignment` 上游本来就是
+`t < 0.5 ? a : b`。
+
+**筛出来的比我列出来的多。**改完之后按"混合函数的形状"而不是按我的清单去
+逐族强制改回 `lerp_nearer`：30 个字段/混合对里有 **10 个读绿**——
+actions_padding、children_padding、content_padding、extended_padding、
+inset_padding、label_padding、leading_padding、tile_padding、
+expanded_alignment、size_constraints。这十个是第 221 次批量改对了、但从来
+没有测试看着的。补了一条测试，十个字段各给一个**全测试内唯一**的数。再筛，
+49 处、30 对，**一个绿的都没有**。
+
+新写的六条承重规则逐条强制改错：六条全红（其中 `lerp_state_size` 的空端第一
+轮读绿，补测试后转红）。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5513 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
