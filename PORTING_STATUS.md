@@ -16708,3 +16708,35 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5429 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 211 次：`clone` 和 `dispose` 是编译器的活，`isCloneOf` 不是
+
+`ImageInfo`，2/7 到 **7/7**。
+
+上游这个类有 `clone()` 和 `dispose()`，还有一整段关于谁该调哪个的约定。那是
+因为 `dart:ui` 的 image 是一个**句柄**：`clone()` 造出第二个句柄，每一个都要
+被 dispose，最后一个走了缓冲区才走。
+
+`Rc<Image>` 就是那套计数，由编译器做。所以这两个方法在这里无事可做，也就没有
+写。**但 `isCloneOf` 不是白来的**——它回答的是监听者每一帧都要回答的问题：
+*这是新的像素，还是同样的像素又来了一次？*答案决定要不要重新布局和重绘。
+
+两边分家的地方也写清楚了：在 Dart 里 `clone()` 造第二个句柄，所以克隆出来的
+`ImageInfo` 是 `isCloneOf` 而**不是** `==`（`==` 比的是句柄）。这里 `Rc` 的
+克隆就是同一个指针，两个问题答案相同，于是它是 `Rc::ptr_eq`。上游需要的那个
+区分是**手工计数句柄的后果**，不是关于图像的事实，合并它是对的；而**把这个
+方法整个略掉就不对**——"这是不是同样的像素"仍然是一个有错误答案可选的问题
+（比尺寸，或者什么都不比、每帧都重绘）。
+
+`size_bytes` 是**解码后**的大小，不是文件的：不管源格式是什么，每像素四字节。
+一张 200 KB 的照片在 4000×3000 下是 48 MB，缓存要数的是这个数——这也是上游的
+`ImageCache` 按字节而不是按张数计的原因。
+
+变异：六条中四条一次转红。另两条（去掉那个 4、把 scale 乘进去）存活——我第一版
+是在那张一像素的 fixture 上量的，而它的宽高正是桩对不认识的字节返回的值，
+**每一种算错都给出同一个答案**。改成用桩自己的 40×30 fixture 之后两条都转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5433 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

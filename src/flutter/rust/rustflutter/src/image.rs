@@ -63,12 +63,90 @@ impl ImageConfiguration {
 }
 
 /// A decoded frame and the scale it decodes at, upstream `ImageInfo`.
+///
+/// # `clone` and `dispose` are the language's job here
+///
+/// Upstream this class has both, and a paragraph of contract about who calls
+/// which. That is because a `dart:ui` image is a **handle** onto a buffer:
+/// `clone()` makes a second handle, each one has to be disposed, and the
+/// buffer goes when the last of them does.
+///
+/// `Rc<Image>` is that counting, done by the compiler. Cloning an `ImageInfo`
+/// bumps the count and dropping it lowers it, so neither method has anything
+/// to do here and neither is written.
+///
+/// What does not come for free is [`ImageInfo::is_clone_of`] -- see there.
 #[derive(Clone)]
 pub struct ImageInfo {
     pub image: Rc<Image>,
     /// Logical pixels per image pixel; a 2.0 means the image is drawn at
     /// half its pixel size.
     pub scale: f32,
+    /// Upstream's `debugLabel`, which is not decoration: it is how an image
+    /// in a leak report or a memory dump is traced back to the thing that
+    /// asked for it. Part of the identity below for that reason -- two infos
+    /// labelled differently came from different places even if the pixels are
+    /// the same.
+    pub debug_label: Option<String>,
+}
+
+impl ImageInfo {
+    pub fn new(image: Rc<Image>, scale: f32) -> ImageInfo {
+        ImageInfo {
+            image,
+            scale,
+            debug_label: None,
+        }
+    }
+
+    pub fn with_debug_label(mut self, label: impl Into<String>) -> Self {
+        self.debug_label = Some(label.into());
+        self
+    }
+
+    /// Upstream's `sizeBytes`: `image.height * image.width * 4`.
+    ///
+    /// **The decoded size, not the file's.** Four bytes a pixel whatever the
+    /// source format was, so a 200 KB photograph is 48 MB of memory at
+    /// 4000x3000 and the number that matters for a cache is this one. Upstream
+    /// puts the same arithmetic in `ImageCache`, which is what makes the cache
+    /// count in bytes rather than in images.
+    pub fn size_bytes(&self) -> usize {
+        let (width, height) = self.image.size();
+        (width.max(0) as usize) * (height.max(0) as usize) * 4
+    }
+
+    /// Upstream's `isCloneOf`: whether these two describe the **same pixels**.
+    ///
+    /// ```dart
+    /// bool isCloneOf(ImageInfo other) {
+    ///   return other.image.isCloneOf(image) && other.scale == scale && other.debugLabel == debugLabel;
+    /// }
+    /// ```
+    ///
+    /// It exists for one question a listener has to answer on every frame it
+    /// is handed an image: *is this new pixels, or the same pixels again?* The
+    /// answer decides whether to lay out and paint again, and upstream's own
+    /// example shows the caller disposing the new reference and returning
+    /// where it is a clone.
+    ///
+    /// # Where this port and upstream part company, and why
+    ///
+    /// In Dart `clone()` makes a **second handle** onto one buffer, so a
+    /// cloned `ImageInfo` is `isCloneOf` the original and **not** `==` to it
+    /// -- `==` compares the handles. Here an `Rc` clone is the same pointer,
+    /// so the two questions have the same answer and this is `Rc::ptr_eq`.
+    ///
+    /// The distinction upstream needs is a consequence of hand-counted
+    /// handles, not of anything about images. Collapsing it is right; leaving
+    /// the method out would not be, because *"are these the same pixels"* is
+    /// still a question with a wrong answer available -- comparing sizes, or
+    /// comparing nothing and repainting every frame.
+    pub fn is_clone_of(&self, other: &ImageInfo) -> bool {
+        Rc::ptr_eq(&self.image, &other.image)
+            && self.scale == other.scale
+            && self.debug_label == other.debug_label
+    }
 }
 
 /// One listener on a stream, upstream `ImageStreamListener`: the frame
@@ -327,7 +405,7 @@ impl ImageProvider {
         match self.load_bytes() {
             Ok(bytes) => {
                 if let Some(image) = Image::shared(&key.key, &bytes) {
-                    completer.borrow_mut().set_image(ImageInfo { image, scale });
+                    completer.borrow_mut().set_image(ImageInfo::new(image, scale));
                 }
             }
             Err(error) => completer.borrow_mut().report_error(error),
@@ -346,7 +424,7 @@ impl ImageProvider {
         match self.load_bytes() {
             Ok(bytes) => {
                 if let Some(image) = Image::shared_now(&key.key, &bytes) {
-                    completer.borrow_mut().set_image(ImageInfo { image, scale });
+                    completer.borrow_mut().set_image(ImageInfo::new(image, scale));
                 }
             }
             Err(error) => completer.borrow_mut().report_error(error),
@@ -439,10 +517,9 @@ mod tests {
         // A frame arriving without the worker pool: the direct spelling.
         let image = crate::painting::Image::decode(ONE_PX_PNG);
         if let Some(image) = image {
-            completer.borrow_mut().set_image(ImageInfo {
-                image: Rc::new(image),
-                scale: 1.0,
-            });
+            completer
+                .borrow_mut()
+                .set_image(ImageInfo::new(Rc::new(image), 1.0));
             assert!(heard.get());
         }
     }
@@ -453,10 +530,7 @@ mod tests {
         let Some(image) = image else {
             return;
         };
-        let completer = Rc::new(RefCell::new(ImageStreamCompleter::one_frame(ImageInfo {
-            image: Rc::new(image),
-            scale: 2.0,
-        })));
+        let completer = Rc::new(RefCell::new(ImageStreamCompleter::one_frame(ImageInfo::new(Rc::new(image), 2.0))));
         let mut stream = ImageStream::new();
         stream.set_completer(completer);
         let scale_seen = Rc::new(Cell::new(0.0f32));
@@ -538,4 +612,83 @@ mod tests {
         let stream = provider.resolve_now(ImageConfiguration::EMPTY);
         assert!(stream.completer().is_some());
     }
+
+    // -- Is this new pixels, or the same pixels again? ----------------------
+
+    #[test]
+    fn an_info_and_its_clone_describe_the_same_pixels() {
+        // The question a listener answers on every frame it is handed an
+        // image: the answer decides whether to lay out and paint again.
+        let Some(image) = crate::painting::Image::decode(ONE_PX_PNG) else {
+            return;
+        };
+        let first = ImageInfo::new(Rc::new(image), 1.0);
+        let second = first.clone();
+        assert!(first.is_clone_of(&second));
+        assert!(second.is_clone_of(&first), "and either way round");
+    }
+
+    #[test]
+    fn but_two_decodes_of_the_same_bytes_are_not() {
+        // Same pixels by value, different buffers. A listener told these were
+        // clones would skip a repaint it needs -- the new buffer is what it
+        // has to draw from, and the old one may be on its way out.
+        let (Some(one), Some(two)) = (
+            crate::painting::Image::decode(ONE_PX_PNG),
+            crate::painting::Image::decode(ONE_PX_PNG),
+        ) else {
+            return;
+        };
+        let first = ImageInfo::new(Rc::new(one), 1.0);
+        let second = ImageInfo::new(Rc::new(two), 1.0);
+        assert!(!first.is_clone_of(&second));
+    }
+
+    #[test]
+    fn the_scale_and_the_label_are_part_of_the_identity() {
+        // Upstream compares all three. The same buffer at a different scale is
+        // a different thing to draw, and a different label came from a
+        // different place -- which is what makes a leak report readable.
+        let Some(image) = crate::painting::Image::decode(ONE_PX_PNG) else {
+            return;
+        };
+        let image = Rc::new(image);
+        let base = ImageInfo::new(Rc::clone(&image), 1.0);
+
+        let rescaled = ImageInfo::new(Rc::clone(&image), 2.0);
+        assert!(!base.is_clone_of(&rescaled), "same buffer, different scale");
+
+        let labelled = ImageInfo::new(Rc::clone(&image), 1.0).with_debug_label("avatar");
+        assert!(!base.is_clone_of(&labelled), "same buffer, different label");
+        assert!(labelled.is_clone_of(&labelled.clone()), "and its own clone is");
+    }
+
+    #[test]
+    fn the_size_is_the_decoded_size_and_not_the_files() {
+        // Four bytes a pixel whatever the source format was. This is the
+        // number a cache has to count in, and the reason a small photograph
+        // can be a large image.
+        //
+        // The dimensions have to be **known and not square**, and neither is
+        // fussiness: the first version measured the one-pixel fixture, whose
+        // width and height are what the stub reports for bytes it does not
+        // recognise. Every arithmetic mistake gives the same answer there, and
+        // two mutations -- dropping the four and multiplying by the scale --
+        // both stayed green.
+        let bytes = crate::engine_test_stubs::encoded_image(40, 30);
+        let Some(image) = crate::painting::Image::decode(&bytes) else {
+            panic!("the stub decodes its own fixture");
+        };
+        assert_eq!(image.size(), (40, 30), "the fixture arrived intact");
+        let info = ImageInfo::new(Rc::new(image), 1.0);
+        assert_eq!(info.size_bytes(), 40 * 30 * 4);
+
+        // And the scale does not enter into it: scale is about how large the
+        // image is *drawn*, not how much of it there is. A 3.0 here would be
+        // three times the memory if it did.
+        let other = crate::painting::Image::decode(&bytes).expect("again");
+        let scaled = ImageInfo::new(Rc::new(other), 3.0);
+        assert_eq!(scaled.size_bytes(), info.size_bytes());
+    }
 }
+
