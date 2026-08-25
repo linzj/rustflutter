@@ -259,6 +259,16 @@ impl CupertinoIcons {
     /// dependency on the other. Neither is visible to the type system.
     pub const ICON_FONT_PACKAGE: &'static str = "cupertino_icons";
 
+    /// Constant, and it is a fact about the ecosystem rather than a check.
+    ///
+    /// Material's icons ship inside the framework; these do not, and no
+    /// arrangement of this crate can change that. It is a `fn` rather than a
+    /// `const` because it is the answer to a question a caller asks about a
+    /// font -- the Material side of the same question is `uses-material-design`
+    /// in a pubspec -- and because the two want to be asked the same way even
+    /// though only one of them can ever vary.
+    ///
+    /// See [`CupertinoIcons::ICON_FONT_PACKAGE`] for the mechanism.
     pub fn requires_a_package_dependency() -> bool {
         true
     }

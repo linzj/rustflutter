@@ -3176,6 +3176,112 @@ mod tests {
         seen.borrow_mut().take().expect("built once")
     }
 
+    /// Every one of the four button themes, each set to a foreground of its
+    /// own, so which one a variant read is readable off the answer.
+    ///
+    /// `variant_sweep` found `ButtonVariant::Outlined` able to read
+    /// `ElevatedButtonTheme` -- the arm above it -- with the whole suite
+    /// green. Nothing distinguished the four, because every test that reached
+    /// this function published one theme at a time.
+    fn variant_reads(variant: ButtonVariant) -> ResolvedButton {
+        use crate::component_themes::{
+            FilledButtonTheme, FilledButtonThemeData, OutlinedButtonTheme,
+            OutlinedButtonThemeData, TextButtonTheme, TextButtonThemeData,
+        };
+        use crate::widget_state::StateProperty;
+
+        struct Reader {
+            variant: ButtonVariant,
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedButton>>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.seen.borrow_mut() = Some(ResolvedButton::of(
+                    context,
+                    self.variant,
+                    crate::widget_state::WidgetStates::NONE,
+                    ResolvedButton {
+                        background: None,
+                        foreground: UNTHEMED,
+                        side: None,
+                        padding: None,
+                        minimum_size: None,
+                    },
+                ));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+
+        fn style(colour: crate::engine::Color) -> Option<ButtonStyle> {
+            let mut style = ButtonStyle::new();
+            style.foreground_color = Some(StateProperty::all(Some(colour)));
+            Some(style)
+        }
+
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let reader = component(Reader {
+            variant,
+            seen: std::rc::Rc::clone(&seen),
+        });
+
+        let mut filled = FilledButtonThemeData::new();
+        filled.style = style(FILLED_MARK);
+        let mut elevated = ElevatedButtonThemeData::new();
+        elevated.style = style(ELEVATED_MARK);
+        let mut outlined = OutlinedButtonThemeData::new();
+        outlined.style = style(OUTLINED_MARK);
+        let mut text = TextButtonThemeData::new();
+        text.style = style(TEXT_MARK);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            FilledButtonTheme::new(
+                filled,
+                ElevatedButtonTheme::new(
+                    elevated,
+                    OutlinedButtonTheme::new(
+                        outlined,
+                        TextButtonTheme::new(text, reader),
+                    ),
+                ),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    const UNTHEMED: crate::engine::Color = crate::engine::Color(0xff000001);
+    const FILLED_MARK: crate::engine::Color = crate::engine::Color(0xff000011);
+    const ELEVATED_MARK: crate::engine::Color = crate::engine::Color(0xff000022);
+    const OUTLINED_MARK: crate::engine::Color = crate::engine::Color(0xff000033);
+    const TEXT_MARK: crate::engine::Color = crate::engine::Color(0xff000044);
+
+    #[test]
+    fn each_button_variant_reads_the_theme_its_own_widget_reads() {
+        // Reading a neighbour's theme is invisible until all four are in the
+        // tree at once: an application that themes its outlined buttons and
+        // sees nothing change has no other symptom.
+        assert_eq!(variant_reads(ButtonVariant::Filled).foreground, FILLED_MARK);
+        assert_eq!(
+            variant_reads(ButtonVariant::Elevated).foreground,
+            ELEVATED_MARK
+        );
+        assert_eq!(
+            variant_reads(ButtonVariant::Outlined).foreground,
+            OUTLINED_MARK
+        );
+        assert_eq!(variant_reads(ButtonVariant::Text).foreground, TEXT_MARK);
+    }
+
+    #[test]
+    fn and_the_danger_variant_reads_the_filled_one_on_purpose() {
+        // Upstream has no danger button; this crate's is a filled button in
+        // the error colours, so it takes a filled button's theme. Sharing an
+        // arm is a decision rather than an omission, which is why it has a
+        // test of its own rather than being left to look like one.
+        assert_eq!(variant_reads(ButtonVariant::Danger).foreground, FILLED_MARK);
+    }
+
     #[test]
     fn an_elevated_button_is_not_a_filled_one_with_a_shadow() {
         // Its background is the low surface container and its label the

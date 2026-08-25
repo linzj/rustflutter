@@ -14867,3 +14867,48 @@ list to be before"。现在有了。改名为
 背景只在缩放时填。
 
 5201 测试通过，完整 GN 门过。
+
+## 第 162 轮 — 两个没人问的公式，和一个读了邻居主题也没人发现的按钮
+
+`unpainted` 清空后转向另外两条队列。
+
+### hollow：两个常量谓词，说明写在了别处
+
+`hollow.py` 找的是"看起来像检查、实际是陈述事实"的谓词，
+而它要求那段事实写在**函数自己的**文档注释上。两个漏网的：
+
+- `CupertinoIcons::requires_a_package_dependency` —— 说明在它上面那个常量的
+  注释里。Material 的图标随框架发布，这些不是，本 crate 怎么摆布都改不了。
+- `FabMiniOffsetAdjustment::is_mini` —— 说明在 struct 上。
+  上游那个 mixin 的全部内容就是 `isMini() => true`，它存在的意义是覆盖
+  `StandardFabLocation::is_mini` 的 `false`，**两个答案相反就是这个类型的全部内容**。
+
+查下来还有一件更实的：这个 struct 的两个成员**都没有任何读者**。
+真正的机制是 location 上的 `mini` 标志加模块级常量。而文件自己的模块文档说
+"each rule is a unit struct holding its formula"——五个兄弟规则结构都被
+`get_offset_x` / `offset_y` 读着，只有这一个的公式没人问。
+按文件自己声明的设计接上（`get_offset` 现在走
+`FabMiniOffsetAdjustment::ADJUSTMENT`），并补一条测试钉住"它翻转默认值而不是
+重复默认值"。
+
+hollow 的未说明项：2 → 0。
+
+### variant_sweep：component_themes.rs 13 处臂，3 处存活
+
+- **`ButtonVariant::Outlined` 可以去读 `ElevatedButtonTheme`（上一条臂），
+  整个测试套件全绿。** 原因是每一条走到 `ResolvedButton::of` 的测试都只往树里
+  放一个按钮主题。四个一起放进去，谁读了谁就写在答案里了。
+  一个给自己 outlined 按钮设了主题却什么都没变的应用，没有别的症状。
+  顺带给 `Danger` 读 filled 主题这件事单写了一条——共用一条臂是决定而不是遗漏，
+  所以它需要一条自己的测试，而不是被留着看起来像遗漏。
+- **`TextCapitalization::as_name` 四行里有两行可以换成邻居。**
+  这正是 sweep 文档点名的第一类：发往 `flutter/textinput` 的表，
+  这边没人读，读它的是 embedder，所以错一行会换掉读者拿到的键盘而这里毫无反应。
+  补 `ALL` 和两条测试：逐行断言（上游发的是 Dart 枚举的 `toString()`，
+  形如 `TextCapitalization.words`），以及两两互不相同——
+  后者才是"换成邻居"这件事可被察觉的前提。
+
+重跑 sweep：13 处臂全部被抓住，**0 存活**。
+`unwalked.py`：268 → 264 个从未被点名的变体。
+
+5205 测试通过，完整 GN 门过。

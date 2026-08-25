@@ -264,6 +264,17 @@ pub struct FabMiniOffsetAdjustment;
 impl FabMiniOffsetAdjustment {
     pub const ADJUSTMENT: f32 = MINI_BUTTON_OFFSET_ADJUSTMENT;
 
+    /// Constant on purpose, and the constant **is** the mixin.
+    ///
+    /// Upstream's whole body is `isMini() => true`. It exists to override
+    /// [`StandardFabLocation::is_mini`], whose default is `false`, so mixing
+    /// it in is how one of the nineteen says it is a mini location. The two
+    /// answers being opposites is the entire content of the type; a `true`
+    /// here that agreed with the default would make the mixin do nothing.
+    ///
+    /// This port puts the answer on the location as a flag rather than in the
+    /// type it is mixed into -- see the module docs -- so what is left here is
+    /// the rule itself, which is what its five sibling rule structs also hold.
     pub fn is_mini() -> bool {
         true
     }
@@ -305,8 +316,11 @@ pub trait StandardFabLocation {
     /// the mini adjustment is worked out once here rather than in each of the
     /// nineteen.
     fn get_offset(&self, geometry: &ScaffoldPrelayoutGeometry) -> Offset {
+        // Through the rule struct rather than the bare constant, which is
+        // how the other five rules in this file are reached. It held its
+        // formula and nothing asked it for it.
         let adjustment = if self.is_mini() {
-            MINI_BUTTON_OFFSET_ADJUSTMENT
+            FabMiniOffsetAdjustment::ADJUSTMENT
         } else {
             0.0
         };
@@ -572,6 +586,14 @@ mod tests {
                 .dx,
             12.0
         );
+        // The mixin's whole content: it answers the opposite of the default
+        // it overrides. Equal, and mixing it in would do nothing.
+        assert_ne!(
+            FabMiniOffsetAdjustment::is_mini(),
+            FloatingActionButtonLocation::START_FLOAT.is_mini(),
+            "the rule flips the default rather than restating it"
+        );
+        assert!(FabMiniOffsetAdjustment::is_mini());
         assert!(!FloatingActionButtonLocation::START_FLOAT.is_mini());
         assert!(FloatingActionButtonLocation::MINI_START_FLOAT.is_mini());
     }

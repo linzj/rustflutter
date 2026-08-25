@@ -7793,14 +7793,60 @@ pub enum TextCapitalization {
 }
 
 impl TextCapitalization {
+    /// Every value, so a test can walk the table rather than sample it.
+    pub const ALL: [TextCapitalization; 4] = [
+        TextCapitalization::Words,
+        TextCapitalization::Sentences,
+        TextCapitalization::Characters,
+        TextCapitalization::None,
+    ];
+
     /// Upstream's `toString()` on the enum, which is what the text input
     /// channel carries.
+    ///
+    /// A table **nothing on this side reads**: it goes out on
+    /// `flutter/textinput` and the embedder looks it up. A row that took its
+    /// neighbour's string would change what keyboard the reader gets and
+    /// nothing here would notice, which is what `variant_sweep` found for two
+    /// of these four.
     pub fn as_name(self) -> &'static str {
         match self {
             TextCapitalization::Words => "TextCapitalization.words",
             TextCapitalization::Sentences => "TextCapitalization.sentences",
             TextCapitalization::Characters => "TextCapitalization.characters",
             TextCapitalization::None => "TextCapitalization.none",
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_capitalization_tests {
+    use super::TextCapitalization;
+
+    #[test]
+    fn every_capitalization_names_itself_the_way_dart_would() {
+        // Upstream sends `textCapitalization.toString()`, and a Dart enum's is
+        // `EnumName.valueName`. These are protocol, not ours to choose: an
+        // embedder is already written against each one.
+        assert_eq!(
+            TextCapitalization::ALL.map(TextCapitalization::as_name),
+            [
+                "TextCapitalization.words",
+                "TextCapitalization.sentences",
+                "TextCapitalization.characters",
+                "TextCapitalization.none",
+            ]
+        );
+    }
+
+    #[test]
+    fn and_no_two_of_them_share_a_name() {
+        // What makes a neighbour-swap detectable at all. Two rows with one
+        // string is a keyboard setting the reader cannot reach.
+        for (index, one) in TextCapitalization::ALL.iter().enumerate() {
+            for other in TextCapitalization::ALL.iter().skip(index + 1) {
+                assert_ne!(one.as_name(), other.as_name(), "{one:?} and {other:?}");
+            }
         }
     }
 }
