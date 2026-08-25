@@ -216,6 +216,19 @@ pub enum ChannelValue {
 
 /// Upstream `PlatformProvidedMenuItemType`: menus the platform supplies
 /// itself.
+///
+/// # The declaration order is the wire format
+///
+/// Upstream serialises `item.type.index`, and a Dart enum's index is the
+/// position it was written in. `serialize_node` sends `menu_type as i32` for
+/// the same reason, so **this list is a protocol and not a list**: a variant
+/// inserted in the middle renumbers every one after it, and the embedder would
+/// draw a services submenu where the application asked for Quit.
+///
+/// There is nothing per-variant here for a test to reach -- no string, no
+/// method -- which is why `variant_sweep` cannot see it: it reads match arms,
+/// and a table spelled `enum as i32` has none. `unwalked.py` is what found
+/// this one, and the name-shaped question was the right one to ask here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlatformProvidedMenuItemType {
     About,
@@ -230,6 +243,24 @@ pub enum PlatformProvidedMenuItemType {
     MinimizeWindow,
     ZoomWindow,
     ArrangeWindowsInFront,
+}
+
+impl PlatformProvidedMenuItemType {
+    /// Every value, in the order that is the protocol.
+    pub const ALL: [PlatformProvidedMenuItemType; 12] = [
+        PlatformProvidedMenuItemType::About,
+        PlatformProvidedMenuItemType::Quit,
+        PlatformProvidedMenuItemType::ServicesSubmenu,
+        PlatformProvidedMenuItemType::Hide,
+        PlatformProvidedMenuItemType::HideOtherApplications,
+        PlatformProvidedMenuItemType::ShowAllApplications,
+        PlatformProvidedMenuItemType::StartSpeaking,
+        PlatformProvidedMenuItemType::StopSpeaking,
+        PlatformProvidedMenuItemType::ToggleFullScreen,
+        PlatformProvidedMenuItemType::MinimizeWindow,
+        PlatformProvidedMenuItemType::ZoomWindow,
+        PlatformProvidedMenuItemType::ArrangeWindowsInFront,
+    ];
 }
 
 /// Upstream `PlatformProvidedMenuItem`: an item the platform draws and
@@ -1075,3 +1106,75 @@ mod menu_serializable_tests {
         ));
     }
 }
+
+// -- The numbers the platform menu items go out as ----------------------------
+
+#[cfg(test)]
+mod provided_menu_index_tests {
+    //! What `platformProvidedMenu` carries is the variant's position, so the
+    //! order these are written in is the protocol.
+    //!
+    //! Nothing on this side reads the number back, and there is no per-variant
+    //! body for `variant_sweep` to mutate, so until now a variant inserted in
+    //! the middle would have renumbered eleven menu items with the whole suite
+    //! green.
+
+    use super::{
+        ChannelValue, DefaultPlatformMenuDelegate, PlatformMenuNode, PlatformProvidedMenuItem,
+        PlatformProvidedMenuItemType, keys,
+    };
+
+    /// The number the delegate puts on the channel for this item.
+    fn sent(menu_type: PlatformProvidedMenuItemType) -> i32 {
+        let mut delegate = DefaultPlatformMenuDelegate::new();
+        let entries = delegate.serialize_node(&PlatformMenuNode::Provided(
+            PlatformProvidedMenuItem::new(menu_type),
+        ));
+        let entry = entries.first().expect("one entry");
+        match entry
+            .iter()
+            .find(|(key, _)| *key == keys::PLATFORM_PROVIDED_MENU)
+            .map(|(_, value)| value)
+        {
+            Some(ChannelValue::Int(index)) => *index,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_provided_menu_goes_out_as_its_position_in_upstreams_list() {
+        // Upstream's `platform_menu_bar.dart`, in this order: about, quit,
+        // servicesSubmenu, hide, hideOtherApplications, showAllApplications,
+        // startSpeaking, stopSpeaking, toggleFullScreen, minimizeWindow,
+        // zoomWindow, arrangeWindowsInFront.
+        for (position, menu_type) in PlatformProvidedMenuItemType::ALL.iter().enumerate() {
+            assert_eq!(sent(*menu_type), position as i32, "{menu_type:?}");
+        }
+    }
+
+    #[test]
+    fn and_the_two_that_would_be_confused_are_the_ones_worth_naming() {
+        // Written out rather than left to the loop above, because these are
+        // what an off-by-one costs: the item that quits the application and
+        // the one that opens a submenu of services sit next to each other.
+        assert_eq!(sent(PlatformProvidedMenuItemType::Quit), 1);
+        assert_eq!(sent(PlatformProvidedMenuItemType::ServicesSubmenu), 2);
+        assert_ne!(
+            sent(PlatformProvidedMenuItemType::Quit),
+            sent(PlatformProvidedMenuItemType::ServicesSubmenu)
+        );
+    }
+
+    #[test]
+    fn no_two_provided_menus_share_a_number() {
+        // An explicit discriminant added to one of them would collide
+        // silently; the embedder would then draw one menu twice and never the
+        // other.
+        for (index, one) in PlatformProvidedMenuItemType::ALL.iter().enumerate() {
+            for other in PlatformProvidedMenuItemType::ALL.iter().skip(index + 1) {
+                assert_ne!(sent(*one), sent(*other), "{one:?} and {other:?}");
+            }
+        }
+    }
+}
+

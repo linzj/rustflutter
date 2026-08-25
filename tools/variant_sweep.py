@@ -36,6 +36,20 @@ Least worth sweeping: arms whose bodies are already distinct types, or which
 some other test exercises end to end. The sweep will tell you, but it will
 spend twenty seconds doing it.
 
+What this cannot see, and `unwalked.py` can
+-------------------------------------------
+
+It rewrites **single-line match arms**, so a table with no match in it is
+invisible. The one that turned up is the worst kind:
+`PlatformProvidedMenuItemType` goes over the channel as `menu_type as i32`,
+so the *declaration order* is the protocol and there are no arms at all --
+a variant inserted in the middle renumbers eleven menu items and this sweep
+would report the file as having nothing to look at.
+
+`unwalked.py` is what found that one. The name-shaped question is a worse
+question in general and was the right one there, so the two queues are worth
+keeping side by side rather than replacing one with the other.
+
   python tools/variant_sweep.py src/widget_state.rs [more files...]
 """
 
