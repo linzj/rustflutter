@@ -1,5 +1,5 @@
-//! Ports of `scheduler/priority.dart`, the performance-mode half of
-//! `scheduler/binding.dart`, and `gestures/binding.dart`'s
+//! Ports of `scheduler/priority.dart`, the task-queue and performance-mode
+//! halves of `scheduler/binding.dart`, and `gestures/binding.dart`'s
 //! `FlutterErrorDetailsForPointerEventDispatcher`.
 //!
 //! Framework plumbing, and three small designs worth keeping.
@@ -110,11 +110,32 @@ impl PerformanceModeRequestHandle {
     }
 }
 
-/// The performance-mode half of upstream `SchedulerBinding`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// One queued task: what to run and how badly it wants to.
+struct TaskEntry {
+    priority: i64,
+    task: Box<dyn FnOnce()>,
+}
+
+/// The task-queue and performance-mode halves of upstream `SchedulerBinding`.
+///
+/// [`Priority`] was ported here with nothing that consumed it. This is what it
+/// was for: `scheduleTask` puts work behind the frame rather than in front of
+/// it, and the priority decides which side of an animation a task lands on.
+#[derive(Default)]
 pub struct SchedulerBinding {
     performance_mode: Option<DartPerformanceMode>,
     request_count: usize,
+    /// Upstream's `_taskQueue`, a heap. A sorted `Vec` here, which is the same
+    /// order and the wrong complexity for a queue that never holds more than a
+    /// handful.
+    tasks: Vec<TaskEntry>,
+    /// Upstream's `BindingBase.locked`: true while the binding is in the
+    /// middle of something that must not be re-entered.
+    locked: bool,
+    /// Upstream's `transientCallbackCount`, which here is set rather than
+    /// counted -- this port has no frame-callback register on this type, and
+    /// the scheduling strategy only ever asks whether it is above zero.
+    transient_callback_count: usize,
 }
 
 impl SchedulerBinding {
@@ -175,6 +196,132 @@ impl SchedulerBinding {
 
     pub fn request_count(&self) -> usize {
         self.request_count
+    }
+
+    // -- The task queue ------------------------------------------------------
+
+    /// Upstream `SchedulerBinding.scheduleTask`.
+    ///
+    /// ```dart
+    /// final bool isFirstTask = _taskQueue.isEmpty;
+    /// _taskQueue.add(entry);
+    /// if (isFirstTask && !locked) {
+    ///   _ensureEventLoopCallback();
+    /// }
+    /// ```
+    ///
+    /// The event loop is kicked **only for the first task**, and not while
+    /// locked. Both halves are about not asking twice: a queue that already
+    /// has work in it already has a callback coming, and a locked binding gets
+    /// its kick from [`SchedulerBinding::unlocked`] instead. Kicking on every
+    /// `scheduleTask` would queue one event-loop callback per task and run
+    /// them all in one turn, which is the thing the queue exists to avoid.
+    ///
+    /// Returns whether this call is the one that has to kick the loop, which
+    /// is what `_ensureEventLoopCallback` would have done.
+    pub fn schedule_task(&mut self, priority: Priority, task: impl FnOnce() + 'static) -> bool {
+        let is_first_task = self.tasks.is_empty();
+        self.tasks.push(TaskEntry {
+            priority: priority.value(),
+            task: Box::new(task),
+        });
+        // Upstream's `_taskSorter` is `-e1.priority.compareTo(e2.priority)`:
+        // **descending**, so the highest priority is at the head. A stable
+        // sort keeps equal priorities in the order they were scheduled, which
+        // upstream's heap does not promise -- a difference worth knowing about
+        // rather than one to rely on.
+        self.tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        is_first_task && !self.locked
+    }
+
+    pub fn pending_tasks(&self) -> usize {
+        self.tasks.len()
+    }
+
+    /// Upstream's `locked` setter by way of `unlocked()`.
+    ///
+    /// ```dart
+    /// void unlocked() {
+    ///   super.unlocked();
+    ///   if (_taskQueue.isNotEmpty) {
+    ///     _ensureEventLoopCallback();
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Returns whether unlocking has to kick the loop -- work that arrived
+    /// while locked got no kick of its own, so this is where it comes from.
+    pub fn set_locked(&mut self, locked: bool) -> bool {
+        let was_locked = self.locked;
+        self.locked = locked;
+        was_locked && !locked && !self.tasks.is_empty()
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Upstream's `transientCallbackCount`, which the default scheduling
+    /// strategy reads.
+    pub fn set_transient_callback_count(&mut self, count: usize) {
+        self.transient_callback_count = count;
+    }
+
+    pub fn transient_callback_count(&self) -> usize {
+        self.transient_callback_count
+    }
+
+    /// Upstream `defaultSchedulingStrategy`.
+    ///
+    /// ```dart
+    /// if (scheduler.transientCallbackCount > 0) {
+    ///   return priority >= Priority.animation.value;
+    /// }
+    /// return true;
+    /// ```
+    ///
+    /// While a frame callback is registered -- which is to say while something
+    /// is animating -- only [`Priority::ANIMATION`] and above run. That is the
+    /// whole reason the three named priorities are spaced the way they are:
+    /// [`Priority::IDLE`] work is exactly the work that must not compete with
+    /// a running animation for the frame budget, and it waits.
+    pub fn default_scheduling_strategy(&self, priority: i64) -> bool {
+        if self.transient_callback_count > 0 {
+            return priority >= Priority::ANIMATION.value();
+        }
+        true
+    }
+
+    /// Upstream `SchedulerBinding.handleEventLoopCallback`: run the
+    /// highest-priority task **if it is of a high enough priority**.
+    ///
+    /// The return value is the subtle part, and upstream's doc spells it out:
+    ///
+    /// > Returns false if the scheduler is locked, or if there are no tasks
+    /// > remaining.
+    /// >
+    /// > Returns true otherwise, **including when no task is executed due to
+    /// > priority being too low**.
+    ///
+    /// The caller re-arms itself on true. So "there is work, but not yet" and
+    /// "I ran something" have to give the same answer: if a starved task
+    /// returned false the loop would stop, and that task would still be
+    /// waiting when the animation ended with nothing left to wake it. False is
+    /// reserved for the two cases where the loop genuinely has nothing to come
+    /// back to -- and even then `unlocked` and `schedule_task` will start it
+    /// again.
+    ///
+    /// Only the head is consulted. It is the highest priority there is, so a
+    /// head the strategy refuses means every task is refused.
+    pub fn handle_event_loop_callback(&mut self) -> bool {
+        if self.tasks.is_empty() || self.locked {
+            return false;
+        }
+        if self.default_scheduling_strategy(self.tasks[0].priority) {
+            let entry = self.tasks.remove(0);
+            (entry.task)();
+        }
+        true
     }
 }
 
@@ -422,5 +569,209 @@ mod tests {
         let details = FlutterErrorDetailsForPointerEventDispatcher::new("boom");
         assert_eq!(details.library.as_deref(), Some("gesture library"));
         assert_eq!(details.exception, "boom");
+    }
+
+    // -- The task queue, which is what `Priority` was ported for -------------
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A scheduler and the log its tasks write to.
+    fn recording() -> (SchedulerBinding, Rc<RefCell<Vec<&'static str>>>) {
+        (SchedulerBinding::new(), Rc::new(RefCell::new(Vec::new())))
+    }
+
+    fn push(
+        binding: &mut SchedulerBinding,
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        priority: Priority,
+        name: &'static str,
+    ) -> bool {
+        let log = Rc::clone(log);
+        binding.schedule_task(priority, move || log.borrow_mut().push(name))
+    }
+
+    #[test]
+    fn the_highest_priority_runs_first_however_it_was_queued() {
+        let (mut binding, log) = recording();
+        push(&mut binding, &log, Priority::IDLE, "idle");
+        push(&mut binding, &log, Priority::TOUCH, "touch");
+        push(&mut binding, &log, Priority::ANIMATION, "animation");
+
+        while binding.pending_tasks() > 0 {
+            binding.handle_event_loop_callback();
+        }
+        assert_eq!(*log.borrow(), ["touch", "animation", "idle"]);
+    }
+
+    #[test]
+    fn only_the_first_task_kicks_the_event_loop() {
+        // Upstream: `if (isFirstTask && !locked) _ensureEventLoopCallback()`.
+        // A queue with work in it already has a callback coming, and kicking
+        // per task would run the whole queue in one turn -- which is the thing
+        // the queue exists to avoid.
+        let (mut binding, log) = recording();
+        assert!(push(&mut binding, &log, Priority::IDLE, "first"));
+        assert!(!push(&mut binding, &log, Priority::TOUCH, "second"));
+        assert!(!push(&mut binding, &log, Priority::IDLE, "third"));
+
+        // And once the queue drains, the next one kicks again.
+        while binding.pending_tasks() > 0 {
+            binding.handle_event_loop_callback();
+        }
+        assert!(push(&mut binding, &log, Priority::IDLE, "later"));
+    }
+
+    #[test]
+    fn work_that_arrives_while_locked_is_kicked_by_the_unlocking() {
+        // The other half of the same rule. A locked binding gets no kick from
+        // `scheduleTask`, so without `unlocked()` doing it the task would sit
+        // there with nothing coming to run it.
+        let (mut binding, log) = recording();
+        binding.set_locked(true);
+        assert!(
+            !push(&mut binding, &log, Priority::TOUCH, "queued"),
+            "no kick while locked, even for the first task"
+        );
+        assert!(
+            !binding.handle_event_loop_callback(),
+            "and the loop refuses to run one"
+        );
+        assert!(binding.set_locked(false), "the unlocking is the kick");
+        assert!(binding.handle_event_loop_callback());
+        assert_eq!(*log.borrow(), ["queued"]);
+    }
+
+    #[test]
+    fn unlocking_an_empty_queue_kicks_nothing() {
+        let mut binding = SchedulerBinding::new();
+        binding.set_locked(true);
+        assert!(!binding.set_locked(false));
+    }
+
+    // -- The scheduling strategy ---------------------------------------------
+
+    #[test]
+    fn an_animation_starves_idle_work_and_lets_animation_work_through() {
+        // `defaultSchedulingStrategy`: while a frame callback is registered,
+        // only `Priority.animation` and above run. That is what the spacing of
+        // the three named priorities is for -- idle work is exactly the work
+        // that must not compete with a running animation for the frame budget.
+        let (mut binding, log) = recording();
+        binding.set_transient_callback_count(1);
+        push(&mut binding, &log, Priority::IDLE, "idle");
+        push(&mut binding, &log, Priority::ANIMATION, "animation");
+
+        binding.handle_event_loop_callback();
+        assert_eq!(*log.borrow(), ["animation"], "the higher one goes");
+
+        binding.handle_event_loop_callback();
+        assert_eq!(*log.borrow(), ["animation"], "and the idle one waits");
+        assert_eq!(binding.pending_tasks(), 1);
+
+        binding.set_transient_callback_count(0);
+        binding.handle_event_loop_callback();
+        assert_eq!(*log.borrow(), ["animation", "idle"], "until nothing animates");
+    }
+
+    #[test]
+    fn a_starved_queue_still_answers_true_so_the_loop_comes_back() {
+        // The subtle half of `handleEventLoopCallback`, and upstream's doc
+        // says it in as many words: "Returns true otherwise, including when no
+        // task is executed due to priority being too low."
+        //
+        // The caller re-arms on true. A starved task answering false would
+        // stop the loop, and that task would still be waiting when the
+        // animation ended -- with nothing left to wake it.
+        let (mut binding, log) = recording();
+        binding.set_transient_callback_count(1);
+        push(&mut binding, &log, Priority::IDLE, "idle");
+
+        assert!(
+            binding.handle_event_loop_callback(),
+            "there is work, just not yet"
+        );
+        assert!(log.borrow().is_empty());
+        assert_eq!(binding.pending_tasks(), 1, "and it is still queued");
+    }
+
+    #[test]
+    fn and_answers_false_only_where_the_loop_has_nothing_to_come_back_to() {
+        // The two cases upstream names: empty, and locked.
+        let mut binding = SchedulerBinding::new();
+        assert!(!binding.handle_event_loop_callback(), "empty");
+
+        let (mut binding, log) = recording();
+        push(&mut binding, &log, Priority::TOUCH, "queued");
+        binding.set_locked(true);
+        assert!(!binding.handle_event_loop_callback(), "locked");
+        assert_eq!(binding.pending_tasks(), 1, "and nothing was thrown away");
+    }
+
+    #[test]
+    fn a_refused_head_holds_the_whole_queue_and_loses_none_of_it() {
+        // Upstream consults only the head, and that is a **consequence of the
+        // sort rather than a rule of its own**: the head is the highest
+        // priority there is, so a refused head means every task is refused.
+        // Rewriting `handleEventLoopCallback` to scan for the first acceptable
+        // task changes nothing and no test can tell the difference -- a
+        // mutation doing exactly that stayed green, which is the honest reason
+        // this test is named for what it establishes rather than for the
+        // implementation detail it cannot see.
+        //
+        // What it does establish: a refused head starves everything, the loop
+        // keeps answering true, and nothing is dropped on the way.
+        //
+        // The three priorities are distinct on purpose. Equal ones come back
+        // in scheduling order here because the sort is stable, and upstream's
+        // heap does not promise that -- a test that leaned on it would be
+        // asserting more than upstream says.
+        let (mut binding, log) = recording();
+        binding.set_transient_callback_count(1);
+        push(&mut binding, &log, Priority::IDLE, "lowest");
+        push(&mut binding, &log, Priority::TOUCH, "touch");
+        push(&mut binding, &log, Priority::IDLE.raise(1), "low");
+
+        assert!(binding.handle_event_loop_callback());
+        assert_eq!(*log.borrow(), ["touch"], "the one above the line goes");
+
+        for _ in 0..3 {
+            assert!(binding.handle_event_loop_callback());
+        }
+        assert_eq!(*log.borrow(), ["touch"], "and the two below it wait");
+        assert_eq!(binding.pending_tasks(), 2, "both still there");
+
+        binding.set_transient_callback_count(0);
+        while binding.pending_tasks() > 0 {
+            binding.handle_event_loop_callback();
+        }
+        assert_eq!(*log.borrow(), ["touch", "low", "lowest"]);
+    }
+
+    #[test]
+    fn a_relative_priority_can_cross_the_line_the_strategy_draws() {
+        // `Priority` and the strategy are one design: `raise` moves a task by
+        // at most `MAX_OFFSET`, and the named priorities sit ten times that
+        // apart, so a single offset cannot lift idle work over the animation
+        // line. What it *can* do is move a task that is already above it.
+        let (mut binding, log) = recording();
+        binding.set_transient_callback_count(1);
+        push(
+            &mut binding,
+            &log,
+            Priority::ANIMATION.lower(Priority::MAX_OFFSET),
+            "just under animation",
+        );
+        binding.handle_event_loop_callback();
+        assert!(log.borrow().is_empty(), "one step under the line is under it");
+
+        let (mut binding, log) = recording();
+        binding.set_transient_callback_count(1);
+        push(&mut binding, &log, Priority::IDLE.raise(999_999), "idle, raised");
+        binding.handle_event_loop_callback();
+        assert!(
+            log.borrow().is_empty(),
+            "and the offset is clamped, so one hop cannot get idle work over it"
+        );
     }
 }

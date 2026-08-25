@@ -15857,3 +15857,39 @@ bool get descendantsAreFocusable => _canRequestFocus && super.descendantsAreFocu
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5311 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 188 次：`Priority` 移植了，它存在的理由没有
+
+`SchedulerBinding`（depth 5/33）。本移植有 `Priority` 三档、`MAX_OFFSET` 的
+夹取规则，以及性能模式那一半——但 `scheduleTask` 的优先队列和调度策略一行
+都没有。也就是说 `Priority` 是一个**没有消费者的抽象**：三档优先级之间为什么
+隔 100,000、为什么单次偏移夹在 10,000，这些写在文档里的理由在代码里无处落地。
+
+补上另一半：
+
+- `schedule_task(priority, task)`。上游只在**第一个任务**且未上锁时踢事件
+  循环。两半都是"不要问两次"：队列里已经有活就已经有回调在路上，上锁的绑定
+  由 `unlocked()` 来踢。每次都踢会让一轮把整个队列跑完，而那正是队列要避免的。
+- `set_locked` 返回"解锁这一下是否就是那个踢"——上锁期间到达的活没有自己的
+  踢，只能从这里来。
+- `default_scheduling_strategy`：只要还有帧回调注册着（也就是有东西在动），
+  就只有 `Priority::ANIMATION` 及以上能跑。三档的间距就是为这条线服务的——
+  idle 的活恰恰是不该和运行中的动画抢帧预算的活。
+- `handle_event_loop_callback`。**返回值是微妙的那一半**，上游文档写得很明白：
+  "Returns true otherwise, **including when no task is executed due to
+  priority being too low**."。调用方靠 true 给自己重新上弦，所以"有活但还
+  不到时候"和"我跑了一个"必须给同一个答案；被饿着的任务若答 false，循环就停了，
+  等动画结束时它还在那儿，而已经没有东西会来叫醒它。false 只留给上游点名的
+  两种情况：空队列和上锁。
+
+变异：九条中八条转红。第九条——把"只问队首"改成"扫描队列找第一个能跑的"——
+存活，查证后确认**在任何队列上都不可区分**：队列是降序的，队首被拒就是全部
+被拒。"只问队首"因此不是独立规则而是排序的推论；那条测试改名为它实际成立的
+说法（队首被拒时整队停住且一个不丢），并把这一点写在测试里。
+
+另外把那条测试里等优先级的先入先出断言去掉了：文档刚说过上游的堆不保证这个
+顺序，测试就不该靠它——三个优先级现在互不相同。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5320 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
