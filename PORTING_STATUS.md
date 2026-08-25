@@ -15926,3 +15926,48 @@ unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5327 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 190 次：把手工做了五次的那件事交给机器
+
+同一个形状在五次里出现了四次：第 185 次 `hide` 的守卫、第 187 次
+`traversal_children` 的、第 188 次 `handleEventLoopCallback` 的队首检查、
+第 189 次放大镜的两条。每一条都是因为我**恰好选中它**写成变异才发现的。
+没选中的那些还在原地。
+
+`tools/idle_guards.py` 把选择权交出去：对一个文件里每一条
+
+    if <条件> {
+        return <表达式>;
+    }
+
+形状的守卫，删掉这三行、跑单元测试、还原。删掉后仍然全绿的，是**候选，不是
+缺陷**——工具文档把三种情况都写明了，只有第一种该照着改：
+
+1. 守卫真的冗余（下一层或后面已经挡住了）；
+2. 守卫承重但**没有任何测试走到它**——这是缺测试，删守卫恰恰是最错的做法；
+3. 类型系统在所有可达状态下已经排除了它。
+
+只有读代码能分辨，所以工具打印候选就停。一把替我做决定的工具会有三分之一
+的时候是错的，而错的那三分之一正是我会照着动手的。
+
+端到端验证：把第 189 次删掉的那条守卫临时加回去，工具自己找到了它。
+
+第一次正经出手就在 `navigator.rs` 捞出**两条第二类**：
+
+- `below_top` 的 `if self.history.len() < 2`。下一行对 `usize` 减二，栈里只有
+  一条路由时会下溢 panic。而这个 case 是可达的：调用者是
+  `did_start_user_gesture`，**根路由上的回扫手势就是恰好一条路由的栈**。
+- `maybe_pop` 的 `if self.history.is_empty()`。上游 `maybePop` 在看任何
+  disposition 之前先返回 false，所以空导航器对三种 disposition 一律答 false
+  ——包括 `DoNotPop`，那个在有路由时意味着"处理了，但什么都没动"。
+
+两条都补了测试，`navigator.rs` 的候选数从 2 降到 0。
+
+`focus.rs` 报出的三条属于第三类：`hover` / `focus` / `set_enabled` 的相等检查
+在上游同样冗余（`update` 本就只在派生答案变化时才触发回调）。守卫保留——它们
+是上游的形状且不花钱——但把注释改准了：原文说"根本不进回调机制"，这对控制流
+成立，读起来却像是在讲结果。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5329 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。

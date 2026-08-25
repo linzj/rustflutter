@@ -651,6 +651,12 @@ impl NavigatorState {
         self.history.last().copied()
     }
 
+    /// The route under the top one, or `None` when the top is the only one.
+    ///
+    /// The guard is not decoration: the line below subtracts two from a
+    /// `usize`, so a stack of one route underflows and panics without it. The
+    /// case is reachable -- [`NavigatorState::did_start_user_gesture`] is the
+    /// caller, and a back-swipe on the root route is a stack of exactly one.
     fn below_top(&self) -> Option<u64> {
         if self.history.len() < 2 {
             return None;
@@ -1575,6 +1581,58 @@ mod tests {
             navigator.observations().last(),
             Some(&NavigatorObservation::StopUserGesture)
         );
+    }
+
+    #[test]
+    fn a_back_swipe_on_the_only_route_has_nothing_underneath_it() {
+        // The root route being dragged is a stack of exactly one, and
+        // `below_top` subtracts two from a `usize` to find what is under the
+        // top. Without its guard this panics rather than answering `None`, and
+        // nothing here reached that shape until a screen for guards the suite
+        // cannot make matter pointed at it.
+        let mut navigator = NavigatorState::new();
+        navigator.push(1);
+        let before = navigator.observations().len();
+
+        navigator.did_start_user_gesture();
+        assert_eq!(
+            &navigator.observations()[before..],
+            &[NavigatorObservation::StartUserGesture {
+                route: 1,
+                previous: None
+            }],
+            "the gesture is still announced -- there is just nothing below"
+        );
+    }
+
+    #[test]
+    fn an_empty_navigator_handles_nothing_whatever_the_route_would_have_said() {
+        // Upstream's `maybePop` opens with `if (lastEntry == null) return
+        // false`, before it looks at any disposition. So an empty navigator
+        // answers **false for all three**, including `DoNotPop` -- which on a
+        // stack with a route means "handled, and nothing moved" and would be
+        // the wrong answer with no route to have said it.
+        //
+        // False is what lets the press reach the platform, which is the right
+        // outcome for a back press on a navigator with nothing in it.
+        for disposition in [
+            RoutePopDisposition::Pop,
+            RoutePopDisposition::DoNotPop,
+            RoutePopDisposition::Bubble,
+        ] {
+            let mut navigator = NavigatorState::new();
+            assert!(!navigator.maybe_pop(disposition), "{disposition:?}");
+            assert!(navigator.observations().is_empty(), "{disposition:?}");
+        }
+
+        // And with a route on the stack the three part company again, which is
+        // what says the rule above belongs to the emptiness and not to the
+        // dispositions.
+        let mut navigator = NavigatorState::new();
+        navigator.push(1);
+        assert!(navigator.maybe_pop(RoutePopDisposition::DoNotPop));
+        assert!(!navigator.maybe_pop(RoutePopDisposition::Bubble));
+        assert!(navigator.maybe_pop(RoutePopDisposition::Pop));
     }
 
     #[test]

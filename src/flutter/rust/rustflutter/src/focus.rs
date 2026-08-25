@@ -905,9 +905,18 @@ impl FocusableActionDetector {
         }
     }
 
-    /// The pointer arrived. Upstream's `_handleMouseEnter`, including its guard
-    /// -- an enter while already hovering is not a change and does not go
-    /// through the callback machinery at all.
+    /// The pointer arrived. Upstream's `_handleMouseEnter`, including its
+    /// guard.
+    ///
+    /// The guard saves the walk, **not the outcome**: [`Detector::update`]
+    /// already fires only the callbacks whose derived answer moved, and
+    /// setting `hovering` to the value it already has moves nothing. So
+    /// deleting the guard here changes what runs and not what happens, which
+    /// is why a screen for guards the suite cannot make matter finds this one
+    /// and the two below it. They stay because they are upstream's shape and
+    /// they are free; the earlier version of this comment said the enter "does
+    /// not go through the callback machinery at all", which is true of the
+    /// control flow and reads like a claim about the result.
     pub fn hover(&mut self, hovering: bool) {
         if self.state.hovering == hovering {
             return;
