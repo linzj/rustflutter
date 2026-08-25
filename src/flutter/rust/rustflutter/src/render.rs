@@ -25282,15 +25282,22 @@ mod canvas_balance_tests {
     }
 
     #[test]
-    fn and_a_child_that_fits_is_not_clipped_at_all() {
+    fn and_a_child_that_fits_costs_the_canvas_nothing() {
         // The first draft of the test above used loose constraints and found
         // *no* calls at all beyond the paragraph -- which turned out to be the
-        // rule rather than a broken test. A clip whose child is inside it does
-        // nothing, so the save, the clip and the restore are all skipped.
+        // rule rather than a broken test. A clip whose child is inside it
+        // needs no canvas work, so the save, the clip and the restore are all
+        // skipped.
         //
         // Worth pinning: this is per frame, on every clip in a tree, and the
         // cost of getting it wrong is three canvas calls for every one of
         // them.
+        //
+        // This was called "not clipped at all" until the compositor's own clip
+        // became observable, and then it was too strong: the clip **layer** is
+        // pushed either way, which is upstream's `RenderClipRect.paint` -- it
+        // consults `clipBehavior` and never asks whether the child fits. What
+        // the fitting child saves is the canvas, not the layer.
         let calls = painted(
             Box::new(RenderClipRect::new(RenderParagraph::new("x"))),
             BoxConstraints::loose(400.0, 200.0),
@@ -25301,7 +25308,13 @@ mod canvas_balance_tests {
                 call,
                 Drawn::ClipRect { .. } | Drawn::Save | Drawn::RestoreToCount { .. }
             )),
-            "nothing to clip, nothing done: {calls:?}"
+            "nothing to clip, no canvas work: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::ClipRectLayer { .. })),
+            "the layer is pushed regardless, which is upstream's shape: {calls:?}"
         );
     }
 

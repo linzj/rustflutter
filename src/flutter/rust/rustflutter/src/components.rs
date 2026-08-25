@@ -670,7 +670,12 @@ impl Component for Button {
         // -- the tap still belongs to the button. Clipped to the button's
         // corners, which is what `containedInkWell` means upstream.
         described(crate::framework::stateful(
-            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face).with_color(splash_color),
+            // The same `radius` the face is drawn with. A stadium button
+            // whose ink is clipped square shows four wedges of splash colour
+            // outside the pill, and they grow with the ripple.
+            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
+                .with_color(splash_color)
+                .with_corner_radius(radius),
         ))
     }
 }
@@ -3097,6 +3102,56 @@ mod tests {
     }
 
     /// The colours a badge actually put on the glass: the pill and the label.
+    #[test]
+    fn a_buttons_ink_is_held_inside_the_pill_and_not_inside_its_bounding_box() {
+        // The defect a downstream application saw: pressing a button drew a
+        // rectangle that grew. A Material button is a stadium and its ripple
+        // was clipped to the bounding rectangle, so once the circle was wide
+        // enough to pass the rounded ends it filled the rectangle's four
+        // corners with splash colour -- square wedges outside the pill,
+        // growing with the ripple. Upstream has no rectangle here at all: it
+        // clips the splash with the ink well's own border radius.
+        //
+        // The radius asserted is the button's own: as round as it is tall,
+        // which is upstream's `StadiumBorder`.
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(Button::new(1, "go"))));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+
+        let rounded: Vec<f32> = calls
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::ClipRRectLayer { radius_x, .. } => Some(*radius_x),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rounded,
+            vec![BUTTON_HEIGHT / 2.0],
+            "the ink is clipped to the pill: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+            )),
+            "and to nothing square: {calls:?}"
+        );
+    }
+
     fn badge_colours(badge: Badge) -> (Option<u32>, Option<u32>) {
         let mut tree = ElementTree::new();
         tree.rebuild(provide(Theme::dark(), component(badge)));

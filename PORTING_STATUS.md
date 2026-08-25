@@ -15971,3 +15971,49 @@ unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5329 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 191 次：按下去长出来的那个矩形
+
+下游应用（`rustflutter_album`）报告：按钮按下去是一个矩形高亮框逐渐扩张，
+而正确的 Flutter 看不见任何矩形。
+
+先排除了框架自己画错形状的可能——两个探针都确认涟漪发出的是
+`RRect 80×80 radius 40`，也就是一个正圆。问题在**裁剪的形状**。上游的
+`paintInkCircle` 有三条分支：
+
+```dart
+if (customBorder != null) canvas.clipPath(customBorder.getOuterPath(rect, ...));
+else if (borderRadius != BorderRadius.zero) canvas.clipRRect(...);
+else canvas.clipRect(rect);
+```
+
+本移植只有第三条。Material 按钮是胶囊形，所以涟漪一旦宽到越过两端的圆角，
+就把**外接矩形的四个角**填满——胶囊外面四块方形色块，跟着涟漪一起长大。
+读者看到的不是一个圆在按钮里铺开，而是一个矩形从按钮里长出来，而那个形状
+上游根本没有。
+
+`Ink::with_corner_radius`（上游 `InkWell.borderRadius`）补上，按钮把自己那个
+"和它一样高的一半"的半径交下去。裁剪加在容纳层而不是圆上，因为本移植的容纳
+层就在那里，效果相同：容纳层里唯一够得着角落的就是涟漪。
+
+**打开的盲区**：层裁剪此前只被 `LayerCalls` 计数，没有任何东西记录它的形状，
+所以"裁成矩形"和"裁成胶囊"是同一个观察。新增 `Drawn::ClipRectLayer` 和
+`Drawn::ClipRRectLayer`，与画布上的 `Drawn::ClipRect` 分开——两者是不同的事件，
+一条断言其中之一的测试不该被另一个满足，而此前写的每一条 `ClipRect` 断言指的
+都是画布那个。
+
+盲区一打开就有一条既有测试转红：`and_a_child_that_fits_is_not_clipped_at_all`
+断言"装得下就完全没有裁剪"。这句话只在**画布调用**可见时成立——裁剪层一直
+都在推，只是没人看得见。上游的 `RenderClipRect.paint` 只看 `clipBehavior`，
+从不问孩子装不装得下。测试改名为 `..._costs_the_canvas_nothing`，并补上一条
+正面断言：层照推不误。
+
+变异：四条（容纳层丢掉半径、`with_corner_radius` 变成空操作、容纳开关被半径
+顶替、按钮不再交出形状）全部转红，其中两条同时打中按钮层面那条新测试——
+用户真正看到的就是那一层。`vacuous.py` 抓住了新写的"未容纳就不裁剪"只声称
+缺席，补上"容纳了就裁剪"那一半后回到 8。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5333 + 333 通过；五个输出目录的 rustflutter_engine 全部重建
+（下游链接的就是它们）。

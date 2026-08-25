@@ -144,6 +144,12 @@ pub struct Ink {
     /// Clipped to the child's box. A splash that escapes its button looks like
     /// a bug, and upstream's `containedInkWell` is the same switch.
     contained: bool,
+    /// Upstream's `InkWell.borderRadius`, which is the shape the splash is
+    /// clipped **to** rather than the shape of anything drawn.
+    ///
+    /// Zero is a square-cornered clip and was the only thing this had. See
+    /// [`Ink::with_corner_radius`] for what that cost.
+    corner_radius: f32,
 }
 
 impl Ink {
@@ -153,6 +159,7 @@ impl Ink {
             build_child: Rc::new(build_child),
             color: None,
             contained: true,
+            corner_radius: 0.0,
         }
     }
 
@@ -166,6 +173,38 @@ impl Ink {
 
     pub fn with_contained(mut self, contained: bool) -> Self {
         self.contained = contained;
+        self
+    }
+
+    /// Upstream's `InkWell.borderRadius`: the rounding of the clip a contained
+    /// splash is held inside.
+    ///
+    /// # What a square clip costs
+    ///
+    /// Upstream clips the splash itself, in `paintInkCircle`:
+    ///
+    /// ```dart
+    /// if (customBorder != null) {
+    ///   canvas.clipPath(customBorder.getOuterPath(rect, textDirection: textDirection));
+    /// } else if (borderRadius != BorderRadius.zero) {
+    ///   canvas.clipRRect(RRect.fromRectAndCorners(rect, ...));
+    /// } else {
+    ///   canvas.clipRect(rect);
+    /// }
+    /// ```
+    ///
+    /// Three branches, and this port had only the third. A Material button is
+    /// a stadium, so a ripple wide enough to reach its ends filled the
+    /// **bounding rectangle's** corners -- four square wedges of colour
+    /// outside the pill, growing with the ripple. What the reader sees is not
+    /// a circle spreading through a button but a rectangle expanding out of
+    /// one, which is the shape upstream has none of.
+    ///
+    /// The clip is on the containment, not on the circle, because that is
+    /// where this port's containment already is. It comes to the same thing:
+    /// the splash is the only thing inside it that can reach the corners.
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = radius;
         self
     }
 }
@@ -229,6 +268,7 @@ impl StatefulComponent for Ink {
         let size_sink = Rc::clone(&state.size);
         let id = self.id;
         let contained = self.contained;
+        let corner_radius = self.corner_radius;
 
         single(child, move |child| {
             let measured = size_sink.get();
@@ -267,7 +307,9 @@ impl StatefulComponent for Ink {
             let region = crate::render::RenderPointerRegion::new(id, watched)
                 .with_handlers(handlers.clone());
             if contained {
-                crate::render::RenderRef::new(crate::render::RenderClipRect::new(region))
+                crate::render::RenderRef::new(
+                    crate::render::RenderClipRect::new(region).with_corner_radius(corner_radius),
+                )
             } else {
                 crate::render::RenderRef::new(region)
             }
@@ -1499,4 +1541,113 @@ mod tests {
     fn an_ink_decoration_with_nothing_to_draw_draws_nothing() {
         assert!(!InkDecoration::default().paints());
     }
+
+    // -- The shape the splash is held inside ---------------------------------
+
+    /// Paints an `Ink` of `size` with the given containment radius and returns
+    /// what the compositor was asked for.
+    fn ink_clip(corner_radius: f32, contained: bool) -> Vec<crate::engine_test_stubs::Drawn> {
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderConstrainedBox};
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            Ink::new(9101, || {
+                crate::framework::leaf(|| RenderConstrainedBox::tight(120.0, 48.0))
+            })
+            .with_contained(contained)
+            .with_corner_radius(corner_radius),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    #[test]
+    fn a_rounded_ink_is_held_inside_a_rounded_clip_and_not_its_bounding_box() {
+        // The defect this pins. A Material button is a stadium; its ink was
+        // clipped to the bounding rectangle, so a ripple wide enough to reach
+        // the ends filled the rectangle's four corners with square wedges of
+        // splash colour that grew with the ripple. A reader sees a rectangle
+        // expanding out of a button, which is a shape upstream has none of.
+        let rounded: Vec<_> = ink_clip(24.0, true)
+            .into_iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
+                        | crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            rounded,
+            vec![crate::engine_test_stubs::Drawn::ClipRRectLayer {
+                left: 0.0,
+                top: 0.0,
+                right: 120.0,
+                bottom: 48.0,
+                radius_x: 24.0,
+                radius_y: 24.0,
+            }],
+            "the containment takes the shape it was given"
+        );
+    }
+
+    #[test]
+    fn and_a_square_ink_still_gets_a_square_clip() {
+        // Upstream's third branch, which is the one this port had. It is the
+        // right answer for an ink with no rounding to speak of, and keeping it
+        // is what says the fix is about the shape rather than about always
+        // rounding.
+        let calls = ink_clip(0.0, true);
+        assert!(
+            calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+            )),
+            "a rect clip"
+        );
+        assert!(
+            !calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
+            )),
+            "and no rounded one"
+        );
+    }
+
+    #[test]
+    fn an_uncontained_ink_is_not_clipped_at_all_whatever_radius_it_carries() {
+        // `contained` is the switch and the radius is only its shape. An
+        // uncontained ink that started clipping because somebody gave it a
+        // radius would be a different widget.
+        let clips = |calls: &[crate::engine_test_stubs::Drawn]| {
+            calls.iter().any(|call| {
+                matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+                        | crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
+                )
+            })
+        };
+        // Written as the pair, because "no clip" on its own is satisfied by an
+        // `Ink` that never clips anything.
+        for radius in [0.0, 24.0] {
+            assert!(!clips(&ink_clip(radius, false)), "uncontained, {radius}");
+            assert!(clips(&ink_clip(radius, true)), "contained, {radius}");
+        }
+    }
 }
+

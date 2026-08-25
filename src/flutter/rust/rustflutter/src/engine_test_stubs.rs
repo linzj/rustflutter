@@ -846,6 +846,34 @@ pub enum Drawn {
         clip_op: c_int,
         anti_alias: bool,
     },
+    /// A clip pushed as a **compositor layer** rather than onto the canvas.
+    ///
+    /// Kept apart from [`Drawn::ClipRect`] because the two are different
+    /// events and a test that meant one should not be satisfied by the other:
+    /// `ClipRect` is `canvas.clipRect`, this is a `ClipRectLayer`. Every test
+    /// written before this variant existed meant the canvas one.
+    ClipRectLayer {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    },
+    /// A rounded clip pushed as a compositor layer.
+    ///
+    /// [`LayerCalls`] counted these and nothing recorded their shape, so
+    /// "clipped to a rectangle" and "clipped to a pill" were the same
+    /// observation as long as both went through a clip of *some* kind. That
+    /// is the difference between a button's ripple staying inside the button
+    /// and the same ripple showing four square corners outside it, which is
+    /// what this crate shipped.
+    ClipRRectLayer {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        radius_x: f32,
+        radius_y: f32,
+    },
     /// The whole canvas filled, which is what a frame's background is. It
     /// recorded nothing before, so "the background goes down before anything
     /// the application paints" was not a claim any test could make -- and it
@@ -1054,6 +1082,32 @@ impl Drawn {
                 clip_op,
                 anti_alias,
             },
+            Drawn::ClipRectLayer {
+                left,
+                top,
+                right,
+                bottom,
+            } => Drawn::ClipRectLayer {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+            },
+            Drawn::ClipRRectLayer {
+                left,
+                top,
+                right,
+                bottom,
+                radius_x,
+                radius_y,
+            } => Drawn::ClipRRectLayer {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                radius_x,
+                radius_y,
+            },
             Drawn::Paragraph { text, x, y, argb } => Drawn::Paragraph {
                 text,
                 x: x + dx,
@@ -1210,6 +1264,15 @@ pub unsafe extern "C" fn rf_layer_tree_push_clip_rect(
     clip_behavior: c_int,
 ) {
     note(|calls| calls.clip_rects += 1);
+    // Recorded for the same reason as its rounded sibling below: a clip
+    // pushed as a layer was counted and never described, so a test could see
+    // *that* something was clipped and never *to what*.
+    record(Drawn::ClipRectLayer {
+        left,
+        top,
+        right,
+        bottom,
+    });
     open_container();
 }
 
@@ -1225,6 +1288,14 @@ pub unsafe extern "C" fn rf_layer_tree_push_clip_rounded_rect(
     clip_behavior: c_int,
 ) {
     note(|calls| calls.clip_rounded_rects += 1);
+    record(Drawn::ClipRRectLayer {
+        left,
+        top,
+        right,
+        bottom,
+        radius_x,
+        radius_y,
+    });
     open_container();
 }
 
