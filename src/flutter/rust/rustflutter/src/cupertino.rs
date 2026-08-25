@@ -6605,3 +6605,174 @@ mod glyph_paint_tests {
     }
 }
 
+// -- Where the activity indicator's ticks go ----------------------------------
+
+#[cfg(test)]
+mod activity_tick_tests {
+    //! The spinner is one tick shape drawn once per entry in `TICK_ALPHAS`
+    //! with a rotation between each, and until the stub recorded `rotate` the
+    //! rotation was invisible: a ring of ticks stacked on top of one another
+    //! looked exactly like a ring of ticks around a circle, because the only
+    //! thing that separates them is a canvas call nothing could see.
+    //!
+    //! The count is `TICK_ALPHAS.len()` and never a number written here --
+    //! upstream's `_kAlphaValues` is what decides how many arms the spinner
+    //! has, and a test that spelled it would be asserting its own arithmetic.
+
+    use super::{ActivityIndicatorTicks, TICK_ALPHAS};
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn, save_depth};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const INK: Color = Color(0xff123456);
+    const RADIUS: f32 = 10.0;
+
+    fn painted(position: f32, progress: f32, at: Offset) -> Vec<Drawn> {
+        let mut ticks = ActivityIndicatorTicks {
+            position,
+            progress,
+            radius: RADIUS,
+            color: INK,
+            laid_out: Size::ZERO,
+        };
+        ticks.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            ticks.paint(&mut context, at);
+        }
+        drawn()
+    }
+
+    fn rotations(calls: &[Drawn]) -> Vec<f32> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rotate { degrees } => Some(*degrees),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ticks_drawn(calls: &[Drawn]) -> usize {
+        calls
+            .iter()
+            .filter(|call| matches!(call, Drawn::Path { .. }))
+            .count()
+    }
+
+    #[test]
+    fn a_full_ring_is_one_tick_per_step_all_the_way_round() {
+        // One tick per alpha, and the rotations between them add up to a
+        // whole turn. Any other step and the ring is either bunched into an
+        // arc or wrapped past itself.
+        let calls = painted(0.0, 1.0, Offset::ZERO);
+        let count = TICK_ALPHAS.len();
+        assert_eq!(ticks_drawn(&calls), count);
+
+        let turns = rotations(&calls);
+        assert_eq!(turns.len(), count);
+        let step = 360.0 / count as f32;
+        assert!(turns.iter().all(|degrees| *degrees == step), "{turns:?}");
+        assert_eq!(
+            turns.iter().sum::<f32>(),
+            360.0,
+            "the steps close the circle"
+        );
+    }
+
+    #[test]
+    fn a_partly_revealed_ring_draws_only_what_it_has_revealed() {
+        // Upstream's `progress` is how much of the spinner has appeared, which
+        // is what makes a Cupertino activity indicator fade in rather than
+        // pop.
+        let calls = painted(0.0, 0.5, Offset::ZERO);
+        assert_eq!(ticks_drawn(&calls), TICK_ALPHAS.len() / 2);
+    }
+
+    #[test]
+    fn and_nothing_at_all_before_it_has_started() {
+        let calls = painted(0.0, 0.0, Offset::ZERO);
+        assert_eq!(ticks_drawn(&calls), 0);
+        assert!(rotations(&calls).is_empty(), "{calls:?}");
+    }
+
+    #[test]
+    fn the_ring_turns_about_the_middle_of_the_box_it_was_given() {
+        // The translate goes first and is what makes the rotation a rotation
+        // about the spinner's centre rather than about the corner of the
+        // screen -- where a ring of radius ten would be a quarter visible.
+        let at = Offset::new(30.0, 40.0);
+        let calls = painted(0.0, 1.0, at);
+        let moved = calls.iter().find_map(|call| match call {
+            Drawn::Translate { dx, dy } => Some((*dx, *dy)),
+            _ => None,
+        });
+        assert_eq!(
+            moved,
+            Some((at.dx + RADIUS, at.dy + RADIUS)),
+            "the centre of a box two radii across: {calls:?}"
+        );
+        assert_eq!(save_depth(&calls), Some(0), "and it is put back");
+    }
+
+    #[test]
+    fn the_ticks_are_drawn_dimmest_first_and_the_head_comes_last() {
+        // `TICK_ALPHAS` in order, starting at whichever tick `position` says
+        // is the head. What makes a spinner look like it is turning is the
+        // *fade*, not the movement -- every tick is in the same place on every
+        // frame.
+        //
+        // The brightest is the **last** drawn, not the first. The first draft
+        // of this test asserted the opposite from memory of upstream and was
+        // wrong: `_kAlphaValues` runs dim to bright, and the leading arm is
+        // the one at the end of the list.
+        let calls = painted(0.0, 1.0, Offset::ZERO);
+        let alphas: Vec<u8> = calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Path { argb, .. } => Some((*argb >> 24) as u8),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(alphas, TICK_ALPHAS.to_vec());
+        assert!(
+            *alphas.last().expect("ticks") > alphas[0],
+            "the head is brighter than the tail: {alphas:?}"
+        );
+        // And the tail is flat -- four arms at the same dim value, which is
+        // what stops the spinner reading as a comet with a long fade.
+        assert!(
+            alphas.windows(2).all(|pair| pair[0] <= pair[1]),
+            "never brightens then dims: {alphas:?}"
+        );
+    }
+
+    #[test]
+    fn and_the_head_moves_with_the_position() {
+        // The same twelve alphas, rotated round the ring. A spinner whose
+        // position did nothing would be a static ring of dashes.
+        let start = painted(0.0, 1.0, Offset::ZERO);
+        let later = painted(0.5, 1.0, Offset::ZERO);
+        let alphas = |calls: &[Drawn]| -> Vec<u8> {
+            calls
+                .iter()
+                .filter_map(|call| match call {
+                    Drawn::Path { argb, .. } => Some((*argb >> 24) as u8),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_ne!(alphas(&start), alphas(&later));
+        let mut sorted_start = alphas(&start);
+        let mut sorted_later = alphas(&later);
+        sorted_start.sort_unstable();
+        sorted_later.sort_unstable();
+        assert_eq!(
+            sorted_start, sorted_later,
+            "the same alphas, in a different place"
+        );
+    }
+}
+

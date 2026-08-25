@@ -526,10 +526,14 @@ pub unsafe extern "C" fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy:
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32) {}
+pub unsafe extern "C" fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32) {
+    record(Drawn::Scale { sx, sy });
+}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_rotate(canvas: *mut RfCanvas, degrees: f32) {}
+pub unsafe extern "C" fn rf_canvas_rotate(canvas: *mut RfCanvas, degrees: f32) {
+    record(Drawn::Rotate { degrees });
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_skew(canvas: *mut RfCanvas, sx: f32, sy: f32) {}
@@ -798,6 +802,16 @@ pub enum Drawn {
         dx: f32,
         dy: f32,
     },
+    /// The other two transforms a paint reaches for. A scale or a rotation is
+    /// a *delta* on the canvas, like a translate, so neither moves when the
+    /// box it was painted in does.
+    Scale {
+        sx: f32,
+        sy: f32,
+    },
+    Rotate {
+        degrees: f32,
+    },
     ClipRect {
         left: f32,
         top: f32,
@@ -989,6 +1003,8 @@ impl Drawn {
             },
             // A translate is a *delta*, so it does not move with the box.
             Drawn::Translate { dx: x, dy: y } => Drawn::Translate { dx: x, dy: y },
+            Drawn::Scale { sx, sy } => Drawn::Scale { sx, sy },
+            Drawn::Rotate { degrees } => Drawn::Rotate { degrees },
             Drawn::ClipRect {
                 left,
                 top,
