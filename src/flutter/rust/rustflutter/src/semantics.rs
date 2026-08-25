@@ -3386,6 +3386,15 @@ mod tests {
             collected.is_none(),
             "a tree nobody reads should not be built"
         );
+
+        // And the same tree is built once somebody asks. Without this the
+        // claim above is satisfied by a `flush` that never builds anything --
+        // which would be a screen reader that hears silence from every
+        // application.
+        set_enabled(true);
+        let heard = flush(Size::new(200.0, 100.0), &root);
+        assert!(heard.is_some(), "somebody asked");
+        set_enabled(false);
     }
 
     #[test]

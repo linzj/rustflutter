@@ -23880,6 +23880,20 @@ mod coordinate_round_trip {
             !result.path.iter().any(|entry| entry.target == PROBE_ID),
             "offstage is not on the screen and not under the finger"
         );
+
+        // The same tree onstage, hit at the same point. Without it the claim
+        // above holds just as well when the finger missed for some other
+        // reason -- a probe laid out at nothing, a coordinate off the box --
+        // and the test would be about neither offstage nor hit testing.
+        let onstage_probe = RenderRef::new(Probe::new(PROBE_ID));
+        let mut onstage = RenderRef::new(RenderOffstage::new(false, onstage_probe));
+        onstage.layout(BoxConstraints::new(0.0, 800.0, 0.0, 600.0));
+        let mut found = HitTestResult::new();
+        onstage.hit_test(Offset::new(5.0, 5.0), &mut found);
+        assert!(
+            found.path.iter().any(|entry| entry.target == PROBE_ID),
+            "and the same point does find it when it is on the screen"
+        );
     }
 
     #[test]
@@ -24034,6 +24048,30 @@ mod custom_painter_semantics_tests {
             }
         }
         assert!(Silent.semantics_builder(Size::new(10.0, 10.0)).is_empty());
+
+        // And one that does choose to speak is heard, which is what says the
+        // empty answer above is this painter's decision rather than the only
+        // answer the trait can give.
+        struct Talkative;
+        impl CustomPainter for Talkative {
+            fn paint(&self, _canvas: &mut Canvas, _size: Size) {}
+            fn should_repaint(&self, _old: &dyn CustomPainter) -> bool {
+                false
+            }
+            fn kind_id(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Talkative>()
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn semantics_builder(&self, _size: Size) -> Vec<CustomPainterSemantics> {
+                vec![at(0.0)]
+            }
+        }
+        assert_eq!(
+            Talkative.semantics_builder(Size::new(10.0, 10.0)).len(),
+            1
+        );
     }
 
     #[test]

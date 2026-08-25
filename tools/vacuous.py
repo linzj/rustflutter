@@ -28,6 +28,14 @@ So this reports tests with no positive claim at all, for reading. The answer
 is usually one line -- assert the thing that should be there beside the thing
 that should not.
 
+**The count is not a target.** Eight were read at tick 174 and left as they
+are, because for each the absence *is* the whole claim and a sibling test in
+the same module makes the positive one -- `merging_two_empty_lists_is_empty`,
+`a_negative_index_is_out_whatever_the_bounds_say`,
+`a_scrim_with_no_colour_paints_nothing_at_all` and the rest. Driving this to
+zero would mean padding those with assertions nobody needs, which is the
+opposite of what the screen is for.
+
   python tools/vacuous.py            # the list
   python tools/vacuous.py --all      # including ones with 3+ claims
 """

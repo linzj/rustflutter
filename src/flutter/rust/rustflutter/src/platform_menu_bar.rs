@@ -831,6 +831,22 @@ mod tests {
             DefaultPlatformMenuDelegate::tidy_dividers(vec![divider(), divider(), divider()])
                 .is_empty()
         );
+        // And a menu with something in it keeps it. Without this the test
+        // above is satisfied by a `tidy_dividers` that answers empty to
+        // everything, which would take every menu off the bar.
+        let item = vec![
+            (keys::ID, ChannelValue::Int(2)),
+            (keys::LABEL, ChannelValue::Text("Open".to_string())),
+        ];
+        assert_eq!(
+            DefaultPlatformMenuDelegate::tidy_dividers(vec![
+                divider(),
+                item.clone(),
+                divider()
+            ]),
+            vec![item],
+            "the dividers go and the item stays"
+        );
     }
 
     #[test]

@@ -15333,3 +15333,37 @@ list wheel 那边同样加了一条。
 每一条都打中了对应的那条测试。
 
 5253 测试通过，完整 GN 门过。
+
+## 第 174 轮 — 把新尺子的队列读完
+
+`vacuous.py` 报的 12 条，逐条读。四条是真缺口，八条不是。
+
+### 四条补了伴随断言
+
+- **`tidying_leaves_a_menu_of_nothing_but_dividers_empty`**：断言三条分隔线
+  收拾完是空的。一个对什么都答空的 `tidy_dividers` 同样满足——
+  而那会把每一个菜单从菜单栏上抹掉。补上"有内容的菜单留住内容"。
+- **`a_painter_says_nothing_unless_it_chooses_to`**：默认的语义构建器返回空表。
+  补一个"确实要说话"的画家，说明那个空表是这个画家的决定，
+  而不是这个 trait 唯一能给的答案。
+- **`and_an_offstage_one_cannot`**：断言探针不在命中路径上。
+  **手指因为别的原因没碰到时，它同样成立**——探针尺寸为零、坐标落在盒外，
+  这条测试就既不关于 offstage 也不关于命中测试了。
+  补上"同一棵树在台上、同一个点能碰到"。
+- **`nothing_is_collected_until_something_asks`**：关掉时不收集语义树。
+  一个从不构建任何东西的 `flush` 同样满足——那是一台对每个应用都听见沉默的读屏器。
+  补上"有人问的时候就构建"。
+
+三条变异各自打红对应的测试（`tidy_dividers` 恒空、`RenderOffstage` 的命中测试
+恒假、`flush` 恒 None）。
+
+### 八条读过后原样留下
+
+`merging_two_empty_lists_is_empty`、
+`a_negative_index_is_out_whatever_the_bounds_say`、
+`a_scrim_with_no_colour_paints_nothing_at_all` 等——
+**缺席本身就是全部主张**，而同模块里有做正面主张的兄弟测试。
+把这个数字驱到零意味着给它们塞上没人需要的断言，那正好和这把尺子的用途相反。
+这句话写进了 `vacuous.py` 的文档：**这个计数不是目标**。
+
+5253 测试通过，完整 GN 门过。
