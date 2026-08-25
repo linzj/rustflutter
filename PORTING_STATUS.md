@@ -16740,3 +16740,37 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5433 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 212 次：两个形状之间不是把轮廓插值出来的
+
+`StadiumBorder`（3/11 到 9/11）。上游的 `lerpFrom`/`lerpTo` 不去插值两条轮廓
+——**它造出第三个形状**，带一个"走到哪儿了"的参数，由那个形状自己知道中途该
+怎么画：`_StadiumToCircleBorder` 和 `_StadiumToRoundedRectangleBorder`。逐点
+插值两条路径要求它们有同样多的点、且顺序一致，而胶囊和圆并没有。
+
+参数的方向是这里最容易改坏的地方：
+
+```dart
+// lerpFrom：circularity: 1.0 - t     // lerpTo：circularity: t
+```
+
+这不是要顺手抹平的符号错误。那个参数的含义**始终是"有多圆"**，所以它必须从
+圆所在的那一端开始数：**从**圆过来时它从 1 往下走，**往**圆去时它从 0 往上走。
+变的只有 `t`。而 `eccentricity` 取自两个操作数里**是圆的那一个**——胶囊自己
+没有偏心率可以参与插值；`border_radius` 同理。
+
+不认识的形状返回 `NotSpecial`（上游的 `super.lerpFrom`，淡出淡入而不是变形）。
+把这件事说出来是有意义的：一个在这里悄悄返回胶囊的移植，会把上游用交叉淡化
+处理的形状变化做成一段形变动画。
+
+变异：八条中六条一次转红，一条不编译（等同于红）。存活的两条都是测试的问题：
+
+- `lerp_from` 的 eccentricity 从没被测到——两个用例一个用零偏心率、一个只测
+  `lerp_to`。
+- 边框宽度那条用了 **t = 0.5**，而**插值在中点是对称的**：那里分不出
+  `lerp(a, b, t)` 和 `lerp(b, a, t)`，把两端调换仍然全绿。改成四分之一处。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5440 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

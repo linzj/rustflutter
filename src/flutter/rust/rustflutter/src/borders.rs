@@ -1900,9 +1900,148 @@ impl Default for StadiumBorder {
     }
 }
 
+/// What a stadium becomes part-way to another shape.
+///
+/// Upstream does not interpolate the two outlines. It builds a **third
+/// shape**, parameterised by how far along it is, and that shape knows how to
+/// draw itself at any point between: `_StadiumToCircleBorder` and
+/// `_StadiumToRoundedRectangleBorder`. Interpolating paths point by point
+/// would need the two to have the same points in the same order, which a
+/// stadium and a circle do not.
+///
+/// This carries the **decision** -- which shape, with which parameter -- and
+/// not the intermediate outlines themselves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StadiumLerp {
+    /// Both ends were stadiums, so the answer is one too: only the side moves.
+    Stadium(StadiumBorder),
+    /// Upstream `_StadiumToCircleBorder`.
+    ToCircle {
+        side: BorderSide,
+        /// **How circular**, not `t`: 0 is the stadium and 1 is the circle.
+        circularity: f32,
+        /// Taken from whichever operand was the circle -- a stadium has no
+        /// eccentricity of its own to lerp with.
+        eccentricity: f32,
+    },
+    /// Upstream `_StadiumToRoundedRectangleBorder`.
+    ToRoundedRectangle {
+        side: BorderSide,
+        /// **How rectilinear**: 0 is the stadium and 1 is the rounded rect.
+        rectilinearity: f32,
+        /// From whichever operand was the rounded rectangle.
+        border_radius: BorderRadiusGeometry,
+    },
+    /// Neither of the shapes upstream knows how to meet: `super.lerpFrom`,
+    /// which fades one out and the other in rather than morphing.
+    NotSpecial,
+}
+
+/// The other end of a lerp, as far as [`StadiumBorder`] cares.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LerpPartner {
+    Stadium(StadiumBorder),
+    Circle(CircleBorder),
+    RoundedRectangle(RoundedRectangleBorder),
+    /// Anything else, including nothing at all.
+    Other,
+}
+
 impl StadiumBorder {
     pub fn new(side: BorderSide) -> Self {
         StadiumBorder { side }
+    }
+
+    /// Upstream `scale`: the side scales and the shape does not.
+    ///
+    /// A stadium's radius is its own height, so there is nothing else to
+    /// scale -- which is why this is one line here and several in the shapes
+    /// that carry a radius of their own.
+    pub fn scale(&self, t: f32) -> StadiumBorder {
+        StadiumBorder {
+            side: self.side.scale(t),
+        }
+    }
+
+    /// Upstream `copyWith`.
+    pub fn copy_with(&self, side: Option<BorderSide>) -> StadiumBorder {
+        StadiumBorder {
+            side: side.unwrap_or(self.side),
+        }
+    }
+
+    /// Upstream `preferPaintInterior`, which is `true` here.
+    ///
+    /// A stadium **is** a rounded rectangle, so the canvas can fill it in one
+    /// call rather than being handed a path to fill. The flag is what lets a
+    /// caller take the cheap route and it is only true for the shapes that
+    /// have one.
+    pub fn prefer_paint_interior(&self) -> bool {
+        true
+    }
+
+    /// Upstream `hitTest`: inside the rounded rectangle, corners and all.
+    ///
+    /// The corners matter -- a press just outside the curve at the end of a
+    /// pill is a press on whatever is behind it, and testing the bounding
+    /// rectangle instead would swallow it.
+    pub fn hit_test(&self, rect: Rect, position: Offset) -> bool {
+        stadium_rrect(rect).contains(position)
+    }
+
+    /// Upstream `lerpFrom`: this stadium is the **destination**, `a` the
+    /// start, and `t` runs from `a` to here.
+    ///
+    /// ```dart
+    /// if (a is CircleBorder) {
+    ///   return _StadiumToCircleBorder(side: ..., circularity: 1.0 - t, eccentricity: a.eccentricity);
+    /// }
+    /// ```
+    ///
+    /// **`circularity` is `1.0 - t` here and `t` in [`StadiumBorder::lerp_to`]**,
+    /// and that is not a sign error to tidy away. The parameter always means
+    /// *how circular*, so it has to count from whichever end the circle is at:
+    /// coming **from** a circle it starts at 1 and falls, going **to** one it
+    /// starts at 0 and rises. Only `t` changes direction.
+    pub fn lerp_from(&self, a: LerpPartner, t: f32) -> StadiumLerp {
+        match a {
+            LerpPartner::Stadium(a) => {
+                StadiumLerp::Stadium(StadiumBorder::new(BorderSide::lerp(a.side, self.side, t)))
+            }
+            LerpPartner::Circle(a) => StadiumLerp::ToCircle {
+                side: BorderSide::lerp(a.side, self.side, t),
+                circularity: 1.0 - t,
+                eccentricity: a.eccentricity,
+            },
+            LerpPartner::RoundedRectangle(a) => StadiumLerp::ToRoundedRectangle {
+                side: BorderSide::lerp(a.side, self.side, t),
+                rectilinearity: 1.0 - t,
+                border_radius: a.border_radius,
+            },
+            LerpPartner::Other => StadiumLerp::NotSpecial,
+        }
+    }
+
+    /// Upstream `lerpTo`: this stadium is the **start** and `b` the
+    /// destination. See [`StadiumBorder::lerp_from`] for why the parameter is
+    /// `t` here and `1.0 - t` there.
+    pub fn lerp_to(&self, b: LerpPartner, t: f32) -> StadiumLerp {
+        match b {
+            LerpPartner::Stadium(b) => {
+                StadiumLerp::Stadium(StadiumBorder::new(BorderSide::lerp(self.side, b.side, t)))
+            }
+            LerpPartner::Circle(b) => StadiumLerp::ToCircle {
+                side: BorderSide::lerp(self.side, b.side, t),
+                circularity: t,
+                eccentricity: b.eccentricity,
+            },
+            LerpPartner::RoundedRectangle(b) => StadiumLerp::ToRoundedRectangle {
+                side: BorderSide::lerp(self.side, b.side, t),
+                rectilinearity: t,
+                border_radius: b.border_radius,
+            },
+            LerpPartner::Other => StadiumLerp::NotSpecial,
+        }
     }
 }
 
@@ -5195,6 +5334,167 @@ mod tests {
     }
 
     // -- RRect -------------------------------------------------------------------
+
+    /// A visible side, so a lerp of it is observable.
+    fn thick(width: f32) -> BorderSide {
+        BorderSide {
+            width,
+            ..BorderSide::NONE
+        }
+    }
+
+    #[test]
+    fn two_stadiums_lerp_to_a_stadium_and_only_the_side_moves() {
+        // A stadium's radius is its own height, so there is nothing else that
+        // could move.
+        //
+        // **Not at `t = 0.5`**: a lerp is symmetric there, so a test at the
+        // midpoint cannot tell `lerp(a, b, t)` from `lerp(b, a, t)` and
+        // swapping the two ends stays green. A quarter of the way along says
+        // which end is which.
+        let from = StadiumBorder::new(thick(2.0));
+        let to = StadiumBorder::new(thick(6.0));
+        match to.lerp_from(LerpPartner::Stadium(from), 0.25) {
+            StadiumLerp::Stadium(result) => {
+                assert_eq!(result.side.width, 3.0, "a quarter of the way from 2 to 6")
+            }
+            other => panic!("{other:?}"),
+        }
+        match to.lerp_to(LerpPartner::Stadium(from), 0.25) {
+            StadiumLerp::Stadium(result) => {
+                assert_eq!(result.side.width, 5.0, "and the other way round")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stadium_meeting_a_circle_becomes_a_third_shape() {
+        // Upstream does not interpolate the two outlines; it builds a shape
+        // parameterised by how far along it is. Interpolating paths point by
+        // point would need the two to have the same points in the same order,
+        // which a stadium and a circle do not.
+        let stadium = StadiumBorder::new(thick(2.0));
+        let circle = CircleBorder {
+            side: thick(2.0),
+            eccentricity: 0.25,
+        };
+        let eccentricity = |lerp: StadiumLerp| match lerp {
+            StadiumLerp::ToCircle {
+                circularity,
+                eccentricity,
+                ..
+            } => (circularity, eccentricity),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            eccentricity(stadium.lerp_to(LerpPartner::Circle(circle), 0.25)),
+            (0.25, 0.25),
+            "taken from the circle -- a stadium has none of its own"
+        );
+        // Both directions: whichever operand is the circle is the one asked,
+        // and a test of only one leaves the other free to answer zero.
+        assert_eq!(
+            eccentricity(stadium.lerp_from(LerpPartner::Circle(circle), 0.25)),
+            (0.75, 0.25)
+        );
+    }
+
+    #[test]
+    fn the_parameter_counts_from_whichever_end_the_circle_is_at() {
+        // `circularity` is `1.0 - t` in `lerpFrom` and `t` in `lerpTo`, and
+        // that is not a sign error to tidy away: the parameter always means
+        // *how circular*, so only `t` changes direction.
+        let stadium = StadiumBorder::new(thick(2.0));
+        let circle = CircleBorder {
+            side: thick(2.0),
+            eccentricity: 0.0,
+        };
+
+        let circularity = |lerp: StadiumLerp| match lerp {
+            StadiumLerp::ToCircle { circularity, .. } => circularity,
+            other => panic!("{other:?}"),
+        };
+
+        // Going towards the circle: nothing circular at the start, all of it
+        // at the end.
+        assert_eq!(circularity(stadium.lerp_to(LerpPartner::Circle(circle), 0.0)), 0.0);
+        assert_eq!(circularity(stadium.lerp_to(LerpPartner::Circle(circle), 1.0)), 1.0);
+
+        // Coming from it: the other way round, at the same `t`.
+        assert_eq!(circularity(stadium.lerp_from(LerpPartner::Circle(circle), 0.0)), 1.0);
+        assert_eq!(circularity(stadium.lerp_from(LerpPartner::Circle(circle), 1.0)), 0.0);
+
+        // And the two agree about the middle, which is what says they are one
+        // parameterisation seen from two ends rather than two rules.
+        assert_eq!(
+            circularity(stadium.lerp_to(LerpPartner::Circle(circle), 0.5)),
+            circularity(stadium.lerp_from(LerpPartner::Circle(circle), 0.5))
+        );
+    }
+
+    #[test]
+    fn and_a_rounded_rectangle_is_the_same_story_with_its_own_word() {
+        let stadium = StadiumBorder::new(thick(2.0));
+        let rounded = RoundedRectangleBorder {
+            side: thick(2.0),
+            border_radius: BorderRadiusGeometry::Zero,
+        };
+        let rectilinearity = |lerp: StadiumLerp| match lerp {
+            StadiumLerp::ToRoundedRectangle { rectilinearity, .. } => rectilinearity,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            rectilinearity(stadium.lerp_to(LerpPartner::RoundedRectangle(rounded), 0.25)),
+            0.25
+        );
+        assert_eq!(
+            rectilinearity(stadium.lerp_from(LerpPartner::RoundedRectangle(rounded), 0.25)),
+            0.75
+        );
+    }
+
+    #[test]
+    fn anything_else_is_not_a_shape_a_stadium_knows_how_to_meet() {
+        // `super.lerpFrom`, which fades one out and the other in rather than
+        // morphing. Saying so is the point: a port that quietly produced a
+        // stadium here would animate a shape change that upstream crossfades.
+        let stadium = StadiumBorder::new(thick(2.0));
+        assert_eq!(
+            stadium.lerp_to(LerpPartner::Other, 0.5),
+            StadiumLerp::NotSpecial
+        );
+        assert_eq!(
+            stadium.lerp_from(LerpPartner::Other, 0.5),
+            StadiumLerp::NotSpecial
+        );
+    }
+
+    #[test]
+    fn a_press_past_the_curve_at_the_end_of_a_pill_misses_it() {
+        // The corners are the point of the hit test: testing the bounding
+        // rectangle instead would swallow a press meant for whatever is
+        // behind the button.
+        let stadium = StadiumBorder::default();
+        let rect = Rect::ltrb(0.0, 0.0, 100.0, 40.0);
+        assert!(stadium.hit_test(rect, Offset::new(50.0, 20.0)), "the middle");
+        assert!(stadium.hit_test(rect, Offset::new(1.0, 20.0)), "the left end");
+        assert!(
+            !stadium.hit_test(rect, Offset::new(1.0, 1.0)),
+            "the top-left corner is outside the curve"
+        );
+        assert!(!stadium.hit_test(rect, Offset::new(99.0, 39.0)));
+    }
+
+    #[test]
+    fn scaling_moves_the_side_and_nothing_else() {
+        // A stadium's radius is its own height. There is nothing else to
+        // scale, which is why upstream's `scale` is one line here and several
+        // in the shapes that carry a radius.
+        let scaled = StadiumBorder::new(thick(4.0)).scale(0.5);
+        assert_eq!(scaled.side.width, 2.0);
+        assert!(StadiumBorder::default().prefer_paint_interior());
+    }
 
     #[test]
     fn rrect_contains_respects_corners() {
