@@ -4420,3 +4420,158 @@ mod modal_surface_label_tests {
         );
     }
 }
+
+// -- What the spinner puts on the canvas --------------------------------------
+
+#[cfg(test)]
+mod spinner_paint_tests {
+    use super::ArcSpinner;
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const TRACK: Color = Color(0xff303030);
+    const FILL: Color = Color(0xff0066cc);
+    const EXTENT: f32 = 36.0;
+
+    /// The stub's `rf_canvas_draw_arc` had an empty body until this tick, so
+    /// none of what is asserted below was a call any test could see. The
+    /// spinner is one oval and one arc, and everything it says is in the
+    /// angles.
+    fn painted(value: f32, at: Offset) -> Vec<Drawn> {
+        let mut spinner = ArcSpinner {
+            value,
+            extent: EXTENT,
+            track: TRACK,
+            fill: FILL,
+            laid_out: Size::ZERO,
+        };
+        spinner.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            spinner.paint(&mut context, at);
+        }
+        drawn()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn arcs(calls: &[Drawn]) -> Vec<((f32, f32, f32, f32), f32, f32, bool, u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Arc {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    start_degrees,
+                    sweep_degrees,
+                    use_center,
+                    argb,
+                } => Some((
+                    (*left, *top, *right, *bottom),
+                    *start_degrees,
+                    *sweep_degrees,
+                    *use_center,
+                    *argb,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ovals(calls: &[Drawn]) -> Vec<((f32, f32, f32, f32), u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Oval {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    argb,
+                } => Some(((*left, *top, *right, *bottom), *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_spinner_starts_at_twelve_oclock_and_not_at_three() {
+        // Zero on a canvas is three o'clock. A spinner that starts there looks
+        // like it is a quarter of the way round before it has moved, and the
+        // only thing that says otherwise is this number.
+        let calls = painted(0.25, Offset::ZERO);
+        let arc = arcs(&calls);
+        assert_eq!(arc.len(), 1, "{calls:?}");
+        assert_eq!(arc[0].1, -90.0);
+    }
+
+    #[test]
+    fn the_sweep_is_the_value_as_a_fraction_of_the_whole_turn() {
+        for (value, degrees) in [(0.25, 90.0), (0.5, 180.0), (1.0, 360.0)] {
+            let arc = arcs(&painted(value, Offset::ZERO));
+            assert_eq!(arc.len(), 1, "at {value}");
+            assert_eq!(arc[0].2, degrees, "at {value}");
+        }
+    }
+
+    #[test]
+    fn a_spinner_at_zero_draws_no_arc_rather_than_an_arc_of_no_length() {
+        // The arc has a round cap, so a sweep of zero is not nothing: it is a
+        // dot at twelve o'clock. The guard is what stops a progress bar that
+        // has not started from showing a mark saying it has.
+        let calls = painted(0.0, Offset::ZERO);
+        assert!(arcs(&calls).is_empty(), "{calls:?}");
+        assert_eq!(ovals(&calls).len(), 1, "but the track is still drawn");
+    }
+
+    #[test]
+    fn the_arc_rides_on_the_track_rather_than_inside_or_outside_it() {
+        // Both are stroked at the same width, so sharing the bounds is what
+        // makes them the same ring. Different bounds and the fill sits beside
+        // the track in a groove of its own.
+        let calls = painted(0.75, Offset::ZERO);
+        let track = ovals(&calls);
+        let arc = arcs(&calls);
+        assert_eq!((track.len(), arc.len()), (1, 1));
+        assert_eq!(track[0].0, arc[0].0);
+        assert_eq!(track[0].1, TRACK.0, "the track is the track colour");
+        assert_eq!(arc[0].4, FILL.0, "and the arc is the fill colour");
+    }
+
+    #[test]
+    fn the_ring_is_inset_by_half_its_stroke_so_it_fits_the_box() {
+        // A stroke is centred on the path, so a ring drawn on the edge of the
+        // box loses its outer half to the clip. The inset is what keeps the
+        // whole stroke inside, and it is half the width rather than the width.
+        let stroke = (EXTENT * 0.11f32).max(2.0);
+        let inset = stroke / 2.0;
+        let calls = painted(1.0, Offset::ZERO);
+        let (left, top, right, bottom) = ovals(&calls)[0].0;
+        assert_eq!((left, top), (inset, inset));
+        assert_eq!((right, bottom), (EXTENT - inset, EXTENT - inset));
+        assert_eq!(right - left, EXTENT - stroke, "a whole stroke narrower");
+    }
+
+    #[test]
+    fn the_arc_is_a_ring_segment_and_not_a_pie_wedge() {
+        // `use_center` joins the two ends through the middle. A filled wedge
+        // is a different control, and the flag is one character away.
+        let arc = arcs(&painted(0.3, Offset::ZERO));
+        assert!(!arc[0].3);
+    }
+
+    #[test]
+    fn moving_the_spinner_moves_the_box_and_leaves_the_angles_alone() {
+        let at = Offset::new(12.0, 30.0);
+        let here = arcs(&painted(0.4, Offset::ZERO));
+        let there = arcs(&painted(0.4, at));
+        assert_eq!(there[0].0.0 - here[0].0.0, at.dx);
+        assert_eq!(there[0].0.1 - here[0].0.1, at.dy);
+        assert_eq!((there[0].1, there[0].2), (here[0].1, here[0].2));
+    }
+}
+

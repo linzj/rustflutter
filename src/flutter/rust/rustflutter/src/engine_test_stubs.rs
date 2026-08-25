@@ -418,6 +418,16 @@ pub unsafe extern "C" fn rf_canvas_draw_arc(
     use_center: c_int,
     paint: *const RfPaint,
 ) {
+    record(Drawn::Arc {
+        left,
+        top,
+        right,
+        bottom,
+        start_degrees,
+        sweep_degrees,
+        use_center: use_center != 0,
+        argb: unsafe { paint_argb(paint) },
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -707,6 +717,28 @@ pub enum Drawn {
         bottom: f32,
         argb: u32,
     },
+    /// An arc, which recorded **nothing at all** before: the stub's
+    /// `rf_canvas_draw_arc` had an empty body, so a spinner's arc was not a
+    /// call a test could see, let alone one it could check.
+    ///
+    /// The angles are what carry the meaning. A spinner that starts at three
+    /// o'clock rather than twelve, or that sweeps the wrong way, is drawing an
+    /// arc of exactly the right size in exactly the right box.
+    Arc {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        /// Degrees clockwise from three o'clock, which is where zero is on a
+        /// canvas. Twelve o'clock is -90.
+        start_degrees: f32,
+        sweep_degrees: f32,
+        /// Upstream's `useCenter`: whether the two ends are joined through the
+        /// middle. True is a pie wedge, false is a ring segment, and the two
+        /// look nothing alike.
+        use_center: bool,
+        argb: u32,
+    },
     Circle {
         cx: f32,
         cy: f32,
@@ -814,6 +846,26 @@ impl Drawn {
                 top: top + dy,
                 right: right + dx,
                 bottom: bottom + dy,
+                argb,
+            },
+            Drawn::Arc {
+                left,
+                top,
+                right,
+                bottom,
+                start_degrees,
+                sweep_degrees,
+                use_center,
+                argb,
+            } => Drawn::Arc {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                // Angles are not positions and do not move.
+                start_degrees,
+                sweep_degrees,
+                use_center,
                 argb,
             },
             Drawn::Circle {
