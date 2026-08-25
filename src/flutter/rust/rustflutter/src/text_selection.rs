@@ -628,6 +628,171 @@ impl<D: TextSelectionGestureDetectorBuilderDelegate> TextSelectionGestureDetecto
     }
 }
 
+/// Upstream `TextAffinity` (`dart:ui`): which side of an ambiguous offset a
+/// position means.
+///
+/// One offset can be two places on the screen. Where a line **wraps**, the
+/// offset at the break is both the end of the first line and the start of the
+/// second; in bidirectional text the boundary between an LTR and an RTL run is
+/// the same. Upstream's own note is worth keeping: this is only about wrapping
+/// and about direction changes, **not** about explicit newlines -- a `\n` puts
+/// the offset in one place and there is nothing to disambiguate.
+///
+/// The port has carried the string `TextAffinity.downstream` over the wire
+/// since the text-input work and never had the type, so nothing could say
+/// which of the two a position meant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextAffinity {
+    /// Towards the beginning of the string: at a wrap, the end of the first
+    /// line.
+    Upstream,
+    /// Towards the end of the string: at a wrap, the start of the second line.
+    ///
+    /// Upstream's default everywhere, and this port's wire messages have
+    /// always said so.
+    #[default]
+    Downstream,
+}
+
+impl TextAffinity {
+    pub const ALL: [TextAffinity; 2] = [TextAffinity::Upstream, TextAffinity::Downstream];
+
+    /// The name the engine's channel uses, which this crate was already
+    /// sending as a literal.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            TextAffinity::Upstream => "TextAffinity.upstream",
+            TextAffinity::Downstream => "TextAffinity.downstream",
+        }
+    }
+}
+
+/// What a single tap on a focused field does, once the platform has decided
+/// the tap is a touch one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TapOutcome {
+    /// The tap landed on the selection the field already had: show the toolbar
+    /// if it is down, hide it if it is up.
+    ToggleToolbar,
+    /// The tap landed somewhere else: move the caret to the nearest word edge.
+    /// What happens to the toolbar afterwards depends on whether that moved
+    /// anything -- see [`after_selecting_the_word_edge`].
+    SelectWordEdge,
+    /// The word under the tap is misspelled, which upstream checks before
+    /// anything else.
+    SelectWordAndOfferSpelling,
+}
+
+/// What the toolbar does after a tap that chose [`TapOutcome::SelectWordEdge`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterWordEdge {
+    /// The word edge was already where the caret was, so the tap was a second
+    /// tap in the same place and means "show me the toolbar".
+    ToggleToolbar,
+    /// The tap moved the caret, so any toolbar belongs to where it used to be.
+    HideToolbar,
+}
+
+/// Upstream's `_positionWasOnSelectionExclusive`: strictly **inside** the
+/// selection, touching neither end.
+///
+/// The ends are where the handles are. A tap on one is aimed at the handle, or
+/// at putting the caret out of the selection -- not at the selection itself.
+pub fn position_was_on_selection_exclusive(selection: (i32, i32), offset: i32) -> bool {
+    let (start, end) = ordered(selection);
+    start < offset && end > offset
+}
+
+/// Upstream's `_positionWasOnSelectionInclusive`: inside **or on either end**.
+///
+/// The pair only makes sense together. A collapsed selection is a caret, and
+/// "on the caret" can only mean *at* it -- an exclusive test on a zero-width
+/// selection is false for every offset there is, so the collapsed case would
+/// never fire.
+pub fn position_was_on_selection_inclusive(selection: (i32, i32), offset: i32) -> bool {
+    let (start, end) = ordered(selection);
+    start <= offset && end >= offset
+}
+
+fn ordered(selection: (i32, i32)) -> (i32, i32) {
+    (selection.0.min(selection.1), selection.0.max(selection.1))
+}
+
+/// Upstream's single-tap-up branch for a touch on iOS, which is the longest
+/// piece of reasoning in the file and is quoted in its own comment there.
+///
+/// ```dart
+/// } else if (((_positionWasOnSelectionExclusive(textPosition) && !previousSelection.isCollapsed)
+///          || (_positionWasOnSelectionInclusive(textPosition) && previousSelection.isCollapsed
+///              && isAffinityTheSame && !renderEditable.readOnly))
+///         && renderEditable.hasFocus) {
+///   editableText.toggleToolbar(false);
+/// } else {
+///   renderEditable.selectWordEdge(cause: SelectionChangedCause.tap);
+///   ...
+/// }
+/// ```
+///
+/// Every term earns its place.
+///
+/// * **Exclusive for a range, inclusive for a caret.** Tapping inside a
+///   highlighted run toggles the toolbar; tapping exactly on an end does not,
+///   because that is where the handle is. A caret has no inside, so the
+///   collapsed case has to be inclusive or it could never fire.
+/// * **The affinity has to match.** At a line wrap one offset is two places.
+///   If the reader's tap means the other one, the caret should move to the
+///   following line rather than the toolbar appearing where they did not tap.
+/// * **Not read-only.** A read-only field's caret is not something the reader
+///   put there, so a tap on it is a request to select rather than a second tap
+///   on their own caret.
+/// * **Focused.** An unfocused field's first tap is about taking focus and
+///   placing the caret, whatever it landed on.
+/// * **Misspelled first.** Checked before all of it: a tap on a misspelling is
+///   a request for the suggestions, and it does not matter what the selection
+///   was.
+pub fn tap_outcome(
+    misspelled: bool,
+    selection: (i32, i32),
+    offset: i32,
+    affinity_is_the_same: bool,
+    read_only: bool,
+    has_focus: bool,
+) -> TapOutcome {
+    if misspelled {
+        return TapOutcome::SelectWordAndOfferSpelling;
+    }
+    let (start, end) = ordered(selection);
+    let collapsed = start == end;
+    let on_the_selection = (position_was_on_selection_exclusive(selection, offset) && !collapsed)
+        || (position_was_on_selection_inclusive(selection, offset)
+            && collapsed
+            && affinity_is_the_same
+            && !read_only);
+    if on_the_selection && has_focus {
+        TapOutcome::ToggleToolbar
+    } else {
+        TapOutcome::SelectWordEdge
+    }
+}
+
+/// Upstream's `else` arm, once the word edge has been selected.
+///
+/// The toolbar comes up only when the tap changed **nothing** -- the reader
+/// tapped their own caret a second time. A tap that moved the caret hides the
+/// toolbar instead, because a toolbar belongs to the selection it was raised
+/// for.
+pub fn after_selecting_the_word_edge(
+    selection_changed: bool,
+    read_only: bool,
+    has_focus: bool,
+) -> AfterWordEdge {
+    if !selection_changed && has_focus && !read_only {
+        AfterWordEdge::ToggleToolbar
+    } else {
+        AfterWordEdge::HideToolbar
+    }
+}
+
 /// Upstream `SelectionOverlay`: the handles and the toolbar, positioned.
 ///
 /// Upstream puts them in an `Overlay` so they can be drawn over anything,
@@ -2123,4 +2288,165 @@ mod selection_gesture_rule_tests {
             }
         }
     }
+
+    // -- What a tap on a focused field means --------------------------------
+
+    /// A tap with everything else in the ordinary state: focused, editable,
+    /// the affinity unchanged, the word spelled correctly.
+    fn tap(selection: (i32, i32), offset: i32) -> TapOutcome {
+        tap_outcome(false, selection, offset, true, false, true)
+    }
+
+    #[test]
+    fn a_tap_inside_a_highlighted_run_toggles_the_toolbar_and_a_tap_on_its_end_does_not() {
+        // Exclusive, for a reason: the ends are where the handles are, so a
+        // tap there is aimed at the handle or at putting the caret outside the
+        // selection. Inside is the only place that means "this selection".
+        let run = (4, 9);
+        assert_eq!(tap(run, 6), TapOutcome::ToggleToolbar, "inside");
+        assert_eq!(tap(run, 4), TapOutcome::SelectWordEdge, "on the start");
+        assert_eq!(tap(run, 9), TapOutcome::SelectWordEdge, "on the end");
+        assert_eq!(tap(run, 12), TapOutcome::SelectWordEdge, "past it");
+    }
+
+    #[test]
+    fn but_a_caret_is_tested_inclusively_or_the_rule_could_never_fire() {
+        // A collapsed selection has no inside. An exclusive test on it is
+        // false for every offset there is, so the second-tap-on-your-own-caret
+        // case would never happen -- which is the case the rule exists for.
+        let caret = (7, 7);
+        assert!(!position_was_on_selection_exclusive(caret, 7));
+        assert!(position_was_on_selection_inclusive(caret, 7));
+        assert_eq!(tap(caret, 7), TapOutcome::ToggleToolbar);
+        assert_eq!(tap(caret, 8), TapOutcome::SelectWordEdge, "not the caret");
+    }
+
+    #[test]
+    fn a_tap_at_a_line_wrap_that_means_the_other_line_moves_rather_than_toggles() {
+        // One offset is two places where the text wraps. If the affinity is
+        // not the one the selection already had, the reader is asking for the
+        // following line, and the toolbar appearing where they did not tap
+        // would be the wrong answer.
+        let caret = (7, 7);
+        assert_eq!(
+            tap_outcome(false, caret, 7, true, false, true),
+            TapOutcome::ToggleToolbar,
+            "same affinity: the same place"
+        );
+        assert_eq!(
+            tap_outcome(false, caret, 7, false, false, true),
+            TapOutcome::SelectWordEdge,
+            "a different affinity is a different place"
+        );
+
+        // The affinity only qualifies the collapsed arm. A tap inside a run
+        // toggles regardless, because a run has an inside and there is nothing
+        // ambiguous about being in it.
+        assert_eq!(
+            tap_outcome(false, (4, 9), 6, false, false, true),
+            TapOutcome::ToggleToolbar
+        );
+    }
+
+    #[test]
+    fn a_read_only_field_takes_a_tap_on_its_caret_as_a_request_to_select() {
+        // The caret in a read-only field is not something the reader put
+        // there, so tapping it is not a second tap on their own work.
+        let caret = (7, 7);
+        assert_eq!(
+            tap_outcome(false, caret, 7, true, true, true),
+            TapOutcome::SelectWordEdge
+        );
+        // And again only the collapsed arm: a highlighted run in a read-only
+        // field still toggles, because the reader made that selection.
+        assert_eq!(
+            tap_outcome(false, (4, 9), 6, true, true, true),
+            TapOutcome::ToggleToolbar
+        );
+    }
+
+    #[test]
+    fn an_unfocused_field_places_the_caret_whatever_the_tap_landed_on() {
+        // The `hasFocus` term gates the whole condition rather than one arm of
+        // it: a first tap is about taking focus.
+        for selection in [(4, 9), (7, 7)] {
+            let offset = if selection.0 == selection.1 { 7 } else { 6 };
+            assert_eq!(
+                tap_outcome(false, selection, offset, true, false, false),
+                TapOutcome::SelectWordEdge,
+                "{selection:?}"
+            );
+            assert_eq!(
+                tap_outcome(false, selection, offset, true, false, true),
+                TapOutcome::ToggleToolbar,
+                "{selection:?} focused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_misspelled_word_is_checked_before_any_of_it() {
+        // The suggestions are what the tap was for, and it does not matter
+        // where the selection was or whether the field has focus.
+        for has_focus in [false, true] {
+            for selection in [(4, 9), (7, 7)] {
+                assert_eq!(
+                    tap_outcome(true, selection, 6, true, false, has_focus),
+                    TapOutcome::SelectWordAndOfferSpelling,
+                    "{selection:?} {has_focus}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_toolbar_comes_back_only_when_the_word_edge_moved_nothing() {
+        // A tap that moved the caret hides the toolbar: a toolbar belongs to
+        // the selection it was raised for. A tap that changed nothing was a
+        // second tap in the same place, which is a request for the toolbar.
+        assert_eq!(
+            after_selecting_the_word_edge(false, false, true),
+            AfterWordEdge::ToggleToolbar
+        );
+        assert_eq!(
+            after_selecting_the_word_edge(true, false, true),
+            AfterWordEdge::HideToolbar,
+            "it moved"
+        );
+        assert_eq!(
+            after_selecting_the_word_edge(false, true, true),
+            AfterWordEdge::HideToolbar,
+            "read-only"
+        );
+        assert_eq!(
+            after_selecting_the_word_edge(false, false, false),
+            AfterWordEdge::HideToolbar,
+            "unfocused"
+        );
+    }
+
+    #[test]
+    fn a_selection_given_backwards_is_the_same_selection() {
+        // A field's selection is a base and an extent, and dragging right to
+        // left puts the larger number first. Every predicate here has to read
+        // it the same way round.
+        assert!(position_was_on_selection_exclusive((9, 4), 6));
+        assert!(position_was_on_selection_inclusive((9, 4), 4));
+        assert_eq!(tap((9, 4), 6), TapOutcome::ToggleToolbar);
+    }
+
+    #[test]
+    fn the_two_affinities_carry_the_names_the_wire_already_used() {
+        // The strings were being sent as literals before the type existed.
+        assert_eq!(TextAffinity::Downstream.as_wire(), "TextAffinity.downstream");
+        assert_eq!(TextAffinity::Upstream.as_wire(), "TextAffinity.upstream");
+        assert_eq!(TextAffinity::default(), TextAffinity::Downstream);
+        // Item by item: `ALL.len() == 2` is a claim about an array literal
+        // and would hold whatever the two were.
+        assert_eq!(
+            TextAffinity::ALL,
+            [TextAffinity::Upstream, TextAffinity::Downstream]
+        );
+    }
 }
+

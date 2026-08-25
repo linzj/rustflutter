@@ -16222,3 +16222,46 @@ unfocus 本来就以 `had_focus && !value` 为条件。**本移植还没有
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5347 + 333 通过；五个输出目录的 rustflutter_engine 与
 rust_lib 全部重建。
+
+### 第 198 次：一个偏移量是两个地方
+
+`TextSelectionGestureDetectorBuilder`（depth 6/27）。上游那条最长的判断，
+连注释一起横跨十几行，讲的是**在已聚焦的字段上轻点一下，是切换工具条还是把
+光标挪到词边**：
+
+```dart
+} else if (((_positionWasOnSelectionExclusive(textPosition) && !previousSelection.isCollapsed)
+         || (_positionWasOnSelectionInclusive(textPosition) && previousSelection.isCollapsed
+             && isAffinityTheSame && !renderEditable.readOnly))
+        && renderEditable.hasFocus) {
+```
+
+每一项都有它的理由，而且理由各不相同：
+
+- **范围用 exclusive，光标用 inclusive。** 高亮区的两端是**手柄所在**，点在
+  那里是冲着手柄去的、或是要把光标挪出选区。而光标没有"内部"——对一个零宽
+  选区做 exclusive 判断对任何偏移量都是假，那一支永远不会触发，而它恰恰是这
+  条规则存在的理由。
+- **affinity 必须相同。** 换行处**一个偏移量是两个地方**。若读者点的是另一个，
+  光标应当移到下一行，而不是在他们没点的位置弹出工具条。
+- **非只读。** 只读字段里的光标不是读者放的，点它是"我想选"而不是"再点一次
+  我自己的光标"。
+- **已聚焦**管住整个条件，而不是其中一支：第一次点是为了取得焦点。
+- **拼写错误在这一切之前判断**：点在拼错的词上就是要看建议，选区是什么、有没有
+  焦点都不重要。
+
+`else` 那支同样有内容：选完词边之后，**只有当什么都没动时**才升起工具条——那
+说明读者是在同一处点了第二次；点动了光标则收起工具条，因为工具条属于当初为它
+升起的那个选区。
+
+顺带补上 `TextAffinity`（`dart:ui`）。本移植从做文本输入起就一直在往线上发
+`TextAffinity.downstream` 这个字面量，却从来没有这个类型——没有任何东西能说出
+一个位置指的是两者中的哪一个。
+
+变异：九条全部转红。测试里那句 `assert_eq!(ALL.len(), 2)` 是同义反复（这是第
+二次犯，第一次在第 165 次），改成逐项比较。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5356 + 333 通过；五个输出目录的 rustflutter_engine 与
+rust_lib 全部重建。
