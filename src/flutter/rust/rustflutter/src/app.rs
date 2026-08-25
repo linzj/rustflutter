@@ -582,6 +582,13 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         let images_arrived = crate::painting::take_images_arrived();
         let resized = self.last_size != Some(context.size);
         let data = crate::media_query::MediaQueryData::from_view(&context.metrics);
+        // The reader's language, from the same place the text scale and the
+        // brightness come from. Upstream's `WidgetsApp` builds a
+        // `Localizations` around what you gave it; this is the same position
+        // and the same reason -- everything below can ask what language it is
+        // in without being handed one.
+        let localizations =
+            crate::localizations::Localizations::new(crate::platform::locale());
         let mounted = if self.tree.is_empty() || resized || images_arrived {
             // Published above the application's own root, which is where
             // upstream puts it too: `WidgetsApp` wraps what you gave it in a
@@ -596,9 +603,12 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
             // `Navigator`'s `Overlay`: an entry needs to know how big the view
             // is as much as the page does, and a dialog put up by the
             // application has to land above everything the application built.
-            let root = crate::media_query::MediaQuery::new(
-                data,
-                crate::theatre::overlay(self.app.build(context)),
+            let root = crate::localizations::provide_localizations(
+                localizations,
+                crate::media_query::MediaQuery::new(
+                    data,
+                    crate::theatre::overlay(self.app.build(context)),
+                ),
             );
             self.tree.rebuild(root);
             self.last_size = Some(context.size);
@@ -612,7 +622,11 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
             // of that animation, and the answer should not be rebuilding the
             // page thirty times.
             let republished = self.tree.publish(data);
-            self.tree.rebuild_dirty() > 0 || republished
+            // The language goes the same way, and for the same reason: a
+            // reader who changes their system language should not cost a
+            // remount of everything, only a rebuild of whoever asked.
+            let relocalised = self.tree.publish(localizations);
+            self.tree.rebuild_dirty() > 0 || republished || relocalised
         };
 
         // Anything built this frame has never been asked whether it wants to
@@ -1345,7 +1359,10 @@ mod abi {
         locales: *const *const c_char,
         count: usize,
     ) {
-        if instance(app).is_none() || locales.is_null() {
+        let Some(instance) = instance(app) else {
+            return;
+        };
+        if locales.is_null() {
             return;
         }
         let flat = unsafe { std::slice::from_raw_parts(locales, count * 4) };
@@ -1375,7 +1392,13 @@ mod abi {
                 variant_code: read(group[3]),
             });
         }
-        platform::set_locales(parsed);
+        // A frame, for the same reason `rf_app_set_user_settings` asks for
+        // one: the language reaches the tree through the root's
+        // `Localizations` during a frame, and nothing else was going to ask
+        // for one. Only on a change -- the shell re-sends the whole list.
+        if platform::set_locales(parsed) {
+            instance.schedule_frame();
+        }
     }
 
     #[unsafe(no_mangle)]

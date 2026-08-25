@@ -361,17 +361,17 @@ fn call(slot: Slot, settings: &UserSettings) {
 }
 
 /// Records new locales and tells the handler, if anything changed.
-pub(crate) fn set_locales(locales: Vec<Locale>) {
+pub(crate) fn set_locales(locales: Vec<Locale>) -> bool {
     let unchanged = PLATFORM.with(|platform| platform.borrow().locales == locales);
     if unchanged {
-        return;
+        return false;
     }
     let handler = PLATFORM.with(|platform| {
         let mut platform = platform.borrow_mut();
         platform.locales = locales;
         platform.locales_handler.take()
     });
-    let Some(mut handler) = handler else { return };
+    let Some(mut handler) = handler else { return true };
     let current = self::locales();
     handler(&current);
     PLATFORM.with(|platform| {
@@ -380,6 +380,7 @@ pub(crate) fn set_locales(locales: Vec<Locale>) {
             platform.locales_handler = Some(handler);
         }
     });
+    true
 }
 
 /// Forgets everything, so that a second app on this thread does not inherit the
@@ -563,6 +564,20 @@ mod tests {
             "the same message twice is not a change"
         );
         assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_same_locale_list_twice_is_not_a_change() {
+        // The return value is what the ABI schedules a frame on, and the shell
+        // re-sends the whole list whenever any of it moves. Same shape as the
+        // settings payload, and same reason.
+        clear();
+        assert!(set_locales(vec![Locale::new("fr")]));
+        assert!(
+            !set_locales(vec![Locale::new("fr")]),
+            "the same list again says nothing new"
+        );
+        assert!(set_locales(vec![Locale::new("ja")]));
     }
 
     #[test]

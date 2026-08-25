@@ -302,6 +302,13 @@ impl LocalizationsDelegate for DefaultWidgetsLocalizationsDelegate {
 }
 
 /// Upstream `Localizations`: the widget that holds the loaded resources.
+///
+/// # It is a widget now
+///
+/// This was a value with no way into a tree, which meant the reader's language
+/// stopped at [`crate::platform::locale`] and nothing below could ask for it.
+/// [`provide_localizations`] publishes one and [`locale_of`] reads it back,
+/// which is upstream's `Localizations.localeOf(context)`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Localizations {
     pub locale: Option<Locale>,
@@ -324,7 +331,10 @@ impl Localizations {
         self.resources.get(resource_type).map(String::as_str)
     }
 
-    /// Upstream's `maybeLocaleOf`.
+    /// The locale this bundle was loaded for, if it has one.
+    ///
+    /// Not upstream's `maybeLocaleOf`, which takes a context -- that is
+    /// [`maybe_locale_of`], and this is what it reads.
     pub fn maybe_locale(&self) -> Option<&Locale> {
         self.locale.as_ref()
     }
@@ -365,6 +375,58 @@ impl Localizations {
 /// something further down would match more precisely. The one case that still
 /// waits is when the *next* preference names the same language, where one more
 /// round is at worst the same answer and at best a better one.
+// -- Reaching it from a build ------------------------------------------------
+
+/// Publishes a [`Localizations`] to a subtree, which is upstream's
+/// `Localizations` widget.
+///
+/// The root of an application is wrapped in one automatically -- see
+/// `WidgetHost` -- so this is only needed to *change* what a subtree sees,
+/// which is upstream's `Localizations.override`.
+pub fn provide_localizations(
+    localizations: Localizations,
+    child: crate::framework::AnyWidget,
+) -> crate::framework::AnyWidget {
+    crate::framework::provide(localizations, child)
+}
+
+/// Upstream's `Localizations.maybeLocaleOf`: the reader's language, or `None`
+/// where nothing published one.
+pub fn maybe_locale_of(context: &crate::framework::BuildContext) -> Option<Locale> {
+    context
+        .inherited::<Localizations>()
+        .and_then(|bundle| bundle.locale.clone())
+}
+
+/// Upstream's `Localizations.localeOf`.
+///
+/// Upstream asserts when there is no `Localizations` above; here the root
+/// always publishes one, so the fallback is only reachable from a test that
+/// mounted a widget on its own -- the same arrangement, and the same reason,
+/// as [`crate::media_query::media_query_of`].
+///
+/// The fallback is [`crate::platform::locale`], which has a documented one of
+/// its own: a platform that has said nothing is treated as `en`, because a
+/// framework with no locale at all cannot format a date.
+pub fn locale_of(context: &crate::framework::BuildContext) -> Locale {
+    maybe_locale_of(context).unwrap_or_else(crate::platform::locale)
+}
+
+/// Upstream's `Localizations.of<T>`, which answers **null** rather than
+/// asserting when the type is not there.
+///
+/// Nullable is right: a widget that works without a particular localization --
+/// and several do, falling back to an unlabelled control -- should be able to
+/// ask.
+pub fn resource_of(
+    context: &crate::framework::BuildContext,
+    resource_type: &str,
+) -> Option<String> {
+    context
+        .inherited::<Localizations>()
+        .and_then(|bundle| bundle.of(resource_type).map(str::to_string))
+}
+
 pub fn basic_locale_list_resolution(
     preferred_locales: &[Locale],
     supported_locales: &[Locale],
@@ -556,6 +618,139 @@ mod tests {
 
     fn locale(language: &str) -> Locale {
         Locale::new(language)
+    }
+
+    // -- Reaching it from a build ---------------------------------------------
+
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, many,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    /// Reads the ambient locale and counts its builds, the way a real consumer
+    /// would.
+    struct LocaleProbe {
+        seen: Rc<RefCell<Vec<String>>>,
+        builds: Rc<Cell<u32>>,
+    }
+
+    impl Component for LocaleProbe {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            self.builds.set(self.builds.get() + 1);
+            self.seen
+                .borrow_mut()
+                .push(locale_of(context).language_code.clone());
+            leaf(|| crate::widgets::Empty)
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn locale_probe() -> (AnyWidget, Rc<RefCell<Vec<String>>>, Rc<Cell<u32>>) {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let builds = Rc::new(Cell::new(0));
+        (
+            component(LocaleProbe {
+                seen: Rc::clone(&seen),
+                builds: Rc::clone(&builds),
+            }),
+            seen,
+            builds,
+        )
+    }
+
+    #[test]
+    fn a_widget_can_ask_what_language_it_is_in() {
+        // Before this the reader's language stopped at `platform::locale`:
+        // nothing in the framework read it, and there was no way into a tree
+        // for it to be read from.
+        let (probe, seen, _) = locale_probe();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide_localizations(
+            Localizations::new(locale("fr")),
+            probe,
+        ));
+        assert_eq!(*seen.borrow(), vec!["fr"]);
+    }
+
+    #[test]
+    fn a_subtree_can_be_in_another_language() {
+        // Upstream's `Localizations.override`, which exists so one part of a
+        // page can be in a language the rest is not -- a preview of a
+        // translation, a name that should not be transliterated.
+        let (outer, outer_seen, _) = locale_probe();
+        let (inner, inner_seen, _) = locale_probe();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide_localizations(
+            Localizations::new(locale("fr")),
+            many(
+                vec![outer, provide_localizations(Localizations::new(locale("ja")), inner)],
+                |children| {
+                    let mut flex = crate::render::RenderFlex::column();
+                    for child in children {
+                        flex = flex.push(child);
+                    }
+                    Box::new(flex)
+                },
+            ),
+        ));
+        assert_eq!(*outer_seen.borrow(), vec!["fr"]);
+        assert_eq!(*inner_seen.borrow(), vec!["ja"], "the nearer one wins");
+    }
+
+    #[test]
+    fn changing_the_language_rebuilds_whoever_asked_and_nobody_else() {
+        // What `publish` buys over remounting: the reader changes their system
+        // language and only the widgets that asked about it are built again.
+        let (asker, seen, asker_builds) = locale_probe();
+        let quiet_builds = Rc::new(Cell::new(0));
+
+        struct Quiet(Rc<Cell<u32>>);
+        impl Component for Quiet {
+            fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+                self.0.set(self.0.get() + 1);
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide_localizations(
+            Localizations::new(locale("fr")),
+            many(
+                vec![asker, component(Quiet(Rc::clone(&quiet_builds)))],
+                |children| {
+                    let mut flex = crate::render::RenderFlex::column();
+                    for child in children {
+                        flex = flex.push(child);
+                    }
+                    Box::new(flex)
+                },
+            ),
+        ));
+        assert_eq!((asker_builds.get(), quiet_builds.get()), (1, 1));
+
+        assert!(tree.publish(Localizations::new(locale("ja"))));
+        tree.rebuild_dirty();
+        assert_eq!(*seen.borrow(), vec!["fr", "ja"]);
+        assert_eq!(
+            (asker_builds.get(), quiet_builds.get()),
+            (2, 1),
+            "the one that never asked is not rebuilt"
+        );
+    }
+
+    #[test]
+    fn a_widget_with_nothing_above_it_falls_back_to_the_platform() {
+        // Upstream asserts here. The root of an application always publishes
+        // one, so this is only reachable from a test that mounted a widget on
+        // its own -- and answering with the platform's is better than
+        // answering with an empty locale nothing could match.
+        crate::platform::set_locales(vec![with_country("pt", "BR")]);
+        let (probe, seen, _) = locale_probe();
+        let mut tree = ElementTree::new();
+        tree.rebuild(probe);
+        assert_eq!(*seen.borrow(), vec!["pt"]);
+        crate::platform::reset();
     }
 
     fn with_country(language: &str, country: &str) -> Locale {

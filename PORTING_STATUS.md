@@ -14574,3 +14574,44 @@ bool removeObserver(WidgetsBindingObserver observer) {
 否则那两条测试测的是"什么都没记"。
 
 5152 测试通过，完整 GN 门过。`depth.py` 上 `WidgetsBinding` 15/38 → 16/38。
+
+## 第 155 轮 — 读者的语言，树里问不到
+
+本来打算给 `WidgetsBinding` 加单例，把上一轮那条链接完。先按纪律找真实调用方，
+结果发现管子的另一头也是空的：`Localizations::did_change_locales` 同样没有生产
+驱动，`WidgetsApp` 那半只是一组断言，**框架里没有任何东西读 `platform::locale()`**。
+
+给一条没有听众的通路加"请求一帧"，等于给不存在的人装闹钟。真正的缺口在更前面：
+
+### `Localizations` 从来没被发布进树
+
+上游的 `Localizations` 是 `InheritedWidget`，配 `Localizations.localeOf(context)`。
+这里它是个普通结构体，有 `of(&self, resource_type)`——**没有进树的路**。
+于是 `flutter/localization` 通道进来的语言到 `platform::locale()` 就停住了。
+
+补上三个：
+
+- `provide_localizations(bundle, child)` —— 上游 `Localizations` 的 widget 那一半
+- `maybe_locale_of(context)` / `locale_of(context)` —— 上游的 `maybeLocaleOf` / `localeOf`
+- `resource_of(context, type)` —— 上游的 `Localizations.of<T>`，返回 null 而不是断言
+
+`locale_of` 在头上什么都没有时回落到 `platform::locale()`，那个本身还有一层
+有文档的回落（平台什么都没说就当 `en`，因为没有 locale 的框架格式化不了日期）。
+上游在这里是断言；这里根总会发布一个，所以回落只有"单独挂载一个 widget 的测试"
+够得着——和 `media_query_of` 同样的安排、同样的理由。
+
+根上按帧读 `platform::locale()` 发布，和 `MediaQueryData::from_view` 并排；
+换语言走 `publish` 而不是重挂载，所以**只有问过的人被重建**。
+
+`rf_app_set_locales` 现在会请求一帧了——而这一次是有听众的。
+
+四条新测试加一条 `set_locales` 的返回值测试；三条变异全红：
+回落改成空 locale、`maybe_locale_of` 恒 None、列表没变也返回 true。
+
+### 沿途记下的
+
+`localizations.rs` 里 `maybe_locale` 的文档原来写着"Upstream's `maybeLocaleOf`"，
+但上游那个收 context、是查树的。改成说清楚：那是新加的 `maybe_locale_of`，
+这个是它读的东西。
+
+5157 测试通过，完整 GN 门过。`depth.py` 上 `Localizations` 3/8 → 6/8。
