@@ -17332,3 +17332,65 @@ Brightness get brightness => colorScheme.brightness;
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5594 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 228 次：一把新尺子，和它自己改了三次的口径
+
+`unwired.py` 问的是"每个**主题**有没有读者"，读零已经很久。但一个四十字段的
+主题，读者可以只碰三十九个——第四十个就是一个被声明、被文档、被 `copy_with`
+带过、被 `lerp` 插值、被测试盯着，而**没有任何东西回答**的字段。
+
+手工先找到一个：**`DividerThemeData::radius` 没有任何 widget 读它。**上游
+`Divider.build` 读 `radius ?? dividerTheme.radius ?? defaults.radius`，而端口
+的 `ResolvedDivider` 干脆把它丢了——`Divider` 和 `VerticalDivider` 永远圆不了
+角，设了这个主题字段的调用方得到沉默。
+
+于是有了 `tools/unread_theme_fields.py`。
+
+**它的口径改了三次，每次都是尺子的错，不是端口的：**
+
+| 版本 | 规则 | 报出 | 错在哪 |
+| --- | --- | --- | --- |
+| v1 | 四个主题文件之外的才算读者 | 224 | 30 个 `ThemeData` 字段 `component_themes.rs` 读得好好的 |
+| v2 | 声明该结构体的那个文件之外的才算 | 152 | `ResolvedSlider::of` 就在 `slider_theme.rs` 里读 `data.track_shape` |
+| v3 | 除了该字段自己的"文书"（结构体声明、`lerp`、`copy_with`、构造器、测试模块）之外都算 | **137** | |
+
+第一个数字虚高了 63%。这一点写进了尺子的文档里——**一把没人该比读它更信任
+的尺子，纠正的方向应该总是指向它自己。**
+
+它的口径仍然是保守的：按裸字段名在全 crate 里找，所以 `color` 这种常见名会
+被巧合命中而不报。它**只会少报**。
+
+**137 条里 135 条上游自己的 widget 会读**（静态查得），另 17 条上游也不读，
+属于"仅仅被携带"。前者是 135 根该接而没接的线。
+
+### 接上第一根：`SliderThemeData::allowed_interaction`
+
+上游在 `_SliderState._startInteraction` 和 `_handleDragUpdate` 里按它分支：
+
+| 模式 | 点 | 拖 |
+| --- | --- | --- |
+| `TapAndSlide` | 跳过去 | 滑动 |
+| `TapOnly` | 跳过去 | 忽略 |
+| `SlideOnly` | 忽略 | 滑动 |
+| `SlideThumb` | 忽略 | 只有从拇指上开始的才滑 |
+
+端口每一个点和每一个拖都收——主题要 `SlideOnly`（应用不想让误触改动数值）
+被完全忽略。
+
+**原因是手势建在 `wired` 里，而 `wired` 跑的时候还没有可以解析主题的
+context。**所以 `wired` 现在只记住"拿到一个值该做什么"，`build` 才决定"哪些
+手势有资格产生一个值"。这样主题是自动被遵守的，不需要调用方多做一步。
+
+**一处和上游的差别写在了原处**：`SlideThumb` 上游问 `_isPointerOnOverlay`，
+而 overlay 比拇指宽。这里问的是拇指本身，因为这个 slider 只有拇指这一个矩形
+——它把拇指画成行里的一个盒子，没有 overlay。紧挨着 Material 3 拇指外侧开始
+的拖动，这里拒绝，上游接受。
+
+五条承重规则逐条强制改错：**五条全红**。其中"解析器读错主题字段"那条第一轮
+**读绿**——四条手势测试都是手工构造 `ResolvedSlider` 的，它们看着 widget 拿到
+答案之后做什么，却没有看着答案是从主题来的。补了一条走真实控件树的测试。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后，**unread_theme_fields 137（新，队列）**。
+门：5600 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

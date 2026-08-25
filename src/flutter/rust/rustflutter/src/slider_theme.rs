@@ -2130,6 +2130,11 @@ pub struct ResolvedSlider {
     /// comes from [`SliderThemeData::thumb_size`] and for the circle is twice
     /// its radius.
     pub thumb_size: Size,
+    /// Which gestures move the value. Upstream reads it in
+    /// `_SliderState._startInteraction` and `_handleDragUpdate`, and its
+    /// default -- `defaultAllowedInteraction` -- is
+    /// [`SliderInteraction::TapAndSlide`].
+    pub allowed_interaction: SliderInteraction,
 }
 
 impl ResolvedSlider {
@@ -2168,6 +2173,7 @@ impl ResolvedSlider {
             }),
             thumb_shape,
             thumb_size,
+            allowed_interaction: data.allowed_interaction.unwrap_or_default(),
         }
     }
 }
@@ -2972,6 +2978,42 @@ mod tests {
         assert_eq!(SliderThemeData::lerp(&a, &b, 0.499), a);
         // ...and just past it every one of them is `b`'s, in the same frame.
         assert_eq!(SliderThemeData::lerp(&a, &b, 0.5), b);
+    }
+
+    #[test]
+    fn the_resolved_slider_takes_its_interaction_from_the_theme() {
+        // The mode has to travel from `SliderThemeData` to the widget. The
+        // gesture tests above build a `ResolvedSlider` by hand, so they watch
+        // what the widget does with the answer and not that the answer came
+        // from the theme -- and a resolver that ignored the field would have
+        // left every one of them green.
+        let themed = |mode: Option<SliderInteraction>| {
+            read_in(
+                move |child| {
+                    MaterialTheme::new(
+                        ThemeData::light(),
+                        SliderTheme::new(
+                            SliderThemeData {
+                                allowed_interaction: mode,
+                                ..SliderThemeData::default()
+                            },
+                            child,
+                        ),
+                    )
+                },
+                |context| ResolvedSlider::of(context).allowed_interaction,
+            )
+        };
+        assert_eq!(
+            themed(Some(SliderInteraction::SlideOnly)),
+            SliderInteraction::SlideOnly
+        );
+        assert_eq!(
+            themed(Some(SliderInteraction::TapOnly)),
+            SliderInteraction::TapOnly
+        );
+        // Unset is upstream's `defaultAllowedInteraction`.
+        assert_eq!(themed(None), SliderInteraction::TapAndSlide);
     }
 }
 

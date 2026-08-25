@@ -1205,7 +1205,10 @@ pub struct Slider {
     id: u64,
     value: f32,
     width: f32,
-    handlers: PointerHandlers,
+    /// What to do with a new value, if anything. The gestures that produce
+    /// one are decided in `build`, where the theme can be read; this is the
+    /// part that has to be captured before then.
+    on_change: Option<std::rc::Rc<dyn Fn(f32)>>,
 }
 
 impl Slider {
@@ -1214,7 +1217,7 @@ impl Slider {
             id,
             value: value.clamp(0.0, 1.0),
             width: 200.0,
-            handlers: PointerHandlers::new(),
+            on_change: None,
         }
     }
 
@@ -1223,23 +1226,88 @@ impl Slider {
         self
     }
 
-    /// Drags and taps both set the value from the pointer's position along the
-    /// track, which is the behaviour that needs no separate "thumb grabbed"
-    /// state.
+    /// Remembers what to do with a new value.
+    ///
+    /// Which gestures are allowed to produce one comes from
+    /// [`SliderThemeData::allowed_interaction`] and is decided in `build`,
+    /// because the theme cannot be read here -- there is no context yet.
+    /// That is why this no longer builds the handlers: it used to, and the
+    /// widget therefore took every tap and every drag whatever the theme
+    /// said.
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, set: fn(&mut S, f32)) -> Self {
+        self.on_change = Some(std::rc::Rc::new(move |value: f32| {
+            handle.set_state(move |state| set(state, value));
+        }));
+        self
+    }
+}
+
+impl Slider {
+    /// The gestures this slider accepts, under the theme's
+    /// [`SliderThemeData::allowed_interaction`].
+    ///
+    /// # The four modes
+    ///
+    /// Upstream switches on them in `_SliderState._startInteraction` and
+    /// `_handleDragUpdate`:
+    ///
+    /// | mode | a tap | a drag |
+    /// | --- | --- | --- |
+    /// | `TapAndSlide` | jumps | slides |
+    /// | `TapOnly` | jumps | ignored |
+    /// | `SlideOnly` | ignored | slides |
+    /// | `SlideThumb` | ignored | slides, if it began on the thumb |
+    ///
+    /// `SlideOnly` is there so that a stray tap cannot move a value an
+    /// application cares about. Ignoring the field, as this did, threw that
+    /// away.
+    ///
+    /// # Where this differs from upstream
+    ///
+    /// `SlideThumb` upstream asks `_isPointerOnOverlay`, and the overlay is
+    /// wider than the thumb. This asks whether the pointer went down on the
+    /// thumb itself, because that is the only rectangle this slider has: it
+    /// draws the thumb as a box in a row and has no overlay. A drag starting
+    /// just outside the thumb is refused here and accepted upstream.
+    fn gestures(&self, slider: &crate::slider_theme::ResolvedSlider) -> PointerHandlers {
+        let Some(on_change) = self.on_change.clone() else {
+            return PointerHandlers::new();
+        };
+        let interaction = slider.allowed_interaction;
         let width = self.width;
-        let drag_handle = handle.clone();
-        let tap_handle = handle;
-        self.handlers = PointerHandlers::new()
+        // The thumb sits at the end of the filled part of the track, so its
+        // box runs from there to a thumb's width further along.
+        let filled = (width * self.value).clamp(0.0, width);
+        let thumb_width = slider.thumb_size.width;
+        // Whether the drag in flight began on the thumb. Only `SlideThumb`
+        // reads it, but it has to be recorded at every drag start, which is
+        // the only moment the answer is knowable.
+        let began_on_thumb = std::rc::Rc::new(std::cell::Cell::new(false));
+        let starting = std::rc::Rc::clone(&began_on_thumb);
+        let dragging = std::rc::Rc::clone(&on_change);
+        PointerHandlers::new()
+            .with_drag_start(move |drag| {
+                let dx = drag.local_position.dx;
+                starting.set(dx >= filled && dx <= filled + thumb_width);
+            })
             .with_drag_update(move |drag| {
-                let value = (drag.local_position.dx / width).clamp(0.0, 1.0);
-                drag_handle.set_state(move |state| set(state, value));
+                if interaction == crate::slider_theme::SliderInteraction::TapOnly {
+                    return;
+                }
+                if interaction == crate::slider_theme::SliderInteraction::SlideThumb && !began_on_thumb.get() {
+                    return;
+                }
+                dragging((drag.local_position.dx / width).clamp(0.0, 1.0));
             })
             .with_tap(move |tap| {
-                let value = (tap.local_position.dx / width).clamp(0.0, 1.0);
-                tap_handle.set_state(move |state| set(state, value));
-            });
-        self
+                if matches!(
+                    interaction,
+                    crate::slider_theme::SliderInteraction::SlideOnly | crate::slider_theme::SliderInteraction::SlideThumb
+                ) {
+                    return;
+                }
+                on_change((tap.local_position.dx / width).clamp(0.0, 1.0));
+            })
     }
 }
 
@@ -1249,7 +1317,7 @@ impl Component for Slider {
         let value = self.value;
         let width = self.width;
         let id = self.id;
-        let handlers = self.handlers.clone();
+        let handlers = self.gestures(&slider);
         let track = slider.inactive_track_color;
         let fill = slider.active_track_color;
         let knob = slider.thumb_color;
@@ -4523,6 +4591,145 @@ mod tests {
         assert_eq!(second.height(), 10.0);
 
         assert_eq!(table.row_box(2), None, "and no third row exists");
+    }
+
+    // -- The theme decides which gestures move a slider, tick 228 -----------
+    //
+    // `tools/unread_theme_fields.py` found `SliderThemeData::allowed_interaction`
+    // named nowhere outside its own paperwork: the widget built its gestures
+    // in `wired`, before there was a context to read a theme from, so it took
+    // every tap and every drag whatever the theme asked for.
+
+    /// A slider under `mode`, and the value its gestures produce.
+    ///
+    /// The thumb is twenty wide and the value is a half of two hundred, so it
+    /// occupies `[100, 120]`: a drag from 110 begins on it and one from 10
+    /// does not.
+    fn under(
+        mode: crate::slider_theme::SliderInteraction,
+    ) -> (std::rc::Rc<std::cell::Cell<Option<f32>>>, PointerHandlers) {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let recorder = std::rc::Rc::clone(&seen);
+        let mut slider = Slider::new(1, 0.5);
+        slider.on_change = Some(std::rc::Rc::new(move |value| recorder.set(Some(value))));
+        let resolved = crate::slider_theme::ResolvedSlider {
+            track_height: 4.0,
+            active_track_color: Color::argb(255, 0, 0, 0),
+            inactive_track_color: Color::argb(255, 0, 0, 0),
+            thumb_color: Color::argb(255, 0, 0, 0),
+            track_shape: crate::slider_theme::SliderTrackShape::Rectangular(
+                crate::slider_theme::RectangularSliderTrackShape::default(),
+            ),
+            thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
+            thumb_size: Size::new(20.0, 20.0),
+            allowed_interaction: mode,
+        };
+        let handlers = slider.gestures(&resolved);
+        (seen, handlers)
+    }
+
+    fn tap_at(handlers: &PointerHandlers, dx: f32) {
+        let handler = handlers.on_tap.clone().expect("a tap handler");
+        handler(crate::gestures::TapEvent {
+            local_position: Offset::new(dx, 0.0),
+            pointer_id: 1,
+        });
+    }
+
+    fn drag_from_to(handlers: &PointerHandlers, from: f32, to: f32) {
+        let start = handlers.on_drag_start.clone().expect("a drag start handler");
+        start(crate::gestures::DragEvent {
+            delta: Offset::new(0.0, 0.0),
+            total: Offset::new(0.0, 0.0),
+            local_position: Offset::new(from, 0.0),
+            pointer_id: 1,
+        });
+        let update = handlers
+            .on_drag_update
+            .clone()
+            .expect("a drag update handler");
+        update(crate::gestures::DragEvent {
+            delta: Offset::new(to - from, 0.0),
+            total: Offset::new(to - from, 0.0),
+            local_position: Offset::new(to, 0.0),
+            pointer_id: 1,
+        });
+    }
+
+    #[test]
+    fn tap_and_slide_takes_both() {
+        use crate::slider_theme::SliderInteraction;
+        let (seen, handlers) = under(SliderInteraction::TapAndSlide);
+        tap_at(&handlers, 50.0);
+        assert_eq!(seen.get(), Some(0.25));
+        seen.set(None);
+        drag_from_to(&handlers, 10.0, 150.0);
+        assert_eq!(seen.get(), Some(0.75));
+    }
+
+    #[test]
+    fn tap_only_refuses_the_drag() {
+        use crate::slider_theme::SliderInteraction;
+        let (seen, handlers) = under(SliderInteraction::TapOnly);
+        drag_from_to(&handlers, 110.0, 150.0);
+        assert_eq!(seen.get(), None, "a drag moves nothing under TapOnly");
+        tap_at(&handlers, 50.0);
+        assert_eq!(seen.get(), Some(0.25), "and the tap still lands");
+    }
+
+    #[test]
+    fn slide_only_refuses_the_tap() {
+        // The point of the mode: a stray tap cannot move a value the
+        // application cares about.
+        use crate::slider_theme::SliderInteraction;
+        let (seen, handlers) = under(SliderInteraction::SlideOnly);
+        tap_at(&handlers, 50.0);
+        assert_eq!(seen.get(), None, "a tap moves nothing under SlideOnly");
+        drag_from_to(&handlers, 10.0, 150.0);
+        assert_eq!(
+            seen.get(),
+            Some(0.75),
+            "and a drag from anywhere still slides"
+        );
+    }
+
+    #[test]
+    fn slide_thumb_wants_the_drag_to_have_begun_on_the_thumb() {
+        use crate::slider_theme::SliderInteraction;
+        let (seen, handlers) = under(SliderInteraction::SlideThumb);
+        tap_at(&handlers, 50.0);
+        assert_eq!(seen.get(), None, "a tap moves nothing under SlideThumb");
+
+        drag_from_to(&handlers, 10.0, 150.0);
+        assert_eq!(seen.get(), None, "nor a drag that began off the thumb");
+
+        // The thumb is at [100, 120] for a half-way value on a two-hundred
+        // track with a twenty-wide thumb.
+        drag_from_to(&handlers, 110.0, 150.0);
+        assert_eq!(seen.get(), Some(0.75), "a drag that began on it does");
+    }
+
+    #[test]
+    fn a_slider_nobody_wired_accepts_nothing() {
+        // `gestures` hands back an empty set rather than handlers that would
+        // panic or silently do nothing, so an unwired slider is inert by
+        // construction.
+        let slider = Slider::new(1, 0.5);
+        let resolved = crate::slider_theme::ResolvedSlider {
+            track_height: 4.0,
+            active_track_color: Color::argb(255, 0, 0, 0),
+            inactive_track_color: Color::argb(255, 0, 0, 0),
+            thumb_color: Color::argb(255, 0, 0, 0),
+            track_shape: crate::slider_theme::SliderTrackShape::Rectangular(
+                crate::slider_theme::RectangularSliderTrackShape::default(),
+            ),
+            thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
+            thumb_size: Size::new(20.0, 20.0),
+            allowed_interaction: crate::slider_theme::SliderInteraction::TapAndSlide,
+        };
+        let handlers = slider.gestures(&resolved);
+        assert!(handlers.on_tap.is_none());
+        assert!(handlers.on_drag_update.is_none());
     }
 }
 
