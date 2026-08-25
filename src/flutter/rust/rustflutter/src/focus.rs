@@ -77,6 +77,65 @@ struct FocusEntry {
     group: Option<u64>,
     /// Whether this node is a [`FocusTraversalGroup`] boundary.
     is_group: bool,
+    /// Upstream's `descendantsAreFocusable`: whether anything **below** this
+    /// node may take the keyboard.
+    descendants_focusable: bool,
+    /// Upstream's `descendantsAreTraversable`: whether Tab may wander below.
+    ///
+    /// Independent of the one above, and the pair is the point. A subtree can
+    /// be focusable and not traversable -- a page under a dialog, say, which
+    /// something may still focus deliberately while Tab must stay in the
+    /// dialog -- and there is no way to say that with one flag.
+    descendants_traversable: bool,
+}
+
+/// Upstream's `FocusNode.canRequestFocus`:
+/// `_canRequestFocus && ancestors.every((a) => a.descendantsAreFocusable)`.
+///
+/// **Every** ancestor has to allow it. One that says no is enough, however far
+/// up it is, which is what makes `ExcludeFocus` around a whole page work.
+fn can_take_focus(manager: &FocusManager, id: u64) -> bool {
+    let Some(entry) = manager.entries.iter().find(|entry| entry.id == id) else {
+        return false;
+    };
+    entry.ancestors.iter().all(|ancestor| {
+        manager
+            .entries
+            .iter()
+            .find(|other| other.id == *ancestor)
+            .is_none_or(|other| other.descendants_focusable)
+    })
+}
+
+/// Upstream's `FocusNode.skipTraversal`:
+/// `_skipTraversal || ancestors.any((a) => !a.descendantsAreTraversable)`.
+///
+/// The dual of the one above, and the shapes differ on purpose: focusability
+/// is an **and** over permission, traversability an **or** over refusal. They
+/// come to the same thing per ancestor and read as opposites, which is why
+/// each is written the way upstream writes it rather than one in terms of the
+/// other.
+fn skips_traversal(manager: &FocusManager, entry: &FocusEntry) -> bool {
+    if !entry.traversable {
+        return true;
+    }
+    // Upstream's `traversalDescendants` is
+    // `where((node) => !node.skipTraversal && node.canRequestFocus)`, so a
+    // node that cannot take the keyboard is not a stop on the way to it
+    // either. **The implication runs one way**: unfocusable is untraversable,
+    // and untraversable is not unfocusable. The first draft of this file had
+    // only the two ancestor walks and let Tab land on a node that then refused
+    // the focus -- which reads as a dead key press.
+    if !can_take_focus(manager, entry.id) {
+        return true;
+    }
+    entry.ancestors.iter().any(|ancestor| {
+        manager
+            .entries
+            .iter()
+            .find(|other| other.id == *ancestor)
+            .is_some_and(|other| !other.descendants_traversable)
+    })
 }
 
 /// Upstream `FocusOrder`: where a node goes in an explicit traversal order.
@@ -158,6 +217,39 @@ impl FocusTraversalGroup {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(id: u64, child: AnyWidget) -> AnyWidget {
         component(Focus::new(id, child).with_traversable(false).as_group())
+    }
+
+    /// Upstream's `descendantsAreFocusable: false`: nothing inside may take
+    /// the keyboard, however it is asked.
+    ///
+    /// This is what `ExcludeFocus` is built out of upstream, and the reason it
+    /// is a *group* flag rather than a per-node one: a page put behind a
+    /// dialog says it once, and every control on it stops answering.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn unfocusable(id: u64, child: AnyWidget) -> AnyWidget {
+        component(
+            Focus::new(id, child)
+                .with_traversable(false)
+                .with_descendants_focusable(false)
+                .as_group(),
+        )
+    }
+
+    /// Upstream's `descendantsAreTraversable: false`: Tab does not wander in,
+    /// but something may still focus a node inside deliberately.
+    ///
+    /// The pair with [`FocusTraversalGroup::unfocusable`] is the point. A
+    /// subtree that is untraversable but focusable is a page under a dialog
+    /// whose fields an application may still address; one that is unfocusable
+    /// is a page nothing may touch at all. One flag cannot say both.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn untraversable(id: u64, child: AnyWidget) -> AnyWidget {
+        component(
+            Focus::new(id, child)
+                .with_traversable(false)
+                .with_descendants_traversable(false)
+                .as_group(),
+        )
     }
 }
 
@@ -916,6 +1008,12 @@ pub fn focus(id: u64) -> bool {
         if !manager.entries.iter().any(|entry| entry.id == id) {
             return (false, None, None);
         }
+        // Nor is one inside a subtree that has said its descendants may not be
+        // focused. Upstream's `requestFocus` consults `canRequestFocus`, which
+        // is the same walk.
+        if !can_take_focus(&manager, id) {
+            return (false, None, None);
+        }
         let lost = manager
             .focused
             .and_then(|old| manager.entries.iter().find(|e| e.id == old))
@@ -1215,7 +1313,9 @@ fn traversal_order(manager: &FocusManager) -> Vec<u64> {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.group == group && (entry.traversable || entry.is_group))
+            .filter(|(_, entry)| {
+                entry.group == group && (!skips_traversal(manager, entry) || entry.is_group)
+            })
             .collect();
         // Ordered first, in their order; the rest keep the order they
         // registered in, which `sort_by` preserves because it is stable.
@@ -1224,7 +1324,7 @@ fn traversal_order(manager: &FocusManager) -> Vec<u64> {
             if entry.is_group {
                 expand(manager, Some(entry.id), out);
             }
-            if entry.traversable {
+            if !skips_traversal(manager, entry) {
                 out.push(entry.id);
             }
         }
@@ -1336,6 +1436,10 @@ pub fn handle_traversal_key(event: &KeyEvent, keyboard: &Keyboard) -> bool {
 /// }))
 /// ```
 pub struct Focus {
+    /// Upstream's `descendantsAreFocusable` and `descendantsAreTraversable`,
+    /// both true by default: a plain `Focus` gets in nobody's way.
+    descendants_focusable: bool,
+    descendants_traversable: bool,
     id: u64,
     child: RefCell<Option<AnyWidget>>,
     on_key: Option<KeyHandler>,
@@ -1356,6 +1460,8 @@ impl Focus {
             on_key: None,
             on_focus_change: None,
             traversable: true,
+            descendants_focusable: true,
+            descendants_traversable: true,
             focus_on_tap: true,
             group: false,
         }
@@ -1383,6 +1489,19 @@ impl Focus {
     /// focused inside it says no.
     pub fn with_traversable(mut self, traversable: bool) -> Self {
         self.traversable = traversable;
+        self
+    }
+
+    /// Upstream's `descendantsAreFocusable`, which is what `ExcludeFocus` is
+    /// built out of.
+    pub fn with_descendants_focusable(mut self, focusable: bool) -> Self {
+        self.descendants_focusable = focusable;
+        self
+    }
+
+    /// Upstream's `descendantsAreTraversable`.
+    pub fn with_descendants_traversable(mut self, traversable: bool) -> Self {
+        self.descendants_traversable = traversable;
         self
     }
 
@@ -1434,6 +1553,8 @@ impl Component for Focus {
             ancestors: scope,
             on_key: self.on_key.clone(),
             traversable: self.traversable,
+            descendants_focusable: self.descendants_focusable,
+            descendants_traversable: self.descendants_traversable,
             on_focus_change: self.on_focus_change.clone(),
             order,
             group,
@@ -1773,6 +1894,109 @@ mod tests {
 
     fn field(id: u64) -> AnyWidget {
         focusable(id, leaf(|| SizedBox::new(10.0, 10.0)))
+    }
+
+    #[test]
+    fn a_subtree_may_be_shut_out_of_tab_and_still_be_focusable() {
+        // Upstream's two group flags, and the reason there are two. A page
+        // under a dialog is untraversable -- Tab must stay in the dialog --
+        // and still focusable, because the application may address a field on
+        // it deliberately.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::untraversable(90, field(2)),
+            field(3),
+        ]);
+
+        // Tab walks past the whole group.
+        assert!(next());
+        assert_eq!(focused(), Some(1));
+        assert!(next());
+        assert_eq!(focused(), Some(3), "and not 2, which is inside the group");
+
+        // But the node inside is not out of reach.
+        assert!(focus(2), "something may still put the keyboard there");
+        assert_eq!(focused(), Some(2));
+    }
+
+    #[test]
+    fn and_one_that_is_shut_out_of_focus_is_out_of_reach_entirely() {
+        // The other flag. Nothing inside may take the keyboard, however it is
+        // asked -- which is what `ExcludeFocus` is built out of, and why it is
+        // a group flag: a page says it once and every control on it stops
+        // answering.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::unfocusable(90, field(2)),
+            field(3),
+        ]);
+
+        assert!(!focus(2), "asking directly is refused too");
+        assert_ne!(focused(), Some(2));
+
+        assert!(next());
+        assert_eq!(focused(), Some(1));
+        assert!(next());
+        assert_eq!(focused(), Some(3), "and Tab does not go there either");
+    }
+
+    #[test]
+    fn the_implication_runs_one_way_only() {
+        // Upstream's `traversalDescendants` filters on `canRequestFocus` as
+        // well as `skipTraversal`, so unfocusable **is** untraversable -- Tab
+        // landing on a node that then refuses the keyboard reads as a dead key
+        // press. The reverse does not hold, and the pair of tests above is
+        // what says so.
+        //
+        // Written as one test because the two halves only mean something
+        // together: either alone is satisfied by making both flags do the same
+        // thing.
+        let _tree = mounted(vec![
+            FocusTraversalGroup::unfocusable(90, field(1)),
+            FocusTraversalGroup::untraversable(91, field(2)),
+            field(3),
+        ]);
+        // The traversal half first, from a clean state: neither group is a
+        // stop, so the only one is 3.
+        assert!(next());
+        assert_eq!(focused(), Some(3), "the only stop there is");
+
+        // Then the reachability half, which is where the two part company.
+        assert!(!focus(1), "unfocusable: out of reach");
+        assert!(focus(2), "untraversable: still reachable");
+    }
+
+    #[test]
+    fn one_ancestor_saying_no_is_enough_however_far_up_it_is() {
+        // `canRequestFocus` is `every ancestor allows it`, not "the nearest
+        // one". A group nested inside an unfocusable one cannot re-admit its
+        // children by saying nothing.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::unfocusable(
+                90,
+                FocusTraversalGroup::new(91, field(2)),
+            ),
+        ]);
+        assert!(!focus(2), "the outer group still refuses");
+        assert!(focus(1), "and a node outside it is unaffected");
+    }
+
+    #[test]
+    fn a_plain_group_gets_in_nobodys_way() {
+        // Both flags default to true, so grouping alone changes neither
+        // question. Without this the two tests above would hold just as well
+        // if *every* group were shut, and they would be about grouping rather
+        // than about the flags.
+        let _tree = mounted(vec![
+            field(1),
+            FocusTraversalGroup::new(90, field(2)),
+            field(3),
+        ]);
+        assert!(focus(2));
+        assert_eq!(focused(), Some(2));
+        assert!(next());
+        assert_eq!(focused(), Some(3), "and Tab passes through it");
     }
 
     #[test]

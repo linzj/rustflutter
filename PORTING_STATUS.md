@@ -15667,3 +15667,33 @@ debug 门跑的单元测试链接的是 **stub** 引擎，从不链接真的那�
 只开完整那一条而不铺祖先、去掉空栈兜底。
 
 5286 测试通过，完整 GN 门过。
+
+### 第 183 次：一个子树可以被排除在 Tab 之外，同时仍然可以被聚焦
+
+`FocusTraversalGroup`（depth 2/11）补上上游的 `descendantsAreFocusable` 与
+`descendantsAreTraversable`。这两个标志此前一个都没有，也就是说
+`ExcludeFocus` 和 `FocusTraversalGroup(descendantsAreTraversable: false)`
+在本移植里都无从表达。
+
+- `FocusEntry` 与 `Focus` 各增两个字段，配 `with_descendants_focusable`
+  / `with_descendants_traversable` 两个构造器，另加
+  `FocusTraversalGroup::unfocusable` / `::untraversable` 两个快捷构造。
+- `can_take_focus` 是**对所有祖先的与**（上游 `canRequestFocus`）：
+  任何一个祖先说不，无论隔多远都够了。
+- `skips_traversal` 是**对所有祖先的或**（上游 `skipTraversal`）。
+  两者形状相反是有意为之，各自照上游的写法写，而不是互相定义。
+- `traversal_order` 的过滤与压栈、以及 `focus(id)` 都改走这两个判定。
+
+写测试时发现的真差别：上游 `traversalDescendants` 过滤的是
+`!skipTraversal && canRequestFocus`，所以**蕴含只朝一个方向走**——不可聚焦
+必然不可遍历，反之不成立。`skips_traversal` 因此要先问 `can_take_focus`。
+`the_implication_runs_one_way_only` 一条测试把两半写在一起，因为任何一半
+单独都能被"让两个标志做同一件事"满足。
+
+变异：四条（focus 不再走链、不可聚焦不再蕴含不可遍历、"所有祖先"退化为
+"最近祖先"、不可遍历反过来蕴含不可聚焦）全部转红，且两个方向各自被不同的
+测试打中。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，stale_engines 全部不落后。
+门：5291 + 333 通过；五个输出目录的 rustflutter_engine 全部重建通过。
