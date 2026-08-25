@@ -12,8 +12,19 @@
 //!   an observer may be there only to *learn* that an exit was attempted --
 //!   to save a draft, say -- and cancelling is somebody else's business.
 //!
-//! Both loops walk a **copy** of the observer list, so an observer that
-//! removes itself while being notified does not corrupt the walk it is in.
+//! Neither loop walks a copy. Upstream's do -- `List<WidgetsBindingObserver>.of(_observers)`
+//! -- because upstream identifies an observer by the object and `removeObserver`
+//! takes it out of the list, so a removal during a walk would shift everything
+//! after it. Here an observer is identified by the token
+//! [`WidgetsBinding::add_observer`] handed back, and
+//! [`WidgetsBinding::remove_observer`] leaves an empty slot rather than
+//! closing the gap: the walk stays valid because nothing moves, and every
+//! token issued before the removal still means the same observer.
+//!
+//! That is not a smaller version of upstream's guarantee, it is a different
+//! one, and it is the one this port needs: `register_back_gesture_observer`
+//! stores tokens, so a removal that renumbered the list would silently point
+//! the back gesture at somebody else.
 //!
 //! ## What is not here
 //!
@@ -153,7 +164,9 @@ pub struct DispatchOutcome {
 /// dispatch rules.
 #[derive(Default)]
 pub struct WidgetsBinding {
-    observers: Vec<Box<dyn WidgetsBindingObserver>>,
+    /// Slots rather than observers, so a removal can leave a hole. See the
+    /// module docs for why the hole matters.
+    observers: Vec<Option<Box<dyn WidgetsBindingObserver>>>,
     /// Upstream keeps a second list for the predictive back gesture, because
     /// only observers that opted in should be driven through a gesture that
     /// may be cancelled halfway.
@@ -165,21 +178,46 @@ impl WidgetsBinding {
         WidgetsBinding::default()
     }
 
+    /// How many observers are registered **now** -- removals are not counted,
+    /// so this is not the next token.
     pub fn observer_count(&self) -> usize {
-        self.observers.len()
+        self.observers.iter().filter(|slot| slot.is_some()).count()
     }
 
     /// Upstream's `addObserver`. Registration order is the dispatch order, and
     /// for a back press that means **the most recently added is asked last**
     /// -- which is why a route pushes its own observer and the navigator's own
     /// registration sits underneath.
+    /// Upstream's `addObserver`, and the token it hands back is this port's:
+    /// upstream identifies an observer by the object, which a `Box<dyn Trait>`
+    /// cannot be compared by.
+    ///
+    /// Tokens are never reused. A removed slot stays empty rather than being
+    /// filled by the next registration, because a token handed out once has to
+    /// keep meaning what it meant -- see [`remove_observer`].
+    ///
+    /// [`remove_observer`]: WidgetsBinding::remove_observer
     pub fn add_observer(&mut self, observer: Box<dyn WidgetsBindingObserver>) -> usize {
-        self.observers.push(observer);
+        self.observers.push(Some(observer));
         self.observers.len() - 1
     }
 
+    /// Upstream's `removeObserver`, which answers whether there was one.
+    ///
+    /// **Also drops the back-gesture registration**, which is upstream's first
+    /// line and easy to leave out: an observer taken off the main list but
+    /// left on the gesture list would still be driven through a predictive
+    /// back gesture after it had asked not to be.
+    pub fn remove_observer(&mut self, token: usize) -> bool {
+        self.back_gesture_observers.retain(|index| *index != token);
+        match self.observers.get_mut(token) {
+            Some(slot) => slot.take().is_some(),
+            None => false,
+        }
+    }
+
     pub fn observer_mut(&mut self, index: usize) -> Option<&mut Box<dyn WidgetsBindingObserver>> {
-        self.observers.get_mut(index)
+        self.observers.get_mut(index)?.as_mut()
     }
 
     pub fn register_back_gesture_observer(&mut self, index: usize) {
@@ -198,8 +236,11 @@ impl WidgetsBinding {
     pub fn handle_pop_route(&mut self) -> DispatchOutcome {
         let mut asked = 0;
         for index in 0..self.observers.len() {
+            let Some(observer) = self.observers[index].as_mut() else {
+                continue;
+            };
             asked += 1;
-            if self.observers[index].did_pop_route() {
+            if observer.did_pop_route() {
                 return DispatchOutcome {
                     handled: true,
                     asked,
@@ -217,8 +258,11 @@ impl WidgetsBinding {
     pub fn handle_push_route(&mut self, route: &str) -> DispatchOutcome {
         let mut asked = 0;
         for index in 0..self.observers.len() {
+            let Some(observer) = self.observers[index].as_mut() else {
+                continue;
+            };
             asked += 1;
-            if self.observers[index].did_push_route(route) {
+            if observer.did_push_route(route) {
                 return DispatchOutcome {
                     handled: true,
                     asked,
@@ -234,8 +278,11 @@ impl WidgetsBinding {
     pub fn handle_push_route_information(&mut self, uri: &RouteUri) -> DispatchOutcome {
         let mut asked = 0;
         for index in 0..self.observers.len() {
+            let Some(observer) = self.observers[index].as_mut() else {
+                continue;
+            };
             asked += 1;
-            if self.observers[index].did_push_route_information(uri) {
+            if observer.did_push_route_information(uri) {
                 return DispatchOutcome {
                     handled: true,
                     asked,
@@ -262,8 +309,11 @@ impl WidgetsBinding {
         let mut did_cancel = false;
         let mut asked = 0;
         for index in 0..self.observers.len() {
+            let Some(observer) = self.observers[index].as_mut() else {
+                continue;
+            };
             asked += 1;
-            if self.observers[index].did_request_app_exit() == AppExitResponse::Cancel {
+            if observer.did_request_app_exit() == AppExitResponse::Cancel {
                 did_cancel = true;
             }
         }
@@ -277,25 +327,25 @@ impl WidgetsBinding {
 
     /// The broadcast dispatches, which ask everyone and collect nothing.
     pub fn handle_app_lifecycle_state_changed(&mut self, state: AppLifecycleState) {
-        for observer in self.observers.iter_mut() {
+        for observer in self.observers.iter_mut().flatten() {
             observer.did_change_app_lifecycle_state(state);
         }
     }
 
     pub fn handle_locales_changed(&mut self, locales: &[Locale]) {
-        for observer in self.observers.iter_mut() {
+        for observer in self.observers.iter_mut().flatten() {
             observer.did_change_locales(locales);
         }
     }
 
     pub fn handle_metrics_changed(&mut self) {
-        for observer in self.observers.iter_mut() {
+        for observer in self.observers.iter_mut().flatten() {
             observer.did_change_metrics();
         }
     }
 
     pub fn handle_memory_pressure(&mut self) {
-        for observer in self.observers.iter_mut() {
+        for observer in self.observers.iter_mut().flatten() {
             observer.did_have_memory_pressure();
         }
     }
@@ -310,7 +360,7 @@ impl WidgetsBinding {
         }
         let indices = self.back_gesture_observers.clone();
         for index in indices {
-            if let Some(observer) = self.observers.get_mut(index) {
+            if let Some(observer) = self.observers.get_mut(index).and_then(Option::as_mut) {
                 observer.handle_commit_back_gesture();
             }
         }
@@ -324,7 +374,7 @@ impl WidgetsBinding {
 impl std::fmt::Debug for WidgetsBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WidgetsBinding")
-            .field("observers", &self.observers.len())
+            .field("observers", &self.observer_count())
             .finish()
     }
 }
@@ -538,6 +588,113 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    // -- remove_observer ------------------------------------------------------
+
+    #[test]
+    fn a_token_still_means_the_same_observer_after_somebody_else_leaves() {
+        // The rule the tombstone exists for. Upstream identifies an observer
+        // by the object and can afford to close the gap; here the token is the
+        // identity, and closing the gap would renumber everyone after it.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut binding = WidgetsBinding::new();
+        let a = binding.add_observer(Box::new(Spy::new(&log, "a")));
+        let b = binding.add_observer(Box::new(Spy::new(&log, "b")));
+        let c = binding.add_observer(Box::new(Spy::new(&log, "c").claiming_pop()));
+        assert_eq!((a, b, c), (0, 1, 2));
+
+        assert!(binding.remove_observer(a));
+        assert_eq!(binding.observer_count(), 2, "two left, not two slots");
+
+        // c is still c: the token issued before the removal reaches the same
+        // observer, and it is the one that claims the press.
+        let outcome = binding.handle_pop_route();
+        assert_eq!(*log.borrow(), vec!["b:pop", "c:pop"]);
+        assert!(outcome.handled);
+        assert_eq!(outcome.asked, 2, "the empty slot is not an observer asked");
+
+        // And the next registration takes a new token rather than a's.
+        let d = binding.add_observer(Box::new(Spy::new(&log, "d")));
+        assert_eq!(d, 3, "tokens are not reused");
+    }
+
+    #[test]
+    fn removing_an_observer_takes_it_off_the_back_gesture_list_too() {
+        // Upstream's `removeObserver` starts with
+        // `_backGestureObservers.remove(observer)`, which is the line easiest
+        // to leave out: an observer off the main list but still on the gesture
+        // list would keep being driven through a predictive back gesture after
+        // it had asked not to be.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut binding = WidgetsBinding::new();
+        let a = binding.add_observer(Box::new(Spy::new(&log, "a")));
+        let b = binding.add_observer(Box::new(Spy::new(&log, "b")));
+        binding.register_back_gesture_observer(a);
+        binding.register_back_gesture_observer(b);
+
+        assert!(binding.remove_observer(a));
+        log.borrow_mut().clear();
+        let outcome = binding.handle_commit_back_gesture();
+        assert_eq!(*log.borrow(), vec!["b:commit"]);
+        assert_eq!(outcome.asked, 1, "and it is off the count as well");
+    }
+
+    #[test]
+    fn a_press_nothing_wants_any_more_leaves() {
+        // The fallback is the part removal can change: with the only claimer
+        // gone the press reaches nobody, and an unclaimed press quits.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut binding = WidgetsBinding::new();
+        let claimer = binding.add_observer(Box::new(Spy::new(&log, "a").claiming_pop()));
+        assert!(binding.handle_pop_route().handled);
+
+        assert!(binding.remove_observer(claimer));
+        let outcome = binding.handle_pop_route();
+        assert!(!outcome.handled, "nobody left to claim it");
+        assert_eq!(outcome.asked, 0);
+    }
+
+    #[test]
+    fn removing_the_same_observer_twice_says_no_the_second_time() {
+        // Upstream's `removeObserver` returns whether there was one, and a
+        // caller unregistering in a dispose that runs twice is the case that
+        // asks. An unknown token is the same answer rather than a panic.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut binding = WidgetsBinding::new();
+        let a = binding.add_observer(Box::new(Spy::new(&log, "a")));
+        assert!(binding.remove_observer(a));
+        assert!(!binding.remove_observer(a));
+        assert!(!binding.remove_observer(97));
+        assert_eq!(binding.observer_count(), 0);
+    }
+
+    #[test]
+    fn a_removed_observer_hears_none_of_the_broadcasts() {
+        // The four loops that ask everyone and collect nothing walk the same
+        // list, and every one of them has to skip the hole.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut binding = WidgetsBinding::new();
+        let a = binding.add_observer(Box::new(Spy::new(&log, "a")));
+        binding.add_observer(Box::new(Spy::new(&log, "b")));
+        assert!(binding.remove_observer(a));
+
+        binding.handle_app_lifecycle_state_changed(AppLifecycleState::Paused);
+        binding.handle_memory_pressure();
+        binding.handle_metrics_changed();
+        binding.handle_locales_changed(&[Locale::new("en")]);
+        // Spelled out rather than "every line starts with b", which an empty
+        // log satisfies too -- and an empty log is exactly what a broadcast
+        // that skipped everybody would leave behind.
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "b:lifecycle(Paused)",
+                "b:memory",
+                "b:metrics",
+                "b:locales(1)"
+            ]
+        );
+    }
+
     /// A spy that records what it was asked and answers as told.
     #[derive(Default)]
     struct Spy {
@@ -601,6 +758,18 @@ mod tests {
 
         fn did_change_app_lifecycle_state(&mut self, state: AppLifecycleState) {
             self.note(&format!("lifecycle({state:?})"));
+        }
+
+        fn did_change_metrics(&mut self) {
+            self.note("metrics");
+        }
+
+        fn did_change_locales(&mut self, locales: &[Locale]) {
+            self.note(&format!("locales({})", locales.len()));
+        }
+
+        fn handle_commit_back_gesture(&mut self) {
+            self.note("commit");
         }
 
         fn did_have_memory_pressure(&mut self) {

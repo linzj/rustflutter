@@ -14517,3 +14517,60 @@ crate 自己的测试二进制不链接 C++ 引擎。判定本身放在了
 `platform::set_user_settings` 的返回值里，那是测得到的一半。
 
 5147 测试通过，完整 GN 门过（gallery 333 也过）。
+
+## 第 154 轮 — 模块文档描述了一份没有做的拷贝，防的是做不到的事
+
+接着上一轮的链往上：`WidgetsBinding` 只在自己的测试里被构造过，整个类是有测试
+的模型、没有生产实例。`flutter/navigation` 也一样——`system::on_route_message`
+是个单槽，而 `WidgetsBinding::handle_pop_route`（"第一个认领的停住"、兜底退出、
+返回手势名单）是一份平行的、够不着的实现。把两层接起来需要单例，那不是一轮的事。
+
+这一轮做的是路上一件独立且必须先做的：**`remove_observer` 不存在**。
+
+### 文档说的和代码做的不是一回事
+
+模块头写着：
+
+> Both loops walk a **copy** of the observer list, so an observer that removes
+> itself while being notified does not corrupt the walk it is in.
+
+两个循环都不是走拷贝，是按下标走。而且**没有 `remove_observer`**，
+所以"an observer that removes itself"这件事在这个 port 里根本发生不了。
+这段文档描述的是上游的保证，写得像是这里的。
+
+上游确实要拷贝：它按对象辨认观察者，`removeObserver` 从列表里删掉，
+删了之后后面全部前移。这里按 `add_observer` 发的**令牌**辨认，
+所以正确答案不是拷贝，是**墓碑**——移除留下空槽，不合拢。
+
+这不是上游保证的缩水版，是另一条保证，而且是这个 port 需要的那条：
+`register_back_gesture_observer` 存的是令牌，一次会重新编号的移除
+会**悄悄把返回手势指向别人**。
+
+### `removeObserver` 的第一行最容易漏
+
+上游：
+
+```dart
+bool removeObserver(WidgetsBindingObserver observer) {
+  _backGestureObservers.remove(observer);
+  return _observers.remove(observer);
+}
+```
+
+先摘返回手势，再摘主列表。一个从主列表下来、却还留在手势列表上的观察者，
+在它已经要求不再被驱动之后，仍然会被预测返回手势驱动。
+
+`observers` 改成 `Vec<Option<Box<dyn ...>>>`，六个分发循环全部跳过空槽，
+`asked` 只数真被问到的，`observer_count` 只数活着的，令牌不复用。
+
+四条变异全红：移除改成合拢（令牌那条 + 手势那条红）、漏掉手势那一行
+（手势那条红）、`observer_count` 改数槽位（令牌那条 + 二次移除那条红）、
+`asked` 在跳过空槽之前就加一（兜底退出那条 + 令牌那条红）。
+
+写测试时抓到自己一个真空断言：广播那条本来写的是"每一行都以 b: 开头"，
+而一行都没有时它同样通过——**而一行都没有正是"广播跳过了所有人"的样子**。
+改成逐行断言完整日志。同时给测试里的 `Spy` 补上 `did_change_metrics`、
+`did_change_locales`、`handle_commit_back_gesture` 三个它本来没实现的钩子，
+否则那两条测试测的是"什么都没记"。
+
+5152 测试通过，完整 GN 门过。`depth.py` 上 `WidgetsBinding` 15/38 → 16/38。
