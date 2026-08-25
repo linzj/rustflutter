@@ -108,6 +108,116 @@ fn lerp_state_color(
     })
 }
 
+/// Upstream `EdgeInsets.lerp`, which has the same two null arms as
+/// [`EdgeInsetsGeometry::lerp`]: a missing end scales the present one rather
+/// than holding it still.
+fn lerp_edge_insets(a: Option<EdgeInsets>, b: Option<EdgeInsets>, t: f32) -> Option<EdgeInsets> {
+    let scale = |insets: EdgeInsets, factor: f32| EdgeInsets {
+        left: insets.left * factor,
+        top: insets.top * factor,
+        right: insets.right * factor,
+        bottom: insets.bottom * factor,
+    };
+    match (a, b) {
+        (None, None) => None,
+        (None, Some(b)) => Some(scale(b, t)),
+        (Some(a), None) => Some(scale(a, 1.0 - t)),
+        (Some(a), Some(b)) => Some(<EdgeInsets as crate::implicit::Lerp>::lerp(a, b, t)),
+    }
+}
+
+/// `WidgetStateProperty.lerp<EdgeInsetsGeometry?>(a, b, t,
+/// EdgeInsetsGeometry.lerp)`.
+fn lerp_state_insets(
+    a: Option<&StateProperty<Option<EdgeInsetsGeometry>>>,
+    b: Option<&StateProperty<Option<EdgeInsetsGeometry>>>,
+    t: f32,
+) -> Option<StateProperty<Option<EdgeInsetsGeometry>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        EdgeInsetsGeometry::lerp(first.flatten(), second.flatten(), t)
+    })
+}
+
+/// `WidgetStateProperty.lerp<double?>(a, b, t, lerpDouble)`.
+fn lerp_state_f32(
+    a: Option<&StateProperty<Option<f32>>>,
+    b: Option<&StateProperty<Option<f32>>>,
+    t: f32,
+) -> Option<StateProperty<Option<f32>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        lerp_f32(first.flatten(), second.flatten(), t)
+    })
+}
+
+/// `WidgetStateProperty.lerp<OutlinedBorder?>(a, b, t, OutlinedBorder.lerp)`.
+fn lerp_state_shape(
+    a: Option<&StateProperty<Option<ShapeBorder>>>,
+    b: Option<&StateProperty<Option<ShapeBorder>>>,
+    t: f32,
+) -> Option<StateProperty<Option<ShapeBorder>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        ShapeBorder::lerp(first.flatten(), second.flatten(), t)
+    })
+}
+
+/// `WidgetStateProperty.lerp<IconThemeData?>(a, b, t, IconThemeData.lerp)`.
+fn lerp_state_icon_theme(
+    a: Option<&StateProperty<Option<IconThemeData>>>,
+    b: Option<&StateProperty<Option<IconThemeData>>>,
+    t: f32,
+) -> Option<StateProperty<Option<IconThemeData>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        lerp_icon_theme(&first.flatten(), &second.flatten(), t)
+    })
+}
+
+/// `WidgetStateProperty.lerp<TextStyle?>(a, b, t, TextStyle.lerp)`.
+///
+/// The same shape as [`lerp_state_color`]: both ends resolve against the same
+/// states and the two answers blend. [`lerp_text_style`]'s note on the single
+/// null applies here too, one state at a time.
+fn lerp_state_text_style(
+    a: Option<&StateProperty<Option<TextStyle>>>,
+    b: Option<&StateProperty<Option<TextStyle>>>,
+    t: f32,
+) -> Option<StateProperty<Option<TextStyle>>> {
+    lerp_state_property(a, b, t, |first, second, t| {
+        lerp_text_style(&first.flatten(), &second.flatten(), t)
+    })
+}
+
+/// Upstream `TextStyle.lerp` behind this file's optional-wrapper idiom.
+///
+/// # What upstream does with a single null that this cannot
+///
+/// Upstream's null arms do not step. `TextStyle.lerp(null, b, t)` builds a
+/// style whose colour is `Color.lerp(null, b.color, t)` -- a fade in from
+/// transparent -- whose weight comes from `FontWeight.lerp(null, b.fontWeight,
+/// t)`, and whose every other field is `t < 0.5 ? null : b.x`. The fields that
+/// step are the ones with no midpoint; the two that fade are the two that
+/// have one.
+///
+/// This port cannot express that arm, because its [`TextStyle`] has no null
+/// fields: `color`, `font_size`, `font_weight` and `align` are values, not
+/// options, so "a style whose size is still null" has nowhere to live. A
+/// style that only one end names therefore steps whole at the midpoint,
+/// colour included, where upstream would fade its colour in. Both ends
+/// present -- which is every field of a `TextTheme` built from a Material
+/// baseline, and so the case a real theme transition takes -- goes through
+/// [`TextStyle::lerp`] and is exact.
+fn lerp_text_style(a: &Option<TextStyle>, b: &Option<TextStyle>, t: f32) -> Option<TextStyle> {
+    match (a, b) {
+        (Some(first), Some(second)) => Some(TextStyle::lerp(first, second, t)),
+        (first, second) => {
+            if t < 0.5 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        }
+    }
+}
+
 /// Two optional icon themes interpolated.
 fn lerp_icon_theme(
     a: &Option<IconThemeData>,
@@ -275,7 +385,7 @@ impl CardThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            margin: lerp_nearer(&a.margin, &b.margin, t),
+            margin: EdgeInsetsGeometry::lerp(a.margin, b.margin, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
         }
     }
@@ -342,8 +452,8 @@ impl BadgeThemeData {
             text_color: lerp_color(a.text_color, b.text_color, t),
             small_size: lerp_f32(a.small_size, b.small_size, t),
             large_size: lerp_f32(a.large_size, b.large_size, t),
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            text_style: lerp_text_style(&a.text_style, &b.text_style, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
             alignment: lerp_nearer(&a.alignment, &b.alignment, t),
             offset: match (a.offset, b.offset) {
                 (Some(a), Some(b)) => Some(Offset::new(
@@ -434,8 +544,8 @@ impl TooltipThemeData {
             height: lerp_f32(a.height, b.height, t),
             vertical_offset: lerp_f32(a.vertical_offset, b.vertical_offset, t),
             constraints: lerp_nearer(&a.constraints, &b.constraints, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
-            margin: lerp_nearer(&a.margin, &b.margin, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
+            margin: EdgeInsetsGeometry::lerp(a.margin, b.margin, t),
             prefer_below: lerp_nearer(&a.prefer_below, &b.prefer_below, t),
             exclude_from_semantics: lerp_nearer(
                 &a.exclude_from_semantics,
@@ -443,7 +553,7 @@ impl TooltipThemeData {
                 t,
             ),
             decoration: lerp_nearer(&a.decoration, &b.decoration, t),
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            text_style: lerp_text_style(&a.text_style, &b.text_style, t),
             text_align: lerp_nearer(&a.text_align, &b.text_align, t),
             wait_duration: lerp_nearer(&a.wait_duration, &b.wait_duration, t),
             show_duration: lerp_nearer(&a.show_duration, &b.show_duration, t),
@@ -748,7 +858,7 @@ impl RadioThemeData {
                     }
                 }
             },
-            inner_radius: lerp_nearer(&a.inner_radius, &b.inner_radius, t),
+            inner_radius: lerp_state_f32(a.inner_radius.as_ref(), b.inner_radius.as_ref(), t),
         }
     }
 }
@@ -813,7 +923,7 @@ impl SwitchThemeData {
                 b.track_outline_color.as_ref(),
                 t,
             ),
-            track_outline_width: lerp_nearer(&a.track_outline_width, &b.track_outline_width, t),
+            track_outline_width: lerp_state_f32(a.track_outline_width.as_ref(), b.track_outline_width.as_ref(), t),
             material_tap_target_size: lerp_nearer(
                 &a.material_tap_target_size,
                 &b.material_tap_target_size,
@@ -822,7 +932,7 @@ impl SwitchThemeData {
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
             splash_radius: lerp_f32(a.splash_radius, b.splash_radius, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
         }
     }
 }
@@ -4909,9 +5019,9 @@ impl AppBarThemeData {
             title_spacing: lerp_f32(a.title_spacing, b.title_spacing, t),
             leading_width: lerp_f32(a.leading_width, b.leading_width, t),
             toolbar_height: lerp_f32(a.toolbar_height, b.toolbar_height, t),
-            toolbar_text_style: lerp_nearer(&a.toolbar_text_style, &b.toolbar_text_style, t),
-            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
-            actions_padding: lerp_nearer(&a.actions_padding, &b.actions_padding, t),
+            toolbar_text_style: lerp_text_style(&a.toolbar_text_style, &b.toolbar_text_style, t),
+            title_text_style: lerp_text_style(&a.title_text_style, &b.title_text_style, t),
+            actions_padding: EdgeInsetsGeometry::lerp(a.actions_padding, b.actions_padding, t),
         }
     }
 }
@@ -5160,12 +5270,12 @@ impl SnackBarThemeData {
                 b.disabled_action_text_color,
                 t,
             ),
-            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
+            content_text_style: lerp_text_style(&a.content_text_style, &b.content_text_style, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
             behavior: lerp_nearer(&a.behavior, &b.behavior, t),
             width: lerp_f32(a.width, b.width, t),
-            inset_padding: lerp_nearer(&a.inset_padding, &b.inset_padding, t),
+            inset_padding: EdgeInsetsGeometry::lerp(a.inset_padding, b.inset_padding, t),
             show_close_icon: lerp_nearer(&a.show_close_icon, &b.show_close_icon, t),
             close_icon_color: lerp_color(a.close_icon_color, b.close_icon_color, t),
             action_overflow_threshold: lerp_f32(
@@ -5321,14 +5431,10 @@ impl ListTileThemeData {
             selected_color: lerp_color(a.selected_color, b.selected_color, t),
             icon_color: lerp_color(a.icon_color, b.icon_color, t),
             text_color: lerp_color(a.text_color, b.text_color, t),
-            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
-            subtitle_text_style: lerp_nearer(&a.subtitle_text_style, &b.subtitle_text_style, t),
-            leading_and_trailing_text_style: lerp_nearer(
-                &a.leading_and_trailing_text_style,
-                &b.leading_and_trailing_text_style,
-                t,
-            ),
-            content_padding: lerp_nearer(&a.content_padding, &b.content_padding, t),
+            title_text_style: lerp_text_style(&a.title_text_style, &b.title_text_style, t),
+            subtitle_text_style: lerp_text_style(&a.subtitle_text_style, &b.subtitle_text_style, t),
+            leading_and_trailing_text_style: lerp_text_style(&a.leading_and_trailing_text_style, &b.leading_and_trailing_text_style, t),
+            content_padding: EdgeInsetsGeometry::lerp(a.content_padding, b.content_padding, t),
             tile_color: lerp_color(a.tile_color, b.tile_color, t),
             selected_tile_color: lerp_color(a.selected_tile_color, b.selected_tile_color, t),
             horizontal_title_gap: lerp_f32(a.horizontal_title_gap, b.horizontal_title_gap, t),
@@ -5535,12 +5641,12 @@ impl DialogThemeData {
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
             alignment: lerp_nearer(&a.alignment, &b.alignment, t),
-            title_text_style: lerp_nearer(&a.title_text_style, &b.title_text_style, t),
-            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
-            actions_padding: lerp_nearer(&a.actions_padding, &b.actions_padding, t),
+            title_text_style: lerp_text_style(&a.title_text_style, &b.title_text_style, t),
+            content_text_style: lerp_text_style(&a.content_text_style, &b.content_text_style, t),
+            actions_padding: EdgeInsetsGeometry::lerp(a.actions_padding, b.actions_padding, t),
             icon_color: lerp_color(a.icon_color, b.icon_color, t),
             barrier_color: lerp_color(a.barrier_color, b.barrier_color, t),
-            inset_padding: lerp_nearer(&a.inset_padding, &b.inset_padding, t),
+            inset_padding: lerp_edge_insets(a.inset_padding, b.inset_padding, t),
             constraints: lerp_nearer(&a.constraints, &b.constraints, t),
         }
     }
@@ -5649,8 +5755,8 @@ impl ChipThemeData {
             selected_shadow_color: lerp_color(a.selected_shadow_color, b.selected_shadow_color, t),
             show_checkmark: lerp_nearer(&a.show_checkmark, &b.show_checkmark, t),
             checkmark_color: lerp_color(a.checkmark_color, b.checkmark_color, t),
-            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            label_padding: EdgeInsetsGeometry::lerp(a.label_padding, b.label_padding, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
             side: match (a.side, b.side) {
                 (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
                 (first, second) => {
@@ -5662,12 +5768,8 @@ impl ChipThemeData {
                 }
             },
             shape: lerp_nearer(&a.shape, &b.shape, t),
-            label_style: lerp_nearer(&a.label_style, &b.label_style, t),
-            secondary_label_style: lerp_nearer(
-                &a.secondary_label_style,
-                &b.secondary_label_style,
-                t,
-            ),
+            label_style: lerp_text_style(&a.label_style, &b.label_style, t),
+            secondary_label_style: lerp_text_style(&a.secondary_label_style, &b.secondary_label_style, t),
             brightness: lerp_nearer(&a.brightness, &b.brightness, t),
             icon_theme: lerp_icon_theme(&a.icon_theme, &b.icon_theme, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
@@ -5847,18 +5949,14 @@ impl TabBarThemeData {
             divider_color: lerp_color(a.divider_color, b.divider_color, t),
             divider_height: lerp_f32(a.divider_height, b.divider_height, t),
             label_color: lerp_color(a.label_color, b.label_color, t),
-            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
-            label_style: lerp_nearer(&a.label_style, &b.label_style, t),
+            label_padding: EdgeInsetsGeometry::lerp(a.label_padding, b.label_padding, t),
+            label_style: lerp_text_style(&a.label_style, &b.label_style, t),
             unselected_label_color: lerp_color(
                 a.unselected_label_color,
                 b.unselected_label_color,
                 t,
             ),
-            unselected_label_style: lerp_nearer(
-                &a.unselected_label_style,
-                &b.unselected_label_style,
-                t,
-            ),
+            unselected_label_style: lerp_text_style(&a.unselected_label_style, &b.unselected_label_style, t),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             tab_alignment: lerp_nearer(&a.tab_alignment, &b.tab_alignment, t),
@@ -6018,14 +6116,14 @@ impl DataTableThemeData {
             ),
             data_row_min_height: lerp_f32(a.data_row_min_height, b.data_row_min_height, t),
             data_row_max_height: lerp_f32(a.data_row_max_height, b.data_row_max_height, t),
-            data_text_style: lerp_nearer(&a.data_text_style, &b.data_text_style, t),
+            data_text_style: lerp_text_style(&a.data_text_style, &b.data_text_style, t),
             heading_row_color: lerp_state_color(
                 a.heading_row_color.as_ref(),
                 b.heading_row_color.as_ref(),
                 t,
             ),
             heading_row_height: lerp_f32(a.heading_row_height, b.heading_row_height, t),
-            heading_text_style: lerp_nearer(&a.heading_text_style, &b.heading_text_style, t),
+            heading_text_style: lerp_text_style(&a.heading_text_style, &b.heading_text_style, t),
             horizontal_margin: lerp_f32(a.horizontal_margin, b.horizontal_margin, t),
             column_spacing: lerp_f32(a.column_spacing, b.column_spacing, t),
             divider_thickness: lerp_f32(a.divider_thickness, b.divider_thickness, t),
@@ -6130,16 +6228,8 @@ impl NavigationRailThemeData {
         NavigationRailThemeData {
             background_color: lerp_color(a.background_color, b.background_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            unselected_label_text_style: lerp_nearer(
-                &a.unselected_label_text_style,
-                &b.unselected_label_text_style,
-                t,
-            ),
-            selected_label_text_style: lerp_nearer(
-                &a.selected_label_text_style,
-                &b.selected_label_text_style,
-                t,
-            ),
+            unselected_label_text_style: lerp_text_style(&a.unselected_label_text_style, &b.unselected_label_text_style, t),
+            selected_label_text_style: lerp_text_style(&a.selected_label_text_style, &b.selected_label_text_style, t),
             unselected_icon_theme: lerp_icon_theme(
                 &a.unselected_icon_theme,
                 &b.unselected_icon_theme,
@@ -6244,7 +6334,7 @@ impl BottomNavigationBarThemeData {
             ),
             selected_item_color: lerp_color(a.selected_item_color, b.selected_item_color, t),
             unselected_item_color: lerp_color(a.unselected_item_color, b.unselected_item_color, t),
-            selected_label_style: lerp_nearer(&a.selected_label_style, &b.selected_label_style, t),
+            selected_label_style: lerp_text_style(&a.selected_label_style, &b.selected_label_style, t),
             unselected_label_style: lerp_nearer(
                 &a.unselected_label_style,
                 &b.unselected_label_style,
@@ -6510,7 +6600,7 @@ impl ButtonStyle {
     /// Upstream `ButtonStyle.lerp`.
     pub fn lerp(a: &ButtonStyle, b: &ButtonStyle, t: f32) -> ButtonStyle {
         ButtonStyle {
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            text_style: lerp_state_text_style(a.text_style.as_ref(), b.text_style.as_ref(), t),
             background_color: lerp_state_color(
                 a.background_color.as_ref(),
                 b.background_color.as_ref(),
@@ -6528,13 +6618,13 @@ impl ButtonStyle {
                 b.surface_tint_color.as_ref(),
                 t,
             ),
-            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            elevation: lerp_state_f32(a.elevation.as_ref(), b.elevation.as_ref(), t),
+            padding: lerp_state_insets(a.padding.as_ref(), b.padding.as_ref(), t),
             minimum_size: lerp_nearer(&a.minimum_size, &b.minimum_size, t),
             fixed_size: lerp_nearer(&a.fixed_size, &b.fixed_size, t),
             maximum_size: lerp_nearer(&a.maximum_size, &b.maximum_size, t),
             icon_color: lerp_state_color(a.icon_color.as_ref(), b.icon_color.as_ref(), t),
-            icon_size: lerp_nearer(&a.icon_size, &b.icon_size, t),
+            icon_size: lerp_state_f32(a.icon_size.as_ref(), b.icon_size.as_ref(), t),
             icon_alignment: lerp_nearer(&a.icon_alignment, &b.icon_alignment, t),
             side: lerp_nearer(&a.side, &b.side, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
@@ -6914,10 +7004,10 @@ impl MaterialBannerThemeData {
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             divider_color: lerp_color(a.divider_color, b.divider_color, t),
-            content_text_style: lerp_nearer(&a.content_text_style, &b.content_text_style, t),
+            content_text_style: lerp_text_style(&a.content_text_style, &b.content_text_style, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
-            leading_padding: lerp_nearer(&a.leading_padding, &b.leading_padding, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
+            leading_padding: EdgeInsetsGeometry::lerp(a.leading_padding, b.leading_padding, t),
         }
     }
 }
@@ -6998,9 +7088,9 @@ impl ExpansionTileThemeData {
                 b.collapsed_background_color,
                 t,
             ),
-            tile_padding: lerp_nearer(&a.tile_padding, &b.tile_padding, t),
+            tile_padding: EdgeInsetsGeometry::lerp(a.tile_padding, b.tile_padding, t),
             expanded_alignment: lerp_nearer(&a.expanded_alignment, &b.expanded_alignment, t),
-            children_padding: lerp_nearer(&a.children_padding, &b.children_padding, t),
+            children_padding: EdgeInsetsGeometry::lerp(a.children_padding, b.children_padding, t),
             icon_color: lerp_color(a.icon_color, b.icon_color, t),
             collapsed_icon_color: lerp_color(a.collapsed_icon_color, b.collapsed_icon_color, t),
             text_color: lerp_color(a.text_color, b.text_color, t),
@@ -7214,8 +7304,13 @@ impl ScrollbarThemeData {
     /// Upstream `ScrollbarThemeData.lerp`.
     pub fn lerp(a: &ScrollbarThemeData, b: &ScrollbarThemeData, t: f32) -> ScrollbarThemeData {
         ScrollbarThemeData {
+            // Upstream wraps these two in `WidgetStateProperty.lerp<bool?>`
+            // with `_lerpBool`, which is `t < 0.5 ? a : b` -- a step, per
+            // resolved state. Stepping every state on the same `t` is the
+            // same answer as stepping the whole property, so `lerp_nearer`
+            // is not a shortcut here; it is the same function.
             thumb_visibility: lerp_nearer(&a.thumb_visibility, &b.thumb_visibility, t),
-            thickness: lerp_nearer(&a.thickness, &b.thickness, t),
+            thickness: lerp_state_f32(a.thickness.as_ref(), b.thickness.as_ref(), t),
             track_visibility: lerp_nearer(&a.track_visibility, &b.track_visibility, t),
             interactive: lerp_nearer(&a.interactive, &b.interactive, t),
             radius: lerp_nearer(&a.radius, &b.radius, t),
@@ -7357,8 +7452,8 @@ impl MenuStyle {
                 b.surface_tint_color.as_ref(),
                 t,
             ),
-            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            elevation: lerp_state_f32(a.elevation.as_ref(), b.elevation.as_ref(), t),
+            padding: lerp_state_insets(a.padding.as_ref(), b.padding.as_ref(), t),
             minimum_size: lerp_nearer(&a.minimum_size, &b.minimum_size, t),
             fixed_size: lerp_nearer(&a.fixed_size, &b.fixed_size, t),
             maximum_size: lerp_nearer(&a.maximum_size, &b.maximum_size, t),
@@ -7671,8 +7766,8 @@ impl FloatingActionButtonThemeData {
                 b.extended_icon_label_spacing,
                 t,
             ),
-            extended_padding: lerp_nearer(&a.extended_padding, &b.extended_padding, t),
-            extended_text_style: lerp_nearer(&a.extended_text_style, &b.extended_text_style, t),
+            extended_padding: EdgeInsetsGeometry::lerp(a.extended_padding, b.extended_padding, t),
+            extended_text_style: lerp_text_style(&a.extended_text_style, &b.extended_text_style, t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
         }
     }
@@ -7807,7 +7902,7 @@ impl ToggleButtonsThemeData {
         t: f32,
     ) -> ToggleButtonsThemeData {
         ToggleButtonsThemeData {
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            text_style: lerp_text_style(&a.text_style, &b.text_style, t),
             constraints: lerp_nearer(&a.constraints, &b.constraints, t),
             color: lerp_color(a.color, b.color, t),
             selected_color: lerp_color(a.selected_color, b.selected_color, t),
@@ -7962,7 +8057,7 @@ impl SearchBarThemeData {
     /// Upstream `SearchBarThemeData.lerp`.
     pub fn lerp(a: &SearchBarThemeData, b: &SearchBarThemeData, t: f32) -> SearchBarThemeData {
         SearchBarThemeData {
-            elevation: lerp_nearer(&a.elevation, &b.elevation, t),
+            elevation: lerp_state_f32(a.elevation.as_ref(), b.elevation.as_ref(), t),
             background_color: lerp_state_color(
                 a.background_color.as_ref(),
                 b.background_color.as_ref(),
@@ -7977,9 +8072,9 @@ impl SearchBarThemeData {
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
             side: lerp_nearer(&a.side, &b.side, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
-            hint_style: lerp_nearer(&a.hint_style, &b.hint_style, t),
+            padding: lerp_state_insets(a.padding.as_ref(), b.padding.as_ref(), t),
+            text_style: lerp_state_text_style(a.text_style.as_ref(), b.text_style.as_ref(), t),
+            hint_style: lerp_state_text_style(a.hint_style.as_ref(), b.hint_style.as_ref(), t),
             constraints: lerp_nearer(&a.constraints, &b.constraints, t),
             text_capitalization: lerp_nearer(&a.text_capitalization, &b.text_capitalization, t),
         }
@@ -8065,11 +8160,11 @@ impl SearchViewThemeData {
             },
             shape: lerp_nearer(&a.shape, &b.shape, t),
             header_height: lerp_f32(a.header_height, b.header_height, t),
-            header_text_style: lerp_nearer(&a.header_text_style, &b.header_text_style, t),
-            header_hint_style: lerp_nearer(&a.header_hint_style, &b.header_hint_style, t),
+            header_text_style: lerp_text_style(&a.header_text_style, &b.header_text_style, t),
+            header_hint_style: lerp_text_style(&a.header_hint_style, &b.header_hint_style, t),
             constraints: lerp_nearer(&a.constraints, &b.constraints, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
-            bar_padding: lerp_nearer(&a.bar_padding, &b.bar_padding, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
+            bar_padding: EdgeInsetsGeometry::lerp(a.bar_padding, b.bar_padding, t),
             shrink_wrap: lerp_nearer(&a.shrink_wrap, &b.shrink_wrap, t),
             divider_color: lerp_color(a.divider_color, b.divider_color, t),
         }
@@ -8187,18 +8282,14 @@ impl TimePickerThemeData {
             day_period_color: lerp_color(a.day_period_color, b.day_period_color, t),
             day_period_shape: lerp_nearer(&a.day_period_shape, &b.day_period_shape, t),
             day_period_text_color: lerp_color(a.day_period_text_color, b.day_period_text_color, t),
-            day_period_text_style: lerp_nearer(
-                &a.day_period_text_style,
-                &b.day_period_text_style,
-                t,
-            ),
+            day_period_text_style: lerp_text_style(&a.day_period_text_style, &b.day_period_text_style, t),
             dial_background_color: lerp_color(a.dial_background_color, b.dial_background_color, t),
             dial_hand_color: lerp_color(a.dial_hand_color, b.dial_hand_color, t),
             dial_text_color: lerp_color(a.dial_text_color, b.dial_text_color, t),
-            dial_text_style: lerp_nearer(&a.dial_text_style, &b.dial_text_style, t),
+            dial_text_style: lerp_text_style(&a.dial_text_style, &b.dial_text_style, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             entry_mode_icon_color: lerp_color(a.entry_mode_icon_color, b.entry_mode_icon_color, t),
-            help_text_style: lerp_nearer(&a.help_text_style, &b.help_text_style, t),
+            help_text_style: lerp_text_style(&a.help_text_style, &b.help_text_style, t),
             hour_minute_color: lerp_color(a.hour_minute_color, b.hour_minute_color, t),
             hour_minute_shape: lerp_nearer(&a.hour_minute_shape, &b.hour_minute_shape, t),
             hour_minute_text_color: lerp_color(
@@ -8206,12 +8297,8 @@ impl TimePickerThemeData {
                 b.hour_minute_text_color,
                 t,
             ),
-            hour_minute_text_style: lerp_nearer(
-                &a.hour_minute_text_style,
-                &b.hour_minute_text_style,
-                t,
-            ),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            hour_minute_text_style: lerp_text_style(&a.hour_minute_text_style, &b.hour_minute_text_style, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
             time_selector_separator_color: lerp_state_color(
                 a.time_selector_separator_color.as_ref(),
@@ -8367,14 +8454,10 @@ impl DatePickerThemeData {
                 b.header_foreground_color,
                 t,
             ),
-            header_headline_style: lerp_nearer(
-                &a.header_headline_style,
-                &b.header_headline_style,
-                t,
-            ),
-            header_help_style: lerp_nearer(&a.header_help_style, &b.header_help_style, t),
-            weekday_style: lerp_nearer(&a.weekday_style, &b.weekday_style, t),
-            day_style: lerp_nearer(&a.day_style, &b.day_style, t),
+            header_headline_style: lerp_text_style(&a.header_headline_style, &b.header_headline_style, t),
+            header_help_style: lerp_text_style(&a.header_help_style, &b.header_help_style, t),
+            weekday_style: lerp_text_style(&a.weekday_style, &b.weekday_style, t),
+            day_style: lerp_text_style(&a.day_style, &b.day_style, t),
             day_foreground_color: lerp_state_color(
                 a.day_foreground_color.as_ref(),
                 b.day_foreground_color.as_ref(),
@@ -8390,7 +8473,7 @@ impl DatePickerThemeData {
                 b.day_overlay_color.as_ref(),
                 t,
             ),
-            day_shape: lerp_nearer(&a.day_shape, &b.day_shape, t),
+            day_shape: lerp_state_shape(a.day_shape.as_ref(), b.day_shape.as_ref(), t),
             today_foreground_color: lerp_state_color(
                 a.today_foreground_color.as_ref(),
                 b.today_foreground_color.as_ref(),
@@ -8402,7 +8485,7 @@ impl DatePickerThemeData {
                 t,
             ),
             today_border: side(a.today_border, b.today_border),
-            year_style: lerp_nearer(&a.year_style, &b.year_style, t),
+            year_style: lerp_text_style(&a.year_style, &b.year_style, t),
             year_foreground_color: lerp_state_color(
                 a.year_foreground_color.as_ref(),
                 b.year_foreground_color.as_ref(),
@@ -8418,7 +8501,7 @@ impl DatePickerThemeData {
                 b.year_overlay_color.as_ref(),
                 t,
             ),
-            year_shape: lerp_nearer(&a.year_shape, &b.year_shape, t),
+            year_shape: lerp_state_shape(a.year_shape.as_ref(), b.year_shape.as_ref(), t),
             range_picker_background_color: lerp_color(
                 a.range_picker_background_color,
                 b.range_picker_background_color,
@@ -8446,16 +8529,8 @@ impl DatePickerThemeData {
                 b.range_picker_header_foreground_color,
                 t,
             ),
-            range_picker_header_headline_style: lerp_nearer(
-                &a.range_picker_header_headline_style,
-                &b.range_picker_header_headline_style,
-                t,
-            ),
-            range_picker_header_help_style: lerp_nearer(
-                &a.range_picker_header_help_style,
-                &b.range_picker_header_help_style,
-                t,
-            ),
+            range_picker_header_headline_style: lerp_text_style(&a.range_picker_header_headline_style, &b.range_picker_header_headline_style, t),
+            range_picker_header_help_style: lerp_text_style(&a.range_picker_header_help_style, &b.range_picker_header_help_style, t),
             range_selection_background_color: lerp_color(
                 a.range_selection_background_color,
                 b.range_selection_background_color,
@@ -8477,11 +8552,7 @@ impl DatePickerThemeData {
                 &b.confirm_button_style,
                 t,
             ),
-            toggle_button_text_style: lerp_nearer(
-                &a.toggle_button_text_style,
-                &b.toggle_button_text_style,
-                t,
-            ),
+            toggle_button_text_style: lerp_text_style(&a.toggle_button_text_style, &b.toggle_button_text_style, t),
             sub_header_foreground_color: lerp_color(
                 a.sub_header_foreground_color,
                 b.sub_header_foreground_color,
@@ -8967,12 +9038,12 @@ impl PopupMenuThemeData {
         PopupMenuThemeData {
             color: lerp_color(a.color, b.color, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
-            menu_padding: lerp_nearer(&a.menu_padding, &b.menu_padding, t),
+            menu_padding: EdgeInsetsGeometry::lerp(a.menu_padding, b.menu_padding, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
-            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
+            text_style: lerp_text_style(&a.text_style, &b.text_style, t),
+            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
             enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             position: lerp_nearer(&a.position, &b.position, t),
@@ -9035,7 +9106,7 @@ impl DropdownMenuThemeData {
         t: f32,
     ) -> DropdownMenuThemeData {
         DropdownMenuThemeData {
-            text_style: lerp_nearer(&a.text_style, &b.text_style, t),
+            text_style: lerp_text_style(&a.text_style, &b.text_style, t),
             // Upstream takes the decoration from the nearer end too: it has
             // no `lerp` of its own, for the reason given on that class.
             input_decoration_theme: lerp_nearer(
@@ -9114,7 +9185,7 @@ impl BottomAppBarThemeData {
             height: lerp_f32(a.height, b.height, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
         }
     }
 }
@@ -9205,11 +9276,11 @@ impl NavigationBarThemeData {
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
             indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
-            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
-            icon_theme: lerp_nearer(&a.icon_theme, &b.icon_theme, t),
+            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
+            icon_theme: lerp_state_icon_theme(a.icon_theme.as_ref(), b.icon_theme.as_ref(), t),
             label_behavior: lerp_nearer(&a.label_behavior, &b.label_behavior, t),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
-            label_padding: lerp_nearer(&a.label_padding, &b.label_padding, t),
+            label_padding: EdgeInsetsGeometry::lerp(a.label_padding, b.label_padding, t),
         }
     }
 }
@@ -9293,8 +9364,8 @@ impl NavigationDrawerThemeData {
                     }
                 }
             },
-            label_text_style: lerp_nearer(&a.label_text_style, &b.label_text_style, t),
-            icon_theme: lerp_nearer(&a.icon_theme, &b.icon_theme, t),
+            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
+            icon_theme: lerp_state_icon_theme(a.icon_theme.as_ref(), b.icon_theme.as_ref(), t),
         }
     }
 }
@@ -9352,7 +9423,7 @@ impl CarouselViewThemeData {
         t: f32,
     ) -> CarouselViewThemeData {
         CarouselViewThemeData {
-            padding: lerp_nearer(&a.padding, &b.padding, t),
+            padding: lerp_edge_insets(a.padding, b.padding, t),
             background_color: lerp_color(a.background_color, b.background_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shape: lerp_nearer(&a.shape, &b.shape, t),
@@ -9501,21 +9572,21 @@ impl TextTheme {
     /// Upstream `TextTheme.lerp`.
     pub fn lerp(a: &TextTheme, b: &TextTheme, t: f32) -> TextTheme {
         TextTheme {
-            display_large: lerp_nearer(&a.display_large, &b.display_large, t),
-            display_medium: lerp_nearer(&a.display_medium, &b.display_medium, t),
-            display_small: lerp_nearer(&a.display_small, &b.display_small, t),
-            headline_large: lerp_nearer(&a.headline_large, &b.headline_large, t),
-            headline_medium: lerp_nearer(&a.headline_medium, &b.headline_medium, t),
-            headline_small: lerp_nearer(&a.headline_small, &b.headline_small, t),
-            title_large: lerp_nearer(&a.title_large, &b.title_large, t),
-            title_medium: lerp_nearer(&a.title_medium, &b.title_medium, t),
-            title_small: lerp_nearer(&a.title_small, &b.title_small, t),
-            body_large: lerp_nearer(&a.body_large, &b.body_large, t),
-            body_medium: lerp_nearer(&a.body_medium, &b.body_medium, t),
-            body_small: lerp_nearer(&a.body_small, &b.body_small, t),
-            label_large: lerp_nearer(&a.label_large, &b.label_large, t),
-            label_medium: lerp_nearer(&a.label_medium, &b.label_medium, t),
-            label_small: lerp_nearer(&a.label_small, &b.label_small, t),
+            display_large: lerp_text_style(&a.display_large, &b.display_large, t),
+            display_medium: lerp_text_style(&a.display_medium, &b.display_medium, t),
+            display_small: lerp_text_style(&a.display_small, &b.display_small, t),
+            headline_large: lerp_text_style(&a.headline_large, &b.headline_large, t),
+            headline_medium: lerp_text_style(&a.headline_medium, &b.headline_medium, t),
+            headline_small: lerp_text_style(&a.headline_small, &b.headline_small, t),
+            title_large: lerp_text_style(&a.title_large, &b.title_large, t),
+            title_medium: lerp_text_style(&a.title_medium, &b.title_medium, t),
+            title_small: lerp_text_style(&a.title_small, &b.title_small, t),
+            body_large: lerp_text_style(&a.body_large, &b.body_large, t),
+            body_medium: lerp_text_style(&a.body_medium, &b.body_medium, t),
+            body_small: lerp_text_style(&a.body_small, &b.body_small, t),
+            label_large: lerp_text_style(&a.label_large, &b.label_large, t),
+            label_medium: lerp_text_style(&a.label_medium, &b.label_medium, t),
+            label_small: lerp_text_style(&a.label_small, &b.label_small, t),
         }
     }
 }
@@ -10113,7 +10184,7 @@ impl ButtonBarThemeData {
             button_text_theme: lerp_nearer(&a.button_text_theme, &b.button_text_theme, t),
             button_min_width: lerp_f32(a.button_min_width, b.button_min_width, t),
             button_height: lerp_f32(a.button_height, b.button_height, t),
-            button_padding: lerp_nearer(&a.button_padding, &b.button_padding, t),
+            button_padding: EdgeInsetsGeometry::lerp(a.button_padding, b.button_padding, t),
             button_aligned_dropdown: lerp_nearer(
                 &a.button_aligned_dropdown,
                 &b.button_aligned_dropdown,
@@ -12217,6 +12288,333 @@ mod tests {
         };
         assert_eq!(ChipThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width), Some(8.0));
         assert_eq!(ChipThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width), Some(16.0));
+    }
+
+    // -- The blends that replaced a step at tick 221 ------------------------
+    //
+    // `tools/unlerped_fields.py` and a line-by-line read against upstream
+    // found this file stepping fields upstream interpolates: every text
+    // style, every padding, and the `WidgetStateProperty.lerp<double?>`
+    // family. A stepping typography means every piece of text in an
+    // application changes size in one frame partway through a theme
+    // transition instead of growing into its new size.
+
+    /// A typography whose fifteen styles are fifteen *different* sizes, so
+    /// that a line naming the wrong one answers with another style's size.
+    fn sized_theme(base: f32) -> TextTheme {
+        let mut n = 0.0;
+        let mut next = || {
+            n += 1.0;
+            Some(TextStyle {
+                font_size: base + n,
+                ..TextStyle::default()
+            })
+        };
+        TextTheme {
+            display_large: next(),
+            display_medium: next(),
+            display_small: next(),
+            headline_large: next(),
+            headline_medium: next(),
+            headline_small: next(),
+            title_large: next(),
+            title_medium: next(),
+            title_small: next(),
+            body_large: next(),
+            body_medium: next(),
+            body_small: next(),
+            label_large: next(),
+            label_medium: next(),
+            label_small: next(),
+        }
+    }
+
+    #[test]
+    fn a_typography_grows_into_its_new_sizes_rather_than_jumping() {
+        // Upstream is `TextStyle.lerp` on all fifteen. This port had
+        // `lerp_nearer` on all fifteen, which answers `a` for the whole first
+        // half and then jumps.
+        assert_eq!(
+            TextTheme::lerp(&sized_theme(0.0), &sized_theme(80.0), 0.25),
+            sized_theme(20.0)
+        );
+        assert_eq!(
+            TextTheme::lerp(&sized_theme(80.0), &sized_theme(0.0), 0.25),
+            sized_theme(60.0)
+        );
+    }
+
+    #[test]
+    fn a_style_only_one_end_names_still_steps() {
+        // Upstream's single-null arm fades the colour in and steps the rest.
+        // This port's `TextStyle` has no null fields -- `color` and
+        // `font_size` are values -- so there is nowhere to put "a style whose
+        // size is still null", and the whole style steps. Stated here rather
+        // than left to be discovered.
+        let named = TextTheme {
+            body_large: Some(TextStyle {
+                font_size: 20.0,
+                ..TextStyle::default()
+            }),
+            ..TextTheme::default()
+        };
+        assert_eq!(
+            TextTheme::lerp(&TextTheme::default(), &named, 0.499).body_large,
+            None
+        );
+        assert_eq!(
+            TextTheme::lerp(&TextTheme::default(), &named, 0.5).body_large,
+            named.body_large
+        );
+    }
+
+    #[test]
+    fn a_tooltips_padding_and_margin_slide_rather_than_jumping() {
+        // Upstream: `EdgeInsetsGeometry.lerp` for both. Two different pairs,
+        // so a line reading the other field lands on the wrong number.
+        let insets = |edge: f32| {
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: edge,
+                top: edge,
+                right: edge,
+                bottom: edge,
+            }))
+        };
+        let a = TooltipThemeData {
+            padding: insets(4.0),
+            margin: insets(12.0),
+            ..TooltipThemeData::default()
+        };
+        let b = TooltipThemeData {
+            padding: insets(20.0),
+            margin: insets(28.0),
+            ..TooltipThemeData::default()
+        };
+        let quarter = TooltipThemeData::lerp(&a, &b, 0.25);
+        assert_eq!(
+            quarter.padding.map(|p| p.resolve(crate::direction::TextDirection::Ltr).left),
+            Some(8.0)
+        );
+        assert_eq!(
+            quarter.margin.map(|m| m.resolve(crate::direction::TextDirection::Ltr).left),
+            Some(16.0)
+        );
+    }
+
+    #[test]
+    fn a_button_styles_numbers_blend_state_by_state() {
+        // Upstream: `WidgetStateProperty.lerp<double?>(a, b, t, lerpDouble)`.
+        // Two different pairs again, so `elevation` and `icon_size` cannot
+        // stand in for one another.
+        let a = ButtonStyle {
+            elevation: Some(StateProperty::all(Some(4.0))),
+            icon_size: Some(StateProperty::all(Some(12.0))),
+            ..ButtonStyle::default()
+        };
+        let b = ButtonStyle {
+            elevation: Some(StateProperty::all(Some(20.0))),
+            icon_size: Some(StateProperty::all(Some(28.0))),
+            ..ButtonStyle::default()
+        };
+        let quarter = ButtonStyle::lerp(&a, &b, 0.25);
+        assert_eq!(
+            quarter
+                .elevation
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(8.0)
+        );
+        assert_eq!(
+            quarter
+                .icon_size
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(16.0)
+        );
+    }
+
+    #[test]
+    fn a_navigation_bars_label_and_icon_blend_state_by_state() {
+        // Upstream: `WidgetStateProperty.lerp<TextStyle?>` and
+        // `<IconThemeData?>`. Both were stepping here.
+        let a = NavigationBarThemeData {
+            label_text_style: Some(StateProperty::all(Some(TextStyle {
+                font_size: 4.0,
+                ..TextStyle::default()
+            }))),
+            icon_theme: Some(StateProperty::all(Some(IconThemeData {
+                size: Some(12.0),
+                ..IconThemeData::default()
+            }))),
+            ..NavigationBarThemeData::default()
+        };
+        let b = NavigationBarThemeData {
+            label_text_style: Some(StateProperty::all(Some(TextStyle {
+                font_size: 20.0,
+                ..TextStyle::default()
+            }))),
+            icon_theme: Some(StateProperty::all(Some(IconThemeData {
+                size: Some(28.0),
+                ..IconThemeData::default()
+            }))),
+            ..NavigationBarThemeData::default()
+        };
+        let quarter = NavigationBarThemeData::lerp(&a, &b, 0.25);
+        assert_eq!(
+            quarter
+                .label_text_style
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE)
+                .map(|style| style.font_size),
+            Some(8.0)
+        );
+        assert_eq!(
+            quarter
+                .icon_theme
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE)
+                .and_then(|theme| theme.size),
+            Some(16.0)
+        );
+    }
+
+
+    #[test]
+    fn a_date_pickers_day_and_year_shapes_morph_state_by_state() {
+        // Upstream: `WidgetStateProperty.lerp<OutlinedBorder?>`. The two
+        // shapes carry different widths, so a line reading the other field
+        // answers with a width that is not its own.
+        let circle = |width: f32| {
+            Some(StateProperty::all(Some(ShapeBorder::Circle(
+                crate::borders::CircleBorder::new(
+                    BorderSide {
+                        color: Color::argb(255, 255, 0, 0),
+                        width,
+                        ..BorderSide::NONE
+                    },
+                    0.0,
+                ),
+            ))))
+        };
+        let a = DatePickerThemeData {
+            day_shape: circle(4.0),
+            year_shape: circle(12.0),
+            ..DatePickerThemeData::default()
+        };
+        let b = DatePickerThemeData {
+            day_shape: circle(20.0),
+            year_shape: circle(28.0),
+            ..DatePickerThemeData::default()
+        };
+        let quarter = DatePickerThemeData::lerp(&a, &b, 0.25);
+        let width_of = |shape: Option<StateProperty<Option<ShapeBorder>>>| {
+            match shape
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE)
+            {
+                Some(ShapeBorder::Circle(circle)) => circle.side.width,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(width_of(quarter.day_shape), 8.0);
+        assert_eq!(width_of(quarter.year_shape), 16.0);
+    }
+
+    #[test]
+    fn the_remaining_state_numbers_blend_too() {
+        // Three more `WidgetStateProperty.lerp<double?>` sites, each in a
+        // different theme, each with its own pair of numbers.
+        let radio = RadioThemeData {
+            inner_radius: Some(StateProperty::all(Some(4.0))),
+            ..RadioThemeData::default()
+        };
+        let bigger = RadioThemeData {
+            inner_radius: Some(StateProperty::all(Some(20.0))),
+            ..RadioThemeData::default()
+        };
+        assert_eq!(
+            RadioThemeData::lerp(&radio, &bigger, 0.25)
+                .inner_radius
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(8.0)
+        );
+
+        let switch = SwitchThemeData {
+            track_outline_width: Some(StateProperty::all(Some(8.0))),
+            ..SwitchThemeData::default()
+        };
+        let thicker = SwitchThemeData {
+            track_outline_width: Some(StateProperty::all(Some(24.0))),
+            ..SwitchThemeData::default()
+        };
+        assert_eq!(
+            SwitchThemeData::lerp(&switch, &thicker, 0.25)
+                .track_outline_width
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(12.0)
+        );
+
+        let bar = ScrollbarThemeData {
+            thickness: Some(StateProperty::all(Some(12.0))),
+            ..ScrollbarThemeData::default()
+        };
+        let fatter = ScrollbarThemeData {
+            thickness: Some(StateProperty::all(Some(28.0))),
+            ..ScrollbarThemeData::default()
+        };
+        assert_eq!(
+            ScrollbarThemeData::lerp(&bar, &fatter, 0.25)
+                .thickness
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(16.0)
+        );
+    }
+
+    #[test]
+    fn a_dialogs_inset_padding_slides_and_a_missing_one_grows_in() {
+        // Upstream: `EdgeInsets.lerp`. This is the one plain-`EdgeInsets`
+        // padding in the file; `SnackBarThemeData`'s field of the same name
+        // is a geometry, which is why the two cannot share a line.
+        let a = DialogThemeData {
+            inset_padding: Some(EdgeInsets {
+                left: 4.0,
+                top: 8.0,
+                right: 12.0,
+                bottom: 16.0,
+            }),
+            ..DialogThemeData::default()
+        };
+        let b = DialogThemeData {
+            inset_padding: Some(EdgeInsets {
+                left: 20.0,
+                top: 24.0,
+                right: 28.0,
+                bottom: 32.0,
+            }),
+            ..DialogThemeData::default()
+        };
+        assert_eq!(
+            DialogThemeData::lerp(&a, &b, 0.25).inset_padding,
+            Some(EdgeInsets {
+                left: 8.0,
+                top: 12.0,
+                right: 16.0,
+                bottom: 20.0,
+            })
+        );
+        // A missing end scales rather than holding the other still.
+        assert_eq!(
+            DialogThemeData::lerp(&DialogThemeData::default(), &b, 0.25).inset_padding,
+            Some(EdgeInsets {
+                left: 5.0,
+                top: 6.0,
+                right: 7.0,
+                bottom: 8.0,
+            })
+        );
     }
 }
 

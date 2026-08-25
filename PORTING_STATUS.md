@@ -17036,3 +17036,49 @@ elevation。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5490 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 221 次：整套排版在主题过渡的中点跳一次字号
+
+第 220 次留下的队列。按上游逐行对读 `component_themes.rs` 的 235 处
+`lerp_nearer`，其中**一大批上游是插值的**。
+
+**`TextTheme` 的 15 行全在跳变。**上游 `TextTheme.lerp` 十五个字号一律走
+`TextStyle.lerp`。端口十五行全是"取较近的一端"——主题过渡走到一半时，应用
+里**每一段文字**会在一帧里换一次字号，而不是长过去。这是这批里最显眼的一个。
+
+一共改了这些族（每一处都先在上游确认过，不是照猜）：
+
+- **59 处文字样式** → `lerp_text_style` / `lerp_state_text_style`
+- **13 处内边距** → `EdgeInsetsGeometry::lerp` / `lerp_edge_insets` /
+  `lerp_state_insets`。12 处 `padding` 分属三种类型，靠名字改会错三分之一，
+  是按"所在结构体字面量 → 该结构体的字段声明"逐处定的。
+- **7 处 `WidgetStateProperty.lerp<double?>`** → `lerp_state_f32`
+  （elevation ×3、thickness、icon_size、inner_radius、track_outline_width）
+- **2 处 `<IconThemeData?>`** 与 **2 处 `<OutlinedBorder?>`**
+
+**有两处看着像缺陷，其实不是。**`thumb_visibility` 与 `track_visibility` 上游
+包在 `WidgetStateProperty.lerp<bool?>` 里，但传进去的 `_lerpBool` 就是
+`t < 0.5 ? a : b`。逐状态跳、每个状态用同一个 `t`，和整体跳是同一个答案。
+`lerp_nearer` 在这里不是抄近路，它就是那个函数。注释写在原处。
+
+**一处说不出口的差别写进了测试。**上游 `TextStyle.lerp` 的单空端不跳变：颜色
+从透明淡入，其余字段在中点换。本端口的 `TextStyle` 没有可空字段——`color`、
+`font_size` 是值不是选项——"字号还是 null 的样式"无处安放，所以只有一端有的
+样式整体跳变。`a_style_only_one_end_names_still_steps` 把这条差别钉住，而不是
+留着以后被发现。
+
+十三族逐族强制改回 `lerp_nearer`：**十三族全红**，各由预期的那条测试抓住。
+
+**一次自己造成的破坏。**回滚一个插错的测试块时，我按"从标记处截断再补一个
+右花括号"来做——而 `component_themes.rs` 有**六个**测试模块，`mod tests` 后面
+还有五个。那一刀把它们全切了，套件从 5495 掉到 5480 还是绿的。从 HEAD 取回，
+并按 struct / enum / lerp 三个计数与 HEAD 对齐确认没有别的损失。教训和第 219
+次那次一样：**按行号或标记截断文件，前提是文件的结构和我以为的一样。**
+
+**下一个队列**：同一族里剩下的 Size / BoxConstraints / BorderRadius /
+Alignment / ShapeBorder / Decoration 各族，约七十处。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5498 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
