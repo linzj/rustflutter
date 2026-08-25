@@ -338,6 +338,24 @@ impl Default for IconButton {
 /// `RawMaterialButton`'s are not -- a FAB defers to the theme by default and
 /// only overrides what it was told to. The asserts change shape to match:
 /// `elevation == null || elevation >= 0.0`.
+/// Upstream's `_FloatingActionButtonType`: which of the four a button is.
+///
+/// It decides the size constraints, and for the extended form three more
+/// theme fields besides. This port carried `is_extended: bool`, which cannot
+/// say "small" or "large" -- so two of the four sizes were unreachable and
+/// the theme fields holding them reached nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FloatingActionButtonKind {
+    #[default]
+    Regular,
+    Small,
+    Large,
+    /// Carries a label beside the icon, and is the only one whose width is
+    /// left to its content: upstream's `extendedSizeConstraints` fixes the
+    /// height and says nothing about the width.
+    Extended,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FloatingActionButton {
     pub elevation: Option<f32>,
@@ -345,9 +363,12 @@ pub struct FloatingActionButton {
     pub hover_elevation: Option<f32>,
     pub highlight_elevation: Option<f32>,
     pub disabled_elevation: Option<f32>,
-    /// Whether this is the extended form, which carries a label beside the
-    /// icon.
-    pub is_extended: bool,
+    /// Which of upstream's four this is.
+    pub kind: FloatingActionButtonKind,
+    /// Whether the extended form has an icon beside its label, which is the
+    /// only thing upstream's default `extendedPadding` depends on: a label
+    /// with nothing beside it wants the same room at both ends.
+    pub has_icon: bool,
 }
 
 impl FloatingActionButton {
@@ -356,10 +377,30 @@ impl FloatingActionButton {
     }
 
     pub fn extended() -> FloatingActionButton {
+        FloatingActionButton::of_kind(FloatingActionButtonKind::Extended)
+    }
+
+    /// Upstream's `FloatingActionButton.small`.
+    pub fn small() -> FloatingActionButton {
+        FloatingActionButton::of_kind(FloatingActionButtonKind::Small)
+    }
+
+    /// Upstream's `FloatingActionButton.large`.
+    pub fn large() -> FloatingActionButton {
+        FloatingActionButton::of_kind(FloatingActionButtonKind::Large)
+    }
+
+    fn of_kind(kind: FloatingActionButtonKind) -> FloatingActionButton {
         FloatingActionButton {
-            is_extended: true,
+            kind,
             ..FloatingActionButton::default()
         }
+    }
+
+    /// Whether this is the extended form, which carries a label beside the
+    /// icon.
+    pub fn is_extended(&self) -> bool {
+        self.kind == FloatingActionButtonKind::Extended
     }
 
     /// Upstream's asserts, in their nullable form.
@@ -388,8 +429,12 @@ impl FloatingActionButton {
         states: crate::widget_state::WidgetStates,
     ) -> crate::component_themes::ResolvedFloatingActionButton {
         use crate::widget_state::WidgetState;
-        let mut resolved =
-            crate::component_themes::ResolvedFloatingActionButton::of(context, states);
+        let mut resolved = crate::component_themes::ResolvedFloatingActionButton::of_kind(
+            context,
+            states,
+            self.kind,
+            self.has_icon,
+        );
         // The same order the resolver uses, over the widget's own fields.
         let mine = if states.contains(WidgetState::Disabled) {
             self.disabled_elevation.or(self.elevation)
@@ -609,8 +654,8 @@ mod tests {
 
     #[test]
     fn an_extended_fab_is_the_same_button_carrying_a_label() {
-        assert!(FloatingActionButton::extended().is_extended);
-        assert!(!FloatingActionButton::new().is_extended);
+        assert!(FloatingActionButton::extended().is_extended());
+        assert!(!FloatingActionButton::new().is_extended());
     }
 
     // -- The one upstream tells you not to use ------------------------------------
@@ -880,6 +925,138 @@ mod fab_theme_tests {
         assert!(!fab.is_valid());
         fab.elevation = Some(0.0);
         assert!(fab.is_valid(), "resting on the surface is allowed");
+    }
+
+    // -- A FAB is one of four sizes, tick 233 -------------------------------
+    //
+    // `tools/unread_theme_fields.py` found `smallSizeConstraints`,
+    // `largeSizeConstraints`, `extendedSizeConstraints`,
+    // `extendedIconLabelSpacing`, `extendedPadding` and `extendedTextStyle`
+    // reaching nothing. The resolver read `size_constraints` whatever the
+    // button was, and the widget carried `is_extended: bool`, which cannot
+    // say "small" or "large" at all.
+
+    fn sized(kind: FloatingActionButtonKind) -> crate::render::BoxConstraints {
+        resolve(
+            FloatingActionButton {
+                kind,
+                ..FloatingActionButton::default()
+            },
+            FloatingActionButtonThemeData::new(),
+            none(),
+        )
+        .size
+    }
+
+    #[test]
+    fn the_four_kinds_are_four_different_sizes() {
+        use crate::component_themes::ResolvedFloatingActionButton as Fab;
+        assert_eq!(
+            sized(FloatingActionButtonKind::Regular).max_width,
+            Fab::SIZE
+        );
+        assert_eq!(
+            sized(FloatingActionButtonKind::Small).max_width,
+            Fab::SMALL_SIZE
+        );
+        assert_eq!(
+            sized(FloatingActionButtonKind::Large).max_width,
+            Fab::LARGE_SIZE
+        );
+        // Four different numbers, so a line reading a neighbour's field
+        // answers with a size that is not its own.
+        assert_ne!(Fab::SIZE, Fab::SMALL_SIZE);
+        assert_ne!(Fab::SIZE, Fab::LARGE_SIZE);
+    }
+
+    #[test]
+    fn the_extended_form_fixes_only_its_height() {
+        // Its width is whatever the label needs, which is the whole point of
+        // the form -- a fixed width would truncate or pad it.
+        use crate::component_themes::ResolvedFloatingActionButton as Fab;
+        let size = sized(FloatingActionButtonKind::Extended);
+        assert_eq!(size.min_height, Fab::EXTENDED_HEIGHT);
+        assert_eq!(size.max_height, Fab::EXTENDED_HEIGHT);
+        assert_eq!(size.min_width, 0.0);
+        assert!(size.max_width.is_infinite(), "{:?}", size.max_width);
+    }
+
+    #[test]
+    fn each_kind_reads_its_own_theme_field() {
+        // Four different numbers again: a resolver reading the regular field
+        // for a small button would answer 40 where 41 was asked for.
+        let themed = FloatingActionButtonThemeData {
+            size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(11.0, 11.0))),
+            small_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(22.0, 22.0))),
+            large_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(33.0, 33.0))),
+            extended_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(44.0, 44.0))),
+            ..FloatingActionButtonThemeData::new()
+        };
+        let width = |kind| {
+            resolve(
+                FloatingActionButton {
+                    kind,
+                    ..FloatingActionButton::default()
+                },
+                themed.clone(),
+                none(),
+            )
+            .size
+            .max_width
+        };
+        assert_eq!(width(FloatingActionButtonKind::Regular), 11.0);
+        assert_eq!(width(FloatingActionButtonKind::Small), 22.0);
+        assert_eq!(width(FloatingActionButtonKind::Large), 33.0);
+        assert_eq!(width(FloatingActionButtonKind::Extended), 44.0);
+    }
+
+    #[test]
+    fn the_extended_padding_depends_on_whether_there_is_an_icon() {
+        // Upstream's M3 default is
+        // `EdgeInsetsDirectional.only(start: hasChild ? 16 : 20, end: 20)`:
+        // a label with nothing beside it wants the same room at both ends,
+        // and one with an icon does not.
+        let padding = |has_icon| {
+            resolve(
+                FloatingActionButton {
+                    kind: FloatingActionButtonKind::Extended,
+                    has_icon,
+                    ..FloatingActionButton::default()
+                },
+                FloatingActionButtonThemeData::new(),
+                none(),
+            )
+            .extended_padding
+            .resolve(crate::direction::TextDirection::Ltr)
+        };
+        assert_eq!(padding(true).left, 16.0);
+        assert_eq!(padding(true).right, 20.0);
+        assert_eq!(padding(false).left, 20.0);
+        assert_eq!(padding(false).right, 20.0);
+    }
+
+    #[test]
+    fn the_extended_spacing_and_label_style_come_from_the_theme() {
+        use crate::component_themes::ResolvedFloatingActionButton as Fab;
+        let resolved = resolve(
+            FloatingActionButton::extended(),
+            FloatingActionButtonThemeData::new(),
+            none(),
+        );
+        assert_eq!(
+            resolved.extended_icon_label_spacing,
+            Fab::EXTENDED_ICON_LABEL_SPACING
+        );
+
+        let themed = resolve(
+            FloatingActionButton::extended(),
+            FloatingActionButtonThemeData {
+                extended_icon_label_spacing: Some(55.0),
+                ..FloatingActionButtonThemeData::new()
+            },
+            none(),
+        );
+        assert_eq!(themed.extended_icon_label_spacing, 55.0);
     }
 }
 

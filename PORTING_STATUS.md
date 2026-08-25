@@ -17554,3 +17554,31 @@ stale_engines 全部不落后，**unread_theme_fields 133 → 132**。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后，**unread_theme_fields 132 → 131**。
 门：5615 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 233 次：一个 FAB 有四种大小，而这个端口只会问其中一种
+
+`ResolvedFloatingActionButton::of` 无论按钮是哪一种，都只读
+`size_constraints`。于是 `smallSizeConstraints`、`largeSizeConstraints`、
+`extendedSizeConstraints` 三个字段到不了任何地方，扩展形态的
+`extendedIconLabelSpacing`、`extendedPadding`、`extendedTextStyle` 也一样。
+
+**widget 也说不出来**：它带的是 `is_extended: bool`，这个类型**根本表达不了
+"小"和"大"**。上游的 `_FloatingActionButtonType` 有四个成员，`build` 按它分支
+——所以要带的是"种类"而不是一个布尔。现在有了
+`FloatingActionButtonKind`，以及 `small()` / `large()` 两个构造器。
+
+**扩展形态只固定高度。**上游的 `extendedSizeConstraints` 是
+`BoxConstraints.tightFor(height: 56.0)`——**宽度不定**，因为那正是这个形态的
+意义：固定宽度会截断或撑开标签。
+
+**内边距取决于有没有图标。**上游 M3 的默认是
+`EdgeInsetsDirectional.only(start: hasChild ? 16 : 20, end: 20)`：旁边没有
+图标的标签两端要一样的余量，有图标的不用。所以 widget 也补上了 `has_icon`。
+
+测试给四种大小四个**互不相同**的数——一行读了邻居的字段，就会答出一个不属于
+它的尺寸。四条承重规则逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 131 → 125**。
+门：5620 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

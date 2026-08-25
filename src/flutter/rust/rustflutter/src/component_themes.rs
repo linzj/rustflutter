@@ -7934,7 +7934,23 @@ pub struct ResolvedFloatingActionButton {
     /// The elevation for the states it is in -- upstream picks one of the
     /// five fields rather than blending them.
     pub elevation: f32,
+    /// The constraints for **this kind** of button. Upstream switches on
+    /// `_FloatingActionButtonType` and reads one of four theme fields; this
+    /// read `size_constraints` whatever the button was, so three of the four
+    /// reached nothing.
     pub size: BoxConstraints,
+    /// The gap between the icon and the label, for the extended form only.
+    /// Upstream's chain ends at a literal `8.0` rather than a default-table
+    /// entry, which is why the number is here and not beside the others.
+    pub extended_icon_label_spacing: f32,
+    /// The extended form's padding. Upstream's M3 default is
+    /// **asymmetric and depends on whether there is an icon**:
+    /// `EdgeInsetsDirectional.only(start: hasChild ? 16 : 20, end: 20)` -- a
+    /// label with no icon beside it needs the same room on both sides, and
+    /// one with an icon does not.
+    pub extended_padding: EdgeInsetsGeometry,
+    /// The extended form's label style, `textTheme.labelLarge` by default.
+    pub extended_text_style: Option<TextStyle>,
 }
 
 impl ResolvedFloatingActionButton {
@@ -7949,9 +7965,35 @@ impl ResolvedFloatingActionButton {
     /// class doc states ("width of 56.0 logical pixels").
     pub const SIZE: f32 = 56.0;
 
+    /// Upstream's four size tables, from `_FABDefaultsM3`.
+    pub const SMALL_SIZE: f32 = 40.0;
+    pub const LARGE_SIZE: f32 = 96.0;
+    /// The extended form fixes only the height: its width is its content's.
+    pub const EXTENDED_HEIGHT: f32 = 56.0;
+    pub const EXTENDED_ICON_LABEL_SPACING: f32 = 8.0;
+
     pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedFloatingActionButton {
+        ResolvedFloatingActionButton::of_kind(
+            context,
+            states,
+            crate::buttons::FloatingActionButtonKind::Regular,
+            false,
+        )
+    }
+
+    /// [`ResolvedFloatingActionButton::of`] for a button that knows which of
+    /// upstream's four it is, and -- for the extended form -- whether it has
+    /// an icon, which changes its padding.
+    pub fn of_kind(
+        context: &mut BuildContext,
+        states: WidgetStates,
+        kind: crate::buttons::FloatingActionButtonKind,
+        has_icon: bool,
+    ) -> ResolvedFloatingActionButton {
+        use crate::buttons::FloatingActionButtonKind;
         let data = FloatingActionButtonTheme::of(context);
-        let scheme = ThemeData::of(context).color_scheme;
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
         // Upstream picks by state, in this order: disabled, then held, then
         // hovered, then focused, then the resting elevation.
         let elevation = if states.contains(WidgetState::Disabled) {
@@ -7972,12 +8014,51 @@ impl ResolvedFloatingActionButton {
                 .foreground_color
                 .unwrap_or(scheme.on_primary_container()),
             elevation: elevation.unwrap_or(ResolvedFloatingActionButton::ELEVATION),
-            size: data.size_constraints.unwrap_or(BoxConstraints {
-                min_width: ResolvedFloatingActionButton::SIZE,
-                max_width: ResolvedFloatingActionButton::SIZE,
-                min_height: ResolvedFloatingActionButton::SIZE,
-                max_height: ResolvedFloatingActionButton::SIZE,
+            size: match kind {
+                FloatingActionButtonKind::Regular => data.size_constraints,
+                FloatingActionButtonKind::Small => data.small_size_constraints,
+                FloatingActionButtonKind::Large => data.large_size_constraints,
+                FloatingActionButtonKind::Extended => data.extended_size_constraints,
+            }
+            .unwrap_or(match kind {
+                FloatingActionButtonKind::Regular => {
+                    BoxConstraints::tight_for(crate::render::Size::new(
+                        ResolvedFloatingActionButton::SIZE,
+                        ResolvedFloatingActionButton::SIZE,
+                    ))
+                }
+                FloatingActionButtonKind::Small => BoxConstraints::tight_for(crate::render::Size::new(
+                    ResolvedFloatingActionButton::SMALL_SIZE,
+                    ResolvedFloatingActionButton::SMALL_SIZE,
+                )),
+                FloatingActionButtonKind::Large => BoxConstraints::tight_for(crate::render::Size::new(
+                    ResolvedFloatingActionButton::LARGE_SIZE,
+                    ResolvedFloatingActionButton::LARGE_SIZE,
+                )),
+                // Height only: the width is whatever the label needs.
+                FloatingActionButtonKind::Extended => BoxConstraints {
+                    min_width: 0.0,
+                    max_width: f32::INFINITY,
+                    min_height: ResolvedFloatingActionButton::EXTENDED_HEIGHT,
+                    max_height: ResolvedFloatingActionButton::EXTENDED_HEIGHT,
+                },
             }),
+            extended_icon_label_spacing: data
+                .extended_icon_label_spacing
+                .unwrap_or(ResolvedFloatingActionButton::EXTENDED_ICON_LABEL_SPACING),
+            extended_padding: data.extended_padding.unwrap_or({
+                let start = if has_icon { 16.0 } else { 20.0 };
+                EdgeInsetsGeometry::Directional(crate::render::EdgeInsetsDirectional {
+                    start,
+                    top: 0.0,
+                    end: 20.0,
+                    bottom: 0.0,
+                })
+            }),
+            extended_text_style: data
+                .extended_text_style
+                .clone()
+                .or_else(|| theme.text_theme.label_large.clone()),
         }
     }
 }
