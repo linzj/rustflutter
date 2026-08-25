@@ -3149,6 +3149,29 @@ impl ShapeBorder {
             (ShapeBorder::Oval(a), ShapeBorder::Oval(b)) => Some(ShapeBorder::Oval(
                 OvalBorder::new(BorderSide::lerp(a.side, b.side, t)),
             )),
+            // A circle and an oval, either way round.
+            //
+            // Upstream has no arm for this because it does not need one:
+            // `OvalBorder extends CircleBorder`, so a circle asked to lerp
+            // with an oval finds `b is CircleBorder` and interpolates the two
+            // eccentricities -- 0 to 1, which *is* the circle opening into an
+            // ellipse. This crate makes them two variants, and without this
+            // arm the pair fell through to the crossfade at the end of
+            // [`ShapeBorder::lerp`]: an animation between them snapped
+            // instead of morphing.
+            //
+            // The helpers already said as much -- "the oval is the circle
+            // with the eccentricity pinned" -- and the arm that would have
+            // used them was missing. A screen that swapped the two ends of
+            // every lerp in this file found it: the swap changed nothing
+            // here, because nothing was being interpolated.
+            (a, b) if is_circle_like(a) && is_circle_like(b) => {
+                Some(ShapeBorder::Circle(CircleBorder::new(
+                    BorderSide::lerp(circle_side(a), circle_side(b), t),
+                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t)
+                        .clamp(0.0, 1.0),
+                )))
+            }
             (ShapeBorder::Stadium(a), ShapeBorder::Stadium(b)) => Some(ShapeBorder::Stadium(
                 StadiumBorder::new(BorderSide::lerp(a.side, b.side, t)),
             )),
@@ -3402,6 +3425,18 @@ impl ShapeBorder {
             (ShapeBorder::Oval(a), ShapeBorder::Oval(b)) => Some(ShapeBorder::Oval(
                 OvalBorder::new(BorderSide::lerp(a.side, b.side, t)),
             )),
+            // The mirror of the arm in `lerp_from`, which carries the
+            // reasoning. Both are needed for the same reason upstream needs
+            // both `lerpFrom` and `lerpTo`: `ShapeBorder::lerp` asks one and
+            // then the other, and a pair handled in only one of them answers
+            // for one direction and crossfades the other.
+            (a, b) if is_circle_like(a) && is_circle_like(b) => {
+                Some(ShapeBorder::Circle(CircleBorder::new(
+                    BorderSide::lerp(circle_side(a), circle_side(b), t),
+                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t)
+                        .clamp(0.0, 1.0),
+                )))
+            }
             (ShapeBorder::Stadium(a), ShapeBorder::Stadium(b)) => Some(ShapeBorder::Stadium(
                 StadiumBorder::new(BorderSide::lerp(a.side, b.side, t)),
             )),
@@ -5052,13 +5087,22 @@ impl TableBorder {
                 left: BorderSide::lerp(a.left, b.left, t),
                 horizontal_inside: BorderSide::lerp(a.horizontal_inside, b.horizontal_inside, t),
                 vertical_inside: BorderSide::lerp(a.vertical_inside, b.vertical_inside, t),
-                // Radii do not interpolate upstream either -- the border
-                // carries whichever side `t` has passed.
-                border_radius: if t < 0.5 {
-                    a.border_radius
-                } else {
-                    b.border_radius
-                },
+                // **Upstream drops the radius.** Its `lerp` builds a
+                // `TableBorder(...)` with the six sides and no
+                // `borderRadius:` argument at all, so the result takes the
+                // constructor's default of zero -- a rounded table border
+                // animating to another rounded one loses its corners for the
+                // whole of the animation and gets them back at the end.
+                //
+                // That reads like an oversight and it is ported as written,
+                // for the reason tick 206 gives about the floating cursor:
+                // guessing an upstream omission into the shape it looks like
+                // it should have is inventing behaviour. This port said
+                // something else -- "the border carries whichever side `t`
+                // has passed" -- which was kinder and was **also not what
+                // upstream does**, and nothing could tell, because nothing
+                // asked what the radius was after a lerp.
+                border_radius: BorderRadius::ZERO,
             },
             (None, None) => TableBorder::default(),
         }
@@ -5334,6 +5378,264 @@ mod tests {
     }
 
     // -- RRect -------------------------------------------------------------------
+
+    // -- Which end is which ------------------------------------------------
+    //
+    // A lerp is **symmetric at `t = 0.5`**, so a test that only checks the
+    // midpoint cannot tell `lerp(a, b, t)` from `lerp(b, a, t)`. Tick 212
+    // wrote exactly that test and the swap stayed green; a screen that
+    // swapped every `lerp(a, b, t)` in this file then found **101 of 107**
+    // going unnoticed. The whole family's direction was unasserted.
+    //
+    // These tests run at a quarter of the way along, where the two ends give
+    // different answers, and they walk the shapes rather than sampling them:
+    // one arm of a match nobody visits is one arm that can be backwards.
+
+    /// A side of a given width, so a lerp of it reads as a number.
+    fn wide(width: f32) -> BorderSide {
+        BorderSide {
+            width,
+            ..BorderSide::NONE
+        }
+    }
+
+    /// Every shape this crate can lerp, each carrying the side it was given.
+    fn shapes(side: BorderSide) -> Vec<(&'static str, ShapeBorder)> {
+        vec![
+            ("circle", ShapeBorder::Circle(CircleBorder::new(side, 0.0))),
+            ("oval", ShapeBorder::Oval(OvalBorder::new(side))),
+            ("stadium", ShapeBorder::Stadium(StadiumBorder::new(side))),
+            (
+                "rounded",
+                ShapeBorder::Rounded(RoundedRectangleBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                )),
+            ),
+            (
+                "beveled",
+                ShapeBorder::Beveled(BeveledRectangleBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                )),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_pair_of_shapes_lerps_from_the_first_towards_the_second() {
+        // A quarter of the way, the answer has to be on **`a`'s side**, and
+        // that is one claim covering the two things a pair can do.
+        //
+        // * A pair upstream morphs gives 3, a quarter of the way from a
+        //   2-wide side to a 6-wide one.
+        // * A pair it does not -- a circle and a beveled rectangle, say --
+        //   crossfades, and `ShapeBorder::lerp` ends with
+        //   `if t < 0.5 { a } else { b }`. That gives 2.
+        //
+        // Both are direction claims and both fail on 6, so a swapped pair
+        // cannot pass either way. Asserting 3 everywhere would be asserting
+        // more than upstream does: `BeveledRectangleBorder.lerpFrom` only
+        // knows another beveled border, and inventing a morph there would be
+        // a shape animation upstream fades.
+        for (from_name, from) in shapes(wide(2.0)) {
+            for (to_name, to) in shapes(wide(6.0)) {
+                let quarter = ShapeBorder::lerp(Some(from.clone()), Some(to.clone()), 0.25)
+                    .unwrap_or_else(|| panic!("{from_name} to {to_name} interpolates"));
+                let Some(side) = quarter.outlined_side() else {
+                    continue;
+                };
+                assert!(
+                    side.width == 3.0 || side.width == 2.0,
+                    "{from_name} -> {to_name}: {} is on the wrong side of 2..6",
+                    side.width
+                );
+
+                // And the same pair the other way round lands on the other
+                // side, which is what says the number above is a direction
+                // and not a coincidence of the arithmetic.
+                let back = ShapeBorder::lerp(Some(to.clone()), Some(from.clone()), 0.25)
+                    .unwrap_or_else(|| panic!("{to_name} to {from_name} interpolates"));
+                if let Some(back) = back.outlined_side() {
+                    assert!(
+                        back.width == 5.0 || back.width == 6.0,
+                        "{to_name} -> {from_name}: {} is on the wrong side",
+                        back.width
+                    );
+                    assert_ne!(
+                        side.width, back.width,
+                        "{from_name}/{to_name}: the two directions must differ"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn and_a_circle_opening_into_an_oval_morphs_rather_than_fading() {
+        // The pair this screen turned up. Upstream needs no arm for it --
+        // `OvalBorder extends CircleBorder`, so the circle's own lerp handles
+        // it and interpolates the eccentricities, 0 to 1. This crate makes
+        // them two variants, and the pair was falling through to the
+        // crossfade: the shape snapped instead of opening.
+        let circle = ShapeBorder::Circle(CircleBorder::new(wide(2.0), 0.0));
+        let oval = ShapeBorder::Oval(OvalBorder::new(wide(6.0)));
+        let quarter = ShapeBorder::lerp(Some(circle.clone()), Some(oval.clone()), 0.25)
+            .expect("a circle and an oval interpolate");
+        assert_eq!(
+            quarter.outlined_side().map(|side| side.width),
+            Some(3.0),
+            "the side is interpolated, so the pair is not being faded"
+        );
+        match quarter {
+            ShapeBorder::Circle(circle) => assert_eq!(
+                circle.eccentricity, 0.25,
+                "and the eccentricity is what opens it"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_shape_lerped_with_nothing_still_knows_which_end_it_is() {
+        // `lerp(Some(x), None, t)` and `lerp(None, Some(x), t)` are not the
+        // same journey: one is fading a shape out and the other is fading it
+        // in, and at a quarter of the way they are different shapes.
+        for (name, shape) in shapes(wide(4.0)) {
+            let out = ShapeBorder::lerp(Some(shape.clone()), None, 0.25);
+            let into = ShapeBorder::lerp(None, Some(shape.clone()), 0.25);
+            match (out.and_then(|s| s.outlined_side()), into.and_then(|s| s.outlined_side())) {
+                (Some(out), Some(into)) => assert_ne!(
+                    out.width, into.width,
+                    "{name}: fading out and fading in are not the same"
+                ),
+                (None, None) => {}
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_border_lerps_every_one_of_its_six_sides_the_same_way_round() {
+        // Six sides and a radius, each lerped on its own line. A swap in one
+        // of them is one edge of a table animating backwards while the other
+        // five go forwards -- which is exactly the sort of thing that reads as
+        // "the animation is a bit odd" and never gets traced.
+        //
+        // Every field is given a **different** pair, so a line that read the
+        // wrong field would fail too.
+        let near = TableBorder {
+            top: wide(1.0),
+            right: wide(2.0),
+            bottom: wide(3.0),
+            left: wide(4.0),
+            horizontal_inside: wide(5.0),
+            vertical_inside: wide(6.0),
+            border_radius: BorderRadius::circular(8.0),
+        };
+        let far = TableBorder {
+            top: wide(9.0),
+            right: wide(10.0),
+            bottom: wide(11.0),
+            left: wide(12.0),
+            horizontal_inside: wide(13.0),
+            vertical_inside: wide(14.0),
+            border_radius: BorderRadius::circular(16.0),
+        };
+        // A quarter of the way is two more than where it started, for each.
+        let quarter = TableBorder::lerp(Some(&near), Some(&far), 0.25);
+        assert_eq!(quarter.top.width, 3.0);
+        assert_eq!(quarter.right.width, 4.0);
+        assert_eq!(quarter.bottom.width, 5.0);
+        assert_eq!(quarter.left.width, 6.0);
+        assert_eq!(quarter.horizontal_inside.width, 7.0);
+        assert_eq!(quarter.vertical_inside.width, 8.0);
+        assert_eq!(
+            quarter.border_radius,
+            BorderRadius::ZERO,
+            "upstream's lerp builds a border with no radius argument at all"
+        );
+
+        // And the other way round, two less than where *that* started.
+        let back = TableBorder::lerp(Some(&far), Some(&near), 0.25);
+        assert_eq!(back.top.width, 7.0);
+        assert_eq!(back.right.width, 8.0);
+        assert_eq!(back.bottom.width, 9.0);
+        assert_eq!(back.left.width, 10.0);
+        assert_eq!(back.horizontal_inside.width, 11.0);
+        assert_eq!(back.vertical_inside.width, 12.0);
+        assert_eq!(back.border_radius, BorderRadius::ZERO, "either way round");
+    }
+
+    #[test]
+    fn a_linear_border_lerps_its_four_edges_the_same_way_round() {
+        // The four edges are four independent lines, and each carries a size
+        // and an alignment of its own -- eight numbers that can be backwards
+        // one at a time.
+        let edge = |size: f32, alignment: f32| Some(LinearBorderEdge::new(size, alignment));
+        let near = LinearBorder::new(
+            wide(1.0),
+            edge(0.1, -1.0),
+            edge(0.2, -0.8),
+            edge(0.3, -0.6),
+            edge(0.4, -0.4),
+        );
+        let far = LinearBorder::new(
+            wide(5.0),
+            edge(0.5, 1.0),
+            edge(0.6, 0.8),
+            edge(0.7, 0.6),
+            edge(0.8, 0.4),
+        );
+
+        let quarter = LinearBorder::lerp(&near, &far, 0.25);
+        assert_eq!(quarter.side.width, 2.0);
+        let sizes = |border: &LinearBorder| {
+            [
+                border.start.map(|edge| edge.size),
+                border.end.map(|edge| edge.size),
+                border.top.map(|edge| edge.size),
+                border.bottom.map(|edge| edge.size),
+            ]
+        };
+        let alignments = |border: &LinearBorder| {
+            [
+                border.start.map(|edge| edge.alignment),
+                border.end.map(|edge| edge.alignment),
+                border.top.map(|edge| edge.alignment),
+                border.bottom.map(|edge| edge.alignment),
+            ]
+        };
+        assert_eq!(sizes(&quarter), [Some(0.2), Some(0.3), Some(0.4), Some(0.5)]);
+        assert_eq!(
+            alignments(&quarter),
+            [Some(-0.5), Some(-0.4), Some(-0.3), Some(-0.2)]
+        );
+
+        let back = LinearBorder::lerp(&far, &near, 0.25);
+        assert_eq!(back.side.width, 4.0);
+        assert_eq!(sizes(&back), [Some(0.4), Some(0.5), Some(0.6), Some(0.7)]);
+        assert_eq!(
+            alignments(&back),
+            [Some(0.5), Some(0.4), Some(0.3), Some(0.2)]
+        );
+    }
+
+    #[test]
+    fn the_smaller_pieces_lerp_the_way_round_they_say_they_do() {
+        // The shapes above are built out of these, and a swap in one of them
+        // is invisible to a test that only ever asks about shapes.
+        assert_eq!(BorderSide::lerp(wide(2.0), wide(6.0), 0.25).width, 3.0);
+        assert_eq!(BorderSide::lerp(wide(6.0), wide(2.0), 0.25).width, 5.0);
+
+        assert_eq!(Radius::lerp(Radius::circular(4.0), Radius::circular(8.0), 0.25).x, 5.0);
+        assert_eq!(Radius::lerp(Radius::circular(8.0), Radius::circular(4.0), 0.25).x, 7.0);
+
+        let near = BorderRadius::circular(4.0);
+        let far = BorderRadius::circular(8.0);
+        assert_eq!(BorderRadius::lerp(near, far, 0.25).top_left.x, 5.0);
+        assert_eq!(BorderRadius::lerp(far, near, 0.25).top_left.x, 7.0);
+    }
 
     /// A visible side, so a lerp of it is observable.
     fn thick(width: f32) -> BorderSide {

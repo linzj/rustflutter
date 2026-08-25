@@ -16774,3 +16774,41 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5440 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 213 次：把 lerp 的两端对调，107 处里 101 处没人察觉
+
+第 212 次那个"t = 0.5 看不出方向"的错值得机械地扫一遍。`tools/swap_lerps.py`
+把 `borders.rs` 里每一处 `lerp(a, b, t)` 的两端对调、跑全量测试、再还原。
+
+**107 处里 101 处对调后毫无察觉。**这个文件整个 lerp 家族的方向都没有被断言过。
+
+补测试的时候撞出两处真差别：
+
+**一、圆变成椭圆时会跳，而不是张开。**上游不需要为这一对写分支——
+`OvalBorder extends CircleBorder`，所以圆自己的 lerp 就接住了它，并插值两个
+偏心率（0 到 1），**那正是圆张开成椭圆的过程**。本 crate 把两者做成两个变体，
+这一对就掉进了末尾的交叉淡化。而文件里那几个工具函数早就写着"the oval is the
+circle with the eccentricity pinned"——**该用它们的那条分支缺了**。补在
+`lerp_from` 和 `lerp_to` 两处，理由和上游需要两个方向的方法一样。
+
+**二、`TableBorder::lerp` 的圆角。**这里原本的注释说"上游也不插值——边框带着
+`t` 越过的那一侧"。这句**说错了上游**：上游构造 `TableBorder(...)` 时**根本
+没传 `borderRadius:`**，于是落到默认的零——一个圆角表格边框动到另一个圆角边框，
+整段动画期间没有圆角，结束时才回来。那读起来像是上游的疏漏，仍然照写，理由和
+第 206 次那处浮动光标一样：把上游的省略猜成"它看上去该有的样子"，就是在发明
+行为。而本移植那个更体贴的版本**同样不是上游做的事**，且没有东西能发现——
+因为从来没有人问过一次 lerp 之后半径是多少。
+
+补上的测试按类型走而不是按点抽样：形状两两组合、`TableBorder` 的六条边加圆角、
+`LinearBorder` 的四条边各自的 size 与 alignment。断言的形状也订正过一次：
+一开始要求每一对都给出 3.0（变形），但上游的 beveled 只和 beveled 变形，
+**那是在要求得比上游多**。改成"四分之一处答案必须落在 `a` 那一侧"——变形给 3、
+交叉淡化给 2，两者都是方向主张，而对调后都会失败。
+
+候选数 101 → 94，剩下的是其他类型 lerp 里逐字段的方向，**如实记为待办**。
+筛子留在 `tools/swap_lerps.py`。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5446 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
