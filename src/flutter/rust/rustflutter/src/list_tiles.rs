@@ -379,23 +379,64 @@ impl ControlTile {
     /// Each control resolves it the way that control does -- a switch's active
     /// colour is not a checkbox's -- so this asks the same resolvers the
     /// controls themselves ask rather than guessing a shared default.
+    ///
+    /// # Which part of the control the row borrows
+    ///
+    /// The switch's chain is
+    /// `activeThumbColor ?? activeColor ?? switchTheme.thumbColor ?? ...`:
+    /// the **thumb**, not the track. This port read the track, which on the
+    /// ordinary two-tone switch -- coloured track, pale thumb -- is a
+    /// different colour, so a selected row's title came out in the track's
+    /// colour where upstream draws it in the thumb's.
+    ///
+    /// # Which `selected` the state property is asked about
+    ///
+    /// Upstream builds the state set from the **tile's** `selected`:
+    ///
+    /// ```dart
+    /// final states = <WidgetState>{if (selected) WidgetState.selected};
+    /// ```
+    ///
+    /// not from the control's value. The two are separate properties and they
+    /// come apart in ordinary use -- a settings page marks the row the reader
+    /// arrived at with `selected: true` whether or not its switch is on. This
+    /// port asked the switch, so a themed colour keyed on `selected` answered
+    /// the wrong question in both directions.
+    ///
+    /// # The fallback
+    ///
+    /// Upstream ends at `theme.colorScheme.secondary` in all three chains.
+    /// This crate's [`crate::components::Theme`] is a smaller palette with no
+    /// secondary role at all, so the last step is its `primary`, which is the
+    /// accent this port has. That is a substitution and is written down as
+    /// one; it is not a claim that upstream ends at primary.
     pub(crate) fn control_active_color(
         &self,
         context: &mut BuildContext,
     ) -> crate::engine::Color {
         let theme = crate::components::theme_of(context);
-        match self.tile.control {
-            TileControl::Switch => {
-                crate::components::Switch::new(self.id, self.tile.value.unwrap_or(true))
-                    .resolved(crate::component_themes::SwitchTheme::of(context), &theme)
-                    .track
-            }
-            TileControl::Checkbox | TileControl::Radio => {
-                // Both resolve through a state property keyed on `selected`,
-                // and both fall back to the scheme's primary.
-                theme.primary
-            }
-        }
+        // The tile's `selected`, which is the whole of upstream's state set
+        // here -- `enabled` is not in it, in any of the three.
+        let states = if self.selected {
+            crate::widget_state::WidgetStates::NONE.with(crate::widget_state::WidgetState::Selected)
+        } else {
+            crate::widget_state::WidgetStates::NONE
+        };
+        let resolved = match self.tile.control {
+            TileControl::Switch => crate::component_themes::SwitchTheme::of(context)
+                .thumb_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            TileControl::Checkbox => crate::component_themes::CheckboxTheme::of(context)
+                .fill_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            TileControl::Radio => crate::component_themes::RadioTheme::of(context)
+                .fill_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+        };
+        resolved.unwrap_or(theme.primary)
     }
 }
 
@@ -1067,8 +1108,10 @@ mod control_colour_tests {
     //! the builder was handed an `argb` all along and the stub dropped it --
     //! and the last test below is the one that could not be written before.
 
-    use super::{ControlTile, SwitchListTile, TileControl};
-    use crate::component_themes::{SwitchTheme, SwitchThemeData};
+    use super::{CheckboxListTile, ControlTile, RadioListTile, SwitchListTile, TileControl};
+    use crate::component_themes::{
+        CheckboxTheme, CheckboxThemeData, RadioTheme, RadioThemeData, SwitchTheme, SwitchThemeData,
+    };
     use crate::components::Theme;
     use crate::engine::Color;
     use crate::framework::{
@@ -1079,10 +1122,20 @@ mod control_colour_tests {
     use std::rc::Rc;
 
     const GREEN: Color = Color(0xff00cc44);
+    const ORANGE: Color = Color(0xffee7722);
 
-    /// The colour a tile would hand its `ListTile`, under a switch theme that
-    /// says what it says.
-    fn active_colour(tile: ControlTile, track: Option<Color>) -> (Color, Color) {
+    /// The colour a tile would hand its `ListTile`, under a switch theme whose
+    /// thumb says what it says.
+    fn active_colour(tile: ControlTile, thumb: Option<Color>) -> (Color, Color) {
+        active_colour_with(tile, thumb, None)
+    }
+
+    /// The same, with the track set separately, so the two can disagree.
+    fn active_colour_with(
+        tile: ControlTile,
+        thumb: Option<Color>,
+        track: Option<Color>,
+    ) -> (Color, Color) {
         struct Reader {
             tile: std::cell::RefCell<Option<ControlTile>>,
             seen: Rc<Cell<(Color, Color)>>,
@@ -1098,6 +1151,7 @@ mod control_colour_tests {
         }
         let seen = Rc::new(Cell::new((Color(0), Color(0))));
         let mut data = SwitchThemeData::new();
+        data.thumb_color = thumb.map(|colour| StateProperty::all(Some(colour)));
         data.track_color = track.map(|colour| StateProperty::all(Some(colour)));
         let mut tree = ElementTree::new();
         tree.rebuild(provide(
@@ -1117,6 +1171,30 @@ mod control_colour_tests {
         ControlTile::new(1, SwitchListTile::new(true).0, "Wi-Fi")
     }
 
+    // -- Which part of the switch the row borrows ---------------------------
+
+    #[test]
+    fn the_row_borrows_the_thumbs_colour_and_not_the_tracks() {
+        // Upstream's chain is `activeThumbColor ?? activeColor ??
+        // switchTheme.thumbColor ?? ...`. This port read the track, and on the
+        // ordinary two-tone switch -- coloured track, pale thumb -- those are
+        // different colours, so the row's title came out wrong in every theme
+        // that set both.
+        let (colour, _) = active_colour_with(switch_tile(), Some(GREEN), Some(ORANGE));
+        assert_eq!(colour, GREEN, "the thumb's");
+        assert_ne!(colour, ORANGE, "not the track's");
+    }
+
+    #[test]
+    fn a_theme_that_only_paints_the_track_does_not_recolour_the_row() {
+        // The other direction, and the one a single-colour test cannot see:
+        // with only the track set, the row falls all the way through to the
+        // accent rather than picking the track up.
+        let (colour, primary) = active_colour_with(switch_tile(), None, Some(ORANGE));
+        assert_eq!(colour, primary);
+        assert_ne!(colour, ORANGE);
+    }
+
     #[test]
     fn a_switch_row_answers_with_its_switchs_colour_and_not_the_accent() {
         // The whole point of upstream's `effectiveActiveColor`: a page of
@@ -1134,10 +1212,10 @@ mod control_colour_tests {
     }
 
     /// The colour the tile's title was actually drawn in, under a switch
-    /// theme that says what it says.
-    fn painted_title_colour(selected: bool, track: Option<Color>) -> u32 {
+    /// theme whose thumb says what it says.
+    fn painted_title_colour(selected: bool, thumb: Option<Color>) -> u32 {
         let mut data = SwitchThemeData::new();
-        data.track_color = track.map(|colour| StateProperty::all(Some(colour)));
+        data.thumb_color = thumb.map(|colour| StateProperty::all(Some(colour)));
         let mut tree = ElementTree::new();
         tree.rebuild(provide(
             Theme::dark(),
@@ -1201,5 +1279,135 @@ mod control_colour_tests {
         let (colour, primary) = active_colour(tile, Some(GREEN));
         assert_eq!(colour, primary);
         assert_ne!(colour, GREEN);
+    }
+
+    // -- The other two controls, which had no resolver at all ----------------
+
+    /// What a checkbox or radio tile hands over, under its own theme.
+    fn control_colour(tile: ControlTile, fill: Option<Color>) -> (Color, Color) {
+        struct Reader {
+            tile: std::cell::RefCell<Option<ControlTile>>,
+            seen: Rc<Cell<(Color, Color)>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let tile = self.tile.borrow_mut().take().expect("built once");
+                let colour = tile.control_active_color(context);
+                let theme = crate::components::theme_of(context);
+                self.seen.set((colour, theme.primary));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+        let seen = Rc::new(Cell::new((Color(0), Color(0))));
+        let mut checkbox = CheckboxThemeData::new();
+        checkbox.fill_color = fill.map(|colour| StateProperty::all(Some(colour)));
+        let mut radio = RadioThemeData::new();
+        radio.fill_color = fill.map(|colour| StateProperty::all(Some(colour)));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            CheckboxTheme::new(
+                checkbox,
+                RadioTheme::new(
+                    radio,
+                    component(Reader {
+                        tile: std::cell::RefCell::new(Some(tile)),
+                        seen: Rc::clone(&seen),
+                    }),
+                ),
+            ),
+        ));
+        seen.get()
+    }
+
+    #[test]
+    fn a_checkbox_row_reads_its_own_themes_fill_colour() {
+        // Upstream is `checkboxTheme.fillColor?.resolve(states)`. This port
+        // returned a bare accent for both checkbox and radio and never asked
+        // either theme, so a page that recoloured its checkboxes left every
+        // selected row's title behind at the default.
+        let tile = ControlTile::new(1, CheckboxListTile::new(true).0, "Remember me")
+            .with_selected(true);
+        let (colour, primary) = control_colour(tile, Some(GREEN));
+        assert_eq!(colour, GREEN);
+        assert_ne!(colour, primary);
+    }
+
+    #[test]
+    fn and_a_radio_row_reads_its_own() {
+        let tile = ControlTile::new(1, RadioListTile::new(true).0, "Medium").with_selected(true);
+        let (colour, primary) = control_colour(tile, Some(GREEN));
+        assert_eq!(colour, GREEN);
+        assert_ne!(colour, primary);
+    }
+
+    #[test]
+    fn and_both_fall_back_to_the_accent_with_no_theme_to_read() {
+        for tile in [
+            ControlTile::new(1, CheckboxListTile::new(true).0, "Remember me"),
+            ControlTile::new(1, RadioListTile::new(true).0, "Medium"),
+        ] {
+            let control = tile.tile.control;
+            let (colour, primary) = control_colour(tile.with_selected(true), None);
+            assert_eq!(colour, primary, "{control:?}");
+        }
+    }
+
+    // -- Whose `selected` the state property is asked about ------------------
+
+    #[test]
+    fn the_state_property_is_asked_about_the_rows_selection_not_the_controls() {
+        // Upstream builds `{if (selected) WidgetState.selected}` from the
+        // tile's `selected`. This port asked the control's *value*, which is a
+        // different property and comes apart in ordinary use: a settings page
+        // marks the row the reader arrived at whether or not its switch is on.
+        //
+        // A property that answers only when selected, so the two questions
+        // give different answers.
+        let only_selected = || {
+            StateProperty::resolve_with(|states| {
+                states
+                    .contains(crate::widget_state::WidgetState::Selected)
+                    .then_some(GREEN)
+            })
+        };
+
+        struct Reader {
+            tile: std::cell::RefCell<Option<ControlTile>>,
+            seen: Rc<Cell<Color>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let tile = self.tile.borrow_mut().take().expect("built once");
+                self.seen.set(tile.control_active_color(context));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+
+        let answer = |row_selected: bool, switch_on: bool| {
+            let mut data = SwitchThemeData::new();
+            data.thumb_color = Some(only_selected());
+            let seen = Rc::new(Cell::new(Color(0)));
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                Theme::dark(),
+                SwitchTheme::new(
+                    data,
+                    component(Reader {
+                        tile: std::cell::RefCell::new(Some(
+                            ControlTile::new(1, SwitchListTile::new(switch_on).0, "Wi-Fi")
+                                .with_selected(row_selected),
+                        )),
+                        seen: Rc::clone(&seen),
+                    }),
+                ),
+            ));
+            seen.get()
+        };
+
+        // A selected row whose switch is off still resolves as selected...
+        assert_eq!(answer(true, false), GREEN);
+        // ...and an unselected row whose switch is on does not.
+        assert_ne!(answer(false, true), GREEN);
     }
 }

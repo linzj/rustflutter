@@ -15779,3 +15779,39 @@ should be true"。
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5301 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 186 次：一行注释宣称的三件事，三件都不对
+
+`ControlTile::control_active_color`——第 175 次补上的那条"选中行用自己控件的
+颜色"的链——顶着一句注释："Both resolve through a state property keyed on
+`selected`, and both fall back to the scheme's primary."。逐条对上游查下来，
+这句话描述的三件事没有一件成立。
+
+1. **开关那支读的是 track，上游读的是 thumb。** 上游的链是
+   `activeThumbColor ?? activeColor ?? switchTheme.thumbColor ?? ...`。在
+   常见的双色开关上（有色轨道、浅色滑块）这是两个不同的颜色，所以凡是同时
+   设了两者的主题，选中行的标题都画错了。
+2. **状态集问的是控件的值，上游问的是行的 `selected`。** 上游是
+   `final states = <WidgetState>{if (selected) WidgetState.selected}`，
+   `selected` 是 tile 的属性。两者是不同的属性，日常就会分开——设置页会把
+   读者刚到达的那一行标为选中，与它的开关开没开无关。此前用值去问，两个
+   方向都答错。
+3. **checkbox 和 radio 那支根本没问过任何主题**，直接返回 accent。上游是
+   `checkboxTheme.fillColor?.resolve(states)` / `radioThemeData.fillColor`。
+   一个把复选框改了色的页面，选中行的标题会留在默认色上。
+
+第三件里还有一半是**形状差异而不是缺口**，也写清楚了：上游三条链都止于
+`theme.colorScheme.secondary`，而本 crate 的 `components::Theme` 是一套更小
+的调色板，根本没有 secondary 这个角色，所以最后一步落在它的 `primary`。这是
+一次替换，写成替换，而不是继续声称上游止于 primary。
+
+第 175 次的两条测试是照着实现写的（设 `track_color` 再断言拿到它），所以改成
+读 thumb 后立刻转红。新测试把 thumb 和 track 设成**不同**颜色，两个方向各断言
+一次；单色的测试看不出这个区别。
+
+变异：六条（改回读 track、状态集改回问控件的值、状态集恒空、checkbox 不读
+主题、radio 不读主题、checkbox 改读开关主题）全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5307 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
