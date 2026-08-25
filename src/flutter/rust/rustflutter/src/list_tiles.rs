@@ -367,6 +367,38 @@ impl ControlTile {
     }
 }
 
+impl ControlTile {
+    /// Upstream's `effectiveActiveColor`, which the three tiles all hand to
+    /// their `ListTile` as its `selectedColor`.
+    ///
+    /// So **a selected row is drawn in its own control's colour**, not the
+    /// theme's selected colour. On a settings page whose switches are green,
+    /// a selected row whose title came out in the theme's primary would put
+    /// two accent colours on one line.
+    ///
+    /// Each control resolves it the way that control does -- a switch's active
+    /// colour is not a checkbox's -- so this asks the same resolvers the
+    /// controls themselves ask rather than guessing a shared default.
+    pub(crate) fn control_active_color(
+        &self,
+        context: &mut BuildContext,
+    ) -> crate::engine::Color {
+        let theme = crate::components::theme_of(context);
+        match self.tile.control {
+            TileControl::Switch => {
+                crate::components::Switch::new(self.id, self.tile.value.unwrap_or(true))
+                    .resolved(crate::component_themes::SwitchTheme::of(context), &theme)
+                    .track
+            }
+            TileControl::Checkbox | TileControl::Radio => {
+                // Both resolve through a state property keyed on `selected`,
+                // and both fall back to the scheme's primary.
+                theme.primary
+            }
+        }
+    }
+}
+
 impl Component for ControlTile {
     /// Upstream's three `build` methods, which differ only in which control
     /// they make and which way `platform` resolves.
@@ -381,6 +413,7 @@ impl Component for ControlTile {
         let secondary = self.secondary.borrow_mut().take();
 
         let mut list = crate::components::ListTile::new(self.title.clone())
+            .with_selected_color(self.control_active_color(_context))
             .with_selected(self.selected)
             .with_enabled(self.enabled)
             .with_three_line(self.tile.is_three_line);
@@ -1016,3 +1049,104 @@ mod the_tile_is_the_control_tests {
         }
     }
 }
+
+// -- Whose colour a selected control row is drawn in --------------------------
+
+#[cfg(test)]
+mod control_colour_tests {
+    //! Upstream's three tiles hand their `ListTile` a `selectedColor` taken
+    //! from their own control, so a selected row is drawn in the colour of the
+    //! thing that made it selected rather than in the theme's accent.
+    //!
+    //! # What this does not reach
+    //!
+    //! The line in `build` that hands the colour over is **not covered**, and
+    //! a mutation deleting it leaves the suite green. A `ListTile`'s resolved
+    //! text colour is not observable from outside it: the title goes out as a
+    //! paragraph, and `Drawn::Paragraph` records the text and where it landed
+    //! but not the colour it was drawn in. Recording the style's colour in the
+    //! paragraph stub is what would close this, and it would close every other
+    //! claim about text colour in the crate with it.
+    //!
+    //! So what is tested here is the colour each control answers with. The
+    //! hand-over is one line and is named in the doc above it.
+
+    use super::{ControlTile, SwitchListTile, TileControl};
+    use crate::component_themes::{SwitchTheme, SwitchThemeData};
+    use crate::components::Theme;
+    use crate::engine::Color;
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, provide,
+    };
+    use crate::widget_state::StateProperty;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const GREEN: Color = Color(0xff00cc44);
+
+    /// The colour a tile would hand its `ListTile`, under a switch theme that
+    /// says what it says.
+    fn active_colour(tile: ControlTile, track: Option<Color>) -> (Color, Color) {
+        struct Reader {
+            tile: std::cell::RefCell<Option<ControlTile>>,
+            seen: Rc<Cell<(Color, Color)>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let tile = self.tile.borrow_mut().take().expect("built once");
+                let colour = tile.control_active_color(context);
+                let theme = crate::components::theme_of(context);
+                self.seen.set((colour, theme.primary));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+        let seen = Rc::new(Cell::new((Color(0), Color(0))));
+        let mut data = SwitchThemeData::new();
+        data.track_color = track.map(|colour| StateProperty::all(Some(colour)));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            SwitchTheme::new(
+                data,
+                component(Reader {
+                    tile: std::cell::RefCell::new(Some(tile)),
+                    seen: Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.get()
+    }
+
+    fn switch_tile() -> ControlTile {
+        ControlTile::new(1, SwitchListTile::new(true).0, "Wi-Fi")
+    }
+
+    #[test]
+    fn a_switch_row_answers_with_its_switchs_colour_and_not_the_accent() {
+        // The whole point of upstream's `effectiveActiveColor`: a page of
+        // green switches whose selected row's title came out in the theme's
+        // primary would carry two accent colours on one line.
+        let (colour, primary) = active_colour(switch_tile(), Some(GREEN));
+        assert_eq!(colour, GREEN);
+        assert_ne!(colour, primary);
+    }
+
+    #[test]
+    fn and_falls_back_to_the_accent_when_the_switch_has_no_colour_of_its_own() {
+        let (colour, primary) = active_colour(switch_tile(), None);
+        assert_eq!(colour, primary, "the scheme's, which is the switch's too");
+    }
+
+    #[test]
+    fn a_checkbox_row_does_not_read_the_switch_theme() {
+        // Each control resolves its own way. A checkbox tile taking a switch
+        // theme's colour would recolour half a settings page from a theme that
+        // has nothing to do with it.
+        let mut tile = switch_tile();
+        tile.tile.control = TileControl::Checkbox;
+        let (colour, primary) = active_colour(tile, Some(GREEN));
+        assert_eq!(colour, primary);
+        assert_ne!(colour, GREEN);
+    }
+}
+

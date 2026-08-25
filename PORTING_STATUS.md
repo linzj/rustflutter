@@ -15367,3 +15367,50 @@ list wheel 那边同样加了一条。
 这句话写进了 `vacuous.py` 的文档：**这个计数不是目标**。
 
 5253 测试通过，完整 GN 门过。
+
+## 第 175 轮 — 选中的那一行，该用谁的颜色
+
+回到 `depth` 队列。`SwitchListTile` 3/46 是比例缺口最大的一条，
+但那个 3 大半是**类形状造成的假警报**：这个 port 把三个控件 tile 合并成
+一个 `ControlListTile` 加一个 `ControlTile`（两边都有文档），
+所以 `depth.py` 数在 `SwitchListTile` 上的成员其实在别处。
+
+逐条读上游那 55 个成员：除了六个，其余全是转发给 `Switch` 或 `ListTile` 的
+构造参数。六个带规则的里，`effectiveControlAffinity` 和 `.adaptive` 已经在了。
+两个不在。
+
+### 一、`selectedColor: effectiveActiveColor`
+
+上游三个 tile 都把**自己控件的颜色**交给 `ListTile` 当选中色。
+所以选中的那一行是用"让它变成选中的那个东西"的颜色画的。
+
+这个 port 只从 list tile 主题解析选中色——于是一页绿色开关的设置里，
+**选中那行的标题会用主题的强调色**，一行上出现两种强调色。
+
+补上 `ListTile::with_selected_color` 和
+`ResolvedListTile::of_with_selected_color`，优先级是
+widget 的 → 主题的 → 配色的（上游的顺序）。
+
+### 二、控件外面的 `ExcludeFocus` —— 没做，并且说明为什么
+
+上游用它把控件排除在焦点遍历之外，可聚焦的是整条 tile，
+所以在设置页上按 Tab 每行停一次而不是两次。
+
+**没有加**：这个 port 里控件和 `ListTile` 都不注册焦点节点，
+包上去就是给不存在的机制建模。
+
+### 一处坦白：接线那一行没有测试
+
+删掉 `ControlTile::build` 里 `.with_selected_color(...)` 那一行，套件全绿。
+`ListTile` 解析出来的文字颜色**从外面观察不到**——标题作为 paragraph 发出去，
+而 `Drawn::Paragraph` 记文本和位置、不记颜色。
+
+所以测的是每个控件各自答什么颜色（三条，变异红），
+而那一行的缺口写在了它上面的文档里。
+**把段落样式的颜色记进 stub 就能补上这条，而且能一并补上这个 crate 里
+其他所有关于文字颜色的主张**——那是下一个明确的动作。
+
+三条变异红（widget 的颜色被忽略、选中判断恒真、switch 不读自己的主题）；
+第四条（删掉接线）绿，已如实记录。
+
+`depth_examined.json` 记了这次阅读。5259 测试通过，完整 GN 门过。

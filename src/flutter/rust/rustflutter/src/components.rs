@@ -1664,6 +1664,8 @@ pub struct ListTile {
     id: Option<u64>,
     handlers: PointerHandlers,
     selected: bool,
+    /// Upstream's `selectedColor`. `None` defers to the list tile theme's.
+    selected_color: Option<Color>,
     enabled: bool,
     /// Upstream's `dense`, three-valued: `None` defers to the theme.
     dense: Option<bool>,
@@ -1687,6 +1689,7 @@ impl ListTile {
             id: None,
             handlers: PointerHandlers::new(),
             selected: false,
+            selected_color: None,
             // Upstream's default. A tile is live unless it is said not to be.
             enabled: true,
             dense: None,
@@ -1721,6 +1724,15 @@ impl ListTile {
     /// Upstream's `selected`.
     pub fn with_selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Upstream's `selectedColor`, which sits above the theme's.
+    ///
+    /// A control tile fills this in with its control's active colour -- see
+    /// [`crate::component_themes::ResolvedListTile::of_with_selected_color`].
+    pub fn with_selected_color(mut self, color: Color) -> Self {
+        self.selected_color = Some(color);
         self
     }
 
@@ -1799,7 +1811,12 @@ impl Component for ListTile {
         // control's defaults. `selected` is passed in because it chooses
         // between two different sets of those.
         let tile =
-            crate::component_themes::ResolvedListTile::of(context, self.selected, self.dense);
+            crate::component_themes::ResolvedListTile::of_with_selected_color(
+                context,
+                self.selected,
+                self.dense,
+                self.selected_color,
+            );
         let content_padding = self.content_padding.unwrap_or(tile.content_padding);
         let title_gap = tile.horizontal_title_gap;
         let min_tile_height = tile.min_tile_height;

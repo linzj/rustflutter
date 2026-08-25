@@ -5372,11 +5372,34 @@ impl ResolvedListTile {
         selected: bool,
         dense_override: Option<bool>,
     ) -> ResolvedListTile {
+        ResolvedListTile::of_with_selected_color(context, selected, dense_override, None)
+    }
+
+    /// [`ResolvedListTile::of`] with the widget's own `selectedColor`.
+    ///
+    /// Upstream's `ListTile` takes one and its three control tiles all pass
+    /// theirs: `SwitchListTile.build` hands over `selectedColor:
+    /// effectiveActiveColor`, so **a selected switch row's title is the
+    /// switch's own colour** rather than the theme's selected colour. A page
+    /// of settings rows with a green switch would otherwise have its selected
+    /// row's title in the theme's primary, which is a second accent colour on
+    /// the same line as the first.
+    pub fn of_with_selected_color(
+        context: &mut BuildContext,
+        selected: bool,
+        dense_override: Option<bool>,
+        selected_color: Option<Color>,
+    ) -> ResolvedListTile {
         let data = ListTileTheme::of(context);
         let theme = ThemeData::of(context);
         let dense = dense_override.or(data.dense).unwrap_or(false);
         let text_color = if selected {
-            data.selected_color.unwrap_or(theme.color_scheme.primary)
+            // The widget's own is above the theme's, which is above the
+            // scheme's -- upstream's order, and the widget's is the one a
+            // control tile fills in.
+            selected_color
+                .or(data.selected_color)
+                .unwrap_or(theme.color_scheme.primary)
         } else {
             data.text_color.unwrap_or(theme.color_scheme.on_surface)
         };
@@ -12170,3 +12193,100 @@ mod script_category_tests {
         );
     }
 }
+
+// -- Whose colour a selected row is drawn in ----------------------------------
+
+#[cfg(test)]
+mod selected_tile_colour_tests {
+    //! Upstream's three control tiles all hand their `ListTile` a
+    //! `selectedColor` taken from their own control -- `SwitchListTile.build`
+    //! passes `effectiveActiveColor` -- so a selected row is drawn in the
+    //! colour of the thing that made it selected.
+    //!
+    //! This port resolved the selected colour from the list tile theme alone,
+    //! which put the theme's primary on a row whose switch is some other
+    //! colour: two accents on one line.
+
+    use super::{ListTileTheme, ListTileThemeData, ResolvedListTile};
+    use crate::components::Theme;
+    use crate::engine::Color;
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, provide,
+    };
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const MINE: Color = Color(0xff00cc44);
+    const THEMES: Color = Color(0xffcc0044);
+
+    /// The text colour a tile resolves, and the two scheme colours it falls
+    /// back to -- read from the same context, because the scheme the
+    /// resolution consults is `ThemeData`'s and not the one the test provides.
+    fn resolved(
+        selected: bool,
+        own: Option<Color>,
+        theme_colour: Option<Color>,
+    ) -> (Color, Color, Color) {
+        struct Reader {
+            selected: bool,
+            own: Option<Color>,
+            seen: Rc<Cell<(Color, Color, Color)>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                let tile = ResolvedListTile::of_with_selected_color(
+                    context,
+                    self.selected,
+                    None,
+                    self.own,
+                );
+                let scheme = super::ThemeData::of(context).color_scheme;
+                self.seen
+                    .set((tile.text_color, scheme.primary, scheme.on_surface));
+                leaf(|| crate::widgets::Empty)
+            }
+        }
+        let seen = Rc::new(Cell::new((Color(0), Color(0), Color(0))));
+        let mut data = ListTileThemeData::new();
+        data.selected_color = theme_colour;
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            ListTileTheme::new(
+                data,
+                component(Reader {
+                    selected,
+                    own: own,
+                    seen: Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.get()
+    }
+
+    #[test]
+    fn a_colour_the_widget_gave_beats_the_themes() {
+        // The order upstream's `ListTile` uses, and the one a control tile
+        // relies on: it fills the widget's slot with its control's colour and
+        // expects that to win.
+        assert_eq!(resolved(true, Some(MINE), Some(THEMES)).0, MINE);
+    }
+
+    #[test]
+    fn and_the_themes_beats_the_schemes() {
+        assert_eq!(resolved(true, None, Some(THEMES)).0, THEMES);
+        let (text, primary, _) = resolved(true, None, None);
+        assert_eq!(text, primary, "with nobody else asked, the scheme's");
+    }
+
+    #[test]
+    fn but_none_of_them_touches_a_row_that_is_not_selected() {
+        // The colour is *for* being selected. A tile that took it anyway would
+        // paint every row of a list in the accent colour.
+        let (text, primary, on_surface) = resolved(false, Some(MINE), Some(THEMES));
+        assert_eq!(text, on_surface);
+        assert_ne!(text, MINE);
+        assert_ne!(text, primary, "and not the accent either");
+    }
+}
+
