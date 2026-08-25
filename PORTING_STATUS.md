@@ -17127,3 +17127,65 @@ expanded_alignment、size_constraints。这十个是第 221 次批量改对了�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5513 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 223 次：形状从来不变形，而三个筛子有半个文件没看
+
+**二十九处形状在中点被整个换掉。**上游对 `shape` 一律走
+`ShapeBorder.lerp`（少数几处是 `WidgetStateProperty.lerp<OutlinedBorder?>`），
+端口二十三个主题全用 `lerp_nearer`——卡片、对话框、chip、抽屉、菜单、日期
+和时间选择器的轮廓，都是在主题过渡走到一半时**一帧换掉**，而不是变形过去。
+
+讽刺的是第 218 次整整一个 tick 都在把 `ShapeBorder::lerp` 的每一条分支修对，
+**而主题里没有一处在调它**。
+
+**一处确认是对的，专门写了测试说明为什么。**`BottomAppBarThemeData::shape`
+是 `NotchedShape`，上游真的是 `t < 0.5 ? a : b`。它夹在二十多个都变形的轮廓
+中间，所以"它为什么不变形"值得写在下一次扫这里的人会读到的地方：凹口是
+算出来的挖空，不是有宽度的边框，圆形凹口和平边之间没有"一半"可言。
+
+二十九处逐处强制改回 `lerp_nearer`：**二十九处全红**。
+
+---
+
+**三个筛子共用了一个已经过期的假设。**`idle_guards.py` 里写着：
+
+> Every test module in this crate is the tail of its file, so the first
+> `#[cfg(test)]` is enough.
+
+写下时是真的，现在不是。`swap_lerps.py` 和 `unlerped_fields.py` 抄了同一个
+`body_limit`。于是它们全都**在第一个 `#[cfg(test)]` 处停下**，而这个 crate 里
+测试模块和产品代码是交错的：
+
+| 文件 | 第一个测试模块之后仍是产品代码 |
+| --- | --- |
+| `render.rs` | 171,898 字符 |
+| `component_themes.rs` | 96,072 字符 |
+| `scrolling.rs` | 37,469 字符 |
+| `animation.rs` | 32,865 字符 |
+
+**是手工数出来的。**我按行号逐处变异那 27 处形状，筛子只报了 16 处——差的
+11 处都在第一个测试模块之后。
+
+新的 `tools/rust_source.py` 真的去数括号，给出每个 `#[cfg(test)] mod` 的字符
+区间；三个筛子都改用它。边界修正之后，第 219 次那句"134 处 lerp，全部读零"
+**不再成立**：真实数字是 **189**（`component_themes.rs` 11 → 60，
+`borders.rs` 107 → 109，`slider_theme.rs` 0 → 3，`engine.rs` 0 → 1）。
+
+那条注释点名了自己的假设，这是这个洞还能被发现的唯一原因——但它仍然让三个
+筛子安静地只读了半个文件读了好几个 tick。
+
+边界修好之后重跑：`component_themes.rs` 60 处里 **23 处调换无人察觉**——全在
+以前看不到的那半边。补了四条方向测试（内边距 11 处、约束 6 处、对齐 3 处、
+`BorderSide` 分支 3 处），每一处的两端都取到"反过来是另一个数"。再跑：
+`component_themes.rs` 60 处读零，`borders.rs` 109 处读零，其余六个文件也读零
+——**189 处，一处调换都逃不掉**。
+
+**下一个队列**：`unlerped_fields.py` 的边界也修了，它现在看得见 475 处
+（`component_themes.rs` 283 → 371，`theme.rs` 29 处从来没筛过）；
+`idle_guards.py` 同理，`render.rs` 17 万字符、`scrolling.rs` 3.7 万、
+`animation.rs` 3.3 万的产品代码从来没被它看过。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5522 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

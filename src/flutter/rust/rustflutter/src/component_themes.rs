@@ -437,7 +437,7 @@ impl CardThemeData {
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             margin: EdgeInsetsGeometry::lerp(a.margin, b.margin, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
         }
     }
 }
@@ -805,7 +805,7 @@ impl CheckboxThemeData {
                     }
                 }
             },
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             side: match (a.side, b.side) {
                 (Some(first), Some(second)) => Some(BorderSide::lerp(first, second, t)),
                 (first, second) => {
@@ -5059,7 +5059,7 @@ impl AppBarThemeData {
             ),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             icon_theme: lerp_icon_theme(&a.icon_theme, &b.icon_theme, t),
             actions_icon_theme: lerp_icon_theme(&a.actions_icon_theme, &b.actions_icon_theme, t),
             center_title: lerp_nearer(&a.center_title, &b.center_title, t),
@@ -5221,7 +5221,7 @@ impl BottomSheetThemeData {
             modal_barrier_color: lerp_color(a.modal_barrier_color, b.modal_barrier_color, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             modal_elevation: lerp_f32(a.modal_elevation, b.modal_elevation, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             show_drag_handle: lerp_nearer(&a.show_drag_handle, &b.show_drag_handle, t),
             drag_handle_color: lerp_color(a.drag_handle_color, b.drag_handle_color, t),
             drag_handle_size: match (a.drag_handle_size, b.drag_handle_size) {
@@ -5319,7 +5319,7 @@ impl SnackBarThemeData {
             ),
             content_text_style: lerp_text_style(&a.content_text_style, &b.content_text_style, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             behavior: lerp_nearer(&a.behavior, &b.behavior, t),
             width: lerp_f32(a.width, b.width, t),
             inset_padding: EdgeInsetsGeometry::lerp(a.inset_padding, b.inset_padding, t),
@@ -5473,7 +5473,7 @@ impl ListTileThemeData {
     pub fn lerp(a: &ListTileThemeData, b: &ListTileThemeData, t: f32) -> ListTileThemeData {
         ListTileThemeData {
             dense: lerp_nearer(&a.dense, &b.dense, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             style: lerp_nearer(&a.style, &b.style, t),
             selected_color: lerp_color(a.selected_color, b.selected_color, t),
             icon_color: lerp_color(a.icon_color, b.icon_color, t),
@@ -5686,7 +5686,7 @@ impl DialogThemeData {
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             alignment: AlignmentGeometry::lerp(a.alignment, b.alignment, t),
             title_text_style: lerp_text_style(&a.title_text_style, &b.title_text_style, t),
             content_text_style: lerp_text_style(&a.content_text_style, &b.content_text_style, t),
@@ -5814,7 +5814,7 @@ impl ChipThemeData {
                     }
                 }
             },
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             label_style: lerp_text_style(&a.label_style, &b.label_style, t),
             secondary_label_style: lerp_text_style(&a.secondary_label_style, &b.secondary_label_style, t),
             brightness: lerp_nearer(&a.brightness, &b.brightness, t),
@@ -6279,7 +6279,7 @@ impl NavigationRailThemeData {
             label_type: lerp_nearer(&a.label_type, &b.label_type, t),
             use_indicator: lerp_nearer(&a.use_indicator, &b.use_indicator, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
             min_width: lerp_f32(a.min_width, b.min_width, t),
             min_extended_width: lerp_f32(a.min_extended_width, b.min_extended_width, t),
         }
@@ -6453,8 +6453,8 @@ impl DrawerThemeData {
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
-            end_shape: lerp_nearer(&a.end_shape, &b.end_shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
+            end_shape: ShapeBorder::lerp(a.end_shape.clone(), b.end_shape.clone(), t),
             width: lerp_f32(a.width, b.width, t),
         }
     }
@@ -6662,7 +6662,7 @@ impl ButtonStyle {
             icon_size: lerp_state_f32(a.icon_size.as_ref(), b.icon_size.as_ref(), t),
             icon_alignment: lerp_nearer(&a.icon_alignment, &b.icon_alignment, t),
             side: lerp_state_side(a.side.as_ref(), b.side.as_ref(), t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: lerp_state_shape(a.shape.as_ref(), b.shape.as_ref(), t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             visual_density: match (a.visual_density, b.visual_density) {
                 (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
@@ -7130,8 +7130,8 @@ impl ExpansionTileThemeData {
             collapsed_icon_color: lerp_color(a.collapsed_icon_color, b.collapsed_icon_color, t),
             text_color: lerp_color(a.text_color, b.text_color, t),
             collapsed_text_color: lerp_color(a.collapsed_text_color, b.collapsed_text_color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
-            collapsed_shape: lerp_nearer(&a.collapsed_shape, &b.collapsed_shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
+            collapsed_shape: ShapeBorder::lerp(a.collapsed_shape.clone(), b.collapsed_shape.clone(), t),
             expansion_animation_style: lerp_nearer(
                 &a.expansion_animation_style,
                 &b.expansion_animation_style,
@@ -7493,7 +7493,7 @@ impl MenuStyle {
             fixed_size: lerp_state_size(a.fixed_size.as_ref(), b.fixed_size.as_ref(), t),
             maximum_size: lerp_state_size(a.maximum_size.as_ref(), b.maximum_size.as_ref(), t),
             side: lerp_state_side(a.side.as_ref(), b.side.as_ref(), t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: lerp_state_shape(a.shape.as_ref(), b.shape.as_ref(), t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             visual_density: match (a.visual_density, b.visual_density) {
                 (Some(first), Some(second)) => Some(VisualDensity::lerp(first, second, t)),
@@ -7777,7 +7777,7 @@ impl FloatingActionButtonThemeData {
             hover_elevation: lerp_f32(a.hover_elevation, b.hover_elevation, t),
             disabled_elevation: lerp_f32(a.disabled_elevation, b.disabled_elevation, t),
             highlight_elevation: lerp_f32(a.highlight_elevation, b.highlight_elevation, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
             icon_size: lerp_f32(a.icon_size, b.icon_size, t),
             size_constraints: BoxConstraints::lerp(a.size_constraints, b.size_constraints, t),
@@ -8094,7 +8094,7 @@ impl SearchBarThemeData {
             ),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
             side: lerp_state_side(a.side.as_ref(), b.side.as_ref(), t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: lerp_state_shape(a.shape.as_ref(), b.shape.as_ref(), t),
             padding: lerp_state_insets(a.padding.as_ref(), b.padding.as_ref(), t),
             text_style: lerp_state_text_style(a.text_style.as_ref(), b.text_style.as_ref(), t),
             hint_style: lerp_state_text_style(a.hint_style.as_ref(), b.hint_style.as_ref(), t),
@@ -8181,7 +8181,7 @@ impl SearchViewThemeData {
                     }
                 }
             },
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             header_height: lerp_f32(a.header_height, b.header_height, t),
             header_text_style: lerp_text_style(&a.header_text_style, &b.header_text_style, t),
             header_hint_style: lerp_text_style(&a.header_hint_style, &b.header_hint_style, t),
@@ -8303,7 +8303,7 @@ impl TimePickerThemeData {
                 }
             },
             day_period_color: lerp_color(a.day_period_color, b.day_period_color, t),
-            day_period_shape: lerp_nearer(&a.day_period_shape, &b.day_period_shape, t),
+            day_period_shape: ShapeBorder::lerp(a.day_period_shape.clone(), b.day_period_shape.clone(), t),
             day_period_text_color: lerp_color(a.day_period_text_color, b.day_period_text_color, t),
             day_period_text_style: lerp_text_style(&a.day_period_text_style, &b.day_period_text_style, t),
             dial_background_color: lerp_color(a.dial_background_color, b.dial_background_color, t),
@@ -8314,7 +8314,7 @@ impl TimePickerThemeData {
             entry_mode_icon_color: lerp_color(a.entry_mode_icon_color, b.entry_mode_icon_color, t),
             help_text_style: lerp_text_style(&a.help_text_style, &b.help_text_style, t),
             hour_minute_color: lerp_color(a.hour_minute_color, b.hour_minute_color, t),
-            hour_minute_shape: lerp_nearer(&a.hour_minute_shape, &b.hour_minute_shape, t),
+            hour_minute_shape: ShapeBorder::lerp(a.hour_minute_shape.clone(), b.hour_minute_shape.clone(), t),
             hour_minute_text_color: lerp_color(
                 a.hour_minute_text_color,
                 b.hour_minute_text_color,
@@ -8322,7 +8322,7 @@ impl TimePickerThemeData {
             ),
             hour_minute_text_style: lerp_text_style(&a.hour_minute_text_style, &b.hour_minute_text_style, t),
             padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             time_selector_separator_color: lerp_state_color(
                 a.time_selector_separator_color.as_ref(),
                 b.time_selector_separator_color.as_ref(),
@@ -8462,7 +8462,7 @@ impl DatePickerThemeData {
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             header_background_color: lerp_color(
                 a.header_background_color,
                 b.header_background_color,
@@ -8537,7 +8537,7 @@ impl DatePickerThemeData {
                 b.range_picker_surface_tint_color,
                 t,
             ),
-            range_picker_shape: lerp_nearer(&a.range_picker_shape, &b.range_picker_shape, t),
+            range_picker_shape: ShapeBorder::lerp(a.range_picker_shape.clone(), b.range_picker_shape.clone(), t),
             range_picker_header_background_color: lerp_color(
                 a.range_picker_header_background_color,
                 b.range_picker_header_background_color,
@@ -9056,7 +9056,7 @@ impl PopupMenuThemeData {
     pub fn lerp(a: &PopupMenuThemeData, b: &PopupMenuThemeData, t: f32) -> PopupMenuThemeData {
         PopupMenuThemeData {
             color: lerp_color(a.color, b.color, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             menu_padding: EdgeInsetsGeometry::lerp(a.menu_padding, b.menu_padding, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
@@ -9294,7 +9294,7 @@ impl NavigationBarThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
             label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
             icon_theme: lerp_state_icon_theme(a.icon_theme.as_ref(), b.icon_theme.as_ref(), t),
             label_behavior: lerp_nearer(&a.label_behavior, &b.label_behavior, t),
@@ -9369,7 +9369,7 @@ impl NavigationDrawerThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: lerp_nearer(&a.indicator_shape, &b.indicator_shape, t),
+            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
             indicator_size: match (a.indicator_size, b.indicator_size) {
                 (Some(first), Some(second)) => Some(Size::new(
                     first.width + (second.width - first.width) * t,
@@ -9445,7 +9445,7 @@ impl CarouselViewThemeData {
             padding: lerp_edge_insets(a.padding, b.padding, t),
             background_color: lerp_color(a.background_color, b.background_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            shape: lerp_nearer(&a.shape, &b.shape, t),
+            shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
         }
     }
@@ -13121,6 +13121,423 @@ mod tests {
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
             Some(Size::new(15.0, 3.0))
+        );
+    }
+
+    // -- Shapes morph, tick 223 ---------------------------------------------
+    //
+    // Twenty-seven fields across twenty-three themes went through
+    // `lerp_nearer`, so every card, dialog, chip, drawer, menu and picker
+    // swapped its outline in one frame at the midpoint of a theme transition
+    // instead of morphing. Tick 218 spent a whole tick making
+    // `ShapeBorder::lerp` right; nothing in the themes was calling it.
+
+    /// A rounded rectangle whose side width is the only thing that moves, so
+    /// a blended shape reads back as a number.
+    fn outline(width: f32) -> Option<ShapeBorder> {
+        Some(ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+            BorderSide {
+                color: Color::argb(255, 255, 0, 0),
+                width,
+                ..BorderSide::NONE
+            },
+            crate::borders::BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(8.0),
+            ),
+        )))
+    }
+
+    fn outline_width(shape: Option<ShapeBorder>) -> f32 {
+        match shape {
+            Some(ShapeBorder::Rounded(rounded)) => rounded.side.width,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn state_outline_width(shape: Option<StateProperty<Option<ShapeBorder>>>) -> f32 {
+        outline_width(
+            shape
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+        )
+    }
+
+    #[test]
+    fn a_shape_morphs_rather_than_being_swapped_at_the_midpoint() {
+        // One theme in full, to say what "morphs" means: a quarter of the way
+        // is a quarter of the way, not the first end.
+        let a = CardThemeData {
+            shape: outline(4.0),
+            ..CardThemeData::default()
+        };
+        let b = CardThemeData {
+            shape: outline(20.0),
+            ..CardThemeData::default()
+        };
+        assert_eq!(outline_width(CardThemeData::lerp(&a, &b, 0.25).shape), 8.0);
+        assert_eq!(outline_width(CardThemeData::lerp(&b, &a, 0.25).shape), 16.0);
+    }
+
+    #[test]
+    fn the_themes_with_two_or_more_shapes_keep_them_apart() {
+        // Where one theme carries several outlines, each gets a width no
+        // other line in the same theme uses -- so a line naming its
+        // neighbour's field answers with a width that is not its own.
+        let drawer = DrawerThemeData {
+            shape: outline(4.0),
+            end_shape: outline(12.0),
+            ..DrawerThemeData::default()
+        };
+        let opened = DrawerThemeData {
+            shape: outline(20.0),
+            end_shape: outline(28.0),
+            ..DrawerThemeData::default()
+        };
+        let quarter = DrawerThemeData::lerp(&drawer, &opened, 0.25);
+        assert_eq!(outline_width(quarter.shape), 8.0);
+        assert_eq!(outline_width(quarter.end_shape), 16.0);
+
+        let tile = ExpansionTileThemeData {
+            shape: outline(4.0),
+            collapsed_shape: outline(12.0),
+            ..ExpansionTileThemeData::default()
+        };
+        let expanded = ExpansionTileThemeData {
+            shape: outline(20.0),
+            collapsed_shape: outline(28.0),
+            ..ExpansionTileThemeData::default()
+        };
+        let quarter = ExpansionTileThemeData::lerp(&tile, &expanded, 0.25);
+        assert_eq!(outline_width(quarter.shape), 8.0);
+        assert_eq!(outline_width(quarter.collapsed_shape), 16.0);
+
+        let clock = TimePickerThemeData {
+            shape: outline(4.0),
+            day_period_shape: outline(12.0),
+            hour_minute_shape: outline(40.0),
+            ..TimePickerThemeData::default()
+        };
+        let later = TimePickerThemeData {
+            shape: outline(20.0),
+            day_period_shape: outline(28.0),
+            hour_minute_shape: outline(56.0),
+            ..TimePickerThemeData::default()
+        };
+        let quarter = TimePickerThemeData::lerp(&clock, &later, 0.25);
+        assert_eq!(outline_width(quarter.shape), 8.0);
+        assert_eq!(outline_width(quarter.day_period_shape), 16.0);
+        assert_eq!(outline_width(quarter.hour_minute_shape), 44.0);
+
+        let calendar = DatePickerThemeData {
+            shape: outline(4.0),
+            range_picker_shape: outline(12.0),
+            ..DatePickerThemeData::default()
+        };
+        let next_month = DatePickerThemeData {
+            shape: outline(20.0),
+            range_picker_shape: outline(28.0),
+            ..DatePickerThemeData::default()
+        };
+        let quarter = DatePickerThemeData::lerp(&calendar, &next_month, 0.25);
+        assert_eq!(outline_width(quarter.shape), 8.0);
+        assert_eq!(outline_width(quarter.range_picker_shape), 16.0);
+    }
+
+    #[test]
+    fn every_other_theme_that_carries_a_shape_morphs_it_too() {
+        // One assertion per remaining site. They are separate `lerp`
+        // methods, so a line in one cannot stand in for a line in another --
+        // what this catches is a site left behind on `lerp_nearer`.
+        macro_rules! morphs {
+            ($theme:ident, $field:ident) => {{
+                let a = $theme {
+                    $field: outline(4.0),
+                    ..$theme::default()
+                };
+                let b = $theme {
+                    $field: outline(20.0),
+                    ..$theme::default()
+                };
+                assert_eq!(
+                    outline_width($theme::lerp(&a, &b, 0.25).$field),
+                    8.0,
+                    concat!(stringify!($theme), "::", stringify!($field))
+                );
+            }};
+        }
+        morphs!(CheckboxThemeData, shape);
+        morphs!(AppBarThemeData, shape);
+        morphs!(BottomSheetThemeData, shape);
+        morphs!(SnackBarThemeData, shape);
+        morphs!(ListTileThemeData, shape);
+        morphs!(DialogThemeData, shape);
+        morphs!(ChipThemeData, shape);
+        morphs!(NavigationRailThemeData, indicator_shape);
+        morphs!(FloatingActionButtonThemeData, shape);
+        morphs!(SearchViewThemeData, shape);
+        morphs!(PopupMenuThemeData, shape);
+        morphs!(NavigationBarThemeData, indicator_shape);
+        morphs!(NavigationDrawerThemeData, indicator_shape);
+        morphs!(CarouselViewThemeData, shape);
+    }
+
+    #[test]
+    fn the_three_state_property_shapes_morph_state_by_state() {
+        // Upstream: `WidgetStateProperty.lerp<OutlinedBorder?>`.
+        macro_rules! morphs {
+            ($theme:ident) => {{
+                let a = $theme {
+                    shape: Some(StateProperty::all(outline(4.0))),
+                    ..$theme::default()
+                };
+                let b = $theme {
+                    shape: Some(StateProperty::all(outline(20.0))),
+                    ..$theme::default()
+                };
+                assert_eq!(
+                    state_outline_width($theme::lerp(&a, &b, 0.25).shape),
+                    8.0,
+                    stringify!($theme)
+                );
+            }};
+        }
+        morphs!(ButtonStyle);
+        morphs!(MenuStyle);
+        morphs!(SearchBarThemeData);
+    }
+
+    #[test]
+    fn a_notched_shape_really_does_step() {
+        // `BottomAppBarThemeData.shape` is a `NotchedShape`, and upstream
+        // steps it: `t < 0.5 ? a?.shape : b?.shape`. It sits among two dozen
+        // outlines that all morph, so the reason it does not is worth having
+        // written down where the next sweep will read it. A notch is a
+        // computed cut-out, not a border with a width; there is nothing
+        // between a circular notch and a flat edge to be half-way at.
+        let a = BottomAppBarThemeData {
+            shape: Some(crate::borders::NotchedShape::Circular { inverted: false }),
+            ..BottomAppBarThemeData::default()
+        };
+        let b = BottomAppBarThemeData {
+            shape: Some(crate::borders::NotchedShape::Circular { inverted: true }),
+            ..BottomAppBarThemeData::default()
+        };
+        assert_eq!(
+            BottomAppBarThemeData::lerp(&a, &b, 0.499).shape,
+            Some(crate::borders::NotchedShape::Circular { inverted: false })
+        );
+        assert_eq!(
+            BottomAppBarThemeData::lerp(&a, &b, 0.5).shape,
+            Some(crate::borders::NotchedShape::Circular { inverted: true })
+        );
+    }
+
+    // -- Direction, for the half of this file no screen had read -------------
+    //
+    // `tools/swap_lerps.py` stopped at the first `#[cfg(test)]`, and this file
+    // has 96,000 characters of code after it. With the boundary corrected the
+    // screen found sixty swappable sites here rather than eleven, and
+    // twenty-three of them could have their two ends exchanged with the whole
+    // suite still green. These are those. A lerp is symmetric at its midpoint,
+    // so each runs a quarter of the way, and each pair of ends differs enough
+    // that the reversed answer is a different number.
+
+    #[test]
+    fn every_remaining_inset_runs_from_the_first_end() {
+        macro_rules! runs {
+            ($theme:ident, $field:ident) => {{
+                let a = $theme {
+                    $field: Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                        left: 4.0,
+                        top: 4.0,
+                        right: 4.0,
+                        bottom: 4.0,
+                    })),
+                    ..$theme::default()
+                };
+                let b = $theme {
+                    $field: Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                        left: 20.0,
+                        top: 20.0,
+                        right: 20.0,
+                        bottom: 20.0,
+                    })),
+                    ..$theme::default()
+                };
+                let read = |theme: $theme| {
+                    theme
+                        .$field
+                        .map(|i| i.resolve(crate::direction::TextDirection::Ltr).left)
+                };
+                assert_eq!(
+                    read($theme::lerp(&a, &b, 0.25)),
+                    Some(8.0),
+                    concat!(stringify!($theme), "::", stringify!($field))
+                );
+                assert_eq!(
+                    read($theme::lerp(&b, &a, 0.25)),
+                    Some(16.0),
+                    concat!(stringify!($theme), "::", stringify!($field), " reversed")
+                );
+            }};
+        }
+        runs!(CardThemeData, margin);
+        runs!(BadgeThemeData, padding);
+        runs!(SwitchThemeData, padding);
+        runs!(ChipThemeData, padding);
+        runs!(MaterialBannerThemeData, padding);
+        runs!(SearchViewThemeData, padding);
+        runs!(SearchViewThemeData, bar_padding);
+        runs!(TimePickerThemeData, padding);
+        runs!(PopupMenuThemeData, menu_padding);
+        runs!(BottomAppBarThemeData, padding);
+        runs!(ButtonBarThemeData, button_padding);
+    }
+
+    #[test]
+    fn every_remaining_constraint_runs_from_the_first_end() {
+        macro_rules! runs {
+            ($theme:ident, $field:ident) => {{
+                let a = $theme {
+                    $field: Some(BoxConstraints::new(4.0, 4.0, 4.0, 4.0)),
+                    ..$theme::default()
+                };
+                let b = $theme {
+                    $field: Some(BoxConstraints::new(20.0, 20.0, 20.0, 20.0)),
+                    ..$theme::default()
+                };
+                assert_eq!(
+                    $theme::lerp(&a, &b, 0.25).$field.map(|c| c.min_width),
+                    Some(8.0),
+                    concat!(stringify!($theme), "::", stringify!($field))
+                );
+                assert_eq!(
+                    $theme::lerp(&b, &a, 0.25).$field.map(|c| c.min_width),
+                    Some(16.0),
+                    concat!(stringify!($theme), "::", stringify!($field), " reversed")
+                );
+            }};
+        }
+        runs!(ProgressIndicatorThemeData, constraints);
+        runs!(BottomSheetThemeData, constraints);
+        runs!(DialogThemeData, constraints);
+        runs!(ToggleButtonsThemeData, constraints);
+        runs!(SearchBarThemeData, constraints);
+        runs!(SearchViewThemeData, constraints);
+    }
+
+    #[test]
+    fn every_remaining_alignment_runs_from_the_first_end() {
+        macro_rules! runs {
+            ($theme:ident, $field:ident) => {{
+                // The two axes move opposite ways, so a line reading the
+                // wrong one lands on the other axis's answer as well.
+                let a = $theme {
+                    $field: Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                        x: -1.0,
+                        y: 1.0,
+                    })),
+                    ..$theme::default()
+                };
+                let b = $theme {
+                    $field: Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                        x: 1.0,
+                        y: -1.0,
+                    })),
+                    ..$theme::default()
+                };
+                assert_eq!(
+                    $theme::lerp(&a, &b, 0.25).$field,
+                    Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                        x: -0.5,
+                        y: 0.5
+                    })),
+                    concat!(stringify!($theme), "::", stringify!($field))
+                );
+                assert_eq!(
+                    $theme::lerp(&b, &a, 0.25).$field,
+                    Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                        x: 0.5,
+                        y: -0.5
+                    })),
+                    concat!(stringify!($theme), "::", stringify!($field), " reversed")
+                );
+            }};
+        }
+        runs!(BadgeThemeData, alignment);
+        runs!(DialogThemeData, alignment);
+        runs!(MenuStyle, alignment);
+    }
+
+    #[test]
+    fn the_remaining_border_side_arms_run_from_the_first_end() {
+        // Three more copies of the `(Some, Some) => BorderSide::lerp` arm,
+        // in three themes that had none.
+        let side = |width: f32| {
+            Some(BorderSide {
+                color: Color::argb(255, 255, 0, 0),
+                width,
+                ..BorderSide::NONE
+            })
+        };
+
+        let a = SearchViewThemeData {
+            side: side(4.0),
+            ..SearchViewThemeData::default()
+        };
+        let b = SearchViewThemeData {
+            side: side(20.0),
+            ..SearchViewThemeData::default()
+        };
+        assert_eq!(
+            SearchViewThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            SearchViewThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width),
+            Some(16.0)
+        );
+
+        let a = TimePickerThemeData {
+            day_period_border_side: side(4.0),
+            ..TimePickerThemeData::default()
+        };
+        let b = TimePickerThemeData {
+            day_period_border_side: side(20.0),
+            ..TimePickerThemeData::default()
+        };
+        assert_eq!(
+            TimePickerThemeData::lerp(&a, &b, 0.25)
+                .day_period_border_side
+                .map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            TimePickerThemeData::lerp(&b, &a, 0.25)
+                .day_period_border_side
+                .map(|s| s.width),
+            Some(16.0)
+        );
+
+        let a = DatePickerThemeData {
+            today_border: side(4.0),
+            ..DatePickerThemeData::default()
+        };
+        let b = DatePickerThemeData {
+            today_border: side(20.0),
+            ..DatePickerThemeData::default()
+        };
+        assert_eq!(
+            DatePickerThemeData::lerp(&a, &b, 0.25)
+                .today_border
+                .map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            DatePickerThemeData::lerp(&b, &a, 0.25)
+                .today_border
+                .map(|s| s.width),
+            Some(16.0)
         );
     }
 }

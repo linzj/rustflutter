@@ -65,6 +65,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rust_source import production  # noqa: E402
+
 CRATE = r'K:\rustflutter\src\flutter\rust\rustflutter'
 MSVC = (r'C:\Program Files\Microsoft Visual Studio\2022\Community'
         r'\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64')
@@ -159,14 +162,6 @@ def recover(path):
         print('  (recovered %s from a killed run)' % os.path.basename(path))
 
 
-def body_limit(text):
-    lines = text.split('\n')
-    for i, line in enumerate(lines):
-        if line.strip() == '#[cfg(test)]':
-            return sum(len(l) + 1 for l in lines[:i])
-    return len(text)
-
-
 def run(env):
     result = subprocess.run(['cargo', 'test', '--lib', '-q'],
                             cwd=CRATE, env=env, capture_output=True, text=True)
@@ -183,9 +178,9 @@ def main(argv):
     newline = '\r\n' if '\r\n' in original else '\n'
     io.open(path + SIDECAR, 'w', encoding='utf-8', newline='').write(original)
     text = original.replace('\r\n', '\n')
-    limit = body_limit(text)
 
-    found = [s for s in sites(text) if s[0] < limit]
+    outside = production(text)
+    found = [s for s in sites(text) if outside(s[0])]
     print('%s: %d blended fields' % (os.path.basename(path), len(found)))
 
     env = dict(os.environ)

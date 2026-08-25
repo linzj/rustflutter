@@ -16,6 +16,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rust_source import production  # noqa: E402
+
 CRATE = r'K:\rustflutter\src\flutter\rust\rustflutter'
 MSVC = (r'C:\Program Files\Microsoft Visual Studio\2022\Community'
         r'\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64')
@@ -24,12 +27,6 @@ CALL = re.compile(
     r'\blerp\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*t\s*\)')
 
 
-def body_limit(text):
-    lines = text.split('\n')
-    for i, line in enumerate(lines):
-        if line.strip() == '#[cfg(test)]':
-            return sum(len(l) + 1 for l in lines[:i])
-    return len(text)
 
 
 def is_comment(text, position):
@@ -71,8 +68,8 @@ def main(argv):
     io.open(path + SIDECAR, 'w', encoding='utf-8', newline='').write(original)
     newline = '\r\n' if '\r\n' in original else '\n'
     text = original.replace('\r\n', '\n')
-    limit = body_limit(text)
-    sites = [m for m in CALL.finditer(text) if m.start() < limit]
+    outside = production(text)
+    sites = [m for m in CALL.finditer(text) if outside(m.start())]
     sites = [m for m in sites if m.group(1) != m.group(2)]
     # A match inside a comment can never turn anything red -- swapping it
     # changes no code at all. Tick 219 chased two such 'findings' in

@@ -53,6 +53,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rust_source import production  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATE = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter')
 MSVC = (r'C:\Program Files\Microsoft Visual Studio\2022\Community'
@@ -76,18 +79,6 @@ def guards(lines):
         yield i, indent, condition
 
 
-def test_module_ranges(lines):
-    """Line indices inside `#[cfg(test)]`, roughly: from the attribute to EOF.
-
-    Every test module in this crate is the tail of its file, so the first
-    `#[cfg(test)]` is enough. A file that ever grows a test module in the
-    middle will read as having fewer guards, which is the safe direction: it
-    under-reports rather than pointing at test code.
-    """
-    for i, line in enumerate(lines):
-        if line.strip() == '#[cfg(test)]':
-            return i
-    return len(lines)
 
 
 def run_tests(env):
@@ -123,8 +114,13 @@ def screen(path, env):
     io.open(path + SIDECAR, 'w', encoding='utf-8', newline='').write(original)
     newline = '\r\n' if '\r\n' in original else '\n'
     lines = original.replace('\r\n', '\n').split('\n')
-    limit = test_module_ranges(lines)
-    found = [g for g in guards(lines) if g[0] < limit]
+    outside = production(original.replace('\r\n', '\n'))
+    starts = []
+    at = 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    found = [g for g in guards(lines) if outside(starts[g[0]])]
 
     rel = os.path.relpath(path, REPO).replace(os.sep, '/')
     print('%s: %d single-return guards' % (rel, len(found)))
