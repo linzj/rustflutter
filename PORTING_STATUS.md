@@ -16838,3 +16838,33 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5451 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 215 次：`lerp` 先问 `lerp_from`，所以另一半从来没被走到过
+
+继续收。**65 → 47 → 43 → 25。**
+
+先把形状表的两端在**圆角**上也拉开（4 对 12）——半数分支在插值边框之外还
+单独插值一条半径，而只读边框的测试看不见那一行被调转。断言的形状连改两次，
+两次都是我要求得比上游多：
+
+- `circle -> rounded` 的圆角出来是 12。**上游正是这样**：圆没有半径可插值，
+  所以结果直接带上圆角矩形自己的那个，形变由 `circularity` 承担。
+- `rounded -> stadium-to-rounded` 也是 12，上游那一支写的就是
+  `borderRadius: borderRadius`——它自己的。
+
+于是换成一条对两种分支都成立的说法：**两个方向的结果若不同，正向必须比反向
+小**。原样带过去的分支两边给同一个数、什么都不主张；插值的分支给 6 和 10，
+调转之后给 10 和 6。
+
+然后是结构上的一件事：`ShapeBorder::lerp` **先问 `b.lerp_from(a)`**，只有它
+拒绝才落到 `a.lerp_to(b)`。所以**凡是 `lerp_from` 接得住的一对，`lerp_to` 里
+那条镜像分支经由 `lerp` 永远走不到**——43 条里有 24 条正在那一半。它们不是
+死代码：两个方法都是公开的，上游的 `lerp` 也是同样的两步。补了一条直接调用
+两者的测试——同一段旅程，用调用者可以用的两种问法各问一次。
+
+剩下 25 条如实记为待办，重测的脚本留在 `tools/recheck_lerps.py`。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5452 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

@@ -5399,39 +5399,60 @@ mod tests {
         }
     }
 
-    /// Every shape this crate can lerp, each carrying the side it was given.
-    fn shapes(side: BorderSide) -> Vec<(&'static str, ShapeBorder)> {
+    /// The corner radius a lerped shape came out with, where it has one.
+    ///
+    /// Half the arms in `lerp_from` interpolate a radius as well as a side,
+    /// on their own line, and a test that only ever reads the side cannot see
+    /// a swap in either of them. A shape whose outline opens forwards while
+    /// its corners close backwards is a specific, watchable wrongness.
+    fn radius_of(shape: &ShapeBorder) -> Option<f32> {
+        let geometry = match shape {
+            ShapeBorder::Rounded(shape) => shape.border_radius,
+            ShapeBorder::Beveled(shape) => shape.border_radius,
+            ShapeBorder::Continuous(shape) => shape.border_radius,
+            ShapeBorder::Superellipse(shape) => shape.border_radius,
+            ShapeBorder::StadiumToRoundedRect(shape) => shape.border_radius,
+            ShapeBorder::RoundedToCircle(shape) => shape.border_radius,
+            ShapeBorder::Underline(shape) => {
+                return Some(shape.border_radius.top_left.x);
+            }
+            ShapeBorder::Outline(shape) => {
+                return Some(shape.border_radius.top_left.x);
+            }
+            _ => return None,
+        };
+        Some(
+            geometry
+                .resolve(crate::direction::TextDirection::Ltr)
+                .top_left
+                .x,
+        )
+    }
+
+    /// Every shape this crate can lerp, each carrying the side and the corner
+    /// radius it was given.
+    fn shapes_with(side: BorderSide, radius: f32) -> Vec<(&'static str, ShapeBorder)> {
+        let flat = BorderRadius::circular(radius);
+        let corners = BorderRadiusGeometry::Absolute(flat);
         vec![
             ("circle", ShapeBorder::Circle(CircleBorder::new(side, 0.0))),
             ("oval", ShapeBorder::Oval(OvalBorder::new(side))),
             ("stadium", ShapeBorder::Stadium(StadiumBorder::new(side))),
             (
                 "rounded",
-                ShapeBorder::Rounded(RoundedRectangleBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                )),
+                ShapeBorder::Rounded(RoundedRectangleBorder::new(side, corners)),
             ),
             (
                 "beveled",
-                ShapeBorder::Beveled(BeveledRectangleBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                )),
+                ShapeBorder::Beveled(BeveledRectangleBorder::new(side, corners)),
             ),
             (
                 "continuous",
-                ShapeBorder::Continuous(ContinuousRectangleBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                )),
+                ShapeBorder::Continuous(ContinuousRectangleBorder::new(side, corners)),
             ),
             (
                 "superellipse",
-                ShapeBorder::Superellipse(RoundedSuperellipseBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                )),
+                ShapeBorder::Superellipse(RoundedSuperellipseBorder::new(side, corners)),
             ),
             (
                 "star",
@@ -5441,14 +5462,14 @@ mod tests {
                 "underline",
                 ShapeBorder::Underline(UnderlineInputBorder {
                     side,
-                    border_radius: BorderRadius::ZERO,
+                    border_radius: flat,
                 }),
             ),
             (
                 "outline",
                 ShapeBorder::Outline(OutlineInputBorder {
                     side,
-                    border_radius: BorderRadius::ZERO,
+                    border_radius: flat,
                     gap_padding: 4.0,
                 }),
             ),
@@ -5463,22 +5484,22 @@ mod tests {
             (
                 "stadium-to-rounded",
                 ShapeBorder::StadiumToRoundedRect(StadiumToRoundedRectBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                    0.5,
+                    side, corners, 0.5,
                 )),
             ),
             (
                 "rounded-to-circle",
                 ShapeBorder::RoundedToCircle(RoundedToCircleBorder::new(
-                    side,
-                    BorderRadiusGeometry::Zero,
-                    0.5,
-                    0.0,
-                    false,
+                    side, corners, 0.5, 0.0, false,
                 )),
             ),
         ]
+    }
+
+    /// The same table with square corners, for the tests that are not asking
+    /// about them.
+    fn shapes(side: BorderSide) -> Vec<(&'static str, ShapeBorder)> {
+        shapes_with(side, 0.0)
     }
 
     #[test]
@@ -5503,8 +5524,14 @@ mod tests {
         // another beveled border, and the multi-phase shapes are not moving
         // at a constant rate at all. The exact numbers for the ordinary pairs
         // are pinned in the tests below.
-        for (from_name, from) in shapes(wide(2.0)) {
-            for (to_name, to) in shapes(wide(6.0)) {
+        //
+        // The two ends differ in their **corner radius** as well as their
+        // side, 4 against 12, because half these arms interpolate a radius on
+        // a line of its own. A test that only read the side could not see a
+        // swap there, and a shape whose outline opens forwards while its
+        // corners close backwards is a specific, watchable wrongness.
+        for (from_name, from) in shapes_with(wide(2.0), 4.0) {
+            for (to_name, to) in shapes_with(wide(6.0), 12.0) {
                 let quarter = ShapeBorder::lerp(Some(from.clone()), Some(to.clone()), 0.25)
                     .unwrap_or_else(|| panic!("{from_name} to {to_name} interpolates"));
                 let Some(side) = quarter.outlined_side() else {
@@ -5531,6 +5558,93 @@ mod tests {
                         side.width, back.width,
                         "{from_name}/{to_name}: the two directions must differ"
                     );
+                }
+
+                // And a claim about the corners, stated so that it holds for
+                // both kinds of arm.
+                //
+                // Some arms interpolate the radius and some **carry one end's
+                // through**: a circle has no radius, so
+                // `RoundedRectangleBorder.lerpFrom(a is CircleBorder)` keeps
+                // the rectangle's own and lets `circularity` do the morphing,
+                // and `_StadiumToRoundedRectangleBorder` does the same with
+                // `borderRadius: borderRadius`. Demanding an interpolation
+                // there would be demanding one upstream does not perform.
+                //
+                // So: **where the two directions disagree at all, the forward
+                // one is the smaller** -- 4 to 12 read from the 4 end. An arm
+                // that carries a radius through gives the same answer both
+                // ways and says nothing; an arm that lerps gives 6 and 10, and
+                // a swap gives 10 and 6.
+                if let (Some(forward), Some(backward)) = (
+                    radius_of(&quarter),
+                    ShapeBorder::lerp(Some(to.clone()), Some(from.clone()), 0.25)
+                        .as_ref()
+                        .and_then(radius_of),
+                ) {
+                    if forward != backward {
+                        assert!(
+                            forward < backward,
+                            "{from_name} -> {to_name}: corners run backwards                              ({forward} forward, {backward} back)"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_halves_of_a_lerp_agree_about_which_way_the_journey_runs() {
+        // `ShapeBorder::lerp` asks `b.lerp_from(a)` first and only falls to
+        // `a.lerp_to(b)` when that declines, so **every arm `lerp_from`
+        // handles makes the mirrored arm in `lerp_to` unreachable through
+        // `lerp`**. Half this file's match arms are in the half that never
+        // runs for the pairs the other half knows.
+        //
+        // They are not dead: both are public, and upstream's `lerp` has the
+        // same two-step. So they are called directly here -- one journey,
+        // asked for in the two ways a caller can ask.
+        for (from_name, from) in shapes_with(wide(2.0), 4.0) {
+            for (to_name, to) in shapes_with(wide(6.0), 12.0) {
+                let asked_of_the_destination = to.lerp_from(Some(&from), 0.25);
+                let asked_of_the_start = from.lerp_to(Some(&to), 0.25);
+                for (how, result) in [
+                    ("lerp_from", asked_of_the_destination),
+                    ("lerp_to", asked_of_the_start),
+                ] {
+                    let Some(result) = result else {
+                        continue;
+                    };
+                    if let Some(side) = result.outlined_side() {
+                        assert!(
+                            side.width < 4.0,
+                            "{from_name} -> {to_name} via {how}: {} is past the midpoint",
+                            side.width
+                        );
+                    }
+                }
+
+                // And the corners, by the same rule as above: where the two
+                // directions disagree, the forward one is the smaller.
+                let forward = to.lerp_from(Some(&from), 0.25).as_ref().and_then(radius_of);
+                let backward = from.lerp_from(Some(&to), 0.25).as_ref().and_then(radius_of);
+                if let (Some(forward), Some(backward)) = (forward, backward) {
+                    if forward != backward {
+                        assert!(
+                            forward < backward,
+                            "{from_name} -> {to_name} via lerp_from: corners run                              backwards ({forward} forward, {backward} back)"
+                        );
+                    }
+                }
+                let forward = from.lerp_to(Some(&to), 0.25).as_ref().and_then(radius_of);
+                let backward = to.lerp_to(Some(&from), 0.25).as_ref().and_then(radius_of);
+                if let (Some(forward), Some(backward)) = (forward, backward) {
+                    if forward != backward {
+                        assert!(
+                            forward < backward,
+                            "{from_name} -> {to_name} via lerp_to: corners run                              backwards ({forward} forward, {backward} back)"
+                        );
+                    }
                 }
             }
         }
