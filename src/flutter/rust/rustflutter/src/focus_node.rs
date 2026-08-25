@@ -49,8 +49,11 @@ pub struct FocusNode {
     pub is_scope: bool,
     /// Upstream's `_canRequestFocus`, before ancestors are consulted.
     can_request_focus: bool,
-    /// Upstream's `descendantsAreFocusable`, which does **not** affect this
+    /// Upstream's `_descendantsAreFocusable`, which does **not** affect this
     /// node -- only everything under it.
+    ///
+    /// The stored field, not the answer. On a scope the getter is an override
+    /// -- see [`FocusTree::descendants_are_focusable`].
     descendants_are_focusable: bool,
     /// Upstream's `skipTraversal`: still focusable, just skipped by the
     /// traversal policy. A node reachable by tap but not by tab.
@@ -308,11 +311,49 @@ impl FocusTree {
             return false;
         };
         node.can_request_focus
-            && self.ancestors(id).into_iter().all(|ancestor| {
-                self.nodes
-                    .get(&ancestor)
-                    .is_some_and(|node| node.descendants_are_focusable)
-            })
+            && self
+                .ancestors(id)
+                .into_iter()
+                .all(|ancestor| self.descendants_are_focusable(ancestor))
+    }
+
+    /// Upstream's `descendantsAreFocusable` **getter**, which a scope
+    /// overrides:
+    ///
+    /// ```dart
+    /// // FocusScopeNode
+    /// bool get descendantsAreFocusable => _canRequestFocus && super.descendantsAreFocusable;
+    /// ```
+    ///
+    /// So the two kinds of node treat their own `canRequestFocus: false`
+    /// completely differently, and the difference is the point of a scope:
+    ///
+    /// * an ordinary node that cannot take focus is **one** node the keyboard
+    ///   skips. Its children are untouched, which is what makes a `Focus`
+    ///   wrapper around a widget a thing you can turn off without disabling
+    ///   the widget.
+    /// * a **scope** that cannot take focus shuts out everything inside it.
+    ///   That is how `FocusScope(canRequestFocus: false)` disables a whole
+    ///   page under a modal without touching a single field on it.
+    ///
+    /// This port read the stored field for every ancestor alike, so an
+    /// unfocusable scope was a door that said closed and stood open: every
+    /// field on the page underneath a modal was still focusable, by tap and
+    /// by keyboard.
+    ///
+    /// Upstream also forbids the other spelling. `FocusScopeNode`'s
+    /// constructor passes `super(descendantsAreFocusable: true)` and offers no
+    /// parameter for it, so a scope's stored field is always true and the
+    /// override is the *only* way a scope shuts its subtree out. That is why
+    /// this reads `can_request_focus` and not the pair.
+    pub fn descendants_are_focusable(&self, id: u64) -> bool {
+        let Some(node) = self.nodes.get(&id) else {
+            return false;
+        };
+        if node.is_scope {
+            return node.can_request_focus && node.descendants_are_focusable;
+        }
+        node.descendants_are_focusable
     }
 
     /// Upstream's `hasPrimaryFocus`: at the **end** of the chain.
@@ -343,6 +384,12 @@ impl FocusTree {
         let Some(node) = self.nodes.get(&id) else {
             return Vec::new();
         };
+        // The stored field and not [`FocusTree::descendants_are_focusable`],
+        // deliberately: for a scope the two differ only when the scope cannot
+        // request focus, and the clause before this one has already returned
+        // by then. A mutation swapping this for the getter stayed green on
+        // every tree, so the getter here would be a line that reads like a
+        // rule and decides nothing.
         if !self.can_request_focus(id) || !node.descendants_are_focusable {
             return Vec::new();
         }
@@ -719,6 +766,85 @@ mod tests {
             "but the panel itself is still focusable"
         );
         assert!(tree.can_request_focus(6), "and the other subtree is fine");
+    }
+
+    // -- The one thing a scope does that an ordinary node does not -----------
+
+    #[test]
+    fn a_scope_that_cannot_take_focus_shuts_out_everything_inside_it() {
+        // `FocusScopeNode.descendantsAreFocusable` is an override:
+        // `_canRequestFocus && super.descendantsAreFocusable`. That is how
+        // `FocusScope(canRequestFocus: false)` disables a whole page under a
+        // modal without touching a single field on it. This port read the
+        // stored field for every ancestor alike, so the door said closed and
+        // stood open.
+        let mut tree = tree();
+        assert!(tree.can_request_focus(4));
+        assert!(tree.can_request_focus(5));
+
+        tree.set_can_request_focus(2, false);
+        assert!(!tree.can_request_focus(4), "the page underneath is out");
+        assert!(!tree.can_request_focus(5));
+        assert!(tree.can_request_focus(6), "and the other scope is untouched");
+    }
+
+    #[test]
+    fn but_an_ordinary_node_that_cannot_take_focus_is_only_itself() {
+        // The half that says the rule above belongs to scopes rather than to
+        // unfocusable ancestors in general. Without this the fix could be
+        // "any unfocusable ancestor shuts out its subtree", which is a
+        // different rule that happens to agree on the case above -- and it
+        // would break every `Focus` wrapper somebody turned off around a
+        // widget they still wanted usable.
+        let mut tree = tree();
+        tree.attach(FocusNode::new(7), 4);
+        assert!(tree.can_request_focus(7));
+
+        tree.set_can_request_focus(4, false);
+        assert!(!tree.can_request_focus(4), "itself, yes");
+        assert!(tree.can_request_focus(7), "its child, no");
+    }
+
+    #[test]
+    fn and_a_shut_scope_hands_back_no_traversal_children_either() {
+        // Not "the children minus the unfocusable ones" -- nothing at all.
+        let mut tree = tree();
+        assert_eq!(tree.traversal_children(2), vec![4, 5]);
+        tree.set_can_request_focus(2, false);
+        assert!(tree.traversal_children(2).is_empty());
+        assert_eq!(
+            tree.traversal_children(3),
+            vec![6],
+            "and the scope beside it still walks"
+        );
+    }
+
+    #[test]
+    fn a_scopes_stored_flag_is_not_the_thing_that_shuts_it() {
+        // Upstream's `FocusScopeNode` constructor passes
+        // `super(descendantsAreFocusable: true)` and offers no parameter for
+        // it, so a scope's stored field is always true and the override is the
+        // only way it shuts. Reading the pair rather than `canRequestFocus`
+        // alone would agree with upstream on every tree a scope can actually
+        // be in, and disagree here -- which is why this asks about a tree
+        // upstream cannot build.
+        let mut shut = FocusTree::new(FocusNode::scope(1));
+        shut.attach(
+            FocusNode::scope(2).with_descendants_are_focusable(false),
+            1,
+        );
+        shut.attach(FocusNode::new(3), 2);
+        assert!(
+            !shut.descendants_are_focusable(2),
+            "the stored flag still counts when it is somehow false"
+        );
+        assert!(!shut.can_request_focus(3));
+
+        // And a scope that can take focus, with the flag at its only upstream
+        // value, lets its children through.
+        let ordinary = tree();
+        assert!(ordinary.descendants_are_focusable(2));
+        assert!(ordinary.can_request_focus(4));
     }
 
     #[test]

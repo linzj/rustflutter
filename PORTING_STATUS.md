@@ -15815,3 +15815,45 @@ unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5307 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 187 次：一扇写着"关"的门一直开着
+
+先写了个探针，把 port 文档里 71 段 ```dart 引用逐行拿去上游比对。噪声很大
+（29 段有对不上的行，绝大多数是带 `...` 的转述而非逐字引用），**不值得立成
+尺子**——一把大部分时候是对的尺子比一把有明说盲区的更糟，因为它错的那些正是
+你会照着动手的。但它当一次性筛子是有用的，交出了几个候选。
+
+顺着 `focus_node.rs` 那条候选（引用本身是对的，假阳性）读到上游同一个文件的
+第 1376 行：
+
+```dart
+// FocusScopeNode
+bool get descendantsAreFocusable => _canRequestFocus && super.descendantsAreFocusable;
+```
+
+这是**只有 scope 才有的覆写**，两种节点对自己的 `canRequestFocus: false` 处理
+完全不同：
+
+- 普通节点不能取焦点，就只是**一个**节点被键盘跳过，子节点毫发无损——这正是
+  `Focus` 包装器可以关掉而不禁用里面那个控件的原因；
+- **scope** 不能取焦点，里面的一切都取不到。`FocusScope(canRequestFocus: false)`
+  就是靠这个把模态下面整页禁用掉，而不用碰页上任何一个字段。
+
+本移植对所有祖先一律读那个存储字段，所以**一扇写着"关"的门一直开着**：模态
+下面那一页的每个字段仍然可以被点、被 Tab 走到。
+
+新增 `FocusTree::descendants_are_focusable(id)` 作为 getter，`can_request_focus`
+改走它。另记一条上游的约束：`FocusScopeNode` 的构造函数传
+`super(descendantsAreFocusable: true)` 且不提供这个参数，所以 scope 的存储字段
+永远是 true，覆写是它关门的**唯一**途径——测试因此要构造一棵上游造不出来的树
+才能区分"读 canRequestFocus"和"读两者的与"。
+
+变异：五条中四条转红（去掉覆写、覆写扩到所有节点、scope 忘掉存储字段、
+`can_request_focus` 改回读原字段）。第五条——`traversal_children` 改回读原
+字段——存活，查证后确认在任何树上都不可区分：它前面那个
+`!can_request_focus(id)` 子句已经先返回了。按第 185 次的做法撤掉这处不可证伪
+的改动，把原因写在原地，而不是留一行读起来像规则却什么都不决定的代码。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5311 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
