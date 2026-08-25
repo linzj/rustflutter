@@ -15893,3 +15893,36 @@ unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5320 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 189 次：第 185 次造了 `exists()`，它的调用者在这里
+
+`SelectionOverlay`（depth 9/43）。上游的这个类除了两个手柄和工具条，还拥有
+`_magnifierController`，并对外给出四个入口——`magnifierExists`、
+`magnifierIsVisible`、`showMagnifier`、`hideMagnifier`（加上
+`updateMagnifier`）。本移植的 `SelectionHost` 一条都没有：放大镜和选区覆盖层
+在这里是两个互不相识的东西。
+
+补上之后，`showMagnifier` 里三件事都是承重的，而且顺序就是理由：
+
+1. **守卫问的是 exists 不是 shown。** 中途自己藏起来的放大镜仍在 overlay 里，
+   按可见性守卫会在手指每次越线回来时留下一个旧的、再插一个新的。这正是第
+   185 次那个 `exists()` 存在的原因，而它此前没有调用者。
+2. **工具条先下去。** 选区工具条和放大镜是同一块文字上争同一块地方的两样
+   东西，而跟着手指走的是放大镜。反过来不成立：`hideMagnifier` **不**把工具条
+   放回来——它是靠再次做出唤起它的手势回来的。
+3. **先问 builder 再插入。** 上游在插入任何东西之前先构建，builder 返回 null
+   就直接返回；这就是 `showMagnifier` "safe to call on platforms not mobile"
+   的全部含义。先插后问会在每个桌面长按上留下一个空 entry。而工具条是在问
+   builder **之前**就下去的——把守卫挪到之后会让桌面的工具条留着，读起来像
+   对的，但不是上游。
+
+变异：九条中七条转红。两条存活的都是**冗余守卫**——`hide_magnifier` 和
+`update_magnifier` 各自照上游写了 `if (overlayEntry == null) return`，而下一层
+的 `MagnifierHost::remove_from_overlay` 和 `MagnifierHost::update` 已经各自
+挡住了。这是第三次遇到同一个形状，处理照旧：撤掉，把上游的形状留在文档的引用
+里，而不是留一行读起来像规则却从不决定任何事的代码。一条规则配两道守卫，
+意味着其中一道永远不是任何事发生的原因。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5327 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。

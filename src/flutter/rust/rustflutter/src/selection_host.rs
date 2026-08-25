@@ -49,6 +49,7 @@ use std::rc::Rc;
 use crate::engine::Rect;
 use crate::framework::{AnyWidget, BuildContext, StateHandle, StatefulComponent, many};
 use crate::render::{Offset, RenderConstrainedBox, RenderRef, RenderStack, Size, StackPosition};
+use crate::magnifier_host::{MagnifierHost, MagnifierStyle, show_magnifier};
 use crate::text_selection::{SelectionOverlay, TextSelectionToolbarLayoutDelegate};
 use crate::text_selection_controls::{
     TextSelectionControls, TextSelectionHandleType, TextSelectionToolbarAnchors,
@@ -235,6 +236,10 @@ pub struct SelectionHost {
     toolbar_above: Cell<bool>,
     /// The hit ids the two handles answer to.
     handle_ids: (u64, u64),
+    /// Upstream's `_magnifierController`, which `SelectionOverlay` owns
+    /// alongside the handles and the toolbar. `None` here is upstream's
+    /// `overlayEntry == null`.
+    magnifier: Option<MagnifierHost>,
 }
 
 impl SelectionHost {
@@ -370,8 +375,125 @@ impl SelectionHost {
         self.geometry.touch();
     }
 
-    /// Upstream's `dispose`: all three entries go.
-    pub fn dismiss(self) {
+    // -- The magnifier ------------------------------------------------------
+
+    /// Upstream's `SelectionOverlay.magnifierExists`:
+    /// `_magnifierController.overlayEntry != null`.
+    ///
+    /// The question both of upstream's guards ask, and the one this host could
+    /// not answer at all until now.
+    pub fn magnifier_exists(&self) -> bool {
+        self.magnifier
+            .as_ref()
+            .is_some_and(MagnifierHost::exists)
+    }
+
+    /// Upstream's `SelectionOverlay.magnifierIsVisible`:
+    /// `_magnifierController.shown`.
+    ///
+    /// Upstream's doc for the pair is the whole distinction: *"This differs
+    /// from [magnifierIsVisible] in that the magnifier may exist in the
+    /// overlay, but not be shown."*
+    pub fn magnifier_is_visible(&self) -> bool {
+        self.magnifier
+            .as_ref()
+            .is_some_and(MagnifierHost::is_shown)
+    }
+
+    /// Upstream's `SelectionOverlay.showMagnifier`.
+    ///
+    /// ```dart
+    /// if (_magnifierController.overlayEntry != null) { return; }
+    /// if (toolbarIsVisible) { hideToolbar(); }
+    /// _magnifierInfo.value = initialMagnifierInfo;
+    /// final Widget? builtMagnifier = magnifierConfiguration.magnifierBuilder(...);
+    /// if (builtMagnifier == null) { return; }
+    /// _magnifierController.show(...);
+    /// ```
+    ///
+    /// Four things happen in that order and three of them are load-bearing.
+    ///
+    /// * **The guard is on exists, not on shown.** A loupe that hid itself
+    ///   mid-drag is still in the overlay, and showing a second one would
+    ///   leave the first behind.
+    /// * **The toolbar goes first.** A selection toolbar and a magnifier are
+    ///   two things over the same text competing for the same space, and the
+    ///   magnifier is the one following the reader's finger. Note that
+    ///   [`SelectionHost::hide_magnifier`] does **not** bring it back: the
+    ///   toolbar comes back when the gesture that raises it happens again,
+    ///   not when the magnifier leaves.
+    /// * **The builder is asked before anything is inserted.** A `None` style
+    ///   is upstream's null builder, which is how `showMagnifier` is "safe to
+    ///   call on platforms not mobile" -- desktop has no magnifier and no
+    ///   entry appears. Inserting first and asking after would leave an empty
+    ///   entry in the overlay on every desktop long press.
+    ///
+    /// Returns whether a magnifier went up.
+    pub fn show_magnifier(&mut self, style: Option<MagnifierStyle>) -> bool {
+        if self.magnifier_exists() {
+            return false;
+        }
+        if self.config.toolbar_visible {
+            self.set_toolbar_visible(false);
+        }
+        let Some(style) = style else {
+            return false;
+        };
+        // A host whose entry was taken out is not a host to keep: upstream
+        // replaces `_overlayEntry` outright here.
+        self.magnifier = show_magnifier(Rc::clone(&self.overlay), style);
+        self.magnifier.is_some()
+    }
+
+    /// Upstream's `SelectionOverlay.hideMagnifier`, whose guard carries the
+    /// comment that explains the pair above it:
+    ///
+    /// > This cannot be a check on `MagnifierController.shown`, since it's
+    /// > possible that the magnifier is still in the overlay, but not shown in
+    /// > cases where the magnifier hides itself.
+    ///
+    /// The entry goes -- upstream's `hide()` defaults to `removeFromOverlay:
+    /// true` -- so a later `showMagnifier` builds a fresh one.
+    ///
+    /// Upstream's `if (overlayEntry == null) return;` is not written out here.
+    /// [`MagnifierHost::remove_from_overlay`] answers false rather than
+    /// removing something twice, so the guard changes nothing and a mutation
+    /// deleting it stays green. The shape is above, in the quote, rather than
+    /// in a line that reads like a rule and decides nothing.
+    pub fn hide_magnifier(&mut self) {
+        if let Some(magnifier) = self.magnifier.as_mut() {
+            magnifier.hide(true);
+        }
+    }
+
+    /// Upstream's `SelectionOverlay.updateMagnifier`, which is the same guard
+    /// and then the move.
+    ///
+    /// ```dart
+    /// if (_magnifierController.overlayEntry == null) { return; }
+    /// _magnifierInfo.value = magnifierInfo;
+    /// ```
+    ///
+    /// The guard is one level down: [`MagnifierHost::update`] already refuses
+    /// to place an entry that is gone, and a mutation deleting this one stayed
+    /// green. Two guards for one rule means one of them is never the reason
+    /// anything happens.
+    pub fn update_magnifier(
+        &mut self,
+        info: crate::magnifier::MagnifierInfo,
+        screen: Rect,
+        overlay: &crate::render::RenderRef,
+    ) {
+        if let Some(magnifier) = self.magnifier.as_mut() {
+            magnifier.update(info, screen, overlay);
+        }
+    }
+
+    /// Upstream's `dispose`: all three entries go, and the magnifier with them.
+    pub fn dismiss(mut self) {
+        if let Some(magnifier) = self.magnifier.as_mut() {
+            magnifier.remove_from_overlay();
+        }
         for entry in self.entries {
             self.overlay.remove(entry);
         }
@@ -421,6 +543,7 @@ pub fn show_selection_overlay(
     });
 
     Some(SelectionHost {
+        magnifier: None,
         config: SelectionOverlay::new(),
         controls,
         overlay,
@@ -486,6 +609,14 @@ mod tests {
     const OVERLAY_SIZE: Size = Size {
         width: 760.0,
         height: 570.0,
+    };
+
+    /// The window, for magnifier placements.
+    const SCREEN: Rect = Rect {
+        left: 0.0,
+        top: 0.0,
+        right: 800.0,
+        bottom: 600.0,
     };
 
     fn controls() -> Rc<dyn TextSelectionControls> {
@@ -1082,4 +1213,148 @@ mod tests {
             "the two handles are 120 apart and do not overlap"
         );
     }
+
+    // -- The magnifier, which this host had no plumbing for at all -----------
+
+    /// A finger at `y`, with the caret on a line centred at `line`.
+    fn magnifier_info(y: f32, line: f32) -> crate::magnifier::MagnifierInfo {
+        crate::magnifier::MagnifierInfo::new(
+            Offset::new(200.0, y),
+            Rect::ltrb(200.0, line - 8.0, 202.0, line + 8.0),
+            Rect::ltrb(50.0, line - 8.0, 400.0, line + 8.0),
+            Rect::ltrb(50.0, 100.0, 400.0, 500.0),
+        )
+    }
+
+    #[test]
+    fn showing_a_magnifier_takes_the_toolbar_down_and_hiding_it_does_not_bring_it_back() {
+        // Upstream: `if (toolbarIsVisible) { hideToolbar(); }`, and nothing in
+        // `hideMagnifier` undoes it. Two things over the same text competing
+        // for the same space, and the magnifier is the one following the
+        // reader's finger. The toolbar comes back when the gesture that raises
+        // it happens again, not when the magnifier leaves.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        host.set_toolbar_visible(true);
+        assert!(host.config.toolbar_visible);
+
+        assert!(host.show_magnifier(Some(MagnifierStyle::Material)));
+        assert!(!host.config.toolbar_visible, "the toolbar went first");
+
+        host.hide_magnifier();
+        assert!(
+            !host.config.toolbar_visible,
+            "and hiding the magnifier does not put it back"
+        );
+    }
+
+    #[test]
+    fn a_platform_with_no_magnifier_puts_nothing_in_the_overlay() {
+        // Upstream builds the magnifier before inserting anything and returns
+        // on a null builder, which is what makes `showMagnifier` safe to call
+        // on a desktop. Inserting first and asking after would leave an empty
+        // entry behind on every desktop long press.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        let before = overlay.entry_count();
+
+        assert!(!host.show_magnifier(None));
+        assert_eq!(overlay.entry_count(), before);
+        assert!(!host.magnifier_exists());
+
+        assert!(host.show_magnifier(Some(MagnifierStyle::Material)));
+        assert_eq!(overlay.entry_count(), before + 1);
+    }
+
+    #[test]
+    fn but_the_toolbar_still_goes_down_on_a_platform_that_has_no_magnifier() {
+        // The order in upstream's method: the toolbar is hidden **before** the
+        // builder is asked. Moving the guard after it would leave a desktop's
+        // toolbar up, which reads like the right answer and is not upstream's.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        host.set_toolbar_visible(true);
+        assert!(!host.show_magnifier(None));
+        assert!(!host.config.toolbar_visible);
+    }
+
+    #[test]
+    fn a_second_show_is_refused_while_one_exists_even_if_it_is_not_showing() {
+        // The guard is on `magnifierExists`, not `magnifierIsVisible`. The
+        // Cupertino loupe hides itself when the finger goes below the line and
+        // keeps its entry, so a guard on visibility would insert a second one
+        // every time the finger crossed back.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        let root = laid_out(&mut tree);
+        let theatre = theatre_of(&root);
+
+        assert!(host.show_magnifier(Some(MagnifierStyle::Cupertino)));
+        let count = overlay.entry_count();
+        host.update_magnifier(magnifier_info(320.0, 300.0), SCREEN, &theatre);
+        assert!(host.magnifier_is_visible());
+
+        // Below the line: the loupe hides itself and keeps its entry.
+        host.update_magnifier(
+            magnifier_info(300.0 + crate::magnifier_host::CUPERTINO_HIDE_BELOW + 10.0, 300.0),
+            SCREEN,
+            &theatre,
+        );
+        assert!(!host.magnifier_is_visible(), "not showing");
+        assert!(host.magnifier_exists(), "but still there");
+
+        assert!(
+            !host.show_magnifier(Some(MagnifierStyle::Cupertino)),
+            "so a second show is refused"
+        );
+        assert_eq!(overlay.entry_count(), count, "and nothing was inserted");
+    }
+
+    #[test]
+    fn hiding_the_magnifier_takes_its_entry_out_so_the_next_show_builds_one() {
+        // Upstream's `hide()` defaults to `removeFromOverlay: true`, so
+        // `hideMagnifier` is the end of that magnifier rather than a pause.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        let before = overlay.entry_count();
+
+        assert!(host.show_magnifier(Some(MagnifierStyle::Material)));
+        host.hide_magnifier();
+        assert!(!host.magnifier_exists());
+        assert_eq!(overlay.entry_count(), before);
+
+        assert!(host.show_magnifier(Some(MagnifierStyle::Material)));
+        assert_eq!(overlay.entry_count(), before + 1);
+    }
+
+    #[test]
+    fn hiding_or_moving_a_magnifier_that_is_not_there_does_nothing() {
+        // Both of upstream's methods open with the same `overlayEntry == null`
+        // return. A `hideMagnifier` on a field that never raised one is the
+        // ordinary case, not an error.
+        let (mut tree, overlay) = mounted();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        let root = laid_out(&mut tree);
+        let theatre = theatre_of(&root);
+        let before = overlay.entry_count();
+
+        host.hide_magnifier();
+        host.update_magnifier(magnifier_info(320.0, 300.0), SCREEN, &theatre);
+        assert_eq!(overlay.entry_count(), before);
+        assert!(!host.magnifier_exists());
+        assert!(!host.magnifier_is_visible());
+    }
+
+    #[test]
+    fn dismissing_the_overlay_takes_the_magnifier_with_it() {
+        let (mut tree, overlay) = mounted();
+        let before = overlay.entry_count();
+        let mut host = host(&mut tree, Rc::clone(&overlay));
+        host.show_magnifier(Some(MagnifierStyle::Material));
+        assert!(overlay.entry_count() > before);
+        host.dismiss();
+        assert_eq!(overlay.entry_count(), before);
+        drop(tree);
+    }
 }
+
