@@ -16556,3 +16556,44 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5402 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 207 次：锚点是按下时记的一个全局点，而文字在它底下动了
+
+`onSingleLongTapMoveUpdate`，也就是第 206 次那个标志的调用者。
+
+苹果那一支**不问字段现在有没有焦点**——到这时它一定有，因为按下时就取到了。
+它问的是 `_longPressStartedWithoutFocus || readOnly`，也就是**按下时回答过的
+那个问题被保存了下来**。这就是那个标志存在的全部理由：拖动必须继续做它由之
+长出来的那次按下正在做的事，而能告诉它的那个事实，到它运行时已经没了。
+
+另一半是那段锚点修正的算术，值得单独说：
+
+```dart
+final editableOffset = renderEditable.maxLines == 1
+    ? Offset(renderEditable.offset.pixels - _dragStartViewportOffset, 0.0)
+    : Offset(0.0, renderEditable.offset.pixels - _dragStartViewportOffset);
+final Offset scrollableOffset = switch (axisDirectionToAxis(_scrollDirection ?? AxisDirection.left)) {
+  Axis.horizontal => Offset(_scrollPosition - _dragStartScrollOffset, 0.0),
+  Axis.vertical => Offset(0.0, _scrollPosition - _dragStartScrollOffset),
+};
+```
+
+锚点是按下那一刻记下的一个**全局**点，选区从它连到手指。从那以后有两样东西
+可能动过它：字段把自己的文字滚了，以及字段所在的页面滚了。两者都不会移动手指
+——所以少了这段修正，一个会自动滚动的字段里的拖动，锚点会落在读者从没按过的
+地方，选区从错误的一端长起来。
+
+**两半问的不是同一个轴。**单行字段的文字左右滚，修正在 x 上；多行的上下滚，
+修正在 y 上。外层的可滚动区有它自己的轴、单独回答——一个单行字段放在垂直滚动
+的页面里，一个修正在 x、另一个在 y。
+
+上游在没有外层可滚动区时回落到 `AxisDirection.left`（水平）。这没有区别：
+那时两个像素读数都是 0，落在哪个轴上都是零。写了一条测试而不是耸耸肩，因为
+将来会有人纳闷为什么回落的不是大多数页面在滚的那个垂直轴。
+
+变异：九条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5410 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

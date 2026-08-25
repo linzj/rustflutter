@@ -900,6 +900,111 @@ pub fn shift_tap_down(
     }
 }
 
+/// How the drag after a long press moves the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongPressMove {
+    /// The field does not select.
+    Nothing,
+    /// Grow the selection a word at a time, from the anchor to the finger.
+    SelectWordsInRange,
+    /// Move the caret to the finger and keep the floating cursor with it.
+    MoveCaretAndFloatingCursor,
+}
+
+/// Upstream's `onSingleLongTapMoveUpdate`, which is
+/// [`long_press_start`]'s decision carried forward.
+///
+/// The Apple branch does not ask whether the field has focus **now** -- by
+/// this point it does, because the press took it. It asks
+/// `_longPressStartedWithoutFocus || readOnly`, which is the same question
+/// the press answered, preserved. That is the whole reason the flag exists:
+/// a drag has to keep doing what the press it grew out of started doing, and
+/// the fact that would tell it is gone by the time it runs.
+///
+/// Everywhere else the drag grows the selection by words, as the press did.
+pub fn long_press_move_update(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    started_without_focus: bool,
+    read_only: bool,
+) -> LongPressMove {
+    use crate::editable_text::TargetPlatform;
+    if !selection_enabled {
+        return LongPressMove::Nothing;
+    }
+    match platform {
+        TargetPlatform::IOS | TargetPlatform::MacOS => {
+            if started_without_focus || read_only {
+                LongPressMove::SelectWordsInRange
+            } else {
+                LongPressMove::MoveCaretAndFloatingCursor
+            }
+        }
+        TargetPlatform::Android
+        | TargetPlatform::Fuchsia
+        | TargetPlatform::Linux
+        | TargetPlatform::Windows => LongPressMove::SelectWordsInRange,
+    }
+}
+
+/// How far the anchor of a long-press drag has to be pulled back, because the
+/// text moved underneath it.
+///
+/// ```dart
+/// final editableOffset = renderEditable.maxLines == 1
+///     ? Offset(renderEditable.offset.pixels - _dragStartViewportOffset, 0.0)
+///     : Offset(0.0, renderEditable.offset.pixels - _dragStartViewportOffset);
+/// final Offset scrollableOffset = switch (axisDirectionToAxis(_scrollDirection ?? AxisDirection.left)) {
+///   Axis.horizontal => Offset(_scrollPosition - _dragStartScrollOffset, 0.0),
+///   Axis.vertical => Offset(0.0, _scrollPosition - _dragStartScrollOffset),
+/// };
+/// ```
+///
+/// The anchor is a **global** point recorded when the press began, and the
+/// selection runs from there to the finger. Two things can have moved it since:
+/// the field scrolled its own text, and the page the field sits on scrolled.
+/// Neither moves the finger, so without the correction a drag in a field that
+/// auto-scrolls anchors somewhere the reader never pressed, and the selection
+/// grows from the wrong end.
+///
+/// **The axis is not the same question in the two halves.** A single-line
+/// field scrolls its text sideways, so its correction is on x; a multi-line
+/// one scrolls up and down, so its correction is on y. The surrounding
+/// scrollable has its own axis and answers separately -- a single-line field
+/// inside a vertically scrolling page corrects on x for one and on y for the
+/// other.
+///
+/// `scroll_axis` is `None` where there is no scrollable above. Upstream falls
+/// back to `AxisDirection.left` there, which is horizontal, and it makes no
+/// difference: with no scrollable both pixel readings are zero and the
+/// correction is `Offset::ZERO` whichever axis it lands on.
+///
+/// The caller **subtracts** this from the press position, as upstream's
+/// `details.globalPosition - details.offsetFromOrigin - editableOffset -
+/// scrollableOffset` does.
+pub fn drag_anchor_correction(
+    single_line: bool,
+    field_pixels: f32,
+    field_pixels_at_press: f32,
+    scroll_pixels: f32,
+    scroll_pixels_at_press: f32,
+    scroll_axis: Option<crate::render::Axis>,
+) -> Offset {
+    use crate::render::Axis;
+    let field = field_pixels - field_pixels_at_press;
+    let scrolled = scroll_pixels - scroll_pixels_at_press;
+    let (field_dx, field_dy) = if single_line {
+        (field, 0.0)
+    } else {
+        (0.0, field)
+    };
+    let (scroll_dx, scroll_dy) = match scroll_axis.unwrap_or(Axis::Horizontal) {
+        Axis::Horizontal => (scrolled, 0.0),
+        Axis::Vertical => (0.0, scrolled),
+    };
+    Offset::new(field_dx + scroll_dx, field_dy + scroll_dy)
+}
+
 /// What a long press moves the selection to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LongPressSelects {
@@ -3133,6 +3238,176 @@ mod selection_gesture_rule_tests {
                 "{platform:?}: no shift"
             );
         }
+    }
+
+    // -- And the drag that grows out of the press ---------------------------
+
+    #[test]
+    fn the_drag_keeps_doing_what_the_press_started_doing() {
+        // The Apple branch does not ask whether the field has focus **now** --
+        // by this point it does, because the press took it. It asks the
+        // question the press answered, preserved in the flag. That is the
+        // whole reason the flag exists.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                long_press_move_update(platform, true, true, false),
+                LongPressMove::SelectWordsInRange,
+                "{platform:?}: the press began unfocused, so the drag selects words"
+            );
+            assert_eq!(
+                long_press_move_update(platform, true, false, false),
+                LongPressMove::MoveCaretAndFloatingCursor,
+                "{platform:?}: it began in a live field, so the drag places the caret"
+            );
+            assert_eq!(
+                long_press_move_update(platform, true, false, true),
+                LongPressMove::SelectWordsInRange,
+                "{platform:?}: read-only is the other way in"
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_start_and_the_move_agree_about_which_it_is() {
+        // The pair only works if the two answer the same question. Written as
+        // one claim, because a port where the press placed a caret and the
+        // drag selected words would be worse than either alone.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            for read_only in [false, true] {
+                let start = long_press_start(platform, true, false, read_only);
+                let moved = long_press_move_update(
+                    platform,
+                    true,
+                    start.remembers_it_began_unfocused,
+                    read_only,
+                );
+                // The press began unfocused, so both should be word-shaped.
+                assert_eq!(start.selects, LongPressSelects::Word, "{platform:?}");
+                assert_eq!(moved, LongPressMove::SelectWordsInRange, "{platform:?}");
+            }
+
+            // And from a focused editable field, both are caret-shaped.
+            let start = long_press_start(platform, true, true, false);
+            assert_eq!(start.selects, LongPressSelects::CaretAtTheFinger);
+            assert_eq!(
+                long_press_move_update(platform, true, start.remembers_it_began_unfocused, false),
+                LongPressMove::MoveCaretAndFloatingCursor
+            );
+        }
+    }
+
+    #[test]
+    fn everywhere_else_a_drag_grows_the_selection_by_words() {
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            for started_unfocused in [false, true] {
+                for read_only in [false, true] {
+                    assert_eq!(
+                        long_press_move_update(platform, true, started_unfocused, read_only),
+                        LongPressMove::SelectWordsInRange,
+                        "{platform:?}"
+                    );
+                }
+            }
+        }
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                long_press_move_update(platform, false, true, false),
+                LongPressMove::Nothing,
+                "{platform:?}"
+            );
+        }
+    }
+
+    // -- The anchor moved because the text did ------------------------------
+
+    #[test]
+    fn a_single_line_field_corrects_sideways_and_a_multiline_one_downwards() {
+        // A single-line field scrolls its text sideways; a multi-line one
+        // scrolls up and down. The correction follows the field's own axis,
+        // which is not a choice about the page.
+        let single = drag_anchor_correction(true, 30.0, 10.0, 0.0, 0.0, None);
+        assert_eq!(single, Offset::new(20.0, 0.0));
+
+        let multi = drag_anchor_correction(false, 30.0, 10.0, 0.0, 0.0, None);
+        assert_eq!(multi, Offset::new(0.0, 20.0));
+    }
+
+    #[test]
+    fn the_page_around_it_answers_on_its_own_axis() {
+        // A single-line field inside a vertically scrolling page corrects on
+        // x for the field and on y for the page, and the two are added.
+        let both = drag_anchor_correction(
+            true,
+            30.0,
+            10.0,
+            75.0,
+            50.0,
+            Some(crate::render::Axis::Vertical),
+        );
+        assert_eq!(both, Offset::new(20.0, 25.0), "one axis each");
+
+        // And a multi-line field in a horizontally scrolling one is the
+        // mirror image.
+        let mirrored = drag_anchor_correction(
+            false,
+            30.0,
+            10.0,
+            75.0,
+            50.0,
+            Some(crate::render::Axis::Horizontal),
+        );
+        assert_eq!(mirrored, Offset::new(25.0, 20.0));
+    }
+
+    #[test]
+    fn nothing_having_scrolled_is_no_correction_at_all() {
+        // Which is the ordinary case, and it has to cost nothing: the anchor
+        // is where the reader pressed.
+        for single_line in [false, true] {
+            for axis in [
+                None,
+                Some(crate::render::Axis::Horizontal),
+                Some(crate::render::Axis::Vertical),
+            ] {
+                assert_eq!(
+                    drag_anchor_correction(single_line, 12.0, 12.0, 40.0, 40.0, axis),
+                    Offset::ZERO,
+                    "{single_line} {axis:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn with_no_scrollable_above_the_fallback_axis_cannot_matter() {
+        // Upstream falls back to `AxisDirection.left`, which is horizontal.
+        // It makes no difference: with no scrollable both pixel readings are
+        // zero, so the term is zero whichever axis it lands on. Worth a test
+        // rather than a shrug, because a future reader will wonder why the
+        // fallback is not the vertical one that most pages scroll.
+        let fallback = drag_anchor_correction(true, 30.0, 10.0, 0.0, 0.0, None);
+        for axis in [crate::render::Axis::Horizontal, crate::render::Axis::Vertical] {
+            assert_eq!(
+                drag_anchor_correction(true, 30.0, 10.0, 0.0, 0.0, Some(axis)),
+                fallback,
+                "{axis:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_backwards_pulls_the_anchor_the_other_way() {
+        // The correction is a signed difference, not a distance: a field
+        // scrolled back to where it was undoes it exactly.
+        assert_eq!(
+            drag_anchor_correction(true, 5.0, 20.0, 0.0, 0.0, None),
+            Offset::new(-15.0, 0.0)
+        );
     }
 
     // -- A long press means two different things ---------------------------
