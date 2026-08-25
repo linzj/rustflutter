@@ -95,6 +95,11 @@ impl TextRange {
 /// an implementation that overrides none of the three would loop for ever.
 pub trait TextBoundary {
     /// Upstream `getLeadingTextBoundaryAt`.
+    ///
+    /// Refuses a negative position rather than clamping it, which is the same
+    /// asymmetry [`ParagraphBoundary`] spells out one level down: this walks
+    /// backwards, and there is nothing behind the start of the text. Its
+    /// sibling below walks forwards and clamps instead.
     fn leading_boundary_at(&self, position: isize) -> Option<isize> {
         if position < 0 {
             return None;
@@ -103,7 +108,8 @@ pub trait TextBoundary {
         (start >= 0).then_some(start)
     }
 
-    /// Upstream `getTrailingTextBoundaryAt`.
+    /// Upstream `getTrailingTextBoundaryAt`, whose `math.max(0, position)` is
+    /// the clamp the one above refuses to make.
     fn trailing_boundary_at(&self, position: isize) -> Option<isize> {
         let end = self.text_boundary_at(position.max(0)).end;
         (end >= 0).then_some(end)
@@ -264,6 +270,29 @@ impl ParagraphBoundary<'_> {
 }
 
 impl TextBoundary for ParagraphBoundary<'_> {
+    /// Upstream's four opening lines, and the pair of them is an asymmetry
+    /// worth reading twice:
+    ///
+    /// ```dart
+    /// // getLeadingTextBoundaryAt
+    /// if (position < 0 || _text.isEmpty) return null;
+    /// if (position >= _text.length) return _text.length;
+    ///
+    /// // getTrailingTextBoundaryAt
+    /// if (position >= _text.length || _text.isEmpty) return null;
+    /// if (position < 0) return 0;
+    /// ```
+    ///
+    /// Each direction **refuses** when the position has run past the end it is
+    /// walking towards, and **clamps** when it has run past the one behind it.
+    /// Leading walks back towards zero, so a negative position has nothing
+    /// left to find and answers `None`, while a position past the text still
+    /// has the whole text behind it and answers its length. Trailing is the
+    /// mirror image.
+    ///
+    /// Which means the two never answer `None` for the same out-of-range
+    /// position, and a reader who has scrolled a caret off either end still
+    /// gets a boundary in the direction that has one.
     fn leading_boundary_at(&self, position: isize) -> Option<isize> {
         if position < 0 || self.text.is_empty() {
             return None;
@@ -272,6 +301,10 @@ impl TextBoundary for ParagraphBoundary<'_> {
         if position >= length {
             return Some(length);
         }
+        // Upstream's fast path. It decides nothing -- a walk starting at
+        // zero leaves the `while index > 0` loop immediately and answers
+        // `Some(0)` too -- and a screen for guards the suite cannot make
+        // matter says so. Kept because it is upstream's shape and it is free.
         if position == 0 {
             return Some(0);
         }
@@ -317,6 +350,9 @@ impl TextBoundary for ParagraphBoundary<'_> {
                 Some(character) => character.len_utf8(),
                 None => return Some(self.text.len() as isize),
             };
+            // The same kind of fast path as the one in `leading_boundary_at`
+            // above: without it the next `char_at` answers `None` and the arm
+            // above returns the same length. One iteration, not one outcome.
             if index >= self.text.len() {
                 return Some(self.text.len() as isize);
             }
@@ -549,6 +585,89 @@ mod tests {
         let boundary = ParagraphBoundary::new("");
         assert_eq!(boundary.leading_boundary_at(0), None);
         assert_eq!(boundary.trailing_boundary_at(0), None);
+    }
+
+    #[test]
+    fn the_defaults_refuse_backwards_and_clamp_forwards_too() {
+        // The same asymmetry as the test below, one level up: the trait's own
+        // `leading_boundary_at` returns `None` for a negative position while
+        // `trailing_boundary_at` runs `math.max(0, position)` first.
+        //
+        // `LineBoundary` is the implementation that takes both defaults, and
+        // its `text_boundary_at` clamps -- so without the guard the leading
+        // answer would be `Some(0)` rather than `None`, and a caller walking
+        // backwards would never learn it had run out of text.
+        let lines = [(0usize, 7usize), (7, 13)];
+        let boundary = LineBoundary::new(&lines);
+
+        assert_eq!(boundary.leading_boundary_at(-1), None);
+        assert_eq!(boundary.leading_boundary_at(-50), None);
+        assert_eq!(
+            boundary.trailing_boundary_at(-1),
+            Some(7),
+            "clamped to the start, so the first line's end"
+        );
+        assert_eq!(boundary.trailing_boundary_at(-50), Some(7));
+
+        // And from inside the text both answer normally, which is what says
+        // the rule above belongs to the negative position and not to this
+        // boundary being unusual.
+        assert_eq!(boundary.leading_boundary_at(3), Some(0));
+        assert_eq!(boundary.trailing_boundary_at(3), Some(7));
+    }
+
+    #[test]
+    fn a_position_off_either_end_is_refused_one_way_and_clamped_the_other() {
+        // Upstream's four opening lines, and they are not symmetric. Each
+        // direction refuses when the position has run past the end it walks
+        // **towards** and clamps when it has run past the one behind it:
+        // there is no leading boundary before the start of the text, but a
+        // position past the end still has the whole text behind it.
+        //
+        // So the two never both answer `None` for one out-of-range position,
+        // and a caret dragged off either end still finds a boundary in the
+        // direction that has one. Nothing reached these four lines until a
+        // screen for guards the suite cannot make matter pointed at them.
+        let text = "one\ntwo";
+        let length = text.len() as isize;
+        let boundary = ParagraphBoundary::new(text);
+
+        assert_eq!(boundary.leading_boundary_at(-1), None, "nothing behind it");
+        assert_eq!(
+            boundary.trailing_boundary_at(-1),
+            Some(0),
+            "but the text is still ahead of it"
+        );
+
+        assert_eq!(
+            boundary.trailing_boundary_at(length),
+            None,
+            "nothing ahead of it"
+        );
+        assert_eq!(
+            boundary.leading_boundary_at(length),
+            Some(length),
+            "but the text is still behind it"
+        );
+
+        // Far out of range, not merely one past, so a fix that clamped by one
+        // would not pass.
+        assert_eq!(boundary.leading_boundary_at(length + 50), Some(length));
+        assert_eq!(boundary.trailing_boundary_at(-50), Some(0));
+        assert_eq!(boundary.leading_boundary_at(-50), None);
+        assert_eq!(boundary.trailing_boundary_at(length + 50), None);
+    }
+
+    #[test]
+    fn and_an_empty_document_refuses_in_both_directions_from_anywhere() {
+        // The `_text.isEmpty` half of each guard, which is the one case where
+        // the asymmetry above does not apply: with no text there is nothing
+        // behind a position either.
+        let boundary = ParagraphBoundary::new("");
+        for position in [-5, -1, 0, 1, 5] {
+            assert_eq!(boundary.leading_boundary_at(position), None, "{position}");
+            assert_eq!(boundary.trailing_boundary_at(position), None, "{position}");
+        }
     }
 
     #[test]

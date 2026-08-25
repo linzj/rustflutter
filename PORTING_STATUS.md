@@ -16017,3 +16017,40 @@ else canvas.clipRect(rect);
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5333 + 333 通过；五个输出目录的 rustflutter_engine 全部重建
 （下游链接的就是它们）。
+
+### 第 192 次：走向哪一端，就在哪一端拒绝
+
+读第 190 次那把筛子在 `services/text_boundary.rs` 上留下的五条候选。其中三条
+是**真缺口**（第二类：守卫承重，但没有任何测试走到它），而且它们讲的是同一条
+规则：
+
+```dart
+// getLeadingTextBoundaryAt          // getTrailingTextBoundaryAt
+if (position < 0 || _text.isEmpty)   if (position >= _text.length || _text.isEmpty)
+  return null;                         return null;
+if (position >= _text.length)        if (position < 0)
+  return _text.length;                 return 0;
+```
+
+**每个方向都在自己走向的那一端拒绝，在身后那一端夹取。** leading 向 0 走，
+所以负位置身前无物、答 `None`，而越过文末的位置身后仍有整篇文本、答 `len`；
+trailing 是它的镜像。于是两者永远不会对同一个越界位置都答 `None`——把光标拖
+出任何一端的读者，仍能在有边界的那个方向拿到边界。
+
+同一条规则在 trait 的默认实现里也在，而且此前同样没有测试：默认的
+`leading_boundary_at` 拒绝负位置，默认的 `trailing_boundary_at` 先做
+`math.max(0, position)`。`LineBoundary` 是唯一两个默认都用的实现，而它的
+`text_boundary_at` 自己会夹取——所以**没有那道守卫，向后走的调用者会拿到
+`Some(0)` 而不是 `None`，永远学不到自己已经走出了文本**。
+
+剩下两条候选是第三类：`position == 0` 和循环里的 `index >= len` 都是上游的
+快捷路径，删掉后答案一样（走一遍循环也到同一处）。保留——上游的形状，且不
+花钱——但在原地写明它们省的是一次迭代而不是一个结果。
+
+变异：六条（默认实现改成向后夹取、默认实现改成向前拒绝、段落边界向后夹取、
+越过文末改成拒绝、向前改成夹取、空文档不再拒绝）全部转红。
+`text_boundary.rs` 的候选数从 5 降到 3，剩下的三条都已注明。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5336 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
