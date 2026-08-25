@@ -2020,8 +2020,14 @@ mod tests {
 
     #[test]
     fn a_descendant_finds_the_overlay_above_it() {
+        // An empty count is what a handle to *nothing* answers too, so the
+        // insert is what makes this a test about finding the overlay rather
+        // than about the number zero.
         let (_tree, handle) = mounted_overlay();
         assert_eq!(handle.entry_count(), 0, "a live, empty overlay");
+
+        handle.insert(|| counted_entry(1)).expect("the handle is live");
+        assert_eq!(handle.entry_count(), 1, "and it is this overlay's");
     }
 
     #[test]

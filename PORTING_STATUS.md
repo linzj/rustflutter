@@ -15285,3 +15285,51 @@ list wheel 那边同样加了一条。
 `engine_test_stubs.rs` 里的空 stub：20 → 19。
 
 5253 测试通过，完整 GN 门过。
+
+## 第 173 轮 — 一把新尺子：只断言"什么都没发生"的测试
+
+最近四轮里出现了三条同样毛病的测试，而每一条都是**用同一种方式**被发现的：
+把测试指向错误的机制，然后看着它照样通过。
+
+- `an_opacity_group_is_closed_too` 断言存还深度为零——**一个根本不开层的
+  paint 也满足**，而 `RenderOpacity` 正是如此。
+- `the_highlight_is_the_first_mark_of_the_frame` 断言高亮在第 0 位——
+  后面有没有字都成立。
+- `an_empty_field_showing_a_hint_still_draws_its_caret` 数了一个矩形，
+  而它名字里的那个 hint 从来没被设过。
+
+这个形状可以搜，所以有了 `tools/vacuous.py`：**一条测试的所有断言都是
+"这里没有这样东西"**，那它在"被测代码什么都没做"的运行里同样通过——
+包括测试建错了东西、或那个特性根本没被走到。
+
+这类测试不自动是错的（"空 decoration 一笔不画"正是这个形状且值得有），
+它缺的是**同一条测试里一句"这条路确实跑过了"**。
+
+### 尺子本身收窄了三次
+
+- 第一版把 `assert_ne!`、`assert!(!x)`、`assert_eq!(x, 0)` 也算进去，
+  报了 5253 里的 368 条——那不是队列，是情绪。
+- 第二版仍然匹配断言里任何位置的 `, None`，于是把
+  `resolve(true, None, None)` 这种**参数位**上的 None 也算成缺席，
+  报出了两条明明带着肯定断言的测试（其中一条的下一行就是 `.is_some()`）。
+- 第三版漏掉了取反：`assert!(!sheet.is_empty())` 是"确实有东西"的主张。
+
+368 → 145 → 47 → **12**。一把点名了正在做对事情的测试的尺子，
+读它的人付出的比省下的多。
+
+### 修了三条
+
+- `a_field_told_not_to_show_a_caret_shows_none`：补上"同一个字段把插入符打开
+  就画一个"。
+- `a_descendant_finds_the_overlay_above_it`：名字说的是"找到了上面的 overlay"，
+  而唯一的断言是计数为零——那是**一个指向空处的句柄**也会给的答案。
+  补上一次插入。
+- `a_wheel_standing_where_it_means_to_stand_is_given_nothing_to_do`：
+  补上"被甩过的轮子有事可做"。第一版我写成"稍微偏离但速度为零"，
+  踩了 `FrictionSimulation` 的 `debug_assert`——滚回去是一段运动，
+  而没有速度的运动这套物理造不出来。已写进注释。
+
+三条变异全红（把插入符关死、让句柄的计数恒为零、让弹道模拟恒返回 None），
+每一条都打中了对应的那条测试。
+
+5253 测试通过，完整 GN 门过。

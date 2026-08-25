@@ -1712,6 +1712,20 @@ mod tests {
                 .create_ballistic_simulation(&metrics, 40.0, 0.0)
                 .is_none()
         );
+        // And a wheel that has been flicked is given something to do, which
+        // is what says the `None` above is a decision rather than the only
+        // answer this function has. The first draft of this line used the same
+        // wheel a little off its mark with no velocity, and tripped a
+        // `debug_assert` in `FrictionSimulation`: rolling back somewhere is a
+        // motion, and a motion with no velocity is not one this physics can
+        // build.
+        let flicked = wheel_metrics(85.0, 40.0, 10);
+        assert!(
+            physics
+                .create_ballistic_simulation(&flicked, 40.0, 30.0)
+                .is_some(),
+            "a flicked wheel has somewhere to go"
+        );
     }
 
     #[test]

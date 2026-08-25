@@ -2468,8 +2468,16 @@ mod painted_field_tests {
 
     #[test]
     fn a_field_told_not_to_show_a_caret_shows_none() {
+        // Both halves, because the first on its own is satisfied by a field
+        // that drew nothing whatever -- one that failed to lay out, or a
+        // helper that stopped recording. The second says the path ran.
         let hidden = field("hello", 3, 3).with_caret(CARET, false);
         assert!(rects(&painted(hidden, 300.0)).is_empty());
+
+        let shown = field("hello", 3, 3).with_caret(CARET, true);
+        let marks = rects(&painted(shown, 300.0));
+        assert_eq!(marks.len(), 1, "the same field with the caret on");
+        assert_eq!(marks[0].4, CARET.0);
     }
 
     #[test]
