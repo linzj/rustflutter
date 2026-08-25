@@ -16634,3 +16634,46 @@ null，所以 `Unknown` 对应上游的 `unknown`，而 null 那一档无处安�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5418 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 209 次：把一个样式设过去再设回来，一条消息都不该发
+
+`SystemChrome.setSystemUIOverlayStyle`（depth 2/8）。样式是从 `build` 里设的，
+而重建又便宜又频繁——嵌在几层里的 `AnnotatedRegion` 每帧都会设同一个样式。所以
+上游把发送推到一个 microtask 上，等它跑的时候发这一轮里最后一个调用者要的那个。
+
+三条出口，加上里面第四道判断：
+
+```dart
+if (_pendingStyle != null) { _pendingStyle = style; return; }
+if (style == _latestStyle) { return; }          // 上游称之为 trivial success
+_pendingStyle = style;
+scheduleMicrotask(() {
+  if (_pendingStyle != _latestStyle) { ...发送...; _latestStyle = _pendingStyle; }
+  _pendingStyle = null;
+});
+```
+
+**第四道是微妙的那一道**：pending 在排队之后还可能被换掉，甚至换回成当前已经
+生效的那个。**把一个样式设过去再设回来，一条消息都不发**——而只有 microtask
+里那第二次比较看得见这件事。
+
+还有一处顺序：`_pendingStyle = null` 在那个 `if` **外面**。一次什么都没发的
+flush 也必须把槽位清空，否则下一次 `set` 会走"已经排过队了"那条出口，而那个
+microtask 早就跑完了——从此再也不发。
+
+`handleAppLifecycleStateChanged` 只在 **detached** 时把记录清掉，理由是宿主
+在应用离开时把样式丢了，所以"已经发过"这个记录也得丢——否则回来时用同一个值
+调 `set` 会走"已经生效"那条出口，状态栏就带着错的样子回来。而它也是在
+**microtask 上**清而不是当场清：这一轮里已经排好的发送先跑（比的是旧记录），
+清除排在它后面。当场清会让那个待发的比较对上一个空值，然后朝一个正在离开的
+应用发出去。
+
+本移植没有自己的 microtask 队列，所以两半是两次调用：`set` 回答"要不要安排一次
+flush"，`flush` 是那个 microtask 的函数体。
+
+变异：八条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5425 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

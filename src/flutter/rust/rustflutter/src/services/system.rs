@@ -843,6 +843,125 @@ mod tests {
         }
     }
 
+    // -- One message per turn, whatever the frame asked for ------------------
+
+    const LIGHT: SystemUiOverlayStyle = SystemUiOverlayStyle::LIGHT;
+    const DARK: SystemUiOverlayStyle = SystemUiOverlayStyle::DARK;
+
+    #[test]
+    fn many_calls_in_one_turn_become_one_message() {
+        // A style is set from `build`, and a rebuild is cheap and frequent.
+        // Every call going straight to the host would be a channel message
+        // and a round trip per frame.
+        let mut sink = SystemUiStyleSink::new();
+        assert!(sink.set(LIGHT), "the first has to arrange a flush");
+        assert!(!sink.set(DARK), "and the second rides on it");
+        assert!(!sink.set(LIGHT));
+        assert!(!sink.set(DARK));
+        assert_eq!(sink.flush(), Some(DARK), "the last one asked for wins");
+        assert_eq!(sink.latest(), Some(DARK));
+    }
+
+    #[test]
+    fn a_style_already_in_effect_arranges_nothing_at_all() {
+        // Upstream calls this the trivial success: no message, and no
+        // microtask either.
+        let mut sink = SystemUiStyleSink::new();
+        sink.set(LIGHT);
+        sink.flush();
+        assert!(!sink.set(LIGHT), "nothing to say");
+        assert!(!sink.has_pending(), "and nothing queued to say it with");
+        assert_eq!(sink.flush(), None);
+    }
+
+    #[test]
+    fn setting_a_style_and_setting_it_back_sends_nothing() {
+        // The second comparison, inside the microtask, is the only thing that
+        // can see this: the pending value was replaced after it was queued,
+        // and replaced back to what is already in effect.
+        let mut sink = SystemUiStyleSink::new();
+        sink.set(LIGHT);
+        assert_eq!(sink.flush(), Some(LIGHT));
+
+        assert!(sink.set(DARK), "a real change, so a flush is arranged");
+        assert!(!sink.set(LIGHT), "and then undone before it runs");
+        assert_eq!(
+            sink.flush(),
+            None,
+            "the flush finds nothing left to say"
+        );
+        assert_eq!(sink.latest(), Some(LIGHT), "and the record is unmoved");
+    }
+
+    #[test]
+    fn and_the_pending_slot_is_emptied_either_way() {
+        // Upstream's microtask ends with `_pendingStyle = null` outside the
+        // `if`. A flush that sent nothing still has to clear the slot, or the
+        // next `set` would take the "already queued" way out for a microtask
+        // that has already run and never send again.
+        let mut sink = SystemUiStyleSink::new();
+        sink.set(LIGHT);
+        sink.flush();
+        sink.set(DARK);
+        sink.set(LIGHT);
+        assert_eq!(sink.flush(), None);
+        assert!(!sink.has_pending());
+        assert!(sink.set(DARK), "so the next change is heard");
+    }
+
+    #[test]
+    fn detaching_forgets_the_style_so_it_is_sent_again_on_the_way_back() {
+        // The host loses the style when the application goes, so the record
+        // of having sent it has to go too -- otherwise the next `set` with
+        // the same value takes the "already in effect" way out and the bars
+        // come back wrong.
+        let mut sink = SystemUiStyleSink::new();
+        sink.set(LIGHT);
+        sink.flush();
+        assert!(!sink.set(LIGHT), "unchanged, so nothing");
+
+        assert!(sink.app_lifecycle_changed(AppLifecycleState::Detached));
+        sink.forget_latest();
+        assert_eq!(sink.latest(), None);
+        assert!(sink.set(LIGHT), "and now the same style is worth sending");
+        assert_eq!(sink.flush(), Some(LIGHT));
+    }
+
+    #[test]
+    fn but_only_detaching() {
+        // Every other lifecycle state leaves the record alone: the host still
+        // has the style, and re-sending it on every trip to the background
+        // would be a message for nothing.
+        let sink = SystemUiStyleSink::new();
+        for state in [
+            AppLifecycleState::Resumed,
+            AppLifecycleState::Inactive,
+            AppLifecycleState::Hidden,
+            AppLifecycleState::Paused,
+        ] {
+            assert!(!sink.app_lifecycle_changed(state), "{state:?}");
+        }
+        assert!(sink.app_lifecycle_changed(AppLifecycleState::Detached));
+    }
+
+    #[test]
+    fn a_send_already_arranged_this_turn_goes_out_before_the_forgetting() {
+        // Why upstream clears on a microtask rather than at once. Forgetting
+        // synchronously would leave the queued send comparing against nothing
+        // and firing into an application that is leaving.
+        let mut sink = SystemUiStyleSink::new();
+        sink.set(LIGHT);
+        sink.flush();
+
+        assert!(sink.set(DARK), "a change is queued");
+        assert!(sink.app_lifecycle_changed(AppLifecycleState::Detached));
+        // The queued send runs first, against the old record...
+        assert_eq!(sink.flush(), Some(DARK));
+        // ...and the forgetting after it.
+        sink.forget_latest();
+        assert_eq!(sink.latest(), None);
+    }
+
     #[test]
     fn each_haptic_names_the_impact_the_embedders_switch_on() {
         // Five values, five payloads, and nothing in the crate was reading
@@ -1491,6 +1610,123 @@ impl SystemUiMode {
     /// ignored otherwise.
     pub fn is_legal(self, has_overlays: bool) -> bool {
         !self.sets_overlays_directly() || has_overlays
+    }
+}
+
+/// Upstream's `SystemChrome.setSystemUIOverlayStyle` and the two statics it
+/// keeps: many calls in one turn become at most one message.
+///
+/// # Why it coalesces at all
+///
+/// A style is set from `build`, and a rebuild is cheap and frequent. An
+/// `AnnotatedRegion` a few widgets deep can set the same style on every
+/// frame, and every one of those would be a platform channel message and a
+/// round trip to the host. So upstream sends on a **microtask**, and by the
+/// time it runs it sends whatever the last caller of this turn asked for.
+///
+/// # The three ways out, and the fourth check inside
+///
+/// ```dart
+/// if (_pendingStyle != null) { _pendingStyle = style; return; }
+/// if (style == _latestStyle) { return; }
+/// _pendingStyle = style;
+/// scheduleMicrotask(() {
+///   if (_pendingStyle != _latestStyle) { ...send...; _latestStyle = _pendingStyle; }
+///   _pendingStyle = null;
+/// });
+/// ```
+///
+/// * **A microtask is already queued** -- replace the pending value and
+///   leave. The queued one will pick it up.
+/// * **Nothing queued and the style is already in effect** -- upstream calls
+///   this a "trivial success". No message, and no microtask either.
+/// * Otherwise queue one.
+/// * **And compare again inside the microtask.** This is the subtle one: the
+///   pending value can have been replaced since it was queued, possibly back
+///   to what is already in effect. Setting a style and setting it back within
+///   one turn sends **nothing at all**, and only the second comparison can
+///   see that.
+///
+/// This port has no microtask queue of its own, so the two halves are
+/// separate calls: [`SystemUiStyleSink::set`] answers whether the caller must
+/// arrange for [`SystemUiStyleSink::flush`] to run later, and `flush` is the
+/// body of upstream's microtask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemUiStyleSink {
+    latest: Option<SystemUiOverlayStyle>,
+    pending: Option<SystemUiOverlayStyle>,
+}
+
+impl SystemUiStyleSink {
+    pub fn new() -> SystemUiStyleSink {
+        SystemUiStyleSink::default()
+    }
+
+    /// Upstream's `latestStyle`: the last style actually sent to the host.
+    pub fn latest(&self) -> Option<SystemUiOverlayStyle> {
+        self.latest
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Upstream's `setSystemUIOverlayStyle`, up to the `scheduleMicrotask`.
+    ///
+    /// Returns whether a flush has to be arranged. **False twice over**: once
+    /// because one is already coming, once because there is nothing to send.
+    pub fn set(&mut self, style: SystemUiOverlayStyle) -> bool {
+        if self.pending.is_some() {
+            self.pending = Some(style);
+            return false;
+        }
+        if Some(style) == self.latest {
+            return false;
+        }
+        self.pending = Some(style);
+        true
+    }
+
+    /// The body of upstream's microtask. Returns the style to send, or `None`
+    /// where the second comparison found nothing left to say.
+    pub fn flush(&mut self) -> Option<SystemUiOverlayStyle> {
+        let pending = self.pending.take();
+        if pending.is_some() && pending != self.latest {
+            self.latest = pending;
+            return pending;
+        }
+        None
+    }
+
+    /// Upstream's `handleAppLifecycleStateChanged`, which forgets the last
+    /// style **only** when the application detaches:
+    ///
+    /// ```dart
+    /// if (state == AppLifecycleState.detached) {
+    ///   scheduleMicrotask(() { _latestStyle = null; });
+    /// }
+    /// ```
+    ///
+    /// The host loses the style when the application goes, so the record of
+    /// having sent it has to go too -- otherwise the next `set` with the same
+    /// value takes the "already in effect" way out and the bars come back
+    /// wrong.
+    ///
+    /// **On a microtask, not at once**, and the ordering is the point: a send
+    /// already queued this turn runs first, against the old `latest`, and the
+    /// clearing happens after it. Forgetting synchronously would make that
+    /// pending send compare against nothing and go out into an application
+    /// that is leaving.
+    ///
+    /// Returns whether the caller must arrange for
+    /// [`SystemUiStyleSink::forget_latest`] to run later.
+    pub fn app_lifecycle_changed(&self, state: AppLifecycleState) -> bool {
+        state == AppLifecycleState::Detached
+    }
+
+    /// The body of that second microtask.
+    pub fn forget_latest(&mut self) {
+        self.latest = None;
     }
 }
 
