@@ -427,6 +427,52 @@ pub fn resource_of(
         .and_then(|bundle| bundle.of(resource_type).map(str::to_string))
 }
 
+/// Upstream `LocaleListResolutionCallback`: given every preferred locale and
+/// every supported one, choose. `None` means "I have no opinion".
+pub type LocaleListResolution = fn(&[Locale], &[Locale]) -> Option<Locale>;
+
+/// Upstream `LocaleResolutionCallback`, which is handed **one** locale: the
+/// reader's first preference, or `None` where the platform named none.
+pub type LocaleResolution = fn(Option<&Locale>, &[Locale]) -> Option<Locale>;
+
+/// Upstream's `_resolveLocales`: two chances to override, then the algorithm.
+///
+/// ```dart
+/// if (localeListResolutionCallback != null) { ... if (locale != null) return locale; }
+/// if (localeResolutionCallback != null) { ... if (locale != null) return locale; }
+/// return basicLocaleListResolution(preferredLocales, supportedLocales);
+/// ```
+///
+/// Three things about the order, none of which is arbitrary.
+///
+/// * The **list** callback comes first, because it is the one that can see
+///   what the reader actually asked for. A reader whose preferences are
+///   `[fr_CA, fr_FR, en]` is telling you something a single locale cannot.
+/// * The **single** callback is handed only the first preference -- upstream
+///   passes `preferredLocales.first`, and `None` when the list is empty. An
+///   application that wrote the simpler callback gets the simpler question.
+/// * Returning `None` from either is **not** the same as returning a locale
+///   that happens to be unsupported: `None` means "carry on", so a callback
+///   that only wants to intervene sometimes says nothing the rest of the time.
+pub fn resolve_locales(
+    preferred: &[Locale],
+    supported: &[Locale],
+    list_callback: Option<LocaleListResolution>,
+    single_callback: Option<LocaleResolution>,
+) -> Option<Locale> {
+    if let Some(callback) = list_callback {
+        if let Some(locale) = callback(preferred, supported) {
+            return Some(locale);
+        }
+    }
+    if let Some(callback) = single_callback {
+        if let Some(locale) = callback(preferred.first(), supported) {
+            return Some(locale);
+        }
+    }
+    basic_locale_list_resolution(preferred, supported)
+}
+
 pub fn basic_locale_list_resolution(
     preferred_locales: &[Locale],
     supported_locales: &[Locale],
@@ -1159,3 +1205,140 @@ mod tests {
         assert_eq!(resolver.resolved(), Some(locale("fr")));
     }
 }
+
+// -- The two chances to override the resolution -------------------------------
+
+#[cfg(test)]
+mod resolve_locales_tests {
+    //! Upstream's `_resolveLocales`, which this port had only the last step
+    //! of: `basicLocaleListResolution` was reachable and the two callbacks
+    //! above it were not, so an application could not intervene at all.
+
+    use super::{Locale, resolve_locales};
+
+    fn supported() -> Vec<Locale> {
+        vec![Locale::new("en"), Locale::new("fr"), Locale::new("ja")]
+    }
+
+    fn preferred() -> Vec<Locale> {
+        vec![Locale::new("de"), Locale::new("fr")]
+    }
+
+    #[test]
+    fn the_list_callback_gets_the_first_word() {
+        // It is the one that can see what the reader actually asked for, in
+        // order, which is a thing a single locale cannot say.
+        fn always_japanese(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("ja"))
+        }
+        assert_eq!(
+            resolve_locales(&preferred(), &supported(), Some(always_japanese), None),
+            Some(Locale::new("ja"))
+        );
+    }
+
+    #[test]
+    fn and_when_both_speak_the_list_one_is_the_one_heard() {
+        // The test that says the order is an order. With only one callback
+        // answering at a time, swapping the two changes nothing -- which is
+        // what the first draft of this module asserted, and a mutation that
+        // swapped them stayed green.
+        fn list_says_japanese(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("ja"))
+        }
+        fn single_says_english(_first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("en"))
+        }
+        assert_eq!(
+            resolve_locales(
+                &preferred(),
+                &supported(),
+                Some(list_says_japanese),
+                Some(single_says_english)
+            ),
+            Some(Locale::new("ja")),
+            "the one that can see the whole list decides first"
+        );
+    }
+
+    #[test]
+    fn and_the_single_callback_the_second() {
+        fn always_japanese(_first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("ja"))
+        }
+        assert_eq!(
+            resolve_locales(&preferred(), &supported(), None, Some(always_japanese)),
+            Some(Locale::new("ja"))
+        );
+    }
+
+    #[test]
+    fn a_callback_that_says_nothing_hands_on_rather_than_deciding() {
+        // `None` is "carry on", not "no locale". A callback that only wants to
+        // intervene sometimes has to be able to stay quiet the rest of the
+        // time, and if `None` ended the search every such callback would blank
+        // out the application it was written for.
+        fn quiet_list(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+            None
+        }
+        fn quiet_single(_first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            None
+        }
+        // Both quiet: the basic algorithm answers, which for [de, fr] against
+        // [en, fr, ja] is fr.
+        assert_eq!(
+            resolve_locales(
+                &preferred(),
+                &supported(),
+                Some(quiet_list),
+                Some(quiet_single)
+            ),
+            Some(Locale::new("fr"))
+        );
+        // And the quiet list callback still lets the single one speak.
+        fn speaks(_first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("ja"))
+        }
+        assert_eq!(
+            resolve_locales(&preferred(), &supported(), Some(quiet_list), Some(speaks)),
+            Some(Locale::new("ja"))
+        );
+    }
+
+    #[test]
+    fn the_single_callback_is_handed_one_locale_and_not_the_list() {
+        // Upstream passes `preferredLocales.first`. An application that wrote
+        // the simpler callback gets the simpler question, and a callback that
+        // read the whole list would be reading a list it was never given.
+        fn echoes_first(first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            first.cloned()
+        }
+        assert_eq!(
+            resolve_locales(&preferred(), &supported(), None, Some(echoes_first)),
+            Some(Locale::new("de")),
+            "the first preference, not the one that matches"
+        );
+    }
+
+    #[test]
+    fn and_none_at_all_where_the_platform_named_none() {
+        // Upstream passes null rather than a made-up locale, so a callback can
+        // tell "the reader wants nothing in particular" from "the reader wants
+        // English".
+        fn refuses_nothing(first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+            match first {
+                None => Some(Locale::new("ja")),
+                Some(_) => None,
+            }
+        }
+        assert_eq!(
+            resolve_locales(&[], &supported(), None, Some(refuses_nothing)),
+            Some(Locale::new("ja"))
+        );
+        assert_ne!(
+            resolve_locales(&preferred(), &supported(), None, Some(refuses_nothing)),
+            Some(Locale::new("ja"))
+        );
+    }
+}
+

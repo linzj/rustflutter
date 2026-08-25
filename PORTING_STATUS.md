@@ -15589,3 +15589,47 @@ return centerTitle ?? appbarTheme.centerTitle ?? platformCenter();
 三条变异全红：Apple 分支恒真、macOS 掉队、动作数量泄漏到别的平台。
 
 5272 测试通过，完整 GN 门过，release 引擎库重建。
+
+## 第 181 轮 — 五份引擎库，五份都旧了
+
+上一轮那个事故只修了 `host_release`。这一轮先问：**还有几处**。
+
+```
+host_debug_unopt         2026-08-17    ← debug 门自己的，也旧了
+host_release             2026-08-25    ← 上一轮刚修
+host_release_unopt       2026-08-15
+android_release_arm64    2026-08-16
+android_release_x64      2026-08-16
+FFI 源码                  2026-08-24
+```
+
+**五份里四份比源码旧**，包括 `host_debug_unopt` 自己的那份——
+debug 门跑的单元测试链接的是 **stub** 引擎，从不链接真的那一份，
+所以门每轮都绿而那份库一直在腐烂。
+
+五份全部重建，`llvm-nm` 逐个确认两个符号都在。
+
+### 而"以后记得重建"是一句关于我记性的话
+
+所以有了 `tools/stale_engines.py`：拿每个输出目录里的引擎库和
+本项目自己写的那几个 C++ 文件（`rust/ffi`、`rust/host`、
+`runtime_controller.cc`、`rust_app_api.h`）比时间戳，旧了就非零退出。
+
+碰一下 `rustflutter_ffi.cc` 验证它会咬：五份全报 stale，并把
+每一条重建命令打出来。重建后归零。
+
+### 然后是移植
+
+`WidgetsApp` 10/42。上游 `_resolveLocales` 有两级覆盖再落到基础算法，
+**这个 port 只有最后一级**——应用根本无法干预语言解析。
+
+移植了那三步，并写清楚为什么是这个顺序：列表回调先，
+因为它是唯一看得见读者**按顺序**要了什么的那个（`[fr_CA, fr_FR, en]`
+说的事不是单个 locale 能说的）；单个回调只拿第一个首选；
+而返回 `None` 是"继续往下"而不是"没有语言"——否则每个只想偶尔介入的回调
+都会把它服务的应用整个变白。
+
+写完跑变异，**交换两个回调次序那条存活**——因为我没有一条测试让两个回调
+同时开口。补上判别式后三条全红。
+
+5278 测试通过，完整 GN 门过，五份引擎库全部重建。
