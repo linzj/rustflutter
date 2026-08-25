@@ -17476,3 +17476,50 @@ stale_engines 全部不落后，unread_theme_fields 137（队列）。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后，**unread_theme_fields 137 → 133**。
 门：5606 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 231 次：一个当时记下的决定，把回落留在了不存在的地方
+
+**先修工单。**排序脚本没有跳过注释。`ThemeData::canvas_color` 被归到
+`bottom_navigation_bar.dart`，而那一处是句文档注释——真正读它的是
+`material/dart` 里的 `MaterialType.canvas => theme.canvasColor`。这和第 219 次
+在 `swap_lerps.py` 里找到的是同一个盲区。修好之后**总数没变（106），变的是
+归因**：每个字段本来就至少有一处真读，错的是"在哪里读"。
+
+### `ThemeData::unselected_widget_color` 到不了任何地方
+
+`ResolvedBottomNavigationBar` 把主题的两个 item 颜色照抄成 `Option<Color>`
+就结束了，没有最后一级。于是三条回落全部落空：固定条未选端的
+`unselected_widget_color`、选中端的 `themeColor`、以及 shifting 条两端的
+`colorScheme.surface`。
+
+**widget 也帮不上忙**：它带的是 `has_selected_item_color` 和 `has_fixed_color`
+两个**布尔**，够上游那句"不能同时给"的断言，此外什么都不够——调用方说出一个
+颜色，没有地方可放。现在它带颜色本身，断言从颜色推出来。
+
+上游的两条链（`_BottomNavigationBarState.build`）：
+
+| 类型 | 未选中 | 选中 |
+| --- | --- | --- |
+| 固定 | widget → 主题 → `unselectedWidgetColor` | widget → 主题 → `fixedColor` → `themeColor` |
+| shifting | widget → 主题 → `colorScheme.surface` | 同左 |
+
+`themeColor` 是亮色主题的 `primary`、暗色主题的 `secondary`。**这个对调是有
+理由的**：暗色主题的 primary 是给大面积用的浅色调，而一个小小的选中图标需要
+的是强调色。
+
+**一条既有测试的前提站不住了。**原来那条叫
+`nothing_is_invented_for_the_colours_upstream_leaves_null`，注释写着"widget
+会回落到 primary 和 caption 色，在这里编一个颜色它就分不清了"。**这个端口里
+没有那一步 widget 代码**——解析器就是上游在 `build` 里做的事。所以那个当时
+记下的决定，把回落留在了不存在的地方，`unselected_widget_color` 正是这样
+落空的。测试改写了，理由写在原处；背景色仍然留 null，因为上游确实留 null，
+由 `Material` 自己补。
+
+四条承重规则逐条强制改错——把 `fixedColor` 提到主题前面、把未选端接到选中端
+的角色上、让 shifting 条走固定条的回落、让 `themeColor` 不随明暗对调——
+**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后，**unread_theme_fields 133 → 132**。
+门：5612 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

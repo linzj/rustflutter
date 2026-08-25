@@ -2269,8 +2269,22 @@ pub struct ResolvedBottomNavigationBar {
     pub bar_type: BottomNavigationBarType,
     pub background_color: Option<Color>,
     pub elevation: f32,
-    pub selected_item_color: Option<Color>,
-    pub unselected_item_color: Option<Color>,
+    /// Upstream's two `ColorTween` ends, resolved.
+    ///
+    /// # The last step depends on the bar's type
+    ///
+    /// A **fixed** bar falls back to `ThemeData::unselected_widget_color`
+    /// for the unselected end and to `themeColor` for the selected one --
+    /// `colorScheme.primary` under a light theme, `secondary` under a dark
+    /// one. A **shifting** bar falls back to `colorScheme.surface` for
+    /// *both*, because its items sit on a coloured background of their own
+    /// and the contrast comes from the background rather than the ink.
+    ///
+    /// These were `Option<Color>` copies of the theme's fields with no
+    /// last step at all, so none of those three fallbacks reached
+    /// anything.
+    pub selected_item_color: Color,
+    pub unselected_item_color: Color,
     pub selected_label_style: Option<TextStyle>,
     pub unselected_label_style: Option<TextStyle>,
     pub selected_icon_theme: Option<IconThemeData>,
@@ -2285,6 +2299,18 @@ impl ResolvedBottomNavigationBar {
     /// Upstream's default elevation.
     pub const ELEVATION: f32 = 8.0;
 
+    /// Upstream's `themeColor`, the last step of a fixed bar's *selected*
+    /// end: the primary role under a light theme and the secondary under a
+    /// dark one. The swap is the point -- a dark theme's primary is a pale
+    /// tint meant for large areas, and a small selected icon needs the
+    /// accent.
+    pub fn theme_color(theme: &ThemeData) -> Color {
+        match theme.brightness() {
+            crate::platform::Brightness::Light => theme.color_scheme.primary,
+            crate::platform::Brightness::Dark => theme.color_scheme.secondary,
+        }
+    }
+
     /// Upstream's `_defaultShowUnselected`.
     pub fn default_show_unselected(bar_type: BottomNavigationBarType) -> bool {
         match bar_type {
@@ -2298,6 +2324,7 @@ impl ResolvedBottomNavigationBar {
         bar: &crate::bottom_bars::BottomNavigationBar,
     ) -> ResolvedBottomNavigationBar {
         let data = BottomNavigationBarTheme::of(context);
+        let theme = ThemeData::of(context);
         // The type first, because one of the label defaults is computed from
         // it -- and from the *resolved* one, so a theme that asks for shifting
         // changes what the unselected labels do without touching them.
@@ -2308,8 +2335,26 @@ impl ResolvedBottomNavigationBar {
             elevation: data
                 .elevation
                 .unwrap_or(ResolvedBottomNavigationBar::ELEVATION),
-            selected_item_color: data.selected_item_color,
-            unselected_item_color: data.unselected_item_color,
+            selected_item_color: bar
+                .selected_item_color
+                .or(data.selected_item_color)
+                .or(match bar_type {
+                    BottomNavigationBarType::Fixed => bar.fixed_color,
+                    BottomNavigationBarType::Shifting => None,
+                })
+                .unwrap_or(match bar_type {
+                    BottomNavigationBarType::Fixed => {
+                        ResolvedBottomNavigationBar::theme_color(&theme)
+                    }
+                    BottomNavigationBarType::Shifting => theme.color_scheme.surface,
+                }),
+            unselected_item_color: bar
+                .unselected_item_color
+                .or(data.unselected_item_color)
+                .unwrap_or(match bar_type {
+                    BottomNavigationBarType::Fixed => theme.unselected_widget_color,
+                    BottomNavigationBarType::Shifting => theme.color_scheme.surface,
+                }),
             selected_label_style: data.selected_label_style.clone(),
             unselected_label_style: data.unselected_label_style.clone(),
             selected_icon_theme: data.selected_icon_theme.clone(),

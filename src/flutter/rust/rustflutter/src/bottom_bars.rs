@@ -41,8 +41,16 @@ pub struct BottomNavigationBar {
     pub current_index: usize,
     /// `None` means "work it out from the count".
     pub bar_type: Option<BottomNavigationBarType>,
-    pub has_selected_item_color: bool,
-    pub has_fixed_color: bool,
+    /// Upstream's `selectedItemColor` and `fixedColor`, which are the same
+    /// slot under two names -- see [`BottomNavigationBar::check`].
+    ///
+    /// These were `has_selected_item_color` and `has_fixed_color`, two
+    /// booleans: enough for the "not both" assertion and nothing else, so a
+    /// caller naming a colour had nowhere to put it and the resolver had
+    /// nothing to read.
+    pub selected_item_color: Option<crate::engine::Color>,
+    pub fixed_color: Option<crate::engine::Color>,
+    pub unselected_item_color: Option<crate::engine::Color>,
     /// `None` defers to the theme, then to `true`.
     pub show_selected_labels: Option<bool>,
     /// `None` defers to the theme, then to a default computed from the
@@ -58,8 +66,9 @@ impl BottomNavigationBar {
             all_items_labelled: true,
             current_index,
             bar_type: None,
-            has_selected_item_color: false,
-            has_fixed_color: false,
+            selected_item_color: None,
+            fixed_color: None,
+            unselected_item_color: None,
             show_selected_labels: None,
             show_unselected_labels: None,
         }
@@ -88,7 +97,7 @@ impl BottomNavigationBar {
         if self.current_index >= self.item_count {
             return Err("currentIndex must be a valid index into items");
         }
-        if self.has_selected_item_color && self.has_fixed_color {
+        if self.selected_item_color.is_some() && self.fixed_color.is_some() {
             // The same slot under two names, one of them older.
             return Err("Either selectedItemColor or fixedColor can be specified, but not both");
         }
@@ -357,9 +366,9 @@ mod tests {
     #[test]
     fn two_names_for_one_colour_cannot_both_be_given() {
         let mut bar = BottomNavigationBar::new(3, 0);
-        bar.has_selected_item_color = true;
+        bar.selected_item_color = Some(crate::engine::Color::argb(255, 0, 0, 10));
         assert_eq!(bar.validate(), Ok(()));
-        bar.has_fixed_color = true;
+        bar.fixed_color = Some(crate::engine::Color::argb(255, 0, 0, 20));
         assert!(bar.validate().is_err());
     }
 
@@ -426,6 +435,7 @@ mod tests {
             BottomNavigationBarLandscapeLayout::Centered
         );
     }
+
 }
 
 #[cfg(test)]
@@ -463,6 +473,29 @@ mod bottom_bar_theme_tests {
                 bar,
                 seen: std::rc::Rc::clone(&seen),
             }),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    /// The same, under a named `ThemeData` -- which the two item colours now
+    /// end at, so the last step can be checked against a theme that is not
+    /// the fallback.
+    fn resolve_under(
+        bar: BottomNavigationBar,
+        data: BottomNavigationBarThemeData,
+        theme: crate::theme::ThemeData,
+    ) -> ResolvedBottomNavigationBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            BottomNavigationBarTheme::new(
+                data,
+                component(Reader {
+                    bar,
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
         ));
         seen.borrow_mut().take().expect("built once")
     }
@@ -567,15 +600,19 @@ mod bottom_bar_theme_tests {
     }
 
     #[test]
-    fn nothing_is_invented_for_the_colours_upstream_leaves_null() {
-        // The widget falls back to the primary and to the caption colour;
-        // a colour made up here is one it could not tell from an answer.
+    fn nothing_is_invented_for_the_background_upstream_leaves_null() {
+        // This used to say the same of the two item colours, on the grounds
+        // that "the widget falls back to the primary and to the caption
+        // colour". There is no such widget step in this port: the resolver
+        // *is* what upstream does in `build`, so leaving them null left the
+        // fallback nowhere at all -- which is how
+        // `ThemeData::unselected_widget_color` came to reach nothing. The
+        // background is different: upstream really does leave it null for a
+        // fixed bar with no colour named, and `Material` supplies its own.
         let resolved = resolve(
             BottomNavigationBar::new(3, 0),
             BottomNavigationBarThemeData::new(),
         );
-        assert_eq!(resolved.selected_item_color, None);
-        assert_eq!(resolved.unselected_item_color, None);
         assert_eq!(resolved.background_color, None);
     }
 
@@ -590,6 +627,126 @@ mod bottom_bar_theme_tests {
         assert_eq!(
             resolved.landscape_layout,
             BottomNavigationBarLandscapeLayout::Spread
+        );
+    }
+
+    // -- Where a bottom bar's item colours come from, tick 231 --------------
+    //
+    // `tools/unread_theme_fields.py` found `ThemeData::unselected_widget_color`
+    // reaching nothing. It reached nothing because
+    // `ResolvedBottomNavigationBar` copied the theme's two item colours
+    // across as bare `Option<Color>` and stopped -- and the widget carried
+    // `has_selected_item_color` and `has_fixed_color` as booleans, enough for
+    // upstream's "not both" assertion and nothing else, so a caller naming a
+    // colour had nowhere to put it.
+    //
+    // Every level below uses a number no other level uses.
+
+    fn ink(blue: u8) -> crate::engine::Color {
+        crate::engine::Color::argb(255, 0, 0, blue)
+    }
+
+    #[test]
+    fn a_fixed_bars_item_colours_prefer_the_bar_then_the_theme() {
+        let mut bar = BottomNavigationBar::new(3, 0);
+        bar.selected_item_color = Some(ink(10));
+        bar.unselected_item_color = Some(ink(20));
+        let themed = BottomNavigationBarThemeData {
+            selected_item_color: Some(ink(30)),
+            unselected_item_color: Some(ink(40)),
+            ..BottomNavigationBarThemeData::new()
+        };
+        let resolved = resolve(bar, themed.clone());
+        assert_eq!(resolved.selected_item_color, ink(10));
+        assert_eq!(resolved.unselected_item_color, ink(20));
+
+        let resolved = resolve(BottomNavigationBar::new(3, 0), themed);
+        assert_eq!(resolved.selected_item_color, ink(30));
+        assert_eq!(resolved.unselected_item_color, ink(40));
+    }
+
+    #[test]
+    fn the_older_fixed_color_is_the_step_after_the_theme() {
+        // Upstream's chain is `widget.selectedItemColor ?? theme ??
+        // widget.fixedColor ?? themeColor` -- `fixedColor` comes *after* the
+        // theme, not with the widget's other colour, which is the part a
+        // reading would most easily get backwards.
+        let mut bar = BottomNavigationBar::new(3, 0);
+        bar.fixed_color = Some(ink(50));
+        let themed = BottomNavigationBarThemeData {
+            selected_item_color: Some(ink(60)),
+            ..BottomNavigationBarThemeData::new()
+        };
+        assert_eq!(resolve(bar, themed).selected_item_color, ink(60));
+
+        let mut bar = BottomNavigationBar::new(3, 0);
+        bar.fixed_color = Some(ink(50));
+        assert_eq!(
+            resolve(bar, BottomNavigationBarThemeData::new()).selected_item_color,
+            ink(50)
+        );
+    }
+
+    #[test]
+    fn a_fixed_bar_ends_at_the_theme_datas_own_colours() {
+        // The two fallbacks that reached nothing before: the unselected end
+        // takes `ThemeData::unselected_widget_color` and the selected end
+        // takes `themeColor`.
+        let resolved = resolve(
+            BottomNavigationBar::new(3, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        let theme = crate::theme::ThemeData::light();
+        assert_eq!(
+            resolved.unselected_item_color,
+            theme.unselected_widget_color
+        );
+        assert_eq!(resolved.selected_item_color, theme.color_scheme.primary);
+    }
+
+    #[test]
+    fn a_shifting_bar_ends_at_the_surface_for_both_ends() {
+        // Its items sit on a coloured background of their own, so the
+        // contrast comes from the background and both ends are the surface.
+        // Four items is upstream's threshold for shifting.
+        let resolved = resolve(
+            BottomNavigationBar::new(4, 0),
+            BottomNavigationBarThemeData::new(),
+        );
+        assert_eq!(resolved.bar_type, BottomNavigationBarType::Shifting);
+        let surface = crate::theme::ThemeData::light().color_scheme.surface;
+        assert_eq!(resolved.selected_item_color, surface);
+        assert_eq!(resolved.unselected_item_color, surface);
+    }
+
+    #[test]
+    fn a_shifting_bar_ignores_the_older_fixed_color() {
+        // `fixedColor` is in the fixed arm of upstream's switch only, and the
+        // name says why.
+        let mut bar = BottomNavigationBar::new(4, 0);
+        bar.fixed_color = Some(ink(70));
+        let resolved = resolve(bar, BottomNavigationBarThemeData::new());
+        assert_eq!(
+            resolved.selected_item_color,
+            crate::theme::ThemeData::light().color_scheme.surface
+        );
+    }
+
+    #[test]
+    fn the_selected_end_of_a_fixed_bar_swaps_role_with_the_brightness() {
+        // Upstream's `themeColor`: primary under a light theme, secondary
+        // under a dark one. A dark theme's primary is a pale tint meant for
+        // large areas; a small selected icon needs the accent.
+        let dark = crate::theme::ThemeData::dark();
+        let resolved = resolve_under(
+            BottomNavigationBar::new(3, 0),
+            BottomNavigationBarThemeData::new(),
+            dark.clone(),
+        );
+        assert_eq!(resolved.selected_item_color, dark.color_scheme.secondary);
+        assert_ne!(
+            dark.color_scheme.secondary, dark.color_scheme.primary,
+            "the two roles differ, so the assertion above says something"
         );
     }
 }
