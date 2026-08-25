@@ -793,6 +793,113 @@ pub fn after_selecting_the_word_edge(
     }
 }
 
+/// Upstream's `_extendSelection`: keep the base where it is and move the
+/// extent to the tap.
+///
+/// The base is the end the reader started from; the extent is the loose one.
+/// So this drags the loose end and never touches the anchor, which is the
+/// plain reading of "extend".
+///
+/// A selection is `(base, extent)` here, in that order, and the order matters
+/// -- these two functions are the reason it cannot be reduced to a sorted
+/// pair.
+pub fn extend_selection(selection: (i32, i32), tapped: i32) -> (i32, i32) {
+    (selection.0, tapped)
+}
+
+/// Upstream's `_expandSelection`: **re-choose which end is loose**, so that
+/// the end further from the tap stays put.
+///
+/// ```dart
+/// final bool baseIsCloser =
+///     (tappedPosition.offset - selection.baseOffset).abs()
+///   < (tappedPosition.offset - selection.extentOffset).abs();
+/// selection.copyWith(
+///   baseOffset: baseIsCloser ? selection.extentOffset : selection.baseOffset,
+///   extentOffset: tappedPosition.offset,
+/// );
+/// ```
+///
+/// # Where the two part company
+///
+/// Tapping **beyond** the loose end they agree. Tapping **past the anchor**
+/// they do not, and that is the case the name is about. With `4..9` selected
+/// and a shift-click at 1:
+///
+/// * extend moves the extent to 1, giving `4..1` -- the run from 4 to 9 is
+///   gone, and the reader has lost the selection they were adding to;
+/// * expand notices 1 is nearer the base than the extent, anchors on the
+///   **extent** instead, and gives `9..1` -- the original run is still inside
+///   it.
+///
+/// So expand never drops the far boundary. That is the whole difference, and
+/// it is why the Apple platforms use it: shift-clicking back past where you
+/// started grows the selection there rather than starting a new one.
+pub fn expand_selection(selection: (i32, i32), tapped: i32) -> (i32, i32) {
+    let (base, extent) = selection;
+    let base_is_closer = (tapped - base).abs() < (tapped - extent).abs();
+    let anchor = if base_is_closer { extent } else { base };
+    (anchor, tapped)
+}
+
+/// What a shift-click does on tap **down**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftTapDown {
+    /// Upstream's `_expandSelection` from the selection the field already has.
+    Expand,
+    /// The same, but from a caret at offset zero. macOS only, and only when
+    /// the field was not focused -- upstream's comment: *"On macOS, a
+    /// shift-tapped unfocused field expands from 0, not from the previous
+    /// selection."*
+    ExpandFromTheStart,
+    /// Upstream's `_extendSelection`.
+    Extend,
+    /// Nothing happens here. The mobile platforms set the selection on tap
+    /// **up**, so tap down is not where the answer is.
+    Nothing,
+}
+
+/// Upstream's `onTapDown`, reduced to what the shift key decides.
+///
+/// `has_selection` is upstream's
+/// `renderEditable.selection?.baseOffset != null`, and its own comment says
+/// what it is for: *"It is impossible to extend the selection when the shift
+/// key is pressed, if the renderEditable.selection is invalid."* There is
+/// nothing to extend from.
+///
+/// The three groups:
+///
+/// * **macOS** expands, and from zero when the field had no focus. A
+///   shift-click into a cold field selects from the start of the text to the
+///   click, which is that platform's convention in every text view it has.
+/// * **Linux and Windows** extend.
+/// * **Android, Fuchsia and iOS** do nothing on the way down; those decide on
+///   the way up.
+pub fn shift_tap_down(
+    platform: crate::editable_text::TargetPlatform,
+    shift_pressed: bool,
+    has_selection: bool,
+    has_focus: bool,
+) -> ShiftTapDown {
+    use crate::editable_text::TargetPlatform;
+    if !shift_pressed || !has_selection {
+        return ShiftTapDown::Nothing;
+    }
+    match platform {
+        TargetPlatform::MacOS => {
+            if has_focus {
+                ShiftTapDown::Expand
+            } else {
+                ShiftTapDown::ExpandFromTheStart
+            }
+        }
+        TargetPlatform::Linux | TargetPlatform::Windows => ShiftTapDown::Extend,
+        TargetPlatform::Android | TargetPlatform::Fuchsia | TargetPlatform::IOS => {
+            ShiftTapDown::Nothing
+        }
+    }
+}
+
 /// What a right-click moves the selection to, if anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecondarySelects {
@@ -2564,6 +2671,127 @@ mod selection_gesture_rule_tests {
         assert!(position_was_on_selection_exclusive((9, 4), 6));
         assert!(position_was_on_selection_inclusive((9, 4), 4));
         assert_eq!(tap((9, 4), 6), TapOutcome::ToggleToolbar);
+    }
+
+    // -- Expand and extend, which differ in one case ------------------------
+
+    #[test]
+    fn beyond_the_loose_end_the_two_agree() {
+        // Shift-clicking further along in the direction you were already
+        // going is the ordinary case, and it is the one where the names do
+        // not matter.
+        let run = (4, 9);
+        assert_eq!(extend_selection(run, 12), (4, 12));
+        assert_eq!(expand_selection(run, 12), (4, 12));
+    }
+
+    #[test]
+    fn but_past_the_anchor_extend_throws_the_selection_away_and_expand_keeps_it() {
+        // The case the two names are about. With 4..9 selected and a
+        // shift-click at 1: extend drags the loose end to 1 and the run from 4
+        // to 9 is gone, so the reader has lost what they were adding to.
+        // Expand notices 1 is nearer the base, anchors on the extent instead,
+        // and the original run is still inside the answer.
+        let run = (4, 9);
+        assert_eq!(extend_selection(run, 1), (4, 1), "4..9 became 1..4");
+        assert_eq!(expand_selection(run, 1), (9, 1), "and here 1..9");
+
+        let (base, extent) = expand_selection(run, 1);
+        let (low, high) = (base.min(extent), base.max(extent));
+        assert!(low <= 4 && high >= 9, "the whole of the old run survives");
+    }
+
+    #[test]
+    fn expand_anchors_on_whichever_end_is_further_away() {
+        // Stated directly, because the `baseIsCloser` spelling hides it: the
+        // end that stays is the far one, whichever it happens to be.
+        assert_eq!(expand_selection((4, 9), 5), (9, 5), "5 is nearer 4");
+        assert_eq!(expand_selection((4, 9), 8), (4, 8), "8 is nearer 9");
+        // A backwards selection is the same rule, not a special case.
+        assert_eq!(expand_selection((9, 4), 5), (9, 5));
+        assert_eq!(expand_selection((9, 4), 8), (4, 8));
+    }
+
+    #[test]
+    fn extend_never_looks_at_where_the_tap_is() {
+        // Which is the other half of the contrast: it keeps the base whatever
+        // the tap says, so it is the same one line for every position.
+        for tapped in [-3, 0, 4, 6, 9, 20] {
+            assert_eq!(extend_selection((4, 9), tapped), (4, tapped));
+        }
+    }
+
+    // -- Which of the two a shift-click gets --------------------------------
+
+    #[test]
+    fn macos_expands_and_the_other_desktops_extend() {
+        assert_eq!(
+            shift_tap_down(TargetPlatform::MacOS, true, true, true),
+            ShiftTapDown::Expand
+        );
+        for platform in [TargetPlatform::Linux, TargetPlatform::Windows] {
+            assert_eq!(
+                shift_tap_down(platform, true, true, true),
+                ShiftTapDown::Extend,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn and_a_cold_macos_field_expands_from_the_start_of_the_text() {
+        // Upstream's comment: "On macOS, a shift-tapped unfocused field
+        // expands from 0, not from the previous selection." A shift-click into
+        // a field nobody was in selects from the beginning to the click, which
+        // is what every text view on that platform does.
+        assert_eq!(
+            shift_tap_down(TargetPlatform::MacOS, true, true, false),
+            ShiftTapDown::ExpandFromTheStart
+        );
+        // Only macOS: the others do not have a second answer here.
+        for platform in [TargetPlatform::Linux, TargetPlatform::Windows] {
+            assert_eq!(
+                shift_tap_down(platform, true, true, false),
+                ShiftTapDown::Extend,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_mobile_platforms_decide_on_the_way_up_instead() {
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+        ] {
+            for has_focus in [false, true] {
+                assert_eq!(
+                    shift_tap_down(platform, true, true, has_focus),
+                    ShiftTapDown::Nothing,
+                    "{platform:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shift_with_nothing_to_extend_from_does_nothing() {
+        // Upstream's own words: "It is impossible to extend the selection when
+        // the shift key is pressed, if the renderEditable.selection is
+        // invalid."
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                shift_tap_down(platform, true, false, true),
+                ShiftTapDown::Nothing,
+                "{platform:?}: no selection"
+            );
+            assert_eq!(
+                shift_tap_down(platform, false, true, true),
+                ShiftTapDown::Nothing,
+                "{platform:?}: no shift"
+            );
+        }
     }
 
     // -- What a right-click means, which is not what a left-click means -----

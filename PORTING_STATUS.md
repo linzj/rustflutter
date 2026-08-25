@@ -16412,3 +16412,55 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
 stale_engines 全部不落后。门：5373 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 203 次：`expand` 和 `extend` 只在一种情况下不同，而那种情况是它们名字的由来
+
+同一个类，Shift 点击那一半。上游有两个函数，读起来像同义词：
+
+```dart
+// _extendSelection
+selection.copyWith(extentOffset: tappedPosition.offset);
+
+// _expandSelection
+final bool baseIsCloser =
+    (tappedPosition.offset - selection.baseOffset).abs()
+  < (tappedPosition.offset - selection.extentOffset).abs();
+selection.copyWith(
+  baseOffset: baseIsCloser ? selection.extentOffset : selection.baseOffset,
+  extentOffset: tappedPosition.offset,
+);
+```
+
+沿着原来的方向往前点，两者给出同一个答案。**越过锚点往回点**才分家，而这正是
+名字要说的事。选区是 4..9、Shift 点在 1：
+
+- extend 把松的那端拖到 1，得到 `4..1`——4 到 9 那一段没了，读者刚才在往上加
+  的东西丢了；
+- expand 发现 1 离 base 更近，于是改以 **extent** 为锚，得到 `9..1`——原来那段
+  仍在里面。
+
+所以 expand **从不丢掉远端的边界**。这就是全部差别，也是苹果平台用它的理由：
+Shift 往回点是在那边**扩大**选区，而不是重新开一个。
+
+`baseIsCloser` 这个拼法把结论藏起来了，所以文档里直接写出来：**留下的那一端
+是离点击更远的那一端，不管它是哪一个。**
+
+还有一条只属于 macOS：
+
+> "On macOS, a shift-tapped unfocused field expands from 0, not from the
+> previous selection."
+
+Shift 点进一个没人在的字段，从文本开头选到点击处——那是这个平台每个文本视图
+的做法。Linux/Windows 用 extend；Android/Fuchsia/iOS 在按下时什么都不做，
+它们在抬起时决定。
+
+`isShiftPressedValid` 那一半也照上游写了，它自己的注释说明了理由："It is
+impossible to extend the selection when the shift key is pressed, if the
+renderEditable.selection is invalid." ——没有可扩的东西。
+
+变异：九条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
+stale_engines 全部不落后。门：5381 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
