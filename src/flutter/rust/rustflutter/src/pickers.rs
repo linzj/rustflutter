@@ -6472,6 +6472,15 @@ mod dial_label_tests {
     }
 
     fn labels_of(mut dial: TimeDial) -> Vec<(String, f32, f32)> {
+        labels_with_colour(&mut dial)
+            .into_iter()
+            .map(|(text, x, y, _)| (text, x, y))
+            .collect()
+    }
+
+    /// The same, keeping the colour each label was drawn in.
+    #[allow(clippy::type_complexity)]
+    fn labels_with_colour(dial: &mut TimeDial) -> Vec<(String, f32, f32, u32)> {
         dial.layout(BoxConstraints::tight(SIDE, SIDE));
         let mut layers = LayerTree::new(600, 600);
         reset_drawn();
@@ -6482,7 +6491,9 @@ mod dial_label_tests {
         drawn()
             .iter()
             .filter_map(|call| match call {
-                Drawn::Paragraph { text, x, y } => Some((text.clone(), *x, *y)),
+                Drawn::Paragraph { text, x, y, argb } => {
+                    Some((text.clone(), *x, *y, *argb))
+                }
                 _ => None,
             })
             .collect()
@@ -6621,9 +6632,21 @@ mod dial_label_tests {
         //
         // It is drawn last, which is what puts it over the dot rather than
         // under it.
-        let drawn = labels_of(dial_with(dial_labels(HourMinuteMode::Hour, false)));
+        let mut dial = dial_with(dial_labels(HourMinuteMode::Hour, false));
+        let drawn = labels_with_colour(&mut dial);
         assert_eq!(drawn.len(), 13, "twelve numbers and one repaint");
-        assert_eq!(drawn[12], drawn[0], "the same text at the same point");
+        let (text, x, y, colour) = drawn[12].clone();
+        let (first_text, first_x, first_y, first_colour) = drawn[0].clone();
+        assert_eq!((&text, x, y), (&first_text, first_x, first_y));
+
+        // And it is a repaint in the **selector's** colour, which is the whole
+        // reason for drawing it twice: the second copy is what the reader sees
+        // against the dot. Until tick 176 recorded the paragraph's colour this
+        // half could not be asked, and the test said only that a number landed
+        // on a number.
+        assert_eq!(colour, dial.dot_text.0);
+        assert_ne!(colour, first_colour, "the first copy is the label colour");
+        assert_eq!(first_colour, dial.label_color.0);
     }
 
     #[test]

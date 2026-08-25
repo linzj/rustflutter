@@ -869,6 +869,14 @@ pub enum Drawn {
         text: String,
         x: f32,
         y: f32,
+        /// The colour the style asked for.
+        ///
+        /// Recorded from tick 176. Before that the stub took the `argb` the
+        /// builder was handed and dropped it, so **no test in this crate could
+        /// say what colour any text was drawn in**: a disabled label in the
+        /// enabled colour, a hint indistinguishable from the text beside it, a
+        /// selected row's title in the wrong accent. Every one of those passed.
+        argb: u32,
     },
     /// An arc, which recorded **nothing at all** before: the stub's
     /// `rf_canvas_draw_arc` had an empty body, so a spinner's arc was not a
@@ -1046,10 +1054,11 @@ impl Drawn {
                 clip_op,
                 anti_alias,
             },
-            Drawn::Paragraph { text, x, y } => Drawn::Paragraph {
+            Drawn::Paragraph { text, x, y, argb } => Drawn::Paragraph {
                 text,
                 x: x + dx,
                 y: y + dy,
+                argb,
             },
             Drawn::Arc {
                 left,
@@ -1466,10 +1475,10 @@ pub unsafe extern "C" fn rf_canvas_draw_paragraph(
     x: f32,
     y: f32,
 ) {
-    let text = unsafe { stub_paragraph(paragraph) }
-        .map(|paragraph| paragraph.text.clone())
+    let (text, argb) = unsafe { stub_paragraph(paragraph) }
+        .map(|paragraph| (paragraph.text.clone(), paragraph.argb))
         .unwrap_or_default();
-    record(Drawn::Paragraph { text, x, y });
+    record(Drawn::Paragraph { text, x, y, argb });
 }
 
 #[unsafe(no_mangle)]
@@ -1548,6 +1557,7 @@ pub unsafe extern "C" fn rf_paragraph_new(
         text,
         font_size: if font_size > 0.0 { font_size } else { 14.0 },
         max_lines,
+        argb,
         lines: Vec::new(),
         constraint: 0.0,
     })) as *mut RfParagraph
@@ -1590,6 +1600,8 @@ struct StubParagraph {
     text: String,
     font_size: f32,
     max_lines: usize,
+    /// The colour the last pushed style asked for.
+    argb: u32,
     /// Filled in by `layout`, which the crate calls before reading anything.
     lines: Vec<String>,
     constraint: f32,
@@ -1656,8 +1668,9 @@ unsafe fn stub_paragraph<'a>(paragraph: *mut RfParagraph) -> Option<&'a mut Stub
 thread_local! {
     /// The builder in progress. One at a time is enough -- the crate builds a
     /// paragraph and consumes it before starting another.
-    static BUILDING: std::cell::RefCell<(String, f32, usize)> =
-        const { std::cell::RefCell::new((String::new(), 14.0, 0)) };
+    /// Text, font size, max lines, and the colour the last style asked for.
+    static BUILDING: std::cell::RefCell<(String, f32, usize, u32)> =
+        const { std::cell::RefCell::new((String::new(), 14.0, 0, 0)) };
 }
 
 #[unsafe(no_mangle)]
@@ -1668,7 +1681,7 @@ pub unsafe extern "C" fn rf_paragraph_builder_new(
     ellipsis: bool,
 ) -> *mut RfParagraphBuilder {
     note_paragraph_style(text_align, text_direction);
-    BUILDING.with(|building| *building.borrow_mut() = (String::new(), 14.0, max_lines));
+    BUILDING.with(|building| *building.borrow_mut() = (String::new(), 14.0, max_lines, 0));
     allocate::<RfParagraphBuilder>()
 }
 
@@ -1701,6 +1714,12 @@ pub unsafe extern "C" fn rf_paragraph_builder_push_style(
     if font_size > 0.0 {
         BUILDING.with(|building| building.borrow_mut().1 = font_size);
     }
+    // The colour was thrown away for as long as this stub has existed, which
+    // made **every claim about what colour text is drawn in unaskable**. A
+    // disabled label in the enabled colour, a selected row's title in the
+    // wrong accent, a hint indistinguishable from the text beside it: all of
+    // them passed every test that could be written.
+    BUILDING.with(|building| building.borrow_mut().3 = argb);
 }
 
 #[unsafe(no_mangle)]
@@ -1726,11 +1745,13 @@ pub unsafe extern "C" fn rf_paragraph_builder_build(
     builder: *mut RfParagraphBuilder,
 ) -> *mut RfParagraph {
     unsafe { release(builder) };
-    let (text, font_size, max_lines) = BUILDING.with(|building| building.borrow().clone());
+    let (text, font_size, max_lines, argb) =
+        BUILDING.with(|building| building.borrow().clone());
     Box::into_raw(Box::new(StubParagraph {
         text,
         font_size,
         max_lines,
+        argb,
         lines: Vec::new(),
         constraint: 0.0,
     })) as *mut RfParagraph

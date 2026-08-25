@@ -14626,6 +14626,53 @@ mod tests {
     }
 
     #[test]
+    fn a_rich_run_is_drawn_in_the_colour_its_style_asked_for() {
+        // The builder path -- `Paragraph::rich` pushes a style and then adds
+        // the run -- and the colour goes out in the style rather than
+        // alongside the text. A run whose style was never pushed draws in
+        // whatever the last one asked for, or in nothing.
+        //
+        // Unaskable until tick 176: the stub took the `argb` it was handed and
+        // dropped it, so no test in this crate could say what colour any text
+        // was drawn in.
+        //
+        // Two runs, because one is not rich: a single-style paragraph takes
+        // the cheap one-shot constructor and never touches the builder. The
+        // first draft of this test used one run and the mutation that drops
+        // the colour in `push_style` stayed green.
+        //
+        // The stub keeps **one** colour per paragraph -- the last style
+        // pushed -- which is all a model with one advance per glyph can carry.
+        // So what is asserted is the last run's, and a per-run colour is
+        // something this stub cannot answer.
+        const INK: crate::engine::Color = crate::engine::Color(0xff4488cc);
+        let mut first = TextStyle::default();
+        first.color = crate::engine::Color(0xff111111);
+        let mut style = TextStyle::default();
+        style.color = INK;
+        let mut text = RenderParagraph::rich(vec![
+            (String::from("Hold "), first),
+            (String::from("Shift"), style),
+        ]);
+        text.layout(BoxConstraints::new(0.0, 200.0, 0.0, f32::INFINITY));
+
+        let mut layers = crate::engine::LayerTree::new(400, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 200.0));
+            text.paint(&mut context, Offset::ZERO);
+        }
+        let colour = crate::engine_test_stubs::drawn()
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .expect("it drew the run");
+        assert_eq!(colour, INK.0, "the last style pushed");
+    }
+
+    #[test]
     fn a_paragraph_with_one_style_is_not_rich() {
         let plain = RenderParagraph::new("just text");
         assert!(

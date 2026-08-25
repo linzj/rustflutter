@@ -1058,18 +1058,14 @@ mod control_colour_tests {
     //! from their own control, so a selected row is drawn in the colour of the
     //! thing that made it selected rather than in the theme's accent.
     //!
-    //! # What this does not reach
+    //! # The hand-over, which took two ticks to be able to ask about
     //!
-    //! The line in `build` that hands the colour over is **not covered**, and
-    //! a mutation deleting it leaves the suite green. A `ListTile`'s resolved
-    //! text colour is not observable from outside it: the title goes out as a
-    //! paragraph, and `Drawn::Paragraph` records the text and where it landed
-    //! but not the colour it was drawn in. Recording the style's colour in the
-    //! paragraph stub is what would close this, and it would close every other
-    //! claim about text colour in the crate with it.
-    //!
-    //! So what is tested here is the colour each control answers with. The
-    //! hand-over is one line and is named in the doc above it.
+    //! Tick 175 left the line in `build` that hands the colour over uncovered,
+    //! because a `ListTile`'s resolved text colour was not observable: the
+    //! title goes out as a paragraph and `Drawn::Paragraph` recorded the text
+    //! and where it landed but not its colour. Tick 176 recorded the colour --
+    //! the builder was handed an `argb` all along and the stub dropped it --
+    //! and the last test below is the one that could not be written before.
 
     use super::{ControlTile, SwitchListTile, TileControl};
     use crate::component_themes::{SwitchTheme, SwitchThemeData};
@@ -1137,6 +1133,64 @@ mod control_colour_tests {
         assert_eq!(colour, primary, "the scheme's, which is the switch's too");
     }
 
+    /// The colour the tile's title was actually drawn in, under a switch
+    /// theme that says what it says.
+    fn painted_title_colour(selected: bool, track: Option<Color>) -> u32 {
+        let mut data = SwitchThemeData::new();
+        data.track_color = track.map(|colour| StateProperty::all(Some(colour)));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            SwitchTheme::new(
+                data,
+                component(
+                    ControlTile::new(1, SwitchListTile::new(true).0, "Wi-Fi")
+                        .with_selected(selected),
+                ),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                    if text == "Wi-Fi" =>
+                {
+                    Some(*argb)
+                }
+                _ => None,
+            })
+            .expect("the title was drawn")
+    }
+
+    #[test]
+    fn and_the_title_really_is_drawn_in_it() {
+        // The hand-over. Deleting `.with_selected_color(..)` from `build` left
+        // the whole suite green at tick 175, because no test could see what
+        // colour any text was drawn in. This is that test.
+        assert_eq!(painted_title_colour(true, Some(GREEN)), GREEN.0);
+    }
+
+    #[test]
+    fn and_an_unselected_row_is_not_drawn_in_it() {
+        // The other half, and the one that says the colour is *for* being
+        // selected rather than for being a switch row.
+        assert_ne!(painted_title_colour(false, Some(GREEN)), GREEN.0);
+    }
+
     #[test]
     fn a_checkbox_row_does_not_read_the_switch_theme() {
         // Each control resolves its own way. A checkbox tile taking a switch
@@ -1149,4 +1203,3 @@ mod control_colour_tests {
         assert_ne!(colour, GREEN);
     }
 }
-
