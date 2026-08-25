@@ -16677,3 +16677,34 @@ flush"，`flush` 是那个 microtask 的函数体。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5425 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 210 次：注册会通知宿主，注销不会
+
+补齐 `SystemChrome` 剩下的三个成员，这个类从 2/8 到 **8/8**。
+
+**`setSystemUIChangeCallback`** 只做一个决定：**要不要告诉宿主这里有个监听者**。
+上游注释写着 "Skip setting up the listener if there is no callback." ——注册时
+发一条消息，清掉时**一条都不发**。这不是要抹平的疏漏：那条消息是在**请求一项
+功能**，而平台那一侧没有关闭开关。被告知过一次的宿主会一直上报，框架把自己
+已经没有回调可交的东西丢掉。
+
+它什么时候才会响也值得记：只有在覆盖层会自己来去的那几种模式下——`leanBack`、
+`immersive`、`immersiveSticky`。`edgeToEdge` 下覆盖层始终可见，永远不响；
+`manual` 下**只在每一个覆盖层都被禁用时**才响，上游注明那让这种情况的行为和
+`leanBack` 一样。
+
+**`restoreSystemUIOverlays`** 不带参数，因为状态在宿主那边——它恢复的是
+`setEnabledSystemUIMode` 上次要的东西。它存在是因为平台可以推翻应用：上游举的
+例子是 Android 键盘，它弹起时强制打开状态栏和导航栏，收起时**不会通知应用**。
+上游还记了一条限制值得带过来：**Android 上系统 UI 在上次改动后一秒内不能再改**，
+而理由不是性能——是为了让恶意软件没法靠"重新藏得比人反应还快"来永久藏掉导航键。
+
+**`setPreferredOrientations`** 的空列表**不是**"没有表达偏好"，而是"偏好为空"，
+上游把如何解读留给平台。照原样发送；替应用做决定是嵌入层的事，不是这里的。
+
+变异：六条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5429 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

@@ -561,6 +561,73 @@ pub fn exit_application(
 pub struct SystemChrome;
 
 impl SystemChrome {
+    /// Upstream `SystemChrome.setPreferredOrientations`.
+    ///
+    /// An **empty** list is not "no preference expressed" -- it is a
+    /// preference for nothing, which upstream's own doc says the platform is
+    /// free to read as "any". The list is sent as given either way; deciding
+    /// on the application's behalf is the embedder's job and not this one's.
+    pub fn set_preferred_orientations(orientations: &[DeviceOrientation]) {
+        PLATFORM.invoke(
+            "SystemChrome.setPreferredOrientations",
+            Value::List(
+                orientations
+                    .iter()
+                    .map(|orientation| Value::from(orientation.wire_name()))
+                    .collect(),
+            ),
+        );
+    }
+
+    /// Upstream `SystemChrome.restoreSystemUIOverlays`: put the bars back the
+    /// way [`SystemUiMode`] last asked for.
+    ///
+    /// It exists because the platform can overrule the application. Upstream's
+    /// example is the Android keyboard, which force-enables the status and
+    /// navigation bars while it is up; when it closes, nothing tells the
+    /// application, and this is how the bars get hidden again.
+    ///
+    /// Upstream also records a limit worth carrying: **on Android the system
+    /// UI cannot be changed until a second after the previous change**, and
+    /// the reason is not performance -- it is so that malware cannot hide the
+    /// navigation buttons permanently by re-hiding them faster than a reader
+    /// can act.
+    pub fn restore_system_ui_overlays() {
+        PLATFORM.invoke("SystemChrome.restoreSystemUIOverlays", Value::Null);
+    }
+
+    /// Upstream `SystemChrome.setSystemUIChangeCallback`, reduced to the one
+    /// decision it makes: **whether to tell the host there is a listener**.
+    ///
+    /// ```dart
+    /// ServicesBinding.instance.setSystemUiChangeCallback(callback);
+    /// // Skip setting up the listener if there is no callback.
+    /// if (callback != null) {
+    ///   await SystemChannels.platform.invokeMethod<void>('SystemChrome.setSystemUIChangeListener');
+    /// }
+    /// ```
+    ///
+    /// **Registering tells the host; clearing does not.** There is no
+    /// un-register message, so a host told once keeps reporting and the
+    /// framework drops what it no longer has a callback for. That is not an
+    /// oversight to smooth over: the message is a request for a *feature*,
+    /// and the platform side of it has no off switch.
+    ///
+    /// The callback is only ever called in the modes where the overlays can
+    /// come and go on their own -- `leanBack`, `immersive`,
+    /// `immersiveSticky`. In `edgeToEdge` the overlays are always visible and
+    /// it never fires, and in `manual` it fires **only when every overlay has
+    /// been disabled**, which upstream notes makes that case behave like
+    /// `leanBack`.
+    ///
+    /// Returns whether the host has to be told.
+    pub fn set_system_ui_change_callback(has_callback: bool) -> bool {
+        if has_callback {
+            PLATFORM.invoke("SystemChrome.setSystemUIChangeListener", Value::Null);
+        }
+        has_callback
+    }
+
     /// Sets the title and colour the platform's task switcher shows.
     ///
     /// `primary_color` is 0xAARRGGBB, the same encoding as everything else here.
@@ -841,6 +908,81 @@ mod tests {
                 "{cursor:?} => {kind}"
             );
         }
+    }
+
+    // -- The rest of SystemChrome -------------------------------------------
+
+    /// The one method call the recorder saw, decoded.
+    fn only_call(recorder: &super::super::tests_support::Recorder) -> (String, Value) {
+        let mut sent = recorder.sent();
+        assert_eq!(sent.len(), 1, "one message");
+        let (channel, bytes, _) = sent.remove(0);
+        assert_eq!(channel, "flutter/platform");
+        let call = JsonMethodCodec.decode_method_call(&bytes).unwrap();
+        (call.method, call.arguments)
+    }
+
+    #[test]
+    fn preferred_orientations_go_out_as_the_dart_enums_own_rendering() {
+        // The embedder reads `"DeviceOrientation.portraitUp"`, not
+        // `"portraitUp"`: upstream sends `orientation.toString()`.
+        let recorder = install();
+        SystemChrome::set_preferred_orientations(&[
+            DeviceOrientation::PortraitUp,
+            DeviceOrientation::LandscapeLeft,
+        ]);
+        let (method, arguments) = only_call(&recorder);
+        assert_eq!(method, "SystemChrome.setPreferredOrientations");
+        assert_eq!(
+            arguments,
+            Value::List(vec![
+                Value::from("DeviceOrientation.portraitUp"),
+                Value::from("DeviceOrientation.landscapeLeft"),
+            ])
+        );
+    }
+
+    #[test]
+    fn and_an_empty_list_is_sent_as_an_empty_list() {
+        // Not "no preference expressed" -- a preference for nothing, which
+        // upstream leaves the platform to read as "any". Deciding on the
+        // application's behalf is the embedder's job.
+        let recorder = install();
+        SystemChrome::set_preferred_orientations(&[]);
+        let (method, arguments) = only_call(&recorder);
+        assert_eq!(method, "SystemChrome.setPreferredOrientations");
+        assert_eq!(arguments, Value::List(Vec::new()));
+    }
+
+    #[test]
+    fn restoring_the_overlays_carries_no_argument() {
+        // It restores whatever `setEnabledSystemUIMode` last asked for, so
+        // there is nothing to say. The state is the host's.
+        let recorder = install();
+        SystemChrome::restore_system_ui_overlays();
+        let (method, arguments) = only_call(&recorder);
+        assert_eq!(method, "SystemChrome.restoreSystemUIOverlays");
+        assert_eq!(arguments, Value::Null);
+    }
+
+    #[test]
+    fn registering_a_ui_change_callback_tells_the_host_and_clearing_it_does_not() {
+        // The asymmetry, and it is not an oversight: the message is a request
+        // for a feature, and the platform side of it has no off switch. A
+        // host told once keeps reporting, and the framework drops what it no
+        // longer has a callback for.
+        let recorder = install();
+        assert!(SystemChrome::set_system_ui_change_callback(true));
+        let (method, arguments) = only_call(&recorder);
+        assert_eq!(method, "SystemChrome.setSystemUIChangeListener");
+        assert_eq!(arguments, Value::Null);
+
+        let recorder = install();
+        assert!(!SystemChrome::set_system_ui_change_callback(false));
+        assert!(
+            recorder.sent().is_empty(),
+            "clearing it says nothing at all"
+        );
     }
 
     // -- One message per turn, whatever the frame asked for ------------------
