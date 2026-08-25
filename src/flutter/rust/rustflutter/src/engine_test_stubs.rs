@@ -692,7 +692,10 @@ pub fn layer_calls() -> LayerCalls {
 /// with nothing readable behind it here, and recording that it happened
 /// without recording its shape would invite a test that proves less than it
 /// appears to.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// `Clone` but **not `Copy`**: [`Drawn::Paragraph`] carries the string that was
+/// drawn, and a call that says a rectangle was drawn somewhere without saying
+/// what text went with it is the blind spot this recorder exists to close.
+#[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum Drawn {
     Rect {
@@ -716,6 +719,23 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
         argb: u32,
+    },
+    /// Text, which recorded **nothing at all** before: like the arc below,
+    /// `rf_canvas_draw_paragraph` had an empty body.
+    ///
+    /// The cost was not only that no test could check what was written. It was
+    /// that **no test could see text in a draw order at all**, so every rule of
+    /// the form "this goes down before the glyphs" was unaskable, and two
+    /// tests in `editable.rs` said so in their own comments while asserting the
+    /// weaker thing they could reach.
+    ///
+    /// The text is the shaped string, not the glyphs: this stub does not
+    /// pretend to shape. Where it landed is the baseline-less top-left corner
+    /// the crate passes to `drawParagraph`.
+    Paragraph {
+        text: String,
+        x: f32,
+        y: f32,
     },
     /// An arc, which recorded **nothing at all** before: the stub's
     /// `rf_canvas_draw_arc` had an empty body, so a spinner's arc was not a
@@ -847,6 +867,11 @@ impl Drawn {
                 right: right + dx,
                 bottom: bottom + dy,
                 argb,
+            },
+            Drawn::Paragraph { text, x, y } => Drawn::Paragraph {
+                text,
+                x: x + dx,
+                y: y + dy,
             },
             Drawn::Arc {
                 left,
@@ -1217,6 +1242,10 @@ pub unsafe extern "C" fn rf_canvas_draw_paragraph(
     x: f32,
     y: f32,
 ) {
+    let text = unsafe { stub_paragraph(paragraph) }
+        .map(|paragraph| paragraph.text.clone())
+        .unwrap_or_default();
+    record(Drawn::Paragraph { text, x, y });
 }
 
 #[unsafe(no_mangle)]

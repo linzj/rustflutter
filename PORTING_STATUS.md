@@ -14696,3 +14696,60 @@ use_center, argb }`。加完之后没有一条既有测试变红——和上一�
 `unpainted.py`：11 → 9 处无人观察的绘制调用，13 个文件里有观察者的从 7 增至 8。
 
 5169 测试通过，完整 GN 门过。
+
+## 第 158 轮 — 24 小时表盘上，被选中的那个小时从来没有被高亮过
+
+`rf_canvas_draw_paragraph` 和上一轮的 `draw_arc` 一样，函数体是空的。
+文字从来没被记录过，代价不只是"查不了写了什么"——**是任何"这个要画在字的下面"
+的规则都问不出口**，而 `editable.rs` 里有两条测试在自己的注释里写着这件事，
+一边断言着它们够得着的那个较弱的说法。
+
+加上 `Drawn::Paragraph { text, x, y }`。`Drawn` 因此从 `Copy` 降为 `Clone`
+（`String` 不是 `Copy`），`render.rs` 里五处 `.copied()` 跟着改。
+加完之后照例没有一条既有测试变红。
+
+### 打开之后，三件事
+
+**1. 一条测试的名字是假的。**
+`an_empty_field_showing_a_hint_still_draws_its_caret` 从来没设过占位文字——
+`field` 辅助函数不调 `with_placeholder`。它建的是一个空空如也的字段，
+而在 paragraph 不被记录之前，没有任何东西能说破。现在它真的设一个，
+并断言插入符画在占位文字**之上**：藏在灰色提示后面的插入符，
+会让一个正握着键盘的字段看起来没有焦点。
+
+**2. 一条测试终于能问它本来的问题。**
+`the_highlight_is_the_first_mark_of_the_frame` 的注释写着"that half cannot be
+checked here, because paragraphs are not recorded and there is no glyph in the
+list to be before"。现在有了。改名为
+`the_highlight_goes_down_before_the_glyphs_it_highlights`，
+断言真正的规则：填充矩形画在字之后会盖住它本要高亮的字。
+
+**3. 一个真缺陷。**
+
+`TimeDial::paint_labels` 里 `enumerate()` 在 `filter` **之前**，
+所以 `index` 是标签在 `self.labels` 里的下标；而调用方传的 `only_index` 是
+**它在那一圈里的位置**（从角度和 `ring_len` 算出来的，0..len-1）。
+
+外圈从 0 开始，两种编号恰好相同，所以一直看不出来。
+**内圈是 labels 12..23，`only_index` 的 0..11 一个都匹配不上**——
+24 小时表盘上，被选中的小时永远不会用选择器的颜色重绘，
+它就以普通标签色躺在选择器圆点下面。而这一切没有任何测试能看见，
+因为 paragraph 不被记录。
+
+`enumerate()` 移到 `filter` 之后。
+
+### 表盘标签的七条断言
+
+12 小时圈是 12 个数字、从 12 开始；第一个在正上方且顺时针推进
+（起点错会整体旋转，符号错会镜像，两种坏法不同）；分钟圈每五分钟一个；
+24 小时是双圈且内圈确实更靠内；被选中的那个数字最后再画一遍、落在原位。
+
+居中那条我第一版写错了：记录的是段落的**左上角**，所以对置两个标签的 y
+中点并不落在圆心上——它整体上移半个行高，而这**正是**判别式：
+挂在角上画的话中点会正好落在圆心。改成断言"每一对对置标签的中点一致，
+且在圆心上方"。
+
+四条变异全红：把 `enumerate` 挪回 `filter` 之前（24 小时那两条红）、
+标签挂角画、圈子逆时针、以及在高亮之前先画一遍字。
+
+5176 测试通过，完整 GN 门过。

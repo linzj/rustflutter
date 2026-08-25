@@ -2257,9 +2257,10 @@ mod painted_field_tests {
     //! selection goes down before the glyphs, a run crossing a wrap is one
     //! rectangle per line, and there is no caret while a run is selected.
     //!
-    //! The glyphs themselves are a paragraph, which the recorder does not read
-    //! back. So what is pinned is where the rectangles are and in what order,
-    //! not what the text looks like.
+    //! The glyphs are a paragraph, and the recorder reads those back now: the
+    //! text that was drawn and where it landed, though not its shaping. That
+    //! is enough for the ordering rules, which is what two of the tests here
+    //! were written around and could not ask.
     //!
     //! # The wrapping ones came back
     //!
@@ -2352,34 +2353,61 @@ mod painted_field_tests {
     }
 
     #[test]
-    fn the_highlight_is_the_first_mark_of_the_frame() {
-        // As far as this can see. The rule beside the code is that the
-        // highlight goes down *before the glyphs*, because a filled rectangle
-        // drawn after them would cover the text it is meant to be
-        // highlighting -- and that half cannot be checked here, because
-        // paragraphs are not recorded and there is no glyph in the list to be
-        // before.
+    fn the_highlight_goes_down_before_the_glyphs_it_highlights() {
+        // The rule beside the code, and until the stub started recording
+        // paragraphs this test could not ask it: there was no glyph in the
+        // list to be before, so it asserted the weaker "nothing else gets in
+        // first" and said so.
         //
-        // What is checked is that nothing else gets in first, which is the
-        // part that would break if the block moved below the caret or the
-        // composing underline.
+        // The rule matters because a filled rectangle drawn *after* the text
+        // covers the text it is meant to be highlighting. A selection that
+        // blanks out the words inside it is the failure this prevents, and it
+        // is one line's worth of reordering away.
         let calls = painted(field("hello", 1, 4), 300.0);
         let highlight = calls
             .iter()
             .position(|call| matches!(call, Drawn::Rect { argb, .. } if *argb == SELECTION.0))
             .expect("the highlight");
-        assert_eq!(highlight, 0, "the first thing drawn: {calls:?}");
+        let glyphs = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Paragraph { .. }))
+            .expect("the text");
+        assert!(
+            highlight < glyphs,
+            "the highlight is under the words, not over them: {calls:?}"
+        );
+        assert_eq!(highlight, 0, "and nothing else gets in first");
     }
 
     #[test]
     fn an_empty_field_showing_a_hint_still_draws_its_caret() {
-        // The placeholder is a paragraph and the caret is a rectangle, so the
-        // caret is the only one of the two this can see -- which is the case
-        // worth pinning anyway: a field with nothing in it still says where
-        // typing will go.
-        let calls = painted(field("", 0, 0), 300.0);
+        // This test was named for a hint and never set one -- `field` does not
+        // call `with_placeholder`, so what it built was an empty field with
+        // nothing to show, and while paragraphs went unrecorded there was
+        // nothing that could tell. It sets one now.
+        //
+        // Both halves are worth pinning. A field with nothing in it still says
+        // where typing will go, and the caret is drawn *over* the placeholder
+        // rather than under it: a caret hidden behind grey hint text is a
+        // field that looks unfocused while it has the keyboard.
+        let mut hint_style = TextStyle::default();
+        hint_style.color = TEXT;
+        let calls = painted(
+            field("", 0, 0).with_placeholder("Search", hint_style),
+            300.0,
+        );
         assert_eq!(rects(&calls).len(), 1, "{calls:?}");
         assert_eq!(rects(&calls)[0].4, CARET.0);
+
+        let caret = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Rect { argb, .. } if *argb == CARET.0))
+            .expect("the caret");
+        let hint = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search"))
+            .expect("the placeholder");
+        assert!(caret > hint, "the caret sits over the hint: {calls:?}");
     }
 
     #[test]

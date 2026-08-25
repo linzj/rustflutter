@@ -24873,7 +24873,7 @@ mod paint_respects_its_offset_tests {
             // not move; the layer carries the whole translation.
             let layers: Vec<Drawn> = moved
                 .iter()
-                .copied()
+                .cloned()
                 .filter(|call| matches!(call, Drawn::OffsetLayer { .. }))
                 .collect();
             assert_eq!(
@@ -24884,11 +24884,11 @@ mod paint_respects_its_offset_tests {
             let before: Vec<Drawn> = at_origin
                 .iter()
                 .take_while(|call| !matches!(call, Drawn::OffsetLayer { .. }))
-                .map(|call| call.translated(17.0, 23.0))
+                .map(|call| call.clone().translated(17.0, 23.0))
                 .collect();
             let moved_before: Vec<Drawn> = moved
                 .iter()
-                .copied()
+                .cloned()
                 .take_while(|call| !matches!(call, Drawn::OffsetLayer { .. }))
                 .collect();
             assert_eq!(moved_before, before, "{name}: drawn before the layer");
@@ -24897,7 +24897,7 @@ mod paint_respects_its_offset_tests {
 
         let expected: Vec<Drawn> = at_origin
             .iter()
-            .map(|call| call.translated(17.0, 23.0))
+            .map(|call| call.clone().translated(17.0, 23.0))
             .collect();
         assert_eq!(moved, expected, "{name}");
     }
@@ -24933,7 +24933,7 @@ mod paint_respects_its_offset_tests {
         });
 
         let (at_origin, moved) = both(|| Box::new(RenderImage::new(image())));
-        match (at_origin[0], moved[0]) {
+        match (&at_origin[0], &moved[0]) {
             (Drawn::ImageRect { source: first, .. }, Drawn::ImageRect { source: second, .. }) => {
                 assert_eq!(first, second, "the source window stayed put")
             }
@@ -24956,14 +24956,14 @@ mod paint_respects_its_offset_tests {
         let layer = calls
             .iter()
             .find(|call| matches!(call, Drawn::OffsetLayer { .. }))
-            .copied();
+            .cloned();
         assert_eq!(
             layer,
             Some(Drawn::OffsetLayer { dx: 17.0, dy: 23.0 }),
             "the whole translation, in the layer"
         );
 
-        let child = calls.last().copied().expect("the child drew something");
+        let child = calls.last().cloned().expect("the child drew something");
         assert_eq!(
             child,
             Drawn::Rect {

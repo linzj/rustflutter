@@ -2674,11 +2674,20 @@ impl TimeDial {
         color: Color,
         only_index: Option<usize>,
     ) {
-        let ring: Vec<(usize, &DialLabel)> = self
+        // **Enumerated after the filter, not before.** `only_index` is a
+        // position within this ring -- the caller computes it from an angle
+        // and `ring_len` -- and numbering these by their index in `labels`
+        // instead made the two agree only for the outer ring, where the two
+        // happen to coincide because it starts at zero.
+        //
+        // On a 24-hour face the inner ring is labels 12..23, so `only_index`
+        // of 0..11 matched nothing and the selected hour was never repainted
+        // in the selector colour. It sat under the dot in the ordinary label
+        // colour, and no test could see it: paragraphs went unrecorded.
+        let ring: Vec<&DialLabel> = self
             .labels
             .iter()
-            .enumerate()
-            .filter(|(_, label)| label.inner == inner)
+            .filter(|label| label.inner == inner)
             .collect();
         if ring.is_empty() {
             return;
@@ -2688,7 +2697,7 @@ impl TimeDial {
         let increment = -TWO_PI / ring.len() as f32;
         let mut theta = std::f32::consts::FRAC_PI_2;
         let direction = current_direction();
-        for (index, label) in ring {
+        for (index, label) in ring.into_iter().enumerate() {
             if only_index.is_some_and(|only| only != index) {
                 theta += increment;
                 continue;
@@ -6244,8 +6253,10 @@ mod dial_geometry_tests {
     //! `_DialPainter.paint` is arithmetic over five constants and nothing in
     //! the crate could see any of it. What is pinned here is the shape of the
     //! picture -- where the face is, where the hand points, how long it is --
-    //! rather than the labels, which go through a paragraph the recorder does
-    //! not read back.
+    //! and, since the stub started recording paragraphs, where the labels are
+    //! and which is which. A ring of numbers whose order or starting point is
+    //! wrong is a clock face that reads as a clock face and tells the wrong
+    //! time.
 
     use super::{
         DIAL_CENTER_RADIUS, DIAL_DOT_RADIUS, DIAL_HAND_WIDTH, DIAL_MIN_RADIUS, DIAL_PADDING,
@@ -6423,3 +6434,215 @@ mod dial_geometry_tests {
         assert!(DIAL_HAND_WIDTH > 0.0);
     }
 }
+
+// -- The ring of numbers on the dial ------------------------------------------
+
+#[cfg(test)]
+mod dial_label_tests {
+    //! Where each number sits on the face.
+    //!
+    //! Unreachable until the stub started recording paragraphs: the labels are
+    //! the only part of a clock face that says what time it is, and a ring
+    //! that starts at three o'clock or runs anticlockwise looks exactly as
+    //! much like a clock as one that is right.
+
+    use super::{DialLabel, HourMinuteMode, TimeDial, dial_labels};
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const SIDE: f32 = 260.0;
+
+    fn dial_with(labels: Vec<DialLabel>) -> TimeDial {
+        TimeDial {
+            labels,
+            theta: std::f32::consts::FRAC_PI_2,
+            radius: 0.0,
+            extent: Rc::new(Cell::new(0.0)),
+            background: Color(0xff111111),
+            hand: Color(0xff222222),
+            dot_text: Color(0xff333333),
+            label_color: Color(0xff444444),
+            label_size: 14.0,
+            size: Size::ZERO,
+        }
+    }
+
+    fn labels_of(mut dial: TimeDial) -> Vec<(String, f32, f32)> {
+        dial.layout(BoxConstraints::tight(SIDE, SIDE));
+        let mut layers = LayerTree::new(600, 600);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(600.0, 600.0));
+            dial.paint(&mut context, Offset::ZERO);
+        }
+        drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Paragraph { text, x, y } => Some((text.clone(), *x, *y)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every label the face drew, in order. The last one is a repaint -- see
+    /// [`the_selected_number_is_drawn_again_over_the_selector`] -- so the ring
+    /// itself is everything but the tail.
+    fn ring_of(dial: TimeDial) -> Vec<(String, f32, f32)> {
+        let mut all = labels_of(dial);
+        all.pop();
+        all
+    }
+
+    #[test]
+    fn the_twelve_hour_ring_is_twelve_numbers_starting_at_twelve() {
+        let drawn = ring_of(dial_with(dial_labels(HourMinuteMode::Hour, false)));
+        let texts: Vec<&str> = drawn.iter().map(|(text, ..)| text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["12", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]
+        );
+    }
+
+    #[test]
+    fn the_first_number_is_at_the_top_and_the_ring_runs_clockwise() {
+        // Upstream's `_DialPainter.paintLabels` starts at twelve o'clock and
+        // steps by `-_kTwoPi / len`. Both halves matter and each fails
+        // differently: a wrong start rotates the whole face, and a wrong sign
+        // mirrors it.
+        let drawn = ring_of(dial_with(dial_labels(HourMinuteMode::Hour, false)));
+        assert_eq!(drawn.len(), 12);
+
+        let centre = SIDE / 2.0;
+        let (twelve, three, six, nine) = (&drawn[0], &drawn[3], &drawn[6], &drawn[9]);
+        assert_eq!(twelve.0, "12");
+        assert!(twelve.2 < centre, "12 is above the middle: {twelve:?}");
+        assert!((twelve.1 - centre).abs() < 12.0, "and roughly over it");
+
+        assert_eq!(three.0, "3");
+        assert!(three.1 > centre, "3 is a quarter turn clockwise, to the right");
+        assert!((three.2 - centre).abs() < 12.0);
+
+        assert_eq!(six.0, "6");
+        assert!(six.2 > centre, "6 is at the bottom");
+
+        assert_eq!(nine.0, "9");
+        assert!(nine.1 < centre, "9 is on the left, so the ring is not mirrored");
+    }
+
+    #[test]
+    fn each_number_is_centred_on_its_point_rather_than_hung_from_it() {
+        // `x - width / 2`, `y - height / 2`. Drawn from the corner instead,
+        // every number sits down and to the right of where it belongs -- by
+        // half its own size, so the wider ones drift further and the ring
+        // stops looking round.
+        //
+        // What is recorded is the paragraph's **top-left corner**, so the
+        // check is not that opposite labels are symmetric about the middle --
+        // they are not, and the first draft of this test asserted that and was
+        // wrong. Centring shifts every label up and left by half its own size,
+        // which is exactly what makes the midpoint of an opposite pair miss
+        // the centre.
+        //
+        // Hung from the corner instead, that midpoint would land **on** the
+        // centre. So: every opposite pair agrees on where the midpoint is, and
+        // it is above and to the left of the middle by half a label.
+        let drawn = ring_of(dial_with(dial_labels(HourMinuteMode::Hour, false)));
+        let centre = SIDE / 2.0;
+        let midpoint_y = |a: usize, b: usize| (drawn[a].2 + drawn[b].2) / 2.0;
+
+        // Every label is one line at one size, so every pair agrees.
+        let across_the_top = midpoint_y(0, 6);
+        for (a, b) in [(1, 7), (2, 8), (3, 9), (4, 10), (5, 11)] {
+            assert!(
+                (midpoint_y(a, b) - across_the_top).abs() < 0.01,
+                "pair {a}/{b} disagrees: {} against {across_the_top}",
+                midpoint_y(a, b)
+            );
+        }
+        assert!(
+            across_the_top < centre,
+            "half a line above the middle, not on it: {across_the_top} against {centre}"
+        );
+
+        // And the same sideways, on a pair whose two labels are the same width.
+        let midpoint_x = (drawn[3].1 + drawn[9].1) / 2.0;
+        assert_eq!(drawn[3].0.len(), drawn[9].0.len(), "3 and 9 are one glyph each");
+        assert!(
+            midpoint_x < centre,
+            "half a glyph left of the middle: {midpoint_x} against {centre}"
+        );
+    }
+
+    #[test]
+    fn the_minute_ring_is_marked_every_five() {
+        // Upstream's `_buildMinutes` labels 0, 5, 10 ... rather than all sixty:
+        // a face with sixty numbers on it cannot be read.
+        let drawn = ring_of(dial_with(dial_labels(HourMinuteMode::Minute, false)));
+        let texts: Vec<&str> = drawn.iter().map(|(text, ..)| text.as_str()).collect();
+        assert_eq!(texts.len(), 12);
+        assert_eq!(texts[0], "00");
+        assert_eq!(texts[1], "05");
+        assert_eq!(texts[3], "15");
+    }
+
+    #[test]
+    fn a_twenty_four_hour_face_has_two_rings_and_they_do_not_share_a_circle() {
+        // M3's double ring. The inner one is what a 24-hour clock adds, and it
+        // has to be *inner*: two rings at the same radius are one ring with
+        // every number drawn twice.
+        let labels = dial_labels(HourMinuteMode::Hour, true);
+        assert_eq!(labels.iter().filter(|label| label.inner).count(), 12);
+
+        let drawn = ring_of(dial_with(labels));
+        assert_eq!(drawn.len(), 24);
+        let centre = SIDE / 2.0;
+        let reach = |label: &(String, f32, f32)| {
+            ((label.1 - centre).powi(2) + (label.2 - centre).powi(2)).sqrt()
+        };
+        assert!(
+            reach(&drawn[12]) < reach(&drawn[0]),
+            "the second ring is inside the first: {} against {}",
+            reach(&drawn[12]),
+            reach(&drawn[0])
+        );
+    }
+
+    #[test]
+    fn the_selected_number_is_drawn_again_over_the_selector() {
+        // Upstream repaints every label in the selected colour clipped to the
+        // focused dot; only the one under the dot survives the clip, so this
+        // port repaints that one alone. The second copy has to land on the
+        // first, or the number under the selector is written twice in two
+        // places.
+        //
+        // It is drawn last, which is what puts it over the dot rather than
+        // under it.
+        let drawn = labels_of(dial_with(dial_labels(HourMinuteMode::Hour, false)));
+        assert_eq!(drawn.len(), 13, "twelve numbers and one repaint");
+        assert_eq!(drawn[12], drawn[0], "the same text at the same point");
+    }
+
+    #[test]
+    fn and_on_a_twenty_four_hour_face_too_where_the_selection_is_on_the_inner_ring() {
+        // The bug this test was written for. `paint_labels` numbered its
+        // labels by their index in `labels` rather than by their position in
+        // the ring it had just filtered, so `only_index` -- which the caller
+        // computes as a ring position -- matched nothing on the inner ring,
+        // whose indices run 12..23.
+        //
+        // The outer ring worked by coincidence: it starts at zero, so the two
+        // numberings agree. On a 24-hour face the selected hour simply was not
+        // highlighted, and nothing could see it, because paragraphs went
+        // unrecorded.
+        let drawn = labels_of(dial_with(dial_labels(HourMinuteMode::Hour, true)));
+        assert_eq!(drawn.len(), 25, "twenty-four numbers and one repaint");
+        assert_eq!(
+            drawn[24], drawn[12],
+            "the repaint lands on the first inner label"
+        );
+    }
+}
+
