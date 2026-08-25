@@ -5199,6 +5199,22 @@ pub struct ResolvedAppBar {
     pub toolbar_height: f32,
     pub center_title: bool,
     pub title_spacing: f32,
+    /// The elevation to use **while something is scrolled underneath**, which
+    /// is a different number from the resting one: Material 3 lifts a bar off
+    /// the content it is covering rather than keeping it flat. Upstream's
+    /// default is 3, and its last step falls back to the resting elevation
+    /// rather than to nothing.
+    pub scrolled_under_elevation: f32,
+    /// The icons on the trailing side. Upstream's chain reaches the bar's
+    /// *leading* icon theme and then the theme's before the defaults, so a
+    /// theme that set only `iconTheme` colours the actions too.
+    pub actions_icon_theme: IconThemeData,
+    /// How much room the leading slot reserves. Upstream's `_kLeadingWidth`
+    /// is `kToolbarHeight`, with the comment "So the leading button is
+    /// square" -- the number is the height for a reason.
+    pub leading_width: f32,
+    /// The style for text in the toolbar that is not the title.
+    pub toolbar_text_style: Option<TextStyle>,
 }
 
 impl ResolvedAppBar {
@@ -5206,6 +5222,10 @@ impl ResolvedAppBar {
     pub const TOOLBAR_HEIGHT: f32 = 56.0;
     /// Upstream's `NavigationToolbar.kMiddleSpacing`.
     pub const TITLE_SPACING: f32 = 16.0;
+    /// Upstream's `_AppBarDefaultsM3.scrolledUnderElevation`.
+    pub const SCROLLED_UNDER_ELEVATION: f32 = 3.0;
+    /// Upstream's default action icon size.
+    pub const ACTIONS_ICON_SIZE: f32 = 24.0;
 
     pub fn of(context: &mut BuildContext) -> ResolvedAppBar {
         ResolvedAppBar::of_with_center_title(context, None, 0)
@@ -5242,6 +5262,25 @@ impl ResolvedAppBar {
                 .or(data.center_title)
                 .unwrap_or_else(|| ResolvedAppBar::platform_center(platform, action_count)),
             title_spacing: data.title_spacing.unwrap_or(ResolvedAppBar::TITLE_SPACING),
+            scrolled_under_elevation: data
+                .scrolled_under_elevation
+                .unwrap_or(ResolvedAppBar::SCROLLED_UNDER_ELEVATION),
+            actions_icon_theme: data
+                .actions_icon_theme
+                .clone()
+                .or_else(|| data.icon_theme.clone())
+                .unwrap_or_else(|| {
+                    IconThemeData::new()
+                        .with_color(scheme.on_surface_variant())
+                        .with_size(ResolvedAppBar::ACTIONS_ICON_SIZE)
+                }),
+            leading_width: data
+                .leading_width
+                .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
+            toolbar_text_style: data
+                .toolbar_text_style
+                .clone()
+                .or_else(|| ThemeData::of(context).text_theme.body_medium.clone()),
         }
     }
 
@@ -15787,6 +15826,114 @@ mod tests {
             Some(11.0),
             "and a selected filter chip never asks for the secondary one"
         );
+    }
+
+    // -- Four app bar theme fields that reached nothing, tick 235 -----------
+    //
+    // `ResolvedAppBar` carried a background, a foreground, a height, the
+    // centring rule and the title spacing. `scrolledUnderElevation`,
+    // `actionsIconTheme`, `leadingWidth` and `toolbarTextStyle` reached
+    // nothing.
+    //
+    // Every value below is a number no other line in the test uses.
+
+    fn app_bar_under<T: 'static>(
+        data: AppBarThemeData,
+        read: impl Fn(&mut BuildContext) -> T + 'static,
+    ) -> T {
+        read_in(move |child| AppBarTheme::new(data.clone(), child), read)
+    }
+
+    #[test]
+    fn the_four_app_bar_fields_arrive_from_the_theme() {
+        let data = AppBarThemeData {
+            scrolled_under_elevation: Some(11.0),
+            leading_width: Some(22.0),
+            toolbar_text_style: Some(TextStyle {
+                font_size: 33.0,
+                ..TextStyle::default()
+            }),
+            actions_icon_theme: Some(IconThemeData::new().with_size(44.0)),
+            ..AppBarThemeData::new()
+        };
+        let resolved = app_bar_under(data, ResolvedAppBar::of);
+        assert_eq!(resolved.scrolled_under_elevation, 11.0);
+        assert_eq!(resolved.leading_width, 22.0);
+        assert_eq!(
+            resolved.toolbar_text_style.map(|style| style.font_size),
+            Some(33.0)
+        );
+        assert_eq!(resolved.actions_icon_theme.size, Some(44.0));
+    }
+
+    #[test]
+    fn the_actions_fall_through_the_bars_own_icon_theme_first() {
+        // Upstream's chain reaches `appBarTheme.iconTheme` before the
+        // defaults, so a theme that set only `iconTheme` colours the actions
+        // too -- the trailing icons follow the leading one unless told
+        // otherwise.
+        let through = app_bar_under(
+            AppBarThemeData {
+                icon_theme: Some(IconThemeData::new().with_size(55.0)),
+                ..AppBarThemeData::new()
+            },
+            ResolvedAppBar::of,
+        );
+        assert_eq!(through.actions_icon_theme.size, Some(55.0));
+
+        // And the actions' own field still wins over that.
+        let named = app_bar_under(
+            AppBarThemeData {
+                icon_theme: Some(IconThemeData::new().with_size(55.0)),
+                actions_icon_theme: Some(IconThemeData::new().with_size(66.0)),
+                ..AppBarThemeData::new()
+            },
+            ResolvedAppBar::of,
+        );
+        assert_eq!(named.actions_icon_theme.size, Some(66.0));
+    }
+
+    #[test]
+    fn the_leading_slot_is_square_by_default() {
+        // Upstream's `_kLeadingWidth` is `kToolbarHeight`, with the comment
+        // "So the leading button is square". The number is the height for a
+        // reason, so this checks the *relationship* and not a literal 56.
+        let plain = read_in(|child| child, ResolvedAppBar::of);
+        assert_eq!(plain.leading_width, plain.toolbar_height);
+        assert_eq!(plain.leading_width, ResolvedAppBar::TOOLBAR_HEIGHT);
+    }
+
+    #[test]
+    fn scrolling_under_lifts_the_bar_by_a_different_number() {
+        // Material 3 lifts a bar off the content it is covering rather than
+        // keeping it flat, so the two elevations are two numbers and a
+        // resolver that answered one for both would be wrong in a way nothing
+        // else here would notice.
+        let plain = read_in(|child| child, ResolvedAppBar::of);
+        assert_eq!(
+            plain.scrolled_under_elevation,
+            ResolvedAppBar::SCROLLED_UNDER_ELEVATION
+        );
+        assert_ne!(
+            ResolvedAppBar::SCROLLED_UNDER_ELEVATION,
+            0.0,
+            "the resting elevation is zero under Material 3, so an equal pair \
+             would mean the bar never lifts"
+        );
+    }
+
+    #[test]
+    fn the_toolbar_style_ends_at_the_typographys_body_medium() {
+        // Upstream's last step is `textTheme.bodyMedium`. Without this the
+        // fallback could be dropped entirely and the test above -- which only
+        // asks what the theme's own value resolves to -- would stay green.
+        let plain = read_in(|child| child, ResolvedAppBar::of);
+        assert_eq!(
+            plain.toolbar_text_style,
+            crate::theme::ThemeData::light().text_theme.body_medium,
+            "and it is not nothing"
+        );
+        assert!(plain.toolbar_text_style.is_some());
     }
 }
 

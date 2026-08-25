@@ -41,6 +41,15 @@ under-report: a field named `color` is "read" by anything anywhere that says
 `.color`. Every name it *does* report appears nowhere outside its own
 paperwork at all.
 
+# Deprecated upstream is not a queue entry
+
+A theme upstream marks `@Deprecated` is excluded, the same rule
+`tools/unwired.py` uses and for the same reason: `ButtonBarThemeData`'s six
+fields are read only by upstream's deprecated `ButtonBar`, this port maps
+`ButtonBar` to `OverflowBar` as the deprecation notice says to, and
+`OverflowBar` consults no theme. A wire invented for them would be a resolver
+for a widget that does not exist.
+
 # Not a queue to drive to zero blindly
 
 Upstream itself carries theme fields nothing in the framework reads -- a
@@ -56,6 +65,35 @@ SRC = os.path.join('K:', os.sep, 'rustflutter', 'src', 'flutter', 'rust',
 # The files that declare themes, and so do not count as readers of them.
 DECLARING = {'component_themes.rs', 'slider_theme.rs', 'theme.rs',
              'color_scheme.rs'}
+
+
+UPSTREAM = os.path.join('K:', os.sep, 'flutter', 'packages', 'flutter', 'lib',
+                        'src')
+
+
+def deprecated_upstream():
+    """Theme types whose upstream `class X` carries an `@Deprecated`.
+
+    Read from the declaration rather than from a list here, so the answer
+    follows upstream instead of following a note somebody wrote once. Same
+    body as `unwired.py`'s, and for the same reason.
+    """
+    if not os.path.isdir(UPSTREAM):
+        return set()
+    out = set()
+    for root, _dirs, files in os.walk(UPSTREAM):
+        for name in files:
+            if not name.endswith('.dart'):
+                continue
+            text = io.open(os.path.join(root, name),
+                           encoding='utf-8', errors='replace').read()
+            for match in re.finditer(r'^class (\w+Theme(?:Data)?)\b', text, re.M):
+                head = text[max(0, match.start() - 240):match.start()]
+                if '@Deprecated' not in head.rsplit('///', 1)[-1]:
+                    continue
+                out.add(match.group(1))
+                out.add(match.group(1).removesuffix('Data'))
+    return out
 
 
 def theme_fields():
@@ -112,6 +150,7 @@ def reads(theme, field, files):
 
 def main():
     fields = theme_fields()
+    retired = deprecated_upstream()
     files = {}
     for name in sorted(os.listdir(SRC)):
         if name.endswith('.rs'):
@@ -120,12 +159,20 @@ def main():
                     '\r\n', '\n')
     total = 0
     unread = []
+    skipped = []
     for theme in sorted(fields):
+        if theme in retired:
+            skipped.append((theme, len(fields[theme])))
+            continue
         for where, field in fields[theme]:
             total += 1
             if not reads(theme, field, files):
                 unread.append((theme, field, where))
-    print('%d public theme fields across %d themes' % (total, len(fields)))
+    print('%d public theme fields across %d themes'
+          % (total, len(fields) - len(skipped)))
+    for theme, count in skipped:
+        print('  (%s: %d fields, deprecated upstream, not a queue entry)'
+              % (theme, count))
     if not unread:
         print('0 of them are named nowhere outside their own paperwork')
         return 0

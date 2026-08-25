@@ -17617,3 +17617,42 @@ chipTheme.iconTheme?.color ?? defaults`——所以只设了图标颜色的主�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 125 → 118**。
 门：5625 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 235 次：有一族**不该接**，尺子学会了不报它
+
+`ButtonBarThemeData` 的六个字段一直挂在队列里，像是六个缺陷。它们不是：上游把
+`ButtonBar` 和它的主题都标了
+`@Deprecated("Use OverflowBar instead")`，这个端口按那句话把 `ButtonBar` 映射
+到 `OverflowBar`，而 `OverflowBar` 从不查主题。给它们接线，等于为一个不存在的
+widget 造一个解析器——这一点该类型自己的文档早就写明了。
+
+`unwired.py` 早有这条规则，而且是**从上游的 `@Deprecated` 读出来的，不是从
+谁写过的一张名单**。这把尺子现在也这样做，并且把跳过的那一族单独列出来，
+而不是悄悄从分母里减掉。**118 → 112**，减掉的是不该接的。
+
+### 接上 `AppBarThemeData` 的四条
+
+`ResolvedAppBar` 带的是背景、前景、高度、居中规则、标题间距。
+`scrolledUnderElevation`、`actionsIconTheme`、`leadingWidth`、
+`toolbarTextStyle` 四个到不了。
+
+三处上游的细节值得记：
+
+- **"被滚过"是另一个数**。Material 3 会把栏从它遮住的内容上抬起来，而不是
+  一直平贴，所以静止和被滚过是两个高度（M3 静止是 0，被滚过是 3）。
+- **动作图标先回落到栏自己的图标主题**。上游的链是
+  `actionsIconTheme ?? theme.actionsIconTheme ?? iconTheme ?? theme.iconTheme
+  ?? defaults`——只设了 `iconTheme` 的主题，尾部图标也会跟着变。
+- **前导槽默认是方的**。上游 `_kLeadingWidth = kToolbarHeight`，注释写着
+  "So the leading button is square"。测试查的是这个**关系**而不是字面的 56。
+
+**一处第一轮读绿。**`toolbar_text_style` 的回落被整个去掉，套件没反应——我的
+测试只问了"主题给的值解析成什么"，没问"什么都不给时回落到哪"。补了一条。
+
+四条承重规则最终逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 118 → 107**（其中 6 条是
+剔除废弃族，5 条是真接上的）。
+门：5630 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
