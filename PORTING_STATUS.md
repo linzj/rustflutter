@@ -16868,3 +16868,32 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5452 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 216 次：左右和首尾不是同一对边，所以只能分两半来
+
+**25 → 15。**
+
+两处。`StadiumBorder` 与圆、与圆角矩形的那两支各自还插值一条边框，而我在第
+212 次写的测试只问了 `circularity` 和 `rectilinearity`——**那一行一直是自由的**。
+把两端的边框宽度也拉开再读一次。
+
+另一处是这个文件里最绕的一段：`BoxBorder::lerp` 里"统一边框变成方向边框"。
+
+`left`/`right` 和 `start`/`end` **不是同一对边**——一个是固定的，一个要看阅读
+方向。它们之间没有可插值的东西，所以上游做了唯一诚实的处理：把真正对应的
+`top` 和 `bottom` 直接对插，然后**前半段把左右淡出、后半段把首尾淡入**，
+结果在中点换类型。左右用 `t * 2.0`、首尾用 `(t - 0.5) * 2.0`，各自在自己那半
+段里走完整程。
+
+上游还有一条捷径在两段式代码之前：目标的首尾都为空时没有东西可淡入，于是整段
+动画就是左右按**普通速率**淡出——走两段式的边框会有一半时间站着不动。
+
+反方向靠交换两端并取 `1.0 - t` 复用同一段算术，而那只有在**交换把 `t` 一起带
+走**时才对：少了那个 `1.0 - t`，读者要求倒放而动画正放。
+
+写这几条时我自己把 12 到 32 的四分之一算成了 16（是 17），三条测试同时转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5455 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

@@ -5744,6 +5744,152 @@ mod tests {
         }
     }
 
+    // -- A uniform border becoming a directional one ------------------------
+
+    /// The width of each side of whichever kind of box border came back.
+    fn box_widths(border: &BoxBorder) -> (f32, f32, f32, f32, f32, f32) {
+        match border {
+            BoxBorder::Uniform(border) => (
+                border.top.width,
+                border.bottom.width,
+                border.left.width,
+                border.right.width,
+                0.0,
+                0.0,
+            ),
+            BoxBorder::Directional(border) => (
+                border.top.width,
+                border.bottom.width,
+                0.0,
+                0.0,
+                border.start.width,
+                border.end.width,
+            ),
+            BoxBorder::None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn a_uniform_border_becoming_a_directional_one_does_it_in_two_halves() {
+        // The most intricate lerp in this file and none of it was asserted.
+        //
+        // `left`/`right` and `start`/`end` are not the same pair of edges --
+        // one is fixed and the other reads. There is no interpolating between
+        // them, so upstream does the only honest thing: it takes the sides
+        // that **do** correspond, `top` and `bottom`, straight across, and
+        // spends the first half of the animation fading the left and the
+        // right out and the second half fading the start and the end in. The
+        // result changes type at the midpoint.
+        let uniform = BoxBorder::Uniform(Border::new(
+            wide(4.0),
+            wide(8.0),
+            wide(12.0),
+            wide(16.0),
+        ));
+        let directional = BoxBorder::Directional(BorderDirectional::new(
+            wide(20.0),
+            wide(24.0),
+            wide(28.0),
+            wide(32.0),
+        ));
+
+        // A quarter of the way: still a uniform border, and half way through
+        // the fading-out of the left and the right.
+        let quarter = BoxBorder::lerp(Some(uniform), Some(directional), 0.25);
+        assert!(
+            matches!(quarter, BoxBorder::Uniform(_)),
+            "before the midpoint it is still the shape it started as"
+        );
+        let (top, bottom, left, right, ..) = box_widths(&quarter);
+        assert_eq!(top, 8.0, "a quarter of the way from 4 to 20");
+        assert_eq!(bottom, 17.0, "and from 12 to 32");
+        assert_eq!(right, 4.0, "8 fading out, halfway: `t * 2.0`");
+        assert_eq!(left, 8.0, "16 fading out, halfway");
+
+        // Three quarters: a directional border now, half way through the
+        // fading-in of the start and the end.
+        let three_quarters = BoxBorder::lerp(Some(uniform), Some(directional), 0.75);
+        assert!(
+            matches!(three_quarters, BoxBorder::Directional(_)),
+            "past the midpoint it is the shape it is becoming"
+        );
+        let (top, bottom, _, _, start, end) = box_widths(&three_quarters);
+        assert_eq!(top, 16.0, "three quarters of the way from 4 to 20");
+        assert_eq!(bottom, 27.0, "and from 12 to 32");
+        assert_eq!(start, 12.0, "24 fading in, halfway: `(t - 0.5) * 2.0`");
+        assert_eq!(end, 14.0, "28 fading in, halfway");
+    }
+
+    #[test]
+    fn and_the_same_pair_the_other_way_round_runs_backwards() {
+        // Upstream normalises by swapping the two and taking `1.0 - t`, so
+        // the whole of the arithmetic above is reused rather than written
+        // twice. That is only right if the swap takes `t` with it: without
+        // the `1.0 - t` the animation would play forwards while the reader
+        // asked for backwards.
+        let uniform = BoxBorder::Uniform(Border::new(
+            wide(4.0),
+            wide(8.0),
+            wide(12.0),
+            wide(16.0),
+        ));
+        let directional = BoxBorder::Directional(BorderDirectional::new(
+            wide(20.0),
+            wide(24.0),
+            wide(28.0),
+            wide(32.0),
+        ));
+
+        // Starting from the directional one, a quarter of the way along is
+        // three quarters of the way through the journey written above -- so
+        // it is *still* directional, and the start and end are on their way
+        // out rather than in.
+        let quarter = BoxBorder::lerp(Some(directional), Some(uniform), 0.25);
+        assert!(matches!(quarter, BoxBorder::Directional(_)));
+        let (top, bottom, _, _, start, end) = box_widths(&quarter);
+        assert_eq!(top, 16.0, "a quarter of the way from 20 down to 4");
+        assert_eq!(bottom, 27.0);
+        assert_eq!(start, 12.0);
+        assert_eq!(end, 14.0);
+
+        // And three quarters of the way back is the uniform quarter above.
+        let three_quarters = BoxBorder::lerp(Some(directional), Some(uniform), 0.75);
+        assert!(matches!(three_quarters, BoxBorder::Uniform(_)));
+        let (top, bottom, left, right, ..) = box_widths(&three_quarters);
+        assert_eq!(top, 8.0);
+        assert_eq!(bottom, 17.0);
+        assert_eq!(right, 4.0);
+        assert_eq!(left, 8.0);
+    }
+
+    #[test]
+    fn a_directional_border_with_no_start_or_end_needs_no_two_halves() {
+        // The shortcut above the two-phase code: there is nothing to fade in,
+        // so the whole animation is the top and the bottom crossing and the
+        // left and the right fading out at the ordinary rate. A border that
+        // took the two-phase path here would spend half the animation
+        // standing still.
+        let uniform = BoxBorder::Uniform(Border::new(
+            wide(4.0),
+            wide(8.0),
+            wide(12.0),
+            wide(16.0),
+        ));
+        let bare = BoxBorder::Directional(BorderDirectional::new(
+            wide(20.0),
+            BorderSide::NONE,
+            BorderSide::NONE,
+            wide(32.0),
+        ));
+        let quarter = BoxBorder::lerp(Some(uniform), Some(bare), 0.25);
+        assert!(matches!(quarter, BoxBorder::Uniform(_)), "and it stays uniform");
+        let (top, bottom, left, right, ..) = box_widths(&quarter);
+        assert_eq!(top, 8.0);
+        assert_eq!(bottom, 17.0);
+        assert_eq!(right, 6.0, "8 fading out at `t`, not `t * 2.0`");
+        assert_eq!(left, 12.0, "16 fading out at `t`");
+    }
+
     #[test]
     fn a_box_border_lerps_each_of_its_four_sides_on_its_own_line() {
         // Four independent lines, and a swap in one of them is one edge of a
@@ -6068,27 +6214,39 @@ mod tests {
         // which a stadium and a circle do not.
         let stadium = StadiumBorder::new(thick(2.0));
         let circle = CircleBorder {
-            side: thick(2.0),
+            side: thick(6.0),
             eccentricity: 0.25,
         };
+        // The side is read as well as the parameters. It is lerped on a
+        // line of its own in each of these arms, and a test that only asked
+        // about `circularity` left that line free to run backwards.
         let eccentricity = |lerp: StadiumLerp| match lerp {
             StadiumLerp::ToCircle {
                 circularity,
                 eccentricity,
-                ..
-            } => (circularity, eccentricity),
+                side,
+            } => {
+                assert!(
+                    side.width == 3.0 || side.width == 5.0,
+                    "a quarter of the way between 2 and 6, one way or the other"
+                );
+                (circularity, eccentricity, side.width)
+            }
             other => panic!("{other:?}"),
         };
+        // The stadium's side is 2 and the circle's is 6, so `lerp_to` runs
+        // from the stadium and lands at 3, while `lerp_from` runs towards it
+        // and lands at 5.
         assert_eq!(
             eccentricity(stadium.lerp_to(LerpPartner::Circle(circle), 0.25)),
-            (0.25, 0.25),
+            (0.25, 0.25, 3.0),
             "taken from the circle -- a stadium has none of its own"
         );
         // Both directions: whichever operand is the circle is the one asked,
         // and a test of only one leaves the other free to answer zero.
         assert_eq!(
             eccentricity(stadium.lerp_from(LerpPartner::Circle(circle), 0.25)),
-            (0.75, 0.25)
+            (0.75, 0.25, 5.0)
         );
     }
 
@@ -6129,20 +6287,24 @@ mod tests {
     fn and_a_rounded_rectangle_is_the_same_story_with_its_own_word() {
         let stadium = StadiumBorder::new(thick(2.0));
         let rounded = RoundedRectangleBorder {
-            side: thick(2.0),
+            side: thick(6.0),
             border_radius: BorderRadiusGeometry::Zero,
         };
         let rectilinearity = |lerp: StadiumLerp| match lerp {
-            StadiumLerp::ToRoundedRectangle { rectilinearity, .. } => rectilinearity,
+            StadiumLerp::ToRoundedRectangle {
+                rectilinearity,
+                side,
+                ..
+            } => (rectilinearity, side.width),
             other => panic!("{other:?}"),
         };
         assert_eq!(
             rectilinearity(stadium.lerp_to(LerpPartner::RoundedRectangle(rounded), 0.25)),
-            0.25
+            (0.25, 3.0)
         );
         assert_eq!(
             rectilinearity(stadium.lerp_from(LerpPartner::RoundedRectangle(rounded), 0.25)),
-            0.75
+            (0.75, 5.0)
         );
     }
 
