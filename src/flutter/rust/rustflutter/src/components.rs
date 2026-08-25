@@ -3096,20 +3096,73 @@ mod tests {
         );
     }
 
+    /// The colours a badge actually put on the glass: the pill and the label.
+    fn badge_colours(badge: Badge) -> (Option<u32>, Option<u32>) {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(badge)));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        let pill = calls.iter().find_map(|call| match call {
+            crate::engine_test_stubs::Drawn::RRect { argb, .. }
+            | crate::engine_test_stubs::Drawn::Rect { argb, .. } => Some(*argb),
+            _ => None,
+        });
+        let label = calls.iter().find_map(|call| match call {
+            crate::engine_test_stubs::Drawn::Paragraph { argb, .. } => Some(*argb),
+            _ => None,
+        });
+        (pill, label)
+    }
+
     #[test]
-    fn the_badges_own_colour_is_recorded_for_the_widget_step() {
-        // The widget-then-theme-then-default order has three steps and
-        // `ResolvedBadge` does the last two; the first is the widget's own
-        // `unwrap_or` in `build`. Which colour came out is not observable --
-        // the stub engine counts rectangles and does not say what colour they
-        // were -- so only the field the step reads is asserted here.
+    fn the_badges_own_colour_is_the_one_it_is_drawn_in() {
+        // This test used to assert only the field, and said why: "which colour
+        // came out is not observable -- the stub engine counts rectangles and
+        // does not say what colour they were". That stopped being true a long
+        // time ago for rectangles and at tick 176 for text, and the comment
+        // outlived the limitation it described.
+        //
+        // The widget-then-theme-then-default order has three steps;
+        // `ResolvedBadge` does the last two and the widget's own `unwrap_or`
+        // in `build` is the first. What is asserted now is the answer rather
+        // than the input to it.
         const MINE: Color = Color::argb(0xFF, 0x77, 0x66, 0x55);
+        const INK: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+
         assert_eq!(
             Badge::new("1").with_color(MINE).background_color,
             Some(MINE)
         );
         assert_eq!(Badge::new("1").background_color, None, "unset defers");
-        assert_eq!(Badge::new("1").with_text_color(MINE).text_color, Some(MINE));
+
+        let (pill, _) = badge_colours(Badge::new("1").with_color(MINE));
+        assert_eq!(pill, Some(MINE.0), "the pill is the colour it was given");
+
+        let (defaulted, _) = badge_colours(Badge::new("1"));
+        assert_ne!(defaulted, Some(MINE.0), "and an unset one is not");
+
+        let (_, label) = badge_colours(Badge::new("1").with_text_color(INK));
+        assert_eq!(label, Some(INK.0), "and so is the number on it");
+        let (_, plain) = badge_colours(Badge::new("1"));
+        assert_ne!(plain, Some(INK.0));
     }
 
     #[test]
@@ -3570,13 +3623,78 @@ mod tests {
         assert_eq!(tile_hit(tile(), (380.0, 40.0), 400.0), Some(TRAILING));
     }
 
+    /// Where the tile put its title, in the coordinates it was painted in.
+    ///
+    /// The title is built inside the tile and was not reachable from here for
+    /// that reason. It is reachable now: it goes out as a paragraph, and the
+    /// recorder keeps the text and where it landed.
+    fn title_x(tile: ListTile) -> f32 {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), component(tile)));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, x, .. } if text == "a" => {
+                    Some(*x)
+                }
+                _ => None,
+            })
+            .expect("the title was drawn")
+    }
+
+    #[test]
+    fn a_wider_reservation_pushes_the_title_further_along() {
+        // This claim used to sit in the test below as a comment saying it
+        // could not be made: "this harness can see neither the title (it is
+        // built inside the tile) nor the tile's intrinsic width". The first
+        // half stopped being true when the stub started recording paragraphs
+        // and where they landed.
+        //
+        // What `minLeadingWidth` reserves is room before the title, so the
+        // whole of its effect is that number.
+        let leading = || {
+            crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0))
+        };
+        let narrow = title_x(ListTile::new("a").with_leading(leading()));
+        let wide = title_x(
+            ListTile::new("a")
+                .with_leading(leading())
+                .with_min_leading_width(120.0),
+        );
+        assert!(
+            wide > narrow,
+            "a wider reservation moves the title: {narrow} then {wide}"
+        );
+        assert_eq!(
+            wide - narrow,
+            120.0 - crate::component_themes::ResolvedListTile::MIN_LEADING_WIDTH,
+            "by exactly the difference between the two reservations"
+        );
+    }
+
     #[test]
     fn the_tile_overrides_the_themes_leading_width() {
-        // Only the choice is asserted, not the geometry. The reservation's
-        // effect is on where the *title* starts, and this harness can see
-        // neither the title (it is built inside the tile) nor the tile's
-        // intrinsic width (nothing along this chain implements intrinsics).
-        // A test of the geometry here would be one that cannot fail.
+        // The choice, which is what the tile records; the geometry it causes
+        // is the test above.
         assert_eq!(
             ListTile::new("a")
                 .with_min_leading_width(60.0)
