@@ -16301,3 +16301,37 @@ rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
 stale_engines 全部不落后。门：5356 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 200 次：一个字段写着"这里还没有消费者"
+
+`CupertinoSwitch`（depth 6/26）。文件里那句注释——
+"`selectionHandleColor`/`applyThemeToAll` have no consumers here yet"——
+是自陈的债，而这类注释在第 187 次就证明过是值得追的。
+
+上游打开的开关，轨道颜色是**三级**链：
+
+```dart
+widget.activeTrackColor
+  ?? ((widget.applyTheme ?? theme.applyThemeToAll) ? theme.primaryColor : null)
+  ?? CupertinoColors.systemGreen
+```
+
+本移植只有第一级和第三级。**中间那级整个不在**：一个写了
+`applyTheme: true` 的开关被忽略，一个写了 `applyThemeToAll: true` 的主题也被
+忽略，这个 crate 里的每个开关都是 iOS 绿，不管它自己或它的主题要什么。
+
+而 `applyTheme` 是 `bool?` 而不是 `bool`，那个 null 是**第三个答案**而不是缺
+一个答案：它让单个开关能在**两个方向上**与主题相左——`Some(true)` 在说不的
+主题下取主色，`Some(false)` 在说是的主题下保持绿色。
+
+默认值本身也值得留一句：`applyThemeToAll` 默认为假，因为 iOS 开关是绿的是因为
+iOS 开关就是绿的，不是因为应用是绿的。主题的主色属于应用自己选的东西——按钮、
+链接——把系统控件也接管过去是要显式要求的。
+
+变异：五条（中间那级消失、控件的答案不再压过主题、主题不再是回落、一次性
+颜色不再优先、默认值翻转）全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
+stale_engines 全部不落后。门：5361 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

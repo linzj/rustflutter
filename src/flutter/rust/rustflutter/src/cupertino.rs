@@ -422,11 +422,21 @@ impl CupertinoColors {
 /// `CupertinoThemeData`, reduced to the fields the ported widgets read:
 /// `textTheme` is inlined into each widget (the `_kDefault*TextStyle`
 /// constants of text_theme.dart are copied at the use sites), and
-/// `selectionHandleColor`/`applyThemeToAll` have no consumers here yet.
+/// `selectionHandleColor` has no consumer here yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CupertinoTheme {
     pub brightness: Brightness,
     pub primary_color: Color,
+    /// Upstream's `CupertinoThemeData.applyThemeToAll`.
+    ///
+    /// **False by default**, and that default is the interesting part: an iOS
+    /// switch is green because iOS switches are green, not because the
+    /// application is. A theme's primary colour is for the things the
+    /// application chose -- buttons, links -- and taking over the system
+    /// controls as well is opt-in.
+    ///
+    /// [`CupertinoSwitch::with_apply_theme`] is the per-widget override of it.
+    pub apply_theme_to_all: bool,
     pub primary_contrasting_color: Color,
     /// Nav bars and tab bars. Translucent; the blur that would sit under it
     /// upstream is not ported (see the module docs).
@@ -440,6 +450,9 @@ impl CupertinoTheme {
         let brightness = Brightness::Light;
         CupertinoTheme {
             brightness,
+            // Upstream's default. A system control keeps its system colour
+            // unless the application says otherwise.
+            apply_theme_to_all: false,
             primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness, BASE),
             primary_contrasting_color: CupertinoColors::WHITE,
             // `_CupertinoThemeDefaults.barBackgroundColor`. The dark value is
@@ -455,6 +468,9 @@ impl CupertinoTheme {
         let brightness = Brightness::Dark;
         CupertinoTheme {
             brightness,
+            // Upstream's default. A system control keeps its system colour
+            // unless the application says otherwise.
+            apply_theme_to_all: false,
             primary_color: CupertinoColors::SYSTEM_BLUE.resolve(brightness, BASE),
             primary_contrasting_color: CupertinoColors::WHITE,
             bar_background_color: Color(0xF01D_1D1D),
@@ -930,6 +946,9 @@ pub struct CupertinoSwitch {
     value: bool,
     enabled: bool,
     active_track_color: Option<Color>,
+    /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
+    /// "whatever the theme says", not "no".
+    apply_theme: Option<bool>,
     on_changed: Option<Rc<dyn Fn(bool)>>,
 }
 
@@ -940,6 +959,7 @@ impl CupertinoSwitch {
             value,
             enabled: true,
             active_track_color: None,
+            apply_theme: None,
             on_changed: None,
         }
     }
@@ -948,6 +968,50 @@ impl CupertinoSwitch {
     pub fn with_active_track_color(mut self, color: Color) -> Self {
         self.active_track_color = Some(color);
         self
+    }
+
+    /// Upstream's `applyTheme`: whether this switch takes the theme's primary
+    /// colour when it is on.
+    ///
+    /// Not a plain `bool`, because upstream's is nullable and the null is a
+    /// third answer rather than a missing one:
+    ///
+    /// ```dart
+    /// widget.activeTrackColor
+    ///   ?? ((widget.applyTheme ?? theme.applyThemeToAll) ? theme.primaryColor : null)
+    ///   ?? CupertinoColors.systemGreen
+    /// ```
+    ///
+    /// Three levels, and this port had the first and the third. A switch that
+    /// said `applyTheme: true` was ignored, and so was a theme that said
+    /// `applyThemeToAll: true` -- every switch in this crate was iOS green
+    /// whatever it or its theme asked for.
+    ///
+    /// The nullability is what lets one switch disagree with its theme in
+    /// **either** direction: `Some(true)` takes the primary colour under a
+    /// theme that says no, and `Some(false)` keeps the green under a theme
+    /// that says yes.
+    pub fn with_apply_theme(mut self, apply: bool) -> Self {
+        self.apply_theme = Some(apply);
+        self
+    }
+
+    /// The track colour for an *on* switch, which is upstream's three-level
+    /// chain above. Pulled out so it can be asked without building a switch.
+    pub fn active_track_color(
+        one_off: Option<Color>,
+        apply_theme: Option<bool>,
+        theme_applies_to_all: bool,
+        theme_primary: Color,
+        system_green: Color,
+    ) -> Color {
+        if let Some(colour) = one_off {
+            return colour;
+        }
+        if apply_theme.unwrap_or(theme_applies_to_all) {
+            return theme_primary;
+        }
+        system_green
     }
 
     pub fn with_enabled(mut self, enabled: bool) -> Self {
@@ -988,9 +1052,13 @@ impl StatefulComponent for CupertinoSwitch {
         // color because upstream's `applyTheme` path only takes over when the
         // ambient `CupertinoThemeData.applyThemeToAll` asks it to, and the
         // default is false.
-        let active_track = self
-            .active_track_color
-            .unwrap_or_else(|| theme.resolve(CupertinoColors::SYSTEM_GREEN));
+        let active_track = CupertinoSwitch::active_track_color(
+            self.active_track_color,
+            self.apply_theme,
+            theme.apply_theme_to_all,
+            theme.primary_color,
+            theme.resolve(CupertinoColors::SYSTEM_GREEN),
+        );
         let inactive_track = theme.resolve(CupertinoColors::SECONDARY_SYSTEM_FILL);
         let track = if value { active_track } else { inactive_track };
 
@@ -6773,6 +6841,74 @@ mod activity_tick_tests {
             sorted_start, sorted_later,
             "the same alphas, in a different place"
         );
+    }
+
+    // -- Whose colour an iOS switch is ---------------------------------------
+
+    use crate::cupertino::{CupertinoSwitch, CupertinoTheme};
+
+    const GREEN: Color = Color(0xff34c759);
+    const PRIMARY: Color = Color(0xffcc0044);
+    const ONE_OFF: Color = Color(0xff112233);
+
+    fn track(one_off: Option<Color>, apply: Option<bool>, all: bool) -> Color {
+        CupertinoSwitch::active_track_color(one_off, apply, all, PRIMARY, GREEN)
+    }
+
+    #[test]
+    fn a_switch_is_ios_green_until_something_asks_otherwise() {
+        // The default at both levels. An iOS switch is green because iOS
+        // switches are green, not because the application is: a theme's
+        // primary colour is for the things the application chose.
+        assert_eq!(track(None, None, false), GREEN);
+    }
+
+    #[test]
+    fn a_theme_can_take_over_every_switch_at_once() {
+        // `CupertinoThemeData.applyThemeToAll`, which this crate had as a
+        // field with no reader -- so a theme that asked for it was ignored and
+        // every switch stayed green.
+        assert_eq!(track(None, None, true), PRIMARY);
+    }
+
+    #[test]
+    fn and_one_switch_can_disagree_with_its_theme_in_either_direction() {
+        // This is what upstream's nullable `applyTheme` buys, and why it is
+        // not a plain `bool`: `None` is "whatever the theme says", which is a
+        // third answer rather than a missing one.
+        assert_eq!(
+            track(None, Some(true), false),
+            PRIMARY,
+            "opting in under a theme that says no"
+        );
+        assert_eq!(
+            track(None, Some(false), true),
+            GREEN,
+            "and opting out under one that says yes"
+        );
+    }
+
+    #[test]
+    fn a_colour_named_on_the_switch_beats_both() {
+        // First in upstream's chain. A caller who named a colour has said
+        // more than either flag, and the flags only choose *which default*.
+        for apply in [None, Some(false), Some(true)] {
+            for all in [false, true] {
+                assert_eq!(
+                    track(Some(ONE_OFF), apply, all),
+                    ONE_OFF,
+                    "{apply:?} {all}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_theme_says_no_at_both_appearances() {
+        // The field is on the theme, so a light and a dark theme both have to
+        // carry upstream's default rather than one of them picking it up.
+        assert!(!CupertinoTheme::light().apply_theme_to_all);
+        assert!(!CupertinoTheme::dark().apply_theme_to_all);
     }
 }
 
