@@ -16379,3 +16379,36 @@ Semantics(inMutuallyExclusiveGroup: true, checked: value,
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
 stale_engines 全部不落后。门：5366 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 202 次：右键不是左键，四条分岔没有一条是装饰
+
+接着第 198 次把 `TextSelectionGestureDetectorBuilder` 的 `onSecondaryTap`
+移过来。整条按平台一分为二，而两边的四处差别各有各的道理：
+
+- **苹果选中一个词，其余只放光标。** 在 macOS 上右键点一个词会选中它，好让
+  菜单里的 `Copy` 和 `Look Up` 有东西可作用。在 Windows 和 Linux 上右键是为了
+  开菜单，移动光标已经是它做的全部。
+- **苹果会保住点在其中的那个选区。** 这就是 `_lastSecondaryTapWasOnSelection`
+  的用处：在高亮区内右键不动它，于是 `Copy` 复制的是读者选的那一段，而不是
+  指针底下那一个词。
+- **其余平台只在字段未聚焦时才动选区。** 已聚焦的字段保留它原有的选择，点在
+  哪里都一样。
+- **苹果是"收起再展开"，其余是切换。** 前者意味着在别处再右键一次会把菜单
+  **移过去**，后者意味着再右键一次把它收掉。两者都是有意的，一个到处都用的
+  移植不是在四个平台上错，就是在两个平台上错。
+
+`shouldShowSelectionToolbar` 只管苹果那一支。其余无条件切换——这是上游的形状
+而不是疏漏：被这个标志压住的切换会留下一个收不掉的菜单。
+
+还记下一处两个判断的区别：`_lastSecondaryTapWasOnSelection` 用的是 **inclusive**
+判断，也就是**右键点在选区边缘算在里面**，而第 198 次那个左键判断不算。两者
+问的不是同一个问题——左键点边缘是冲着手柄去的，而右键底下没有手柄。
+
+变异：九条中八条一次转红。第九条（把苹果那支的条件从
+`!on_selection || !has_focus` 削成 `!has_focus`）存活，因为我漏了那个组合：
+**已聚焦的字段上、右键点在选区之外**——而那正是"选中该词"的主场景。补上后转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
+stale_engines 全部不落后。门：5373 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

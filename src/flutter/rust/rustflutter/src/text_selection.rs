@@ -793,6 +793,137 @@ pub fn after_selecting_the_word_edge(
     }
 }
 
+/// What a right-click moves the selection to, if anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondarySelects {
+    /// The word under the pointer. What the Apple platforms do, so that the
+    /// menu's `Copy` and `Look Up` have something to act on.
+    Word,
+    /// Just the caret. What the others do: a right-click there is about
+    /// opening the menu, not about choosing text.
+    Position,
+    /// Nothing -- whatever was selected stays selected.
+    Nothing,
+}
+
+/// What a right-click does to the toolbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondaryToolbar {
+    /// Hide it and show it again. **Not** a toggle: a second right-click
+    /// somewhere else moves the menu there rather than dismissing it.
+    Reshow,
+    /// Up if it was down, down if it was up. A second right-click dismisses.
+    Toggle,
+    /// Leave it alone.
+    Nothing,
+}
+
+/// Both halves of upstream's `onSecondaryTap`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecondaryTap {
+    pub selects: SecondarySelects,
+    pub toolbar: SecondaryToolbar,
+}
+
+/// Upstream's `_lastSecondaryTapWasOnSelection`, which is
+/// [`position_was_on_selection_inclusive`] under another name -- the same
+/// `start <= offset && end >= offset`.
+///
+/// Worth saying rather than leaving to be noticed: a right-click **on the
+/// edge** of a highlighted run counts as on it, where a left-click at
+/// [`tap_outcome`] does not. The two are asking different questions. A
+/// left-click on the edge is aimed at the handle; there are no handles under a
+/// right-click, and what it is aimed at is the menu.
+///
+/// `None` is upstream's null selection, which answers false: there is nothing
+/// to have clicked inside of.
+pub fn last_secondary_tap_was_on_selection(selection: Option<(i32, i32)>, offset: i32) -> bool {
+    match selection {
+        Some(selection) => position_was_on_selection_inclusive(selection, offset),
+        None => false,
+    }
+}
+
+/// Upstream's `TextSelectionGestureDetectorBuilder.onSecondaryTap`.
+///
+/// ```dart
+/// case iOS || macOS:
+///   if (!_lastSecondaryTapWasOnSelection || !renderEditable.hasFocus) {
+///     renderEditable.selectWord(cause: SelectionChangedCause.tap);
+///   }
+///   if (shouldShowSelectionToolbar) {
+///     editableText.hideToolbar();
+///     editableText.showToolbar();
+///   }
+/// case android || fuchsia || linux || windows:
+///   if (!renderEditable.hasFocus) {
+///     renderEditable.selectPosition(cause: SelectionChangedCause.tap);
+///   }
+///   editableText.toggleToolbar();
+/// ```
+///
+/// Four differences, and none of them is decoration.
+///
+/// * **Apple selects a word; the rest place a caret.** Right-clicking a word
+///   on macOS selects it, so the menu's `Copy` and `Look Up` have something to
+///   act on. On Windows and Linux a right-click is about opening the menu, and
+///   moving the caret is as much as it does.
+/// * **Apple keeps a selection the click landed inside.** That is what
+///   `_lastSecondaryTapWasOnSelection` is for: right-clicking within a
+///   highlighted run leaves it alone, so `Copy` copies what the reader
+///   highlighted rather than the one word under the pointer.
+/// * **The rest only touch the selection when the field is unfocused.** A
+///   focused field keeps whatever it had, wherever the click landed.
+/// * **Apple re-shows the toolbar; the rest toggle it.** Hide-then-show means
+///   a second right-click somewhere else *moves* the menu there. Toggling
+///   means a second right-click dismisses it. Both are deliberate, and a port
+///   that used one everywhere would be wrong on four platforms or on two.
+///
+/// `shouldShowSelectionToolbar` gates only the Apple branch. The others
+/// toggle regardless, which is upstream's shape and not an oversight: a
+/// toggle that the flag suppressed would leave a menu up with no way to
+/// dismiss it.
+pub fn secondary_tap(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    tap_was_on_selection: bool,
+    has_focus: bool,
+    should_show_selection_toolbar: bool,
+) -> SecondaryTap {
+    use crate::editable_text::TargetPlatform;
+    if !selection_enabled {
+        return SecondaryTap {
+            selects: SecondarySelects::Nothing,
+            toolbar: SecondaryToolbar::Nothing,
+        };
+    }
+    match platform {
+        TargetPlatform::IOS | TargetPlatform::MacOS => SecondaryTap {
+            selects: if !tap_was_on_selection || !has_focus {
+                SecondarySelects::Word
+            } else {
+                SecondarySelects::Nothing
+            },
+            toolbar: if should_show_selection_toolbar {
+                SecondaryToolbar::Reshow
+            } else {
+                SecondaryToolbar::Nothing
+            },
+        },
+        TargetPlatform::Android
+        | TargetPlatform::Fuchsia
+        | TargetPlatform::Linux
+        | TargetPlatform::Windows => SecondaryTap {
+            selects: if has_focus {
+                SecondarySelects::Nothing
+            } else {
+                SecondarySelects::Position
+            },
+            toolbar: SecondaryToolbar::Toggle,
+        },
+    }
+}
+
 /// Upstream `SelectionOverlay`: the handles and the toolbar, positioned.
 ///
 /// Upstream puts them in an `Overlay` so they can be drawn over anything,
@@ -2433,6 +2564,164 @@ mod selection_gesture_rule_tests {
         assert!(position_was_on_selection_exclusive((9, 4), 6));
         assert!(position_was_on_selection_inclusive((9, 4), 4));
         assert_eq!(tap((9, 4), 6), TapOutcome::ToggleToolbar);
+    }
+
+    // -- What a right-click means, which is not what a left-click means -----
+
+    use crate::editable_text::TargetPlatform;
+
+    const APPLE: [TargetPlatform; 2] = [TargetPlatform::IOS, TargetPlatform::MacOS];
+    const REST: [TargetPlatform; 4] = [
+        TargetPlatform::Android,
+        TargetPlatform::Fuchsia,
+        TargetPlatform::Linux,
+        TargetPlatform::Windows,
+    ];
+
+    #[test]
+    fn a_right_click_selects_a_word_on_apple_and_only_a_caret_elsewhere() {
+        // Right-clicking a word on macOS selects it, so the menu's `Copy` and
+        // `Look Up` have something to act on. On Windows a right-click is
+        // about opening the menu, and moving the caret is as much as it does.
+        for platform in APPLE {
+            assert_eq!(
+                secondary_tap(platform, true, false, false, true).selects,
+                SecondarySelects::Word,
+                "{platform:?}"
+            );
+        }
+        for platform in REST {
+            assert_eq!(
+                secondary_tap(platform, true, false, false, true).selects,
+                SecondarySelects::Position,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn apple_keeps_a_selection_the_click_landed_inside() {
+        // `_lastSecondaryTapWasOnSelection`. Right-clicking within a
+        // highlighted run leaves it alone, so `Copy` copies what the reader
+        // highlighted rather than the one word under the pointer.
+        for platform in APPLE {
+            assert_eq!(
+                secondary_tap(platform, true, true, true, true).selects,
+                SecondarySelects::Nothing,
+                "{platform:?}: inside the selection, and focused"
+            );
+            assert_eq!(
+                secondary_tap(platform, true, true, false, true).selects,
+                SecondarySelects::Word,
+                "{platform:?}: an unfocused field has no selection to keep"
+            );
+            // The case the rule is actually for, and the one that tells the
+            // condition apart from a plain `!hasFocus`: a focused field,
+            // right-clicked **outside** whatever was selected. That selects
+            // the word under the pointer, which is what the menu will act on.
+            assert_eq!(
+                secondary_tap(platform, true, false, true, true).selects,
+                SecondarySelects::Word,
+                "{platform:?}: focused, but not on the selection"
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_others_only_move_the_caret_when_the_field_was_not_focused() {
+        // A focused field keeps whatever it had, wherever the click landed --
+        // so the position of the click does not enter into it at all.
+        for platform in REST {
+            for on_selection in [false, true] {
+                assert_eq!(
+                    secondary_tap(platform, true, on_selection, true, true).selects,
+                    SecondarySelects::Nothing,
+                    "{platform:?} focused"
+                );
+                assert_eq!(
+                    secondary_tap(platform, true, on_selection, false, true).selects,
+                    SecondarySelects::Position,
+                    "{platform:?} unfocused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apple_re_shows_the_toolbar_where_the_others_toggle_it() {
+        // Hide-then-show means a second right-click somewhere else *moves* the
+        // menu there. Toggling means a second right-click dismisses it. A port
+        // that used one everywhere would be wrong on four platforms or on two.
+        for platform in APPLE {
+            assert_eq!(
+                secondary_tap(platform, true, false, true, true).toolbar,
+                SecondaryToolbar::Reshow,
+                "{platform:?}"
+            );
+        }
+        for platform in REST {
+            assert_eq!(
+                secondary_tap(platform, true, false, true, true).toolbar,
+                SecondaryToolbar::Toggle,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_toolbar_flag_gates_only_the_apple_branch() {
+        // Upstream's shape, and not an oversight: a toggle the flag
+        // suppressed would leave a menu up with no way to dismiss it.
+        for platform in APPLE {
+            assert_eq!(
+                secondary_tap(platform, true, false, true, false).toolbar,
+                SecondaryToolbar::Nothing,
+                "{platform:?}"
+            );
+        }
+        for platform in REST {
+            assert_eq!(
+                secondary_tap(platform, true, false, true, false).toolbar,
+                SecondaryToolbar::Toggle,
+                "{platform:?}: still toggles"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_that_does_not_select_does_nothing_at_all() {
+        // Upstream's first line, before the switch.
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                secondary_tap(platform, false, true, true, true),
+                SecondaryTap {
+                    selects: SecondarySelects::Nothing,
+                    toolbar: SecondaryToolbar::Nothing,
+                },
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_right_click_on_the_edge_of_a_selection_counts_as_on_it() {
+        // Where a left-click does not. The two are asking different
+        // questions: a left-click on the edge is aimed at the handle, and
+        // there are no handles under a right-click.
+        let run = (4, 9);
+        assert!(last_secondary_tap_was_on_selection(Some(run), 4));
+        assert!(last_secondary_tap_was_on_selection(Some(run), 9));
+        assert_eq!(
+            tap_outcome(false, run, 4, true, false, true),
+            TapOutcome::SelectWordEdge,
+            "the left-click on the same spot does not"
+        );
+
+        assert!(!last_secondary_tap_was_on_selection(Some(run), 10));
+        assert!(
+            !last_secondary_tap_was_on_selection(None, 6),
+            "no selection is nothing to have clicked inside of"
+        );
     }
 
     #[test]
