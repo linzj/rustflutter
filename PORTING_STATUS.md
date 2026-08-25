@@ -15099,3 +15099,45 @@ embedder 不会再问就把窗口关掉——读者没有被问过要不要保�
 不是遗漏，是还没到；没有为它发明一个消费者。
 
 `unwalked.py`：255 → 254。5230 测试通过，完整 GN 门过。
+
+## 第 168 轮 — 二十九个混合模式，两把尺子都看不见
+
+上一轮的形状——**判别式直接当线上格式**——是可以系统搜的：
+在 FFI 调用处对枚举做 `as c_int` 的地方。搜出来五张表，
+一张都没有 match 臂，所以 `variant_sweep` 全部够不着。
+
+- `StrokeCap`（1 round、2 square、默认 butt）
+- `StrokeJoin`（1 round、2 bevel、默认 miter）
+- `FillType`（1 odd、否则 non-zero——自交路径的内部归属，
+  一颗五角星在一种规则下是实心的、另一种下中间是空的）
+- `ClipOp`（1 difference、否则 intersect——弄反了会显示出整个屏幕，
+  唯独不显示本该可见的那块）
+- `BlendMode`，直接 `static_cast` 到 `flutter::DlBlendMode`
+
+每一条都对着读它的那段 C++ 写了断言，并点名文件和 switch。
+
+### 而 `BlendMode` 少了四个
+
+文档写着"判别式与 `DlBlendMode` 一致，后者又与 `dart:ui` 的 `BlendMode` 一致"。
+判别式确实一致——**少的是尾巴**：port 停在 `Multiply = 24`，
+而上游有 29 个。`Multiply` 是上游标注的"最后一个可分离模式"，
+后面四个（`Hue`、`Saturation`、`Color`、`Luminosity`）拿整个颜色而不是逐通道，
+所以它们排在最后，也所以一个 port 会不经意地停在那里。补齐了。
+
+`rf_paint_set_blend_mode` 的守卫会把超出 `kLastMode` 的号码**静默丢弃**，
+所以这边多发明一个模式是一次无操作而不是一次崩溃——这也写进了文档。
+
+### 两把尺子的盲区，各修一处
+
+- `variant_sweep` 只重写单行 match 臂，这五张表一条臂都没有。
+  文档里已经记了（上一轮）。
+- **`unwalked.py` 的变体正则要求名字后面跟 `,`、`{` 或 `(`**，
+  所以 `Clear = 0,` 不匹配——**每一个带显式判别式的枚举对它都是隐形的**。
+  而那恰恰是"数字就是线上格式"的那一类，风险最高。
+  正则修好后总数 1428 → 1457（正好是 `BlendMode` 的 29 个），
+  未点名数仍是 244，因为这一轮的测试把那 29 个全点了。
+
+三条手工变异全红：交换 `StrokeCap` 的前两个、交换 `ClipOp` 的两个、
+把 `Hue` 和 `Saturation` 的号码对调。
+
+5236 测试通过，完整 GN 门过。

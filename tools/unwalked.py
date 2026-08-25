@@ -39,7 +39,12 @@ import sys
 PORT = r'K:\rustflutter\src\flutter\rust\rustflutter\src'
 
 ENUM = re.compile(r'^pub enum ([A-Za-z0-9_]+)\s*\{', re.M)
-VARIANT = re.compile(r'^\s{4}([A-Z][A-Za-z0-9_]*)\s*(?:,|\{|\()', re.M)
+# `= 0,` is in there because it was not, and the omission hid exactly the
+# enums that most needed looking at: one with explicit discriminants is
+# usually one whose *numbers* are the wire format -- `BlendMode`,
+# `SemanticsAction` -- so a wrong one is read by the engine and by nothing
+# here. Twenty-nine blend modes were invisible to this file until tick 168.
+VARIANT = re.compile(r'^\s{4}([A-Z][A-Za-z0-9_]*)\s*(?:=\s*[-\w]+\s*)?(?:,|\{|\()', re.M)
 
 
 def strip_comments(text):

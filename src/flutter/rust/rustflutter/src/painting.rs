@@ -57,6 +57,20 @@ impl TileMode {
 
 /// How source and destination colours are combined. The discriminants match
 /// `flutter::DlBlendMode`, which in turn matches `dart:ui`'s `BlendMode`.
+///
+/// # Separable, and the four that are not
+///
+/// `Multiply` is upstream's last *separable* mode -- one that works on each
+/// colour channel independently -- and its own comment says so. The four after
+/// it (`Hue`, `Saturation`, `Color`, `Luminosity`) take the whole colour at
+/// once, which is why they come last and why a port stops there without
+/// meaning to.
+///
+/// This one did, and the doc line above still claimed the discriminants
+/// matched. They do, and did: what was missing was the tail. It is here now,
+/// because a `static_cast` in `rf_paint_set_blend_mode` is all that stands
+/// between these numbers and the engine, and a mode above `kLastMode` is
+/// **silently dropped** by the guard there rather than reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(i32)]
 pub enum BlendMode {
@@ -85,7 +99,14 @@ pub enum BlendMode {
     SoftLight = 21,
     Difference = 22,
     Exclusion = 23,
+    /// Upstream's "last separable mode".
     Multiply = 24,
+    /// The four non-separable modes, which take a whole colour rather than a
+    /// channel at a time.
+    Hue = 25,
+    Saturation = 26,
+    Color = 27,
+    Luminosity = 28,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -5305,6 +5326,129 @@ mod abi_table_tests {
             "and an upright one does: {:?}",
             turned(Axis::Horizontal, on_the_centre_line)
         );
+    }
+}
+
+// -- The tables whose wire format is the declaration order --------------------
+
+#[cfg(test)]
+mod discriminant_table_tests {
+    //! Five enums whose *number* crosses the FFI without a `match` anywhere.
+    //!
+    //! `variant_sweep` rewrites match arms, so none of these is visible to it:
+    //! `stroke_cap as c_int` has no arms to rewrite. That is the same blind
+    //! spot `PlatformProvidedMenuItemType` fell into, and it is worth saying
+    //! that these were found by grepping for the *shape* -- a discriminant
+    //! cast at an FFI call -- rather than by either queue.
+    //!
+    //! Every number below is checked against the C++ that reads it, and the
+    //! file and switch are named so the pair can be re-read together.
+
+    use super::{BlendMode, ClipOp, FillType, StrokeCap, StrokeJoin};
+
+    #[test]
+    fn the_stroke_caps_are_the_numbers_the_paint_setter_reads() {
+        // `rf_paint_set_stroke_cap` in rustflutter_ffi_draw.cc: 1 round,
+        // 2 square, anything else butt. Butt's number is this side's choice,
+        // being the default arm there.
+        assert_eq!(StrokeCap::Butt as i32, 0);
+        assert_eq!(StrokeCap::Round as i32, 1);
+        assert_eq!(StrokeCap::Square as i32, 2);
+    }
+
+    #[test]
+    fn the_stroke_joins_are_the_numbers_the_paint_setter_reads() {
+        // Same file: 1 round, 2 bevel, anything else miter. Note that round is
+        // 1 in **both** tables and square/bevel are 2 -- so a cap and a join
+        // cannot be told apart by their numbers, only by which setter they are
+        // handed to.
+        assert_eq!(StrokeJoin::Miter as i32, 0);
+        assert_eq!(StrokeJoin::Round as i32, 1);
+        assert_eq!(StrokeJoin::Bevel as i32, 2);
+    }
+
+    #[test]
+    fn a_path_fills_by_the_non_zero_rule_unless_it_says_otherwise() {
+        // `rf_path_set_fill_type`: `fill_type == 1` is odd, everything else is
+        // non-zero. The two rules disagree about the inside of a
+        // self-intersecting path -- a five-pointed star is solid under one and
+        // hollow in the middle under the other.
+        assert_eq!(FillType::NonZero as i32, 0);
+        assert_eq!(FillType::EvenOdd as i32, 1);
+        assert_eq!(FillType::default(), FillType::NonZero);
+    }
+
+    #[test]
+    fn a_clip_keeps_what_is_inside_it_unless_it_says_otherwise() {
+        // `ToClipOp`: `clip_op == 1` is difference, everything else is
+        // intersect. Getting this backwards shows the whole screen except the
+        // part that was meant to be visible.
+        assert_eq!(ClipOp::Intersect as i32, 0);
+        assert_eq!(ClipOp::Difference as i32, 1);
+        assert_eq!(ClipOp::default(), ClipOp::Intersect);
+    }
+
+    #[test]
+    fn every_blend_mode_is_its_position_in_dart_uis_list() {
+        // `rf_paint_set_blend_mode` does a `static_cast` straight to
+        // `flutter::DlBlendMode`, so these are not codes this side chose --
+        // they are the engine's enum, and dart:ui's, spelled again.
+        assert_eq!(BlendMode::Clear as i32, 0);
+        assert_eq!(BlendMode::SrcOver as i32, 3);
+        assert_eq!(BlendMode::default(), BlendMode::SrcOver);
+        assert_eq!(BlendMode::Modulate as i32, 13);
+        assert_eq!(BlendMode::Multiply as i32, 24);
+        // The four this port was missing, and the reason it stopped: Multiply
+        // is upstream's last separable mode.
+        assert_eq!(BlendMode::Hue as i32, 25);
+        assert_eq!(BlendMode::Saturation as i32, 26);
+        assert_eq!(BlendMode::Color as i32, 27);
+        assert_eq!(BlendMode::Luminosity as i32, 28);
+    }
+
+    #[test]
+    fn and_the_list_runs_from_zero_without_a_gap() {
+        // A gap would be a mode the engine reads as its neighbour, and an
+        // explicit discriminant is exactly how one gets introduced. Twenty-nine
+        // of them, 0 through 28, which is `DlBlendMode::kLastMode` -- the guard
+        // in `rf_paint_set_blend_mode` drops anything above it without saying
+        // so, which is why a number too large fails silently rather than
+        // loudly.
+        let modes = [
+            BlendMode::Clear as i32,
+            BlendMode::Src as i32,
+            BlendMode::Dst as i32,
+            BlendMode::SrcOver as i32,
+            BlendMode::DstOver as i32,
+            BlendMode::SrcIn as i32,
+            BlendMode::DstIn as i32,
+            BlendMode::SrcOut as i32,
+            BlendMode::DstOut as i32,
+            BlendMode::SrcATop as i32,
+            BlendMode::DstATop as i32,
+            BlendMode::Xor as i32,
+            BlendMode::Plus as i32,
+            BlendMode::Modulate as i32,
+            BlendMode::Screen as i32,
+            BlendMode::Overlay as i32,
+            BlendMode::Darken as i32,
+            BlendMode::Lighten as i32,
+            BlendMode::ColorDodge as i32,
+            BlendMode::ColorBurn as i32,
+            BlendMode::HardLight as i32,
+            BlendMode::SoftLight as i32,
+            BlendMode::Difference as i32,
+            BlendMode::Exclusion as i32,
+            BlendMode::Multiply as i32,
+            BlendMode::Hue as i32,
+            BlendMode::Saturation as i32,
+            BlendMode::Color as i32,
+            BlendMode::Luminosity as i32,
+        ];
+        assert_eq!(modes.len(), 29);
+        for (position, number) in modes.iter().enumerate() {
+            assert_eq!(*number, position as i32, "at {position}");
+        }
     }
 }
 
