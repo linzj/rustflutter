@@ -462,7 +462,9 @@ pub unsafe extern "C" fn rf_canvas_draw_image_rect(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_save(canvas: *mut RfCanvas) {}
+pub unsafe extern "C" fn rf_canvas_save(canvas: *mut RfCanvas) {
+    record(Drawn::Save);
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_save_layer(
@@ -470,10 +472,19 @@ pub unsafe extern "C" fn rf_canvas_save_layer(
     bounds_ltrb: *const f32,
     paint: *const RfPaint,
 ) {
+    let bounds = if bounds_ltrb.is_null() {
+        None
+    } else {
+        let corners = unsafe { std::slice::from_raw_parts(bounds_ltrb, 4) };
+        Some((corners[0], corners[1], corners[2], corners[3]))
+    };
+    record(Drawn::SaveLayer { bounds });
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_restore(canvas: *mut RfCanvas) {}
+pub unsafe extern "C" fn rf_canvas_restore(canvas: *mut RfCanvas) {
+    record(Drawn::Restore);
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_save_count(canvas: *mut RfCanvas) -> c_int {
@@ -481,10 +492,14 @@ pub unsafe extern "C" fn rf_canvas_save_count(canvas: *mut RfCanvas) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_restore_to_count(canvas: *mut RfCanvas, count: c_int) {}
+pub unsafe extern "C" fn rf_canvas_restore_to_count(canvas: *mut RfCanvas, count: c_int) {
+    record(Drawn::RestoreToCount { count });
+}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy: f32) {}
+pub unsafe extern "C" fn rf_canvas_translate(canvas: *mut RfCanvas, dx: f32, dy: f32) {
+    record(Drawn::Translate { dx, dy });
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_scale(canvas: *mut RfCanvas, sx: f32, sy: f32) {}
@@ -517,6 +532,14 @@ pub unsafe extern "C" fn rf_canvas_clip_rect(
     clip_op: c_int,
     anti_alias: c_int,
 ) {
+    record(Drawn::ClipRect {
+        left,
+        top,
+        right,
+        bottom,
+        clip_op,
+        anti_alias: anti_alias != 0,
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -720,6 +743,40 @@ pub enum Drawn {
         bottom: f32,
         argb: u32,
     },
+    /// The canvas state stack, which recorded nothing before.
+    ///
+    /// # Why a balance is worth watching
+    ///
+    /// A `paint` that saves and does not restore leaves the clip, the
+    /// transform and the paint stack it set up in place for **every sibling
+    /// painted after it**. The symptom is a widget elsewhere on the screen
+    /// drawing in the wrong place or vanishing entirely, and the cause is in a
+    /// file nobody was looking at. Nothing in this crate could see a save
+    /// happen, let alone count them.
+    Save,
+    /// A save that also starts an offscreen group. `None` bounds is upstream's
+    /// null: the layer is as big as it needs to be.
+    SaveLayer {
+        bounds: Option<(f32, f32, f32, f32)>,
+    },
+    Restore,
+    /// The bulk form, which pops down to a depth rather than by one.
+    RestoreToCount {
+        count: c_int,
+    },
+    Translate {
+        dx: f32,
+        dy: f32,
+    },
+    ClipRect {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        /// [`crate::painting::ClipOp`]'s number: 0 intersect, 1 difference.
+        clip_op: c_int,
+        anti_alias: bool,
+    },
     /// The whole canvas filled, which is what a frame's background is. It
     /// recorded nothing before, so "the background goes down before anything
     /// the application paints" was not a claim any test could make -- and it
@@ -877,6 +934,32 @@ impl Drawn {
             },
             // The whole canvas, wherever the canvas is.
             Drawn::Color { argb } => Drawn::Color { argb },
+            // State, not geometry -- except the two that carry coordinates.
+            Drawn::Save => Drawn::Save,
+            Drawn::Restore => Drawn::Restore,
+            Drawn::RestoreToCount { count } => Drawn::RestoreToCount { count },
+            Drawn::SaveLayer { bounds } => Drawn::SaveLayer {
+                bounds: bounds.map(|(left, top, right, bottom)| {
+                    (left + dx, top + dy, right + dx, bottom + dy)
+                }),
+            },
+            // A translate is a *delta*, so it does not move with the box.
+            Drawn::Translate { dx: x, dy: y } => Drawn::Translate { dx: x, dy: y },
+            Drawn::ClipRect {
+                left,
+                top,
+                right,
+                bottom,
+                clip_op,
+                anti_alias,
+            } => Drawn::ClipRect {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
+                clip_op,
+                anti_alias,
+            },
             Drawn::Paragraph { text, x, y } => Drawn::Paragraph {
                 text,
                 x: x + dx,
@@ -1671,3 +1754,28 @@ pub extern "C" fn rf_register_font(
 ) -> std::os::raw::c_int {
     -1
 }
+
+/// How deep the canvas stack is after these calls, or `None` if it ever went
+/// negative.
+///
+/// A paint that leaves this at anything but zero has broken the canvas for
+/// whatever is painted next.
+pub fn save_depth(calls: &[Drawn]) -> Option<i32> {
+    let mut depth = 0;
+    for call in calls {
+        match call {
+            Drawn::Save | Drawn::SaveLayer { .. } => depth += 1,
+            Drawn::Restore => depth -= 1,
+            // `restoreToCount` pops down to a depth rather than by one, and a
+            // count taken before any save is zero -- so this is what the
+            // caller asked to be left with.
+            Drawn::RestoreToCount { count } => depth = *count,
+            _ => {}
+        }
+        if depth < 0 {
+            return None;
+        }
+    }
+    Some(depth)
+}
+

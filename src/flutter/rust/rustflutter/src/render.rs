@@ -25007,3 +25007,226 @@ mod paint_respects_its_offset_tests {
         });
     }
 }
+
+// -- What a paint leaves the canvas in ----------------------------------------
+
+#[cfg(test)]
+mod canvas_balance_tests {
+    //! Every `paint` has to hand the canvas back the way it found it.
+    //!
+    //! A save without its restore leaves the clip and the transform it set up
+    //! in place for **everything painted after it** -- a sibling elsewhere on
+    //! the screen draws in the wrong place or vanishes, and the cause is in a
+    //! file nobody was looking at. Until the stubs started recording the state
+    //! stack, no test in this crate could see a save happen, let alone count
+    //! one.
+
+    use super::{
+        BoxConstraints, Offset, PaintContext, RenderBox, RenderClipRect, RenderOpacity,
+        RenderParagraph, Size, TextOverflow,
+    };
+    use crate::engine::LayerTree;
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn, save_depth};
+
+    /// Lays a box out into a box too small for it and paints it, returning
+    /// what the canvas was told.
+    ///
+    /// **Tight** constraints, because that is what makes a paragraph overflow:
+    /// a loose box grows to fit its text and never clips, which is how the
+    /// first draft of this module got two tests that painted nothing.
+    fn painted(mut box_: Box<dyn RenderBox>, constraints: BoxConstraints) -> Vec<Drawn> {
+        box_.layout(constraints);
+        let mut layers = LayerTree::new(600, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(600.0, 400.0));
+            box_.paint(&mut context, Offset::new(10.0, 20.0));
+        }
+        drawn()
+    }
+
+    fn faded() -> Box<dyn RenderBox> {
+        Box::new(
+            RenderParagraph::new("an overlong sentence that will not fit")
+                .with_overflow(TextOverflow::Fade),
+        )
+    }
+
+    #[test]
+    fn a_paragraph_that_fades_opens_a_layer_and_the_bulk_pop_closes_it() {
+        // The one paint in this file that opens an offscreen group: the fade
+        // is a gradient multiplied over the text, and the layer is what stops
+        // it blending with whatever was behind.
+        //
+        // The first draft of this test said "two saves, two restores" and was
+        // wrong about what protects the canvas. `Canvas::saved` records the
+        // depth, saves, runs the body and calls `restore_to_count` -- so a
+        // body that leaves a save open is **contained**, and deleting the
+        // inner `restore()` here changes nothing at all. That was checked by
+        // deleting it: the suite stayed green, because it is redundant.
+        //
+        // What a balance test can therefore catch is a paint that leaks
+        // *without* going through `saved`. What this one pins is the shape:
+        // a layer is opened, and the bulk pop is what closes it.
+        let calls = painted(faded(), BoxConstraints::tight(120.0, 16.0));
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::SaveLayer { .. })),
+            "the fade opens a layer: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::RestoreToCount { .. })),
+            "and the scope pops by count: {calls:?}"
+        );
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+    }
+
+    #[test]
+    fn a_scope_pops_by_count_so_a_leaky_body_cannot_reach_its_siblings() {
+        // The property the paint above relies on, asked directly. A body that
+        // saves three times and restores none still leaves the canvas where it
+        // started, because the scope pops to the depth it recorded rather than
+        // once per save.
+        //
+        // This is what makes `Canvas::saved` worth using in preference to a
+        // hand-written pair, and it is the reason a missing `restore()` inside
+        // one is harmless rather than a bug.
+        let mut layers = LayerTree::new(600, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(600.0, 400.0));
+            context.canvas().saved(|canvas| {
+                canvas.save();
+                canvas.save();
+                canvas.save();
+            });
+        }
+        let calls = drawn();
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+    }
+
+    #[test]
+    fn and_so_does_one_that_does_not_fade() {
+        // The other branch of the same paint. It still saves -- the clip has
+        // to be undone -- and the `if let` that restores the layer must not
+        // run, or the depth goes negative and the *parent's* state is popped.
+        let plain = || -> Box<dyn RenderBox> { Box::new(RenderParagraph::new("short")) };
+        let calls = painted(plain(), BoxConstraints::loose(400.0, 200.0));
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, Drawn::SaveLayer { .. })),
+            "and opens no layer: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_that_clips_clips_the_box_it_was_given() {
+        // The clip is in the canvas, at the offset the paragraph was painted
+        // at, and is undone with it. A clip left in place is the worst of
+        // these to diagnose, because the widget that disappears is not the one
+        // with the bug.
+        let calls = painted(
+            Box::new(
+                RenderParagraph::new("an overlong sentence that will not fit")
+                    .with_overflow(TextOverflow::Clip),
+            ),
+            BoxConstraints::tight(120.0, 16.0),
+        );
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+        let clip = calls
+            .iter()
+            .find_map(|call| match call {
+                Drawn::ClipRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..
+                } => Some((*left, *top, *right, *bottom)),
+                _ => None,
+            })
+            .expect("it clips");
+        assert_eq!(clip, (10.0, 20.0, 130.0, 36.0), "the box, where it was put");
+    }
+
+    #[test]
+    fn a_clip_widget_pops_by_count_rather_than_one_at_a_time() {
+        // `push_clip_rect` puts down a save, the clip, the child, and a
+        // `restoreToCount(0)` -- the bulk form, which pops to a depth rather
+        // than by one. That is the form to use around a child whose own paint
+        // is not this file's to trust: a child that saved once too few would
+        // otherwise leave the clip in place for everything after it.
+        let calls = painted(
+            Box::new(RenderClipRect::new(RenderParagraph::new("x"))),
+            BoxConstraints::tight(120.0, 16.0),
+        );
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::RestoreToCount { count: 0 })),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::ClipRect { .. })),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn and_a_child_that_fits_is_not_clipped_at_all() {
+        // The first draft of the test above used loose constraints and found
+        // *no* calls at all beyond the paragraph -- which turned out to be the
+        // rule rather than a broken test. A clip whose child is inside it does
+        // nothing, so the save, the clip and the restore are all skipped.
+        //
+        // Worth pinning: this is per frame, on every clip in a tree, and the
+        // cost of getting it wrong is three canvas calls for every one of
+        // them.
+        let calls = painted(
+            Box::new(RenderClipRect::new(RenderParagraph::new("x"))),
+            BoxConstraints::loose(400.0, 200.0),
+        );
+        assert_eq!(save_depth(&calls), Some(0));
+        assert!(
+            !calls.iter().any(|call| matches!(
+                call,
+                Drawn::ClipRect { .. } | Drawn::Save | Drawn::RestoreToCount { .. }
+            )),
+            "nothing to clip, nothing done: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn an_opacity_group_is_closed_too() {
+        // `save_layer` with a paint on it, which is how a subtree is faded as
+        // one thing rather than each of its parts separately.
+        let calls = painted(
+            Box::new(RenderOpacity::new(0.5, RenderParagraph::new("x"))),
+            BoxConstraints::tight(120.0, 16.0),
+        );
+        assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+    }
+
+    #[test]
+    fn the_depth_counter_notices_a_restore_that_was_never_saved() {
+        // The helper's own claim. A paint that restores once too often pops
+        // the state of whatever was painting *it*, which is why `None` is a
+        // different answer from a leftover depth rather than the same one.
+        assert_eq!(save_depth(&[Drawn::Save, Drawn::Restore]), Some(0));
+        assert_eq!(save_depth(&[Drawn::Save]), Some(1), "left one open");
+        assert_eq!(save_depth(&[Drawn::Restore]), None, "one too many");
+        assert_eq!(
+            save_depth(&[Drawn::Save, Drawn::Restore, Drawn::Restore]),
+            None
+        );
+    }
+}
+
