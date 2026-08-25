@@ -17582,3 +17582,38 @@ stale_engines 全部不落后，**unread_theme_fields 132 → 131**。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 131 → 125**。
 门：5620 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 234 次：chip 的七个字段，其中两个是为一个 widget 存在的
+
+`ResolvedChip` 带的是填充、边、内边距三样。`checkmarkColor`、
+`deleteIconColor`、`selectedShadowColor`、`avatarBoxConstraints`、
+`deleteIconBoxConstraints` 五个到不了任何地方。
+
+**另外两个是另一回事。**`secondarySelectedColor` 与 `secondaryLabelStyle` 是
+上游为 **`ChoiceChip` 一个 widget** 准备的字段——
+
+```dart
+labelStyle: labelStyle ?? (selected ? chipTheme.secondaryLabelStyle : null),
+selectedColor: selectedColor ?? chipTheme.secondarySelectedColor,
+```
+
+它们到不了，是因为**那个 widget 没有自己的解析步骤**。现在有了
+`ResolvedChip::of_choice`。这两个字段和 `selectedColor` 分开，是因为筛选型
+chip 的选中是一个开关，而选择型 chip 的选中是一次挑选——两者想长得不一样。
+
+**两处 `None` 是答案，不是缺口，测试专门说了。**上游 M3 的 `checkmarkColor`
+默认就是 null，意思是"跟着标签的颜色走"而不是它自己有一个颜色；两个
+`BoxConstraints` 上游也没有默认——布局回落到"内容自身大小的正方形"，那是一条
+布局规则而不是一个主题值。
+
+**删除图标的链要穿过图标主题。**上游是
+`widget ?? chipTheme ?? theme.chipTheme ?? widget.iconTheme?.color ??
+chipTheme.iconTheme?.color ?? defaults`——所以只设了图标颜色的主题，删除叉也
+会跟着变色。
+
+五条承重规则逐条强制改错：**五条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 125 → 118**。
+门：5625 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

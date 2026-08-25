@@ -5971,6 +5971,28 @@ pub struct ResolvedChip {
     pub fill: Color,
     pub side: Option<BorderSide>,
     pub padding: EdgeInsets,
+    /// The tick on a selected chip. Upstream's M3 default is **null**, which
+    /// means "whatever the label is written in" rather than a colour of its
+    /// own -- so `None` here is an answer and not a gap.
+    pub checkmark_color: Option<Color>,
+    /// Upstream's chain runs through the icon theme before reaching the
+    /// defaults, so a theme that set only an icon colour still colours the
+    /// delete cross.
+    pub delete_icon_color: Option<Color>,
+    pub selected_shadow_color: Option<Color>,
+    /// Upstream has no default for these two: the layout falls back to a
+    /// square of the content's own size, which is a layout rule rather than a
+    /// theme value. `None` is what a widget checks for.
+    pub avatar_box_constraints: Option<BoxConstraints>,
+    pub delete_icon_box_constraints: Option<BoxConstraints>,
+    /// The label's style.
+    ///
+    /// A **selected choice chip** takes `secondaryLabelStyle` instead, and
+    /// its fill takes `secondarySelectedColor` -- see
+    /// [`ResolvedChip::of_choice`]. Those two fields exist for exactly one
+    /// widget, which is why nothing reached them until that widget had a
+    /// resolution step of its own.
+    pub label_style: Option<TextStyle>,
 }
 
 impl ResolvedChip {
@@ -5982,6 +6004,34 @@ impl ResolvedChip {
         states: WidgetStates,
         default_fill: Color,
     ) -> ResolvedChip {
+        ResolvedChip::resolve(context, states, default_fill, false)
+    }
+
+    /// [`ResolvedChip::of`] for a `ChoiceChip`, which upstream builds as
+    ///
+    /// ```dart
+    /// labelStyle: labelStyle ?? (selected ? chipTheme.secondaryLabelStyle : null),
+    /// selectedColor: selectedColor ?? chipTheme.secondarySelectedColor,
+    /// ```
+    ///
+    /// The `secondary` pair is the theme's answer for "the one chip in
+    /// this row that is chosen", and it is separate from `selectedColor`
+    /// because a filter chip's selection is a toggle while a choice
+    /// chip's is a pick -- the two want to look different.
+    pub fn of_choice(
+        context: &mut BuildContext,
+        states: WidgetStates,
+        default_fill: Color,
+    ) -> ResolvedChip {
+        ResolvedChip::resolve(context, states, default_fill, true)
+    }
+
+    fn resolve(
+        context: &mut BuildContext,
+        states: WidgetStates,
+        default_fill: Color,
+        choice: bool,
+    ) -> ResolvedChip {
         let data = ChipTheme::of(context);
         let selected = states.contains(WidgetState::Selected);
         let disabled = states.contains(WidgetState::Disabled);
@@ -5992,7 +6042,13 @@ impl ResolvedChip {
             .or(if disabled {
                 data.disabled_color
             } else if selected {
-                data.selected_color
+                // A chosen choice chip asks the theme's `secondary` slot
+                // first; every other chip has no such slot to ask.
+                if choice {
+                    data.secondary_selected_color.or(data.selected_color)
+                } else {
+                    data.selected_color
+                }
             } else {
                 None
             })
@@ -6001,6 +6057,25 @@ impl ResolvedChip {
         ResolvedChip {
             fill,
             side: data.side,
+            checkmark_color: data.checkmark_color,
+            delete_icon_color: data
+                .delete_icon_color
+                .or_else(|| data.icon_theme.as_ref().and_then(|icons| icons.color))
+                .or(Some(if disabled {
+                    ThemeData::of(context).color_scheme.on_surface
+                } else {
+                    ThemeData::of(context).color_scheme.on_surface_variant()
+                })),
+            selected_shadow_color: data.selected_shadow_color,
+            avatar_box_constraints: data.avatar_box_constraints,
+            delete_icon_box_constraints: data.delete_icon_box_constraints,
+            label_style: if choice && selected {
+                data.secondary_label_style
+                    .clone()
+                    .or_else(|| data.label_style.clone())
+            } else {
+                data.label_style.clone()
+            },
             padding: data
                 .padding
                 .map(|padding| padding.resolve(crate::direction::current_direction()))
@@ -15542,6 +15617,176 @@ mod tests {
             ))
         );
         assert_eq!(themed(None), None);
+    }
+
+    // -- Seven chip theme fields that reached nothing, tick 234 -------------
+    //
+    // `ResolvedChip` carried a fill, a side and a padding. `checkmarkColor`,
+    // `deleteIconColor`, `selectedShadowColor`, `avatarBoxConstraints` and
+    // `deleteIconBoxConstraints` reached nothing at all, and `ChoiceChip`'s
+    // `secondarySelectedColor` and `secondaryLabelStyle` had no resolution
+    // step to reach.
+    //
+    // Every value below is a number no other line in the test uses.
+
+    fn chip_under<T: 'static>(
+        data: ChipThemeData,
+        read: impl Fn(&mut BuildContext) -> T + 'static,
+    ) -> T {
+        read_in(move |child| ChipTheme::new(data.clone(), child), read)
+    }
+
+    #[test]
+    fn the_five_plain_chip_fields_arrive_from_the_theme() {
+        use crate::widget_state::WidgetStates;
+        let fill = Color::argb(255, 9, 9, 9);
+        let data = ChipThemeData {
+            checkmark_color: Some(Color::argb(255, 0, 0, 10)),
+            delete_icon_color: Some(Color::argb(255, 0, 0, 20)),
+            selected_shadow_color: Some(Color::argb(255, 0, 0, 30)),
+            avatar_box_constraints: Some(BoxConstraints::tight_for(
+                crate::render::Size::new(40.0, 40.0),
+            )),
+            delete_icon_box_constraints: Some(BoxConstraints::tight_for(
+                crate::render::Size::new(50.0, 50.0),
+            )),
+            ..ChipThemeData::new()
+        };
+        let resolved = chip_under(data, move |context| {
+            ResolvedChip::of(context, WidgetStates::NONE, fill)
+        });
+        assert_eq!(resolved.checkmark_color, Some(Color::argb(255, 0, 0, 10)));
+        assert_eq!(resolved.delete_icon_color, Some(Color::argb(255, 0, 0, 20)));
+        assert_eq!(
+            resolved.selected_shadow_color,
+            Some(Color::argb(255, 0, 0, 30))
+        );
+        assert_eq!(
+            resolved.avatar_box_constraints.map(|c| c.max_width),
+            Some(40.0)
+        );
+        assert_eq!(
+            resolved.delete_icon_box_constraints.map(|c| c.max_width),
+            Some(50.0)
+        );
+    }
+
+    #[test]
+    fn a_checkmark_with_no_colour_stays_without_one() {
+        // Upstream's M3 default for `checkmarkColor` is **null**, which means
+        // "whatever the label is written in" rather than a colour of its own.
+        // `None` here is an answer, not a gap.
+        use crate::widget_state::WidgetStates;
+        let fill = Color::argb(255, 9, 9, 9);
+        let resolved = chip_under(ChipThemeData::new(), move |context| {
+            ResolvedChip::of(context, WidgetStates::NONE, fill)
+        });
+        assert_eq!(resolved.checkmark_color, None);
+        // And neither box constraint acquires one: upstream has no default
+        // for those either -- the layout falls back to a square of the
+        // content's size, which is a layout rule and not a theme value.
+        assert_eq!(resolved.avatar_box_constraints, None);
+        assert_eq!(resolved.delete_icon_box_constraints, None);
+    }
+
+    #[test]
+    fn the_delete_icon_falls_through_the_icon_theme_before_the_default() {
+        // Upstream's chain reaches `chipTheme.iconTheme?.color` before the
+        // defaults, so a theme that set only an icon colour still colours the
+        // delete cross.
+        use crate::widget_state::WidgetStates;
+        let fill = Color::argb(255, 9, 9, 9);
+        let through_icons = chip_under(
+            ChipThemeData {
+                icon_theme: Some(IconThemeData::new().with_color(Color::argb(255, 0, 0, 60))),
+                ..ChipThemeData::new()
+            },
+            move |context| ResolvedChip::of(context, WidgetStates::NONE, fill).delete_icon_color,
+        );
+        assert_eq!(through_icons, Some(Color::argb(255, 0, 0, 60)));
+
+        // Its own field still wins over that.
+        let named = chip_under(
+            ChipThemeData {
+                delete_icon_color: Some(Color::argb(255, 0, 0, 70)),
+                icon_theme: Some(IconThemeData::new().with_color(Color::argb(255, 0, 0, 60))),
+                ..ChipThemeData::new()
+            },
+            move |context| ResolvedChip::of(context, WidgetStates::NONE, fill).delete_icon_color,
+        );
+        assert_eq!(named, Some(Color::argb(255, 0, 0, 70)));
+    }
+
+    #[test]
+    fn a_chosen_choice_chip_asks_the_secondary_slot_first() {
+        // Upstream: `selectedColor ?? chipTheme.secondarySelectedColor`, and a
+        // filter chip has no such slot to ask. The two differ because a
+        // filter chip's selection is a toggle and a choice chip's is a pick.
+        use crate::widget_state::{WidgetState, WidgetStates};
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        let fill = Color::argb(255, 9, 9, 9);
+        let data = ChipThemeData {
+            selected_color: Some(Color::argb(255, 0, 0, 80)),
+            secondary_selected_color: Some(Color::argb(255, 0, 0, 90)),
+            ..ChipThemeData::new()
+        };
+        assert_eq!(
+            chip_under(data.clone(), move |context| ResolvedChip::of_choice(
+                context, selected, fill
+            )
+            .fill),
+            Color::argb(255, 0, 0, 90),
+            "the chosen one takes the secondary colour"
+        );
+        assert_eq!(
+            chip_under(data, move |context| ResolvedChip::of(
+                context, selected, fill
+            )
+            .fill),
+            Color::argb(255, 0, 0, 80),
+            "and every other chip takes the ordinary one"
+        );
+    }
+
+    #[test]
+    fn and_the_secondary_label_style_with_it() {
+        use crate::widget_state::{WidgetState, WidgetStates};
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        let none = WidgetStates::NONE;
+        let fill = Color::argb(255, 9, 9, 9);
+        let data = ChipThemeData {
+            label_style: Some(TextStyle {
+                font_size: 11.0,
+                ..TextStyle::default()
+            }),
+            secondary_label_style: Some(TextStyle {
+                font_size: 22.0,
+                ..TextStyle::default()
+            }),
+            ..ChipThemeData::new()
+        };
+        let size = |resolved: ResolvedChip| resolved.label_style.map(|style| style.font_size);
+        assert_eq!(
+            size(chip_under(data.clone(), move |context| {
+                ResolvedChip::of_choice(context, selected, fill)
+            })),
+            Some(22.0),
+            "chosen"
+        );
+        assert_eq!(
+            size(chip_under(data.clone(), move |context| {
+                ResolvedChip::of_choice(context, none, fill)
+            })),
+            Some(11.0),
+            "not chosen -- the ordinary style"
+        );
+        assert_eq!(
+            size(chip_under(data, move |context| {
+                ResolvedChip::of(context, selected, fill)
+            })),
+            Some(11.0),
+            "and a selected filter chip never asks for the secondary one"
+        );
     }
 }
 
