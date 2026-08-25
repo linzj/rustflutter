@@ -720,6 +720,13 @@ pub enum Drawn {
         bottom: f32,
         argb: u32,
     },
+    /// The whole canvas filled, which is what a frame's background is. It
+    /// recorded nothing before, so "the background goes down before anything
+    /// the application paints" was not a claim any test could make -- and it
+    /// is the one rule this call has.
+    Color {
+        argb: u32,
+    },
     /// Text, which recorded **nothing at all** before: like the arc below,
     /// `rf_canvas_draw_paragraph` had an empty body.
     ///
@@ -868,6 +875,8 @@ impl Drawn {
                 bottom: bottom + dy,
                 argb,
             },
+            // The whole canvas, wherever the canvas is.
+            Drawn::Color { argb } => Drawn::Color { argb },
             Drawn::Paragraph { text, x, y } => Drawn::Paragraph {
                 text,
                 x: x + dx,
@@ -1211,7 +1220,9 @@ pub unsafe extern "C" fn rf_canvas_free(canvas: *mut RfCanvas) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_canvas_draw_color(canvas: *mut RfCanvas, argb: u32) {}
+pub unsafe extern "C" fn rf_canvas_draw_color(canvas: *mut RfCanvas, argb: u32) {
+    record(Drawn::Color { argb });
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_canvas_draw_rect(

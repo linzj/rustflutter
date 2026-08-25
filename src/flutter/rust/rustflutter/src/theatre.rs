@@ -2921,3 +2921,75 @@ mod overlay_child_layout_info_tests {
         assert_ne!(placed.child_size, placed.overlay_size);
     }
 }
+
+// -- What a scrim puts on the canvas ------------------------------------------
+
+#[cfg(test)]
+mod scrim_paint_tests {
+    //! A [`RenderScrim`] is the grey behind a dialog, and it is a barrier
+    //! whether or not it is painted -- which is the pair of facts worth
+    //! holding together, because the invisible case is the one that looks
+    //! broken when it is wrong.
+
+    use super::RenderScrim;
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const SCRIM: Color = Color(0x8a000000);
+
+    fn painted(color: Option<Color>, at: Offset) -> Vec<Drawn> {
+        let mut scrim = RenderScrim::new(color);
+        scrim.layout(BoxConstraints::tight(300.0, 200.0));
+        let mut layers = LayerTree::new(400, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            scrim.paint(&mut context, at);
+        }
+        drawn()
+    }
+
+    #[test]
+    fn a_scrim_with_a_colour_covers_everything_it_was_given() {
+        // Short of its own size and the dialog behind it shows through at the
+        // edges, which reads as a rendering fault rather than as a barrier.
+        let calls = painted(Some(SCRIM), Offset::ZERO);
+        assert_eq!(
+            calls,
+            vec![Drawn::Rect {
+                left: 0.0,
+                top: 0.0,
+                right: 300.0,
+                bottom: 200.0,
+                argb: SCRIM.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_scrim_with_no_colour_paints_nothing_at_all() {
+        // Upstream's `ModalBarrier` with a null colour, which is what a route
+        // that wants the taps caught but the page left visible asks for. A
+        // transparent fill would do the same thing to the eye and cost a draw
+        // call on every frame of every such route.
+        assert!(painted(None, Offset::ZERO).is_empty());
+    }
+
+    #[test]
+    fn a_scrim_paints_where_it_was_put() {
+        let at = Offset::new(12.0, 34.0);
+        let calls = painted(Some(SCRIM), at);
+        assert_eq!(
+            calls,
+            vec![Drawn::Rect {
+                left: at.dx,
+                top: at.dy,
+                right: at.dx + 300.0,
+                bottom: at.dy + 200.0,
+                argb: SCRIM.0,
+            }]
+        );
+    }
+}
+

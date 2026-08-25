@@ -942,3 +942,194 @@ mod tests {
         assert_eq!(without.creator, None);
     }
 }
+
+// -- What the two debug boxes put on the canvas -------------------------------
+
+#[cfg(test)]
+mod debug_paint_tests {
+    //! Both of these are seen only when something has already gone wrong,
+    //! which is exactly why nothing was watching them: an error box that
+    //! painted nothing would look like an application that merely failed
+    //! quietly, and the overflow stripes are the only thing that tells a
+    //! developer a row is too wide.
+
+    use super::{DebugOverflowIndicator, RenderErrorBox};
+    use crate::engine::{LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const SCREEN: Size = Size {
+        width: 400.0,
+        height: 300.0,
+    };
+
+    fn painted(body: impl FnOnce(&mut PaintContext)) -> Vec<Drawn> {
+        let mut layers = LayerTree::new(400, 300);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, SCREEN);
+            body(&mut context);
+        }
+        drawn()
+    }
+
+    fn error_box(message: &str, at: Offset) -> Vec<Drawn> {
+        let mut boxed = RenderErrorBox::new(message);
+        boxed.layout(BoxConstraints::loose(SCREEN.width, SCREEN.height));
+        painted(|context| boxed.paint(context, at))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn rects(calls: &[Drawn]) -> Vec<((f32, f32, f32, f32), u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    argb,
+                } => Some(((*left, *top, *right, *bottom), *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_error_box_fills_itself_before_writing_on_itself() {
+        // The background is the whole point of the box: a message in the app's
+        // own colours reads as part of the app. It has to cover the box, and
+        // it has to go down first or it covers the message instead.
+        let calls = error_box("something went wrong", Offset::ZERO);
+        let marks = rects(&calls);
+        assert_eq!(marks.len(), 1, "one fill: {calls:?}");
+        let ((left, top, right, bottom), argb) = marks[0];
+        assert_eq!(argb, RenderErrorBox::background_color().0);
+        assert_eq!((left, top), (0.0, 0.0));
+
+        let mut sized = RenderErrorBox::new("something went wrong");
+        let size = sized.layout(BoxConstraints::loose(SCREEN.width, SCREEN.height));
+        assert_eq!((right - left, bottom - top), (size.width, size.height));
+
+        let fill = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Rect { .. }))
+            .expect("the fill");
+        let words = calls
+            .iter()
+            .position(|call| matches!(call, Drawn::Paragraph { .. }))
+            .expect("the message");
+        assert!(fill < words, "the fill is under the words: {calls:?}");
+    }
+
+    #[test]
+    fn the_message_it_was_given_is_the_message_it_writes() {
+        // Not a tautology while paragraphs went unrecorded: an error box that
+        // painted its own class name, or nothing, looked the same from here.
+        let calls = error_box("assertion failed: index < length", Offset::ZERO);
+        let said: Vec<&str> = calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Paragraph { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, vec!["assertion failed: index < length"]);
+    }
+
+    #[test]
+    fn an_error_with_nothing_to_say_still_draws_the_box() {
+        // The guard in `paint`. A failure with no message is still a failure,
+        // and a box with nothing in it says so; drawing neither would say the
+        // application is fine.
+        let calls = error_box("", Offset::ZERO);
+        assert_eq!(rects(&calls).len(), 1, "{calls:?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { .. })),
+            "and no empty paragraph: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn an_error_box_paints_where_it_was_put() {
+        let at = Offset::new(30.0, 45.0);
+        let here = rects(&error_box("oh no", Offset::ZERO))[0].0;
+        let there = rects(&error_box("oh no", at))[0].0;
+        assert_eq!((there.0 - here.0, there.1 - here.1), (at.dx, at.dy));
+    }
+
+    // -- The overflow stripes ------------------------------------------------
+
+    fn overflow(container: Rect, child: Rect, at: Offset) -> (bool, Vec<Drawn>) {
+        let indicator = DebugOverflowIndicator::new();
+        let mut drew = false;
+        let calls = painted(|context| {
+            drew = indicator.paint(context, at, container, child);
+        });
+        (drew, calls)
+    }
+
+    #[test]
+    fn a_child_inside_its_container_gets_no_stripes_at_all() {
+        // The case that matters most, because it is every frame of a working
+        // application. An indicator that marked a fitting child would put
+        // yellow over the whole interface.
+        let (drew, calls) = overflow(
+            Rect::xywh(0.0, 0.0, 200.0, 100.0),
+            Rect::xywh(10.0, 10.0, 100.0, 50.0),
+            Offset::ZERO,
+        );
+        assert!(!drew);
+        assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    #[test]
+    fn a_child_too_wide_is_marked_on_the_side_it_ran_off() {
+        // One region per overflowing edge, and the edge is the information: a
+        // row that runs off the right is a different bug from one that runs
+        // off the bottom, and marking both would say neither.
+        let container = Rect::xywh(0.0, 0.0, 200.0, 100.0);
+        let (drew, calls) = overflow(
+            container,
+            Rect::xywh(0.0, 0.0, 260.0, 100.0),
+            Offset::ZERO,
+        );
+        assert!(drew);
+        let marks = rects(&calls);
+        assert_eq!(marks.len(), 1, "one edge, one mark: {calls:?}");
+        let ((left, _, right, _), _) = marks[0];
+        assert!(
+            left > container.width() / 2.0,
+            "the mark is on the right-hand side: {left}"
+        );
+        assert_eq!(right, container.width(), "and reaches the edge");
+    }
+
+    #[test]
+    fn a_child_too_big_in_both_directions_is_marked_twice() {
+        let (drew, calls) = overflow(
+            Rect::xywh(0.0, 0.0, 200.0, 100.0),
+            Rect::xywh(0.0, 0.0, 260.0, 160.0),
+            Offset::ZERO,
+        );
+        assert!(drew);
+        assert_eq!(rects(&calls).len(), 2, "{calls:?}");
+    }
+
+    #[test]
+    fn the_stripes_land_where_the_container_is() {
+        // The regions are computed in the container's own coordinates, so the
+        // offset has to be added. Left out, every overflow in a scrolled page
+        // is marked at the top of the screen instead of on the widget.
+        let container = Rect::xywh(0.0, 0.0, 200.0, 100.0);
+        let child = Rect::xywh(0.0, 0.0, 260.0, 100.0);
+        let here = rects(&overflow(container, child, Offset::ZERO).1)[0].0;
+        let at = Offset::new(25.0, 60.0);
+        let there = rects(&overflow(container, child, at).1)[0].0;
+        assert_eq!((there.0 - here.0, there.1 - here.1), (at.dx, at.dy));
+    }
+}
+

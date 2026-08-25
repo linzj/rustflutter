@@ -1695,8 +1695,71 @@ mod abi {
 
 #[cfg(test)]
 mod tests {
-    use super::pack_text_direction;
+    use super::{compose_frame, pack_text_direction};
     use crate::direction::TextDirection;
+    use crate::engine::Color;
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::Size;
+
+    const BACKGROUND: Color = Color(0xff101418);
+    const MARK: Color = Color(0xffcc0000);
+
+    /// Composes a frame whose application paints one rectangle, and hands back
+    /// what the canvas was told.
+    fn frame(device_pixel_ratio: f64) -> Vec<Drawn> {
+        reset_drawn();
+        let _tree = compose_frame(
+            800,
+            600,
+            device_pixel_ratio,
+            Size::new(400.0, 300.0),
+            BACKGROUND,
+            |context| {
+                context.canvas().draw_rect(
+                    crate::engine::Rect::xywh(0.0, 0.0, 10.0, 10.0),
+                    &crate::engine::Paint::new(MARK),
+                );
+            },
+        );
+        drawn()
+    }
+
+    #[test]
+    fn the_background_goes_down_before_the_application_paints() {
+        // `draw_color` recorded nothing until this tick, so this -- the one
+        // rule the call has -- was not a claim any test could make. Painted
+        // after instead, the background covers the whole application; not
+        // painted at all, whatever the last frame left behind shows through.
+        let calls = frame(2.0);
+        assert_eq!(
+            calls.first(),
+            Some(&Drawn::Color {
+                argb: BACKGROUND.0
+            }),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::Rect { argb, .. } if *argb == MARK.0)),
+            "and the application painted after it: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn the_background_is_filled_once_whatever_the_device_pixel_ratio() {
+        // A scale of exactly one skips the transform layer -- "pushing an
+        // identity would cost a layer to say nothing" -- and the background
+        // must not be skipped with it.
+        for dpr in [1.0, 2.0, 3.0] {
+            let calls = frame(dpr);
+            let fills = calls
+                .iter()
+                .filter(|call| matches!(call, Drawn::Color { .. }))
+                .count();
+            assert_eq!(fills, 1, "at {dpr}: {calls:?}");
+        }
+    }
 
     #[test]
     fn reading_directions_cross_in_the_embedders_encoding() {
