@@ -17656,3 +17656,47 @@ unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 118 → 107**（其中 6 条是
 剔除废弃族，5 条是真接上的）。
 门：5630 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 236 次：尺子第一次**多报**，以及七根小线
+
+前三次修尺子改的都是它**少看**的地方。这次是反过来的一次：
+`SearchBarThemeData::hint_style` 明明被读了，读它的是
+
+```rust
+hint_style: pick!(hint_style)
+```
+
+——一个宏。展开之后才有那次读取，源码里从来没写过那个点号。尺子加上了
+`!(field)` 这一种形状，并把这类写进文档：**前两次错都是少报，这次是多报。**
+全队列里只有这一处。**107 → 106。**
+
+### 七根线
+
+| 主题 | 字段 | 上游的最后一级 |
+| --- | --- | --- |
+| `ListTileThemeData` | 三个文字样式 | `bodyLarge` / `bodyMedium` / `labelSmall` |
+| `ProgressIndicatorThemeData` | `strokeCap`、`circularTrackPadding` | 无 |
+| `ScrollbarThemeData` | `trackBorderColor` | 随明暗而变 |
+| `TooltipThemeData` | `exitDuration` | 100ms |
+
+**三个文字样式是三个不同的角色**——`ResolvedListTile` 一个样式也没带。测试除了
+查每个字段都到位，还查了**三个默认互不相同**：三个样式变成一个样式，是不会被
+任何单个数字发现的。（其中 `title_text_style` 尺子没报，因为这个名字 crate
+里别处正好也出现——又一次它只会少报的例子。）
+
+**`stroke_cap` 的 `None` 是答案。**上游自己的默认不是一个值：spinner 和线性
+轨道是 round，而 Material 3 那条带缺口的线性条是 butt。所以"没有值"的意思是
+"各画各的"，不是"方头"。
+
+**轨道边线随明暗而变**：亮色主题取墨色的十分之一透明度，暗色取四分之一——
+在白底上读作"淡"的那个透明度，在黑底上会直接消失。
+
+**tooltip 离开得比停留快**：`_defaultExitDuration` 是 100ms，而 `showDuration`
+是 1500。指针滑开和读者读完不是同一件事，不给同样的宽限。
+
+四条承重规则逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 107 → 99**。
+门：5634 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

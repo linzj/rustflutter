@@ -1246,6 +1246,11 @@ pub struct ResolvedTooltip {
     pub text_align: TextAlign,
     pub wait_duration: std::time::Duration,
     pub show_duration: std::time::Duration,
+    /// How long the tooltip stays after the pointer leaves. Upstream's own
+    /// default is 100ms, which is a tenth of `show_duration`'s -- a pointer
+    /// that slid off is not the same event as a reader who has finished
+    /// reading, and it is not given the same grace.
+    pub exit_duration: std::time::Duration,
 }
 
 impl ResolvedTooltip {
@@ -1255,6 +1260,8 @@ impl ResolvedTooltip {
     pub const PREFER_BELOW: bool = true;
     /// Upstream's `_defaultShowDuration`.
     pub const SHOW_DURATION: std::time::Duration = std::time::Duration::from_millis(1500);
+    /// Upstream's `_defaultExitDuration`.
+    pub const EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
     /// Upstream's `_defaultWaitDuration`, which is **zero**: a tooltip summoned
     /// by a long press has already been waited for.
     pub const WAIT_DURATION: std::time::Duration = std::time::Duration::ZERO;
@@ -1300,6 +1307,7 @@ impl ResolvedTooltip {
             text_align: data.text_align.unwrap_or(TextAlign::Start),
             wait_duration: data.wait_duration.unwrap_or(ResolvedTooltip::WAIT_DURATION),
             show_duration: data.show_duration.unwrap_or(ResolvedTooltip::SHOW_DURATION),
+            exit_duration: data.exit_duration.unwrap_or(ResolvedTooltip::EXIT_DURATION),
         }
     }
 }
@@ -1328,6 +1336,13 @@ pub struct ResolvedProgressIndicator {
     pub refresh_background_color: Color,
     pub stop_indicator_color: Option<Color>,
     pub stop_indicator_radius: Option<f32>,
+    /// How the ends of the drawn arc are cut. Upstream's own default is not
+    /// one value: `StrokeCap.round` for a spinner and for a linear bar's
+    /// track, `StrokeCap.butt` for the gapped Material 3 linear bar -- so
+    /// `None` here means "each painter's own", not "square".
+    pub stroke_cap: Option<crate::painting::StrokeCap>,
+    /// The room a circular indicator leaves around its track.
+    pub circular_track_padding: Option<EdgeInsetsGeometry>,
 }
 
 impl ResolvedProgressIndicator {
@@ -1347,6 +1362,8 @@ impl ResolvedProgressIndicator {
                 .unwrap_or(ResolvedProgressIndicator::LINEAR_MIN_HEIGHT),
             circular_track_color: data.circular_track_color,
             refresh_background_color: data.refresh_background_color.unwrap_or(scheme.surface),
+            stroke_cap: data.stroke_cap,
+            circular_track_padding: data.circular_track_padding,
             stop_indicator_color: data.stop_indicator_color,
             stop_indicator_radius: data.stop_indicator_radius,
         }
@@ -5679,6 +5696,15 @@ pub struct ResolvedListTile {
     pub tile_color: Option<Color>,
     pub text_color: Color,
     pub dense: bool,
+    /// The three text styles, each `tile ?? tileTheme ?? defaults`.
+    ///
+    /// Upstream's M3 defaults are three *different* roles -- `bodyLarge` for
+    /// the title, `bodyMedium` for the subtitle, `labelSmall` for whatever
+    /// sits at the ends -- so a tile whose three styles were one style would
+    /// look wrong in a way no single number shows.
+    pub title_text_style: Option<TextStyle>,
+    pub subtitle_text_style: Option<TextStyle>,
+    pub leading_and_trailing_text_style: Option<TextStyle>,
     /// Upstream's
     /// `titleAlignment ?? tileTheme.titleAlignment ?? (useMaterial3 ?
     /// threeLine : titleHeight)`.
@@ -5775,6 +5801,18 @@ impl ResolvedListTile {
             },
             text_color,
             dense,
+            title_text_style: data
+                .title_text_style
+                .clone()
+                .or_else(|| theme.text_theme.body_large.clone()),
+            subtitle_text_style: data
+                .subtitle_text_style
+                .clone()
+                .or_else(|| theme.text_theme.body_medium.clone()),
+            leading_and_trailing_text_style: data
+                .leading_and_trailing_text_style
+                .clone()
+                .or_else(|| theme.text_theme.label_small.clone()),
             title_alignment: data.title_alignment.unwrap_or(if theme.use_material3 {
                 ListTileTitleAlignment::ThreeLine
             } else {
@@ -7617,6 +7655,13 @@ pub struct ResolvedScrollbar {
     pub main_axis_margin: f32,
     pub min_thumb_length: f32,
     pub interactive: bool,
+    /// The line down the edge of the track.
+    ///
+    /// Upstream's default is **brightness-dependent**: `onSurface` at a tenth
+    /// opacity under a light theme and a quarter under a dark one, because a
+    /// faint line on a dark ground disappears at the opacity that reads as
+    /// faint on a light one.
+    pub track_border_color: Color,
 }
 
 impl ResolvedScrollbar {
@@ -7654,6 +7699,21 @@ impl ResolvedScrollbar {
                 .min_thumb_length
                 .unwrap_or(ResolvedScrollbar::MIN_THUMB_LENGTH),
             interactive: data.interactive.unwrap_or(true),
+            track_border_color: data
+                .track_border_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or_else(|| {
+                    let ink = scheme.on_surface;
+                    match ThemeData::of(context).brightness() {
+                        crate::platform::Brightness::Light => {
+                            ink.with_alpha((ink.alpha() as f32 * 0.1).round() as u8)
+                        }
+                        crate::platform::Brightness::Dark => {
+                            ink.with_alpha((ink.alpha() as f32 * 0.25).round() as u8)
+                        }
+                    }
+                }),
         }
     }
 }
@@ -15934,6 +15994,181 @@ mod tests {
             "and it is not nothing"
         );
         assert!(plain.toolbar_text_style.is_some());
+    }
+
+    // -- Seven small wires, four resolvers, tick 236 ------------------------
+    //
+    // Every value below is a number no other line in the test uses.
+
+    #[test]
+    fn a_tiles_three_text_styles_are_three_different_roles() {
+        // Upstream's M3 defaults are `bodyLarge`, `bodyMedium` and
+        // `labelSmall` -- a tile whose three styles were one style would look
+        // wrong in a way no single number shows, so this checks that the
+        // three defaults differ as well as that each field arrives.
+        let themed = read_in(
+            |child| {
+                ListTileTheme::new(
+                    ListTileThemeData {
+                        title_text_style: Some(TextStyle {
+                            font_size: 11.0,
+                            ..TextStyle::default()
+                        }),
+                        subtitle_text_style: Some(TextStyle {
+                            font_size: 22.0,
+                            ..TextStyle::default()
+                        }),
+                        leading_and_trailing_text_style: Some(TextStyle {
+                            font_size: 33.0,
+                            ..TextStyle::default()
+                        }),
+                        ..ListTileThemeData::default()
+                    },
+                    child,
+                )
+            },
+            |context| ResolvedListTile::of(context, false, None),
+        );
+        assert_eq!(
+            themed.title_text_style.map(|style| style.font_size),
+            Some(11.0)
+        );
+        assert_eq!(
+            themed.subtitle_text_style.map(|style| style.font_size),
+            Some(22.0)
+        );
+        assert_eq!(
+            themed
+                .leading_and_trailing_text_style
+                .map(|style| style.font_size),
+            Some(33.0)
+        );
+
+        let plain = read_in(
+            |child| child,
+            |context| ResolvedListTile::of(context, false, None),
+        );
+        let typography = crate::theme::ThemeData::light().text_theme;
+        assert_eq!(plain.title_text_style, typography.body_large);
+        assert_eq!(plain.subtitle_text_style, typography.body_medium);
+        assert_eq!(
+            plain.leading_and_trailing_text_style,
+            typography.label_small
+        );
+        assert_ne!(
+            plain.title_text_style, plain.leading_and_trailing_text_style,
+            "the three roles are three styles, so the assertions above say \
+             something"
+        );
+    }
+
+    #[test]
+    fn a_progress_indicator_carries_its_cap_and_track_padding() {
+        // `None` for the cap is an answer: upstream's own default is not one
+        // value -- round for a spinner and for a linear track, butt for the
+        // gapped Material 3 bar -- so it means "each painter's own".
+        let plain = read_in(|child| child, ResolvedProgressIndicator::of);
+        assert_eq!(plain.stroke_cap, None);
+        assert_eq!(plain.circular_track_padding, None);
+
+        let themed = read_in(
+            |child| {
+                ProgressIndicatorTheme::new(
+                    ProgressIndicatorThemeData {
+                        stroke_cap: Some(crate::painting::StrokeCap::Square),
+                        circular_track_padding: Some(EdgeInsetsGeometry::Absolute(
+                            crate::render::EdgeInsets::all(44.0),
+                        )),
+                        ..ProgressIndicatorThemeData::default()
+                    },
+                    child,
+                )
+            },
+            ResolvedProgressIndicator::of,
+        );
+        assert_eq!(themed.stroke_cap, Some(crate::painting::StrokeCap::Square));
+        assert_eq!(
+            themed
+                .circular_track_padding
+                .map(|p| p.resolve(crate::direction::TextDirection::Ltr).left),
+            Some(44.0)
+        );
+    }
+
+    #[test]
+    fn a_scrollbars_track_border_is_fainter_on_a_light_ground() {
+        // Upstream's default is brightness-dependent: a tenth of the ink's
+        // opacity under a light theme and a quarter under a dark one, because
+        // a line that reads as faint on white disappears on black.
+        use crate::widget_state::WidgetStates;
+        let under = |theme: crate::theme::ThemeData| {
+            read_in(
+                move |child| {
+                    crate::theme::MaterialTheme::new(
+                        theme.clone(),
+                        ScrollbarTheme::new(ScrollbarThemeData::default(), child),
+                    )
+                },
+                |context| ResolvedScrollbar::of(context, WidgetStates::NONE).track_border_color,
+            )
+        };
+        let light = under(crate::theme::ThemeData::light());
+        let dark = under(crate::theme::ThemeData::dark());
+        assert!(
+            dark.alpha() > light.alpha(),
+            "the dark theme's line is the stronger one: {} vs {}",
+            dark.alpha(),
+            light.alpha()
+        );
+
+        // And the theme's own field wins over both.
+        let named = read_in(
+            |child| {
+                ScrollbarTheme::new(
+                    ScrollbarThemeData {
+                        track_border_color: Some(crate::widget_state::StateProperty::all(Some(
+                            Color::argb(255, 0, 0, 55),
+                        ))),
+                        ..ScrollbarThemeData::default()
+                    },
+                    child,
+                )
+            },
+            |context| ResolvedScrollbar::of(context, WidgetStates::NONE).track_border_color,
+        );
+        assert_eq!(named, Color::argb(255, 0, 0, 55));
+    }
+
+    #[test]
+    fn a_tooltip_leaves_faster_than_it_stays() {
+        // Upstream's `_defaultExitDuration` is 100ms against `showDuration`'s
+        // 1500: a pointer that slid off is not the same event as a reader who
+        // has finished reading, and it is not given the same grace.
+        let plain = read_in(|child| child, ResolvedTooltip::of);
+        assert_eq!(plain.exit_duration, ResolvedTooltip::EXIT_DURATION);
+        assert!(
+            plain.exit_duration < plain.show_duration,
+            "{:?} against {:?}",
+            plain.exit_duration,
+            plain.show_duration
+        );
+
+        let themed = read_in(
+            |child| {
+                TooltipTheme::new(
+                    TooltipThemeData {
+                        exit_duration: Some(std::time::Duration::from_millis(66)),
+                        ..TooltipThemeData::default()
+                    },
+                    child,
+                )
+            },
+            ResolvedTooltip::of,
+        );
+        assert_eq!(
+            themed.exit_duration,
+            std::time::Duration::from_millis(66)
+        );
     }
 }
 

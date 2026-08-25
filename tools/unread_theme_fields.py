@@ -39,7 +39,12 @@ The check is by field name rather than by type, because the resolution
 usually copies the field across under the same name. That makes it
 under-report: a field named `color` is "read" by anything anywhere that says
 `.color`. Every name it *does* report appears nowhere outside its own
-paperwork at all.
+paperwork at all -- with one exception, now handled: a read that exists only
+after a macro expands. `component_themes.rs` resolves a dozen state-property
+fields through `pick!(field)`, and the source never writes the dot, so
+`SearchBarThemeData::hint_style` was reported unread while being read. That
+was an *over*-report, where the other two mistakes this rule made were
+under-reports.
 
 # Deprecated upstream is not a queue entry
 
@@ -142,9 +147,11 @@ def reads(theme, field, files):
     """Is this field named anywhere that is not its own paperwork?"""
     for name, text in files.items():
         spans = paperwork(text, theme)
-        for m in re.finditer(r'\.%s\b' % re.escape(field), text):
-            if not any(start <= m.start() < end for start, end in spans):
-                return True
+        for pattern in (r'\.%s\b' % re.escape(field),
+                        r'!\(\s*%s\s*\)' % re.escape(field)):
+            for m in re.finditer(pattern, text):
+                if not any(start <= m.start() < end for start, end in spans):
+                    return True
     return False
 
 
