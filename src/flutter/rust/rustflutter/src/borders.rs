@@ -5459,6 +5459,16 @@ mod tests {
                 ShapeBorder::Star(StarBorder::new(side, 5.0, 0.4, 0.0, 0.0, 0.0, 1.0)),
             ),
             (
+                "linear",
+                ShapeBorder::Linear(LinearBorder::new(
+                    side,
+                    Some(LinearBorderEdge::new(0.5, 0.0)),
+                    None,
+                    None,
+                    None,
+                )),
+            ),
+            (
                 "underline",
                 ShapeBorder::Underline(UnderlineInputBorder {
                     side,
@@ -5651,6 +5661,91 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_decorations_shadows_lerp_in_pairs_and_the_odd_ones_fade() {
+        // Two lists of shadows, walked by index. Where both have one at that
+        // index the two are interpolated; where only one does, it fades --
+        // **out** when it belongs to `a` and **in** when it belongs to `b`,
+        // which is the pair of lines a swap makes indistinguishable.
+        //
+        // The lists are deliberately different lengths, because equal-length
+        // lists never reach the two fading arms at all.
+        let shadow = |blur: f32| crate::painting::BoxShadow::new(Color(0xff000000), 0.0, 0.0, blur, 0.0);
+        let near = ShapeDecoration {
+            fill: None,
+            shadows: vec![shadow(4.0), shadow(8.0)],
+            shape: ShapeBorder::Stadium(StadiumBorder::new(wide(2.0))),
+        };
+        let far = ShapeDecoration {
+            fill: None,
+            shadows: vec![shadow(12.0)],
+            shape: ShapeBorder::Stadium(StadiumBorder::new(wide(6.0))),
+        };
+
+        let quarter = ShapeDecoration::lerp(Some(&near), Some(&far), 0.25).expect("stadiums interpolate");
+        assert_eq!(quarter.shadows.len(), 2, "the longer list decides how many");
+        assert_eq!(
+            quarter.shadows[0].blur_radius, 6.0,
+            "a quarter of the way from 4 to 12"
+        );
+        assert_eq!(
+            quarter.shadows[1].blur_radius, 6.0,
+            "the odd one is `a`'s, so it is three quarters of the way *out*"
+        );
+
+        // The other way round the odd shadow belongs to `b`, so at the same
+        // `t` it is only a quarter of the way *in* -- 2, not 6. The two
+        // fading arms are told apart by exactly this.
+        let back = ShapeDecoration::lerp(Some(&far), Some(&near), 0.25).expect("and back");
+        assert_eq!(back.shadows.len(), 2);
+        assert_eq!(back.shadows[0].blur_radius, 10.0, "12 towards 4");
+        assert_eq!(back.shadows[1].blur_radius, 2.0, "8 fading in at a quarter");
+    }
+
+    #[test]
+    fn a_multi_phase_lerp_has_to_be_asked_about_its_second_phase_too() {
+        // A stadium becoming a star passes through a circle, and the side
+        // computed at the top of that arm is what the **intermediate circle**
+        // is built with. In the first phase the answer is dominated by the
+        // stadium end, so a quarter of the way along says little about it;
+        // the phase where that circle is the *start* is the one that reads it.
+        //
+        // Sampling one point of a two-phase animation is sampling one of its
+        // two rules.
+        let stadium = ShapeBorder::Stadium(StadiumBorder::new(wide(2.0)));
+        let star = ShapeBorder::Star(StarBorder::new(wide(10.0), 5.0, 0.4, 0.0, 0.0, 0.0, 1.0));
+
+        let widths: Vec<f32> = [0.25, 0.75]
+            .into_iter()
+            .filter_map(|t| {
+                ShapeBorder::lerp(Some(stadium.clone()), Some(star.clone()), t)
+                    .and_then(|shape| shape.outlined_side())
+                    .map(|side| side.width)
+            })
+            .collect();
+        assert_eq!(widths.len(), 2, "both phases answer");
+        assert!(
+            widths[0] < widths[1],
+            "the side grows through both phases: {widths:?}"
+        );
+        assert!(widths[0] < 6.0 && widths[1] > 6.0, "one each side of the middle");
+
+        // And the journey the other way round is the mirror.
+        let back: Vec<f32> = [0.25, 0.75]
+            .into_iter()
+            .filter_map(|t| {
+                ShapeBorder::lerp(Some(star.clone()), Some(stadium.clone()), t)
+                    .and_then(|shape| shape.outlined_side())
+                    .map(|side| side.width)
+            })
+            .collect();
+        assert!(
+            back[0] > back[1],
+            "starting from the star it shrinks: {back:?}"
+        );
+        assert!(back[0] > 6.0 && back[1] < 6.0);
+    }
+
+    #[test]
     fn and_a_circle_opening_into_an_oval_morphs_rather_than_fading() {
         // The pair this screen turned up. Upstream needs no arm for it --
         // `OvalBorder extends CircleBorder`, so the circle's own lerp handles
@@ -5767,6 +5862,53 @@ mod tests {
             ),
             BoxBorder::None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         }
+    }
+
+    #[test]
+    fn two_borders_of_the_same_kind_go_straight_through_without_the_dance() {
+        // The two easy cases above the interesting one, and each has its own
+        // line: uniform with uniform hands off to `Border::lerp`, directional
+        // with directional to `BorderDirectional::lerp`. Neither needs the
+        // two-phase treatment, because every edge has a counterpart.
+        let uniform_near = BoxBorder::Uniform(Border::new(
+            wide(4.0),
+            wide(8.0),
+            wide(12.0),
+            wide(16.0),
+        ));
+        let uniform_far = BoxBorder::Uniform(Border::new(
+            wide(20.0),
+            wide(24.0),
+            wide(28.0),
+            wide(32.0),
+        ));
+        let quarter = BoxBorder::lerp(Some(uniform_near), Some(uniform_far), 0.25);
+        assert!(matches!(quarter, BoxBorder::Uniform(_)), "it stays uniform");
+        let (top, bottom, left, right, ..) = box_widths(&quarter);
+        assert_eq!((top, bottom, left, right), (8.0, 16.0, 20.0, 12.0));
+        let back = BoxBorder::lerp(Some(uniform_far), Some(uniform_near), 0.25);
+        let (top, bottom, left, right, ..) = box_widths(&back);
+        assert_eq!((top, bottom, left, right), (16.0, 24.0, 28.0, 20.0));
+
+        let directional_near = BoxBorder::Directional(BorderDirectional::new(
+            wide(4.0),
+            wide(8.0),
+            wide(12.0),
+            wide(16.0),
+        ));
+        let directional_far = BoxBorder::Directional(BorderDirectional::new(
+            wide(20.0),
+            wide(24.0),
+            wide(28.0),
+            wide(32.0),
+        ));
+        let quarter = BoxBorder::lerp(Some(directional_near), Some(directional_far), 0.25);
+        assert!(matches!(quarter, BoxBorder::Directional(_)));
+        let (top, bottom, _, _, start, end) = box_widths(&quarter);
+        assert_eq!((top, bottom, start, end), (8.0, 20.0, 12.0, 16.0));
+        let back = BoxBorder::lerp(Some(directional_far), Some(directional_near), 0.25);
+        let (top, bottom, _, _, start, end) = box_widths(&back);
+        assert_eq!((top, bottom, start, end), (16.0, 28.0, 20.0, 24.0));
     }
 
     #[test]
