@@ -577,6 +577,19 @@ impl FocusTree {
     /// `unfocus` runs, because unfocus consults it while culling unfocusable
     /// previously-focused children. Setting it afterwards would leave this
     /// node looking focusable during exactly the walk meant to skip it.
+    ///
+    /// # The `changed` guard decides nothing here yet
+    ///
+    /// Upstream's setter wraps its whole body in `if (value != _canRequestFocus)`,
+    /// and what that guard is really protecting is the last line --
+    /// `_manager?._markPropertiesChanged(this)`, a notification. The
+    /// unfocusing below is already conditional on `had_focus && !value`, so
+    /// setting a value to what it already is does nothing either way.
+    ///
+    /// This port has no `_markPropertiesChanged` yet, so the guard has nothing
+    /// left to protect and a mutation deleting it stays green. It is kept as
+    /// upstream's shape and as the place the notification will go, and that is
+    /// written down rather than left to be rediscovered.
     pub fn set_can_request_focus(&mut self, id: u64, value: bool) {
         let changed = self
             .nodes
@@ -600,6 +613,9 @@ impl FocusTree {
     /// Its doc adds one thing worth keeping: when set back to true the
     /// descendants are **not** refocused, though they can accept focus again.
     /// A panel that disables and re-enables itself does not steal focus back.
+    ///
+    /// Its `changed` guard is the same story as the one above:
+    /// [`FocusTree::set_can_request_focus`] says why it decides nothing yet.
     pub fn set_descendants_are_focusable(&mut self, id: u64, value: bool) {
         let changed = self
             .nodes

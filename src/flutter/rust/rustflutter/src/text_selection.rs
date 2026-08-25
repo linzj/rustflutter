@@ -1188,6 +1188,40 @@ mod tests {
     }
 
     #[test]
+    fn and_so_is_a_failure_arriving_after_disposal() {
+        // The other half of the same await. `fail_update` writes `Unknown`
+        // **on purpose** -- so the notifier tries again later -- which makes
+        // it the one path where writing into a dead object looks harmless:
+        // the value it writes is the value a fresh notifier has.
+        //
+        // It is not harmless. A notifier is a `ValueNotifier`, and writing to
+        // it is what tells its listeners; a disposed one has told them it is
+        // finished. Nothing reached this guard until a screen for guards the
+        // suite cannot make matter pointed at it, and the reason nothing did
+        // is exactly that the value looks unchanged.
+        let mut notifier = ClipboardStatusNotifier::new();
+        notifier.add_listener();
+        notifier.complete_update(true);
+        assert_eq!(notifier.value(), ClipboardStatus::Pasteable);
+        notifier.dispose();
+        notifier.fail_update();
+        assert_eq!(
+            notifier.value(),
+            ClipboardStatus::Pasteable,
+            "the dead notifier keeps whatever it last said, so nothing it              is still wired to is told anything"
+        );
+
+        // And a live one does take the failure, which is what says the rule
+        // belongs to disposal rather than to `fail_update` never doing
+        // anything.
+        let mut notifier = ClipboardStatusNotifier::new();
+        notifier.add_listener();
+        notifier.complete_update(true);
+        notifier.fail_update();
+        assert_eq!(notifier.value(), ClipboardStatus::Unknown);
+    }
+
+    #[test]
     fn live_text_says_nothing_when_the_answer_has_not_changed() {
         // Live Text availability is a property of the device and almost never
         // moves; a notification saying it is still what it was would rebuild

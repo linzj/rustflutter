@@ -16194,3 +16194,31 @@ factor 后它按标签收缩，长标签仍会把它撑宽。
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5346 + 333 通过；五个输出目录的 rustflutter_engine 与
 rust_lib 全部重建。
+
+### 第 197 次：那个写下去看着无害的值
+
+结清第 190 次筛子留下的最后三条候选。
+
+`ClipboardStatusNotifier::fail_update` 的 `if self.disposed { return; }`。
+`fail_update` **故意**写 `Unknown`——好让它稍后再试一次——这恰恰使得"往一个
+已销毁的对象里写"看上去无害：它写进去的值，正是一个新建的通知器本来就有的值。
+
+并不无害。通知器是 `ValueNotifier`，写它就是在告诉它的监听者；一个已销毁的
+通知器已经说过自己结束了。**没有任何东西走到过这道守卫，而原因恰恰是那个值
+看上去没变。**补了测试：死掉的通知器保住它最后说过的话，而活着的照收失败。
+
+`focus_node` 里 `set_can_request_focus` 和 `set_descendants_are_focusable`
+的两条 `if !changed`。上游那个 `if (value != _canRequestFocus)` 真正在保护的
+是最后一行 `_manager?._markPropertiesChanged(this)`，一个通知；而底下的
+unfocus 本来就以 `had_focus && !value` 为条件。**本移植还没有
+`_markPropertiesChanged`，所以这道守卫已经没有可保护的东西了**——保留作为
+上游的形状、也作为将来那条通知要落的位置，并把这一点写在原地，而不是留给
+下一次重新发现。
+
+`text_selection.rs` 的候选数 1→0；另两条已注明。第 190 次那批候选到此全部
+结清：真缺口都补了测试，其余各自写明了它们为什么不决定任何事。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5347 + 333 通过；五个输出目录的 rustflutter_engine 与
+rust_lib 全部重建。
