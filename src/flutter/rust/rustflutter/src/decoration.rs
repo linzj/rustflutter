@@ -936,3 +936,180 @@ mod flutter_logo_tests {
         }
     }
 }
+
+// -- What a BoxDecoration puts on the canvas ----------------------------------
+
+#[cfg(test)]
+mod decoration_paint_tests {
+    //! `BoxDecoration::paint` was three draw calls nothing could see.
+    //!
+    //! A path is a handle with no readable shape behind it here, so what the
+    //! recorder keeps is its **bounding box** and its colour. That is enough
+    //! for what this paint gets wrong: where each shadow lands, how far it
+    //! spreads, and what order the three layers go down in.
+
+    use super::{BoxDecoration, BoxShape, Fill};
+    use crate::borders::{Border, BorderStyle, BoxBorder, STROKE_ALIGN_INSIDE};
+    use crate::direction::TextDirection;
+    use crate::engine::{Color, LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::painting::BoxShadow;
+    use crate::render::{PaintContext, Size};
+
+    const FILL: Color = Color(0xff2277cc);
+    const SHADOW: Color = Color(0x66000000);
+    const EDGE: Color = Color(0xff993333);
+    const BOX: Rect = Rect {
+        left: 20.0,
+        top: 30.0,
+        right: 120.0,
+        bottom: 90.0,
+    };
+
+    fn painted(decoration: BoxDecoration) -> Vec<Drawn> {
+        let mut layers = LayerTree::new(400, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            decoration.paint(context.canvas(), BOX, TextDirection::Ltr);
+        }
+        drawn()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn paths(calls: &[Drawn]) -> Vec<((f32, f32, f32, f32), u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Path {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    argb,
+                } => Some(((*left, *top, *right, *bottom), *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shadows_go_under_the_fill_and_the_fill_under_the_border() {
+        // Upstream's `_BoxDecorationPainter.paint` order, and each swap breaks
+        // differently: a shadow over the fill is a smear across the box, and a
+        // border under it is not there at all.
+        let decoration = BoxDecoration::new()
+            .with_fill(Fill::Solid(FILL))
+            .with_border(BoxBorder::Uniform(Border::all(
+                EDGE,
+                2.0,
+                BorderStyle::Solid,
+                STROKE_ALIGN_INSIDE,
+            )))
+            .with_box_shadow(vec![BoxShadow::new(SHADOW, 0.0, 4.0, 6.0, 0.0)]);
+        let calls = painted(decoration);
+        let colours: Vec<u32> = calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Path { argb, .. } => Some(*argb),
+                Drawn::Rect { argb, .. } | Drawn::RRect { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect();
+        let first = colours.iter().position(|argb| *argb == SHADOW.0);
+        let fill = colours.iter().position(|argb| *argb == FILL.0);
+        let border = colours.iter().position(|argb| *argb == EDGE.0);
+        assert!(
+            first < fill && fill < border,
+            "shadow {first:?}, fill {fill:?}, border {border:?} in {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_shadow_is_the_box_moved_by_its_offset() {
+        // `BoxShadow.offset`, which is what makes a shadow look like light
+        // coming from somewhere rather than a halo.
+        let calls = painted(
+            BoxDecoration::new().with_box_shadow(vec![BoxShadow::new(SHADOW, 5.0, 9.0, 0.0, 0.0)]),
+        );
+        let shapes = paths(&calls);
+        assert_eq!(shapes.len(), 1, "{calls:?}");
+        assert_eq!(
+            shapes[0].0,
+            (
+                BOX.left + 5.0,
+                BOX.top + 9.0,
+                BOX.right + 5.0,
+                BOX.bottom + 9.0
+            )
+        );
+        assert_eq!(shapes[0].1, SHADOW.0);
+    }
+
+    #[test]
+    fn and_grown_by_its_spread_on_every_side() {
+        // `spreadRadius` inflates rather than scales: the same amount on each
+        // edge, so a tall box's shadow does not become tall and thin.
+        let calls = painted(
+            BoxDecoration::new().with_box_shadow(vec![BoxShadow::new(SHADOW, 0.0, 0.0, 0.0, 7.0)]),
+        );
+        let (left, top, right, bottom) = paths(&calls)[0].0;
+        assert_eq!(
+            (left, top, right, bottom),
+            (
+                BOX.left - 7.0,
+                BOX.top - 7.0,
+                BOX.right + 7.0,
+                BOX.bottom + 7.0
+            )
+        );
+        assert_eq!(right - left, BOX.right - BOX.left + 14.0, "grown both ways");
+        assert_eq!(bottom - top, BOX.bottom - BOX.top + 14.0);
+    }
+
+    #[test]
+    fn every_shadow_in_the_list_is_drawn_and_the_last_one_is_on_top() {
+        // Upstream walks `boxShadow` in order and the later ones land over the
+        // earlier. A painter that stopped at the first would lose the
+        // ambient-plus-key pair that every elevation in Material is made of.
+        let calls = painted(BoxDecoration::new().with_box_shadow(vec![
+                BoxShadow::new(Color(0x22000000), 0.0, 1.0, 0.0, 0.0),
+                BoxShadow::new(Color(0x44000000), 0.0, 6.0, 0.0, 0.0),
+            ]));
+        let shapes = paths(&calls);
+        assert_eq!(shapes.len(), 2, "{calls:?}");
+        assert_eq!(shapes[0].1, 0x22000000);
+        assert_eq!(shapes[1].1, 0x44000000, "the second is drawn second");
+        assert!(shapes[1].0.1 > shapes[0].0.1, "and sits lower down");
+    }
+
+    #[test]
+    fn a_circle_shadow_is_round_rather_than_the_shape_of_the_box() {
+        // `BoxShape.circle` fits a circle to the *shortest* side, so an oblong
+        // box gets a round shadow inside it rather than an ellipse filling it.
+        let mut decoration = BoxDecoration::new()
+            .with_box_shadow(vec![BoxShadow::new(SHADOW, 0.0, 0.0, 0.0, 0.0)]);
+        decoration.shape = BoxShape::Circle;
+        let (left, top, right, bottom) = paths(&painted(decoration))[0].0;
+        let width = right - left;
+        let height = bottom - top;
+        assert_eq!(width, height, "as tall as it is wide");
+        assert_eq!(
+            width,
+            (BOX.bottom - BOX.top).min(BOX.right - BOX.left),
+            "and fitted to the shorter side"
+        );
+        // Centred in the box, which is what makes it fit rather than hug an
+        // edge.
+        assert_eq!((left + right) / 2.0, (BOX.left + BOX.right) / 2.0);
+        assert_eq!((top + bottom) / 2.0, (BOX.top + BOX.bottom) / 2.0);
+    }
+
+    #[test]
+    fn a_decoration_with_nothing_in_it_draws_nothing() {
+        // The case a painter gets wrong by drawing a transparent rectangle
+        // instead: every empty container in a tree would then cost a draw call.
+        assert!(painted(BoxDecoration::new()).is_empty());
+    }
+}
+
