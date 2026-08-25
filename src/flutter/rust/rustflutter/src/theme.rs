@@ -1260,4 +1260,136 @@ mod tests {
         let back = ThemeData::lerp(&dense, &sparse, 0.25).visual_density;
         assert_eq!((back.horizontal, back.vertical), (2.0, -2.0));
     }
+
+    // -- `ThemeData::lerp`'s sixteen colour lines ---------------------------
+    //
+    // Sixteen lines of `x: mix(a.x, b.x)`, which is the shape a copy-paste
+    // gets wrong: the new line still names the field above it. No screen sees
+    // these -- `tools/unlerped_fields.py` looks for a `t` in the call, and
+    // `mix` closes over it -- so this test is what stands in for one.
+
+    /// A theme whose sixteen mixed colours are sixteen *different* numbers.
+    fn numbered_theme(base: u8) -> ThemeData {
+        let mut n = 0;
+        let mut next = || {
+            n += 1;
+            Color::argb(255, 0, 0, base + n)
+        };
+        ThemeData {
+            canvas_color: next(),
+            card_color: next(),
+            scaffold_background_color: next(),
+            divider_color: next(),
+            shadow_color: next(),
+            primary_color: next(),
+            primary_color_light: next(),
+            primary_color_dark: next(),
+            secondary_header_color: next(),
+            disabled_color: next(),
+            focus_color: next(),
+            hover_color: next(),
+            highlight_color: next(),
+            splash_color: next(),
+            hint_color: next(),
+            unselected_widget_color: next(),
+            ..ThemeData::light()
+        }
+    }
+
+    #[test]
+    fn every_theme_colour_blends_and_every_line_names_its_own_field() {
+        // Everything else is identical at both ends, so whatever those
+        // fields do they contribute nothing to the comparison -- and the
+        // sixteen that do move can only land on `numbered_theme(20)` if all
+        // sixteen lines read the field they are assigned to.
+        let quarter = ThemeData::lerp(&numbered_theme(0), &numbered_theme(80), 0.25);
+        let expected = numbered_theme(20);
+        assert_eq!(quarter.canvas_color, expected.canvas_color);
+        assert_eq!(quarter.card_color, expected.card_color);
+        assert_eq!(
+            quarter.scaffold_background_color,
+            expected.scaffold_background_color
+        );
+        assert_eq!(quarter.divider_color, expected.divider_color);
+        assert_eq!(quarter.shadow_color, expected.shadow_color);
+        assert_eq!(quarter.primary_color, expected.primary_color);
+        assert_eq!(quarter.primary_color_light, expected.primary_color_light);
+        assert_eq!(quarter.primary_color_dark, expected.primary_color_dark);
+        assert_eq!(
+            quarter.secondary_header_color,
+            expected.secondary_header_color
+        );
+        assert_eq!(quarter.disabled_color, expected.disabled_color);
+        assert_eq!(quarter.focus_color, expected.focus_color);
+        assert_eq!(quarter.hover_color, expected.hover_color);
+        assert_eq!(quarter.highlight_color, expected.highlight_color);
+        assert_eq!(quarter.splash_color, expected.splash_color);
+        assert_eq!(quarter.hint_color, expected.hint_color);
+        assert_eq!(
+            quarter.unselected_widget_color,
+            expected.unselected_widget_color
+        );
+
+        // And the other way, so no line can be reading its two ends in the
+        // wrong order: a lerp is symmetric at the midpoint but not here.
+        let back = ThemeData::lerp(&numbered_theme(80), &numbered_theme(0), 0.25);
+        let expected = numbered_theme(60);
+        assert_eq!(back.canvas_color, expected.canvas_color);
+        assert_eq!(back.unselected_widget_color, expected.unselected_widget_color);
+    }
+
+    #[test]
+    fn a_themes_typography_grows_into_its_new_sizes() {
+        // `ThemeData.lerp` sends both text themes through `TextTheme.lerp`,
+        // which tick 221 changed from a step to a blend. This is the same
+        // claim one level up: the fix reaches an application through here.
+        let small = ThemeData {
+            text_theme: TextTheme {
+                body_large: Some(crate::engine::TextStyle {
+                    font_size: 4.0,
+                    ..crate::engine::TextStyle::default()
+                }),
+                ..TextTheme::default()
+            },
+            primary_text_theme: TextTheme {
+                body_large: Some(crate::engine::TextStyle {
+                    font_size: 12.0,
+                    ..crate::engine::TextStyle::default()
+                }),
+                ..TextTheme::default()
+            },
+            ..ThemeData::light()
+        };
+        let large = ThemeData {
+            text_theme: TextTheme {
+                body_large: Some(crate::engine::TextStyle {
+                    font_size: 20.0,
+                    ..crate::engine::TextStyle::default()
+                }),
+                ..TextTheme::default()
+            },
+            primary_text_theme: TextTheme {
+                body_large: Some(crate::engine::TextStyle {
+                    font_size: 28.0,
+                    ..crate::engine::TextStyle::default()
+                }),
+                ..TextTheme::default()
+            },
+            ..ThemeData::light()
+        };
+        let quarter = ThemeData::lerp(&small, &large, 0.25);
+        // The two themes carry different sizes, so a line reading the wrong
+        // one answers with the other theme's number.
+        assert_eq!(
+            quarter.text_theme.body_large.map(|style| style.font_size),
+            Some(8.0)
+        );
+        assert_eq!(
+            quarter
+                .primary_text_theme
+                .body_large
+                .map(|style| style.font_size),
+            Some(16.0)
+        );
+    }
 }

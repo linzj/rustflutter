@@ -1020,4 +1020,185 @@ mod tests {
             Brightness::Dark
         );
     }
+
+    // -- Every role, and every line reading its own -------------------------
+    //
+    // `ColorScheme::lerp` is forty-nine lines of `mix(a.x(), b.x())`, and the
+    // test above watched three of them, at the midpoint. Three of forty-nine
+    // is not coverage, and a midpoint cannot tell the two ends apart. This
+    // gives every role a number no other role uses and reads it back a
+    // quarter of the way, so a line naming its neighbour answers with a
+    // value that is not its own and a line written backwards answers with
+    // the wrong end.
+    //
+    // Generated rather than typed: forty-nine hand-written names would be
+    // forty-nine chances to make exactly the mistake being tested for.
+
+    /// A scheme whose every role is a different number.
+    fn numbered_scheme(base: u8) -> ColorScheme {
+        let mut n = 0;
+        let mut next = || {
+            n += 1;
+            Color::argb(255, 0, 0, base + n)
+        };
+        ColorScheme::light()
+            .with_primary(next())
+            .with_on_primary(next())
+            .with_secondary(next())
+            .with_on_secondary(next())
+            .with_error(next())
+            .with_on_error(next())
+            .with_surface(next())
+            .with_on_surface(next())
+            .with_primary_container(next())
+            .with_on_primary_container(next())
+            .with_primary_fixed(next())
+            .with_primary_fixed_dim(next())
+            .with_on_primary_fixed(next())
+            .with_on_primary_fixed_variant(next())
+            .with_secondary_container(next())
+            .with_on_secondary_container(next())
+            .with_secondary_fixed(next())
+            .with_secondary_fixed_dim(next())
+            .with_on_secondary_fixed(next())
+            .with_on_secondary_fixed_variant(next())
+            .with_tertiary(next())
+            .with_on_tertiary(next())
+            .with_tertiary_container(next())
+            .with_on_tertiary_container(next())
+            .with_tertiary_fixed(next())
+            .with_tertiary_fixed_dim(next())
+            .with_on_tertiary_fixed(next())
+            .with_on_tertiary_fixed_variant(next())
+            .with_error_container(next())
+            .with_on_error_container(next())
+            .with_surface_variant(next())
+            .with_surface_dim(next())
+            .with_surface_bright(next())
+            .with_surface_container_lowest(next())
+            .with_surface_container_low(next())
+            .with_surface_container(next())
+            .with_surface_container_high(next())
+            .with_surface_container_highest(next())
+            .with_on_surface_variant(next())
+            .with_outline(next())
+            .with_outline_variant(next())
+            .with_shadow(next())
+            .with_scrim(next())
+            .with_inverse_surface(next())
+            .with_on_inverse_surface(next())
+            .with_inverse_primary(next())
+            .with_surface_tint(next())
+            .with_background(next())
+            .with_on_background(next())
+    }
+
+    #[test]
+    fn every_role_blends_and_every_line_names_its_own_role() {
+        let quarter = ColorScheme::lerp(&numbered_scheme(0), &numbered_scheme(80), 0.25);
+        let expected = numbered_scheme(20);
+        assert_eq!(quarter.primary, expected.primary, "primary");
+        assert_eq!(quarter.on_primary, expected.on_primary, "on_primary");
+        assert_eq!(quarter.secondary, expected.secondary, "secondary");
+        assert_eq!(quarter.on_secondary, expected.on_secondary, "on_secondary");
+        assert_eq!(quarter.error, expected.error, "error");
+        assert_eq!(quarter.on_error, expected.on_error, "on_error");
+        assert_eq!(quarter.surface, expected.surface, "surface");
+        assert_eq!(quarter.on_surface, expected.on_surface, "on_surface");
+        assert_eq!(quarter.primary_container(), expected.primary_container(), "primary_container");
+        assert_eq!(quarter.on_primary_container(), expected.on_primary_container(), "on_primary_container");
+        assert_eq!(quarter.primary_fixed(), expected.primary_fixed(), "primary_fixed");
+        assert_eq!(quarter.primary_fixed_dim(), expected.primary_fixed_dim(), "primary_fixed_dim");
+        assert_eq!(quarter.on_primary_fixed(), expected.on_primary_fixed(), "on_primary_fixed");
+        assert_eq!(quarter.on_primary_fixed_variant(), expected.on_primary_fixed_variant(), "on_primary_fixed_variant");
+        assert_eq!(quarter.secondary_container(), expected.secondary_container(), "secondary_container");
+        assert_eq!(quarter.on_secondary_container(), expected.on_secondary_container(), "on_secondary_container");
+        assert_eq!(quarter.secondary_fixed(), expected.secondary_fixed(), "secondary_fixed");
+        assert_eq!(quarter.secondary_fixed_dim(), expected.secondary_fixed_dim(), "secondary_fixed_dim");
+        assert_eq!(quarter.on_secondary_fixed(), expected.on_secondary_fixed(), "on_secondary_fixed");
+        assert_eq!(quarter.on_secondary_fixed_variant(), expected.on_secondary_fixed_variant(), "on_secondary_fixed_variant");
+        assert_eq!(quarter.tertiary(), expected.tertiary(), "tertiary");
+        assert_eq!(quarter.on_tertiary(), expected.on_tertiary(), "on_tertiary");
+        assert_eq!(quarter.tertiary_container(), expected.tertiary_container(), "tertiary_container");
+        assert_eq!(quarter.on_tertiary_container(), expected.on_tertiary_container(), "on_tertiary_container");
+        assert_eq!(quarter.tertiary_fixed(), expected.tertiary_fixed(), "tertiary_fixed");
+        assert_eq!(quarter.tertiary_fixed_dim(), expected.tertiary_fixed_dim(), "tertiary_fixed_dim");
+        assert_eq!(quarter.on_tertiary_fixed(), expected.on_tertiary_fixed(), "on_tertiary_fixed");
+        assert_eq!(quarter.on_tertiary_fixed_variant(), expected.on_tertiary_fixed_variant(), "on_tertiary_fixed_variant");
+        assert_eq!(quarter.error_container(), expected.error_container(), "error_container");
+        assert_eq!(quarter.on_error_container(), expected.on_error_container(), "on_error_container");
+        assert_eq!(quarter.surface_variant(), expected.surface_variant(), "surface_variant");
+        assert_eq!(quarter.surface_dim(), expected.surface_dim(), "surface_dim");
+        assert_eq!(quarter.surface_bright(), expected.surface_bright(), "surface_bright");
+        assert_eq!(quarter.surface_container_lowest(), expected.surface_container_lowest(), "surface_container_lowest");
+        assert_eq!(quarter.surface_container_low(), expected.surface_container_low(), "surface_container_low");
+        assert_eq!(quarter.surface_container(), expected.surface_container(), "surface_container");
+        assert_eq!(quarter.surface_container_high(), expected.surface_container_high(), "surface_container_high");
+        assert_eq!(quarter.surface_container_highest(), expected.surface_container_highest(), "surface_container_highest");
+        assert_eq!(quarter.on_surface_variant(), expected.on_surface_variant(), "on_surface_variant");
+        assert_eq!(quarter.outline(), expected.outline(), "outline");
+        assert_eq!(quarter.outline_variant(), expected.outline_variant(), "outline_variant");
+        assert_eq!(quarter.shadow(), expected.shadow(), "shadow");
+        assert_eq!(quarter.scrim(), expected.scrim(), "scrim");
+        assert_eq!(quarter.inverse_surface(), expected.inverse_surface(), "inverse_surface");
+        assert_eq!(quarter.on_inverse_surface(), expected.on_inverse_surface(), "on_inverse_surface");
+        assert_eq!(quarter.inverse_primary(), expected.inverse_primary(), "inverse_primary");
+        assert_eq!(quarter.surface_tint(), expected.surface_tint(), "surface_tint");
+        assert_eq!(quarter.background(), expected.background(), "background");
+        assert_eq!(quarter.on_background(), expected.on_background(), "on_background");
+
+        // And the other way: a lerp is symmetric at the midpoint, so only an
+        // off-centre t can tell `lerp(a, b, t)` from `lerp(b, a, t)`.
+        let back = ColorScheme::lerp(&numbered_scheme(80), &numbered_scheme(0), 0.25);
+        let expected = numbered_scheme(60);
+        assert_eq!(back.primary, expected.primary, "primary reversed");
+        assert_eq!(back.on_primary, expected.on_primary, "on_primary reversed");
+        assert_eq!(back.secondary, expected.secondary, "secondary reversed");
+        assert_eq!(back.on_secondary, expected.on_secondary, "on_secondary reversed");
+        assert_eq!(back.error, expected.error, "error reversed");
+        assert_eq!(back.on_error, expected.on_error, "on_error reversed");
+        assert_eq!(back.surface, expected.surface, "surface reversed");
+        assert_eq!(back.on_surface, expected.on_surface, "on_surface reversed");
+        assert_eq!(back.primary_container(), expected.primary_container(), "primary_container reversed");
+        assert_eq!(back.on_primary_container(), expected.on_primary_container(), "on_primary_container reversed");
+        assert_eq!(back.primary_fixed(), expected.primary_fixed(), "primary_fixed reversed");
+        assert_eq!(back.primary_fixed_dim(), expected.primary_fixed_dim(), "primary_fixed_dim reversed");
+        assert_eq!(back.on_primary_fixed(), expected.on_primary_fixed(), "on_primary_fixed reversed");
+        assert_eq!(back.on_primary_fixed_variant(), expected.on_primary_fixed_variant(), "on_primary_fixed_variant reversed");
+        assert_eq!(back.secondary_container(), expected.secondary_container(), "secondary_container reversed");
+        assert_eq!(back.on_secondary_container(), expected.on_secondary_container(), "on_secondary_container reversed");
+        assert_eq!(back.secondary_fixed(), expected.secondary_fixed(), "secondary_fixed reversed");
+        assert_eq!(back.secondary_fixed_dim(), expected.secondary_fixed_dim(), "secondary_fixed_dim reversed");
+        assert_eq!(back.on_secondary_fixed(), expected.on_secondary_fixed(), "on_secondary_fixed reversed");
+        assert_eq!(back.on_secondary_fixed_variant(), expected.on_secondary_fixed_variant(), "on_secondary_fixed_variant reversed");
+        assert_eq!(back.tertiary(), expected.tertiary(), "tertiary reversed");
+        assert_eq!(back.on_tertiary(), expected.on_tertiary(), "on_tertiary reversed");
+        assert_eq!(back.tertiary_container(), expected.tertiary_container(), "tertiary_container reversed");
+        assert_eq!(back.on_tertiary_container(), expected.on_tertiary_container(), "on_tertiary_container reversed");
+        assert_eq!(back.tertiary_fixed(), expected.tertiary_fixed(), "tertiary_fixed reversed");
+        assert_eq!(back.tertiary_fixed_dim(), expected.tertiary_fixed_dim(), "tertiary_fixed_dim reversed");
+        assert_eq!(back.on_tertiary_fixed(), expected.on_tertiary_fixed(), "on_tertiary_fixed reversed");
+        assert_eq!(back.on_tertiary_fixed_variant(), expected.on_tertiary_fixed_variant(), "on_tertiary_fixed_variant reversed");
+        assert_eq!(back.error_container(), expected.error_container(), "error_container reversed");
+        assert_eq!(back.on_error_container(), expected.on_error_container(), "on_error_container reversed");
+        assert_eq!(back.surface_variant(), expected.surface_variant(), "surface_variant reversed");
+        assert_eq!(back.surface_dim(), expected.surface_dim(), "surface_dim reversed");
+        assert_eq!(back.surface_bright(), expected.surface_bright(), "surface_bright reversed");
+        assert_eq!(back.surface_container_lowest(), expected.surface_container_lowest(), "surface_container_lowest reversed");
+        assert_eq!(back.surface_container_low(), expected.surface_container_low(), "surface_container_low reversed");
+        assert_eq!(back.surface_container(), expected.surface_container(), "surface_container reversed");
+        assert_eq!(back.surface_container_high(), expected.surface_container_high(), "surface_container_high reversed");
+        assert_eq!(back.surface_container_highest(), expected.surface_container_highest(), "surface_container_highest reversed");
+        assert_eq!(back.on_surface_variant(), expected.on_surface_variant(), "on_surface_variant reversed");
+        assert_eq!(back.outline(), expected.outline(), "outline reversed");
+        assert_eq!(back.outline_variant(), expected.outline_variant(), "outline_variant reversed");
+        assert_eq!(back.shadow(), expected.shadow(), "shadow reversed");
+        assert_eq!(back.scrim(), expected.scrim(), "scrim reversed");
+        assert_eq!(back.inverse_surface(), expected.inverse_surface(), "inverse_surface reversed");
+        assert_eq!(back.on_inverse_surface(), expected.on_inverse_surface(), "on_inverse_surface reversed");
+        assert_eq!(back.inverse_primary(), expected.inverse_primary(), "inverse_primary reversed");
+        assert_eq!(back.surface_tint(), expected.surface_tint(), "surface_tint reversed");
+        assert_eq!(back.background(), expected.background(), "background reversed");
+        assert_eq!(back.on_background(), expected.on_background(), "on_background reversed");
+    }
 }

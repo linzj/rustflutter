@@ -17189,3 +17189,32 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5522 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 224 次：49 个角色里只有 3 个被看着，而且是在对称的中点
+
+`ColorScheme::lerp` 是 49 行 `mix(a.x(), b.x())`，`ThemeData::lerp` 是 16 行
+`mix(a.x, b.x)`。这两处**没有任何筛子看得见**：`unlerped_fields.py` 找的是
+调用里的 `t`，而 `mix` 把 `t` 闭包进去了。
+
+原有的那条测试只看三个角色，而且取 `t = 0.5`——lerp 在中点对称，那里连两端
+写反都看不出来。
+
+**先确认没有漏掉的角色。**第一次数的时候我的正则说有五个角色没被插值
+（`on_primary_fixed_variant`、三个 `*_fixed_variant`、
+`surface_container_lowest`/`highest`），对着上游一看确实都是插值的——差点当成
+五个真缺陷。再看代码：那五个是**折行**写的 `Some(mix(\n a.x(),\n b.x(),\n))`，
+正则没匹配上。改成容忍折行之后：**49 个字段，49 个都插值，一个不缺。**
+
+**测试是生成的，不是手打的。**49 个角色名手写一遍，就是 49 次把名字打成隔壁
+那个的机会——而那正是这条测试要抓的缺陷，打错一次就变成"因为错误的理由而
+通过"。所以从结构体声明生成：每个角色一个**全表唯一**的数，四分之一处读回，
+再反过来读一次。`ThemeData` 的 16 个颜色同样处理。
+
+**逐行让它读隔壁的字段。**55 处一行式的 `mix` 全部逐行改成读上一处的字段：
+**55 处全红**。另外 9 处折行的，正则没覆盖，手工验了一处
+（`surface_container_lowest` 改读 `surface_container_low`）——也红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5525 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
