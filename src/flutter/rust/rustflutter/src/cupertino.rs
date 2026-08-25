@@ -6445,7 +6445,7 @@ mod glyph_paint_tests {
         calls
             .iter()
             .filter_map(|call| match call {
-                Drawn::Line { from, to, argb } => Some((*from, *to, *argb)),
+                Drawn::Line { from, to, argb, .. } => Some((*from, *to, *argb)),
                 _ => None,
             })
             .collect()
@@ -6520,7 +6520,7 @@ mod glyph_paint_tests {
         let circles: Vec<_> = calls
             .iter()
             .filter_map(|call| match call {
-                Drawn::Circle { cx, cy, radius, argb } => Some((*cx, *cy, *radius, *argb)),
+                Drawn::Circle { cx, cy, radius, argb, .. } => Some((*cx, *cy, *radius, *argb)),
                 _ => None,
             })
             .collect();
@@ -6561,7 +6561,7 @@ mod glyph_paint_tests {
         let circles: Vec<_> = calls
             .iter()
             .filter_map(|call| match call {
-                Drawn::Circle { cx, cy, radius, argb } => Some((*cx, *cy, *radius, *argb)),
+                Drawn::Circle { cx, cy, radius, argb, .. } => Some((*cx, *cy, *radius, *argb)),
                 _ => None,
             })
             .collect();

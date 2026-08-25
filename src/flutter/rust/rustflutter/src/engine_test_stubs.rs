@@ -85,7 +85,10 @@ pub unsafe extern "C" fn rf_initialize(icu_data_path: *const c_char) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_new() -> *mut RfPaint {
-    Box::into_raw(Box::new(StubPaint { argb: 0 })) as *mut RfPaint
+    Box::into_raw(Box::new(StubPaint {
+        argb: 0,
+        stroke: None,
+    })) as *mut RfPaint
 }
 
 /// What the stub remembers about a paint.
@@ -98,6 +101,13 @@ pub unsafe extern "C" fn rf_paint_new() -> *mut RfPaint {
 /// prompted this: with one global there is nothing to compare.
 struct StubPaint {
     argb: u32,
+    /// `None` is a fill, `Some(width)` a stroke of that width.
+    ///
+    /// The distinction was invisible for the whole life of this recorder: a
+    /// border drawn as a filled rectangle, or a two-point outline drawn at
+    /// eight, passed every test that checked its colour and its box. Which is
+    /// most of them.
+    stroke: Option<f32>,
 }
 
 /// # Safety
@@ -114,6 +124,12 @@ unsafe fn stub_paint_ref<'a>(paint: *const RfPaint) -> Option<&'a StubPaint> {
 /// given no paint at all.
 unsafe fn paint_argb(paint: *const RfPaint) -> u32 {
     unsafe { stub_paint_ref(paint) }.map_or(0, |paint| paint.argb)
+}
+
+/// # Safety
+/// As [`stub_paint_ref`].
+unsafe fn paint_stroke(paint: *const RfPaint) -> Option<f32> {
+    unsafe { stub_paint_ref(paint) }.and_then(|paint| paint.stroke)
 }
 
 #[unsafe(no_mangle)]
@@ -142,7 +158,11 @@ pub fn last_paint_color() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int, width: f32) {}
+pub unsafe extern "C" fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int, width: f32) {
+    if let Some(paint) = unsafe { (paint as *mut StubPaint).as_mut() } {
+        paint.stroke = (stroke != 0).then_some(width);
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int) {}
@@ -367,6 +387,7 @@ pub unsafe extern "C" fn rf_canvas_draw_line(
         from: (x0, y0),
         to: (x1, y1),
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -385,6 +406,7 @@ pub unsafe extern "C" fn rf_canvas_draw_oval(
         right,
         bottom,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -403,6 +425,7 @@ pub unsafe extern "C" fn rf_canvas_draw_path(
         right: bounds.2,
         bottom: bounds.3,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -427,6 +450,7 @@ pub unsafe extern "C" fn rf_canvas_draw_arc(
         sweep_degrees,
         use_center: use_center != 0,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -727,6 +751,8 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     RRect {
         left: f32,
@@ -735,6 +761,8 @@ pub enum Drawn {
         bottom: f32,
         radius: f32,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     Oval {
         left: f32,
@@ -742,6 +770,8 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     /// The canvas state stack, which recorded nothing before.
     ///
@@ -822,12 +852,16 @@ pub enum Drawn {
         /// look nothing alike.
         use_center: bool,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     Circle {
         cx: f32,
         cy: f32,
         radius: f32,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     Line {
         from: (f32, f32),
@@ -839,6 +873,8 @@ pub enum Drawn {
         /// out of the filled circle, and using the item colour instead would
         /// have left a mark with no cross in it and nothing to say so.
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
     /// Both rectangles, because the pair is the point: the source is in image
     /// pixels and the destination in logical ones, and a test that sees only
@@ -875,6 +911,8 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
         argb: u32,
+        /// `None` for a fill, `Some(width)` for a stroke of that width.
+        stroke: Option<f32>,
     },
 }
 
@@ -897,12 +935,14 @@ impl Drawn {
                 right,
                 bottom,
                 argb,
+                stroke,
             } => Drawn::Rect {
                 left: left + dx,
                 top: top + dy,
                 right: right + dx,
                 bottom: bottom + dy,
                 argb,
+                stroke,
             },
             Drawn::RRect {
                 left,
@@ -911,6 +951,7 @@ impl Drawn {
                 bottom,
                 radius,
                 argb,
+                stroke,
             } => Drawn::RRect {
                 left: left + dx,
                 top: top + dy,
@@ -918,6 +959,7 @@ impl Drawn {
                 bottom: bottom + dy,
                 radius,
                 argb,
+                stroke,
             },
             Drawn::Oval {
                 left,
@@ -925,12 +967,14 @@ impl Drawn {
                 right,
                 bottom,
                 argb,
+                stroke,
             } => Drawn::Oval {
                 left: left + dx,
                 top: top + dy,
                 right: right + dx,
                 bottom: bottom + dy,
                 argb,
+                stroke,
             },
             // The whole canvas, wherever the canvas is.
             Drawn::Color { argb } => Drawn::Color { argb },
@@ -974,6 +1018,7 @@ impl Drawn {
                 sweep_degrees,
                 use_center,
                 argb,
+                stroke,
             } => Drawn::Arc {
                 left: left + dx,
                 top: top + dy,
@@ -984,22 +1029,26 @@ impl Drawn {
                 sweep_degrees,
                 use_center,
                 argb,
+                stroke,
             },
             Drawn::Circle {
                 cx,
                 cy,
                 radius,
                 argb,
+                stroke,
             } => Drawn::Circle {
                 cx: cx + dx,
                 cy: cy + dy,
                 radius,
                 argb,
+                stroke,
             },
-            Drawn::Line { from, to, argb } => Drawn::Line {
+            Drawn::Line { from, to, argb, stroke } => Drawn::Line {
                 from: (from.0 + dx, from.1 + dy),
                 to: (to.0 + dx, to.1 + dy),
                 argb,
+                stroke,
             },
             Drawn::ImageRect {
                 source,
@@ -1025,12 +1074,14 @@ impl Drawn {
                 right,
                 bottom,
                 argb,
+                stroke,
             } => Drawn::Path {
                 left: left + dx,
                 top: top + dy,
                 right: right + dx,
                 bottom: bottom + dy,
                 argb,
+                stroke,
             },
             // A layer's own translation is what moves; translating it again
             // would be counting the same movement twice.
@@ -1323,6 +1374,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rect(
         right,
         bottom,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -1344,6 +1396,7 @@ pub unsafe extern "C" fn rf_canvas_draw_rrect(
         bottom,
         radius,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 
@@ -1360,6 +1413,7 @@ pub unsafe extern "C" fn rf_canvas_draw_circle(
         cy,
         radius,
         argb: unsafe { paint_argb(paint) },
+        stroke: unsafe { paint_stroke(paint) },
     });
 }
 

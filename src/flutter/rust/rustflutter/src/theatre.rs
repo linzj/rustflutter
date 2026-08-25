@@ -2963,6 +2963,7 @@ mod scrim_paint_tests {
                 right: 300.0,
                 bottom: 200.0,
                 argb: SCRIM.0,
+                stroke: None,
             }]
         );
     }
@@ -2988,6 +2989,7 @@ mod scrim_paint_tests {
                 right: at.dx + 300.0,
                 bottom: at.dy + 200.0,
                 argb: SCRIM.0,
+                stroke: None,
             }]
         );
     }

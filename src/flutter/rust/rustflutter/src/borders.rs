@@ -6088,6 +6088,13 @@ mod paint_border_geometry_tests {
         drawn()
     }
 
+    /// A border side, as the canvas was told it.
+    ///
+    /// **A filled band, not a stroke** -- upstream's `paintBorder` builds a
+    /// four-cornered path from the outer edge to the inner one and fills it,
+    /// and this port does the same. The paint was not recorded until now, so
+    /// a side drawn as a stroke of its own width would have occupied the same
+    /// box, in the same colour, and passed.
     fn path(left: f32, top: f32, right: f32, bottom: f32, colour: Color) -> Drawn {
         Drawn::Path {
             left,
@@ -6095,6 +6102,22 @@ mod paint_border_geometry_tests {
             right,
             bottom,
             argb: colour.0,
+            stroke: None,
+        }
+    }
+
+    /// The other branch: a side of **zero** width is a stroke of zero width,
+    /// which is upstream's hairline -- the thinnest line the device can draw
+    /// rather than nothing at all. A fill of an empty quadrilateral would be
+    /// nothing, which is why the branch exists.
+    fn hairline(left: f32, top: f32, right: f32, bottom: f32, colour: Color) -> Drawn {
+        Drawn::Path {
+            left,
+            top,
+            right,
+            bottom,
+            argb: colour.0,
+            stroke: Some(0.0),
         }
     }
 
@@ -6173,7 +6196,17 @@ mod paint_border_geometry_tests {
             BorderSide::NONE,
             BorderSide::NONE,
         );
-        assert_eq!(calls, vec![path(0.0, 0.0, 100.0, 0.0, RED)]);
+        assert_eq!(calls, vec![hairline(0.0, 0.0, 100.0, 0.0, RED)]);
+        // Said twice on purpose: the box is the same either way -- a band of
+        // zero depth and a hairline both have `bottom == top` -- so the paint
+        // is the only thing that separates "the thinnest line the device can
+        // draw" from "nothing at all".
+        assert_ne!(
+            calls,
+            vec![path(0.0, 0.0, 100.0, 0.0, RED)],
+            "a fill of an empty quadrilateral would be invisible"
+        );
+
     }
 
     #[test]

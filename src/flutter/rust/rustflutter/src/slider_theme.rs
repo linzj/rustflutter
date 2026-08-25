@@ -2753,6 +2753,7 @@ mod rectangular_track_paint_tests {
             right,
             bottom: 12.0,
             argb: colour.0,
+            stroke: None,
         }
     }
 

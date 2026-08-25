@@ -4470,6 +4470,7 @@ mod spinner_paint_tests {
                     sweep_degrees,
                     use_center,
                     argb,
+                    ..
                 } => Some((
                     (*left, *top, *right, *bottom),
                     *start_degrees,
@@ -4492,6 +4493,7 @@ mod spinner_paint_tests {
                     right,
                     bottom,
                     argb,
+                    ..
                 } => Some(((*left, *top, *right, *bottom), *argb)),
                 _ => None,
             })

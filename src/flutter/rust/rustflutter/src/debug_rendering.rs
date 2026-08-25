@@ -990,6 +990,7 @@ mod debug_paint_tests {
                     right,
                     bottom,
                     argb,
+                    ..
                 } => Some(((*left, *top, *right, *bottom), *argb)),
                 _ => None,
             })

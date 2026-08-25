@@ -24714,6 +24714,7 @@ mod decorated_box_geometry_tests {
                 right: 100.0,
                 bottom: 40.0,
                 argb: Color::BLACK.0,
+                stroke: None,
             }]
         );
     }
@@ -24733,6 +24734,11 @@ mod decorated_box_geometry_tests {
                 right: 96.0,
                 bottom: 36.0,
                 argb: Color::BLACK.0,
+                // And it is a *stroke* of eight, not a filled rectangle four
+                // in from the edge. Those look identical in every number
+                // above; the paint is what tells them apart, and it was not
+                // recorded until this tick.
+                stroke: Some(8.0),
             }],
             "four in from each edge, which is half of eight"
         );
@@ -24751,6 +24757,10 @@ mod decorated_box_geometry_tests {
                     right: 100.0 - half,
                     bottom: 40.0 - half,
                     argb: Color::BLACK.0,
+                    // A stroke of the whole width, inset by half of it -- the
+                    // two halves of the same fact, and until the paint was
+                    // recorded only the inset half could be checked.
+                    stroke: Some(width),
                 }],
                 "{width}"
             );
@@ -24774,6 +24784,7 @@ mod decorated_box_geometry_tests {
                     right: 100.0,
                     bottom: 40.0,
                     argb: Color::BLACK.0,
+                    stroke: None,
                 },
                 Drawn::Rect {
                     left: 2.0,
@@ -24781,6 +24792,10 @@ mod decorated_box_geometry_tests {
                     right: 98.0,
                     bottom: 38.0,
                     argb: Color::WHITE.0,
+                    // The fill above is a fill and this is a stroke, which is
+                    // the difference the order exists for: a stroke drawn
+                    // first would be half covered by the fill.
+                    stroke: Some(4.0),
                 },
             ]
         );
@@ -24972,6 +24987,7 @@ mod paint_respects_its_offset_tests {
                 right: 60.0,
                 bottom: 20.0,
                 argb: Color::BLACK.0,
+                stroke: None,
             },
             "at the origin, in the layer's coordinates"
         );

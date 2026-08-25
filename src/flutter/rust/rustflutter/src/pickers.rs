@@ -6308,6 +6308,7 @@ mod dial_geometry_tests {
                     cy,
                     radius,
                     argb,
+                    ..
                 } => Some((*cx, *cy, *radius, *argb)),
                 _ => None,
             })
