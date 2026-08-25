@@ -163,7 +163,11 @@ impl StatefulComponent for LoupeEntry {
 pub struct MagnifierHost {
     style: MagnifierStyle,
     overlay: Rc<OverlayHandle>,
-    entry: u64,
+    /// `None` once the entry has been taken out of the overlay. Upstream's
+    /// `_overlayEntry`, which is nullable for the same reason: **hidden and
+    /// gone are two different states**, and the whole of `hide`'s
+    /// `removeFromOverlay` flag is about choosing between them.
+    entry: Option<u64>,
     state: LoupeState,
     /// Upstream's `_magnifierPosition`, null for exactly one frame so the
     /// *first* appearance is not animated. Kept here rather than in the entry
@@ -180,9 +184,37 @@ impl MagnifierHost {
         self.state.at.get()
     }
 
-    /// Whether the platform's rule says it should be on screen at all.
+    /// Upstream's `MagnifierController.overlayEntry != null`, and upstream's
+    /// `SelectionOverlay.magnifierExists`.
+    ///
+    /// Not the same question as [`MagnifierHost::is_shown`], and upstream says
+    /// so twice. `SelectionOverlay.showMagnifier` returns early when one
+    /// **exists**, and `hideMagnifier` returns early when none exists, with a
+    /// comment on the second saying outright why it cannot ask the other
+    /// question:
+    ///
+    /// > This cannot be a check on `MagnifierController.shown`, since it's
+    /// > possible that the magnifier is still in the overlay, but not shown in
+    /// > cases where the magnifier hides itself.
+    ///
+    /// Which is exactly what the Cupertino loupe does when the gesture goes
+    /// [`CUPERTINO_HIDE_BELOW`] past the line: upstream calls
+    /// `hide(removeFromOverlay: false)` there, on purpose, so that dragging
+    /// back up brings the same entry back rather than building a new one.
+    ///
+    /// A caller that guarded on `is_shown` instead would insert a second loupe
+    /// every time the finger crossed that threshold and came back.
+    pub fn exists(&self) -> bool {
+        self.entry.is_some()
+    }
+
+    /// Upstream's `MagnifierController.shown`.
+    ///
+    /// An entry that has been removed is not shown whatever the last placement
+    /// decided -- upstream's `shown` leads with `overlayEntry != null` for the
+    /// same reason.
     pub fn is_shown(&self) -> bool {
-        self.state.shown.get()
+        self.exists() && self.state.shown.get()
     }
 
     /// The last placement, or `None` before the first gesture.
@@ -196,6 +228,12 @@ impl MagnifierHost {
     /// `overlay` is the theatre's render object, which is what the global
     /// answer is converted against.
     pub fn update(&mut self, info: MagnifierInfo, screen: Rect, overlay: &RenderRef) {
+        if !self.exists() {
+            // There is nothing in the overlay to move. Upstream never reaches
+            // this case because the widget that listens is the entry, and a
+            // removed entry has no listener left.
+            return;
+        }
         let placement = self.style.place(info, screen, self.previous);
         self.last = Some(placement);
         self.state.shown.set(placement.shown);
@@ -232,16 +270,59 @@ impl MagnifierHost {
         self.last.is_some_and(|placement| placement.animate)
     }
 
-    /// Upstream's `MagnifierController.hide`, which keeps the entry: see
-    /// [`LoupeEntry::build`].
-    pub fn hide(&mut self) {
+    /// Upstream's `MagnifierController.hide({bool removeFromOverlay = true})`.
+    ///
+    /// **The default is to remove**, and this port had only the other half:
+    /// `hide` kept the entry unconditionally under a doc comment saying that
+    /// was what upstream's `hide` did. It is what upstream's
+    /// `hide(removeFromOverlay: false)` does, and that spelling exists for one
+    /// caller -- the Cupertino loupe hiding itself mid-drag, which needs the
+    /// entry to survive so the finger coming back up finds it. Upstream's own
+    /// guidance is the opposite way round: "in general, `removeFromOverlay`
+    /// should be true, unless the magnifier needs to preserve states between
+    /// shows / hides."
+    ///
+    /// Keeping the entry is the cheaper-looking option and the wrong default:
+    /// an application that hid a loupe and never showed another one would
+    /// leave a zero-sized entry in the overlay for the rest of the route's
+    /// life. See [`LoupeEntry::build`] for what a kept entry becomes.
+    ///
+    /// Upstream's `hide` opens with `if (overlayEntry == null) return;`, and
+    /// this does not, because here that guard cannot be observed: upstream
+    /// needs it so that a hide with nothing up does not await an animation
+    /// controller's `reverse`, and there is no controller here to await. A
+    /// mutation deleting the guard stayed green, which is the honest reason to
+    /// leave it out rather than keep a line that reads like a rule.
+    pub fn hide(&mut self, remove_from_overlay: bool) {
         self.state.shown.set(false);
         self.state.refresh.refresh();
+        if remove_from_overlay {
+            self.remove_from_overlay();
+        }
     }
 
-    /// Upstream's `MagnifierController.dispose`: the entry goes.
-    pub fn dismiss(self) -> bool {
-        self.overlay.remove(self.entry)
+    /// Upstream's `MagnifierController.removeFromOverlay`: the entry goes now,
+    /// whatever it was in the middle of.
+    ///
+    /// Upstream marks it `@visibleForTesting` and warns that it "leads to
+    /// abrupt removals of `OverlayEntry`s with animations". It is here rather
+    /// than hidden because [`MagnifierHost::hide`] is written in terms of it,
+    /// which is also how upstream writes it.
+    ///
+    /// Returns whether there was an entry to take out, so calling it twice is
+    /// answerable rather than silent.
+    pub fn remove_from_overlay(&mut self) -> bool {
+        let Some(entry) = self.entry.take() else {
+            return false;
+        };
+        // Deliberately does not touch `shown`, which is what upstream's three
+        // lines do -- they null the entry and say nothing about the animation
+        // controller. Forcing it false here as well would keep the two in sync
+        // by hand and make the `exists()` term in [`MagnifierHost::is_shown`]
+        // unfalsifiable: a mutation deleting that term stayed green while this
+        // line was here. The entry is the source of truth; `shown` is a
+        // placement's opinion about where to put one.
+        self.overlay.remove(entry)
     }
 }
 
@@ -262,7 +343,7 @@ pub fn show_magnifier(overlay: Rc<OverlayHandle>, style: MagnifierStyle) -> Opti
     Some(MagnifierHost {
         style,
         overlay,
-        entry,
+        entry: Some(entry),
         state,
         previous: None,
         last: None,
@@ -493,6 +574,10 @@ mod tests {
         );
         assert!(!host.is_shown());
         assert_eq!(overlay.entry_count(), before + 1, "hidden, not removed");
+        assert!(
+            host.exists(),
+            "and the host says so, which is the question upstream's two              guards ask -- `showMagnifier` and `hideMagnifier` both check              the entry and not `shown`, because this is the state where              the two answers differ"
+        );
 
         host.update(info_at(200.0, 310.0, 300.0), screen(), &theatre);
         assert!(host.is_shown(), "and it came back");
@@ -574,8 +659,9 @@ mod tests {
 
         host.update(info_at(200.0, 320.0, 300.0), screen(), &theatre);
         let shown_at = host.overlay_position();
-        host.hide();
+        host.hide(false);
         assert!(!host.is_shown());
+        assert!(host.exists(), "kept, which is what the `false` asked for");
         assert_eq!(
             host.overlay_position(),
             shown_at,
@@ -658,14 +744,89 @@ mod tests {
     }
 
     #[test]
-    fn the_loupe_goes_when_it_is_dismissed() {
+    fn the_loupe_goes_when_it_is_taken_out_of_the_overlay() {
         let (tree, overlay) = mounted();
         let before = overlay.entry_count();
-        let host =
+        let mut host =
             show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
         assert_eq!(overlay.entry_count(), before + 1);
-        assert!(host.dismiss());
+        assert!(host.remove_from_overlay());
         assert_eq!(overlay.entry_count(), before);
+        assert!(!host.exists());
+        assert!(
+            !host.remove_from_overlay(),
+            "and there is nothing left to take out the second time"
+        );
+        drop(tree);
+    }
+
+    // -- Hidden and gone are two different states ----------------------------
+
+    #[test]
+    fn hiding_removes_the_entry_unless_asked_not_to() {
+        // Upstream's default is `removeFromOverlay: true`, and this port had
+        // only the other half under a doc comment claiming it was upstream's
+        // `hide`. It was upstream's `hide(removeFromOverlay: false)`.
+        let (tree, overlay) = mounted();
+        let before = overlay.entry_count();
+
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        host.hide(true);
+        assert_eq!(overlay.entry_count(), before, "the default takes it out");
+        assert!(!host.exists());
+
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        host.hide(false);
+        assert_eq!(overlay.entry_count(), before + 1, "and this one keeps it");
+        assert!(host.exists());
+        assert!(!host.is_shown(), "kept is not the same as showing");
+        drop(tree);
+    }
+
+    #[test]
+    fn an_entry_that_is_gone_is_not_shown_and_does_not_move() {
+        // Upstream's `shown` leads with `overlayEntry != null`. Without that
+        // term a host whose entry had been taken out would keep answering with
+        // whatever the last placement decided, and a caller asking "is the
+        // loupe up" would be told yes about nothing.
+        let (mut tree, overlay) = mounted();
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        tree.rebuild_dirty();
+        let root = laid_out(&mut tree);
+        let theatre = theatre_of(&root);
+
+        host.update(info_at(200.0, 320.0, 300.0), screen(), &theatre);
+        assert!(host.is_shown());
+        let was_at = host.overlay_position();
+
+        host.remove_from_overlay();
+        assert!(!host.is_shown());
+
+        host.update(info_at(400.0, 320.0, 300.0), screen(), &theatre);
+        assert!(!host.is_shown(), "a gesture does not bring it back");
+        assert_eq!(
+            host.overlay_position(),
+            was_at,
+            "and nothing moved, because there is nothing to move"
+        );
+    }
+
+    #[test]
+    fn hiding_a_loupe_that_is_already_gone_does_nothing_rather_than_removing_twice() {
+        // Upstream's `hide` opens with `if (overlayEntry == null) return`.
+        let (tree, overlay) = mounted();
+        let before = overlay.entry_count();
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        host.hide(true);
+        assert_eq!(overlay.entry_count(), before);
+        host.hide(true);
+        host.hide(false);
+        assert_eq!(overlay.entry_count(), before);
+        assert!(!host.exists());
         drop(tree);
     }
 

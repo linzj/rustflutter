@@ -15738,3 +15738,44 @@ error）——此前完全无法表达，而 iOS 上这三种走的是另一个�
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5298 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 185 次：藏起来和拿掉是两种状态，而这里只有一种
+
+`MagnifierController`（depth 2/8）。本移植的 `MagnifierHost::hide` 顶着一句
+"Upstream's `MagnifierController.hide`, which keeps the entry" 的注释——这句
+**说错了上游**。上游是 `hide({bool removeFromOverlay = true})`，默认是拿掉；
+本移植实现的是 `hide(removeFromOverlay: false)`，而那个拼法上游只为一个调用者
+存在：Cupertino 放大镜在手指拖过阈值时自己藏起来，需要 entry 活着，好让手指
+回来时找到同一个。上游自己的指引正好反过来："in general, `removeFromOverlay`
+should be true"。
+
+- `entry: u64` 变 `Option<u64>`。
+- 新增 `exists()`（上游 `overlayEntry != null`，也就是
+  `SelectionOverlay.magnifierExists`）。这是**上游两个守卫实际问的问题**：
+  `showMagnifier` 在已存在时提前返回，`hideMagnifier` 在不存在时提前返回，
+  后者还带一句注释说明为什么不能问 `shown`——"放大镜可能还在 overlay 里，
+  只是没显示"。本移植此前根本没有这个问题的答案，只有 `is_shown()`；用它当
+  守卫的调用者每次手指越过阈值再回来都会插入第二个放大镜。
+- `hide(remove_from_overlay: bool)` 按上游取默认语义；`dismiss(self)` 改名
+  `remove_from_overlay(&mut self)`，对齐上游那个 `@visibleForTesting`、
+  "abrupt removals" 的同名方法，并在第二次调用时返回 false 而不是静默。
+- `is_shown()` 加上 `exists()` 项；`update` 在 entry 已消失时不再计算位置。
+
+两条变异先是存活，查下来两处都是**冗余**：`remove_from_overlay` 自己把
+`shown` 置了 false，于是 `is_shown` 里的 entry 项和 `hide` 里的
+`if !exists() return` 守卫都观察不到。上游的 `removeFromOverlay` 只有三行，
+一行都不碰 animation controller。改成照上游写之后，entry 项变成可证伪的
+（变异 3 转红），而 `hide` 的守卫在这里确实买不到任何东西——没有要 await 的
+动画——所以删掉并把原因写在文档里，而不是留一行读起来像规则的死代码。
+
+变异：六条中五条转红（默认不再拿掉、默认总是拿掉、`shown` 丢掉 entry 项、
+`exists` 改答另一个问题、`update` 继续搬已消失的 entry）。第六条是把那行冗余
+赋值加回去，本就是 no-op，绿是正确结果。
+
+**未完**：`MagnifierController` 仍留在 depth 队列上，是 7/8 而不是 8/8。缺的
+是 `animationController`——本移植的放大镜没有进出动画，瞬间出现和消失。这是
+真缺口不是拼写差异，所以**没有**记进 `depth_examined.json` 把它从队列里藏掉。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5301 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
