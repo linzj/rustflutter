@@ -5640,6 +5640,13 @@ pub struct ResolvedListTile {
     pub tile_color: Option<Color>,
     pub text_color: Color,
     pub dense: bool,
+    /// Upstream's
+    /// `titleAlignment ?? tileTheme.titleAlignment ?? (useMaterial3 ?
+    /// threeLine : titleHeight)`.
+    ///
+    /// The tile used to hard-code the `ThreeLine` rule, so the theme's field
+    /// reached nothing and four of the five variants were unreachable.
+    pub title_alignment: ListTileTitleAlignment,
 }
 
 impl ResolvedListTile {
@@ -5729,6 +5736,11 @@ impl ResolvedListTile {
             },
             text_color,
             dense,
+            title_alignment: data.title_alignment.unwrap_or(if theme.use_material3 {
+                ListTileTitleAlignment::ThreeLine
+            } else {
+                ListTileTitleAlignment::TitleHeight
+            }),
         }
     }
 }

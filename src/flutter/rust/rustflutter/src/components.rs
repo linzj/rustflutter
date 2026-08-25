@@ -1975,6 +1975,41 @@ impl Component for ListTile {
         // because centring against a three-line block puts an icon in the
         // middle of the text instead of beside its first line.
         let three_line = self.is_three_line;
+        // Upstream's `ListTileTitleAlignment`, which this used to hard-code
+        // as the `ThreeLine` arm -- so a theme naming any of the other four
+        // was ignored, and so was Material 2's default of `TitleHeight`.
+        //
+        // # Two of the five are approximated here, and say so
+        //
+        // `ThreeLine` and `Center` are exact: top against a three-line block,
+        // centred otherwise, and centred always. `Top` and `Bottom` are exact
+        // up to the `minVerticalPadding` upstream also inserts, which this
+        // row does not add on the cross axis.
+        //
+        // `TitleHeight` is not exact. Upstream puts the leading and trailing
+        // sixteen pixels below the top of the *title* when the tile is taller
+        // than 72, and otherwise centres the trailing against both titles
+        // while keeping the leading whichever of the two is nearer the
+        // title's top. That rule needs the title's own box, which this row
+        // does not have -- it aligns against the whole cross axis. Centring
+        // is the nearer of the two answers it can give, and it is what a
+        // one- or two-line tile gets upstream as well; a tall Material 2 tile
+        // is where the two differ.
+        let cross_alignment = match tile.title_alignment {
+            crate::component_themes::ListTileTitleAlignment::ThreeLine => {
+                if three_line {
+                    CrossAxisAlignment::Start
+                } else {
+                    CrossAxisAlignment::Center
+                }
+            }
+            crate::component_themes::ListTileTitleAlignment::Top => CrossAxisAlignment::Start,
+            crate::component_themes::ListTileTitleAlignment::Bottom => CrossAxisAlignment::End,
+            crate::component_themes::ListTileTitleAlignment::Center
+            | crate::component_themes::ListTileTitleAlignment::TitleHeight => {
+                CrossAxisAlignment::Center
+            }
+        };
 
         let has_trailing = trailing.is_some();
         let has_leading = leading.is_some();
@@ -2016,15 +2051,7 @@ impl Component for ListTile {
         many(children, move |mut rendered| {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
-                // Upstream's `ListTileTitleAlignment.threeLine`: against a
-                // three-line block the leading and trailing go to the top, not
-                // the middle -- an icon centred on three lines of text sits
-                // beside the second one, which is not where it belongs.
-                .with_cross_axis_alignment(if three_line {
-                    CrossAxisAlignment::Start
-                } else {
-                    CrossAxisAlignment::Center
-                })
+                .with_cross_axis_alignment(cross_alignment)
                 // Upstream's `horizontalTitleGap` is "the gap between the
                 // titles and the leading/trailing widgets" -- both sides, not
                 // just the trailing. A row with neither has nothing to space.
@@ -4838,6 +4865,131 @@ mod tests {
         );
         let square = painted(divider_under(None, true));
         assert!(!is_path(&square), "and stays square without: {square:?}");
+    }
+
+    // -- Where a tile's leading widget sits, tick 232 -----------------------
+    //
+    // `tools/unread_theme_fields.py` found `ListTileThemeData::title_alignment`
+    // reaching nothing: the tile hard-coded upstream's `threeLine` rule, so a
+    // theme naming any of the other four was ignored and so was Material 2's
+    // default of `titleHeight`.
+
+    /// The top of the leading widget's box, under `alignment`.
+    ///
+    /// The leading is a small coloured square so that it paints a rectangle
+    /// the stub records; the title beside it is what makes the row taller
+    /// than the square, so top, centre and bottom are three different
+    /// answers.
+    fn leading_top(
+        alignment: Option<crate::component_themes::ListTileTitleAlignment>,
+        subtitle: bool,
+        three_line: bool,
+    ) -> f32 {
+        let mut tile = ListTile::new("a").with_leading(crate::framework::leaf(|| {
+            Container::new()
+                .with_size(10.0, 10.0)
+                .with_color(Color::argb(255, 255, 0, 0))
+        }));
+        if subtitle {
+            tile = tile.with_subtitle("b");
+        }
+        if three_line {
+            tile = tile.with_three_line(true);
+        }
+        let data = crate::component_themes::ListTileThemeData {
+            title_alignment: alignment,
+            ..crate::component_themes::ListTileThemeData::default()
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::component_themes::ListTileTheme::new(data, component(tile)),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect {
+                    top,
+                    bottom,
+                    argb: 0xFFFF_0000,
+                    ..
+                } if (bottom - top - 10.0).abs() < 0.5 => Some(*top),
+                _ => None,
+            })
+            .expect("the leading square was drawn")
+    }
+
+    #[test]
+    fn a_theme_can_put_the_leading_at_the_top_the_middle_or_the_bottom() {
+        use crate::component_themes::ListTileTitleAlignment;
+        let top = leading_top(Some(ListTileTitleAlignment::Top), false, false);
+        let centre = leading_top(Some(ListTileTitleAlignment::Center), false, false);
+        let bottom = leading_top(Some(ListTileTitleAlignment::Bottom), false, false);
+        assert!(
+            top < centre && centre < bottom,
+            "three different places: {top}, {centre}, {bottom}"
+        );
+    }
+
+    #[test]
+    fn the_default_is_the_three_line_rule_and_it_reads_the_tile() {
+        // `ThreeLine` is top against a three-line block and centred
+        // otherwise, so the *same* alignment gives two answers depending on
+        // the tile -- which is what distinguishes it from a fixed `Top` or
+        // `Center` and what an unset field has to fall back to under
+        // Material 3.
+        use crate::component_themes::ListTileTitleAlignment;
+        let two_line = leading_top(None, true, false);
+        let three = leading_top(None, true, true);
+        assert!(
+            three < two_line,
+            "a three-line tile lifts the leading: {three} vs {two_line}"
+        );
+        assert_eq!(
+            three,
+            leading_top(Some(ListTileTitleAlignment::Top), true, true),
+            "which is the top"
+        );
+        assert_eq!(
+            two_line,
+            leading_top(Some(ListTileTitleAlignment::Center), true, false),
+            "and the other is the middle"
+        );
+    }
+
+    #[test]
+    fn title_height_is_centred_here_which_is_not_upstreams_rule() {
+        // Upstream puts the leading sixteen pixels below the top of the
+        // *title* when the tile is taller than 72, and centres it against
+        // both titles otherwise. That needs the title's own box; this row
+        // aligns against the whole cross axis and has no such box. Centring
+        // is the nearer of the answers it can give, and it is what upstream
+        // gives a short tile too -- a tall Material 2 tile is where the two
+        // part company. Written down rather than left to be discovered.
+        use crate::component_themes::ListTileTitleAlignment;
+        assert_eq!(
+            leading_top(Some(ListTileTitleAlignment::TitleHeight), true, false),
+            leading_top(Some(ListTileTitleAlignment::Center), true, false)
+        );
     }
 }
 

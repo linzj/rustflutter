@@ -17523,3 +17523,34 @@ stale_engines 全部不落后，**unread_theme_fields 137 → 133**。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后，**unread_theme_fields 133 → 132**。
 门：5612 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 232 次：五种对齐里四种到不了，因为那条规则是写死的
+
+`ListTileThemeData::title_alignment` 到不了任何地方。列表项把上游 `threeLine`
+那条规则**写死**了——三行块贴顶、否则居中——从不问主题。于是：
+
+- 主题指定另外四种对齐中的任何一种，都被忽略；
+- 上游 Material 2 的默认 `titleHeight` 也无从生效；
+- 那个枚举里五个变体有四个是不可达的。
+
+上游的链是
+`titleAlignment ?? tileTheme.titleAlignment ?? (useMaterial3 ? threeLine : titleHeight)`，
+现在照这个解析，列表项按解析结果选交叉轴对齐。
+
+**五种里两种是近似的，测试里写明了。**`ThreeLine` 和 `Center` 是精确的。
+`Top` 与 `Bottom` 精确到上游还会额外插入的 `minVerticalPadding`——这个行在
+交叉轴上不加那一份。
+
+`TitleHeight` **不精确**：上游在整块高于 72 时把 leading 放在**标题**顶部下方
+十六像素处，否则对着两行标题居中、而 leading 取"离标题顶部更近的那一个"。
+那条规则需要标题自己的盒子，而这个行只对着整条交叉轴对齐，没有那个盒子。
+居中是它给得出的两个答案里更近的一个，而且短的列表项在上游也是居中——
+**高的 Material 2 列表项才是两者分道扬镳的地方**。这一条有自己的测试。
+
+三条承重规则逐条强制改错——把规则改回写死、把 `Top` 与 `Bottom` 对调、让
+解析器一律给 `Top`——**三条全红**。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后，**unread_theme_fields 132 → 131**。
+门：5615 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
