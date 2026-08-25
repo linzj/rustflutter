@@ -364,13 +364,25 @@ impl Component for Chip {
                 .with_color(fill)
                 .with_corner_radius(16.0)
                 .with_padding(EdgeInsets::symmetric(14.0, 0.0))
-                .with_child(Align::new(
-                    Alignment::CENTER,
-                    Text::new(label.clone())
-                        .with_size(size)
-                        .with_weight(600)
-                        .with_color(text_color),
-                ));
+                .with_child(
+                    Align::new(
+                        Alignment::CENTER,
+                        Text::new(label.clone())
+                            .with_size(size)
+                            .with_weight(600)
+                            .with_color(text_color),
+                    )
+                    // Shrink-wrapped, the way upstream's chip is sized by its
+                    // content rather than by its offer. An `Align` with no
+                    // factors fills whatever it is given, and a chip is
+                    // normally in a `Wrap`: without this every chip is as wide
+                    // as the row and one chip fills a line.
+                    //
+                    // Only the width factor decides anything -- the container
+                    // above fixes the height at 32 -- but both are written,
+                    // for the same reason as the button in `components.rs`.
+                    .with_factors(Some(1.0), Some(1.0)),
+                );
             if let Some((width, color)) = border {
                 container = container.with_border(width, color);
             }
@@ -2790,6 +2802,41 @@ mod tests {
     use crate::components::Theme;
     use crate::framework::{ElementTree, component, provide};
     use crate::render::{BoxConstraints, RenderBox};
+
+    #[test]
+    fn a_chip_is_as_wide_as_its_label_and_not_as_wide_as_the_row() {
+        // A chip normally sits in a `Wrap`. Sized by its offer rather than its
+        // content, every chip is as wide as the row and one chip fills a line.
+        //
+        // The port centred its label with an `Align` and no factors, which
+        // fills whatever it is given -- the same shape the button had, found
+        // by looking for it after the button turned up twice.
+        let width_at = |offer: f32| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(Theme::dark(), component(Chip::new(1, "hi"))));
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::loose(offer, 200.0));
+            crate::render::flush_layout();
+            root.size().width
+        };
+
+        let wide = width_at(400.0);
+        let narrow = width_at(120.0);
+        assert_eq!(wide, narrow, "the offer does not decide the width");
+        assert!(wide < 120.0, "and it is the label's own width: {wide}");
+
+        // A longer label does widen it, which is what says the width comes
+        // from the content rather than from a constant.
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Theme::dark(),
+            component(Chip::new(1, "a much longer label")),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+        assert!(root.size().width > wide);
+    }
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
         let mut tree = ElementTree::new();

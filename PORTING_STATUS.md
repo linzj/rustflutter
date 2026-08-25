@@ -16164,3 +16164,33 @@ loose 的。`customBorder` 优先于 `borderRadius`，这是上游 `paintInkCirc
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5345 + 333 通过；五个输出目录的 rustflutter_engine 与
 rust_lib 全部重建。
+
+### 第 196 次：同一个形状去别处找，八处里有一处是真的
+
+按钮那个缺陷的根子是 `Align` 没有 factor——上游是
+`Align(widthFactor: 1.0, heightFactor: 1.0)`，而无 factor 的 `Align` 会撑满
+被给到的宽度。这个形状既然出现过，就该去别处找。
+
+写了个筛子：`Align` 位于一个**没有设宽度**的 `Container` 里、且十几行内没有
+`with_factors`。八处。
+
+七处读下来是**对的**，而且理由各不相同：分隔线（`Divider`、
+`PopupMenuDivider`）就该横贯整行；对话框动作条要靠右对齐，靠右就必须先撑满；
+表格单元要填满它那一列；`PopupMenuItem` 要和菜单一样宽——上游那个也确实没有
+widthFactor；标签页在 `CrossAxisAlignment::Stretch` 的行里等分。**这个形状本身
+不是缺陷**，要紧的是这个控件该不该按内容定尺寸。
+
+一处是真的：**`Chip`**。探针给出
+
+    给 400 宽 -> 400 宽
+    给 120 宽 -> 120 宽
+
+而 chip 通常放在 `Wrap` 里，按offer定宽意味着**每个 chip 都占满一行**。补上
+factor 后它按标签收缩，长标签仍会把它撑宽。
+
+变异：两条（去掉两个 factor、只去掉宽度 factor）都转红。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5346 + 333 通过；五个输出目录的 rustflutter_engine 与
+rust_lib 全部重建。
