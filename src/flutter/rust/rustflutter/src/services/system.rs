@@ -251,7 +251,18 @@ pub enum SystemSoundType {
 }
 
 impl SystemSoundType {
-    fn as_argument(self) -> &'static str {
+    /// Every value, so a test can walk the table rather than sample it.
+    pub const ALL: [SystemSoundType; 3] = [
+        SystemSoundType::Click,
+        SystemSoundType::Alert,
+        SystemSoundType::Tick,
+    ];
+
+    /// What goes out on `flutter/platform`, and **nothing on this side reads
+    /// it**: the embedder does. A row that took its neighbour's string would
+    /// play a click where an alert was asked for, and no test here would
+    /// notice -- which is what `variant_sweep` found for two of these three.
+    pub(crate) fn as_argument(self) -> &'static str {
         match self {
             SystemSoundType::Click => "SystemSoundType.click",
             SystemSoundType::Alert => "SystemSoundType.alert",
@@ -328,14 +339,24 @@ pub enum AppExitType {
 }
 
 impl AppExitType {
-    fn as_message(self) -> &'static str {
+    /// Both values, in the order upstream declares them.
+    pub const ALL: [AppExitType; 2] = [AppExitType::Required, AppExitType::Cancelable];
+
+    /// Upstream sends `exitType.name`, which is the variant's name in lower
+    /// camel -- both of these happen to be one word.
+    ///
+    /// `Cancelable` could take `Required`'s string with the whole suite green.
+    /// That one is not a cosmetic difference: an exit the application wanted
+    /// the chance to refuse would be sent as one it cannot, and the embedder
+    /// would close the window without asking.
+    pub(crate) fn as_message(self) -> &'static str {
         match self {
             AppExitType::Required => "required",
             AppExitType::Cancelable => "cancelable",
         }
     }
 
-    fn from_message(name: &str) -> AppExitType {
+    pub(crate) fn from_message(name: &str) -> AppExitType {
         // Anything that is not "cancelable" is required, which is how
         // `StringToAppExitType` in the Windows embedder decides it. Erring
         // this way means a request nobody understands still closes the window.
@@ -356,14 +377,16 @@ pub enum AppExitResponse {
 }
 
 impl AppExitResponse {
-    fn as_message(self) -> &'static str {
+    pub const ALL: [AppExitResponse; 2] = [AppExitResponse::Exit, AppExitResponse::Cancel];
+
+    pub(crate) fn as_message(self) -> &'static str {
         match self {
             AppExitResponse::Exit => "exit",
             AppExitResponse::Cancel => "cancel",
         }
     }
 
-    fn from_message(name: &str) -> Option<AppExitResponse> {
+    pub(crate) fn from_message(name: &str) -> Option<AppExitResponse> {
         match name {
             "exit" => Some(AppExitResponse::Exit),
             "cancel" => Some(AppExitResponse::Cancel),
@@ -2304,3 +2327,101 @@ mod system_chrome_tests {
         }
     }
 }
+
+// -- The strings that go out on flutter/platform ------------------------------
+
+#[cfg(test)]
+mod channel_string_tests {
+    //! `variant_sweep` found three arms in this file that nothing was looking
+    //! at, and all three were rows of a table the embedder reads.
+
+    use super::{AppExitResponse, AppExitType, SystemSoundType};
+
+    #[test]
+    fn every_system_sound_names_itself_the_way_dart_would() {
+        // Upstream sends the enum's `toString()`, which is
+        // `EnumName.valueName`. These are protocol: an embedder is already
+        // written against each one.
+        assert_eq!(
+            SystemSoundType::ALL.map(SystemSoundType::as_argument),
+            [
+                "SystemSoundType.click",
+                "SystemSoundType.alert",
+                "SystemSoundType.tick",
+            ]
+        );
+    }
+
+    #[test]
+    fn and_no_two_sounds_share_an_argument() {
+        for (index, one) in SystemSoundType::ALL.iter().enumerate() {
+            for other in SystemSoundType::ALL.iter().skip(index + 1) {
+                assert_ne!(
+                    one.as_argument(),
+                    other.as_argument(),
+                    "{one:?} and {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_exit_that_may_be_refused_says_so_and_one_that_may_not_says_otherwise() {
+        // Upstream sends `exitType.name`. The two strings differing is the
+        // whole protocol: a cancelable exit sent as "required" is a window
+        // that closes on the reader without asking whether they wanted to
+        // save.
+        assert_eq!(AppExitType::ALL.map(AppExitType::as_message), ["required", "cancelable"]);
+        assert_ne!(
+            AppExitType::Required.as_message(),
+            AppExitType::Cancelable.as_message()
+        );
+    }
+
+    #[test]
+    fn and_a_request_nobody_understands_still_closes_the_window() {
+        // The asymmetry is deliberate and is the Windows embedder's:
+        // `StringToAppExitType` treats anything that is not "cancelable" as
+        // required. Erring the other way would leave a machine that is
+        // shutting down waiting on an application that thinks it may refuse.
+        for name in ["required", "", "REQUIRED", "cancellable", "nonsense"] {
+            assert_eq!(
+                AppExitType::from_message(name),
+                AppExitType::Required,
+                "{name:?}"
+            );
+        }
+        assert_eq!(
+            AppExitType::from_message("cancelable"),
+            AppExitType::Cancelable,
+            "and the one spelling that means it is exact"
+        );
+    }
+
+    #[test]
+    fn an_exit_response_survives_the_round_trip() {
+        for response in AppExitResponse::ALL {
+            assert_eq!(
+                AppExitResponse::from_message(response.as_message()),
+                Some(response),
+                "{response:?}"
+            );
+        }
+        assert_eq!(
+            AppExitResponse::ALL.map(AppExitResponse::as_message),
+            ["exit", "cancel"]
+        );
+    }
+
+    #[test]
+    fn and_a_response_nobody_understands_is_none_rather_than_a_guess() {
+        // Unlike the request above, this one refuses to guess -- and the
+        // difference is which way the mistake falls. Guessing `exit` here
+        // would close an application whose embedder answered something this
+        // crate has not heard of; the caller decides what to do with `None`.
+        assert_eq!(AppExitResponse::from_message("Exit"), None);
+        assert_eq!(AppExitResponse::from_message(""), None);
+        assert_eq!(AppExitResponse::from_message("cancelled"), None);
+    }
+}
+
