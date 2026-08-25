@@ -31,7 +31,21 @@ pub enum TileMode {
 }
 
 impl TileMode {
-    fn code(self) -> c_int {
+    /// Every value, so a test can walk the table rather than sample it.
+    pub const ALL: [TileMode; 4] = [
+        TileMode::Clamp,
+        TileMode::Repeat,
+        TileMode::Mirror,
+        TileMode::Decal,
+    ];
+
+    /// The number the engine reads, and **nothing on this side reads it**:
+    /// `ToTileMode` in `rustflutter_ffi_draw.cc` is the other half, and the
+    /// two are hand-written mirrors of one ABI. A row that took its
+    /// neighbour's number would tile a gradient the wrong way with nothing
+    /// here to notice, which is what `variant_sweep` found for three of these
+    /// four.
+    pub(crate) fn code(self) -> c_int {
         match self {
             TileMode::Clamp => 0,
             TileMode::Repeat => 1,
@@ -113,7 +127,18 @@ pub enum ClipBehavior {
 }
 
 impl ClipBehavior {
-    fn code(self) -> c_int {
+    /// Every value, in the order the codes run.
+    pub const ALL: [ClipBehavior; 4] = [
+        ClipBehavior::None,
+        ClipBehavior::HardEdge,
+        ClipBehavior::AntiAlias,
+        ClipBehavior::AntiAliasWithSaveLayer,
+    ];
+
+    /// The number the engine reads. `ToClipBehavior` in
+    /// `rustflutter_ffi_draw.cc` is the other half; see [`TileMode::code`] for
+    /// why a table like this needs a test on this side at all.
+    pub(crate) fn code(self) -> c_int {
         match self {
             ClipBehavior::None => 0,
             ClipBehavior::HardEdge => 1,
@@ -5178,6 +5203,108 @@ mod decoration_image_paint_tests {
         };
         let (source, _) = painted(DecorationImage::new(unrecognised)).expect("it still draws");
         assert_eq!(size_of_rect(source), (0.0, 0.0));
+    }
+}
+
+// -- The two code tables, and which way a cylinder turns ----------------------
+
+#[cfg(test)]
+mod abi_table_tests {
+    //! Numbers that leave this crate and are read in C++.
+    //!
+    //! `variant_sweep` found seven arms in this file that nothing was looking
+    //! at, and six of them were these two tables: every row but the first
+    //! could take its neighbour's number with the whole suite green. That is
+    //! the shape the sweep's own docs put first -- a table this side writes
+    //! and only the engine reads -- and the reason is structural rather than
+    //! an oversight, so the fix is a test rather than a rule.
+
+    use super::matrix_utils;
+    use super::{ClipBehavior, TileMode};
+    use crate::render::{Axis, Offset};
+
+    #[test]
+    fn every_tile_mode_sends_the_number_to_tile_mode_reads() {
+        // `ToTileMode` in src/flutter/rust/ffi/rustflutter_ffi_draw.cc:
+        // 1 repeat, 2 mirror, 3 decal, anything else clamp. Clamp is the
+        // default arm there, so its number is the one this side chooses.
+        assert_eq!(TileMode::ALL.map(TileMode::code), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn every_clip_behaviour_sends_the_number_to_clip_behaviour_reads() {
+        // `ToClipBehavior` in the same file: 0 none, 1 hard edge,
+        // 3 anti-alias with a save layer, anything else plain anti-alias.
+        assert_eq!(ClipBehavior::ALL.map(ClipBehavior::code), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn and_no_two_rows_of_either_table_share_a_number() {
+        // What makes a neighbour swap detectable at all. Two tile modes with
+        // one code is a gradient the engine cannot tell apart from another.
+        for (index, one) in TileMode::ALL.iter().enumerate() {
+            for other in TileMode::ALL.iter().skip(index + 1) {
+                assert_ne!(one.code(), other.code(), "{one:?} and {other:?}");
+            }
+        }
+        for (index, one) in ClipBehavior::ALL.iter().enumerate() {
+            for other in ClipBehavior::ALL.iter().skip(index + 1) {
+                assert_ne!(one.code(), other.code(), "{one:?} and {other:?}");
+            }
+        }
+    }
+
+    /// Where a point off the axis of rotation lands, once the cylinder has
+    /// turned. A quarter turn, so the movement is unmistakable.
+    fn turned(orientation: Axis, point: Offset) -> Offset {
+        let transform = matrix_utils::create_cylindrical_projection_transform(
+            100.0,
+            std::f32::consts::FRAC_PI_4,
+            0.001,
+            orientation,
+        );
+        matrix_utils::transform_point(transform, point)
+    }
+
+    #[test]
+    fn a_horizontal_wheel_turns_about_the_upright_axis_and_a_vertical_one_about_the_flat() {
+        // Upstream's `createCylindricalProjectionTransform`: horizontal is
+        // `rotationY`, vertical is `rotationX`. The vertical arm could take
+        // the horizontal one's with the suite green -- a list wheel that
+        // scrolls up and down would have spun sideways, and every existing
+        // test of this matrix used the default orientation.
+        //
+        // The model translates every point out to `z = radius` before it
+        // turns, so both rotations move a point's x -- the first draft of this
+        // test assumed otherwise and failed. What separates them is which
+        // coordinate stays at **zero**: turning about the upright axis leaves
+        // y alone, so a point on the horizon lands on the horizon; turning
+        // about the flat axis leaves x alone, so a point on the centre line
+        // stays on it.
+        let on_the_horizon = Offset::new(40.0, 0.0);
+        let on_the_centre_line = Offset::new(0.0, 40.0);
+
+        assert_eq!(
+            turned(Axis::Horizontal, on_the_horizon).dy,
+            0.0,
+            "an upright axis does not lift a point off the horizon"
+        );
+        assert!(
+            turned(Axis::Vertical, on_the_horizon).dy.abs() > 1.0,
+            "and a flat one does: {:?}",
+            turned(Axis::Vertical, on_the_horizon)
+        );
+
+        assert_eq!(
+            turned(Axis::Vertical, on_the_centre_line).dx,
+            0.0,
+            "a flat axis does not push a point off the centre line"
+        );
+        assert!(
+            turned(Axis::Horizontal, on_the_centre_line).dx.abs() > 1.0,
+            "and an upright one does: {:?}",
+            turned(Axis::Horizontal, on_the_centre_line)
+        );
     }
 }
 
