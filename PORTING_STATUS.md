@@ -16124,3 +16124,43 @@ stack：state layer 是画在孩子之上的 ink feature，不是并排的另一
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5341 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 195 次：上一轮修错了地方——真正丢掉尺寸的是 `ButtonBounds` 自己
+
+上一轮的修复经肉眼验证**没有解决问题**。读了 `rustflutter_album` 的
+`ui.rs`：按钮是被 `push_positioned` 放进一个带显式 `width`/`height` 的槽位
+（104×40），也就是**紧约束**。而 `ButtonBounds::layout` 把孩子用最小值去布局、
+完全不看传进来的约束：
+
+```rust
+let inner = BoxConstraints::new(self.min_width, INF, self.min_height, INF);
+self.size = constraints.constrain(child.layout_child(inner, true));
+```
+
+盒子被 `constrain` 成 104，孩子却早按 64 布局完了。上一轮改的两个 stack fit
+在这条路径上根本轮不到——损失发生在它们**上面**。
+
+改成把传进来的约束**抬到最小值**再传下去。这一改立刻让一条既有测试转红，
+而那条红暴露了根因：上游按钮里是 `Align(widthFactor: 1.0, heightFactor: 1.0)`
+（收缩包裹），本移植的 `Align` 没有 factor、会撑满可用宽度——**旧代码传
+`INFINITY` 正是在绕开这一点**，代价是丢掉每一个紧约束。补上 factor 之后
+两件事同时成立。
+
+变异：五条中三条转红。存活的两条各说明一件事——把上限也抬到最小值既不可
+证伪也不如上游忠实（上游从不在这里加宽上限），去掉；高度 factor 在这里被
+容器的固定高度决定，保留并注明。
+
+顺带把 `InkResponse`（`InkWell` 真正建在其上的那个类）的同三处补齐：上游的
+`borderRadius` 与 `customBorder` 此前完全没有，裁剪一律是直角；stack 也是
+loose 的。`customBorder` 优先于 `borderRadius`，这是上游 `paintInkCircle`
+的顺序。均匀圆角走 rrect 裁剪而不是 path——上游中间那支是 `clipRRect`。
+
+**又开了一个盲区**：`rf_layer_tree_push_clip_path` 此前只被计数。新增
+`Drawn::ClipPathLayer`，用路径的**外接矩形**描述它，并写明这比
+`ClipRRectLayer` 说得少：它能把胶囊和不同大小的圆分开，不能把胶囊和同样大小
+的圆分开。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5345 + 333 通过；五个输出目录的 rustflutter_engine 与
+rust_lib 全部重建。

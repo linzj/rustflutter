@@ -303,6 +303,36 @@ impl ButtonBounds {
         self.child = Some(RenderRef::new(child));
         self
     }
+
+    /// The constraints the button was given, **raised to the minimums**.
+    ///
+    /// The first version handed the child `(min_width, INFINITY)` and ignored
+    /// the incoming constraints entirely, then squeezed its own size back
+    /// through them. Under loose constraints that is the same thing. Under
+    /// **tight** ones it is not, and a downstream application found out how:
+    /// a button dropped into a positioned stack slot 104 wide laid its child
+    /// out at 64, sized itself to 104, and painted a pill 64 wide inside a box
+    /// of 104. The rest was unpainted box inside the ink's rounded clip, and
+    /// what showed through read as a second, darker pill beside the button.
+    ///
+    /// Upstream hands the child `constraints` and takes the maximum with the
+    /// minimum size afterwards, so a tight box reaches the child. The minimum
+    /// is a floor on the answer, not a replacement for the question.
+    ///
+    /// The **maximums are the ones that came in**, unraised. A first version
+    /// lifted them to the minimums as well, so that a button asked for less
+    /// room than its minimum would lay its child out at the minimum anyway --
+    /// which is a child overflowing its own box, and `constrain` below would
+    /// clip the answer back regardless. Upstream never widens a maximum here,
+    /// and a mutation removing the lift stayed green: it decided nothing.
+    fn inner_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        BoxConstraints::new(
+            self.min_width.max(constraints.min_width),
+            constraints.max_width,
+            self.min_height.max(constraints.min_height),
+            constraints.max_height,
+        )
+    }
 }
 
 impl RenderBox for ButtonBounds {
@@ -324,15 +354,10 @@ impl RenderBox for ButtonBounds {
         Some(effect)
     }
 
-    /// `_InputPadding.performLayout`: the child's answer at nothing but the
-    /// minimums, put through the constraints the button itself was given.
+    /// `_InputPadding.performLayout`: the child's answer, put through the
+    /// constraints the button itself was given.
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
-        let inner = BoxConstraints::new(
-            self.min_width,
-            f32::INFINITY,
-            self.min_height,
-            f32::INFINITY,
-        );
+        let inner = self.inner_constraints(constraints);
         self.size = match &mut self.child {
             Some(child) => constraints.constrain(child.layout_child(inner, true)),
             None => constraints.constrain(Size::new(self.min_width, self.min_height)),
@@ -345,12 +370,7 @@ impl RenderBox for ButtonBounds {
     }
 
     fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
-        let inner = BoxConstraints::new(
-            self.min_width,
-            f32::INFINITY,
-            self.min_height,
-            f32::INFINITY,
-        );
+        let inner = self.inner_constraints(constraints);
         match &self.child {
             Some(child) => constraints.constrain(child.dry_layout(inner)),
             None => constraints.constrain(Size::new(self.min_width, self.min_height)),
@@ -588,15 +608,33 @@ impl Component for Button {
                     .with_height(height)
                     .with_corner_radius(radius)
                     .with_padding(EdgeInsets::symmetric(padding, 0.0))
-                    .with_child(Align::new(
-                        Alignment::CENTER,
-                        // Upstream's label style for buttons is `labelLarge`:
-                        // medium weight, not bold.
-                        Text::new(label.clone())
-                            .with_size(body_size)
-                            .with_weight(500)
-                            .with_color(label_color),
-                    ));
+                    .with_child(
+                        Align::new(
+                            Alignment::CENTER,
+                            // Upstream's label style for buttons is
+                            // `labelLarge`: medium weight, not bold.
+                            Text::new(label.clone())
+                                .with_size(body_size)
+                                .with_weight(500)
+                                .with_color(label_color),
+                        )
+                        // Upstream's `Align(widthFactor: 1.0, heightFactor:
+                        // 1.0)`. Without the factors an `Align` fills whatever
+                        // it is offered, so the button would be as wide as the
+                        // row it sits in rather than as wide as its label.
+                        //
+                        // The first version of `ButtonBounds` worked around
+                        // that by handing the child an infinite maximum, which
+                        // hid the real difference and lost every tight
+                        // constraint on the way down. The factors are the
+                        // thing upstream actually does.
+                        //
+                        // Only the width factor is observable here -- the
+                        // container above fixes the height -- so a mutation
+                        // dropping the height one stays green. It is upstream's
+                        // argument and it costs nothing, so both are written.
+                        .with_factors(Some(1.0), Some(1.0)),
+                    );
                 if let Some(color) = fill {
                     container = container.with_color(color);
                 }
@@ -3183,12 +3221,19 @@ mod tests {
         // Both branches: a pressed button builds a different stack -- the one
         // with the state layer over it -- and it is the branch a reader is
         // looking at when they see the button at all.
+        // Four ways a button gets its width, against both states. The tight
+        // slot is the one a downstream application actually hit: a button
+        // dropped into a positioned stack cell 104 wide. `ButtonBounds` used
+        // to hand its child `(min_width, INFINITY)` and ignore the incoming
+        // constraints, so the child laid out at 64 while the box became 104.
         let mut label_widths: Vec<f32> = Vec::new();
-        for (min_width, pressed) in [
-            (None, false),
-            (Some(200.0f32), false),
-            (None, true),
-            (Some(200.0f32), true),
+        for (given, min_width, pressed) in [
+            (BoxConstraints::loose(400.0, 200.0), None, false),
+            (BoxConstraints::loose(400.0, 200.0), Some(200.0f32), false),
+            (BoxConstraints::loose(400.0, 200.0), None, true),
+            (BoxConstraints::loose(400.0, 200.0), Some(200.0f32), true),
+            (BoxConstraints::tight(104.0, 40.0), None, false),
+            (BoxConstraints::tight(104.0, 40.0), None, true),
         ] {
             let mut tree = ElementTree::new();
             let mut button = Button::new(1, "next").with_pressed(pressed);
@@ -3197,7 +3242,7 @@ mod tests {
             }
             tree.rebuild(provide(Theme::dark(), component(button)));
             let root = tree.build_render_tree().expect("a root");
-            crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+            crate::render::schedule_root_layout(&root, given);
             crate::render::flush_layout();
             let width = root.size().width;
 
@@ -3224,7 +3269,7 @@ mod tests {
             assert_eq!(
                 pill,
                 (0.0, width),
-                "{min_width:?} pressed={pressed}: the pill fills the box,                  leaving no strip beside it"
+                "{given:?} {min_width:?} pressed={pressed}: the pill fills                  the box, leaving no strip beside it"
             );
 
             // And the label is centred in the box rather than parked at the

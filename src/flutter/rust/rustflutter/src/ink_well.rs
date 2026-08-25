@@ -305,9 +305,51 @@ pub struct InkResponse {
     /// rectangle in the region's own coordinates.
     #[allow(clippy::type_complexity)]
     rect_callback: Option<Rc<dyn Fn(Size) -> crate::engine::Rect>>,
+    /// Upstream's `borderRadius`, and it shapes the **clip** rather than
+    /// anything drawn.
+    ///
+    /// See [`InkResponse::with_border_radius`].
+    border_radius: Option<crate::borders::BorderRadius>,
+    /// Upstream's `customBorder`, which wins over `borderRadius` when both are
+    /// given -- the order in `paintInkCircle` says so, and it is the right way
+    /// round: a caller who named a whole shape has said more than one who
+    /// named four corners.
+    custom_border: Option<crate::borders::ShapeBorder>,
 }
 
 impl InkResponse {
+    /// Upstream's `InkResponse.borderRadius`: the rounding of the clip a
+    /// contained splash is held inside.
+    ///
+    /// Upstream clips the splash itself, in `paintInkCircle`:
+    ///
+    /// ```dart
+    /// if (customBorder != null) {
+    ///   canvas.clipPath(customBorder.getOuterPath(rect, textDirection: textDirection));
+    /// } else if (borderRadius != BorderRadius.zero) {
+    ///   canvas.clipRRect(RRect.fromRectAndCorners(rect, ...));
+    /// } else {
+    ///   canvas.clipRect(rect);
+    /// }
+    /// ```
+    ///
+    /// Three branches, and this had only the third -- the same gap
+    /// [`crate::ink::Ink`] had, in the class `InkWell` is actually built
+    /// from. A rounded card or a pill-shaped response showed the ripple
+    /// filling the corners of its **bounding rectangle**, square wedges of
+    /// colour outside the shape, growing with the ripple.
+    pub fn with_border_radius(mut self, radius: crate::borders::BorderRadius) -> Self {
+        self.border_radius = Some(radius);
+        self
+    }
+
+    /// Upstream's `InkResponse.customBorder`, which takes precedence over
+    /// [`InkResponse::with_border_radius`].
+    pub fn with_custom_border(mut self, border: crate::borders::ShapeBorder) -> Self {
+        self.custom_border = Some(border);
+        self
+    }
+
     pub fn new(id: u64, build_child: impl Fn() -> AnyWidget + 'static) -> InkResponse {
         InkResponse {
             id,
@@ -317,6 +359,8 @@ impl InkResponse {
             on_highlight_changed: None,
             on_hover: None,
             contained_ink_well: false,
+            border_radius: None,
+            custom_border: None,
             // Upstream's default, and the reason `InkWell` exists to change
             // it: a response with no box to fill is a circle.
             highlight_shape: InkHighlightShape::Circle,
@@ -618,9 +662,21 @@ impl StatefulComponent for InkResponse {
             })
             .collect();
         let id = self.id;
+        let border_radius = self.border_radius;
+        let custom_border = self.custom_border.clone();
 
         single(child, move |child| {
-            let mut stack = crate::render::RenderStack::new().push_boxed(child);
+            // **Passthrough**, not the stack's default of loose. Upstream
+            // paints ink features from `_RenderInkFeatures`, a
+            // `RenderProxyBox`, so the constraints a caller was given reach
+            // its child untouched. Stacking features as real boxes is this
+            // port's arrangement, and a loose stack drops a minimum size on
+            // the way down -- which leaves the child painting narrower than
+            // the box it was given and the difference showing through the
+            // ink's own clip.
+            let mut stack = crate::render::RenderStack::new()
+                .with_fit(crate::render::StackFit::Passthrough)
+                .push_boxed(child);
             for (centre, radius, colour) in &painted {
                 let circle = crate::widgets::Container::new()
                     .with_size(radius * 2.0, radius * 2.0)
@@ -641,10 +697,46 @@ impl StatefulComponent for InkResponse {
             let watched = crate::render::RenderSizeReporter::new(Rc::clone(&size_sink), stack);
             let region = crate::render::RenderPointerRegion::new(id, watched)
                 .with_handlers(handlers.clone());
-            if contained {
-                crate::render::RenderRef::new(crate::render::RenderClipRect::new(region))
-            } else {
-                crate::render::RenderRef::new(region)
+            if !contained {
+                return crate::render::RenderRef::new(region);
+            }
+            // Upstream's three branches, in upstream's order.
+            match (&custom_border, border_radius) {
+                (Some(border), _) => {
+                    let size = size_sink.get();
+                    let path = border.outer_path(
+                        crate::engine::Rect::xywh(0.0, 0.0, size.width, size.height),
+                        crate::direction::current_direction(),
+                    );
+                    crate::render::RenderRef::new(crate::render::RenderClipPath::new(path, region))
+                }
+                (None, Some(radius)) => {
+                    // Upstream's middle branch is `clipRRect`, not `clipPath`,
+                    // so a radius that is one number on all four corners goes
+                    // out as a rounded-rect clip. `with_border_radius` here
+                    // builds a path, which is the right answer for four
+                    // different corners and a heavier one for the common case.
+                    let uniform = [
+                        radius.top_left,
+                        radius.top_right,
+                        radius.bottom_left,
+                        radius.bottom_right,
+                    ];
+                    let first = uniform[0];
+                    let same = uniform
+                        .iter()
+                        .all(|corner| corner.x == first.x && corner.y == first.y)
+                        && first.x == first.y;
+                    let clip = crate::render::RenderClipRect::new(region);
+                    crate::render::RenderRef::new(if same {
+                        clip.with_corner_radius(first.x)
+                    } else {
+                        clip.with_border_radius(radius)
+                    })
+                }
+                (None, None) => {
+                    crate::render::RenderRef::new(crate::render::RenderClipRect::new(region))
+                }
             }
         })
     }
@@ -871,4 +963,163 @@ mod tests {
         assert!(!response.contained_ink_well);
         assert_eq!(response.highlight_shape, InkHighlightShape::Circle);
     }
+
+    // -- The shape a contained response holds its ink inside ----------------
+
+    /// Paints an `InkResponse` and hands back what the compositor was asked
+    /// for.
+    fn response_calls(build: impl FnOnce(InkResponse) -> InkResponse) -> Vec<crate::engine_test_stubs::Drawn> {
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderConstrainedBox};
+
+        let response = build(
+            InkResponse::new(9301, || {
+                crate::framework::leaf(|| RenderConstrainedBox::tight(120.0, 48.0))
+            })
+            .with_contained(true),
+        );
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(response));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    #[test]
+    fn a_response_with_a_border_radius_is_clipped_round_and_one_without_is_not() {
+        // Upstream's `paintInkCircle` clips the splash with `borderRadius`
+        // when it has one and with the plain rect otherwise. This had only the
+        // rect, in the class `InkWell` is built from -- so a rounded card
+        // showed the ripple filling the corners of its bounding rectangle,
+        // square wedges of colour outside the shape.
+        let square = response_calls(|response| response);
+        assert!(
+            square.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+            )),
+            "no radius, a square clip"
+        );
+
+        let rounded = response_calls(|response| {
+            response.with_border_radius(crate::borders::BorderRadius::circular(12.0))
+        });
+        let radii: Vec<f32> = rounded
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::ClipRRectLayer { radius_x, .. } => Some(*radius_x),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(radii, vec![12.0], "the radius it was given: {rounded:?}");
+        assert!(
+            !rounded.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+            )),
+            "and nothing square"
+        );
+    }
+
+    #[test]
+    fn a_custom_border_wins_over_a_border_radius() {
+        // Upstream's order: `customBorder` is tested first. A caller who named
+        // a whole shape has said more than one who named four corners, and the
+        // two are allowed to be given together.
+        let calls = response_calls(|response| {
+            response
+                .with_border_radius(crate::borders::BorderRadius::circular(12.0))
+                .with_custom_border(crate::borders::ShapeBorder::Circle(
+                    crate::borders::CircleBorder::new(crate::borders::BorderSide::NONE, 0.0),
+                ))
+        });
+        assert!(
+            calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipPathLayer { .. }
+            )),
+            "the shape's own path: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
+                    | crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+            )),
+            "and neither of the two simpler clips: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn an_uncontained_response_is_not_clipped_whatever_shape_it_was_given() {
+        // `contained` is the switch; the shape is only what it clips to.
+        let clipped = |calls: &[crate::engine_test_stubs::Drawn]| {
+            calls.iter().any(|call| {
+                matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
+                        | crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
+                )
+            })
+        };
+        assert!(clipped(&response_calls(|response| response
+            .with_border_radius(crate::borders::BorderRadius::circular(12.0)))));
+        assert!(!clipped(&response_calls(|response| response
+            .with_contained(false)
+            .with_border_radius(crate::borders::BorderRadius::circular(12.0)))));
+    }
+
+    #[test]
+    fn a_response_hands_its_child_the_constraints_it_was_given() {
+        // The same fix `Ink` needed: upstream paints ink features from a
+        // `RenderProxyBox`, so constraints reach the child untouched, while a
+        // stack loosens by default and drops a minimum on the way down.
+        use crate::framework::ElementTree;
+        use crate::render::{BoxConstraints, RenderConstrainedBox};
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(InkResponse::new(9302, || {
+            crate::framework::leaf(|| {
+                crate::widgets::Container::new()
+                    .with_color(INK)
+                    .with_child(RenderConstrainedBox::tight(30.0, 10.0))
+            })
+        })));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::new(200.0, 400.0, 0.0, 200.0),
+        );
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let filled = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { left, right, .. } => Some((left, right)),
+                _ => None,
+            })
+            .expect("the child painted");
+        assert_eq!(filled, (0.0, 200.0));
+    }
 }
+

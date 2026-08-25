@@ -858,6 +858,20 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
     },
+    /// A path clip pushed as a compositor layer, described by the path's
+    /// **bounding box**.
+    ///
+    /// The bounds are all a stub path keeps -- it accumulates the points it is
+    /// given and nothing else -- so this tells a pill from a circle of a
+    /// different size and **not** from a circle of the same size. That is a
+    /// smaller claim than [`Drawn::ClipRRectLayer`] makes, and it is said here
+    /// rather than left to be discovered.
+    ClipPathLayer {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    },
     /// A rounded clip pushed as a compositor layer.
     ///
     /// [`LayerCalls`] counted these and nothing recorded their shape, so
@@ -1081,6 +1095,17 @@ impl Drawn {
                 bottom: bottom + dy,
                 clip_op,
                 anti_alias,
+            },
+            Drawn::ClipPathLayer {
+                left,
+                top,
+                right,
+                bottom,
+            } => Drawn::ClipPathLayer {
+                left: left + dx,
+                top: top + dy,
+                right: right + dx,
+                bottom: bottom + dy,
             },
             Drawn::ClipRectLayer {
                 left,
@@ -1306,6 +1331,16 @@ pub unsafe extern "C" fn rf_layer_tree_push_clip_path(
     clip_behavior: c_int,
 ) {
     note(|calls| calls.clip_paths += 1);
+    if let Some((left, top, right, bottom)) =
+        unsafe { stub_path(path as *mut RfPath) }.and_then(|path| path.bounds)
+    {
+        record(Drawn::ClipPathLayer {
+            left,
+            top,
+            right,
+            bottom,
+        });
+    }
     open_container();
 }
 
