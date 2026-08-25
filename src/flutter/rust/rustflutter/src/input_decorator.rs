@@ -129,6 +129,8 @@ pub enum SubtitleSlot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputDecoration {
     pub label_text: Option<String>,
+    /// Upstream's `hintText`, the placeholder shown in an empty field.
+    pub hint_text: Option<String>,
     pub helper_text: Option<String>,
     pub error_text: Option<String>,
     pub counter_text: Option<String>,
@@ -147,6 +149,16 @@ pub struct InputDecoration {
     pub content_padding_is_zero: bool,
     /// Whether a widget was given for the slot as well as a string.
     pub has_helper_widget: bool,
+    /// The widget forms of the three that had only their string form here.
+    ///
+    /// Upstream carries both for each, forbids giving both, and asks
+    /// `x != null || xText != null` wherever it wants to know whether there is
+    /// one. Modelling only the string made the widget form invisible: a field
+    /// given an `error` widget and no `errorText` reported no error at all, so
+    /// its helper line stayed put and the border stayed the enabled colour.
+    pub has_label_widget: bool,
+    pub has_hint_widget: bool,
+    pub has_error_widget: bool,
     pub has_prefix_widget: bool,
     pub has_prefix_text: bool,
     pub has_suffix_widget: bool,
@@ -156,6 +168,10 @@ pub struct InputDecoration {
 impl InputDecoration {
     pub fn new() -> InputDecoration {
         InputDecoration {
+            hint_text: None,
+            has_label_widget: false,
+            has_hint_widget: false,
+            has_error_widget: false,
             label_text: None,
             helper_text: None,
             error_text: None,
@@ -183,10 +199,23 @@ impl InputDecoration {
         }
     }
 
-    /// Upstream's three "only one of" asserts. In each pair the widget form and
-    /// the string form are **alternatives**: giving both says nothing, because
+    /// Upstream's **six** "only one of" asserts. In each pair the widget form
+    /// and the string form are alternatives: giving both says nothing, because
     /// there is one slot and no rule for which fills it.
+    ///
+    /// This said "three" and had three -- helper, prefix, suffix. Upstream
+    /// also forbids both forms of the label, the hint and the error, and those
+    /// three were missing here along with the widget forms they are about.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.has_label_widget && self.label_text.is_some() {
+            return Err("only one of label and labelText can be specified");
+        }
+        if self.has_hint_widget && self.hint_text.is_some() {
+            return Err("only one of hint and hintText can be specified");
+        }
+        if self.has_error_widget && self.error_text.is_some() {
+            return Err("only one of error and errorText can be specified");
+        }
         if self.has_helper_widget && self.helper_text.is_some() {
             return Err("only one of helper and helperText can be specified");
         }
@@ -207,13 +236,27 @@ impl InputDecoration {
     /// the field, and a field cannot be explaining itself and complaining at
     /// the same time. The complaint is the more urgent of the two.
     pub fn subtitle(&self) -> SubtitleSlot {
-        if self.error_text.is_some() {
+        if self.has_error() {
             SubtitleSlot::Error
         } else if self.helper_text.is_some() || self.has_helper_widget {
             SubtitleSlot::Helper
         } else {
             SubtitleSlot::Nothing
         }
+    }
+
+    /// Upstream's `_hasError`: `errorText != null || error != null`.
+    ///
+    /// Both forms, because a field given an error *widget* is as wrong as one
+    /// given an error string, and everything downstream -- the subtitle slot,
+    /// the border colour, the label colour -- turns on this one answer.
+    pub fn has_error(&self) -> bool {
+        self.error_text.is_some() || self.has_error_widget
+    }
+
+    /// Upstream's label test: `labelText != null || label != null`.
+    pub fn has_label(&self) -> bool {
+        self.label_text.is_some() || self.has_label_widget
     }
 }
 
@@ -277,7 +320,7 @@ impl InputDecorator {
 
     /// Upstream's `_shouldShowLabel` and `_hasInlineLabel`, together.
     pub fn label_placement(&self) -> LabelPlacement {
-        if self.decoration.label_text.is_none() {
+        if !self.decoration.has_label() {
             return LabelPlacement::Absent;
         }
         let behavior = self.decoration.floating_label_behavior;
@@ -305,7 +348,7 @@ impl InputDecorator {
             context,
             self.decoration.enabled,
             self.is_focused,
-            self.decoration.error_text.is_some(),
+            self.decoration.has_error(),
             border_is_state_property,
             !border.has_side,
         )
@@ -450,6 +493,99 @@ mod tests {
             InputDecorator::new(decoration).label_placement(),
             LabelPlacement::Floating
         );
+    }
+
+    #[test]
+    fn a_field_given_an_error_widget_is_as_wrong_as_one_given_an_error_string() {
+        // Upstream's `_hasError` is `errorText != null || error != null`, and
+        // everything under the field turns on that one answer: which slot the
+        // subtitle line holds, what colour the border is, what colour the
+        // label is. Only the string form was modelled here, so a field given
+        // an error *widget* reported no error at all -- its helper line stayed
+        // put and its border stayed the enabled colour.
+        let mut widget_form = InputDecoration::new();
+        widget_form.has_error_widget = true;
+        assert!(widget_form.has_error());
+        assert_eq!(widget_form.subtitle(), SubtitleSlot::Error);
+
+        let mut string_form = InputDecoration::new();
+        string_form.error_text = Some(String::from("too short"));
+        assert!(string_form.has_error());
+        assert_eq!(string_form.subtitle(), SubtitleSlot::Error);
+
+        // And the error still outranks a helper given either way.
+        let mut both = InputDecoration::new();
+        both.has_error_widget = true;
+        both.has_helper_widget = true;
+        assert_eq!(both.subtitle(), SubtitleSlot::Error);
+    }
+
+    #[test]
+    fn a_label_widget_is_a_label_and_gets_a_placement_like_one() {
+        // The same asymmetry, on the other end of the field. A label given as
+        // a widget was `Absent` -- so it was never floated, never withdrawn,
+        // and the field looked like one with no name.
+        let mut decoration = InputDecoration::new();
+        decoration.has_label_widget = true;
+        assert!(decoration.has_label());
+        assert_eq!(
+            InputDecorator::new(decoration.clone()).label_placement(),
+            LabelPlacement::Inline
+        );
+        assert_eq!(
+            InputDecorator::new(decoration).focused().label_placement(),
+            LabelPlacement::Floating
+        );
+    }
+
+    #[test]
+    fn each_of_the_six_pairs_may_be_given_one_way_or_the_other_and_not_both() {
+        // Upstream asserts six times, once per pair. This said "three" and had
+        // three; the label, the hint and the error were missing along with the
+        // widget forms they are about.
+        let pairs: Vec<(&str, fn(&mut InputDecoration), fn(&mut InputDecoration))> = vec![
+            (
+                "label",
+                |d| d.has_label_widget = true,
+                |d| d.label_text = Some(String::from("x")),
+            ),
+            (
+                "hint",
+                |d| d.has_hint_widget = true,
+                |d| d.hint_text = Some(String::from("x")),
+            ),
+            (
+                "error",
+                |d| d.has_error_widget = true,
+                |d| d.error_text = Some(String::from("x")),
+            ),
+            (
+                "helper",
+                |d| d.has_helper_widget = true,
+                |d| d.helper_text = Some(String::from("x")),
+            ),
+            ("prefix", |d| d.has_prefix_widget = true, |d| d.has_prefix_text = true),
+            ("suffix", |d| d.has_suffix_widget = true, |d| d.has_suffix_text = true),
+        ];
+        for (name, as_widget, as_string) in pairs {
+            let mut only_widget = InputDecoration::new();
+            as_widget(&mut only_widget);
+            assert!(only_widget.validate().is_ok(), "{name} as a widget alone");
+
+            let mut only_string = InputDecoration::new();
+            as_string(&mut only_string);
+            assert!(only_string.validate().is_ok(), "{name} as a string alone");
+
+            let mut both = InputDecoration::new();
+            as_widget(&mut both);
+            as_string(&mut both);
+            let refused = both.validate();
+            assert!(refused.is_err(), "{name} both ways");
+            assert!(
+                refused.unwrap_err().contains(name),
+                "and the message names the pair"
+            );
+        }
     }
 
     // -- A border with no side ---------------------------------------------------

@@ -15510,3 +15510,36 @@ widget 的 → 主题的 → 配色的（上游的顺序）。
 三条变异全红：去掉 `enabled` 项、`Hidden` 改回 `Inline`、`Always` 不再压过一切。
 
 `depth_examined.json` 记了这次阅读。5266 测试通过，完整 GN 门过。
+
+## 第 179 轮 — 注释说"上游的三条断言"，上游有六条
+
+先试了一把新尺子：**会分支、却仍有一格状态到不了的函数**——
+第 178 轮那个 bug 的成因正是如此。收紧后只剩 13 条候选，
+挨个查前三条，**全是假阳性**：`maybe_invoke` 的 `Handled` 由
+`to_key_result` 给出、`direction` 的 `Up` 由 `flip_axis_direction` 给出、
+`in_direction` 的 `Retraced` 由 `pop_policy_data_if_needed` 给出。
+
+委托是常态，所以这个形状不跟数据流就搜不出来。**没做成工具**——
+这是名字形状的启发式在这个代码库上第五、六次失效，
+`variant_sweep.py` 当初就是为此而生。结论记在这里。
+
+### 然后是这一轮真的东西
+
+`InputDecoration::validate` 的文档写着"Upstream's three 'only one of' asserts"。
+**上游有六条**：label、hint、helper、prefix、suffix、error。
+少的三对，连同它们所说的那三个 widget 形式，都不在这里。
+
+后果不只是少了断言：
+
+- 上游 `_hasError` 是 `errorText != null || error != null`，
+  而字段下面的一切都转在这一个答案上——副标题那一行归谁、边框什么颜色、
+  标签什么颜色。**只建模了字符串形式，于是一个给了 error widget 的字段
+  报告"没有错误"**：它的 helper 行原地不动，边框还是启用时的颜色。
+- 以字段另一端的同一处不对称：**以 widget 形式给的标签是 `Absent`**——
+  从不浮起、从不退位，那个字段看起来像没有名字。
+
+补 `has_error()`、`has_label()`、`hint_text` 和缺的三条断言。
+三条变异全红。
+
+`depth_examined.json` 上 `InputDecoration` 那条补了这一段。
+5269 测试通过，完整 GN 门过。
