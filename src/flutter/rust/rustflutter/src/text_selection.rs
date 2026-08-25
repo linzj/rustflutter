@@ -900,6 +900,140 @@ pub fn shift_tap_down(
     }
 }
 
+/// What the beginning of a drag does to the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragStartSelects {
+    /// Nothing -- and on several paths that is the answer rather than an
+    /// oversight. See [`drag_selection_start`].
+    Nothing,
+    /// Shift was held: [`expand_selection`] from where the selection was.
+    Expand,
+    /// Shift was held: [`extend_selection`].
+    Extend,
+    /// Put the caret where the drag began.
+    CaretAtTheFinger,
+}
+
+/// Everything upstream's `onDragSelectionStart` decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragSelectionStart {
+    pub selects: DragStartSelects,
+    /// Only one path raises it, and it is not the one a desktop takes.
+    pub shows_magnifier: bool,
+    /// Whether `_shouldShowSelectionToolbar` and `_shouldShowSelectionHandles`
+    /// are set from the pointer kind. Both are set together and to the same
+    /// value; upstream assigns the second from the first.
+    pub sets_the_overlay_flags: bool,
+}
+
+/// Upstream's `onDragSelectionStart`.
+///
+/// # A double tap that becomes a drag keeps its words
+///
+/// ```dart
+/// if (_getEffectiveConsecutiveTapCount(details.consecutiveTapCount) > 1) {
+///   // Do not set the selection on a consecutive tap and drag.
+///   return;
+/// }
+/// ```
+///
+/// The second tap already selected a word, and the drag that follows grows
+/// the selection word by word. Placing a caret here would throw that away at
+/// the very moment the reader started to drag.
+///
+/// Note where the return sits: **after** the flags and the drag-start state
+/// are recorded. Those are needed by the update that follows whether or not
+/// this call sets a selection.
+///
+/// # A finger does not start a drag-selection the way a mouse does
+///
+/// * **Desktop (Linux, macOS, Windows)** places the caret, whatever the
+///   pointer is. There is nothing else a drag on a desktop could mean.
+/// * **Android and Fuchsia** place the caret for a mouse or a trackpad, and
+///   for a finger **only in a field that already has focus** -- and that is
+///   the one path in this whole method that raises the magnifier.
+/// * **iOS** places the caret for a mouse or a trackpad and does **nothing at
+///   all** for a finger. Upstream's comment on the Android branch says "For
+///   Android, Fuchsia, and iOS platforms, a touch drag does not initiate
+///   unless the editable has focus", but iOS's own touch case is empty: there
+///   is no focus test there because there is no path there. The code is what
+///   is ported; the comment is a sentence about three platforms sitting over
+///   a branch that serves two.
+///
+/// A stylus starts nothing anywhere, on any platform, even though it sets the
+/// overlay flags on the way past.
+///
+/// # One thing this port cannot say
+///
+/// Upstream's `details.kind` is nullable, and `null` is a **third** answer
+/// next to `PointerDeviceKind.unknown`: on Android and Fuchsia `unknown`
+/// takes the focus-gated touch path and `null` takes none. This crate's
+/// [`PointerKind`] has no null, so [`PointerKind::Unknown`] is upstream's
+/// `unknown` and the null case has nowhere to live. Written down rather than
+/// smoothed over.
+pub fn drag_selection_start(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    kind: PointerKind,
+    shift_pressed: bool,
+    has_valid_selection: bool,
+    consecutive_taps: u32,
+    has_focus: bool,
+) -> DragSelectionStart {
+    use crate::editable_text::TargetPlatform;
+    if !selection_enabled {
+        return DragSelectionStart {
+            selects: DragStartSelects::Nothing,
+            shows_magnifier: false,
+            sets_the_overlay_flags: false,
+        };
+    }
+    let nothing = DragSelectionStart {
+        selects: DragStartSelects::Nothing,
+        shows_magnifier: false,
+        sets_the_overlay_flags: true,
+    };
+    if consecutive_taps > 1 {
+        return nothing;
+    }
+    if shift_pressed && has_valid_selection {
+        return DragSelectionStart {
+            selects: match platform {
+                TargetPlatform::IOS | TargetPlatform::MacOS => DragStartSelects::Expand,
+                _ => DragStartSelects::Extend,
+            },
+            ..nothing
+        };
+    }
+    let caret = DragSelectionStart {
+        selects: DragStartSelects::CaretAtTheFinger,
+        ..nothing
+    };
+    let precise = matches!(kind, PointerKind::Mouse | PointerKind::Trackpad);
+    match platform {
+        TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows => caret,
+        TargetPlatform::IOS => {
+            if precise {
+                caret
+            } else {
+                nothing
+            }
+        }
+        TargetPlatform::Android | TargetPlatform::Fuchsia => {
+            if precise {
+                caret
+            } else if matches!(kind, PointerKind::Touch | PointerKind::Unknown) && has_focus {
+                DragSelectionStart {
+                    shows_magnifier: true,
+                    ..caret
+                }
+            } else {
+                nothing
+            }
+        }
+    }
+}
+
 /// How the drag after a long press moves the selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LongPressMove {
@@ -3236,6 +3370,205 @@ mod selection_gesture_rule_tests {
                 shift_tap_down(platform, false, true, true),
                 ShiftTapDown::Nothing,
                 "{platform:?}: no shift"
+            );
+        }
+    }
+
+    // -- Starting a drag-selection -----------------------------------------
+
+    /// A plain drag: no shift, one tap, focused.
+    fn drag(platform: TargetPlatform, kind: PointerKind) -> DragSelectionStart {
+        drag_selection_start(platform, true, kind, false, true, 1, true)
+    }
+
+    #[test]
+    fn a_desktop_places_the_caret_whatever_the_pointer_is() {
+        // There is nothing else a drag on a desktop could mean.
+        for platform in [
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            for kind in [PointerKind::Mouse, PointerKind::Touch, PointerKind::Stylus] {
+                assert_eq!(
+                    drag(platform, kind).selects,
+                    DragStartSelects::CaretAtTheFinger,
+                    "{platform:?} {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ios_starts_nothing_under_a_finger_even_in_a_focused_field() {
+        // Android and Fuchsia do start there; iOS's touch case is empty, so
+        // there is no focus test on that platform because there is no path.
+        // Upstream's comment names three platforms over a branch serving two.
+        for kind in [PointerKind::Touch, PointerKind::Unknown] {
+            assert_eq!(
+                drag(TargetPlatform::IOS, kind).selects,
+                DragStartSelects::Nothing,
+                "{kind:?}"
+            );
+            assert_eq!(
+                drag_selection_start(TargetPlatform::IOS, true, kind, false, true, 1, false)
+                    .selects,
+                DragStartSelects::Nothing,
+                "{kind:?}: and unfocused is the same nothing"
+            );
+        }
+        // A mouse on the same platform does place the caret -- and so does a
+        // trackpad. Upstream's precise pair is `mouse || trackpad` in every
+        // one of these branches, so a port that read only `mouse` would leave
+        // a trackpad drag doing nothing on the platforms where it matters.
+        for kind in [PointerKind::Mouse, PointerKind::Trackpad] {
+            assert_eq!(
+                drag(TargetPlatform::IOS, kind).selects,
+                DragStartSelects::CaretAtTheFinger,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn android_starts_under_a_finger_only_in_a_field_that_already_has_focus() {
+        for platform in [TargetPlatform::Android, TargetPlatform::Fuchsia] {
+            // A trackpad is precise and goes the other way, focus or not.
+            for kind in [PointerKind::Mouse, PointerKind::Trackpad] {
+                assert_eq!(
+                    drag_selection_start(platform, true, kind, false, true, 1, false).selects,
+                    DragStartSelects::CaretAtTheFinger,
+                    "{platform:?} {kind:?}"
+                );
+            }
+
+            let focused = drag(platform, PointerKind::Touch);
+            assert_eq!(
+                focused.selects,
+                DragStartSelects::CaretAtTheFinger,
+                "{platform:?}"
+            );
+            assert!(
+                focused.shows_magnifier,
+                "{platform:?}: and this is the only path in the method that raises it"
+            );
+
+            let cold = drag_selection_start(platform, true, PointerKind::Touch, false, true, 1, false);
+            assert_eq!(cold.selects, DragStartSelects::Nothing, "{platform:?}");
+            assert!(!cold.shows_magnifier, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_magnifier_belongs_to_that_path_and_no_other() {
+        // Not a mouse, not a desktop, not a shift-drag.
+        for platform in TargetPlatform::ALL {
+            assert!(
+                !drag(platform, PointerKind::Mouse).shows_magnifier,
+                "{platform:?} mouse"
+            );
+        }
+        for platform in [
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !drag(platform, PointerKind::Touch).shows_magnifier,
+                "{platform:?} touch"
+            );
+        }
+        assert!(
+            !drag_selection_start(
+                TargetPlatform::Android,
+                true,
+                PointerKind::Touch,
+                true,
+                true,
+                1,
+                true
+            )
+            .shows_magnifier,
+            "a shift-drag takes the other branch entirely"
+        );
+    }
+
+    #[test]
+    fn a_stylus_starts_nothing_anywhere_but_still_sets_the_flags() {
+        // The flags are assigned before every branch, so the gesture that
+        // does nothing still says what kind of pointer it was.
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+        ] {
+            let start = drag(platform, PointerKind::Stylus);
+            assert_eq!(start.selects, DragStartSelects::Nothing, "{platform:?}");
+            assert!(start.sets_the_overlay_flags, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn a_double_tap_that_becomes_a_drag_keeps_the_word_it_selected() {
+        // The second tap already selected a word and the drag grows the
+        // selection word by word. Placing a caret here would throw that away
+        // at the moment the reader started to drag.
+        for platform in TargetPlatform::ALL {
+            let start = drag_selection_start(platform, true, PointerKind::Mouse, false, true, 2, true);
+            assert_eq!(start.selects, DragStartSelects::Nothing, "{platform:?}");
+            assert!(
+                start.sets_the_overlay_flags,
+                "{platform:?}: but the return is after the flags"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shift_drag_splits_the_way_every_other_shift_gesture_does() {
+        // Apple expands, everyone else extends -- the same division as
+        // `shift_tap_down`, so the shift key means one thing per platform
+        // rather than one thing per gesture.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                drag_selection_start(platform, true, PointerKind::Mouse, true, true, 1, true)
+                    .selects,
+                DragStartSelects::Expand,
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(
+                drag_selection_start(platform, true, PointerKind::Mouse, true, true, 1, true)
+                    .selects,
+                DragStartSelects::Extend,
+                "{platform:?}"
+            );
+        }
+        // And with nothing selected the shift branch is not taken at all.
+        assert_eq!(
+            drag_selection_start(TargetPlatform::MacOS, true, PointerKind::Mouse, true, false, 1, true)
+                .selects,
+            DragStartSelects::CaretAtTheFinger
+        );
+    }
+
+    #[test]
+    fn a_field_that_does_not_select_does_not_even_set_the_flags() {
+        // The only early return above the assignments.
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                drag_selection_start(platform, false, PointerKind::Touch, false, true, 1, true),
+                DragSelectionStart {
+                    selects: DragStartSelects::Nothing,
+                    shows_magnifier: false,
+                    sets_the_overlay_flags: false,
+                },
+                "{platform:?}"
             );
         }
     }

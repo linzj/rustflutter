@@ -16597,3 +16597,40 @@ final Offset scrollableOffset = switch (axisDirectionToAxis(_scrollDirection ?? 
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5410 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 208 次：上游的注释点了三个平台的名，而它管的那一支只服务两个
+
+`onDragSelectionStart`，这个类里最后一大块。
+
+**一次变成拖动的双击，保住它选中的那个词。**上游那个
+`consecutiveTapCount > 1` 就直接返回，注释写着 "Do not set the selection on a
+consecutive tap and drag."——第二下已经选中了一个词，随后的拖动是按词长的；
+在这里放一个光标，等于在读者刚开始拖的那一刻把它扔掉。注意那个 return 的位置：
+**在记录标志和拖动起始状态之后**，因为随后的 update 无论如何都要用它们。
+
+按平台三分：
+
+- **桌面**（Linux/macOS/Windows）无论什么指针都放光标；桌面上的拖动没有别的
+  意思。
+- **Android 与 Fuchsia** 对鼠标和触控板放光标，对手指**只在字段已经有焦点时**
+  才放——而这是整个方法里**唯一**会升起放大镜的一条路。
+- **iOS** 对鼠标和触控板放光标，对手指**什么都不做**。上游在 Android 那一支
+  上的注释写着 "For Android, Fuchsia, and iOS platforms, a touch drag does not
+  initiate unless the editable has focus"，可 iOS 自己那一支的 touch 分支是
+  **空的**：那里没有焦点判断，因为那里根本没有路径。**注释点了三个平台的名，
+  而它管的那一支只服务两个。**照代码写，把差异记下来。
+
+触控笔在任何平台上都不启动任何东西，但一路过去仍然把 overlay 的两个标志设上。
+
+一处本移植说不出来的事也写明了：上游的 `details.kind` 可空，而 `null` 是
+`PointerDeviceKind.unknown` 之外的**第三个**答案——Android/Fuchsia 上 `unknown`
+走那条受焦点管的触摸路径，`null` 一条都不走。本 crate 的 `PointerKind` 没有
+null，所以 `Unknown` 对应上游的 `unknown`，而 null 那一档无处安放。
+
+变异：九条中八条一次转红。第九条（把"精确设备"从 `Mouse | Trackpad` 缩成
+`Mouse`）存活——我一处都没用过 `Trackpad`。补上后转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5418 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
