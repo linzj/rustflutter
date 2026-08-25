@@ -47,6 +47,7 @@ What it does NOT see
   python tools/idle_guards.py <file.rs> [more.rs ...]
   python tools/idle_guards.py --changed      # files touched by HEAD
 """
+import io
 import os
 import re
 import subprocess
@@ -98,9 +99,28 @@ def run_tests(env):
         return 'no-build'
     return 'green' if result.returncode == 0 else 'red'
 
+SIDECAR = '.screen_orig'
+
+
+def recover(path):
+    """Restore a file a killed run left mutated.
+
+    The `finally` below cannot run if the process is killed. Tick 219 lost a
+    `swap_lerps.py` run to a timeout that way, and the next run read the
+    mutated file as its baseline and reported the repair as a finding. The
+    sidecar holds the last known-good text, so put it back before reading.
+    """
+    if os.path.exists(path + SIDECAR):
+        io.open(path, 'w', encoding='utf-8', newline='').write(
+            io.open(path + SIDECAR, encoding='utf-8', newline='').read())
+        os.remove(path + SIDECAR)
+        print('  (recovered %s from a killed run)' % os.path.basename(path))
+
 
 def screen(path, env):
+    recover(path)
     original = open(path, encoding='utf-8', newline='').read()
+    io.open(path + SIDECAR, 'w', encoding='utf-8', newline='').write(original)
     newline = '\r\n' if '\r\n' in original else '\n'
     lines = original.replace('\r\n', '\n').split('\n')
     limit = test_module_ranges(lines)
@@ -123,6 +143,7 @@ def screen(path, env):
                 unbuilt += 1
     finally:
         open(path, 'w', encoding='utf-8', newline='').write(original)
+        os.remove(path + SIDECAR)
 
     print('  %d of %d can be deleted with the suite still green (%d would not build)'
           % (len(idle), len(found), unbuilt))

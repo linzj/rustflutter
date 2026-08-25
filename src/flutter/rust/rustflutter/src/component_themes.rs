@@ -12005,6 +12005,219 @@ mod tests {
         assert_eq!(themed.button_min_width, Some(64.0));
         assert_eq!(themed.overflow_direction, Some(VerticalDirection::Up));
     }
+
+    // -- Which end each component theme's lerp runs from ---------------------
+    //
+    // Every one of these blends its two ends on a single line, and a lerp is
+    // symmetric at the midpoint -- so a test at `t = 0.5` cannot tell
+    // `lerp(a, b, t)` from `lerp(b, a, t)`. Each of these runs a quarter of
+    // the way, and each names a distinct function, so a swap anywhere in the
+    // set turns exactly one of them red.
+
+    /// Two densities whose axes move opposite ways, so a line that reads the
+    /// wrong axis lands on the other's answer.
+    fn sparse() -> VisualDensity {
+        VisualDensity {
+            horizontal: -4.0,
+            vertical: 4.0,
+        }
+    }
+
+    fn dense() -> VisualDensity {
+        VisualDensity {
+            horizontal: 4.0,
+            vertical: -4.0,
+        }
+    }
+
+    fn quartered() -> Option<VisualDensity> {
+        Some(VisualDensity {
+            horizontal: -2.0,
+            vertical: 2.0,
+        })
+    }
+
+    fn quartered_back() -> Option<VisualDensity> {
+        Some(VisualDensity {
+            horizontal: 2.0,
+            vertical: -2.0,
+        })
+    }
+
+    /// Two sides differing only in width, so a swap shows as the wrong width.
+    fn side(width: f32) -> BorderSide {
+        BorderSide {
+            color: Color::argb(255, 255, 0, 0),
+            width,
+            ..BorderSide::NONE
+        }
+    }
+
+    #[test]
+    fn the_optional_wrappers_hand_the_first_end_first() {
+        // Three functions of the same shape: both ends present goes to the
+        // type's own `lerp`, and only there does the order matter.
+        let small = IconThemeData {
+            size: Some(4.0),
+            ..IconThemeData::default()
+        };
+        let large = IconThemeData {
+            size: Some(20.0),
+            ..IconThemeData::default()
+        };
+        assert_eq!(
+            lerp_icon_theme(&Some(small.clone()), &Some(large.clone()), 0.25)
+                .and_then(|theme| theme.size),
+            Some(8.0)
+        );
+        assert_eq!(
+            lerp_icon_theme(&Some(large), &Some(small), 0.25).and_then(|theme| theme.size),
+            Some(20.0 - 4.0)
+        );
+
+        let a = ButtonStyle {
+            visual_density: Some(sparse()),
+            ..ButtonStyle::default()
+        };
+        let b = ButtonStyle {
+            visual_density: Some(dense()),
+            ..ButtonStyle::default()
+        };
+        assert_eq!(
+            lerp_button_style(&Some(a.clone()), &Some(b.clone()), 0.25)
+                .and_then(|style| style.visual_density),
+            quartered()
+        );
+        assert_eq!(
+            lerp_button_style(&Some(b), &Some(a), 0.25).and_then(|style| style.visual_density),
+            quartered_back()
+        );
+
+        let a = MenuStyle {
+            visual_density: Some(sparse()),
+            ..MenuStyle::default()
+        };
+        let b = MenuStyle {
+            visual_density: Some(dense()),
+            ..MenuStyle::default()
+        };
+        assert_eq!(
+            lerp_menu_style(&Some(a.clone()), &Some(b.clone()), 0.25)
+                .and_then(|style| style.visual_density),
+            quartered()
+        );
+        assert_eq!(
+            lerp_menu_style(&Some(b), &Some(a), 0.25).and_then(|style| style.visual_density),
+            quartered_back()
+        );
+    }
+
+    #[test]
+    fn every_density_arm_blends_from_the_first_end() {
+        // Five separate copies of the same three-line arm, one per theme.
+        let a = CheckboxThemeData {
+            visual_density: Some(sparse()),
+            ..CheckboxThemeData::default()
+        };
+        let b = CheckboxThemeData {
+            visual_density: Some(dense()),
+            ..CheckboxThemeData::default()
+        };
+        assert_eq!(CheckboxThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(
+            CheckboxThemeData::lerp(&b, &a, 0.25).visual_density,
+            quartered_back()
+        );
+
+        let a = RadioThemeData {
+            visual_density: Some(sparse()),
+            ..RadioThemeData::default()
+        };
+        let b = RadioThemeData {
+            visual_density: Some(dense()),
+            ..RadioThemeData::default()
+        };
+        assert_eq!(RadioThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(RadioThemeData::lerp(&b, &a, 0.25).visual_density, quartered_back());
+
+        let a = ListTileThemeData {
+            visual_density: Some(sparse()),
+            ..ListTileThemeData::default()
+        };
+        let b = ListTileThemeData {
+            visual_density: Some(dense()),
+            ..ListTileThemeData::default()
+        };
+        assert_eq!(ListTileThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(
+            ListTileThemeData::lerp(&b, &a, 0.25).visual_density,
+            quartered_back()
+        );
+
+        let a = ButtonStyle {
+            visual_density: Some(sparse()),
+            ..ButtonStyle::default()
+        };
+        let b = ButtonStyle {
+            visual_density: Some(dense()),
+            ..ButtonStyle::default()
+        };
+        assert_eq!(ButtonStyle::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(ButtonStyle::lerp(&b, &a, 0.25).visual_density, quartered_back());
+
+        let a = MenuStyle {
+            visual_density: Some(sparse()),
+            ..MenuStyle::default()
+        };
+        let b = MenuStyle {
+            visual_density: Some(dense()),
+            ..MenuStyle::default()
+        };
+        assert_eq!(MenuStyle::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(MenuStyle::lerp(&b, &a, 0.25).visual_density, quartered_back());
+    }
+
+    #[test]
+    fn every_side_arm_blends_from_the_first_end() {
+        let a = CheckboxThemeData {
+            side: Some(side(4.0)),
+            ..CheckboxThemeData::default()
+        };
+        let b = CheckboxThemeData {
+            side: Some(side(20.0)),
+            ..CheckboxThemeData::default()
+        };
+        assert_eq!(
+            CheckboxThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            CheckboxThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width),
+            Some(16.0)
+        );
+
+        let a = RadioThemeData {
+            side: Some(side(4.0)),
+            ..RadioThemeData::default()
+        };
+        let b = RadioThemeData {
+            side: Some(side(20.0)),
+            ..RadioThemeData::default()
+        };
+        assert_eq!(RadioThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width), Some(8.0));
+        assert_eq!(RadioThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width), Some(16.0));
+
+        let a = ChipThemeData {
+            side: Some(side(4.0)),
+            ..ChipThemeData::default()
+        };
+        let b = ChipThemeData {
+            side: Some(side(20.0)),
+            ..ChipThemeData::default()
+        };
+        assert_eq!(ChipThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width), Some(8.0));
+        assert_eq!(ChipThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width), Some(16.0));
+    }
 }
 
 #[cfg(test)]

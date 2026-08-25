@@ -1291,4 +1291,83 @@ mod tests {
         assert_eq!(controller.status(), AnimationStatus::Forward);
         assert!(!controller.is_animating());
     }
+
+    // -- A tween's two ends are not interchangeable -------------------------
+    //
+    // Each of these has one line reading `begin` and `end`, and a lerp is
+    // symmetric at the midpoint -- so a test at `t = 0.5` cannot tell a tween
+    // that runs the right way from one that plays backwards. A quarter of the
+    // way can.
+
+    #[test]
+    fn an_alignment_tween_runs_from_its_begin_to_its_end() {
+        // The two axes move opposite ways, so a line that read the wrong one
+        // would land on the other axis's answer.
+        let tween = AlignmentTween {
+            begin: Alignment { x: -1.0, y: 1.0 },
+            end: Alignment { x: 1.0, y: -1.0 },
+        };
+        let quarter = tween.lerp(0.25);
+        assert_eq!((quarter.x, quarter.y), (-0.5, 0.5));
+
+        let reversed = AlignmentTween {
+            begin: tween.end,
+            end: tween.begin,
+        };
+        let quarter = reversed.lerp(0.25);
+        assert_eq!((quarter.x, quarter.y), (0.5, -0.5));
+    }
+
+    #[test]
+    fn and_so_does_a_directional_one() {
+        let tween = AlignmentGeometryTween {
+            begin: AlignmentGeometry::Absolute(Alignment { x: -1.0, y: 1.0 }),
+            end: AlignmentGeometry::Absolute(Alignment { x: 1.0, y: -1.0 }),
+        };
+        match tween.lerp(0.25) {
+            AlignmentGeometry::Absolute(alignment) => {
+                assert_eq!((alignment.x, alignment.y), (-0.5, 0.5));
+            }
+            other => panic!("{other:?}"),
+        }
+        let reversed = AlignmentGeometryTween {
+            begin: tween.end,
+            end: tween.begin,
+        };
+        match reversed.lerp(0.25) {
+            AlignmentGeometry::Absolute(alignment) => {
+                assert_eq!((alignment.x, alignment.y), (0.5, -0.5));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_relative_rect_tween_runs_from_its_begin_too() {
+        // Four different pairs, so a line reading the wrong edge fails as
+        // well as one reading the wrong direction.
+        let begin = RelativeRect {
+            left: 4.0,
+            top: 8.0,
+            right: 12.0,
+            bottom: 16.0,
+        };
+        let end = RelativeRect {
+            left: 20.0,
+            top: 24.0,
+            right: 28.0,
+            bottom: 32.0,
+        };
+        let quarter = RelativeRectTween::new(begin, end).lerp(0.25);
+        assert_eq!(
+            (quarter.left, quarter.top, quarter.right, quarter.bottom),
+            (8.0, 12.0, 16.0, 20.0)
+        );
+        let back = RelativeRectTween::new(end, begin).lerp(0.25);
+        assert_eq!(
+            (back.left, back.top, back.right, back.bottom),
+            (16.0, 20.0, 24.0, 28.0)
+        );
+    }
+
 }

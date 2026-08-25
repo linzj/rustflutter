@@ -384,4 +384,58 @@ mod tests {
         };
         assert_eq!(state.value(Duration::ZERO, Curve::Linear), Some(10.0));
     }
+
+    // -- Which end a `Lerp` runs from ---------------------------------------
+    //
+    // Every one of these is a field-by-field walk, and each field is its own
+    // line that can be written backwards on its own. A quarter of the way is
+    // used rather than a half, because a lerp is symmetric at the midpoint
+    // and a test there cannot tell `lerp(a, b, t)` from `lerp(b, a, t)`.
+
+    #[test]
+    fn an_offset_lerps_each_axis_from_the_first_towards_the_second() {
+        let from = Offset::new(4.0, 20.0);
+        let to = Offset::new(20.0, 4.0);
+        // The two axes move in opposite directions on purpose: a line that
+        // read the wrong field would land on the other axis's answer.
+        assert_eq!(Offset::lerp(from, to, 0.25), Offset::new(8.0, 16.0));
+        assert_eq!(Offset::lerp(to, from, 0.25), Offset::new(16.0, 8.0));
+    }
+
+    #[test]
+    fn a_size_lerps_each_dimension_from_the_first_towards_the_second() {
+        let from = Size::new(4.0, 20.0);
+        let to = Size::new(20.0, 4.0);
+        assert_eq!(Size::lerp(from, to, 0.25), Size::new(8.0, 16.0));
+        assert_eq!(Size::lerp(to, from, 0.25), Size::new(16.0, 8.0));
+    }
+
+    #[test]
+    fn edge_insets_lerp_all_four_edges_from_the_first_towards_the_second() {
+        // Four different pairs, so a line reading the wrong edge fails as
+        // well as a line reading the wrong direction.
+        let from = EdgeInsets {
+            left: 4.0,
+            top: 8.0,
+            right: 12.0,
+            bottom: 16.0,
+        };
+        let to = EdgeInsets {
+            left: 20.0,
+            top: 24.0,
+            right: 28.0,
+            bottom: 32.0,
+        };
+        let quarter = EdgeInsets::lerp(from, to, 0.25);
+        assert_eq!(
+            (quarter.left, quarter.top, quarter.right, quarter.bottom),
+            (8.0, 12.0, 16.0, 20.0)
+        );
+        let back = EdgeInsets::lerp(to, from, 0.25);
+        assert_eq!(
+            (back.left, back.top, back.right, back.bottom),
+            (16.0, 20.0, 24.0, 28.0)
+        );
+    }
+
 }

@@ -1233,4 +1233,31 @@ mod tests {
         tree.rebuild(component(Reader(Rc::clone(&seen))));
         assert_eq!(seen.get(), Some(Brightness::Light));
     }
+
+    #[test]
+    fn a_theme_lerps_its_density_from_the_first_towards_the_second() {
+        // `ThemeData::lerp` walks its fields one line each, and this line is
+        // one of the few that blends rather than snapping to the nearer end.
+        // A lerp is symmetric at the midpoint, so only an off-centre t can
+        // tell the two ends apart. The axes move opposite ways, so a line
+        // reading the wrong one lands on the other axis's answer.
+        let sparse = ThemeData {
+            visual_density: VisualDensity {
+                horizontal: -4.0,
+                vertical: 4.0,
+            },
+            ..ThemeData::light()
+        };
+        let dense = ThemeData {
+            visual_density: VisualDensity {
+                horizontal: 4.0,
+                vertical: -4.0,
+            },
+            ..ThemeData::light()
+        };
+        let quarter = ThemeData::lerp(&sparse, &dense, 0.25).visual_density;
+        assert_eq!((quarter.horizontal, quarter.vertical), (-2.0, 2.0));
+        let back = ThemeData::lerp(&dense, &sparse, 0.25).visual_density;
+        assert_eq!((back.horizontal, back.vertical), (2.0, -2.0));
+    }
 }

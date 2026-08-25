@@ -32,6 +32,29 @@ def body_limit(text):
     return len(text)
 
 
+def is_comment(text, position):
+    """Is this offset inside a `//` comment line?"""
+    start = text.rfind('\n', 0, position) + 1
+    return text[start:position].lstrip().startswith('//')
+
+SIDECAR = '.screen_orig'
+
+
+def recover(path):
+    """Restore a file a killed run left mutated.
+
+    The `finally` below cannot run if the process is killed. Whatever is in
+    the sidecar is the last known-good text, so put it back before reading
+    the file as a baseline -- otherwise the screen measures a corrupted one
+    and calls the repair a finding.
+    """
+    if os.path.exists(path + SIDECAR):
+        io.open(path, 'w', encoding='utf-8', newline='').write(
+            io.open(path + SIDECAR, encoding='utf-8', newline='').read())
+        os.remove(path + SIDECAR)
+        print('  (recovered %s from a killed run)' % os.path.basename(path))
+
+
 def run(env):
     result = subprocess.run(['cargo', 'test', '--lib', '-q'],
                             cwd=CRATE, env=env, capture_output=True, text=True)
@@ -43,12 +66,18 @@ def run(env):
 
 def main(argv):
     path = argv[0]
+    recover(path)
     original = io.open(path, encoding='utf-8', newline='').read()
+    io.open(path + SIDECAR, 'w', encoding='utf-8', newline='').write(original)
     newline = '\r\n' if '\r\n' in original else '\n'
     text = original.replace('\r\n', '\n')
     limit = body_limit(text)
     sites = [m for m in CALL.finditer(text) if m.start() < limit]
     sites = [m for m in sites if m.group(1) != m.group(2)]
+    # A match inside a comment can never turn anything red -- swapping it
+    # changes no code at all. Tick 219 chased two such 'findings' in
+    # `component_themes.rs` before noticing they were prose.
+    sites = [m for m in sites if not is_comment(text, m.start())]
     print('%s: %d swappable lerp calls' % (os.path.basename(path), len(sites)))
 
     env = dict(os.environ)
@@ -69,6 +98,7 @@ def main(argv):
                 print('  line %-6d (would not build)' % line)
     finally:
         io.open(path, 'w', encoding='utf-8', newline='').write(original)
+        os.remove(path + SIDECAR)
     print('  %d of %d swap unnoticed' % (len(green), len(sites)))
     return 0
 

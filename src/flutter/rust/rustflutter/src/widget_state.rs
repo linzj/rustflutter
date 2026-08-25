@@ -884,6 +884,79 @@ mod tests {
         assert_eq!(heard.get(), 2);
         assert!(controller.value().is_empty());
     }
+
+    // -- Which end a state property's lerp runs from -------------------------
+    //
+    // Each of these hands its two resolved ends to a blend in one line, and a
+    // lerp is symmetric at the midpoint -- so a test at `t = 0.5` cannot tell
+    // the right order from the reversed one. A quarter of the way can.
+
+    #[test]
+    fn a_lerped_state_property_hands_the_first_end_first() {
+        let blend = |first: Option<f32>, second: Option<f32>, t: f32| {
+            first.unwrap_or(0.0) * (1.0 - t) + second.unwrap_or(0.0) * t
+        };
+        let a = StateProperty::all(4.0f32);
+        let b = StateProperty::all(20.0f32);
+        let quarter = lerp_state_property(Some(&a), Some(&b), 0.25, blend)
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE);
+        assert_eq!(quarter, 8.0);
+        let back = lerp_state_property(Some(&b), Some(&a), 0.25, blend)
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE);
+        assert_eq!(back, 16.0);
+    }
+
+    #[test]
+    fn and_so_does_the_property_pair_version() {
+        let blend: Rc<dyn Fn(Option<f32>, Option<f32>, f32) -> Option<f32>> =
+            Rc::new(|first, second, t| {
+                Some(first.unwrap_or(0.0) * (1.0 - t) + second.unwrap_or(0.0) * t)
+            });
+        let a: Rc<dyn WidgetStateProperty<f32>> = Rc::new(WidgetStatePropertyAll(4.0f32));
+        let b: Rc<dyn WidgetStateProperty<f32>> = Rc::new(WidgetStatePropertyAll(20.0f32));
+        let quarter = lerp_properties(
+            Some(Rc::clone(&a)),
+            Some(Rc::clone(&b)),
+            0.25,
+            Rc::clone(&blend),
+        )
+        .expect("two ends is enough")
+        .resolve(WidgetStates::NONE);
+        assert_eq!(quarter, Some(8.0));
+        let back = lerp_properties(Some(b), Some(a), 0.25, blend)
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE);
+        assert_eq!(back, Some(16.0));
+    }
+
+    #[test]
+    fn two_present_sides_lerp_from_the_first_towards_the_second() {
+        // The fading arms above are already asymmetric -- the vanishing side
+        // sits on a named end. This is the arm where both ends are real, and
+        // where the order is invisible at the midpoint.
+        let side = |width: f32| {
+            Rc::new(WidgetStateBorderSide::from_map(vec![(
+                WidgetStatesConstraint::ANY,
+                BorderSide {
+                    color: Color::argb(255, 255, 0, 0),
+                    width,
+                    ..BorderSide::NONE
+                },
+            )]))
+        };
+        let quarter = WidgetStateBorderSide::lerp(Some(side(4.0)), Some(side(20.0)), 0.25)
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE)
+            .expect("both ends are present");
+        assert_eq!(quarter.width, 8.0);
+        let back = WidgetStateBorderSide::lerp(Some(side(20.0)), Some(side(4.0)), 0.25)
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE)
+            .expect("both ends are present");
+        assert_eq!(back.width, 16.0);
+    }
 }
 
 #[cfg(test)]

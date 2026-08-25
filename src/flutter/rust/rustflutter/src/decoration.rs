@@ -586,6 +586,53 @@ mod tests {
         let rounded = BoxDecoration::new().with_border_radius(BorderRadiusGeometry::circular(4.0));
         let _ = rounded.clip_path(Rect::xywh(0.0, 0.0, 100.0, 50.0), TextDirection::Ltr);
     }
+
+    // -- Which end a decoration lerp runs from -------------------------------
+    //
+    // `lerpFrom` is handed the decoration being left and `lerpTo` the one
+    // being arrived at, so the pair each hands to `BoxDecoration.lerp` is
+    // ordered differently in the two methods. At `t = 0.5` a lerp is
+    // symmetric and neither order shows; a quarter of the way both do.
+
+    #[test]
+    fn a_box_decoration_lerps_from_the_one_being_left() {
+        let from = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF000000))));
+        let to = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF0000FF))));
+
+        // `Decoration::lerp` tries `lerp_from` first, so this is that arm.
+        let quarter = Decoration::lerp(Some(from.clone()), Some(to.clone()), 0.25)
+            .expect("two box decorations blend");
+        assert_eq!(fill_blue(&quarter), 64);
+        let back = Decoration::lerp(Some(to.clone()), Some(from.clone()), 0.25)
+            .expect("two box decorations blend");
+        assert_eq!(fill_blue(&back), 191);
+    }
+
+    #[test]
+    fn and_lerp_to_orders_them_the_other_way() {
+        // `lerp_to`'s box/box arm is unreachable through `Decoration::lerp`,
+        // which finds `lerp_from`'s first. Called directly, `self` is the end
+        // being left and the argument the one arrived at.
+        let from = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF000000))));
+        let to = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF0000FF))));
+
+        let quarter = from.lerp_to(Some(&to), 0.25).expect("two box decorations blend");
+        assert_eq!(fill_blue(&quarter), 64);
+        let back = to.lerp_to(Some(&from), 0.25).expect("two box decorations blend");
+        assert_eq!(fill_blue(&back), 191);
+    }
+
+    /// The blue channel of a box decoration's solid fill, which is the only
+    /// thing the two tests above move.
+    fn fill_blue(decoration: &Decoration) -> u8 {
+        match decoration {
+            Decoration::Box(box_decoration) => match &box_decoration.fill {
+                Some(Fill::Solid(color)) => color.blue(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 // -- The Flutter logo (upstream flutter_logo.dart) ---------------------------------

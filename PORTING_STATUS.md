@@ -16952,3 +16952,34 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5460 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 219 次：其余七个文件的 27 处 lerp，方向也全部有人看着了；筛子自己有两个洞
+
+**26 → 0。**`borders.rs` 之外还剩七个文件，第 218 次筛出 30 处能被静默调换。
+
+逐个补上：`implicit.rs` 的 `Offset` / `Size` / `EdgeInsets`（两轴故意反向走，
+读错字段和读反方向一样红）、`transitions.rs` 的三个 tween（`begin` 与 `end`
+不可互换）、`widget_state.rs` 的两个属性 lerp 包装与 `WidgetStateBorderSide`
+**两端都在**的那一支（淡入淡出的两支本来就不对称，只有这一支在中点看不出
+顺序）、`decoration.rs` 的 `lerp_from` 与 `lerp_to`（后者的 box/box 分支从
+`Decoration::lerp` 走不到——它先找到 `lerp_from`——只能直接调用）、`theme.rs`
+的 `visual_density`，以及 `component_themes.rs` 的十一处：三个可空包装
+（icon theme / button style / menu style）、五处 `VisualDensity` 分支、三处
+`BorderSide` 分支。全部取四分之一处，因为 lerp 在中点对称。
+
+**筛子把注释也当成了代码。** `component_themes.rs` 那两处"发现"在
+`/// Color.lerp(null, y, t)` 这样的散文里——调换它什么都不会红。这不是发现，
+是噪音。筛子现在跳过 `//` 开头的行。
+
+**筛子被杀就会把文件留在变异态。** `implicit.rs` 那一轮撞上两分钟超时，
+`finally` 没机会跑；下一轮于是把**坏掉的文件**当作基线，反过来把"改回正确"
+报成了绿色发现。差点当真。现在 `swap_lerps.py` 与 `idle_guards.py` 在动手前
+都先把原文写到 sidecar，启动时若发现 sidecar 就先复原——`finally` 挡不住
+被杀，落盘的副本可以。
+
+八个文件、134 处 lerp，`tools/swap_lerps.py` 现在全部读零。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5475 通过；五个输出目录的 rustflutter_engine
+与 rust_lib 全部重建。
