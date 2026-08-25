@@ -665,7 +665,23 @@ pub enum TextAlign {
 }
 
 impl TextAlign {
+    /// Every value, in the order the codes run.
+    pub const ALL: [TextAlign; 6] = [
+        TextAlign::Left,
+        TextAlign::Right,
+        TextAlign::Center,
+        TextAlign::Start,
+        TextAlign::End,
+        TextAlign::Justify,
+    ];
+
     /// The code the FFI expects, in the order the variants are declared.
+    ///
+    /// **Nothing on this side reads it.** `MakeParagraphStyle` in
+    /// `rustflutter_ffi.cc` is the other half -- a `switch` whose default arm
+    /// is `left`, which is why `Left` is the number this side chooses rather
+    /// than one that side names. A row that took its neighbour's number would
+    /// centre a paragraph that asked to be right-aligned.
     pub(crate) fn code(self) -> c_int {
         match self {
             TextAlign::Left => 0,
@@ -1321,7 +1337,22 @@ pub enum RenderError {
 }
 
 impl RenderError {
-    fn from_code(code: c_int) -> RenderError {
+    /// Every error the engine has a code for, in code order. `Unknown` is not
+    /// here: it is what happens to a code this list does not cover.
+    pub const ALL: [RenderError; 6] = [
+        RenderError::InvalidPath,
+        RenderError::RasterizationFailed,
+        RenderError::SnapshotFailed,
+        RenderError::WriteFailed,
+        RenderError::EncodeFailed,
+        RenderError::NoPresenter,
+    ];
+
+    /// The numbers `rf_layer_tree_write_png` in `rustflutter_ffi.cc` returns.
+    /// The other half of a hand-written ABI, like [`TextAlign::code`], and
+    /// read in the other direction: this side turns the engine's number back
+    /// into something to say.
+    pub(crate) fn from_code(code: c_int) -> RenderError {
         match code {
             -1 => RenderError::InvalidPath,
             -2 => RenderError::RasterizationFailed,
@@ -1405,3 +1436,105 @@ mod tests {
         assert_eq!(TextStyle::default().align, TextAlign::Start);
     }
 }
+
+// -- The two tables that cross the FFI in this file ---------------------------
+
+#[cfg(test)]
+mod ffi_table_tests {
+    //! `variant_sweep` found four arms here nothing was looking at, and both
+    //! groups are the shape that has dominated every sweep so far: a table
+    //! this side writes or reads and the engine owns the other half of.
+
+    use super::{RenderError, TextAlign};
+
+    #[test]
+    fn every_alignment_sends_the_number_make_paragraph_style_reads() {
+        // `MakeParagraphStyle` in src/flutter/rust/ffi/rustflutter_ffi.cc:
+        // 1 right, 2 center, 3 start, 4 end, 5 justify, anything else left.
+        assert_eq!(TextAlign::ALL.map(TextAlign::code), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn and_no_two_alignments_share_a_number() {
+        // Two alignments with one code is a paragraph the engine cannot lay
+        // out the way it was asked.
+        for (index, one) in TextAlign::ALL.iter().enumerate() {
+            for other in TextAlign::ALL.iter().skip(index + 1) {
+                assert_ne!(one.code(), other.code(), "{one:?} and {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_render_error_comes_back_from_the_number_the_engine_returns() {
+        // `rf_layer_tree_write_png` in the same file: -1 no path, -2 rasterize,
+        // -3 snapshot, -4 open or write the file, -5 encode. -100 is the
+        // window presenter's, from the host rather than the drawing side.
+        let mapped = [
+            (-1, RenderError::InvalidPath),
+            (-2, RenderError::RasterizationFailed),
+            (-3, RenderError::SnapshotFailed),
+            (-4, RenderError::WriteFailed),
+            (-5, RenderError::EncodeFailed),
+            (-100, RenderError::NoPresenter),
+        ];
+        // Every error with a code of its own is in the list below, so a
+        // seventh added to the enum without a code here fails to compile
+        // rather than quietly becoming `Unknown`.
+        assert_eq!(
+            RenderError::ALL.to_vec(),
+            mapped.iter().map(|(_, error)| *error).collect::<Vec<_>>()
+        );
+        for (code, expected) in [
+            (-1, RenderError::InvalidPath),
+            (-2, RenderError::RasterizationFailed),
+            (-3, RenderError::SnapshotFailed),
+            (-4, RenderError::WriteFailed),
+            (-5, RenderError::EncodeFailed),
+            (-100, RenderError::NoPresenter),
+        ] {
+            assert_eq!(RenderError::from_code(code), expected, "code {code}");
+        }
+    }
+
+    #[test]
+    fn a_code_nobody_has_claimed_is_carried_rather_than_guessed() {
+        // The fallback arm, and it keeps the number: an engine that grows a
+        // new failure should say so in the message rather than be reported as
+        // whichever known error happens to be nearest.
+        assert_eq!(RenderError::from_code(-7), RenderError::Unknown(-7));
+        assert_eq!(RenderError::from_code(42), RenderError::Unknown(42));
+        assert!(RenderError::from_code(-7).to_string().contains("-7"));
+    }
+
+    #[test]
+    fn no_two_render_errors_say_the_same_thing() {
+        // The arms `variant_sweep` reached: "could not open the output file"
+        // and "PNG encoding failed" could take each other's text, and a
+        // headless render that ran out of disk would have reported an
+        // encoding fault. Two messages that read alike are one diagnosis.
+        for (index, one) in RenderError::ALL.iter().enumerate() {
+            for other in RenderError::ALL.iter().skip(index + 1) {
+                assert_ne!(
+                    one.to_string(),
+                    other.to_string(),
+                    "{one:?} and {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn and_each_says_which_step_failed() {
+        // Not a spelling check: each message has to name the step, because it
+        // is the only thing a caller gets. The words below are the ones that
+        // tell the three failures of `rf_layer_tree_write_png` apart.
+        assert!(RenderError::RasterizationFailed.to_string().contains("rasterize"));
+        assert!(RenderError::SnapshotFailed.to_string().contains("snapshot"));
+        assert!(RenderError::WriteFailed.to_string().contains("open"));
+        assert!(RenderError::EncodeFailed.to_string().contains("encoding"));
+        assert!(RenderError::InvalidPath.to_string().contains("path"));
+        assert!(RenderError::NoPresenter.to_string().contains("presenter"));
+    }
+}
+
