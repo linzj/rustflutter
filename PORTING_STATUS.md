@@ -15543,3 +15543,49 @@ widget 的 → 主题的 → 配色的（上游的顺序）。
 
 `depth_examined.json` 上 `InputDecoration` 那条补了这一段。
 5269 测试通过，完整 GN 门过。
+
+## 第 180 轮 — 一个只在 debug 门里存在的符号
+
+### 先处理一件事故
+
+下游 `rustflutter_album` 链接失败：
+
+```
+lld-link: error: undefined symbol: rf_paint_set_color_filter
+lld-link: error: undefined symbol: rf_paint_clear_color_filter
+```
+
+这两个符号是早先一轮我为 `RenderImage` 的染色加进 `rustflutter_ffi.cc` 的
+（blend mode 合成的是图像与背景，染色要的是 `ColorFilter.mode(colour, srcIn)`，
+两者不是一回事）。源码里有，`out/host_release/obj/flutter/rust/rustflutter_engine.lib`
+里没有——**那份静态库停在 8 月 17 日**。
+
+原因是我的门只构建 `out/host_debug_unopt`。改了 FFI 而只在 debug 侧验证，
+release 侧的静态库就悄悄落后，而落后的表现是在**别人的**构建里报未定义符号。
+
+重建后两个符号都在（`External`）。**门从这一轮起加上
+`ninja -C out/host_release rustflutter_engine`**，FFI 一改两边同时构建。
+
+### 然后是这一轮的移植
+
+先试了"注释里写下的数字是可以对着上游数的断言"这个思路
+（第 179 轮的 `three` 对 `six` 就是这么找到的）。查了三条：
+`SliverAppBar` 的三条断言、`CupertinoDatePicker` 的十二条——都对。
+命中率约三分之一，方法记下但不做成工具。
+
+**`AppBar` 的标题居中规则整个不在。** 上游：
+
+```dart
+return centerTitle ?? appbarTheme.centerTitle ?? platformCenter();
+```
+
+`ResolvedAppBar::of` 只有中间那一级，然后 `unwrap_or(false)`——
+**于是在 iOS 和 macOS 上标题从不居中**，而那是那个平台导航栏的全部惯例。
+
+`platformCenter()` 里还有一句容易漏掉的：Apple 平台**只在动作少于两个时**居中。
+居中的标题两侧都有按钮，就得短到能塞进中间；长出第二个动作的栏宁可放弃居中，
+也不截断标题。
+
+三条变异全红：Apple 分支恒真、macOS 掉队、动作数量泄漏到别的平台。
+
+5272 测试通过，完整 GN 门过，release 引擎库重建。

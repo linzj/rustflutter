@@ -4952,16 +4952,60 @@ impl ResolvedAppBar {
     pub const TITLE_SPACING: f32 = 16.0;
 
     pub fn of(context: &mut BuildContext) -> ResolvedAppBar {
+        ResolvedAppBar::of_with_center_title(context, None, 0)
+    }
+
+    /// [`ResolvedAppBar::of`] with the bar's own `centerTitle` and how many
+    /// actions it has.
+    ///
+    /// Upstream's `_getEffectiveCenterTitle` is three levels deep and the
+    /// bottom one is a **platform rule**:
+    ///
+    /// ```dart
+    /// return centerTitle ?? appbarTheme.centerTitle ?? platformCenter();
+    /// ```
+    ///
+    /// This resolver had the middle level and then `unwrap_or(false)`, so on
+    /// iOS and macOS the title was never centred -- which is that platform's
+    /// whole convention for a navigation bar.
+    pub fn of_with_center_title(
+        context: &mut BuildContext,
+        center_title: Option<bool>,
+        action_count: usize,
+    ) -> ResolvedAppBar {
         let data = AppBarTheme::of(context);
         let scheme = ThemeData::of(context).color_scheme;
+        let platform = ThemeData::of(context).platform;
         ResolvedAppBar {
             background: data.background_color.unwrap_or(scheme.surface),
             foreground: data.foreground_color.unwrap_or(scheme.on_surface),
             toolbar_height: data
                 .toolbar_height
                 .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
-            center_title: data.center_title.unwrap_or(false),
+            center_title: center_title
+                .or(data.center_title)
+                .unwrap_or_else(|| ResolvedAppBar::platform_center(platform, action_count)),
             title_spacing: data.title_spacing.unwrap_or(ResolvedAppBar::TITLE_SPACING),
+        }
+    }
+
+    /// Upstream's `platformCenter()`, which is the last word when neither the
+    /// bar nor the theme has one.
+    ///
+    /// The Apple platforms centre a title **only while there are fewer than
+    /// two actions**, and that clause is the interesting part: a centred title
+    /// with buttons on both sides has to be short enough to fit between them,
+    /// so a bar that has grown a second action gives up on centring rather
+    /// than truncating the title. Everywhere else the title starts at the
+    /// leading edge and the question does not arise.
+    pub fn platform_center(platform: crate::editable_text::TargetPlatform, action_count: usize) -> bool {
+        use crate::editable_text::TargetPlatform;
+        match platform {
+            TargetPlatform::IOS | TargetPlatform::MacOS => action_count < 2,
+            TargetPlatform::Android
+            | TargetPlatform::Fuchsia
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows => false,
         }
     }
 }
@@ -12287,6 +12331,65 @@ mod selected_tile_colour_tests {
         assert_eq!(text, on_surface);
         assert_ne!(text, MINE);
         assert_ne!(text, primary, "and not the accent either");
+    }
+}
+
+// -- Whether an app bar centres its title -------------------------------------
+
+#[cfg(test)]
+mod app_bar_centring_tests {
+    //! Upstream's `_getEffectiveCenterTitle` is
+    //! `centerTitle ?? appbarTheme.centerTitle ?? platformCenter()`, and this
+    //! resolver had the middle level and then `unwrap_or(false)`. So on iOS
+    //! and macOS the title was never centred, which is that platform's whole
+    //! convention for a navigation bar.
+
+    use super::ResolvedAppBar;
+    use crate::editable_text::TargetPlatform;
+
+    #[test]
+    fn the_apple_platforms_centre_a_title_and_the_others_do_not() {
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(
+                ResolvedAppBar::platform_center(platform, 0),
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !ResolvedAppBar::platform_center(platform, 0),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn but_a_second_action_makes_an_apple_bar_give_up_on_centring() {
+        // The clause that is easy to miss: `actions == null || actions.length < 2`.
+        // A centred title with buttons on both sides has to fit between them,
+        // so a bar that has grown a second action stops centring rather than
+        // truncating the title.
+        assert!(ResolvedAppBar::platform_center(TargetPlatform::IOS, 1));
+        assert!(!ResolvedAppBar::platform_center(TargetPlatform::IOS, 2));
+        assert!(!ResolvedAppBar::platform_center(TargetPlatform::MacOS, 3));
+    }
+
+    #[test]
+    fn and_the_count_changes_nothing_anywhere_else() {
+        // The clause belongs to the Apple branch. Android reading it would
+        // make a bar's alignment depend on how many buttons it happens to
+        // carry, which is not a rule anybody stated.
+        for actions in [0, 1, 2, 5] {
+            assert!(!ResolvedAppBar::platform_center(
+                TargetPlatform::Android,
+                actions
+            ));
+        }
     }
 }
 
