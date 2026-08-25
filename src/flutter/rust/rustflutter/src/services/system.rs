@@ -281,6 +281,25 @@ impl SystemSound {
 }
 
 /// How hard the device should buzz.
+///
+/// Upstream spells these as eight static methods rather than one method and an
+/// enum, but they are eight ways of saying the same thing to the same platform
+/// call, so they are one enum here. The three groups are not interchangeable:
+///
+/// * an **impact** ([`Light`](HapticFeedbackType::Light),
+///   [`Medium`](HapticFeedbackType::Medium),
+///   [`Heavy`](HapticFeedbackType::Heavy)) says a thing hit another thing, and
+///   the weight says how big it was;
+/// * a **selection** ([`Selection`](HapticFeedbackType::Selection)) says a
+///   value moved one notch through discrete steps -- a picker wheel, a slider
+///   with stops -- and is deliberately the faintest of them;
+/// * a **notification** ([`Success`](HapticFeedbackType::Success),
+///   [`Warning`](HapticFeedbackType::Warning),
+///   [`Error`](HapticFeedbackType::Error)) says something *finished*, and
+///   carries the outcome. On iOS these three are a different generator
+///   (`UINotificationFeedbackGenerator`) from the impacts, so an application
+///   that reaches for `Heavy` to report a failure is not asking for the same
+///   thing quietly -- it is asking for a different thing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HapticFeedbackType {
     Standard,
@@ -288,6 +307,9 @@ pub enum HapticFeedbackType {
     Medium,
     Heavy,
     Selection,
+    Success,
+    Warning,
+    Error,
 }
 
 /// Vibration. Silent on a platform with no vibrator, which is most desktops.
@@ -304,6 +326,13 @@ impl HapticFeedback {
             HapticFeedbackType::Medium => Value::from("HapticFeedbackType.mediumImpact"),
             HapticFeedbackType::Heavy => Value::from("HapticFeedbackType.heavyImpact"),
             HapticFeedbackType::Selection => Value::from("HapticFeedbackType.selectionClick"),
+            HapticFeedbackType::Success => {
+                Value::from("HapticFeedbackType.successNotification")
+            }
+            HapticFeedbackType::Warning => {
+                Value::from("HapticFeedbackType.warningNotification")
+            }
+            HapticFeedbackType::Error => Value::from("HapticFeedbackType.errorNotification"),
         };
         PLATFORM.invoke("HapticFeedback.vibrate", argument);
     }
@@ -837,6 +866,18 @@ mod tests {
             (
                 HapticFeedbackType::Selection,
                 Value::from("HapticFeedbackType.selectionClick"),
+            ),
+            (
+                HapticFeedbackType::Success,
+                Value::from("HapticFeedbackType.successNotification"),
+            ),
+            (
+                HapticFeedbackType::Warning,
+                Value::from("HapticFeedbackType.warningNotification"),
+            ),
+            (
+                HapticFeedbackType::Error,
+                Value::from("HapticFeedbackType.errorNotification"),
             ),
         ];
         for (kind, argument) in expected {

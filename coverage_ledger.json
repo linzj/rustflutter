@@ -1046,10 +1046,6 @@
       "rust": "controls::Banner",
       "note": "既有"
     },
-    "Feedback": {
-      "rust": "services::system 的触感/声效门面",
-      "note": "HapticFeedback/SystemSound 已在"
-    },
     "FlutterLogo": {
       "rust": "FlutterLogoDecoration",
       "note": "decoration.rs 已入账"

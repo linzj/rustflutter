@@ -15697,3 +15697,44 @@ debug 门跑的单元测试链接的是 **stub** 引擎，从不链接真的那�
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，stale_engines 全部不落后。
 门：5291 + 333 通过；五个输出目录的 rustflutter_engine 全部重建通过。
+
+### 第 184 次：ledger 把 `Feedback` 交给了它用的材料，而不是它本身
+
+`Feedback`（widgets/feedback.dart）在 coverage ledger 里是一条 `equivalent`
+行，写着交给 "services::system 的震动/音效函数"。这条读反了：声音和震动是
+**材料**，`Feedback` 是唯一说出"哪个手势在哪个平台上值得哪一种"的地方，而这个
+判断本移植里根本不存在。绕过它的应用会在没有振子的桌面上震动，又在想要同时
+听到点击声的 iPhone 上保持安静。
+
+新建 `feedback.rs`，四个入口照上游写：
+
+- `for_tap` / `for_long_press` **先无条件发语义事件**，再问平台。这个顺序比
+  看上去重要：Linux/macOS/Windows 上平台那半边什么都不做，所以把语义事件折进
+  switch 的第一条分支，在 Android 上看不出来，在 Windows 上则是读屏用户唯一
+  能得到的东西全没了。
+- Android/Fuchsia 的长按是**无参数的 `vibrate`**，不是 heavy impact；heavy
+  impact 是 iOS 的。两条分支很容易写反，因为各自单独看都说得通。
+- iOS 对一个手势做**两件事**（点击声 + heavy impact），而对轻点什么都不做。
+  所以 iOS 不是"安静的那个平台"。
+- `wrap_for_tap` / `wrap_for_long_press`：反馈在回调**之前**发出；回调为
+  `None` 时返回 `None`，而不是一个只发声不做事的闭包。
+
+顺带补上 `HapticFeedback` 的三种 notification 触感（success / warning /
+error）——此前完全无法表达，而 iOS 上这三种走的是另一个发生器
+（`UINotificationFeedbackGenerator`），不是"同一件事换个力度"。
+`TargetPlatform::ALL` 新增，因为按平台分派的代码几乎都有一条"其余什么都不做"
+的分支，抽查两个平台等于四个平台从没被看过。
+
+`depth.py` 对 `HapticFeedback` 会永远报 2/8：上游八个静态方法在线上是**同一个**
+方法名，只有参数不同，所以这里是一个函数加一个八值枚举。这是拼写差异，不是
+缺口，已记入 `depth_examined.json`。ledger 里那条 `equivalent` 行删除——
+`Feedback` 现在是真符号。
+
+变异：五条（语义事件折进响的分支、Android 长按改成 heavy impact、iOS 丢掉
+点击声、Fuchsia 归到桌面一侧、包装器改成先回调后反馈）全部转红，各由不同的
+测试打中。`no_callback_is_no_wrapper` 一开始被 `vacuous.py` 抓住——整条测试
+只声称"什么都没发生"，补上"有回调就有包装器"那一半后回到 8。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5298 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。

@@ -49,6 +49,21 @@ pub enum TargetPlatform {
 }
 
 impl TargetPlatform {
+    /// Every value, so a test can walk the table rather than sample it.
+    ///
+    /// Which matters more here than for most enums: nearly everything that
+    /// switches on a platform has a "the rest do nothing" arm, and sampling
+    /// two of the six leaves four platforms whose behaviour nothing has ever
+    /// looked at.
+    pub const ALL: [TargetPlatform; 6] = [
+        TargetPlatform::Android,
+        TargetPlatform::Fuchsia,
+        TargetPlatform::IOS,
+        TargetPlatform::Linux,
+        TargetPlatform::MacOS,
+        TargetPlatform::Windows,
+    ];
+
     /// The three upstream calls "mobile platforms" when deciding whether to
     /// briefly reveal a password character. A desktop keyboard gives real
     /// feedback -- the reader can feel the keys -- so the reveal is a phone

@@ -84,6 +84,7 @@ pub mod engine;
 pub mod expansion;
 pub mod expansion_panel;
 pub mod fab_location;
+pub mod feedback;
 pub mod flexible_space_bar;
 pub mod focus;
 pub mod focus_node;
@@ -359,6 +360,7 @@ pub use semantics::{
     SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsOwner,
     SemanticsProperties, SemanticsSortKey, SemanticsTag, StringAttribute,
 };
+pub use feedback::Feedback;
 pub use semantics_event::{Assertiveness, SemanticsEvent, SemanticsService};
 pub use services::restoration::{
     BucketData, Restorable, RestorableBool, RestorableBoolN, RestorableChangeNotifier,
