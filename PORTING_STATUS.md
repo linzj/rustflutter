@@ -16054,3 +16054,38 @@ trailing 是它的镜像。于是两者永远不会对同一个越界位置都�
 尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5336 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。
+
+### 第 193 次：一条以机制命名的测试，实际是被另一个机制满足的
+
+`undo_history.rs` 的四条候选。最有意思的一条是：文件里**已经有**一条测试叫
+`the_modifier_runs_before_the_duplicate_check_and_that_is_what_makes_it_work`，
+而筛子说删掉那道检查它照样绿。
+
+查下来它断言的 `stack().len() == 1` 是被 **`UndoStack::push` 自己的去重**
+满足的（第 118 行：等于当前值就不入栈），和它命名的机制毫无关系。
+
+`push` 里那道检查唯一的可观察后果，是**它会不会去碰节流窗口**：拿着没有变化
+的值走到 `Throttled::call`，会把时钟开起来，于是**下一次真实编辑的窗口是从
+一次光标移动开始计时的，而不是从它自己**。撤销步骤会被切在错误的地方，而栈
+看上去完全正常。新测试就断言这个。
+
+`push` 里的两次 `last_value` 比较不是彼此的快捷路径：第一次问"**控件报上来的**
+变了没有"，第二次问"**栈要存的**变了没有"。写第一条测试时我选错了场景——
+`last_value` 存的是**修改后**的值，所以报回 "hello" 永远不等于 "hello!"，那次
+比较根本没被走到。改成报回被记录的那个值（文本框的控制器被撤销栈赋值时正是
+如此），才真正打中。
+
+`update` 那条也补上了：栈底的撤销**会把已经在那里的值再交回来**——它是停住
+而不是掉下去——所以读者按住快捷键时，第一次之后每一次都会走到这里。上游的
+`onTriggered` 会去设置字段的值，拿字段已有的内容再设一次不是无害的：它会移动
+光标，还会和读者接下来做的事打架。
+
+`current_value` 的空表检查保留并注明：上游 `_list[_index]` 越界会抛，而
+`Vec::get` 返回 `None`，所以这里那道检查确实不决定任何事——是语言差异，不是
+我们的冗余。
+
+`undo_history.rs` 的候选数从 4 降到 1，剩下那条已注明。
+
+尺子：coverage 2102/0，constants 158/0/0，unwired 48/0，unvaried 0，
+unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
+全部不落后。门：5339 + 333 通过；五个输出目录的 rustflutter_engine 全部重建。

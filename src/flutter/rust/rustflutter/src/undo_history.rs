@@ -92,6 +92,14 @@ impl<T: Clone + PartialEq> UndoStack<T> {
         self.index
     }
 
+    /// Upstream's `currentValue`, which is `_list.isEmpty ? null : _list[_index]`.
+    ///
+    /// The emptiness check is upstream's shape and decides nothing here: Dart
+    /// throws on an out-of-range index and `Vec::get` answers `None`, so the
+    /// line below already covers the empty list -- and covers a negative
+    /// `index`, which casts to a very large `usize` and misses. A screen for
+    /// guards the suite cannot make matter finds this one; it is a language
+    /// difference rather than a redundancy of ours, so it stays.
     pub fn current_value(&self) -> Option<&T> {
         if self.list.is_empty() {
             return None;
@@ -365,6 +373,24 @@ impl<T: Clone + PartialEq> UndoHistoryState<T> {
     /// makes a text field's use of it work: two values differing only in
     /// selection both modify down to the same text, and the second is then
     /// correctly recognised as nothing new.
+    ///
+    /// # Two duplicate checks, and they ask different questions
+    ///
+    /// `_lastValue` is compared twice, before the modifier and after, and
+    /// neither is the other's fast path. The first asks whether **what the
+    /// widget reported** has changed; the second asks whether **what the stack
+    /// would store** has. A modifier that drops the selection makes them
+    /// differ, which is the whole reason the second exists.
+    ///
+    /// # What either one being missing costs
+    ///
+    /// Not a duplicate entry -- [`UndoStack::push`] refuses one of those on
+    /// its own, and for a while that hid this. What it costs is the
+    /// **throttle window**: reaching [`Throttled::call`] with nothing new
+    /// starts the clock, and the next real edit is then committed early,
+    /// measured from a keystroke that changed nothing rather than from
+    /// itself. Undo steps get cut in the wrong places, and the stack still
+    /// looks right.
     pub fn push(
         &mut self,
         now_micros: i64,
@@ -793,6 +819,12 @@ mod tests {
         // Two values differing only in selection modify down to the same text,
         // and the second is then correctly seen as nothing new -- which only
         // happens because the check is after the modifier, not before.
+        //
+        // **The length assertion below does not establish that.** `UndoStack::
+        // push` refuses a value equal to the current one on its own, so the
+        // stack stays at one entry either way, and a screen for guards the
+        // suite cannot make matter found the check deletable with this test
+        // green. What the check actually decides is in the test below.
         let strip_after_hash =
             |value: &String| value.split('#').next().unwrap_or_default().to_string();
         let mut state = state();
@@ -810,6 +842,107 @@ mod tests {
             state.stack().len(),
             1,
             "moving the cursor is not an undo step"
+        );
+    }
+
+    #[test]
+    fn a_keystroke_that_changes_nothing_does_not_start_the_clock_on_the_next_one() {
+        // What the duplicate check in `push` really decides, and the only
+        // thing it decides: whether `Throttled::call` is reached. Reaching it
+        // with nothing new opens a window, and the next real edit is then
+        // committed when *that* window closes -- measured from a cursor move
+        // rather than from the edit. The stack still looks right; the undo
+        // steps are cut in the wrong places.
+        let strip_after_hash =
+            |value: &String| value.split('#').next().unwrap_or_default().to_string();
+        let mut state = state();
+        state.push(0, "hello#1".to_string(), None, Some(&strip_after_hash));
+        state.advance(WINDOW);
+        assert!(!state.throttle.is_active(), "the first edit's window closed");
+
+        // A cursor move: different value, same text once modified.
+        state.push(WINDOW, "hello#7".to_string(), None, Some(&strip_after_hash));
+        assert!(
+            !state.throttle.is_active(),
+            "nothing new, so no clock started"
+        );
+
+        // A real edit, a moment later.
+        state.push(WINDOW + 100 * MS, "world#1".to_string(), None, Some(&strip_after_hash));
+        assert!(state.throttle.is_active());
+
+        // The window belongs to the edit, so at the cursor move's deadline it
+        // has not closed yet.
+        state.advance(WINDOW * 2);
+        assert_eq!(
+            state.stack().len(),
+            1,
+            "the edit's window runs from the edit, not from the cursor move"
+        );
+        state.advance(WINDOW * 2 + 100 * MS);
+        assert_eq!(state.stack().len(), 2, "and then it closes");
+    }
+
+    #[test]
+    fn and_the_check_before_the_modifier_asks_a_different_question() {
+        // The two comparisons against `last_value` are not one another's fast
+        // path. The first is about what the widget reported, the second about
+        // what the stack would store, and a modifier that is not the identity
+        // on an unchanged value tells them apart: without the first check this
+        // records something the reader never typed.
+        let shout = |value: &String| format!("{value}!");
+        let mut state = state();
+        state.push(0, "hello".to_string(), None, Some(&shout));
+        state.advance(WINDOW);
+        assert_eq!(
+            state.stack().current_value().map(String::as_str),
+            Some("hello!")
+        );
+
+        // The widget now reports the value that was recorded -- which is
+        // what a text field does the moment its controller is set from the
+        // stack. Nothing changed, so nothing happens, even though the modifier
+        // would have produced "hello!!", which the stack has never seen.
+        //
+        // The value has to be the *modified* one: `last_value` holds what was
+        // stored, not what was reported, so a test that pushed "hello" again
+        // would sail past this check without touching it.
+        state.push(WINDOW, "hello!".to_string(), None, Some(&shout));
+        assert!(!state.throttle.is_active(), "no clock started");
+        state.advance(WINDOW * 3);
+        assert_eq!(state.stack().len(), 1, "and no second entry");
+        assert_eq!(
+            state.stack().current_value().map(String::as_str),
+            Some("hello!"),
+            "certainly not `hello!!`, which nobody typed"
+        );
+    }
+
+    #[test]
+    fn an_undo_that_lands_where_it_already_is_does_not_tell_the_widget_again() {
+        // `_update`'s own `value == _lastValue` check. Undo at the bottom of
+        // the stack hands back the value that is already there -- it stops
+        // rather than falling off -- so a reader holding the shortcut down
+        // reaches this on every press after the first.
+        //
+        // Upstream's `onTriggered` sets the field's value. Firing it again
+        // with what the field already has is not harmless: it moves the caret
+        // and it can fight whatever the reader does next.
+        let mut state = state();
+        let after = commit(&mut state, 0, "a");
+        let after = commit(&mut state, after, "b");
+        state.advance(after);
+
+        state.undo();
+        assert_eq!(state.triggered(), ["a"], "back to the first value");
+
+        // At the bottom now. Two more presses.
+        state.undo();
+        state.undo();
+        assert_eq!(
+            state.triggered(),
+            ["a"],
+            "and it stays there without saying so again"
         );
     }
 
