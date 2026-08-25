@@ -16265,3 +16265,39 @@ rust_lib 全部重建。
 unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，stale_engines
 全部不落后。门：5356 + 333 通过；五个输出目录的 rustflutter_engine 与
 rust_lib 全部重建。
+
+### 第 199 次：错两次的那个断言，和它指出的一整类东西
+
+第 198 次我写了 `assert_eq!(ALL.len(), 2)`——同义反复，第 165 次已经犯过一次。
+去数了数这个形状还有多少：三处。
+
+要紧的不是"同义反复"本身。`ALL.len() == N` 是对**数组字面量**的绊线，能抓住
+有人加减了一项；它抓不住的是**换掉一项**——个数不变。三处里
+`TimeOfDayFormat` 那条的注释还写着"每一个都有着落，没有模式被漏掉"，而断言
+根本没说这件事。改成"这六个都在 `ALL` 里 + `ALL` 里只有六个"：两句配在一起
+才等于"恰好是这六个"，所以那个计数留在原地、并且现在真的在做事。没有写成
+`assert_eq!(ALL, [...])`，因为那还会主张一个顺序，而这里没有东西依赖顺序。
+变异验证：把 `ALL` 里的一项换成另一项的重复（个数不变），旧写法全绿，新写法
+转红。
+
+另外两处（`AutofillHints` 67 个、`SystemChannels` 24 个）逐项写出来就是把表
+抄第二遍。它们要的是**另一种检查**，于是有了第十把尺子。
+
+`tools/wire_strings.py`：本移植声明的**协议字符串**是否还存在于上游。
+
+    pub const TEXT_INPUT: &str = "flutter/textinput";
+    pub const ONE_TIME_CODE: &str = "oneTimeCode";
+
+这些值全都在另一端按名字匹配——嵌入层、操作系统的自动填充服务、引擎的通道表。
+错一个是**静默失败**：不报错，通道上就是没人听，自动填充的提示就是不出现。
+数字错了通常在屏幕上看得出来，这些不会。
+
+122 个协议字符串，0 个对不上。盲区写明了：它只检查字符串仍存在于上游，**不
+检查它是不是这个常量该有的那一个**——手抄错成另一个上游字符串会通过。把每个
+常量和它上游的声明配起来需要一份逐行的账本，而没人维护的账本比一句写明的盲区
+更糟。验证：临时把 `flutter/textinput` 改成 `flutter/textinputt`，尺子转红。
+
+尺子：coverage 2102/0，constants 158/0/0，**wire_strings 122/0**，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
+stale_engines 全部不落后。门：5356 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

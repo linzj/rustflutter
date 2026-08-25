@@ -1340,8 +1340,28 @@ mod time_format_tests {
         ] {
             assert_eq!(padded.hour_format(), HourFormat::HH, "{padded:?}");
         }
-        // And every one of the six lands somewhere: no pattern is unaccounted.
-        assert_eq!(TimeOfDayFormat::ALL.len(), 6);
+        // And those are all of them.
+        //
+        // `ALL.len() == 6` on its own is a claim about an array literal: it
+        // says there are six, not that these are the six, so a pattern
+        // swapped for another would not move it. The two lines together do
+        // say it -- every pattern named above is in `ALL`, and `ALL` holds no
+        // more than the six named -- which is why the count is here rather
+        // than being the whole of it.
+        //
+        // Not written as `assert_eq!(ALL, [...])`, because that would also
+        // claim an order, and nothing here depends on one.
+        for format in [
+            TimeOfDayFormat::h_colon_mm_space_a,
+            TimeOfDayFormat::a_space_h_colon_mm,
+            TimeOfDayFormat::H_colon_mm,
+            TimeOfDayFormat::HH_colon_mm,
+            TimeOfDayFormat::HH_dot_mm,
+            TimeOfDayFormat::FrenchCanadian,
+        ] {
+            assert!(TimeOfDayFormat::ALL.contains(&format), "{format:?}");
+        }
+        assert_eq!(TimeOfDayFormat::ALL.len(), 6, "and no seventh");
     }
 
     #[test]

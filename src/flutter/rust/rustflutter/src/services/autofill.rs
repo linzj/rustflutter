@@ -371,6 +371,9 @@ mod tests {
         // The table is generated from upstream because a typo here is a field
         // the operating system silently declines to fill -- nothing errors,
         // the offer just never appears.
+        // A tripwire on the array, not a check that the sixty-seven are the
+        // right sixty-seven: that is `tools/wire_strings.py`, which looks each
+        // value up in upstream's own sources.
         assert_eq!(AutofillHints::ALL.len(), 67);
         assert_eq!(AutofillHints::EMAIL, "email");
         assert_eq!(AutofillHints::PASSWORD, "password");

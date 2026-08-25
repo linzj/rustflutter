@@ -314,6 +314,9 @@ mod tests {
     fn every_channel_name_is_the_one_the_engine_answers_on() {
         // Generated from upstream because a typo here is a channel nobody is
         // listening on: nothing errors, the call simply never arrives.
+        // A tripwire on the array. Whether each name is one the engine
+        // actually answers on is `tools/wire_strings.py`'s question, and it
+        // asks upstream rather than asking this file.
         assert_eq!(SystemChannels::ALL.len(), 24);
         assert_eq!(SystemChannels::TEXT_INPUT, "flutter/textinput");
         assert_eq!(SystemChannels::PLATFORM, "flutter/platform");
