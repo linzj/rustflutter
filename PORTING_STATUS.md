@@ -16492,3 +16492,36 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5388 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 205 次：三个处理器对同两个问题给出三种答案
+
+同一个类里较重的三个手势。它们看起来该是同一段代码带参数，其实不是：
+
+|                    | 选中 | 弹工具条 | 抬起 `_shouldShowSelectionToolbar` |
+|--------------------|------|----------|------------------------------------|
+| `onDoubleTapDown`  | 看字段能否选 | **问标志** | 不动 |
+| `onForcePressStart`| 看字段能否选 | **不问，直接弹** | **置 true** |
+| `onForcePressEnd`  | **总是选** | **问标志** | 不动 |
+
+两处顺序是有意的：
+
+- **标志在"字段能否选"这个检查之前置位。**赋值在上游那个提前返回的上面，所以
+  一个不允许选择的字段仍然把它留成 true。用力按下按定义就是深思熟虑的手势
+  ——没人会不小心用力按——而那正是这个标志往下带的主张，与这个字段拿它做什么
+  无关。
+- **start 不问就弹，其余处理器都先问。**它刚刚自己把标志置了位；再问就是把
+  自己的问题问回给自己。
+
+而 end 问标志这件事，平时答案总是"是"（start 刚置过）。**中间唯一会把这道门
+关上的是拖动**：读者把用力按变成了滚动，标志被清掉，于是松手时不会在他正滚向
+的文字上弹出工具条。
+
+还有一处：end **没有** `selectionEnabled` 检查，只有"force press 已启用"的
+断言——上游根本只在 delegate 要了那个识别器时才走到这个处理器。
+
+变异：六条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5393 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

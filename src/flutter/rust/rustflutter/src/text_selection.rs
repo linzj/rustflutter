@@ -900,6 +900,91 @@ pub fn shift_tap_down(
     }
 }
 
+/// What one of the heavier gestures does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PressAction {
+    /// Whether the selection moves. `false` is upstream returning early
+    /// because the field does not select.
+    pub selects: bool,
+    /// Whether the toolbar goes up.
+    pub shows_toolbar: bool,
+    /// Whether `_shouldShowSelectionToolbar` is **set to true** by this
+    /// gesture, which only [`force_press_start`] does.
+    pub raises_the_flag: bool,
+}
+
+/// Upstream's `onDoubleTapDown`.
+///
+/// ```dart
+/// if (delegate.selectionEnabled) {
+///   renderEditable.selectWord(cause: SelectionChangedCause.doubleTap);
+///   if (shouldShowSelectionToolbar) {
+///     editableText.showToolbar();
+///   }
+/// }
+/// ```
+///
+/// Both halves are inside the `selectionEnabled` check, and the toolbar is
+/// gated. It does **not** set the flag -- a double tap goes with whatever the
+/// tap before it decided, which is how a double tap with a mouse selects the
+/// word without raising a menu nobody asked for.
+pub fn double_tap_down(selection_enabled: bool, should_show_selection_toolbar: bool) -> PressAction {
+    PressAction {
+        selects: selection_enabled,
+        shows_toolbar: selection_enabled && should_show_selection_toolbar,
+        raises_the_flag: false,
+    }
+}
+
+/// Upstream's `onForcePressStart`.
+///
+/// ```dart
+/// assert(delegate.forcePressEnabled);
+/// _shouldShowSelectionToolbar = true;
+/// if (!delegate.selectionEnabled) {
+///   return;
+/// }
+/// renderEditable.selectWordsInRange(from: details.globalPosition, ...);
+/// editableText.showToolbar();
+/// ```
+///
+/// Two orderings, both deliberate.
+///
+/// * **The flag is raised before the check**, so a field that does not select
+///   still leaves it true. A force press is by definition a considered
+///   gesture -- nobody presses hard by accident -- and that is the claim the
+///   flag carries forward, whatever this particular field does with it.
+/// * **The toolbar is shown unconditionally here**, where every other handler
+///   asks the flag first. It has just set the flag itself; asking would be
+///   asking its own question back.
+pub fn force_press_start(selection_enabled: bool) -> PressAction {
+    PressAction {
+        selects: selection_enabled,
+        shows_toolbar: selection_enabled,
+        raises_the_flag: true,
+    }
+}
+
+/// Upstream's `onForcePressEnd`, which selects again and **asks the flag**.
+///
+/// The asymmetry with [`force_press_start`] is the whole of this function.
+/// Start set the flag true, so ordinarily the gate is open and the end shows
+/// the toolbar too. The one thing that closes it in between is a drag: a
+/// force press the reader turned into a scroll clears the flag, and then
+/// letting go does not pop a toolbar over the text they were scrolling to.
+///
+/// Note also that this selects **whether or not** the field selects -- there
+/// is no `selectionEnabled` check here, only the assert that force press was
+/// enabled. Upstream reaches this handler at all only through a recogniser
+/// the delegate asked for.
+pub fn force_press_end(should_show_selection_toolbar: bool) -> PressAction {
+    PressAction {
+        selects: true,
+        shows_toolbar: should_show_selection_toolbar,
+        raises_the_flag: false,
+    }
+}
+
 /// What a plain tap does when the finger (or the pointer) lifts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TapUp {
@@ -2899,6 +2984,94 @@ mod selection_gesture_rule_tests {
                 "{platform:?}: no shift"
             );
         }
+    }
+
+    // -- The heavier gestures, and where they disagree with each other ------
+
+    #[test]
+    fn a_double_tap_selects_a_word_but_only_raises_a_menu_if_one_was_wanted() {
+        // The gate is what keeps a double-click with a mouse from popping a
+        // menu nobody asked for: a double tap goes with whatever the tap
+        // before it decided, and it does not set the flag itself.
+        assert_eq!(
+            double_tap_down(true, true),
+            PressAction {
+                selects: true,
+                shows_toolbar: true,
+                raises_the_flag: false
+            }
+        );
+        assert_eq!(
+            double_tap_down(true, false),
+            PressAction {
+                selects: true,
+                shows_toolbar: false,
+                raises_the_flag: false
+            },
+            "selects, and says nothing"
+        );
+    }
+
+    #[test]
+    fn and_a_field_that_does_not_select_does_neither() {
+        // Both halves are inside upstream's `selectionEnabled` check.
+        for should_show in [false, true] {
+            assert_eq!(
+                double_tap_down(false, should_show),
+                PressAction {
+                    selects: false,
+                    shows_toolbar: false,
+                    raises_the_flag: false
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_force_press_raises_the_flag_before_it_asks_whether_the_field_selects() {
+        // The assignment is above upstream's early return, so a field that
+        // does not select still leaves it true. Nobody presses hard by
+        // accident, and that is the claim the flag carries forward whatever
+        // this particular field does with it.
+        assert!(force_press_start(false).raises_the_flag);
+        assert!(!force_press_start(false).selects, "and does nothing else");
+        assert!(force_press_start(true).raises_the_flag);
+    }
+
+    #[test]
+    fn the_start_shows_the_toolbar_without_asking_and_the_end_asks() {
+        // The asymmetry between the two. The start has just set the flag
+        // itself; asking would be asking its own question back.
+        assert!(force_press_start(true).shows_toolbar);
+
+        // The end asks, and ordinarily the answer is yes because the start
+        // set it. The one thing that closes the gate in between is a drag: a
+        // force press the reader turned into a scroll clears the flag, and
+        // then letting go does not pop a toolbar over the text they were
+        // scrolling to.
+        assert!(force_press_end(true).shows_toolbar);
+        assert!(
+            !force_press_end(false).shows_toolbar,
+            "the press became a scroll"
+        );
+        assert!(
+            force_press_end(false).selects,
+            "but the selection still lands where the finger left"
+        );
+    }
+
+    #[test]
+    fn neither_end_of_a_force_press_is_the_double_tap_rule() {
+        // Three handlers, three different answers to the same two questions,
+        // which is why they are three functions rather than one with flags.
+        let disabled_gate = (
+            double_tap_down(true, false),
+            force_press_start(true),
+            force_press_end(false),
+        );
+        assert!(!disabled_gate.0.shows_toolbar, "double tap obeys the gate");
+        assert!(disabled_gate.1.shows_toolbar, "the start ignores it");
+        assert!(!disabled_gate.2.shows_toolbar, "the end obeys it");
     }
 
     // -- And the other half: what the phones decide on the way up -----------
