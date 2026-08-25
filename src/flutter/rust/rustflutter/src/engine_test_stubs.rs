@@ -366,6 +366,7 @@ pub unsafe extern "C" fn rf_canvas_draw_line(
     record(Drawn::Line {
         from: (x0, y0),
         to: (x1, y1),
+        argb: unsafe { paint_argb(paint) },
     });
 }
 
@@ -715,6 +716,13 @@ pub enum Drawn {
     Line {
         from: (f32, f32),
         to: (f32, f32),
+        /// Every other shape here recorded its colour and this one did not,
+        /// which made **a stroke drawn in the wrong colour invisible to every
+        /// test**. It is not a hypothetical: `cupertino.rs`'s clear mark draws
+        /// its cross in the field's background colour on purpose, knocking it
+        /// out of the filled circle, and using the item colour instead would
+        /// have left a mark with no cross in it and nothing to say so.
+        argb: u32,
     },
     /// Both rectangles, because the pair is the point: the source is in image
     /// pixels and the destination in logical ones, and a test that sees only
@@ -819,9 +827,10 @@ impl Drawn {
                 radius,
                 argb,
             },
-            Drawn::Line { from, to } => Drawn::Line {
+            Drawn::Line { from, to, argb } => Drawn::Line {
                 from: (from.0 + dx, from.1 + dy),
                 to: (to.0 + dx, to.1 + dy),
+                argb,
             },
             Drawn::ImageRect {
                 source,

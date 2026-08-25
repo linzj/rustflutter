@@ -6409,3 +6409,199 @@ mod form_row_tests {
         assert!(padding.left > padding.right * 3.0);
     }
 }
+
+// -- What the Cupertino glyphs actually put on the canvas ---------------------
+
+#[cfg(test)]
+mod glyph_paint_tests {
+    use super::{BackChevron, ClearGlyph, SEARCH_FIELD_ITEM_SIZE, SearchGlyph};
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
+
+    const INK: Color = Color(0xff112233);
+    const FIELD: Color = Color(0xff445566);
+
+    /// Lays the glyph out at its natural size and paints it at `at`, returning
+    /// what the canvas was told.
+    ///
+    /// These three are drawn rather than set in an icon font -- the module docs
+    /// say why -- so what is on the screen *is* these calls, and until the
+    /// recorder was pointed at them nothing checked any of it. `unpainted.py`
+    /// had cupertino.rs at eight draw calls with no reader, the largest entry
+    /// on that list.
+    fn painted(mut glyph: impl RenderBox, at: Offset) -> Vec<Drawn> {
+        glyph.layout(BoxConstraints::loose(100.0, 100.0));
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            glyph.paint(&mut context, at);
+        }
+        drawn()
+    }
+
+    fn lines(calls: &[Drawn]) -> Vec<((f32, f32), (f32, f32), u32)> {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Line { from, to, argb } => Some((*from, *to, *argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn chevron(mirror: bool) -> BackChevron {
+        BackChevron {
+            color: INK,
+            mirror,
+            laid_out: Size::ZERO,
+        }
+    }
+
+    #[test]
+    fn the_back_chevron_is_two_strokes_meeting_at_a_point() {
+        // Upstream's is the `CupertinoIcons.back` glyph; with no icon font here
+        // it is two strokes, and the shape is the whole of what it says. They
+        // have to *meet*: two strokes that stop short of one another read as a
+        // broken arrow rather than a chevron.
+        let calls = painted(chevron(false), Offset::ZERO);
+        let strokes = lines(&calls);
+        assert_eq!(strokes.len(), 2, "{calls:?}");
+        assert_eq!(strokes[0].1, strokes[1].0, "the second starts where the first ended");
+        assert_eq!(strokes[0].1, (3.0, 10.0), "and the point is at the tip");
+        assert_eq!(strokes[0].2, INK.0, "in the colour it was given");
+        assert_eq!(strokes[1].2, INK.0);
+    }
+
+    #[test]
+    fn and_it_points_at_the_start_of_the_line_whichever_way_that_is() {
+        // Upstream's `_BackChevron` mirrors itself under `TextDirection.rtl`.
+        // A mirror is a reflection about the middle of the box, not a
+        // different pair of numbers that happens to lean the other way -- and
+        // the difference shows as a chevron sitting off-centre.
+        let box_width = 12.0;
+        let middle = box_width / 2.0;
+
+        let ltr = lines(&painted(chevron(false), Offset::ZERO));
+        let rtl = lines(&painted(chevron(true), Offset::ZERO));
+        assert_eq!(ltr.len(), 2);
+        assert_eq!(rtl.len(), 2);
+
+        for (index, (left, right)) in ltr.iter().zip(rtl.iter()).enumerate() {
+            assert_eq!(
+                left.0.0 + right.0.0,
+                box_width,
+                "stroke {index} start reflects about {middle}"
+            );
+            assert_eq!(left.1.0 + right.1.0, box_width, "stroke {index} end");
+            assert_eq!(left.0.1, right.0.1, "and nothing moves vertically");
+            assert_eq!(left.1.1, right.1.1);
+        }
+
+        // Which way each points, said plainly: the tip is nearer the start of
+        // the line than the two ends are.
+        assert!(ltr[0].1.0 < ltr[0].0.0, "ltr points left");
+        assert!(rtl[0].1.0 > rtl[0].0.0, "rtl points right");
+    }
+
+    #[test]
+    fn the_search_glass_has_its_handle_on_the_far_diagonal() {
+        // The glass sits high and to the start; the handle runs out from its
+        // lower-right, along the diagonal through the centre. Anything else is
+        // a circle with a stick beside it.
+        let calls = painted(
+            SearchGlyph {
+                color: INK,
+                laid_out: Size::ZERO,
+            },
+            Offset::ZERO,
+        );
+        let circles: Vec<_> = calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Circle { cx, cy, radius, argb } => Some((*cx, *cy, *radius, *argb)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(circles.len(), 1, "{calls:?}");
+        let (cx, cy, radius, _) = circles[0];
+
+        let strokes = lines(&calls);
+        assert_eq!(strokes.len(), 1);
+        let ((from_x, from_y), (to_x, to_y), argb) = strokes[0];
+        assert_eq!(argb, INK.0, "the handle is the same ink as the glass");
+
+        // On the diagonal: equal steps in x and y, both away from the centre.
+        assert_eq!(from_x - cx, from_y - cy, "the near end is on the diagonal");
+        assert_eq!(to_x - from_x, to_y - from_y, "and so is the run");
+        assert!(to_x > from_x && from_x > cx, "it runs outward");
+        // And it starts at about the rim rather than inside the glass.
+        let reach = ((from_x - cx).powi(2) + (from_y - cy).powi(2)).sqrt();
+        assert!(
+            (reach - radius).abs() < 0.2,
+            "the handle meets the rim: {reach} against {radius}"
+        );
+    }
+
+    #[test]
+    fn the_clear_marks_cross_is_knocked_out_in_the_background_colour() {
+        // The claim the recorder could not see until this tick: `Drawn::Line`
+        // carried no colour, so a cross drawn in the item colour instead of
+        // the field's would have been a filled circle with an invisible mark
+        // in it and nothing to say so.
+        let calls = painted(
+            ClearGlyph {
+                color: INK,
+                background: FIELD,
+                laid_out: Size::ZERO,
+            },
+            Offset::ZERO,
+        );
+        let circles: Vec<_> = calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Circle { cx, cy, radius, argb } => Some((*cx, *cy, *radius, *argb)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(circles.len(), 1, "{calls:?}");
+        let (cx, cy, radius, fill) = circles[0];
+        assert_eq!(fill, INK.0, "the disc is the item colour");
+        assert_eq!(radius, SEARCH_FIELD_ITEM_SIZE / 2.0);
+        assert_eq!((cx, cy), (SEARCH_FIELD_ITEM_SIZE / 2.0, SEARCH_FIELD_ITEM_SIZE / 2.0));
+
+        let strokes = lines(&calls);
+        assert_eq!(strokes.len(), 2, "two arms");
+        for (index, (from, to, argb)) in strokes.iter().enumerate() {
+            assert_eq!(*argb, FIELD.0, "arm {index} is knocked out, not drawn on");
+            assert_ne!(*argb, INK.0);
+            // Centred on the disc: the two ends are opposite about the middle.
+            assert_eq!((from.0 + to.0) / 2.0, cx, "arm {index} is centred in x");
+            assert_eq!((from.1 + to.1) / 2.0, cy, "arm {index} is centred in y");
+        }
+        // And the two arms cross rather than lying on top of one another.
+        assert_ne!(strokes[0].0, strokes[1].0);
+        assert_eq!(
+            strokes[0].0.1 - strokes[0].1.1,
+            -(strokes[1].0.1 - strokes[1].1.1),
+            "one leans each way"
+        );
+    }
+
+    #[test]
+    fn every_glyph_paints_where_it_was_put() {
+        // A glyph that ignores its offset draws in the corner of the screen,
+        // which is the kind of thing that survives every test that only counts
+        // the calls.
+        let at = Offset::new(40.0, 25.0);
+        let here = lines(&painted(chevron(false), Offset::ZERO));
+        let there = lines(&painted(chevron(false), at));
+        assert_eq!(here.len(), there.len());
+        for (index, (near, far)) in here.iter().zip(there.iter()).enumerate() {
+            assert_eq!(far.0.0 - near.0.0, at.dx, "stroke {index}");
+            assert_eq!(far.0.1 - near.0.1, at.dy);
+        }
+    }
+}
+

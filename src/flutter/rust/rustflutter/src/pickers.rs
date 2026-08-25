@@ -6339,7 +6339,7 @@ mod dial_geometry_tests {
         assert_eq!(marks[2].2, DIAL_DOT_RADIUS, "the handle");
 
         match calls.last().expect("the hand") {
-            Drawn::Line { from, to } => {
+            Drawn::Line { from, to, .. } => {
                 assert_eq!(*from, centre, "starts at the centre dot");
                 assert_eq!(*to, handle, "ends at the handle");
             }
@@ -6353,7 +6353,7 @@ mod dial_geometry_tests {
         let quarter = painted(dial(std::f32::consts::FRAC_PI_2, 1.0), 300.0);
         let half = painted(dial(std::f32::consts::PI, 1.0), 300.0);
         let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
-            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
             other => panic!("{other:?}"),
         };
         let ends = |calls: &[Drawn]| match calls.last().expect("the hand") {
@@ -6377,7 +6377,7 @@ mod dial_geometry_tests {
         let outer = painted(dial(0.0, 1.0), 300.0);
         let inner = painted(dial(0.0, 0.2), 300.0);
         let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
-            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
             other => panic!("{other:?}"),
         };
         assert!(
@@ -6412,7 +6412,7 @@ mod dial_geometry_tests {
         // of 150 and labels at 150 - DIAL_PADDING.
         let calls = painted(dial(0.0, 1.0), 300.0);
         let reach = match calls.last().expect("the hand") {
-            Drawn::Line { from, to } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
             other => panic!("{other:?}"),
         };
         assert!(
