@@ -15250,3 +15250,38 @@ self.restore_to_count(count);
 `engine_test_stubs.rs` 里的空 stub：29 → **20**。
 
 5250 测试通过，完整 GN 门过。
+
+## 第 172 轮 — 追着透明度问了三处，三处都不在画布上
+
+`rf_paint_set_opacity` 是空的。给 `StubPaint` 加上它，
+并挂到 `Drawn::SaveLayer` 上（不是挂到每个形状上——这个 crate 里带
+opacity 的 paint 只有交给 `save_layer` 的那些）。
+
+然后去找它的读者，连着找错了三次，而每一次的答案都是同一件事。
+
+- **`RenderOpacity`** 用 `push_opacity`——合成器**图层**，画布状态栈毫不知情。
+- **`RenderClipRect`** 的裁剪也是图层（第 169 轮已记）。
+- **`RenderListWheelViewport`** 的调暗同样是 `push_opacity`。
+
+所以这个 crate 里**所有分数不透明度走的都是图层**，
+只有段落 fade 和 `RenderFlow` 用画布 `save_layer`。这不是缺陷，是分工：
+画布组是这条线程每帧要填的一块和子树等大的缓冲，
+图层是合成器的事、还能在没动的帧上复用。两者在 `paint_children` 里只差一个调用。
+
+### 顺带把第 169 轮自己写的一条弱测试改掉
+
+`an_opacity_group_is_closed_too` 断言的是深度回零——而**一个根本不开层的
+paint 同样满足它**，`RenderOpacity` 正是如此。它当时通过，
+不是因为对，是因为问得太松。
+
+改名为 `a_faded_subtree_is_an_opacity_layer_and_not_a_canvas_group`，
+断言真正成立且有失败模式的事：没有画布组、孩子照画。
+外加"全透明时一笔不画"（图层填了再扔掉是最糟的一种）。
+list wheel 那边同样加了一条。
+
+三条变异全红：去掉"opacity ≥ 1 时单遍"、去掉"opacity ≤ 0 时不画"、
+把 list wheel 的图层改成画布组。
+
+`engine_test_stubs.rs` 里的空 stub：20 → 19。
+
+5253 测试通过，完整 GN 门过。

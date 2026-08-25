@@ -25221,14 +25221,47 @@ mod canvas_balance_tests {
     }
 
     #[test]
-    fn an_opacity_group_is_closed_too() {
-        // `save_layer` with a paint on it, which is how a subtree is faded as
-        // one thing rather than each of its parts separately.
+    fn a_faded_subtree_is_an_opacity_layer_and_not_a_canvas_group() {
+        // This test used to be called `an_opacity_group_is_closed_too` and
+        // asserted a depth of zero, which a paint that opens no layer at all
+        // satisfies -- and that is what `RenderOpacity` does. It pushes an
+        // **opacity layer**; the compositor fades the subtree and the canvas
+        // state stack never hears about it, exactly as `RenderClipRect` does
+        // with its clip.
+        //
+        // Found by trying to read the layer's opacity back off the canvas and
+        // getting nothing. The saving is real -- a canvas `save_layer` costs a
+        // buffer the size of the subtree every frame, where a layer is the
+        // compositor's to schedule -- and the two are one word apart in the
+        // paint.
         let calls = painted(
             Box::new(RenderOpacity::new(0.5, RenderParagraph::new("x"))),
             BoxConstraints::tight(120.0, 16.0),
         );
         assert_eq!(save_depth(&calls), Some(0), "{calls:?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, Drawn::SaveLayer { .. })),
+            "no canvas group: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { .. })),
+            "and the child is drawn: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn and_a_fully_transparent_one_draws_nothing_at_all() {
+        // The other end. At zero the child is not painted either -- a layer
+        // faded to nothing would be a buffer filled in and then thrown away.
+        let calls = painted(
+            Box::new(RenderOpacity::new(0.0, RenderParagraph::new("x"))),
+            BoxConstraints::tight(120.0, 16.0),
+        );
+        assert!(calls.is_empty(), "{calls:?}");
     }
 
     #[test]

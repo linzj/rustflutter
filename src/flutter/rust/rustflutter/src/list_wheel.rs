@@ -2302,6 +2302,51 @@ mod viewport_tests {
     }
 
     #[test]
+    fn a_dimmed_wheel_fades_with_a_layer_rather_than_a_canvas_group() {
+        // The alpha tests above are arithmetic; this is what reaches the
+        // engine, and the answer is: nothing on the canvas. The dimming is
+        // `push_opacity` -- a compositor layer -- so no `save_layer` is
+        // opened.
+        //
+        // Which is the point. A canvas group costs a buffer the size of the
+        // wheel on every frame and is this thread's to fill; a layer is the
+        // compositor's to schedule, and can be cached across frames where the
+        // wheel has not moved. The two are one call apart in `paint_children`.
+        let mut w = wheel(5);
+        w.over_and_under_center_opacity = 0.5;
+        let w = laid_out(w);
+        crate::engine_test_stubs::reset_drawn();
+        paint_once(&w);
+        assert!(
+            !crate::engine_test_stubs::drawn()
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::SaveLayer { .. }
+                )),
+            "the fade is a layer, not a canvas group"
+        );
+    }
+
+    #[test]
+    fn and_an_undimmed_one_opens_none() {
+        // The single-pass path. A group at full opacity would cost a buffer
+        // the size of the wheel on every frame and change nothing.
+        let w = laid_out(wheel(5));
+        crate::engine_test_stubs::reset_drawn();
+        paint_once(&w);
+        assert!(
+            !crate::engine_test_stubs::drawn()
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::SaveLayer { .. }
+                )),
+            "no group at full opacity"
+        );
+    }
+
+    #[test]
     fn the_dimming_is_flat_and_not_a_ramp() {
         // Every off-centre child gets the same value -- one shared layer. A
         // per-child ramp would need one layer per row and would show the seams

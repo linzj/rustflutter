@@ -88,6 +88,7 @@ pub unsafe extern "C" fn rf_paint_new() -> *mut RfPaint {
     Box::into_raw(Box::new(StubPaint {
         argb: 0,
         stroke: None,
+        opacity: 1.0,
     })) as *mut RfPaint
 }
 
@@ -108,6 +109,13 @@ struct StubPaint {
     /// eight, passed every test that checked its colour and its box. Which is
     /// most of them.
     stroke: Option<f32>,
+    /// Upstream's `Paint.opacity`, which the engine clamps to 0..1.
+    ///
+    /// It is not folded into the colour: `DlPaint::setOpacity` is its own
+    /// property, and the only paints in this crate that carry one are the
+    /// ones handed to `save_layer`. Which is why it is recorded on the layer
+    /// rather than on every shape -- see [`Drawn::SaveLayer`].
+    opacity: f32,
 }
 
 /// # Safety
@@ -168,7 +176,13 @@ pub unsafe extern "C" fn rf_paint_set_stroke(paint: *mut RfPaint, stroke: c_int,
 pub unsafe extern "C" fn rf_paint_set_anti_alias(paint: *mut RfPaint, anti_alias: c_int) {}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32) {}
+pub unsafe extern "C" fn rf_paint_set_opacity(paint: *mut RfPaint, opacity: f32) {
+    if let Some(paint) = unsafe { (paint as *mut StubPaint).as_mut() } {
+        // The engine clamps, so a test that hands over 1.7 should see what the
+        // engine would have used rather than what it was given.
+        paint.opacity = opacity.clamp(0.0, 1.0);
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_paint_set_blend_mode(paint: *mut RfPaint, blend_mode: c_int) {}
@@ -502,7 +516,12 @@ pub unsafe extern "C" fn rf_canvas_save_layer(
         let corners = unsafe { std::slice::from_raw_parts(bounds_ltrb, 4) };
         Some((corners[0], corners[1], corners[2], corners[3]))
     };
-    record(Drawn::SaveLayer { bounds });
+    let opacity = if paint.is_null() {
+        None
+    } else {
+        unsafe { stub_paint_ref(paint) }.map(|paint| paint.opacity)
+    };
+    record(Drawn::SaveLayer { bounds, opacity });
 }
 
 #[unsafe(no_mangle)]
@@ -792,6 +811,12 @@ pub enum Drawn {
     /// null: the layer is as big as it needs to be.
     SaveLayer {
         bounds: Option<(f32, f32, f32, f32)>,
+        /// The layer's opacity, or `None` where no paint was given.
+        ///
+        /// **This is the whole content of an opacity group**, and it was not
+        /// recorded: a subtree faded to a tenth and one faded to nothing
+        /// produced identical calls, so nothing could tell them apart.
+        opacity: Option<f32>,
     },
     Restore,
     /// The bulk form, which pops down to a depth rather than by one.
@@ -996,10 +1021,11 @@ impl Drawn {
             Drawn::Save => Drawn::Save,
             Drawn::Restore => Drawn::Restore,
             Drawn::RestoreToCount { count } => Drawn::RestoreToCount { count },
-            Drawn::SaveLayer { bounds } => Drawn::SaveLayer {
+            Drawn::SaveLayer { bounds, opacity } => Drawn::SaveLayer {
                 bounds: bounds.map(|(left, top, right, bottom)| {
                     (left + dx, top + dy, right + dx, bottom + dy)
                 }),
+                opacity,
             },
             // A translate is a *delta*, so it does not move with the box.
             Drawn::Translate { dx: x, dy: y } => Drawn::Translate { dx: x, dy: y },
