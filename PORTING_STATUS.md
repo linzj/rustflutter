@@ -14912,3 +14912,42 @@ hollow 的未说明项：2 → 0。
 `unwalked.py`：268 → 264 个从未被点名的变体。
 
 5205 测试通过，完整 GN 门过。
+
+## 第 163 轮 — 在 RTL 语言里，每个刻度都染在错的一侧
+
+`variant_sweep` 扫 `slider_theme.rs`：8 处臂，2 处存活。
+
+### 刻度的 RTL 那一支没有任何人在看
+
+`RoundSliderTickMarkShape::paint` 判断"这个刻度在拇指的哪一侧"：
+
+```rust
+let inactive = match direction {
+    TextDirection::Ltr => offset > 0.0,
+    TextDirection::Rtl => offset < 0.0,
+};
+```
+
+RTL 那一行可以改成和 LTR 一样，**整个测试套件全绿**。
+后果是在 RTL 语言里，每一个滑块上的每一个刻度都染在错的一侧——
+而任何 LTR 的测试都看不见这件事。
+
+补的测试写成**上面那条的镜像**而不是又两个数字：同一个几何，
+两个方向必须给出不同的答案，否则其中一个没被读。
+另加边界那条：offset 恰为零时两边都判为 active（两个比较都是严格的），
+这是拇指压着的那个刻度在越过时不会闪的原因。
+
+### `Round` 刻度的尺寸可以变成零
+
+`SliderTickMarkShape::preferred_size` 的 `Round` 臂可以答成 `Size::ZERO`
+（也就是 `Empty` 的答案），全绿。而 `paint` 里有 `if radius > 0.0` 的守卫——
+所以那等于**一个刻度都不画**。一个悄悄不再显示分度的滑块，
+看起来就像一个本来就没有分度的滑块。
+
+顺带钉住上游的默认：半径没给时是轨道高度的四分之一（这就是那个字段是
+`Option<f32>` 而不是一个带默认值的数的原因——轨道更高的滑块自动得到更大的分度）。
+
+重跑 sweep：8 处臂全部被抓住，**0 存活**。
+`unwalked.py`：264 → 262。
+
+5211 测试通过，完整 GN 门过。

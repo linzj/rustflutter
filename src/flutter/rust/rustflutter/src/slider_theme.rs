@@ -2851,3 +2851,144 @@ mod rectangular_track_paint_tests {
         assert_eq!(calls.len(), 2, "the two ordinary segments only: {calls:?}");
     }
 }
+
+// -- Where a tick mark is, and which side of the thumb that is ----------------
+
+#[cfg(test)]
+mod tick_mark_paint_tests {
+    //! `variant_sweep` found two arms here that nothing was looking at: the
+    //! RTL branch of "which side of the thumb is past it", and the whole of
+    //! `Round`'s preferred size, which could answer `Size::ZERO` -- the empty
+    //! shape's answer -- with the suite green. A zero size draws no tick marks
+    //! at all, because `paint` guards on `radius > 0.0`.
+
+    use super::{
+        RoundSliderTickMarkShape, SliderThemeData, SliderTickMarkShape,
+    };
+    use crate::direction::TextDirection;
+    use crate::engine::{Color, LayerTree};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{Offset, PaintContext, Size};
+
+    const ACTIVE: Color = Color(0xff00aa00);
+    const INACTIVE: Color = Color(0xff888888);
+    const TRACK_HEIGHT: f32 = 8.0;
+
+    fn theme() -> SliderThemeData {
+        let mut theme = SliderThemeData::new().with_track_height(TRACK_HEIGHT);
+        theme.active_tick_mark_color = Some(ACTIVE);
+        theme.inactive_tick_mark_color = Some(INACTIVE);
+        theme
+    }
+
+    /// The colour a mark at `center_x` is given with the thumb at `thumb_x`.
+    fn mark_colour(center_x: f32, thumb_x: f32, direction: TextDirection) -> Option<u32> {
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            RoundSliderTickMarkShape::new().paint(
+                context.canvas(),
+                Offset::new(center_x, 10.0),
+                &theme(),
+                Offset::new(thumb_x, 10.0),
+                direction,
+                1.0,
+            );
+        }
+        drawn().iter().find_map(|call| match call {
+            Drawn::Circle { argb, .. } => Some(*argb),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_mark_the_thumb_has_passed_is_active_and_one_ahead_of_it_is_not() {
+        // Left to right: the thumb sweeps rightwards, so everything left of it
+        // has been chosen and everything right of it has not.
+        assert_eq!(mark_colour(20.0, 50.0, TextDirection::Ltr), Some(ACTIVE.0));
+        assert_eq!(
+            mark_colour(80.0, 50.0, TextDirection::Ltr),
+            Some(INACTIVE.0)
+        );
+    }
+
+    #[test]
+    fn and_right_to_left_it_is_the_other_way_round() {
+        // The arm nothing was looking at. Written as the mirror of the test
+        // above rather than as two more numbers: in an RTL locale the thumb
+        // sweeps leftwards, so a mark to its *right* is the one it has passed.
+        // Get this wrong and every tick on every slider in every RTL language
+        // is coloured on the wrong side, which no LTR test can see.
+        for (mark, thumb) in [(20.0, 50.0), (80.0, 50.0), (10.0, 90.0)] {
+            let ltr = mark_colour(mark, thumb, TextDirection::Ltr);
+            let rtl = mark_colour(mark, thumb, TextDirection::Rtl);
+            assert!(ltr.is_some() && rtl.is_some());
+            assert_ne!(
+                ltr, rtl,
+                "mark at {mark} with the thumb at {thumb}: the two directions \
+                 have to disagree, or one of them is not being read"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mark_under_the_thumb_is_active_in_both_directions() {
+        // The boundary, and the one place the two agree: the comparison is
+        // strict on both sides, so an offset of exactly zero falls to the
+        // active branch either way. That is what stops the mark the thumb is
+        // sitting on from flickering as it crosses.
+        assert_eq!(mark_colour(50.0, 50.0, TextDirection::Ltr), Some(ACTIVE.0));
+        assert_eq!(mark_colour(50.0, 50.0, TextDirection::Rtl), Some(ACTIVE.0));
+    }
+
+    #[test]
+    fn a_round_tick_mark_has_a_size_and_the_empty_one_has_none() {
+        // The other surviving arm. `Round` answering `Size::ZERO` -- the empty
+        // shape's answer -- makes `paint` draw nothing, because it guards on a
+        // positive radius. A slider that quietly stopped showing its
+        // divisions would look like a slider that had none.
+        let theme = theme();
+        let round = SliderTickMarkShape::Round(RoundSliderTickMarkShape::new());
+        let size = round.preferred_size(&theme);
+        assert!(size.width > 0.0, "{size:?}");
+        assert_eq!(
+            SliderTickMarkShape::Empty.preferred_size(&theme),
+            Size::ZERO
+        );
+        assert_ne!(size, Size::ZERO);
+    }
+
+    #[test]
+    fn an_unset_radius_is_a_quarter_of_the_track_height() {
+        // Upstream's default, and the reason the field is nullable rather than
+        // a number: a slider with a taller track gets bigger divisions without
+        // anybody restating them.
+        let theme = theme();
+        let default = RoundSliderTickMarkShape::new().preferred_size(&theme);
+        assert_eq!(default, Size::from_radius(TRACK_HEIGHT / 4.0));
+
+        let asked = RoundSliderTickMarkShape::with_radius(5.0).preferred_size(&theme);
+        assert_eq!(asked, Size::from_radius(5.0));
+        assert_ne!(asked, default, "and a radius given is a radius used");
+    }
+
+    #[test]
+    fn the_empty_shape_draws_nothing_whatever_it_is_asked() {
+        let mut layers = LayerTree::new(200, 200);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            SliderTickMarkShape::Empty.paint(
+                context.canvas(),
+                Offset::new(20.0, 10.0),
+                &theme(),
+                Offset::new(50.0, 10.0),
+                TextDirection::Ltr,
+                1.0,
+            );
+        }
+        assert!(drawn().is_empty());
+    }
+}
+
