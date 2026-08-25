@@ -5015,3 +5015,169 @@ mod image_repeat_tests {
         );
     }
 }
+
+// -- What a DecorationImage puts on the canvas --------------------------------
+
+#[cfg(test)]
+mod decoration_image_paint_tests {
+    //! `DecorationImage::paint` was one draw call nothing could see, and it
+    //! could not have been seen even with a recorder: the stub's decoder
+    //! reported every provider's picture as nought by nought, so `apply_box_fit`
+    //! was fitting an empty image into a box and agreed with any answer.
+    //!
+    //! `engine_test_stubs::encoded_image` gives a provider a picture with a
+    //! shape. What is pinned here is the pair `ImageRect` carries: the source
+    //! window in **image pixels** and where it lands in **logical ones**, which
+    //! is the mix-up this recorder was built for in the first place.
+    //!
+    //! Both are `(left, top, right, bottom)`. The first draft of this module
+    //! read them as `(x, y, width, height)` and three of its tests failed with
+    //! the right numbers in the wrong slots, which is the more useful of the
+    //! two ways to find out.
+
+    use super::{BoxFit, DecorationImage};
+    use crate::direction::TextDirection;
+    use crate::engine::{LayerTree, Rect};
+    use crate::engine_test_stubs::{Drawn, drawn, encoded_image, reset_drawn};
+    use crate::image::ImageProvider;
+    use crate::render::{Alignment, AlignmentGeometry, PaintContext, Size};
+    use std::rc::Rc;
+
+    /// A box twice as wide as it is tall.
+    const BOX: Rect = Rect {
+        left: 10.0,
+        top: 20.0,
+        right: 210.0,
+        bottom: 120.0,
+    };
+
+    fn provider(width: u16, height: u16) -> ImageProvider {
+        ImageProvider::Memory {
+            bytes: Rc::new(encoded_image(width, height)),
+            scale: 1.0,
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn painted(decoration: DecorationImage) -> Option<((f32, f32, f32, f32), (f32, f32, f32, f32))> {
+        let mut layers = LayerTree::new(400, 400);
+        reset_drawn();
+        let drew = {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            decoration.paint(context.canvas(), BOX, TextDirection::Ltr)
+        };
+        let calls = drawn();
+        let found = calls.iter().find_map(|call| match call {
+            Drawn::ImageRect {
+                source,
+                destination,
+            } => Some((*source, *destination)),
+            _ => None,
+        });
+        assert_eq!(
+            drew,
+            found.is_some(),
+            "the return value and the canvas disagree: {calls:?}"
+        );
+        found
+    }
+
+    /// `(right - left, bottom - top)`. Both rectangles the recorder carries
+    /// are `(left, top, right, bottom)`.
+    fn size_of_rect(rect: (f32, f32, f32, f32)) -> (f32, f32) {
+        (rect.2 - rect.0, rect.3 - rect.1)
+    }
+
+    #[test]
+    fn the_source_window_is_the_whole_picture_in_its_own_pixels() {
+        // The unit mix-up this recorder exists for. Taken in logical pixels
+        // instead, a picture wider than its box is cropped rather than
+        // scaled -- and every test that only looked at the destination passed.
+        let (source, _) = painted(DecorationImage::new(provider(64, 32))).expect("a draw");
+        assert_eq!(source, (0.0, 0.0, 64.0, 32.0));
+    }
+
+    #[test]
+    fn a_fit_that_was_not_given_is_scale_down_rather_than_fill() {
+        // Upstream documents `null` fit as `scaleDown`, which is the one fit
+        // that leaves a small picture alone. `fill` in its place stretches
+        // every icon to the shape of its box.
+        let (_, destination) = painted(DecorationImage::new(provider(40, 20))).expect("a draw");
+        assert_eq!(
+            size_of_rect(destination),
+            (40.0, 20.0),
+            "a picture smaller than the box is not grown"
+        );
+
+        let filled = painted(DecorationImage::new(provider(40, 20)).with_fit(BoxFit::Fill))
+            .expect("a draw");
+        assert_eq!(
+            size_of_rect(filled.1),
+            (BOX.width(), BOX.height()),
+            "and fill is a different answer, so the default is doing something"
+        );
+    }
+
+    #[test]
+    fn and_scale_down_does_shrink_one_that_is_too_big() {
+        // The other half of `scaleDown`: it is `contain` for anything larger.
+        // A test that only tried a small picture could not tell the two apart.
+        let (_, destination) = painted(DecorationImage::new(provider(400, 400))).expect("a draw");
+        let (width, height) = size_of_rect(destination);
+        assert_eq!(height, BOX.height(), "fitted to the shorter side");
+        assert_eq!(width, BOX.height(), "and kept square");
+        assert!(width < BOX.width());
+    }
+
+    #[test]
+    fn the_picture_is_centred_on_the_alignment_and_not_on_the_box() {
+        // `alignment` picks a point in the box and the fitted picture is hung
+        // around it. The default is the centre; anything else has to move.
+        let centre = painted(DecorationImage::new(provider(400, 400))).expect("a draw");
+        let (left, top, right, bottom) = centre.1;
+        assert_eq!((left + right) / 2.0, (BOX.left + BOX.right) / 2.0);
+        assert_eq!((top + bottom) / 2.0, (BOX.top + BOX.bottom) / 2.0);
+
+        let left_aligned = painted(
+            DecorationImage::new(provider(400, 400))
+                .with_alignment(AlignmentGeometry::Absolute(Alignment::CENTER_LEFT)),
+        )
+        .expect("a draw");
+        assert!(
+            left_aligned.1.0 < left,
+            "aligned to the start, it moves that way: {} against {left}",
+            left_aligned.1.0
+        );
+        assert_eq!(left_aligned.1.1, top, "and not vertically");
+    }
+
+    #[test]
+    fn a_provider_that_cannot_load_draws_nothing_and_says_so() {
+        // The return value is what a decoration painter above uses to decide
+        // whether to draw a placeholder, so "drew nothing" and "returned
+        // false" have to be the same event -- which is what `painted` asserts
+        // on every call in this module.
+        let missing = ImageProvider::File {
+            path: "no/such/picture.png".to_string(),
+            scale: 1.0,
+        };
+        assert!(painted(DecorationImage::new(missing)).is_none());
+    }
+
+    #[test]
+    fn but_a_picture_that_decoded_to_nothing_is_still_a_picture() {
+        // The distinction the test above is not: a payload this stub does not
+        // recognise decodes to an image of nought by nought rather than to a
+        // failure, so the paint happens and draws an empty window. Worth
+        // saying out loud, because a test that asserted "no picture, no draw"
+        // against *this* case would be asserting the wrong thing about the
+        // wrong path.
+        let unrecognised = ImageProvider::Memory {
+            bytes: Rc::new(b"not a picture".to_vec()),
+            scale: 1.0,
+        };
+        let (source, _) = painted(DecorationImage::new(unrecognised)).expect("it still draws");
+        assert_eq!(size_of_rect(source), (0.0, 0.0));
+    }
+}
+

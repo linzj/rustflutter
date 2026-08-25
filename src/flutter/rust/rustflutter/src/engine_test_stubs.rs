@@ -1131,10 +1131,44 @@ pub unsafe extern "C" fn rf_layer_free(layer: *mut RfLayer) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_image_decode(data: *const u8, length: usize) -> *mut RfImage {
-    // Nothing here decodes, so there are no dimensions to report and this is
-    // the one image handle that still measures zero. A test that needs a size
-    // builds one from pixels.
-    stub_image(0, 0)
+    // Nothing here decodes a real format, and for a long time that meant this
+    // was the one image handle that still measured zero -- which made the
+    // **whole `ImageProvider` path** untestable, not just this call. Anything
+    // that resolves a provider and paints what comes back was measuring
+    // against a size of nought, and so agreed with every implementation of
+    // itself. `DecorationImage::paint` is the case that found it.
+    //
+    // So there is one format this understands, and it is plainly a fixture
+    // rather than a pretence at decoding: bytes beginning `RFIM` are followed
+    // by a little-endian `u16` width and height. Build them with
+    // [`encoded_image`]. Everything else still measures zero, so no test that
+    // hands over a real PNG has changed its mind about anything.
+    if data.is_null() || length < ENCODED_HEADER {
+        return stub_image(0, 0);
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, length) };
+    if &bytes[..4] != ENCODED_MAGIC {
+        return stub_image(0, 0);
+    }
+    let width = u16::from_le_bytes([bytes[4], bytes[5]]) as c_int;
+    let height = u16::from_le_bytes([bytes[6], bytes[7]]) as c_int;
+    stub_image(width, height)
+}
+
+/// The marker that says "this is the stub's own fixture, not a picture".
+const ENCODED_MAGIC: &[u8] = b"RFIM";
+/// Four bytes of marker and two `u16`s.
+const ENCODED_HEADER: usize = 8;
+
+/// Bytes that [`rf_image_decode`] will report as an image of this size.
+///
+/// For a test that needs a provider to resolve to a picture with a shape --
+/// which is every test about fitting one into a box.
+pub fn encoded_image(width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = ENCODED_MAGIC.to_vec();
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&height.to_le_bytes());
+    bytes
 }
 
 #[unsafe(no_mangle)]
