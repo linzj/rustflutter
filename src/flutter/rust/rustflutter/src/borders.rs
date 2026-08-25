@@ -5661,6 +5661,113 @@ mod tests {
     }
 
     #[test]
+    fn a_rectangle_meeting_a_half_circled_one_interpolates_both_of_its_numbers() {
+        // `(Rounded, RoundedToCircle)` and its smooth-cornered twin are the
+        // two arms where an interrupted circle-morph is picked up again, and
+        // each lerps a side **and** a radius. The comparative claim in the
+        // sweep above cannot reach the radius here: the mirrored pair takes a
+        // different arm and carries its radius through, so the two directions
+        // agree and the claim says nothing. This one asks outright.
+        let corners = |radius: f32| {
+            BorderRadiusGeometry::Absolute(BorderRadius::circular(radius))
+        };
+        let radius_out = |shape: &ShapeBorder| match shape {
+            ShapeBorder::RoundedToCircle(shape) => shape
+                .border_radius
+                .resolve(crate::direction::TextDirection::Ltr)
+                .top_left
+                .x,
+            other => panic!("{other:?}"),
+        };
+
+        for smooth in [false, true] {
+            let start = if smooth {
+                ShapeBorder::Superellipse(RoundedSuperellipseBorder::new(wide(2.0), corners(4.0)))
+            } else {
+                ShapeBorder::Rounded(RoundedRectangleBorder::new(wide(2.0), corners(4.0)))
+            };
+            let part_way = ShapeBorder::RoundedToCircle(RoundedToCircleBorder::new(
+                wide(6.0),
+                corners(12.0),
+                0.5,
+                0.0,
+                smooth,
+            ));
+            let quarter = ShapeBorder::lerp(Some(start), Some(part_way), 0.25)
+                .unwrap_or_else(|| panic!("smooth={smooth} interpolates"));
+            assert_eq!(
+                quarter.outlined_side().map(|side| side.width),
+                Some(3.0),
+                "smooth={smooth}: a quarter of the way from 2 to 6"
+            );
+            assert_eq!(
+                radius_out(&quarter),
+                6.0,
+                "smooth={smooth}: and from 4 to 12"
+            );
+
+            // And the journey back, which is a **different arm** rather than
+            // the same one read backwards -- `lerp_to`'s, reached by asking
+            // the half-circled shape directly. Its `circularity` runs
+            // `a.circularity * (1.0 - t)` where the other ran
+            // `b.circularity * t`, so the two are written separately and can
+            // disagree separately.
+            let part_way = ShapeBorder::RoundedToCircle(RoundedToCircleBorder::new(
+                wide(2.0),
+                corners(4.0),
+                0.5,
+                0.0,
+                smooth,
+            ));
+            let back_to = if smooth {
+                ShapeBorder::Superellipse(RoundedSuperellipseBorder::new(wide(6.0), corners(12.0)))
+            } else {
+                ShapeBorder::Rounded(RoundedRectangleBorder::new(wide(6.0), corners(12.0)))
+            };
+            let quarter = part_way
+                .lerp_to(Some(&back_to), 0.25)
+                .unwrap_or_else(|| panic!("smooth={smooth} interpolates the other way"));
+            assert_eq!(
+                quarter.outlined_side().map(|side| side.width),
+                Some(3.0),
+                "smooth={smooth}: from 2 to 6 again"
+            );
+            assert_eq!(radius_out(&quarter), 6.0, "smooth={smooth}: and 4 to 12");
+        }
+    }
+
+    #[test]
+    fn a_uniform_border_with_no_left_or_right_has_nothing_to_fade_out() {
+        // The second shortcut, and the mirror of the first: with no left and
+        // no right there is nothing to spend the first half on, so the start
+        // and the end fade in at the ordinary rate and the result is
+        // directional from the outset. A border that took the two-phase path
+        // here would stand still for the first half.
+        let bare = BoxBorder::Uniform(Border::new(
+            wide(4.0),
+            BorderSide::NONE,
+            wide(12.0),
+            BorderSide::NONE,
+        ));
+        let directional = BoxBorder::Directional(BorderDirectional::new(
+            wide(20.0),
+            wide(24.0),
+            wide(28.0),
+            wide(32.0),
+        ));
+        let quarter = BoxBorder::lerp(Some(bare), Some(directional), 0.25);
+        assert!(
+            matches!(quarter, BoxBorder::Directional(_)),
+            "directional from the outset"
+        );
+        let (top, bottom, _, _, start, end) = box_widths(&quarter);
+        assert_eq!(top, 8.0, "a quarter of the way from 4 to 20");
+        assert_eq!(bottom, 17.0, "and from 12 to 32");
+        assert_eq!(start, 6.0, "24 fading in at `t`, not `(t - 0.5) * 2.0`");
+        assert_eq!(end, 7.0, "28 fading in at `t`");
+    }
+
+    #[test]
     fn a_shape_decorations_shadows_lerp_in_pairs_and_the_odd_ones_fade() {
         // Two lists of shadows, walked by index. Where both have one at that
         // index the two are interpolated; where only one does, it fades --
@@ -5722,12 +5829,19 @@ mod tests {
                     .map(|side| side.width)
             })
             .collect();
-        assert_eq!(widths.len(), 2, "both phases answer");
-        assert!(
-            widths[0] < widths[1],
-            "the side grows through both phases: {widths:?}"
+        // The exact numbers, not a range. The intermediate circle's side is
+        // computed at the **overall** `t`, so a swap there moves the answer
+        // without moving it past any obvious landmark: at a quarter of the way
+        // the forward journey gives 3 and the swapped one gives 5, and a test
+        // that only asked for "less than the middle" would take either.
+        //
+        // Forward: the circle is `lerp(2, 10, t)`, and each phase runs from
+        // its own end to it at `2t` or `2t - 1`.
+        assert_eq!(
+            widths,
+            vec![3.0, 9.0],
+            "a quarter of the way through the first phase, and half through the second"
         );
-        assert!(widths[0] < 6.0 && widths[1] > 6.0, "one each side of the middle");
 
         // And the journey the other way round is the mirror.
         let back: Vec<f32> = [0.25, 0.75]
@@ -5738,11 +5852,7 @@ mod tests {
                     .map(|side| side.width)
             })
             .collect();
-        assert!(
-            back[0] > back[1],
-            "starting from the star it shrinks: {back:?}"
-        );
-        assert!(back[0] > 6.0 && back[1] < 6.0);
+        assert_eq!(back, vec![9.0, 3.0], "the same two numbers, reversed");
     }
 
     #[test]

@@ -16923,3 +16923,32 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5458 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 218 次：`borders.rs` 的 107 处 lerp，方向全部有人看着了
+
+**10 → 0。**从 101 起。
+
+最后四类，每一类都说明了"抽样"在哪里不够：
+
+**两个未走到的捷径。** `BoxBorder::lerp` 里"目标没有首尾"和"起点没有左右"是
+一对镜像的捷径，第 216 次只测了前一个。后者是：没有左右可淡出，于是首尾按
+**普通速率**淡入，结果一开始就是方向边框。
+
+**范围断言不够窄。** 星形那两条的中间圆是用**整体 `t`** 算边框的，所以把两端
+调转之后答案会移动，却移不过任何显眼的界标——四分之一处正向给 3、调转给 5，
+而"小于中点"两个都收。改成确切数值（前后两段各取一点：3 和 9，反向 9 和 3）。
+
+**比较式断言在镜像分支上是空的。** `(Rounded, RoundedToCircle)` 一支插值半径，
+而它的镜像走的是**另一条分支**并把半径原样带过去——两个方向答案相同，于是
+"正向小于反向"什么都没说。改成直接断言那个数。
+
+**守卫挡住的分支要专门去走。** `(Superellipse, RoundedToCircle)` 只在
+`smooth_corners` 为真时才走，而表里那个是假的。
+
+`tools/swap_lerps.py` 现在对这个文件读零：**107 处 lerp，任何一处把两端调转，
+都会有测试转红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5460 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
