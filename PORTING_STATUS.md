@@ -16335,3 +16335,47 @@ iOS 开关就是绿的，不是因为应用是绿的。主题的主色属于应�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
 stale_engines 全部不落后。门：5361 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 201 次：同一件事说两遍，是因为两个读屏器读的不是同一处
+
+`RawRadio.build` 里那段按平台分岔的无障碍代码。三件事，中间那件是意外的：
+
+```dart
+switch (defaultTargetPlatform) {
+  case android || fuchsia || linux || windows:
+    accessibilitySelected = null;  semanticsHint = null;
+  case iOS || macOS:
+    accessibilitySelected = value;
+    if (!(value ?? false)) semanticsHint = localizations.radioButtonUnselectedLabel;
+}
+Semantics(inMutuallyExclusiveGroup: true, checked: value,
+          selected: accessibilitySelected, hint: semanticsHint, ...)
+```
+
+- **`checked` 在所有平台都带着答案，`inMutuallyExclusiveGroup` 也在所有平台
+  设上。**这两条加起来才是"单选"。本移植没有后一个 flag——而它正是把 radio 和
+  checkbox 分开的那一个：两者都可勾选、都会播报开关，只有它说出"打开这一个会
+  关掉另一个"，也就是"其中七个同时开着"是可能还是荒谬。少了它，一列单选被读成
+  一列复选。
+- **`selected` 也设，但只在苹果平台。**同一件事在两个属性里说两遍，因为两个
+  读屏器读的不是同一处。到处都设并非中性：TalkBack 会把一个单选播报成
+  selected **且** checked。
+- **提示只给没被选中的那个**，上游自己写了理由：iOS 已经通过 `selected` 播报
+  选中状态，给选中的再加提示等于说两遍。需要被告知的是**没被选中**的那个——
+  那里的沉默和"这个控件什么都不做"分辨不出来。
+
+变异：七条（去掉 group flag、`selected` 到处都设、`selected` 不看选中状态、
+提示到处都给、提示不看选中状态、merge 改成交集、苹果平台漏掉 macOS）全部转红。
+
+线索仍是自陈的债：第 187、200 次各中一次，这次扫了全库 51 条这类注释，绝大多数
+是有理由的架构取舍（没有动画系统、没有模糊层），读完没有过期的。
+
+**未做并记下**：上游 `RawRadioState` 里 `tristate => widget.toggleable` 这个
+等式——单选的"可以再点一下取消"就是 toggleable mixin 的三态——本移植的
+`RadioMenuButton::next_group_value` 有这条规则，而 `controls.rs` 的 `Radio`
+没有组的概念，加在那里是硬凑。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
+stale_engines 全部不落后。门：5366 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

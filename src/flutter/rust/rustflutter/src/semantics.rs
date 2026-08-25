@@ -170,6 +170,15 @@ pub struct SemanticsFlags {
     pub has_enabled_state: bool,
     pub is_enabled: bool,
     pub is_selected: bool,
+    /// Upstream's `isInMutuallyExclusiveGroup`: one of a set where choosing
+    /// this one un-chooses the others.
+    ///
+    /// This is what separates a **radio** from a checkbox for a screen reader.
+    /// Both are checkable and both announce on and off; only this says that
+    /// turning one on turns another off, which is the difference between
+    /// "seven of these are on" being possible and being nonsense. Without it a
+    /// column of radios is read as a column of checkboxes.
+    pub is_in_mutually_exclusive_group: bool,
     /// Whether the keyboard is here. Separate from the framework's own focus
     /// because accessibility focus and keyboard focus are different things
     /// that happen to coincide most of the time.
@@ -198,6 +207,8 @@ impl SemanticsFlags {
             has_enabled_state: self.has_enabled_state || other.has_enabled_state,
             is_enabled: self.is_enabled || other.is_enabled,
             is_selected: self.is_selected || other.is_selected,
+            is_in_mutually_exclusive_group: self.is_in_mutually_exclusive_group
+                || other.is_in_mutually_exclusive_group,
             is_focused: self.is_focused || other.is_focused,
         }
     }
@@ -1521,6 +1532,65 @@ impl SemanticsProperties {
             ..SemanticsProperties::label(label)
         }
         .with_action(SemanticsAction::Tap)
+    }
+
+    /// Upstream's `RawRadio.build`: one of a set of choices, announced the way
+    /// the platform's own screen reader expects.
+    ///
+    /// ```dart
+    /// switch (defaultTargetPlatform) {
+    ///   case android || fuchsia || linux || windows:
+    ///     accessibilitySelected = null;
+    ///     semanticsHint = null;
+    ///   case iOS || macOS:
+    ///     accessibilitySelected = value;
+    ///     if (!(value ?? false)) {
+    ///       semanticsHint = localizations.radioButtonUnselectedLabel;
+    ///     }
+    /// }
+    /// Semantics(inMutuallyExclusiveGroup: true, checked: value,
+    ///           selected: accessibilitySelected, hint: semanticsHint, ...)
+    /// ```
+    ///
+    /// Three things, and the middle one is the surprise.
+    ///
+    /// * **`checked` carries the answer on every platform**, and
+    ///   `inMutuallyExclusiveGroup` is set on every platform. Those two
+    ///   together are what a radio *is*.
+    /// * **`selected` is set as well, but only on the Apple platforms.** The
+    ///   same fact said twice, in two properties, because the two screen
+    ///   readers read different ones. Setting it everywhere is not neutral:
+    ///   TalkBack would announce a radio as selected *and* checked.
+    /// * **The hint appears only when the radio is off**, and upstream says
+    ///   why in its own comment: iOS already announces the selected state
+    ///   through `selected`, so a hint on a selected radio would say it twice.
+    ///   The one that needs telling is the one that is *not* chosen, because
+    ///   silence there is indistinguishable from a control that does nothing.
+    pub fn radio(
+        label: impl Into<String>,
+        selected: bool,
+        platform: crate::editable_text::TargetPlatform,
+        unselected_hint: &str,
+    ) -> SemanticsProperties {
+        use crate::editable_text::TargetPlatform;
+        let apple = matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS);
+        let mut properties = SemanticsProperties {
+            flags: SemanticsFlags {
+                has_checked_state: true,
+                is_checked: selected,
+                is_in_mutually_exclusive_group: true,
+                is_selected: apple && selected,
+                has_enabled_state: true,
+                is_enabled: true,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::label(label)
+        }
+        .with_action(SemanticsAction::Tap);
+        if apple && !selected {
+            properties.hint = unselected_hint.to_string();
+        }
+        properties
     }
 
     /// A place text is typed.
@@ -6890,4 +6960,108 @@ mod focus_block_tests {
         );
         assert_eq!(AccessibilityFocusBlockType::None.strength(), 0);
     }
+
+    // -- A radio, said the way each platform's screen reader expects ---------
+
+    use crate::editable_text::TargetPlatform;
+    use crate::semantics::SemanticsProperties;
+
+    const HINT: &str = "Not selected";
+
+    fn radio(selected: bool, platform: TargetPlatform) -> SemanticsProperties {
+        SemanticsProperties::radio("Medium", selected, platform, HINT)
+    }
+
+    #[test]
+    fn a_radio_is_checkable_and_in_a_group_on_every_platform() {
+        // The two together are what a radio *is*. Checkable alone is a
+        // checkbox, and a column of radios read as checkboxes says that seven
+        // of them being on is a thing that could happen.
+        for platform in TargetPlatform::ALL {
+            for selected in [false, true] {
+                let properties = radio(selected, platform);
+                assert!(properties.flags.has_checked_state, "{platform:?}");
+                assert_eq!(properties.flags.is_checked, selected, "{platform:?}");
+                assert!(
+                    properties.flags.is_in_mutually_exclusive_group,
+                    "{platform:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn but_only_the_apple_platforms_say_it_a_second_time_as_selected() {
+        // The same fact in two properties, because the two screen readers read
+        // different ones. Setting it everywhere is not neutral: TalkBack would
+        // announce a radio as selected *and* checked.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(radio(true, platform).flags.is_selected, "{platform:?}");
+            assert!(!radio(false, platform).flags.is_selected, "{platform:?}");
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !radio(true, platform).flags.is_selected,
+                "{platform:?}: checked is the whole of it here"
+            );
+        }
+    }
+
+    #[test]
+    fn and_the_hint_belongs_to_the_radio_that_is_not_chosen() {
+        // Upstream's own comment: the selected state is already announced on
+        // iOS through `selected`, so a hint on a selected radio would say it
+        // twice. The one that needs telling is the one that is off, where
+        // silence is indistinguishable from a control that does nothing.
+        assert_eq!(radio(false, TargetPlatform::IOS).hint, HINT);
+        assert_eq!(
+            radio(true, TargetPlatform::IOS).hint,
+            "",
+            "a chosen radio has already said so"
+        );
+
+        // And nowhere else at all: the hint exists to stand in for a property
+        // the other platforms do not read.
+        for platform in [TargetPlatform::Android, TargetPlatform::Windows] {
+            for selected in [false, true] {
+                assert_eq!(radio(selected, platform).hint, "", "{platform:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_radio_and_a_checkbox_differ_by_exactly_one_flag() {
+        // Which is the point of porting the flag at all. Everything else about
+        // the two is the same shape, so a reader who has both on a page can
+        // only be told them apart by this.
+        let radio = SemanticsProperties::radio("Medium", true, TargetPlatform::Android, HINT);
+        let checkbox = SemanticsProperties::toggle("Remember me", true);
+        assert_eq!(radio.flags.has_checked_state, checkbox.flags.has_checked_state);
+        assert_eq!(radio.flags.is_checked, checkbox.flags.is_checked);
+        assert_ne!(
+            radio.flags.is_in_mutually_exclusive_group,
+            checkbox.flags.is_in_mutually_exclusive_group
+        );
+    }
+
+    #[test]
+    fn merging_keeps_the_group_claim() {
+        // `SemanticsFlags::merge` is a union, and a radio folded into a row
+        // that also carries a label must not come out as a checkbox.
+        let radio = SemanticsProperties::radio("Medium", false, TargetPlatform::Android, HINT);
+        let plain = SemanticsProperties::label("A row");
+        assert!(
+            radio.flags.merge(&plain.flags).is_in_mutually_exclusive_group
+        );
+        assert!(
+            plain.flags.merge(&radio.flags).is_in_mutually_exclusive_group,
+            "either way round"
+        );
+    }
 }
+
