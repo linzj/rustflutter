@@ -5419,25 +5419,90 @@ mod tests {
                     BorderRadiusGeometry::Zero,
                 )),
             ),
+            (
+                "continuous",
+                ShapeBorder::Continuous(ContinuousRectangleBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                )),
+            ),
+            (
+                "superellipse",
+                ShapeBorder::Superellipse(RoundedSuperellipseBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                )),
+            ),
+            (
+                "star",
+                ShapeBorder::Star(StarBorder::new(side, 5.0, 0.4, 0.0, 0.0, 0.0, 1.0)),
+            ),
+            (
+                "underline",
+                ShapeBorder::Underline(UnderlineInputBorder {
+                    side,
+                    border_radius: BorderRadius::ZERO,
+                }),
+            ),
+            (
+                "outline",
+                ShapeBorder::Outline(OutlineInputBorder {
+                    side,
+                    border_radius: BorderRadius::ZERO,
+                    gap_padding: 4.0,
+                }),
+            ),
+            // The three shapes that only exist part-way through another
+            // lerp. They can be lerped again from there -- an animation
+            // interrupted and redirected lands here -- so their arms are as
+            // reachable as any other.
+            (
+                "stadium-to-circle",
+                ShapeBorder::StadiumToCircle(StadiumToCircleBorder::new(side, 0.5, 0.0)),
+            ),
+            (
+                "stadium-to-rounded",
+                ShapeBorder::StadiumToRoundedRect(StadiumToRoundedRectBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                    0.5,
+                )),
+            ),
+            (
+                "rounded-to-circle",
+                ShapeBorder::RoundedToCircle(RoundedToCircleBorder::new(
+                    side,
+                    BorderRadiusGeometry::Zero,
+                    0.5,
+                    0.0,
+                    false,
+                )),
+            ),
         ]
     }
 
     #[test]
     fn every_pair_of_shapes_lerps_from_the_first_towards_the_second() {
-        // A quarter of the way, the answer has to be on **`a`'s side**, and
-        // that is one claim covering the two things a pair can do.
+        // A quarter of the way, the answer has to be on **`a`'s side of the
+        // midpoint**, and that is one claim covering the three things a pair
+        // can do.
         //
         // * A pair upstream morphs gives 3, a quarter of the way from a
         //   2-wide side to a 6-wide one.
         // * A pair it does not -- a circle and a beveled rectangle, say --
         //   crossfades, and `ShapeBorder::lerp` ends with
         //   `if t < 0.5 { a } else { b }`. That gives 2.
+        // * A pair that goes **through** another shape gives something else
+        //   again: a stadium becoming a star passes through a circle in two
+        //   phases, and a quarter of the way overall is halfway through the
+        //   first phase. That gives 2.5.
         //
-        // Both are direction claims and both fail on 6, so a swapped pair
-        // cannot pass either way. Asserting 3 everywhere would be asserting
-        // more than upstream does: `BeveledRectangleBorder.lerpFrom` only
-        // knows another beveled border, and inventing a morph there would be
-        // a shape animation upstream fades.
+        // All three are on `a`'s side and all three fail on a swap, which is
+        // what this asks. Demanding 3 everywhere would be asserting more than
+        // upstream does -- `BeveledRectangleBorder.lerpFrom` only knows
+        // another beveled border, and the multi-phase shapes are not moving
+        // at a constant rate at all. The exact numbers for the ordinary pairs
+        // are pinned in the tests below.
         for (from_name, from) in shapes(wide(2.0)) {
             for (to_name, to) in shapes(wide(6.0)) {
                 let quarter = ShapeBorder::lerp(Some(from.clone()), Some(to.clone()), 0.25)
@@ -5446,8 +5511,8 @@ mod tests {
                     continue;
                 };
                 assert!(
-                    side.width == 3.0 || side.width == 2.0,
-                    "{from_name} -> {to_name}: {} is on the wrong side of 2..6",
+                    side.width < 4.0,
+                    "{from_name} -> {to_name}: {} is past the midpoint of 2..6",
                     side.width
                 );
 
@@ -5458,8 +5523,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("{to_name} to {from_name} interpolates"));
                 if let Some(back) = back.outlined_side() {
                     assert!(
-                        back.width == 5.0 || back.width == 6.0,
-                        "{to_name} -> {from_name}: {} is on the wrong side",
+                        back.width > 4.0,
+                        "{to_name} -> {from_name}: {} is past the midpoint",
                         back.width
                     );
                     assert_ne!(
@@ -5513,6 +5578,217 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn the_rectangular_shapes_lerp_their_radius_as_well_as_their_side() {
+        // Two numbers moving together, and each has its own line in the
+        // match arm. A shape whose side interpolates and whose corners jump
+        // is a specific, visible wrongness -- and the side test above cannot
+        // see it, because it only ever reads the side.
+        let rounded = |side: f32, radius: f32| {
+            ShapeBorder::Rounded(RoundedRectangleBorder::new(
+                wide(side),
+                BorderRadiusGeometry::Absolute(BorderRadius::circular(radius)),
+            ))
+        };
+        let beveled = |side: f32, radius: f32| {
+            ShapeBorder::Beveled(BeveledRectangleBorder::new(
+                wide(side),
+                BorderRadiusGeometry::Absolute(BorderRadius::circular(radius)),
+            ))
+        };
+
+        for build in [rounded, beveled] {
+            let near = build(1.0, 4.0);
+            let far = build(9.0, 12.0);
+            let quarter = ShapeBorder::lerp(Some(near.clone()), Some(far.clone()), 0.25)
+                .expect("the same shape interpolates with itself");
+            let radius_of = |shape: &ShapeBorder| match shape {
+                ShapeBorder::Rounded(shape) => shape.border_radius,
+                ShapeBorder::Beveled(shape) => shape.border_radius,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(quarter.outlined_side().map(|side| side.width), Some(3.0));
+            assert_eq!(
+                radius_of(&quarter)
+                    .resolve(crate::direction::TextDirection::Ltr)
+                    .top_left
+                    .x,
+                6.0
+            );
+
+            let back = ShapeBorder::lerp(Some(far), Some(near), 0.25).expect("and back");
+            assert_eq!(back.outlined_side().map(|side| side.width), Some(7.0));
+            assert_eq!(
+                radius_of(&back)
+                    .resolve(crate::direction::TextDirection::Ltr)
+                    .top_left
+                    .x,
+                10.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_box_border_lerps_each_of_its_four_sides_on_its_own_line() {
+        // Four independent lines, and a swap in one of them is one edge of a
+        // box animating backwards while the other three go forwards. Each
+        // side gets a different pair so a line reading the wrong field fails
+        // as well.
+        let near = Border {
+            top: wide(1.0),
+            right: wide(2.0),
+            bottom: wide(3.0),
+            left: wide(4.0),
+        };
+        let far = Border {
+            top: wide(9.0),
+            right: wide(10.0),
+            bottom: wide(11.0),
+            left: wide(12.0),
+        };
+        let quarter = Border::lerp(Some(near), Some(far), 0.25);
+        assert_eq!(
+            [
+                quarter.top.width,
+                quarter.right.width,
+                quarter.bottom.width,
+                quarter.left.width
+            ],
+            [3.0, 4.0, 5.0, 6.0]
+        );
+        let back = Border::lerp(Some(far), Some(near), 0.25);
+        assert_eq!(
+            [
+                back.top.width,
+                back.right.width,
+                back.bottom.width,
+                back.left.width
+            ],
+            [7.0, 8.0, 9.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn and_a_directional_one_lerps_its_start_and_end_rather_than_left_and_right() {
+        // The directional border's whole point: `start` and `end` resolve
+        // against the reading direction later, so lerping them into `left`
+        // and `right` here would settle a question that is not this
+        // function's to settle.
+        let near = BorderDirectional {
+            top: wide(1.0),
+            start: wide(2.0),
+            bottom: wide(3.0),
+            end: wide(4.0),
+        };
+        let far = BorderDirectional {
+            top: wide(9.0),
+            start: wide(10.0),
+            bottom: wide(11.0),
+            end: wide(12.0),
+        };
+        let quarter = BorderDirectional::lerp(Some(near), Some(far), 0.25);
+        assert_eq!(
+            [
+                quarter.top.width,
+                quarter.start.width,
+                quarter.bottom.width,
+                quarter.end.width
+            ],
+            [3.0, 4.0, 5.0, 6.0]
+        );
+        let back = BorderDirectional::lerp(Some(far), Some(near), 0.25);
+        assert_eq!(
+            [
+                back.top.width,
+                back.start.width,
+                back.bottom.width,
+                back.end.width
+            ],
+            [7.0, 8.0, 9.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn a_directional_radius_lerps_its_four_corners_by_reading_order() {
+        // The same argument as the border above, one type down.
+        let near = BorderRadiusDirectional::only(
+            Radius::circular(1.0),
+            Radius::circular(2.0),
+            Radius::circular(3.0),
+            Radius::circular(4.0),
+        );
+        let far = BorderRadiusDirectional::only(
+            Radius::circular(9.0),
+            Radius::circular(10.0),
+            Radius::circular(11.0),
+            Radius::circular(12.0),
+        );
+        let quarter = BorderRadiusDirectional::lerp(near, far, 0.25);
+        assert_eq!(
+            [
+                quarter.top_start.x,
+                quarter.top_end.x,
+                quarter.bottom_start.x,
+                quarter.bottom_end.x
+            ],
+            [3.0, 4.0, 5.0, 6.0]
+        );
+        let back = BorderRadiusDirectional::lerp(far, near, 0.25);
+        assert_eq!(
+            [
+                back.top_start.x,
+                back.top_end.x,
+                back.bottom_start.x,
+                back.bottom_end.x
+            ],
+            [7.0, 8.0, 9.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn the_two_input_borders_lerp_their_side_and_their_radius_the_same_way() {
+        // A field's border animating on focus is the most-seen lerp in a
+        // Material application, and it is two numbers moving together: the
+        // line thickens and the corners open.
+        let near_underline = UnderlineInputBorder {
+            side: wide(1.0),
+            border_radius: BorderRadius::circular(4.0),
+        };
+        let far_underline = UnderlineInputBorder {
+            side: wide(9.0),
+            border_radius: BorderRadius::circular(12.0),
+        };
+        let quarter = UnderlineInputBorder::lerp(&near_underline, &far_underline, 0.25);
+        assert_eq!(quarter.side.width, 3.0);
+        assert_eq!(quarter.border_radius.top_left.x, 6.0);
+        let back = UnderlineInputBorder::lerp(&far_underline, &near_underline, 0.25);
+        assert_eq!(back.side.width, 7.0);
+        assert_eq!(back.border_radius.top_left.x, 10.0);
+
+        let near_outline = OutlineInputBorder {
+            side: wide(1.0),
+            border_radius: BorderRadius::circular(4.0),
+            gap_padding: 7.0,
+        };
+        let far_outline = OutlineInputBorder {
+            side: wide(9.0),
+            border_radius: BorderRadius::circular(12.0),
+            gap_padding: 99.0,
+        };
+        let quarter = OutlineInputBorder::lerp(&near_outline, &far_outline, 0.25);
+        assert_eq!(quarter.side.width, 3.0);
+        assert_eq!(quarter.border_radius.top_left.x, 6.0);
+        assert_eq!(
+            quarter.gap_padding, 7.0,
+            "the gap padding is taken from `a` and not interpolated, which is \
+             upstream's own `gapPadding: a.gapPadding`"
+        );
+        let back = OutlineInputBorder::lerp(&far_outline, &near_outline, 0.25);
+        assert_eq!(back.side.width, 7.0);
+        assert_eq!(back.border_radius.top_left.x, 10.0);
+        assert_eq!(back.gap_padding, 99.0, "from whichever end is `a`");
     }
 
     #[test]

@@ -16812,3 +16812,29 @@ circle with the eccentricity pinned"——**该用它们的那条分支缺了**�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5446 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 214 次：一条对三种情况都成立的断言
+
+接着收第 213 次那 94 条。按类型补方向测试——`Border`、`BorderDirectional`、
+`BorderRadiusDirectional`、两种输入框边框、以及带圆角的那几个形状分支——每个
+字段给不同的一对数，好让"读错字段"和"读反方向"都失败。
+
+候选数 94 → **65**。
+
+然后把形状表从五个变体扩到全部（含 `StadiumToCircle` 一类只在别的 lerp 中途
+存在的形状——一段被打断又改向的动画正落在那里，它们的分支和别的一样可达），
+这一扩就撞上了一条：`stadium -> star` 在四分之一处给 2.5。
+
+星形是**分段** lerp：胶囊先变成圆，再变成星，边框在每一段里各走一次，所以
+"整体四分之一"是"第一段的一半"。我原来那条断言（要么 3、要么 2）对它不成立
+——**不是代码错了，是断言写得比事实窄**。
+
+改成一条对三种情况都成立的说法：**四分之一处的答案必须落在 `a` 那一侧的
+中点以内**。变形给 3，交叉淡化给 2，分段给 2.5，三者都在 `a` 这边，且三者
+对调之后都会失败。至于普通那几对的确切数值，由下面几条专门的测试钉住——一条
+统一的断言负责覆盖面，几条专门的负责精度。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5451 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
