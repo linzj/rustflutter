@@ -16525,3 +16525,34 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
 stale_engines 全部不落后。门：5393 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 206 次：长按在两个地方是两件事，而触感不是均匀给的
+
+`onSingleLongTapStart`。苹果平台三分支，其余平台一个答案：
+
+- **未聚焦**——选中该词，记住"这次按下时还没有焦点"，**不给触感**。字段马上就
+  要取得焦点并把键盘推上屏幕，那已经是反馈了。
+- **已聚焦且只读**——选中该词，**并且给触感**。这是苹果那三支里唯一会震的一支。
+- **已聚焦且可编辑**——**根本不选词**。把光标放到手指处，并启动**浮动光标**，
+  那是这个平台精确放置光标的手势。不给触感：浮动光标自带反馈，而震动会宣告
+  一次并没有发生的选择。
+
+其余平台只有一句：选中该词并震动。
+
+**所以长按在 Android 上是"选中这个词"，在活着的 iOS 字段上是"让我把光标放这
+儿"**——把两者一视同仁的移植，必定错掉其中一个。
+
+`_longPressStartedWithoutFocus` 为什么要记：随后的拖动会读它。在苹果平台上，
+长按之后拖动是**按词扩展**（当按下时没有焦点、或字段只读），否则是移动光标。
+而到了拖动的时候字段已经有焦点了——正是它需要的那个事实已经没了。
+
+`_onSingleLongTapEndOrCancel` 里有一处上游的**不对称**，照写不改：起手在
+`iOS || macOS` 上启动浮动光标，收尾却只在 `defaultTargetPlatform == iOS` 时
+结束它。猜着把它对称化就是在一个"用鼠标长按"本就少见的平台上凭空发明行为。
+
+变异：九条全部转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5402 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

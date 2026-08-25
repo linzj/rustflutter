@@ -900,6 +900,155 @@ pub fn shift_tap_down(
     }
 }
 
+/// What a long press moves the selection to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongPressSelects {
+    /// The field does not select, and upstream returns before the switch.
+    Nothing,
+    /// The word under the finger.
+    Word,
+    /// The caret, at the finger. Only reached on the Apple platforms, and
+    /// only in a field the reader can type in right now.
+    CaretAtTheFinger,
+}
+
+/// Everything upstream's `onSingleLongTapStart` decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LongPressStart {
+    pub selects: LongPressSelects,
+    /// `Feedback.forLongPress`, which is **not** given on every path.
+    pub haptic: bool,
+    /// iOS and macOS start a floating cursor when the press lands in a field
+    /// that can be typed in.
+    pub starts_floating_cursor: bool,
+    /// Upstream's `_longPressStartedWithoutFocus`, remembered so that the
+    /// drag which follows can be consistent with how the press began.
+    pub remembers_it_began_unfocused: bool,
+    /// `_showMagnifierIfSupportedByPlatform`, after the switch and so on
+    /// every path that reaches it.
+    pub shows_magnifier: bool,
+}
+
+/// Upstream's `onSingleLongTapStart`.
+///
+/// # The Apple platforms answer three different ways
+///
+/// * **Unfocused** -- select the word, remember that the press began without
+///   focus, and give **no** haptic. The field is about to take focus and put a
+///   keyboard on the screen, which is feedback enough.
+/// * **Focused and read-only** -- select the word, **and** give the haptic.
+///   This is the one Apple path that buzzes.
+/// * **Focused and editable** -- do not select a word at all. Put the caret
+///   where the finger is and start the **floating cursor**, which is that
+///   platform's gesture for placing a caret precisely. No haptic: the
+///   floating cursor is its own feedback, and a buzz would announce a
+///   selection that is not happening.
+///
+/// Everywhere else there is one answer: select the word and buzz.
+///
+/// So a long press means *select this word* on Android and *let me put the
+/// caret here* on a live iOS field, and the port that treats them alike gets
+/// one of the two wrong.
+///
+/// # Why the flag is remembered
+///
+/// `onSingleLongTapMoveUpdate` reads it: on Apple, dragging after a long
+/// press extends **by words** when the press began unfocused or the field is
+/// read-only, and moves the caret otherwise. Without the flag the drag would
+/// have to guess, and by then the field has focus -- the very fact it needs.
+pub fn long_press_start(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    has_focus: bool,
+    read_only: bool,
+) -> LongPressStart {
+    use crate::editable_text::TargetPlatform;
+    if !selection_enabled {
+        return LongPressStart {
+            selects: LongPressSelects::Nothing,
+            haptic: false,
+            starts_floating_cursor: false,
+            remembers_it_began_unfocused: false,
+            shows_magnifier: false,
+        };
+    }
+    let base = LongPressStart {
+        selects: LongPressSelects::Word,
+        haptic: true,
+        starts_floating_cursor: false,
+        remembers_it_began_unfocused: false,
+        shows_magnifier: true,
+    };
+    match platform {
+        TargetPlatform::IOS | TargetPlatform::MacOS => {
+            if !has_focus {
+                LongPressStart {
+                    haptic: false,
+                    remembers_it_began_unfocused: true,
+                    ..base
+                }
+            } else if read_only {
+                base
+            } else {
+                LongPressStart {
+                    selects: LongPressSelects::CaretAtTheFinger,
+                    haptic: false,
+                    starts_floating_cursor: true,
+                    ..base
+                }
+            }
+        }
+        TargetPlatform::Android
+        | TargetPlatform::Fuchsia
+        | TargetPlatform::Linux
+        | TargetPlatform::Windows => base,
+    }
+}
+
+/// Everything upstream's `_onSingleLongTapEndOrCancel` does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LongPressEnd {
+    pub hides_magnifier: bool,
+    pub clears_the_flag: bool,
+    pub ends_floating_cursor: bool,
+}
+
+/// Upstream's `_onSingleLongTapEndOrCancel`, which the end and the cancel
+/// share -- a long press that was taken away has to leave the same way one
+/// that finished does.
+///
+/// The first two happen unconditionally. The third is gated three ways:
+///
+/// ```dart
+/// if (_isEditableTextMounted
+///     && defaultTargetPlatform == TargetPlatform.iOS
+///     && delegate.selectionEnabled
+///     && editableText.textEditingValue.selection.isCollapsed) {
+/// ```
+///
+/// **`iOS` alone, not the Apple pair** -- and [`long_press_start`] begins a
+/// floating cursor on macOS as well. Ported as it is written rather than as
+/// it looks like it should be: this is upstream's asymmetry, and guessing it
+/// into symmetry would be inventing behaviour on a platform where a long
+/// press with a mouse is unusual enough that nobody has needed to.
+///
+/// The collapsed check is the other half: a floating cursor is for placing a
+/// caret, so a press that ended with a range selected was never doing that.
+pub fn long_press_end(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    selection_is_collapsed: bool,
+) -> LongPressEnd {
+    use crate::editable_text::TargetPlatform;
+    LongPressEnd {
+        hides_magnifier: true,
+        clears_the_flag: true,
+        ends_floating_cursor: platform == TargetPlatform::IOS
+            && selection_enabled
+            && selection_is_collapsed,
+    }
+}
+
 /// What one of the heavier gestures does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PressAction {
@@ -2984,6 +3133,167 @@ mod selection_gesture_rule_tests {
                 "{platform:?}: no shift"
             );
         }
+    }
+
+    // -- A long press means two different things ---------------------------
+
+    const APPLE_PAIR: [TargetPlatform; 2] = [TargetPlatform::IOS, TargetPlatform::MacOS];
+    const THE_REST: [TargetPlatform; 4] = [
+        TargetPlatform::Android,
+        TargetPlatform::Fuchsia,
+        TargetPlatform::Linux,
+        TargetPlatform::Windows,
+    ];
+
+    #[test]
+    fn a_long_press_selects_a_word_everywhere_except_a_live_apple_field() {
+        // Where it means "let me put the caret here" instead. A port that
+        // treated the two alike would get one of them wrong, and which one
+        // depends on which it copied.
+        for platform in THE_REST {
+            let start = long_press_start(platform, true, true, false);
+            assert_eq!(start.selects, LongPressSelects::Word, "{platform:?}");
+            assert!(!start.starts_floating_cursor, "{platform:?}");
+        }
+        for platform in APPLE_PAIR {
+            let start = long_press_start(platform, true, true, false);
+            assert_eq!(
+                start.selects,
+                LongPressSelects::CaretAtTheFinger,
+                "{platform:?}"
+            );
+            assert!(start.starts_floating_cursor, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn and_it_is_back_to_a_word_when_the_apple_field_cannot_be_typed_in() {
+        // Both ways of not being typeable: no focus yet, or read-only. The
+        // caret-placing gesture is for a field the reader is already in.
+        for platform in APPLE_PAIR {
+            for (has_focus, read_only) in [(false, false), (true, true), (false, true)] {
+                let start = long_press_start(platform, true, has_focus, read_only);
+                assert_eq!(
+                    start.selects,
+                    LongPressSelects::Word,
+                    "{platform:?} focus={has_focus} read_only={read_only}"
+                );
+                assert!(!start.starts_floating_cursor);
+            }
+        }
+    }
+
+    #[test]
+    fn the_haptic_is_not_given_on_every_path() {
+        // Three Apple branches and only the middle one buzzes.
+        //
+        // Unfocused: the field is about to take focus and put a keyboard on
+        // the screen, which is feedback enough. Editable: the floating cursor
+        // is its own feedback, and a buzz would announce a selection that is
+        // not happening. Read-only and focused: nothing else is about to
+        // happen, so the buzz is what says the press landed.
+        for platform in APPLE_PAIR {
+            assert!(
+                !long_press_start(platform, true, false, false).haptic,
+                "{platform:?} unfocused"
+            );
+            assert!(
+                long_press_start(platform, true, true, true).haptic,
+                "{platform:?} focused and read-only"
+            );
+            assert!(
+                !long_press_start(platform, true, true, false).haptic,
+                "{platform:?} focused and editable"
+            );
+        }
+        // Everywhere else it buzzes whatever the field is doing.
+        for platform in THE_REST {
+            for (has_focus, read_only) in [(false, false), (true, false), (true, true)] {
+                assert!(
+                    long_press_start(platform, true, has_focus, read_only).haptic,
+                    "{platform:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_unfocused_apple_press_is_remembered_as_such() {
+        // The flag exists for the drag that follows: on Apple, dragging after
+        // a long press extends by words when the press began unfocused, and
+        // by then the field has focus -- the very fact the drag needs.
+        for platform in APPLE_PAIR {
+            assert!(long_press_start(platform, true, false, false).remembers_it_began_unfocused);
+            assert!(!long_press_start(platform, true, true, false).remembers_it_began_unfocused);
+        }
+        for platform in THE_REST {
+            assert!(
+                !long_press_start(platform, true, false, false).remembers_it_began_unfocused,
+                "{platform:?}: the drag there does not ask"
+            );
+        }
+    }
+
+    #[test]
+    fn the_magnifier_comes_up_after_the_switch_and_so_on_every_path() {
+        for platform in TargetPlatform::ALL {
+            for (has_focus, read_only) in [(false, false), (true, false), (true, true)] {
+                assert!(
+                    long_press_start(platform, true, has_focus, read_only).shows_magnifier,
+                    "{platform:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_that_does_not_select_returns_before_any_of_it() {
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                long_press_start(platform, false, true, false),
+                LongPressStart {
+                    selects: LongPressSelects::Nothing,
+                    haptic: false,
+                    starts_floating_cursor: false,
+                    remembers_it_began_unfocused: false,
+                    shows_magnifier: false,
+                },
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_end_puts_the_magnifier_and_the_flag_away_on_every_platform() {
+        // The end and the cancel share this: a press taken away has to leave
+        // the same way one that finished does.
+        for platform in TargetPlatform::ALL {
+            for enabled in [false, true] {
+                let end = long_press_end(platform, enabled, true);
+                assert!(end.hides_magnifier, "{platform:?}");
+                assert!(end.clears_the_flag, "{platform:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn but_only_ios_ends_the_floating_cursor_although_macos_starts_one() {
+        // Upstream's asymmetry, ported as written. `onSingleLongTapStart`
+        // begins a floating cursor on `iOS || macOS`; the end gates on
+        // `defaultTargetPlatform == TargetPlatform.iOS` alone.
+        assert!(long_press_start(TargetPlatform::MacOS, true, true, false).starts_floating_cursor);
+        assert!(
+            !long_press_end(TargetPlatform::MacOS, true, true).ends_floating_cursor,
+            "and nothing ends it"
+        );
+        assert!(long_press_end(TargetPlatform::IOS, true, true).ends_floating_cursor);
+    }
+
+    #[test]
+    fn and_a_press_that_ended_on_a_range_was_never_placing_a_caret() {
+        // The collapsed half of the same gate.
+        assert!(!long_press_end(TargetPlatform::IOS, true, false).ends_floating_cursor);
+        assert!(!long_press_end(TargetPlatform::IOS, false, true).ends_floating_cursor);
     }
 
     // -- The heavier gestures, and where they disagree with each other ------
