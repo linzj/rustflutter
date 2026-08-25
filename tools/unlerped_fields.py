@@ -55,7 +55,10 @@ that steps, because the first end *is* the answer there. Eight of
 screen reports a stepping field, the missing test is one at `t >= 0.5`.
 
 Some sites will not compile after the mutation (the lerp's return type differs
-from the field's). Those are reported and not counted either way.
+from the field's). Those are reported and not counted either way. A site that
+took its first end by reference is retried as `a.x.clone()` before being
+counted that way: on `theme.rs` the un-cloned spelling failed to build at 27
+of 29 sites, so without the retry the screen read that file almost blind.
 
 Usage: python tools/unlerped_fields.py <path-to-a-.rs-file>
 """
@@ -188,10 +191,18 @@ def main(argv):
     unwatched, unbuilt = [], []
     try:
         for begin, finish, _indent, field, first in found:
-            mutated = text[:begin] + '%s: %s,' % (field, first) + text[finish:]
-            io.open(path, 'w', encoding='utf-8', newline='').write(
-                mutated.replace('\n', newline))
-            verdict = run(env)
+            # `x: a.x` does not typecheck when the blend took `&a.x` and the
+            # field is not `Copy`, which on `theme.rs` was 27 of 29 sites --
+            # the screen was all but blind there. Try the borrowed spelling
+            # too before giving up on a site.
+            for spelling in ('%s: %s,' % (field, first),
+                             '%s: %s.clone(),' % (field, first)):
+                mutated = text[:begin] + spelling + text[finish:]
+                io.open(path, 'w', encoding='utf-8', newline='').write(
+                    mutated.replace('\n', newline))
+                verdict = run(env)
+                if verdict != 'no-build':
+                    break
             line = text.count('\n', 0, begin) + 1
             if verdict == 'green':
                 unwatched.append((line, field))

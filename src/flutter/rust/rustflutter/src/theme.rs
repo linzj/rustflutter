@@ -1392,4 +1392,634 @@ mod tests {
             Some(16.0)
         );
     }
+
+    #[test]
+    fn a_theme_blends_the_colour_scheme_it_carries() {
+        // `tools/unlerped_fields.py` froze this line -- `color_scheme:
+        // a.color_scheme` -- and the suite stayed green. The scheme's own
+        // forty-nine roles are watched in `color_scheme.rs`, but nothing was
+        // watching that `ThemeData::lerp` calls that blend at all: it could
+        // have handed back the first theme's scheme whole and gone unnoticed.
+        let a = ThemeData {
+            color_scheme: ColorScheme::light().with_primary(Color::argb(255, 0, 0, 0)),
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            color_scheme: ColorScheme::light().with_primary(Color::argb(255, 0, 0, 80)),
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).color_scheme.primary,
+            Color::argb(255, 0, 0, 20)
+        );
+        // A quarter rather than a half, so a line reading its two ends the
+        // wrong way round is visible too.
+        assert_eq!(
+            ThemeData::lerp(&b, &a, 0.25).color_scheme.primary,
+            Color::argb(255, 0, 0, 60)
+        );
+    }
+
+
+
+
+
+    // -- Every component theme a `ThemeData` hands through ------------------
+    //
+    // `tools/unlerped_fields.py` froze each of these lines in turn -- so the
+    // theme handed the first end's component theme back whole -- and
+    // twenty-four of them left the suite green. Each component theme has its
+    // own tests; nothing was watching that `ThemeData::lerp` calls them.
+    //
+    // Each probe moves one field the component theme itself interpolates, and
+    // each gets a number no other line here uses, so a line naming its
+    // neighbour answers with a value that is not its own.
+    //
+    // One test each rather than one test with twenty blocks: a `ThemeData`
+    // is a large value, and twenty pairs of them in a single frame overflow
+    // the test thread's stack.
+
+    #[test]
+    fn the_theme_blends_its_divider_theme() {
+        let a = ThemeData {
+            divider_theme: DividerThemeData {
+                color: Some(Color::argb(255, 0, 0, 4)),
+                ..DividerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            divider_theme: DividerThemeData {
+                color: Some(Color::argb(255, 0, 0, 20)),
+                ..DividerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).divider_theme.color,
+            Some(Color::argb(255, 0, 0, 8)),
+            "divider_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_slider_theme() {
+        let a = ThemeData {
+            slider_theme: SliderThemeData {
+                active_track_color: Some(Color::argb(255, 0, 0, 8)),
+                ..SliderThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            slider_theme: SliderThemeData {
+                active_track_color: Some(Color::argb(255, 0, 0, 24)),
+                ..SliderThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).slider_theme.active_track_color,
+            Some(Color::argb(255, 0, 0, 12)),
+            "slider_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_card_theme() {
+        let a = ThemeData {
+            card_theme: CardThemeData {
+                color: Some(Color::argb(255, 0, 0, 12)),
+                ..CardThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            card_theme: CardThemeData {
+                color: Some(Color::argb(255, 0, 0, 28)),
+                ..CardThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).card_theme.color,
+            Some(Color::argb(255, 0, 0, 16)),
+            "card_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_badge_theme() {
+        let a = ThemeData {
+            badge_theme: BadgeThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 16)),
+                ..BadgeThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            badge_theme: BadgeThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 32)),
+                ..BadgeThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).badge_theme.background_color,
+            Some(Color::argb(255, 0, 0, 20)),
+            "badge_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_tooltip_theme() {
+        let a = ThemeData {
+            tooltip_theme: TooltipThemeData {
+                height: Some(20.0),
+                ..TooltipThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            tooltip_theme: TooltipThemeData {
+                height: Some(36.0),
+                ..TooltipThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).tooltip_theme.height,
+            Some(24.0),
+            "tooltip_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_checkbox_theme() {
+        let a = ThemeData {
+            checkbox_theme: CheckboxThemeData {
+                splash_radius: Some(24.0),
+                ..CheckboxThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            checkbox_theme: CheckboxThemeData {
+                splash_radius: Some(40.0),
+                ..CheckboxThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).checkbox_theme.splash_radius,
+            Some(28.0),
+            "checkbox_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_radio_theme() {
+        let a = ThemeData {
+            radio_theme: RadioThemeData {
+                splash_radius: Some(28.0),
+                ..RadioThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            radio_theme: RadioThemeData {
+                splash_radius: Some(44.0),
+                ..RadioThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).radio_theme.splash_radius,
+            Some(32.0),
+            "radio_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_switch_theme() {
+        let a = ThemeData {
+            switch_theme: SwitchThemeData {
+                splash_radius: Some(32.0),
+                ..SwitchThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            switch_theme: SwitchThemeData {
+                splash_radius: Some(48.0),
+                ..SwitchThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).switch_theme.splash_radius,
+            Some(36.0),
+            "switch_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_app_bar_theme() {
+        let a = ThemeData {
+            app_bar_theme: AppBarThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 36)),
+                ..AppBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            app_bar_theme: AppBarThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 52)),
+                ..AppBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).app_bar_theme.background_color,
+            Some(Color::argb(255, 0, 0, 40)),
+            "app_bar_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_snack_bar_theme() {
+        let a = ThemeData {
+            snack_bar_theme: SnackBarThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 40)),
+                ..SnackBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            snack_bar_theme: SnackBarThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 56)),
+                ..SnackBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).snack_bar_theme.background_color,
+            Some(Color::argb(255, 0, 0, 44)),
+            "snack_bar_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_list_tile_theme() {
+        let a = ThemeData {
+            list_tile_theme: ListTileThemeData {
+                selected_color: Some(Color::argb(255, 0, 0, 44)),
+                ..ListTileThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            list_tile_theme: ListTileThemeData {
+                selected_color: Some(Color::argb(255, 0, 0, 60)),
+                ..ListTileThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).list_tile_theme.selected_color,
+            Some(Color::argb(255, 0, 0, 48)),
+            "list_tile_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_dialog_theme() {
+        let a = ThemeData {
+            dialog_theme: DialogThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 48)),
+                ..DialogThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            dialog_theme: DialogThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 64)),
+                ..DialogThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).dialog_theme.background_color,
+            Some(Color::argb(255, 0, 0, 52)),
+            "dialog_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_chip_theme() {
+        let a = ThemeData {
+            chip_theme: ChipThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 52)),
+                ..ChipThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            chip_theme: ChipThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 68)),
+                ..ChipThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).chip_theme.background_color,
+            Some(Color::argb(255, 0, 0, 56)),
+            "chip_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_tab_bar_theme() {
+        let a = ThemeData {
+            tab_bar_theme: TabBarThemeData {
+                indicator_color: Some(Color::argb(255, 0, 0, 56)),
+                ..TabBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            tab_bar_theme: TabBarThemeData {
+                indicator_color: Some(Color::argb(255, 0, 0, 72)),
+                ..TabBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).tab_bar_theme.indicator_color,
+            Some(Color::argb(255, 0, 0, 60)),
+            "tab_bar_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_data_table_theme() {
+        let a = ThemeData {
+            data_table_theme: DataTableThemeData {
+                data_row_min_height: Some(60.0),
+                ..DataTableThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            data_table_theme: DataTableThemeData {
+                data_row_min_height: Some(76.0),
+                ..DataTableThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).data_table_theme.data_row_min_height,
+            Some(64.0),
+            "data_table_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_drawer_theme() {
+        let a = ThemeData {
+            drawer_theme: DrawerThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 64)),
+                ..DrawerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            drawer_theme: DrawerThemeData {
+                background_color: Some(Color::argb(255, 0, 0, 80)),
+                ..DrawerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).drawer_theme.background_color,
+            Some(Color::argb(255, 0, 0, 68)),
+            "drawer_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_scrollbar_theme() {
+        let a = ThemeData {
+            scrollbar_theme: ScrollbarThemeData {
+                cross_axis_margin: Some(68.0),
+                ..ScrollbarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            scrollbar_theme: ScrollbarThemeData {
+                cross_axis_margin: Some(84.0),
+                ..ScrollbarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).scrollbar_theme.cross_axis_margin,
+            Some(72.0),
+            "scrollbar_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_icon_theme() {
+        let a = ThemeData {
+            // A private field means no struct-update form here.
+            icon_theme: IconThemeData::new().with_color(Color::argb(255, 0, 0, 72)),
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            // A private field means no struct-update form here.
+            icon_theme: IconThemeData::new().with_color(Color::argb(255, 0, 0, 88)),
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).icon_theme.color,
+            Some(Color::argb(255, 0, 0, 76)),
+            "icon_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_popup_menu_theme() {
+        let a = ThemeData {
+            popup_menu_theme: PopupMenuThemeData {
+                color: Some(Color::argb(255, 0, 0, 76)),
+                ..PopupMenuThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            popup_menu_theme: PopupMenuThemeData {
+                color: Some(Color::argb(255, 0, 0, 92)),
+                ..PopupMenuThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).popup_menu_theme.color,
+            Some(Color::argb(255, 0, 0, 80)),
+            "popup_menu_theme"
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_button_bar_theme() {
+        let a = ThemeData {
+            button_bar_theme: ButtonBarThemeData {
+                button_min_width: Some(80.0),
+                ..ButtonBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            button_bar_theme: ButtonBarThemeData {
+                button_min_width: Some(96.0),
+                ..ButtonBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25).button_bar_theme.button_min_width,
+            Some(84.0),
+            "button_bar_theme"
+        );
+    }
+
+    // The four the generator could not probe. `MaterialBannerThemeData`'s
+    // `lerp` has a wrapped signature, so the generator's search for
+    // `pub fn lerp(a: &Type` missed it; the other three keep everything in
+    // state properties or in a nested style, which its three probe shapes do
+    // not reach.
+
+    #[test]
+    fn the_theme_blends_its_banner_theme() {
+        let a = ThemeData {
+            banner_theme: MaterialBannerThemeData {
+                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(crate::render::EdgeInsets {
+                    left: 84.0,
+                    top: 84.0,
+                    right: 84.0,
+                    bottom: 84.0,
+                })),
+                ..MaterialBannerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            banner_theme: MaterialBannerThemeData {
+                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(crate::render::EdgeInsets {
+                    left: 100.0,
+                    top: 100.0,
+                    right: 100.0,
+                    bottom: 100.0,
+                })),
+                ..MaterialBannerThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25)
+                .banner_theme
+                .padding
+                .map(|i| i.resolve(crate::direction::TextDirection::Ltr).left),
+            Some(88.0)
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_menu_theme() {
+        let a = ThemeData {
+            menu_theme: MenuThemeData {
+                style: Some(crate::component_themes::MenuStyle {
+                    elevation: Some(crate::widget_state::StateProperty::all(Some(104.0))),
+                    ..crate::component_themes::MenuStyle::default()
+                }),
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            menu_theme: MenuThemeData {
+                style: Some(crate::component_themes::MenuStyle {
+                    elevation: Some(crate::widget_state::StateProperty::all(Some(120.0))),
+                    ..crate::component_themes::MenuStyle::default()
+                }),
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25)
+                .menu_theme
+                .style
+                .and_then(|style| style.elevation)
+                .and_then(|elevation| elevation.resolve(crate::widget_state::WidgetStates::NONE)),
+            Some(108.0)
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_menu_bar_theme() {
+        // A different pair from the menu theme above, so a line naming the
+        // wrong one of the two answers with a number that is not its own.
+        let a = ThemeData {
+            menu_bar_theme: MenuBarThemeData {
+                style: Some(crate::component_themes::MenuStyle {
+                    elevation: Some(crate::widget_state::StateProperty::all(Some(124.0))),
+                    ..crate::component_themes::MenuStyle::default()
+                }),
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            menu_bar_theme: MenuBarThemeData {
+                style: Some(crate::component_themes::MenuStyle {
+                    elevation: Some(crate::widget_state::StateProperty::all(Some(140.0))),
+                    ..crate::component_themes::MenuStyle::default()
+                }),
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25)
+                .menu_bar_theme
+                .style
+                .and_then(|style| style.elevation)
+                .and_then(|elevation| elevation.resolve(crate::widget_state::WidgetStates::NONE)),
+            Some(128.0)
+        );
+    }
+
+    #[test]
+    fn the_theme_blends_its_search_bar_theme() {
+        let a = ThemeData {
+            search_bar_theme: SearchBarThemeData {
+                elevation: Some(crate::widget_state::StateProperty::all(Some(144.0))),
+                ..SearchBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        let b = ThemeData {
+            search_bar_theme: SearchBarThemeData {
+                elevation: Some(crate::widget_state::StateProperty::all(Some(160.0))),
+                ..SearchBarThemeData::default()
+            },
+            ..ThemeData::light()
+        };
+        assert_eq!(
+            ThemeData::lerp(&a, &b, 0.25)
+                .search_bar_theme
+                .elevation
+                .and_then(|elevation| elevation.resolve(crate::widget_state::WidgetStates::NONE)),
+            Some(148.0)
+        );
+    }
 }

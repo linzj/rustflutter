@@ -17218,3 +17218,39 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5525 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 225 次：整个 `ThemeData` 可以停止混合它的 24 个组件主题，没人会发现
+
+第 223 次修好边界之后，`unlerped_fields.py` 第一次看得见 `theme.rs`。
+
+**但它先是几乎瞎的。**第一轮 29 处里 **27 处"编译不过"**——冻结变异写的是
+`x: a.x`，而这些混合是按 `&a.x` 取参、字段又不是 `Copy` 的，移不出引用。
+筛子于是只报了一处。现在它在放弃之前会再试一次 `a.x.clone()`：**29 处全部
+编译得过**，读绿的从 1 处变成 **24 处**。
+
+那 24 处是 `ThemeData::lerp` 交给每一个组件主题的那一行。每个组件主题都有
+自己的测试，但**没有任何测试看着 `ThemeData::lerp` 去调它们**——整个主题可以
+把第一端的组件主题原样交回去，套件照样绿。
+
+测试是生成的：24 个名字手写一遍就是 24 次把名字打成隔壁那个的机会。每个主题
+探一个它自己会插值的字段（颜色优先，其次数字，再次内边距），每个探针给一个
+**全表唯一**的数。
+
+生成器自己有三个洞，都写在原处：
+
+- **一次跨结构体误配。**探针在整个 crate 里找 `pub opacity`，命中了别的结构
+  体的同名公开字段，而 `IconThemeData::opacity` 是私有的。改成只在该主题自己
+  的结构体里找。
+- **私有字段挡住了 `..Type::default()`。**`IconThemeData` 因此要走构造器。
+- **折行的签名找不到。**`MaterialBannerThemeData::lerp` 的参数是折行写的，
+  生成器按 `pub fn lerp(a: &Type` 去找就漏了它。这四处手写。
+
+**还栈溢出了一次。**二十组 `ThemeData` 放在同一个测试函数里，栈直接爆了——
+`ThemeData` 是个很大的值。改成每个主题一条测试。
+
+再跑：`theme.rs` 29 处**读零**。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5550 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
