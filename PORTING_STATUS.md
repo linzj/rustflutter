@@ -16464,3 +16464,31 @@ renderEditable.selection is invalid." ——没有可扩的东西。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 0，vacuous 8，
 stale_engines 全部不落后。门：5381 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 204 次：一次点击的两端，各带一份规则
+
+`onSingleTapUp`，也就是第 203 次那一半的镜像：桌面在按下时决定的，手机在抬起
+时决定，两份名单恰好互补，合起来每个平台被回答一次。三件读了代码才知道的事：
+
+- **iOS 也有 macOS 那条"未聚焦时从 0 展开"的规则**，连注释都各抄了一份——但
+  在**抬起**时，因为 iOS 在那里决定。两个苹果平台在**行为**上一致，在**时机**
+  上不一致。
+- **Android 在普通点击后给拼写建议，Fuchsia 不给。** 两支除此之外是同样的五
+  行，这是它们**唯一**的区别：把它们合并会在 Android 上丢掉拼写检查，或者在
+  Fuchsia 上凭空造出一个。
+- **iOS 上精确设备收起工具条，手指则切换它。** 第 198 次那条长规则只在手指
+  下才走到。iPad 上的鼠标能瞄准，不需要再点一次来说明它指的是哪儿，所以它拿到
+  精确光标、菜单收起。
+
+还有一条：`requestKeyboard()` 在 switch **之后**，连"不允许选择"那一支也是从
+它下面返回的。**一个选不了的字段被点一下，键盘照样起来**——读者点的是文本框，
+打字是他们可能想做的另一件事。
+
+变异：九条中八条一次转红。第九条（shift 不再要求"有可扩的东西"）存活——
+第 203 次给 tap-down 那一半写了这条测试，孪生的 tap-up 没写。**一次点击的两端
+各带一份这条规则，所以两处都要说。**补上后转红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 66/0，vacuous 8，
+stale_engines 全部不落后。门：5388 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

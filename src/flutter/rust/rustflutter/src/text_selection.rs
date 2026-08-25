@@ -900,6 +900,113 @@ pub fn shift_tap_down(
     }
 }
 
+/// What a plain tap does when the finger (or the pointer) lifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TapUp {
+    /// The field does not select. Upstream still asks for the keyboard --
+    /// see [`single_tap_up`] -- and does nothing else.
+    SelectionDisabled,
+    /// The desktops decided on the way **down**; there is nothing left here.
+    Nothing,
+    /// Shift was held: [`extend_selection`].
+    Extend,
+    /// Shift was held: [`expand_selection`] from the current selection.
+    Expand,
+    /// Shift was held on an unfocused iOS field: expand from a caret at zero.
+    ExpandFromTheStart,
+    /// Put the caret where the tap was.
+    PlaceCaret,
+    /// Put the caret there **and** offer spelling suggestions. Android only.
+    PlaceCaretAndOfferSpelling,
+    /// Put the caret there and take the toolbar down. iOS with a precise
+    /// device.
+    PlaceCaretAndHideToolbar,
+    /// iOS under a finger: [`tap_outcome`] is the rule, and it is long enough
+    /// to live on its own.
+    AskTheTouchRule,
+}
+
+/// Upstream's `onSingleTapUp`, which is where the mobile platforms decide.
+///
+/// The mirror of [`shift_tap_down`]: everything the desktops settle on the way
+/// down, the phones settle on the way up, and each list is the other's
+/// complement.
+///
+/// # Three things worth having read the code for
+///
+/// * **iOS has macOS's shift-from-zero rule too**, with its own copy of the
+///   comment -- but on tap *up*, because that is where iOS decides. The two
+///   Apple platforms agree about the behaviour and disagree about when.
+/// * **Android offers spelling suggestions after a plain tap and Fuchsia does
+///   not.** The two branches are otherwise the same five lines, and this is
+///   the only difference between them: a port that folded them together would
+///   lose the spell-check on Android or invent it on Fuchsia.
+/// * **A precise device on iOS hides the toolbar; a finger toggles it.** The
+///   long touch rule at [`tap_outcome`] is only reached under a finger. A
+///   mouse on an iPad places the caret and takes the menu down, because a
+///   mouse can aim and does not need a second tap to say where it meant.
+///
+/// And the keyboard is asked for on **every** path, including the one where
+/// the field does not select at all -- upstream's `requestKeyboard()` is
+/// after the switch, and the disabled branch returns through it. A read-only
+/// or unselectable field still takes the keyboard when tapped.
+pub fn single_tap_up(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    shift_pressed: bool,
+    has_selection: bool,
+    has_focus: bool,
+    kind: PointerKind,
+) -> TapUp {
+    use crate::editable_text::TargetPlatform;
+    if !selection_enabled {
+        return TapUp::SelectionDisabled;
+    }
+    let shift = shift_pressed && has_selection;
+    match platform {
+        TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows => TapUp::Nothing,
+        TargetPlatform::Android => {
+            if shift {
+                TapUp::Extend
+            } else {
+                TapUp::PlaceCaretAndOfferSpelling
+            }
+        }
+        TargetPlatform::Fuchsia => {
+            if shift {
+                TapUp::Extend
+            } else {
+                TapUp::PlaceCaret
+            }
+        }
+        TargetPlatform::IOS => {
+            if shift {
+                return if has_focus {
+                    TapUp::Expand
+                } else {
+                    TapUp::ExpandFromTheStart
+                };
+            }
+            match kind {
+                PointerKind::Touch | PointerKind::Unknown => TapUp::AskTheTouchRule,
+                _ => TapUp::PlaceCaretAndHideToolbar,
+            }
+        }
+    }
+}
+
+/// Whether a tap asks for the keyboard, which upstream answers with a single
+/// unconditional call after the switch.
+///
+/// Its own function because the alternative is a field on [`TapUp`] that is
+/// true in every variant, and a constant is not an answer worth carrying
+/// around. A tap on a field that cannot be selected in still opens the
+/// keyboard: the reader tapped a text field, and typing is the other thing
+/// they might have meant.
+pub fn tap_up_requests_keyboard() -> bool {
+    true
+}
+
 /// What a right-click moves the selection to, if anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecondarySelects {
@@ -2792,6 +2899,161 @@ mod selection_gesture_rule_tests {
                 "{platform:?}: no shift"
             );
         }
+    }
+
+    // -- And the other half: what the phones decide on the way up -----------
+
+    /// A plain tap with a finger: no shift, a selection to shift from, focused.
+    fn up(platform: TargetPlatform) -> TapUp {
+        single_tap_up(platform, true, false, true, true, PointerKind::Touch)
+    }
+
+    #[test]
+    fn the_desktops_have_already_decided_by_the_time_the_button_comes_up() {
+        // The mirror of `shift_tap_down`: each list is the other's
+        // complement, and between them every platform is answered exactly
+        // once.
+        for platform in [
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(up(platform), TapUp::Nothing, "{platform:?}");
+            assert_ne!(
+                shift_tap_down(platform, true, true, true),
+                ShiftTapDown::Nothing,
+                "{platform:?}: and it did decide on the way down"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+        ] {
+            assert_ne!(up(platform), TapUp::Nothing, "{platform:?}");
+            assert_eq!(
+                shift_tap_down(platform, true, true, true),
+                ShiftTapDown::Nothing,
+                "{platform:?}: and it did not decide on the way down"
+            );
+        }
+    }
+
+    #[test]
+    fn android_offers_spelling_after_a_plain_tap_and_fuchsia_does_not() {
+        // The two branches are otherwise the same five lines, and this is the
+        // only difference between them. Folding them together would lose the
+        // spell-check on Android or invent it on Fuchsia.
+        assert_eq!(up(TargetPlatform::Android), TapUp::PlaceCaretAndOfferSpelling);
+        assert_eq!(up(TargetPlatform::Fuchsia), TapUp::PlaceCaret);
+    }
+
+    #[test]
+    fn ios_has_the_shift_from_zero_rule_too_but_on_the_way_up() {
+        // The two Apple platforms agree about the behaviour and disagree
+        // about when: macOS settles it on tap down, iOS on tap up. Each
+        // carries its own copy of upstream's comment.
+        assert_eq!(
+            single_tap_up(TargetPlatform::IOS, true, true, true, false, PointerKind::Touch),
+            TapUp::ExpandFromTheStart
+        );
+        assert_eq!(
+            single_tap_up(TargetPlatform::IOS, true, true, true, true, PointerKind::Touch),
+            TapUp::Expand
+        );
+        assert_eq!(
+            shift_tap_down(TargetPlatform::MacOS, true, true, false),
+            ShiftTapDown::ExpandFromTheStart,
+            "the same answer at the other end of the tap"
+        );
+        assert_eq!(
+            shift_tap_down(TargetPlatform::IOS, true, true, false),
+            ShiftTapDown::Nothing,
+            "and iOS says nothing on the way down"
+        );
+    }
+
+    #[test]
+    fn a_shift_tap_on_android_extends_rather_than_expanding() {
+        // The phones split the same way the desktops do: Apple expands,
+        // everyone else extends.
+        for platform in [TargetPlatform::Android, TargetPlatform::Fuchsia] {
+            assert_eq!(
+                single_tap_up(platform, true, true, true, true, PointerKind::Touch),
+                TapUp::Extend,
+                "{platform:?}"
+            );
+        }
+
+        // And the same `isShiftPressedValid` half as the tap-down twin, for
+        // the same reason upstream gives: there is nothing to extend from.
+        // The two ends of one tap carry one copy of this rule each, so both
+        // need saying.
+        for platform in TargetPlatform::ALL {
+            let held = single_tap_up(platform, true, true, false, true, PointerKind::Touch);
+            let released = single_tap_up(platform, true, false, false, true, PointerKind::Touch);
+            assert_eq!(
+                held, released,
+                "{platform:?}: shift with no selection is shift not pressed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_precise_device_on_ios_places_the_caret_and_takes_the_menu_down() {
+        // The long touch rule is only reached under a finger. A mouse can aim
+        // and does not need a second tap to say where it meant, so it gets a
+        // precise caret and the menu goes away.
+        for kind in [
+            PointerKind::Mouse,
+            PointerKind::Trackpad,
+            PointerKind::Stylus,
+            PointerKind::InvertedStylus,
+        ] {
+            assert_eq!(
+                single_tap_up(TargetPlatform::IOS, true, false, true, true, kind),
+                TapUp::PlaceCaretAndHideToolbar,
+                "{kind:?}"
+            );
+        }
+        for kind in [PointerKind::Touch, PointerKind::Unknown] {
+            assert_eq!(
+                single_tap_up(TargetPlatform::IOS, true, false, true, true, kind),
+                TapUp::AskTheTouchRule,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_device_kind_only_matters_on_ios() {
+        // Everywhere else the branch is the same for a mouse and a finger, so
+        // a port that consulted the kind generally would be inventing a rule.
+        for platform in TargetPlatform::ALL {
+            if platform == TargetPlatform::IOS {
+                continue;
+            }
+            assert_eq!(
+                single_tap_up(platform, true, false, true, true, PointerKind::Mouse),
+                up(platform),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_that_cannot_be_selected_in_still_takes_the_keyboard() {
+        // Upstream's `requestKeyboard()` sits after the switch and the
+        // disabled branch returns through it. The reader tapped a text field,
+        // and typing is the other thing they might have meant.
+        for platform in TargetPlatform::ALL {
+            assert_eq!(
+                single_tap_up(platform, false, false, true, true, PointerKind::Touch),
+                TapUp::SelectionDisabled,
+                "{platform:?}"
+            );
+        }
+        assert!(tap_up_requests_keyboard());
     }
 
     // -- What a right-click means, which is not what a left-click means -----
