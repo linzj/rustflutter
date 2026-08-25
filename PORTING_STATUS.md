@@ -17289,3 +17289,46 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5590 + 333 通过；五个输出目录的
 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 227 次：一个上游表达不出来的状态，和一处被粗糙匹配器藏起来的缺陷
+
+三件事，都是在等第 226 次的筛子跑完时用**只读对照**找出来的。
+
+**一、`IconThemeData.shadows` 在中点整张换掉。**上游走
+`Shadow.lerpList`——多出来的那一层阴影是**淡入**的，不是在中点凭空出现。端口
+是 `lerp_nearer`。
+
+这一处第 222 次那个粗糙匹配器漏掉了，因为它只在 `material/` 目录里找单行
+右值，而 `IconThemeData` 住在 `widgets/`。新的对照按"这个主题**自己**的
+`lerp` 体在哪、里面对这个字段做了什么"来找，不再按目录和行形状猜。
+
+**二、上游自己丢掉的六个字段。**`TooltipThemeData.lerp` 只赋十个字段，
+`waitDuration`、`showDuration`、`exitDuration`、`triggerMode`、`enableFeedback`
+一个都不赋——混合出来的主题这五个是 null，每个 tooltip 回落到自己的默认值。
+`SnackBarThemeData.lerp` 同样丢掉 `showCloseIcon`。
+
+端口用"取较近一端"把它们带过去了。这看着更像上游的疏漏而不是决定，但**端口
+和上游不一样这件事本身应该是被写下来、被测试盯住的选择**。现在两处 `lerp`
+的文档都点名了上游丢哪几个，两条测试把携带行为钉住。
+
+**三、`ThemeData.brightness` 从字段改成了方法。**上游是
+
+```dart
+Brightness get brightness => colorScheme.brightness;
+```
+
+端口存成了 `pub brightness: Brightness`，紧挨着 `color_scheme`。于是端口能
+表达一个上游**表达不出来**的状态：主题声称自己是亮色，而它携带的配色方案是
+暗色。没有代码路径会产生它——`from_color_scheme` 是唯一设置它的地方——但
+`ThemeData { color_scheme: dark, ..ThemeData::light() }` 就差一行，而
+`ResolvedBottomAppBar::of` **在同一个函数里**既读 `theme.color_scheme` 又读
+`theme.brightness`。改成派生就让这个不一致无法表达，这正是上游那样写的理由。
+
+四条承重断言逐条强制改错：**四条全红。**其中 brightness 那条最初是被
+`bottom_bars` 里一条既有测试抓住的，说明改动确实承重，但没有测试盯着"派生
+关系"本身——补了一条，它连"两端调转"和"混合中途两者是否一致"一起钉住。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5594 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。

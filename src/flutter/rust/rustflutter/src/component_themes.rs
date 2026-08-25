@@ -597,6 +597,18 @@ impl TooltipThemeData {
             constraints: BoxConstraints::lerp(a.constraints, b.constraints, t),
             padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
             margin: EdgeInsetsGeometry::lerp(a.margin, b.margin, t),
+            // # Five fields upstream's own `lerp` drops
+            //
+            // `TooltipThemeData.lerp` assigns ten fields and leaves
+            // `waitDuration`, `showDuration`, `exitDuration`, `triggerMode`
+            // and `enableFeedback` unset, so a tooltip theme half-way through
+            // a transition loses them and each tooltip falls back to its own
+            // default. This port carries them at the nearer end instead.
+            //
+            // That is a deliberate difference, not an oversight here: the
+            // five have no midpoint, dropping them is visible behaviour, and
+            // it reads like an upstream oversight rather than a decision. It
+            // is pinned by a test so that it stays a choice.
             prefer_below: lerp_nearer(&a.prefer_below, &b.prefer_below, t),
             exclude_from_semantics: lerp_nearer(
                 &a.exclude_from_semantics,
@@ -2629,7 +2641,7 @@ impl ResolvedBottomAppBar {
             color: data.color.unwrap_or_else(|| {
                 if material3 {
                     scheme.surface_container()
-                } else if theme.brightness == crate::platform::Brightness::Dark {
+                } else if theme.brightness() == crate::platform::Brightness::Dark {
                     ResolvedBottomAppBar::M2_DARK
                 } else {
                     ResolvedBottomAppBar::M2_LIGHT
@@ -3661,7 +3673,7 @@ impl ResolvedIconButton {
     /// Upstream's `IconButton.themeStyleOf`: the theme merged over the filtered
     /// icon theme, and the icon theme alone where there is no theme.
     pub fn of(context: &mut BuildContext, icon_theme: &IconThemeData) -> ResolvedIconButton {
-        let is_dark = ThemeData::of(context).brightness == crate::platform::Brightness::Dark;
+        let is_dark = ThemeData::of(context).brightness() == crate::platform::Brightness::Dark;
         let from_icons = ResolvedIconButton::from_icon_theme(icon_theme, is_dark);
         let style = match IconButtonTheme::of(context).style {
             Some(theme_style) => theme_style.merge(&from_icons),
@@ -5323,6 +5335,10 @@ impl SnackBarThemeData {
             behavior: lerp_nearer(&a.behavior, &b.behavior, t),
             width: lerp_f32(a.width, b.width, t),
             inset_padding: EdgeInsetsGeometry::lerp(a.inset_padding, b.inset_padding, t),
+            // Upstream's `SnackBarThemeData.lerp` does not assign
+            // `showCloseIcon`, so a blended theme loses it. Carried here at
+            // the nearer end, for the reason given on
+            // [`TooltipThemeData::lerp`].
             show_close_icon: lerp_nearer(&a.show_close_icon, &b.show_close_icon, t),
             close_icon_color: lerp_color(a.close_icon_color, b.close_icon_color, t),
             action_overflow_threshold: lerp_f32(
@@ -8886,7 +8902,17 @@ impl IconThemeData {
             optical_size: lerp_f32(a.optical_size, b.optical_size, t),
             color: lerp_color(a.color, b.color, t),
             opacity: lerp_f32(a.opacity(), b.opacity(), t),
-            shadows: lerp_nearer(&a.shadows, &b.shadows, t),
+            // Upstream is `Shadow.lerpList`, which scales the excess items on
+            // whichever side has more rather than stepping the whole list: a
+            // second shadow that only one end has fades in.
+            shadows: match (&a.shadows, &b.shadows) {
+                (None, None) => None,
+                (first, second) => Some(crate::painting::BoxShadow::lerp_list(
+                    first.as_deref().unwrap_or(&[]),
+                    second.as_deref().unwrap_or(&[]),
+                    t,
+                )),
+            },
             apply_text_scaling: lerp_nearer(&a.apply_text_scaling, &b.apply_text_scaling, t),
         }
     }
@@ -15180,6 +15206,117 @@ mod tests {
                 .resolve(WidgetStates::NONE),
             state_numbered_date_picker_theme_data(20).range_selection_overlay_color.unwrap().resolve(WidgetStates::NONE),
             "range_selection_overlay_color"
+        );
+    }
+
+    // -- Three differences from upstream, tick 227 --------------------------
+
+    #[test]
+    fn an_icon_themes_shadows_blend_rather_than_stepping() {
+        // Upstream is `Shadow.lerpList`, which scales the excess items on
+        // whichever side has more rather than swapping the whole list at the
+        // midpoint. This port had `lerp_nearer`.
+        let shadow = |blur: f32| crate::painting::BoxShadow {
+            color: Color::argb(255, 0, 0, 0),
+            offset: crate::render::Offset::new(0.0, 0.0),
+            blur_radius: blur,
+            spread_radius: 0.0,
+        };
+        let a = IconThemeData::new().with_size(4.0);
+        let a = IconThemeData {
+            shadows: Some(vec![shadow(4.0)]),
+            ..a
+        };
+        let b = IconThemeData {
+            shadows: Some(vec![shadow(20.0)]),
+            ..IconThemeData::new().with_size(4.0)
+        };
+        let quarter = IconThemeData::lerp(&a, &b, 0.25);
+        assert_eq!(
+            quarter.shadows.as_ref().map(|s| s[0].blur_radius),
+            Some(8.0)
+        );
+        let back = IconThemeData::lerp(&b, &a, 0.25);
+        assert_eq!(back.shadows.as_ref().map(|s| s[0].blur_radius), Some(16.0));
+
+        // And a second shadow only one end has fades in rather than
+        // appearing at the midpoint: that is what `lerpList` is for.
+        let two = IconThemeData {
+            shadows: Some(vec![shadow(4.0), shadow(40.0)]),
+            ..IconThemeData::new().with_size(4.0)
+        };
+        let grown = IconThemeData::lerp(&a, &two, 0.25);
+        assert_eq!(
+            grown.shadows.as_ref().map(|s| s.len()),
+            Some(2),
+            "the second shadow is present from the first frame"
+        );
+    }
+
+    #[test]
+    fn the_five_fields_upstreams_tooltip_lerp_drops_are_carried_here() {
+        // `TooltipThemeData.lerp` assigns ten fields and leaves
+        // `waitDuration`, `showDuration`, `exitDuration`, `triggerMode` and
+        // `enableFeedback` unset, so upstream's blended theme loses them and
+        // each tooltip falls back to its own default. This port carries them
+        // at the nearer end. The difference is deliberate; this pins it so it
+        // stays a choice rather than becoming an accident.
+        let a = TooltipThemeData {
+            wait_duration: Some(std::time::Duration::from_millis(100)),
+            show_duration: Some(std::time::Duration::from_millis(200)),
+            exit_duration: Some(std::time::Duration::from_millis(300)),
+            enable_feedback: Some(true),
+            ..TooltipThemeData::default()
+        };
+        let b = TooltipThemeData {
+            wait_duration: Some(std::time::Duration::from_millis(400)),
+            show_duration: Some(std::time::Duration::from_millis(500)),
+            exit_duration: Some(std::time::Duration::from_millis(600)),
+            enable_feedback: Some(false),
+            ..TooltipThemeData::default()
+        };
+        // Upstream would answer `None` for every one of these.
+        let early = TooltipThemeData::lerp(&a, &b, 0.25);
+        assert_eq!(
+            early.wait_duration,
+            Some(std::time::Duration::from_millis(100))
+        );
+        assert_eq!(
+            early.show_duration,
+            Some(std::time::Duration::from_millis(200))
+        );
+        assert_eq!(
+            early.exit_duration,
+            Some(std::time::Duration::from_millis(300))
+        );
+        assert_eq!(early.enable_feedback, Some(true));
+
+        let late = TooltipThemeData::lerp(&a, &b, 0.75);
+        assert_eq!(
+            late.wait_duration,
+            Some(std::time::Duration::from_millis(400))
+        );
+        assert_eq!(late.enable_feedback, Some(false));
+    }
+
+    #[test]
+    fn the_close_icon_upstreams_snack_bar_lerp_drops_is_carried_here() {
+        // The same difference, one field, in `SnackBarThemeData.lerp`.
+        let a = SnackBarThemeData {
+            show_close_icon: Some(true),
+            ..SnackBarThemeData::default()
+        };
+        let b = SnackBarThemeData {
+            show_close_icon: Some(false),
+            ..SnackBarThemeData::default()
+        };
+        assert_eq!(
+            SnackBarThemeData::lerp(&a, &b, 0.25).show_close_icon,
+            Some(true)
+        );
+        assert_eq!(
+            SnackBarThemeData::lerp(&a, &b, 0.75).show_close_icon,
+            Some(false)
         );
     }
 }

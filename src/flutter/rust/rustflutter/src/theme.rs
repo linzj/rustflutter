@@ -176,7 +176,6 @@ impl Default for VisualDensity {
 /// controls are here.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThemeData {
-    pub brightness: Brightness,
     /// Upstream's `platform`, which is what the *adaptive* defaults are read
     /// against.
     ///
@@ -314,7 +313,6 @@ impl ThemeData {
             color_scheme.primary
         };
         ThemeData {
-            brightness,
             platform: TargetPlatform::host(),
             use_material3: true,
             color_scheme,
@@ -649,7 +647,6 @@ impl ThemeData {
         };
         let nearer = if t < 0.5 { a } else { b };
         ThemeData {
-            brightness: nearer.brightness,
             platform: nearer.platform,
             // A bool has no midpoint either.
             use_material3: nearer.use_material3,
@@ -836,8 +833,29 @@ impl ThemeData {
     /// `surface` is the scheme's, `outline` is the scheme's, `text` is
     /// `onSurface`, and the two sizes and the spacing keep the values the
     /// crate's controls were built against.
+    /// Upstream `ThemeData.brightness`, which is a getter over the scheme:
+    ///
+    /// ```dart
+    /// Brightness get brightness => colorScheme.brightness;
+    /// ```
+    ///
+    /// # Why it is not a field here
+    ///
+    /// It was one, next to `color_scheme`, and that let this port hold a
+    /// state upstream cannot express: a theme saying it is light while the
+    /// scheme it carries is dark. Nothing built one -- `from_color_scheme`
+    /// is the only place that set it, from the scheme -- but
+    /// `ThemeData { color_scheme: dark, ..ThemeData::light() }` is one line
+    /// away, and `ResolvedBottomAppBar::of` reads `theme.color_scheme` and
+    /// this in the same function. Deriving it makes the mismatch
+    /// unrepresentable, which is the whole reason upstream spells it that
+    /// way.
+    pub fn brightness(&self) -> Brightness {
+        self.color_scheme.brightness
+    }
+
     pub fn to_component_theme(&self) -> Theme {
-        let base = if self.brightness == Brightness::Dark {
+        let base = if self.brightness() == Brightness::Dark {
             Theme::dark()
         } else {
             Theme::light()
@@ -1154,14 +1172,14 @@ mod tests {
         let light = ThemeData::light();
         let dark = ThemeData::dark();
         let half = ThemeData::lerp(&light, &dark, 0.5);
-        assert_eq!(half.brightness, Brightness::Dark);
+        assert_eq!(half.brightness(), Brightness::Dark);
         assert!(half.apply_elevation_overlay_color);
         // The surface is between the two, not either of them.
         assert_ne!(half.canvas_color, light.canvas_color);
         assert_ne!(half.canvas_color, dark.canvas_color);
 
         let just_before = ThemeData::lerp(&light, &dark, 0.49);
-        assert_eq!(just_before.brightness, Brightness::Light);
+        assert_eq!(just_before.brightness(), Brightness::Light);
         assert!(!just_before.apply_elevation_overlay_color);
     }
 
@@ -1223,7 +1241,7 @@ mod tests {
 
         impl Component for Reader {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
-                self.0.set(Some(ThemeData::of(context).brightness));
+                self.0.set(Some(ThemeData::of(context).brightness()));
                 leaf(|| SizedBox::new(1.0, 1.0))
             }
         }
@@ -2021,5 +2039,32 @@ mod tests {
                 .and_then(|elevation| elevation.resolve(crate::widget_state::WidgetStates::NONE)),
             Some(148.0)
         );
+    }
+
+    #[test]
+    fn a_themes_brightness_is_its_schemes_and_cannot_disagree_with_it() {
+        // Upstream: `Brightness get brightness => colorScheme.brightness;`.
+        // This was a stored field here, so a theme could say it was light
+        // while carrying a dark scheme -- one line away, and
+        // `ResolvedBottomAppBar::of` reads both in the same function.
+        assert_eq!(ThemeData::light().brightness(), Brightness::Light);
+        assert_eq!(ThemeData::dark().brightness(), Brightness::Dark);
+
+        // The line that used to make the two disagree. It cannot now: there
+        // is no field to leave behind.
+        let swapped = ThemeData {
+            color_scheme: ColorScheme::dark(),
+            ..ThemeData::light()
+        };
+        assert_eq!(swapped.brightness(), Brightness::Dark);
+        assert_eq!(swapped.brightness(), swapped.color_scheme.brightness);
+
+        // And through the blend, where the field used to be stepped on its
+        // own line: the scheme's own brightness steps at the midpoint, so the
+        // theme's follows it rather than being a second, separate step.
+        let half = ThemeData::lerp(&ThemeData::light(), &ThemeData::dark(), 0.5);
+        assert_eq!(half.brightness(), half.color_scheme.brightness);
+        let early = ThemeData::lerp(&ThemeData::light(), &ThemeData::dark(), 0.499);
+        assert_eq!(early.brightness(), early.color_scheme.brightness);
     }
 }
