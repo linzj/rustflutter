@@ -18,12 +18,33 @@ pub enum FloatingLabelBehavior {
 }
 
 impl FloatingLabelBehavior {
-    pub fn floats(self, focused: bool, has_content: bool) -> bool {
+    /// Upstream's `labelShouldWithdraw`, which is
+    /// `!isEmpty || (isFocused && decoration.enabled)` and then
+    /// `|| behavior == always`.
+    ///
+    /// **The `enabled` term is upstream's and was missing here.** A disabled
+    /// field that holds focus keeps its label inline: floating it would say
+    /// the field is being edited when it cannot be.
+    pub fn withdraws(self, focused: bool, has_content: bool, enabled: bool) -> bool {
         match self {
-            FloatingLabelBehavior::Never => false,
             FloatingLabelBehavior::Always => true,
-            FloatingLabelBehavior::Auto => focused || has_content,
+            _ => has_content || (focused && enabled),
         }
+    }
+
+    /// Upstream's `_floatingLabelEnabled`: anything but `never`.
+    pub fn allows_floating(self) -> bool {
+        self != FloatingLabelBehavior::Never
+    }
+
+    /// Whether the label is drawn above the content.
+    ///
+    /// Withdrawing is not the same question as floating: a label withdraws
+    /// because there is something in the field, and it floats only if the
+    /// behaviour lets it. Under `never` it withdraws and goes **nowhere** --
+    /// see [`LabelPlacement::Hidden`].
+    pub fn floats(self, focused: bool, has_content: bool) -> bool {
+        self.allows_floating() && self.withdraws(focused, has_content, true)
     }
 }
 
@@ -209,6 +230,18 @@ pub enum LabelPlacement {
     Floating,
     /// Sitting in the content, where it reads as a placeholder.
     Inline,
+    /// There is a label, and it is drawn nowhere.
+    ///
+    /// Upstream's `_shouldShowLabel` -- `_hasInlineLabel || _floatingLabelEnabled`
+    /// -- is false in exactly one case: the behaviour is `never` **and** the
+    /// label has withdrawn. It has nowhere to go: `never` forbids the floating
+    /// position, and the inline position is where the reader's own text now
+    /// is.
+    ///
+    /// This port had no such state, and answered `Inline` -- which draws the
+    /// label **on top of what was typed**. That is the thing
+    /// [`ShapedInputBorder`]'s own doc warns about from the other direction.
+    Hidden,
     /// Not shown at all -- there was no label.
     Absent,
 }
@@ -242,18 +275,21 @@ impl InputDecorator {
         self
     }
 
+    /// Upstream's `_shouldShowLabel` and `_hasInlineLabel`, together.
     pub fn label_placement(&self) -> LabelPlacement {
         if self.decoration.label_text.is_none() {
             return LabelPlacement::Absent;
         }
-        if self
-            .decoration
-            .floating_label_behavior
-            .floats(self.is_focused, !self.is_empty)
-        {
-            LabelPlacement::Floating
-        } else {
-            LabelPlacement::Inline
+        let behavior = self.decoration.floating_label_behavior;
+        let withdrawn = behavior.withdraws(
+            self.is_focused,
+            !self.is_empty,
+            self.decoration.enabled,
+        );
+        match (withdrawn, behavior.allows_floating()) {
+            (true, true) => LabelPlacement::Floating,
+            (true, false) => LabelPlacement::Hidden,
+            (false, _) => LabelPlacement::Inline,
         }
     }
 
@@ -334,6 +370,84 @@ mod tests {
             InputDecorator::new(labelled())
                 .with_content()
                 .label_placement(),
+            LabelPlacement::Floating
+        );
+    }
+
+    #[test]
+    fn a_label_told_never_to_float_is_hidden_rather_than_drawn_over_the_text() {
+        // Upstream's `_shouldShowLabel` is `_hasInlineLabel || _floatingLabelEnabled`,
+        // and it is false in exactly one case: `never`, with the label
+        // withdrawn. It has nowhere to go -- `never` forbids the floating
+        // position and the reader's own text is now in the inline one.
+        //
+        // This port had no such state and answered `Inline`, which draws the
+        // label **on top of what was typed**. `ShapedInputBorder`'s own doc
+        // warns about `never` from the other direction; this is the near side
+        // of it.
+        let never = || {
+            let mut decoration = labelled();
+            decoration.floating_label_behavior = FloatingLabelBehavior::Never;
+            decoration
+        };
+        assert_eq!(
+            InputDecorator::new(never()).label_placement(),
+            LabelPlacement::Inline,
+            "an empty field still reads it as a placeholder"
+        );
+        assert_eq!(
+            InputDecorator::new(never()).with_content().label_placement(),
+            LabelPlacement::Hidden,
+            "and once there is text, it goes nowhere"
+        );
+        assert_eq!(
+            InputDecorator::new(never()).focused().label_placement(),
+            LabelPlacement::Hidden,
+            "the same while it is being typed into"
+        );
+    }
+
+    #[test]
+    fn a_field_you_cannot_edit_does_not_float_its_label_for_being_focused() {
+        // Upstream's `_labelShouldWithdraw` is
+        // `!isEmpty || (isFocused && decoration.enabled)`, and the `enabled`
+        // term was missing here. Floating the label of a disabled field says
+        // it is being edited when it cannot be.
+        let disabled = || {
+            let mut decoration = labelled();
+            decoration.enabled = false;
+            decoration
+        };
+        assert_eq!(
+            InputDecorator::new(disabled()).focused().label_placement(),
+            LabelPlacement::Inline,
+            "focus alone does not lift it"
+        );
+        // But content does, because the label would otherwise sit on the text
+        // -- and that is true whether or not the field can be edited.
+        assert_eq!(
+            InputDecorator::new(disabled())
+                .with_content()
+                .label_placement(),
+            LabelPlacement::Floating
+        );
+        // And an enabled field is the case that shows the term is read.
+        assert_eq!(
+            InputDecorator::new(labelled()).focused().label_placement(),
+            LabelPlacement::Floating
+        );
+    }
+
+    #[test]
+    fn always_floats_a_label_with_nothing_under_it_at_all() {
+        // The third behaviour, and the one that makes `withdraws` more than
+        // "is there something here": `always` withdraws an empty, unfocused,
+        // disabled field's label.
+        let mut decoration = labelled();
+        decoration.floating_label_behavior = FloatingLabelBehavior::Always;
+        decoration.enabled = false;
+        assert_eq!(
+            InputDecorator::new(decoration).label_placement(),
             LabelPlacement::Floating
         );
     }

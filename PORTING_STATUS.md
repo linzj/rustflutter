@@ -15480,3 +15480,33 @@ widget 的 → 主题的 → 配色的（上游的顺序）。
 `with_max_lines(1)` 映射到 `Single` 而不是 `Bounded(1)`）。
 
 5263 测试通过，完整 GN 门过。
+
+## 第 178 轮 — 说"永不浮动"的标签，被画在了用户打的字上面
+
+回到 `depth`。`InputDecoration` 20/61。它那六十一个成员里绝大多数是转发给
+`InputDecorationTheme` 的样式字段（这个 crate 已经在解析），
+真正由它承担的是标签的那几条规则：`_labelShouldWithdraw`、
+`labelShouldWithdraw`、`_floatingLabelEnabled`、`_hasInlineLabel`、
+`_shouldShowLabel`。逐条对下来，**两条是错的**。
+
+### 一、`never` 加上有内容，标签应当藏起来
+
+上游 `_shouldShowLabel` 是 `_hasInlineLabel || _floatingLabelEnabled`，
+只有一种情况为假：行为是 `never` 而标签已经"退位"。
+它**无处可去**——`never` 禁掉了浮动的位置，而行内的位置现在是读者打的字。
+
+这个 port 没有这个状态，答的是 `Inline`——**标签会画在输入的文字上面**。
+`ShapedInputBorder` 的文档从另一侧警告过 `never`（缺口照旧被切出来），
+这是它的近侧。加了 `LabelPlacement::Hidden`。
+
+### 二、`isFocused && decoration.enabled` 里的 `enabled` 项漏了
+
+一个被禁用的字段拿到焦点会浮起标签——那等于说它正在被编辑，而它不能被编辑。
+
+顺手把 `FloatingLabelBehavior` 拆成 `withdraws()` 和 `allows_floating()`，
+这是上游自己的拆法，也是这两个问题不是同一个问题的理由：
+**标签退位是因为字段里有东西，浮起来则要行为允许**。
+
+三条变异全红：去掉 `enabled` 项、`Hidden` 改回 `Inline`、`Always` 不再压过一切。
+
+`depth_examined.json` 记了这次阅读。5266 测试通过，完整 GN 门过。
