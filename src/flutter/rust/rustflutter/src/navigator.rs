@@ -1745,3 +1745,173 @@ mod tests {
         assert!(shown.contains("home"), "{shown}");
     }
 }
+
+// -- The stack an initial route opens on --------------------------------------
+
+/// Upstream `Navigator.defaultRouteName`.
+pub const DEFAULT_ROUTE_NAME: &str = "/";
+
+/// Upstream `Navigator.defaultGenerateInitialRoutes`: which routes an
+/// application launched at `/a/b/c` finds already on its stack.
+///
+/// # Not one route, a stack
+///
+/// A deep link is a place *inside* an application, and arriving there with
+/// nothing underneath leaves the reader with no way back that is not the
+/// system's. So `/a/b/c` opens `/`, `/a`, `/a/b`, `/a/b/c` -- every prefix,
+/// outermost first -- and the back button walks out the way somebody who had
+/// navigated there by hand would.
+///
+/// # The asymmetry worth knowing
+///
+/// A prefix that does not exist is treated **two different ways depending on
+/// where it is**, and upstream's comments say why for one and not the other:
+///
+/// * a missing route in the **middle** is skipped, and the two either side of
+///   it end up adjacent. Upstream's example is `routes = ['A', 'A/B/C']` with
+///   `A/B` absent: the answer is `['A', 'A/B/C']`. An application is allowed
+///   to have gaps in its route table.
+/// * a missing route at the **end** discards the whole stack. That is the
+///   route the reader actually asked for; without it the rest is a pile of
+///   ancestors of somewhere they cannot reach, so upstream reports an error
+///   and falls back to `/` alone.
+///
+/// So the same absence is a gap to route around in one place and a reason to
+/// give up in another, and which one it is depends only on position.
+///
+/// `exists` answers whether the application can build a route of that name --
+/// upstream's `_routeNamed(..., allowNull: true)`.
+pub fn default_generate_initial_routes(
+    initial_route_name: &str,
+    exists: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut names: Vec<Option<String>> = Vec::new();
+
+    if initial_route_name.starts_with('/') && initial_route_name.len() > 1 {
+        let stripped = &initial_route_name[1..];
+        names.push(exists(DEFAULT_ROUTE_NAME).then(|| DEFAULT_ROUTE_NAME.to_string()));
+        let mut name = String::new();
+        for part in stripped.split('/') {
+            name.push('/');
+            name.push_str(part);
+            names.push(exists(&name).then(|| name.clone()));
+        }
+        // The last is the one that was asked for. Without it the rest is a
+        // pile of ancestors of somewhere the reader cannot reach.
+        if names.last().is_some_and(Option::is_none) {
+            names.clear();
+        }
+    } else if initial_route_name != DEFAULT_ROUTE_NAME {
+        names.push(exists(initial_route_name).then(|| initial_route_name.to_string()));
+    }
+
+    // Gaps in the middle are routed around rather than fatal.
+    let mut stack: Vec<String> = names.into_iter().flatten().collect();
+    if stack.is_empty() {
+        // Upstream drops `allowNull` here: an application with no `/` at all
+        // is a mistake to report rather than a stack to leave empty.
+        stack.push(DEFAULT_ROUTE_NAME.to_string());
+    }
+    stack
+}
+
+#[cfg(test)]
+mod initial_route_tests {
+    use super::{DEFAULT_ROUTE_NAME, default_generate_initial_routes};
+
+    /// An application whose route table is exactly these names.
+    fn table(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |name: &str| names.contains(&name)
+    }
+
+    #[test]
+    fn a_deep_link_arrives_with_its_ancestors_underneath_it() {
+        // The whole reason this is a stack and not a route: the back button
+        // has to walk out the way somebody who navigated there by hand would.
+        assert_eq!(
+            default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b", "/a/b/c"])),
+            vec!["/", "/a", "/a/b", "/a/b/c"]
+        );
+    }
+
+    #[test]
+    fn a_gap_in_the_middle_is_routed_around() {
+        // Upstream's own example: `routes = ['A', 'A/B/C']` with `A/B` absent.
+        // An application is allowed to have gaps in its route table, and the
+        // two either side end up adjacent.
+        assert_eq!(
+            default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b/c"])),
+            vec!["/", "/a", "/a/b/c"]
+        );
+    }
+
+    #[test]
+    fn but_a_gap_at_the_end_throws_the_whole_stack_away() {
+        // The asymmetry. The last name is the one the reader asked for;
+        // without it the rest is a pile of ancestors of somewhere they cannot
+        // reach, so upstream reports an error and opens `/` alone.
+        assert_eq!(
+            default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b"])),
+            vec![DEFAULT_ROUTE_NAME]
+        );
+    }
+
+    #[test]
+    fn and_the_two_are_told_apart_only_by_position() {
+        // The same absence, twice, in one route table. `/a/b` missing is a
+        // gap; `/a/b/c` missing is a failure. Nothing about the name says
+        // which.
+        let missing_middle = default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b/c"]));
+        let missing_end = default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b"]));
+        assert_eq!(missing_middle.len(), 3);
+        assert_eq!(missing_end, vec![DEFAULT_ROUTE_NAME]);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_path_is_tried_on_its_own() {
+        // Upstream's `else if`: a name that does not start with `/` gets one
+        // attempt and no ancestors, because there is no path to take apart.
+        assert_eq!(
+            default_generate_initial_routes("settings", table(&["/", "settings"])),
+            vec!["settings"]
+        );
+        assert_eq!(
+            default_generate_initial_routes("settings", table(&["/"])),
+            vec![DEFAULT_ROUTE_NAME],
+            "and falls back when it is not there"
+        );
+    }
+
+    #[test]
+    fn the_default_route_asks_for_nothing_and_gets_itself() {
+        // `/` takes neither branch: it is not longer than one character and it
+        // is not something other than the default. The empty stack at the end
+        // is what supplies it.
+        assert_eq!(
+            default_generate_initial_routes("/", table(&["/"])),
+            vec![DEFAULT_ROUTE_NAME]
+        );
+    }
+
+    #[test]
+    fn an_application_with_no_root_route_still_gets_one_to_report() {
+        // Upstream drops `allowNull` for this last attempt, so an application
+        // with no `/` at all is a mistake it reports rather than a stack it
+        // leaves empty. A navigator with nothing on it has nothing to draw.
+        assert_eq!(
+            default_generate_initial_routes("/a", table(&[])),
+            vec![DEFAULT_ROUTE_NAME]
+        );
+    }
+
+    #[test]
+    fn a_root_that_is_missing_is_a_gap_like_any_other() {
+        // `/` is the first prefix, not a special case, so an application that
+        // has `/a` and no `/` opens at `/a` alone.
+        assert_eq!(
+            default_generate_initial_routes("/a", table(&["/a"])),
+            vec!["/a"]
+        );
+    }
+}
+
