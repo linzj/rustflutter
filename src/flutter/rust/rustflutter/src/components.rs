@@ -2144,14 +2144,25 @@ impl Component for Divider {
             top: 0.0,
             bottom: 0.0,
         };
+        // Upstream rounds the box and draws the line as its *bottom border*;
+        // this fills a box of the line's thickness. At a zero radius the two
+        // are the same picture. With one they differ at the ends, and this
+        // is the shape this Container can draw.
+        let radius = divider
+            .radius
+            .map(|r| r.resolve(crate::direction::direction_of(context)));
         leaf(move || {
-            Container::new().with_height(space).with_child(Align::new(
-                Alignment::CENTER,
-                Container::new()
-                    .with_height(thickness)
-                    .with_color(color)
-                    .with_margin(insets),
-            ))
+            let line = Container::new()
+                .with_height(thickness)
+                .with_color(color)
+                .with_margin(insets);
+            let line = match radius {
+                Some(radius) => line.with_border_radius(radius),
+                None => line,
+            };
+            Container::new()
+                .with_height(space)
+                .with_child(Align::new(Alignment::CENTER, line))
         })
     }
 }
@@ -4731,6 +4742,103 @@ mod tests {
         assert!(handlers.on_tap.is_none());
         assert!(handlers.on_drag_update.is_none());
     }
+
+    // -- A divider can round its ends, tick 229 -----------------------------
+    //
+    // `tools/unread_theme_fields.py` found `DividerThemeData::radius` named
+    // nowhere outside its own paperwork: it is declared, documented, carried
+    // through `copy_with`, interpolated by `lerp` and watched by a test --
+    // and `ResolvedDivider` dropped it, so no divider in this port could
+    // round its corners however the theme was set. Upstream's
+    // `Divider.build` reads `radius ?? dividerTheme.radius ?? defaults.radius`
+    // and neither default sets one.
+
+
+    // -- A divider can round its ends, tick 229 -----------------------------
+    //
+    // `tools/unread_theme_fields.py` found `DividerThemeData::radius` named
+    // nowhere outside its own paperwork: declared, documented, carried
+    // through `copy_with`, interpolated by `lerp`, watched by a test -- and
+    // `ResolvedDivider` dropped it, so no divider here could round its
+    // corners however the theme was set. Upstream's `Divider.build` reads
+    // `radius ?? dividerTheme.radius ?? defaults.radius`, and neither
+    // `_DividerDefaultsM2` nor `_DividerDefaultsM3` sets one.
+
+    /// What a widget painted.
+    fn painted(widget: AnyWidget) -> Vec<crate::engine_test_stubs::Drawn> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn divider_under(radius: Option<f32>, vertical: bool) -> AnyWidget {
+        let data = crate::component_themes::DividerThemeData {
+            color: Some(Color::argb(255, 255, 0, 0)),
+            thickness: Some(4.0),
+            radius: radius.map(|r| {
+                crate::borders::BorderRadiusGeometry::Absolute(
+                    crate::borders::BorderRadius::circular(r),
+                )
+            }),
+            ..crate::component_themes::DividerThemeData::default()
+        };
+        let line = if vertical {
+            component(VerticalDivider)
+        } else {
+            component(Divider)
+        };
+        crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::component_themes::DividerTheme::new(data, line),
+        )
+    }
+
+    #[test]
+    fn a_divider_rounds_its_ends_when_the_theme_asks_and_stays_square_otherwise() {
+        // What is checkable here is the *shape*, not the radius: a rounded
+        // fill goes to the engine as a path, and `Drawn::Path` records only
+        // the path's bounding box -- the stub's stated blind spot. So this
+        // says the rounding reached the painter, and
+        // `the_resolved_divider_carries_the_themes_radius` says the number
+        // that reached it was the theme's. Neither claim alone is the wire.
+        let is_path = |calls: &[crate::engine_test_stubs::Drawn]| {
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Path { .. }))
+        };
+        let is_rect = |calls: &[crate::engine_test_stubs::Drawn]| {
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Rect { .. }))
+        };
+
+        let rounded = painted(divider_under(Some(6.0), false));
+        assert!(is_path(&rounded), "a rounded rule is a path: {rounded:?}");
+        let square = painted(divider_under(None, false));
+        assert!(is_rect(&square), "a square one is a rectangle: {square:?}");
+        assert!(!is_path(&square), "and nothing rounds it: {square:?}");
+
+        let rounded = painted(divider_under(Some(6.0), true));
+        assert!(
+            is_path(&rounded),
+            "the vertical rule rounds too: {rounded:?}"
+        );
+        let square = painted(divider_under(None, true));
+        assert!(!is_path(&square), "and stays square without: {square:?}");
+    }
 }
 
 /// Upstream `VerticalDivider`: the same hairline, on its side.
@@ -4758,14 +4866,22 @@ impl Component for VerticalDivider {
             top: divider.indent,
             bottom: divider.end_indent,
         };
+        // The same rounding the horizontal rule takes, from the same field.
+        let radius = divider
+            .radius
+            .map(|r| r.resolve(crate::direction::direction_of(context)));
         leaf(move || {
-            Container::new().with_width(space).with_child(Align::new(
-                Alignment::CENTER,
-                Container::new()
-                    .with_width(thickness)
-                    .with_color(color)
-                    .with_margin(insets),
-            ))
+            let line = Container::new()
+                .with_width(thickness)
+                .with_color(color)
+                .with_margin(insets);
+            let line = match radius {
+                Some(radius) => line.with_border_radius(radius),
+                None => line,
+            };
+            Container::new()
+                .with_width(space)
+                .with_child(Align::new(Alignment::CENTER, line))
         })
     }
 }

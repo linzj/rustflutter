@@ -17394,3 +17394,42 @@ context。**所以 `wired` 现在只记住"拿到一个值该做什么"，`build
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后，**unread_theme_fields 137（新，队列）**。
 门：5600 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 229 次：分隔线终于能圆角了，而找到它的不是那把尺子
+
+第 228 次手工找到的那根线：**`DividerThemeData::radius` 没有任何 widget 读
+它**。`ResolvedDivider` 干脆没有这个字段，所以无论主题怎么设，端口里的
+`Divider` 和 `VerticalDivider` 都圆不了角。上游两处 `build` 都读
+
+```dart
+borderRadius: radius ?? dividerTheme.radius ?? defaults.radius
+```
+
+而 `_DividerDefaultsM2` 与 `_DividerDefaultsM3` 都不设 `radius`——所以解析就是
+"主题给什么用什么，不给就是方角"。现在两条规都按方向解析后交给 `Container`。
+
+**一处和上游的差别写在了原处**：上游把线画成一个圆角盒子的**底边框**，这里
+是填满一个线厚的盒子。半径为零时两者是同一张图；有半径时两端不同，而这是
+这个 `Container` 画得出来的形状。
+
+**测试拆成了两半，因为一半说不准。**圆角填充到引擎是一条 `Path`，而
+`Drawn::Path` 只记录包围盒——这是引擎桩自己声明的盲区。所以：
+
+- `components.rs` 那条说**圆角到达了画笔**：有半径画路径，没半径画矩形，
+  且没半径时不会凭空多出一条路径。
+- `component_themes.rs` 那条说**到达画笔的数值是主题的**：解析器交出的正是
+  设进去的那个 `BorderRadius`，未设时仍是未设。
+
+两条各自都不是"这根线接上了"，合起来才是。测试里写明了这一点。
+
+三段逐段强制改错：**三段全红。**
+
+**尺子没找到它。**`unread_theme_fields.py` 按裸字段名在全 crate 里搜，而
+`.radius` 到处都是——所以 `DividerThemeData::radius` 从来没进过那份名单，读数
+仍是 137。尺子找到的是这**一类**缺陷；这个具体的实例是对着上游读出来的。
+这正是那把尺子文档里说的"它只会少报"的样子。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后，unread_theme_fields 137（队列）。
+门：5602 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

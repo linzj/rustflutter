@@ -10470,6 +10470,11 @@ pub struct ResolvedDivider {
     pub thickness: f32,
     pub indent: f32,
     pub end_indent: f32,
+    /// Upstream's `radius ?? dividerTheme.radius ?? defaults.radius`, and
+    /// neither `_DividerDefaultsM2` nor `_DividerDefaultsM3` sets one -- so
+    /// this is the theme's or nothing. It was missing here, which meant no
+    /// divider could round its corners whatever the theme said.
+    pub radius: Option<BorderRadiusGeometry>,
 }
 
 impl ResolvedDivider {
@@ -10477,6 +10482,7 @@ impl ResolvedDivider {
         let data = DividerTheme::of(context);
         let theme = ThemeData::of(context);
         ResolvedDivider {
+            radius: data.radius,
             color: data.color.unwrap_or(theme.divider_color),
             space: data.space.unwrap_or(16.0),
             thickness: data.thickness.unwrap_or(0.0),
@@ -15318,6 +15324,44 @@ mod tests {
             SnackBarThemeData::lerp(&a, &b, 0.75).show_close_icon,
             Some(false)
         );
+    }
+
+    #[test]
+    fn the_resolved_divider_carries_the_themes_radius() {
+        // The painter test in `components.rs` can only see that a rounding
+        // happened, because a rounded fill reaches the engine as a path and
+        // the stub records a path by its bounding box. This is the other
+        // half: the number that arrives is the theme's, and an unset field
+        // stays unset rather than acquiring a default of its own -- upstream's
+        // two default tables set no radius.
+        let themed = |radius: Option<f32>| {
+            read_in(
+                move |child| {
+                    MaterialTheme::new(
+                        ThemeData::light(),
+                        DividerTheme::new(
+                            DividerThemeData {
+                                radius: radius.map(|r| {
+                                    crate::borders::BorderRadiusGeometry::Absolute(
+                                        crate::borders::BorderRadius::circular(r),
+                                    )
+                                }),
+                                ..DividerThemeData::default()
+                            },
+                            child,
+                        ),
+                    )
+                },
+                |context| ResolvedDivider::of(context).radius,
+            )
+        };
+        assert_eq!(
+            themed(Some(6.0)),
+            Some(crate::borders::BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(6.0)
+            ))
+        );
+        assert_eq!(themed(None), None);
     }
 }
 
