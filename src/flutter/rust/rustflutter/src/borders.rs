@@ -481,6 +481,98 @@ impl EdgeInsetsGeometry {
         }
     }
 
+    /// Upstream `EdgeInsetsGeometry * double`, which scales every edge.
+    pub fn scale(self, factor: f32) -> EdgeInsetsGeometry {
+        match self {
+            EdgeInsetsGeometry::Zero => EdgeInsetsGeometry::Zero,
+            EdgeInsetsGeometry::Absolute(insets) => EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: insets.left * factor,
+                top: insets.top * factor,
+                right: insets.right * factor,
+                bottom: insets.bottom * factor,
+            }),
+            EdgeInsetsGeometry::Directional(insets) => {
+                EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                    start: insets.start * factor,
+                    top: insets.top * factor,
+                    end: insets.end * factor,
+                    bottom: insets.bottom * factor,
+                })
+            }
+        }
+    }
+
+    /// Upstream `EdgeInsetsGeometry.lerp`.
+    ///
+    /// # A missing end is not the other end held still
+    ///
+    /// Upstream answers `b * t` when `a` is null and `a * (1 - t)` when `b`
+    /// is: insets that appear grow out of nothing and insets that go away
+    /// shrink into it, rather than either snapping to full size.
+    ///
+    /// `Zero` is not that null. It is `EdgeInsets.zero`, a real value on the
+    /// absolute side, so a `Zero`/`Directional` pair takes the mixed arm
+    /// below exactly as upstream does.
+    ///
+    /// # The mixed pair is an approximation here
+    ///
+    /// Upstream builds a `_MixedEdgeInsets` carrying all six numbers -- left,
+    /// right, start, end, top, bottom -- and only resolves when someone asks
+    /// for a direction. This enum has no such variant, so a mixed pair
+    /// resolves both ends left-to-right first: the same approximation
+    /// [`EdgeInsetsGeometry::add`] already makes, and for the same reason.
+    /// Under RTL the two ends are still right and only the frames between
+    /// them are mirrored from upstream's.
+    pub fn lerp(
+        a: Option<EdgeInsetsGeometry>,
+        b: Option<EdgeInsetsGeometry>,
+        t: f32,
+    ) -> Option<EdgeInsetsGeometry> {
+        let blend = |first: (f32, f32, f32, f32), second: (f32, f32, f32, f32)| {
+            (
+                lerp_double(first.0, second.0, t),
+                lerp_double(first.1, second.1, t),
+                lerp_double(first.2, second.2, t),
+                lerp_double(first.3, second.3, t),
+            )
+        };
+        match (a, b) {
+            (None, None) => None,
+            (None, Some(b)) => Some(b.scale(t)),
+            (Some(a), None) => Some(a.scale(1.0 - t)),
+            (Some(a), Some(b)) if a == b => Some(a),
+            (
+                Some(EdgeInsetsGeometry::Directional(a)),
+                Some(EdgeInsetsGeometry::Directional(b)),
+            ) => {
+                let (start, top, end, bottom) = blend(
+                    (a.start, a.top, a.end, a.bottom),
+                    (b.start, b.top, b.end, b.bottom),
+                );
+                Some(EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                    start,
+                    top,
+                    end,
+                    bottom,
+                }))
+            }
+            (Some(a), Some(b)) => {
+                let a = a.resolve(TextDirection::Ltr);
+                let b = b.resolve(TextDirection::Ltr);
+                let (left, top, right, bottom) = blend(
+                    (a.left, a.top, a.right, a.bottom),
+                    (b.left, b.top, b.right, b.bottom),
+                );
+                Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                }))
+            }
+        }
+    }
+
     pub fn deflate_rect(&self, rect: Rect, direction: TextDirection) -> Rect {
         rect_deflate_insets(rect, self.resolve(direction))
     }
@@ -7277,6 +7369,145 @@ mod tests {
                 "at t={t}"
             );
         }
+    }
+
+    // -- `EdgeInsetsGeometry::lerp` -----------------------------------------
+    //
+    // Added at tick 220, because three `SliderThemeData` fields were stepping
+    // where upstream blends and the blends they needed did not exist here.
+
+    #[test]
+    fn insets_that_appear_grow_out_of_nothing() {
+        // Upstream answers `b * t` for a null first end, not `b` held still:
+        // a padding that only the destination theme has grows in.
+        let insets = EdgeInsetsGeometry::Absolute(EdgeInsets {
+            left: 4.0,
+            top: 8.0,
+            right: 12.0,
+            bottom: 16.0,
+        });
+        assert_eq!(
+            EdgeInsetsGeometry::lerp(None, Some(insets), 0.25),
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 1.0,
+                top: 2.0,
+                right: 3.0,
+                bottom: 4.0,
+            }))
+        );
+        // And `a * (1 - t)` the other way: one that goes away shrinks into
+        // nothing rather than staying full size until it vanishes.
+        assert_eq!(
+            EdgeInsetsGeometry::lerp(Some(insets), None, 0.25),
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 3.0,
+                top: 6.0,
+                right: 9.0,
+                bottom: 12.0,
+            }))
+        );
+        assert_eq!(EdgeInsetsGeometry::lerp(None, None, 0.25), None);
+    }
+
+    #[test]
+    fn a_directional_pair_stays_directional() {
+        // The point of the arm: blending start-and-end as start-and-end, so
+        // the answer still reads against the text direction. Resolving first
+        // would freeze the mid-animation frames to one direction.
+        let quarter = EdgeInsetsGeometry::lerp(
+            Some(EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                start: 4.0,
+                top: 8.0,
+                end: 12.0,
+                bottom: 16.0,
+            })),
+            Some(EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                start: 20.0,
+                top: 24.0,
+                end: 28.0,
+                bottom: 32.0,
+            })),
+            0.25,
+        );
+        assert_eq!(
+            quarter,
+            Some(EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                start: 8.0,
+                top: 12.0,
+                end: 16.0,
+                bottom: 20.0,
+            }))
+        );
+        // Which is to say it still mirrors.
+        let quarter = quarter.expect("both ends are present");
+        assert_eq!(quarter.resolve(TextDirection::Ltr).left, 8.0);
+        assert_eq!(quarter.resolve(TextDirection::Rtl).left, 16.0);
+    }
+
+    #[test]
+    fn a_mixed_pair_resolves_first_which_is_this_ports_approximation() {
+        // Upstream builds a `_MixedEdgeInsets` carrying all six numbers and
+        // resolves later. This enum has no such variant, so the pair resolves
+        // left-to-right first -- the same approximation `add` makes. The two
+        // ends are still right; only the frames between them are mirrored
+        // from upstream's under RTL.
+        let quarter = EdgeInsetsGeometry::lerp(
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 4.0,
+                top: 0.0,
+                right: 12.0,
+                bottom: 0.0,
+            })),
+            Some(EdgeInsetsGeometry::Directional(EdgeInsetsDirectional {
+                start: 20.0,
+                top: 0.0,
+                end: 28.0,
+                bottom: 0.0,
+            })),
+            0.25,
+        );
+        assert_eq!(
+            quarter,
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 8.0,
+                top: 0.0,
+                right: 16.0,
+                bottom: 0.0,
+            }))
+        );
+    }
+
+    #[test]
+    fn zero_is_a_value_and_not_the_absent_end() {
+        // `Zero` is `EdgeInsets.zero`, which upstream treats as an ordinary
+        // `EdgeInsets`. Reading it as the null end would scale the other side
+        // instead of blending towards nothing -- a different curve.
+        let full = EdgeInsetsGeometry::Absolute(EdgeInsets {
+            left: 40.0,
+            top: 40.0,
+            right: 40.0,
+            bottom: 40.0,
+        });
+        assert_eq!(
+            EdgeInsetsGeometry::lerp(Some(EdgeInsetsGeometry::Zero), Some(full), 0.25),
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 10.0,
+                top: 10.0,
+                right: 10.0,
+                bottom: 10.0,
+            }))
+        );
+        // The two agree here only because zero scales to zero; what differs
+        // is the direction of travel, which the pair below shows.
+        assert_eq!(
+            EdgeInsetsGeometry::lerp(Some(full), Some(EdgeInsetsGeometry::Zero), 0.25),
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 30.0,
+                top: 30.0,
+                right: 30.0,
+                bottom: 30.0,
+            }))
+        );
     }
 }
 

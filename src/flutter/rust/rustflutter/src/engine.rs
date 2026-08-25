@@ -762,6 +762,67 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
+    /// Upstream `TextStyle.lerp`, for the fields this struct carries.
+    ///
+    /// # A missing end does not read as zero
+    ///
+    /// The rule that is easiest to get wrong is upstream's
+    ///
+    /// ```dart
+    /// letterSpacing: lerpDouble(a.letterSpacing ?? b.letterSpacing,
+    ///                           b.letterSpacing ?? a.letterSpacing, t)
+    /// ```
+    ///
+    /// -- when one end has no spacing, **the other end's value is used at
+    /// both ends**, so the field does not move at all. Treating the absent
+    /// end as zero instead would animate the spacing down to nothing and back
+    /// up, which is not what a null means: a null is "whatever the font
+    /// says", not "none". The same shape covers `word_spacing` and `height`.
+    ///
+    /// # What steps rather than blends
+    ///
+    /// A family name, a fallback list, a decoration, a feature set and
+    /// italics have no midpoint, so upstream takes the nearer end for each.
+    /// `align` is this port's field and not upstream's -- upstream keeps text
+    /// alignment on the painter, not the style -- and it is categorical, so
+    /// it steps with the rest.
+    ///
+    /// `font_size`, `font_weight` and `color` are not optional here, so the
+    /// null-fallback above cannot arise for them; they blend outright.
+    /// `font_weight` follows `FontWeight.lerp`, which rounds and clamps back
+    /// into 100..=900 -- a weight between two named ones is a real weight to
+    /// a variable font, but only inside that range.
+    pub fn lerp(a: &TextStyle, b: &TextStyle, t: f32) -> TextStyle {
+        let nearer = if t < 0.5 { a } else { b };
+        // Upstream's `x ?? y, y ?? x` pair: with one end absent the present
+        // value sits at both ends and the field holds still.
+        let paired = |first: Option<f32>, second: Option<f32>| match (first, second) {
+            (None, None) => None,
+            (first, second) => {
+                let from = first.or(second).unwrap_or(0.0);
+                let to = second.or(first).unwrap_or(0.0);
+                Some(from + (to - from) * t)
+            }
+        };
+        TextStyle {
+            font_family: nearer.font_family.clone(),
+            font_family_fallback: nearer.font_family_fallback.clone(),
+            font_size: a.font_size + (b.font_size - a.font_size) * t,
+            font_weight: ((a.font_weight as f32
+                + (b.font_weight as f32 - a.font_weight as f32) * t)
+                .round() as i32)
+                .clamp(100, 900),
+            italic: nearer.italic,
+            letter_spacing: paired(a.letter_spacing, b.letter_spacing),
+            word_spacing: paired(a.word_spacing, b.word_spacing),
+            height: paired(a.height, b.height),
+            decoration: nearer.decoration,
+            font_features: nearer.font_features.clone(),
+            color: <Color as crate::implicit::Lerp>::lerp(a.color, b.color, t),
+            align: nearer.align,
+        }
+    }
+
     /// Upstream's `TextStyle.compareTo`: how badly this style differs from
     /// another, in [`crate::painting::RenderComparison`]'s terms.
     ///
@@ -1434,6 +1495,152 @@ mod tests {
         // alignment must resolve against the paragraph's direction, not pin
         // the left edge.
         assert_eq!(TextStyle::default().align, TextAlign::Start);
+    }
+
+    // -- `TextStyle::lerp` ---------------------------------------------------
+    //
+    // Added at tick 220, because `SliderThemeData.lerp` needed it and this
+    // port had no `TextStyle` blend at all -- the value indicator's text
+    // jumped from one style to the other at the midpoint.
+
+    #[test]
+    fn a_field_only_one_end_names_does_not_move() {
+        // Upstream's `lerpDouble(a.x ?? b.x, b.x ?? a.x, t)`. With one end
+        // absent the present value sits at *both* ends, so the field holds
+        // still. Reading the absent end as zero instead would animate the
+        // spacing down to nothing and back, which is not what a null means:
+        // a null is "whatever the font says", not "none".
+        let spaced = TextStyle {
+            letter_spacing: Some(4.0),
+            word_spacing: Some(8.0),
+            height: Some(2.0),
+            ..TextStyle::default()
+        };
+        let silent = TextStyle::default();
+
+        let quarter = TextStyle::lerp(&spaced, &silent, 0.25);
+        assert_eq!(quarter.letter_spacing, Some(4.0));
+        assert_eq!(quarter.word_spacing, Some(8.0));
+        assert_eq!(quarter.height, Some(2.0));
+
+        // Both ways, and at a t past the midpoint too -- holding still is not
+        // the same as stepping late.
+        let late = TextStyle::lerp(&silent, &spaced, 0.75);
+        assert_eq!(late.letter_spacing, Some(4.0));
+        assert_eq!(late.word_spacing, Some(8.0));
+        assert_eq!(late.height, Some(2.0));
+
+        // Absent at both ends stays absent.
+        let neither = TextStyle::lerp(&silent, &silent, 0.25);
+        assert_eq!(neither.letter_spacing, None);
+        assert_eq!(neither.word_spacing, None);
+        assert_eq!(neither.height, None);
+    }
+
+    #[test]
+    fn the_spacings_blend_when_both_ends_name_them() {
+        // Three different pairs, so a line reading a neighbour's field lands
+        // on a number that is not its own.
+        let a = TextStyle {
+            letter_spacing: Some(4.0),
+            word_spacing: Some(8.0),
+            height: Some(12.0),
+            ..TextStyle::default()
+        };
+        let b = TextStyle {
+            letter_spacing: Some(20.0),
+            word_spacing: Some(24.0),
+            height: Some(28.0),
+            ..TextStyle::default()
+        };
+        let quarter = TextStyle::lerp(&a, &b, 0.25);
+        assert_eq!(
+            (
+                quarter.letter_spacing,
+                quarter.word_spacing,
+                quarter.height
+            ),
+            (Some(8.0), Some(12.0), Some(16.0))
+        );
+        let back = TextStyle::lerp(&b, &a, 0.25);
+        assert_eq!(
+            (back.letter_spacing, back.word_spacing, back.height),
+            (Some(16.0), Some(20.0), Some(24.0))
+        );
+    }
+
+    #[test]
+    fn the_weight_rounds_to_a_real_weight_and_stays_in_range() {
+        // Upstream's `FontWeight.lerp` rounds and clamps to 100..=900. A
+        // variable font will take 517; it will not take 63.
+        let light = TextStyle {
+            font_weight: 100,
+            ..TextStyle::default()
+        };
+        let heavy = TextStyle {
+            font_weight: 900,
+            ..TextStyle::default()
+        };
+        assert_eq!(TextStyle::lerp(&light, &heavy, 0.25).font_weight, 300);
+        // Off a round fraction it rounds rather than truncating.
+        assert_eq!(TextStyle::lerp(&light, &heavy, 0.3).font_weight, 340);
+        // And an overshooting curve cannot push it out of range.
+        assert_eq!(TextStyle::lerp(&light, &heavy, -0.5).font_weight, 100);
+        assert_eq!(TextStyle::lerp(&light, &heavy, 1.5).font_weight, 900);
+    }
+
+    #[test]
+    fn what_has_no_midpoint_takes_the_nearer_end() {
+        // A family name, a decoration and italics have nothing in between, so
+        // each steps. Every field differs at the two ends, so a line reading
+        // its neighbour's answers with the wrong one.
+        let a = TextStyle {
+            font_family: Some("Roboto".to_string()),
+            italic: false,
+            decoration: TextDecoration::NONE,
+            align: TextAlign::Left,
+            ..TextStyle::default()
+        };
+        let b = TextStyle {
+            font_family: Some("Noto".to_string()),
+            italic: true,
+            decoration: TextDecoration::UNDERLINE,
+            align: TextAlign::Right,
+            ..TextStyle::default()
+        };
+        let early = TextStyle::lerp(&a, &b, 0.499);
+        assert_eq!(early.font_family.as_deref(), Some("Roboto"));
+        assert!(!early.italic);
+        assert_eq!(early.decoration, TextDecoration::NONE);
+        assert_eq!(early.align, TextAlign::Left);
+
+        let late = TextStyle::lerp(&a, &b, 0.5);
+        assert_eq!(late.font_family.as_deref(), Some("Noto"));
+        assert!(late.italic);
+        assert_eq!(late.decoration, TextDecoration::UNDERLINE);
+        assert_eq!(late.align, TextAlign::Right);
+    }
+
+    #[test]
+    fn the_size_and_the_colour_blend_outright() {
+        // Neither is optional here, so the pairing rule above cannot arise
+        // for them.
+        let a = TextStyle {
+            font_size: 4.0,
+            color: Color::argb(255, 0, 0, 0),
+            ..TextStyle::default()
+        };
+        let b = TextStyle {
+            font_size: 20.0,
+            color: Color::argb(255, 0, 0, 80),
+            ..TextStyle::default()
+        };
+        let quarter = TextStyle::lerp(&a, &b, 0.25);
+        assert_eq!(quarter.font_size, 8.0);
+        assert_eq!(quarter.color, Color::argb(255, 0, 0, 20));
+        let back = TextStyle::lerp(&b, &a, 0.25);
+        assert_eq!(back.font_size, 16.0);
+        assert_eq!(back.color, Color::argb(255, 0, 0, 60));
     }
 }
 

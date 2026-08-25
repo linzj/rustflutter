@@ -45,7 +45,7 @@ use crate::painting::{ClipOp, RenderPath, TextPainter, elevation_shadows};
 use crate::render::{Offset, Size};
 use crate::services::system::SystemMouseCursor;
 use crate::theme::ThemeData;
-use crate::widget_state::{StateProperty, WidgetStates};
+use crate::widget_state::{StateProperty, WidgetStates, lerp_state_property};
 
 /// Upstream `lerpDouble` on two numbers that are both present.
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -1103,6 +1103,14 @@ impl SliderThemeData {
     /// Every colour and number interpolates; every shape and every enum takes
     /// the nearer end, because a shape half-way between a circle and a bar is
     /// not a shape.
+    ///
+    /// Three fields are neither, and this port had all three stepping when
+    /// upstream blends them: `padding` goes through
+    /// `EdgeInsetsGeometry.lerp`, `thumb_size` through
+    /// `WidgetStateProperty.lerp<Size?>(..., Size.lerp)`, and
+    /// `value_indicator_text_style` through `TextStyle.lerp`. A stepping
+    /// padding jumps the whole track sideways at the midpoint of a theme
+    /// transition; a stepping thumb size jumps the thumb.
     pub fn lerp(a: &SliderThemeData, b: &SliderThemeData, t: f32) -> SliderThemeData {
         SliderThemeData {
             track_height: lerp_f32(a.track_height, b.track_height, t),
@@ -1185,20 +1193,45 @@ impl SliderThemeData {
                 t,
             ),
 
-            value_indicator_text_style: lerp_nearer(
+            value_indicator_text_style: match (
                 &a.value_indicator_text_style,
                 &b.value_indicator_text_style,
-                t,
-            ),
+            ) {
+                (Some(first), Some(second)) => Some(TextStyle::lerp(first, second, t)),
+                (first, second) => {
+                    if t < 0.5 {
+                        first.clone()
+                    } else {
+                        second.clone()
+                    }
+                }
+            },
             min_thumb_separation: lerp_f32(a.min_thumb_separation, b.min_thumb_separation, t),
             thumb_selector: lerp_nearer(&a.thumb_selector, &b.thumb_selector, t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             allowed_interaction: lerp_nearer(&a.allowed_interaction, &b.allowed_interaction, t),
-            padding: lerp_nearer(&a.padding, &b.padding, t),
-            thumb_size: lerp_nearer(&a.thumb_size, &b.thumb_size, t),
+            padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
+            thumb_size: lerp_state_property(
+                a.thumb_size.as_ref(),
+                b.thumb_size.as_ref(),
+                t,
+                |first, second, t| lerp_size(first.flatten(), second.flatten(), t),
+            ),
             track_gap: lerp_f32(a.track_gap, b.track_gap, t),
             year_2023: lerp_nearer(&a.year_2023, &b.year_2023, t),
         }
+    }
+}
+
+/// Upstream `Size.lerp`, whose two null arms are not "hold the other end":
+/// a missing end scales the present size by `t` (or `1 - t`), so a thumb that
+/// appears grows out of nothing rather than springing to full size.
+fn lerp_size(a: Option<Size>, b: Option<Size>, t: f32) -> Option<Size> {
+    match (a, b) {
+        (None, None) => None,
+        (None, Some(b)) => Some(Size::new(b.width * t, b.height * t)),
+        (Some(a), None) => Some(Size::new(a.width * (1.0 - t), a.height * (1.0 - t))),
+        (Some(a), Some(b)) => Some(<Size as crate::implicit::Lerp>::lerp(a, b, t)),
     }
 }
 
@@ -2702,6 +2735,243 @@ mod tests {
         let (leading, trailing) = track_paints(&theme, &rtl).expect("both colours set");
         assert_eq!(leading, theme.inactive_track_color.unwrap());
         assert_eq!(trailing, theme.active_track_color.unwrap());
+    }
+
+    // -- What the field-by-field walk in `lerp` actually blends --------------
+    //
+    // `tools/unlerped_fields.py` froze each of this method's 22 lines in turn
+    // -- replacing the whole blend with its first end -- and 17 of them left
+    // the suite green. Nothing anywhere read those fields through a lerp, so
+    // a line that named the field above it would have been invisible too.
+    // That is the defect this shape actually has.
+
+    /// A theme whose sixteen colours are sixteen *different* numbers, so that
+    /// a line naming the wrong field answers with another field's value.
+    fn numbered(base: u8) -> SliderThemeData {
+        let mut n = 0;
+        let mut next = || {
+            n += 1;
+            Some(Color::argb(255, 0, 0, base + n))
+        };
+        SliderThemeData {
+            active_track_color: next(),
+            inactive_track_color: next(),
+            secondary_active_track_color: next(),
+            disabled_active_track_color: next(),
+            disabled_secondary_active_track_color: next(),
+            disabled_inactive_track_color: next(),
+            active_tick_mark_color: next(),
+            inactive_tick_mark_color: next(),
+            disabled_active_tick_mark_color: next(),
+            disabled_inactive_tick_mark_color: next(),
+            thumb_color: next(),
+            overlapping_shape_stroke_color: next(),
+            disabled_thumb_color: next(),
+            overlay_color: next(),
+            value_indicator_color: next(),
+            value_indicator_stroke_color: next(),
+            ..SliderThemeData::default()
+        }
+    }
+
+    #[test]
+    fn every_colour_blends_and_every_line_names_its_own_field() {
+        // Every other field is absent at both ends, so the whole struct
+        // compares equal in one assertion -- and it can only compare equal if
+        // all sixteen lines read the field they are assigned to.
+        assert_eq!(
+            SliderThemeData::lerp(&numbered(0), &numbered(80), 0.25),
+            numbered(20)
+        );
+        assert_eq!(
+            SliderThemeData::lerp(&numbered(80), &numbered(0), 0.25),
+            numbered(60)
+        );
+    }
+
+    #[test]
+    fn the_three_numbers_blend_and_do_not_share_a_line() {
+        // Three different pairs, so a line reading a neighbour's field lands
+        // on a number that is not its own.
+        let a = SliderThemeData {
+            track_height: Some(4.0),
+            min_thumb_separation: Some(8.0),
+            track_gap: Some(12.0),
+            ..SliderThemeData::default()
+        };
+        let b = SliderThemeData {
+            track_height: Some(20.0),
+            min_thumb_separation: Some(24.0),
+            track_gap: Some(28.0),
+            ..SliderThemeData::default()
+        };
+        let quarter = SliderThemeData::lerp(&a, &b, 0.25);
+        assert_eq!(
+            (
+                quarter.track_height,
+                quarter.min_thumb_separation,
+                quarter.track_gap
+            ),
+            (Some(8.0), Some(12.0), Some(16.0))
+        );
+        let back = SliderThemeData::lerp(&b, &a, 0.25);
+        assert_eq!(
+            (back.track_height, back.min_thumb_separation, back.track_gap),
+            (Some(16.0), Some(20.0), Some(24.0))
+        );
+    }
+
+    // -- Three fields this port had stepping that upstream blends ------------
+
+    #[test]
+    fn the_padding_slides_rather_than_jumping_at_the_midpoint() {
+        // Upstream is `EdgeInsetsGeometry.lerp(a.padding, b.padding, t)`.
+        // This port had `lerp_nearer`, which answers `a` for the whole first
+        // half and then jumps -- the track would shift sideways in one frame
+        // partway through a theme transition.
+        let a = SliderThemeData {
+            padding: Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 4.0,
+                top: 8.0,
+                right: 12.0,
+                bottom: 16.0,
+            })),
+            ..SliderThemeData::default()
+        };
+        let b = SliderThemeData {
+            padding: Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 20.0,
+                top: 24.0,
+                right: 28.0,
+                bottom: 32.0,
+            })),
+            ..SliderThemeData::default()
+        };
+        assert_eq!(
+            SliderThemeData::lerp(&a, &b, 0.25).padding,
+            Some(EdgeInsetsGeometry::Absolute(EdgeInsets {
+                left: 8.0,
+                top: 12.0,
+                right: 16.0,
+                bottom: 20.0,
+            }))
+        );
+    }
+
+    #[test]
+    fn the_thumb_size_grows_rather_than_jumping() {
+        // Upstream is `WidgetStateProperty.lerp<Size?>(..., Size.lerp)`.
+        let a = SliderThemeData {
+            thumb_size: Some(StateProperty::all(Some(Size::new(4.0, 20.0)))),
+            ..SliderThemeData::default()
+        };
+        let b = SliderThemeData {
+            thumb_size: Some(StateProperty::all(Some(Size::new(20.0, 4.0)))),
+            ..SliderThemeData::default()
+        };
+        // The two dimensions move opposite ways, so a line reading the wrong
+        // one lands on the other's answer.
+        assert_eq!(
+            SliderThemeData::lerp(&a, &b, 0.25)
+                .thumb_size
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(Size::new(8.0, 16.0))
+        );
+
+        // And a thumb size that only one end has grows out of nothing rather
+        // than springing to full size: upstream's `Size.lerp(null, b, t)` is
+        // `b * t`.
+        let only_b = SliderThemeData {
+            thumb_size: Some(StateProperty::all(None)),
+            ..SliderThemeData::default()
+        };
+        assert_eq!(
+            SliderThemeData::lerp(&only_b, &b, 0.25)
+                .thumb_size
+                .expect("two ends is enough")
+                .resolve(WidgetStates::NONE),
+            Some(Size::new(5.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn the_value_indicator_text_blends_rather_than_jumping() {
+        // Upstream is `TextStyle.lerp`, which moves the size, the weight and
+        // the colour.
+        let a = SliderThemeData {
+            value_indicator_text_style: Some(TextStyle {
+                font_size: 4.0,
+                font_weight: 400,
+                ..TextStyle::default()
+            }),
+            ..SliderThemeData::default()
+        };
+        let b = SliderThemeData {
+            value_indicator_text_style: Some(TextStyle {
+                font_size: 20.0,
+                font_weight: 800,
+                ..TextStyle::default()
+            }),
+            ..SliderThemeData::default()
+        };
+        let quarter = SliderThemeData::lerp(&a, &b, 0.25)
+            .value_indicator_text_style
+            .expect("two ends is enough");
+        assert_eq!((quarter.font_size, quarter.font_weight), (8.0, 500));
+    }
+
+    #[test]
+    fn every_stepping_field_steps_at_the_midpoint_and_names_its_own_field() {
+        // These are the fields with no midpoint -- a shape half-way between a
+        // circle and a bar is not a shape -- so each takes the nearer end.
+        // The tests above all sample a quarter of the way, where the nearer
+        // end *is* `a`, and freezing one of these lines to `a` is invisible
+        // there. Past the midpoint it is not.
+        //
+        // Every field gets a different variant at each end, so a line reading
+        // its neighbour's field answers with a shape that is not its own.
+        let a = SliderThemeData {
+            overlay_shape: Some(SliderComponentShape::Empty),
+            tick_mark_shape: Some(SliderTickMarkShape::Empty),
+            thumb_shape: Some(SliderComponentShape::Handle(HandleThumbShape::default())),
+            show_value_indicator: Some(ShowValueIndicator::Never),
+            range_thumb_shape: Some(crate::range_slider_parts::RangeSliderThumbShape::Handle(
+                crate::range_slider_parts::HandleRangeSliderThumbShape::default(),
+            )),
+            range_track_shape: Some(crate::range_slider_parts::RangeSliderTrackShape::Rectangular(
+                crate::range_slider_parts::RectangularRangeSliderTrackShape::default(),
+            )),
+            allowed_interaction: Some(SliderInteraction::TapOnly),
+            year_2023: Some(true),
+            ..SliderThemeData::default()
+        };
+        let b = SliderThemeData {
+            overlay_shape: Some(SliderComponentShape::RoundOverlay(
+                RoundSliderOverlayShape::default(),
+            )),
+            tick_mark_shape: Some(SliderTickMarkShape::Round(
+                RoundSliderTickMarkShape::default(),
+            )),
+            thumb_shape: Some(SliderComponentShape::RoundThumb(
+                RoundSliderThumbShape::default(),
+            )),
+            show_value_indicator: Some(ShowValueIndicator::AlwaysVisible),
+            range_thumb_shape: Some(crate::range_slider_parts::RangeSliderThumbShape::Round(
+                crate::range_slider_parts::RoundRangeSliderThumbShape::default(),
+            )),
+            range_track_shape: Some(crate::range_slider_parts::RangeSliderTrackShape::Gapped(
+                crate::range_slider_parts::GappedRangeSliderTrackShape::default(),
+            )),
+            allowed_interaction: Some(SliderInteraction::SlideThumb),
+            year_2023: Some(false),
+            ..SliderThemeData::default()
+        };
+
+        // Just short of the midpoint every one of them is still `a`'s...
+        assert_eq!(SliderThemeData::lerp(&a, &b, 0.499), a);
+        // ...and just past it every one of them is `b`'s, in the same frame.
+        assert_eq!(SliderThemeData::lerp(&a, &b, 0.5), b);
     }
 }
 

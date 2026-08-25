@@ -16983,3 +16983,56 @@ rustflutter_engine 与 rust_lib 全部重建。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后。门：5475 通过；五个输出目录的 rustflutter_engine
 与 rust_lib 全部重建。
+
+### 第 220 次：三个字段在中点跳变，因为它们需要的混合函数根本不存在
+
+`swap_lerps.py` 的正则只认 `lerp(a, b, t)` 这一种写法。这个代码库里真正的
+大族是主题的逐字段行走——`x: lerp_color(a.x, b.x, t)`，一个方法四十行——
+而 rustfmt 会把长的折成四行，正则一行都看不见。**387 处从来没有被筛过。**
+
+新筛子 `tools/unlerped_fields.py` 换了个更钝的问题：把整个混合式换成**第一
+端**，让这个字段完全不动。绿，就说明没有任何测试从"混合"这条路上读过它——
+不是方向，不是数值，连"它会动"都没人看着。这一族的典型缺陷不是两端调转，
+而是**复制粘贴时那一行还写着上一行的字段名**，而那种错在这里同样看不见。
+
+第一次运行就是三个真缺陷。`slider_theme.rs` 的 22 行里 17 行读绿，其中：
+
+**`padding` / `thumb_size` / `value_indicator_text_style` 全都在跳变。**
+上游分别走 `EdgeInsetsGeometry.lerp`、
+`WidgetStateProperty.lerp<Size?>(..., Size.lerp)` 和 `TextStyle.lerp`，端口
+三个都用了"取较近的一端"。跳变的 padding 会让整条轨道在主题过渡的中点横移
+一帧；跳变的 thumb_size 会让滑块跳一下。
+
+**原因是那三个混合函数在这个端口里压根不存在。**于是这次补上：
+
+- `EdgeInsetsGeometry::scale` 与 `::lerp`。空端不是"另一端不动"——上游是
+  `b * t` 和 `a * (1 - t)`，出现的内边距从无长出来。`Zero` 不是那个空：它是
+  `EdgeInsets.zero`，一个绝对侧的实值，所以 `Zero`/`Directional` 走混合支。
+  混合支这里是近似：本端口的枚举没有 `_MixedEdgeInsets` 这一支，只能先按
+  从左到右解析——`add` 早就是这个近似。两端仍然对，RTL 下只有中间帧是镜像。
+- `TextStyle::lerp`。上游最容易写错的一条是
+  `lerpDouble(a.x ?? b.x, b.x ?? a.x, t)`：某一端没有值时，**用另一端的值
+  填两端**，于是这个字段根本不动。把缺的那端当零会让字距先缩到零再回来，
+  而 null 的意思是"照字体的"，不是"没有"。
+- `lerp_size`，`Size.lerp` 的空端。
+
+**16 个颜色字段一条断言全部变成承重的。**两个主题，十六个字段各给一个**互不
+相同**的数，于是 `lerp(numbered(0), numbered(80), 0.25) == numbered(20)` 这
+一条比较，只有在十六行各读各的字段时才成立。
+
+**冻结在中点之前是看不见的。**剩下 8 处全是"取较近一端"的字段，而先前的测试
+都取四分之一处——那里答案本来就是 `a`，冻结成 `a` 什么也不会变。补了一条在
+0.499 与 0.5 各看一次的测试之后，`slider_theme.rs` 读零。
+
+七条承重断言逐条强制改错，七条全红，各由预期的那一条测试抓住。
+
+**下一个队列：`component_themes.rs` 里同一族的约五十处。**上游对 padding、
+textStyle、elevation 一律插值（`badge_theme.dart:107-108`、
+`tooltip_theme.dart:193,199`、`chip_theme.dart:539,542,545`），端口一律
+`lerp_nearer`。12 处 padding、约 20 处 text style，外加若干 size / radius /
+elevation。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0，
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后。门：5490 + 333 通过；五个输出目录的
+rustflutter_engine 与 rust_lib 全部重建。
