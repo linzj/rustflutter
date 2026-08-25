@@ -1385,7 +1385,26 @@ pub struct ResolvedSnackBar {
     pub show_close_icon: bool,
     pub action_overflow_threshold: f32,
     pub content_text_style: Option<TextStyle>,
-    pub action_text_color: Option<Color>,
+    /// The action's label colour, enabled and disabled.
+    ///
+    /// Upstream resolves each as
+    /// `widget.textColor ?? snackBarTheme.actionTextColor ?? defaults`, and
+    /// `_SnackbarDefaultsM3` answers `colorScheme.inversePrimary` for both.
+    /// This carried the theme's enabled colour only, and neither the action's
+    /// own override nor the default -- so an action that named a colour was
+    /// ignored, and one that named none had none.
+    pub action_text_color: Color,
+    pub disabled_action_text_color: Color,
+    /// The action's background, enabled and disabled. Upstream's default for
+    /// both is `Colors.transparent`: the action is a text button unless a
+    /// theme or the action itself asks otherwise.
+    pub action_background_color: Color,
+    pub disabled_action_background_color: Color,
+    /// Upstream's
+    /// `widget.closeIconColor ?? snackBarTheme.closeIconColor ?? defaults`,
+    /// whose M3 default is `colorScheme.onInverseSurface` -- the same ink the
+    /// content is written in.
+    pub close_icon_color: Color,
 }
 
 impl ResolvedSnackBar {
@@ -1407,6 +1426,7 @@ impl ResolvedSnackBar {
     pub fn of(context: &mut BuildContext, bar: &crate::snack_bar::SnackBar) -> ResolvedSnackBar {
         let data = SnackBarTheme::of(context);
         let scheme = ThemeData::of(context).color_scheme;
+        let action = bar.action.as_ref();
         let (behavior, behavior_source) = match (bar.behavior, data.behavior) {
             (Some(behavior), _) => (behavior, SnackBarBehaviorSource::Widget),
             (None, Some(behavior)) => (behavior, SnackBarBehaviorSource::Theme),
@@ -1439,7 +1459,29 @@ impl ResolvedSnackBar {
                 .or(data.action_overflow_threshold)
                 .unwrap_or(ResolvedSnackBar::ACTION_OVERFLOW_THRESHOLD),
             content_text_style: data.content_text_style.clone(),
-            action_text_color: data.action_text_color,
+            // Each of the five is the action's own value, then the theme's,
+            // then upstream's default. The action's overrides were reaching
+            // nothing at all before, and three of the theme's five were too.
+            action_text_color: action
+                .and_then(|action| action.text_color)
+                .or(data.action_text_color)
+                .unwrap_or(scheme.inverse_primary()),
+            disabled_action_text_color: action
+                .and_then(|action| action.disabled_text_color)
+                .or(data.disabled_action_text_color)
+                .unwrap_or(scheme.inverse_primary()),
+            action_background_color: action
+                .and_then(|action| action.background_color)
+                .or(data.action_background_color)
+                .unwrap_or(Color::TRANSPARENT),
+            disabled_action_background_color: action
+                .and_then(|action| action.disabled_background_color)
+                .or(data.disabled_action_background_color)
+                .unwrap_or(Color::TRANSPARENT),
+            close_icon_color: bar
+                .close_icon_color
+                .or(data.close_icon_color)
+                .unwrap_or(scheme.on_inverse_surface()),
         }
     }
 

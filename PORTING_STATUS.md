@@ -17433,3 +17433,46 @@ borderRadius: radius ?? dividerTheme.radius ?? defaults.radius
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
 stale_engines 全部不落后，unread_theme_fields 137（队列）。
 门：5602 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 230 次：更正一个数字，然后接上 snack bar 的五条颜色链
+
+**先更正。**第 228 次的条目里写"137 条里 135 条上游自己的 widget 会读"——那是
+把 v3 尺子的**总数**和 v1 尺子的**排序**拼在了一起。用 v3 重新排过之后是
+**110 条上游会读，27 条上游也不读**。当时那份工单是用旧尺子生成的，这一轮
+才发现：拿它去查 `AppBarThemeData::title_spacing`，结果那个字段
+`ResolvedAppBar::of_with_center_title` 明明在读。
+
+（那个字段在 v3 下并不上榜。上榜的 `AppBarThemeData` 变成 4 条。）
+
+### 接上的五条链
+
+`unread_theme_fields.py` 报出 `SnackBarThemeData` 四个颜色没人读。对着上游读
+下去，发现第五个问题：`action_text_color` 虽然被 `ResolvedSnackBar` 带着，
+**却只是半根线**——它只取主题的值，动作自己的颜色和上游的默认都到不了。而
+`SnackBar` 连 `close_icon_color` 这个字段都没有，那条链的第一级根本无法表达。
+
+上游的五条链（`_SnackBarState.build` 与 `_SnackbarDefaultsM3`）：
+
+| 字段 | 链 |
+| --- | --- |
+| `actionTextColor` | 动作 → 主题 → `colorScheme.inversePrimary` |
+| `disabledActionTextColor` | 动作 → 主题 → `colorScheme.inversePrimary` |
+| `actionBackgroundColor` | 动作 → 主题 → 透明 |
+| `disabledActionBackgroundColor` | 动作 → 主题 → 透明 |
+| `closeIconColor` | bar → 主题 → `colorScheme.onInverseSurface` |
+
+四个背景/标签色现在从 `Option<Color>` 变成了 `Color`——上游对这五个都有确定的
+默认，所以"没有值"不是一个可能的答案。`SnackBar` 补上了 `close_icon_color`
+字段与构造器。
+
+测试把**每一级**都查了，而且每一级用一个全测试内唯一的数——所以一行读错了来源
+（拿主题当动作）或读错了字段（拿启用色当禁用色）都会答出一个不属于它的值。
+另有一条盯着"没有动作的 bar 也照样解析动作颜色"：上游无论有没有东西可画都
+解析它们，而一个伸手去取不存在的动作的解析器会 panic 而不是回答。
+
+四条承重规则逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8，
+stale_engines 全部不落后，**unread_theme_fields 137 → 133**。
+门：5606 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

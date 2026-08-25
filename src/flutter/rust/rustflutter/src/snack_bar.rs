@@ -133,6 +133,11 @@ pub struct SnackBar {
     pub margin: Option<f32>,
     pub width: Option<f32>,
     pub show_close_icon: Option<bool>,
+    /// Upstream's `closeIconColor`, the first step of
+    /// `widget.closeIconColor ?? snackBarTheme.closeIconColor ?? defaults`.
+    /// The field was absent here, so neither the bar's own choice nor the
+    /// theme's could be expressed.
+    pub close_icon_color: Option<Color>,
     /// Upstream's `actionOverflowThreshold`: the fraction of the bar's width
     /// the action may take before it moves to its own line.
     pub action_overflow_threshold: Option<f32>,
@@ -156,6 +161,7 @@ impl SnackBar {
             margin: None,
             width: None,
             show_close_icon: None,
+            close_icon_color: None,
             action_overflow_threshold: None,
             action: None,
             persist: false,
@@ -238,6 +244,12 @@ impl SnackBar {
 
     pub fn with_close_icon(mut self, show: bool) -> Self {
         self.show_close_icon = Some(show);
+        self
+    }
+
+    /// Upstream's `closeIconColor`.
+    pub fn with_close_icon_color(mut self, color: Color) -> Self {
+        self.close_icon_color = Some(color);
         self
     }
 
@@ -498,6 +510,7 @@ mod tests {
             "and it still waits -- persist was decided when the action arrived"
         );
     }
+
 }
 
 #[cfg(test)]
@@ -723,5 +736,142 @@ mod snack_bar_theme_tests {
             "a snack bar is the inverse surface: it is a message over the app, \
              not part of it"
         );
+    }
+
+    // -- Five colour chains, tick 230 ---------------------------------------
+    //
+    // `tools/unread_theme_fields.py` found four `SnackBarThemeData` colours
+    // named nowhere outside their own paperwork, and reading upstream turned
+    // up a fifth problem: `action_text_color` was carried, but only from the
+    // theme -- neither the action's own colour nor upstream's default reached
+    // anything -- and `SnackBar` had no `close_icon_color` field at all, so
+    // the first step of that chain could not be expressed.
+    //
+    // Every level below uses a number no other level or chain uses, so a line
+    // reading its neighbour's source, or its neighbour's field, answers with
+    // a value that is not its own.
+
+    fn ink(blue: u8) -> Color {
+        Color::argb(255, 0, 0, blue)
+    }
+
+    fn action_with(
+        text: Option<Color>,
+        disabled_text: Option<Color>,
+        background: Option<Color>,
+        disabled_background: Option<Color>,
+    ) -> SnackBarAction {
+        let mut action = SnackBarAction::new("undo", || {});
+        if let Some(color) = text {
+            action = action.with_text_color(color);
+        }
+        if let Some(color) = disabled_text {
+            action = action.with_disabled_text_color(color);
+        }
+        if let Some(color) = background {
+            action = action.with_background_color(color);
+        }
+        if let Some(color) = disabled_background {
+            action = action.with_disabled_background_color(color);
+        }
+        action
+    }
+
+    #[test]
+    fn the_action_colours_prefer_the_action_then_the_theme_then_the_default() {
+        let themed = SnackBarThemeData {
+            action_text_color: Some(ink(10)),
+            disabled_action_text_color: Some(ink(20)),
+            action_background_color: Some(ink(30)),
+            disabled_action_background_color: Some(ink(40)),
+            ..SnackBarThemeData::new()
+        };
+
+        // The action's own colours win over the theme's.
+        let (resolved, _) = resolve(
+            SnackBar::new().with_action(action_with(
+                Some(ink(50)),
+                Some(ink(60)),
+                Some(ink(70)),
+                Some(ink(80)),
+            )),
+            themed.clone(),
+        );
+        assert_eq!(resolved.action_text_color, ink(50));
+        assert_eq!(resolved.disabled_action_text_color, ink(60));
+        assert_eq!(resolved.action_background_color, ink(70));
+        assert_eq!(resolved.disabled_action_background_color, ink(80));
+
+        // With none of its own, the theme's -- which is the half that reached
+        // nothing for three of the four.
+        let (resolved, _) = resolve(
+            SnackBar::new().with_action(action_with(None, None, None, None)),
+            themed,
+        );
+        assert_eq!(resolved.action_text_color, ink(10));
+        assert_eq!(resolved.disabled_action_text_color, ink(20));
+        assert_eq!(resolved.action_background_color, ink(30));
+        assert_eq!(resolved.disabled_action_background_color, ink(40));
+    }
+
+    #[test]
+    fn and_fall_back_to_upstreams_own_defaults() {
+        // `_SnackbarDefaultsM3`: both label colours are `inversePrimary`, and
+        // both backgrounds are transparent -- the action is a text button
+        // until something says otherwise.
+        let (resolved, _) = resolve(
+            SnackBar::new().with_action(action_with(None, None, None, None)),
+            SnackBarThemeData::new(),
+        );
+        let scheme = crate::theme::ThemeData::light().color_scheme;
+        assert_eq!(resolved.action_text_color, scheme.inverse_primary());
+        assert_eq!(
+            resolved.disabled_action_text_color,
+            scheme.inverse_primary()
+        );
+        assert_eq!(resolved.action_background_color, Color::TRANSPARENT);
+        assert_eq!(
+            resolved.disabled_action_background_color,
+            Color::TRANSPARENT
+        );
+    }
+
+    #[test]
+    fn the_close_icon_colour_has_the_same_three_steps() {
+        let themed = SnackBarThemeData {
+            close_icon_color: Some(ink(90)),
+            ..SnackBarThemeData::new()
+        };
+        let (resolved, _) = resolve(
+            SnackBar::new().with_close_icon_color(ink(100)),
+            themed.clone(),
+        );
+        assert_eq!(resolved.close_icon_color, ink(100), "the bar's own");
+
+        let (resolved, _) = resolve(SnackBar::new(), themed);
+        assert_eq!(resolved.close_icon_color, ink(90), "then the theme's");
+
+        let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
+        assert_eq!(
+            resolved.close_icon_color,
+            crate::theme::ThemeData::light().color_scheme.on_inverse_surface(),
+            "then upstream's default, the ink the content is written in"
+        );
+    }
+
+    #[test]
+    fn a_bar_with_no_action_still_resolves_its_action_colours() {
+        // The action is optional, and the colours are not: upstream resolves
+        // them whether or not there is anything to paint with them, and a
+        // resolver that reached for a missing action would panic rather than
+        // answer.
+        let (resolved, _) = resolve(
+            SnackBar::new(),
+            SnackBarThemeData {
+                action_text_color: Some(ink(110)),
+                ..SnackBarThemeData::new()
+            },
+        );
+        assert_eq!(resolved.action_text_color, ink(110));
     }
 }
