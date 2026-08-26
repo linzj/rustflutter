@@ -17920,3 +17920,30 @@ backgroundColor = widget.color ?? switch (widget.type) {
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 65 → 64**。
 门：5649 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 243 次：最后一级不属于主题，而属于按钮
+
+`ButtonStyle::icon_alignment` 与 `animation_duration` 到不了任何地方。
+`ResolvedButton` 带的是背景、前景、边、内边距、最小尺寸五样，而上游
+`ButtonStyleButton.build` 用**同一个** `effectiveValue` 走法解析这两个——
+widget 的样式、主题的样式、默认——再交给它构建的按钮。
+
+**这两个的最后一级和前面几批不一样：它属于按钮而不是主题。**
+`IconAlignment.start` 和 `kThemeChangeDuration` 都是 widget 自己的默认，所以
+它们和其余字段一样通过 `defaults` 参数进来，而不是在解析器里写一个常量。
+两条测试分开查了这两级——主题给了就用主题的，主题不给就留按钮的。
+
+`ANIMATION_DURATION` 那个常量单独断言了一次等于 200ms。上游的
+`kThemeChangeDuration` 是个具体数字，而一个"差不多的时长"不会被别的断言发现。
+
+两条承重规则强制改错：**两条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 64 → 62**。
+门：5651 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**剩下的 62 条全部集中在四块**：`DatePickerThemeData` 26、
+`TimePickerThemeData` 15、`TextTheme` 10、`SliderThemeData` 9。它们不是"少接
+一根线"——各自要等对应的绘制器或 widget 先长出来（日期/时间选择器的绘制路径、
+用排版角色的那些 widget、基于形状的滑块绘制器）。那是工程，不是接线。

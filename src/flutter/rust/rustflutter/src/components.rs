@@ -564,6 +564,8 @@ impl Component for Button {
                 }),
                 padding: None,
                 minimum_size: None,
+                icon_alignment: crate::component_themes::IconAlignment::Start,
+                animation_duration: crate::component_themes::ResolvedButton::ANIMATION_DURATION,
             },
         );
         let fill = resolved.background;
@@ -3537,6 +3539,8 @@ mod tests {
                         side: None,
                         padding: None,
                         minimum_size: None,
+                        icon_alignment: crate::component_themes::IconAlignment::Start,
+                        animation_duration: crate::component_themes::ResolvedButton::ANIMATION_DURATION,
                     },
                 ));
                 leaf(|| crate::widgets::Empty)
@@ -3590,6 +3594,8 @@ mod tests {
                         side: None,
                         padding: None,
                         minimum_size: None,
+                        icon_alignment: crate::component_themes::IconAlignment::Start,
+                        animation_duration: crate::component_themes::ResolvedButton::ANIMATION_DURATION,
                     },
                 ));
                 leaf(|| crate::widgets::Empty)

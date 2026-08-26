@@ -7358,6 +7358,18 @@ pub struct ResolvedButton {
     pub side: Option<BorderSide>,
     pub padding: Option<EdgeInsets>,
     pub minimum_size: Option<Size>,
+    /// Which side of the label the icon sits on, and how long the button
+    /// takes to move between its states.
+    ///
+    /// Upstream resolves both through the same `effectiveValue` walk as
+    /// everything above -- widget style, theme style, defaults -- and hands
+    /// them to the button it builds. Neither reached anything here.
+    ///
+    /// The last step for both is the *button's* own default rather than the
+    /// theme's, which is why they arrive through `defaults` like the rest:
+    /// `IconAlignment.start` and `kThemeChangeDuration`.
+    pub icon_alignment: IconAlignment,
+    pub animation_duration: std::time::Duration,
 }
 
 impl ResolvedButton {
@@ -7407,8 +7419,16 @@ impl ResolvedButton {
                 .as_ref()
                 .and_then(|property| property.resolve(states))
                 .or(defaults.minimum_size),
+            icon_alignment: style.icon_alignment.unwrap_or(defaults.icon_alignment),
+            animation_duration: style
+                .animation_duration
+                .unwrap_or(defaults.animation_duration),
         }
     }
+
+    /// Upstream's `kThemeChangeDuration`, which is what a button with no
+    /// style of its own animates over.
+    pub const ANIMATION_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
 }
 
 // -- Material banner (upstream `banner_theme.dart`) ---------------------------
@@ -11686,6 +11706,8 @@ mod tests {
             side: None,
             padding: None,
             minimum_size: None,
+            icon_alignment: IconAlignment::Start,
+            animation_duration: ResolvedButton::ANIMATION_DURATION,
         };
 
         // No theme: the control's own defaults, untouched.
@@ -16612,6 +16634,100 @@ mod tests {
         assert_eq!(plain.shape, ResolvedDrawer::default_shape(false));
         assert_eq!(plain.end_shape, ResolvedDrawer::default_shape(true));
         assert_ne!(plain.shape, plain.end_shape);
+    }
+
+    #[test]
+    fn a_buttons_icon_side_and_animation_come_off_the_style_too() {
+        // `tools/unread_theme_fields.py` found `ButtonStyle::icon_alignment`
+        // and `animation_duration` reaching nothing. Upstream resolves both
+        // through the same `effectiveValue` walk as the colours and hands
+        // them to the button it builds.
+        use crate::components::ButtonVariant;
+
+        let defaults = || ResolvedButton {
+            background: None,
+            foreground: Color::argb(255, 8, 8, 8),
+            side: None,
+            padding: None,
+            minimum_size: None,
+            icon_alignment: IconAlignment::Start,
+            animation_duration: ResolvedButton::ANIMATION_DURATION,
+        };
+
+        let themed = read_in(
+            |child| {
+                FilledButtonTheme::new(
+                    FilledButtonThemeData {
+                        style: Some(ButtonStyle {
+                            icon_alignment: Some(IconAlignment::End),
+                            animation_duration: Some(std::time::Duration::from_millis(77)),
+                            ..ButtonStyle::default()
+                        }),
+                    },
+                    child,
+                )
+            },
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Filled,
+                    WidgetStates::NONE,
+                    defaults(),
+                )
+            },
+        );
+        assert_eq!(themed.icon_alignment, IconAlignment::End);
+        assert_eq!(
+            themed.animation_duration,
+            std::time::Duration::from_millis(77)
+        );
+    }
+
+    #[test]
+    fn and_fall_back_to_the_buttons_own_defaults() {
+        // The last step for both belongs to the *button*, not the theme:
+        // `IconAlignment.start` and `kThemeChangeDuration`. A style that
+        // names neither leaves the button's own answers standing.
+        use crate::components::ButtonVariant;
+
+        let defaults = || ResolvedButton {
+            background: None,
+            foreground: Color::argb(255, 8, 8, 8),
+            side: None,
+            padding: None,
+            minimum_size: None,
+            icon_alignment: IconAlignment::End,
+            animation_duration: std::time::Duration::from_millis(88),
+        };
+        let plain = read_in(
+            |child| {
+                FilledButtonTheme::new(
+                    FilledButtonThemeData {
+                        style: Some(ButtonStyle::default()),
+                    },
+                    child,
+                )
+            },
+            move |context| {
+                ResolvedButton::of(
+                    context,
+                    ButtonVariant::Filled,
+                    WidgetStates::NONE,
+                    defaults(),
+                )
+            },
+        );
+        assert_eq!(plain.icon_alignment, IconAlignment::End);
+        assert_eq!(
+            plain.animation_duration,
+            std::time::Duration::from_millis(88)
+        );
+
+        // And the constant is upstream's `kThemeChangeDuration`.
+        assert_eq!(
+            ResolvedButton::ANIMATION_DURATION,
+            std::time::Duration::from_millis(200)
+        );
     }
 }
 
