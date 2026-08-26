@@ -17889,3 +17889,34 @@ Text('AB'))`，这就是那个情形，按解析出的前景色和排版画出�
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 68 → 65**。
 门：5648 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 242 次：默认那一种材质用的颜色，从来没被读过
+
+上游 `Material.build` 的开头是一个 switch：
+
+```dart
+backgroundColor = widget.color ?? switch (widget.type) {
+  MaterialType.canvas => theme.canvasColor,
+  MaterialType.card   => theme.cardColor,
+  button | circle | transparency => null,
+};
+```
+
+这个端口把 `Canvas` 映到组件 `Theme` 的 `background`、`Card` 映到它的
+`surface`，两个 `ThemeData` 字段一个都不问。`canvas_color` 因此到不了——
+**而 `Canvas` 是默认的材质类型**，所以这不是一个角落，是绝大多数材质本该取的
+那个颜色。
+
+测试给两个字段两个**互不相同**的数：一个把两支都写成同一个字段的 switch，会
+答出一个不属于它的颜色。另外单独查了"什么都不说的材质取画布色"，因为默认值
+本身也是一条会被写错的规则。
+
+两条承重规则强制改错：**两条全红。**
+
+顺带把三条既有测试的前提改了——它们拿组件 `Theme` 去问 `effective_color`，
+而那个方法现在要 `ThemeData`。改的是它们问谁，断言的意思没有变。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 65 → 64**。
+门：5649 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

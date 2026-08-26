@@ -332,12 +332,17 @@ impl Material {
     /// then the type, then the theme -- and only `canvas` and `card` have a
     /// theme colour at all, which is why the other three answer `None` and a
     /// non-transparent material without a colour is an error upstream asserts
-    /// on. Then M3's surface tint is laid over it, which is what an elevated
+    /// on.
+    ///
+    /// The two theme colours are `ThemeData`'s own `canvasColor` and
+    /// `cardColor`, not the component theme's surfaces. This read the latter,
+    /// so `ThemeData::canvas_color` reached nothing -- and `canvas` is the
+    /// default type, so it is the colour most materials would have taken. Then M3's surface tint is laid over it, which is what an elevated
     /// surface looks like in a dark theme where a shadow would be invisible.
-    pub fn effective_color(&self, theme: &crate::components::Theme) -> Option<Color> {
+    pub fn effective_color(&self, theme: &crate::theme::ThemeData) -> Option<Color> {
         let background = self.color.or(match self.material_type {
-            MaterialType::Canvas => Some(theme.background),
-            MaterialType::Card => Some(theme.surface),
+            MaterialType::Canvas => Some(theme.canvas_color),
+            MaterialType::Card => Some(theme.card_color),
             MaterialType::Button | MaterialType::Circle | MaterialType::Transparency => None,
         })?;
         Some(
@@ -354,12 +359,13 @@ impl Component for Material {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         self.debug_assert_valid();
         let theme = theme_of(context);
+        let material = crate::theme::ThemeData::of(context);
         let child = self
             .child
             .borrow_mut()
             .take()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
-        let colour = self.effective_color(&theme);
+        let colour = self.effective_color(&material);
         // The renderer's shadow table is indexed by whole elevation steps, as
         // `Card` documents; a material asked for half a step gets the nearer
         // one rather than none.
@@ -476,18 +482,18 @@ mod tests {
         // Upstream's switch answers null for the other three, and then
         // asserts that a non-transparent material without a colour is an
         // error -- which is to say a button-type material must be told.
-        let theme = Theme::dark();
+        let theme = crate::theme::ThemeData::dark();
         assert_eq!(
             Material::new(leaf(|| crate::widgets::Empty))
                 .with_type(MaterialType::Canvas)
                 .effective_color(&theme),
-            Some(theme.background)
+            Some(theme.canvas_color)
         );
         assert_eq!(
             Material::new(leaf(|| crate::widgets::Empty))
                 .with_type(MaterialType::Card)
                 .effective_color(&theme),
-            Some(theme.surface)
+            Some(theme.card_color)
         );
         for uncoloured in [
             MaterialType::Button,
@@ -516,7 +522,7 @@ mod tests {
     fn an_elevated_material_is_tinted_rather_than_left_flat() {
         // What an elevated surface looks like in a dark theme, where a shadow
         // would be invisible. See `elevation_overlay`.
-        let theme = Theme::dark();
+        let theme = crate::theme::ThemeData::dark();
         let flat = Material::new(leaf(|| crate::widgets::Empty))
             .with_color(Color::rgb(0x20, 0x20, 0x20))
             .with_surface_tint_color(Color::rgb(0x80, 0x80, 0xFF));
@@ -690,5 +696,37 @@ mod tests {
             }
             InkFeature::Decoration(_) => panic!("a splash was added"),
         }
+    }
+
+    #[test]
+    fn the_two_typed_materials_take_two_different_theme_fields() {
+        // `tools/unread_theme_fields.py` found `ThemeData::canvas_color`
+        // reaching nothing: this mapped `Canvas` to the component theme's
+        // `background` and `Card` to its `surface`, where upstream's switch
+        // reads `theme.canvasColor` and `theme.cardColor`.
+        //
+        // Two distinct numbers, so a switch whose two arms named one field
+        // answers with a colour that is not its own. `Canvas` is the default
+        // type, which is why getting it wrong would have been the common
+        // case rather than a corner.
+        let theme = crate::theme::ThemeData {
+            canvas_color: Color::argb(255, 0, 0, 11),
+            card_color: Color::argb(255, 0, 0, 22),
+            ..crate::theme::ThemeData::light()
+        };
+        let of_type = |material_type| {
+            Material::new(leaf(|| crate::widgets::Empty))
+                .with_type(material_type)
+                .effective_color(&theme)
+        };
+        assert_eq!(of_type(MaterialType::Canvas), Some(Color::argb(255, 0, 0, 11)));
+        assert_eq!(of_type(MaterialType::Card), Some(Color::argb(255, 0, 0, 22)));
+
+        // And the default type is `Canvas`, so a material told nothing takes
+        // the canvas colour.
+        assert_eq!(
+            Material::new(leaf(|| crate::widgets::Empty)).effective_color(&theme),
+            Some(Color::argb(255, 0, 0, 11))
+        );
     }
 }
