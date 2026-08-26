@@ -19245,3 +19245,51 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 `truncateAfterCompositionEnds` 是为汉字/假名输入法存在的：组合中途截断会把输入法
 弄坏）、`readOnly` 与 `enabled` 的区别、以及 `enableInteractiveSelection` 的推导
 `?? (!readOnly || !obscureText)`。
+
+## 第 271 轮：整个 crate 里没有任何东西答的那一个成员
+
+这一轮开头做错了一件事，值得先写下来。我照着上游的字段表列了"下一步"，然后发现
+`maxLengthEnforcement`（连平台表带字素簇取舍）早就在 `services/text_formatter.rs`
+里做完了，`read_only` 和 `enable_interactive_selection` 也早在 `editable_text.rs`
+里。**照上游列清单、不先查端口，会把已经做完的事列成待办。**
+
+而这不是偶然。`depth.py` 报 `RadioListTile` 3/43、`TextField` 15/76、
+`MaterialButton` 4/34——三个连着查下来，低比值的**主要成因都是"答在别处"**：三个
+tile 合成了一个 `ControlListTile`，文本框的字段散在 `editable_text.rs` 和
+`services/text_formatter.rs`，按钮的颜色和高程在 `MaterialButtonColors` 与
+`ButtonElevations`。
+
+**`depth.py` 早就为这件事准备好了机制**：`depth_examined.json`，"一行读过之后连
+结论一起记进去，并写明是什么机制答了那些成员——那是一个主张，不是一份压制名单"。
+我此前没在用它。这一轮把三个类都按格式记了进去，队列从 672 缩到 669，而且不会再
+被重新发现一次。
+
+查证的方法本身是这一轮的收获：**拿上游的每一个成员名去搜整个 crate**，而不是只搜
+那个同名类型。`MaterialButton` 三十个成员这样过一遍，二十九个有着落，恰好一个
+全crate 零命中——`colorBrightness`：
+
+    Brightness getBrightness(MaterialButton button) {
+      return button.colorBrightness ?? colorScheme!.brightness;
+    }
+
+`MaterialButtonColors::text_color` **本来就接受一个 brightness 参数**，所以机制是
+齐的，缺的是喂给它的那个覆盖值。代价很具体：一个自带深色填充、放在浅色页面上的
+按钮没有办法说出这件事，而 `ButtonTextTheme::Normal` 读的是**页面**的明暗——于是
+标签在深色按钮上是黑的。
+
+而它只够得着三个文字主题里的一个：`Normal` 直接问明暗；`Primary` **先问填充色**,
+只有没有填充时才退回明暗，所以有颜色的主按钮本来就是对的；`Accent` 根本不问。
+**一个覆盖值、一个依赖它的主题、两个本来就答对的**——这就是为什么没人注意到。
+
+四条承重规则逐条强制改错，全红（第四条顺带弄红了另一条早已存在的测试，那条正是在
+守"Primary 看填充而不是看页面"）。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2,
+depth 已读 10 → 13。
+门：5787 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`depth` 队列的头部现在是 `CheckboxListTile` 5/42（大概率和
+`RadioListTile` 同因，值得连着一起判掉）、`SelectionOverlay` 9/43 和
+`RenderEditable` 22/97——后两个是文本编辑的核心，不太可能是"答在别处"。

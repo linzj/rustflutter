@@ -85,6 +85,27 @@
       "file": "services/haptic_feedback.dart",
       "tick": 184,
       "finding": "Read member by member and closed for content, not for shape. Upstream spells eight static methods -- vibrate, lightImpact, mediumImpact, heavyImpact, selectionClick, successNotification, warningNotification, errorNotification -- and all eight put the SAME method name on the wire (`HapticFeedback.vibrate`); only the argument differs. So they are one function and an eight-value enum here, and depth.py, which counts symbols by name, will keep reporting 2/8 forever. It is counting a spelling difference. Tick 184 added the three notification kinds, which were genuinely absent -- an application could not ask for a success, warning or error haptic at all, and on iOS those three are a different generator (UINotificationFeedbackGenerator) from the impacts rather than the same thing at another weight. The five payload strings that were already here were unchanged. Nothing remains: every upstream method has a variant."
+    },
+    {
+      "class": "MaterialButton",
+      "file": "material/material_button.dart",
+      "tick": 271,
+      "finding": "Twenty-nine of upstream's thirty members are answered somewhere in the crate, and checking them one at a time against the WHOLE crate rather than against the type named after it is what showed that: ButtonTextTheme, MaterialButtonColors (getTextColor, getDisabledTextColor, getFillColor and its runtime-type clause), MaterialTapTargetSize, RawMaterialButton and ButtonElevations between them carry the colours, the five elevations, the constraints and the tap target. Exactly one had no reader anywhere: colorBrightness, upstream's getBrightness -- `button.colorBrightness ?? colorScheme.brightness`. text_color already took a brightness, so the machinery was complete and the override that feeds it was absent; a button with a dark custom fill on a light page had no way to say so and ButtonTextTheme::Normal gave it a black label. Ported. It reaches exactly one of the three text themes: Normal asks the brightness directly, Primary asks the fill first and only falls back to it, Accent never asks -- which is why nothing noticed.",
+      "at": "src/flutter/rust/rustflutter/src/component_themes.rs -- MaterialButtonColors::brightness, and its two tests"
+    },
+    {
+      "class": "RadioListTile",
+      "file": "material/radio_list_tile.dart",
+      "tick": 262,
+      "finding": "The ratio will not move and should not. This port has ONE ControlListTile where upstream has three widgets (RadioListTile, CheckboxListTile, SwitchListTile), so members answered for all three are counted against none of them. Reading the list found four real gaps, all ported: `enabled` as a bool? whose assert is asymmetric (it may turn a tile off freely and may only turn one on where a handler or a RadioGroup already exists); `toggleable`, which upstream declares IS the tristate (`bool get tristate => widget.toggleable`); the tap rule, where a plain radio already chosen SWALLOWS the tap rather than reporting the same value again; and radioScaleFactor, whose one is `no wrapper at all` rather than a scale of one. The state properties radioBackgroundColor/radioSide/radioInnerRadius remain unported and wait on these tiles drawing their own control rather than assembling ListTile slots.",
+      "at": "src/flutter/rust/rustflutter/src/list_tiles.rs -- ControlListTile::is_enabled, validate_enabled, tap_on_radio, with_toggleable, scales_the_control, draws_a_cupertino_checkmark"
+    },
+    {
+      "class": "TextField",
+      "file": "material/text_field.dart",
+      "tick": 270,
+      "finding": "Most of upstream's seventy-three fields are answered outside the widget: editable_text.rs carries read_only, enable_interactive_selection and the editing state; services/text_formatter.rs carries maxLength, MaxLengthEnforcement and its platform table (with a recorded divergence -- grapheme clusters upstream, scalar values here); services/text_input.rs carries the keyboard types and actions. What was genuinely absent was the CONSTRUCTOR itself: eight asserts and three derived defaults, none of them present. Five of the eight are about pairs of fields rather than one value's range, and each carries its own message. Ported, with the two that are easy to get wrong written down: noMaxLength is -1 and legal (counter, no limit) rather than 'any negative', and an obscured field both refuses to be multiline and turns smart punctuation off by default -- an IME turning `--` into an em-dash silently changes a password to something unreadable and unrepeatable.",
+      "at": "src/flutter/rust/rustflutter/src/editable.rs -- TextField::validate, TextFieldError, effective_input_type, smart_punctuation, NO_MAX_LENGTH"
     }
   ]
 }

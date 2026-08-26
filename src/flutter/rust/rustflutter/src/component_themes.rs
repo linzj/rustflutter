@@ -6121,6 +6121,34 @@ impl MaterialButtonColors {
         })
     }
 
+    /// Upstream's `getBrightness`:
+    ///
+    /// ```dart
+    /// Brightness getBrightness(MaterialButton button) {
+    ///   return button.colorBrightness ?? colorScheme!.brightness;
+    /// }
+    /// ```
+    ///
+    /// The one member of `MaterialButton` nothing in this crate answered.
+    /// [`MaterialButtonColors::text_color`] already took a brightness, so the
+    /// machinery was complete and the override that feeds it was absent --
+    /// and what that cost is specific: a button with a dark custom fill on a
+    /// light page had no way to say so, and [`ButtonTextTheme::Normal`] reads
+    /// the *page's* brightness, so the label came out black on a dark button.
+    ///
+    /// It reaches exactly one of the three text themes. `Normal` asks the
+    /// brightness directly; `Primary` asks the **fill** first and only falls
+    /// back to the brightness when there is no fill, so a coloured primary
+    /// button was already right; `Accent` never asks. One override, one
+    /// theme that depends on it, and two that were answered anyway -- which
+    /// is why nothing noticed.
+    pub fn brightness(
+        color_brightness: Option<crate::platform::Brightness>,
+        scheme: &ColorScheme,
+    ) -> crate::platform::Brightness {
+        color_brightness.unwrap_or(scheme.brightness)
+    }
+
     /// Upstream's `getTextColor`.
     pub fn text_color(
         enabled: bool,
@@ -12296,6 +12324,88 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- The one member nothing answered, tick 271 ---------------------------
+
+    #[test]
+    fn a_button_may_say_it_is_dark_when_the_page_is_not() {
+        // Upstream's `getBrightness`, the one member of `MaterialButton` with
+        // no reader anywhere in this crate. `text_color` already took a
+        // brightness, so what was missing is the override that feeds it.
+        use crate::platform::Brightness;
+        let light = ThemeData::light().color_scheme;
+        assert_eq!(
+            MaterialButtonColors::brightness(None, &light),
+            Brightness::Light,
+            "with nothing said, the page decides"
+        );
+        assert_eq!(
+            MaterialButtonColors::brightness(Some(Brightness::Dark), &light),
+            Brightness::Dark,
+            "and the button may disagree with it"
+        );
+        // Both directions, so this is an override and not a one-way flag.
+        let dark = ThemeData::dark().color_scheme;
+        assert_eq!(
+            MaterialButtonColors::brightness(Some(Brightness::Light), &dark),
+            Brightness::Light
+        );
+    }
+
+    #[test]
+    fn the_override_reaches_the_normal_text_theme_and_not_the_other_two() {
+        // What it costs to be missing, said as the difference it makes. A
+        // dark button on a light page gets a white label -- and did not,
+        // because `Normal` reads the page's brightness.
+        use crate::platform::Brightness;
+        let scheme = ThemeData::light().color_scheme;
+        let label = |brightness, theme| {
+            MaterialButtonColors::text_color(true, None, None, theme, None, brightness, &scheme)
+        };
+
+        assert_eq!(
+            label(
+                MaterialButtonColors::brightness(Some(Brightness::Dark), &scheme),
+                ButtonTextTheme::Normal
+            ),
+            Color::WHITE
+        );
+        assert_eq!(
+            label(
+                MaterialButtonColors::brightness(None, &scheme),
+                ButtonTextTheme::Normal
+            ),
+            MaterialButtonColors::BLACK87,
+            "which is what a dark button used to get"
+        );
+
+        // `Accent` never asks, so the override cannot move it.
+        assert_eq!(
+            label(Brightness::Dark, ButtonTextTheme::Accent),
+            label(Brightness::Light, ButtonTextTheme::Accent)
+        );
+
+        // `Primary` asks the *fill* first, so a coloured button was already
+        // right and only a fill-less one consults the brightness.
+        let filled = |brightness| {
+            MaterialButtonColors::text_color(
+                true,
+                None,
+                None,
+                ButtonTextTheme::Primary,
+                Some(Color::BLACK),
+                brightness,
+                &scheme,
+            )
+        };
+        assert_eq!(filled(Brightness::Light), filled(Brightness::Dark));
+        assert_eq!(filled(Brightness::Light), Color::WHITE, "a dark fill");
+        assert_ne!(
+            label(Brightness::Dark, ButtonTextTheme::Primary),
+            label(Brightness::Light, ButtonTextTheme::Primary),
+            "and with no fill it is the brightness after all"
+        );
+    }
 
     // -- The AM/PM toggle and the dial, tick 257 -----------------------------
     //
