@@ -243,6 +243,66 @@ impl SemanticsAction {
     }
 }
 
+/// Upstream `SemanticsCheckState`: what a checkable node's box looks like.
+///
+/// Four values and not two booleans, and the fourth is the reason. This port
+/// carried `has_checked_state` and `is_checked`, which say three things --
+/// not checkable, checked, unchecked -- and had nowhere for **mixed** to come
+/// from. The whole chain agreed: two bits in the ABI, and a ternary in
+/// `runtime_controller.cc` that could only ever produce `kTrue` or `kFalse`.
+///
+/// Meanwhile this port *has* tristate checkboxes:
+/// [`crate::list_tiles::ControlListTile::value`] is an `Option<bool>` whose
+/// doc says "`None` is the indeterminate state". So a half-checked "select
+/// all" box -- the one above a list where some rows are chosen -- announced
+/// as **not checked**, which is one of the two things it is not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SemanticsCheckState {
+    /// Not a checkable thing at all. What stops a reader saying "not checked"
+    /// about a label.
+    #[default]
+    None,
+    Checked,
+    Unchecked,
+    /// Some of what this stands for is checked and some is not.
+    Mixed,
+}
+
+impl SemanticsCheckState {
+    /// What a control holding `value` looks like, in this port's idiom for a
+    /// checkable thing: `None` is the indeterminate state and not the absence
+    /// of one.
+    pub fn of(value: Option<bool>) -> SemanticsCheckState {
+        match value {
+            Some(true) => SemanticsCheckState::Checked,
+            Some(false) => SemanticsCheckState::Unchecked,
+            None => SemanticsCheckState::Mixed,
+        }
+    }
+
+    /// Whether there is a box at all. Upstream's `kNone` against the rest,
+    /// and the old `has_checked_state` boolean.
+    pub fn is_checkable(self) -> bool {
+        self != SemanticsCheckState::None
+    }
+
+    /// The `merge` rule, which is the union the rest of the flags use, said
+    /// for four values instead of two.
+    ///
+    /// A node that is not checkable takes the other's state outright. Two
+    /// that disagree are **mixed**, which is what the value is for: folding a
+    /// checked thing and an unchecked thing into one node produces a node
+    /// that is partly checked, and saying "checked" or "unchecked" there
+    /// would be picking one of them at random.
+    pub fn merge(self, other: SemanticsCheckState) -> SemanticsCheckState {
+        match (self, other) {
+            (SemanticsCheckState::None, state) | (state, SemanticsCheckState::None) => state,
+            (a, b) if a == b => a,
+            _ => SemanticsCheckState::Mixed,
+        }
+    }
+}
+
 /// What a node *is*, as opposed to what can be done to it.
 ///
 /// A subset of upstream's `SemanticsFlags`: the ones that change what a screen
@@ -260,10 +320,11 @@ pub struct SemanticsFlags {
     pub is_obscured: bool,
     pub is_read_only: bool,
     pub is_live_region: bool,
-    /// Whether this node can be checked at all -- a switch or a checkbox has
-    /// this even when it is off, which is what makes "off" sayable.
-    pub has_checked_state: bool,
-    pub is_checked: bool,
+    /// Whether this node can be checked at all and which way, in one value.
+    ///
+    /// This was two booleans, and two booleans cannot say *mixed*. See
+    /// [`SemanticsCheckState`].
+    pub checked: SemanticsCheckState,
     pub has_enabled_state: bool,
     pub is_enabled: bool,
     pub is_selected: bool,
@@ -299,8 +360,10 @@ impl SemanticsFlags {
             is_obscured: self.is_obscured || other.is_obscured,
             is_read_only: self.is_read_only || other.is_read_only,
             is_live_region: self.is_live_region || other.is_live_region,
-            has_checked_state: self.has_checked_state || other.has_checked_state,
-            is_checked: self.is_checked || other.is_checked,
+            // Not a union: two checkable things that disagree fold into a
+            // node that is *mixed*, which is the value's whole reason for
+            // existing. `||` would have picked "checked" whenever either was.
+            checked: self.checked.merge(other.checked),
             has_enabled_state: self.has_enabled_state || other.has_enabled_state,
             is_enabled: self.is_enabled || other.is_enabled,
             is_selected: self.is_selected || other.is_selected,
@@ -339,10 +402,16 @@ impl SemanticsFlags {
             || both(self.is_link, other.is_link)
             || both(self.is_slider, other.is_slider)
             // The tri-state ones: upstream's `hasConflict` on a flag that can
-            // be unset, set true or set false. Here they are plain bools, so
-            // "unset" and "false" cannot be told apart and the conflict is the
-            // same both-true test as the rest.
-            || both(self.is_checked, other.is_checked)
+            // be unset, set true or set false.
+            //
+            // `checked` is no longer one of the bools this comment used to
+            // group it with -- it is a four-valued state now -- so the test
+            // for it is the right one: two *checkable* nodes conflict
+            // whichever way each is set, because merging them loses which was
+            // which. An unchecked node and a checked one are as much a
+            // conflict as two checked ones, and `both(is_checked, ...)` said
+            // they were not.
+            || (self.checked.is_checkable() && other.checked.is_checkable())
             || both(self.is_selected, other.is_selected)
             || both(self.is_enabled, other.is_enabled)
             || both(self.is_focused, other.is_focused)
@@ -1620,8 +1689,7 @@ impl SemanticsProperties {
     pub fn toggle(label: impl Into<String>, on: bool) -> SemanticsProperties {
         SemanticsProperties {
             flags: SemanticsFlags {
-                has_checked_state: true,
-                is_checked: on,
+                checked: SemanticsCheckState::of(Some(on)),
                 has_enabled_state: true,
                 is_enabled: true,
                 ..SemanticsFlags::default()
@@ -1673,8 +1741,7 @@ impl SemanticsProperties {
         let apple = matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS);
         let mut properties = SemanticsProperties {
             flags: SemanticsFlags {
-                has_checked_state: true,
-                is_checked: selected,
+                checked: SemanticsCheckState::of(Some(selected)),
                 is_in_mutually_exclusive_group: true,
                 is_selected: apple && selected,
                 has_enabled_state: true,
@@ -3436,6 +3503,131 @@ mod tests {
     use std::cell::Cell;
     use std::cmp::Ordering;
 
+    // -- Saying "partly checked", tick 266 -----------------------------------
+    //
+    // The engine's `SemanticsCheckState` has four values and this port
+    // carried two booleans, which say three. The whole chain agreed: two bits
+    // in the ABI, and a ternary in `runtime_controller.cc` that could only
+    // ever produce `kTrue` or `kFalse`.
+    //
+    // Meanwhile this port *has* tristate checkboxes -- `ControlListTile`'s
+    // value is an `Option<bool>` whose doc says "`None` is the indeterminate
+    // state" -- so the half-checked box above a list announced as **not
+    // checked**, which is one of the two things it is not.
+
+    #[test]
+    fn a_half_checked_box_is_neither_checked_nor_unchecked() {
+        // The value the two booleans had nowhere to come from.
+        assert_eq!(
+            SemanticsCheckState::of(None),
+            SemanticsCheckState::Mixed
+        );
+        assert_ne!(SemanticsCheckState::Mixed, SemanticsCheckState::Checked);
+        assert_ne!(SemanticsCheckState::Mixed, SemanticsCheckState::Unchecked);
+        // And it is still a box: a reader should say something about it, just
+        // not "checked" or "unchecked".
+        assert!(SemanticsCheckState::Mixed.is_checkable());
+    }
+
+    #[test]
+    fn a_thing_with_no_box_is_told_apart_from_one_with_an_empty_box() {
+        // The distinction the old `has_checked_state` boolean carried, kept:
+        // without it a reader announces "not checked" about a label.
+        assert!(!SemanticsCheckState::None.is_checkable());
+        assert!(SemanticsCheckState::Unchecked.is_checkable());
+        assert_eq!(SemanticsCheckState::default(), SemanticsCheckState::None);
+        assert_eq!(
+            SemanticsFlags::default().checked,
+            SemanticsCheckState::None,
+            "a plain node is not checkable"
+        );
+    }
+
+    #[test]
+    fn two_boxes_that_disagree_merge_into_a_mixed_one() {
+        // Not the union the rest of the flags use. `||` on the old booleans
+        // gave "checked" whenever *either* was, so folding a checked row and
+        // an unchecked one produced a node claiming to be checked -- picking
+        // one of the two at random. Mixed is what that node actually is.
+        assert_eq!(
+            SemanticsCheckState::Checked.merge(SemanticsCheckState::Unchecked),
+            SemanticsCheckState::Mixed
+        );
+        assert_eq!(
+            SemanticsCheckState::Unchecked.merge(SemanticsCheckState::Checked),
+            SemanticsCheckState::Mixed
+        );
+
+        // Agreeing keeps the answer, and a node with no box takes the other's
+        // outright rather than dragging it to mixed.
+        assert_eq!(
+            SemanticsCheckState::Checked.merge(SemanticsCheckState::Checked),
+            SemanticsCheckState::Checked
+        );
+        assert_eq!(
+            SemanticsCheckState::None.merge(SemanticsCheckState::Unchecked),
+            SemanticsCheckState::Unchecked
+        );
+        assert_eq!(
+            SemanticsCheckState::Unchecked.merge(SemanticsCheckState::None),
+            SemanticsCheckState::Unchecked
+        );
+        assert_eq!(
+            SemanticsCheckState::None.merge(SemanticsCheckState::None),
+            SemanticsCheckState::None
+        );
+    }
+
+    #[test]
+    fn two_checkable_nodes_conflict_whichever_way_each_is_set() {
+        // `has_conflict` grouped `is_checked` with the plain bools and tested
+        // "both true", so an unchecked node and a checked one were said not
+        // to conflict -- and merging them loses which was which, which is the
+        // definition of one.
+        let mut checked = said("Yes");
+        checked.flags.checked = SemanticsCheckState::Checked;
+        let mut unchecked = said("No");
+        unchecked.flags.checked = SemanticsCheckState::Unchecked;
+        assert!(checked.flags.conflicts_with(&unchecked.flags));
+
+        // And a node with no box does not conflict with one that has one.
+        let plain = said("Label");
+        assert!(!plain.flags.conflicts_with(&checked.flags));
+    }
+
+    #[test]
+    fn the_mixed_state_reaches_the_abi_as_a_third_bit() {
+        // Three bits for four states: "checkable" gates the other two, and
+        // "mixed" outranks "checked". A sender that never raises the third
+        // bit is unchanged, which is what makes this a widening rather than a
+        // break.
+        use crate::app::pack_semantics_flags;
+        let bits = |state| {
+            pack_semantics_flags(&SemanticsFlags {
+                checked: state,
+                ..SemanticsFlags::default()
+            })
+        };
+        let checkable = 1 << 9;
+        let is_checked = 1 << 10;
+        let mixed = 1 << 15;
+
+        assert_eq!(bits(SemanticsCheckState::None) & (checkable | is_checked | mixed), 0);
+        assert_eq!(
+            bits(SemanticsCheckState::Unchecked) & (checkable | is_checked | mixed),
+            checkable
+        );
+        assert_eq!(
+            bits(SemanticsCheckState::Checked) & (checkable | is_checked | mixed),
+            checkable | is_checked
+        );
+        assert_eq!(
+            bits(SemanticsCheckState::Mixed) & (checkable | is_checked | mixed),
+            checkable | mixed,
+            "mixed is not also checked"
+        );
+    }
+
     // -- The thirteen actions this port did not have, tick 265 ---------------
     //
     // `ffi_tables.py` found them, against an enum whose own doc says "four
@@ -4123,8 +4315,8 @@ mod tests {
         let on = SemanticsProperties::toggle("Notifications", true);
         // Having the state is what makes "off" sayable at all; a node without
         // it is just a label, and a reader is told nothing.
-        assert!(off.flags.has_checked_state && !off.flags.is_checked);
-        assert!(on.flags.has_checked_state && on.flags.is_checked);
+        assert_eq!(off.flags.checked, SemanticsCheckState::Unchecked);
+        assert_eq!(on.flags.checked, SemanticsCheckState::Checked);
         assert!(off.has(SemanticsAction::Tap));
     }
 
@@ -4174,8 +4366,12 @@ mod tests {
             .iter()
             .find(|n| n.id == node_id_for(2))
             .expect("the switch is there");
-        assert!(switch.properties.flags.has_checked_state);
-        assert!(switch.properties.flags.is_checked, "and it is on");
+        assert!(switch.properties.flags.checked.is_checkable());
+        assert_eq!(
+            switch.properties.flags.checked,
+            SemanticsCheckState::Checked,
+            "and it is on"
+        );
 
         let save = says("Save").expect("the button is read");
         assert_eq!(
@@ -5724,16 +5920,18 @@ mod tests {
     #[test]
     fn flags_merge_and_actions_union() {
         let mut parent = said("Row");
-        parent.flags.has_checked_state = true;
         parent.actions.push(SemanticsAction::Tap);
 
         let mut child = said("Check");
-        child.flags.is_checked = true;
+        child.flags.checked = SemanticsCheckState::Checked;
         child.actions.push(SemanticsAction::LongPress);
         child.actions.push(SemanticsAction::Tap);
 
         parent.absorb(&child);
-        assert!(parent.flags.has_checked_state && parent.flags.is_checked);
+        // The parent had no check state, so it takes the child's outright --
+        // which is the arm `||` used to get right by accident and would have
+        // got wrong the moment the parent was unchecked.
+        assert_eq!(parent.flags.checked, SemanticsCheckState::Checked);
         assert_eq!(parent.actions.len(), 2, "Tap was not added twice");
         assert!(parent.actions.contains(&SemanticsAction::LongPress));
     }
@@ -5857,7 +6055,7 @@ mod tests {
         // One node contributing "checkable" and another "focused" describes a
         // thing that is both, which is a real thing.
         let mut checkable = said("a");
-        checkable.flags.has_checked_state = true;
+        checkable.flags.checked = SemanticsCheckState::Unchecked;
         let mut focused = said("b");
         focused.flags.is_focused = true;
         assert!(checkable.is_compatible_with(Some(&focused)));
@@ -7184,8 +7382,12 @@ mod focus_block_tests {
         for platform in TargetPlatform::ALL {
             for selected in [false, true] {
                 let properties = radio(selected, platform);
-                assert!(properties.flags.has_checked_state, "{platform:?}");
-                assert_eq!(properties.flags.is_checked, selected, "{platform:?}");
+                assert!(properties.flags.checked.is_checkable(), "{platform:?}");
+                assert_eq!(
+                    properties.flags.checked,
+                    crate::semantics::SemanticsCheckState::of(Some(selected)),
+                    "{platform:?}"
+                );
                 assert!(
                     properties.flags.is_in_mutually_exclusive_group,
                     "{platform:?}"
@@ -7245,8 +7447,7 @@ mod focus_block_tests {
         // only be told them apart by this.
         let radio = SemanticsProperties::radio("Medium", true, TargetPlatform::Android, HINT);
         let checkbox = SemanticsProperties::toggle("Remember me", true);
-        assert_eq!(radio.flags.has_checked_state, checkbox.flags.has_checked_state);
-        assert_eq!(radio.flags.is_checked, checkbox.flags.is_checked);
+        assert_eq!(radio.flags.checked, checkbox.flags.checked);
         assert_ne!(
             radio.flags.is_in_mutually_exclusive_group,
             checkbox.flags.is_in_mutually_exclusive_group

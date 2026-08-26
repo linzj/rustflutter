@@ -68,6 +68,14 @@ enum {
   kRfSemanticsIsEnabled = 1 << 12,
   kRfSemanticsIsSelected = 1 << 13,
   kRfSemanticsIsFocused = 1 << 14,
+  // The fourth check state, which two bits could not carry. A node with the
+  // checked state *and* this one is partly checked -- the "select all" box
+  // above a list where some rows are chosen -- and without it that box
+  // crossed as plain unchecked, which is one of the two things it is not.
+  //
+  // It is read only when kRfSemanticsHasCheckedState is set, so an old
+  // sender that never raises it is unchanged.
+  kRfSemanticsIsCheckStateMixed = 1 << 15,
 };
 
 typedef struct RfSemanticsNode {

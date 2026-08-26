@@ -539,9 +539,16 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
     // of them: kNone is what stops a screen reader announcing "not checked"
     // about a thing that was never checkable.
     if ((in.flags & kRfSemanticsHasCheckedState) != 0) {
-      out.flags.isChecked = (in.flags & kRfSemanticsIsChecked) != 0
-                                ? SemanticsCheckState::kTrue
-                                : SemanticsCheckState::kFalse;
+      // Three arms, not a ternary. The mixed bit is checked first because it
+      // outranks the other two: a partly checked box is neither, and this
+      // was a two-way choice that could never produce kMixed at all.
+      if ((in.flags & kRfSemanticsIsCheckStateMixed) != 0) {
+        out.flags.isChecked = SemanticsCheckState::kMixed;
+      } else if ((in.flags & kRfSemanticsIsChecked) != 0) {
+        out.flags.isChecked = SemanticsCheckState::kTrue;
+      } else {
+        out.flags.isChecked = SemanticsCheckState::kFalse;
+      }
     }
     if ((in.flags & kRfSemanticsHasEnabledState) != 0) {
       out.flags.isEnabled = (in.flags & kRfSemanticsIsEnabled) != 0

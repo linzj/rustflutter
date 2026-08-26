@@ -211,6 +211,9 @@ mod semantics_bits {
     pub const IS_ENABLED: i32 = 1 << 12;
     pub const IS_SELECTED: i32 = 1 << 13;
     pub const IS_FOCUSED: i32 = 1 << 14;
+    /// The fourth check state, which the two bits above cannot carry between
+    /// them. Read only when `HAS_CHECKED_STATE` is set.
+    pub const IS_CHECK_STATE_MIXED: i32 = 1 << 15;
 }
 
 /// Packs the framework's flags into the ABI's bit set.
@@ -231,8 +234,20 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.is_obscured, IS_OBSCURED);
     set(&mut bits, flags.is_read_only, IS_READ_ONLY);
     set(&mut bits, flags.is_live_region, IS_LIVE_REGION);
-    set(&mut bits, flags.has_checked_state, HAS_CHECKED_STATE);
-    set(&mut bits, flags.is_checked, IS_CHECKED);
+    // Three bits for four states, which is the cheapest honest encoding:
+    // "checkable" gates the other two, and "mixed" outranks "checked".
+    use crate::semantics::SemanticsCheckState;
+    set(&mut bits, flags.checked.is_checkable(), HAS_CHECKED_STATE);
+    set(
+        &mut bits,
+        flags.checked == SemanticsCheckState::Checked,
+        IS_CHECKED,
+    );
+    set(
+        &mut bits,
+        flags.checked == SemanticsCheckState::Mixed,
+        IS_CHECK_STATE_MIXED,
+    );
     set(&mut bits, flags.has_enabled_state, HAS_ENABLED_STATE);
     set(&mut bits, flags.is_enabled, IS_ENABLED);
     set(&mut bits, flags.is_selected, IS_SELECTED);

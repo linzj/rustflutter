@@ -18996,3 +18996,55 @@ unread_strings 44+16+7/0，unpainted 0，hollow 67/0，vacuous 8，stale_engines
 **下一步**：这十三个动作现在是可以被认出来的名字，但**还没有节点会应答它们**——
 `SemanticsFlags` 那边同样是上游一个更大集合的子集，值得同样问一遍"少了哪些、
 少的那些是什么"。
+
+## 第 266 轮：一个说不出"部分勾选"的读屏通道
+
+引擎的 `SemanticsFlags` 带的是 `SemanticsCheckState`，四个值：
+
+    kNone = 0, kTrue = 1, kFalse = 2, kMixed = 3
+
+这个端口带的是两个布尔——`has_checked_state` 和 `is_checked`——它们表达三个。
+`kMixed` **无处可来**，而整条链是一致的：ABI 只有两个位，`runtime_controller.cc`
+把它们读成
+
+    out.flags.isChecked = (in.flags & kRfSemanticsIsChecked) != 0
+                              ? SemanticsCheckState::kTrue
+                              : SemanticsCheckState::kFalse;
+
+一个永远产不出第四个值的三目运算。
+
+**而这个端口是有三态复选框的。** `ControlListTile::value` 是
+`Option<bool>`，它自己的文档写着"`None` 是中间态"，`CheckboxListTile::tristate`
+就是通往它的构造函数。于是一个半勾选的"全选"框——列表上方那个、下面有些行被选中
+的那个——**对读屏器报的是"未勾选"**，而那正是它不是的两件事之一。
+
+三个文件，因为这个值要穿过三层：框架的 flags、ABI 的位、以及把前者变成后者的桥接。
+ABI 加了第三个位（`kRfSemanticsIsCheckStateMixed`，1 << 15），只在"可勾选"位被
+置起时读，所以一个从不置它的旧发送方行为不变——这让它是一次**加宽**而不是一次破坏。
+
+**合并规则不再是并集。** 其余 flag 都是"两个东西折成一个节点，两个主张都成立"，
+所以取或。勾选状态不是：`||` 在任一为真时给出"已勾选"，于是把一个勾选的行和一个
+未勾选的行折起来，得到一个自称已勾选的节点——**从两者里随便挑了一个**。它实际是
+mixed，这正是这个值存在的理由。而一个**没有框**的节点原样接受另一个的状态，不会
+把它拖成 mixed。
+
+**顺带一条过期前提。** `conflicts_with` 里有一句注释把 `is_checked` 和别的裸
+bool 归在一起："这里都是裸 bool，所以'未设置'和'false'分不开，冲突就是同样的
+两者皆真。" 对四值的 `checked` 这已经不成立了——**两个可勾选的节点无论各自是哪一
+面都冲突**，因为合并会丢掉谁是谁；一个未勾选的和一个已勾选的，和两个已勾选的一样
+是冲突，而 `both(is_checked, ...)` 说它们不是。
+
+七条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5762 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建
+（这一轮动了 FFI 头文件，所以是真重建而不是空跑）。
+
+**下一步**：`SemanticsFlags` 相对引擎那份还少十个——`isToggled`、`isExpanded`、
+`isRequired` 是同样的三态形状（一个开关说"开/关"而不是"勾上/没勾上"，是
+`isToggled` 而不是 `isChecked` 在说这件事），`isHidden`、`namesRoute` 改变的是
+读屏器**说不说**；而 `scopesRoute`、`hasImplicitScrolling`、
+`isAccessibilityFocusBlocked` 按这个端口自己写下的取舍标准（"改变读屏器说什么，
+而不是某个平台怎么排它自己的树"）本就在范围之外，值得连理由一起记下来。
