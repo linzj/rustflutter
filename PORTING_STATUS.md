@@ -19913,3 +19913,57 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 
 **下一步**：`depth` 队头的 `CupertinoApp` 8/37 与
 `TextSelectionGestureDetectorBuilder` 6/27。
+
+## 第 283 轮：三击选一段，Linux 除外，单行字段除外
+
+`TextSelectionGestureDetectorBuilder.onTripleTapDown`、
+`_selectTextBoundariesInRange` 和 `_moveToTextBoundary`。
+
+### 三个答案，顺序固定
+
+**单行字段选全部**，而且是在问平台**之前**——在一个不能折行的字段里，段落、行和整段
+文字是同一个东西，`selectAll` 把这句话直说了。
+
+之后是 **Linux 一个对五个**：只有 Linux 选一行，其余平台都选一段。而工具条是在这个
+分支**之外**升起来的，所以三种情况哪一种发生了它都会出现。
+
+### 那个减一在文末，而且只在 leading 那一侧
+
+    // Use extent.offset - 1 when `extent` is at the end of the text to retrieve
+    // the previous text boundary's location.
+
+停在文字最末端的光标是在最后一个边界**之外**的，所以在那里问 leading 边界，答的是
+文末本身，范围回来是空的。往回退一个字符，问的才是最后那一段。
+
+trailing 那一侧没有这个调整——它往前走，而从文末往前走还是文末。两个兜底也各奔一端：
+**leading 兜到 0，trailing 兜到文字长度**。
+
+### 一个替身比真东西宽容，就会把真东西需要的规则藏起来
+
+十四条承重规则强制改错，**三条读绿**。查下去不是测试写松了，是我给测试写的
+`Paragraphs` 替身——一个"走到最近的换行并 clamp"的手卷实现——在文末答 4，而**真的**
+`ParagraphBoundary` 在文末答 7（上游那两行：`if (position >= _text.length) return
+_text.length;`）。替身里那个减一没有东西可修，所以删掉它测试照样绿。
+
+换成真的 `ParagraphBoundary` 之后：
+
+* 第 5 条（"文末不退一步"）立刻落红；
+* 第 6 条（"到处都退一步"）还是绿——因为我挑的位置上 `extent` 和 `extent−1` 落在
+  **同一段**里。补一条 offset 4 的测试：那是第二段的首字符，而 3 是结束第一段的终止符,
+  正是退一步会改答案的位置。落红。
+* 第 7 条（"trailing 那侧也退一步"）查实是**等价改错**：`trailing(length)` 走兜底得
+  `length`，`trailing(length−1)` 得的也是 `length`——两条路同解，任何输入都分不开。
+  和第 281 轮那条一样，如实记下，另换两条能观察的（"end 取自 leading 那次查找"、
+  "start 取自 trailing 那次查找"），两条都红。
+
+顺带修正：真的边界把段落的**终止符也算在段内**，所以 `"one\ntwo"` 的第一段是 `[0,4)`
+而不是 `[0,3)`——我照替身写的两处预期是错的，按真值改了。
+
+十二条落红，一条查实等价。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5913 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一个 builder 的 `onSingleTapUp`（一百多行的平台表）与 `onTapDown`。

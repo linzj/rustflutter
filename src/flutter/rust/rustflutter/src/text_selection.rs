@@ -1614,6 +1614,107 @@ pub fn secondary_tap(
     }
 }
 
+/// What a triple tap selects -- upstream
+/// `TextSelectionGestureDetectorBuilder.onTripleTapDown`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TripleTapSelects {
+    /// A field that cannot wrap: the paragraph, the line and the whole text
+    /// are the same thing, and upstream calls `selectAll` outright.
+    Everything,
+    /// Every platform but one.
+    Paragraph,
+    /// **Linux alone.**
+    Line,
+}
+
+/// The boundary selection a triple tap or a boundary drag makes -- upstream
+/// `TextSelectionGestureDetectorBuilder._selectTextBoundariesInRange` and
+/// `_moveToTextBoundary`.
+pub struct BoundarySelection;
+
+impl BoundarySelection {
+    /// Upstream's `onTripleTapDown`, as the decision it makes.
+    ///
+    /// **The one-line case is answered before the platform is asked.** After
+    /// that it is one row against five: Linux takes a line and everybody else
+    /// takes a paragraph.
+    pub fn triple_tap(
+        max_lines: Option<usize>,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> TripleTapSelects {
+        use crate::editable_text::TargetPlatform;
+        if max_lines == Some(1) {
+            return TripleTapSelects::Everything;
+        }
+        match platform {
+            TargetPlatform::Linux => TripleTapSelects::Line,
+            _ => TripleTapSelects::Paragraph,
+        }
+    }
+
+    /// Upstream's `_moveToTextBoundary`.
+    ///
+    /// **The minus one is at the end of the text and only on the leading
+    /// side.** Upstream's comment: "Use extent.offset - 1 when `extent` is at
+    /// the end of the text to retrieve the previous text boundary's location."
+    /// A caret at the very end is past the last boundary, so asking there for
+    /// the leading boundary answers the end itself and the range comes back
+    /// empty; stepping back one character asks about the last paragraph
+    /// instead.
+    ///
+    /// The trailing lookup gets no adjustment -- it walks forwards, and
+    /// forwards from the end is the end. And the two fallbacks go to opposite
+    /// ends of the text: **0** for the leading one and the **length** for the
+    /// trailing one.
+    pub fn move_to_boundary(
+        extent: isize,
+        text_length: isize,
+        boundary: &dyn crate::services::text_boundary::TextBoundary,
+    ) -> crate::services::text_boundary::TextRange {
+        let leading_from = if extent == text_length {
+            extent - 1
+        } else {
+            extent
+        };
+        crate::services::text_boundary::TextRange {
+            start: boundary.leading_boundary_at(leading_from).unwrap_or(0),
+            end: boundary.trailing_boundary_at(extent).unwrap_or(text_length),
+        }
+    }
+
+    /// Upstream's `_selectTextBoundariesInRange`, minus the hit testing.
+    ///
+    /// `to` is `None` for a tap that never became a drag, and then the far end
+    /// *is* the near end -- one boundary, selected from its own start to its
+    /// own end.
+    ///
+    /// Returns `(base, extent)`. The swap test is
+    /// `fromRange.start < toRange.end`, the same one
+    /// `WordSelection::words_in_range` uses one
+    /// boundary kind down: a backwards drag selects the same span with the
+    /// ends the other way about, so the handles stay where the finger put
+    /// them.
+    pub fn in_range(
+        from_extent: isize,
+        to_extent: Option<isize>,
+        text_length: isize,
+        boundary: &dyn crate::services::text_boundary::TextBoundary,
+    ) -> (isize, isize) {
+        let from_range = BoundarySelection::move_to_boundary(from_extent, text_length, boundary);
+        let to_extent = to_extent.unwrap_or(from_extent);
+        let to_range = if to_extent == from_extent {
+            from_range
+        } else {
+            BoundarySelection::move_to_boundary(to_extent, text_length, boundary)
+        };
+        if from_range.start < to_range.end {
+            (from_range.start, to_range.end)
+        } else {
+            (from_range.end, to_range.start)
+        }
+    }
+}
+
 /// Which end of the selection a handle drag is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionHandleEnd {
@@ -2357,6 +2458,201 @@ impl VerticalCaretMovementRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- What a triple tap selects, tick 283 ---------------------------------
+
+    // The **real** `ParagraphBoundary`, not a stand-in. The first version of
+    // these tests used a hand-rolled one that walked to the nearest newline
+    // and clamped, and three mutations of the minus-one rule read green
+    // against it -- because that stand-in answered 4 at the end of the text
+    // where the real boundary answers 7, so the adjustment had nothing to fix.
+    //
+    // A stand-in that is kinder than the real thing hides the rule the real
+    // thing needs.
+    fn paragraphs(text: &str) -> crate::services::text_boundary::ParagraphBoundary<'_> {
+        crate::services::text_boundary::ParagraphBoundary::new(text)
+    }
+
+    #[test]
+    fn a_one_line_field_selects_everything_before_the_platform_is_asked() {
+        // In a field that cannot wrap, the paragraph and the line and the
+        // whole text are the same thing, and upstream says so with selectAll.
+        use crate::editable_text::TargetPlatform;
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+            TargetPlatform::Linux,
+        ] {
+            assert_eq!(
+                BoundarySelection::triple_tap(Some(1), platform),
+                TripleTapSelects::Everything,
+                "{platform:?}: even Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_alone_selects_a_line_and_everyone_else_a_paragraph() {
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            BoundarySelection::triple_tap(Some(4), TargetPlatform::Linux),
+            TripleTapSelects::Line
+        );
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(
+                BoundarySelection::triple_tap(Some(4), platform),
+                TripleTapSelects::Paragraph,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unbounded_field_is_not_a_one_line_field() {
+        // maxLines == null is the growing field, and it takes the platform
+        // branch like any other multi-line one.
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            BoundarySelection::triple_tap(None, TargetPlatform::Linux),
+            TripleTapSelects::Line
+        );
+        assert_eq!(
+            BoundarySelection::triple_tap(None, TargetPlatform::Android),
+            TripleTapSelects::Paragraph
+        );
+    }
+
+    #[test]
+    fn a_caret_at_the_very_end_steps_back_one_to_find_its_paragraph() {
+        // Upstream: "Use extent.offset - 1 when `extent` is at the end of the
+        // text to retrieve the previous text boundary's location." Without it
+        // the leading lookup at the end answers the end, and the range is
+        // empty.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        let length = text.len() as isize; // 7
+        let range = BoundarySelection::move_to_boundary(length, length, &paragraphs);
+        assert_eq!(
+            (range.start, range.end),
+            (4, 7),
+            "the last paragraph, not an empty range at 7"
+        );
+    }
+
+    #[test]
+    fn the_step_back_happens_only_at_the_end_of_the_text() {
+        // One character earlier there is no adjustment, and the answer is the
+        // same because that position is inside the same paragraph -- so the
+        // rule is about the boundary case alone.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        let inside = BoundarySelection::move_to_boundary(5, 7, &paragraphs);
+        assert_eq!((inside.start, inside.end), (4, 7));
+    }
+
+    #[test]
+    fn a_caret_on_the_first_character_of_a_paragraph_is_not_stepped_back() {
+        // The adjustment is for the end of the text and nowhere else. Offset 4
+        // is the first character of the second paragraph and offset 3 is the
+        // terminator that ends the first, so this is the position where a
+        // step back would change the answer -- and it must not.
+        let text = "one
+two";
+        let paragraphs = paragraphs(text);
+        let range = BoundarySelection::move_to_boundary(4, 7, &paragraphs);
+        assert_eq!(range.start, 4, "the second paragraph, not the first");
+    }
+
+    #[test]
+    fn only_the_leading_lookup_is_adjusted() {
+        // The trailing lookup walks forwards, and forwards from the end is the
+        // end. Adjusting it too would cut the last character off every
+        // triple tap at the end of the text.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        let range = BoundarySelection::move_to_boundary(7, 7, &paragraphs);
+        assert_eq!(range.end, 7, "the whole of the last paragraph");
+    }
+
+    #[test]
+    fn the_two_fallbacks_go_to_opposite_ends_of_the_text() {
+        // Leading falls back to 0 and trailing to the text's length. A
+        // boundary that answers nothing at either side should select
+        // everything, not collapse.
+        struct Silent;
+        impl crate::services::text_boundary::TextBoundary for Silent {
+            fn text_boundary_at(
+                &self,
+                _position: isize,
+            ) -> crate::services::text_boundary::TextRange {
+                crate::services::text_boundary::TextRange { start: -1, end: -1 }
+            }
+        }
+        let range = BoundarySelection::move_to_boundary(3, 7, &Silent);
+        assert_eq!((range.start, range.end), (0, 7));
+    }
+
+    #[test]
+    fn a_tap_that_never_became_a_drag_selects_one_boundary() {
+        // `to: null` makes the far end the near end.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        assert_eq!(
+            BoundarySelection::in_range(1, None, 7, &paragraphs),
+            (0, 4),
+            "the first paragraph, its terminator included"
+        );
+    }
+
+    #[test]
+    fn a_drag_across_paragraphs_takes_both_whole() {
+        // From inside the first to inside the second: the first's start to the
+        // second's end, so neither is cut in half.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        assert_eq!(
+            BoundarySelection::in_range(1, Some(5), 7, &paragraphs),
+            (0, 7)
+        );
+    }
+
+    #[test]
+    fn a_backwards_drag_selects_the_same_span_the_other_way_about() {
+        // `fromRange.start < toRange.end` again, one boundary kind up from
+        // selectWordsInRange: the handles stay on the ends the finger put
+        // them.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        let forwards = BoundarySelection::in_range(1, Some(5), 7, &paragraphs);
+        let backwards = BoundarySelection::in_range(5, Some(1), 7, &paragraphs);
+        assert_eq!(forwards, (0, 7));
+        assert_eq!(backwards, (7, 0), "the same span, base and extent swapped");
+    }
+
+    #[test]
+    fn the_far_end_landing_in_the_same_boundary_is_the_same_selection() {
+        // Dragging within one paragraph selects that paragraph and no more,
+        // however far the finger moves inside it.
+        let text = "one\ntwo";
+        let paragraphs = paragraphs(text);
+        assert_eq!(
+            BoundarySelection::in_range(0, Some(2), 7, &paragraphs),
+            (0, 4)
+        );
+        assert_eq!(
+            BoundarySelection::in_range(2, Some(0), 7, &paragraphs),
+            (0, 4)
+        );
+    }
 
     // -- Dragging a handle needs two flags, tick 282 -------------------------
 
