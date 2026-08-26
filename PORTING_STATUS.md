@@ -19377,3 +19377,56 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 `selectWordsInRange`、`getWordAtOffset`），以及浮动光标那一组
 （`setFloatingCursor`、`calculateBoundedFloatingCursorOffset`、
 `floatingCursorAddedMargin`），最后一组是 iOS 长按拖动光标时的那套算术。
+
+## 第 274 轮：浮动光标——往回拖不是往外拖的倒放
+
+iOS 上按住空格键（或长按光标）拖动，光标会从文字上脱开跟着手指走，被字段的边界
+框住。这是 `RenderEditable.calculateBoundedFloatingCursorOffset`，而**有意思的
+部分不是那个 clamp**。
+
+先说那四条边界，四行里有三件事：
+
+**底边减掉了一个行高，别的边没有。** 光标的偏移量是它的**左上角**，所以"整整一行
+还放得下"的最后一个位置是离底边一个行高的地方；而右边不能这么减——一个光标有一行
+高、没有宽度。
+
+**`min(size, textPainter)`**，不是单取其一：边界取"字段拿到的"和"文字实际需要的"
+里较小的那个，所以一个只有一个词的字段不会让光标游进空白里。
+
+**边距是 `fromLTRB(4, 4, 4, 5)`**——底边 5，其余 4。只有底边多那一像素的余量。
+
+### 不是 clamp 的那一部分
+
+四个 `_resetOriginOn*` 标志是这段代码不是五行 `clamp` 的原因。它们在光标**已经越过
+边界、而手指还在继续往外走**时被**装上**，在往回走的第一帧被**用掉**——那一刻相对
+原点被重新定义，让光标正好落在边界上。
+
+这买到的是：你可以把手指拖出文字末尾很远，光标钉在边缘不动，而当你往回走时它**立刻
+开始移动**，而不是等你把多走的那段全部退回来。一个朴素的 clamp 会让光标恰好滞后
+"你多走了多远"，感觉像是字段卡住了。
+
+**而装载是有方向的。** `_resetOriginOnLeft` 只在光标在界左**且手指还在往左**时装上;
+它在手指下一次往右时用掉。往外和往回是两个不同的事件,所以每条边一个标志、判据是
+delta 的符号而不是位置。
+
+**这里有一个差一帧，我第一版测试就写错了**：重入的那一帧把原点重定义到边缘,
+所以它**答的还是边缘值**——和 clamp 一样——从**下一帧**起两者才分道扬镳。在那一帧
+就断言移动的端口差了一格。
+
+八条承重规则逐条强制改错。其中三条（按位置而不是按方向装载、不看方向就用掉、
+一条边重置两个轴）第一次读绿——三条都是**没人看着的规则**，而它们要的场景各不相同:
+
+* "不看方向就用掉"要一个**装上之后手指还继续往外走**的帧；
+* "一条边重置两个轴"要**先做一次纵向出入**把 y 原点变成非零；
+* "按位置装载"要一个**一开始就在界外、往回拖**的手势——那个手势从来没有往外走过,
+  所以没有超出量可以补偿，光标应当像 clamp 一样一直钉着。这正是方向判据存在的理由。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5806 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 还剩四十来个成员——选区端点与视口那一组
+（`getEndpointsForSelection`、`selectionStartInViewport`、`selectionEndInViewport`）
+和按位置选词那一组（`selectWord`、`selectWordEdge`、`selectWordsInRange`、
+`getWordAtOffset`）。

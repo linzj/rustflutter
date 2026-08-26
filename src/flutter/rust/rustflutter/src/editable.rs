@@ -959,6 +959,156 @@ impl TextInputClient for FieldClient {
 /// Tapping it starts editing; tapping another field stops it. What the reader
 /// types -- directly, or through an IME, or by pasting -- arrives as whole
 /// values and is drawn, composing text underlined.
+/// Upstream `RenderEditable`'s floating cursor: the caret detached from the
+/// text, following a finger.
+///
+/// On iOS a long press on the caret, or a press-and-drag on the space bar,
+/// lifts the caret off the text and lets it be dragged around inside the
+/// field. What makes this more than a clamp is that **dragging back in is not
+/// the reverse of dragging out**: the caret pins at the edge while the finger
+/// keeps going, and starts moving again the *instant* the finger comes back.
+///
+/// A plain clamp makes the caret lag by exactly however far the finger went
+/// past the edge, which feels like the field has stopped responding.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FloatingCursor {
+    /// Upstream's `_relativeOrigin`: what is subtracted from the raw finger
+    /// position to get the caret's. Redefined whenever the finger comes back
+    /// in through an edge it had left.
+    relative_origin: crate::render::Offset,
+    /// Upstream's `_previousOffset`, which is what makes a *delta* available
+    /// -- the direction of travel, not the position, is what arms and spends
+    /// the four flags.
+    previous: Option<crate::render::Offset>,
+    /// Upstream's `_shouldResetOrigin`, set by the caller alongside a new
+    /// raw offset.
+    should_reset_origin: bool,
+    reset_on_left: bool,
+    reset_on_right: bool,
+    reset_on_top: bool,
+    reset_on_bottom: bool,
+}
+
+impl FloatingCursor {
+    /// Upstream's `floatingCursorAddedMargin`:
+    /// `EdgeInsets.fromLTRB(4, 4, 4, 5)`.
+    ///
+    /// **Five at the bottom and four everywhere else** -- one pixel of slack
+    /// that only the bottom edge gets.
+    pub const MARGIN_LEFT: f32 = 4.0;
+    pub const MARGIN_TOP: f32 = 4.0;
+    pub const MARGIN_RIGHT: f32 = 4.0;
+    pub const MARGIN_BOTTOM: f32 = 5.0;
+
+    /// Upstream's four bounds.
+    ///
+    /// ```dart
+    /// topBound    = -margin.top
+    /// bottomBound = min(size.height, painter.height) - preferredLineHeight + margin.bottom
+    /// leftBound   = -margin.left
+    /// rightBound  = min(size.width, painter.width) + margin.right
+    /// ```
+    ///
+    /// The bottom **subtracts a line's height** and the right does not. The
+    /// cursor's offset is its top-left corner, so the last position where a
+    /// whole line still fits is a line height above the bottom; a caret is a
+    /// line tall and nothing wide, so the right edge has nothing to subtract.
+    ///
+    /// And both use `min(field, text)`, not either alone: the caret may not
+    /// wander into space the text does not occupy, however large the field.
+    pub fn bounds(
+        field: crate::render::Size,
+        text: crate::render::Size,
+        preferred_line_height: f32,
+    ) -> crate::engine::Rect {
+        crate::engine::Rect::ltrb(
+            -FloatingCursor::MARGIN_LEFT,
+            -FloatingCursor::MARGIN_TOP,
+            field.width.min(text.width) + FloatingCursor::MARGIN_RIGHT,
+            field.height.min(text.height) - preferred_line_height
+                + FloatingCursor::MARGIN_BOTTOM,
+        )
+    }
+
+    /// Upstream's `_calculateAdjustedCursorOffset`: the plain clamp, which is
+    /// the whole answer only when the origin is not being reset.
+    fn clamped(offset: crate::render::Offset, bounds: crate::engine::Rect) -> crate::render::Offset {
+        crate::render::Offset::new(
+            offset.dx.clamp(bounds.left, bounds.right),
+            offset.dy.clamp(bounds.top, bounds.bottom),
+        )
+    }
+
+    /// Upstream's `calculateBoundedFloatingCursorOffset`.
+    ///
+    /// `should_reset_origin` is upstream's optional argument: `None` leaves
+    /// the stored value alone, which is how a drag in progress keeps the
+    /// behaviour the drag started with.
+    pub fn advance(
+        &mut self,
+        raw: crate::render::Offset,
+        bounds: crate::engine::Rect,
+        should_reset_origin: Option<bool>,
+    ) -> crate::render::Offset {
+        if let Some(reset) = should_reset_origin {
+            self.should_reset_origin = reset;
+        }
+        if !self.should_reset_origin {
+            return FloatingCursor::clamped(raw, bounds);
+        }
+
+        let delta = match self.previous {
+            Some(previous) => crate::render::Offset::new(raw.dx - previous.dx, raw.dy - previous.dy),
+            None => crate::render::Offset::ZERO,
+        };
+
+        // Spending a flag: the finger has come back in through an edge it
+        // left, so the origin is redefined to put the caret *at* that edge.
+        // Only the axis that came back moves; the other keeps its origin.
+        if self.reset_on_left && delta.dx > 0.0 {
+            self.relative_origin =
+                crate::render::Offset::new(raw.dx - bounds.left, self.relative_origin.dy);
+            self.reset_on_left = false;
+        } else if self.reset_on_right && delta.dx < 0.0 {
+            self.relative_origin =
+                crate::render::Offset::new(raw.dx - bounds.right, self.relative_origin.dy);
+            self.reset_on_right = false;
+        }
+        if self.reset_on_top && delta.dy > 0.0 {
+            self.relative_origin =
+                crate::render::Offset::new(self.relative_origin.dx, raw.dy - bounds.top);
+            self.reset_on_top = false;
+        } else if self.reset_on_bottom && delta.dy < 0.0 {
+            self.relative_origin =
+                crate::render::Offset::new(self.relative_origin.dx, raw.dy - bounds.bottom);
+            self.reset_on_bottom = false;
+        }
+
+        let current = crate::render::Offset::new(
+            raw.dx - self.relative_origin.dx,
+            raw.dy - self.relative_origin.dy,
+        );
+        let adjusted = FloatingCursor::clamped(current, bounds);
+
+        // Arming a flag: past an edge *and still going that way*. Out and
+        // back are two different events, which is why this is a sign test on
+        // the delta and not a position test.
+        if current.dx < bounds.left && delta.dx < 0.0 {
+            self.reset_on_left = true;
+        } else if current.dx > bounds.right && delta.dx > 0.0 {
+            self.reset_on_right = true;
+        }
+        if current.dy < bounds.top && delta.dy < 0.0 {
+            self.reset_on_top = true;
+        } else if current.dy > bounds.bottom && delta.dy > 0.0 {
+            self.reset_on_bottom = true;
+        }
+
+        self.previous = Some(raw);
+        adjusted
+    }
+}
+
 /// Where a text field's caret is drawn, and how, on one platform.
 ///
 /// Upstream builds this in `_TextFieldState.build`'s platform switch rather
@@ -1614,6 +1764,252 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- The floating cursor, tick 274 ---------------------------------------
+    //
+    // On iOS the caret can be lifted off the text and dragged. What makes
+    // this more than a clamp is that dragging back in is not the reverse of
+    // dragging out.
+
+    #[test]
+    fn the_bottom_bound_leaves_a_line_and_the_right_bound_does_not() {
+        // The cursor's offset is its top-left corner, so the last position
+        // where a whole line still fits is a line height above the bottom. A
+        // caret is a line tall and nothing wide, so the right edge has
+        // nothing to subtract.
+        let bounds = FloatingCursor::bounds(
+            crate::render::Size::new(200.0, 100.0),
+            crate::render::Size::new(200.0, 100.0),
+            20.0,
+        );
+        assert_eq!(bounds.left, -4.0);
+        assert_eq!(bounds.top, -4.0);
+        assert_eq!(bounds.right, 204.0, "width plus the margin, nothing taken off");
+        assert_eq!(bounds.bottom, 85.0, "100 - 20 + 5");
+    }
+
+    #[test]
+    fn the_bottom_margin_is_the_one_that_is_not_four() {
+        assert_eq!(FloatingCursor::MARGIN_LEFT, 4.0);
+        assert_eq!(FloatingCursor::MARGIN_TOP, 4.0);
+        assert_eq!(FloatingCursor::MARGIN_RIGHT, 4.0);
+        assert_eq!(FloatingCursor::MARGIN_BOTTOM, 5.0);
+    }
+
+    #[test]
+    fn the_caret_may_not_wander_past_the_text_however_wide_the_field() {
+        // `min(size, textPainter)`, not either alone. A one-word field does
+        // not let the caret out into empty space.
+        let narrow_text = FloatingCursor::bounds(
+            crate::render::Size::new(400.0, 100.0),
+            crate::render::Size::new(50.0, 100.0),
+            20.0,
+        );
+        assert_eq!(narrow_text.right, 54.0, "the text decides, not the field");
+
+        let narrow_field = FloatingCursor::bounds(
+            crate::render::Size::new(50.0, 100.0),
+            crate::render::Size::new(400.0, 100.0),
+            20.0,
+        );
+        assert_eq!(narrow_field.right, 54.0, "and so does the field");
+    }
+
+    #[test]
+    fn without_the_reset_the_whole_thing_is_a_clamp() {
+        // `_shouldResetOrigin` false is upstream's early return, and it is
+        // the behaviour a port that read only the first two lines would have
+        // written for everything.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        let out = cursor.advance(
+            crate::render::Offset::new(160.0, 25.0),
+            bounds,
+            Some(false),
+        );
+        assert_eq!(out.dx, 100.0);
+        let back = cursor.advance(
+            crate::render::Offset::new(150.0, 25.0),
+            bounds,
+            None,
+        );
+        assert_eq!(back.dx, 100.0, "still pinned, and still lagging");
+    }
+
+    #[test]
+    fn coming_back_in_moves_the_caret_at_once_rather_than_retracing_the_overshoot() {
+        // The whole point. Drag forty past the right edge, then come back
+        // ten: a clamp would still be pinned (150 - 10 = 140, still past
+        // 100), and this starts moving immediately.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+
+        // In bounds, establishing a previous offset.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(90.0, 10.0), bounds, Some(true))
+                .dx,
+            90.0
+        );
+        // Out past the right edge, still going right: pinned, and armed.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(150.0, 10.0), bounds, None)
+                .dx,
+            100.0
+        );
+        // The re-entry frame **redefines the origin to put the caret at the
+        // edge**, so it answers 100 -- the same as a clamp would, and one
+        // frame later they part company. Worth pinning: a port asserting the
+        // move on this frame is off by one, which is how this test was first
+        // written.
+        let entry = cursor.advance(crate::render::Offset::new(140.0, 10.0), bounds, None);
+        assert_eq!(entry.dx, 100.0, "still at the edge, origin now redefined");
+
+        // From here it tracks. A clamp would still answer 100 at 130 and at
+        // 110, and would not move until 100.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(130.0, 10.0), bounds, None)
+                .dx,
+            90.0
+        );
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(110.0, 10.0), bounds, None)
+                .dx,
+            70.0
+        );
+    }
+
+    #[test]
+    fn going_further_out_does_not_arm_anything_new_or_move_the_caret() {
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        cursor.advance(crate::render::Offset::new(90.0, 10.0), bounds, Some(true));
+        for x in [150.0, 200.0, 400.0] {
+            assert_eq!(
+                cursor
+                    .advance(crate::render::Offset::new(x, 10.0), bounds, None)
+                    .dx,
+                100.0,
+                "still at the edge at {x}"
+            );
+        }
+        // The first step back pins at the edge and redefines the origin;
+        // the second moves by its own step, not by the three hundred that
+        // were overshot.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(399.0, 10.0), bounds, None)
+                .dx,
+            100.0
+        );
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(398.0, 10.0), bounds, None)
+                .dx,
+            99.0
+        );
+    }
+
+    #[test]
+    fn a_drag_that_begins_outside_has_no_overshoot_to_forgive() {
+        // Arming needs the finger to be going *outward*. A drag that starts
+        // beyond the edge never went out, so there is nothing to forgive and
+        // the caret stays pinned until the finger genuinely arrives -- which
+        // is what a plain clamp does, and is right here.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(300.0, 10.0), bounds, Some(true))
+                .dx,
+            100.0
+        );
+        for x in [290.0, 280.0, 150.0] {
+            assert_eq!(
+                cursor
+                    .advance(crate::render::Offset::new(x, 10.0), bounds, None)
+                    .dx,
+                100.0,
+                "still pinned at {x}: nothing was armed"
+            );
+        }
+        // And it arrives when the finger does.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(80.0, 10.0), bounds, None)
+                .dx,
+            80.0
+        );
+    }
+
+    #[test]
+    fn an_armed_edge_is_spent_only_by_a_movement_back_in() {
+        // Going *further* out while armed must not spend the flag. If it did,
+        // the origin would be redefined mid-overshoot and the caret would
+        // start tracking one frame early -- which is the same lag the flag
+        // exists to remove, just smaller.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        cursor.advance(crate::render::Offset::new(90.0, 10.0), bounds, Some(true));
+        cursor.advance(crate::render::Offset::new(150.0, 10.0), bounds, None);
+        // Still going out, and armed. Nothing is spent here.
+        cursor.advance(crate::render::Offset::new(200.0, 10.0), bounds, None);
+        // The first frame back is the one that redefines the origin, so it
+        // is still at the edge.
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(190.0, 10.0), bounds, None)
+                .dx,
+            100.0
+        );
+        assert_eq!(
+            cursor
+                .advance(crate::render::Offset::new(180.0, 10.0), bounds, None)
+                .dx,
+            90.0
+        );
+    }
+
+    #[test]
+    fn redefining_one_axis_origin_leaves_the_other_alone() {
+        // Four flags and four origins-by-axis. A vertical excursion sets the
+        // y origin; a later horizontal one must not clear it, or the caret
+        // would jump vertically when the finger came back in sideways.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        cursor.advance(crate::render::Offset::new(50.0, 25.0), bounds, Some(true));
+        // Down past the bottom, then back: the y origin becomes non-zero.
+        cursor.advance(crate::render::Offset::new(50.0, 90.0), bounds, None);
+        cursor.advance(crate::render::Offset::new(50.0, 80.0), bounds, None);
+        let after_vertical = cursor.advance(crate::render::Offset::new(50.0, 70.0), bounds, None);
+        assert_eq!(after_vertical.dy, 40.0, "80 - 50 is the y origin, so 70 - 30");
+
+        // Now a horizontal excursion and return. The y answer must not move.
+        cursor.advance(crate::render::Offset::new(200.0, 70.0), bounds, None);
+        let back = cursor.advance(crate::render::Offset::new(190.0, 70.0), bounds, None);
+        assert_eq!(
+            back.dy, 40.0,
+            "the horizontal reset did not touch the vertical origin"
+        );
+    }
+
+    #[test]
+    fn each_edge_is_armed_and_spent_on_its_own_axis() {
+        // Four flags, not one: leaving through the right and coming back
+        // must not reset the vertical origin, or a diagonal drag would jump.
+        let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
+        let mut cursor = FloatingCursor::default();
+        cursor.advance(crate::render::Offset::new(50.0, 25.0), bounds, Some(true));
+        // Out to the right only; y stays put.
+        cursor.advance(crate::render::Offset::new(200.0, 25.0), bounds, None);
+        cursor.advance(crate::render::Offset::new(190.0, 25.0), bounds, None);
+        let back = cursor.advance(crate::render::Offset::new(180.0, 25.0), bounds, None);
+        assert_eq!(back.dx, 90.0);
+        assert_eq!(back.dy, 25.0, "the vertical origin was not touched");
+    }
 
     // -- Where the caret is drawn, tick 273 ----------------------------------
     //
