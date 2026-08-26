@@ -18804,3 +18804,50 @@ vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
 **下一步**：同一族里还剩 `useCupertinoCheckmarkStyle`（复选框独有）、
 `radioScaleFactor`、`radioSide`、`radioInnerRadius`、`radioBackgroundColor`;
 `unwalked` 的 213 条要用 `variant_sweep.py` 一个模块一个模块地定案。
+
+## 第 262 轮：一行里的单选按钮长什么样
+
+五个字段，五种"空值的含义"：
+
+    字段                          默认值      空值意味着
+    radioScaleFactor             1.0        **一层包装都不加**
+    useCupertinoCheckmarkStyle   false      而且只有 `.adaptive` 能给
+    radioBackgroundColor         null       每个状态下都透明
+    radioSide                    null       一条**用填充色画的**边框
+    radioInnerRadius             null       每个状态下都是 4.5
+
+三条不止是字段：
+
+**缩放系数为一时不包任何东西。**
+
+    if (widget.radioScaleFactor != 1.0) {
+      control = Transform.scale(scale: widget.radioScaleFactor, child: control);
+    }
+
+不是 `Transform.scale(scale: 1.0)`——那画出来一模一样。默认情况下这棵树**少一层
+widget**，一个总是包装的端口在像素上是对的、在树上是错的，而任何遍历这棵树的
+东西看到的是后者。
+
+**`useCupertinoCheckmarkStyle` 是被构造函数拒绝的，不是被 assert 拒绝的。** 上游
+普通构造函数在初始化列表里写 `useCupertinoCheckmarkStyle = false`——它在那里
+根本不是一个参数，只有 `.adaptive` 收。所以上游**没有 assert，因为没有什么可
+assert 的**。这个端口是一个类型对应上游两个构造函数，于是这条规则必须写下来。
+而它真正生效还需要另一半：一个 Apple 平台。两者分开问，因为在一个永远到不了 iOS
+的 tile 上设这个标志是合法的，只是不起作用——测试顺带断言了它和
+`adapts_away_the_theme` 认的是同一批平台。
+
+**`radioSide` 的默认是"一条用填充色画的边框"，不是"没有边框"。** 单选按钮总是
+有一圈环，这个字段是**替换**它而不是**添加**一条。而 4.5 的内半径是同一幅画的
+另一半：环里那个点，上游把它写成一个裸数字。
+
+七条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0，hollow 67/0,
+vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5752 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同族里剩下的三个状态属性（`radioBackgroundColor`、`radioSide`、
+`radioInnerRadius`）要等这三个 tile 真正把控件画出来——目前它们组装的是
+`ListTile` 的槽位，控件本身还是别处画的；`unwalked` 的 213 条要用
+`variant_sweep.py` 逐模块定案。

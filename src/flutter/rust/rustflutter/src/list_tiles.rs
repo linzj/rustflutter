@@ -111,6 +111,18 @@ pub struct ControlListTile {
     /// `None` is the old behaviour and still the default. See
     /// [`ControlListTile::is_enabled`] for why setting it is not symmetric.
     pub enabled: Option<bool>,
+    /// Upstream's `radioScaleFactor`. One is not "scaled by one" -- see
+    /// [`ControlListTile::scales_the_control`].
+    pub radio_scale_factor: f32,
+    /// Upstream's `useCupertinoCheckmarkStyle`: on Apple platforms an
+    /// adaptive radio draws an iOS checkmark instead of a ring.
+    ///
+    /// Upstream's plain constructor does not take this at all -- it sets it
+    /// in its initializer list -- so there is no assert, because there is
+    /// nothing to assert. This port has one type where upstream has two
+    /// constructors, so [`ControlListTile::validate_checkmark_style`] says it
+    /// instead.
+    pub use_cupertino_checkmark_style: bool,
 }
 
 impl ControlListTile {
@@ -127,7 +139,68 @@ impl ControlListTile {
             adaptive: false,
             toggleable: false,
             enabled: None,
+            radio_scale_factor: 1.0,
+            use_cupertino_checkmark_style: false,
         }
+    }
+
+    /// Upstream's radio defaults, which are three different kinds of "null
+    /// means something".
+    ///
+    /// The background is transparent, so a radio has no fill of its own and
+    /// whatever is behind the row shows through the ring. The side is **a
+    /// border in the fill colour** rather than no border -- a radio always
+    /// has a ring, and the field replaces it rather than adding one. And the
+    /// inner circle is 4.5, the dot inside that ring, which upstream states
+    /// as a bare number.
+    pub const INNER_RADIUS: f32 = 4.5;
+
+    pub fn with_radio_scale_factor(mut self, factor: f32) -> Self {
+        self.radio_scale_factor = factor;
+        self
+    }
+
+    pub fn with_cupertino_checkmark_style(mut self, use_checkmark: bool) -> Self {
+        self.use_cupertino_checkmark_style = use_checkmark;
+        self
+    }
+
+    /// Whether the control is wrapped in a scaling transform at all.
+    ///
+    /// ```dart
+    /// if (widget.radioScaleFactor != 1.0) {
+    ///   control = Transform.scale(scale: widget.radioScaleFactor, child: control);
+    /// }
+    /// ```
+    ///
+    /// **Not `Transform.scale(scale: 1.0)`**, which would be the same
+    /// picture. The default leaves the tree one widget shorter, and a port
+    /// that always wrapped would be right about the pixels and wrong about
+    /// the tree -- which is what anything walking it sees.
+    pub fn scales_the_control(&self) -> bool {
+        self.radio_scale_factor != 1.0
+    }
+
+    /// Upstream's plain constructor sets `useCupertinoCheckmarkStyle = false`
+    /// in its initializer list, so only `.adaptive` can carry a true one.
+    pub fn validate_checkmark_style(&self) -> Result<(), &'static str> {
+        if self.use_cupertino_checkmark_style && !self.adaptive {
+            return Err("useCupertinoCheckmarkStyle is only usable on an adaptive tile");
+        }
+        Ok(())
+    }
+
+    /// Whether the checkmark style actually changes the picture.
+    ///
+    /// It needs both halves: the flag *and* an Apple platform. Elsewhere an
+    /// adaptive radio is the Material one, and there is no checkmark to draw
+    /// -- the same shape as [`ControlListTile::adapts_away_the_theme`], and
+    /// asked separately because a caller may set the flag on a tile that
+    /// never reaches iOS.
+    pub fn draws_a_cupertino_checkmark(&self, platform: TargetPlatform) -> bool {
+        self.use_cupertino_checkmark_style
+            && self.adaptive
+            && matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS)
     }
 
     /// Upstream's `toggleable`, and with it upstream's `tristate` for a
@@ -626,6 +699,98 @@ impl SwitchListTile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- What a radio in a row looks like, tick 262 --------------------------
+
+    #[test]
+    fn a_scale_factor_of_one_wraps_the_control_in_nothing_at_all() {
+        // Upstream: `if (widget.radioScaleFactor != 1.0) { control =
+        // Transform.scale(...) }`. Not `Transform.scale(scale: 1.0)`, which
+        // would be the same picture -- the default leaves the tree one widget
+        // shorter, and a port that always wrapped would be right about the
+        // pixels and wrong about the tree, which is what anything walking it
+        // sees.
+        let plain = ControlListTile::new(TileControl::Radio, Some(true));
+        assert_eq!(plain.radio_scale_factor, 1.0);
+        assert!(!plain.scales_the_control());
+
+        assert!(plain.with_radio_scale_factor(1.5).scales_the_control());
+        assert!(
+            plain.with_radio_scale_factor(0.5).scales_the_control(),
+            "shrinking is a transform too"
+        );
+    }
+
+    #[test]
+    fn the_cupertino_checkmark_is_only_offered_on_an_adaptive_tile() {
+        // Upstream's plain constructor sets `useCupertinoCheckmarkStyle =
+        // false` in its initializer list, so it is not a parameter there and
+        // there is no assert -- there is nothing to assert. This port has one
+        // type where upstream has two constructors, so it has to be said.
+        let plain = ControlListTile::new(TileControl::Radio, Some(true));
+        assert_eq!(plain.validate_checkmark_style(), Ok(()));
+        assert!(
+            plain
+                .with_cupertino_checkmark_style(true)
+                .validate_checkmark_style()
+                .is_err()
+        );
+
+        let mut adaptive = ControlListTile::new(TileControl::Radio, Some(true));
+        adaptive.adaptive = true;
+        assert_eq!(
+            adaptive
+                .with_cupertino_checkmark_style(true)
+                .validate_checkmark_style(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_checkmark_needs_the_flag_and_an_apple_platform_both() {
+        // Off an Apple platform an adaptive radio is the Material one and
+        // there is no checkmark to draw. Asked separately from the validator
+        // because a caller may set the flag on a tile that never reaches iOS
+        // -- that is legal and simply does nothing.
+        let mut tile = ControlListTile::new(TileControl::Radio, Some(true));
+        tile.adaptive = true;
+        let checkmarked = tile.with_cupertino_checkmark_style(true);
+
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(checkmarked.draws_a_cupertino_checkmark(platform), "{platform:?}");
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(!checkmarked.draws_a_cupertino_checkmark(platform), "{platform:?}");
+        }
+
+        // And an adaptive tile without the flag draws a ring on iOS like
+        // everywhere else.
+        assert!(!tile.draws_a_cupertino_checkmark(TargetPlatform::IOS));
+
+        // The same platforms `adapts_away_the_theme` picks, which is the
+        // point: "adaptive" means one thing here and both readers of it agree
+        // about which platforms it means.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                checkmarked.draws_a_cupertino_checkmark(platform),
+                checkmarked.adapts_away_the_theme(platform),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_radios_inner_circle_is_four_and_a_half() {
+        // Upstream states it as a bare number in the doc for
+        // `radioInnerRadius`: "If null, then it defaults to 4.5 in all
+        // states." The dot inside the ring.
+        assert_eq!(ControlListTile::INNER_RADIUS, 4.5);
+    }
 
     // -- Un-choosing a radio, and a comment that had expired, tick 261 -------
     //
