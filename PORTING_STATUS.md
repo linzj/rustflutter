@@ -19489,3 +19489,53 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 **下一步**：`RenderEditable` 还剩选区端点与视口那一组
 （`getEndpointsForSelection`、`selectionStartInViewport`、`selectionEndInViewport`）
 和固有尺寸那一组（`computeDryLayout`、`computeMaxIntrinsicWidth` 等）。
+
+## 第 276 轮：两个手柄画在哪里，以及它们还在不在屏幕上
+
+`RenderEditable.getEndpointsForSelection` 和 `_updateSelectionExtentsVisibility`,
+两个小方法，之间有六条随手一猜就会猜错的规则。
+
+**端点是**下**角，不是上角。** 上游自己的文档：`Coordinates of the **lower** left
+or lower right corner of the selection`。这一个词解释了这个方法里全部的意外——空
+box 那一支之所以要加 `Offset(0.0, preferredLineHeight)`，是因为 caret 的偏移量是它
+的**顶**，而手柄是从**底**上垂下来的。
+
+**没有 box 时是一个点，不是两个**，而且它的方向是 `null`。有两条路走到这里：折叠的
+选区根本不去问段落要 box；而没折叠的选区问了也可能一个都拿不到。折叠的插入点没有
+第二个端可以握。
+
+**`boxes.first.start` 和 `boxes.last.end`，不是 `left` 和 `right`。** 这两个是
+**认方向**的边——在从右往左的文字里 `start` 是更大的那个数。一个伸手去拿 `left`
+的端口，会把一段阿拉伯语选区的两个手柄都画在错误的一侧。
+
+**x 被 clamp，y 不被。** `clampDouble(boxes.first.start, 0, size.width)`,
+而 `bottom` 旁边什么都没有。一个滚到左边界外的 box 仍然在原点得到手柄；而 y 不能
+clamp，因为字段是竖着滚的，clamp 过的 y 会把手柄钉死在最后一行可见文字上。
+
+**两个方向来自两个不同的 box。** `boxes.first.direction` 和 `boxes.last.direction`：
+一段从英文开始、到阿拉伯语结束的选区，两端跑向相反，每个手柄都得知道自己那一端的。
+
+### 还在不在屏幕上
+
+`_updateSelectionExtentsVisibility` 自己有两条。
+
+**无效的选区不是"不知道"，是"看不见"。** 两个 notifier 都被推成 `false`——尽管它们
+出生时是 `true`。"我不知道它在哪"落到"你看不见它"，这正是让手柄不至于跑到原点上去
+画出来的那一步。
+
+**判定之前区域先 inflate 0.5**，而且上游把理由写明了："因为取整和不取整的值之间有
+差，caret 会被报成有一个略微（< 0.5）为负的 y 偏移。这个取整发生在 paragraph.cc 的
+layout 和 TextPainter 的 `_applyFloatingPointHack` 里。" 于是一个待在顶行的 caret
+报出来大约是 -0.4，严格的包含判定会让它的手柄在你正看着它的时候消失。
+
+十二条承重规则逐条强制改错，全红。其中"没有 box 时是一个点"第一次改成了一个语法坏掉
+的形式——**编译不过不是红**，那一轮不作数，换成"返回两个一样的点"重来。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5824 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 剩固有尺寸那一组（`computeDryLayout`、
+`computeMaxIntrinsicWidth`、`computeMinIntrinsicWidth` 等）和
+`getRectForComposingRange`。

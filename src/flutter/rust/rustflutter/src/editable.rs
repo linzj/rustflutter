@@ -1167,6 +1167,153 @@ impl<'a> WordSelection<'a> {
     }
 }
 
+/// The three fields `getEndpointsForSelection` reads off a `ui.TextBox`, and no
+/// more.
+///
+/// `start` and `end` rather than `left` and `right` on purpose: they are the
+/// **direction-aware** edges, so in right-to-left text `start` is the larger
+/// number. A port that reaches for `left` and `right` here draws both handles
+/// on the wrong sides of an Arabic selection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionBox {
+    /// The leading edge, whichever side of the box that is.
+    pub start: f32,
+    /// The trailing edge.
+    pub end: f32,
+    /// The **bottom**, because a handle hangs from the bottom of a line.
+    pub bottom: f32,
+    pub direction: crate::direction::TextDirection,
+}
+
+/// Where a selection's two handles go -- upstream
+/// `RenderEditable.getEndpointsForSelection`.
+///
+/// Upstream's doc for the point it returns: "Coordinates of the **lower** left
+/// or lower right corner of the selection". Every surprise in this method
+/// follows from that one word.
+pub struct SelectionEndpoints;
+
+impl SelectionEndpoints {
+    /// The boxes belong to the engine's paragraph, so they arrive rather than
+    /// being invented -- the same shape upstream's `getBoxesForSelection` has.
+    ///
+    /// `caret` is upstream's `getOffsetForCaret(selection.extent, ...)`, used
+    /// only when there are no boxes.
+    ///
+    /// Returns **one** point when the boxes are empty and two otherwise, which
+    /// is the same length contract upstream's `List<TextSelectionPoint>` has.
+    pub fn of(
+        boxes: &[SelectionBox],
+        caret: crate::render::Offset,
+        preferred_line_height: f32,
+        text_width: f32,
+        paint_offset: crate::render::Offset,
+    ) -> Vec<crate::text_selection::TextSelectionPoint> {
+        use crate::text_selection::TextSelectionPoint;
+
+        let Some(first) = boxes.first() else {
+            // A caret offset is the caret's *top*; a handle hangs from the
+            // bottom, so a line height goes on the y. Reached both by a
+            // collapsed selection, which never asks for boxes at all, and by
+            // one that asked and got none.
+            //
+            // The direction is `None`: there is no box to have read one from.
+            return vec![TextSelectionPoint::new(
+                crate::render::Offset::new(
+                    caret.dx + paint_offset.dx,
+                    caret.dy + preferred_line_height + paint_offset.dy,
+                ),
+                None,
+            )];
+        };
+        let last = boxes.last().expect("non-empty");
+
+        // x is clamped into the text's width and y is not: a box that begins
+        // left of the origin still gets its handle at the origin, while the
+        // bottom is passed through whatever it is.
+        let clamp = |x: f32| x.clamp(0.0, text_width);
+        vec![
+            TextSelectionPoint::new(
+                crate::render::Offset::new(
+                    clamp(first.start) + paint_offset.dx,
+                    first.bottom + paint_offset.dy,
+                ),
+                Some(first.direction),
+            ),
+            TextSelectionPoint::new(
+                crate::render::Offset::new(
+                    clamp(last.end) + paint_offset.dx,
+                    last.bottom + paint_offset.dy,
+                ),
+                // The **last** box's direction, not the first's. A selection
+                // running from English into Arabic has ends that go opposite
+                // ways and two handles that must each know their own.
+                Some(last.direction),
+            ),
+        ]
+    }
+}
+
+/// Whether each end of the selection is inside the field -- upstream
+/// `RenderEditable._updateSelectionExtentsVisibility`, feeding
+/// `selectionStartInViewport` and `selectionEndInViewport`.
+///
+/// This is about *scrolling*, not about the widget being on screen: it answers
+/// whether the text has been scrolled far enough that a handle has left the
+/// field, which is what decides whether the handle is painted at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionVisibility {
+    pub start: bool,
+    pub end: bool,
+}
+
+impl SelectionVisibility {
+    /// Upstream's `visibleRegionSlop`, with upstream's reason:
+    ///
+    /// > Check if the selection is visible with an approximation because a
+    /// > difference between rounded and unrounded values causes the caret to
+    /// > be reported as having a slightly (< 0.5) negative y offset. This
+    /// > rounding happens in paragraph.cc's layout and TextPainter's
+    /// > `_applyFloatingPointHack`.
+    ///
+    /// So a caret sitting at the very top of the field reports a y of about
+    /// -0.4, and a strict containment test makes its handle vanish while you
+    /// are looking straight at it.
+    pub const REGION_SLOP: f32 = 0.5;
+
+    /// `valid` is upstream's `selection.isValid`; the two offsets are
+    /// `getOffsetForCaret` at the selection's start and end, which upstream
+    /// asks for with the selection's own affinity.
+    pub fn of(
+        valid: bool,
+        size: crate::render::Size,
+        start_caret: crate::render::Offset,
+        end_caret: crate::render::Offset,
+        effective_offset: crate::render::Offset,
+    ) -> SelectionVisibility {
+        // Both **false**, though both notifiers start life `true`. "I do not
+        // know where it is" resolves to "you cannot see it", which is what
+        // keeps a handle from being painted at the origin.
+        if !valid {
+            return SelectionVisibility {
+                start: false,
+                end: false,
+            };
+        }
+
+        let slop = SelectionVisibility::REGION_SLOP;
+        let inside = |caret: crate::render::Offset| {
+            let x = caret.dx + effective_offset.dx;
+            let y = caret.dy + effective_offset.dy;
+            x >= -slop && y >= -slop && x < size.width + slop && y < size.height + slop
+        };
+        SelectionVisibility {
+            start: inside(start_caret),
+            end: inside(end_caret),
+        }
+    }
+}
+
 /// Upstream `RenderEditable`'s floating cursor: the caret detached from the
 /// text, following a finger.
 ///
@@ -1976,6 +2123,227 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- Where the two handles go, tick 276 ----------------------------------
+    //
+    // Upstream's doc for the point: "Coordinates of the **lower** left or
+    // lower right corner of the selection." Every surprise follows from that.
+
+    fn a_box(start: f32, end: f32, bottom: f32) -> SelectionBox {
+        SelectionBox {
+            start,
+            end,
+            bottom,
+            direction: crate::direction::TextDirection::Ltr,
+        }
+    }
+
+    #[test]
+    fn no_boxes_is_one_endpoint_with_no_direction() {
+        // A collapsed selection never asks the paragraph for boxes at all, and
+        // a selection that asks can still get none. Both land here, and both
+        // get *one* point -- a caret has no second end to hold.
+        let points = SelectionEndpoints::of(
+            &[],
+            crate::render::Offset::new(30.0, 10.0),
+            14.0,
+            200.0,
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(points.len(), 1, "one, not two");
+        assert_eq!(points[0].direction, None, "no box to have read one from");
+    }
+
+    #[test]
+    fn the_lone_endpoint_hangs_a_line_below_the_caret() {
+        // The caret offset is the caret's *top*. A handle hangs from the
+        // bottom, so a whole line height goes on the y -- and nothing goes on
+        // the x, which is the half a reasonable guess gets wrong in the other
+        // direction.
+        let caret = crate::render::Offset::new(30.0, 10.0);
+        let points = SelectionEndpoints::of(&[], caret, 14.0, 200.0, crate::render::Offset::ZERO);
+        assert_eq!(points[0].point.dy, 24.0, "10 + a line");
+        assert_eq!(points[0].point.dx, 30.0, "the caret's x, untouched");
+    }
+
+    #[test]
+    fn the_endpoints_are_the_boxes_bottoms_not_their_tops() {
+        // Same rule as the lone endpoint, arrived at the other way: the box
+        // carries its own bottom, so nothing is added here.
+        let points = SelectionEndpoints::of(
+            &[a_box(10.0, 90.0, 24.0)],
+            crate::render::Offset::ZERO,
+            14.0,
+            200.0,
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].point.dy, 24.0);
+        assert_eq!(points[1].point.dy, 24.0);
+    }
+
+    #[test]
+    fn the_first_box_gives_the_start_and_the_last_gives_the_end() {
+        // A selection across a wrap is several boxes. The handles belong on
+        // the outside of the whole run, so the middle boxes are not consulted
+        // -- and taking `end` from the first box would put the far handle at
+        // the end of the first line.
+        let points = SelectionEndpoints::of(
+            &[
+                a_box(10.0, 90.0, 24.0),
+                a_box(0.0, 70.0, 48.0),
+                a_box(0.0, 35.0, 72.0),
+            ],
+            crate::render::Offset::ZERO,
+            14.0,
+            200.0,
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(
+            (points[0].point.dx, points[0].point.dy),
+            (10.0, 24.0),
+            "the first box's start, on the first line"
+        );
+        assert_eq!(
+            (points[1].point.dx, points[1].point.dy),
+            (35.0, 72.0),
+            "the last box's end, on the last line"
+        );
+    }
+
+    #[test]
+    fn each_handle_takes_its_own_boxs_direction() {
+        // A selection that begins in English and ends in Arabic has ends that
+        // run opposite ways, and a left handle at a right-to-left end is the
+        // wrong handle.
+        use crate::direction::TextDirection;
+        let mut first = a_box(10.0, 90.0, 24.0);
+        first.direction = TextDirection::Ltr;
+        let mut last = a_box(0.0, 70.0, 48.0);
+        last.direction = TextDirection::Rtl;
+        let points = SelectionEndpoints::of(
+            &[first, last],
+            crate::render::Offset::ZERO,
+            14.0,
+            200.0,
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(points[0].direction, Some(TextDirection::Ltr));
+        assert_eq!(points[1].direction, Some(TextDirection::Rtl));
+    }
+
+    #[test]
+    fn x_is_clamped_into_the_text_and_y_is_not() {
+        // `clampDouble(boxes.first.start, 0, size.width)` and nothing around
+        // `bottom`. A box scrolled off to the left still gets its handle at
+        // the origin; a box below the text keeps its own y, because the field
+        // scrolls vertically and a clamped y would pin the handle to the last
+        // visible line.
+        let points = SelectionEndpoints::of(
+            &[a_box(-40.0, 900.0, 4000.0)],
+            crate::render::Offset::ZERO,
+            14.0,
+            200.0,
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(points[0].point.dx, 0.0, "clamped up to the origin");
+        assert_eq!(points[1].point.dx, 200.0, "clamped down to the width");
+        assert_eq!(points[0].point.dy, 4000.0, "not clamped at all");
+    }
+
+    #[test]
+    fn the_paint_offset_reaches_both_branches() {
+        // The scroll offset is added whether there were boxes or not. Getting
+        // it into only one branch means the handles are right until the caret
+        // collapses, and then jump.
+        let shift = crate::render::Offset::new(-5.0, -7.0);
+        let boxed = SelectionEndpoints::of(
+            &[a_box(10.0, 90.0, 24.0)],
+            crate::render::Offset::ZERO,
+            14.0,
+            200.0,
+            shift,
+        );
+        assert_eq!((boxed[0].point.dx, boxed[0].point.dy), (5.0, 17.0));
+        let lone = SelectionEndpoints::of(
+            &[],
+            crate::render::Offset::new(30.0, 10.0),
+            14.0,
+            200.0,
+            shift,
+        );
+        assert_eq!((lone[0].point.dx, lone[0].point.dy), (25.0, 17.0));
+    }
+
+    #[test]
+    fn an_invalid_selection_is_invisible_rather_than_visible() {
+        // Both notifiers are constructed `true`, and an invalid selection
+        // drives them **false**: "I do not know where it is" resolves to "you
+        // cannot see it", which is what stops a handle appearing at the
+        // origin.
+        let hidden = SelectionVisibility::of(
+            false,
+            crate::render::Size::new(200.0, 40.0),
+            crate::render::Offset::new(10.0, 10.0),
+            crate::render::Offset::new(20.0, 10.0),
+            crate::render::Offset::ZERO,
+        );
+        assert_eq!(
+            hidden,
+            SelectionVisibility {
+                start: false,
+                end: false
+            },
+            "not the true they start at, even though those offsets are inside"
+        );
+    }
+
+    #[test]
+    fn a_caret_just_above_the_field_still_counts_as_inside() {
+        // Upstream: "a difference between rounded and unrounded values causes
+        // the caret to be reported as having a slightly (< 0.5) negative y
+        // offset. This rounding happens in paragraph.cc's layout and
+        // TextPainter's _applyFloatingPointHack."
+        //
+        // So a caret on the top line reports about -0.4 and a strict test
+        // makes its handle vanish while you are looking at it.
+        let field = crate::render::Size::new(200.0, 40.0);
+        let inside = SelectionVisibility::of(
+            true,
+            field,
+            crate::render::Offset::new(10.0, -0.4),
+            crate::render::Offset::new(20.0, -0.4),
+            crate::render::Offset::ZERO,
+        );
+        assert!(inside.start && inside.end, "within the slop");
+
+        let outside = SelectionVisibility::of(
+            true,
+            field,
+            crate::render::Offset::new(10.0, -0.6),
+            crate::render::Offset::new(20.0, -0.6),
+            crate::render::Offset::ZERO,
+        );
+        assert!(
+            !outside.start && !outside.end,
+            "past the slop, genuinely scrolled away"
+        );
+    }
+
+    #[test]
+    fn the_two_ends_are_answered_separately() {
+        // The whole point of two notifiers: scroll until the start has left
+        // and the end has not, and one handle is painted.
+        let visibility = SelectionVisibility::of(
+            true,
+            crate::render::Size::new(200.0, 40.0),
+            crate::render::Offset::new(10.0, 10.0),
+            crate::render::Offset::new(190.0, 10.0),
+            crate::render::Offset::new(-100.0, 0.0),
+        );
+        assert!(!visibility.start, "scrolled off to the left");
+        assert!(visibility.end, "still in the field");
+    }
 
     // -- What a double tap selects, tick 275 ---------------------------------
     //
