@@ -125,15 +125,117 @@ impl RangeSlider {
         }
     }
 
-    /// Where the range lands when the selected thumb is dragged to `tap_value`.
+    /// Where the range lands when the selected thumb is dragged to
+    /// `tap_value`, given how close the two thumbs are allowed to get.
     ///
-    /// Upstream replaces only the selected side and asserts
+    /// `separation` is a fraction of the track --
+    /// [`RangeSlider::separation_fraction`] converts the theme's pixels.
+    ///
+    /// # What this used to say
+    ///
+    /// "Upstream replaces only the selected side and asserts
     /// `newValues.start <= newValues.end` downstream, so a thumb that would
-    /// cross its partner is a caller error rather than something repaired here.
-    pub fn values_with(&self, thumb: Thumb, tap_value: f32) -> (f32, f32) {
+    /// cross its partner is a caller error rather than something repaired
+    /// here."
+    ///
+    /// That was wrong about upstream, and the mistake was load-bearing: it
+    /// is exactly the `math.min` and `math.max` in `_handleDragUpdate` that
+    /// read `SliderThemeData.minThumbSeparation`, which is why that field
+    /// was named nowhere in this port outside its own paperwork. A start
+    /// thumb dragged past the end one came back with `start > end`, and the
+    /// assert this comment appealed to would have been the thing that fired.
+    pub fn values_with(&self, thumb: Thumb, tap_value: f32, separation: f32) -> (f32, f32) {
         match thumb {
-            Thumb::Start => (tap_value, self.end),
-            Thumb::End => (self.start, tap_value),
+            Thumb::Start => (tap_value.min(self.end - separation), self.end),
+            Thumb::End => (self.start, tap_value.max(self.start + separation)),
+        }
+    }
+
+    /// How close the two thumbs may get, in pixels, under `theme`.
+    ///
+    /// Upstream's `sliderTheme.minThumbSeparation ?? defaults.minThumbSeparation`,
+    /// where `defaults` is one of a *separate* pair of tables kept for the
+    /// range slider -- `_RangeSliderDefaultsM2` and `_RangeSliderDefaultsM3`
+    /// -- and the two disagree about exactly this field: eight pixels under
+    /// Material 2, and zero under Material 3, where the thumbs may touch.
+    pub fn min_thumb_separation(
+        theme: &crate::slider_theme::SliderThemeData,
+        use_material3: bool,
+    ) -> f32 {
+        theme
+            .min_thumb_separation
+            .unwrap_or(if use_material3 { 0.0 } else { 8.0 })
+    }
+
+    /// Upstream `_minThumbSeparationValue`: the theme's gap, in pixels,
+    /// as a fraction of the track it is measured across.
+    ///
+    /// Zero on a discrete slider whatever the theme says -- the divisions
+    /// already keep the thumbs a division apart, and a separation on top of
+    /// them would stop a thumb reaching a position it is allowed to occupy.
+    pub fn separation_fraction(&self, separation: f32, track_width: f32) -> f32 {
+        if self.divisions.is_some() || track_width <= 0.0 {
+            return 0.0;
+        }
+        separation / track_width
+    }
+
+    /// Which thumb a touch means, under `theme`.
+    ///
+    /// Upstream's `sliderTheme.thumbSelector ?? _defaultRangeThumbSelector`.
+    pub fn select_thumb_under(
+        &self,
+        theme: &crate::slider_theme::SliderThemeData,
+        text_direction: ThumbTextDirection,
+        tap_value: f32,
+        thumb_width: f32,
+        track_width: f32,
+        dx: f32,
+    ) -> Option<Thumb> {
+        self.select_thumb(
+            theme.thumb_selector.as_ref(),
+            text_direction,
+            tap_value,
+            thumb_width,
+            track_width,
+            dx,
+        )
+    }
+
+    /// Which thumb a touch means: `selector` when there is one,
+    /// [`RangeSlider::default_range_thumb_selector`] when there is not.
+    ///
+    /// Upstream's `sliderTheme.thumbSelector ?? _defaultRangeThumbSelector`,
+    /// which is a choice nothing in this port had ever made: both sides were
+    /// ported and no caller picked between them.
+    pub fn select_thumb(
+        &self,
+        selector: Option<&crate::range_slider_parts::RangeThumbSelector>,
+        text_direction: ThumbTextDirection,
+        tap_value: f32,
+        thumb_width: f32,
+        track_width: f32,
+        dx: f32,
+    ) -> Option<Thumb> {
+        match selector {
+            None => self.default_range_thumb_selector(
+                text_direction,
+                tap_value,
+                thumb_width,
+                track_width,
+                dx,
+            ),
+            Some(selector) => selector.select(
+                match text_direction {
+                    ThumbTextDirection::Ltr => crate::direction::TextDirection::Ltr,
+                    ThumbTextDirection::Rtl => crate::direction::TextDirection::Rtl,
+                },
+                crate::range_slider_parts::RangeValues::new(self.start, self.end),
+                tap_value,
+                crate::render::Size::new(thumb_width, thumb_width),
+                crate::render::Size::new(track_width, 0.0),
+                dx,
+            ),
         }
     }
 
@@ -244,17 +346,162 @@ mod tests {
     #[test]
     fn dragging_one_thumb_leaves_the_other_where_it_was() {
         let slider = RangeSlider::new(0.2, 0.8);
-        assert_eq!(slider.values_with(Thumb::Start, 0.35), (0.35, 0.8));
-        assert_eq!(slider.values_with(Thumb::End, 0.35), (0.2, 0.35));
+        assert_eq!(slider.values_with(Thumb::Start, 0.35, 0.0), (0.35, 0.8));
+        assert_eq!(slider.values_with(Thumb::End, 0.35, 0.0), (0.2, 0.35));
     }
 
     #[test]
-    fn crossing_is_not_repaired_here() {
-        // Upstream asserts it downstream rather than clamping, so the port says
-        // the same thing: this is the caller's to have prevented.
+    fn a_thumb_dragged_past_its_partner_stops_at_it() {
+        // This test used to be called `crossing_is_not_repaired_here` and
+        // asserted `start > end`, on the strength of a comment claiming
+        // upstream only asserts the ordering downstream. Upstream repairs it,
+        // in `_handleDragUpdate`, with the `math.min` and `math.max` that are
+        // the *only* readers of `SliderThemeData.minThumbSeparation` -- which
+        // is how that field came to be named nowhere in this port outside its
+        // own paperwork.
         let slider = RangeSlider::new(0.2, 0.8);
-        let (start, end) = slider.values_with(Thumb::Start, 0.9);
-        assert!(start > end);
+
+        let (start, end) = slider.values_with(Thumb::Start, 0.9, 0.0);
+        assert_eq!((start, end), (0.8, 0.8), "and not (0.9, 0.8)");
+        assert!(start <= end, "which is the ordering the old test broke");
+
+        let (start, end) = slider.values_with(Thumb::End, 0.1, 0.0);
+        assert_eq!((start, end), (0.2, 0.2));
+    }
+
+    #[test]
+    fn a_separation_stops_the_thumbs_short_of_each_other() {
+        // The gap the theme asks for, in fractions of the track. Zero above
+        // is what the old behaviour would have been if it had been right
+        // about crossing; this is the part `minThumbSeparation` adds.
+        let slider = RangeSlider::new(0.2, 0.8);
+        assert_eq!(slider.values_with(Thumb::Start, 0.9, 0.05), (0.75, 0.8));
+        assert_eq!(slider.values_with(Thumb::End, 0.1, 0.05), (0.2, 0.25));
+
+        // A drag that does not reach its partner is untouched by it.
+        assert_eq!(slider.values_with(Thumb::Start, 0.3, 0.05), (0.3, 0.8));
+    }
+
+    #[test]
+    fn the_separation_is_pixels_over_the_track_and_nothing_on_a_discrete_one() {
+        // Upstream's `_minThumbSeparationValue`. The theme's field is in
+        // pixels and the values are fractions, so the track width is in it --
+        // the same eight pixels is a fifth of a forty-pixel track and a
+        // fortieth of an eight-hundred-pixel one.
+        let smooth = RangeSlider::new(0.2, 0.8);
+        assert_eq!(smooth.separation_fraction(8.0, 800.0), 0.01);
+        assert_eq!(smooth.separation_fraction(8.0, 40.0), 0.2);
+
+        // And zero on a discrete slider whatever the theme says: the
+        // divisions already hold the thumbs apart, and a gap on top of them
+        // would stop a thumb reaching a position it is allowed to occupy.
+        let mut discrete = smooth;
+        discrete.divisions = Some(4);
+        assert_eq!(discrete.separation_fraction(8.0, 800.0), 0.0);
+
+        // A track with no width would divide by zero.
+        assert_eq!(smooth.separation_fraction(8.0, 0.0), 0.0);
+    }
+
+    // -- Which thumb a touch means ---------------------------------------------------
+
+    #[test]
+    fn a_theme_may_replace_the_rule_for_choosing_a_thumb() {
+        // Upstream's `sliderTheme.thumbSelector ?? _defaultRangeThumbSelector`
+        // -- a choice nothing in this port had ever made. Both sides were
+        // ported; no caller picked between them, which is why
+        // `SliderThemeData::thumb_selector` reached nothing.
+        let slider = collapsed();
+
+        // Unset, the default answers, and its answer at rest is to refuse.
+        assert_eq!(
+            slider.select_thumb(None, ThumbTextDirection::Ltr, 0.5, 10.0, 400.0, 0.0),
+            None
+        );
+
+        // An application that would rather always move the end thumb says so,
+        // and the default is not consulted.
+        let always_end = crate::range_slider_parts::RangeThumbSelector::new(
+            |_direction, _values, _tap, _thumb, _track, _dx| Some(Thumb::End),
+        );
+        assert_eq!(
+            slider.select_thumb(
+                Some(&always_end),
+                ThumbTextDirection::Ltr,
+                0.5,
+                10.0,
+                400.0,
+                0.0
+            ),
+            Some(Thumb::End),
+            "the theme's, not the default's"
+        );
+
+        // And it is asked about the slider it was given, not a fixed one: the
+        // values reach it.
+        let seen = std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0)));
+        let recorder = std::rc::Rc::clone(&seen);
+        let watcher = crate::range_slider_parts::RangeThumbSelector::new(
+            move |_direction, values, _tap, _thumb, _track, _dx| {
+                recorder.set((values.start, values.end));
+                None
+            },
+        );
+        let wide = RangeSlider::new(0.25, 0.75);
+        wide.select_thumb(
+            Some(&watcher),
+            ThumbTextDirection::Ltr,
+            0.5,
+            10.0,
+            400.0,
+            0.0,
+        );
+        assert_eq!(seen.get(), (0.25, 0.75));
+    }
+
+    #[test]
+    fn material_three_lets_the_thumbs_touch_and_material_two_does_not() {
+        // Upstream keeps a separate pair of defaults tables for the range
+        // slider, and this is the field they disagree about:
+        // `_RangeSliderDefaultsM2` says eight pixels, `_RangeSliderDefaultsM3`
+        // says zero.
+        use crate::slider_theme::SliderThemeData;
+        let unset = SliderThemeData::new();
+        assert_eq!(RangeSlider::min_thumb_separation(&unset, true), 0.0);
+        assert_eq!(RangeSlider::min_thumb_separation(&unset, false), 8.0);
+
+        // A theme that says so beats both tables.
+        let asked = SliderThemeData {
+            min_thumb_separation: Some(20.0),
+            ..SliderThemeData::new()
+        };
+        assert_eq!(RangeSlider::min_thumb_separation(&asked, true), 20.0);
+        assert_eq!(RangeSlider::min_thumb_separation(&asked, false), 20.0);
+    }
+
+    #[test]
+    fn the_selector_a_theme_carries_is_the_one_that_is_asked() {
+        // The other half of `sliderTheme.thumbSelector ?? _default...`, read
+        // off a theme rather than handed in.
+        use crate::slider_theme::SliderThemeData;
+        let slider = collapsed();
+        let plain = SliderThemeData::new();
+        assert_eq!(
+            slider.select_thumb_under(&plain, ThumbTextDirection::Ltr, 0.5, 10.0, 400.0, 0.0),
+            None,
+            "the default, which refuses to guess at rest"
+        );
+
+        let themed = SliderThemeData {
+            thumb_selector: Some(crate::range_slider_parts::RangeThumbSelector::new(
+                |_direction, _values, _tap, _thumb, _track, _dx| Some(Thumb::Start),
+            )),
+            ..SliderThemeData::new()
+        };
+        assert_eq!(
+            slider.select_thumb_under(&themed, ThumbTextDirection::Ltr, 0.5, 10.0, 400.0, 0.0),
+            Some(Thumb::Start)
+        );
     }
 
     // -- What the constructor refuses ------------------------------------------------

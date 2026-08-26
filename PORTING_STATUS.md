@@ -18071,3 +18071,50 @@ stale_engines 全部不落后，unread_theme_fields 61 → 57。
 **下一步**：`SliderThemeData` 队列里剩下的五个（`range_track_shape`、
 `range_tick_mark_shape`、`range_value_indicator_shape`、`min_thumb_separation`、
 `thumb_selector`）全部在等 `RangeSlider`，那个 widget 这个端口还没有。
+
+## 第 247 轮：一个可以被拖着穿过同伴的滑块
+
+`RangeSlider::values_with` 换掉被选中的那一侧，然后在自己的文档注释里说：
+"上游在下游 assert `newValues.start <= newValues.end`，所以一个会穿过同伴的
+拇指是调用方的错，而不是这里要修的东西。"
+
+**这句话是错的**，而且这个错是承重的。上游在 `_handleDragUpdate` 里就修了：
+
+    Thumb.start => RangeValues(
+      math.min(currentDragValue, currentValues.end - _minThumbSeparationValue),
+      currentValues.end),
+    Thumb.end => RangeValues(
+      currentValues.start,
+      math.max(currentDragValue, currentValues.start + _minThumbSeparationValue)),
+
+而这两个 `math.min` / `math.max` 是 `SliderThemeData.minThumbSeparation`
+**唯一的读者**——这正是那个字段在本端口里除了自己的文书之外一个字都没被提过的
+原因。端口里还有一条名叫 `crossing_is_not_repaired_here` 的测试，把这个缺陷
+断言成了规则：`assert!(start > end)`。测试改名为
+`a_thumb_dragged_past_its_partner_stops_at_it`，并把旧名字和旧理由写进注释，
+因为下一个人会想知道它为什么翻面。
+
+`_minThumbSeparationValue` 本身有两处值得记：主题的字段是**像素**而值是**比例**，
+所以要除以轨道宽度（同样的八像素，在四十像素的轨道上是五分之一，在八百像素的
+轨道上是四十分之一）；而在**分度滑块上它是零**，无论主题说什么——分度已经把两个
+拇指隔开了，再加一段间隔会让拇指够不到它本可以占据的位置。
+
+`minThumbSeparation` 的默认值来自上游**专门为区间滑块另开的一对表**
+（`_RangeSliderDefaultsM2` / `_RangeSliderDefaultsM3`），而这两张表恰好就在这一
+个字段上不一致：Material 2 是八像素，Material 3 是零——M3 允许两个拇指贴在一起。
+
+`thumbSelector` 是另一半：主题对 `_defaultRangeThumbSelector` 的替换。类型和
+默认实现两边都早就移植好了，**没有任何调用方在两者之间做过选择**。
+
+七条承重规则逐条强制改错，全红。第六条第一次又被我写成了空操作
+（`Some(_selector) if false => unreachable!()`，一个永不匹配的守卫），读绿，
+改成"主题的选择器永不被查询"之后才红。这已经是连续两轮同一种自欺了。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 57 → 55。
+门：5668 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`SliderThemeData` 队列只剩三个 `range_*` 形状字段，它们要等一个会
+画的区间滑块 widget——`RangeSlider` 目前是一座纯逻辑的孤岛，没有 `build`，
+没有任何东西构造它。
