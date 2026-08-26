@@ -1753,6 +1753,12 @@ impl ElementTree {
                 self.release(child);
             }
         }
+        // A handle to the element that was here is pointing at nothing now.
+        // Without the bump it stayed "valid" until the slot happened to be
+        // reused, and a caller asking `is_valid` -- a drawer's controls asking
+        // whether it is still attached -- got the answer of an element that
+        // no longer exists.
+        self.shared.bump_generation(id);
         self.shared.states.borrow_mut().remove(&id);
         self.shared.parents.borrow_mut().remove(&id);
         self.shared.provided.borrow_mut().remove(&id);

@@ -115,6 +115,10 @@ pub struct DrawerHost {
     side: DrawerSide,
     scrim_id: u64,
     on_dismiss: Rc<dyn Fn()>,
+    /// Fired when the slide-out has run all the way: the entry comes down.
+    /// Without it a closed drawer would stay in the overlay forever --
+    /// invisible, but still on the hit-test path and still "attached".
+    on_closed: Rc<dyn Fn()>,
     /// Handed to the state so an outside caller can start the slide out.
     controls: DrawerControls,
 }
@@ -179,7 +183,7 @@ impl StatefulComponent for DrawerHost {
     fn advance(&self, state: &mut DrawerAnimation, frame_time_micros: i64) -> bool {
         let moving = state.advance(frame_time_micros);
         if state.is_closed() {
-            (self.on_dismiss)();
+            (self.on_closed)();
         }
         moving
     }
@@ -250,6 +254,23 @@ pub fn show_drawer(
     let closing = controls.clone();
     let scrim_id = crate::theatre::next_surface_id();
 
+    // The entry id is known only once the insert returns, and the entry has to
+    // be removable once the slide-out completes -- the same pending-id pattern
+    // `show_modal` uses. Without this the closed drawer stayed in the overlay:
+    // invisible, still swallowing every tap, and still answering
+    // `is_attached`, which is why a drawer could be opened exactly once.
+    let pending: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
+    let on_closed: Rc<dyn Fn()> = {
+        let overlay = Rc::clone(&overlay);
+        let pending = Rc::clone(&pending);
+        let removed = std::cell::Cell::new(false);
+        Rc::new(move || {
+            if !removed.replace(true) {
+                overlay.remove(pending.get());
+            }
+        })
+    };
+
     let entry = {
         let panel = Rc::clone(&panel);
         let controls = controls.clone();
@@ -262,10 +283,12 @@ pub fn show_drawer(
                 on_dismiss: Rc::new(move || {
                     closing.close();
                 }),
+                on_closed: Rc::clone(&on_closed),
                 controls: controls.clone(),
             })
         })?
     };
+    pending.set(entry);
 
     let handle = crate::theatre::modal_from_entry(overlay, entry);
     Some((handle, controls))

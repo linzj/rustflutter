@@ -788,42 +788,102 @@ impl StatefulComponent for EntryHost {
 /// its first entry, but an overlay that can be dropped over an existing tree is
 /// more useful here than one the caller has to re-express their app for.
 pub fn overlay(page: AnyWidget) -> AnyWidget {
-    let data = Rc::new(RefCell::new(LiveOverlay::new()));
-    let host: Rc<RefCell<Option<StateHandle<EntryHostState>>>> = Rc::new(RefCell::new(None));
-    let stage = data.borrow().stage.clone();
-    let id = next_overlay_id();
+    crate::framework::stateful(OverlayRoot {
+        page: RefCell::new(Some(page)),
+    })
+}
 
-    let handle = OverlayHandle {
-        data: Rc::clone(&data),
-        host: Rc::clone(&host),
-        id,
-        stage: stage.clone(),
-    };
-    let entry_host = crate::framework::stateful(EntryHost {
-        data: Rc::clone(&data),
-        host,
-    });
+/// The widget half of [`overlay`]: it carries the page, and nothing else. The
+/// entries live in the state, which is the whole reason the split exists.
+struct OverlayRoot {
+    /// Taken by the build. A fresh page arrives with every widget update --
+    /// `overlay()` is re-run by a full-tree rebuild, and each run hands its own
+    /// page over -- so the `Option` is only ever empty if the element is built
+    /// without an update having happened, which mounting already covered.
+    page: RefCell<Option<AnyWidget>>,
+}
 
-    provide(
-        handle,
-        many(vec![page, entry_host], move |mut rendered| {
-            let entry_stack = rendered.pop().expect("the entry host");
-            let page = rendered.pop().expect("the page");
-            RenderTheatre::new(
-                page,
-                // The inserted entries are one layer, beneath every portal: a
-                // dialog is put up by the application and a tooltip by the
-                // thing it belongs to, and the application's surfaces go under.
-                vec![StagedEntry {
-                    portal_id: 0,
-                    render: entry_stack,
-                    z_order: 0,
-                    stage_id: 0,
-                }],
-            )
-            .with_stage(stage.clone(), 0)
-        }),
-    )
+/// What an overlay keeps across rebuilds. Upstream this is `OverlayState`,
+/// which likewise outlives every widget built above it.
+///
+/// It has to live here rather than in the widget because `overlay()` runs
+/// again on every full-tree rebuild -- a resize, an image that finished
+/// decoding -- and a `LiveOverlay` created inside the widget would take the
+/// inserted entries with it when it went. That is exactly what used to happen:
+/// the rebuild made a fresh, empty overlay, the entry-building element adopted
+/// it, and a drawer or menu that was up vanished with the frame that had
+/// mounted it -- along with anyone holding the old [`OverlayHandle`], whose
+/// inserts now landed in an overlay nothing builds.
+struct OverlayRootState {
+    data: Rc<RefCell<LiveOverlay>>,
+    host: Rc<RefCell<Option<StateHandle<EntryHostState>>>>,
+    stage: OverlayStage,
+    id: u64,
+}
+
+impl Default for OverlayRootState {
+    fn default() -> OverlayRootState {
+        let data = Rc::new(RefCell::new(LiveOverlay::new()));
+        let stage = data.borrow().stage.clone();
+        OverlayRootState {
+            data,
+            host: Rc::new(RefCell::new(None)),
+            stage,
+            id: next_overlay_id(),
+        }
+    }
+}
+
+impl StatefulComponent for OverlayRoot {
+    type State = OverlayRootState;
+
+    fn initial_state(&self) -> OverlayRootState {
+        OverlayRootState::default()
+    }
+
+    fn build(
+        &self,
+        state: &OverlayRootState,
+        _handle: StateHandle<OverlayRootState>,
+        _context: &mut BuildContext,
+    ) -> AnyWidget {
+        let handle = OverlayHandle {
+            data: Rc::clone(&state.data),
+            host: Rc::clone(&state.host),
+            id: state.id,
+            stage: state.stage.clone(),
+        };
+        let entry_host = crate::framework::stateful(EntryHost {
+            data: Rc::clone(&state.data),
+            host: Rc::clone(&state.host),
+        });
+        let page =
+            self.page.borrow_mut().take().unwrap_or_else(|| {
+                crate::framework::leaf(|| RenderRef::new(crate::widgets::Empty))
+            });
+        let stage = state.stage.clone();
+
+        provide(
+            handle,
+            many(vec![page, entry_host], move |mut rendered| {
+                let entry_stack = rendered.pop().expect("the entry host");
+                let page = rendered.pop().expect("the page");
+                RenderTheatre::new(
+                    page,
+                    // The inserted entries are one layer, beneath every portal: a
+                    // dialog is put up by the application and a tooltip by the
+                    // thing it belongs to, and the application's surfaces go under.
+                    vec![StagedEntry {
+                        portal_id: 0,
+                        render: entry_stack,
+                        z_order: 0,
+                        stage_id: 0,
+                    }],
+                )
+                .with_stage(stage.clone(), 0)
+            }),
+        )
+    }
 }
 
 /// A fresh identity for each overlay, so two of them are never mistaken for

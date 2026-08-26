@@ -38,7 +38,7 @@ use rustflutter::prelude::*;
 use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisSize, RenderFlex};
 use rustflutter::widgets::{Align, Center, Pointer, SizedBox};
 
-use rustflutter::{show_drawer, DrawerControls, DrawerSide, OverlayHandle};
+use rustflutter::{overlay, show_drawer, DrawerControls, DrawerSide, OverlayHandle};
 
 use crate::app::ids;
 use crate::data::demos::{self as catalog, icon};
@@ -74,48 +74,27 @@ impl StatefulComponent for NavDrawerDemo {
         &self,
         state: &NavDrawerState,
         handle: StateHandle<NavDrawerState>,
-        context: &mut BuildContext,
+        _context: &mut BuildContext,
     ) -> AnyWidget {
-        let overlay = OverlayHandle::of(context);
-        let already_open = state
-            .drawer
-            .as_ref()
-            .is_some_and(|controls| controls.is_attached());
-        let open_handle = handle.clone();
         let bar = component(DrawerBar {
-            handlers: PointerHandlers::new().with_tap(move |_| {
-                // Upstream's `ScaffoldState.openDrawer`, behind the app bar's
-                // automatic drawer button.
-                let Some(overlay) = overlay.clone() else {
-                    return;
-                };
-                if already_open {
-                    return;
-                }
-                let panel_handle = open_handle.clone();
-                let opened = show_drawer(overlay, DrawerSide::Start, move || {
-                    component(Drawer::new(component(DrawerItems {
-                        handle: panel_handle.clone(),
-                    })))
-                });
-                if let Some((_, controls)) = opened {
-                    open_handle.set_state(move |state| state.drawer = Some(controls));
-                }
-            }),
+            drawer: state.drawer.clone(),
+            open_handle: handle.clone(),
         });
 
         // Upstream's body: `Center(Padding(EdgeInsets.all(50.0), Text(...)))`,
         // the text `demoNavigationDrawerText`.
         let body = component(BodyText);
 
-        // The scaffold has no drawer slot filled: the drawer is over the whole
-        // window now, as upstream's is over the whole screen, rather than
-        // inside this demo's card.
+        // The scaffold has no drawer slot filled: the drawer is an overlay
+        // entry, and the overlay is the demo's own so the panel slides out of
+        // the card's edge and the scrim covers the card -- upstream's drawer
+        // is over the demo's screen, not the whole window.
         let scaffold = Scaffold::new(body).with_app_bar(bar);
 
-        single(component(scaffold), |inner| {
+        let card = single(component(scaffold), |inner| {
             Box::new(Container::new().with_height(DEMO_HEIGHT).with_child(inner))
-        })
+        });
+        overlay(card)
     }
 }
 
@@ -124,17 +103,52 @@ impl StatefulComponent for NavDrawerDemo {
 /// button leading, the title (`demoNavigationDrawerTitle`) after it, at the
 /// same 56-pixel toolbar height.
 struct DrawerBar {
-    handlers: PointerHandlers,
+    /// The controls for whatever drawer the demo has up, so a second tap on
+    /// the button does not put up a second one.
+    drawer: Option<DrawerControls>,
+    /// Where the opened drawer's controls go, so the next build has them.
+    open_handle: StateHandle<NavDrawerState>,
 }
 
 impl Component for DrawerBar {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
-        let handlers = self.handlers.clone();
         let surface = theme.surface;
         let outline = theme.outline;
         let ink = theme.text;
         let title = theme.title();
+
+        // The demo's own overlay, which the card is wrapped in -- looked up
+        // here, below the overlay's `provide`, rather than in the demo's
+        // build, which runs above it and would find the window's.
+        let overlay = OverlayHandle::of(context);
+        let drawer = self.drawer.clone();
+        let open_handle = self.open_handle.clone();
+        let handlers = PointerHandlers::new().with_tap(move |_| {
+            // Upstream's `ScaffoldState.openDrawer`, behind the app bar's
+            // automatic drawer button. Asked now, not at build time: the
+            // drawer can have slid away and been removed since this handler
+            // was built, and a guard read then would refuse every tap after
+            // the first one.
+            let Some(overlay) = overlay.clone() else {
+                return;
+            };
+            let already_open = drawer
+                .as_ref()
+                .is_some_and(|controls| controls.is_attached());
+            if already_open {
+                return;
+            }
+            let panel_handle = open_handle.clone();
+            let opened = show_drawer(overlay, DrawerSide::Start, move || {
+                component(Drawer::new(component(DrawerItems {
+                    handle: panel_handle.clone(),
+                })))
+            });
+            if let Some((_, controls)) = opened {
+                open_handle.set_state(move |state| state.drawer = Some(controls));
+            }
+        });
 
         leaf(move || {
             let button = Pointer::new(

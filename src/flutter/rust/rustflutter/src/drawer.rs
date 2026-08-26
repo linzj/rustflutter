@@ -163,6 +163,13 @@ impl Component for Drawer {
             // `Drawer.build`: ConstrainedBox(BoxConstraints.expand(width: w))
             // around the Material -- tight width, as tall as offered.
             //
+            // `expand`'s height is written as an infinite *minimum* here:
+            // `enforce` clamps it to the incoming maximum, which is what makes
+            // the panel exactly as tall as the constraint it was given. A
+            // `0..INFINITY` height would pass the looseness through and the
+            // panel would shrink to its content -- a floating card instead of
+            // an edge-to-edge drawer.
+            //
             // The M3 shape rounds the drawer's outer corners by 16
             // (`_DrawerDefaultsM3.shape`/`endShape`). The renderer has one
             // radius for all four corners -- the same limitation
@@ -178,7 +185,7 @@ impl Component for Drawer {
                         RenderConstrainedBox::new(BoxConstraints::new(
                             width,
                             width,
-                            0.0,
+                            f32::INFINITY,
                             f32::INFINITY,
                         ))
                         .with_child(inner),
