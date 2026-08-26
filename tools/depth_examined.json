@@ -106,6 +106,13 @@
       "tick": 270,
       "finding": "Most of upstream's seventy-three fields are answered outside the widget: editable_text.rs carries read_only, enable_interactive_selection and the editing state; services/text_formatter.rs carries maxLength, MaxLengthEnforcement and its platform table (with a recorded divergence -- grapheme clusters upstream, scalar values here); services/text_input.rs carries the keyboard types and actions. What was genuinely absent was the CONSTRUCTOR itself: eight asserts and three derived defaults, none of them present. Five of the eight are about pairs of fields rather than one value's range, and each carries its own message. Ported, with the two that are easy to get wrong written down: noMaxLength is -1 and legal (counter, no limit) rather than 'any negative', and an obscured field both refuses to be multiline and turns smart punctuation off by default -- an IME turning `--` into an em-dash silently changes a password to something unreadable and unrepeatable.",
       "at": "src/flutter/rust/rustflutter/src/editable.rs -- TextField::validate, TextFieldError, effective_input_type, smart_punctuation, NO_MAX_LENGTH"
+    },
+    {
+      "class": "CheckboxListTile",
+      "file": "material/checkbox_list_tile.dart",
+      "tick": 272,
+      "finding": "Same cause as RadioListTile -- this port has one ControlListTile where upstream has three widgets -- and checking each of upstream's forty-one members against the whole crate left five with no hit, one of which (_checkboxType) is the private adaptive marker already carried as `adaptive`. Three of the four real ones are ported here. checkboxShape: the box falls through CheckboxThemeData.shape to RoundedRectangleBorder(circular 1.0) -- ONE, not the usual four, so a checkbox is a square with its corners barely taken off. checkboxScaleFactor: the same field the radio has, and the shared one is named by the fact that SwitchListTile has NEITHER a scale factor nor a shape -- a switch has nothing to scale independently of its track, and the two controls that draw a mark inside a box do. internalAddSemanticForOnTap: whether a tappable row says button:true to a screen reader, which upstream's own doc calls 'a temporary flag to help changing the behavior of ListTile onTap semantics' -- and it is only half the condition, since upstream adds the flag *if onTap is provided*. The fourth, checkboxSemanticLabel, waits on these tiles describing their control separately from their row, which is what radioBackgroundColor and its two neighbours wait on too.",
+      "at": "src/flutter/rust/rustflutter/src/list_tiles.rs -- ControlListTile::CHECKBOX_RADIUS, effective_control_shape, announces_as_a_button"
     }
   ]
 }

@@ -19293,3 +19293,44 @@ depth 已读 10 → 13。
 **下一步**：`depth` 队列的头部现在是 `CheckboxListTile` 5/42（大概率和
 `RadioListTile` 同因，值得连着一起判掉）、`SelectionOverlay` 9/43 和
 `RenderEditable` 22/97——后两个是文本编辑的核心，不太可能是"答在别处"。
+
+## 第 272 轮：复选框磁贴有而开关磁贴没有的东西
+
+沿用上一轮的方法：拿上游四十一个成员逐个去搜**整个 crate**。五个零命中，其中
+`_checkboxType` 是私有的 adaptive 标记，端口已经有了。剩下四个里三个有值得留下的
+规则。
+
+**`checkboxShape`。** 方框本身，经 `CheckboxThemeData.shape` 落到
+`RoundedRectangleBorder(circular 1.0)`。**是 1，不是 2 也不是 4**：一个复选框是
+一个**把角刚刚磨掉一点的方块**，一个顺手去拿常见的 4 的端口会画出另一个控件。
+
+**`checkboxScaleFactor`。** 和单选按钮那个是同一个字段，而端口在第 262 轮已经加了
+`radio_scale_factor`——加在共享的 `ControlListTile` 上，用两个有它的控件之一命名。
+真正给这个字段命名的是**缺席的那个**：`SwitchListTile` 既没有缩放系数也没有形状。
+一个开关没有什么可以脱离它的轨道独立缩放，而**两个在方框里画记号的控件**有。
+
+**`internalAddSemanticForOnTap`。** "当提供了 onTap 时，是否往语义里加
+`button: true`。这是一个临时标志，用来帮助改变 ListTile onTap 语义的行为。"——
+一个可以点的行对读屏器来说**是不是一个按钮**，上游自己还在迁移途中，这就是为什么
+它的名字里带着 `internal`，也是为什么端口把它当内部标志而不是一个调用方该去碰的
+选项。而它只是条件的一半：上游是"**当提供了 onTap 时**"才加，所以一个带标志、没有
+处理器的行也不是按钮。**一个按下去什么都不做的行不是按钮，标志说什么都一样。**
+
+第四个 `checkboxSemanticLabel` 是给方框本身的标签（区别于整行的标题），它和
+`radioBackgroundColor` 那三个等的是同一件事：这些磁贴要先把自己的控件和自己的行
+分开描述。
+
+`ControlListTile` 因此不再是 `Copy`——它现在带着一个完整的 `ShapeBorder`，而上游
+那个字段的类型 `OutlinedBorder` 同样不是可平凡复制的。
+
+六条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2,
+depth 已读 13 → 14（队列 669 → 668）。
+门：5791 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`depth` 队列头部现在是 `SelectionOverlay` 9/43、`CupertinoApp` 8/37、
+`TextSelectionGestureDetectorBuilder` 6/27 和 `RenderEditable` 22/97——最后一个
+是文本编辑的核心，不太可能是"答在别处"，值得按同样的方法先查证再动。

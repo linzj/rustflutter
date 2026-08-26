@@ -77,7 +77,7 @@ impl ListTileControlAffinity {
 }
 
 /// What the three tiles share.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ControlListTile {
     pub control: TileControl,
     /// `None` is the indeterminate state, which only a tristate control may
@@ -111,9 +111,30 @@ pub struct ControlListTile {
     /// `None` is the old behaviour and still the default. See
     /// [`ControlListTile::is_enabled`] for why setting it is not symmetric.
     pub enabled: Option<bool>,
-    /// Upstream's `radioScaleFactor`. One is not "scaled by one" -- see
+    /// Upstream's `radioScaleFactor` and `checkboxScaleFactor`, which are the
+    /// same field on the two tiles that have one.
+    ///
+    /// `SwitchListTile` has neither this nor a shape, and that absence is
+    /// what names it: a switch has nothing to scale independently of its
+    /// track, and the two controls that draw a mark *inside a box* do.
+    ///
+    /// One is not "scaled by one" -- see
     /// [`ControlListTile::scales_the_control`].
     pub radio_scale_factor: f32,
+    /// Upstream's `checkboxShape`, and the radio's ring by the same route.
+    ///
+    /// `None` falls through to the component theme and then to
+    /// [`ControlListTile::CHECKBOX_RADIUS`].
+    pub control_shape: Option<crate::borders::ShapeBorder>,
+    /// Upstream's `internalAddSemanticForOnTap`: whether a tile you can tap
+    /// says `button: true` to a screen reader.
+    ///
+    /// Upstream's own doc calls it "a temporary flag to help changing the
+    /// behavior of ListTile onTap semantics" -- it is mid-migration on
+    /// whether a tappable row *is* a button, which is why the name says
+    /// `internal` and why this is not something a caller should be reaching
+    /// for.
+    pub internal_add_semantic_for_on_tap: bool,
     /// Upstream's `useCupertinoCheckmarkStyle`: on Apple platforms an
     /// adaptive radio draws an iOS checkmark instead of a ring.
     ///
@@ -140,6 +161,8 @@ impl ControlListTile {
             toggleable: false,
             enabled: None,
             radio_scale_factor: 1.0,
+            control_shape: None,
+            internal_add_semantic_for_on_tap: true,
             use_cupertino_checkmark_style: false,
         }
     }
@@ -154,6 +177,45 @@ impl ControlListTile {
     /// inner circle is 4.5, the dot inside that ring, which upstream states
     /// as a bare number.
     pub const INNER_RADIUS: f32 = 4.5;
+
+    /// Upstream's checkbox shape default:
+    /// `RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(1.0)))`.
+    ///
+    /// **One**, not two and not four. A checkbox is a square with the corners
+    /// barely taken off, and a port reaching for the usual four would draw a
+    /// different control.
+    pub const CHECKBOX_RADIUS: f32 = 1.0;
+
+    /// The outline the control is drawn in: the tile's, then the theme's,
+    /// then upstream's near-square.
+    pub fn effective_control_shape(&self, theme_shape: Option<crate::borders::ShapeBorder>) -> crate::borders::ShapeBorder {
+        self.control_shape
+            .clone()
+            .or(theme_shape)
+            .unwrap_or_else(|| {
+                crate::borders::ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                    crate::borders::BorderSide::NONE,
+                    crate::borders::BorderRadiusGeometry::circular(
+                        ControlListTile::CHECKBOX_RADIUS,
+                    ),
+                ))
+            })
+    }
+
+    pub fn with_control_shape(mut self, shape: crate::borders::ShapeBorder) -> Self {
+        self.control_shape = Some(shape);
+        self
+    }
+
+    /// Whether a tile with a tap handler announces itself as a button.
+    ///
+    /// Two conditions, and the flag is only half of it: upstream adds
+    /// `button: true` **if onTap is provided**, so a tile with the flag and
+    /// no handler is not a button either. A row that does nothing when
+    /// pressed is not one, whatever a flag says.
+    pub fn announces_as_a_button(&self, has_on_tap: bool) -> bool {
+        self.internal_add_semantic_for_on_tap && has_on_tap
+    }
 
     pub fn with_radio_scale_factor(mut self, factor: f32) -> Self {
         self.radio_scale_factor = factor;
@@ -359,7 +421,7 @@ impl ControlListTile {
 }
 
 /// Upstream `CheckboxListTile`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CheckboxListTile(pub ControlListTile);
 
 impl CheckboxListTile {
@@ -380,7 +442,7 @@ impl CheckboxListTile {
 /// The one of the three whose control sits **first** by default, because a
 /// column of radios reads as a list of choices and the marks want to line up
 /// down the leading edge.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RadioListTile(pub ControlListTile);
 
 impl RadioListTile {
@@ -390,7 +452,7 @@ impl RadioListTile {
 }
 
 /// Upstream `SwitchListTile`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SwitchListTile(pub ControlListTile);
 
 impl SwitchListTile {
@@ -697,6 +759,81 @@ impl SwitchListTile {
 mod tests {
     use super::*;
 
+    // -- What a checkbox tile has that a switch tile does not, tick 272 ------
+    //
+    // `depth.py` reports `CheckboxListTile` at 5 of 42, and checking each of
+    // upstream's forty-one members against the whole crate leaves five with
+    // no hit -- one of which, `_checkboxType`, is the private adaptive marker
+    // this port already carries.
+
+    #[test]
+    fn a_checkbox_is_a_square_with_its_corners_barely_taken_off() {
+        // One, not two and not four. A port reaching for the usual four would
+        // draw a different control.
+        assert_eq!(ControlListTile::CHECKBOX_RADIUS, 1.0);
+        let tile = ControlListTile::new(TileControl::Checkbox, Some(true));
+        match tile.effective_control_shape(None) {
+            crate::borders::ShapeBorder::Rounded(rounded) => {
+                let radius = rounded
+                    .border_radius
+                    .resolve(crate::direction::TextDirection::Ltr);
+                assert_eq!(radius.top_left.x, 1.0);
+            }
+            other => panic!("expected a rounded rectangle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_tiles_own_shape_beats_the_themes_and_the_theme_beats_the_default() {
+        // Three steps, and the middle one is the reason the parameter exists:
+        // `CheckboxThemeData.shape` sits between them.
+        let stadium =
+            crate::borders::ShapeBorder::Stadium(crate::borders::StadiumBorder::default());
+        let circle =
+            crate::borders::ShapeBorder::Circle(crate::borders::CircleBorder::default());
+        let tile = ControlListTile::new(TileControl::Checkbox, Some(true));
+
+        assert!(matches!(
+            tile.clone().with_control_shape(circle.clone())
+                .effective_control_shape(Some(stadium.clone())),
+            crate::borders::ShapeBorder::Circle(_)
+        ));
+        assert!(matches!(
+            tile.effective_control_shape(Some(stadium)),
+            crate::borders::ShapeBorder::Stadium(_)
+        ));
+    }
+
+    #[test]
+    fn a_tappable_row_is_a_button_and_a_row_with_no_handler_is_not() {
+        // Upstream adds `button: true` *if onTap is provided*, so the flag is
+        // only half of it. A row that does nothing when pressed is not a
+        // button, whatever a flag says.
+        let tile = ControlListTile::new(TileControl::Checkbox, Some(true));
+        assert!(tile.internal_add_semantic_for_on_tap, "upstream's default");
+        assert!(tile.announces_as_a_button(true));
+        assert!(!tile.announces_as_a_button(false));
+
+        // And the flag turns it off even with a handler -- which is what it
+        // is for: upstream's doc calls it "a temporary flag to help changing
+        // the behavior of ListTile onTap semantics".
+        let mut migrating = tile;
+        migrating.internal_add_semantic_for_on_tap = false;
+        assert!(!migrating.announces_as_a_button(true));
+    }
+
+    #[test]
+    fn the_scale_factor_belongs_to_the_two_controls_that_draw_a_mark_in_a_box() {
+        // `SwitchListTile` has neither a scale factor nor a shape upstream,
+        // and that absence is what names the shared field: a switch has
+        // nothing to scale independently of its track.
+        for control in [TileControl::Radio, TileControl::Checkbox, TileControl::Switch] {
+            let tile = ControlListTile::new(control, Some(true));
+            assert_eq!(tile.radio_scale_factor, 1.0, "{control:?}");
+            assert!(!tile.scales_the_control(), "{control:?}");
+        }
+    }
+
     // -- What a radio in a row looks like, tick 262 --------------------------
 
     #[test]
@@ -711,9 +848,9 @@ mod tests {
         assert_eq!(plain.radio_scale_factor, 1.0);
         assert!(!plain.scales_the_control());
 
-        assert!(plain.with_radio_scale_factor(1.5).scales_the_control());
+        assert!(plain.clone().with_radio_scale_factor(1.5).scales_the_control());
         assert!(
-            plain.with_radio_scale_factor(0.5).scales_the_control(),
+            plain.clone().with_radio_scale_factor(0.5).scales_the_control(),
             "shrinking is a transform too"
         );
     }
@@ -751,7 +888,7 @@ mod tests {
         // -- that is legal and simply does nothing.
         let mut tile = ControlListTile::new(TileControl::Radio, Some(true));
         tile.adaptive = true;
-        let checkmarked = tile.with_cupertino_checkmark_style(true);
+        let checkmarked = tile.clone().with_cupertino_checkmark_style(true);
 
         for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
             assert!(
@@ -872,10 +1009,10 @@ mod tests {
         // combination refused, because it draws a live control that does
         // nothing.
         let tile = ControlListTile::new(TileControl::Radio, Some(true));
-        assert_eq!(tile.with_enabled(false).validate_enabled(false), Ok(()));
-        assert_eq!(tile.with_enabled(false).validate_enabled(true), Ok(()));
-        assert_eq!(tile.with_enabled(true).validate_enabled(true), Ok(()));
-        assert!(tile.with_enabled(true).validate_enabled(false).is_err());
+        assert_eq!(tile.clone().with_enabled(false).validate_enabled(false), Ok(()));
+        assert_eq!(tile.clone().with_enabled(false).validate_enabled(true), Ok(()));
+        assert_eq!(tile.clone().with_enabled(true).validate_enabled(true), Ok(()));
+        assert!(tile.clone().with_enabled(true).validate_enabled(false).is_err());
 
         // Unset is never refused: it *is* the condition rather than a claim
         // about it.
@@ -893,11 +1030,8 @@ mod tests {
         assert!(!tile.is_enabled(false));
 
         // And the flag overrides both directions.
-        assert!(
-            !tile.with_enabled(false).is_enabled(true),
-            "off despite a handler"
-        );
-        assert!(tile.with_enabled(true).is_enabled(false));
+        assert!(!tile.clone().with_enabled(false).is_enabled(true), "off despite a handler");
+        assert!(tile.clone().with_enabled(true).is_enabled(false));
     }
 
     // -- The three, actually built -----------------------------------------------------
