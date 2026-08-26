@@ -18118,3 +18118,47 @@ stale_engines 全部不落后，unread_theme_fields 57 → 55。
 **下一步**：`SliderThemeData` 队列只剩三个 `range_*` 形状字段，它们要等一个会
 画的区间滑块 widget——`RangeSlider` 目前是一座纯逻辑的孤岛，没有 `build`，
 没有任何东西构造它。
+
+## 第 248 轮：一座逻辑孤岛终于画出了第一个像素
+
+`RangeSlider` 知道一次触摸指的是哪个拇指、一次拖拽落在哪里、构造函数该拒绝
+什么——**而没有任何东西构造过它**。它没有 `build`，从未往画布上放过一个像素。
+这就是 `SliderThemeData` 未读队列里最后三条（`range_track_shape`、
+`range_tick_mark_shape`、`range_value_indicator_shape`）的全部原因。
+
+三个形状连同绘制器都早就在，而且各自知道单值滑块不需要知道的事：
+`RangeSliderTrackShape::paint` 知道区间轨道的活动段在**两个拇指之间**，无论
+哪个在左；`RangeSliderTickMarkShape::paint` 拿到的是**两个**拇指中心，所以
+一个落在区间内的刻度可以和区间外的取不同颜色；`RangeSliderThumbShape::paint`
+知道两个拇指重合时要画一圈环，免得一个折叠的区间看起来像一个单拇指。
+
+`ResolvedRangeSlider` 是独立的一个类型，因为**上游为区间滑块另开了一对默认表**，
+而两对表互不相同：单值滑块 M3 的轨道是 `GappedSliderTrackShape`，区间滑块的是
+`GappedRangeSliderTrackShape`——另一个类，活动段的**两端各留一个缺口**而不是
+一个。
+
+**这一轮的教训全在测试里，而且是一条一条撞出来的：**
+
+- 按半径数圆，一个有两个拇指的滑块数出**八个**——M2 圆拇指把三层高程阴影也画
+  成了圆，同心、半径几乎一样。
+- 改成按填充色数，M3 又数出两个拇指——而 M3 根本不画圆拇指（handle 是圆角
+  矩形）。多出来的是**gapped 轨道自己在两端画的停止指示点**，小圆，同样的
+  `primary`。两个条件缺一不可，注释里两条都写了。
+- 最要紧的一条：`assert_ne!(两张表画出来的东西)` 是**空的**。把两张表的轨道
+  形状改成同一个，这条断言照样绿——因为拇指形状还不一样，够它满足了。而两种
+  轨道都画三条路径，只有数字不同，那更不是测试。改成对**解析结果本身**逐个
+  形状断言，四条各自可证伪。
+
+十条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 55 → 52——**`SliderThemeData`
+的队列清空了**。
+
+门：5674 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个 widget 还只是画。它没有手势（`RangeSlider::select_thumb_under`
+和 `values_with` 都还没有调用方）、没有标签、没有数值指示器——
+`range_value_indicator_shape` 现在被解析了但还没被画。队列里下一批最大的是
+`DatePickerThemeData` 26 条与 `TimePickerThemeData` 15 条。
