@@ -24,6 +24,106 @@ pub enum SliverAppBarError {
     CollapsedHeightBelowToolbar,
 }
 
+/// Upstream's `_ScrollUnderFlexibleConfig`, which is the per-variant table
+/// behind `SliverAppBar.medium` and `SliverAppBar.large`.
+///
+/// The small variant has none: it does not grow a title into the space below
+/// its toolbar, so there is nothing for a config to describe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollUnderConfig {
+    /// How tall the bar is once it has been scrolled under. The same for both
+    /// variants -- what makes a large bar large is only how far it *expands*.
+    pub collapsed_height: f32,
+    pub expanded_height: f32,
+    /// The title's style while the bar is collapsed.
+    pub collapsed_text_style: Option<crate::engine::TextStyle>,
+    /// And while it is open. The one thing besides the height that separates
+    /// the two variants.
+    pub expanded_text_style: Option<crate::engine::TextStyle>,
+    pub expanded_title_padding: crate::render::EdgeInsets,
+}
+
+impl ScrollUnderConfig {
+    /// Both variants' `collapsedHeight`, and both variants' default
+    /// `toolbarHeight`. A medium or large bar is eight pixels taller
+    /// collapsed than an ordinary one, which is `kToolbarHeight`'s 56.
+    pub const COLLAPSED_HEIGHT: f32 = 64.0;
+    pub const MEDIUM_EXPANDED_HEIGHT: f32 = 112.0;
+    pub const LARGE_EXPANDED_HEIGHT: f32 = 152.0;
+    /// The room around an expanded title. The horizontal sixteen is the same
+    /// in both; only the bottom differs, and that is what gives a large bar's
+    /// title the extra breathing room its extra forty pixels bought.
+    pub const TITLE_INSET: f32 = 16.0;
+    pub const MEDIUM_TITLE_BOTTOM: f32 = 20.0;
+    pub const LARGE_TITLE_BOTTOM: f32 = 28.0;
+
+    /// The table for one variant, or `None` for the small one.
+    ///
+    /// `foreground` is the bar's resolved foreground colour. Upstream puts it
+    /// over the config's own ink with a `copyWith`, so the `apply(color:
+    /// onSurface)` written in each config is a value the next line
+    /// overwrites: the two agree under the Material 3 default and stop
+    /// agreeing the moment a bar names a foreground.
+    pub fn of(
+        variant: SliverAppVariant,
+        theme: &crate::theme::ThemeData,
+        foreground: crate::engine::Color,
+    ) -> Option<ScrollUnderConfig> {
+        let ink = |style: Option<crate::engine::TextStyle>| {
+            style.map(|style| crate::engine::TextStyle {
+                color: foreground,
+                ..style
+            })
+        };
+        let collapsed = ink(theme.text_theme.title_large.clone());
+        match variant {
+            SliverAppVariant::Small => None,
+            SliverAppVariant::Medium => Some(ScrollUnderConfig {
+                collapsed_height: ScrollUnderConfig::COLLAPSED_HEIGHT,
+                expanded_height: ScrollUnderConfig::MEDIUM_EXPANDED_HEIGHT,
+                collapsed_text_style: collapsed,
+                expanded_text_style: ink(theme.text_theme.headline_small.clone()),
+                expanded_title_padding: crate::render::EdgeInsets {
+                    left: ScrollUnderConfig::TITLE_INSET,
+                    top: 0.0,
+                    right: ScrollUnderConfig::TITLE_INSET,
+                    bottom: ScrollUnderConfig::MEDIUM_TITLE_BOTTOM,
+                },
+            }),
+            SliverAppVariant::Large => Some(ScrollUnderConfig {
+                collapsed_height: ScrollUnderConfig::COLLAPSED_HEIGHT,
+                expanded_height: ScrollUnderConfig::LARGE_EXPANDED_HEIGHT,
+                collapsed_text_style: collapsed,
+                expanded_text_style: ink(theme.text_theme.headline_medium.clone()),
+                expanded_title_padding: crate::render::EdgeInsets {
+                    left: ScrollUnderConfig::TITLE_INSET,
+                    top: 0.0,
+                    right: ScrollUnderConfig::TITLE_INSET,
+                    bottom: ScrollUnderConfig::LARGE_TITLE_BOTTOM,
+                },
+            }),
+        }
+    }
+
+    /// The padding an expanded title actually gets, given what is under the
+    /// bar.
+    ///
+    /// Upstream's `bottomHeight > 0 ? resolvedTitlePadding.copyWith(bottom: 0)
+    /// : resolvedTitlePadding`. A tab bar or search field beneath the title
+    /// brings its own room; keeping the twenty pixels as well would push the
+    /// title up off the bar it belongs to.
+    pub fn title_padding_over(&self, bottom_height: f32) -> crate::render::EdgeInsets {
+        if bottom_height > 0.0 {
+            crate::render::EdgeInsets {
+                bottom: 0.0,
+                ..self.expanded_title_padding
+            }
+        } else {
+            self.expanded_title_padding
+        }
+    }
+}
+
 /// Upstream `SliverAppBar`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SliverAppBar {
@@ -87,6 +187,47 @@ impl SliverAppBar {
     /// Upstream's `minExtent`: the collapsed height, plain.
     pub fn min_extent(&self) -> f32 {
         self.collapsed_height.unwrap_or(self.toolbar_height) + self.top_padding
+    }
+
+    /// The heights the variant supplies when the caller named none.
+    ///
+    /// Upstream's `_SliverAppBarState.build` switches on the variant for
+    /// exactly this, and nothing in this port read the variant at all:
+    ///
+    /// ```dart
+    /// effectiveExpandedHeight = widget.expandedHeight
+    ///     ?? _MediumScrollUnderFlexibleConfig.expandedHeight + bottomHeight;
+    /// effectiveCollapsedHeight = widget.collapsedHeight
+    ///     ?? topPadding + _MediumScrollUnderFlexibleConfig.collapsedHeight + bottomHeight;
+    /// ```
+    ///
+    /// Note where the bottom goes: **into both**. A bar with a tab strip is
+    /// that much taller open and that much taller shut, so the strip stays on
+    /// screen the whole way down -- which is the point of putting it in the
+    /// bar rather than under it.
+    ///
+    /// And note where the top padding goes: **into the collapsed height
+    /// only**. The status bar's room is already inside `minExtent` by way of
+    /// `top_padding`, so adding it to the expanded height as well would count
+    /// it twice.
+    pub fn variant_extents(&self) -> Option<(f32, f32)> {
+        let config = match self.variant {
+            SliverAppVariant::Small => return None,
+            SliverAppVariant::Medium => (
+                ScrollUnderConfig::COLLAPSED_HEIGHT,
+                ScrollUnderConfig::MEDIUM_EXPANDED_HEIGHT,
+            ),
+            SliverAppVariant::Large => (
+                ScrollUnderConfig::COLLAPSED_HEIGHT,
+                ScrollUnderConfig::LARGE_EXPANDED_HEIGHT,
+            ),
+        };
+        Some((
+            self.collapsed_height
+                .unwrap_or(self.top_padding + config.0 + self.bottom_height),
+            self.expanded_height
+                .unwrap_or(config.1 + self.bottom_height),
+        ))
     }
 
     /// Upstream's `maxExtent`:
@@ -209,6 +350,167 @@ impl Default for SliverAppBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- The variant, which nothing read, tick 258 ---------------------------
+    //
+    // `SliverAppVariant` was ported and `SliverAppBar` carried one, and
+    // nothing in this port ever asked which it was. The variant is the whole
+    // difference between upstream's three constructors.
+
+    fn config(variant: SliverAppVariant) -> ScrollUnderConfig {
+        ScrollUnderConfig::of(
+            variant,
+            &crate::theme::ThemeData::light(),
+            crate::theme::ThemeData::light().color_scheme.on_surface,
+        )
+        .expect("medium and large have one")
+    }
+
+    #[test]
+    fn a_small_bar_has_no_configuration_to_read() {
+        // It does not grow a title into the space below its toolbar, so there
+        // is nothing for a config to describe -- and `variant_extents` has
+        // nothing to supply either, which is what leaves the caller's own
+        // heights alone.
+        assert!(
+            ScrollUnderConfig::of(
+                SliverAppVariant::Small,
+                &crate::theme::ThemeData::light(),
+                crate::engine::Color::BLACK,
+            )
+            .is_none()
+        );
+        let mut bar = SliverAppBar::new();
+        bar.variant = SliverAppVariant::Small;
+        assert_eq!(bar.variant_extents(), None);
+    }
+
+    #[test]
+    fn both_variants_collapse_to_the_same_height_and_the_same_style() {
+        // What makes a large bar large is only how far it *expands*. Four
+        // numbers of which two are equal reads like a copy-paste until it is
+        // said, so it is said.
+        let medium = config(SliverAppVariant::Medium);
+        let large = config(SliverAppVariant::Large);
+        assert_eq!(medium.collapsed_height, large.collapsed_height);
+        assert_eq!(medium.collapsed_height, 64.0);
+        assert_eq!(medium.collapsed_text_style, large.collapsed_text_style);
+
+        // And the expanded halves are where they differ.
+        assert!(large.expanded_height > medium.expanded_height);
+        assert_ne!(medium.expanded_text_style, large.expanded_text_style);
+        assert!(
+            large.expanded_title_padding.bottom > medium.expanded_title_padding.bottom,
+            "the extra forty pixels buy the title extra room under it"
+        );
+        assert_eq!(
+            medium.expanded_title_padding.left,
+            large.expanded_title_padding.left,
+            "and the sides do not move"
+        );
+    }
+
+    #[test]
+    fn a_large_bars_expanded_title_is_headline_medium() {
+        // The role had no reader anywhere in this port. A medium bar's is
+        // `headlineSmall`, a rung below, and both collapse to `titleLarge` --
+        // which is the same role an ordinary app bar's title takes, so a bar
+        // that has been scrolled under is indistinguishable from a plain one.
+        let theme = crate::theme::ThemeData::light();
+        let medium = config(SliverAppVariant::Medium);
+        let large = config(SliverAppVariant::Large);
+        assert_eq!(
+            large.expanded_text_style.as_ref().map(|s| s.font_size),
+            theme.text_theme.headline_medium.as_ref().map(|s| s.font_size)
+        );
+        assert_eq!(
+            medium.expanded_text_style.as_ref().map(|s| s.font_size),
+            theme.text_theme.headline_small.as_ref().map(|s| s.font_size)
+        );
+        assert!(
+            large.expanded_text_style.as_ref().unwrap().font_size
+                > medium.expanded_text_style.as_ref().unwrap().font_size
+        );
+        assert_eq!(
+            medium.collapsed_text_style.as_ref().map(|s| s.font_size),
+            theme.text_theme.title_large.as_ref().map(|s| s.font_size)
+        );
+    }
+
+    #[test]
+    fn the_bars_own_foreground_is_what_the_title_is_written_in() {
+        // Upstream's chain ends `config.expandedTextStyle?.copyWith(color:
+        // foregroundColor ?? appBarTheme.foregroundColor ?? defaults)`, so the
+        // `apply(color: onSurface)` inside each config is a value the next
+        // line overwrites. They agree under the Material 3 default and stop
+        // agreeing the moment a bar names a foreground -- which is when it
+        // matters.
+        const MINE: crate::engine::Color = crate::engine::Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let theme = crate::theme::ThemeData::light();
+        let named = ScrollUnderConfig::of(SliverAppVariant::Large, &theme, MINE).unwrap();
+        assert_eq!(named.expanded_text_style.as_ref().unwrap().color, MINE);
+        assert_eq!(named.collapsed_text_style.as_ref().unwrap().color, MINE);
+        assert_ne!(
+            theme.text_theme.headline_medium.as_ref().unwrap().color,
+            MINE,
+            "which the role does not carry, so this says the merge happened"
+        );
+    }
+
+    #[test]
+    fn a_bar_with_something_under_it_loses_the_padding_beneath_its_title() {
+        // The tab strip or search field brings its own room; keeping the
+        // twenty pixels as well would push the title up off the bar it
+        // belongs to. The sides are untouched -- it is only the bottom that
+        // the thing below has already paid for.
+        let medium = config(SliverAppVariant::Medium);
+        assert_eq!(medium.title_padding_over(0.0).bottom, 20.0);
+        assert_eq!(medium.title_padding_over(48.0).bottom, 0.0);
+        assert_eq!(
+            medium.title_padding_over(48.0).left,
+            medium.expanded_title_padding.left
+        );
+    }
+
+    #[test]
+    fn a_bars_bottom_makes_it_taller_open_and_shut_alike() {
+        // Upstream adds `bottomHeight` to *both* extents. A bar with a tab
+        // strip is that much taller expanded and that much taller collapsed,
+        // so the strip stays on screen the whole way down -- which is the
+        // point of putting it in the bar rather than under it.
+        let mut bar = SliverAppBar::new();
+        bar.variant = SliverAppVariant::Medium;
+        let (shut, open) = bar.variant_extents().expect("a medium bar");
+        assert_eq!((shut, open), (64.0, 112.0));
+
+        bar.bottom_height = 48.0;
+        bar.has_bottom = true;
+        let (shut_with, open_with) = bar.variant_extents().expect("a medium bar");
+        assert_eq!(shut_with - shut, 48.0);
+        assert_eq!(open_with - open, 48.0);
+    }
+
+    #[test]
+    fn the_status_bars_room_is_counted_once_and_into_the_collapsed_height() {
+        // It is already inside `min_extent` by way of `top_padding`, so
+        // adding it to the expanded height as well would count it twice.
+        let mut bar = SliverAppBar::new();
+        bar.variant = SliverAppVariant::Large;
+        let (shut, open) = bar.variant_extents().expect("a large bar");
+        bar.top_padding = 24.0;
+        let (shut_under, open_under) = bar.variant_extents().expect("a large bar");
+        assert_eq!(shut_under - shut, 24.0);
+        assert_eq!(open_under, open, "and not twice");
+    }
+
+    #[test]
+    fn a_named_height_beats_the_variants() {
+        let mut bar = SliverAppBar::new();
+        bar.variant = SliverAppVariant::Large;
+        bar.collapsed_height = Some(70.0);
+        bar.expanded_height = Some(200.0);
+        assert_eq!(bar.variant_extents(), Some((70.0, 200.0)));
+    }
 
     fn expanded() -> SliverAppBar {
         SliverAppBar {

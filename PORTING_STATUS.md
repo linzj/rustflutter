@@ -18575,3 +18575,57 @@ stale_engines 全部不落后，**unread_theme_fields 12 → 3**——
 （第 253 轮已核实，它是给应用用的角色）；`headline_medium` 要等中号应用栏；
 `ThemeData::secondary_header_color` 只有 `PaginatedDataTable` 一个读者，这个端口
 还没有那个 widget。
+
+## 第 258 轮：一个知道自己是哪一种、却什么都不做的 sliver 应用栏
+
+`SliverAppVariant` 早就移植了，`SliverAppBar` 也带着一个——**而没有任何东西读
+过它**。可这个变体正是上游三个构造函数之间的全部差别：
+`_SliverAppBarState.build` 就是按它来选收起高度、展开高度和弹性空间的，
+`_ScrollUnderFlexibleConfig` 是背后那张按变体分的表。
+
+    字段                    medium                     large
+    collapsedHeight        64                         64
+    expandedHeight         112                        152
+    collapsedTextStyle     titleLarge @ onSurface     titleLarge @ onSurface
+    expandedTextStyle      headlineSmall @ onSurface  headlineMedium @ onSurface
+    expandedTitlePadding   16, 0, 16, 20              16, 0, 16, 28
+
+**两种变体收起时高度相同、样式也相同。** 让大号栏成为大号的，只是它能展开多远，
+以及展开后标题下面多出多少地方。四个数字里有两个相等，不写出来就像是复制粘贴，
+所以写了断言。收起时的 `titleLarge` 也正是普通应用栏标题的角色——一个被滚上去的
+大号栏，和一个本来就普通的栏是分不出来的。
+
+`TextTheme::headline_medium` 此前在整个端口没有读者，而它的位置就在这里：大号
+应用栏展开时的标题。
+
+两条来自 `_ScrollUnderFlexibleSpace.build` 的规则值得带过来：
+
+**栏下面挂了东西，标题底下那圈内边距就没了。** 下面的标签条或搜索框自带地方，
+再留二十像素会把标题顶出它所属的那条栏。只有底边归零，左右不动。
+
+**栏自己的前景色盖过表里的墨色。** 链条是
+`titleTextStyle ?? appBarTheme.titleTextStyle ?? config.expandedTextStyle?.copyWith(color: foregroundColor ?? ...)`，
+所以每张 config 里写的 `apply(color: onSurface)` 是一个下一行就会覆盖掉的值：
+在 Material 3 的默认下两者相同，而一旦某条栏指定了前景色就不同了——那正是它要紧
+的时候。
+
+还有两处算术值得记：**底部高度加进*两个*范围**（挂了标签条的栏展开时高这么多、
+收起时也高这么多，标签条才会一路留在屏幕上——把它放进栏里而不是栏下面就是为了
+这个）；而**状态栏的地方只加进收起高度**（它已经通过 `top_padding` 进了
+`min_extent`，再加到展开高度上就算了两遍）。
+
+九条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 3 → 2。
+门：5736 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**`unread_theme_fields` 到此实际见底**：剩下两条各有答案——`display_small` 上游
+整个 framework 没有控件读它（第 253 轮核实过，它是给应用用的角色），
+`ThemeData::secondary_header_color` 只有 `PaginatedDataTable` 一个读者，那个
+widget 这个端口还没有。
+
+**下一步转向别的尺子**：`unwalked` 说 1528 个公开枚举变体里有 219 个从未在任何
+测试里被点过名；`depth` 说 672 个类里有一批成员覆盖率极低（`CupertinoLocalizations`
+2/46、`RadioListTile` 3/43、`MaterialButton` 4/34、`CheckboxListTile` 5/42）。
