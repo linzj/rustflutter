@@ -19334,3 +19334,46 @@ depth 已读 13 → 14（队列 669 → 668）。
 **下一步**：`depth` 队列头部现在是 `SelectionOverlay` 9/43、`CupertinoApp` 8/37、
 `TextSelectionGestureDetectorBuilder` 6/27 和 `RenderEditable` 22/97——最后一个
 是文本编辑的核心，不太可能是"答在别处"，值得按同样的方法先查证再动。
+
+## 第 273 轮：光标画在哪里，以及哪个平台把它画在那里
+
+`depth.py` 报 `RenderEditable` 22/97。这一次全crate 检查**没有**把它解释掉：上游
+九十七个成员里有**五十一个在整个 crate 里零命中**。四个类以来第一个"比值低是真
+缺口"而不是"这个端口的形状造成的假象"。
+
+一轮做不完，所以取光标的几何——一张四条臂的平台表，每一条都有看得见的后果：
+
+    平台                paintCursorAboveText  cursorRadius  cursorOffset  opacityAnimates
+    iOS                 true                  2.0           -2 设备像素    true
+    macOS               true                  2.0           -2 设备像素    false
+    android, fuchsia    false                 --            --            false
+    linux, windows      false                 --            --            false
+
+**`paintCursorAboveText`。** 光标在 Apple 平台上画在字形**之上**，别处画在**之下**。
+在字形和光标那一列重叠的地方看得出来——一个下伸部、一个斜体、一种宽字符——两个答案
+把光标放在那笔墨的前面或后面。
+
+**`cursorOffset` 以设备像素计，而且上游把这句话明说了出来**："这个值是设备像素,
+不是这份代码里通常用的逻辑像素。" 所以进来的路上要除以设备像素比。一个把 -2 当作
+逻辑值的端口，会在 2 倍屏上把光标挪出两倍的距离、4 倍屏上挪出四倍。**这是这个
+crate 迄今遇到的唯一一处上游以设备像素给出的几何量。**
+
+**是往左两像素，不是往右。** 它是负的，因为 iOS 把光标放在它所在字符的**前缘**,
+而这个差别正是让光标看起来属于它后面那个字母、而不是前面那个的原因。
+
+**`cursorOpacityAnimates` 把 iOS 和 macOS 分开了**，而这张表里几乎没有别的行这么做：
+iOS 的光标淡入淡出，macOS 的光标方方正正地闪。四行里唯一一行两个 Apple 平台不一致。
+
+六条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5796 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 剩下的四十几个成员是真队列，值得按簇继续——
+选区端点与视口（`getEndpointsForSelection`、`selectionStartInViewport`、
+`selectionEndInViewport`）、按位置选词的那一组（`selectWord`、`selectWordEdge`、
+`selectWordsInRange`、`getWordAtOffset`），以及浮动光标那一组
+（`setFloatingCursor`、`calculateBoundedFloatingCursorOffset`、
+`floatingCursorAddedMargin`），最后一组是 iOS 长按拖动光标时的那套算术。

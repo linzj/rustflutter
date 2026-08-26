@@ -959,6 +959,88 @@ impl TextInputClient for FieldClient {
 /// Tapping it starts editing; tapping another field stops it. What the reader
 /// types -- directly, or through an IME, or by pasting -- arrives as whole
 /// values and is drawn, composing text underlined.
+/// Where a text field's caret is drawn, and how, on one platform.
+///
+/// Upstream builds this in `_TextFieldState.build`'s platform switch rather
+/// than in a defaults class, so it is four arms of one `switch` rather than a
+/// theme -- and the four disagree about more than colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaretGeometry {
+    /// Upstream's `paintCursorAboveText`.
+    ///
+    /// The caret is drawn **over** the glyphs on Apple platforms and under
+    /// them everywhere else. It shows wherever a glyph overlaps the caret's
+    /// column -- a descender, an italic, a wide script -- and the two answers
+    /// put the caret in front of that ink or behind it.
+    pub above_text: bool,
+    /// Upstream's `cursorRadius`. `None` is a square caret.
+    pub radius: Option<f32>,
+    /// Upstream's `cursorOffset`, **in device pixels**.
+    ///
+    /// Upstream says so in the constant's own doc: "This value is in device
+    /// pixels, not logical pixels as is typically used throughout the
+    /// codebase." See [`CaretGeometry::offset_in_logical_pixels`].
+    pub offset_device_pixels: f32,
+    /// Upstream's `cursorOpacityAnimates`: whether the caret fades or blinks.
+    ///
+    /// The one row where the two Apple platforms disagree -- an iOS caret
+    /// fades in and out, a macOS one blinks square.
+    pub opacity_animates: bool,
+}
+
+impl CaretGeometry {
+    /// Upstream's `iOSHorizontalOffset`, which is **-2 and negative on
+    /// purpose**: iOS puts its caret on the *leading* edge of the character
+    /// it sits before, which is what makes the caret look like it belongs to
+    /// the letter after it rather than the one before.
+    pub const IOS_HORIZONTAL_OFFSET: f32 = -2.0;
+    /// Upstream's `Radius.circular(2.0)` for the Apple platforms.
+    pub const APPLE_RADIUS: f32 = 2.0;
+
+    /// Upstream's platform switch.
+    pub fn of(platform: crate::editable_text::TargetPlatform) -> CaretGeometry {
+        use crate::editable_text::TargetPlatform;
+        match platform {
+            TargetPlatform::IOS => CaretGeometry {
+                above_text: true,
+                radius: Some(CaretGeometry::APPLE_RADIUS),
+                offset_device_pixels: CaretGeometry::IOS_HORIZONTAL_OFFSET,
+                opacity_animates: true,
+            },
+            TargetPlatform::MacOS => CaretGeometry {
+                above_text: true,
+                radius: Some(CaretGeometry::APPLE_RADIUS),
+                offset_device_pixels: CaretGeometry::IOS_HORIZONTAL_OFFSET,
+                // The one disagreement between the two Apple platforms.
+                opacity_animates: false,
+            },
+            TargetPlatform::Android
+            | TargetPlatform::Fuchsia
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows => CaretGeometry {
+                above_text: false,
+                radius: None,
+                offset_device_pixels: 0.0,
+                opacity_animates: false,
+            },
+        }
+    }
+
+    /// The offset in the units everything else here is in.
+    ///
+    /// `Offset(iOSHorizontalOffset / MediaQuery.devicePixelRatioOf(context), 0)`.
+    /// A port that took -2 for a logical value would move the caret twice as
+    /// far on a 2x screen and four times on a 4x one -- and this is the only
+    /// geometry in the framework this crate has met that upstream specifies
+    /// in device pixels.
+    pub fn offset_in_logical_pixels(&self, device_pixel_ratio: f32) -> f32 {
+        if device_pixel_ratio <= 0.0 {
+            return 0.0;
+        }
+        self.offset_device_pixels / device_pixel_ratio
+    }
+}
+
 /// Why a text field's arrangement was refused.
 ///
 /// One variant per upstream assert, because each is a different sentence
@@ -1532,6 +1614,100 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- Where the caret is drawn, tick 273 ----------------------------------
+    //
+    // `depth.py` reports `RenderEditable` at 22 of 97, and the whole-crate
+    // check does not explain it away: fifty-one members have no hit anywhere.
+    // The first class in four where the ratio is a real gap.
+
+    #[test]
+    fn the_caret_is_drawn_over_the_glyphs_on_apple_platforms_and_under_them_elsewhere() {
+        // It shows wherever a glyph overlaps the caret's column -- a
+        // descender, an italic, a wide script -- and the two answers put the
+        // caret in front of that ink or behind it.
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(CaretGeometry::of(platform).above_text, "{platform:?}");
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(!CaretGeometry::of(platform).above_text, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_offset_is_in_device_pixels_and_everything_else_here_is_not() {
+        // Upstream says it in the constant's own doc: "This value is in
+        // device pixels, not logical pixels as is typically used throughout
+        // the codebase." A port that took -2 for a logical value would move
+        // the caret twice as far on a 2x screen.
+        use crate::editable_text::TargetPlatform;
+        let ios = CaretGeometry::of(TargetPlatform::IOS);
+        assert_eq!(ios.offset_device_pixels, -2.0);
+        assert_eq!(ios.offset_in_logical_pixels(1.0), -2.0);
+        assert_eq!(ios.offset_in_logical_pixels(2.0), -1.0);
+        assert_eq!(ios.offset_in_logical_pixels(4.0), -0.5);
+
+        // Negative on purpose: iOS puts its caret on the *leading* edge of
+        // the character it sits before, which is what makes it look like it
+        // belongs to the letter after rather than the one before.
+        assert!(ios.offset_device_pixels < 0.0);
+
+        // And the platforms that do not shift it are unaffected by the ratio.
+        let android = CaretGeometry::of(TargetPlatform::Android);
+        assert_eq!(android.offset_in_logical_pixels(3.0), 0.0);
+    }
+
+    #[test]
+    fn a_zero_ratio_does_not_divide_by_it() {
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            CaretGeometry::of(TargetPlatform::IOS).offset_in_logical_pixels(0.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_two_apple_platforms_disagree_about_exactly_one_row() {
+        // An iOS caret fades in and out; a macOS one blinks square. Every
+        // other row of the table has them together, which is what makes this
+        // one worth naming.
+        use crate::editable_text::TargetPlatform;
+        let ios = CaretGeometry::of(TargetPlatform::IOS);
+        let mac = CaretGeometry::of(TargetPlatform::MacOS);
+        assert!(ios.opacity_animates);
+        assert!(!mac.opacity_animates);
+        assert_eq!(ios.above_text, mac.above_text);
+        assert_eq!(ios.radius, mac.radius);
+        assert_eq!(ios.offset_device_pixels, mac.offset_device_pixels);
+    }
+
+    #[test]
+    fn only_the_apple_platforms_round_the_caret() {
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            CaretGeometry::of(TargetPlatform::IOS).radius,
+            Some(CaretGeometry::APPLE_RADIUS)
+        );
+        assert_eq!(CaretGeometry::APPLE_RADIUS, 2.0);
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(
+                CaretGeometry::of(platform).radius,
+                None,
+                "{platform:?}: a square caret"
+            );
+        }
+    }
 
     // -- What a text field refuses, tick 270 ---------------------------------
     //
