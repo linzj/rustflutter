@@ -19967,3 +19967,72 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 门：5913 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
 
 **下一步**：同一个 builder 的 `onSingleTapUp`（一百多行的平台表）与 `onTapDown`。
+
+## 第 284 轮：一次点击做六件事，而其中一件我三个月前就做过了
+
+`TextSelectionGestureDetectorBuilder.onSingleTapUp`，一百行几乎全是一张平台表,
+里面还套着一张指针种类表。
+
+### 键盘除两条路外每条都要
+
+`editableText.requestKeyboard()` 是这个方法的**最后一行**，所以每个平台都会走到它——
+包括那条什么都不做的桌面臂。禁用选区那条路也走到了它：先要键盘，**然后**才 return。
+
+跳过它的只有两条**shift 点击**的路，它们是从 switch 里面 `return` 的。**一次 shift
+点击不会让字段取得焦点。**
+
+### 三个桌面平台在这里什么都不做
+
+    case linux, macOS, windows:
+      break;
+    // On desktop platforms the selection is set on tap down.
+
+那条注释写在 `break` 之后，是 Dart 的排版，它属于上面那条臂。
+
+### shift 需要一个可以从中延伸的选区
+
+    // It is impossible to extend the selection when the shift key is pressed, if the
+    // renderEditable.selection is invalid.
+
+两半都要。在一个根本没有选区的字段上按住 shift 点击，行为等同于没按 shift。
+
+### Android 与 Fuchsia 只差一行
+
+两条臂都收起工具条、都在有效 shift 时延伸、都 selectPosition。Android 之后多调一次
+`showSpellCheckSuggestionsToolbar()`，Fuchsia 没有。那一次调用就是两条臂的**全部**
+差别。
+
+### iOS，以及它里面那张表
+
+在**未取得焦点**的 iOS 字段上 shift 点击，从偏移 0 开始扩展，而不是从之前的选区——
+上游把这句写明了。否则 iOS 按指针分：鼠标、触控板和两种触控笔是**精确**设备（放置
+光标、收起工具条）；触摸和未知走另一条。
+
+### 而"另一条"我早就做过了
+
+十六条改错跑到一半，我在文件里看见了 `tap_outcome`、
+`position_was_on_selection_exclusive/inclusive`、`after_selecting_the_word_edge`——
+**正是 iOS 触摸那条尾巴**，早已移植，文档里连上游那段最长的注释都逐条拆过，而且签名
+比我新写的好：它收真的 `selection` 和 `offset`，不是预先算好的两个布尔。
+
+我把重写的那一段删了，改成**转交**：`SingleTapAction::Touch(TapOutcome)` 调用已有的
+`tap_outcome`。留下的是真新的部分——平台表、键盘规则、两条 shift 规则、指针种类表,
+以及 misspelled 之后的那个跟进（"选区变了就**显示**，没变就**切换**"，和已有的
+`after_selecting_the_word_edge` 恰好**反着**读同一个事实）。
+
+**为什么全 crate 成员检查没拦住这次。** 我在第 282、283 轮对 `SelectionOverlay` 和
+这个 builder 都跑过检查，但检查的是**上游成员名**，而这条尾巴当初是以
+`tap_outcome` 这个**上游没有的名字**落地的——没有任何成员名能命中它。
+
+**按名字找答案的检查，找不到用别的名字给出的答案。** 这正是这个端口"答在别处"的代价:
+`depth.py` 的比值低是同一件事的另一面，而我这次撞上了它的另一头。
+
+去重后十六条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5926 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一个 builder 的 `onTapDown`（桌面平台在这里设选区）与
+`onSingleLongTapStart`。

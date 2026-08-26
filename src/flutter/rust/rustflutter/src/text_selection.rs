@@ -1614,6 +1614,196 @@ pub fn secondary_tap(
     }
 }
 
+/// What a single tap on a text field does first -- upstream
+/// `TextSelectionGestureDetectorBuilder.onSingleTapUp`, as the decision it
+/// makes.
+///
+/// The long iOS-touch tail of that method is **not** here: it was already
+/// ported as [`tap_outcome`] and [`after_selecting_the_word_edge`], and this
+/// hands off to them rather than saying it a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SingleTapAction {
+    /// The desktop platforms, whose selection was already set on tap *down*.
+    Nothing,
+    /// Upstream's `_extendSelection`, on a valid shift-tap.
+    ExtendSelection,
+    /// Upstream's `_expandSelection`, iOS's shift-tap.
+    ///
+    /// `from_zero` is upstream's `fromSelection`: a shift-tapped **unfocused**
+    /// iOS field expands from offset 0 rather than from what was selected
+    /// before.
+    ExpandSelection { from_zero: bool },
+    /// `selectPosition`, and then the spell check toolbar on Android only --
+    /// the single line by which the Android and Fuchsia arms differ.
+    SelectPosition { spell_check_toolbar: bool },
+    /// iOS with a precise pointer: place the cursor and hide the toolbar.
+    SelectPositionAndHideToolbar,
+    /// iOS with a touch, answered by [`tap_outcome`].
+    Touch(TapOutcome),
+}
+
+/// One tap's whole outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SingleTapOutcome {
+    pub action: SingleTapAction,
+    /// Upstream's trailing `editableText.requestKeyboard()`.
+    ///
+    /// It is the method's **last line**, so it runs for every platform --
+    /// including the desktop arm that does nothing else -- and it runs on the
+    /// selection-disabled path too, which asks for it and then returns. The
+    /// only paths that skip it are the two shift-taps, which `return` from
+    /// inside the switch: **a shift-tap does not focus the field.**
+    pub requests_keyboard: bool,
+    /// Upstream's `hideToolbar(false)` at the top of the Android and Fuchsia
+    /// arms, and nowhere else.
+    pub hides_toolbar_first: bool,
+}
+
+/// What the toolbar does after a tap chose
+/// [`TapOutcome::SelectWordAndOfferSpelling`].
+///
+/// The sibling for [`TapOutcome::SelectWordEdge`] is [`AfterWordEdge`], and
+/// the two read a changed selection **opposite ways**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterMisspelledWord {
+    ShowSpellCheckToolbar,
+    ToggleToolbar,
+}
+
+/// Everything the platform-level decision reads.
+#[derive(Clone, Copy, Debug)]
+pub struct SingleTapContext {
+    pub selection_enabled: bool,
+    pub platform: crate::editable_text::TargetPlatform,
+    pub shift_pressed: bool,
+    /// Upstream's `renderEditable.selection?.baseOffset != null`.
+    pub selection_base_valid: bool,
+    pub has_focus: bool,
+    pub pointer: crate::gestures::PointerKind,
+    pub read_only: bool,
+    /// Upstream's `findSuggestionSpanAtCursorIndex(...) != null`.
+    pub misspelled: bool,
+    /// The selection the field already had, and where the tap landed -- what
+    /// [`tap_outcome`] needs for the iOS touch branch.
+    pub previous_selection: (i32, i32),
+    pub tapped_offset: i32,
+    /// Upstream's `textPosition.affinity == previousSelection.affinity`.
+    pub affinity_same: bool,
+}
+
+/// Upstream `TextSelectionGestureDetectorBuilder.onSingleTapUp`.
+pub struct SingleTapUp;
+
+impl SingleTapUp {
+    /// Upstream's `isShiftPressedValid`, and **both halves matter**: "It is
+    /// impossible to extend the selection when the shift key is pressed, if
+    /// the renderEditable.selection is invalid." Shift held over a field with
+    /// no selection behaves as though shift were not held.
+    pub fn shift_is_usable(context: &SingleTapContext) -> bool {
+        context.shift_pressed && context.selection_base_valid
+    }
+
+    /// Upstream's `details.kind` switch inside the iOS arm. Mouse, trackpad
+    /// and both stylus kinds are the *precise* devices; touch and unknown are
+    /// not.
+    pub fn is_precise(pointer: crate::gestures::PointerKind) -> bool {
+        use crate::gestures::PointerKind;
+        matches!(
+            pointer,
+            PointerKind::Mouse
+                | PointerKind::Trackpad
+                | PointerKind::Stylus
+                | PointerKind::InvertedStylus
+        )
+    }
+
+    pub fn decide(context: &SingleTapContext) -> SingleTapOutcome {
+        use crate::editable_text::TargetPlatform;
+
+        // Asked for and then returned from -- a field that cannot be selected
+        // in still takes focus when it is tapped.
+        if !context.selection_enabled {
+            return SingleTapOutcome {
+                action: SingleTapAction::Nothing,
+                requests_keyboard: true,
+                hides_toolbar_first: false,
+            };
+        }
+
+        let shift = SingleTapUp::shift_is_usable(context);
+        let keyboard = |action| SingleTapOutcome {
+            action,
+            requests_keyboard: true,
+            hides_toolbar_first: false,
+        };
+
+        match context.platform {
+            // "On desktop platforms the selection is set on tap down." The
+            // arm does nothing -- but the method's last line still runs.
+            TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows => {
+                keyboard(SingleTapAction::Nothing)
+            }
+            TargetPlatform::Android | TargetPlatform::Fuchsia => {
+                if shift {
+                    // Returns from inside the switch, so no keyboard.
+                    return SingleTapOutcome {
+                        action: SingleTapAction::ExtendSelection,
+                        requests_keyboard: false,
+                        hides_toolbar_first: true,
+                    };
+                }
+                SingleTapOutcome {
+                    // The one line by which the two arms differ.
+                    action: SingleTapAction::SelectPosition {
+                        spell_check_toolbar: context.platform == TargetPlatform::Android,
+                    },
+                    requests_keyboard: true,
+                    hides_toolbar_first: true,
+                }
+            }
+            TargetPlatform::IOS => {
+                if shift {
+                    return SingleTapOutcome {
+                        action: SingleTapAction::ExpandSelection {
+                            // "On iOS, a shift-tapped unfocused field expands
+                            // from 0, not from the previous selection."
+                            from_zero: !context.has_focus,
+                        },
+                        requests_keyboard: false,
+                        hides_toolbar_first: false,
+                    };
+                }
+                if SingleTapUp::is_precise(context.pointer) {
+                    return keyboard(SingleTapAction::SelectPositionAndHideToolbar);
+                }
+                keyboard(SingleTapAction::Touch(tap_outcome(
+                    context.misspelled,
+                    context.previous_selection,
+                    context.tapped_offset,
+                    context.affinity_same,
+                    context.read_only,
+                    context.has_focus,
+                )))
+            }
+        }
+    }
+
+    /// After [`TapOutcome::SelectWordAndOfferSpelling`]: **show** the spell
+    /// check toolbar if selecting the word moved the selection, and **toggle**
+    /// it if the word was already selected -- a second tap on a misspelled
+    /// word that is already selected puts the toolbar away.
+    ///
+    /// The sense is the opposite of [`after_selecting_the_word_edge`], where a
+    /// change means *hide*.
+    pub fn after_misspelled_word(selection_changed: bool) -> AfterMisspelledWord {
+        if selection_changed {
+            AfterMisspelledWord::ShowSpellCheckToolbar
+        } else {
+            AfterMisspelledWord::ToggleToolbar
+        }
+    }
+}
+
 /// What a triple tap selects -- upstream
 /// `TextSelectionGestureDetectorBuilder.onTripleTapDown`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2458,6 +2648,308 @@ impl VerticalCaretMovementRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- What one tap does, tick 284 -----------------------------------------
+    //
+    // The long iOS-touch tail is not tested here: `tap_outcome` and
+    // `after_selecting_the_word_edge` already own it, with their own tests.
+    // The first version of this block re-implemented and re-tested that tail
+    // before noticing, which is what the whole-crate member check is for --
+    // and it did not catch this one, because the tail had been ported under a
+    // name no upstream member has.
+
+    fn tap(platform: crate::editable_text::TargetPlatform) -> SingleTapContext {
+        SingleTapContext {
+            selection_enabled: true,
+            platform,
+            shift_pressed: false,
+            selection_base_valid: true,
+            has_focus: true,
+            pointer: crate::gestures::PointerKind::Touch,
+            read_only: false,
+            misspelled: false,
+            previous_selection: (2, 6),
+            tapped_offset: 4,
+            affinity_same: true,
+        }
+    }
+
+    const EVERY_PLATFORM: [crate::editable_text::TargetPlatform; 6] = [
+        crate::editable_text::TargetPlatform::Android,
+        crate::editable_text::TargetPlatform::Fuchsia,
+        crate::editable_text::TargetPlatform::IOS,
+        crate::editable_text::TargetPlatform::Linux,
+        crate::editable_text::TargetPlatform::MacOS,
+        crate::editable_text::TargetPlatform::Windows,
+    ];
+
+    #[test]
+    fn a_field_that_cannot_be_selected_in_still_takes_focus() {
+        // requestKeyboard() is called and *then* the method returns.
+        for platform in EVERY_PLATFORM {
+            let mut context = tap(platform);
+            context.selection_enabled = false;
+            let outcome = SingleTapUp::decide(&context);
+            assert!(outcome.requests_keyboard, "{platform:?}");
+            assert_eq!(outcome.action, SingleTapAction::Nothing, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_desktop_platforms_do_nothing_but_still_ask_for_the_keyboard() {
+        // "On desktop platforms the selection is set on tap down." The arm
+        // breaks, and the method's last line still runs.
+        use crate::editable_text::TargetPlatform;
+        for platform in [
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            let outcome = SingleTapUp::decide(&tap(platform));
+            assert_eq!(outcome.action, SingleTapAction::Nothing, "{platform:?}");
+            assert!(outcome.requests_keyboard, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn a_shift_tap_is_the_one_path_that_does_not_focus_the_field() {
+        // Both shift arms `return` from inside the switch, so they never reach
+        // the trailing requestKeyboard().
+        use crate::editable_text::TargetPlatform;
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+        ] {
+            let mut context = tap(platform);
+            context.shift_pressed = true;
+            let outcome = SingleTapUp::decide(&context);
+            assert!(!outcome.requests_keyboard, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn shift_without_a_selection_to_extend_from_is_not_shift() {
+        // "It is impossible to extend the selection when the shift key is
+        // pressed, if the renderEditable.selection is invalid." Both halves.
+        let mut context = tap(crate::editable_text::TargetPlatform::Android);
+        context.shift_pressed = true;
+        context.selection_base_valid = false;
+        assert!(!SingleTapUp::shift_is_usable(&context));
+        let outcome = SingleTapUp::decide(&context);
+        assert_eq!(
+            outcome.action,
+            SingleTapAction::SelectPosition {
+                spell_check_toolbar: true
+            },
+            "the ordinary path, as though shift were not held"
+        );
+        assert!(outcome.requests_keyboard, "and it focuses again");
+    }
+
+    #[test]
+    fn android_and_fuchsia_differ_by_exactly_one_line() {
+        // Both hide the toolbar, both extend on shift, both select the
+        // position. Android alone raises the spell check toolbar afterwards.
+        use crate::editable_text::TargetPlatform;
+        let android = SingleTapUp::decide(&tap(TargetPlatform::Android));
+        let fuchsia = SingleTapUp::decide(&tap(TargetPlatform::Fuchsia));
+        assert_eq!(
+            android.action,
+            SingleTapAction::SelectPosition {
+                spell_check_toolbar: true
+            }
+        );
+        assert_eq!(
+            fuchsia.action,
+            SingleTapAction::SelectPosition {
+                spell_check_toolbar: false
+            }
+        );
+        assert_eq!(android.hides_toolbar_first, fuchsia.hides_toolbar_first);
+        assert_eq!(android.requests_keyboard, fuchsia.requests_keyboard);
+
+        let mut shifted_android = tap(TargetPlatform::Android);
+        shifted_android.shift_pressed = true;
+        let mut shifted_fuchsia = tap(TargetPlatform::Fuchsia);
+        shifted_fuchsia.shift_pressed = true;
+        assert_eq!(
+            SingleTapUp::decide(&shifted_android),
+            SingleTapUp::decide(&shifted_fuchsia),
+            "identical on the shift path"
+        );
+    }
+
+    #[test]
+    fn only_android_and_fuchsia_put_the_toolbar_away_first() {
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::Android, TargetPlatform::Fuchsia] {
+            assert!(
+                SingleTapUp::decide(&tap(platform)).hides_toolbar_first,
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::IOS,
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !SingleTapUp::decide(&tap(platform)).hides_toolbar_first,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shift_tapped_unfocused_ios_field_expands_from_the_beginning() {
+        // "On iOS, a shift-tapped unfocused field expands from 0, not from the
+        // previous selection."
+        let mut context = tap(crate::editable_text::TargetPlatform::IOS);
+        context.shift_pressed = true;
+
+        context.has_focus = false;
+        assert_eq!(
+            SingleTapUp::decide(&context).action,
+            SingleTapAction::ExpandSelection { from_zero: true }
+        );
+        context.has_focus = true;
+        assert_eq!(
+            SingleTapUp::decide(&context).action,
+            SingleTapAction::ExpandSelection { from_zero: false },
+            "a focused field expands from what was selected"
+        );
+    }
+
+    #[test]
+    fn ios_shift_expands_where_the_others_extend() {
+        // Two different verbs, and only iOS uses the expanding one.
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::Android, TargetPlatform::Fuchsia] {
+            let mut context = tap(platform);
+            context.shift_pressed = true;
+            assert_eq!(
+                SingleTapUp::decide(&context).action,
+                SingleTapAction::ExtendSelection,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_precise_pointers_place_the_cursor_and_the_rest_do_not() {
+        // Mouse, trackpad and both stylus kinds are precise; touch and unknown
+        // go to `tap_outcome` instead.
+        use crate::gestures::PointerKind;
+        let mut context = tap(crate::editable_text::TargetPlatform::IOS);
+        for pointer in [
+            PointerKind::Mouse,
+            PointerKind::Trackpad,
+            PointerKind::Stylus,
+            PointerKind::InvertedStylus,
+        ] {
+            assert!(SingleTapUp::is_precise(pointer), "{pointer:?}");
+            context.pointer = pointer;
+            assert_eq!(
+                SingleTapUp::decide(&context).action,
+                SingleTapAction::SelectPositionAndHideToolbar,
+                "{pointer:?}"
+            );
+        }
+        for pointer in [PointerKind::Touch, PointerKind::Unknown] {
+            assert!(!SingleTapUp::is_precise(pointer), "{pointer:?}");
+            context.pointer = pointer;
+            assert!(
+                matches!(
+                    SingleTapUp::decide(&context).action,
+                    SingleTapAction::Touch(_)
+                ),
+                "{pointer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_precise_pointer_never_reaches_the_touch_branch() {
+        // The pointer table is asked before anything `tap_outcome` looks at,
+        // so a mouse click on a misspelled word places the cursor rather than
+        // selecting the word.
+        let mut context = tap(crate::editable_text::TargetPlatform::IOS);
+        context.pointer = crate::gestures::PointerKind::Mouse;
+        context.misspelled = true;
+        assert_eq!(
+            SingleTapUp::decide(&context).action,
+            SingleTapAction::SelectPositionAndHideToolbar
+        );
+    }
+
+    #[test]
+    fn a_touch_on_ios_is_handed_to_the_outcome_that_already_answers_for_it() {
+        // Not a second implementation: the same `tap_outcome` this file has
+        // had, reached through the platform table.
+        let mut context = tap(crate::editable_text::TargetPlatform::IOS);
+        context.misspelled = true;
+        assert_eq!(
+            SingleTapUp::decide(&context).action,
+            SingleTapAction::Touch(TapOutcome::SelectWordAndOfferSpelling)
+        );
+
+        context.misspelled = false;
+        assert_eq!(
+            SingleTapUp::decide(&context).action,
+            SingleTapAction::Touch(tap_outcome(
+                false,
+                context.previous_selection,
+                context.tapped_offset,
+                context.affinity_same,
+                context.read_only,
+                context.has_focus,
+            ))
+        );
+    }
+
+    #[test]
+    fn only_ios_reaches_the_touch_branch_at_all() {
+        // Android and Fuchsia never consult the pointer kind, so a touch there
+        // takes the ordinary select-position path.
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::Android, TargetPlatform::Fuchsia] {
+            let mut context = tap(platform);
+            context.misspelled = true;
+            assert!(
+                !matches!(
+                    SingleTapUp::decide(&context).action,
+                    SingleTapAction::Touch(_)
+                ),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_follow_ups_read_a_changed_selection_opposite_ways() {
+        // After a misspelled word, a *change* means show. After a word edge, a
+        // change means hide. The same fact, the other way round.
+        assert_eq!(
+            SingleTapUp::after_misspelled_word(true),
+            AfterMisspelledWord::ShowSpellCheckToolbar
+        );
+        assert_eq!(
+            SingleTapUp::after_misspelled_word(false),
+            AfterMisspelledWord::ToggleToolbar,
+            "a second tap on an already-selected misspelling puts it away"
+        );
+        assert_eq!(
+            after_selecting_the_word_edge(true, false, true),
+            AfterWordEdge::HideToolbar,
+            "the opposite sense"
+        );
+        assert_eq!(
+            after_selecting_the_word_edge(false, false, true),
+            AfterWordEdge::ToggleToolbar
+        );
+    }
 
     // -- What a triple tap selects, tick 283 ---------------------------------
 
