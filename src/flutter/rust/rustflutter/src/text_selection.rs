@@ -572,6 +572,56 @@ impl TextSelectionGestures {
     /// the precise position, a touch or an unknown device gets the word edge.
     /// So a mouse on an iPad behaves like a desktop, because the reason for
     /// the word edge is the fingertip and not the operating system.
+    /// Upstream's Android arm of `onTapDown`: whether a pointer going down
+    /// should *ask* about starting stylus handwriting.
+    ///
+    /// Three gates, and this answers the first two -- the widget's
+    /// `stylusHandwritingEnabled` flag and the pointer kind. The third is
+    /// `Scribe.isFeatureAvailable()`, a channel round trip, and it is why
+    /// [`TextSelectionGestures::stylus_handwriting_starts`] is a separate
+    /// question.
+    ///
+    /// **Android alone.** iOS has Scribble and reaches it another way; the
+    /// other four arms of the switch do not mention a stylus.
+    ///
+    /// **Both stylus kinds.** An inverted stylus is the same instrument turned
+    /// round, and upstream's `switch` lists it beside the ordinary one.
+    pub fn asks_about_stylus_handwriting(
+        platform: TargetPlatform,
+        kind: PointerKind,
+        stylus_handwriting_enabled: bool,
+    ) -> bool {
+        platform == TargetPlatform::Android
+            && stylus_handwriting_enabled
+            && matches!(kind, PointerKind::Stylus | PointerKind::InvertedStylus)
+    }
+
+    /// The third gate: what the platform said.
+    ///
+    /// **Nothing happens on the frame the stylus goes down.** The tap-down
+    /// handler asks and returns; the caret moves later, from inside the
+    /// callback, and only if the answer was yes. A port that treats this as a
+    /// synchronous three-way `&&` moves the caret a frame early and moves it
+    /// on a device that cannot do handwriting at all.
+    pub fn stylus_handwriting_starts(asked: bool, feature_is_available: bool) -> bool {
+        asked && feature_is_available
+    }
+
+    /// The channel method this arm asks with -- upstream's
+    /// `Scribe.isFeatureAvailable()`, *is this build capable of it*, and not
+    /// `Scribe.isStylusHandwritingAvailable`, *is it available right now*.
+    pub const STYLUS_HANDWRITING_GATE: &'static str =
+        crate::services::system_channels::Scribe::IS_FEATURE_AVAILABLE;
+
+    /// The cause the selection change carries once handwriting starts.
+    ///
+    /// Not `tap`: the change came from the platform's recogniser rather than
+    /// from the finger, so anything downstream that keys off the cause can
+    /// tell the two apart.
+    pub fn stylus_handwriting_cause() -> crate::services::text_input::SelectionChangedCause {
+        crate::services::text_input::SelectionChangedCause::StylusHandwriting
+    }
+
     pub fn caret_lands(platform: TargetPlatform, kind: PointerKind) -> CaretLands {
         match platform {
             TargetPlatform::IOS => match kind {
@@ -2648,6 +2698,134 @@ impl VerticalCaretMovementRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Stylus handwriting is asked for twice, tick 285 ---------------------
+    //
+    // The one arm of onTapDown this port did not already answer for. The rest
+    // of that method is shows_selection_toolbar, shows_selection_handles,
+    // caret_moves_on, shift_tap_down and
+    // shift_tap_expands_from_zero_when_unfocused.
+
+    #[test]
+    fn only_android_asks_about_stylus_handwriting() {
+        // iOS has Scribble and reaches it another way; the other four arms of
+        // the switch do not mention a stylus at all.
+        use crate::editable_text::TargetPlatform;
+        assert!(TextSelectionGestures::asks_about_stylus_handwriting(
+            TargetPlatform::Android,
+            PointerKind::Stylus,
+            true
+        ));
+        for platform in [
+            TargetPlatform::IOS,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::MacOS,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                !TextSelectionGestures::asks_about_stylus_handwriting(
+                    platform,
+                    PointerKind::Stylus,
+                    true
+                ),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_stylus_kinds_ask_and_nothing_else_does() {
+        // An inverted stylus is the same instrument turned round, and
+        // upstream's switch lists it beside the ordinary one.
+        use crate::editable_text::TargetPlatform;
+        for kind in [PointerKind::Stylus, PointerKind::InvertedStylus] {
+            assert!(
+                TextSelectionGestures::asks_about_stylus_handwriting(
+                    TargetPlatform::Android,
+                    kind,
+                    true
+                ),
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            PointerKind::Touch,
+            PointerKind::Mouse,
+            PointerKind::Trackpad,
+            PointerKind::Unknown,
+        ] {
+            assert!(
+                !TextSelectionGestures::asks_about_stylus_handwriting(
+                    TargetPlatform::Android,
+                    kind,
+                    true
+                ),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_with_handwriting_switched_off_never_asks() {
+        // The widget's own flag is the first gate, before the pointer is even
+        // looked at.
+        use crate::editable_text::TargetPlatform;
+        assert!(!TextSelectionGestures::asks_about_stylus_handwriting(
+            TargetPlatform::Android,
+            PointerKind::Stylus,
+            false
+        ));
+    }
+
+    #[test]
+    fn asking_is_not_starting() {
+        // The third gate is a channel round trip. A stylus going down on an
+        // Android field with handwriting enabled moves no caret on that
+        // frame: the handler asks and returns, and the selection changes later
+        // from inside the callback -- and only if the answer was yes.
+        assert!(!TextSelectionGestures::stylus_handwriting_starts(
+            true, false
+        ));
+        assert!(TextSelectionGestures::stylus_handwriting_starts(true, true));
+    }
+
+    #[test]
+    fn a_platform_that_says_yes_to_something_that_was_never_asked_starts_nothing() {
+        // The two gates are conjunctive: an available feature does not start
+        // handwriting for a finger.
+        assert!(!TextSelectionGestures::stylus_handwriting_starts(
+            false, true
+        ));
+    }
+
+    #[test]
+    fn the_gate_asks_whether_the_build_can_and_not_whether_it_is_ready() {
+        // Scribe.isFeatureAvailable, not Scribe.isStylusHandwritingAvailable.
+        // Both are on the channel here and they are different questions.
+        assert_eq!(
+            TextSelectionGestures::STYLUS_HANDWRITING_GATE,
+            "Scribe.isFeatureAvailable"
+        );
+        assert_ne!(
+            TextSelectionGestures::STYLUS_HANDWRITING_GATE,
+            crate::services::system_channels::Scribe::IS_STYLUS_HANDWRITING_AVAILABLE
+        );
+    }
+
+    #[test]
+    fn the_selection_change_carries_its_own_cause() {
+        // Not `tap`: the change came from the platform's recogniser rather
+        // than from the finger.
+        assert_eq!(
+            TextSelectionGestures::stylus_handwriting_cause(),
+            crate::services::text_input::SelectionChangedCause::StylusHandwriting
+        );
+        assert_ne!(
+            TextSelectionGestures::stylus_handwriting_cause(),
+            crate::services::text_input::SelectionChangedCause::Tap
+        );
+    }
 
     // -- What one tap does, tick 284 -----------------------------------------
     //

@@ -20036,3 +20036,66 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 
 **下一步**：同一个 builder 的 `onTapDown`（桌面平台在这里设选区）与
 `onSingleLongTapStart`。
+
+## 第 285 轮：手写笔要问两次才动，以及上一轮那条教训当场生效
+
+先说流程，因为它是这一轮真正的产出。
+
+第 284 轮撞上了"按名字找答案的检查，找不到用别的名字给出的答案"。这一轮**动手之前**
+先按**行为**在 crate 里搜了一遍：不搜 `onTapDown`，搜 `hide_toolbar`、
+`should_show_selection_toolbar`、`expand_selection`、"tap down" 这句散文。结果:
+
+* `onTapDown` 的主体**早就在了**——`shows_selection_toolbar`、
+  `shows_selection_handles`、`caret_moves_on`、`shift_tap_down`、
+  `shift_tap_expands_from_zero_when_unfocused`，连上游那两条互相指认的注释
+  （"移动端在 tap up 定选区"／"桌面端在 tap down 定选区"）都成对记着；
+* 顺手查的 `onSingleLongTapStart` **也早就在了**，而且 `long_press_start` 比我会写的
+  好：Apple 三条臂（未聚焦选词不震、聚焦只读选词并震、聚焦可编辑不选词而起浮动光标）
+  外加 `_longPressStartedWithoutFocus` 为什么要记住的理由，一条不缺。
+
+**上一轮的教训在这一轮省掉了两次重复劳动。** 这就是这一轮该记的第一件事。
+
+### 剩下的那一支
+
+`onTapDown` 里 crate 唯一没有的，是 Android 的手写笔那一支。
+
+    case TargetPlatform.android:
+      if (editableText.widget.stylusHandwritingEnabled) {
+        final bool stylusEnabled = switch (kind) {
+          PointerDeviceKind.stylus || PointerDeviceKind.invertedStylus => ...,
+          _ => false,
+        };
+        if (stylusEnabled) {
+          Scribe.isFeatureAvailable().then((bool isAvailable) {
+            if (isAvailable) { ...selectPosition(cause: stylusHandwriting);
+                               Scribe.startStylusHandwriting(); }
+          });
+        }
+      }
+
+**三道闸，而最后一道是异步的。** widget 的开关、指针种类，这两道当场就结；第三道是
+一次到 Android 的通道往返，光标要等它答"是"才动。
+
+由此掉出一件同步读法看不见的事：**手写笔按下的那一帧什么都不会发生。** tap down
+处理器问完就返回，选区是**之后**在回调里变的，而且只在平台说有的时候变。一个把它当作
+三项 `&&` 的端口，会早一帧移动光标，还会在根本不支持手写的机器上移动它。
+
+**只有 Android。** iOS 有 Scribble，走的是另一条路；另外四条臂根本不提手写笔。而
+**两种手写笔都算**——反向笔就是同一支笔倒过来，上游的 `switch` 把它列在旁边。
+
+**两个常量是两个问题。** `Scribe.isFeatureAvailable` 问的是"这个 Android 版本**能不
+能**"，`Scribe.isStylusHandwritingAvailable` 问的是"**现在**可用吗"。这道闸用的是前
+一个。两个常量在这个 crate 的通道上都有。
+
+**理由也是自己的。** `SelectionChangedCause.stylusHandwriting`，不是 `tap`——这次选区
+变化来自平台的识别器而不是手指，下游任何按理由分岔的代码都能分清。
+
+十条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5933 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个 builder 还剩 `onForcePressStart/End`、`onSecondaryTap(Down)`、
+`onDragSelection*`、`onTapTrackStart/Reset` 几族——**先按行为查，再动手**。
