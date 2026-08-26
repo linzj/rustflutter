@@ -1758,7 +1758,12 @@ impl Component for AppBar {
         let bar = crate::component_themes::ResolvedAppBar::of(context);
         let surface = bar.background;
         let outline = theme.outline;
-        let title_style = theme.title();
+        // Upstream's `titleTextStyle`: the bar's, then the theme's, then
+        // `titleLarge` in the bar's foreground colour. This used to be
+        // `theme.title()` -- a hand-rolled style with a hard-coded weight of
+        // 700, where `titleLarge` is 400 -- so `AppBarThemeData::title_text_style`
+        // reached nothing and the role had no reader in this port at all.
+        let title_style = bar.title_text_style.clone().unwrap_or_else(|| theme.title());
         let muted = theme.muted();
 
         let has_subtitle = subtitle.is_some();
@@ -5887,6 +5892,61 @@ mod tests {
             scheme.on_surface.0,
             "which is what it would be if the style never reached the painter"
         );
+    }
+
+    #[test]
+    fn the_bar_draws_its_title_in_the_style_the_theme_resolved() {
+        // Without this, moving the bar off its hand-rolled `theme.title()`
+        // and onto `ResolvedAppBar::title_text_style` broke nothing at all --
+        // and putting it back broke nothing either. The resolver's own tests
+        // watch what it answers; this is the only thing that watches whether
+        // the widget asks.
+        //
+        // The colour is what makes it visible. A bar's foreground belongs to
+        // the bar, and the hand-rolled style took its ink from the older
+        // `Theme` instead, so a bar told to draw in one colour drew in
+        // another.
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::component_themes::AppBarTheme::new(
+                crate::component_themes::AppBarThemeData {
+                    foreground_color: Some(MINE),
+                    ..crate::component_themes::AppBarThemeData::new()
+                },
+                component(AppBar::new("Inbox")),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let title = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. } if text == "Inbox" => {
+                    Some(argb)
+                }
+                _ => None,
+            })
+            .expect("the title");
+        assert_eq!(title, MINE.0);
     }
 
     #[test]

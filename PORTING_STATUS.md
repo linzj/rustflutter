@@ -18203,3 +18203,38 @@ stale_engines 全部不落后，unread_theme_fields 52 → 50（`hint_color` 与
 widget（`title_large` 是 M3 标题栏的角色，`headline_small` 是对话框的，
 `display_*` 是日期选择器头部的）。`ThemeData::secondary_header_color` 只有一个
 读者，上游的 `PaginatedDataTable`，这个端口还没有。
+
+## 第 250 轮：一个自己编标题样式的标题栏
+
+`ResolvedAppBar` 解析了工具栏的文字样式，却**没有标题的那一项**——于是 `AppBar`
+用 `theme.title()` 画标题，一个手工拼出来的 `TextStyle`，里面硬写着字重 700。
+上游的 `titleLarge` 是 400。一个把标题加粗的标题栏，是在说一件字号表没有说的事。
+
+三处缺口，同在上游那两行里：
+
+1. **`AppBarThemeData::title_text_style` 无处落地。** 主题带着这个字段，没有
+   任何解析器读它，调用方设了等于没设。
+2. **`TextTheme::title_large` 在整个端口没有读者。** 它是标题栏标题在上游两张
+   默认表里的角色（`_AppBarDefaultsM2` 读 `_theme.textTheme.titleLarge`，
+   `_AppBarDefaultsM3` 读 `_textTheme.titleLarge`），而这个 widget 本该是去
+   要它的那个。
+3. **两个默认样式都要过 `copyWith(color: foregroundColor)`。** 角色带来字号、
+   字重和字族；**墨色由栏本身带来**，因为前景色是栏的属性而不是字号表的。端口
+   解析 `toolbar_text_style` 时漏了这一步，所以一个设了前景色的栏，非标题文字
+   画错了颜色。而这一步只加在**默认值**上：主题明写的样式已经定了自己的墨色。
+
+**把 widget 从手工样式换到解析样式，一条测试都没红——把它换回去也一样。** 这是
+这一轮的另一半发现：解析器有自己的测试，但**没有任何东西看着 widget 有没有去问**。
+补了一条画面级测试，用前景色让它可见（手工样式的墨色来自更老的那个 `Theme`，
+所以一个被要求用某种颜色的栏画成了另一种）。之后第五条改错才红。
+
+五条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 50 → 49（`title_large` 离队）。
+门：5684 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextTheme` 还剩七个角色没有读者，都在等用它们的 widget——
+`headline_small` 是对话框标题的角色，`title_small` 是列表小标题的，
+`display_*` 是日期选择器头部的。对话框是其中最近的一个。

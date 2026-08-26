@@ -5463,6 +5463,20 @@ pub struct ResolvedAppBar {
     pub leading_width: f32,
     /// The style for text in the toolbar that is not the title.
     pub toolbar_text_style: Option<TextStyle>,
+    /// The style for the title.
+    ///
+    /// Upstream's role for it is `titleLarge`, in both defaults tables, and
+    /// nothing in this port read either the theme's field or the role: the
+    /// bar drew its title with a hand-rolled style carrying a hard-coded
+    /// weight of 700, where `titleLarge` is 400.
+    ///
+    /// Both styles are the *defaults* put through
+    /// `copyWith(color: foregroundColor)`. The role brings the size, the
+    /// weight and the family; the bar brings the ink, because a foreground
+    /// colour is a property of the bar and not of the type scale. A style the
+    /// theme named outright keeps its own colour -- it is past the defaults
+    /// by then.
+    pub title_text_style: Option<TextStyle>,
 }
 
 impl ResolvedAppBar {
@@ -5500,9 +5514,12 @@ impl ResolvedAppBar {
         let data = AppBarTheme::of(context);
         let scheme = ThemeData::of(context).color_scheme;
         let platform = ThemeData::of(context).platform;
+        // Upstream's `foregroundColor`, computed once: both text styles are
+        // their default role put through `copyWith(color: foregroundColor)`.
+        let foreground = data.foreground_color.unwrap_or(scheme.on_surface);
         ResolvedAppBar {
             background: data.background_color.unwrap_or(scheme.surface),
-            foreground: data.foreground_color.unwrap_or(scheme.on_surface),
+            foreground,
             toolbar_height: data
                 .toolbar_height
                 .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
@@ -5525,10 +5542,26 @@ impl ResolvedAppBar {
             leading_width: data
                 .leading_width
                 .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
-            toolbar_text_style: data
-                .toolbar_text_style
-                .clone()
-                .or_else(|| ThemeData::of(context).text_theme.body_medium.clone()),
+            toolbar_text_style: data.toolbar_text_style.clone().or_else(|| {
+                ThemeData::of(context)
+                    .text_theme
+                    .body_medium
+                    .clone()
+                    .map(|style| TextStyle {
+                        color: foreground,
+                        ..style
+                    })
+            }),
+            title_text_style: data.title_text_style.clone().or_else(|| {
+                ThemeData::of(context)
+                    .text_theme
+                    .title_large
+                    .clone()
+                    .map(|style| TextStyle {
+                        color: foreground,
+                        ..style
+                    })
+            }),
         }
     }
 
@@ -16473,6 +16506,89 @@ mod tests {
             ResolvedAppBar::of,
         );
         assert_eq!(named.actions_icon_theme.size, Some(66.0));
+    }
+
+    // -- The title bar's title, tick 250 -------------------------------------
+    //
+    // `ResolvedAppBar` resolved the toolbar's text style and had no field for
+    // the title's, so `AppBar` drew its title with a hand-rolled style
+    // carrying a hard-coded weight of 700. `titleLarge` is 400, and it is the
+    // role upstream's two defaults tables both name. Neither
+    // `AppBarThemeData::title_text_style` nor `TextTheme::title_large` had a
+    // reader here.
+    //
+    // Changing what the bar draws its title with broke nothing, which is the
+    // other half of the finding: nothing was watching.
+
+    #[test]
+    fn a_bars_title_is_the_type_scales_title_large_and_not_a_bold_one() {
+        // The role, character for character, except for the ink.
+        let theme = ThemeData::light();
+        let role = theme.text_theme.title_large.clone().expect("a role");
+        let bar = app_bar_under(AppBarThemeData::new(), ResolvedAppBar::of);
+        let title = bar.title_text_style.clone().expect("a title style");
+
+        assert_eq!(title.font_size, role.font_size);
+        assert_eq!(title.font_weight, role.font_weight);
+        assert_ne!(
+            title.font_weight, 700,
+            "which is what the bar used to hard-code, and titleLarge is 400"
+        );
+
+        // And it is a different role from the toolbar's, which is bodyMedium:
+        // a bar's title is not the same size as the words beside it.
+        let toolbar = bar.toolbar_text_style.clone().expect("a toolbar style");
+        assert_ne!(title.font_size, toolbar.font_size);
+    }
+
+    #[test]
+    fn both_styles_take_the_bars_foreground_colour_and_not_the_roles() {
+        // Upstream's `defaults.titleTextStyle?.copyWith(color: foregroundColor)`
+        // -- the role brings the size, the weight and the family, and the bar
+        // brings the ink, because a foreground colour belongs to the bar and
+        // not to the type scale. `toolbar_text_style` was resolved here
+        // without that merge, so a bar with a foreground colour drew its
+        // non-title text in the wrong one.
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let theme = ThemeData::light();
+        let bar = app_bar_under(
+            AppBarThemeData {
+                foreground_color: Some(MINE),
+                ..AppBarThemeData::new()
+            },
+            ResolvedAppBar::of,
+        );
+        assert_eq!(bar.title_text_style.clone().expect("a style").color, MINE);
+        assert_eq!(bar.toolbar_text_style.clone().expect("a style").color, MINE);
+        assert_ne!(
+            theme.text_theme.title_large.clone().expect("a role").color,
+            MINE,
+            "which the role does not carry, so this says the merge happened"
+        );
+    }
+
+    #[test]
+    fn a_style_the_theme_names_outright_keeps_its_own_colour() {
+        // The merge is on the *defaults*, not on whatever the theme said. A
+        // caller who named a style has already decided its ink; putting the
+        // bar's foreground over it would make the field unusable for the one
+        // thing it is for.
+        const MINE: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+        const FOREGROUND: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let asked = TextStyle {
+            color: MINE,
+            font_size: 41.0,
+            ..TextStyle::default()
+        };
+        let bar = app_bar_under(
+            AppBarThemeData {
+                foreground_color: Some(FOREGROUND),
+                title_text_style: Some(asked.clone()),
+                ..AppBarThemeData::new()
+            },
+            ResolvedAppBar::of,
+        );
+        assert_eq!(bar.title_text_style, Some(asked));
     }
 
     #[test]
