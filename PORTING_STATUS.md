@@ -17814,3 +17814,39 @@ stale_engines 全部不落后，**unread_theme_fields 82 → 78**。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 78 → 69**。
 门：5643 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 240 次：一个写死的 `true`，和一条因此才通过的测试
+
+`ThemeData::apply_elevation_overlay_color` 到不了任何地方。原因很具体：
+
+```rust
+crate::elevation_overlay::ElevationOverlay::apply_overlay(
+    self.color,
+    self.elevation,
+    true,          // <- 这个参数就是 applyElevationOverlayColor
+    is_dark,
+    ...
+```
+
+第三个参数被写死成 `true`。上游 `applyOverlay` 查三件事——高度大于零、**这个
+标志**、以及暗色——而这里第二件永远成立。于是想让暗色表面保持平坦的
+Material 2 应用被完全忽略。
+
+**改对之后，一条既有测试红了。**它是这样写的：解析一个**亮色** M2 主题下的
+栏，然后分别用 `is_dark: false` 和 `is_dark: true` 去问，断言两者不同。
+
+这条测试此前能通过，**正是因为那个 `true` 是写死的**。上游把两者绑在一起：
+`theme.applyElevationOverlayColor && theme.brightness == dark`，而标志的默认
+就是主题自己的明暗（`apply_elevation_overlay_color: is_dark`）。**一个亮色
+主题自称在暗处，是上游到不了的状态。**
+
+所以改的不是断言的数值，而是它的前提：暗色那一问现在在**暗色主题下**解析。
+理由写在测试里。
+
+新加一条测试直接盯住标志本身：同一个暗色 M2 主题，标志开着叠加、关掉不叠加。
+两条承重规则强制改错——把 `true` 写回去、让解析器不看主题——**两条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 69 → 68**。
+门：5644 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

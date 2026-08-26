@@ -1162,9 +1162,24 @@ mod bottom_app_bar_theme_tests {
             two.color,
             "in the light it does nothing at all"
         );
+        // The dark case has to be resolved under a *dark* theme, not asked of
+        // the light one with `is_dark: true`. Upstream's `applyOverlay` reads
+        // `theme.applyElevationOverlayColor && theme.brightness == dark`, and
+        // both come off the same theme -- the flag defaults to the
+        // brightness. A light theme claiming darkness is a state upstream
+        // cannot reach, and this used to pass only because the flag was
+        // hard-coded `true` here rather than read from the theme.
+        let dark_two = resolve_under(
+            ThemeData {
+                use_material3: false,
+                ..ThemeData::dark()
+            },
+            BottomAppBar::new(),
+            data.clone(),
+        );
         assert_ne!(
-            two.effective_color(true, scheme.surface, scheme.on_surface),
-            two.color,
+            dark_two.effective_color(true, scheme.surface, scheme.on_surface),
+            dark_two.color,
             "and in the dark it lightens the surface by its elevation"
         );
 
@@ -1175,6 +1190,50 @@ mod bottom_app_bar_theme_tests {
             hand_coloured.effective_color(true, scheme.surface, scheme.on_surface),
             hand_coloured.color,
             "a colour someone chose is left alone even in the dark"
+        );
+    }
+
+    #[test]
+    fn a_theme_can_turn_the_elevation_overlay_off() {
+        // `tools/unread_theme_fields.py` found
+        // `ThemeData::apply_elevation_overlay_color` reaching nothing: the
+        // resolver passed a literal `true` where upstream passes the theme's
+        // flag, so a Material 2 application that wanted its dark surfaces
+        // flat was ignored.
+        //
+        // Upstream's `applyOverlay` checks three things, and this is the
+        // second: elevation above zero, the flag, and a dark brightness.
+        let scheme = ThemeData::fallback().color_scheme;
+        let mut data = BottomAppBarThemeData::new();
+        data.color = Some(scheme.surface);
+
+        let on = resolve_under(
+            ThemeData {
+                use_material3: false,
+                ..ThemeData::dark()
+            },
+            BottomAppBar::new(),
+            data.clone(),
+        );
+        assert_ne!(
+            on.effective_color(true, scheme.surface, scheme.on_surface),
+            on.color,
+            "a dark Material 2 theme applies the overlay by default"
+        );
+
+        let off = resolve_under(
+            ThemeData {
+                use_material3: false,
+                apply_elevation_overlay_color: false,
+                ..ThemeData::dark()
+            },
+            BottomAppBar::new(),
+            data,
+        );
+        assert_eq!(
+            off.effective_color(true, scheme.surface, scheme.on_surface),
+            off.color,
+            "and the same theme with the flag off leaves the surface alone"
         );
     }
 }

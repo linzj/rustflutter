@@ -2772,6 +2772,13 @@ pub struct ResolvedBottomAppBar {
     pub shadow_color: Color,
     pub padding: EdgeInsets,
     material3: bool,
+    /// Upstream's `ThemeData.applyElevationOverlayColor`, which is the second
+    /// of the three conditions `applyOverlay` checks.
+    ///
+    /// It was passed as a literal `true` here, so a theme that turned the
+    /// overlay off was ignored -- and turning it off is the only way a
+    /// Material 2 application keeps a dark surface flat.
+    apply_elevation_overlay_color: bool,
 }
 
 impl ResolvedBottomAppBar {
@@ -2849,6 +2856,7 @@ impl ResolvedBottomAppBar {
                     EdgeInsets::ZERO
                 }),
             material3,
+            apply_elevation_overlay_color: theme.apply_elevation_overlay_color,
         }
     }
 
@@ -2870,7 +2878,7 @@ impl ResolvedBottomAppBar {
             crate::elevation_overlay::ElevationOverlay::apply_overlay(
                 self.color,
                 self.elevation,
-                true,
+                self.apply_elevation_overlay_color,
                 is_dark,
                 surface,
                 on_surface,
