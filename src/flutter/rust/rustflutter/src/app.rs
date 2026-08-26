@@ -263,7 +263,6 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.has_enabled_state, HAS_ENABLED_STATE);
     set(&mut bits, flags.is_enabled, IS_ENABLED);
 
-
     // The three tristates, each a "has it" bit gating an "is it" one -- the
     // same encoding the checked pair uses, and for the same reason: "no
     // opinion" is a third thing and one bit says two.

@@ -1794,40 +1794,44 @@ impl Component for AppBar {
             title.clone(),
             crate::theme::ThemeData::of(context).platform,
         );
-        let mut children = vec![crate::semantics::describe(title_semantics, leaf(move || {
-            // One line each, cut with an ellipsis. Upstream wraps the title in
-            // `DefaultTextStyle(softWrap: false, overflow: TextOverflow.ellipsis)`
-            // for exactly this: a bar is a fixed height, so a title that wrapped
-            // would only be clipped, and a clipped word reads worse than an
-            // elided one.
-            let one_line = |text: &str, style: &TextStyle| {
-                Text::new(text.to_string())
-                    .with_style(style.clone())
-                    .with_soft_wrap(false)
-                    .with_overflow(TextOverflow::Ellipsis)
-                    .with_max_lines(1)
-                    // Upstream clamps the title's text scale to
-                    // `_kMaxTitleTextScaleFactor` -- "to keep the visual
-                    // hierarchy the same even with larger font sizes" -- which
-                    // is also what keeps a reader's larger text inside a bar
-                    // whose height does not grow with it.
-                    .with_text_scale(
-                        crate::media_query::current_text_scale().min(MAX_TITLE_TEXT_SCALE_FACTOR),
-                    )
-            };
-            // `MainAxisSize.min` because `_ToolbarLayout` centres a
-            // content-sized middle (`_getMiddleOffset`); a max-sized column
-            // would fill the bar's height and pin the title to its top.
-            let mut stack = Column::new()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                .with_spacing(2.0)
-                .push(one_line(&title, &title_style));
-            if let Some(subtitle) = &subtitle {
-                stack = stack.push(one_line(subtitle, &muted));
-            }
-            stack
-        }))];
+        let mut children = vec![crate::semantics::describe(
+            title_semantics,
+            leaf(move || {
+                // One line each, cut with an ellipsis. Upstream wraps the title in
+                // `DefaultTextStyle(softWrap: false, overflow: TextOverflow.ellipsis)`
+                // for exactly this: a bar is a fixed height, so a title that wrapped
+                // would only be clipped, and a clipped word reads worse than an
+                // elided one.
+                let one_line = |text: &str, style: &TextStyle| {
+                    Text::new(text.to_string())
+                        .with_style(style.clone())
+                        .with_soft_wrap(false)
+                        .with_overflow(TextOverflow::Ellipsis)
+                        .with_max_lines(1)
+                        // Upstream clamps the title's text scale to
+                        // `_kMaxTitleTextScaleFactor` -- "to keep the visual
+                        // hierarchy the same even with larger font sizes" -- which
+                        // is also what keeps a reader's larger text inside a bar
+                        // whose height does not grow with it.
+                        .with_text_scale(
+                            crate::media_query::current_text_scale()
+                                .min(MAX_TITLE_TEXT_SCALE_FACTOR),
+                        )
+                };
+                // `MainAxisSize.min` because `_ToolbarLayout` centres a
+                // content-sized middle (`_getMiddleOffset`); a max-sized column
+                // would fill the bar's height and pin the title to its top.
+                let mut stack = Column::new()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                    .with_spacing(2.0)
+                    .push(one_line(&title, &title_style));
+                if let Some(subtitle) = &subtitle {
+                    stack = stack.push(one_line(subtitle, &muted));
+                }
+                stack
+            }),
+        )];
         if let Some(trailing) = trailing {
             children.push(trailing);
         }

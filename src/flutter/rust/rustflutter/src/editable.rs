@@ -1233,14 +1233,16 @@ impl FloatingCursor {
             -FloatingCursor::MARGIN_LEFT,
             -FloatingCursor::MARGIN_TOP,
             field.width.min(text.width) + FloatingCursor::MARGIN_RIGHT,
-            field.height.min(text.height) - preferred_line_height
-                + FloatingCursor::MARGIN_BOTTOM,
+            field.height.min(text.height) - preferred_line_height + FloatingCursor::MARGIN_BOTTOM,
         )
     }
 
     /// Upstream's `_calculateAdjustedCursorOffset`: the plain clamp, which is
     /// the whole answer only when the origin is not being reset.
-    fn clamped(offset: crate::render::Offset, bounds: crate::engine::Rect) -> crate::render::Offset {
+    fn clamped(
+        offset: crate::render::Offset,
+        bounds: crate::engine::Rect,
+    ) -> crate::render::Offset {
         crate::render::Offset::new(
             offset.dx.clamp(bounds.left, bounds.right),
             offset.dy.clamp(bounds.top, bounds.bottom),
@@ -1266,7 +1268,9 @@ impl FloatingCursor {
         }
 
         let delta = match self.previous {
-            Some(previous) => crate::render::Offset::new(raw.dx - previous.dx, raw.dy - previous.dy),
+            Some(previous) => {
+                crate::render::Offset::new(raw.dx - previous.dx, raw.dy - previous.dy)
+            }
             None => crate::render::Offset::ZERO,
         };
 
@@ -2165,7 +2169,10 @@ mod tests {
         );
         assert_eq!(bounds.left, -4.0);
         assert_eq!(bounds.top, -4.0);
-        assert_eq!(bounds.right, 204.0, "width plus the margin, nothing taken off");
+        assert_eq!(
+            bounds.right, 204.0,
+            "width plus the margin, nothing taken off"
+        );
         assert_eq!(bounds.bottom, 85.0, "100 - 20 + 5");
     }
 
@@ -2203,17 +2210,9 @@ mod tests {
         // written for everything.
         let bounds = crate::engine::Rect::ltrb(0.0, 0.0, 100.0, 50.0);
         let mut cursor = FloatingCursor::default();
-        let out = cursor.advance(
-            crate::render::Offset::new(160.0, 25.0),
-            bounds,
-            Some(false),
-        );
+        let out = cursor.advance(crate::render::Offset::new(160.0, 25.0), bounds, Some(false));
         assert_eq!(out.dx, 100.0);
-        let back = cursor.advance(
-            crate::render::Offset::new(150.0, 25.0),
-            bounds,
-            None,
-        );
+        let back = cursor.advance(crate::render::Offset::new(150.0, 25.0), bounds, None);
         assert_eq!(back.dx, 100.0, "still pinned, and still lagging");
     }
 
@@ -2366,7 +2365,10 @@ mod tests {
         cursor.advance(crate::render::Offset::new(50.0, 90.0), bounds, None);
         cursor.advance(crate::render::Offset::new(50.0, 80.0), bounds, None);
         let after_vertical = cursor.advance(crate::render::Offset::new(50.0, 70.0), bounds, None);
-        assert_eq!(after_vertical.dy, 40.0, "80 - 50 is the y origin, so 70 - 30");
+        assert_eq!(
+            after_vertical.dy, 40.0,
+            "80 - 50 is the y origin, so 70 - 30"
+        );
 
         // Now a horizontal excursion and return. The y answer must not move.
         cursor.advance(crate::render::Offset::new(200.0, 70.0), bounds, None);
@@ -2499,21 +2501,26 @@ mod tests {
         let password = TextField::new(1).obscured();
         assert_eq!(password.validate(), Ok(()));
         assert_eq!(
-            { let mut f = TextField::new(1).obscured(); f.max_lines = MaxLines::Growing; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).obscured();
+                f.max_lines = MaxLines::Growing;
+                f
+            }
+            .validate(),
             Err(TextFieldError::ObscuredAndMultiline)
         );
         assert_eq!(
-            { let mut f = TextField::new(1).obscured(); f.max_lines = MaxLines::Bounded(3); f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).obscured();
+                f.max_lines = MaxLines::Bounded(3);
+                f
+            }
+            .validate(),
             Err(TextFieldError::ObscuredAndMultiline)
         );
         // And a multiline field that is not obscured is fine, so the rule is
         // about the pair.
-        assert_eq!(
-            TextField::new(1).multiline().validate(),
-            Ok(())
-        );
+        assert_eq!(TextField::new(1).multiline().validate(), Ok(()));
     }
 
     #[test]
@@ -2556,8 +2563,12 @@ mod tests {
         // that takes whatever height it is offered has no line count to be
         // asked about.
         assert_eq!(
-            { let mut f = TextField::new(1).with_expands(true); f.max_lines = MaxLines::Growing; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).with_expands(true);
+                f.max_lines = MaxLines::Growing;
+                f
+            }
+            .validate(),
             Ok(()),
             "growing is this port's spelling of a null maxLines"
         );
@@ -2567,9 +2578,12 @@ mod tests {
             "and the default single-line is a maxLines of 1"
         );
         assert_eq!(
-            { let mut f = TextField::new(1).with_min_lines(2).with_expands(true);
-              f.max_lines = MaxLines::Growing; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).with_min_lines(2).with_expands(true);
+                f.max_lines = MaxLines::Growing;
+                f
+            }
+            .validate(),
             Err(TextFieldError::ExpandsWithLineCount)
         );
     }
@@ -2579,8 +2593,12 @@ mod tests {
         // "minLines can't be greater than maxLines", and a single-line field
         // is `maxLines: 1`, so the same conflict is reachable two ways.
         assert_eq!(
-            { let mut f = TextField::new(1).with_min_lines(5); f.max_lines = MaxLines::Bounded(2); f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).with_min_lines(5);
+                f.max_lines = MaxLines::Bounded(2);
+                f
+            }
+            .validate(),
             Err(TextFieldError::MinLinesAboveMaxLines)
         );
         assert_eq!(
@@ -2590,14 +2608,22 @@ mod tests {
         );
         // Equal is allowed -- upstream's test is `>=`.
         assert_eq!(
-            { let mut f = TextField::new(1).with_min_lines(4); f.max_lines = MaxLines::Bounded(4); f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).with_min_lines(4);
+                f.max_lines = MaxLines::Bounded(4);
+                f
+            }
+            .validate(),
             Ok(())
         );
         // And a growing field has no upper bound to exceed.
         assert_eq!(
-            { let mut f = TextField::new(1).with_min_lines(9); f.max_lines = MaxLines::Growing; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1).with_min_lines(9);
+                f.max_lines = MaxLines::Growing;
+                f
+            }
+            .validate(),
             Ok(())
         );
     }
@@ -2605,8 +2631,12 @@ mod tests {
     #[test]
     fn neither_line_count_may_be_zero() {
         assert_eq!(
-            { let mut f = TextField::new(1); f.max_lines = MaxLines::Bounded(0); f }
-                .validate(),
+            {
+                let mut f = TextField::new(1);
+                f.max_lines = MaxLines::Bounded(0);
+                f
+            }
+            .validate(),
             Err(TextFieldError::NonPositiveMaxLines)
         );
         assert_eq!(
@@ -2623,23 +2653,27 @@ mod tests {
         // with a comment saying why -- changing a value the caller set would
         // surprise them.
         assert_eq!(
-            { let mut f = TextField::new(1);
-              f.max_lines = MaxLines::Growing;
-              f.action = TextInputAction::Newline;
-              f.input_type = TextInputType::Text; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1);
+                f.max_lines = MaxLines::Growing;
+                f.action = TextInputAction::Newline;
+                f.input_type = TextInputType::Text;
+                f
+            }
+            .validate(),
             Err(TextFieldError::NewlineActionOnASingleLineKeyboard)
         );
         // Naming the multiline keyboard is the fix.
-        assert_eq!(
-            TextField::new(1).multiline().validate(),
-            Ok(())
-        );
+        assert_eq!(TextField::new(1).multiline().validate(), Ok(()));
         // And a single-line field with a newline action is upstream's other
         // way out of it.
         assert_eq!(
-            { let mut f = TextField::new(1); f.action = TextInputAction::Newline; f }
-                .validate(),
+            {
+                let mut f = TextField::new(1);
+                f.action = TextInputAction::Newline;
+                f
+            }
+            .validate(),
             Ok(())
         );
     }
@@ -2648,18 +2682,28 @@ mod tests {
     fn a_multiline_field_asks_for_a_multiline_keyboard_by_itself() {
         // `keyboardType ?? (maxLines == 1 ? text : multiline)` -- the same
         // fact the eighth assert refuses to let a caller contradict.
-        assert_eq!(TextField::new(1).effective_input_type(), TextInputType::Text);
         assert_eq!(
-            { let mut f = TextField::new(1); f.max_lines = MaxLines::Growing; f }
-                .effective_input_type(),
+            TextField::new(1).effective_input_type(),
+            TextInputType::Text
+        );
+        assert_eq!(
+            {
+                let mut f = TextField::new(1);
+                f.max_lines = MaxLines::Growing;
+                f
+            }
+            .effective_input_type(),
             TextInputType::Multiline
         );
         // A named type wins: this fills in a null, it does not override.
         assert_eq!(
-            { let mut f = TextField::new(1);
-              f.max_lines = MaxLines::Growing;
-              f.input_type = TextInputType::Phone; f }
-                .effective_input_type(),
+            {
+                let mut f = TextField::new(1);
+                f.max_lines = MaxLines::Growing;
+                f.input_type = TextInputType::Phone;
+                f
+            }
+            .effective_input_type(),
             TextInputType::Phone
         );
     }

@@ -3709,7 +3709,10 @@ mod tests {
         let mut covered = SemanticsProperties::label("Behind the sheet");
         covered.flags.is_hidden = true;
         assert!(covered.flags.is_hidden);
-        assert_eq!(covered.label, "Behind the sheet", "and it still has a label");
+        assert_eq!(
+            covered.label, "Behind the sheet",
+            "and it still has a label"
+        );
         assert!(!SemanticsProperties::label("On top").flags.is_hidden);
     }
 
@@ -3822,9 +3825,7 @@ mod tests {
         // tick is about, one level up.
         set_enabled(true);
         let nodes = describe_tree(
-            crate::framework::stateful(
-                crate::editable::TextField::new(7).with_placeholder("Name"),
-            ),
+            crate::framework::stateful(crate::editable::TextField::new(7).with_placeholder("Name")),
             Size::new(300.0, 200.0),
         );
         set_enabled(false);
@@ -3877,7 +3878,10 @@ mod tests {
             selected: SemanticsTristate::True,
             ..plain
         };
-        assert_eq!(pack_semantics_flags(&selected) & mask, (1 << 22) | (1 << 13));
+        assert_eq!(
+            pack_semantics_flags(&selected) & mask,
+            (1 << 22) | (1 << 13)
+        );
 
         // Focused, the same shape on its own pair -- and the two do not share
         // bits, which is what makes a focused unselected tab expressible.

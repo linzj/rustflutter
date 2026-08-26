@@ -188,7 +188,10 @@ impl ControlListTile {
 
     /// The outline the control is drawn in: the tile's, then the theme's,
     /// then upstream's near-square.
-    pub fn effective_control_shape(&self, theme_shape: Option<crate::borders::ShapeBorder>) -> crate::borders::ShapeBorder {
+    pub fn effective_control_shape(
+        &self,
+        theme_shape: Option<crate::borders::ShapeBorder>,
+    ) -> crate::borders::ShapeBorder {
         self.control_shape
             .clone()
             .or(theme_shape)
@@ -789,12 +792,12 @@ mod tests {
         // `CheckboxThemeData.shape` sits between them.
         let stadium =
             crate::borders::ShapeBorder::Stadium(crate::borders::StadiumBorder::default());
-        let circle =
-            crate::borders::ShapeBorder::Circle(crate::borders::CircleBorder::default());
+        let circle = crate::borders::ShapeBorder::Circle(crate::borders::CircleBorder::default());
         let tile = ControlListTile::new(TileControl::Checkbox, Some(true));
 
         assert!(matches!(
-            tile.clone().with_control_shape(circle.clone())
+            tile.clone()
+                .with_control_shape(circle.clone())
                 .effective_control_shape(Some(stadium.clone())),
             crate::borders::ShapeBorder::Circle(_)
         ));
@@ -827,7 +830,11 @@ mod tests {
         // `SwitchListTile` has neither a scale factor nor a shape upstream,
         // and that absence is what names the shared field: a switch has
         // nothing to scale independently of its track.
-        for control in [TileControl::Radio, TileControl::Checkbox, TileControl::Switch] {
+        for control in [
+            TileControl::Radio,
+            TileControl::Checkbox,
+            TileControl::Switch,
+        ] {
             let tile = ControlListTile::new(control, Some(true));
             assert_eq!(tile.radio_scale_factor, 1.0, "{control:?}");
             assert!(!tile.scales_the_control(), "{control:?}");
@@ -848,9 +855,17 @@ mod tests {
         assert_eq!(plain.radio_scale_factor, 1.0);
         assert!(!plain.scales_the_control());
 
-        assert!(plain.clone().with_radio_scale_factor(1.5).scales_the_control());
         assert!(
-            plain.clone().with_radio_scale_factor(0.5).scales_the_control(),
+            plain
+                .clone()
+                .with_radio_scale_factor(1.5)
+                .scales_the_control()
+        );
+        assert!(
+            plain
+                .clone()
+                .with_radio_scale_factor(0.5)
+                .scales_the_control(),
             "shrinking is a transform too"
         );
     }
@@ -1009,10 +1024,24 @@ mod tests {
         // combination refused, because it draws a live control that does
         // nothing.
         let tile = ControlListTile::new(TileControl::Radio, Some(true));
-        assert_eq!(tile.clone().with_enabled(false).validate_enabled(false), Ok(()));
-        assert_eq!(tile.clone().with_enabled(false).validate_enabled(true), Ok(()));
-        assert_eq!(tile.clone().with_enabled(true).validate_enabled(true), Ok(()));
-        assert!(tile.clone().with_enabled(true).validate_enabled(false).is_err());
+        assert_eq!(
+            tile.clone().with_enabled(false).validate_enabled(false),
+            Ok(())
+        );
+        assert_eq!(
+            tile.clone().with_enabled(false).validate_enabled(true),
+            Ok(())
+        );
+        assert_eq!(
+            tile.clone().with_enabled(true).validate_enabled(true),
+            Ok(())
+        );
+        assert!(
+            tile.clone()
+                .with_enabled(true)
+                .validate_enabled(false)
+                .is_err()
+        );
 
         // Unset is never refused: it *is* the condition rather than a claim
         // about it.
@@ -1030,7 +1059,10 @@ mod tests {
         assert!(!tile.is_enabled(false));
 
         // And the flag overrides both directions.
-        assert!(!tile.clone().with_enabled(false).is_enabled(true), "off despite a handler");
+        assert!(
+            !tile.clone().with_enabled(false).is_enabled(true),
+            "off despite a handler"
+        );
         assert!(tile.clone().with_enabled(true).is_enabled(false));
     }
 
