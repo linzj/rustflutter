@@ -6596,6 +6596,19 @@ impl TabBarTheme {
 }
 
 /// What a tab bar draws with, once the three steps have run.
+/// The role a tab's label takes when nobody named a style.
+///
+/// One function because upstream's tables give the selected and the
+/// unselected label the *same* answer, in all three of them, and a
+/// correction to one is a correction to both.
+fn tab_label_role(theme: &ThemeData) -> Option<TextStyle> {
+    if theme.use_material3 {
+        theme.text_theme.title_small.clone()
+    } else {
+        theme.primary_text_theme.body_large.clone()
+    }
+}
+
 pub struct ResolvedTabBar {
     pub indicator_color: Color,
     pub label_color: Color,
@@ -6681,8 +6694,21 @@ impl ResolvedTabBar {
                 .label_padding
                 .map(|padding| padding.resolve(crate::direction::current_direction()))
                 .unwrap_or(EdgeInsets::symmetric(16.0, 0.0)),
-            label_style: data.label_style.clone(),
-            unselected_label_style: data.unselected_label_style.clone(),
+            // Upstream's three tables agree that both styles are the same
+            // role as each other -- a selected tab is told apart by its
+            // colour and its underline, not by being a different size. What
+            // they disagree about is which role: `titleSmall` under Material
+            // 3, and `primaryTextTheme.bodyLarge` under Material 2.
+            //
+            // `primaryTextTheme` is the scale for text drawn *on* a
+            // primary-coloured surface, which is what a Material 2 tab bar
+            // is: it sits in the app bar. Material 3's does not, so it reads
+            // the ordinary scale.
+            label_style: data.label_style.clone().or_else(|| tab_label_role(&material)),
+            unselected_label_style: data
+                .unselected_label_style
+                .clone()
+                .or_else(|| tab_label_role(&material)),
             indicator: data.indicator.clone(),
             tab_alignment: data.tab_alignment.unwrap_or(if scrollable {
                 if material.use_material3 {

@@ -18288,3 +18288,40 @@ stale_engines 全部不落后，unread_theme_fields 49 → 48（`headline_small`
 **下一步**：`TextTheme` 还剩六个角色没有读者。`headline_medium` 与
 `headline_large`、三个 `display_*` 都是日期选择器头部的，`title_small` 是列表
 小标题的——`DatePickerThemeData` 那 26 条也在同一个方向上。
+
+## 第 252 轮：标签页的字，字号来自不知何处
+
+`ResolvedTabBar` 算出五种颜色、分隔线高度、内边距、指示器尺寸、对齐方式和
+动画——**两个标签样式却原样透传，一个默认值都没有**。上游三张表全都给了答案：
+
+    _TabsDefaultsM2            primaryTextTheme.bodyLarge，两个都是
+    _TabsPrimaryDefaultsM3     titleSmall，两个都是
+    _TabsSecondaryDefaultsM3   titleSmall，两个都是
+
+三张表一致地把**选中与未选中的标签给成同一个角色**——一个选中的标签是靠颜色和
+下划线被认出来的，不是靠换个字号。它们分歧的是**哪个角色**。
+
+`primaryTextTheme` 是画在**主色表面上**的文字用的那套字号表，而 Material 2 的
+标签栏正是这种情况：它嵌在应用栏里。Material 3 的不是，所以读普通那套。这也是
+`ThemeData::primary_text_theme` 在本端口一直没有读者的原因——上游如今还在用它
+的地方本就不多。
+
+而 widget 一个都没问。`TabBar::build` 用 `theme.body_size` 定字号、手写 700 或
+500 的字重、从更老的那个 `Theme` 取两种颜色——所以主题指定的标签样式毫无作用，
+`ResolvedTabBar` 用**五步**小心算出来的那两种颜色，也不是画上去的那两种。
+（那五步值得一提：颜色可以写在 `labelColor` 里，也可以写在**样式内部**，而后者
+的优先级更低——上游注释说，把它提上来会是一个没有迁移路径的破坏性改动。）
+
+五条承重规则逐条强制改错，全红。第五条（widget 退回自编样式）第一次读绿——
+但这次不是测试的问题：我的改错脚本第一个替换没匹配上，安静地失败了，于是跑的
+是没改过的代码。按正确方式重跑后当场红。**"改错读绿"有两种可能，另一种是改错
+本身没生效，得先确认文件真的变了。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 48 → 47（`title_small` 离队）。
+门：5691 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextTheme` 只剩五个角色，全部是日期选择器头部的
+（`headline_large`/`headline_medium` 与三个 `display_*`）——和队列里
+`DatePickerThemeData` 的 26 条是同一件事。

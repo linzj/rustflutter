@@ -444,8 +444,16 @@ impl Component for TabBar {
         let first_id = self.first_id;
         let handlers = self.handlers.borrow().clone();
         let labels = self.labels.clone();
-        let primary = theme.primary;
-        let muted = theme.text_muted;
+        // The bar used to size its labels from `theme.body_size` and weight
+        // them 700 or 500 by hand, and take its two colours from the older
+        // `Theme` -- so a theme that named a label style got nothing, and the
+        // five careful steps `ResolvedTabBar` takes to work out the two
+        // colours reached nothing either.
+        let bar = self.resolved(context);
+        let primary = bar.label_color;
+        let muted = bar.unselected_label_color;
+        let chosen = bar.label_style.clone();
+        let quiet = bar.unselected_label_style.clone();
         let outline = theme.outline;
         let size = theme.body_size;
 
@@ -464,10 +472,28 @@ impl Component for TabBar {
                         .push_flex(FlexChild::expanded(
                             Align::new(
                                 Alignment::CENTER,
-                                Text::new(label.clone())
-                                    .with_size(size)
-                                    .with_weight(if active { 700 } else { 500 })
-                                    .with_color(if active { primary } else { muted }),
+                                {
+                                    // Upstream draws the label in the
+                                    // resolved style with the resolved colour
+                                    // over it: the style says the size, the
+                                    // weight and the family, and the colour
+                                    // is worked out separately because a
+                                    // theme may name it in either place.
+                                    let role = if active { &chosen } else { &quiet };
+                                    let ink = if active { primary } else { muted };
+                                    match role {
+                                        Some(style) => Text::new(label.clone()).with_style(
+                                            TextStyle {
+                                                color: ink,
+                                                ..style.clone()
+                                            },
+                                        ),
+                                        None => Text::new(label.clone())
+                                            .with_size(size)
+                                            .with_weight(if active { 700 } else { 500 })
+                                            .with_color(ink),
+                                    }
+                                },
                             ),
                             1,
                         ))
@@ -4087,12 +4113,149 @@ mod tab_bar_theme_tests {
         seen.borrow_mut().take().expect("built once")
     }
 
+    /// [`resolve`] under a named `ThemeData`, which is what upstream's three
+    /// tables are chosen by.
+    fn resolve_under(data: TabBarThemeData, theme: crate::theme::ThemeData) -> ResolvedTabBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TabBarTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
     fn scheme() -> crate::color_scheme::ColorScheme {
         crate::theme::ThemeData::fallback().color_scheme
     }
 
     const IN_FIELD: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
     const IN_STYLE: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+
+    // -- The words on a tab, tick 252 ---------------------------------------
+    //
+    // `ResolvedTabBar` worked out five colours, a divider height, a padding,
+    // an indicator size, an alignment and an animation -- and passed both
+    // label styles straight through with no default. Upstream's three tables
+    // all answer, and `TextTheme::title_small` had no reader in this port.
+    //
+    // The widget asked for none of it either: `TabBar::build` sized its
+    // labels with `theme.body_size` and weighted them 700 or 500 by hand, so
+    // the two colours the resolver works out in five careful steps were not
+    // the ones drawn.
+
+    #[test]
+    fn both_tab_labels_take_the_same_role_and_it_is_title_small() {
+        // A selected tab is told apart by its colour and its underline, not
+        // by being a different size -- so the two styles are the same role,
+        // in all three of upstream's tables. What the tables disagree about
+        // is which role.
+        let theme = crate::theme::ThemeData::light();
+        let resolved = resolve_under(TabBarThemeData::new(), theme.clone());
+        assert_eq!(resolved.label_style, theme.text_theme.title_small);
+        assert_eq!(resolved.unselected_label_style, theme.text_theme.title_small);
+
+        // Material 2 reads `primaryTextTheme`, the scale for text drawn *on*
+        // a primary-coloured surface -- which is what an M2 tab bar is, since
+        // it sits in the app bar. Material 3's does not, so it reads the
+        // ordinary scale.
+        let mut two = crate::theme::ThemeData::light();
+        two.use_material3 = false;
+        let old = resolve_under(TabBarThemeData::new(), two.clone());
+        assert_eq!(old.label_style, two.primary_text_theme.body_large);
+        assert_ne!(
+            old.label_style, resolved.label_style,
+            "the two tables do not agree"
+        );
+        assert_ne!(
+            two.primary_text_theme.body_large, two.text_theme.body_large,
+            "and primaryTextTheme is not the ordinary one"
+        );
+    }
+
+    #[test]
+    fn a_named_style_beats_the_table_for_that_label_alone() {
+        let mine = TextStyle {
+            font_size: 41.0,
+            ..TextStyle::default()
+        };
+        let resolved = resolve_under(
+            TabBarThemeData {
+                label_style: Some(mine.clone()),
+                ..TabBarThemeData::new()
+            },
+            crate::theme::ThemeData::light(),
+        );
+        assert_eq!(
+            resolved.label_style.map(|style| style.font_size),
+            Some(41.0)
+        );
+        assert_ne!(
+            resolved.unselected_label_style.map(|style| style.font_size),
+            Some(41.0),
+            "the other one still takes the table's"
+        );
+    }
+
+    #[test]
+    fn the_bar_draws_its_labels_in_the_styles_and_colours_it_resolved() {
+        // The paint-level half, written before the mutation run. The
+        // resolver's own tests watch what it answers; only this watches
+        // whether the widget asks -- and it did not: it sized the labels from
+        // `theme.body_size` and coloured them from the older `Theme`.
+        const SELECTED: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        const QUIET: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            TabBarTheme::new(
+                TabBarThemeData {
+                    label_color: Some(SELECTED),
+                    unselected_label_color: Some(QUIET),
+                    ..TabBarThemeData::new()
+                },
+                component(TabBar::new(
+                    1,
+                    vec![String::from("Mail"), String::from("Files")],
+                    0,
+                )),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let ink = |wanted: &str| {
+            crate::engine_test_stubs::drawn()
+                .into_iter()
+                .find_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                        if text == wanted =>
+                    {
+                        Some(argb)
+                    }
+                    _ => None,
+                })
+                .expect("the label")
+        };
+        assert_eq!(ink("Mail"), SELECTED.0, "the chosen tab");
+        assert_eq!(ink("Files"), QUIET.0, "and the one beside it");
+    }
 
     #[test]
     fn a_colour_inside_the_text_style_counts_but_counts_last() {
