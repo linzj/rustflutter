@@ -3904,6 +3904,175 @@ pub enum InputBorderSide {
     MaterialTwo,
 }
 
+/// Which of a decorated field's words is being asked about.
+///
+/// Five slots and not four: the label and the *floating* label are separate
+/// fields upstream, and separate here, even though Material 3's two tables
+/// give them character for character the same answer. Material 2's do not --
+/// a floating label turns primary when the field is focused and an inline one
+/// does not -- and folding them would lose that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputTextSlot {
+    Hint,
+    Label,
+    FloatingLabel,
+    Helper,
+    Error,
+}
+
+/// What the words in a decorated field are drawn in.
+///
+/// Upstream's `_InputDecoratorDefaultsM2` and `_InputDecoratorDefaultsM3`,
+/// which between them are the material library's only readers of
+/// `ThemeData.hintColor`.
+///
+/// # Two things Material 2 does that Material 3 does not
+///
+/// A disabled field's helper and error lines go **transparent** under
+/// Material 2 rather than faint. That is not a way of saying "very faint": it
+/// is how the line is hidden *without changing the layout*, so a field does
+/// not change height when it is disabled. Material 3 fades them to 38%
+/// instead and lets them be read.
+///
+/// And Material 2's hint and inline label are `hintColor` with **no text role
+/// at all** -- a bare `TextStyle` carrying only a colour, which upstream
+/// merges over whatever the field's own style is. Material 3 gives them
+/// `bodyLarge` and `bodySmall` outright.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedInputTextStyles {
+    pub hint: TextStyle,
+    pub label: TextStyle,
+    pub floating_label: TextStyle,
+    pub helper: TextStyle,
+    pub error: TextStyle,
+}
+
+impl ResolvedInputTextStyles {
+    /// Upstream's disabled and hint opacity in the Material 3 tables.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedInputTextStyles {
+        let theme = ThemeData::of(context);
+        let data = InputDecorationTheme::of(context);
+        ResolvedInputTextStyles {
+            hint: ResolvedInputTextStyles::style_for(
+                &theme,
+                InputTextSlot::Hint,
+                states,
+                data.hint_style.clone(),
+            ),
+            label: ResolvedInputTextStyles::style_for(
+                &theme,
+                InputTextSlot::Label,
+                states,
+                data.label_style.clone(),
+            ),
+            floating_label: ResolvedInputTextStyles::style_for(
+                &theme,
+                InputTextSlot::FloatingLabel,
+                states,
+                data.floating_label_style.clone(),
+            ),
+            helper: ResolvedInputTextStyles::style_for(
+                &theme,
+                InputTextSlot::Helper,
+                states,
+                data.helper_style.clone(),
+            ),
+            error: ResolvedInputTextStyles::style_for(
+                &theme,
+                InputTextSlot::Error,
+                states,
+                data.error_style.clone(),
+            ),
+        }
+    }
+
+    /// One slot, under one state set. `asked` is what the theme said, which
+    /// wins outright when it said anything.
+    pub fn style_for(
+        theme: &ThemeData,
+        slot: InputTextSlot,
+        states: WidgetStates,
+        asked: Option<TextStyle>,
+    ) -> TextStyle {
+        if let Some(style) = asked {
+            return style;
+        }
+        let role = match slot {
+            // Material 2 gives the hint and the label a colour and no role.
+            // Material 3 gives the label `bodyLarge` and leaves the hint's
+            // role alone too -- its `hintStyle` is a bare `TextStyle(color:)`
+            // in both tables.
+            InputTextSlot::Hint => None,
+            InputTextSlot::Label | InputTextSlot::FloatingLabel => {
+                if theme.use_material3 {
+                    theme.text_theme.body_large.clone()
+                } else {
+                    None
+                }
+            }
+            InputTextSlot::Helper | InputTextSlot::Error => theme.text_theme.body_small.clone(),
+        };
+        TextStyle {
+            color: ResolvedInputTextStyles::color_for(theme, slot, states),
+            ..role.unwrap_or_default()
+        }
+    }
+
+    /// The ink alone, which is the whole of what the two tables disagree
+    /// about.
+    pub fn color_for(theme: &ThemeData, slot: InputTextSlot, states: WidgetStates) -> Color {
+        let scheme = theme.color_scheme;
+        let disabled = states.contains(WidgetState::Disabled);
+        let has_error = states.contains(WidgetState::Error);
+        let focused = states.contains(WidgetState::Focused);
+        let hovered = states.contains(WidgetState::Hovered);
+
+        if !theme.use_material3 {
+            return match slot {
+                // A disabled field's helper and error go transparent, not
+                // faint: the line keeps its room and stops being readable.
+                InputTextSlot::Helper if disabled => Color::TRANSPARENT,
+                InputTextSlot::Error if disabled => Color::TRANSPARENT,
+                InputTextSlot::Error => scheme.error,
+                _ if disabled => theme.disabled_color,
+                // Only the *floating* label answers to error and focus under
+                // Material 2. The inline one is `hintColor` whatever the
+                // field is doing, which is what makes these two slots and not
+                // one.
+                InputTextSlot::FloatingLabel if has_error => scheme.error,
+                InputTextSlot::FloatingLabel if focused => scheme.primary,
+                _ => theme.hint_color,
+            };
+        }
+
+        let faint = scheme
+            .on_surface
+            .with_alpha((255.0 * ResolvedInputTextStyles::DISABLED_OPACITY).round() as u8);
+        match slot {
+            // Material 3's error line has no disabled branch at all: a
+            // complaint stays red on a field that cannot be edited, because
+            // the reader still has to know why it is refused.
+            InputTextSlot::Error => scheme.error,
+            _ if disabled => faint,
+            InputTextSlot::Label | InputTextSlot::FloatingLabel if has_error => {
+                // Two of the three arms are `error`; only the hovered one is
+                // not, and it is `onErrorContainer` -- a hover is a promise
+                // that the field can be fixed, so it softens rather than
+                // shouts.
+                if hovered && !focused {
+                    scheme.on_error_container()
+                } else {
+                    scheme.error
+                }
+            }
+            InputTextSlot::Label | InputTextSlot::FloatingLabel if focused => scheme.primary,
+            _ => scheme.on_surface_variant(),
+        }
+    }
+}
+
 /// How an input decoration's border is arrived at -- upstream's
 /// `_InputDecoratorState._getDefaultBorder` and the five-way pick above it.
 ///
@@ -11040,6 +11209,184 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- The words in a decorated field, tick 249 ----------------------------
+    //
+    // `InputDecoration` modelled the whole structure of a field and
+    // `ResolvedInputBorder` answered for its lines. Nothing answered for the
+    // words: all five style fields on `InputDecorationThemeData` were plain
+    // options, and an unset one fell through to nothing at all. Upstream's
+    // two defaults tables are the material library's only readers of
+    // `ThemeData.hintColor`, which is why `hint_color` -- and
+    // `TextTheme::body_small` with it -- was named nowhere in this port
+    // outside its own paperwork.
+
+    fn input_ink(
+        material3: bool,
+        slot: InputTextSlot,
+        states: WidgetStates,
+    ) -> Color {
+        let mut theme = ThemeData::light();
+        theme.use_material3 = material3;
+        ResolvedInputTextStyles::color_for(&theme, slot, states)
+    }
+
+    #[test]
+    fn a_disabled_fields_helper_line_goes_transparent_under_material_two() {
+        // Not "very faint". Transparent is how the line is hidden *without
+        // changing the layout*, so a field does not change height when it is
+        // disabled. Material 3 fades it to 38% instead and lets it be read.
+        let states = WidgetStates::NONE.with(WidgetState::Disabled);
+        assert_eq!(
+            input_ink(false, InputTextSlot::Helper, states),
+            Color::TRANSPARENT
+        );
+        assert_eq!(
+            input_ink(false, InputTextSlot::Error, states),
+            Color::TRANSPARENT
+        );
+
+        let faint = input_ink(true, InputTextSlot::Helper, states);
+        assert_ne!(faint, Color::TRANSPARENT);
+        assert_eq!(faint.alpha(), 97, "38% of 255, rounded");
+    }
+
+    #[test]
+    fn a_material_three_error_stays_red_on_a_field_that_cannot_be_edited() {
+        // The one slot in either table with no disabled branch. A complaint
+        // stays legible on a disabled field because the reader still has to
+        // know why the field is refused -- and it is the only reason a
+        // disabled field is ever red.
+        let error = ThemeData::light().color_scheme.error;
+        assert_eq!(
+            input_ink(true, InputTextSlot::Error, WidgetStates::NONE.with(WidgetState::Disabled)),
+            error
+        );
+        assert_eq!(
+            input_ink(true, InputTextSlot::Error, WidgetStates::NONE),
+            error
+        );
+    }
+
+    #[test]
+    fn only_the_floating_label_answers_to_focus_under_material_two() {
+        // Which is what makes the label and the floating label two slots and
+        // not one. Material 3's two tables give them character for character
+        // the same answer; Material 2's do not.
+        let theme = ThemeData::light();
+        let focused = WidgetStates::NONE.with(WidgetState::Focused);
+        assert_eq!(
+            input_ink(false, InputTextSlot::FloatingLabel, focused),
+            theme.color_scheme.primary
+        );
+        assert_eq!(
+            input_ink(false, InputTextSlot::Label, focused),
+            theme.hint_color,
+            "an inline label is hintColor whatever the field is doing"
+        );
+
+        // Under Material 3 the two agree, in every one of the states they
+        // branch on -- which is a claim worth making, because it is the
+        // reason folding them would look harmless.
+        for states in [
+            WidgetStates::NONE,
+            WidgetStates::NONE.with(WidgetState::Focused),
+            WidgetStates::NONE.with(WidgetState::Disabled),
+            WidgetStates::NONE.with(WidgetState::Error),
+            WidgetStates::NONE.with(WidgetState::Hovered),
+        ] {
+            assert_eq!(
+                input_ink(true, InputTextSlot::Label, states),
+                input_ink(true, InputTextSlot::FloatingLabel, states),
+                "{states:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hovered_error_label_softens_instead_of_shouting() {
+        // Upstream's error branch has three arms and two of them are the same
+        // colour. Only the hovered one differs, and it is `onErrorContainer`:
+        // a hover is a promise the field can be fixed.
+        let scheme = ThemeData::light().color_scheme;
+        let hovered = WidgetStates::of(&[WidgetState::Error, WidgetState::Hovered]);
+        assert_eq!(
+            input_ink(true, InputTextSlot::Label, hovered),
+            scheme.on_error_container()
+        );
+
+        // Focused beats hovered, which is upstream's order: the focused arm
+        // is tested first.
+        let both = hovered.with(WidgetState::Focused);
+        assert_eq!(input_ink(true, InputTextSlot::Label, both), scheme.error);
+
+        // And an error that is neither is plain error red.
+        assert_eq!(
+            input_ink(true, InputTextSlot::Label, WidgetStates::NONE.with(WidgetState::Error)),
+            scheme.error
+        );
+    }
+
+    #[test]
+    fn the_hint_is_the_themes_hint_colour_and_the_helper_carries_body_small() {
+        // The two queue entries this tick is about, said directly.
+        let theme = ThemeData::light();
+        assert_eq!(
+            input_ink(false, InputTextSlot::Hint, WidgetStates::NONE),
+            theme.hint_color
+        );
+        assert_ne!(
+            theme.hint_color, theme.color_scheme.on_surface,
+            "and hintColor is not just the ordinary ink"
+        );
+
+        // `bodySmall` is the helper and error role in both tables. The hint
+        // has no role in either -- upstream's `hintStyle` is a bare
+        // `TextStyle(color:)` that the field's own style is merged under.
+        let helper = ResolvedInputTextStyles::style_for(
+            &theme,
+            InputTextSlot::Helper,
+            WidgetStates::NONE,
+            None,
+        );
+        let body_small = theme.text_theme.body_small.clone().expect("a role");
+        assert_eq!(helper.font_size, body_small.font_size);
+        assert_ne!(
+            helper.font_size,
+            theme.text_theme.body_large.clone().expect("a role").font_size,
+            "the helper line is smaller than the field's own text"
+        );
+
+        let hint = ResolvedInputTextStyles::style_for(
+            &theme,
+            InputTextSlot::Hint,
+            WidgetStates::NONE,
+            None,
+        );
+        assert_eq!(hint.font_size, TextStyle::default().font_size);
+    }
+
+    #[test]
+    fn a_theme_that_names_a_style_is_taken_at_its_word() {
+        // The other half: a table is only consulted for what the theme left
+        // unset.
+        let theme = ThemeData::light();
+        let mine = TextStyle {
+            color: Color::argb(0xFF, 0x11, 0x22, 0x33),
+            font_size: 41.0,
+            ..TextStyle::default()
+        };
+        let asked = ResolvedInputTextStyles::style_for(
+            &theme,
+            InputTextSlot::Hint,
+            WidgetStates::NONE.with(WidgetState::Disabled),
+            Some(mine.clone()),
+        );
+        assert_eq!(
+            asked, mine,
+            "even disabled, and even in the slot the table has an opinion about"
+        );
+    }
 
     /// Builds `read` inside `tree` and hands back what it saw.
     fn read_in<T: 'static, F, R>(wrap: F, read: R) -> T

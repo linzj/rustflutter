@@ -18162,3 +18162,44 @@ stale_engines 全部不落后，unread_theme_fields 55 → 52——**`SliderThem
 和 `values_with` 都还没有调用方）、没有标签、没有数值指示器——
 `range_value_indicator_shape` 现在被解析了但还没被画。队列里下一批最大的是
 `DatePickerThemeData` 26 条与 `TimePickerThemeData` 15 条。
+
+## 第 249 轮：一个装饰好的输入框，字没有颜色
+
+`InputDecoration` 把整个结构都建好了——哪个槽放什么、标签什么时候让位、五个
+边框里哪一个在用——`ResolvedInputBorder` 也答完了那些**线**。没有任何东西答
+那些**字**。`InputDecorationThemeData` 上的五个样式字段（`hint_style`、
+`label_style`、`floating_label_style`、`helper_style`、`error_style`）全是裸
+的 `Option<TextStyle>`，没设的那个就一路落空到什么都没有。
+
+上游的两张默认表把五个都给成 `WidgetStateTextStyle`，而它们**是整个 material
+库里 `ThemeData.hintColor` 仅有的读者**（加上 `dropdown.dart` 用它做同一件
+事）。这就是 `hint_color` 在本端口除自己的文书外一个字都没被提过的原因，
+`TextTheme::body_small` 同理——helper 与 error 两行正是 `bodySmall` 的用武之地。
+
+**这一轮记下四件上游做了而端口原本无处表达的事：**
+
+1. **Material 2 下，禁用字段的 helper 与 error 变成透明**，不是"很淡"。透明是
+   在**不改变布局**的前提下把那一行藏起来——字段禁用时高度不变。Material 3 改
+   为淡到 38% 并允许被读。
+2. **Material 3 的 error 没有 disabled 分支**，是两张表里唯一没有的。一个不能
+   被编辑的字段上，抱怨依然是红的：读者仍然需要知道它为什么被拒。
+3. **Material 2 下只有*浮动*标签跟随焦点与错误**，行内标签无论字段在做什么都是
+   `hintColor`。这正是 label 与 floating_label 必须是两个槽而不是一个的原因——
+   Material 3 的两张表逐字相同，折在一起看起来毫无损失。测试把"M3 下两者在它们
+   分支的每一个状态上都相等"也断言了下来，因为那才是折叠看起来无害的理由。
+4. **悬停中的错误标签会变软而不是更响**：上游 error 分支三条臂里两条是
+   `error`，只有 hovered 那条是 `onErrorContainer`——悬停是"这个字段可以被修好"
+   的承诺。而 focused 排在 hovered 前面。
+
+八条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 52 → 50（`hint_color` 与
+`body_small` 离队）。
+门：5680 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextTheme` 还剩八个排版角色没有读者，每一个都要等一个用它的
+widget（`title_large` 是 M3 标题栏的角色，`headline_small` 是对话框的，
+`display_*` 是日期选择器头部的）。`ThemeData::secondary_header_color` 只有一个
+读者，上游的 `PaginatedDataTable`，这个端口还没有。
