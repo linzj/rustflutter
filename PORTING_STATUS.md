@@ -19194,3 +19194,54 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 `scopesRoute` 是路由的**范围**而不是它的名字，`hasImplicitScrolling` 和
 `isAccessibilityFocusBlocked` 都是平台排树的事。`isMultiline` 和 `isKeyboardKey`
 介于两者之间——值得单独判一次，而不是顺手补上凑数。
+
+## 第 270 轮：一个文本框拒绝什么，以及它替你算什么
+
+先把上一条线收尾。`SemanticsFlags` 相对引擎剩下的五个，逐个判过了，五个都在这个
+端口写在 ABI 头文件里的取舍标准之外（"改变读屏器说什么，而不是某个平台怎么排它
+自己的树"）：`scopesRoute` 是路由的**范围**不是它的名字；`hasImplicitScrolling`
+和 `isAccessibilityFocusBlocked` 是平台排树的事；而那两个"边界情形"上游文档自己
+把话说明白了——`isMultiline` 的说明是"这是给 Android 无障碍桥和 iOS 无障碍桥用来
+知道这个文本框是不是多行的"，`isKeyboardKey` 同理。**上游自己说它们是桥的事,
+那就不是这里的事。**
+
+于是转向 `depth` 里最厚的那个真 widget。`TextField` 的构造函数在上游是**八条
+assert 加三条推导默认值**，而这个端口一条都没有。这些 assert 不是边界检查——八条
+里有五条讲的是**一对字段**，每条的消息里都写着这一对为什么不能同时成立：
+
+    assert(obscuringCharacter.length == 1)
+    assert(maxLines == null || maxLines > 0)
+    assert(minLines == null || minLines > 0)
+    assert(maxLines >= minLines, "minLines can't be greater than maxLines")
+    assert(!expands || (maxLines == null && minLines == null),
+           'minLines and maxLines must be null when expands is true.')
+    assert(!obscureText || maxLines == 1, 'Obscured fields cannot be multiline.')
+    assert(maxLength == null || maxLength == noMaxLength || maxLength > 0)
+    assert(!newline || maxLines == 1 || keyboardType != text,
+           'Use keyboardType TextInputType.multiline when using
+            TextInputAction.newline on a multiline TextField.')
+
+**`noMaxLength` 是 -1，而且合法。** 一个 `maxLength: -1` 的字段会显示字数计数器
+而不做任何限制——"这段有多长了"而不是"你不能再打了"。一个把那条 assert 读成"要正数"
+的端口，恰好会拒绝那个专门用来说这件事的值。**它也不是"任何负数"**：-2 是错的。
+
+**被遮蔽的那一对最有意思。** 一个密码框不能是多行的，而且它还会把智能标点替换
+**默认关掉**：一个热心地把 `--` 变成破折号的输入法，等于悄悄把密码改成了一个使用者
+看不见、也再打不出来的东西。
+
+第八条 assert 值得单说：上游**宁可 assert 也不悄悄修**，旁边留了一句注释说明理由
+——"这样断言而不是直接设值，是为了不让使用者惊讶于自己设的值被无声地改掉"。而
+`keyboardType ?? (maxLines == 1 ? text : multiline)` 就在它下面几行：**同一件事,
+没人说过的时候自己填上，有人说过而且说错的时候拒绝。**
+
+十条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5785 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextField` 的另外几组——`maxLengthEnforcement`（那个枚举的中间值
+`truncateAfterCompositionEnds` 是为汉字/假名输入法存在的：组合中途截断会把输入法
+弄坏）、`readOnly` 与 `enabled` 的区别、以及 `enableInteractiveSelection` 的推导
+`?? (!readOnly || !obscureText)`。

@@ -959,6 +959,34 @@ impl TextInputClient for FieldClient {
 /// Tapping it starts editing; tapping another field stops it. What the reader
 /// types -- directly, or through an IME, or by pasting -- arrives as whole
 /// values and is drawn, composing text underlined.
+/// Why a text field's arrangement was refused.
+///
+/// One variant per upstream assert, because each is a different sentence
+/// about a different pair of fields -- and five of the eight are about pairs
+/// rather than about one value being out of range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextFieldError {
+    /// `assert(obscuringCharacter.length == 1)`. One character, not one byte:
+    /// upstream's default is a bullet and a caller may pass any single
+    /// grapheme.
+    ObscuringCharacterIsNotOne,
+    /// `assert(maxLines == null || maxLines > 0)`.
+    NonPositiveMaxLines,
+    /// `assert(minLines == null || minLines > 0)`.
+    NonPositiveMinLines,
+    /// "minLines can't be greater than maxLines".
+    MinLinesAboveMaxLines,
+    /// "minLines and maxLines must be null when expands is true."
+    ExpandsWithLineCount,
+    /// "Obscured fields cannot be multiline."
+    ObscuredAndMultiline,
+    /// `assert(maxLength == null || maxLength == noMaxLength || maxLength > 0)`.
+    NonPositiveMaxLength,
+    /// "Use keyboardType TextInputType.multiline when using
+    /// TextInputAction.newline on a multiline TextField."
+    NewlineActionOnASingleLineKeyboard,
+}
+
 pub struct TextField {
     id: u64,
     placeholder: Option<String>,
@@ -967,6 +995,20 @@ pub struct TextField {
     action: TextInputAction,
     obscure: bool,
     max_lines: MaxLines,
+    /// Upstream's `minLines`: how many lines the field is tall before it has
+    /// any text in it. `None` is upstream's null.
+    min_lines: Option<usize>,
+    /// Upstream's `expands`: take whatever height the parent offers.
+    ///
+    /// Refuses to be combined with either line count, and the message says
+    /// why in its own words: a field that fills its parent has no line count
+    /// to be asked about.
+    expands: bool,
+    /// Upstream's `obscuringCharacter`, whose default is a bullet.
+    obscuring_character: char,
+    /// Upstream's `maxLength`. `Some(-1)` is upstream's `noMaxLength`, which
+    /// is **legal and means something**: show the counter, enforce nothing.
+    max_length: Option<i32>,
     on_changed: Option<TextCallback>,
     on_submitted: Option<TextCallback>,
     /// Somewhere to publish this field's [`StateHandle`], so a widget composed
@@ -977,6 +1019,115 @@ pub struct TextField {
 }
 
 impl TextField {
+    /// Upstream's `TextField.noMaxLength`, which is **-1 and not zero**.
+    ///
+    /// A field with this shows the character counter and enforces nothing:
+    /// "how long is this getting" without "you may not type more". A port
+    /// that read the assert as "a positive number" would refuse the one value
+    /// that says so.
+    pub const NO_MAX_LENGTH: i32 = -1;
+
+    /// Upstream's default `obscuringCharacter`.
+    pub const OBSCURING_CHARACTER: char = '\u{2022}';
+
+    pub fn with_min_lines(mut self, lines: usize) -> Self {
+        self.min_lines = Some(lines);
+        self
+    }
+
+    pub fn with_expands(mut self, expands: bool) -> Self {
+        self.expands = expands;
+        self
+    }
+
+    pub fn with_obscuring_character(mut self, character: char) -> Self {
+        self.obscuring_character = character;
+        self
+    }
+
+    pub fn with_max_length(mut self, length: i32) -> Self {
+        self.max_length = Some(length);
+        self
+    }
+
+    /// Upstream's eight constructor asserts, in their order.
+    ///
+    /// Five of them are about *pairs*, which is why each has its own message
+    /// upstream rather than a shared bounds check.
+    pub fn validate(&self) -> Result<(), TextFieldError> {
+        // One *character*, not one byte: upstream's default is a bullet and a
+        // caller may pass any single grapheme.
+        if self.obscuring_character.len_utf8() == 0 {
+            return Err(TextFieldError::ObscuringCharacterIsNotOne);
+        }
+        if let MaxLines::Bounded(0) = self.max_lines {
+            return Err(TextFieldError::NonPositiveMaxLines);
+        }
+        if self.min_lines == Some(0) {
+            return Err(TextFieldError::NonPositiveMinLines);
+        }
+        if let (MaxLines::Bounded(max), Some(min)) = (self.max_lines, self.min_lines) {
+            if max < min {
+                return Err(TextFieldError::MinLinesAboveMaxLines);
+            }
+        }
+        if let (MaxLines::Single, Some(min)) = (self.max_lines, self.min_lines) {
+            // A single-line field is `maxLines: 1`, so any `minLines` above
+            // one is the same conflict written another way.
+            if min > 1 {
+                return Err(TextFieldError::MinLinesAboveMaxLines);
+            }
+        }
+        if self.expands && (self.max_lines != MaxLines::Growing || self.min_lines.is_some()) {
+            // Upstream's `expands` requires *both* line counts null, and
+            // `MaxLines::Growing` is this port's spelling of a null
+            // `maxLines`.
+            return Err(TextFieldError::ExpandsWithLineCount);
+        }
+        if self.obscure && self.max_lines != MaxLines::Single {
+            return Err(TextFieldError::ObscuredAndMultiline);
+        }
+        if let Some(length) = self.max_length {
+            if length != TextField::NO_MAX_LENGTH && length <= 0 {
+                return Err(TextFieldError::NonPositiveMaxLength);
+            }
+        }
+        if self.action == TextInputAction::Newline
+            && self.max_lines != MaxLines::Single
+            && self.input_type == TextInputType::Text
+        {
+            return Err(TextFieldError::NewlineActionOnASingleLineKeyboard);
+        }
+        Ok(())
+    }
+
+    /// Upstream's `keyboardType ?? (maxLines == 1 ? text : multiline)`.
+    ///
+    /// A field that can hold more than one line asks the platform for a
+    /// keyboard with a return key that inserts a newline rather than one that
+    /// submits -- which is the same fact the eighth assert refuses to let a
+    /// caller contradict by hand.
+    pub fn effective_input_type(&self) -> TextInputType {
+        if self.input_type != TextInputType::Text {
+            return self.input_type;
+        }
+        if self.max_lines == MaxLines::Single {
+            TextInputType::Text
+        } else {
+            TextInputType::Multiline
+        }
+    }
+
+    /// Upstream's `smartDashesType ?? (obscureText ? disabled : enabled)`,
+    /// and the same line again for quotes.
+    ///
+    /// **An obscured field turns them off**, and the reason is worth keeping:
+    /// an IME that helpfully turns `--` into an em-dash has silently changed
+    /// a password into something the reader cannot see and cannot retype.
+    pub fn smart_punctuation(&self) -> bool {
+        !self.obscure
+    }
+
     /// `id` distinguishes this field from the others in the tree, for hit
     /// testing and for element reuse.
     pub fn new(id: u64) -> TextField {
@@ -988,6 +1139,10 @@ impl TextField {
             action: TextInputAction::Done,
             obscure: false,
             max_lines: MaxLines::Single,
+            min_lines: None,
+            expands: false,
+            obscuring_character: TextField::OBSCURING_CHARACTER,
+            max_length: None,
             on_changed: None,
             on_submitted: None,
             state_sink: None,
@@ -1377,6 +1532,184 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- What a text field refuses, tick 270 ---------------------------------
+    //
+    // `TextField`'s constructor upstream is eight asserts and three derived
+    // defaults, and this port had none of them. Five of the eight are about
+    // *pairs* of fields, which is why each has its own message rather than a
+    // shared bounds check.
+
+    #[test]
+    fn an_obscured_field_cannot_be_multiline() {
+        // Upstream's own words: 'Obscured fields cannot be multiline.'
+        let password = TextField::new(1).obscured();
+        assert_eq!(password.validate(), Ok(()));
+        assert_eq!(
+            { let mut f = TextField::new(1).obscured(); f.max_lines = MaxLines::Growing; f }
+                .validate(),
+            Err(TextFieldError::ObscuredAndMultiline)
+        );
+        assert_eq!(
+            { let mut f = TextField::new(1).obscured(); f.max_lines = MaxLines::Bounded(3); f }
+                .validate(),
+            Err(TextFieldError::ObscuredAndMultiline)
+        );
+        // And a multiline field that is not obscured is fine, so the rule is
+        // about the pair.
+        assert_eq!(
+            TextField::new(1).multiline().validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_obscured_field_turns_off_the_smart_punctuation() {
+        // Upstream derives both `smartDashesType` and `smartQuotesType` from
+        // `obscureText`. An IME that helpfully turns `--` into an em-dash has
+        // silently changed a password into something the reader cannot see
+        // and cannot retype.
+        assert!(TextField::new(1).smart_punctuation());
+        assert!(!TextField::new(1).obscured().smart_punctuation());
+    }
+
+    #[test]
+    fn minus_one_is_a_legal_max_length_and_zero_is_not() {
+        // `noMaxLength` is -1: show the character counter and enforce
+        // nothing. A port reading the assert as "a positive number" would
+        // refuse the one value that says so.
+        assert_eq!(TextField::NO_MAX_LENGTH, -1);
+        assert_eq!(
+            TextField::new(1)
+                .with_max_length(TextField::NO_MAX_LENGTH)
+                .validate(),
+            Ok(())
+        );
+        assert_eq!(
+            TextField::new(1).with_max_length(0).validate(),
+            Err(TextFieldError::NonPositiveMaxLength)
+        );
+        assert_eq!(
+            TextField::new(1).with_max_length(-2).validate(),
+            Err(TextFieldError::NonPositiveMaxLength),
+            "-1 is the sentinel, not 'any negative'"
+        );
+        assert_eq!(TextField::new(1).with_max_length(100).validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_field_that_fills_its_parent_may_not_also_count_lines() {
+        // 'minLines and maxLines must be null when expands is true.' A field
+        // that takes whatever height it is offered has no line count to be
+        // asked about.
+        assert_eq!(
+            { let mut f = TextField::new(1).with_expands(true); f.max_lines = MaxLines::Growing; f }
+                .validate(),
+            Ok(()),
+            "growing is this port's spelling of a null maxLines"
+        );
+        assert_eq!(
+            TextField::new(1).with_expands(true).validate(),
+            Err(TextFieldError::ExpandsWithLineCount),
+            "and the default single-line is a maxLines of 1"
+        );
+        assert_eq!(
+            { let mut f = TextField::new(1).with_min_lines(2).with_expands(true);
+              f.max_lines = MaxLines::Growing; f }
+                .validate(),
+            Err(TextFieldError::ExpandsWithLineCount)
+        );
+    }
+
+    #[test]
+    fn the_smaller_line_count_may_not_be_the_larger_one() {
+        // "minLines can't be greater than maxLines", and a single-line field
+        // is `maxLines: 1`, so the same conflict is reachable two ways.
+        assert_eq!(
+            { let mut f = TextField::new(1).with_min_lines(5); f.max_lines = MaxLines::Bounded(2); f }
+                .validate(),
+            Err(TextFieldError::MinLinesAboveMaxLines)
+        );
+        assert_eq!(
+            TextField::new(1).with_min_lines(3).validate(),
+            Err(TextFieldError::MinLinesAboveMaxLines),
+            "single-line is maxLines 1"
+        );
+        // Equal is allowed -- upstream's test is `>=`.
+        assert_eq!(
+            { let mut f = TextField::new(1).with_min_lines(4); f.max_lines = MaxLines::Bounded(4); f }
+                .validate(),
+            Ok(())
+        );
+        // And a growing field has no upper bound to exceed.
+        assert_eq!(
+            { let mut f = TextField::new(1).with_min_lines(9); f.max_lines = MaxLines::Growing; f }
+                .validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn neither_line_count_may_be_zero() {
+        assert_eq!(
+            { let mut f = TextField::new(1); f.max_lines = MaxLines::Bounded(0); f }
+                .validate(),
+            Err(TextFieldError::NonPositiveMaxLines)
+        );
+        assert_eq!(
+            TextField::new(1).with_min_lines(0).validate(),
+            Err(TextFieldError::NonPositiveMinLines)
+        );
+    }
+
+    #[test]
+    fn a_newline_action_needs_a_keyboard_that_can_produce_one() {
+        // Upstream's message says what to do: 'Use keyboardType
+        // TextInputType.multiline when using TextInputAction.newline on a
+        // multiline TextField.' It asserts rather than fixing it silently,
+        // with a comment saying why -- changing a value the caller set would
+        // surprise them.
+        assert_eq!(
+            { let mut f = TextField::new(1);
+              f.max_lines = MaxLines::Growing;
+              f.action = TextInputAction::Newline;
+              f.input_type = TextInputType::Text; f }
+                .validate(),
+            Err(TextFieldError::NewlineActionOnASingleLineKeyboard)
+        );
+        // Naming the multiline keyboard is the fix.
+        assert_eq!(
+            TextField::new(1).multiline().validate(),
+            Ok(())
+        );
+        // And a single-line field with a newline action is upstream's other
+        // way out of it.
+        assert_eq!(
+            { let mut f = TextField::new(1); f.action = TextInputAction::Newline; f }
+                .validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_multiline_field_asks_for_a_multiline_keyboard_by_itself() {
+        // `keyboardType ?? (maxLines == 1 ? text : multiline)` -- the same
+        // fact the eighth assert refuses to let a caller contradict.
+        assert_eq!(TextField::new(1).effective_input_type(), TextInputType::Text);
+        assert_eq!(
+            { let mut f = TextField::new(1); f.max_lines = MaxLines::Growing; f }
+                .effective_input_type(),
+            TextInputType::Multiline
+        );
+        // A named type wins: this fills in a null, it does not override.
+        assert_eq!(
+            { let mut f = TextField::new(1);
+              f.max_lines = MaxLines::Growing;
+              f.input_type = TextInputType::Phone; f }
+                .effective_input_type(),
+            TextInputType::Phone
+        );
+    }
 
     #[test]
     fn tab_moves_between_two_fields_and_takes_the_session_with_it() {
