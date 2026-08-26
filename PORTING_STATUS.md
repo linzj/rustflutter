@@ -18411,3 +18411,57 @@ stale_engines 全部不落后，unread_theme_fields 38 → 30（一轮八条）�
 
 **下一步**：`DatePickerThemeData` 还剩十条——两个格子形状、区间选择器自己那层
 表面的六条、区间选中的两条。
+
+## 第 255 轮：格子的形状，和区间选择器
+
+`DatePickerThemeData` 最后十一个字段。
+
+    字段                              M2                        M3
+    dayShape                          CircleBorder              同左
+    yearShape                         StadiumBorder             同左
+    rangePickerShape                  RoundedRectangleBorder()  同左
+    rangePickerBackgroundColor        surface                   **不覆写**
+    rangePickerShadowColor            transparent               transparent
+    rangePickerSurfaceTintColor       transparent               transparent
+    rangePickerHeaderBackgroundColor  dark ? surface : primary  transparent
+    rangePickerHeaderForegroundColor  dark ? onSurface:onPrimary onSurfaceVariant
+    rangeSelectionBackgroundColor     primary @ 12%             secondaryContainer
+    rangeSelectionOverlayColor        两个分支                   **一个**
+
+三个形状是在两张默认表的**构造函数**里传进去的，而不是作为 getter 覆写——所以
+在上游 grep `get dayShape` 一个都找不到。两张表传的是同一组：日期是圆，年份是
+胶囊，全屏的区间选择器是**完全不圆角**的矩形（普通对话框是 28）——一块屏幕没有
+角可以圆。
+
+今天**没有自己的形状**：上游是给日期形状加一条 *side* 来画今天的，所以自定义
+`dayShape` 会把今天的那圈环一起带走。这一条写成了断言。
+
+四处值得记：
+
+**`rangePickerHeaderBackgroundColor` 是日期选择器里最后一处按*明暗*而不是按
+配色角色取色的地方**：暗色主题得 `surface`，亮色得 `primary`，前景跟着走。M3
+把表头改成透明、让身后的对话框透上来——和它对普通表头的处理一样。
+
+**`rangePickerBackgroundColor` 在 M3 表里根本没有覆写。** M3 的区间选择器铺满
+屏幕，用对话框自己的背景；M2 的是一张卡片，需要自己的一份。
+
+**区间条从"淡化的选中色"变成了"一块自己的表面"**：M2 是 `primary` 12%，M3 是
+`secondaryContainer` 满强度。
+
+**`rangeSelectionOverlayColor` 在 M3 下没有选中分支** ——区间里每个格子**本来就
+是**选中的，对它分支等于什么都没说。整条区间用一种方式起波纹：`onPrimaryContainer`
+压在它自己那层 `secondaryContainer` 上。
+
+十三条承重规则逐条强制改错。第十三条读绿——主题自己指定的浮层没人看着，补了
+断言之后才红。**这一轮里凡是"主题说了算"的那一条，都要单独有测试；它和默认表
+那条是两个不同的规则。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 30 → 20——**`DatePickerThemeData`
+的队列清空了**。
+门：5711 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：队列只剩 `TimePickerThemeData` 十四条、`TextTheme` 四个角色、
+`ThemeData::secondary_header_color` 一条。时间选择器那十四条里就有
+`displayLarge`/`displayMedium`（时分数字）——两件事是同一件。

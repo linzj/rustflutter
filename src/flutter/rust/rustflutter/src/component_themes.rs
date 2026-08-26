@@ -4908,11 +4908,18 @@ pub enum DateCellSlot {
 /// unselected date has **no** background, which is different from having a
 /// transparent one -- the surface behind it shows through whatever that is,
 /// including a range selection's tint.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedDateCell {
     pub foreground: Color,
     pub background: Option<Color>,
     pub overlay: Option<Color>,
+    /// The outline the fill is clipped to.
+    ///
+    /// Set in the *constructors* of both defaults classes rather than
+    /// overridden as getters, which is why grepping upstream for
+    /// `get dayShape` finds nothing. Both pass the same pair: a date is a
+    /// circle and a year is a pill.
+    pub shape: ShapeBorder,
 }
 
 impl ResolvedDateCell {
@@ -4945,11 +4952,12 @@ impl ResolvedDateCell {
                 .as_ref()
                 .and_then(|property| property.resolve(states))
         };
-        let (foreground, background, overlay) = match slot {
+        let (foreground, background, overlay, shape) = match slot {
             DateCellSlot::Day => (
                 &data.day_foreground_color,
                 &data.day_background_color,
                 &data.day_overlay_color,
+                &data.day_shape,
             ),
             DateCellSlot::Today => (
                 &data.today_foreground_color,
@@ -4957,11 +4965,15 @@ impl ResolvedDateCell {
                 // Upstream gives today no overlay of its own: it is a date
                 // like the others as far as touching it goes.
                 &data.day_overlay_color,
+                // And no shape of its own either -- today is drawn by
+                // putting a side on the day shape.
+                &data.day_shape,
             ),
             DateCellSlot::Year => (
                 &data.year_foreground_color,
                 &data.year_background_color,
                 &data.year_overlay_color,
+                &data.year_shape,
             ),
         };
 
@@ -4973,6 +4985,23 @@ impl ResolvedDateCell {
                 .or_else(|| ResolvedDateCell::background_for(&scheme, slot, states)),
             overlay: asked(overlay)
                 .or_else(|| ResolvedDateCell::overlay_for(&scheme, material3, slot, states)),
+            shape: shape
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .unwrap_or_else(|| ResolvedDateCell::shape_for(slot)),
+        }
+    }
+
+    /// A date is a circle and a year is a pill, in both tables. Today takes
+    /// the date's -- upstream draws today by putting a *side* on the day
+    /// shape rather than by giving it a shape of its own, which is why a
+    /// custom `dayShape` carries today's ring with it.
+    pub fn shape_for(slot: DateCellSlot) -> ShapeBorder {
+        match slot {
+            DateCellSlot::Day | DateCellSlot::Today => {
+                ShapeBorder::Circle(crate::borders::CircleBorder::default())
+            }
+            DateCellSlot::Year => ShapeBorder::Stadium(crate::borders::StadiumBorder::default()),
         }
     }
 
@@ -5165,6 +5194,25 @@ pub struct ResolvedDatePicker {
     pub toggle_button_text_style: Option<TextStyle>,
     pub range_picker_header_headline_style: Option<TextStyle>,
     pub range_picker_header_help_style: Option<TextStyle>,
+    /// The card a Material 2 range picker is drawn on. `None` under Material
+    /// 3, which is not an oversight: that table does not override it, because
+    /// a Material 3 range picker fills the screen and takes the dialog's own
+    /// background. Material 2's is a card and needs one of its own.
+    pub range_picker_background_color: Option<Color>,
+    pub range_picker_shadow_color: Color,
+    pub range_picker_surface_tint_color: Color,
+    /// The range picker's outline. A plain rectangle in both tables -- no
+    /// rounding at all, where the ordinary dialog gets 28 -- because a range
+    /// picker is the whole screen and a screen has no corners to round.
+    pub range_picker_shape: ShapeBorder,
+    pub range_picker_header_background_color: Color,
+    pub range_picker_header_foreground_color: Color,
+    /// The strip drawn behind the dates between the two ends.
+    pub range_selection_background_color: Color,
+    /// Kept as the property rather than resolved here: see
+    /// [`ResolvedDatePicker::range_selection_overlay`], which is asked once
+    /// per cell like the rest of a calendar's state colours.
+    pub range_selection_overlay_color: Option<StateProperty<Option<Color>>>,
 }
 
 impl ResolvedDatePicker {
@@ -5176,6 +5224,8 @@ impl ResolvedDatePicker {
     pub const RANGE_ELEVATION: f32 = 0.0;
     /// Upstream's `rangePickerShape` radius: a plain rectangle.
     pub const RANGE_RADIUS: f32 = 0.0;
+    /// Material 2's tint on the strip behind a selected range.
+    pub const RANGE_SELECTION_OPACITY: f32 = 0.12;
     /// The fade Material 2 puts on the row of weekday letters. A third of
     /// the way between the 0.38 a disabled thing wears and full strength:
     /// quieter than the dates, still readable as words.
@@ -5246,10 +5296,50 @@ impl ResolvedDatePicker {
         Some(crate::elevation_overlay::with_opacity(base, opacity))
     }
 
+    /// The ripple on a date inside a selected range.
+    ///
+    /// Material 3 has **no selected branch at all**, and that is the whole
+    /// content of the field: inside a range every cell *is* selected, so
+    /// branching on it says nothing. The strip ripples one way, in
+    /// `onPrimaryContainer` over the `secondaryContainer` it is filled with.
+    /// Material 2 keeps the two branches its ordinary day overlay has,
+    /// including the heavy 0.38 for a pressed selected cell.
+    pub fn range_selection_overlay(
+        &self,
+        scheme: &ColorScheme,
+        material3: bool,
+        states: WidgetStates,
+    ) -> Option<Color> {
+        if let Some(asked) = self
+            .range_selection_overlay_color
+            .as_ref()
+            .and_then(|property| property.resolve(states))
+        {
+            return Some(asked);
+        }
+        if material3 {
+            let opacity = if states.contains(WidgetState::Pressed)
+                || states.contains(WidgetState::Focused)
+            {
+                ResolvedDateCell::M3_STRONG_OVERLAY
+            } else if states.contains(WidgetState::Hovered) {
+                ResolvedDateCell::HOVERED_OVERLAY
+            } else {
+                return None;
+            };
+            return Some(crate::elevation_overlay::with_opacity(
+                scheme.on_primary_container(),
+                opacity,
+            ));
+        }
+        ResolvedDateCell::overlay_for(scheme, false, DateCellSlot::Day, states)
+    }
+
     pub fn of(context: &mut BuildContext) -> ResolvedDatePicker {
         let theme = ThemeData::of(context);
         let scheme = theme.color_scheme;
         let material3 = theme.use_material3;
+        let dark = scheme.brightness == crate::platform::Brightness::Dark;
         let text_theme = theme.text_theme.clone();
         let data = DatePickerTheme::of(context);
         let sub_header = data.sub_header_foreground_color.unwrap_or_else(|| {
@@ -5358,6 +5448,60 @@ impl ResolvedDatePicker {
                         text_theme.label_small.clone()
                     }
                 }),
+            range_picker_background_color: data.range_picker_background_color.or(if material3 {
+                None
+            } else {
+                Some(scheme.surface)
+            }),
+            // Both transparent in both tables, and for the reason the
+            // dialog's are: the elevation is said by the colour underneath.
+            range_picker_shadow_color: data
+                .range_picker_shadow_color
+                .unwrap_or(Color::TRANSPARENT),
+            range_picker_surface_tint_color: data
+                .range_picker_surface_tint_color
+                .unwrap_or(Color::TRANSPARENT),
+            range_picker_shape: data.range_picker_shape.clone().unwrap_or(ShapeBorder::Rounded(
+                crate::borders::RoundedRectangleBorder::default(),
+            )),
+            // The last place in the date picker where Material 2 picks a
+            // colour by *brightness* rather than by a scheme role. A dark
+            // theme's header is `surface` and a light one's is `primary`,
+            // with the foreground following. Material 3 makes the header
+            // transparent and lets the dialog behind it show, the same move
+            // it makes for the ordinary header.
+            range_picker_header_background_color: data
+                .range_picker_header_background_color
+                .unwrap_or(if material3 {
+                    Color::TRANSPARENT
+                } else if dark {
+                    scheme.surface
+                } else {
+                    scheme.primary
+                }),
+            range_picker_header_foreground_color: data
+                .range_picker_header_foreground_color
+                .unwrap_or(if material3 {
+                    scheme.on_surface_variant()
+                } else if dark {
+                    scheme.on_surface
+                } else {
+                    scheme.on_primary
+                }),
+            // A tinted primary under Material 2, a container role of its own
+            // under Material 3 -- the strip stops being a faded version of
+            // the selection and becomes a surface in its own right.
+            range_selection_overlay_color: data.range_selection_overlay_color.clone(),
+            range_selection_background_color: data.range_selection_background_color.unwrap_or(
+                if material3 {
+                    scheme.secondary_container()
+                } else {
+                    crate::elevation_overlay::with_opacity(
+                        scheme.primary,
+                        ResolvedDatePicker::RANGE_SELECTION_OPACITY,
+                    )
+                },
+            ),
         }
     }
 }
@@ -11647,6 +11791,245 @@ mod tests {
 
     fn plain_cell(slot: DateCellSlot, states: WidgetStates) -> ResolvedDateCell {
         cell(DatePickerThemeData::new(), ThemeData::light(), slot, states)
+    }
+
+    // -- The cell shapes and the range picker, tick 255 ----------------------
+    //
+    // The last ten fields on `DatePickerThemeData`. The three shapes are set
+    // in the *constructors* of both defaults classes rather than overridden
+    // as getters, which is why grepping upstream for `get dayShape` finds
+    // nothing at all.
+
+    #[test]
+    fn a_date_is_a_circle_and_a_year_is_a_pill() {
+        // Both tables pass the same pair. Today has no shape of its own:
+        // upstream draws it by putting a *side* on the day shape, which is
+        // why a custom `dayShape` carries today's ring with it.
+        assert!(matches!(
+            plain_cell(DateCellSlot::Day, WidgetStates::NONE).shape,
+            ShapeBorder::Circle(_)
+        ));
+        assert_eq!(
+            plain_cell(DateCellSlot::Today, WidgetStates::NONE).shape,
+            plain_cell(DateCellSlot::Day, WidgetStates::NONE).shape
+        );
+        assert!(matches!(
+            plain_cell(DateCellSlot::Year, WidgetStates::NONE).shape,
+            ShapeBorder::Stadium(_)
+        ));
+
+        // A named day shape reaches today as well, and not the year.
+        let named = DatePickerThemeData {
+            day_shape: Some(StateProperty::all(Some(ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            )))),
+            ..DatePickerThemeData::new()
+        };
+        for slot in [DateCellSlot::Day, DateCellSlot::Today] {
+            assert!(
+                matches!(
+                    cell(named.clone(), ThemeData::light(), slot, WidgetStates::NONE).shape,
+                    ShapeBorder::Stadium(_)
+                ),
+                "{slot:?}"
+            );
+        }
+        assert!(matches!(
+            cell(named, ThemeData::light(), DateCellSlot::Year, WidgetStates::NONE).shape,
+            ShapeBorder::Stadium(_)
+        ));
+    }
+
+    #[test]
+    fn a_range_picker_has_no_rounding_where_the_dialog_has_twenty_eight() {
+        // A range picker is the whole screen, and a screen has no corners to
+        // round.
+        let resolved = date_picker_under(DatePickerThemeData::new(), ThemeData::light());
+        assert_eq!(resolved.shape_radius, 28.0);
+        assert_eq!(resolved.range_picker_shape_radius, 0.0);
+        assert!(matches!(
+            resolved.range_picker_shape,
+            ShapeBorder::Rounded(_)
+        ));
+    }
+
+    #[test]
+    fn a_material_two_range_pickers_header_is_chosen_by_brightness() {
+        // The last place in the date picker where a colour comes from the
+        // brightness rather than from a scheme role. A dark theme's header is
+        // `surface` and a light one's is `primary`, and the foreground
+        // follows so the words stay legible on whichever it landed on.
+        let light = ThemeData::light();
+        let mut two_light = light.clone();
+        two_light.use_material3 = false;
+        let mut two_dark = ThemeData::dark();
+        two_dark.use_material3 = false;
+
+        let day = date_picker_under(DatePickerThemeData::new(), two_light.clone());
+        assert_eq!(
+            day.range_picker_header_background_color,
+            two_light.color_scheme.primary
+        );
+        assert_eq!(
+            day.range_picker_header_foreground_color,
+            two_light.color_scheme.on_primary
+        );
+
+        let night = date_picker_under(DatePickerThemeData::new(), two_dark.clone());
+        assert_eq!(
+            night.range_picker_header_background_color,
+            two_dark.color_scheme.surface
+        );
+        assert_eq!(
+            night.range_picker_header_foreground_color,
+            two_dark.color_scheme.on_surface
+        );
+        assert_ne!(
+            night.range_picker_header_background_color,
+            two_dark.color_scheme.primary,
+            "which is what a role-based rule would have given it"
+        );
+
+        // Material 3 makes the header transparent whatever the brightness --
+        // the same move it makes for the ordinary header -- and lets the
+        // dialog behind it show.
+        for theme in [ThemeData::light(), ThemeData::dark()] {
+            let resolved = date_picker_under(DatePickerThemeData::new(), theme);
+            assert_eq!(
+                resolved.range_picker_header_background_color,
+                Color::TRANSPARENT
+            );
+        }
+    }
+
+    #[test]
+    fn a_material_three_range_picker_has_no_background_of_its_own() {
+        // Not overridden in that table, and that is the answer: a Material 3
+        // range picker fills the screen and takes the dialog's own
+        // background. Material 2's is a card and needs one.
+        assert_eq!(
+            date_picker_under(DatePickerThemeData::new(), ThemeData::light())
+                .range_picker_background_color,
+            None
+        );
+
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        assert_eq!(
+            date_picker_under(DatePickerThemeData::new(), two.clone())
+                .range_picker_background_color,
+            Some(two.color_scheme.surface)
+        );
+    }
+
+    #[test]
+    fn the_range_strip_stops_being_a_faded_selection_and_becomes_a_surface() {
+        // Material 2 tints `primary` to twelve percent; Material 3 gives the
+        // strip a container role of its own, at full strength.
+        let three = ThemeData::light();
+        let mut two = three.clone();
+        two.use_material3 = false;
+
+        let new = date_picker_under(DatePickerThemeData::new(), three.clone());
+        assert_eq!(
+            new.range_selection_background_color,
+            three.color_scheme.secondary_container()
+        );
+        assert_eq!(
+            new.range_selection_background_color.alpha(),
+            0xFF,
+            "a surface, not a tint"
+        );
+
+        let old = date_picker_under(DatePickerThemeData::new(), two.clone());
+        assert_ne!(old.range_selection_background_color, new.range_selection_background_color);
+        assert!(
+            old.range_selection_background_color.alpha() < 0x40,
+            "a twelve percent tint"
+        );
+    }
+
+    #[test]
+    fn a_range_ripples_all_one_way_under_material_three() {
+        // Inside a range every cell *is* selected, so a branch on selection
+        // says nothing -- and Material 3's `rangeSelectionOverlayColor` has
+        // no selected branch at all. That is the whole content of the field.
+        // Material 2 kept the two branches its ordinary day overlay has,
+        // including the heavy 0.38 for a pressed selected cell.
+        let three = ThemeData::light();
+        let mut two = three.clone();
+        two.use_material3 = false;
+        let resolved = date_picker_under(DatePickerThemeData::new(), three.clone());
+        let scheme = three.color_scheme;
+
+        let pressed = WidgetStates::NONE.with(WidgetState::Pressed);
+        let pressed_selected = WidgetStates::of(&[WidgetState::Pressed, WidgetState::Selected]);
+        assert_eq!(
+            resolved.range_selection_overlay(&scheme, true, pressed),
+            resolved.range_selection_overlay(&scheme, true, pressed_selected),
+            "selected changes nothing"
+        );
+        // And it is `onPrimaryContainer`, the ink for the container the strip
+        // is filled with -- not `onPrimary`, which is what a date outside the
+        // strip would use.
+        assert_eq!(
+            resolved
+                .range_selection_overlay(&scheme, true, pressed)
+                .unwrap(),
+            crate::elevation_overlay::with_opacity(
+                scheme.on_primary_container(),
+                ResolvedDateCell::M3_STRONG_OVERLAY
+            )
+        );
+
+        // Material 2 does branch, and heavily.
+        assert_ne!(
+            resolved.range_selection_overlay(&scheme, false, pressed),
+            resolved.range_selection_overlay(&scheme, false, pressed_selected)
+        );
+
+        // Untouched is no layer at all, in both.
+        assert_eq!(
+            resolved.range_selection_overlay(&scheme, true, WidgetStates::NONE),
+            None
+        );
+        assert_eq!(
+            resolved.range_selection_overlay(&scheme, false, WidgetStates::NONE),
+            None
+        );
+
+        // And a theme that names one is taken at its word -- including for
+        // the untouched state, where both tables answer nothing.
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let named = date_picker_under(
+            DatePickerThemeData {
+                range_selection_overlay_color: Some(StateProperty::all(Some(MINE))),
+                ..DatePickerThemeData::new()
+            },
+            three,
+        );
+        assert_eq!(
+            named.range_selection_overlay(&scheme, true, WidgetStates::NONE),
+            Some(MINE)
+        );
+        assert_eq!(
+            named.range_selection_overlay(&scheme, true, pressed),
+            Some(MINE)
+        );
+    }
+
+    #[test]
+    fn a_range_pickers_shadow_and_tint_are_transparent_in_both_tables() {
+        // The same pair of transparents the dialog carries, and for the same
+        // reason: how far off the page it sits is said by the colour
+        // underneath, not by a shadow.
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        for theme in [ThemeData::light(), two] {
+            let resolved = date_picker_under(DatePickerThemeData::new(), theme);
+            assert_eq!(resolved.range_picker_shadow_color, Color::TRANSPARENT);
+            assert_eq!(resolved.range_picker_surface_tint_color, Color::TRANSPARENT);
+        }
     }
 
     #[test]
