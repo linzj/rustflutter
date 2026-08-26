@@ -1217,6 +1217,17 @@ impl Component for ProgressBar {
 pub struct Slider {
     id: u64,
     value: f32,
+    /// The ends of the range this slider reports in. Upstream's `min` and
+    /// `max`, both of which this used to assume were 0 and 1 -- so a caller
+    /// with a real range converted by hand, and `Slider::new` clamped their
+    /// value into 0..1 and destroyed it on the way in.
+    min: f32,
+    max: f32,
+    /// `None` is a continuous slider; `Some(n)` snaps to `n + 1` positions
+    /// and is what makes tick marks something to draw. Upstream asserts
+    /// `divisions == null || divisions > 0`: zero would divide by zero and a
+    /// negative number is not a count.
+    divisions: Option<u32>,
     width: f32,
     /// What to do with a new value, if anything. The gestures that produce
     /// one are decided in `build`, where the theme can be read; this is the
@@ -1228,9 +1239,85 @@ impl Slider {
     pub fn new(id: u64, value: f32) -> Slider {
         Slider {
             id,
-            value: value.clamp(0.0, 1.0),
+            value,
+            min: 0.0,
+            max: 1.0,
+            divisions: None,
             width: 200.0,
             on_change: None,
+        }
+    }
+
+    /// Upstream's `min` and `max`.
+    pub fn with_range(mut self, min: f32, max: f32) -> Self {
+        self.min = min;
+        self.max = max;
+        self
+    }
+
+    /// Upstream's `divisions`. Zero is refused rather than clamped: it would
+    /// divide by zero in the discretisation, and a caller who wrote it meant
+    /// something else.
+    pub fn with_divisions(mut self, divisions: u32) -> Self {
+        debug_assert!(divisions > 0, "divisions must be greater than zero");
+        self.divisions = if divisions > 0 { Some(divisions) } else { None };
+        self
+    }
+
+    /// Upstream's two constructor asserts, in this crate's returned form:
+    /// `min <= max`, and the value between them.
+    ///
+    /// This used to **clamp** the value in `new` instead. That is not what
+    /// upstream does and it is worse than either alternative: a caller who
+    /// passed 5 into a 0..1 slider got 1 back with no complaint, and a
+    /// caller whose range was 0..10 -- once ranges existed -- would have had
+    /// their 5 destroyed on the way in.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.min > self.max {
+            return Err(format!("min {} is greater than max {}", self.min, self.max));
+        }
+        if self.value < self.min || self.value > self.max {
+            return Err(format!(
+                "Value {} is not between minimum {} and maximum {}",
+                self.value, self.min, self.max
+            ));
+        }
+        Ok(())
+    }
+
+    /// Upstream's `_unlerp`: where this slider's value sits along its track,
+    /// as a fraction. A zero-width range answers zero rather than dividing by
+    /// it -- upstream's assert forbids `min > max` and allows `min == max`.
+    pub fn fraction(&self) -> f32 {
+        if self.max <= self.min {
+            return 0.0;
+        }
+        ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+    }
+
+    /// Upstream's `_convert`: a position along the track, back to a value --
+    /// snapped to the divisions first when there are any.
+    pub fn value_at(&self, fraction: f32) -> f32 {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let fraction = match self.divisions {
+            Some(divisions) => {
+                let divisions = divisions as f32;
+                (fraction * divisions).round() / divisions
+            }
+            None => fraction,
+        };
+        self.min + fraction * (self.max - self.min)
+    }
+
+    /// Where each tick mark sits along the track, as fractions. Empty for a
+    /// continuous slider, which is why the theme's `tick_mark_shape` had
+    /// nothing to answer before there were divisions to mark.
+    pub fn tick_fractions(&self) -> Vec<f32> {
+        match self.divisions {
+            None => Vec::new(),
+            Some(divisions) => (0..=divisions)
+                .map(|step| step as f32 / divisions as f32)
+                .collect(),
         }
     }
 
@@ -1290,11 +1377,27 @@ impl Slider {
         let width = self.width;
         // The thumb sits at the end of the filled part of the track, so its
         // box runs from there to a thumb's width further along.
-        let filled = (width * self.value).clamp(0.0, width);
+        let filled = (width * self.fraction()).clamp(0.0, width);
         let thumb_width = slider.thumb_size.width;
         // Whether the drag in flight began on the thumb. Only `SlideThumb`
         // reads it, but it has to be recorded at every drag start, which is
         // the only moment the answer is knowable.
+        // A position along the track, as the caller's own value: through
+        // `min`/`max`, and snapped to the divisions when there are any. This
+        // used to hand back the raw fraction, so a slider with a range
+        // reported nonsense and one with divisions never settled on them.
+        let (min, max, divisions) = (self.min, self.max, self.divisions);
+        let to_value = move |fraction: f32| {
+            let fraction = fraction.clamp(0.0, 1.0);
+            let fraction = match divisions {
+                Some(divisions) => {
+                    let divisions = divisions as f32;
+                    (fraction * divisions).round() / divisions
+                }
+                None => fraction,
+            };
+            min + fraction * (max - min)
+        };
         let began_on_thumb = std::rc::Rc::new(std::cell::Cell::new(false));
         let starting = std::rc::Rc::clone(&began_on_thumb);
         let dragging = std::rc::Rc::clone(&on_change);
@@ -1310,7 +1413,7 @@ impl Slider {
                 if interaction == crate::slider_theme::SliderInteraction::SlideThumb && !began_on_thumb.get() {
                     return;
                 }
-                dragging((drag.local_position.dx / width).clamp(0.0, 1.0));
+                dragging(to_value(drag.local_position.dx / width));
             })
             .with_tap(move |tap| {
                 if matches!(
@@ -1319,7 +1422,7 @@ impl Slider {
                 ) {
                     return;
                 }
-                on_change((tap.local_position.dx / width).clamp(0.0, 1.0));
+                on_change(to_value(tap.local_position.dx / width));
             })
     }
 }
@@ -1327,7 +1430,9 @@ impl Slider {
 impl Component for Slider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let slider = ResolvedSlider::of(context);
-        let value = self.value;
+        // The *fraction*, not the value: the track is drawn in its own
+        // coordinates and the value may be anywhere between `min` and `max`.
+        let value = self.fraction();
         let width = self.width;
         let id = self.id;
         let handlers = self.gestures(&slider);
@@ -4296,9 +4401,24 @@ mod tests {
     }
 
     #[test]
-    fn a_slider_clamps_its_value() {
-        assert_eq!(Slider::new(1, 5.0).value, 1.0);
-        assert_eq!(Slider::new(1, -2.0).value, 0.0);
+    fn a_slider_says_when_its_value_is_outside_its_range() {
+        // It used to clamp in `new`, which upstream does not: upstream
+        // asserts `value >= min && value <= max`. Clamping is the worst of
+        // the three answers -- a caller who passed 5 into a 0..1 slider got 1
+        // back and no complaint, and once ranges existed a 0..10 slider would
+        // have destroyed their 5 on the way in.
+        assert!(Slider::new(1, 5.0).validate().is_err());
+        assert!(Slider::new(1, -2.0).validate().is_err());
+        assert_eq!(Slider::new(1, 0.5).validate(), Ok(()));
+        // And with a range, five is perfectly ordinary.
+        assert_eq!(Slider::new(1, 5.0).with_range(0.0, 10.0).validate(), Ok(()));
+        assert!(
+            Slider::new(1, 0.5)
+                .with_range(10.0, 0.0)
+                .validate()
+                .is_err(),
+            "a backwards range is refused too"
+        );
         assert_eq!(ProgressBar::new(0.5).value, 0.5);
     }
 
@@ -5211,6 +5331,178 @@ mod tests {
                 .map(|style| style.font_size),
             Some(100.0)
         );
+    }
+
+    // -- A slider that runs somewhere other than 0 to 1, tick 244 -----------
+    //
+    // `Slider` had a value and a width. `SliderThemeData::tick_mark_shape`
+    // reached nothing because tick marks mark *divisions* and there were
+    // none, and a caller with a real range had to convert on both sides by
+    // hand -- while `Slider::new` clamped their value into 0..1 and destroyed
+    // it on the way in.
+
+    #[test]
+    fn the_fraction_is_where_the_value_sits_between_the_ends() {
+        // Upstream's `_unlerp`. Three different ranges, so a line that
+        // assumed 0..1 answers with a fraction that is not its own.
+        assert_eq!(Slider::new(1, 0.25).fraction(), 0.25);
+        assert_eq!(Slider::new(1, 5.0).with_range(0.0, 10.0).fraction(), 0.5);
+        assert_eq!(
+            Slider::new(1, 1950.0).with_range(1900.0, 2000.0).fraction(),
+            0.5
+        );
+        // A range that does not start at zero is where an implementation that
+        // divided by `max` alone would go wrong.
+        assert_eq!(Slider::new(1, 30.0).with_range(20.0, 40.0).fraction(), 0.5);
+    }
+
+    #[test]
+    fn a_zero_width_range_answers_zero_rather_than_dividing_by_it() {
+        // Upstream asserts `min <= max` and so allows them equal. Every
+        // position is the same position then, and zero is the only answer
+        // that is not a division by zero.
+        assert_eq!(Slider::new(1, 7.0).with_range(7.0, 7.0).fraction(), 0.0);
+    }
+
+    #[test]
+    fn a_position_comes_back_as_the_callers_own_value() {
+        // Upstream's `_lerp`, the other direction.
+        let slider = Slider::new(1, 0.0).with_range(1900.0, 2000.0);
+        assert_eq!(slider.value_at(0.0), 1900.0);
+        assert_eq!(slider.value_at(0.5), 1950.0);
+        assert_eq!(slider.value_at(1.0), 2000.0);
+    }
+
+    #[test]
+    fn divisions_snap_the_value_before_it_leaves_the_track() {
+        // Upstream's `_discretize`: `(fraction * divisions).round() /
+        // divisions`, applied *before* the range, so the snap is to the
+        // divisions and not to round numbers in the caller's units.
+        let slider = Slider::new(1, 0.0).with_range(0.0, 10.0).with_divisions(4);
+        // Quarters of the track: 0, 2.5, 5, 7.5, 10.
+        assert_eq!(slider.value_at(0.0), 0.0);
+        assert_eq!(slider.value_at(0.3), 2.5, "nearer the first quarter");
+        assert_eq!(slider.value_at(0.4), 5.0, "and this one the half");
+        assert_eq!(slider.value_at(1.0), 10.0);
+
+        // Without divisions the same positions pass straight through.
+        let smooth = Slider::new(1, 0.0).with_range(0.0, 10.0);
+        assert_eq!(smooth.value_at(0.3), 3.0);
+        assert_eq!(smooth.value_at(0.4), 4.0);
+    }
+
+    #[test]
+    fn the_ticks_are_the_division_boundaries_and_there_is_one_more_than_them() {
+        // Four divisions make five marks: the two ends count. A slider with
+        // none has nothing to mark, which is why the theme's tick shape had
+        // nothing to answer.
+        assert_eq!(Slider::new(1, 0.0).tick_fractions(), Vec::<f32>::new());
+        assert_eq!(
+            Slider::new(1, 0.0).with_divisions(4).tick_fractions(),
+            vec![0.0, 0.25, 0.5, 0.75, 1.0]
+        );
+        assert_eq!(
+            Slider::new(1, 0.0).with_divisions(1).tick_fractions(),
+            vec![0.0, 1.0],
+            "one division is two marks, one at each end"
+        );
+    }
+
+    #[test]
+    fn a_drag_reports_a_value_in_the_callers_range() {
+        // The gesture used to hand back the raw fraction, so a slider with a
+        // range reported nonsense and one with divisions never settled.
+        use crate::slider_theme::SliderInteraction;
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let recorder = std::rc::Rc::clone(&seen);
+        let mut slider = Slider::new(1, 0.0)
+            .with_range(0.0, 10.0)
+            .with_divisions(4);
+        slider.on_change = Some(std::rc::Rc::new(move |value| recorder.set(Some(value))));
+        let resolved = crate::slider_theme::ResolvedSlider {
+            track_height: 4.0,
+            active_track_color: Color::argb(255, 0, 0, 0),
+            inactive_track_color: Color::argb(255, 0, 0, 0),
+            thumb_color: Color::argb(255, 0, 0, 0),
+            track_shape: crate::slider_theme::SliderTrackShape::Rectangular(
+                crate::slider_theme::RectangularSliderTrackShape::default(),
+            ),
+            thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
+            thumb_size: crate::render::Size::new(20.0, 20.0),
+            allowed_interaction: SliderInteraction::TapAndSlide,
+        };
+        let handlers = slider.gestures(&resolved);
+        let handler = handlers.on_tap.clone().expect("a tap handler");
+        // Three-tenths along a two-hundred-wide track.
+        handler(crate::gestures::TapEvent {
+            local_position: Offset::new(60.0, 0.0),
+            pointer_id: 1,
+        });
+        assert_eq!(
+            seen.get(),
+            Some(2.5),
+            "in the caller's units, snapped to the nearest division"
+        );
+    }
+
+    #[test]
+    fn the_filled_track_is_drawn_from_the_fraction_and_not_from_the_value() {
+        // The track lives in its own coordinates. A slider at 5 of 0..10 is
+        // half filled; one that drew `width * value` would try to fill five
+        // times its own width, and the clamp would hide that as a full track.
+        // The two cases below differ only in the range, so a build that read
+        // the value would answer the same for both.
+        let filled_width = |slider: Slider| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                component(slider),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            crate::render::RenderBox::layout(
+                &mut root,
+                BoxConstraints {
+                    min_width: 0.0,
+                    max_width: 400.0,
+                    min_height: 0.0,
+                    max_height: 400.0,
+                },
+            );
+            let mut layers = crate::engine::LayerTree::new(600, 400);
+            crate::engine_test_stubs::reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(600.0, 400.0),
+                );
+                crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+            }
+            // The active track is the widest thing drawn that is narrower
+            // than the whole track.
+            crate::engine_test_stubs::drawn()
+                .iter()
+                .filter_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::RRect { left, right, .. }
+                    | crate::engine_test_stubs::Drawn::Rect { left, right, .. } => {
+                        Some(right - left)
+                    }
+                    _ => None,
+                })
+                .filter(|width| *width < 199.0)
+                .fold(0.0f32, f32::max)
+        };
+
+        // Half of a ten-wide range fills half of a two-hundred-wide
+        // track. A build that read the value would ask for a thousand,
+        // and the clamp would hand back the whole track instead.
+        assert_eq!(
+            filled_width(Slider::new(1, 5.0).with_range(0.0, 10.0)),
+            100.0
+        );
+        // A quarter of the plain 0..1 slider is a quarter -- the case
+        // that would look right either way, here so the pair says the
+        // difference is the range and not the arithmetic.
+        assert_eq!(filled_width(Slider::new(1, 0.25)), 50.0);
     }
 }
 

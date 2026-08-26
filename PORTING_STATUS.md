@@ -17947,3 +17947,50 @@ stale_engines 全部不落后，**unread_theme_fields 64 → 62**。
 `TimePickerThemeData` 15、`TextTheme` 10、`SliderThemeData` 9。它们不是"少接
 一根线"——各自要等对应的绘制器或 widget 先长出来（日期/时间选择器的绘制路径、
 用排版角色的那些 widget、基于形状的滑块绘制器）。那是工程，不是接线。
+
+### 第 244 次：滑块只会从 0 走到 1，所以刻度没有东西可标
+
+上一轮结尾说剩下四块要等 widget 长出来。这是其中一块的第一步。
+
+端口的 `Slider` 只有一个值和一个宽度：没有 `min`、没有 `max`、没有
+`divisions`。两个后果，而尺子只看得见第二个。
+
+**第一个是明面上的**：有真实范围的调用方（音量 0 到 11、年份 1900 到 2000）
+得在两头手工换算，而 `Slider::new` 会把值裁剪进 0..1——**把它悄悄毁掉**。
+
+**第二个才是 `SliderThemeData::tick_mark_shape` 到不了的原因**：刻度标记标的
+是**分度**，而这里一个分度都没有，主题那个字段无从回答。
+
+上游的算术（`_SliderState`）：
+
+```
+_unlerp(value)  = (value - min) / (max - min)
+_lerp(f)        = min + f * (max - min)
+_discretize(f)  = (f * divisions).round() / divisions
+_convert(value) = divisions == null ? _unlerp : _discretize(_unlerp)
+```
+
+**裁剪换成了断言。**上游不裁剪构造参数，它断言 `value >= min && value <= max`。
+裁剪是三种做法里最差的一种：往 0..1 的滑块里传 5 会拿回 1 而且毫无怨言，
+而一旦有了范围，0..10 的滑块会把这个完全合法的 5 毁在入口。改成这个 crate
+自己的 `validate()` 惯例。
+
+**分度在离开轨道之前生效**——`_discretize` 作用在比例上而不是值上，所以吸附
+到的是分度，不是调用方单位里的整数。测试用 0..10、四分度：0.3 吸到 2.5，
+0.4 吸到 5.0。
+
+**四个分度是五个标记**，两端都算。
+
+六条承重规则逐条强制改错。其中"轨道按值画而不是按比例画"**第一轮读绿**——
+补了一条读回填充宽度的测试：0..10 的滑块在 5 处填 100 像素，而按值画的版本
+会去要一千像素、被裁剪成整条轨道。之后六条全红。
+
+**下一步**：`label` 与数值指示器（一个浮层），那会让
+`value_indicator_shape`、`show_value_indicator`、`value_indicator_text_style`
+三个字段有东西可答。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 62（不变——刻度形状还要等绘制
+那一步）。
+门：5658 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
