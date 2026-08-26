@@ -17770,3 +17770,47 @@ stale_engines 全部不落后，**unread_theme_fields 99 → 82**（16 条是尺
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 82 → 78**。
 门：5639 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 239 次：尺子第五、六次改口径，一次太宽一次太窄
+
+`ColorScheme::on_secondary` 被报成"没人读"。它其实是三个角色的最后一级——
+`on_secondary_container()`、`on_secondary_fixed()`、`on_tertiary()` 都落到它
+——而那三个访问器住在 `impl ColorScheme` 里，被尺子**整块**排除了。排除的本意
+是构造器（`with_x` 会写 `self.x = x`，否则算成自读），却把访问器一起带走了。
+
+**改窄之后又太窄了。**只排除 `lerp`、`copy_with`、`with_*` 的话，
+`TextTheme::merge` 和 `TextTheme::apply_color` 会把十五个角色名全提一遍——
+那是搬运字段，不是回答。读数从 78 掉到 64，掉得没有道理。**我核对了一条才
+发现**，没有直接采信。
+
+最后的口径不按"这个方法住在哪一块"，按**它做什么**：
+
+> 拿走这个类型、交回同一个类型的方法，是在搬运字段；交回一个值的方法，是在
+> 用它回答。
+
+所以排除 `lerp` / `copy_with` / `merge` / `apply*` / `with_*`，访问器留下。
+**78 → 76。**
+
+### 七根线，外加一根顺手发现的
+
+| 主题 | 字段 |
+| --- | --- |
+| `DataTableThemeData` | 两个行色、两个光标（都按状态解析） |
+| `DrawerThemeData` | `endShape` —— 以及 `shape`，**它也从来没被解析过** |
+| `BottomSheetThemeData` | `dragHandleSize` |
+| `ExpansionTileThemeData` | `expansionAnimationStyle` |
+
+**抽屉那两个是两个形状，不是一个镜像。**上游把圆角放在**朝向页面的那一侧**，
+对起始抽屉是尾侧、对结尾抽屉是首侧，`Drawer.build` 按 `isDrawerStart` 挑。
+写测试时才发现 `ResolvedDrawer` 连前导那个 `shape` 都没有——报表里只有
+`end_shape`，因为 `shape` 这个名字 crate 里别处也说。两个一起补了。
+
+**动画样式整个带过去**，不拆开：上游把三部分分开问，各有各的回落，而
+`reverseCurve` **一个回落都没有**——所以只写了时长的样式仍然保留默认曲线。
+
+五条承重规则逐条强制改错：**五条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 78 → 69**。
+门：5643 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

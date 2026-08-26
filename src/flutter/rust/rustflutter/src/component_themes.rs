@@ -1725,12 +1725,20 @@ pub struct ResolvedBottomSheet {
     pub show_drag_handle: bool,
     pub drag_handle_color: Option<Color>,
     pub shape: Option<ShapeBorder>,
+    /// Upstream's `_BottomSheetDefaultsM3.dragHandleSize` is 32 by 4 -- wide
+    /// and thin, so it reads as a grip rather than a button.
+    pub drag_handle_size: crate::render::Size,
 }
 
 impl ResolvedBottomSheet {
     /// Upstream's `_BottomSheetDefaultsM3.elevation`, which is 1: a persistent
     /// sheet is part of the page and barely lifted off it.
     pub const ELEVATION: f32 = 1.0;
+    /// Upstream's `_BottomSheetDefaultsM3.dragHandleSize`.
+    pub const DRAG_HANDLE_SIZE: crate::render::Size = crate::render::Size {
+        width: 32.0,
+        height: 4.0,
+    };
     /// And `modalElevation`, also 1 in Material 3 -- the scrim is what
     /// separates a modal sheet from the page, so it does not also need height.
     pub const MODAL_ELEVATION: f32 = 1.0;
@@ -1762,6 +1770,9 @@ impl ResolvedBottomSheet {
             show_drag_handle: show_drag_handle
                 .unwrap_or(enable_drag && data.show_drag_handle.unwrap_or(false)),
             drag_handle_color: data.drag_handle_color,
+            drag_handle_size: data
+                .drag_handle_size
+                .unwrap_or(ResolvedBottomSheet::DRAG_HANDLE_SIZE),
             shape: data.shape.clone(),
         }
     }
@@ -1890,6 +1901,15 @@ pub struct ResolvedExpansionTile {
     /// Only meaningful while open, which is the only time there are children.
     pub expanded_alignment: crate::render::Alignment,
     pub children_padding: EdgeInsets,
+    /// How long the tile takes to open and how it eases.
+    ///
+    /// Upstream reads the three parts separately --
+    /// `expansionAnimationStyle?.duration ?? 200ms`,
+    /// `?.curve ?? Curves.easeIn`, and `?.reverseCurve` with **no fallback at
+    /// all** -- so a style that names only a duration keeps the default
+    /// curve. Carried whole here for the same reason: the parts are asked
+    /// for one at a time.
+    pub expansion_animation_style: Option<crate::animation::AnimationStyle>,
 }
 
 impl ResolvedExpansionTile {
@@ -1925,6 +1945,7 @@ impl ResolvedExpansionTile {
                 .children_padding
                 .map(|padding| padding.resolve(direction))
                 .unwrap_or(EdgeInsets::ZERO),
+            expansion_animation_style: data.expansion_animation_style.clone(),
         }
     }
 
@@ -2187,6 +2208,16 @@ pub struct ResolvedDataTable {
     pub data_text_style: Option<TextStyle>,
     pub heading_text_style: Option<TextStyle>,
     pub heading_row_alignment: crate::render::MainAxisAlignment,
+    /// The two row fills and the two cursors, each already resolved against
+    /// the states in hand.
+    ///
+    /// `None` is an answer for all four: upstream has no default row colour
+    /// -- a table draws on whatever it is placed on -- and no default cursor
+    /// beyond the pointer's own.
+    pub data_row_color: Option<Color>,
+    pub heading_row_color: Option<Color>,
+    pub data_row_cursor: Option<SystemMouseCursor>,
+    pub heading_cell_cursor: Option<SystemMouseCursor>,
 }
 
 impl ResolvedDataTable {
@@ -2202,6 +2233,13 @@ impl ResolvedDataTable {
     pub const DIVIDER_THICKNESS: f32 = 1.0;
 
     pub fn of(context: &mut BuildContext) -> ResolvedDataTable {
+        ResolvedDataTable::of_in(context, WidgetStates::NONE)
+    }
+
+    /// [`ResolvedDataTable::of`] for a row or cell that knows its states,
+    /// which the four state properties need: a hovered row and a selected
+    /// one are different fills of the same field.
+    pub fn of_in(context: &mut BuildContext, states: WidgetStates) -> ResolvedDataTable {
         let data = DataTableTheme::of(context);
         ResolvedDataTable {
             decoration: data.decoration.clone(),
@@ -2229,6 +2267,22 @@ impl ResolvedDataTable {
             checkbox_horizontal_margin: data.checkbox_horizontal_margin,
             data_text_style: data.data_text_style.clone(),
             heading_text_style: data.heading_text_style.clone(),
+            data_row_color: data
+                .data_row_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            heading_row_color: data
+                .heading_row_color
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            data_row_cursor: data
+                .data_row_cursor
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
+            heading_cell_cursor: data
+                .heading_cell_cursor
+                .as_ref()
+                .and_then(|property| property.resolve(states)),
             heading_row_alignment: data
                 .heading_row_alignment
                 .unwrap_or(crate::render::MainAxisAlignment::Start),
@@ -6789,6 +6843,15 @@ impl DrawerTheme {
 
 /// What a drawer draws with, once the three steps have run.
 pub struct ResolvedDrawer {
+    /// The two shapes, one per edge the drawer can open from.
+    ///
+    /// Not one shape mirrored: upstream's `_DrawerDefaultsM3` rounds the
+    /// corners on the side **facing the page**, which is the trailing side
+    /// for a start drawer and the leading side for an end one, so the two
+    /// defaults are two shapes and `Drawer.build` picks by `isDrawerStart`.
+    /// Neither reached anything here -- `ResolvedDrawer` had no shape at all.
+    pub shape: ShapeBorder,
+    pub end_shape: ShapeBorder,
     pub background: Color,
     pub scrim: Color,
     pub width: f32,
@@ -6813,7 +6876,45 @@ impl ResolvedDrawer {
                 .unwrap_or(scheme.surface_container_low()),
             scrim: data.scrim_color.unwrap_or(ResolvedDrawer::SCRIM),
             width: data.width.unwrap_or(ResolvedDrawer::WIDTH),
+            shape: data
+                .shape
+                .clone()
+                .unwrap_or_else(|| ResolvedDrawer::default_shape(false)),
+            end_shape: data
+                .end_shape
+                .clone()
+                .unwrap_or_else(|| ResolvedDrawer::default_shape(true)),
         }
+    }
+
+    /// Upstream's `_DrawerDefaultsM3.shape` and `.endShape`: sixteen logical
+    /// pixels of rounding on the edge that faces the page.
+    ///
+    /// The radius is directional -- `BorderRadiusDirectional.horizontal(end:)`
+    /// for a start drawer and `(start:)` for an end one -- so under RTL the
+    /// rounded side swaps with the drawer, which is the point of naming it
+    /// that way rather than left and right.
+    pub fn default_shape(end_drawer: bool) -> ShapeBorder {
+        let corner = crate::borders::Radius::circular(16.0);
+        let radius = if end_drawer {
+            crate::borders::BorderRadiusDirectional {
+                top_start: corner,
+                bottom_start: corner,
+                top_end: crate::borders::Radius::ZERO,
+                bottom_end: crate::borders::Radius::ZERO,
+            }
+        } else {
+            crate::borders::BorderRadiusDirectional {
+                top_start: crate::borders::Radius::ZERO,
+                bottom_start: crate::borders::Radius::ZERO,
+                top_end: corner,
+                bottom_end: corner,
+            }
+        };
+        ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+            BorderSide::NONE,
+            crate::borders::BorderRadiusGeometry::Directional(radius),
+        ))
     }
 }
 
@@ -16356,6 +16457,153 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(themed.1, Some(crate::painting::TextScaler::linear(2.0)));
+    }
+
+    // -- Seven small wires, tick 239 ----------------------------------------
+    //
+    // Every value below is a number no other line in the test uses.
+
+    #[test]
+    fn a_data_tables_four_state_properties_resolve_against_the_states() {
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+        let hovered = WidgetStates::NONE.with(WidgetState::Hovered);
+        let data = DataTableThemeData {
+            data_row_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, 11)))),
+            heading_row_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, 22)))),
+            data_row_cursor: Some(StateProperty::all(Some(SystemMouseCursor::Text))),
+            heading_cell_cursor: Some(StateProperty::all(Some(SystemMouseCursor::Click))),
+            ..DataTableThemeData::default()
+        };
+        let resolved = read_in(
+            move |child| DataTableTheme::new(data.clone(), child),
+            move |context| ResolvedDataTable::of_in(context, hovered),
+        );
+        assert_eq!(resolved.data_row_color, Some(Color::argb(255, 0, 0, 11)));
+        assert_eq!(resolved.heading_row_color, Some(Color::argb(255, 0, 0, 22)));
+        assert_eq!(resolved.data_row_cursor, Some(SystemMouseCursor::Text));
+        assert_eq!(resolved.heading_cell_cursor, Some(SystemMouseCursor::Click));
+
+        // Four `None`s with nothing set: upstream has no default row colour
+        // -- a table draws on whatever it is placed on -- and no cursor
+        // beyond the pointer's own.
+        let plain = read_in(|child| child, ResolvedDataTable::of);
+        assert_eq!(plain.data_row_color, None);
+        assert_eq!(plain.heading_row_color, None);
+        assert_eq!(plain.data_row_cursor, None);
+        assert_eq!(plain.heading_cell_cursor, None);
+    }
+
+
+    #[test]
+    fn a_drag_handle_is_wide_and_thin_so_it_reads_as_a_grip() {
+        // Upstream's `_BottomSheetDefaultsM3.dragHandleSize` is 32 by 4.
+        let plain = read_in(|child| child, |context| {
+            ResolvedBottomSheet::of(context, false, None, true)
+        });
+        assert_eq!(plain.drag_handle_size, ResolvedBottomSheet::DRAG_HANDLE_SIZE);
+        assert!(
+            plain.drag_handle_size.width > plain.drag_handle_size.height * 4.0,
+            "much wider than it is tall: {:?}",
+            plain.drag_handle_size
+        );
+
+        let themed = read_in(
+            |child| {
+                BottomSheetTheme::new(
+                    BottomSheetThemeData {
+                        drag_handle_size: Some(crate::render::Size::new(55.0, 6.0)),
+                        ..BottomSheetThemeData::default()
+                    },
+                    child,
+                )
+            },
+            |context| ResolvedBottomSheet::of(context, false, None, true),
+        );
+        assert_eq!(themed.drag_handle_size, crate::render::Size::new(55.0, 6.0));
+    }
+
+    #[test]
+    fn an_expansion_tile_carries_its_animation_style_whole() {
+        // Upstream asks for the three parts one at a time, each with its own
+        // fallback -- and `reverseCurve` has none at all -- so a style that
+        // names only a duration keeps the default curve. Carrying the style
+        // whole is what lets a reader do that.
+        let plain = read_in(|child| child, ResolvedExpansionTile::of);
+        assert_eq!(plain.expansion_animation_style, None);
+
+        let themed = read_in(
+            |child| {
+                ExpansionTileTheme::new(
+                    ExpansionTileThemeData {
+                        expansion_animation_style: Some(crate::animation::AnimationStyle {
+                            duration: Some(std::time::Duration::from_millis(77)),
+                            ..crate::animation::AnimationStyle::default()
+                        }),
+                        ..ExpansionTileThemeData::default()
+                    },
+                    child,
+                )
+            },
+            ResolvedExpansionTile::of,
+        );
+        let style = themed
+            .expansion_animation_style
+            .expect("the theme named one");
+        assert_eq!(style.duration, Some(std::time::Duration::from_millis(77)));
+        assert_eq!(
+            style.curve, None,
+            "and the parts it did not name stay unnamed, so each keeps its \
+             own fallback"
+        );
+    }
+
+
+    #[test]
+    fn a_drawer_has_a_shape_for_each_edge_it_can_open_from() {
+        // `ResolvedDrawer` had no shape at all, so neither `shape` nor
+        // `endShape` reached anything. They are two fields and not one
+        // mirrored: upstream rounds the corners on the side **facing the
+        // page**, which is the trailing side for a start drawer and the
+        // leading side for an end one, and `Drawer.build` picks by
+        // `isDrawerStart`.
+        let outline = |width: f32| {
+            Some(ShapeBorder::Rounded(
+                crate::borders::RoundedRectangleBorder::new(
+                    BorderSide {
+                        color: Color::argb(255, 255, 0, 0),
+                        width,
+                        ..BorderSide::NONE
+                    },
+                    crate::borders::BorderRadiusGeometry::Zero,
+                ),
+            ))
+        };
+        let width_of = |shape: ShapeBorder| match shape {
+            ShapeBorder::Rounded(rounded) => rounded.side.width,
+            other => panic!("{other:?}"),
+        };
+        let resolved = read_in(
+            move |child| {
+                DrawerTheme::new(
+                    DrawerThemeData {
+                        shape: outline(33.0),
+                        end_shape: outline(44.0),
+                        ..DrawerThemeData::default()
+                    },
+                    child,
+                )
+            },
+            ResolvedDrawer::of,
+        );
+        assert_eq!(width_of(resolved.shape), 33.0);
+        assert_eq!(width_of(resolved.end_shape), 44.0);
+
+        // With neither set, the two defaults are two shapes -- mirror images,
+        // so they are not equal, which is what makes them a pair.
+        let plain = read_in(|child| child, ResolvedDrawer::of);
+        assert_eq!(plain.shape, ResolvedDrawer::default_shape(false));
+        assert_eq!(plain.end_shape, ResolvedDrawer::default_shape(true));
+        assert_ne!(plain.shape, plain.end_shape);
     }
 }
 

@@ -133,12 +133,29 @@ def paperwork(text, theme):
     if marker in text:
         start = text.index(marker)
         spans.append((start, text.index('\n}\n', start) + 3))
+    # The field's own paperwork, named by what each method *does* rather than
+    # by which block it sits in.
+    #
+    # Cutting the whole `impl` took the accessors with it, and in
+    # `ColorScheme` the accessors are where the fallbacks live:
+    # `on_secondary_container()`, `on_secondary_fixed()` and `on_tertiary()`
+    # all end at `self.on_secondary`, so that field read as unread while
+    # being the last step of three roles.
+    #
+    # Cutting only `lerp`, `copy_with` and the builders went too far the
+    # other way: `TextTheme::merge` and `TextTheme::apply_color` name all
+    # fifteen roles while rearranging them, and fifteen fields stopped being
+    # reported for no better reason than that.
+    #
+    # A method that takes this type and hands back the same type is moving
+    # fields about; one that hands back a value is answering with it.
     for pattern in (r'pub fn lerp\(\s*a: &%s,' % theme,
-                    r'impl %s \{' % theme):
+                    r'pub fn copy_with\(',
+                    r'pub fn merge\(',
+                    r'pub fn apply\w*\(',
+                    r'pub(?: const)? fn with_\w+\('):
         for m in re.finditer(pattern, text):
             end = text.find('\n    }\n', m.end())
-            if pattern.startswith('impl'):
-                end = text.find('\n}\n', m.end())
             if end > 0:
                 spans.append((m.start(), end))
     # The test modules, by brace count rather than "the first `#[cfg(test)]`
