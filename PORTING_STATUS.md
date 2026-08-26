@@ -18900,3 +18900,60 @@ unread_theme_fields 2。
 **下一步**：`BlendMode` 的 29 个显式判别值直通 `rf_paint_set_blend_mode` 里的一个
 `static_cast`——它没有 `To*` 函数可引用，所以这把量尺看不见它，那是同一族里唯一
 一张还没有两侧比对的表；`unwalked` 的 213 条要用 `variant_sweep.py` 逐模块定案。
+
+## 第 264 轮：另一种过界方式——一次裸转换
+
+`BlendMode` 没有 `To*` 函数可读。`rf_paint_set_blend_mode` 检查完范围就直接
+`static_cast<flutter::DlBlendMode>(blend_mode)`——所以 C++ 那一侧的权威**不是
+谁为这个端口写的 switch**，而是引擎自己的 `enum class`，端口的判别值必须**就是**
+它的编号。
+
+端口自己说了这件事："判别值匹配 `flutter::DlBlendMode`，后者又匹配 `dart:ui`
+的 `BlendMode`。" `wire_enums.py` 检的是这句话的后半句。这一轮检前半句——那半句
+此前什么都没有撑着，而且**两张上游表在不同的仓库里维护**，今天一致是关于今天的
+一个事实。
+
+`ffi_tables.py` 因此多了一段。29 个 blend mode 全部对齐。
+
+**而它第一次诚实运行时报出了一个真缺口**：引擎的 26 个语义动作里，这个端口只有
+13 个。而端口自己的文档写着：
+
+> 判别值是 `flutter::SemanticsAction`，那又是 `semantics.dart` 里的
+> `SemanticsAction`，也是每一个 embedder 里的。**上游有四份同一套位；这是第五份，
+> 它必须匹配。**
+
+没有任何东西在检这句话。现在检了，答案是一张十三个名字的清单（`kSetSelection`、
+`kCopy`、`kCut`、`kPaste`、`kSetText`、`kExpand`、`kCollapse`……）。所以这把量尺
+**从一个问题而不是零开始**，那是诚实的状态，不是坏掉的工具。
+
+**写这一段的过程里，量尺自己错了四次，四次都被它自己的输出抓住：**
+
+1. 文档正则要求文档注释紧挨 `#[repr(i32)]`，可中间隔着 `#[derive(...)]`——它找到了
+   两个枚举和它们**零行**文档，于是报告"没有引用 C++ 枚举"。
+2. 跟别名时"先遇到的别名"胜过"任何地方的定义"，于是搜索被带去另一个同名别名，
+   永远到不了。改成**定义优先于别名**。
+3. 抓引擎枚举时先按逗号切再去注释——而 impeller 的散文里有一个逗号（"without
+   extensions, and so they are"），把一个值切成两半、丢掉了 `kModulate`，于是从
+   13 号往后每一个都错位一格，量尺报出十四条全是我自己的"不一致"。**这和上一轮
+   `wire_enums` 的分号是同一个错误：注释里的分隔符不是分隔符，任何语言、任何字符
+   都一样。**
+4. 两侧都按**位置**比，而 `SemanticsAction` 两边都是位掩码（`kTap = 1 << 0`），
+   第三项是 4 不是 2——十二条"不一致"是提问方式的产物而不是答案。改成两边都按
+   **值**比，序号表只是"值恰好是 0、1、2"的特例。
+
+还有一次不是量尺的错而是**文件里混进了一个真正的 0x08 字节**：heredoc 把 `\\b`
+写成了退格符，那条正则于是永远匹配不上。诊断花了不少时间，因为 `sed`、`grep` 和
+`cat -A` 都把它显示成空。看编译后的常量（`__code__.co_consts`）才看见。
+**转义密集的 Python 要走 Write 工具**——这个教训这一轮又付了一次学费。
+
+量尺自己两条改错验证：对调两个 blend mode（报出 25/26 两行），以及**重演第 168
+轮那个"少了尾巴"的缺陷**（报出 `missing 28 kLuminosity`）。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+**ffi_tables 3 + 2 张表、1 个问题（那十三个语义动作）**，unwired 48/0，unvaried 0,
+unread_strings 44+16+7/0，unpainted 0，hollow 67/0，vacuous 8，stale_engines
+全部不落后，unread_theme_fields 2。
+门：5752 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：把那十三个语义动作补齐——它们不是十三行常量，每一个都是读屏器可以
+下达的一条指令，需要节点那边有东西接住。
