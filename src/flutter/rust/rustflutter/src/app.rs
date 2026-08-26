@@ -214,6 +214,12 @@ mod semantics_bits {
     /// The fourth check state, which the two bits above cannot carry between
     /// them. Read only when `HAS_CHECKED_STATE` is set.
     pub const IS_CHECK_STATE_MIXED: i32 = 1 << 15;
+    pub const HAS_TOGGLED_STATE: i32 = 1 << 16;
+    pub const IS_TOGGLED: i32 = 1 << 17;
+    pub const HAS_EXPANDED_STATE: i32 = 1 << 18;
+    pub const IS_EXPANDED: i32 = 1 << 19;
+    pub const HAS_REQUIRED_STATE: i32 = 1 << 20;
+    pub const IS_REQUIRED: i32 = 1 << 21;
 }
 
 /// Packs the framework's flags into the ABI's bit set.
@@ -252,6 +258,18 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.is_enabled, IS_ENABLED);
     set(&mut bits, flags.is_selected, IS_SELECTED);
     set(&mut bits, flags.is_focused, IS_FOCUSED);
+    // The three tristates, each a "has it" bit gating an "is it" one -- the
+    // same encoding the checked pair uses, and for the same reason: "no
+    // opinion" is a third thing and one bit says two.
+    use crate::semantics::SemanticsTristate;
+    for (state, has, is) in [
+        (flags.toggled, HAS_TOGGLED_STATE, IS_TOGGLED),
+        (flags.expanded, HAS_EXPANDED_STATE, IS_EXPANDED),
+        (flags.required, HAS_REQUIRED_STATE, IS_REQUIRED),
+    ] {
+        set(&mut bits, state.is_set(), has);
+        set(&mut bits, state == SemanticsTristate::True, is);
+    }
     bits
 }
 

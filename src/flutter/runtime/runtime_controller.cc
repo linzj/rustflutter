@@ -550,6 +550,19 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
         out.flags.isChecked = SemanticsCheckState::kFalse;
       }
     }
+    const auto tristate = [](int32_t flags, int32_t has, int32_t is) {
+      if ((flags & has) == 0) {
+        return SemanticsTristate::kNone;
+      }
+      return (flags & is) != 0 ? SemanticsTristate::kTrue
+                               : SemanticsTristate::kFalse;
+    };
+    out.flags.isToggled = tristate(in.flags, kRfSemanticsHasToggledState,
+                                   kRfSemanticsIsToggled);
+    out.flags.isExpanded = tristate(in.flags, kRfSemanticsHasExpandedState,
+                                    kRfSemanticsIsExpanded);
+    out.flags.isRequired = tristate(in.flags, kRfSemanticsHasRequiredState,
+                                    kRfSemanticsIsRequired);
     if ((in.flags & kRfSemanticsHasEnabledState) != 0) {
       out.flags.isEnabled = (in.flags & kRfSemanticsIsEnabled) != 0
                                 ? SemanticsTristate::kTrue

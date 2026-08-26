@@ -19048,3 +19048,58 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 读屏器**说不说**；而 `scopesRoute`、`hasImplicitScrolling`、
 `isAccessibilityFocusBlocked` 按这个端口自己写下的取舍标准（"改变读屏器说什么，
 而不是某个平台怎么排它自己的树"）本就在范围之外，值得连理由一起记下来。
+
+## 第 267 轮：一个把自己念成复选框的开关
+
+上游那两个控件升的是两个不同的 flag，而且它们**不可互换**：
+
+    Switch:    Semantics(toggled: widget.value)
+    Checkbox:  Semantics(checked: widget.value ?? false,
+                         mixed: widget.tristate ? widget.value == null : null)
+
+读屏器对前者说"开/关"，对后者说"勾上/没勾上"。这个端口只有 checked 那一个 flag，
+于是它的 `Switch` 用了它——而它上面还有一段注释把这个选择解释得挺充分：
+
+> 一个开关要说清自己是哪一面，这正是 `has_checked_state` 的全部意义：没有它，
+> 读屏器只被告知这里有个开关，而不知道它是开是关。
+
+**需求说对了，flag 说错了。** 引擎一直把 `isToggled` 摆在 `isChecked` 旁边——它是
+七个 `SemanticsTristate` 字段之一，而这个端口一个都没有。
+
+这一轮加了其中三个，因为每一个都改变**说出来的话**：
+
+    toggled    "开"/"关"，对上复选框的"勾上"/"没勾上"
+    expanded   "展开"/"折叠"，那正是一个展开磁贴是什么、它那个箭头是什么意思
+    required   "必填"，那是一个表单字段在它出错**之前**的身份
+
+**三条测试断言的正是这个缺陷**，其中一条尤其说明问题：
+`a_radio_and_a_checkbox_differ_by_exactly_one_flag` 里，那个所谓的"复选框"是
+`SemanticsProperties::toggle("Remember me", true)` 造出来的——**测试自己的名字说
+的是复选框，它调的辅助函数造的是开关**。三条都改正了，旧断言和它为什么曾经通过
+一起写进了注释。同时补上了 `SemanticsProperties::check`，那才是复选框该走的路,
+并且它接 `Option<bool>`，因为上游只在 `tristate` 时传 `mixed`。
+
+**三值而不是布尔，理由和上一轮四值一样**："这个节点对'开关'没有意见"和"这是一个
+关着的开关"是两件事，分不开的读屏器会对着一个标题说"关"。
+
+而**三值的合并规则和四值的不一样**：勾选状态有第四个值可以逃进去，两个不一致就是
+mixed；三值没有——上游没有"半开"——所以两个不一致时**先者胜**，那是合并节点上每一个
+单值槽位都遵守的规则。这两条对比写在同一条测试里。
+
+ABI 加了六个位（三对"有没有/是不是"），桥接里一个共用的 `tristate` 小函数把它们
+读回引擎的三值。
+
+六条承重规则逐条强制改错，全红。其中第三条（"没有意见等同于关"）一次弄红了十条
+测试——`is_set` 被整个合并与冲突体系用着，这也说明它不是一个孤立的判定。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5767 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`SemanticsFlags` 相对引擎还差七个。`isSelected`/`isEnabled`/`isFocused`
+这个端口有，但是布尔——把它们加宽成三值是和"补一个不存在的 flag"不同的一件事；
+`isHidden` 和 `namesRoute` 改变的是读屏器**说不说**；而 `scopesRoute`、
+`hasImplicitScrolling`、`isAccessibilityFocusBlocked`、`isMultiline`、
+`isKeyboardKey` 按这个端口自己写在 ABI 头文件里的取舍标准（"改变读屏器说什么，
+而不是某个平台怎么排它自己的树"）本就在范围之外。

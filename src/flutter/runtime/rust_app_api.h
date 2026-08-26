@@ -76,6 +76,16 @@ enum {
   // It is read only when kRfSemanticsHasCheckedState is set, so an old
   // sender that never raises it is unchanged.
   kRfSemanticsIsCheckStateMixed = 1 << 15,
+  // A switch, not a checkbox: a reader says "on" and "off" for these and
+  // "checked" and "not checked" for the pair above. Three more tristates,
+  // each a "has it" bit gating an "is it" one, for the same reason the
+  // checked pair is two bits -- "no opinion" is a third thing.
+  kRfSemanticsHasToggledState = 1 << 16,
+  kRfSemanticsIsToggled = 1 << 17,
+  kRfSemanticsHasExpandedState = 1 << 18,
+  kRfSemanticsIsExpanded = 1 << 19,
+  kRfSemanticsHasRequiredState = 1 << 20,
+  kRfSemanticsIsRequired = 1 << 21,
 };
 
 typedef struct RfSemanticsNode {

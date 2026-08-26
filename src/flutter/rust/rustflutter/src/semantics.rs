@@ -243,6 +243,48 @@ impl SemanticsAction {
     }
 }
 
+/// Upstream `SemanticsTristate`: a flag that can be unset, true or false.
+///
+/// The same shape as [`SemanticsCheckState`] with one value fewer, and the
+/// same reason for existing: "this node has no opinion about being toggled"
+/// and "this node is a switch that is off" are different things, and a reader
+/// that cannot tell them apart says "off" about a heading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SemanticsTristate {
+    #[default]
+    None,
+    True,
+    False,
+}
+
+impl SemanticsTristate {
+    pub fn of(value: bool) -> SemanticsTristate {
+        if value {
+            SemanticsTristate::True
+        } else {
+            SemanticsTristate::False
+        }
+    }
+
+    /// Whether the node has an opinion at all.
+    pub fn is_set(self) -> bool {
+        self != SemanticsTristate::None
+    }
+
+    /// The union, said for three values.
+    ///
+    /// A node with no opinion takes the other's. Two that disagree keep the
+    /// first, because unlike the check state there is no fourth value to
+    /// escape into -- upstream has no "partly on" -- and first-wins is the
+    /// rule every other singular slot on a merged node follows.
+    pub fn merge(self, other: SemanticsTristate) -> SemanticsTristate {
+        match self {
+            SemanticsTristate::None => other,
+            _ => self,
+        }
+    }
+}
+
 /// Upstream `SemanticsCheckState`: what a checkable node's box looks like.
 ///
 /// Four values and not two booleans, and the fourth is the reason. This port
@@ -325,6 +367,20 @@ pub struct SemanticsFlags {
     /// This was two booleans, and two booleans cannot say *mixed*. See
     /// [`SemanticsCheckState`].
     pub checked: SemanticsCheckState,
+    /// Upstream's `isToggled`, which is a **switch** and not a checkbox.
+    ///
+    /// A reader says "on" and "off" for this and "checked" and "not checked"
+    /// for [`SemanticsFlags::checked`]. The port raised the checked flag for
+    /// its `Switch`, under a comment that was right about the need and wrong
+    /// about the flag, so every switch announced itself as a checkbox.
+    pub toggled: SemanticsTristate,
+    /// Upstream's `isExpanded`: "expanded" or "collapsed", which is what an
+    /// expansion tile is and what its arrow means.
+    pub expanded: SemanticsTristate,
+    /// Upstream's `isRequired`: "required", which is what a form field is
+    /// before it is wrong -- said when the reader arrives rather than after
+    /// they have left it empty.
+    pub required: SemanticsTristate,
     pub has_enabled_state: bool,
     pub is_enabled: bool,
     pub is_selected: bool,
@@ -364,6 +420,9 @@ impl SemanticsFlags {
             // node that is *mixed*, which is the value's whole reason for
             // existing. `||` would have picked "checked" whenever either was.
             checked: self.checked.merge(other.checked),
+            toggled: self.toggled.merge(other.toggled),
+            expanded: self.expanded.merge(other.expanded),
+            required: self.required.merge(other.required),
             has_enabled_state: self.has_enabled_state || other.has_enabled_state,
             is_enabled: self.is_enabled || other.is_enabled,
             is_selected: self.is_selected || other.is_selected,
@@ -412,6 +471,8 @@ impl SemanticsFlags {
             // conflict as two checked ones, and `both(is_checked, ...)` said
             // they were not.
             || (self.checked.is_checkable() && other.checked.is_checkable())
+            || (self.toggled.is_set() && other.toggled.is_set())
+            || (self.expanded.is_set() && other.expanded.is_set())
             || both(self.is_selected, other.is_selected)
             || both(self.is_enabled, other.is_enabled)
             || both(self.is_focused, other.is_focused)
@@ -1685,11 +1746,34 @@ impl SemanticsProperties {
         }
     }
 
-    /// A thing with two states, like a switch or a checkbox.
+    /// A **switch**: a thing a reader is told is on or off.
+    ///
+    /// This used to set the checked flag, so a switch announced as a checkbox
+    /// -- "checked" where it meant "on". Upstream's `Switch` raises
+    /// `toggled` and its `Checkbox` raises `checked`, and the two are not
+    /// interchangeable to anything that reads them out.
     pub fn toggle(label: impl Into<String>, on: bool) -> SemanticsProperties {
         SemanticsProperties {
             flags: SemanticsFlags {
-                checked: SemanticsCheckState::of(Some(on)),
+                toggled: SemanticsTristate::of(on),
+                has_enabled_state: true,
+                is_enabled: true,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::label(label)
+        }
+        .with_action(SemanticsAction::Tap)
+    }
+
+    /// A **checkbox**: a thing a reader is told is checked, not checked, or
+    /// partly checked.
+    ///
+    /// `None` is upstream's `mixed`, which its `Checkbox` passes only when
+    /// `tristate` is set -- a plain checkbox has no third state to be in.
+    pub fn check(label: impl Into<String>, value: Option<bool>) -> SemanticsProperties {
+        SemanticsProperties {
+            flags: SemanticsFlags {
+                checked: SemanticsCheckState::of(value),
                 has_enabled_state: true,
                 is_enabled: true,
                 ..SemanticsFlags::default()
@@ -3503,6 +3587,144 @@ mod tests {
     use std::cell::Cell;
     use std::cmp::Ordering;
 
+    // -- A switch is not a checkbox, tick 267 --------------------------------
+    //
+    // Upstream's two controls raise two different flags:
+    //
+    //     Switch:   Semantics(toggled: widget.value)
+    //     Checkbox: Semantics(checked: widget.value ?? false,
+    //                         mixed: widget.tristate ? widget.value == null : null)
+    //
+    // A reader says "on"/"off" for one and "checked"/"not checked" for the
+    // other. This port had only the checked flag, so its `Switch` used it --
+    // and three tests asserted that it did.
+
+    #[test]
+    fn a_switch_and_a_checkbox_raise_different_flags() {
+        let switch = SemanticsProperties::toggle("Notifications", true);
+        let checkbox = SemanticsProperties::check("Remember me", Some(true));
+
+        assert_eq!(switch.flags.toggled, SemanticsTristate::True);
+        assert_eq!(switch.flags.checked, SemanticsCheckState::None);
+
+        assert_eq!(checkbox.flags.checked, SemanticsCheckState::Checked);
+        assert_eq!(checkbox.flags.toggled, SemanticsTristate::None);
+
+        // Both are on, and nothing that reads them out would say the same
+        // words about the two -- which is the whole content of the pair.
+        assert_ne!(switch.flags, checkbox.flags);
+    }
+
+    #[test]
+    fn a_tristate_checkbox_can_be_partly_checked_and_a_switch_cannot() {
+        // Upstream passes `mixed` only when `tristate` is set, and there is
+        // no "partly on" anywhere in the semantics API -- a switch is one way
+        // or the other.
+        assert_eq!(
+            SemanticsProperties::check("Select all", None).flags.checked,
+            SemanticsCheckState::Mixed
+        );
+        // `SemanticsTristate` has three values and none of them is mixed.
+        assert_eq!(SemanticsTristate::of(true), SemanticsTristate::True);
+        assert_eq!(SemanticsTristate::of(false), SemanticsTristate::False);
+    }
+
+    #[test]
+    fn having_no_opinion_is_told_apart_from_being_off() {
+        // The reason for three values rather than a bool: a heading is not a
+        // switch that is off, and a reader that cannot tell them apart says
+        // "off" about the heading.
+        assert!(!SemanticsTristate::None.is_set());
+        assert!(SemanticsTristate::False.is_set());
+        assert_eq!(SemanticsTristate::default(), SemanticsTristate::None);
+        assert_eq!(
+            SemanticsProperties::label("A heading").flags.toggled,
+            SemanticsTristate::None
+        );
+    }
+
+    #[test]
+    fn a_tristate_merges_by_first_wins_where_the_check_state_goes_mixed() {
+        // Unlike the check state there is no fourth value to escape into, so
+        // two that disagree keep the first -- the rule every other singular
+        // slot on a merged node follows.
+        assert_eq!(
+            SemanticsTristate::True.merge(SemanticsTristate::False),
+            SemanticsTristate::True
+        );
+        assert_eq!(
+            SemanticsTristate::False.merge(SemanticsTristate::True),
+            SemanticsTristate::False
+        );
+        // And a node with no opinion takes the other's.
+        assert_eq!(
+            SemanticsTristate::None.merge(SemanticsTristate::False),
+            SemanticsTristate::False
+        );
+        assert_eq!(
+            SemanticsTristate::True.merge(SemanticsTristate::None),
+            SemanticsTristate::True
+        );
+
+        // The contrast, said in one place: the same disagreement produces
+        // different answers for the two kinds, and each is right for its
+        // kind.
+        assert_eq!(
+            SemanticsCheckState::Checked.merge(SemanticsCheckState::Unchecked),
+            SemanticsCheckState::Mixed
+        );
+    }
+
+    #[test]
+    fn the_three_tristates_reach_the_abi_as_paired_bits() {
+        use crate::app::pack_semantics_flags;
+        let bits = |flags| pack_semantics_flags(&flags);
+        let plain = SemanticsFlags::default();
+
+        // Nothing set: none of the six bits.
+        let mask = (1 << 16) | (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21);
+        assert_eq!(bits(plain) & mask, 0);
+
+        for (state, has, is) in [
+            (
+                SemanticsFlags {
+                    toggled: SemanticsTristate::False,
+                    ..plain
+                },
+                1 << 16,
+                1 << 17,
+            ),
+            (
+                SemanticsFlags {
+                    expanded: SemanticsTristate::False,
+                    ..plain
+                },
+                1 << 18,
+                1 << 19,
+            ),
+            (
+                SemanticsFlags {
+                    required: SemanticsTristate::False,
+                    ..plain
+                },
+                1 << 20,
+                1 << 21,
+            ),
+        ] {
+            // False raises the "has it" bit and not the "is it" one, which is
+            // the whole point of the pair: without the first, "off" is not
+            // sayable at all.
+            assert_eq!(bits(state) & mask, has);
+            let _ = is;
+        }
+
+        let on = SemanticsFlags {
+            toggled: SemanticsTristate::True,
+            ..plain
+        };
+        assert_eq!(bits(on) & mask, (1 << 16) | (1 << 17));
+    }
+
     // -- Saying "partly checked", tick 266 -----------------------------------
     //
     // The engine's `SemanticsCheckState` has four values and this port
@@ -4315,8 +4537,19 @@ mod tests {
         let on = SemanticsProperties::toggle("Notifications", true);
         // Having the state is what makes "off" sayable at all; a node without
         // it is just a label, and a reader is told nothing.
-        assert_eq!(off.flags.checked, SemanticsCheckState::Unchecked);
-        assert_eq!(on.flags.checked, SemanticsCheckState::Checked);
+        //
+        // This asserted `checked` and passed, because `toggle` set the
+        // checked flag -- so a switch announced as a checkbox and the test
+        // said it was right to. A reader says "on" for one and "checked" for
+        // the other, and upstream's `Switch` raises `toggled` while its
+        // `Checkbox` raises `checked`.
+        assert_eq!(off.flags.toggled, SemanticsTristate::False);
+        assert_eq!(on.flags.toggled, SemanticsTristate::True);
+        assert_eq!(
+            on.flags.checked,
+            SemanticsCheckState::None,
+            "a switch is not a checkbox"
+        );
         assert!(off.has(SemanticsAction::Tap));
     }
 
@@ -4366,11 +4599,19 @@ mod tests {
             .iter()
             .find(|n| n.id == node_id_for(2))
             .expect("the switch is there");
-        assert!(switch.properties.flags.checked.is_checkable());
+        // A switch, so the *toggled* flag: this asserted `checked` and passed,
+        // which is what "the switch announced as a checkbox" looked like from
+        // inside the suite.
+        assert!(switch.properties.flags.toggled.is_set());
+        assert_eq!(
+            switch.properties.flags.toggled,
+            SemanticsTristate::True,
+            "and it is on"
+        );
         assert_eq!(
             switch.properties.flags.checked,
-            SemanticsCheckState::Checked,
-            "and it is on"
+            SemanticsCheckState::None,
+            "and it is not a checkbox"
         );
 
         let save = says("Save").expect("the button is read");
@@ -7446,7 +7687,10 @@ mod focus_block_tests {
         // the two is the same shape, so a reader who has both on a page can
         // only be told them apart by this.
         let radio = SemanticsProperties::radio("Medium", true, TargetPlatform::Android, HINT);
-        let checkbox = SemanticsProperties::toggle("Remember me", true);
+        // This said `toggle` and meant a checkbox, which is the confusion the
+        // missing flag caused: the test's own name says checkbox and the
+        // helper it called made a switch.
+        let checkbox = SemanticsProperties::check("Remember me", Some(true));
         assert_eq!(radio.flags.checked, checkbox.flags.checked);
         assert_ne!(
             radio.flags.is_in_mutually_exclusive_group,
