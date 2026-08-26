@@ -25,11 +25,17 @@
 //! * The foldable `TwoPane` layout is unreachable
 //!   (`adaptive_layout::is_display_foldable` is always false).
 
-use rustflutter::framework::{component, leaf, many, provide, single, AnyWidget, StateHandle};
+use rustflutter::framework::{
+    component, leaf, many, provide, single, AnyWidget, BuildContext, StateHandle,
+};
 use rustflutter::gestures::PointerHandlers;
+use rustflutter::media_query::size_of;
 use rustflutter::prelude::*;
-use rustflutter::render::{Alignment, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
-use rustflutter::widgets::{Align, ClipRRect, Container, Pointer};
+use rustflutter::render::{
+    Alignment, BoxConstraints, CrossAxisAlignment, FlexChild, MainAxisSize, RenderConstrainedBox,
+    RenderFlex,
+};
+use rustflutter::widgets::{Align, ClipRRect, Container, Empty, Pointer};
 
 use crate::app::{self, ids, GalleryState};
 use crate::constants::DESKTOP_DISPLAY1_FONT_DELTA;
@@ -421,6 +427,15 @@ fn demo_wrapper(
             demos::overlay(demo, state, handle),
         )
     };
+    // The card fills the demo area even when the demo is shorter: a demo's
+    // own overlay (the bottom-sheet demo's sheet) lays out against the card,
+    // and a content-sized card would put the sheet's bottom anchor halfway up
+    // the window with the scrim entirely underneath the sheet -- unreachable,
+    // so the sheet could never be dismissed. Upstream gets the height from
+    // the Scaffold's body, which fills it.
+    let content = component(DemoArea {
+        child: std::cell::RefCell::new(Some(content)),
+    });
     let content = app::with_overlay(content, overlay);
     // Upstream wraps the demo in `MaterialDemoThemeData.themeData.copyWith(
     // platform: ...)`; the platform only keyed typography upstream, which is
@@ -433,6 +448,36 @@ fn demo_wrapper(
                 .with_child(ClipRRect::new(10.0, rendered)),
         )
     })
+}
+
+/// Stretches the demo card to the demo area's height. See `demo_wrapper`.
+struct DemoArea {
+    child: std::cell::RefCell<Option<AnyWidget>>,
+}
+
+impl Component for DemoArea {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        // The bar floats over the body, which starts 56 below the top of the
+        // page, and the wrapper's own bottom padding is 16. The SafeArea
+        // inset is zero on the host.
+        let min_height = (size_of(context).height - 56.0 - 16.0).max(0.0);
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| leaf(|| Empty));
+        single(child, move |rendered| {
+            Box::new(
+                RenderConstrainedBox::new(BoxConstraints::new(
+                    0.0,
+                    f32::INFINITY,
+                    min_height,
+                    f32::INFINITY,
+                ))
+                .with_child(rendered),
+            )
+        })
+    }
 }
 
 #[cfg(test)]

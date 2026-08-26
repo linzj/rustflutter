@@ -85,6 +85,9 @@ pub struct DemoState {
     #[allow(dead_code)]
     pub chips: Vec<bool>,
     pub sheet_open: bool,
+    /// The persistent half of the bottom-sheet demo: upstream's
+    /// `_showBottomSheetCallback == null` while the sheet is open.
+    pub persistent_open: bool,
     pub snackbar_open: bool,
     #[allow(dead_code)]
     pub banner_open: bool,
@@ -107,6 +110,7 @@ impl Default for DemoState {
             bottom_nav: 0,
             chips: vec![true, false, false, false],
             sheet_open: false,
+            persistent_open: false,
             snackbar_open: false,
             banner_open: true,
             rail: 1,
@@ -154,7 +158,7 @@ impl Component for Stage {
             "banner" => banner_demo::banner(state, handle),
             "bottom-app-bar" => bottom_app_bar_demo::stage(),
             "bottom-navigation" => bottom_navigation_demo::bottom_navigation(state, handle),
-            "bottom-sheet" => bottom_sheet_demo::sheet_launcher(state, pressed, handle),
+            "bottom-sheet" => bottom_sheet_demo::sheet_launcher(state, pressed, handle, context),
             "button" => button_demo::buttons(state, pressed, handle),
             "card" => cards_demo::cards(),
             "chip" => chip_demo::chips(state, handle),
