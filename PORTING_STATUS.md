@@ -18238,3 +18238,53 @@ stale_engines 全部不落后，unread_theme_fields 50 → 49（`title_large` �
 **下一步**：`TextTheme` 还剩七个角色没有读者，都在等用它们的 widget——
 `headline_small` 是对话框标题的角色，`title_small` 是列表小标题的，
 `display_*` 是日期选择器头部的。对话框是其中最近的一个。
+
+## 第 251 轮：一条断言"上游也什么都不给"的测试
+
+`ResolvedDialog` 把五个字段原样透传——`title_text_style`、
+`content_text_style`、`icon_color`、`shadow_color`、`surface_tint_color`——
+而一条名叫 `nothing_is_invented_for_the_fields_upstream_leaves_null` 的测试
+断言其中三个保持 `None`，理由写着"在这里编一个颜色出来，widget 就分不清它和
+真答案了"。
+
+**上游只把这四个里的一个留空。** `_DialogDefaultsM3` 给了其余三个，而
+`_DialogDefaultsM2` 里有两个答得不一样：
+
+    M3                              M2
+    shadowColor      transparent    theme.shadowColor
+    surfaceTintColor transparent    （没有这个概念）
+    titleTextStyle   headlineSmall  titleLarge
+    contentTextStyle bodyMedium     titleMedium
+    iconColor        secondary      iconTheme.color
+
+真正留空的是 `barrierColor`，而且理由值得留着：**遮罩不属于对话框**，它属于
+`showDialog`——把对话框放上屏幕的那个东西——默认值也在那里。测试改名为
+`only_the_barrier_is_left_for_someone_else_to_answer`，旧名字和旧理由写进注释。
+
+**两个 transparent 是这里最有意思的一对。** M3 的对话框是 elevation 6，
+**既不投影也不上色调**：它离页面多高，完全由 `surfaceContainerHigh` 这一种容器
+颜色来说。留成 `None`，下游任何人读到的都是"没人说过"，于是画出上游特意关掉的
+那道阴影。
+
+`iconColor` 两张表**连答案从哪来都不一样**：M3 直接点名一个配色角色，M2 取
+周围图标主题正在用的颜色——所以 M2 对话框的图标跟身边的图标一致，而不是自成
+一格。
+
+`headlineSmall` 此前在整个端口没有读者。
+
+这一轮把上一轮的教训**用在了改错之前而不是之后**：解析器有自己的测试，只有
+画面级测试才看得住 widget 有没有去问。`Dialog::build` 原本用
+`theme.title()` / `theme.muted()`——这个 crate 自己编的样式——根本没调用过
+`ResolvedDialog::of`。先补画面级测试，再跑七条改错，第七条（widget 退回自编
+样式）当场就红。
+
+七条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 49 → 48（`headline_small` 离队）。
+门：5688 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextTheme` 还剩六个角色没有读者。`headline_medium` 与
+`headline_large`、三个 `display_*` 都是日期选择器头部的，`title_small` 是列表
+小标题的——`DatePickerThemeData` 那 26 条也在同一个方向上。

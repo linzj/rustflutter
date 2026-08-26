@@ -859,8 +859,20 @@ impl Component for Dialog {
         // Material 3's dialog shape: a 28-radius corner all round.
         let radius = 28.0;
         let spacing = theme.spacing;
-        let title_style = theme.title();
-        let muted = theme.muted();
+        // Upstream's `titleTextStyle` and `contentTextStyle`: the theme's,
+        // then `headlineSmall` and `bodyMedium`. This used to be
+        // `theme.title()` and `theme.muted()` -- styles this crate makes up
+        // -- so `DialogThemeData`'s two fields reached nothing and
+        // `headlineSmall` had no reader anywhere in the port.
+        let dialog = self.resolved(context);
+        let title_style = dialog
+            .title_text_style
+            .clone()
+            .unwrap_or_else(|| theme.title());
+        let muted = dialog
+            .content_text_style
+            .clone()
+            .unwrap_or_else(|| theme.muted());
 
         let actions = std::mem::take(&mut *self.actions.borrow_mut());
         let has_actions = !actions.is_empty();
@@ -3790,6 +3802,18 @@ mod dialog_theme_tests {
         seen.borrow_mut().take().expect("built once")
     }
 
+    /// [`resolve`] under a named `ThemeData`, which is what the two defaults
+    /// tables are chosen by.
+    fn resolve_under(data: DialogThemeData, theme: crate::theme::ThemeData) -> ResolvedDialog {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            DialogTheme::new(data, component(Reader(std::rc::Rc::clone(&seen)))),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
     #[test]
     fn the_keyboards_insets_are_added_to_the_margin_and_not_maxed_with_it() {
         // Taking the larger would leave the dialog resting on the keyboard:
@@ -3890,15 +3914,151 @@ mod dialog_theme_tests {
     }
 
     #[test]
-    fn nothing_is_invented_for_the_fields_upstream_leaves_null() {
-        // A shadow colour, a surface tint and a barrier colour that nobody set
-        // stay unset: the widget above decides, and a colour made up here would
-        // be one it could not tell from a real answer.
+    fn the_dialog_draws_its_words_in_the_styles_the_theme_resolved() {
+        // The lesson of tick 250, applied before the mutation run rather than
+        // after it: the resolver's own tests watch what it answers, and only
+        // a paint-level test watches whether the widget asks. Moving the app
+        // bar off its hand-rolled style broke nothing, and putting it back
+        // broke nothing either.
+        //
+        // The colour carries it. A named title style has its own ink, and the
+        // made-up `theme.title()` takes the older `Theme`'s.
+        const TITLE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        const BODY: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            DialogTheme::new(
+                DialogThemeData {
+                    title_text_style: Some(TextStyle {
+                        color: TITLE,
+                        ..TextStyle::default()
+                    }),
+                    content_text_style: Some(TextStyle {
+                        color: BODY,
+                        ..TextStyle::default()
+                    }),
+                    ..DialogThemeData::new()
+                },
+                component(Dialog::new("Discard?").with_body("This cannot be undone.")),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let ink = |wanted: &str| {
+            crate::engine_test_stubs::drawn()
+                .into_iter()
+                .find_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                        if text == wanted =>
+                    {
+                        Some(argb)
+                    }
+                    _ => None,
+                })
+                .expect("the words")
+        };
+        assert_eq!(ink("Discard?"), TITLE.0);
+        assert_eq!(ink("This cannot be undone."), BODY.0);
+    }
+
+    #[test]
+    fn only_the_barrier_is_left_for_someone_else_to_answer() {
+        // This test was called `nothing_is_invented_for_the_fields_upstream_leaves_null`
+        // and asserted that four fields stay unset, on the reasoning that "a
+        // colour made up here would be one the widget could not tell from a
+        // real answer". Upstream leaves exactly one of the four unset.
+        // `_DialogDefaultsM3` answers for the other three, and
+        // `_DialogDefaultsM2` answers differently for two of them.
+        //
+        // The barrier is the real one, and for a reason worth keeping: a
+        // barrier is not part of a dialog. It belongs to `showDialog`, which
+        // is what puts the dialog on the screen, and its default lives there.
         let resolved = resolve(DialogThemeData::new());
-        assert_eq!(resolved.shadow_color, None);
-        assert_eq!(resolved.surface_tint_color, None);
         assert_eq!(resolved.barrier_color, None);
-        assert_eq!(resolved.title_text_style, None);
+    }
+
+    #[test]
+    fn a_material_three_dialog_casts_no_shadow_and_takes_no_tint() {
+        // Both transparent, and that is an answer rather than a gap. An M3
+        // dialog is elevation 6 with no shadow and no tint: how far off the
+        // page it is is said entirely by `surfaceContainerHigh`. Left unset,
+        // anything downstream reads "nobody said" and draws the shadow
+        // upstream turned off on purpose.
+        let resolved = resolve(DialogThemeData::new());
+        assert_eq!(resolved.elevation, 6.0, "and it is still lifted");
+        assert_eq!(resolved.shadow_color, Some(Color::TRANSPARENT));
+        assert_eq!(resolved.surface_tint_color, Some(Color::TRANSPARENT));
+
+        // Material 2 casts the theme's own shadow, and has no notion of a
+        // tint at all -- so that one field really is left alone.
+        let mut two = crate::theme::ThemeData::light();
+        two.use_material3 = false;
+        let old = resolve_under(DialogThemeData::new(), two.clone());
+        assert_eq!(old.shadow_color, Some(two.shadow_color));
+        assert_ne!(old.shadow_color, Some(Color::TRANSPARENT));
+        assert_eq!(old.surface_tint_color, None);
+    }
+
+    #[test]
+    fn a_dialogs_title_is_headline_small_and_its_body_is_not() {
+        // `headlineSmall` had no reader in this port at all. It is the
+        // dialog title's Material 3 role, and the content's is `bodyMedium`
+        // -- two different roles, because a dialog's question and its
+        // explanation are not the same weight of thing.
+        let theme = crate::theme::ThemeData::light();
+        let resolved = resolve(DialogThemeData::new());
+        assert_eq!(resolved.title_text_style, theme.text_theme.headline_small);
+        assert_eq!(resolved.content_text_style, theme.text_theme.body_medium);
+        assert_ne!(
+            resolved.title_text_style, resolved.content_text_style,
+            "the title is not the body"
+        );
+
+        // Material 2 uses `titleLarge` and `titleMedium` -- both of them a
+        // rung down, and both of them different from Material 3's pair.
+        let mut two = crate::theme::ThemeData::light();
+        two.use_material3 = false;
+        let old = resolve_under(DialogThemeData::new(), two.clone());
+        assert_eq!(old.title_text_style, two.text_theme.title_large);
+        assert_eq!(old.content_text_style, two.text_theme.title_medium);
+        assert_ne!(old.title_text_style, resolved.title_text_style);
+    }
+
+    #[test]
+    fn a_dialogs_icon_is_secondary_under_material_three_and_borrowed_under_two() {
+        // The two tables disagree about *where the answer comes from*, not
+        // only about what it is: Material 3 names a scheme colour, and
+        // Material 2 takes whatever the surrounding icon theme is using -- so
+        // an M2 dialog's icon matches the icons around it rather than
+        // standing apart from them.
+        let theme = crate::theme::ThemeData::light();
+        assert_eq!(
+            resolve(DialogThemeData::new()).icon_color,
+            Some(theme.color_scheme.secondary)
+        );
+
+        let mut two = crate::theme::ThemeData::light();
+        two.use_material3 = false;
+        let old = resolve_under(DialogThemeData::new(), two);
+        assert_ne!(old.icon_color, Some(theme.color_scheme.secondary));
     }
 }
 

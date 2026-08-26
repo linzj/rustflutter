@@ -1822,14 +1822,33 @@ impl ResolvedDialog {
 
     pub fn of(context: &mut BuildContext) -> ResolvedDialog {
         let data = DialogTheme::of(context);
-        let scheme = ThemeData::of(context).color_scheme;
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+        let text_theme = theme.text_theme.clone();
         ResolvedDialog {
             background: data
                 .background_color
                 .unwrap_or(scheme.surface_container_high()),
             elevation: data.elevation.unwrap_or(ResolvedDialog::ELEVATION),
-            shadow_color: data.shadow_color,
-            surface_tint_color: data.surface_tint_color,
+            // Both transparent under Material 3, and that is an answer
+            // rather than a gap: an M3 dialog is elevation 6 with **no
+            // shadow and no tint**, so its height off the page is said
+            // entirely by `surfaceContainerHigh`. Left unset, anything
+            // downstream reads "nobody said" and draws the shadow upstream
+            // turned off on purpose.
+            shadow_color: data.shadow_color.or(Some(if material3 {
+                Color::TRANSPARENT
+            } else {
+                theme.shadow_color
+            })),
+            surface_tint_color: data.surface_tint_color.or(if material3 {
+                Some(Color::TRANSPARENT)
+            } else {
+                // `_DialogDefaultsM2` has no `surfaceTintColor` at all: a
+                // tint is a Material 3 idea, and there is nothing to invent.
+                None
+            }),
             shape: data.shape.clone(),
             alignment: data
                 .alignment
@@ -1842,14 +1861,38 @@ impl ResolvedDialog {
                 min_height: 0.0,
                 max_height: f32::INFINITY,
             }),
+            // The one field on this resolver upstream really does leave
+            // unanswered: a barrier belongs to `showDialog`, not to the
+            // dialog, and its default lives there.
             barrier_color: data.barrier_color,
-            title_text_style: data.title_text_style.clone(),
-            content_text_style: data.content_text_style.clone(),
+            title_text_style: data.title_text_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.headline_small.clone()
+                } else {
+                    text_theme.title_large.clone()
+                }
+            }),
+            content_text_style: data.content_text_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.body_medium.clone()
+                } else {
+                    text_theme.title_medium.clone()
+                }
+            }),
             actions_padding: data
                 .actions_padding
                 .map(|padding| padding.resolve(crate::direction::current_direction()))
                 .unwrap_or(EdgeInsets::ZERO),
-            icon_color: data.icon_color,
+            // Material 3 gives the icon `secondary` outright; Material 2
+            // takes whatever the surrounding icon theme is using, so a
+            // dialog's icon matches the icons around it rather than standing
+            // apart from them. Where that theme has no colour there is
+            // nothing to fall back to.
+            icon_color: data.icon_color.or(if material3 {
+                Some(scheme.secondary)
+            } else {
+                IconTheme::of(context).color
+            }),
         }
     }
 
