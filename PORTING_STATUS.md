@@ -20180,3 +20180,61 @@ unread_theme_fields 2。
 门：5933 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
 
 **下一步**：回 `depth.py` 队头的 `CupertinoApp` 8/37——先按行为查。
+
+## 第 287 轮：Material 的英雄走弧线，Cupertino 的走直线
+
+`MaterialApp.createMaterialHeroController` 与
+`CupertinoApp.createCupertinoHeroController`。两个一行的工厂，差别的**全部**就是它们
+交给控制器什么 rect tween。
+
+    // material/app.dart
+    static HeroController createMaterialHeroController() {
+      return HeroController(createRectTween: (begin, end) =>
+        MaterialRectArcTween(begin: begin, end: end));
+    }
+
+    // cupertino/app.dart
+    static HeroController createCupertinoHeroController() => HeroController(); // Linear tweening.
+
+Cupertino 那行末尾的 `// Linear tweening.` 是它得到的**全部**文档，而它之所以要有,
+是因为**"没有那个参数"本身就是那个决定**。翻着找差别的人看见两个长得差不多的构造器,
+其中一个短一点。
+
+两个零件本来都在：`arc.rs` 的 `MaterialRectArcTween`（挑领着运动方向的那条对角线）,
+`heroes.rs` 的 `HeroController`。缺的是**哪个 app 给哪一种**——设计上的差别不在这两个
+零件里，在这一步。
+
+看得见的后果：默认的 `RectTween` 让两角各自线性插值，矩形中心走**直线**；弧 tween 让
+两个对角摆在圆弧上，中心走**曲线**。Material 是故意的——一张卡片展开成一页要"扫"过去
+而不是"滑"过去；iOS 的推入本身就是一次横向直滑，里面再来个弧线会跟它承载的那一页打架。
+
+### 两条被查出来的前提
+
+**一、我以为"只改大小、中心不动"两边就一样了。错。** `MaterialRectArcTween` 摆的是两个
+**角**，不是中心；中心相同的两端，角仍然斜着走，弧照样有东西可摆。所以一个原地缩放的
+英雄在两个 app 上**是不同的**——反直觉，写成了一条测试。
+
+真正让两边一致的是**近轴移动**：`MaterialPointArcTween` 有一支
+`delta_x <= ON_AXIS_DELTA || delta_y <= ON_AXIS_DELTA` 直接留成直线。所以横滑或竖滑的
+英雄两个 app 画得一模一样——**一条这样的飞行做出来的测试分不开两个 app**，这正是另一条
+测试要走对角线的原因。
+
+**二、"四条边都比"这条改错第一次读绿。** 我先写了个探针在网格上找"`left` 一致而别的边
+不一致"的飞行，头一轮没找到——差点就当成等价改错记下了。**把方向扩到负值再找,
+七十五个。** 取其中一个（往左上再往下一点，`left` 正好落在弦上，`top` 差近五个像素）
+钉成测试，第 6 条立刻落红。
+
+**没找到反例不等于不存在，只等于还没找够。** 上一轮刚把两条真的等价改错如实记下，这
+一轮差点把一条不是的也记进去。
+
+七条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，stale_notes 12/0，vacuous 8，stale_engines 全部不落后,
+unread_theme_fields 2。
+门：5940 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`CupertinoApp` 还剩 `checkerboardRasterCacheImages` /
+`checkerboardOffscreenLayers` / `showSemanticsDebugger` / `onGenerateTitle` /
+`navigatorObservers` 这一族 app 级开关——先按行为查。

@@ -242,6 +242,24 @@ pub enum TransitionStart {
     },
 }
 
+/// How a hero's rectangle is interpolated between its two ends -- upstream's
+/// `HeroController.createRectTween`, and the one thing
+/// `MaterialApp.createMaterialHeroController` and
+/// `CupertinoApp.createCupertinoHeroController` disagree about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeroRectTween {
+    /// The default `RectTween`: each corner moves independently and linearly,
+    /// so the rectangle's **centre travels in a straight line**.
+    ///
+    /// Upstream writes this as the *absence* of an argument, with the whole
+    /// documentation it gets on the same line:
+    /// `=> HeroController(); // Linear tweening.`
+    Linear,
+    /// [`crate::arc::MaterialRectArcTween`]: two opposite corners swing on
+    /// circular arcs, so the **centre travels on a curve**.
+    Arc,
+}
+
 /// Upstream `HeroController`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HeroController {
@@ -257,6 +275,53 @@ pub struct HeroController {
 impl HeroController {
     pub fn new() -> HeroController {
         HeroController::default()
+    }
+
+    /// Upstream `MaterialApp.createMaterialHeroController`, which passes a
+    /// `createRectTween` that builds a `MaterialRectArcTween`.
+    ///
+    /// A card expanding into a page sweeps rather than slides, which is the
+    /// Material convention.
+    pub fn for_material_app() -> HeroRectTween {
+        HeroRectTween::Arc
+    }
+
+    /// Upstream `CupertinoApp.createCupertinoHeroController`, which passes
+    /// **nothing** and so gets the default linear `RectTween`.
+    ///
+    /// The absence is the decision, and upstream marks it with a comment
+    /// rather than an argument: `// Linear tweening.` An iOS push is itself a
+    /// straight horizontal slide, and a hero curving inside it would fight the
+    /// page it is riding on.
+    pub fn for_cupertino_app() -> HeroRectTween {
+        HeroRectTween::Linear
+    }
+
+    /// Whether the two apps' heroes would be drawn in the same place at
+    /// `t`, given a flight between `begin` and `end`.
+    ///
+    /// **They agree whenever the arc degenerates**, which the arc tween itself
+    /// decides: [`crate::arc::MaterialRectArcTween`] swings the diagonal that
+    /// leads the motion, and a flight whose ends share a centre, or whose
+    /// chosen corners do not move, has nothing to swing. So a hero that only
+    /// changes size in place looks identical on both platforms, and a test
+    /// built on one cannot tell the two apps apart.
+    pub fn the_two_apps_agree(begin: crate::engine::Rect, end: crate::engine::Rect) -> bool {
+        let arc = crate::arc::MaterialRectArcTween::new(begin, end);
+        // Half way is where a circular arc is furthest from its chord, so it
+        // is the frame that separates them if anything does.
+        let arced = arc.lerp(0.5);
+        let straight = crate::engine::Rect::ltrb(
+            begin.left + (end.left - begin.left) * 0.5,
+            begin.top + (end.top - begin.top) * 0.5,
+            begin.right + (end.right - begin.right) * 0.5,
+            begin.bottom + (end.bottom - begin.bottom) * 0.5,
+        );
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        close(arced.left, straight.left)
+            && close(arced.top, straight.top)
+            && close(arced.right, straight.right)
+            && close(arced.bottom, straight.bottom)
     }
 
     /// Upstream `HeroFlightDirection` selection, which is a switch over the
@@ -425,6 +490,104 @@ impl HeroController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Which tween each app gives its heroes, tick 287 ---------------------
+
+    #[test]
+    fn the_two_apps_hand_their_heroes_different_tweens() {
+        // Upstream writes the Material one as an argument and the Cupertino
+        // one as its absence, with `// Linear tweening.` on the same line.
+        assert_eq!(HeroController::for_material_app(), HeroRectTween::Arc);
+        assert_eq!(HeroController::for_cupertino_app(), HeroRectTween::Linear);
+        assert_ne!(
+            HeroController::for_material_app(),
+            HeroController::for_cupertino_app()
+        );
+    }
+
+    #[test]
+    fn a_hero_moving_across_the_screen_looks_different_on_the_two_apps() {
+        // The arc's whole point: at the half-way frame, where a circular arc
+        // is furthest from its chord, the two are not in the same place.
+        let begin = crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 40.0);
+        let end = crate::engine::Rect::ltrb(200.0, 300.0, 260.0, 360.0);
+        assert!(!HeroController::the_two_apps_agree(begin, end));
+    }
+
+    #[test]
+    fn a_hero_moving_along_one_axis_looks_the_same_on_both() {
+        // `MaterialPointArcTween` leaves a near-axial move straight -- the
+        // `delta_x <= ON_AXIS_DELTA || delta_y <= ON_AXIS_DELTA` arm -- so a
+        // hero sliding horizontally is drawn identically by the two apps. A
+        // test built on a flight like this cannot tell them apart, which is
+        // why the one above moves diagonally.
+        let begin = crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 40.0);
+        let across = crate::engine::Rect::ltrb(200.0, 0.0, 240.0, 40.0);
+        assert!(HeroController::the_two_apps_agree(begin, across));
+
+        let down = crate::engine::Rect::ltrb(0.0, 300.0, 40.0, 340.0);
+        assert!(HeroController::the_two_apps_agree(begin, down));
+    }
+
+    #[test]
+    fn a_hero_that_only_changes_size_in_place_still_differs() {
+        // The counterintuitive one, and the reason this had to be checked
+        // rather than assumed: `MaterialRectArcTween` swings two *corners*,
+        // not the centre. Ends that share a centre still have corners that
+        // move diagonally, so the arc has something to swing and the two apps
+        // part company even though the hero has not gone anywhere.
+        let begin = crate::engine::Rect::ltrb(100.0, 100.0, 140.0, 140.0);
+        let end = crate::engine::Rect::ltrb(80.0, 80.0, 160.0, 160.0);
+        assert!(!HeroController::the_two_apps_agree(begin, end));
+    }
+
+    #[test]
+    fn a_flight_can_disagree_on_one_edge_and_not_another() {
+        // Moving up-left and a little down: the arc's chosen diagonal leaves
+        // `left` exactly on the chord while `top` is nearly five pixels off
+        // it. So "the two apps agree" has to look at every edge -- a check on
+        // one corner alone reports agreement here, and the hero is visibly in
+        // the wrong place.
+        let begin = crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 40.0);
+        let end = crate::engine::Rect::ltrb(-200.0, 20.0, -180.0, 40.0);
+        let arc = crate::arc::MaterialRectArcTween::new(begin, end).lerp(0.5);
+        let midway = |a: f32, b: f32| a + (b - a) * 0.5;
+        assert!(
+            (arc.left - midway(begin.left, end.left)).abs() < 1e-3,
+            "left is on the chord: {arc:?}"
+        );
+        assert!(
+            (arc.top - midway(begin.top, end.top)).abs() > 1.0,
+            "and top is not: {arc:?}"
+        );
+        assert!(!HeroController::the_two_apps_agree(begin, end));
+    }
+
+    #[test]
+    fn a_flight_that_goes_nowhere_agrees_trivially() {
+        let square = crate::engine::Rect::ltrb(10.0, 10.0, 50.0, 50.0);
+        assert!(HeroController::the_two_apps_agree(square, square));
+    }
+
+    #[test]
+    fn the_arc_is_the_one_that_leaves_the_straight_line() {
+        // Which of the two is which: the Material path is the one that is not
+        // the linear interpolation, and the Cupertino path *is* it.
+        let begin = crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 40.0);
+        let end = crate::engine::Rect::ltrb(200.0, 300.0, 260.0, 360.0);
+        let arc = crate::arc::MaterialRectArcTween::new(begin, end).lerp(0.5);
+        let straight_top = begin.top + (end.top - begin.top) * 0.5;
+        assert_ne!(
+            arc.top, straight_top,
+            "the arc leaves the chord at the half-way frame"
+        );
+
+        // And at the ends they must meet, or the hero would jump on arrival.
+        let start = crate::arc::MaterialRectArcTween::new(begin, end).lerp(0.0);
+        let finish = crate::arc::MaterialRectArcTween::new(begin, end).lerp(1.0);
+        assert!((start.left - begin.left).abs() < 1e-3, "{start:?}");
+        assert!((finish.left - end.left).abs() < 1e-3, "{finish:?}");
+    }
 
     use RouteAnimationStatus::{Completed, Dismissed, Forward, Reverse};
 
