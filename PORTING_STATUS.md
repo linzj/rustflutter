@@ -18325,3 +18325,48 @@ stale_engines 全部不落后，unread_theme_fields 48 → 47（`title_small` �
 **下一步**：`TextTheme` 只剩五个角色，全部是日期选择器头部的
 （`headline_large`/`headline_medium` 与三个 `display_*`）——和队列里
 `DatePickerThemeData` 的 26 条是同一件事。
+
+## 第 253 轮：一份日历读起来是什么样
+
+`ResolvedDatePicker` 答了九个字段——表头两种颜色、副表头一种、今日边框、对话框
+与区间选择器各自的高度和圆角——**八个文字样式一路落空到什么都没有**。上游两张
+表在其中六条上不一致，而且分歧不是装饰性的：**Material 3 的日历整整比
+Material 2 大一级**。
+
+    字段                            M2                       M3
+    headerHeadlineStyle            headlineSmall            headlineLarge
+    headerHelpStyle                labelSmall               labelLarge
+    weekdayStyle                   bodySmall @ onSurface60  bodyLarge @ onSurface
+    dayStyle                       bodySmall                bodyLarge
+    yearStyle                      bodyLarge                bodyLarge
+    toggleButtonTextStyle          titleSmall @ subHeader   titleSmall @ subHeader
+    rangePickerHeaderHeadlineStyle headlineSmall            titleLarge
+    rangePickerHeaderHelpStyle     labelSmall               titleSmall
+
+其中两条是**一个角色加一层不属于它的颜色**。`weekdayStyle` 的 M2 六成透明度，
+是日历上方那行字母比下面的日期安静；M3 去掉这层淡化、改成把日期放大——同一句话
+的另一种说法。`toggleButtonTextStyle` 两张表都取副表头的颜色：按钮和它旁边的
+字是同一个控件，重新着色副表头会连按钮一起带走。
+
+两条"一致"也各有各的一致法：`yearStyle` 是**取值相同**（一个年份在哪一级都是
+年份），`toggleButtonTextStyle` 是**构造方式相同**而取值随副表头浮动。八条里
+七条分支、一条不分支，所以那一条也写了断言——否则看起来像漏了。
+
+`TextTheme::headline_large` 此前在整个端口没有读者。
+
+顺手核了一遍剩下的角色在上游有没有读者：`displaySmall` **在整个 framework 里
+一个读者都没有**——它是给应用用的，不是给控件用的。这是答案而不是缺口。
+`displayLarge`/`displayMedium` 是时间选择器的时分数字，`headlineMedium` 是
+中号应用栏的标题和横屏日期选择器的表头。
+
+八条承重规则逐条强制改错，全红。改错脚本这一轮加了一行：**匹配数不为一就报告
+"改错未生效"并退出**，而不是安静地失败——上一轮正是那样读出一个假绿。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 47 → 38（一轮九条）。
+门：5697 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`DatePickerThemeData` 还剩十八条，分三组——日期与年份的状态颜色
+（八条 `WidgetStateProperty`）、三个形状、以及区间选择器自己的那一层表面
+（五条）加上区间选中的两条。

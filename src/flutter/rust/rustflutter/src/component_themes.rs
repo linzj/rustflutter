@@ -4955,6 +4955,20 @@ pub struct ResolvedDatePicker {
     pub today_border: BorderSide,
     pub range_picker_elevation: f32,
     pub range_picker_shape_radius: f32,
+    /// The date at the top of the dialog, large.
+    pub header_headline_style: Option<TextStyle>,
+    /// The line above it -- "Select date" -- small.
+    pub header_help_style: Option<TextStyle>,
+    /// The row of letters above the calendar.
+    pub weekday_style: Option<TextStyle>,
+    /// The dates themselves.
+    pub day_style: Option<TextStyle>,
+    /// The years, in the list the header's arrow opens.
+    pub year_style: Option<TextStyle>,
+    /// The button that swaps the calendar for the text field.
+    pub toggle_button_text_style: Option<TextStyle>,
+    pub range_picker_header_headline_style: Option<TextStyle>,
+    pub range_picker_header_help_style: Option<TextStyle>,
 }
 
 impl ResolvedDatePicker {
@@ -4966,6 +4980,10 @@ impl ResolvedDatePicker {
     pub const RANGE_ELEVATION: f32 = 0.0;
     /// Upstream's `rangePickerShape` radius: a plain rectangle.
     pub const RANGE_RADIUS: f32 = 0.0;
+    /// The fade Material 2 puts on the row of weekday letters. A third of
+    /// the way between the 0.38 a disabled thing wears and full strength:
+    /// quieter than the dates, still readable as words.
+    pub const WEEKDAY_OPACITY: f32 = 0.60;
     /// Upstream's `subHeaderForegroundColor` opacity -- a third number in the
     /// family, beside 0.38 for disabled and 0.12 for a dead outline.
     pub const SUB_HEADER_OPACITY: f32 = 0.60;
@@ -5033,7 +5051,10 @@ impl ResolvedDatePicker {
     }
 
     pub fn of(context: &mut BuildContext) -> ResolvedDatePicker {
-        let scheme = ThemeData::of(context).color_scheme;
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+        let text_theme = theme.text_theme.clone();
         let data = DatePickerTheme::of(context);
         let sub_header = data.sub_header_foreground_color.unwrap_or_else(|| {
             crate::elevation_overlay::with_opacity(
@@ -5064,6 +5085,83 @@ impl ResolvedDatePicker {
                 .range_picker_elevation
                 .unwrap_or(ResolvedDatePicker::RANGE_ELEVATION),
             range_picker_shape_radius: ResolvedDatePicker::RANGE_RADIUS,
+            header_headline_style: data.header_headline_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.headline_large.clone()
+                } else {
+                    text_theme.headline_small.clone()
+                }
+            }),
+            header_help_style: data.header_help_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.label_large.clone()
+                } else {
+                    text_theme.label_small.clone()
+                }
+            }),
+            // A role with a colour put over it, and not the role's own.
+            // Material 2's sixty percent is the letter row being quieter than
+            // the dates beneath it; Material 3 drops the fade and grows the
+            // type instead, which says the same thing the other way round.
+            weekday_style: data.weekday_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.body_large.clone().map(|style| TextStyle {
+                        color: scheme.on_surface,
+                        ..style
+                    })
+                } else {
+                    text_theme.body_small.clone().map(|style| TextStyle {
+                        color: crate::elevation_overlay::with_opacity(
+                            scheme.on_surface,
+                            ResolvedDatePicker::WEEKDAY_OPACITY,
+                        ),
+                        ..style
+                    })
+                }
+            }),
+            day_style: data.day_style.clone().or_else(|| {
+                if material3 {
+                    text_theme.body_large.clone()
+                } else {
+                    text_theme.body_small.clone()
+                }
+            }),
+            // The one style both tables agree on outright: a year is a year
+            // at either size.
+            year_style: data
+                .year_style
+                .clone()
+                .or_else(|| text_theme.body_large.clone()),
+            // And the one they agree on by *construction* rather than by
+            // value: `titleSmall` in the sub-header's colour, whichever
+            // colour that turned out to be. The button and the words beside
+            // it are one control.
+            toggle_button_text_style: data.toggle_button_text_style.clone().or_else(|| {
+                text_theme.title_small.clone().map(|style| TextStyle {
+                    color: sub_header,
+                    ..style
+                })
+            }),
+            range_picker_header_headline_style: data
+                .range_picker_header_headline_style
+                .clone()
+                .or_else(|| {
+                    if material3 {
+                        text_theme.title_large.clone()
+                    } else {
+                        text_theme.headline_small.clone()
+                    }
+                }),
+            range_picker_header_help_style: data
+                .range_picker_header_help_style
+                .clone()
+                .or_else(|| {
+                    if material3 {
+                        text_theme.title_small.clone()
+                    } else {
+                        text_theme.label_small.clone()
+                    }
+                }),
         }
     }
 }
@@ -11311,6 +11409,187 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- What a calendar reads like, tick 253 --------------------------------
+    //
+    // `ResolvedDatePicker` answered for nine fields and left the eight text
+    // styles to fall through to nothing. Upstream's two tables disagree about
+    // six of the eight, and the disagreement is not decorative: a Material 3
+    // calendar is a whole rung of the type scale larger than a Material 2
+    // one. `TextTheme::headline_large` had no reader in this port at all.
+
+    fn date_picker_under(
+        data: DatePickerThemeData,
+        theme: ThemeData,
+    ) -> ResolvedDatePicker {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDatePicker>>>,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() = Some(ResolvedDatePicker::of(context));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            DatePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn material_two() -> ThemeData {
+        let mut theme = ThemeData::light();
+        theme.use_material3 = false;
+        theme
+    }
+
+    #[test]
+    fn a_material_three_calendar_is_a_rung_larger_than_a_material_two_one() {
+        // Six of the eight differ, and these three carry the size: the date
+        // at the top, the row of letters, and the dates themselves.
+        let three = ThemeData::light();
+        let two = material_two();
+        let new = date_picker_under(DatePickerThemeData::new(), three.clone());
+        let old = date_picker_under(DatePickerThemeData::new(), two.clone());
+
+        assert_eq!(
+            new.header_headline_style.as_ref().map(|s| s.font_size),
+            three.text_theme.headline_large.as_ref().map(|s| s.font_size)
+        );
+        assert_eq!(
+            old.header_headline_style.as_ref().map(|s| s.font_size),
+            two.text_theme.headline_small.as_ref().map(|s| s.font_size)
+        );
+        assert!(
+            new.header_headline_style.as_ref().unwrap().font_size
+                > old.header_headline_style.as_ref().unwrap().font_size,
+            "headlineLarge over headlineSmall"
+        );
+
+        assert!(
+            new.day_style.as_ref().unwrap().font_size
+                > old.day_style.as_ref().unwrap().font_size,
+            "bodyLarge over bodySmall"
+        );
+        assert!(
+            new.weekday_style.as_ref().unwrap().font_size
+                > old.weekday_style.as_ref().unwrap().font_size
+        );
+    }
+
+    #[test]
+    fn material_two_quietens_the_weekday_letters_and_material_three_does_not() {
+        // Two ways of saying the same thing: the letter row above a calendar
+        // is not the calendar. Material 2 fades it to sixty percent; Material
+        // 3 leaves it at full strength and grows the dates under it instead.
+        let three = ThemeData::light();
+        let two = material_two();
+        let new = date_picker_under(DatePickerThemeData::new(), three.clone());
+        let old = date_picker_under(DatePickerThemeData::new(), two.clone());
+
+        assert_eq!(new.weekday_style.as_ref().unwrap().color, three.color_scheme.on_surface);
+        let faded = old.weekday_style.as_ref().unwrap().color;
+        assert_ne!(faded, two.color_scheme.on_surface);
+        assert_ne!(
+            faded,
+            two.text_theme.body_small.as_ref().unwrap().color,
+            "and it is not the role's own colour either"
+        );
+    }
+
+    #[test]
+    fn the_toggle_button_wears_the_sub_headers_colour_in_both_tables() {
+        // The one style the two tables agree on by construction rather than
+        // by value: `titleSmall` in whatever the sub-header's colour turned
+        // out to be. The button and the words beside it are one control, so a
+        // theme that recolours the sub-header takes the button with it.
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        for theme in [ThemeData::light(), material_two()] {
+            let resolved = date_picker_under(
+                DatePickerThemeData {
+                    sub_header_foreground_color: Some(MINE),
+                    ..DatePickerThemeData::new()
+                },
+                theme.clone(),
+            );
+            assert_eq!(resolved.sub_header_foreground_color, MINE);
+            assert_eq!(
+                resolved.toggle_button_text_style.as_ref().unwrap().color,
+                MINE
+            );
+            assert_eq!(
+                resolved.toggle_button_text_style.as_ref().map(|s| s.font_size),
+                theme.text_theme.title_small.as_ref().map(|s| s.font_size)
+            );
+        }
+    }
+
+    #[test]
+    fn a_year_is_a_year_at_either_size() {
+        // The one style both tables answer with the same role. Worth
+        // asserting rather than leaving to look like an oversight: seven of
+        // the eight branch, and this one does not.
+        let three = date_picker_under(DatePickerThemeData::new(), ThemeData::light());
+        let two = date_picker_under(DatePickerThemeData::new(), material_two());
+        assert_eq!(three.year_style, two.year_style);
+        assert_eq!(
+            three.year_style,
+            ThemeData::light().text_theme.body_large
+        );
+    }
+
+    #[test]
+    fn a_range_pickers_header_is_smaller_than_a_single_dates() {
+        // Material 3 gives the range picker `titleLarge` where the ordinary
+        // header gets `headlineLarge`: two dates and a dash need the room
+        // that one date did not.
+        let resolved = date_picker_under(DatePickerThemeData::new(), ThemeData::light());
+        assert!(
+            resolved
+                .range_picker_header_headline_style
+                .as_ref()
+                .unwrap()
+                .font_size
+                < resolved.header_headline_style.as_ref().unwrap().font_size
+        );
+
+        // Material 2 gives both the same role, so this is a Material 3
+        // distinction and not a range picker one.
+        let old = date_picker_under(DatePickerThemeData::new(), material_two());
+        assert_eq!(
+            old.range_picker_header_headline_style,
+            old.header_headline_style
+        );
+    }
+
+    #[test]
+    fn a_named_style_beats_both_tables() {
+        let mine = TextStyle {
+            font_size: 41.0,
+            ..TextStyle::default()
+        };
+        let resolved = date_picker_under(
+            DatePickerThemeData {
+                day_style: Some(mine.clone()),
+                ..DatePickerThemeData::new()
+            },
+            ThemeData::light(),
+        );
+        assert_eq!(resolved.day_style, Some(mine));
+        assert_ne!(
+            resolved.weekday_style.as_ref().map(|s| s.font_size),
+            Some(41.0),
+            "and only that one"
+        );
+    }
 
     // -- The words in a decorated field, tick 249 ----------------------------
     //
