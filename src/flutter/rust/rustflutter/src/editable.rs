@@ -1167,6 +1167,172 @@ impl<'a> WordSelection<'a> {
     }
 }
 
+/// How tall a text field wants to be and how wide it lays its text out --
+/// upstream `RenderEditable._preferredHeight`, `_adjustConstraints`,
+/// `_caretMargin` and the four `compute*Intrinsic*` methods.
+///
+/// The paragraph itself belongs to the engine, so laying it out arrives as a
+/// closure rather than being invented here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldExtent {
+    pub cursor_width: f32,
+    /// Upstream's `forceLine`: the line fills the field rather than
+    /// shrink-wrapping the text.
+    pub force_line: bool,
+    /// Upstream's `_isMultiline`. The field that is **not** multiline is the
+    /// one that scrolls sideways.
+    pub multiline: bool,
+    /// `None` is upstream's null: unbounded, grow with the text.
+    pub max_lines: Option<usize>,
+    pub min_lines: Option<usize>,
+    pub preferred_line_height: f32,
+}
+
+impl FieldExtent {
+    /// Upstream's `_kCaretGap`, "1.0; // pixels".
+    pub const CARET_GAP: f32 = 1.0;
+
+    /// Upstream's `_caretMargin`: the gap **plus the cursor's own width**.
+    ///
+    /// A caret sitting after the last character is outside the text, so the
+    /// box has to be wider than its text by this much or the caret is drawn
+    /// half off the edge.
+    pub fn caret_margin(&self) -> f32 {
+        FieldExtent::CARET_GAP + self.cursor_width
+    }
+
+    /// Upstream's `_adjustConstraints`: the width the *paragraph* is laid out
+    /// at, which is not the width of the box.
+    ///
+    /// Returns `(min_width, max_width)`.
+    ///
+    /// The last line is the one that matters: **a field that is not multiline
+    /// gets `f32::INFINITY`**. Nothing wraps, the paragraph comes back wider
+    /// than the box, and the box scrolls. That is the whole of horizontal
+    /// scrolling -- there is no other code for it.
+    pub fn adjust_constraints(&self, min_width: f32, max_width: f32) -> (f32, f32) {
+        // Clamped at zero, so a field narrower than its own caret asks for a
+        // width of nothing rather than a negative one.
+        let available_max = (max_width - self.caret_margin()).max(0.0);
+        // The minimum never exceeds the maximum, whatever was asked for.
+        let available_min = min_width.min(available_max);
+        (
+            if self.force_line {
+                available_max
+            } else {
+                available_min
+            },
+            if self.multiline {
+                available_max
+            } else {
+                f32::INFINITY
+            },
+        )
+    }
+
+    /// Upstream's `_countHardLineBreaks`.
+    ///
+    /// Six characters, and **carriage return is not one of them**. Text pasted
+    /// from Windows arrives as CRLF and is counted once, by its LF; a port
+    /// that adds CR counts every line twice.
+    ///
+    /// Form feed is in the list, and upstream notes the choice: "FF, treating
+    /// it as a regular line separator".
+    pub fn count_hard_line_breaks(text: &str) -> usize {
+        text.chars()
+            .filter(|character| {
+                matches!(
+                    *character,
+                    '\u{000A}'   // LF
+                        | '\u{0085}' // NEL
+                        | '\u{000B}' // VT
+                        | '\u{000C}' // FF
+                        | '\u{2028}' // LS
+                        | '\u{2029}' // PS
+                )
+            })
+            .count()
+    }
+
+    /// Upstream's `_preferredHeight`.
+    ///
+    /// `laid_out` is the paragraph's height once laid out at the constraints
+    /// `adjust_constraints` produces for `width`.
+    pub fn preferred_height(
+        &self,
+        width: f32,
+        text: &str,
+        laid_out: &dyn Fn(f32, f32) -> f32,
+    ) -> f32 {
+        // **`minLines` defaults to `maxLines`**, not to nothing. A field given
+        // only `maxLines: 3` therefore has `minLines == maxLines` and is
+        // always exactly three lines tall -- reading maxLines as a ceiling
+        // gets that field wrong in its resting state.
+        let min_lines = self.min_lines.or(self.max_lines);
+        let min_height = self.preferred_line_height * min_lines.unwrap_or(0) as f32;
+
+        let layout = |width: f32| {
+            let (min_width, max_width) = self.adjust_constraints(0.0, width);
+            laid_out(min_width, max_width)
+        };
+
+        let Some(max_lines) = self.max_lines else {
+            // Unbounded: grow with the text, but never below the minimum.
+            let estimated = if width.is_infinite() {
+                // Nothing wraps at infinite width, so only the breaks that are
+                // in the text itself count.
+                self.preferred_line_height * (FieldExtent::count_hard_line_breaks(text) + 1) as f32
+            } else {
+                layout(width)
+            };
+            return estimated.max(min_height);
+        };
+
+        if max_lines == 1 {
+            // Upstream: "Special case maxLines == 1 since it forces the
+            // scrollable direction to be horizontal. Report the real height to
+            // prevent the text from being clipped." So this is the laid-out
+            // height and **not** one line height -- a tall glyph in a
+            // one-line field is not cut off.
+            return layout(width);
+        }
+        if min_lines == Some(max_lines) {
+            // Fixed: no layout at all, because the answer cannot depend on the
+            // text.
+            return min_height;
+        }
+        layout(width).clamp(min_height, self.preferred_line_height * max_lines as f32)
+    }
+
+    /// Upstream's `computeMinIntrinsicWidth`: the narrowest wrap, and **no
+    /// caret margin**.
+    ///
+    /// At the narrowest wrap the caret is always inside the text, so it needs
+    /// no room of its own.
+    pub fn min_intrinsic_width(&self, paragraph_min_intrinsic: f32) -> f32 {
+        paragraph_min_intrinsic
+    }
+
+    /// Upstream's `computeMaxIntrinsicWidth`: everything on one line, **plus
+    /// the caret margin**, because there the caret can end up past the last
+    /// character.
+    pub fn max_intrinsic_width(&self, paragraph_max_intrinsic: f32) -> f32 {
+        paragraph_max_intrinsic + self.caret_margin()
+    }
+
+    /// Upstream's `computeDryLayout` width.
+    ///
+    /// `forceLine` takes the whole of what it was offered; otherwise the text
+    /// plus the caret's room, constrained.
+    pub fn dry_width(&self, min_width: f32, max_width: f32, text_width: f32) -> f32 {
+        if self.force_line {
+            max_width
+        } else {
+            (text_width + self.caret_margin()).clamp(min_width, max_width)
+        }
+    }
+}
+
 /// The three fields `getEndpointsForSelection` reads off a `ui.TextBox`, and no
 /// more.
 ///
@@ -2123,6 +2289,251 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- How tall a field wants to be, tick 277 ------------------------------
+
+    fn extent() -> FieldExtent {
+        FieldExtent {
+            cursor_width: 2.0,
+            force_line: false,
+            multiline: false,
+            max_lines: Some(1),
+            min_lines: None,
+            preferred_line_height: 14.0,
+        }
+    }
+
+    /// A stand-in for the engine's paragraph: one line per 50 logical pixels
+    /// of text, so a narrower layout is a taller one.
+    fn wrapping_paragraph(text_width: f32) -> impl Fn(f32, f32) -> f32 {
+        move |_min: f32, max: f32| {
+            if max.is_infinite() {
+                14.0
+            } else {
+                let lines = (text_width / max.max(1.0)).ceil().max(1.0);
+                14.0 * lines
+            }
+        }
+    }
+
+    #[test]
+    fn the_caret_margin_is_the_gap_plus_the_cursor_not_either_alone() {
+        // A caret after the last character is outside the text, so the box has
+        // to be wider than its text by the cursor's own width *and* a pixel of
+        // gap. Either half alone draws the caret touching the glyph or half
+        // off the edge.
+        let mut field = extent();
+        field.cursor_width = 2.0;
+        assert_eq!(field.caret_margin(), 3.0);
+        field.cursor_width = 5.0;
+        assert_eq!(field.caret_margin(), 6.0, "it tracks the cursor's width");
+        assert_eq!(FieldExtent::CARET_GAP, 1.0);
+    }
+
+    #[test]
+    fn a_field_that_is_not_multiline_lays_its_text_out_at_infinite_width() {
+        // This one line is the whole of horizontal scrolling. Nothing wraps,
+        // the paragraph comes back wider than the box, and the box scrolls --
+        // there is no other code for it anywhere.
+        let mut field = extent();
+        field.multiline = false;
+        let (_, max) = field.adjust_constraints(0.0, 100.0);
+        assert!(max.is_infinite(), "so nothing can wrap");
+
+        field.multiline = true;
+        let (_, max) = field.adjust_constraints(0.0, 100.0);
+        assert_eq!(max, 97.0, "the box, less the caret's room");
+    }
+
+    #[test]
+    fn force_line_raises_the_minimum_rather_than_the_maximum() {
+        // The line fills the field instead of shrink-wrapping the text, and it
+        // does that by moving the *minimum* up -- the maximum is untouched.
+        let mut field = extent();
+        field.multiline = true;
+        let (loose_min, loose_max) = field.adjust_constraints(0.0, 100.0);
+        field.force_line = true;
+        let (forced_min, forced_max) = field.adjust_constraints(0.0, 100.0);
+        assert_eq!(loose_min, 0.0);
+        assert_eq!(forced_min, 97.0, "up to the whole available width");
+        assert_eq!(forced_max, loose_max, "and the maximum did not move");
+    }
+
+    #[test]
+    fn a_field_narrower_than_its_own_caret_asks_for_nothing_not_less() {
+        // max(0, maxWidth - caretMargin). A negative width would propagate
+        // into the paragraph.
+        let field = extent();
+        let (min, _) = field.adjust_constraints(0.0, 1.0);
+        assert_eq!(min, 0.0);
+        let mut multiline = field;
+        multiline.multiline = true;
+        let (_, max) = multiline.adjust_constraints(0.0, 1.0);
+        assert_eq!(max, 0.0, "nothing, not minus two");
+    }
+
+    #[test]
+    fn the_minimum_width_never_exceeds_the_maximum() {
+        // min(minWidth, availableMaxWidth): asking for a minimum wider than
+        // what is left after the caret's room gives back the maximum.
+        let mut field = extent();
+        field.multiline = true;
+        let (min, max) = field.adjust_constraints(500.0, 100.0);
+        assert_eq!(min, 97.0);
+        assert_eq!(min, max, "and not the 500 that was asked for");
+    }
+
+    #[test]
+    fn min_lines_falls_back_to_max_lines_so_a_capped_field_does_not_grow() {
+        // `this.minLines ?? maxLines`. A field given only `maxLines: 3` has
+        // minLines == maxLines and is *always exactly* three lines tall.
+        // Reading maxLines as a ceiling gets that field wrong at rest.
+        let mut field = extent();
+        field.multiline = true;
+        field.max_lines = Some(3);
+        field.min_lines = None;
+        let short = field.preferred_height(200.0, "hi", &wrapping_paragraph(30.0));
+        assert_eq!(short, 42.0, "three lines even with one line of text");
+
+        field.min_lines = Some(1);
+        let grows = field.preferred_height(200.0, "hi", &wrapping_paragraph(30.0));
+        assert_eq!(grows, 14.0, "asked for one, so it may be one");
+    }
+
+    #[test]
+    fn a_one_line_field_reports_the_height_the_text_actually_took() {
+        // Upstream: "Special case maxLines == 1 since it forces the scrollable
+        // direction to be horizontal. Report the real height to prevent the
+        // text from being clipped." So a tall glyph is not cut off, and this
+        // is not `preferredLineHeight * 1`.
+        let field = extent();
+        let tall = |_min: f32, _max: f32| 40.0;
+        assert_eq!(
+            field.preferred_height(200.0, "hi", &tall),
+            40.0,
+            "the paragraph's height, not one line height"
+        );
+    }
+
+    #[test]
+    fn a_fixed_field_never_asks_the_paragraph_at_all() {
+        // minLines == maxLines returns minHeight with no layout, because the
+        // answer cannot depend on the text.
+        let mut field = extent();
+        field.multiline = true;
+        field.max_lines = Some(4);
+        field.min_lines = Some(4);
+        let exploding = |_min: f32, _max: f32| -> f32 { panic!("laid out anyway") };
+        assert_eq!(field.preferred_height(200.0, "anything", &exploding), 56.0);
+    }
+
+    #[test]
+    fn an_unbounded_field_at_infinite_width_counts_only_the_breaks_in_the_text() {
+        // Nothing wraps at infinite width, so the estimate is the hard breaks
+        // plus one -- and the paragraph is not consulted.
+        let mut field = extent();
+        field.multiline = true;
+        field.max_lines = None;
+        field.min_lines = None;
+        let exploding = |_min: f32, _max: f32| -> f32 { panic!("laid out anyway") };
+        let height = field.preferred_height(f32::INFINITY, "a\nb\nc", &exploding);
+        assert_eq!(height, 42.0, "two breaks, three lines");
+    }
+
+    #[test]
+    fn an_unbounded_field_is_still_at_least_its_minimum() {
+        // max(estimatedHeight, minHeight): min_lines wins over a short text.
+        let mut field = extent();
+        field.multiline = true;
+        field.max_lines = None;
+        field.min_lines = Some(5);
+        let height = field.preferred_height(200.0, "hi", &wrapping_paragraph(30.0));
+        assert_eq!(height, 70.0, "five lines, though the text is one");
+    }
+
+    #[test]
+    fn a_bounded_field_is_clamped_at_both_ends() {
+        // The last branch: the laid-out height between minHeight and
+        // preferredLineHeight * maxLines.
+        let mut field = extent();
+        field.multiline = true;
+        field.min_lines = Some(2);
+        field.max_lines = Some(4);
+        // 30 wide of text in a 197-wide layout is one line; the floor applies.
+        assert_eq!(
+            field.preferred_height(200.0, "hi", &wrapping_paragraph(30.0)),
+            28.0,
+            "raised to the two-line floor"
+        );
+        // 2000 wide of text wraps to eleven lines; the ceiling applies.
+        assert_eq!(
+            field.preferred_height(200.0, "hi", &wrapping_paragraph(2000.0)),
+            56.0,
+            "cut down to the four-line ceiling"
+        );
+    }
+
+    #[test]
+    fn carriage_return_is_not_a_hard_line_break() {
+        // Text pasted from Windows arrives as CRLF and is counted once, by its
+        // LF. A port that adds CR to the table counts every line twice.
+        assert_eq!(FieldExtent::count_hard_line_breaks("a\r\nb\r\nc"), 2);
+        assert_eq!(
+            FieldExtent::count_hard_line_breaks("a\rb\rc"),
+            0,
+            "CR alone"
+        );
+    }
+
+    #[test]
+    fn the_other_five_separators_count() {
+        // NEL, VT, FF, LS and PS alongside LF -- and upstream records the
+        // choice about FF: "treating it as a regular line separator".
+        for separator in [
+            '\u{000A}', '\u{0085}', '\u{000B}', '\u{000C}', '\u{2028}', '\u{2029}',
+        ] {
+            let text = format!("a{separator}b");
+            assert_eq!(
+                FieldExtent::count_hard_line_breaks(&text),
+                1,
+                "U+{:04X}",
+                separator as u32
+            );
+        }
+        assert_eq!(
+            FieldExtent::count_hard_line_breaks("a\tb c"),
+            0,
+            "not tabs or spaces"
+        );
+    }
+
+    #[test]
+    fn only_the_maximum_intrinsic_width_makes_room_for_the_caret() {
+        // The maximum is everything on one line, where the caret can end up
+        // past the last character; the minimum is the narrowest wrap, where it
+        // cannot.
+        let field = extent();
+        assert_eq!(field.min_intrinsic_width(80.0), 80.0);
+        assert_eq!(field.max_intrinsic_width(80.0), 83.0);
+    }
+
+    #[test]
+    fn force_line_takes_the_whole_offered_width_in_a_dry_layout() {
+        let mut field = extent();
+        field.force_line = true;
+        assert_eq!(field.dry_width(0.0, 300.0, 40.0), 300.0);
+        field.force_line = false;
+        assert_eq!(
+            field.dry_width(0.0, 300.0, 40.0),
+            43.0,
+            "the text plus the caret's room"
+        );
+        assert_eq!(
+            field.dry_width(0.0, 20.0, 400.0),
+            20.0,
+            "constrained down to what was offered"
+        );
+    }
 
     // -- Where the two handles go, tick 276 ----------------------------------
     //

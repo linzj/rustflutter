@@ -19539,3 +19539,71 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 **下一步**：`RenderEditable` 剩固有尺寸那一组（`computeDryLayout`、
 `computeMaxIntrinsicWidth`、`computeMinIntrinsicWidth` 等）和
 `getRectForComposingRange`。
+
+## 第 277 轮：一个字段想要多高，以及它把文字排在多宽上
+
+`RenderEditable._preferredHeight`、`_adjustConstraints`、`_caretMargin` 和四个
+`compute*Intrinsic*`。高度有四支，宽度有一条解释了单行字段为什么会横着滚。
+
+### 光标要的地方文字不要
+
+    const double _kCaretGap = 1.0; // pixels
+    double get _caretMargin => _kCaretGap + cursorWidth;
+
+停在最后一个字符**之后**的光标是在文字**之外**的，所以盒子必须比它的文字宽出一个
+光标宽加一个像素。这也解释了 `computeMaxIntrinsicWidth` **加** `_caretMargin` 而
+`computeMinIntrinsicWidth` **不加**：最大值是"全排在一行上"，光标可能落到末尾之外；
+最小值是最窄的那次折行，光标不可能在外面。
+
+### 单行字段为什么会横着滚
+
+    return (
+      forceLine ? availableMaxWidth : availableMinWidth,
+      _isMultiline ? availableMaxWidth : double.infinity,
+    );
+
+**不是多行的字段，把文字排在无限宽上。** 什么都不折，段落回来的宽度大于盒子，盒子
+就滚。那个 `double.infinity` 就是横向滚动的**全部**——整个框架里没有另一处代码做这
+件事。
+
+而 `forceLine` 抬高的是**最小值**，不是最大值：让这一行填满字段，而不是把文字裹紧。
+
+### 高度的四支
+
+    final int? minLines = this.minLines ?? maxLines;
+
+**`minLines` 缺省成 `maxLines`，不是缺省成"没有"。** 于是一个只给了 `maxLines: 3`
+的字段，`minLines == maxLines`，落进第三支，**永远正好三行高**——它不会长到三行,
+它一开始就是三行。把 maxLines 读成"上限"的理解，说错了这个字段的静止状态。
+
+1. **`maxLines == null`**：无上限。无限宽时什么都不折，所以估算是行高乘以**硬**换行
+   数加一；否则排一次版取高度。两种都不低于 `minHeight`。
+
+2. **`maxLines == 1` 被单独拎出来**，上游写了理由："特判 maxLines == 1，因为它把可滚
+   方向强制成横向。报告真实高度以防文字被裁掉。" 所以它报的是**排版后的高度**，不是
+   一个行高——一个高字形在单行字段里不会被切掉。
+
+3. **`minLines == maxLines`**：正好 `minHeight`，**一次版都不排**，因为答案不可能取决
+   于文字。
+
+4. 否则是排版后的高度，夹在 `minHeight` 和 `preferredLineHeight * maxLines` 之间。
+
+### 六个字符会断行，第七个不会
+
+    case 0x000A: // LF     case 0x0085: // NEL    case 0x000B: // VT
+    case 0x000C: // FF     case 0x2028: // LS     case 0x2029: // PS
+
+**回车不在表里。** 从 Windows 粘进来的文字是 CRLF，靠它的 LF 数一次；一个把 CR 也加
+进表里的端口，会把每一行数成两行。而换页在表里，上游把这个取舍写明了："FF，把它当作
+一个普通的行分隔符。"
+
+十八条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，**constants 159/0/0**（`CARET_GAP` 自己被尺子接住并与上游核过），
+wire_strings 122/0，wire_enums 4/0，ffi_tables 5/0，unwired 48/0，unvaried 0,
+unread_strings 44+16+7/0，unpainted 0，hollow 67/0，vacuous 8，stale_engines 全部
+不落后，unread_theme_fields 2。
+门：5839 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 剩 `getRectForComposingRange`（iOS 上 IME 条的位置）
+和 `_snapToPhysicalPixel` 那一组。
