@@ -19607,3 +19607,58 @@ unread_strings 44+16+7/0，unpainted 0，hollow 67/0，vacuous 8，stale_engines
 
 **下一步**：`RenderEditable` 剩 `getRectForComposingRange`（iOS 上 IME 条的位置）
 和 `_snapToPhysicalPixel` 那一组。
+
+## 第 278 轮：IME 条画在哪，以及光标怎么落到一个真实的像素上
+
+`RenderEditable.getRectForComposingRange` 和 `_snapToPhysicalPixel`。两个小方法,
+每一个都有一条按签名去读会读反的规则。
+
+### 组字矩形是并集，不是两端之间
+
+    return boxes.fold(null, (accum, incoming) =>
+        accum?.expandToInclude(incoming.toRect()) ?? incoming.toRect())
+      ?.shift(_paintOffset);
+
+每一个 box 折进去，得到**包含它们全部的最小矩形**——而不是第一个 box 的起点到最后一个
+box 的终点。跨过折行的组字区域，两行上的 box 水平范围**并不嵌套**：第一行可能从 60
+到 200，第二行从 0 到 40。照 `getEndpointsForSelection` 那样取首尾，得到的是一个从
+60 到 40 的**里外翻转**的矩形，把整个第一行漏在外面。
+
+**折叠的范围得到 `null`，不是一个空矩形。** 一个什么都没在组字的 IME 没有地方放它
+的条，而 `Rect.zero` 是一个地方——"别画这个"和"画在原点上"是两件事。
+
+### 那个 snap 答的是移多远，不是移到哪
+
+    return Offset(
+      globalOffset.dx.isFinite
+          ? (globalOffset.dx / pixelMultiple).round() * pixelMultiple - globalOffset.dx
+          : 0, ...
+
+结尾那个 `- globalOffset.dx` 就是整个方法。它交回的是**该移多远**，所以调用处写的是
+`caretRect.shift(_snapToPhysicalPixel(caretRect.topLeft))`——一个 shift，作用在一个
+**局部**坐标的 rect 上，却是从一个**全局**位置算出来的。改成交回吸附后的位置，会把
+光标瞬移到屏幕原点附近。
+
+**它必须是全局的。** 物理像素是屏幕的属性，不是这个盒子的；一个在局部坐标里吸附好的
+光标，如果它所在的盒子本身落在半个像素上，那它还是在半个像素上。
+
+**非有限的坐标修正量是零**，逐轴、各自独立——不是修正**到**零，也不是 NaN，那两样都
+会把光标搬到一个它没有理由去的地方。
+
+### 一条测试断言了缺陷
+
+`an_invalid_composing_range_has_no_rect` 一开始用 `(-1, -1)`——那个范围**同时**是无效
+的和折叠的，于是把 `!range.is_valid()` 整条删掉，`is_collapsed()` 一条也照样答 None,
+测试读绿。换成 `(-1, 5)`：无效但不折叠，两个从句才各自被看着。
+
+**一个 `||` 的两个从句是两条规则，而一个同时满足两边的例子一条都没在看。**
+
+十二条承重规则逐条强制改错，全红。
+
+尺子：coverage 2102/0，constants 159/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5850 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 这一批做完了，回到 `depth.py` 的队头——
+`SelectionOverlay` 9/43、`CupertinoApp` 8/37、`TextSelectionGestureDetectorBuilder` 6/27。

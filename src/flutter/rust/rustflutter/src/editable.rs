@@ -1167,6 +1167,97 @@ impl<'a> WordSelection<'a> {
     }
 }
 
+/// Where the IME bar goes and how the caret lands on a real pixel -- upstream
+/// `RenderEditable.getRectForComposingRange` and `_snapToPhysicalPixel`.
+pub struct ComposingRegion;
+
+impl ComposingRegion {
+    /// Upstream's `getRectForComposingRange`, used to place the IME bar on
+    /// iOS.
+    ///
+    /// The boxes belong to the engine's paragraph and arrive rather than being
+    /// invented, the same shape [`SelectionEndpoints::of`] takes them in.
+    ///
+    /// Two things a reading of the name would not predict.
+    ///
+    /// **A collapsed or invalid range gets `None`, not an empty rect.** An IME
+    /// with nothing composing has nowhere to put its bar, and `Rect::ZERO` is
+    /// a place -- the difference between "do not draw this" and "draw it at
+    /// the origin".
+    ///
+    /// **The answer is the union of every box, not the first box's start to
+    /// the last box's end.** A composing region crossing a wrap has boxes on
+    /// two lines whose horizontal ranges do not nest, and the bar has to clear
+    /// both; taking first and last the way `getEndpointsForSelection` does
+    /// gives a rectangle that misses part of the text it is meant to sit
+    /// against.
+    pub fn rect(
+        range: crate::services::text_boundary::TextRange,
+        boxes: &[crate::engine::Rect],
+        paint_offset: crate::render::Offset,
+    ) -> Option<crate::engine::Rect> {
+        if !range.is_valid() || range.is_collapsed() {
+            return None;
+        }
+        let union = boxes.iter().fold(None, |accumulated, incoming| {
+            Some(match accumulated {
+                Some(crate::engine::Rect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                }) => crate::engine::Rect::ltrb(
+                    left.min(incoming.left),
+                    top.min(incoming.top),
+                    right.max(incoming.right),
+                    bottom.max(incoming.bottom),
+                ),
+                // The fold starts at `None`, so no boxes is no rect.
+                None => *incoming,
+            })
+        })?;
+        // Shifted once, after the fold rather than inside it.
+        Some(crate::engine::Rect::ltrb(
+            union.left + paint_offset.dx,
+            union.top + paint_offset.dy,
+            union.right + paint_offset.dx,
+            union.bottom + paint_offset.dy,
+        ))
+    }
+
+    /// Upstream's `_snapToPhysicalPixel`: **how far to move** to land the
+    /// caret on a whole physical pixel, not where to move it to.
+    ///
+    /// The trailing subtraction is the whole method. The caller writes
+    /// `caretRect.shift(_snapToPhysicalPixel(caretRect.topLeft))` -- a shift,
+    /// applied to a rect in *local* coordinates, computed from a *global*
+    /// position. Handing back the snapped position instead would teleport the
+    /// caret to somewhere near the screen's origin.
+    ///
+    /// `global` is upstream's `localToGlobal(sourceOffset)`, and it has to be
+    /// global: a physical pixel belongs to the screen, not to this box, and a
+    /// caret snapped in local coordinates inside a box that itself sits on a
+    /// half pixel is still on a half pixel.
+    pub fn snap_to_physical_pixel(
+        global: crate::render::Offset,
+        device_pixel_ratio: f32,
+    ) -> crate::render::Offset {
+        // One physical pixel, measured in logical ones.
+        let pixel_multiple = 1.0 / device_pixel_ratio;
+        // Per axis and independently: a non-finite coordinate is corrected by
+        // **zero** -- not corrected *to* zero, and not to NaN, either of which
+        // would move the caret somewhere it has no reason to be.
+        let correction = |value: f32| {
+            if value.is_finite() {
+                (value / pixel_multiple).round() * pixel_multiple - value
+            } else {
+                0.0
+            }
+        };
+        crate::render::Offset::new(correction(global.dx), correction(global.dy))
+    }
+}
+
 /// How tall a text field wants to be and how wide it lays its text out --
 /// upstream `RenderEditable._preferredHeight`, `_adjustConstraints`,
 /// `_caretMargin` and the four `compute*Intrinsic*` methods.
@@ -2289,6 +2380,167 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- The IME bar and the physical pixel, tick 278 ------------------------
+
+    fn a_range(start: isize, end: isize) -> crate::services::text_boundary::TextRange {
+        crate::services::text_boundary::TextRange { start, end }
+    }
+
+    #[test]
+    fn a_collapsed_composing_range_has_no_rect_rather_than_an_empty_one() {
+        // An IME with nothing composing has nowhere to put its bar, and
+        // Rect::ZERO is a place: the difference between "do not draw this" and
+        // "draw it at the origin".
+        let boxes = [crate::engine::Rect::ltrb(10.0, 0.0, 50.0, 14.0)];
+        assert_eq!(
+            ComposingRegion::rect(a_range(3, 3), &boxes, crate::render::Offset::ZERO),
+            None,
+            "collapsed, though there are boxes to fold"
+        );
+        assert!(
+            ComposingRegion::rect(a_range(3, 7), &boxes, crate::render::Offset::ZERO).is_some(),
+            "and the same boxes do answer for a range with width"
+        );
+    }
+
+    #[test]
+    fn an_invalid_composing_range_has_no_rect() {
+        // (-1, 5) rather than (-1, -1): an invalid range that is *not* also
+        // collapsed, so this watches the validity clause on its own. The
+        // first version of this test used (-1, -1) and passed with the
+        // validity test deleted, because collapsed alone already answered.
+        let boxes = [crate::engine::Rect::ltrb(10.0, 0.0, 50.0, 14.0)];
+        assert!(!a_range(-1, 5).is_valid() && !a_range(-1, 5).is_collapsed());
+        assert_eq!(
+            ComposingRegion::rect(a_range(-1, 5), &boxes, crate::render::Offset::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn no_boxes_is_no_rect() {
+        // The fold starts at null, so a valid range the paragraph has nothing
+        // to say about still answers nothing.
+        assert_eq!(
+            ComposingRegion::rect(a_range(3, 7), &[], crate::render::Offset::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn the_composing_rect_is_the_union_and_not_the_span_of_the_ends() {
+        // A composing region across a wrap has boxes on two lines whose
+        // horizontal ranges do not nest. First-to-last, the way
+        // getEndpointsForSelection reads its boxes, would start at 60 and end
+        // at 40 -- an inside-out rectangle that misses the whole first line.
+        let boxes = [
+            crate::engine::Rect::ltrb(60.0, 0.0, 200.0, 14.0),
+            crate::engine::Rect::ltrb(0.0, 14.0, 40.0, 28.0),
+        ];
+        let rect = ComposingRegion::rect(a_range(3, 20), &boxes, crate::render::Offset::ZERO)
+            .expect("a rect");
+        assert_eq!(rect.left, 0.0, "from the second box");
+        assert_eq!(rect.right, 200.0, "from the first");
+        assert_eq!(rect.top, 0.0);
+        assert_eq!(rect.bottom, 28.0, "both lines cleared");
+    }
+
+    #[test]
+    fn a_middle_box_can_widen_the_union() {
+        // Not just the two ends: every box is folded in, so a long middle line
+        // sets the right edge.
+        let boxes = [
+            crate::engine::Rect::ltrb(60.0, 0.0, 100.0, 14.0),
+            crate::engine::Rect::ltrb(0.0, 14.0, 300.0, 28.0),
+            crate::engine::Rect::ltrb(0.0, 28.0, 40.0, 42.0),
+        ];
+        let rect = ComposingRegion::rect(a_range(3, 30), &boxes, crate::render::Offset::ZERO)
+            .expect("a rect");
+        assert_eq!(rect.right, 300.0, "the middle box is the widest");
+    }
+
+    #[test]
+    fn the_paint_offset_shifts_the_union_once() {
+        // Applied after the fold, not inside it -- folding it in per box would
+        // multiply it by the number of lines.
+        let boxes = [
+            crate::engine::Rect::ltrb(10.0, 0.0, 50.0, 14.0),
+            crate::engine::Rect::ltrb(0.0, 14.0, 30.0, 28.0),
+        ];
+        let rect = ComposingRegion::rect(
+            a_range(3, 20),
+            &boxes,
+            crate::render::Offset::new(-5.0, -7.0),
+        )
+        .expect("a rect");
+        assert_eq!((rect.left, rect.top), (-5.0, -7.0));
+        assert_eq!((rect.right, rect.bottom), (45.0, 21.0));
+    }
+
+    #[test]
+    fn the_snap_hands_back_how_far_to_move_not_where_to_move_to() {
+        // The trailing subtraction is the whole method. The caller writes
+        // `caretRect.shift(snap(caretRect.topLeft))`, so the snapped position
+        // would teleport the caret to near the screen's origin.
+        let correction =
+            ComposingRegion::snap_to_physical_pixel(crate::render::Offset::new(100.3, 50.4), 2.0);
+        // Half-pixel grid: 100.3 -> 100.5, 50.4 -> 50.5.
+        assert!(
+            (correction.dx - 0.2).abs() < 1e-4,
+            "a fifth of a pixel, not 100.5: {correction:?}"
+        );
+        assert!((correction.dy - 0.1).abs() < 1e-4, "{correction:?}");
+    }
+
+    #[test]
+    fn the_grid_is_one_physical_pixel_wide() {
+        // pixelMultiple = 1 / devicePixelRatio, so a denser screen snaps to a
+        // finer grid and the same position needs a smaller correction.
+        let at = crate::render::Offset::new(10.3, 0.0);
+        let coarse = ComposingRegion::snap_to_physical_pixel(at, 1.0);
+        let fine = ComposingRegion::snap_to_physical_pixel(at, 4.0);
+        assert!((coarse.dx - -0.3).abs() < 1e-4, "to 10.0: {coarse:?}");
+        assert!((fine.dx - -0.05).abs() < 1e-4, "to 10.25: {fine:?}");
+    }
+
+    #[test]
+    fn the_snap_rounds_to_the_nearest_line_of_the_grid_either_way() {
+        // Round, not floor: a caret just past a pixel boundary comes back to
+        // it rather than being pushed a whole pixel on.
+        let up =
+            ComposingRegion::snap_to_physical_pixel(crate::render::Offset::new(10.1, 0.0), 1.0);
+        let down =
+            ComposingRegion::snap_to_physical_pixel(crate::render::Offset::new(10.9, 0.0), 1.0);
+        assert!(up.dx < 0.0, "back to 10: {up:?}");
+        assert!(down.dx > 0.0, "on to 11: {down:?}");
+    }
+
+    #[test]
+    fn a_position_already_on_the_grid_is_not_moved() {
+        let correction =
+            ComposingRegion::snap_to_physical_pixel(crate::render::Offset::new(10.5, 4.0), 2.0);
+        assert_eq!((correction.dx, correction.dy), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_non_finite_coordinate_is_corrected_by_zero_and_only_on_its_own_axis() {
+        // Not corrected *to* zero, and not to NaN: either would move the caret
+        // somewhere it has no reason to be. And the other axis still answers.
+        let correction = ComposingRegion::snap_to_physical_pixel(
+            crate::render::Offset::new(f32::INFINITY, 50.4),
+            2.0,
+        );
+        assert_eq!(correction.dx, 0.0, "no correction, rather than a huge one");
+        assert!(
+            (correction.dy - 0.1).abs() < 1e-4,
+            "y still snapped: {correction:?}"
+        );
+
+        let nan =
+            ComposingRegion::snap_to_physical_pixel(crate::render::Offset::new(f32::NAN, 4.0), 2.0);
+        assert_eq!(nan.dx, 0.0, "NaN in, zero out");
+    }
 
     // -- How tall a field wants to be, tick 277 ------------------------------
 
