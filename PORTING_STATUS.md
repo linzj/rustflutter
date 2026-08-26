@@ -17994,3 +17994,36 @@ unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，unread_theme_fields 62（不变——刻度形状还要等绘制
 那一步）。
 门：5658 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+## 第 245 轮：刻度形状终于被人调用了
+
+`RoundSliderTickMarkShape::paint` 移植得很早，也有自己的测试——它知道拇指
+之后的标记是暗的、之前的是亮的，也知道"之后"是哪一侧要看阅读方向。缺的从来
+不是它，而是**没有任何 widget 请它画过**。上一轮给了滑块分度，于是有了标记
+可画。
+
+`SliderTickMarks` 是一个 `CustomPainter`，按 `tick_fractions()` 逐个请形状
+落笔，画在轨道之上、拇指之下——上游的顺序是轨道、刻度、涂层、拇指，所以被
+拇指压住的标记是被盖掉，而不是画在拇指上面。
+
+**第一次画出来是空的。** 形状从 `SliderThemeData` 上直接读四个刻度颜色，而
+`SliderTheme::of` 答出来的原始主题里这四个全是 `None`，形状就一笔不画地返回
+了。上游的 `_SliderState.build` 从不把原始数据交给形状：它先把整张默认表
+`copyWith` 进去，再把**已解析**的 `SliderThemeData` 往下传。这一步端口没有，
+而在此之前也没人发现，因为在此之前没有任何形状被调用过。
+
+于是 `ResolvedSlider` 多了一个 `shape_theme`：主题说了什么，加上这个端口能
+答的默认值。四个刻度颜色都是 `_SliderDefaultsM3` 的同一个 38%——标记是提示，
+不是要读的东西——但压在**四种不同的墨色**上，所以一个标记取哪一种，说明的是
+它在哪一侧、以及滑块还活着没有。
+
+`ResolvedSlider` 因此不再是 `Copy`。
+
+五条承重规则逐条强制改错：绘制器不挂上去、每个标记都画在最左端、拇指中心钉死
+在零、把原始主题而不是解析后的交给形状、默认值不折进去——五条全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 62 → 61（`tick_mark_shape`
+离队；四个刻度颜色本来就不在队里，形状自己读它们）。
+门：5660 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

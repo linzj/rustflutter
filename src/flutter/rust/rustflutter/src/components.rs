@@ -1427,6 +1427,60 @@ impl Slider {
     }
 }
 
+
+/// Draws a slider's tick marks, one per division boundary.
+///
+/// The shape does the work -- `RoundSliderTickMarkShape::paint` decides the
+/// colour from which side of the thumb a mark is on, and answers its own
+/// radius -- and this is what finally asks it to. It was ported, tested and
+/// unreachable: `SliderThemeData::tick_mark_shape` had no caller, because a
+/// slider with no divisions has no marks and this one had no divisions.
+struct SliderTickMarks {
+    shape: crate::slider_theme::SliderTickMarkShape,
+    theme: crate::slider_theme::SliderThemeData,
+    /// Where each mark sits along the track, as a fraction.
+    fractions: Vec<f32>,
+    /// Where the thumb is, as a fraction -- the shape asks for it in pixels,
+    /// but the width is not known until paint time.
+    thumb: f32,
+    direction: crate::direction::TextDirection,
+}
+
+impl crate::render::CustomPainter for SliderTickMarks {
+    fn paint(&self, canvas: &mut crate::engine::Canvas, size: crate::render::Size) {
+        let middle = size.height / 2.0;
+        let thumb_center = crate::render::Offset::new(self.thumb * size.width, middle);
+        for fraction in &self.fractions {
+            self.shape.paint(
+                canvas,
+                crate::render::Offset::new(fraction * size.width, middle),
+                &self.theme,
+                thumb_center,
+                self.direction,
+                // Upstream passes the enable animation's value; this slider
+                // has no disabled state yet, so the marks are always drawn at
+                // their enabled colour. Said here rather than left as a bare
+                // literal.
+                1.0,
+            );
+        }
+    }
+
+    fn should_repaint(&self, _old: &dyn crate::render::CustomPainter) -> bool {
+        // Cheap and always correct: the alternative is comparing a shape, a
+        // whole theme and a vector, which costs more than the redraw.
+        true
+    }
+
+    fn kind_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<SliderTickMarks>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl Component for Slider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let slider = ResolvedSlider::of(context);
@@ -1436,6 +1490,21 @@ impl Component for Slider {
         let width = self.width;
         let id = self.id;
         let handlers = self.gestures(&slider);
+        let ticks = self.tick_fractions();
+        let tick_marks = if ticks.is_empty() {
+            None
+        } else {
+            Some(std::rc::Rc::new(SliderTickMarks {
+                shape: slider.tick_mark_shape,
+                // The *resolved* theme, not what `SliderTheme::of` answers:
+                // the shape reads four colours off it and a raw theme leaves
+                // all four unset, so it would return without drawing.
+                theme: slider.shape_theme.clone(),
+                fractions: ticks,
+                thumb: value,
+                direction: crate::direction::direction_of(context),
+            }) as std::rc::Rc<dyn crate::render::CustomPainter>)
+        };
         let track = slider.inactive_track_color;
         let fill = slider.active_track_color;
         let knob = slider.thumb_color;
@@ -1461,7 +1530,9 @@ impl Component for Slider {
                         // thing you can see.
                         .with_size(width, hit_height)
                         .with_child(Center::new(
-                            Container::new()
+                            with_tick_marks(
+                                tick_marks.clone(),
+                                Container::new()
                                 .with_size(width, track_height)
                                 .with_color(track)
                                 .with_corner_radius(track_height / 2.0)
@@ -1482,11 +1553,30 @@ impl Component for Slider {
                                                 .with_corner_radius(thumb.shortest_side() / 2.0),
                                         ),
                                 ),
+                            ),
                         )),
                 )
                 .with_handlers(handlers.clone()),
             )
         })
+    }
+}
+
+/// Wraps the track in a [`crate::render::RenderCustomPaint`] whose
+/// *foreground* painter draws the tick marks -- over the filled part and
+/// under the thumb, which is the order upstream paints in.
+///
+/// With no painter the track is handed back untouched, so a continuous
+/// slider costs nothing for a feature it does not have.
+fn with_tick_marks(
+    painter: Option<std::rc::Rc<dyn crate::render::CustomPainter>>,
+    track: Container,
+) -> Box<dyn crate::render::RenderBox> {
+    match painter {
+        None => Box::new(track),
+        Some(painter) => Box::new(
+            crate::render::RenderCustomPaint::new(track).with_foreground_painter(painter),
+        ),
     }
 }
 
@@ -4798,6 +4888,8 @@ mod tests {
             thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
             thumb_size: Size::new(20.0, 20.0),
             allowed_interaction: mode,
+            tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
+            shape_theme: crate::slider_theme::SliderThemeData::new(),
         };
         let handlers = slider.gestures(&resolved);
         (seen, handlers)
@@ -4901,6 +4993,8 @@ mod tests {
             thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
             thumb_size: Size::new(20.0, 20.0),
             allowed_interaction: crate::slider_theme::SliderInteraction::TapAndSlide,
+            tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
+            shape_theme: crate::slider_theme::SliderThemeData::new(),
         };
         let handlers = slider.gestures(&resolved);
         assert!(handlers.on_tap.is_none());
@@ -5430,6 +5524,8 @@ mod tests {
             thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
             thumb_size: crate::render::Size::new(20.0, 20.0),
             allowed_interaction: SliderInteraction::TapAndSlide,
+            tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
+            shape_theme: crate::slider_theme::SliderThemeData::new(),
         };
         let handlers = slider.gestures(&resolved);
         let handler = handlers.on_tap.clone().expect("a tap handler");
@@ -5503,6 +5599,111 @@ mod tests {
         // that would look right either way, here so the pair says the
         // difference is the range and not the arithmetic.
         assert_eq!(filled_width(Slider::new(1, 0.25)), 50.0);
+    }
+
+    #[test]
+    fn a_discrete_slider_draws_a_mark_at_every_division_boundary() {
+        // `RoundSliderTickMarkShape::paint` was ported and tested long before
+        // this, and nothing ever called it: a slider with no divisions has no
+        // marks, and this one had no divisions until tick 244.
+        let circles = |slider: Slider| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                component(slider),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            crate::render::RenderBox::layout(
+                &mut root,
+                BoxConstraints {
+                    min_width: 0.0,
+                    max_width: 400.0,
+                    min_height: 0.0,
+                    max_height: 400.0,
+                },
+            );
+            let mut layers = crate::engine::LayerTree::new(600, 400);
+            crate::engine_test_stubs::reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(600.0, 400.0),
+                );
+                crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+            }
+            crate::engine_test_stubs::drawn()
+                .iter()
+                .filter_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::Circle { cx, .. } => Some(*cx),
+                    _ => None,
+                })
+                .collect::<Vec<f32>>()
+        };
+
+        // Four divisions, five marks, evenly spaced across a 200-wide track.
+        let marks = circles(Slider::new(1, 0.0).with_divisions(4));
+        assert_eq!(marks, vec![0.0, 50.0, 100.0, 150.0, 200.0]);
+
+        // And a continuous slider draws none at all, which is what makes the
+        // assertion above about divisions rather than about sliders.
+        assert!(circles(Slider::new(1, 0.5)).is_empty());
+    }
+
+    #[test]
+    fn a_mark_past_the_thumb_is_drawn_in_the_inactive_colour() {
+        // The shape decides this, and which side "past" is depends on the
+        // reading direction. What is checked here is that the *thumb's*
+        // position reaches the shape at all -- a painter that handed it a
+        // fixed centre would colour every mark the same.
+        let colours = |value: f32| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                component(
+                    Slider::new(1, value)
+                        .with_range(0.0, 4.0)
+                        .with_divisions(4),
+                ),
+            ));
+            let mut root = tree.build_render_tree().expect("a root");
+            crate::render::RenderBox::layout(
+                &mut root,
+                BoxConstraints {
+                    min_width: 0.0,
+                    max_width: 400.0,
+                    min_height: 0.0,
+                    max_height: 400.0,
+                },
+            );
+            let mut layers = crate::engine::LayerTree::new(600, 400);
+            crate::engine_test_stubs::reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(600.0, 400.0),
+                );
+                crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+            }
+            crate::engine_test_stubs::drawn()
+                .iter()
+                .filter_map(|call| match call {
+                    crate::engine_test_stubs::Drawn::Circle { argb, .. } => Some(*argb),
+                    _ => None,
+                })
+                .collect::<Vec<u32>>()
+        };
+
+        // At zero every mark but the first is past the thumb; at the far end
+        // none of them is. If the thumb's position never reached the shape
+        // the two lists would be identical.
+        let at_start = colours(0.0);
+        let at_end = colours(4.0);
+        assert_eq!(at_start.len(), 5);
+        assert_eq!(at_end.len(), 5);
+        assert_ne!(
+            at_start, at_end,
+            "the thumb's position reaches the shape: {at_start:?} then {at_end:?}"
+        );
     }
 }
 

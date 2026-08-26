@@ -2118,7 +2118,7 @@ impl RangeSliderValueIndicatorShape {
 /// [`SliderThemeData::year_2023`] -- the 2023 look is a thin round-thumbed
 /// track, the 2024 one a tall gapped track with a bar for a thumb. Both are
 /// here because the flag is upstream's and a caller that sets it means it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedSlider {
     pub track_height: f32,
     pub active_track_color: Color,
@@ -2135,6 +2135,26 @@ pub struct ResolvedSlider {
     /// default -- `defaultAllowedInteraction` -- is
     /// [`SliderInteraction::TapAndSlide`].
     pub allowed_interaction: SliderInteraction,
+    /// The shape each tick mark is drawn with. Upstream's Material 3 default
+    /// is `RoundSliderTickMarkShape`, and `noTickMark` is what a caller asks
+    /// for to keep a discrete slider unmarked -- so the shape is always
+    /// present and `Empty` is a shape rather than an absence.
+    pub tick_mark_shape: SliderTickMarkShape,
+    /// The theme the *shapes* are painted against: what the theme said, with
+    /// every default this port answers folded in.
+    ///
+    /// Upstream's `_SliderState.build` does the same and for the same reason
+    /// -- `RoundSliderTickMarkShape.paint` reads four colours straight off a
+    /// `SliderThemeData`, and a shape handed the raw theme finds them all
+    /// null and draws nothing. The first thing here that ever asked a shape
+    /// to paint found exactly that.
+    pub shape_theme: SliderThemeData,
+}
+
+/// Upstream's `withOpacity(0.38)`, which every tick mark colour wears: a
+/// mark is a hint about where the values are, not a thing to read.
+fn faded(color: Color) -> Color {
+    color.with_alpha((color.alpha() as f32 * 0.38).round() as u8)
 }
 
 impl ResolvedSlider {
@@ -2157,10 +2177,11 @@ impl ResolvedSlider {
                 .unwrap_or_else(|| shape.preferred_size()),
             other => other.preferred_size(true),
         };
+        let track_height = data
+            .track_height
+            .unwrap_or(if year_2023 { 4.0 } else { 16.0 });
         ResolvedSlider {
-            track_height: data
-                .track_height
-                .unwrap_or(if year_2023 { 4.0 } else { 16.0 }),
+            track_height,
             active_track_color: data.active_track_color.unwrap_or(colors.primary),
             inactive_track_color: data
                 .inactive_track_color
@@ -2174,6 +2195,33 @@ impl ResolvedSlider {
             thumb_shape,
             thumb_size,
             allowed_interaction: data.allowed_interaction.unwrap_or_default(),
+            tick_mark_shape: data.tick_mark_shape.unwrap_or(SliderTickMarkShape::Round(
+                RoundSliderTickMarkShape::default(),
+            )),
+            shape_theme: SliderThemeData {
+                // Upstream's `_SliderDefaultsM3`: the four tick colours are
+                // all the same 38% -- a mark is a hint, not a mark of its
+                // own -- over four *different* inks, so which one a mark
+                // takes says where it is and whether the slider is live.
+                track_height: Some(track_height),
+                active_tick_mark_color: Some(
+                    data.active_tick_mark_color
+                        .unwrap_or_else(|| faded(colors.on_primary)),
+                ),
+                inactive_tick_mark_color: Some(
+                    data.inactive_tick_mark_color
+                        .unwrap_or_else(|| faded(colors.on_surface_variant())),
+                ),
+                disabled_active_tick_mark_color: Some(
+                    data.disabled_active_tick_mark_color
+                        .unwrap_or_else(|| faded(colors.on_surface)),
+                ),
+                disabled_inactive_tick_mark_color: Some(
+                    data.disabled_inactive_tick_mark_color
+                        .unwrap_or_else(|| faded(colors.on_surface)),
+                ),
+                ..data.clone()
+            },
         }
     }
 }
