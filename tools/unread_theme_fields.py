@@ -64,6 +64,10 @@ does upstream's own widget read it? If it does, this port is missing a wire.
 import io
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rust_source import test_spans  # noqa: E402
 
 SRC = os.path.join('K:', os.sep, 'rustflutter', 'src', 'flutter', 'rust',
                    'rustflutter', 'src')
@@ -137,9 +141,15 @@ def paperwork(text, theme):
                 end = text.find('\n}\n', m.end())
             if end > 0:
                 spans.append((m.start(), end))
-    for m in re.finditer(r'^#\[cfg\(test\)\]', text, re.MULTILINE):
-        spans.append((m.start(), len(text)))
-        break
+    # The test modules, by brace count rather than "the first `#[cfg(test)]`
+    # to the end of the file". That shortcut is wrong in this crate -- test
+    # modules are interleaved with production code, and `component_themes.rs`
+    # has 96,000 characters of code after its first one. Tick 223 found the
+    # same assumption in three mutation screens and wrote `rust_source.py` to
+    # replace it; this ruler was written afterwards and made it again, which
+    # is how twelve `ThemeData` slots came to be reported unread while being
+    # read by the fallback every `XTheme::of` performs.
+    spans.extend(test_spans(text))
     return spans
 
 

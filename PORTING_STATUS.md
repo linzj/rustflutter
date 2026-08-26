@@ -17700,3 +17700,42 @@ hint_style: pick!(hint_style)
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 107 → 99**。
 门：5634 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 237 次：同一个洞，第四次踩到
+
+第 223 次发现三个筛子共用了一句已经过期的假设——"测试模块都在文件末尾，所以
+第一个 `#[cfg(test)]` 就够了"。那次修了三个，并写了 `tools/rust_source.py`
+去数括号。
+
+**这把尺子是那之后写的，又把同一个假设写了一遍。**`component_themes.rs` 第一个
+测试模块在 8377 行，而它后面还有九万多字符的产品代码——所有行号大于它的
+`XTheme::of` 全部看不见。后果是十二个 `ThemeData` 的组件主题槽被报成"没人
+读"，而它们正被上游要求的那次回落读着（`SearchBarTheme::of` 找不到继承的
+数据时，就落到 `ThemeData::of(context).search_bar_theme`）。
+
+先用一个只读的普查确认过：**48 个包装器，48 个都有回落，一个不缺。**队列错了
+不是端口错了。改用 `rust_source::test_spans` 之后：**99 → 83**。
+
+一句已经被改正过的假设，在一个新工具里重新出现——这说明修正应该落在**共用的
+那个函数**里，而不只是落在当时那三个调用点上。`rust_source.py` 本来就是为此
+写的；这次是它没有被用上。
+
+### 顺手接上 `ThemeData::card_color`
+
+卡片停在了组件主题自己的 surface 上，所以上游的最后一级缺了——而那一级
+**不是一个颜色**：`_CardDefaultsM3` 答 `surfaceContainerLow`，
+`_CardDefaultsM2` 答 `Theme.of(context).cardColor`。Material 2 的应用因此
+根本没法给卡片上色。
+
+测试读的是**卡片自己那层填充**：卡片先画阴影（同样大小的圆角矩形，半透明
+黑），再画自己的表面盖上去——所以取"最后一个非描边的填充"而不是"最大的那个"，
+按面积取会撞上平局。两条断言互为对照（M2 取到 77，M3 取不到 88），单独一条
+都不足以说明那一级在按版本分支。
+
+两条承重规则强制改错：**两条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 99 → 82**（16 条是尺子看见了
+本来就接着的线，1 条是真接上的）。
+门：5636 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

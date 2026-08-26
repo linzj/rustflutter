@@ -792,7 +792,18 @@ impl Component for Card {
         // Upstream `Card.build`: `color`, `elevation` and `shape` come off
         // `CardTheme.of(context)` before the control's own defaults.
         let card = crate::component_themes::CardTheme::of(context);
-        let surface = card.color.unwrap_or(theme.surface);
+        // Upstream's `color ?? cardTheme.color ?? defaults.color`, where the
+        // default is **not one colour**: `_CardDefaultsM3` answers
+        // `surfaceContainerLow` and `_CardDefaultsM2` answers
+        // `Theme.of(context).cardColor`. This stopped at the component
+        // theme's own surface, so `ThemeData::card_color` reached nothing and
+        // a Material 2 application could not colour its cards at all.
+        let material = crate::theme::ThemeData::of(context);
+        let surface = card.color.unwrap_or(if material.use_material3 {
+            material.color_scheme.surface_container_low()
+        } else {
+            material.card_color
+        });
         let outline = theme.outline;
         let radius = theme.radius;
         // Material 3's elevated card sits one step off the page; a theme that
@@ -4989,6 +5000,101 @@ mod tests {
         assert_eq!(
             leading_top(Some(ListTileTitleAlignment::TitleHeight), true, false),
             leading_top(Some(ListTileTitleAlignment::Center), true, false)
+        );
+    }
+
+    // -- A card's colour, tick 237 ------------------------------------------
+    //
+    // `tools/unread_theme_fields.py` found `ThemeData::card_color` reaching
+    // nothing. The card stopped at the component theme's own surface, so
+    // upstream's last step was missing -- and that step is **not one colour**:
+    // `_CardDefaultsM3` answers `surfaceContainerLow` and `_CardDefaultsM2`
+    // answers `Theme.of(context).cardColor`.
+
+    /// The colour a widget filled its own box with.
+    ///
+    /// The last unstroked fill, not the largest: a card paints its shadows
+    /// first -- as rounded rectangles of the same size, in translucent
+    /// black -- and then its own surface over them, so "largest" is a tie
+    /// and "last" is the answer.
+    fn own_fill(widget: AnyWidget) -> Color {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        calls
+            .iter()
+            .rev()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::RRect {
+                    argb,
+                    stroke: None,
+                    ..
+                }
+                | crate::engine_test_stubs::Drawn::Rect {
+                    argb,
+                    stroke: None,
+                    ..
+                } => Some(Color(*argb)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("nothing filled: {calls:?}"))
+    }
+
+    fn card_under(theme: crate::theme::ThemeData) -> Color {
+        own_fill(crate::theme::MaterialTheme::new(
+            theme,
+            component(Card::new(crate::framework::leaf(|| {
+                crate::widgets::SizedBox::new(10.0, 10.0)
+            }))),
+        ))
+    }
+
+    #[test]
+    fn a_material_two_card_takes_the_themes_card_colour() {
+        // The step that reached nothing. A distinctive colour, so the
+        // rectangle carrying it can only have come from that field.
+        let theme = crate::theme::ThemeData {
+            use_material3: false,
+            card_color: Color::argb(255, 0, 0, 77),
+            ..crate::theme::ThemeData::light()
+        };
+        assert_eq!(card_under(theme), Color::argb(255, 0, 0, 77));
+    }
+
+    #[test]
+    fn and_a_material_three_card_takes_the_schemes_container_instead() {
+        // Upstream's two default tables answer differently, so a card that
+        // read `cardColor` under Material 3 would be wrong there.
+        let theme = crate::theme::ThemeData {
+            use_material3: true,
+            card_color: Color::argb(255, 0, 0, 88),
+            ..crate::theme::ThemeData::light()
+        };
+        let painted = card_under(theme.clone());
+        assert_eq!(painted, theme.color_scheme.surface_container_low());
+        assert_ne!(
+            painted,
+            Color::argb(255, 0, 0, 88),
+            "and not the Material 2 field, which is what makes the pair a test"
         );
     }
 }
