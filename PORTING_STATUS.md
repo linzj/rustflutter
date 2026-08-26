@@ -18027,3 +18027,47 @@ unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，unread_theme_fields 62 → 61（`tick_mark_shape`
 离队；四个刻度颜色本来就不在队里，形状自己读它们）。
 门：5660 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+## 第 246 轮：拇指上的气泡
+
+四个数值指示器形状——矩形、圆角矩形、水滴、桨形——早就移植好了，连路径绘制
+器和各自的测试都在，`SliderComponentShape::paint_indicator` 也是专门为了让它
+们能被调用而写的。**没有任何东西调用过它。** 三个主题字段
+（`value_indicator_shape`、`show_value_indicator`、`value_indicator_text_style`）
+在自己的文书之外一个字都没被提过，因为滑块没有 `label`、没有"何时该显示"的
+规则、`ResolvedSlider` 也一个字段都没有。
+
+**上游把这个判断拆成两条，而且它们不一致。** `_buildValueIndicator` 决定指示
+器是不是被建出来（否则是一个缩成零的盒子），`shouldShowValueIndicatorWhenDragged`
+决定建出来的那个在拖动时是否可见。`AlwaysVisible` 正是证明这是两条规则的那个
+变体：它对第一条答是，对第二条答**否**——因为它本来就显示着。把两条折成一条，
+`AlwaysVisible` 和 `OnDrag` 就变成同一个变体了。测试因此是一张表：六个变体 ×
+（连续/分度）×（静止/拖动），二十四格。
+
+拖动状态是调用方的，跟的是 `Button::with_pressed` 而不是上游——上游放在
+`_SliderState._dragging` 里，而这个端口的每个 widget 都把瞬时状态交给持有它的
+人。这个差别就是 `with_dragging` 存在的全部理由，注释里直说。
+
+**没有文字就没有气泡**，这一条上游没有：它会给 null 的 label 排版并画出一个空
+气泡。空气泡比没有更糟，所以这里先要词。
+
+`with_tick_marks` 变成了 `over`：两个绘制器挂上去的方式一模一样，而且都不是
+总在——刻度要分度，气泡要标签加拖动。一个函数，于是"怎么挂"的修正是对两者的
+修正。测试里三处 `ResolvedSlider` 字面量收成了 `plain_slider()`：光这一轮解析
+器就多了三个字段，三份字面量就是三次编辑和三次写出不同滑块的机会。
+
+十条承重规则逐条强制改错，全红。其中两次是**我自己错了而不是代码错了**：
+第一版的气泡测试问的是一个**连续**滑块要不要显示，而默认就是
+`OnlyForDiscrete`——测试踩了它自己那一轮刚写下的规则；另一次把"气泡填充不设"
+写成了等价改写（`None.or(x).or(Some(y))`），读绿，重写后才红。顺手把气泡填充
+本身也纳入观察：`inverseSurface` 的底配 `onInverseSurface` 的字，两者是一起
+动的，只盯字色看不见一个已经不再被画出来的气泡。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 61 → 57。
+门：5663 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`SliderThemeData` 队列里剩下的五个（`range_track_shape`、
+`range_tick_mark_shape`、`range_value_indicator_shape`、`min_thumb_separation`、
+`thumb_selector`）全部在等 `RangeSlider`，那个 widget 这个端口还没有。

@@ -1229,6 +1229,18 @@ pub struct Slider {
     /// negative number is not a count.
     divisions: Option<u32>,
     width: f32,
+    /// Upstream's `label`: the words in the bubble over the thumb. Without
+    /// one there is nothing to put in a bubble, so there is no bubble --
+    /// which is why the three value-indicator theme fields reached nothing
+    /// until a slider could carry this.
+    label: Option<String>,
+    /// Whether a thumb is being dragged right now, which is most of what
+    /// decides whether the bubble is showing.
+    ///
+    /// Upstream keeps this in `_SliderState._dragging` and never asks the
+    /// caller. This port keeps a widget's transient state in whatever owns
+    /// it -- `Button::with_pressed` is the same shape -- so the caller says.
+    dragging: bool,
     /// What to do with a new value, if anything. The gestures that produce
     /// one are decided in `build`, where the theme can be read; this is the
     /// part that has to be captured before then.
@@ -1244,8 +1256,32 @@ impl Slider {
             max: 1.0,
             divisions: None,
             width: 200.0,
+            label: None,
+            dragging: false,
             on_change: None,
         }
+    }
+
+    /// Upstream's `label`.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// See [`Slider::dragging`].
+    pub fn with_dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
+        self
+    }
+
+    /// Whether a bubble is showing over the thumb.
+    ///
+    /// A label is required and upstream does not say so anywhere: its
+    /// `_ValueIndicatorRenderObjectWidget` lays out `widget.label` and a null
+    /// label paints an empty bubble. An empty bubble is worse than none, so
+    /// this port asks for the words first.
+    fn shows_indicator(&self, slider: &crate::slider_theme::ResolvedSlider) -> bool {
+        self.label.is_some() && slider.shows_value_indicator(self.divisions.is_some(), self.dragging)
     }
 
     /// Upstream's `min` and `max`.
@@ -1481,6 +1517,56 @@ impl crate::render::CustomPainter for SliderTickMarks {
     }
 }
 
+
+/// Draws the bubble over a slider's thumb.
+///
+/// The shape does all of it: `SliderComponentShape::paint_indicator` picks
+/// one of four painters, each of which sizes itself from the label and knows
+/// how far it may be shifted to stay inside the box. That method was written
+/// so those four could be reached, and until this nothing reached it.
+struct SliderValueIndicator {
+    shape: crate::slider_theme::SliderComponentShape,
+    theme: crate::slider_theme::SliderThemeData,
+    label: String,
+    style: TextStyle,
+    /// Where the thumb is, as a fraction -- the width is not known until
+    /// paint time.
+    thumb: f32,
+}
+
+impl crate::render::CustomPainter for SliderValueIndicator {
+    fn paint(&self, canvas: &mut crate::engine::Canvas, size: crate::render::Size) {
+        let mut label = crate::painting::TextPainter::new()
+            .text(self.label.clone(), self.style.clone());
+        // The bubble grows to its words rather than wrapping them, so the
+        // width it lays out against is no constraint at all.
+        label.layout(f32::INFINITY);
+        let center = crate::render::Offset::new(self.thumb * size.width, size.height / 2.0);
+        let geometry = crate::slider_theme::IndicatorPaintGeometry::new(
+            center,
+            size,
+            // Upstream's activation animation, at rest. This port has no
+            // animation for it yet: the bubble is either drawn or it is not,
+            // and `shows_indicator` has already decided which.
+            1.0,
+        );
+        self.shape
+            .paint_indicator(canvas, &geometry, &self.theme, &label);
+    }
+
+    fn should_repaint(&self, _old: &dyn crate::render::CustomPainter) -> bool {
+        true
+    }
+
+    fn kind_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<SliderValueIndicator>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl Component for Slider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let slider = ResolvedSlider::of(context);
@@ -1505,6 +1591,17 @@ impl Component for Slider {
                 direction: crate::direction::direction_of(context),
             }) as std::rc::Rc<dyn crate::render::CustomPainter>)
         };
+        let indicator = if self.shows_indicator(&slider) {
+            Some(std::rc::Rc::new(SliderValueIndicator {
+                shape: slider.value_indicator_shape,
+                theme: slider.shape_theme.clone(),
+                label: self.label.clone().unwrap_or_default(),
+                style: slider.value_indicator_text_style.clone(),
+                thumb: value,
+            }) as std::rc::Rc<dyn crate::render::CustomPainter>)
+        } else {
+            None
+        };
         let track = slider.inactive_track_color;
         let fill = slider.active_track_color;
         let knob = slider.thumb_color;
@@ -1525,12 +1622,14 @@ impl Component for Slider {
                 Alignment::CENTER_LEFT,
                 Pointer::new(
                     id,
-                    Container::new()
+                    over(
+                        indicator.clone(),
+                        Container::new()
                         // The thing you can hit should be bigger than the
                         // thing you can see.
                         .with_size(width, hit_height)
                         .with_child(Center::new(
-                            with_tick_marks(
+                            over(
                                 tick_marks.clone(),
                                 Container::new()
                                 .with_size(width, track_height)
@@ -1555,6 +1654,7 @@ impl Component for Slider {
                                 ),
                             ),
                         )),
+                    ),
                 )
                 .with_handlers(handlers.clone()),
             )
@@ -1568,14 +1668,21 @@ impl Component for Slider {
 ///
 /// With no painter the track is handed back untouched, so a continuous
 /// slider costs nothing for a feature it does not have.
-fn with_tick_marks(
+/// `child`, with `painter` drawn over it -- or just `child` when there is no
+/// painter.
+///
+/// Both of the slider's painters go on the same way and neither is always
+/// there: the tick marks want a slider with divisions, the value indicator a
+/// slider with a label that is being dragged. One function so that a
+/// correction to how a painter is attached is a correction to both.
+fn over(
     painter: Option<std::rc::Rc<dyn crate::render::CustomPainter>>,
-    track: Container,
+    child: impl crate::render::RenderBox + 'static,
 ) -> Box<dyn crate::render::RenderBox> {
     match painter {
-        None => Box::new(track),
+        None => Box::new(child),
         Some(painter) => Box::new(
-            crate::render::RenderCustomPaint::new(track).with_foreground_painter(painter),
+            crate::render::RenderCustomPaint::new(child).with_foreground_painter(painter),
         ),
     }
 }
@@ -4877,7 +4984,20 @@ mod tests {
         let recorder = std::rc::Rc::clone(&seen);
         let mut slider = Slider::new(1, 0.5);
         slider.on_change = Some(std::rc::Rc::new(move |value| recorder.set(Some(value))));
-        let resolved = crate::slider_theme::ResolvedSlider {
+        let mut resolved = plain_slider();
+        resolved.allowed_interaction = mode;
+        let handlers = slider.gestures(&resolved);
+        (seen, handlers)
+    }
+
+    /// A `ResolvedSlider` with nothing in it that draws, for the tests that
+    /// are about a rule rather than a picture.
+    ///
+    /// One function because the resolver keeps gaining fields -- three at
+    /// tick 246 alone -- and three copies of the same literal means three
+    /// edits and three chances to write a different slider in each.
+    fn plain_slider() -> crate::slider_theme::ResolvedSlider {
+        crate::slider_theme::ResolvedSlider {
             track_height: 4.0,
             active_track_color: Color::argb(255, 0, 0, 0),
             inactive_track_color: Color::argb(255, 0, 0, 0),
@@ -4887,12 +5007,89 @@ mod tests {
             ),
             thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
             thumb_size: Size::new(20.0, 20.0),
-            allowed_interaction: mode,
+            allowed_interaction: crate::slider_theme::SliderInteraction::TapAndSlide,
             tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
+            value_indicator_shape: crate::slider_theme::SliderComponentShape::Empty,
+            show_value_indicator: crate::slider_theme::ShowValueIndicator::OnlyForDiscrete,
+            value_indicator_text_style: TextStyle::default(),
             shape_theme: crate::slider_theme::SliderThemeData::new(),
-        };
-        let handlers = slider.gestures(&resolved);
-        (seen, handlers)
+        }
+    }
+
+    /// Every filled shape a slider draws, as colours. The value indicator's
+    /// bubble is a path, which this stub records by its bounding box.
+    fn fills_of(slider: Slider) -> Vec<u32> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(slider),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { argb, .. }
+                | crate::engine_test_stubs::Drawn::RRect { argb, .. }
+                | crate::engine_test_stubs::Drawn::Path { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every string a slider writes on the canvas, with the colour it was
+    /// written in.
+    fn paragraphs_of(slider: Slider) -> Vec<(String, u32)> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(slider),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. } => {
+                    Some((text.clone(), *argb))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn tap_at(handlers: &PointerHandlers, dx: f32) {
@@ -4982,20 +5179,7 @@ mod tests {
         // panic or silently do nothing, so an unwired slider is inert by
         // construction.
         let slider = Slider::new(1, 0.5);
-        let resolved = crate::slider_theme::ResolvedSlider {
-            track_height: 4.0,
-            active_track_color: Color::argb(255, 0, 0, 0),
-            inactive_track_color: Color::argb(255, 0, 0, 0),
-            thumb_color: Color::argb(255, 0, 0, 0),
-            track_shape: crate::slider_theme::SliderTrackShape::Rectangular(
-                crate::slider_theme::RectangularSliderTrackShape::default(),
-            ),
-            thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
-            thumb_size: Size::new(20.0, 20.0),
-            allowed_interaction: crate::slider_theme::SliderInteraction::TapAndSlide,
-            tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
-            shape_theme: crate::slider_theme::SliderThemeData::new(),
-        };
+        let resolved = plain_slider();
         let handlers = slider.gestures(&resolved);
         assert!(handlers.on_tap.is_none());
         assert!(handlers.on_drag_update.is_none());
@@ -5513,20 +5697,7 @@ mod tests {
             .with_range(0.0, 10.0)
             .with_divisions(4);
         slider.on_change = Some(std::rc::Rc::new(move |value| recorder.set(Some(value))));
-        let resolved = crate::slider_theme::ResolvedSlider {
-            track_height: 4.0,
-            active_track_color: Color::argb(255, 0, 0, 0),
-            inactive_track_color: Color::argb(255, 0, 0, 0),
-            thumb_color: Color::argb(255, 0, 0, 0),
-            track_shape: crate::slider_theme::SliderTrackShape::Rectangular(
-                crate::slider_theme::RectangularSliderTrackShape::default(),
-            ),
-            thumb_shape: crate::slider_theme::SliderComponentShape::Empty,
-            thumb_size: crate::render::Size::new(20.0, 20.0),
-            allowed_interaction: SliderInteraction::TapAndSlide,
-            tick_mark_shape: crate::slider_theme::SliderTickMarkShape::Empty,
-            shape_theme: crate::slider_theme::SliderThemeData::new(),
-        };
+        let resolved = plain_slider();
         let handlers = slider.gestures(&resolved);
         let handler = handlers.on_tap.clone().expect("a tap handler");
         // Three-tenths along a two-hundred-wide track.
@@ -5599,6 +5770,123 @@ mod tests {
         // that would look right either way, here so the pair says the
         // difference is the range and not the arithmetic.
         assert_eq!(filled_width(Slider::new(1, 0.25)), 50.0);
+    }
+
+    // -- The bubble over the thumb, tick 246 ---------------------------------
+    //
+    // All four value indicator shapes were ported, with their path painters
+    // and their own tests, and `SliderComponentShape::paint_indicator` was
+    // written so they could be reached. Nothing reached it. Three theme
+    // fields -- `value_indicator_shape`, `show_value_indicator` and
+    // `value_indicator_text_style` -- were named nowhere outside their own
+    // paperwork, because a slider had no label, no rule about when to show
+    // one, and no resolver field carrying any of the three.
+
+    #[test]
+    fn every_way_of_saying_when_the_bubble_shows_answers_differently() {
+        // The point of the field is that the six variants disagree, so all
+        // six are asked, in all four situations. Upstream splits the decision
+        // in two -- `_buildValueIndicator` builds an indicator or a shrunk
+        // box, `shouldShowValueIndicatorWhenDragged` shows a built one -- and
+        // `AlwaysVisible` is the variant that proves they are two rules: it
+        // builds *and* answers no to the second, because it is showing
+        // already. Folded into one question, it and `OnDrag` would be the
+        // same variant.
+        use crate::slider_theme::ShowValueIndicator::*;
+        let shows = |show, discrete, dragging| {
+            let mut resolved = plain_slider();
+            resolved.show_value_indicator = show;
+            resolved.shows_value_indicator(discrete, dragging)
+        };
+        let table = [
+            //                        continuous      discrete
+            //                      still   drag    still   drag
+            (Never, [false, false, false, false]),
+            (OnlyForDiscrete, [false, false, false, true]),
+            (OnlyForContinuous, [false, true, false, false]),
+            (Always, [false, true, false, true]),
+            (OnDrag, [false, true, false, true]),
+            (AlwaysVisible, [true, true, true, true]),
+        ];
+        for (show, expected) in table {
+            let actual = [
+                shows(show, false, false),
+                shows(show, false, true),
+                shows(show, true, false),
+                shows(show, true, true),
+            ];
+            assert_eq!(actual, expected, "{show:?}");
+        }
+    }
+
+    #[test]
+    fn a_dragged_slider_with_a_label_draws_a_bubble_saying_it() {
+        // The words reach the canvas, which is the whole chain: the label,
+        // the resolved text style, the shape the theme chose, and the fill
+        // that shape reads off the theme before it will draw anything.
+        let words = |slider: Slider| {
+            paragraphs_of(slider)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<String>>()
+        };
+
+        // Divisions on all three, because the default is `OnlyForDiscrete`
+        // and a continuous slider is not showing a bubble whatever else is
+        // true of it. The first draft of this test forgot that and asked for
+        // words from a slider its own rule had already refused.
+        let discrete = || Slider::new(1, 0.5).with_divisions(4);
+
+        assert_eq!(
+            words(discrete().with_label("50%").with_dragging(true)),
+            vec!["50%".to_string()]
+        );
+
+        // Not while it is still: `OnlyForDiscrete` builds the indicator, and
+        // it is a drag that shows a built one.
+        assert!(words(discrete().with_label("50%")).is_empty());
+
+        // And not without words to put in it. Upstream lays out a null label
+        // and draws an empty bubble; an empty bubble is worse than none.
+        assert!(words(discrete().with_dragging(true)).is_empty());
+    }
+
+    #[test]
+    fn the_label_is_drawn_in_the_colour_the_theme_resolved_for_it() {
+        // `value_indicator_text_style` had no reader at all. The Material 3
+        // table writes the label in `onInverseSurface` over a bubble filled
+        // with `inverseSurface` -- the two move together, and a label left in
+        // the theme's ordinary ink would be dark text on a dark bubble.
+        let scheme = crate::theme::ThemeData::light().color_scheme;
+        // The fill first: the shape reads `value_indicator_color` off the
+        // theme and returns without a stroke when it is unset, which is the
+        // trap the tick marks fell into one tick earlier. Watching the ink
+        // alone would not see a bubble that had stopped being drawn -- it
+        // would see no label either, and the label is what this asserts.
+        let fill = fills_of(
+            Slider::new(1, 0.5)
+                .with_divisions(4)
+                .with_label("50%")
+                .with_dragging(true),
+        );
+        assert!(
+            fill.contains(&scheme.inverse_surface().0),
+            "the bubble is filled with the theme's inverse surface"
+        );
+
+        let drawn = paragraphs_of(
+            Slider::new(1, 0.5)
+                .with_divisions(4)
+                .with_label("50%")
+                .with_dragging(true),
+        );
+        let (_, argb) = drawn.first().expect("the label");
+        assert_eq!(*argb, scheme.on_inverse_surface().0);
+        assert_ne!(
+            *argb,
+            scheme.on_surface.0,
+            "which is what it would be if the style never reached the painter"
+        );
     }
 
     #[test]

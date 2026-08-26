@@ -2140,6 +2140,14 @@ pub struct ResolvedSlider {
     /// for to keep a discrete slider unmarked -- so the shape is always
     /// present and `Empty` is a shape rather than an absence.
     pub tick_mark_shape: SliderTickMarkShape,
+    /// The bubble over the thumb, and the words in it.
+    ///
+    /// Three fields that reached nothing: all four indicator shapes were
+    /// ported with their painters and their tests, and no slider had a label,
+    /// a shape to draw one in, or a rule saying when to show it.
+    pub value_indicator_shape: SliderComponentShape,
+    pub show_value_indicator: ShowValueIndicator,
+    pub value_indicator_text_style: TextStyle,
     /// The theme the *shapes* are painted against: what the theme said, with
     /// every default this port answers folded in.
     ///
@@ -2155,6 +2163,39 @@ pub struct ResolvedSlider {
 /// mark is a hint about where the values are, not a thing to read.
 fn faded(color: Color) -> Color {
     color.with_alpha((color.alpha() as f32 * 0.38).round() as u8)
+}
+
+impl ResolvedSlider {
+    /// Whether a bubble is drawn over the thumb, given whether a thumb is
+    /// being dragged right now.
+    ///
+    /// Upstream asks this in two places and they do not agree, which is the
+    /// whole point of the field. `_buildValueIndicator` decides whether the
+    /// indicator is built at all; `shouldShowValueIndicatorWhenDragged`
+    /// decides whether a built one appears during a drag. `AlwaysVisible`
+    /// answers yes to the first and *no* to the second -- it is showing
+    /// already, so a drag changes nothing -- and `Never` answers no to both.
+    /// Folding the two into one question is how those two variants become
+    /// indistinguishable, so they are kept apart here.
+    pub fn shows_value_indicator(&self, is_discrete: bool, dragging: bool) -> bool {
+        let built = match self.show_value_indicator {
+            ShowValueIndicator::Never => false,
+            ShowValueIndicator::OnlyForDiscrete => is_discrete,
+            ShowValueIndicator::OnlyForContinuous => !is_discrete,
+            ShowValueIndicator::AlwaysVisible
+            | ShowValueIndicator::Always
+            | ShowValueIndicator::OnDrag => true,
+        };
+        if !built {
+            return false;
+        }
+        match self.show_value_indicator {
+            // Upstream's `shouldAlwaysShowValueIndicator`, which is this one
+            // variant and nothing else.
+            ShowValueIndicator::AlwaysVisible => true,
+            _ => dragging,
+        }
+    }
 }
 
 impl ResolvedSlider {
@@ -2180,6 +2221,31 @@ impl ResolvedSlider {
         let track_height = data
             .track_height
             .unwrap_or(if year_2023 { 4.0 } else { 16.0 });
+        // `_SliderDefaultsM3Year2023` against `_SliderDefaultsM3` again: the
+        // 2023 bubble is a drop pointing at the thumb, the current one a
+        // stadium that does not point at anything.
+        let value_indicator_shape = data.value_indicator_shape.unwrap_or(if year_2023 {
+            SliderComponentShape::DropIndicator(DropSliderValueIndicatorShape::new())
+        } else {
+            SliderComponentShape::RoundedRectIndicator(RoundedRectSliderValueIndicatorShape::new())
+        });
+        // Both tables write the label over the bubble's own fill, so the two
+        // move together: `onPrimary` over `primary`, `onInverseSurface` over
+        // `inverseSurface`.
+        let text_theme = ThemeData::of(context).text_theme.clone();
+        let value_indicator_text_style = data.value_indicator_text_style.clone().unwrap_or_else(
+            || {
+                let (role, ink) = if year_2023 {
+                    (text_theme.label_medium.clone(), colors.on_primary)
+                } else {
+                    (text_theme.label_large.clone(), colors.on_inverse_surface())
+                };
+                TextStyle {
+                    color: ink,
+                    ..role.unwrap_or_default()
+                }
+            },
+        );
         ResolvedSlider {
             track_height,
             active_track_color: data.active_track_color.unwrap_or(colors.primary),
@@ -2198,7 +2264,30 @@ impl ResolvedSlider {
             tick_mark_shape: data.tick_mark_shape.unwrap_or(SliderTickMarkShape::Round(
                 RoundSliderTickMarkShape::default(),
             )),
+            value_indicator_shape,
+            // Upstream's is a `const` local in `_SliderState.build` rather
+            // than a line in either defaults table: whichever table is in
+            // force, an unset field means the discrete case.
+            show_value_indicator: data
+                .show_value_indicator
+                .unwrap_or(ShowValueIndicator::OnlyForDiscrete),
+            value_indicator_text_style: value_indicator_text_style.clone(),
             shape_theme: SliderThemeData {
+                // The indicator shapes read their fill straight off the
+                // theme and return without drawing when it is unset, the
+                // same trap the tick marks fell into. `_SliderDefaultsM3`
+                // fills the bubble with `inverseSurface` -- the bubble is
+                // read, so it inverts -- where the 2023 table used
+                // `primary`.
+                value_indicator_color: Some(data.value_indicator_color.unwrap_or(
+                    if year_2023 {
+                        colors.primary
+                    } else {
+                        colors.inverse_surface()
+                    },
+                )),
+                value_indicator_shape: Some(value_indicator_shape),
+                value_indicator_text_style: Some(value_indicator_text_style.clone()),
                 // Upstream's `_SliderDefaultsM3`: the four tick colours are
                 // all the same 38% -- a mark is a hint, not a mark of its
                 // own -- over four *different* inks, so which one a mark
