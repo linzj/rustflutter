@@ -43,7 +43,7 @@ use rustflutter::render::StackPosition;
 use rustflutter::widgets::Stack;
 
 use rustflutter::popup::{PopupMenuButton as LiveMenuButton, PopupMenuOpener};
-use rustflutter::{OverlayHandle, dismiss_topmost_modal};
+use rustflutter::{dismiss_topmost_modal, OverlayHandle};
 
 use crate::app::ids;
 
@@ -184,9 +184,10 @@ impl StatefulComponent for MenuDemo {
         let context_item = anchored_menu(
             overlay.clone(),
             |open| {
-                component(ListTile::new("An item with a context menu").with_trailing(
-                    component(PopupMenuButton::new(base).on_press(open)),
-                ))
+                component(
+                    ListTile::new("An item with a context menu")
+                        .with_trailing(component(PopupMenuButton::new(base).on_press(open))),
+                )
             },
             {
                 let handle = handle.clone();
@@ -196,9 +197,10 @@ impl StatefulComponent for MenuDemo {
         let sectioned_item = anchored_menu(
             overlay.clone(),
             |open| {
-                component(ListTile::new("An item with a sectioned menu").with_trailing(
-                    component(PopupMenuButton::new(base + 1).on_press(open)),
-                ))
+                component(
+                    ListTile::new("An item with a sectioned menu")
+                        .with_trailing(component(PopupMenuButton::new(base + 1).on_press(open))),
+                )
             },
             {
                 let handle = handle.clone();
@@ -208,9 +210,10 @@ impl StatefulComponent for MenuDemo {
         let checklist_item = anchored_menu(
             overlay.clone(),
             |open| {
-                component(ListTile::new("An item with a checklist menu").with_trailing(
-                    component(PopupMenuButton::new(base + 2).on_press(open)),
-                ))
+                component(
+                    ListTile::new("An item with a checklist menu")
+                        .with_trailing(component(PopupMenuButton::new(base + 2).on_press(open))),
+                )
             },
             {
                 let handle = handle.clone();

@@ -37,7 +37,7 @@ use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisSize, RenderFle
 use rustflutter::widgets::{Align, Center};
 use rustflutter::{Tooltip, TooltipBubble};
 
-use crate::app::{GalleryState, ids};
+use crate::app::{ids, GalleryState};
 use crate::data::demos as catalog;
 
 use super::DemoState;
@@ -126,8 +126,10 @@ mod tests {
         // with its bottom edge. A target taller than twice the offset would
         // have the bubble overlapping it, which is upstream's arithmetic and
         // not a bug here.
-        let place =
-            rustflutter::tooltip::tooltip_placement(rustflutter::tooltip::DEFAULT_VERTICAL_OFFSET, true);
+        let place = rustflutter::tooltip::tooltip_placement(
+            rustflutter::tooltip::DEFAULT_VERTICAL_OFFSET,
+            true,
+        );
         let target = rustflutter::engine::Rect::xywh(200.0, 200.0, 48.0, 48.0);
         let at = place(
             target,
@@ -140,7 +142,10 @@ mod tests {
             centre_y + rustflutter::tooltip::DEFAULT_VERTICAL_OFFSET,
             "below the centre by the offset"
         );
-        assert_eq!(at.dy, target.bottom, "which for this button is exactly flush");
+        assert_eq!(
+            at.dy, target.bottom,
+            "which for this button is exactly flush"
+        );
 
         // And above, when asked: the same distance the other way, less the
         // bubble's own height, since it is placed by its top-left.

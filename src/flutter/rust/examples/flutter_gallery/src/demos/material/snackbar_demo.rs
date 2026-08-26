@@ -36,11 +36,11 @@
 
 use rustflutter::framework::BuildContext;
 use rustflutter::prelude::*;
+use rustflutter::scaffold_messenger::SnackBarClosedReason;
 use rustflutter::widgets::Center;
 use rustflutter::{Messenger, OverlayHandle, SnackBarDisplay};
-use rustflutter::scaffold_messenger::SnackBarClosedReason;
 
-use crate::app::{GalleryState, ids};
+use crate::app::{ids, GalleryState};
 
 use super::DemoState;
 

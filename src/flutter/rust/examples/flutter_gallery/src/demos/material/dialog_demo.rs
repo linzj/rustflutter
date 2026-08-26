@@ -42,14 +42,14 @@
 //!   all three modal variants share the card helper below, styled as the
 //!   framework's is (surface, radius 28, elevation 6).
 
-use rustflutter::framework::{BuildContext, single};
+use rustflutter::framework::{single, BuildContext};
+use rustflutter::modal_barrier::ModalBarrier;
 use rustflutter::prelude::*;
 use rustflutter::render::{
     Alignment, CrossAxisAlignment, MainAxisAlignment, MainAxisSize, RenderBox, RenderFlex,
 };
-use rustflutter::modal_barrier::ModalBarrier;
 use rustflutter::widgets::{Align, Center, Empty, Pointer, Row};
-use rustflutter::{DialogCloser, ModalHandle, OverlayHandle, show_dialog_with};
+use rustflutter::{show_dialog_with, DialogCloser, ModalHandle, OverlayHandle};
 
 use crate::app::{ids, GalleryState};
 use crate::data::demos::MATERIAL_ICONS;
@@ -120,70 +120,70 @@ struct DialogLauncher {
 
 impl Component for DialogLauncher {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-    let overlay = OverlayHandle::of(context);
-    let pressed = self.pressed;
-    let handle = self.gallery.clone();
-    let result = self.result;
-    let l10n = GalleryLocalizations::en();
-    let sections = [
-        (variant::ALERT, l10n.demo_alert_dialog_title()),
-        (variant::ALERT_TITLE, l10n.demo_alert_title_dialog_title()),
-        (variant::SIMPLE, l10n.demo_simple_dialog_title()),
-        (variant::FULLSCREEN, l10n.demo_fullscreen_dialog_title()),
-    ];
+        let overlay = OverlayHandle::of(context);
+        let pressed = self.pressed;
+        let handle = self.gallery.clone();
+        let result = self.result;
+        let l10n = GalleryLocalizations::en();
+        let sections = [
+            (variant::ALERT, l10n.demo_alert_dialog_title()),
+            (variant::ALERT_TITLE, l10n.demo_alert_title_dialog_title()),
+            (variant::SIMPLE, l10n.demo_simple_dialog_title()),
+            (variant::FULLSCREEN, l10n.demo_fullscreen_dialog_title()),
+        ];
 
-    let mut children: Vec<AnyWidget> = Vec::new();
-    for (index, (variant, title)) in sections.iter().enumerate() {
-        let id = ids::DEMO_LOCAL + index as u64;
-        let variant = *variant;
-        children.push(caption(*title));
-        // Upstream's centred `ElevatedButton`; the stage's column is
-        // start-aligned, so the button is centred by hand. Hand-wired rather
-        // than `Button::wired`, because the tap has to know its variant and
-        // `wired`'s action is a plain `fn`.
-        children.push(single(
-            component(
-                Button::new(id, l10n.dialog_show())
-                    .with_pressed(pressed == Some(id))
-                    .with_handlers(
-                        rustflutter::gestures::PointerHandlers::new()
-                            .with_tap({
-                                let handle = handle.clone();
-                                let overlay = overlay.clone();
-                                move |_| {
-                                    // Upstream's press pushes a route; this one
-                                    // puts a dialog in the overlay. Two presses
-                                    // give two, as two pushes would.
-                                    if let Some(overlay) = overlay.clone() {
-                                        show_variant(overlay, variant, handle.clone());
+        let mut children: Vec<AnyWidget> = Vec::new();
+        for (index, (variant, title)) in sections.iter().enumerate() {
+            let id = ids::DEMO_LOCAL + index as u64;
+            let variant = *variant;
+            children.push(caption(*title));
+            // Upstream's centred `ElevatedButton`; the stage's column is
+            // start-aligned, so the button is centred by hand. Hand-wired rather
+            // than `Button::wired`, because the tap has to know its variant and
+            // `wired`'s action is a plain `fn`.
+            children.push(single(
+                component(
+                    Button::new(id, l10n.dialog_show())
+                        .with_pressed(pressed == Some(id))
+                        .with_handlers(
+                            rustflutter::gestures::PointerHandlers::new()
+                                .with_tap({
+                                    let handle = handle.clone();
+                                    let overlay = overlay.clone();
+                                    move |_| {
+                                        // Upstream's press pushes a route; this one
+                                        // puts a dialog in the overlay. Two presses
+                                        // give two, as two pushes would.
+                                        if let Some(overlay) = overlay.clone() {
+                                            show_variant(overlay, variant, handle.clone());
+                                        }
                                     }
-                                }
-                            })
-                            .with_press_change({
-                                let handle = handle.clone();
-                                move |down| {
-                                    handle.set_state(move |s| {
-                                        s.pressed = if down { Some(id) } else { None };
-                                    });
-                                }
-                            }),
-                    ),
-            ),
-            |rendered| Box::new(Center::new(rendered)),
-        ));
-    }
+                                })
+                                .with_press_change({
+                                    let handle = handle.clone();
+                                    move |down| {
+                                        handle.set_state(move |s| {
+                                            s.pressed = if down { Some(id) } else { None };
+                                        });
+                                    }
+                                }),
+                        ),
+                ),
+                |rendered| Box::new(Center::new(rendered)),
+            ));
+        }
 
-    // Upstream's `_showInSnackBar`: the popped value, shown after a dialog
-    // closes. Inline rather than through `ScaffoldMessenger` (see the module
-    // header); the fullscreen route pops with void, so it sets no result.
-    if let Some(text) = result_text(result) {
-        children.push(component(Snackbar::new(
-            ids::DEMO_LOCAL + sections.len() as u64,
-            l10n.dialog_selected_option(text),
-        )));
-    }
+        // Upstream's `_showInSnackBar`: the popped value, shown after a dialog
+        // closes. Inline rather than through `ScaffoldMessenger` (see the module
+        // header); the fullscreen route pops with void, so it sets no result.
+        if let Some(text) = result_text(result) {
+            children.push(component(Snackbar::new(
+                ids::DEMO_LOCAL + sections.len() as u64,
+                l10n.dialog_selected_option(text),
+            )));
+        }
 
-    column(children, 12.0)
+        column(children, 12.0)
     }
 }
 
@@ -302,7 +302,12 @@ struct DialogButton {
 impl StatefulComponent for DialogButton {
     type State = bool;
 
-    fn build(&self, held: &bool, held_handle: StateHandle<bool>, _: &mut BuildContext) -> AnyWidget {
+    fn build(
+        &self,
+        held: &bool,
+        held_handle: StateHandle<bool>,
+        _: &mut BuildContext,
+    ) -> AnyWidget {
         let id = self.id;
         let option = self.option;
         let variant = self.variant;
@@ -613,7 +618,12 @@ struct FullscreenSave {
 impl StatefulComponent for FullscreenSave {
     type State = bool;
 
-    fn build(&self, held: &bool, held_handle: StateHandle<bool>, _: &mut BuildContext) -> AnyWidget {
+    fn build(
+        &self,
+        held: &bool,
+        held_handle: StateHandle<bool>,
+        _: &mut BuildContext,
+    ) -> AnyWidget {
         let closer = self.closer.clone();
         component(
             Button::new(

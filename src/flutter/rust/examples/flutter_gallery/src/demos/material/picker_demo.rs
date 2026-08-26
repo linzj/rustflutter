@@ -33,9 +33,9 @@
 
 use rustflutter::framework::{AnyWidget, BuildContext, StateHandle, StatefulComponent};
 use rustflutter::prelude::*;
-use rustflutter::OverlayHandle;
 use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex};
 use rustflutter::widgets::Center;
+use rustflutter::OverlayHandle;
 
 use crate::app::ids;
 
@@ -211,10 +211,7 @@ impl StatefulComponent for PickerDemo {
                     show_picker(TIME_BUTTON, OpenPicker::Time),
                 ),
                 caption("Date Range Picker"),
-                picker_section(
-                    range_label,
-                    show_picker(RANGE_BUTTON, OpenPicker::Range),
-                ),
+                picker_section(range_label, show_picker(RANGE_BUTTON, OpenPicker::Range)),
             ],
             16.0,
         );

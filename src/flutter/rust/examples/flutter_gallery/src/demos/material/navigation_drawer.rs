@@ -38,7 +38,7 @@ use rustflutter::prelude::*;
 use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisSize, RenderFlex};
 use rustflutter::widgets::{Align, Center, Pointer, SizedBox};
 
-use rustflutter::{DrawerControls, DrawerSide, OverlayHandle, show_drawer};
+use rustflutter::{show_drawer, DrawerControls, DrawerSide, OverlayHandle};
 
 use crate::app::ids;
 use crate::data::demos::{self as catalog, icon};
