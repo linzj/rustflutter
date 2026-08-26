@@ -959,6 +959,214 @@ impl TextInputClient for FieldClient {
 /// Tapping it starts editing; tapping another field stops it. What the reader
 /// types -- directly, or through an IME, or by pasting -- arrives as whole
 /// values and is drawn, composing text underlined.
+/// What a double tap or a long press selects -- upstream
+/// `RenderEditable.getWordAtOffset` and the two methods around it.
+///
+/// Five rules deep, and only the last of them is "the word boundary".
+///
+/// The boundary itself belongs to the engine's paragraph, so it arrives as a
+/// closure rather than being invented here -- the same shape upstream's
+/// `_textPainter.getWordBoundary` has.
+pub struct WordSelection<'a> {
+    pub text: &'a str,
+    /// Upstream's `obscureText`. An obscured field is **one word**.
+    pub obscured: bool,
+    /// Upstream's `readOnly`, which only Android's arm consults.
+    pub read_only: bool,
+    pub platform: crate::editable_text::TargetPlatform,
+}
+
+impl<'a> WordSelection<'a> {
+    /// Upstream's `_onlyWhitespace`: a range with nothing in it but space.
+    fn only_whitespace(&self, range: crate::services::text_boundary::TextRange) -> bool {
+        self.text
+            .get(range.start as usize..range.end as usize)
+            .map(|slice| {
+                slice.chars().all(|character| {
+                    crate::services::text_boundary::TextLayoutMetrics::is_whitespace(character)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `_getNextWord`: walk forward over whitespace runs until a
+    /// range has something in it.
+    pub fn next_word(
+        &self,
+        mut offset: isize,
+        boundary: &dyn Fn(isize) -> crate::services::text_boundary::TextRange,
+    ) -> Option<crate::services::text_boundary::TextRange> {
+        loop {
+            let range = boundary(offset);
+            if !range.is_valid() || range.is_collapsed() {
+                return None;
+            }
+            if !self.only_whitespace(range) {
+                return Some(range);
+            }
+            offset = range.end;
+        }
+    }
+
+    /// Upstream's `_getPreviousWord`, which walks the other way -- and note
+    /// `range.start - 1` rather than `range.start`: standing on a boundary
+    /// and asking again would answer the same range forever.
+    pub fn previous_word(
+        &self,
+        mut offset: isize,
+        boundary: &dyn Fn(isize) -> crate::services::text_boundary::TextRange,
+    ) -> Option<crate::services::text_boundary::TextRange> {
+        while offset >= 0 {
+            let range = boundary(offset);
+            if !range.is_valid() || range.is_collapsed() {
+                return None;
+            }
+            if !self.only_whitespace(range) {
+                return Some(range);
+            }
+            offset = range.start - 1;
+        }
+        None
+    }
+
+    /// Upstream's `getWordAtOffset`.
+    ///
+    /// `upstream_affinity` is upstream's `TextAffinity.upstream`, which "is
+    /// effectively -1 in text position": a caret between two characters
+    /// belongs to the one before it, and this is the line that turns that
+    /// into an index.
+    pub fn at_offset(
+        &self,
+        offset: isize,
+        upstream_affinity: bool,
+        boundary: &dyn Fn(isize) -> crate::services::text_boundary::TextRange,
+    ) -> crate::services::text_boundary::TextRange {
+        use crate::editable_text::TargetPlatform;
+        use crate::services::text_boundary::TextRange;
+
+        // "When long-pressing past the end of the text, we want a collapsed
+        // cursor." Selecting the last word would be a reasonable guess and is
+        // not what happens.
+        let length = self.text.len() as isize;
+        if offset >= length {
+            return TextRange {
+                start: length,
+                end: length,
+            };
+        }
+        // A password has no word boundaries a reader can see, so a double tap
+        // takes the lot rather than whatever run of bullets happens to sit
+        // between two spaces in the text underneath.
+        if self.obscured {
+            return TextRange {
+                start: 0,
+                end: length,
+            };
+        }
+
+        let word = boundary(offset);
+        let effective = if upstream_affinity {
+            offset - 1
+        } else {
+            offset
+        };
+
+        let on_whitespace = effective > 0
+            && self
+                .text
+                .get(effective as usize..)
+                .and_then(|rest| rest.chars().next())
+                .map(crate::services::text_boundary::TextLayoutMetrics::is_whitespace)
+                .unwrap_or(false);
+
+        if on_whitespace {
+            let previous = self.previous_word(word.start, boundary);
+            match self.platform {
+                TargetPlatform::IOS => {
+                    return match previous {
+                        Some(previous) => TextRange {
+                            start: previous.start,
+                            end: offset,
+                        },
+                        None => match self.next_word(word.start, boundary) {
+                            Some(next) => TextRange {
+                                start: offset,
+                                end: next.end,
+                            },
+                            // Neither behind nor ahead: nothing to select.
+                            None => TextRange {
+                                start: offset,
+                                end: offset,
+                            },
+                        },
+                    };
+                }
+                // **Only a read-only Android field.** Upstream's arm has no
+                // `break` when the field is editable, so it falls out of the
+                // switch to the same answer every other platform gives --
+                // reading it as "Android does the previous-word thing" is
+                // wrong.
+                TargetPlatform::Android if self.read_only => {
+                    return match previous {
+                        Some(previous) => TextRange {
+                            start: previous.start,
+                            end: offset,
+                        },
+                        // The single whitespace character, which is the one
+                        // thing there is to select.
+                        None => TextRange {
+                            start: offset,
+                            end: offset + 1,
+                        },
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        word
+    }
+
+    /// Upstream's `selectWordEdge`: a collapsed caret at whichever end of the
+    /// word the tap was nearer.
+    ///
+    /// The test is `position.offset <= word.start`, **not `<`**: a tap
+    /// exactly on the word's first character goes to the start, not to the
+    /// end of the word before it. And the end case carries **upstream
+    /// affinity**, which is what keeps the caret on this word's last line
+    /// rather than jumping to the start of the next one when the word ends at
+    /// a wrap.
+    pub fn word_edge(
+        offset: isize,
+        word: crate::services::text_boundary::TextRange,
+    ) -> (isize, bool) {
+        if offset <= word.start {
+            (word.start, false)
+        } else {
+            (word.end, true)
+        }
+    }
+
+    /// Upstream's `selectWordsInRange`, minus the hit testing: which way
+    /// round the two words end up.
+    ///
+    /// `isFromWordBeforeToWord = fromWord.start < toWord.end` decides whether
+    /// the selection runs from the first word's base to the second's extent
+    /// or the other way about -- which is what makes a *backwards* drag
+    /// select the same span a forwards one does, with base and extent swapped
+    /// so the handles stay on the ends the finger put them.
+    pub fn words_in_range(
+        from_word: crate::services::text_boundary::TextRange,
+        to_word: crate::services::text_boundary::TextRange,
+    ) -> (isize, isize) {
+        if from_word.start < to_word.end {
+            (from_word.start, to_word.end)
+        } else {
+            (from_word.end, to_word.start)
+        }
+    }
+}
+
 /// Upstream `RenderEditable`'s floating cursor: the caret detached from the
 /// text, following a finger.
 ///
@@ -1764,6 +1972,179 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- What a double tap selects, tick 275 ---------------------------------
+    //
+    // `getWordAtOffset` is five rules deep and only the last is "the word
+    // boundary".
+
+    /// A stand-in for the engine's paragraph: words are runs between spaces.
+    fn spaces_boundary(
+        text: &'static str,
+    ) -> impl Fn(isize) -> crate::services::text_boundary::TextRange {
+        move |offset: isize| {
+            let bytes = text.as_bytes();
+            let at = (offset.max(0) as usize).min(bytes.len().saturating_sub(1));
+            let is_space = |index: usize| bytes.get(index) == Some(&b' ');
+            let here = is_space(at);
+            let mut start = at;
+            while start > 0 && is_space(start - 1) == here {
+                start -= 1;
+            }
+            let mut end = at;
+            while end < bytes.len() && is_space(end) == here {
+                end += 1;
+            }
+            crate::services::text_boundary::TextRange {
+                start: start as isize,
+                end: end as isize,
+            }
+        }
+    }
+
+    fn selection(
+        obscured: bool,
+        read_only: bool,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> WordSelection<'static> {
+        WordSelection {
+            text: "one  two",
+            obscured,
+            read_only,
+            platform,
+        }
+    }
+
+    #[test]
+    fn past_the_end_of_the_text_is_a_collapsed_cursor() {
+        // Upstream's comment: "When long-pressing past the end of the text,
+        // we want a collapsed cursor." Selecting the last word would be a
+        // reasonable guess and is not what happens.
+        use crate::editable_text::TargetPlatform;
+        let words = selection(false, false, TargetPlatform::Android);
+        let boundary = spaces_boundary("one  two");
+        let past = words.at_offset(99, false, &boundary);
+        assert_eq!(past.start, 8);
+        assert_eq!(past.end, 8, "collapsed, not the last word");
+        assert!(past.is_collapsed());
+    }
+
+    #[test]
+    fn an_obscured_field_is_one_word() {
+        // A password has no word boundaries a reader can see, so a double tap
+        // takes the lot rather than whatever run of bullets happens to sit
+        // between two spaces in the text underneath.
+        use crate::editable_text::TargetPlatform;
+        let boundary = spaces_boundary("one  two");
+        let hidden = selection(true, false, TargetPlatform::Android);
+        let all = hidden.at_offset(1, false, &boundary);
+        assert_eq!((all.start, all.end), (0, 8));
+
+        let plain = selection(false, false, TargetPlatform::Android);
+        let word = plain.at_offset(1, false, &boundary);
+        assert_eq!((word.start, word.end), (0, 3), "just the first word");
+    }
+
+    #[test]
+    fn upstream_affinity_is_one_to_the_left() {
+        // "upstream affinity is effectively -1 in text position". A caret
+        // between two characters belongs to the one before it, and this is
+        // the line that turns that into an index -- so at the space after
+        // "one" the two affinities land on different sides of the boundary.
+        use crate::editable_text::TargetPlatform;
+        let words = selection(false, true, TargetPlatform::Android);
+        let boundary = spaces_boundary("one  two");
+        // Offset 3 is the first space, so downstream lands on whitespace and
+        // upstream lands on the last letter of the word before it. Offset 4
+        // would not do: both sides of it are spaces and the two affinities
+        // agree.
+        let downstream = words.at_offset(3, false, &boundary);
+        let upstream = words.at_offset(3, true, &boundary);
+        assert_ne!(
+            (downstream.start, downstream.end),
+            (upstream.start, upstream.end)
+        );
+    }
+
+    #[test]
+    fn only_a_read_only_android_field_reaches_back_for_the_previous_word() {
+        // Upstream's Android arm has **no `break`** when the field is
+        // editable, so it falls out of the switch to the same answer every
+        // other platform gives. Reading it as "Android does the
+        // previous-word thing" is wrong.
+        use crate::editable_text::TargetPlatform;
+        let boundary = spaces_boundary("one  two");
+        let read_only =
+            selection(false, true, TargetPlatform::Android).at_offset(4, false, &boundary);
+        assert_eq!((read_only.start, read_only.end), (0, 4), "back to the word");
+
+        let editable =
+            selection(false, false, TargetPlatform::Android).at_offset(4, false, &boundary);
+        assert_eq!(
+            (editable.start, editable.end),
+            (3, 5),
+            "the plain boundary: the run of spaces"
+        );
+    }
+
+    #[test]
+    fn ios_reaches_back_whether_the_field_is_editable_or_not() {
+        // The iOS arm does not consult `readOnly` at all, which is the other
+        // half of the previous test: the two platforms differ, and Android
+        // differs from itself.
+        use crate::editable_text::TargetPlatform;
+        let boundary = spaces_boundary("one  two");
+        for read_only in [true, false] {
+            let word =
+                selection(false, read_only, TargetPlatform::IOS).at_offset(4, false, &boundary);
+            assert_eq!((word.start, word.end), (0, 4), "read_only = {read_only}");
+        }
+    }
+
+    #[test]
+    fn the_other_platforms_fall_through_to_the_plain_boundary() {
+        use crate::editable_text::TargetPlatform;
+        let boundary = spaces_boundary("one  two");
+        for platform in [
+            TargetPlatform::Fuchsia,
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            let word = selection(false, true, platform).at_offset(4, false, &boundary);
+            assert_eq!((word.start, word.end), (3, 5), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn a_tap_on_the_first_character_of_a_word_goes_to_its_start() {
+        // `position.offset <= word.start`, not `<`. A tap exactly on the
+        // first character goes to the start of this word, not to the end of
+        // the one before it.
+        use crate::services::text_boundary::TextRange;
+        let word = TextRange { start: 4, end: 8 };
+        assert_eq!(WordSelection::word_edge(4, word), (4, false));
+        assert_eq!(WordSelection::word_edge(3, word), (4, false));
+        // Anywhere inside goes to the end, with upstream affinity -- which is
+        // what keeps the caret on this line when the word ends at a wrap.
+        assert_eq!(WordSelection::word_edge(5, word), (8, true));
+        assert_eq!(WordSelection::word_edge(8, word), (8, true));
+    }
+
+    #[test]
+    fn a_backwards_drag_selects_the_same_span_with_the_ends_swapped() {
+        // `isFromWordBeforeToWord = fromWord.start < toWord.end` is what
+        // makes the handles stay on the ends the finger put them.
+        use crate::services::text_boundary::TextRange;
+        let first = TextRange { start: 0, end: 3 };
+        let second = TextRange { start: 5, end: 8 };
+        assert_eq!(WordSelection::words_in_range(first, second), (0, 8));
+        assert_eq!(
+            WordSelection::words_in_range(second, first),
+            (8, 0),
+            "the same span, base and extent the other way about"
+        );
+    }
 
     // -- The floating cursor, tick 274 ---------------------------------------
     //

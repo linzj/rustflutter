@@ -19430,3 +19430,62 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 （`getEndpointsForSelection`、`selectionStartInViewport`、`selectionEndInViewport`）
 和按位置选词那一组（`selectWord`、`selectWordEdge`、`selectWordsInRange`、
 `getWordAtOffset`）。
+
+## 第 275 轮：双击选中的不一定是一个词
+
+`RenderEditable.getWordAtOffset` 有五层，只有最后一层是"词边界"。
+
+**一、越过文末是一个折叠的光标。** 上游自己的注释："长按越过文字末尾时，我们要的是
+一个折叠的光标。"选中最后一个词是个合理的猜测，而事实不是。
+
+**二、被遮蔽的字段就是一个词。** `TextSelection(baseOffset: 0, extentOffset:
+plainText.length)`。密码没有读者看得见的词边界，所以双击取全部，而不是取底下那串
+文字里恰好夹在两个空格之间的某一段圆点。
+
+**三、upstream affinity 就是减一。** "upstream affinity is effectively -1 in text
+position"——夹在两个字符之间的光标属于前一个还是后一个，就是这一行把它变成了下标。
+
+**四、落在空白上是一张平台表**，也是有意思的那一层：
+
+    iOS                前一个词；没有就往前取下一个词的末尾；再没有就折叠
+    Android 且只读     前一个词；没有就那一个空白字符本身
+    其余                落到下面的普通词边界
+
+**Android 那条臂在字段可编辑时没有 `break`**，于是它掉出 switch，得到和其它所有平台
+一样的答案。把它读成"Android 会往回取词"是错的：只有**只读**的 Android 字段才会。
+
+**五、否则就是词边界。**
+
+边界本身属于引擎的段落，所以它是以闭包的形式进来的，而不是在这里被发明出来——和上游
+`_textPainter.getWordBoundary` 是同一个形状。
+
+另外两个方法各有一处不是差一错误的差一：`selectWordEdge` 的判据是
+`position.offset <= word.start` 而**不是 `<`**，正落在首字符上要去这个词的**开头**,
+而不是去前一个词的末尾；末尾那一支带 **upstream affinity**，这正是词在折行处结尾时
+光标留在本行的原因。`selectWordsInRange` 用 `fromWord.start < toWord.end` 决定
+base/extent 的方向，这是**往回拖**能选中和往前拖一样的一段、而两个手柄还留在手指
+放它们的那一端的原因。
+
+### 两处是测试自己教的
+
+**第一版的 affinity 测试选错了位置。** 我取 `"one  two"` 的第 4 位——两侧都是空格,
+所以 offset 4 和 effective 3 都落在空白上、都走只读 Android 那条臂、都返回
+`(previous.start, offset)`,而那个 `offset` 两次都是 4。**两种 affinity 同解,不是
+因为规则不成立,而是因为我把探针放在了一个它照不出差别的地方。** 换到第 3 位——词和
+空格的交界——立刻分开。
+
+**第 8 条改错没有落红,它挂死了。** 把 `offset = range.start - 1` 改成
+`range.start`,`previous_word` 就在同一个全空白的 range 上原地打转。于是那个 `- 1`
+不是栅栏差一,**它是那个循环唯一的前进保证**——问一个边界"你之前是什么"必须先从那个
+边界上退下来一步,否则它永远答同一句话。
+
+八条承重规则逐条强制改错,七条落红、一条不再终止。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5814 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 还剩选区端点与视口那一组
+（`getEndpointsForSelection`、`selectionStartInViewport`、`selectionEndInViewport`）
+和固有尺寸那一组（`computeDryLayout`、`computeMaxIntrinsicWidth` 等）。
