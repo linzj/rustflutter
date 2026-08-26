@@ -1347,7 +1347,11 @@ impl StatefulComponent for TextField {
             state.value.text.clone(),
         );
         properties.flags.is_obscured = self.obscure;
-        properties.flags.is_focused = crate::focus::has_focus(id);
+        // A text field can hold the keyboard, so it says which -- "not
+        // focused" and not silence. That distinction is what the boolean here
+        // could not make.
+        properties.flags.focused =
+            crate::semantics::SemanticsTristate::of(crate::focus::has_focus(id));
         crate::semantics::semantics_with_action(
             crate::semantics::node_id_for(id),
             properties,

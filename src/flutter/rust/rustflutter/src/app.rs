@@ -220,6 +220,8 @@ mod semantics_bits {
     pub const IS_EXPANDED: i32 = 1 << 19;
     pub const HAS_REQUIRED_STATE: i32 = 1 << 20;
     pub const IS_REQUIRED: i32 = 1 << 21;
+    pub const HAS_SELECTED_STATE: i32 = 1 << 22;
+    pub const HAS_FOCUSED_STATE: i32 = 1 << 23;
 }
 
 /// Packs the framework's flags into the ABI's bit set.
@@ -256,8 +258,8 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     );
     set(&mut bits, flags.has_enabled_state, HAS_ENABLED_STATE);
     set(&mut bits, flags.is_enabled, IS_ENABLED);
-    set(&mut bits, flags.is_selected, IS_SELECTED);
-    set(&mut bits, flags.is_focused, IS_FOCUSED);
+
+
     // The three tristates, each a "has it" bit gating an "is it" one -- the
     // same encoding the checked pair uses, and for the same reason: "no
     // opinion" is a third thing and one bit says two.
@@ -266,6 +268,8 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
         (flags.toggled, HAS_TOGGLED_STATE, IS_TOGGLED),
         (flags.expanded, HAS_EXPANDED_STATE, IS_EXPANDED),
         (flags.required, HAS_REQUIRED_STATE, IS_REQUIRED),
+        (flags.selected, HAS_SELECTED_STATE, IS_SELECTED),
+        (flags.focused, HAS_FOCUSED_STATE, IS_FOCUSED),
     ] {
         set(&mut bits, state.is_set(), has);
         set(&mut bits, state == SemanticsTristate::True, is);

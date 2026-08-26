@@ -86,6 +86,12 @@ enum {
   kRfSemanticsIsExpanded = 1 << 19,
   kRfSemanticsHasRequiredState = 1 << 20,
   kRfSemanticsIsRequired = 1 << 21,
+  // Selected had only the "is it" bit, and the bridge turned its absence into
+  // the engine's kNone -- so "selectable and not selected" was unsayable, and
+  // a reader that would have said "not selected" said nothing. The pair says
+  // all three states, like every other tristate above.
+  kRfSemanticsHasSelectedState = 1 << 22,
+  kRfSemanticsHasFocusedState = 1 << 23,
 };
 
 typedef struct RfSemanticsNode {

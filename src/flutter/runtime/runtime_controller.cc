@@ -568,12 +568,10 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
                                 ? SemanticsTristate::kTrue
                                 : SemanticsTristate::kFalse;
     }
-    out.flags.isSelected = (in.flags & kRfSemanticsIsSelected) != 0
-                               ? SemanticsTristate::kTrue
-                               : SemanticsTristate::kNone;
-    out.flags.isFocused = (in.flags & kRfSemanticsIsFocused) != 0
-                              ? SemanticsTristate::kTrue
-                              : SemanticsTristate::kNone;
+    out.flags.isSelected = tristate(in.flags, kRfSemanticsHasSelectedState,
+                                    kRfSemanticsIsSelected);
+    out.flags.isFocused = tristate(in.flags, kRfSemanticsHasFocusedState,
+                                   kRfSemanticsIsFocused);
 
     const auto text = [](const char* value) {
       return value == nullptr ? std::string() : std::string(value);

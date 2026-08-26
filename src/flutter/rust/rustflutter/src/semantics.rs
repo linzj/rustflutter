@@ -383,7 +383,13 @@ pub struct SemanticsFlags {
     pub required: SemanticsTristate,
     pub has_enabled_state: bool,
     pub is_enabled: bool,
-    pub is_selected: bool,
+    /// Upstream's `isSelected`, a tristate.
+    ///
+    /// This was a boolean, and the bridge turned its false into the engine's
+    /// `kNone` -- so a tab that is selectable and currently is not crossed as
+    /// a node with no opinion, and a reader that would have said "not
+    /// selected" said nothing.
+    pub selected: SemanticsTristate,
     /// Upstream's `isInMutuallyExclusiveGroup`: one of a set where choosing
     /// this one un-chooses the others.
     ///
@@ -396,7 +402,10 @@ pub struct SemanticsFlags {
     /// Whether the keyboard is here. Separate from the framework's own focus
     /// because accessibility focus and keyboard focus are different things
     /// that happen to coincide most of the time.
-    pub is_focused: bool,
+    /// Upstream's `isFocused`, a tristate for the same reason
+    /// [`SemanticsFlags::selected`] is: a field that can hold the keyboard
+    /// and does not is "not focused", and a heading has no opinion.
+    pub focused: SemanticsTristate,
 }
 
 impl SemanticsFlags {
@@ -425,10 +434,10 @@ impl SemanticsFlags {
             required: self.required.merge(other.required),
             has_enabled_state: self.has_enabled_state || other.has_enabled_state,
             is_enabled: self.is_enabled || other.is_enabled,
-            is_selected: self.is_selected || other.is_selected,
+            selected: self.selected.merge(other.selected),
             is_in_mutually_exclusive_group: self.is_in_mutually_exclusive_group
                 || other.is_in_mutually_exclusive_group,
-            is_focused: self.is_focused || other.is_focused,
+            focused: self.focused.merge(other.focused),
         }
     }
 
@@ -473,9 +482,9 @@ impl SemanticsFlags {
             || (self.checked.is_checkable() && other.checked.is_checkable())
             || (self.toggled.is_set() && other.toggled.is_set())
             || (self.expanded.is_set() && other.expanded.is_set())
-            || both(self.is_selected, other.is_selected)
+            || (self.selected.is_set() && other.selected.is_set())
             || both(self.is_enabled, other.is_enabled)
-            || both(self.is_focused, other.is_focused)
+            || (self.focused.is_set() && other.focused.is_set())
     }
 }
 
@@ -1827,7 +1836,16 @@ impl SemanticsProperties {
             flags: SemanticsFlags {
                 checked: SemanticsCheckState::of(Some(selected)),
                 is_in_mutually_exclusive_group: true,
-                is_selected: apple && selected,
+                // Upstream's `RawRadio` sets `selected` on Apple
+                // platforms and leaves it null elsewhere. `apple && selected`
+                // was right about Apple's true case and could not tell
+                // Apple's *false* case from the other platforms' silence --
+                // which is the difference between "not selected" and nothing.
+                selected: if apple {
+                    SemanticsTristate::of(selected)
+                } else {
+                    SemanticsTristate::None
+                },
                 has_enabled_state: true,
                 is_enabled: true,
                 ..SemanticsFlags::default()
@@ -3586,6 +3604,142 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::Cell;
     use std::cmp::Ordering;
+
+    // -- "Not selected" is a thing to say, tick 268 --------------------------
+    //
+    // The bridge said it plainly:
+    //
+    //     out.flags.isSelected = (in.flags & kRfSemanticsIsSelected) != 0
+    //                                ? SemanticsTristate::kTrue
+    //                                : SemanticsTristate::kNone;
+    //
+    // False became "no opinion", not "false". A tab that is selectable and
+    // currently is not crossed as a node with nothing to say about it, and a
+    // reader that would have said "not selected" said nothing. `isFocused`
+    // was the same two lines below.
+
+    #[test]
+    fn every_upstream_tristate_is_one_here_now() {
+        // Seven of them upstream. `isChecked` is four-valued and the other
+        // six are three-valued, and this port had all seven as booleans until
+        // tick 266. A boolean can say *yes* and can say *nothing*; the state a
+        // reader most needs -- "no, and I am the kind of thing that can be" --
+        // is the one it cannot reach.
+        let plain = SemanticsFlags::default();
+        assert_eq!(plain.checked, SemanticsCheckState::None);
+        for state in [
+            plain.toggled,
+            plain.expanded,
+            plain.required,
+            plain.selected,
+            plain.focused,
+        ] {
+            assert_eq!(state, SemanticsTristate::None);
+        }
+        // `enabled` is still the older pair, which says the same three things
+        // in two fields -- so it is not on this list and is not a gap.
+        assert!(!plain.has_enabled_state);
+    }
+
+    #[test]
+    fn a_field_that_does_not_hold_the_keyboard_says_so() {
+        // Not silence: a text field is the kind of thing that can be focused,
+        // so "not focused" is a claim it should make. A heading is not, and
+        // makes none.
+        let field = SemanticsProperties::text_field("Name", "");
+        assert_eq!(
+            field.flags.focused,
+            SemanticsTristate::None,
+            "until something says which way"
+        );
+        let mut focused = field;
+        focused.flags.focused = SemanticsTristate::False;
+        assert!(focused.flags.focused.is_set());
+        assert_ne!(focused.flags.focused, SemanticsTristate::None);
+
+        assert_eq!(
+            SemanticsProperties::label("A heading").flags.focused,
+            SemanticsTristate::None
+        );
+    }
+
+    #[test]
+    fn an_unfocused_text_field_says_not_focused_rather_than_nothing() {
+        // The widget end of it, which the type's own tests cannot see: a
+        // field that only ever *raised* the flag when it held the keyboard
+        // would leave every other field silent, which is the collapse this
+        // tick is about, one level up.
+        set_enabled(true);
+        let nodes = describe_tree(
+            crate::framework::stateful(
+                crate::editable::TextField::new(7).with_placeholder("Name"),
+            ),
+            Size::new(300.0, 200.0),
+        );
+        set_enabled(false);
+        let field = nodes
+            .iter()
+            .find(|node| node.id == node_id_for(7))
+            .expect("the field is described");
+        assert!(
+            field.properties.flags.focused.is_set(),
+            "a field says which way it is, not nothing"
+        );
+        assert_eq!(field.properties.flags.focused, SemanticsTristate::False);
+    }
+
+    #[test]
+    fn a_focused_node_folded_into_an_unfocused_one_keeps_the_first_answer() {
+        // `merge` is first-wins for a tristate, and a union would have said
+        // "focused" about a row containing a focused field -- which is a
+        // different claim: the row is not what holds the keyboard.
+        let mut row = said("Row");
+        row.flags.focused = SemanticsTristate::False;
+        let mut field = said("Name");
+        field.flags.focused = SemanticsTristate::True;
+        assert_eq!(
+            row.flags.merge(&field.flags).focused,
+            SemanticsTristate::False
+        );
+        // And a row with no opinion takes the field's.
+        let plain = said("Row");
+        assert_eq!(
+            plain.flags.merge(&field.flags).focused,
+            SemanticsTristate::True
+        );
+    }
+
+    #[test]
+    fn the_two_new_pairs_reach_the_abi_and_false_still_raises_its_has_bit() {
+        use crate::app::pack_semantics_flags;
+        let plain = SemanticsFlags::default();
+        let mask = (1 << 13) | (1 << 14) | (1 << 22) | (1 << 23);
+        assert_eq!(pack_semantics_flags(&plain) & mask, 0);
+
+        // Selected: has-bit alone for false, both for true.
+        let unselected = SemanticsFlags {
+            selected: SemanticsTristate::False,
+            ..plain
+        };
+        assert_eq!(pack_semantics_flags(&unselected) & mask, 1 << 22);
+        let selected = SemanticsFlags {
+            selected: SemanticsTristate::True,
+            ..plain
+        };
+        assert_eq!(pack_semantics_flags(&selected) & mask, (1 << 22) | (1 << 13));
+
+        // Focused, the same shape on its own pair -- and the two do not share
+        // bits, which is what makes a focused unselected tab expressible.
+        let both = SemanticsFlags {
+            selected: SemanticsTristate::False,
+            focused: SemanticsTristate::True,
+            ..plain
+        };
+        assert_eq!(
+            pack_semantics_flags(&both) & mask,
+            (1 << 22) | (1 << 23) | (1 << 14)
+        );
+    }
 
     // -- A switch is not a checkbox, tick 267 --------------------------------
     //
@@ -6298,7 +6452,7 @@ mod tests {
         let mut checkable = said("a");
         checkable.flags.checked = SemanticsCheckState::Unchecked;
         let mut focused = said("b");
-        focused.flags.is_focused = true;
+        focused.flags.focused = SemanticsTristate::True;
         assert!(checkable.is_compatible_with(Some(&focused)));
         assert!(!checkable.flags.conflicts_with(&focused.flags));
     }
@@ -7642,9 +7796,23 @@ mod focus_block_tests {
         // The same fact in two properties, because the two screen readers read
         // different ones. Setting it everywhere is not neutral: TalkBack would
         // announce a radio as selected *and* checked.
+        // These two loops used to make the *same* assertion --
+        // `!flags.is_selected` -- about two different situations, because the
+        // boolean collapsed them. An unchosen radio on iOS is "not selected";
+        // a radio on Android has no opinion about being selected at all, and
+        // TalkBack announcing it as both selected and checked is what that
+        // silence is protecting against.
         for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
-            assert!(radio(true, platform).flags.is_selected, "{platform:?}");
-            assert!(!radio(false, platform).flags.is_selected, "{platform:?}");
+            assert_eq!(
+                radio(true, platform).flags.selected,
+                crate::semantics::SemanticsTristate::True,
+                "{platform:?}"
+            );
+            assert_eq!(
+                radio(false, platform).flags.selected,
+                crate::semantics::SemanticsTristate::False,
+                "{platform:?}: not selected, which is a thing to say"
+            );
         }
         for platform in [
             TargetPlatform::Android,
@@ -7652,9 +7820,15 @@ mod focus_block_tests {
             TargetPlatform::Linux,
             TargetPlatform::Windows,
         ] {
-            assert!(
-                !radio(true, platform).flags.is_selected,
+            assert_eq!(
+                radio(true, platform).flags.selected,
+                crate::semantics::SemanticsTristate::None,
                 "{platform:?}: checked is the whole of it here"
+            );
+            assert_eq!(
+                radio(false, platform).flags.selected,
+                crate::semantics::SemanticsTristate::None,
+                "{platform:?}: and silence, not a claim of not-selected"
             );
         }
     }

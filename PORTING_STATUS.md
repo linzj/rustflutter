@@ -19103,3 +19103,46 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 `hasImplicitScrolling`、`isAccessibilityFocusBlocked`、`isMultiline`、
 `isKeyboardKey` 按这个端口自己写在 ABI 头文件里的取舍标准（"改变读屏器说什么，
 而不是某个平台怎么排它自己的树"）本就在范围之外。
+
+## 第 268 轮："未选中"是一句要说的话
+
+桥接把话说得很直白，而且从这个 flag 存在起就一直这样：
+
+    out.flags.isSelected = (in.flags & kRfSemanticsIsSelected) != 0
+                               ? SemanticsTristate::kTrue
+                               : SemanticsTristate::kNone;
+
+**false 变成了"没有意见"，不是"false"。** 于是一个可选中、当前未选中的标签页，
+或者一行可以被选中而还没被选中的列表项，过界之后成了一个对"选中"无话可说的节点
+——本该说"未选中"的读屏器什么都没说。`isFocused` 在它下面两行，一模一样。
+
+这是同一颗螺丝的第三圈。`isChecked` 要四个值（第 266 轮），`isToggled`、
+`isExpanded`、`isRequired` 要三个（第 267 轮），这两个是上游七个三值字段里最后
+两个仍是布尔的。每一次的形态都相同：**一个布尔能说"是"，也能说"什么都不说"，而
+读屏器最需要的那个状态——"否，而且我是那种可以是的东西"——恰恰是它够不到的那个。**
+
+单选按钮的平台规则就此严丝合缝地落下来。上游的 `RawRadio` 只在 Apple 平台设
+`selected`，别处留空，端口把它写成 `is_selected: apple && selected`——对 Apple 的
+true 分支是对的，而**分不开 Apple 的 false 分支和其他平台的沉默**。三值能说全三件事。
+
+**那条测试自己就是证据。** `but_only_the_apple_platforms_say_it_a_second_time_as_selected`
+里两个循环写着**同一个断言**（`!flags.is_selected`），说的却是两种不同的情形：
+iOS 上一个没被选中的单选按钮是"未选中"，Android 上一个单选按钮**对"选中"这件事
+根本没有意见**——而 TalkBack 会把它同时念成 selected 和 checked，那份沉默正是在
+防这个。现在两个循环各说各的。
+
+六条承重规则逐条强制改错。第五、六条第一次读绿，两条都是**没人看着的规则**：
+widget 只在持有键盘时才升起那个 flag（于是其他每一个字段都沉默——就是这一轮讲的
+那个坍缩，往上一层），以及 `focused` 的合并退回并集（于是一个包含聚焦字段的行会
+自称聚焦，而行不是持有键盘的那个）。各补了一条测试之后才红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5772 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`SemanticsFlags` 相对引擎还差五个，而这五个都不在这个端口写在 ABI
+头文件里的取舍标准之内（"改变读屏器说什么，而不是某个平台怎么排它自己的树"）：
+`scopesRoute`、`hasImplicitScrolling`、`isAccessibilityFocusBlocked` 属于后者;
+`isMultiline` 和 `isKeyboardKey` 介于两者之间，值得单独判一次而不是顺手补上。
+`isHidden` 和 `namesRoute` 是真正还欠的两个。
