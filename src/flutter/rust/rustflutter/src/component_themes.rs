@@ -6299,6 +6299,26 @@ pub struct ResolvedTabBar {
     pub label_padding: EdgeInsets,
     pub label_style: Option<TextStyle>,
     pub unselected_label_style: Option<TextStyle>,
+    /// A whole decoration to draw instead of the underline. `None` means
+    /// "draw the underline from [`ResolvedTabBar::indicator_color`] and the
+    /// weight" -- upstream has no default for it either.
+    pub indicator: Option<crate::decoration::Decoration>,
+    /// Where the tabs sit in a bar wider than they are.
+    ///
+    /// Upstream's default depends on **whether the bar scrolls**, and on the
+    /// Material version: a scrolling bar starts at the leading edge, with an
+    /// offset under Material 3 that Material 2 does not have, and a bar that
+    /// does not scroll fills.
+    pub tab_alignment: TabAlignment,
+    /// How the indicator travels between tabs. Upstream's default depends on
+    /// [`ResolvedTabBar::indicator_size`]: an indicator as wide as its label
+    /// stretches and settles (`Elastic`) while one as wide as the whole tab
+    /// slides (`Linear`) -- the elastic feel reads as the underline reaching
+    /// for the next word, which only makes sense when it is word-shaped.
+    pub indicator_animation: TabIndicatorAnimation,
+    /// `None` leaves the ambient text scale alone, which is what upstream
+    /// passing it into `MediaQuery.copyWith` amounts to.
+    pub text_scaler: Option<crate::painting::TextScaler>,
 }
 
 impl ResolvedTabBar {
@@ -6310,8 +6330,18 @@ impl ResolvedTabBar {
     pub const UNSELECTED_ALPHA: u8 = 0xB2;
 
     pub fn of(context: &mut BuildContext) -> ResolvedTabBar {
+        ResolvedTabBar::of_bar(context, false)
+    }
+
+    /// [`ResolvedTabBar::of`] for a bar that knows whether it scrolls, which
+    /// two of upstream's defaults depend on.
+    pub fn of_bar(context: &mut BuildContext, scrollable: bool) -> ResolvedTabBar {
         let data = TabBarTheme::of(context);
-        let scheme = ThemeData::of(context).color_scheme;
+        let material = ThemeData::of(context);
+        let scheme = material.color_scheme;
+        // Upstream's Material 3 default is `TabBarIndicatorSize.tab`, and
+        // it is resolved first because the animation's default reads it.
+        let indicator_size = data.indicator_size.unwrap_or(TabBarIndicatorSize::Tab);
         ResolvedTabBar {
             // The indicator has a colour of its own and does not follow the
             // label: upstream's `_TabsPrimaryDefaultsM3.indicatorColor` is the
@@ -6339,14 +6369,28 @@ impl ResolvedTabBar {
             divider_height: data
                 .divider_height
                 .unwrap_or(ResolvedTabBar::DIVIDER_HEIGHT),
-            // Upstream's Material 3 default is `TabBarIndicatorSize.tab`.
-            indicator_size: data.indicator_size.unwrap_or(TabBarIndicatorSize::Tab),
+            indicator_size,
             label_padding: data
                 .label_padding
                 .map(|padding| padding.resolve(crate::direction::current_direction()))
                 .unwrap_or(EdgeInsets::symmetric(16.0, 0.0)),
             label_style: data.label_style.clone(),
             unselected_label_style: data.unselected_label_style.clone(),
+            indicator: data.indicator.clone(),
+            tab_alignment: data.tab_alignment.unwrap_or(if scrollable {
+                if material.use_material3 {
+                    TabAlignment::StartOffset
+                } else {
+                    TabAlignment::Start
+                }
+            } else {
+                TabAlignment::Fill
+            }),
+            indicator_animation: data.indicator_animation.unwrap_or(match indicator_size {
+                TabBarIndicatorSize::Label => TabIndicatorAnimation::Elastic,
+                TabBarIndicatorSize::Tab => TabIndicatorAnimation::Linear,
+            }),
+            text_scaler: data.text_scaler,
         }
     }
 
@@ -16169,6 +16213,149 @@ mod tests {
             themed.exit_duration,
             std::time::Duration::from_millis(66)
         );
+    }
+
+    // -- Four tab bar theme fields that reached nothing, tick 238 -----------
+    //
+    // Two of the four have defaults that depend on something the *bar* knows
+    // and the theme does not, so the resolver has to be told: a scrolling bar
+    // aligns differently from one that fills, and the indicator's animation
+    // follows the indicator's size.
+
+    fn tabs_under<T: 'static>(
+        data: TabBarThemeData,
+        material: crate::theme::ThemeData,
+        scrollable: bool,
+        read: impl Fn(ResolvedTabBar) -> T + 'static,
+    ) -> T {
+        read_in(
+            move |child| {
+                crate::theme::MaterialTheme::new(
+                    material.clone(),
+                    TabBarTheme::new(data.clone(), child),
+                )
+            },
+            move |context| read(ResolvedTabBar::of_bar(context, scrollable)),
+        )
+    }
+
+    #[test]
+    fn where_the_tabs_sit_depends_on_scrolling_and_on_the_material_version() {
+        let alignment = |scrollable, material3| {
+            tabs_under(
+                TabBarThemeData::default(),
+                crate::theme::ThemeData {
+                    use_material3: material3,
+                    ..crate::theme::ThemeData::light()
+                },
+                scrollable,
+                |resolved| resolved.tab_alignment,
+            )
+        };
+        // A bar that does not scroll fills, whichever version it is.
+        assert_eq!(alignment(false, true), TabAlignment::Fill);
+        assert_eq!(alignment(false, false), TabAlignment::Fill);
+        // A scrolling one starts, with the offset Material 3 asks for and
+        // Material 2 does not -- three answers from one field.
+        assert_eq!(alignment(true, true), TabAlignment::StartOffset);
+        assert_eq!(alignment(true, false), TabAlignment::Start);
+
+        // And the theme's own value beats all four.
+        assert_eq!(
+            tabs_under(
+                TabBarThemeData {
+                    tab_alignment: Some(TabAlignment::Center),
+                    ..TabBarThemeData::default()
+                },
+                crate::theme::ThemeData::light(),
+                true,
+                |resolved| resolved.tab_alignment,
+            ),
+            TabAlignment::Center
+        );
+    }
+
+    #[test]
+    fn the_indicators_animation_follows_the_indicators_size() {
+        // An indicator as wide as its label stretches and settles; one as
+        // wide as the whole tab slides. The elastic feel reads as the
+        // underline reaching for the next word, which only makes sense when
+        // it is word-shaped.
+        let animation = |size| {
+            tabs_under(
+                TabBarThemeData {
+                    indicator_size: Some(size),
+                    ..TabBarThemeData::default()
+                },
+                crate::theme::ThemeData::light(),
+                false,
+                |resolved| resolved.indicator_animation,
+            )
+        };
+        assert_eq!(
+            animation(TabBarIndicatorSize::Label),
+            TabIndicatorAnimation::Elastic
+        );
+        assert_eq!(
+            animation(TabBarIndicatorSize::Tab),
+            TabIndicatorAnimation::Linear
+        );
+
+        // And the theme's own value beats the size-derived one.
+        assert_eq!(
+            tabs_under(
+                TabBarThemeData {
+                    indicator_size: Some(TabBarIndicatorSize::Label),
+                    indicator_animation: Some(TabIndicatorAnimation::Linear),
+                    ..TabBarThemeData::default()
+                },
+                crate::theme::ThemeData::light(),
+                false,
+                |resolved| resolved.indicator_animation,
+            ),
+            TabIndicatorAnimation::Linear
+        );
+    }
+
+    #[test]
+    fn the_indicator_and_the_text_scaler_have_no_defaults_to_invent() {
+        // `None` is the answer for both: a null indicator means "draw the
+        // underline from the colour and the weight", and a null scaler means
+        // "leave the ambient one alone" -- which is what upstream passing it
+        // into `MediaQuery.copyWith` amounts to.
+        let plain = tabs_under(
+            TabBarThemeData::default(),
+            crate::theme::ThemeData::light(),
+            false,
+            |resolved| (resolved.indicator.is_some(), resolved.text_scaler),
+        );
+        assert_eq!(plain, (false, None));
+
+        let themed = tabs_under(
+            TabBarThemeData {
+                indicator: Some(crate::decoration::Decoration::Box(
+                    crate::decoration::BoxDecoration::new()
+                        .with_fill(crate::render::Fill::Solid(Color::argb(255, 0, 0, 99))),
+                )),
+                text_scaler: Some(crate::painting::TextScaler::linear(2.0)),
+                ..TabBarThemeData::default()
+            },
+            crate::theme::ThemeData::light(),
+            false,
+            |resolved| (resolved.indicator.clone(), resolved.text_scaler),
+        );
+        match themed.0 {
+            Some(crate::decoration::Decoration::Box(box_decoration)) => {
+                match &box_decoration.fill {
+                    Some(crate::render::Fill::Solid(color)) => {
+                        assert_eq!(*color, Color::argb(255, 0, 0, 99))
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(themed.1, Some(crate::painting::TextScaler::linear(2.0)));
     }
 }
 

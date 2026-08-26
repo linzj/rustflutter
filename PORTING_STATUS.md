@@ -17739,3 +17739,34 @@ unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 99 → 82**（16 条是尺子看见了
 本来就接着的线，1 条是真接上的）。
 门：5636 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 238 次：两个默认取决于解析器看不到的东西
+
+`ResolvedTabBar` 带的是颜色、分隔线、指示器尺寸、标签内边距和两个标签样式。
+`indicator`、`tabAlignment`、`textScaler`、`indicatorAnimation` 四个到不了。
+
+**其中两个的默认取决于"栏自己知道、主题不知道"的东西**，所以解析器必须被
+告知——这是这一批和前几批不同的地方：
+
+| 字段 | 上游的默认 |
+| --- | --- |
+| `tabAlignment` | `isScrollable ? (M3 ? startOffset : start) : fill` |
+| `indicatorAnimation` | `indicatorSize == label ? elastic : linear` |
+
+第一条是**一个字段三个答案**：不滚动的栏铺满；滚动的栏靠前，而 Material 3
+比 Material 2 多一个起始偏移。测试把四种组合都查了。
+
+第二条的理由值得写下来：**指示器和标签一样宽时是"弹性"，和整个 tab 一样宽时
+是"线性"**——弹性的手感读起来像下划线在够向下一个词，而那只在它是词形的时候
+才说得通。
+
+**另外两个没有默认可编。**`indicator` 为 null 的意思是"用颜色和粗细画那条
+下划线"，`textScaler` 为 null 的意思是"别动环境里的那个"——上游把它直接传进
+`MediaQuery.copyWith` 就是这个意思。两处 `None` 都有测试。
+
+四条承重规则逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 82 → 78**。
+门：5639 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
