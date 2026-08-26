@@ -18517,3 +18517,61 @@ stale_engines 全部不落后，unread_theme_fields 20 → 12。
 `help_text_style` 一条。`displayLarge`/`displayMedium` 已经离队，剩下的
 `TextTheme` 两个角色里，`displaySmall` 上游**根本没有控件读它**（已在第 253 轮
 记下），`headlineMedium` 要等中号应用栏。
+
+## 第 257 轮：上下午的切换、表盘，和它们上面那行字
+
+九个字段，一个解析器都没有。
+
+    字段                  M2                          M3
+    dayPeriodColor       选中: primary @              选中: tertiaryContainer
+                         dark?0.24:0.12              未选中: **透明**
+                         未选中: **透明**
+    dayPeriodBorderSide  alphaBlend(onSurface38,     outline
+                         surface)
+    dayPeriodShape       半径 4                       半径 8
+    dayPeriodTextColor   选中 ? primary               选中 ? onTertiaryContainer
+                         : onSurface @ 0.60          : onSurfaceVariant
+    dayPeriodTextStyle   titleMedium + 该颜色         titleMedium + 该颜色
+    dialBackgroundColor  onSurface @ dark?0.12:0.08  surfaceContainerHighest
+    dialHandColor        primary                     primary
+    dialTextColor        选中 ? surface               选中 ? onPrimary
+                         : onSurface                 : onSurface
+    dialTextStyle        bodyLarge                   bodyLarge
+    helpTextStyle        labelSmall，平的              labelMedium @ onSurfaceVariant
+
+**未选中的那一半在两张表里都是透明的**，而上游在每张表里都重复了同一句理由：
+未选中的一半应当与它身后的对话框一致，透明做到了这一点"而不必重复一遍，也让
+暗色模式下可选的高度叠色仍然可见"。从对话框抄一份颜色过来，会多出一个要一起改
+的地方，而且会压在高度叠色**之上**而不是之下。
+
+**形状和边是两个总被合起来用的字段。** 上游是
+`(theme.dayPeriodShape ?? defaults).copyWith(side: theme.dayPeriodBorderSide ?? defaults)`
+——主题可以只指定圆角或只指定描边，赢的那个形状会带上赢的那条边。M3 的表在自己的
+getter 里又写了一遍 `copyWith`，与之重复且无害。
+
+**M2 的描边是混到表面上的，不是留成半透明的。** 切换按钮压在对话框上，一条透光
+的描边会把高度叠色放在它身后的东西吸上来。M3 直接点名 `outline`，不需要混合。
+
+**`dialTextColor` 选中时最耐人寻味**：M2 是 `surface`，M3 是 `onPrimary`。指针
+是 `primary`，两者都在说"压在指针上的墨色"——M2 只是还没有 `onPrimary` 这个习惯。
+
+`dialHandColor` 与 `dialTextStyle` 两张表完全相同，也写了断言——这张表大部分都
+在分支，不写就像是漏了。
+
+顺手改了一处不在队列里的缺陷：`entryModeIconColor` 原本解析成平的 `onSurface`，
+那是 M3 的答案。M2 是暗色下满强度、**亮色下六成**——又一处这张表满是的明暗分支。
+
+十三条承重规则逐条强制改错。第十条读绿——**"主题说了算"那条我又没写测试，这是
+连续第二轮**。补了一条把两个解析器的每个字段都指定一遍的测试（而且指定在"表答
+透明"的未选中状态上，这样只有主题生效才可能返回不透明），之后第十到十三条全红。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 12 → 3**——
+`TimePickerThemeData` 队列清空。
+门：5728 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**剩下的三条各有各的答案**：`display_small` 上游**整个 framework 没有控件读它**
+（第 253 轮已核实，它是给应用用的角色）；`headline_medium` 要等中号应用栏；
+`ThemeData::secondary_header_color` 只有 `PaginatedDataTable` 一个读者，这个端口
+还没有那个 widget。

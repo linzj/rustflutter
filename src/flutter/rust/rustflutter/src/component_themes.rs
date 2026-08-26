@@ -4907,6 +4907,188 @@ impl ResolvedHourMinute {
     }
 }
 
+/// What the AM/PM toggle's two halves are drawn with, under one state set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedDayPeriod {
+    pub background: Color,
+    pub foreground: Color,
+    pub style: TextStyle,
+    /// The outline, already put on the shape. Upstream keeps the shape and
+    /// the side as two fields and combines them at the call site, so a theme
+    /// may name the rounding and the outline separately.
+    pub shape: ShapeBorder,
+    pub side: BorderSide,
+}
+
+impl ResolvedDayPeriod {
+    /// Material 2's fade on the unselected half's words.
+    pub const M2_UNSELECTED_OPACITY: f32 = 0.60;
+    /// Material 2's fade on the outline, blended onto the surface rather than
+    /// left translucent.
+    pub const M2_BORDER_OPACITY: f32 = 0.38;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedDayPeriod {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+        let data = TimePickerTheme::of(context);
+        let selected = states.contains(WidgetState::Selected);
+        let dark = scheme.brightness == crate::platform::Brightness::Dark;
+
+        let foreground = data.day_period_text_color.unwrap_or(if selected {
+            if material3 {
+                scheme.on_tertiary_container()
+            } else {
+                scheme.primary
+            }
+        } else if material3 {
+            scheme.on_surface_variant()
+        } else {
+            crate::elevation_overlay::with_opacity(
+                scheme.on_surface,
+                ResolvedDayPeriod::M2_UNSELECTED_OPACITY,
+            )
+        });
+        let side = data.day_period_border_side.unwrap_or(BorderSide {
+            color: if material3 {
+                scheme.outline()
+            } else {
+                // Blended onto the surface rather than left translucent: the
+                // toggle sits on the dialog, and a see-through outline would
+                // pick up whatever the elevation overlay put behind it.
+                crate::elevation_overlay::alpha_blend(
+                    crate::elevation_overlay::with_opacity(
+                        scheme.on_surface,
+                        ResolvedDayPeriod::M2_BORDER_OPACITY,
+                    ),
+                    scheme.surface,
+                )
+            },
+            width: 1.0,
+            ..BorderSide::NONE
+        });
+        ResolvedDayPeriod {
+            background: data.day_period_color.unwrap_or(if !selected {
+                // Transparent in both tables, and upstream says why in a
+                // comment it repeats in each: the unselected half should
+                // match the dialog behind it, and transparency does that
+                // "without being redundant and allows the optional elevation
+                // overlay for dark mode to be visible". A colour copied from
+                // the dialog would be a second place to change it, and would
+                // sit *over* the elevation overlay instead of under it.
+                Color::TRANSPARENT
+            } else if material3 {
+                scheme.tertiary_container()
+            } else {
+                crate::elevation_overlay::with_opacity(
+                    scheme.primary,
+                    if dark {
+                        ResolvedHourMinute::M2_SELECTED_DARK_OPACITY
+                    } else {
+                        ResolvedHourMinute::M2_OPACITY
+                    },
+                )
+            }),
+            foreground,
+            style: data.day_period_text_style.clone().unwrap_or_else(|| {
+                // The same construction in both tables: `titleMedium` with
+                // the resolved colour on it.
+                TextStyle {
+                    color: foreground,
+                    ..theme.text_theme.title_medium.clone().unwrap_or_default()
+                }
+            }),
+            // Upstream's `(theme.dayPeriodShape ?? defaults).copyWith(side:
+            // resolvedSide)`: whichever shape wins takes whichever side wins,
+            // so a theme may name the rounding and the outline separately.
+            // Only a rounded rectangle can carry a side here, which is what
+            // both tables give and what upstream's `OutlinedBorder` type
+            // requires of any replacement.
+            shape: match data.day_period_shape.clone() {
+                Some(ShapeBorder::Rounded(rounded)) => {
+                    ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                        side,
+                        rounded.border_radius,
+                    ))
+                }
+                Some(other) => other,
+                None => ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                    side,
+                    crate::borders::BorderRadiusGeometry::circular(if material3 {
+                        ResolvedHourMinute::M3_RADIUS
+                    } else {
+                        ResolvedHourMinute::M2_RADIUS
+                    }),
+                )),
+            },
+            side,
+        }
+    }
+}
+
+/// What the clock face is drawn with, under one state set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedDial {
+    pub background: Color,
+    /// The hand. `primary` in both tables.
+    pub hand: Color,
+    pub text_color: Color,
+    /// `bodyLarge` in both tables, with the resolved colour on it.
+    pub text_style: TextStyle,
+}
+
+impl ResolvedDial {
+    /// Material 2's dial face tint, in the dark and in the light.
+    pub const M2_DARK_OPACITY: f32 = 0.12;
+    pub const M2_LIGHT_OPACITY: f32 = 0.08;
+
+    pub fn of(context: &mut BuildContext, states: WidgetStates) -> ResolvedDial {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+        let data = TimePickerTheme::of(context);
+        let dark = scheme.brightness == crate::platform::Brightness::Dark;
+
+        let text_color = data.dial_text_color.unwrap_or(
+            if states.contains(WidgetState::Selected) {
+                // Both are the ink for "on the hand", which is `primary`.
+                // Material 2 had no `onPrimary` habit yet and reached for
+                // `surface` instead.
+                if material3 {
+                    scheme.on_primary
+                } else {
+                    scheme.surface
+                }
+            } else {
+                scheme.on_surface
+            },
+        );
+        ResolvedDial {
+            background: data.dial_background_color.unwrap_or(if material3 {
+                scheme.surface_container_highest()
+            } else {
+                crate::elevation_overlay::with_opacity(
+                    scheme.on_surface,
+                    if dark {
+                        ResolvedDial::M2_DARK_OPACITY
+                    } else {
+                        ResolvedDial::M2_LIGHT_OPACITY
+                    },
+                )
+            }),
+            hand: data.dial_hand_color.unwrap_or(scheme.primary),
+            text_color,
+            text_style: data.dial_text_style.clone().map(|style| TextStyle {
+                color: text_color,
+                ..style
+            }).unwrap_or_else(|| TextStyle {
+                color: text_color,
+                ..theme.text_theme.body_large.clone().unwrap_or_default()
+            }),
+        }
+    }
+}
+
 /// What a time picker is drawn with -- upstream's `_TimePickerDefaultsM3`
 /// under `TimePickerTheme.of`.
 ///
@@ -4961,6 +5143,10 @@ pub struct ResolvedTimePicker {
     pub hour_minute_size: Size,
     pub hour_minute_text_is_large: bool,
     pub hour_minute_shape_radius: f32,
+    /// The line above the picker -- "Select time". Material 3 recolours it to
+    /// `onSurfaceVariant`; Material 2's is `labelSmall` flat, so it keeps
+    /// whatever ink the scale carries.
+    pub help_text_style: Option<TextStyle>,
 }
 
 impl ResolvedTimePicker {
@@ -5050,7 +5236,9 @@ impl ResolvedTimePicker {
         mode: crate::pickers::TimePickerEntryMode,
         twenty_four_hour: bool,
     ) -> ResolvedTimePicker {
-        let scheme = ThemeData::of(context).color_scheme;
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
         let data = TimePickerTheme::of(context);
         let is_input = !ResolvedTimePicker::hour_minute_text_is_large(mode);
         ResolvedTimePicker {
@@ -5063,7 +5251,32 @@ impl ResolvedTimePicker {
                 width: 1.0,
                 ..BorderSide::NONE
             }),
-            entry_mode_icon_color: data.entry_mode_icon_color.unwrap_or(scheme.on_surface),
+            // This was a flat `onSurface`, which is Material 3's answer.
+            // Material 2 fades it to sixty percent in the light and leaves it
+            // at full strength in the dark -- another of the brightness
+            // branches that table is full of.
+            entry_mode_icon_color: data.entry_mode_icon_color.unwrap_or_else(|| {
+                if material3 || scheme.brightness == crate::platform::Brightness::Dark {
+                    scheme.on_surface
+                } else {
+                    crate::elevation_overlay::with_opacity(
+                        scheme.on_surface,
+                        ResolvedDayPeriod::M2_UNSELECTED_OPACITY,
+                    )
+                }
+            }),
+            /// The line above the picker -- "Select time".
+            help_text_style: data.help_text_style.clone().or_else(|| {
+                if material3 {
+                    theme.text_theme.label_medium.clone().map(|style| TextStyle {
+                        color: scheme.on_surface_variant(),
+                        ..style
+                    })
+                } else {
+                    // Flat: no colour merged, so it keeps the scale's own.
+                    theme.text_theme.label_small.clone()
+                }
+            }),
             hour_minute_size: ResolvedTimePicker::hour_minute_size(twenty_four_hour, is_input),
             hour_minute_text_is_large: !is_input,
             hour_minute_shape_radius: ResolvedTimePicker::HOUR_MINUTE_RADIUS,
@@ -11935,6 +12148,361 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- The AM/PM toggle and the dial, tick 257 -----------------------------
+    //
+    // Nine fields, none with a resolver.
+
+    fn day_period(
+        data: TimePickerThemeData,
+        theme: ThemeData,
+        states: WidgetStates,
+    ) -> ResolvedDayPeriod {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDayPeriod>>>,
+            states: WidgetStates,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() = Some(ResolvedDayPeriod::of(context, self.states));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TimePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                    states,
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn dial(data: TimePickerThemeData, theme: ThemeData, states: WidgetStates) -> ResolvedDial {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDial>>>,
+            states: WidgetStates,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() = Some(ResolvedDial::of(context, self.states));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TimePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                    states,
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn time_picker_under(data: TimePickerThemeData, theme: ThemeData) -> ResolvedTimePicker {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedTimePicker>>>,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() = Some(ResolvedTimePicker::of(
+                    context,
+                    crate::pickers::TimePickerEntryMode::Dial,
+                    false,
+                ));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TimePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn material_two_light() -> ThemeData {
+        let mut theme = ThemeData::light();
+        theme.use_material3 = false;
+        theme
+    }
+
+    #[test]
+    fn a_theme_that_names_the_toggles_and_the_dials_colours_wins() {
+        // "The theme wins" and "the table answers" are two different rules,
+        // and the second tick running I had only tested the second. Every
+        // field on both resolvers is asked for here.
+        const A: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        const B: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+        const C: Color = Color::argb(0xFF, 0x77, 0x88, 0x99);
+        let named = TimePickerThemeData {
+            day_period_color: Some(A),
+            day_period_text_color: Some(B),
+            day_period_text_style: Some(TextStyle {
+                font_size: 41.0,
+                ..TextStyle::default()
+            }),
+            dial_background_color: Some(A),
+            dial_hand_color: Some(B),
+            dial_text_color: Some(C),
+            dial_text_style: Some(TextStyle {
+                font_size: 42.0,
+                ..TextStyle::default()
+            }),
+            help_text_style: Some(TextStyle {
+                font_size: 43.0,
+                ..TextStyle::default()
+            }),
+            ..TimePickerThemeData::new()
+        };
+        // Unselected, where the tables answer transparent -- so a named
+        // colour is the only way this can come back opaque.
+        let toggle = day_period(named.clone(), ThemeData::light(), WidgetStates::NONE);
+        assert_eq!(toggle.background, A);
+        assert_eq!(toggle.foreground, B);
+        assert_eq!(toggle.style.font_size, 41.0);
+
+        let face = dial(named.clone(), ThemeData::light(), WidgetStates::NONE);
+        assert_eq!(face.background, A);
+        assert_eq!(face.hand, B);
+        assert_eq!(face.text_color, C);
+        assert_eq!(face.text_style.font_size, 42.0);
+        assert_eq!(
+            face.text_style.color, C,
+            "and a named style still takes the resolved ink"
+        );
+
+        assert_eq!(
+            time_picker_under(named, ThemeData::light())
+                .help_text_style
+                .map(|style| style.font_size),
+            Some(43.0)
+        );
+    }
+
+    #[test]
+    fn the_unselected_half_of_the_toggle_is_transparent_in_both_tables() {
+        // Upstream repeats the reason in a comment in each table: the
+        // unselected half should match the dialog behind it, and transparency
+        // does that "without being redundant and allows the optional
+        // elevation overlay for dark mode to be visible". A colour copied
+        // from the dialog would be a second place to change it, and would sit
+        // *over* the elevation overlay instead of under it.
+        for theme in [ThemeData::light(), material_two_light(), ThemeData::dark()] {
+            assert_eq!(
+                day_period(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE)
+                    .background,
+                Color::TRANSPARENT
+            );
+        }
+
+        // The selected half is not, in either.
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        assert_eq!(
+            day_period(TimePickerThemeData::new(), ThemeData::light(), selected).background,
+            ThemeData::light().color_scheme.tertiary_container()
+        );
+        assert_ne!(
+            day_period(TimePickerThemeData::new(), material_two_light(), selected).background,
+            Color::TRANSPARENT
+        );
+    }
+
+    #[test]
+    fn the_toggle_takes_its_outline_and_its_rounding_from_two_separate_fields() {
+        // Upstream's `(theme.dayPeriodShape ?? defaults).copyWith(side:
+        // resolvedSide)`. A theme may name one without the other, and
+        // whichever shape wins takes whichever side wins.
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let named_side = day_period(
+            TimePickerThemeData {
+                day_period_border_side: Some(BorderSide {
+                    color: MINE,
+                    width: 5.0,
+                    ..BorderSide::NONE
+                }),
+                ..TimePickerThemeData::new()
+            },
+            ThemeData::light(),
+            WidgetStates::NONE,
+        );
+        assert_eq!(named_side.side.color, MINE);
+        // And the side reached the shape, not only the field beside it.
+        match &named_side.shape {
+            ShapeBorder::Rounded(rounded) => {
+                assert_eq!(rounded.side.color, MINE);
+                assert_eq!(rounded.side.width, 5.0);
+            }
+            other => panic!("expected a rounded rectangle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_toggles_outline_is_blended_onto_the_surface_under_material_two() {
+        // Not left translucent: the toggle sits on the dialog, and a
+        // see-through outline would pick up whatever the elevation overlay
+        // put behind it. Material 3 names `outline` outright and needs no
+        // blend.
+        let two = day_period(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        assert_eq!(two.side.color.alpha(), 0xFF, "opaque, not 38% of something");
+        assert_ne!(two.side.color, material_two_light().color_scheme.on_surface);
+
+        let three = day_period(TimePickerThemeData::new(), ThemeData::light(), WidgetStates::NONE);
+        assert_eq!(three.side.color, ThemeData::light().color_scheme.outline());
+        assert_ne!(three.side.color, two.side.color);
+    }
+
+    #[test]
+    fn the_toggles_words_are_title_medium_carrying_the_resolved_ink() {
+        // The same construction in both tables, and the two colours differ.
+        let theme = ThemeData::light();
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        let chosen = day_period(TimePickerThemeData::new(), theme.clone(), selected);
+        let quiet = day_period(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE);
+
+        assert_eq!(
+            chosen.style.font_size,
+            theme.text_theme.title_medium.as_ref().unwrap().font_size
+        );
+        assert_eq!(chosen.style.color, chosen.foreground);
+        assert_eq!(quiet.style.color, quiet.foreground);
+        assert_eq!(chosen.foreground, theme.color_scheme.on_tertiary_container());
+        assert_eq!(quiet.foreground, theme.color_scheme.on_surface_variant());
+
+        // Material 2 fades the unselected half's words instead of giving them
+        // a role of their own.
+        let old = day_period(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        assert!(old.foreground.alpha() < 0xFF, "sixty percent");
+        assert_eq!(
+            day_period(TimePickerThemeData::new(), material_two_light(), selected).foreground,
+            material_two_light().color_scheme.primary
+        );
+    }
+
+    #[test]
+    fn the_hand_and_the_dials_type_scale_are_the_same_in_both_tables() {
+        // Worth asserting rather than leaving to look like an oversight: most
+        // of this table branches, and these two do not.
+        let theme = ThemeData::light();
+        let three = dial(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE);
+        let two = dial(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        assert_eq!(three.hand, theme.color_scheme.primary);
+        assert_eq!(two.hand, three.hand);
+        assert_eq!(
+            three.text_style.font_size,
+            theme.text_theme.body_large.as_ref().unwrap().font_size
+        );
+        assert_eq!(two.text_style.font_size, three.text_style.font_size);
+    }
+
+    #[test]
+    fn a_chosen_hour_on_the_dial_is_written_in_the_ink_for_the_hand() {
+        // The hand is `primary`, so the number on it has to be the ink for
+        // primary. Material 3 says `onPrimary`; Material 2 says `surface`,
+        // which is the same idea from before it had the habit.
+        let theme = ThemeData::light();
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        assert_eq!(
+            dial(TimePickerThemeData::new(), theme.clone(), selected).text_color,
+            theme.color_scheme.on_primary
+        );
+        assert_eq!(
+            dial(TimePickerThemeData::new(), material_two_light(), selected).text_color,
+            material_two_light().color_scheme.surface
+        );
+
+        // Unselected agrees: an hour off the hand is ordinary ink.
+        for theme in [ThemeData::light(), material_two_light()] {
+            let scheme = theme.color_scheme;
+            assert_eq!(
+                dial(TimePickerThemeData::new(), theme, WidgetStates::NONE).text_color,
+                scheme.on_surface
+            );
+        }
+    }
+
+    #[test]
+    fn the_dial_face_is_a_surface_role_under_three_and_a_tint_under_two() {
+        let theme = ThemeData::light();
+        assert_eq!(
+            dial(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE).background,
+            theme.color_scheme.surface_container_highest()
+        );
+
+        // And Material 2's tint is heavier in the dark, like the rest of that
+        // table.
+        let mut dark = ThemeData::dark();
+        dark.use_material3 = false;
+        let by_day = dial(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        let by_night = dial(TimePickerThemeData::new(), dark, WidgetStates::NONE);
+        assert_eq!(by_day.background.alpha(), 20, "8% of 255");
+        assert_eq!(by_night.background.alpha(), 31, "12%");
+    }
+
+    #[test]
+    fn the_help_line_is_recoloured_under_three_and_left_alone_under_two() {
+        // Material 3 puts `onSurfaceVariant` on `labelMedium`; Material 2's
+        // `labelSmall` is flat, so it keeps whatever ink the scale carries.
+        let theme = ThemeData::light();
+        let three = time_picker_under(TimePickerThemeData::new(), theme.clone());
+        assert_eq!(
+            three.help_text_style.as_ref().unwrap().color,
+            theme.color_scheme.on_surface_variant()
+        );
+        assert_eq!(
+            three.help_text_style.as_ref().map(|s| s.font_size),
+            theme.text_theme.label_medium.as_ref().map(|s| s.font_size)
+        );
+
+        let two = time_picker_under(TimePickerThemeData::new(), material_two_light());
+        assert_eq!(
+            two.help_text_style.as_ref().map(|s| s.font_size),
+            material_two_light().text_theme.label_small.as_ref().map(|s| s.font_size)
+        );
+        assert_eq!(
+            two.help_text_style.as_ref().unwrap().color,
+            material_two_light().text_theme.label_small.as_ref().unwrap().color,
+            "flat: the scale's own ink"
+        );
+    }
+
+    #[test]
+    fn a_light_material_two_picker_fades_its_entry_mode_icon() {
+        // This was resolved as a flat `onSurface`, which is Material 3's
+        // answer. Material 2 fades it to sixty percent in the light and
+        // leaves it at full strength in the dark.
+        let mut dark = ThemeData::dark();
+        dark.use_material3 = false;
+        let by_day = time_picker_under(TimePickerThemeData::new(), material_two_light());
+        let by_night = time_picker_under(TimePickerThemeData::new(), dark.clone());
+        assert!(by_day.entry_mode_icon_color.alpha() < 0xFF);
+        assert_eq!(by_night.entry_mode_icon_color, dark.color_scheme.on_surface);
+
+        // Material 3 does not fade it at either brightness.
+        for theme in [ThemeData::light(), ThemeData::dark()] {
+            let scheme = theme.color_scheme;
+            assert_eq!(
+                time_picker_under(TimePickerThemeData::new(), theme).entry_mode_icon_color,
+                scheme.on_surface
+            );
+        }
+    }
 
     // -- The big number at the top of a time picker, tick 256 ----------------
     //
