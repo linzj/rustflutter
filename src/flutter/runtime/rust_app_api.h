@@ -92,6 +92,14 @@ enum {
   // all three states, like every other tristate above.
   kRfSemanticsHasSelectedState = 1 << 22,
   kRfSemanticsHasFocusedState = 1 << 23,
+  // The label that names the page. A reader announces this node when a route
+  // arrives instead of reading the whole screen, so there is one per route --
+  // an app bar's title, a dialog's, a bottom sheet's.
+  kRfSemanticsNamesRoute = 1 << 24,
+  // In the tree and not on the screen: covered, or scrolled past. Not the
+  // same as leaving a node out, which removes it -- a hidden node keeps its
+  // place, so "3 of 40" still counts it.
+  kRfSemanticsIsHidden = 1 << 25,
 };
 
 typedef struct RfSemanticsNode {

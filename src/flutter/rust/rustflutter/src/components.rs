@@ -1782,7 +1782,19 @@ impl Component for AppBar {
             None => bar.toolbar_height,
         };
 
-        let mut children = vec![leaf(move || {
+        // Upstream wraps the title in `Semantics(namesRoute: ..., header:
+        // true)`, and this bar wrapped it in nothing: the one line on the
+        // screen that says what page you are on was, to a screen reader, an
+        // ordinary run of words.
+        //
+        // `excludeHeaderSemantics` is upstream's way out of this and has no
+        // counterpart here; a bar that wanted its title unannounced would
+        // need that flag first.
+        let title_semantics = crate::semantics::SemanticsProperties::route_header(
+            title.clone(),
+            crate::theme::ThemeData::of(context).platform,
+        );
+        let mut children = vec![crate::semantics::describe(title_semantics, leaf(move || {
             // One line each, cut with an ellipsis. Upstream wraps the title in
             // `DefaultTextStyle(softWrap: false, overflow: TextOverflow.ellipsis)`
             // for exactly this: a bar is a fixed height, so a title that wrapped
@@ -1815,7 +1827,7 @@ impl Component for AppBar {
                 stack = stack.push(one_line(subtitle, &muted));
             }
             stack
-        })];
+        }))];
         if let Some(trailing) = trailing {
             children.push(trailing);
         }

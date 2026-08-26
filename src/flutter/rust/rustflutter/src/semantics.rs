@@ -356,6 +356,19 @@ pub struct SemanticsFlags {
     pub is_button: bool,
     pub is_text_field: bool,
     pub is_header: bool,
+    /// Upstream's `namesRoute`: this node's label is the name of the page.
+    ///
+    /// What makes a route change speakable. When a new route arrives the
+    /// reader announces the node carrying this rather than reading the whole
+    /// screen, and upstream sets it on exactly one line per route -- an app
+    /// bar's title, a dialog's title, a bottom sheet's.
+    pub names_route: bool,
+    /// Upstream's `isHidden`: in the tree and not on the screen.
+    ///
+    /// Covered by something, or scrolled past. **Not the same as excluding a
+    /// node**, which takes it out: a hidden node keeps its place, so "3 of
+    /// 40" still counts it and a reader moving forward still arrives.
+    pub is_hidden: bool,
     pub is_image: bool,
     pub is_link: bool,
     pub is_slider: bool,
@@ -419,6 +432,8 @@ impl SemanticsFlags {
             is_button: self.is_button || other.is_button,
             is_text_field: self.is_text_field || other.is_text_field,
             is_header: self.is_header || other.is_header,
+            names_route: self.names_route || other.names_route,
+            is_hidden: self.is_hidden || other.is_hidden,
             is_image: self.is_image || other.is_image,
             is_link: self.is_link || other.is_link,
             is_slider: self.is_slider || other.is_slider,
@@ -1881,6 +1896,43 @@ impl SemanticsProperties {
         SemanticsProperties {
             flags: SemanticsFlags {
                 is_header: true,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::label(label)
+        }
+    }
+
+    /// A heading that also *names the page*, which is what an app bar's title
+    /// is.
+    ///
+    /// Upstream:
+    ///
+    /// ```dart
+    /// Semantics(
+    ///   namesRoute: switch (defaultTargetPlatform) {
+    ///     android || fuchsia || linux || windows => true,
+    ///     iOS || macOS => null,
+    ///   },
+    ///   header: true,
+    ///   child: title,
+    /// )
+    /// ```
+    ///
+    /// **Null on Apple and not false** -- the third platform branch in this
+    /// port's semantics, after the radio's `selected` and the radio's
+    /// unselected hint, and the same reason each time: VoiceOver announces a
+    /// route change on its own, so a second announcement is a repetition
+    /// rather than an aid.
+    pub fn route_header(
+        label: impl Into<String>,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> SemanticsProperties {
+        use crate::editable_text::TargetPlatform;
+        let apple = matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS);
+        SemanticsProperties {
+            flags: SemanticsFlags {
+                is_header: true,
+                names_route: !apple,
                 ..SemanticsFlags::default()
             },
             ..SemanticsProperties::label(label)
@@ -3604,6 +3656,105 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::Cell;
     use std::cmp::Ordering;
+
+    // -- The line that says what page you are on, tick 269 -------------------
+    //
+    // Upstream wraps an app bar's title in `Semantics(namesRoute: ...,
+    // header: true)`. This port's `AppBar` wrapped it in nothing, so the one
+    // line on the screen that names the page was an ordinary run of words to
+    // a screen reader.
+
+    #[test]
+    fn an_app_bar_title_names_the_page_everywhere_but_apple() {
+        // `null` on Apple and not `false`: VoiceOver announces a route change
+        // on its own, so a second announcement is a repetition rather than an
+        // aid. The third platform branch in this port's semantics, after the
+        // radio's `selected` and its unselected hint.
+        use crate::editable_text::TargetPlatform;
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            let title = SemanticsProperties::route_header("Inbox", platform);
+            assert!(title.flags.names_route, "{platform:?}");
+            assert!(title.flags.is_header, "{platform:?}: and still a heading");
+        }
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            let title = SemanticsProperties::route_header("Inbox", platform);
+            assert!(!title.flags.names_route, "{platform:?}");
+            assert!(
+                title.flags.is_header,
+                "{platform:?}: the heading claim is not the platform's business"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_heading_does_not_name_a_route() {
+        // There is one route-naming node per route, and a section heading in
+        // the middle of a page is not it -- a reader arriving at a new screen
+        // would be told the name of the third section.
+        let heading = SemanticsProperties::header("Recently played");
+        assert!(heading.flags.is_header);
+        assert!(!heading.flags.names_route);
+    }
+
+    #[test]
+    fn hidden_is_not_the_same_as_absent() {
+        // A hidden node keeps its place in the tree: "3 of 40" still counts
+        // it and a reader moving forward still arrives at it. Leaving a node
+        // out removes it from both.
+        let mut covered = SemanticsProperties::label("Behind the sheet");
+        covered.flags.is_hidden = true;
+        assert!(covered.flags.is_hidden);
+        assert_eq!(covered.label, "Behind the sheet", "and it still has a label");
+        assert!(!SemanticsProperties::label("On top").flags.is_hidden);
+    }
+
+    #[test]
+    fn the_two_new_claims_reach_the_abi() {
+        use crate::app::pack_semantics_flags;
+        let mask = (1 << 24) | (1 << 25);
+        assert_eq!(pack_semantics_flags(&SemanticsFlags::default()) & mask, 0);
+        assert_eq!(
+            pack_semantics_flags(&SemanticsFlags {
+                names_route: true,
+                ..SemanticsFlags::default()
+            }) & mask,
+            1 << 24
+        );
+        assert_eq!(
+            pack_semantics_flags(&SemanticsFlags {
+                is_hidden: true,
+                ..SemanticsFlags::default()
+            }) & mask,
+            1 << 25
+        );
+    }
+
+    #[test]
+    fn the_bar_describes_its_own_title() {
+        // The widget end. Wrapping the title in `describe` is what makes the
+        // resolver's answer reach anything, and the bar wrapped it in nothing
+        // -- so this is the assertion that would have been red all along.
+        set_enabled(true);
+        let nodes = describe_tree(
+            crate::framework::component(crate::components::AppBar::new("Inbox")),
+            Size::new(400.0, 200.0),
+        );
+        set_enabled(false);
+        let title = nodes
+            .iter()
+            .find(|node| node.properties.label == "Inbox")
+            .expect("the bar's title is described");
+        assert!(title.properties.flags.is_header, "it is a heading");
+        assert!(
+            title.properties.flags.names_route,
+            "and on this platform it names the page"
+        );
+    }
 
     // -- "Not selected" is a thing to say, tick 268 --------------------------
     //

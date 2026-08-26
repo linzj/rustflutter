@@ -222,6 +222,8 @@ mod semantics_bits {
     pub const IS_REQUIRED: i32 = 1 << 21;
     pub const HAS_SELECTED_STATE: i32 = 1 << 22;
     pub const HAS_FOCUSED_STATE: i32 = 1 << 23;
+    pub const NAMES_ROUTE: i32 = 1 << 24;
+    pub const IS_HIDDEN: i32 = 1 << 25;
 }
 
 /// Packs the framework's flags into the ABI's bit set.
@@ -236,6 +238,8 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.is_button, IS_BUTTON);
     set(&mut bits, flags.is_text_field, IS_TEXT_FIELD);
     set(&mut bits, flags.is_header, IS_HEADER);
+    set(&mut bits, flags.names_route, NAMES_ROUTE);
+    set(&mut bits, flags.is_hidden, IS_HIDDEN);
     set(&mut bits, flags.is_image, IS_IMAGE);
     set(&mut bits, flags.is_link, IS_LINK);
     set(&mut bits, flags.is_slider, IS_SLIDER);

@@ -19146,3 +19146,51 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 `scopesRoute`、`hasImplicitScrolling`、`isAccessibilityFocusBlocked` 属于后者;
 `isMultiline` 和 `isKeyboardKey` 介于两者之间，值得单独判一次而不是顺手补上。
 `isHidden` 和 `namesRoute` 是真正还欠的两个。
+
+## 第 269 轮：说出你在哪一页的那一行
+
+上游把应用栏的标题包在两个主张里：
+
+    title = Semantics(
+      namesRoute: switch (defaultTargetPlatform) {
+        android || fuchsia || linux || windows => true,
+        iOS || macOS => null,
+      },
+      header: true,
+      child: title,
+    );
+
+**这个端口的 `AppBar` 什么都没包。** `Label::title` 会标出一个标题，而这条栏不用
+它——它直接画 `Text`——于是屏幕上唯一一行说出"你在哪一页"的字，对读屏器来说只是
+一串普通的词。
+
+背后缺的是两个 flag，这一轮把两个都补上。
+
+**`namesRoute` 是让"换了一页"这件事可以被说出来的东西**：新路由到达时，读屏器
+念带着这个 flag 的那个节点，而不是把整页读一遍。上游把它设在应用栏标题、对话框、
+底部弹层上——永远是那一行说明你现在在哪儿的字。
+
+而它在 Apple 上是 **`null` 而不是 `false`**——这是这个端口语义里的第三处平台分支
+（前两处是单选按钮的 `selected` 和它未选中时的提示），每次理由相同：VoiceOver
+自己会宣告路由变化，再说一遍是重复而不是帮助。
+
+**`isHidden` 是一个在树里、不在屏幕上的节点**——被盖住了，或者滚过去了。读屏器
+跳过它。它和"把节点排除掉"不是一回事：排除会把它拿走，而隐藏保留它的位置，所以
+"第 3 项，共 40 项"里仍然算它一个。
+
+顺带记下 `excludeHeaderSemantics`：上游用它来退出这整套行为，这个端口没有对应
+的东西——一条想让自己标题不被念出来的栏，得先有那个 flag。
+
+六条承重规则逐条强制改错，全红。其中第六条（让栏不再描述自己的标题）正是这一轮
+修的那个缺陷本身——它此前一直是红的，只是没有人在看。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5777 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`SemanticsFlags` 相对引擎还差三个，而三个都在这个端口写在 ABI 头文件
+里的取舍标准之外（"改变读屏器说什么，而不是某个平台怎么排它自己的树"）：
+`scopesRoute` 是路由的**范围**而不是它的名字，`hasImplicitScrolling` 和
+`isAccessibilityFocusBlocked` 都是平台排树的事。`isMultiline` 和 `isKeyboardKey`
+介于两者之间——值得单独判一次，而不是顺手补上凑数。
