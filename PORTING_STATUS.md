@@ -18465,3 +18465,55 @@ stale_engines 全部不落后，unread_theme_fields 30 → 20——**`DatePicker
 **下一步**：队列只剩 `TimePickerThemeData` 十四条、`TextTheme` 四个角色、
 `ThemeData::secondary_header_color` 一条。时间选择器那十四条里就有
 `displayLarge`/`displayMedium`（时分数字）——两件事是同一件。
+
+## 第 256 轮：时间选择器顶上那个大数字
+
+六个字段，一个解析器都没有。
+
+    字段                            M2                       M3
+    hourMinuteColor                selected: primary @       状态浮层 alphaBlend
+                                   dark?0.24:0.12            到容器色**之上**
+                                   else onSurface @ 0.12
+    hourMinuteShape                半径 4                    半径 8
+    hourMinuteTextColor            selected ? primary        onPrimaryContainer
+                                   : onSurface               / onSurface
+    hourMinuteTextStyle            displayMedium，平的        表盘上 displayLarge，
+                                                             输入框里 displayMedium
+    timeSelectorSeparatorColor     **不存在**                 onSurface
+    timeSelectorSeparatorTextStyle **不存在**                 displayLarge
+
+三处值得记：
+
+**M3 的 `hourMinuteColor` 是混合而不是挑选。** 状态浮层压在容器色**之上**而不是
+替换它，而按下那一臂的浮层是**满不透明度的墨色**——所以按住小时框，它会直接从
+`primaryContainer` 变成 `onPrimaryContainer`，这是所有这些默认表里最强的一次
+状态变化。悬停和聚焦是压在同一底色上的普通 0.08 / 0.1 混合。混合真正买到的是
+**每种状态下的结果都是不透明的**：把浮层原样交出去会留下一层半透明，身后的对话框
+会从你正在选的那个小时里透出来。
+
+**`hourMinuteTextStyle` 是整个 framework 里唯一按*录入方式*分支的样式。** 表盘
+上小时是整块屏幕的主角，用 `displayLarge`；同一个选择器切到打字模式，小时进了
+一个要留出边框和标签的输入框，降一级到 `displayMedium`。M2 两种都用
+`displayMedium`。
+
+**分隔冒号是 Material 3 才有的概念。** 它那两个字段在 `_TimePickerDefaultsM2`
+里根本不存在——M2 的选择器把冒号按 hour/minute 样式画，和旁边的数字一样；M3 给
+冒号单独的颜色和样式，好让它比它夹着的数字安静。
+
+M2 的 `hourMinuteColor` 也是最后几处**按明暗取色**的地方之一：暗色主题下选中的
+框透明度是亮色的两倍，因为同样 12% 的 `primary` 压在暗色表面上看不出来。
+
+十一条承重规则逐条强制改错。第二条读绿——**我没有断言"混合"到底买到了什么**。
+补上"每种状态下 alpha 都是 0xFF"之后才红。另外 `hour_minute_shape` 第一遍没有
+离队：我解析的是一个**半径**，而上游那个字段是一整个 `ShapeBorder`——主题可以
+把框做成胶囊，而不只是换个圆角。改成读形状本身，并断言了胶囊那种情形。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 20 → 12。
+门：5718 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TimePickerThemeData` 还剩九条——上下午那四条、表盘那四条、
+`help_text_style` 一条。`displayLarge`/`displayMedium` 已经离队，剩下的
+`TextTheme` 两个角色里，`displaySmall` 上游**根本没有控件读它**（已在第 253 轮
+记下），`headlineMedium` 要等中号应用栏。

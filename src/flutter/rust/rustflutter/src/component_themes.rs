@@ -4721,6 +4721,192 @@ impl ResolvedDropdownMenu {
     }
 }
 
+/// What the hour and minute boxes at the top of a time picker are drawn
+/// with, under one state set.
+///
+/// Resolved per box rather than per picker: there are two of them and only
+/// one is selected at a time, which is the whole reason these fields are
+/// state properties.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedHourMinute {
+    pub background: Color,
+    pub foreground: Color,
+    pub style: TextStyle,
+    /// The box's outline. Upstream's field is a whole `ShapeBorder`, so a
+    /// theme may make the box a stadium or a circle and not only round its
+    /// corners differently -- which is why this is the shape and not the
+    /// radius the two tables happen to differ by.
+    pub shape: ShapeBorder,
+    pub shape_radius: f32,
+    /// The colon between the two boxes. `None` under Material 2, which has no
+    /// such field: a Material 2 picker draws its colon in the hour/minute
+    /// style, like the digits beside it.
+    pub separator_color: Option<Color>,
+    pub separator_style: Option<TextStyle>,
+}
+
+impl ResolvedHourMinute {
+    /// Upstream's Material 2 shape radius.
+    pub const M2_RADIUS: f32 = 4.0;
+    /// Upstream's Material 3 shape radius, which is also
+    /// [`ResolvedTimePicker::HOUR_MINUTE_RADIUS`].
+    pub const M3_RADIUS: f32 = 8.0;
+    /// Material 2's tint on an unselected box, and on a selected one under a
+    /// light theme.
+    pub const M2_OPACITY: f32 = 0.12;
+    /// Material 2's tint on a selected box under a **dark** theme. Twice the
+    /// light one, because the same twelve percent of `primary` over a dark
+    /// surface would not be seen.
+    pub const M2_SELECTED_DARK_OPACITY: f32 = 0.24;
+
+    pub fn of(
+        context: &mut BuildContext,
+        entry_mode: crate::pickers::TimePickerEntryMode,
+        states: WidgetStates,
+    ) -> ResolvedHourMinute {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+        let data = TimePickerTheme::of(context);
+        let text_theme = theme.text_theme.clone();
+
+        let foreground = data
+            .hour_minute_text_color
+            .unwrap_or_else(|| ResolvedHourMinute::foreground_for(&scheme, material3, states));
+        ResolvedHourMinute {
+            background: data
+                .hour_minute_color
+                .unwrap_or_else(|| ResolvedHourMinute::background_for(&scheme, material3, states)),
+            foreground,
+            style: data.hour_minute_text_style.clone().unwrap_or_else(|| {
+                // The one style in the framework that branches on the entry
+                // mode. On the dial the number is the whole screen's subject;
+                // in text-entry mode it is inside a field that has to leave
+                // room for a border and a label, so it comes down a rung.
+                let role = if material3 {
+                    match entry_mode {
+                        crate::pickers::TimePickerEntryMode::Dial
+                        | crate::pickers::TimePickerEntryMode::DialOnly => {
+                            text_theme.display_large.clone()
+                        }
+                        _ => text_theme.display_medium.clone(),
+                    }
+                } else {
+                    text_theme.display_medium.clone()
+                };
+                TextStyle {
+                    color: foreground,
+                    ..role.unwrap_or_default()
+                }
+            }),
+            shape: data.hour_minute_shape.clone().unwrap_or_else(|| {
+                ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                    crate::borders::BorderSide::NONE,
+                    crate::borders::BorderRadiusGeometry::circular(if material3 {
+                        ResolvedHourMinute::M3_RADIUS
+                    } else {
+                        ResolvedHourMinute::M2_RADIUS
+                    }),
+                ))
+            }),
+            shape_radius: if material3 {
+                ResolvedHourMinute::M3_RADIUS
+            } else {
+                ResolvedHourMinute::M2_RADIUS
+            },
+            separator_color: data
+                .time_selector_separator_color
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .or(if material3 {
+                    Some(scheme.on_surface)
+                } else {
+                    None
+                }),
+            separator_style: data
+                .time_selector_separator_text_style
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+                .or_else(|| {
+                    if material3 {
+                        text_theme.display_large.clone()
+                    } else {
+                        None
+                    }
+                }),
+        }
+    }
+
+    /// The box's fill.
+    ///
+    /// Material 3 **blends** rather than picks: the state overlay goes over
+    /// the container colour instead of replacing it. And its pressed overlay
+    /// is the ink at full opacity, so pressing the hour box turns it from
+    /// `primaryContainer` into `onPrimaryContainer` outright -- the strongest
+    /// state change in any of these tables.
+    pub fn background_for(
+        scheme: &ColorScheme,
+        material3: bool,
+        states: WidgetStates,
+    ) -> Color {
+        let selected = states.contains(WidgetState::Selected);
+        if !material3 {
+            // One of the last places a colour is picked by brightness rather
+            // than by a scheme role.
+            let dark = scheme.brightness == crate::platform::Brightness::Dark;
+            return if selected {
+                crate::elevation_overlay::with_opacity(
+                    scheme.primary,
+                    if dark {
+                        ResolvedHourMinute::M2_SELECTED_DARK_OPACITY
+                    } else {
+                        ResolvedHourMinute::M2_OPACITY
+                    },
+                )
+            } else {
+                crate::elevation_overlay::with_opacity(
+                    scheme.on_surface,
+                    ResolvedHourMinute::M2_OPACITY,
+                )
+            };
+        }
+        let (base, ink) = if selected {
+            (scheme.primary_container(), scheme.on_primary_container())
+        } else {
+            (scheme.surface_container_highest(), scheme.on_surface)
+        };
+        let overlay = if states.contains(WidgetState::Pressed) {
+            ink
+        } else if states.contains(WidgetState::Hovered) {
+            crate::elevation_overlay::with_opacity(ink, ResolvedTimePicker::HOVERED_OVERLAY)
+        } else if states.contains(WidgetState::Focused) {
+            crate::elevation_overlay::with_opacity(ink, ResolvedTimePicker::PRESSED_OVERLAY)
+        } else {
+            base
+        };
+        crate::elevation_overlay::alpha_blend(overlay, base)
+    }
+
+    /// The digits' ink. Upstream's Material 3 ladder writes the same answer
+    /// in all four arms of each branch, so what it comes to is: selected
+    /// digits are `onPrimaryContainer` and the rest are `onSurface`.
+    pub fn foreground_for(
+        scheme: &ColorScheme,
+        material3: bool,
+        states: WidgetStates,
+    ) -> Color {
+        if states.contains(WidgetState::Selected) {
+            if material3 {
+                scheme.on_primary_container()
+            } else {
+                scheme.primary
+            }
+        } else {
+            scheme.on_surface
+        }
+    }
+}
+
 /// What a time picker is drawn with -- upstream's `_TimePickerDefaultsM3`
 /// under `TimePickerTheme.of`.
 ///
@@ -11749,6 +11935,304 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- The big number at the top of a time picker, tick 256 ----------------
+    //
+    // Six fields, none with a resolver.
+
+    fn hour_minute(
+        data: TimePickerThemeData,
+        theme: ThemeData,
+        entry_mode: crate::pickers::TimePickerEntryMode,
+        states: WidgetStates,
+    ) -> ResolvedHourMinute {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedHourMinute>>>,
+            entry_mode: crate::pickers::TimePickerEntryMode,
+            states: WidgetStates,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() =
+                    Some(ResolvedHourMinute::of(context, self.entry_mode, self.states));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            TimePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                    entry_mode,
+                    states,
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn dialled(states: WidgetStates) -> ResolvedHourMinute {
+        hour_minute(
+            TimePickerThemeData::new(),
+            ThemeData::light(),
+            crate::pickers::TimePickerEntryMode::Dial,
+            states,
+        )
+    }
+
+    #[test]
+    fn pressing_an_hour_box_turns_it_into_its_own_ink() {
+        // Material 3's `hourMinuteColor` *blends* rather than picks: the
+        // state overlay goes over the container colour instead of replacing
+        // it. And the pressed overlay is the ink at full opacity, so the box
+        // goes from `primaryContainer` to `onPrimaryContainer` outright --
+        // the strongest state change in any of these tables.
+        let scheme = ThemeData::light().color_scheme;
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        assert_eq!(dialled(selected).background, scheme.primary_container());
+        assert_eq!(
+            dialled(selected.with(WidgetState::Pressed)).background,
+            scheme.on_primary_container()
+        );
+
+        // Hovered and focused are ordinary blends over the same base, so they
+        // land between the two.
+        let hovered = dialled(selected.with(WidgetState::Hovered)).background;
+        assert_ne!(hovered, scheme.primary_container());
+        assert_ne!(hovered, scheme.on_primary_container());
+        let focused = dialled(selected.with(WidgetState::Focused)).background;
+        assert_ne!(hovered, focused, "0.08 against 0.1");
+
+        // And what "blend" buys is that the answer is **opaque** in every
+        // state: the box has a solid fill. Handing the overlay back unblended
+        // would leave a translucent one, and the dialog behind it would show
+        // through the hour you are choosing.
+        for states in [
+            WidgetStates::NONE,
+            selected,
+            selected.with(WidgetState::Pressed),
+            selected.with(WidgetState::Hovered),
+            selected.with(WidgetState::Focused),
+            WidgetStates::NONE.with(WidgetState::Hovered),
+        ] {
+            assert_eq!(
+                dialled(states).background.alpha(),
+                0xFF,
+                "{states:?} left the box see-through"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_picker_writes_the_hour_smaller_once_you_are_typing_it() {
+        // The one style in the framework that branches on the entry mode. On
+        // the dial the number is the screen's whole subject; in a text field
+        // it has to leave room for a border and a label.
+        use crate::pickers::TimePickerEntryMode;
+        let theme = ThemeData::light();
+        let big = hour_minute(
+            TimePickerThemeData::new(),
+            theme.clone(),
+            TimePickerEntryMode::Dial,
+            WidgetStates::NONE,
+        );
+        let typed = hour_minute(
+            TimePickerThemeData::new(),
+            theme.clone(),
+            TimePickerEntryMode::Input,
+            WidgetStates::NONE,
+        );
+        assert_eq!(
+            big.style.font_size,
+            theme.text_theme.display_large.as_ref().unwrap().font_size
+        );
+        assert_eq!(
+            typed.style.font_size,
+            theme.text_theme.display_medium.as_ref().unwrap().font_size
+        );
+        assert!(big.style.font_size > typed.style.font_size);
+
+        // `DialOnly` is a dial, and `InputOnly` is a field: the "only"
+        // variants are the same two modes without the button to swap.
+        assert_eq!(
+            hour_minute(
+                TimePickerThemeData::new(),
+                theme.clone(),
+                TimePickerEntryMode::DialOnly,
+                WidgetStates::NONE
+            )
+            .style
+            .font_size,
+            big.style.font_size
+        );
+
+        // Material 2 uses `displayMedium` for both, so the branch is a
+        // Material 3 distinction.
+        let mut two = theme.clone();
+        two.use_material3 = false;
+        assert_eq!(
+            hour_minute(
+                TimePickerThemeData::new(),
+                two.clone(),
+                TimePickerEntryMode::Dial,
+                WidgetStates::NONE
+            )
+            .style
+            .font_size,
+            hour_minute(
+                TimePickerThemeData::new(),
+                two,
+                TimePickerEntryMode::Input,
+                WidgetStates::NONE
+            )
+            .style
+            .font_size
+        );
+    }
+
+    #[test]
+    fn the_colon_is_a_material_three_idea() {
+        // Neither separator field exists in `_TimePickerDefaultsM2`. A
+        // Material 2 picker draws its colon in the hour/minute style, like
+        // the digits beside it; Material 3 gives the colon a colour and a
+        // style of its own so it can be quieter than the numbers it sits
+        // between.
+        let scheme = ThemeData::light().color_scheme;
+        let three = dialled(WidgetStates::NONE);
+        assert_eq!(three.separator_color, Some(scheme.on_surface));
+        assert_eq!(
+            three.separator_style.as_ref().map(|s| s.font_size),
+            ThemeData::light()
+                .text_theme
+                .display_large
+                .as_ref()
+                .map(|s| s.font_size)
+        );
+
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        let old = hour_minute(
+            TimePickerThemeData::new(),
+            two,
+            crate::pickers::TimePickerEntryMode::Dial,
+            WidgetStates::NONE,
+        );
+        assert_eq!(old.separator_color, None);
+        assert_eq!(old.separator_style, None);
+    }
+
+    #[test]
+    fn a_dark_material_two_theme_tints_a_selected_box_twice_as_hard() {
+        // The same twelve percent of `primary` over a dark surface would not
+        // be seen. One of the last places a colour comes from the brightness
+        // rather than from a scheme role.
+        let mut light = ThemeData::light();
+        light.use_material3 = false;
+        let mut dark = ThemeData::dark();
+        dark.use_material3 = false;
+        let selected = WidgetStates::NONE.with(WidgetState::Selected);
+        let by_day = hour_minute(
+            TimePickerThemeData::new(),
+            light,
+            crate::pickers::TimePickerEntryMode::Dial,
+            selected,
+        );
+        let by_night = hour_minute(
+            TimePickerThemeData::new(),
+            dark,
+            crate::pickers::TimePickerEntryMode::Dial,
+            selected,
+        );
+        assert_eq!(by_day.background.alpha(), 31, "12% of 255");
+        assert_eq!(by_night.background.alpha(), 61, "24%");
+    }
+
+    #[test]
+    fn the_shape_is_a_rung_rounder_under_material_three() {
+        // Upstream's field is a whole `ShapeBorder`, not a radius, so a theme
+        // may make the box a stadium and not only round its corners
+        // differently. Resolving a radius alone would have quietly refused
+        // that.
+        let stadium = ShapeBorder::Stadium(crate::borders::StadiumBorder::default());
+        assert!(matches!(
+            hour_minute(
+                TimePickerThemeData {
+                    hour_minute_shape: Some(stadium.clone()),
+                    ..TimePickerThemeData::new()
+                },
+                ThemeData::light(),
+                crate::pickers::TimePickerEntryMode::Dial,
+                WidgetStates::NONE
+            )
+            .shape,
+            ShapeBorder::Stadium(_)
+        ));
+        assert!(matches!(
+            dialled(WidgetStates::NONE).shape,
+            ShapeBorder::Rounded(_)
+        ));
+
+        assert_eq!(dialled(WidgetStates::NONE).shape_radius, 8.0);
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        assert_eq!(
+            hour_minute(
+                TimePickerThemeData::new(),
+                two,
+                crate::pickers::TimePickerEntryMode::Dial,
+                WidgetStates::NONE
+            )
+            .shape_radius,
+            4.0
+        );
+    }
+
+    #[test]
+    fn the_digits_ink_turns_over_with_the_selection_and_the_style_carries_it() {
+        // Upstream's Material 3 ladder writes the same answer in all four
+        // arms of each branch, so what it comes to is two colours. The style
+        // is that colour put on the role -- the digits are drawn from the
+        // style, not from the colour beside it.
+        let scheme = ThemeData::light().color_scheme;
+        let selected = dialled(WidgetStates::NONE.with(WidgetState::Selected));
+        let quiet = dialled(WidgetStates::NONE);
+        assert_eq!(selected.foreground, scheme.on_primary_container());
+        assert_eq!(quiet.foreground, scheme.on_surface);
+        assert_eq!(selected.style.color, selected.foreground);
+        assert_eq!(quiet.style.color, quiet.foreground);
+
+        // And the four state arms really do agree, which is worth saying
+        // because upstream writes them out separately.
+        for state in [WidgetState::Pressed, WidgetState::Hovered, WidgetState::Focused] {
+            assert_eq!(
+                dialled(WidgetStates::of(&[WidgetState::Selected, state])).foreground,
+                selected.foreground,
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_that_names_the_boxs_colours_is_taken_at_its_word() {
+        const FILL: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        const INK: Color = Color::argb(0xFF, 0x44, 0x55, 0x66);
+        let named = hour_minute(
+            TimePickerThemeData {
+                hour_minute_color: Some(FILL),
+                hour_minute_text_color: Some(INK),
+                ..TimePickerThemeData::new()
+            },
+            ThemeData::light(),
+            crate::pickers::TimePickerEntryMode::Dial,
+            WidgetStates::NONE.with(WidgetState::Pressed),
+        );
+        assert_eq!(named.background, FILL, "even pressed");
+        assert_eq!(named.foreground, INK);
+        assert_eq!(named.style.color, INK, "and the style follows the colour");
+    }
 
     // -- What a calendar's cells are drawn with, tick 254 --------------------
     //
