@@ -18851,3 +18851,52 @@ vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
 `radioInnerRadius`）要等这三个 tile 真正把控件画出来——目前它们组装的是
 `ListTile` 的槽位，控件本身还是别处画的；`unwalked` 的 213 条要用
 `variant_sweep.py` 逐模块定案。
+
+## 第 263 轮：FFI 两侧都是手写的那几张数字表
+
+`wire_enums.py` 把这个端口和上游 Dart 比。这一轮比的是**它旁边的 C++**——另一个
+问题，另一种失败方式。
+
+这个 crate 里有三个枚举带着 `pub(crate) fn code(self) -> c_int`，唯一的用途就是
+产出一个引擎读的数字，而它们的文档注释都写着同一句不太舒服的话：
+
+> 引擎读的那个数字，而**这一侧什么都不读它**：`ToTileMode`（在
+> `rustflutter_ffi_draw.cc` 里）是另一半，两者是同一套 ABI 的**手写镜像**。一行
+> 拿了邻居的号，会把渐变铺错方向，而这边没有任何东西会注意到。
+
+Rust 的测试钉住 Rust 那边的数字。C++ 钉住 C++ 那边的数字。**没有任何东西在比对
+这两者**——所以两边可以各自自洽却说着不同的意思，而这正是那种在两侧的每一条测试
+下都能活下来的 bug。
+
+`tools/ffi_tables.py` 做的就是这个比对，靠端口自己的引用（`` `ToTileMode` in
+`rustflutter_ffi_draw.cc` ``），逐臂读那个 `switch`。跨语言的名字先归一化：去掉
+`k` 前缀、去掉 `::` 命名空间、去掉下划线、不分大小写——于是
+`kAntiAliasWithSaveLayer`、`txt::TextAlign::justify` 和 `AntiAliasWithSaveLayer`
+可以放在一起比。
+
+**`default:` 那一臂也是一个数字。** 这三个 switch 每个都以 `default:` 结尾，而
+那一臂在任何有意义的读法下都不是"兜底"——它是**那些 case 没有列出的那个号所在的
+那一行**。`ToTileMode` 列了三个 case、其余全部 clamp，所以 `kClamp` 是**因为被
+省略**才是 0 号，而端口写的 `TileMode::Clamp => 0` 正是让这件事成立的东西。
+`ToClipBehavior` 是最容易读错的一个：它列了 0、1、3 而默认到 `kAntiAlias`，所以
+**缺的那个 case 是 2**，而 2 在这一侧最好就是 `AntiAlias`。所以默认臂是拿"端口
+分配了而 C++ 没有点名的那个号"来核的；落到默认臂的号不止一个时报告而不是猜。
+
+三张表当场全部对齐。价值不在这个零，在于**从现在起漂移会被抓住**。
+
+量尺自己三种改错逐条验证：Rust 侧对调两个 tile 码、C++ 侧把 clip 的默认臂改掉、
+Rust 侧删掉一行 text align——三次都报出来并指到具体编号（`5 -> txt::TextAlign::justify`）。
+
+**顺带被别的量尺抓了一次自己。** 改错时动过 `rustflutter_ffi_draw.cc`，内容还原了
+但 mtime 变了，`stale_engines` 立刻报 5 个引擎库比 FFI 源旧。跑完闸门重建后回到
+"全部不落后"。一把量尺抓住的是我而不是代码，这次也算数。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+**ffi_tables 3/0（新）**，unwired 48/0，unvaried 0，unread_strings 44+16+7/0,
+unpainted 0，hollow 67/0，vacuous 8，stale_engines 全部不落后,
+unread_theme_fields 2。
+门：5752 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`BlendMode` 的 29 个显式判别值直通 `rf_paint_set_blend_mode` 里的一个
+`static_cast`——它没有 `To*` 函数可引用，所以这把量尺看不见它，那是同一族里唯一
+一张还没有两侧比对的表；`unwalked` 的 213 条要用 `variant_sweep.py` 逐模块定案。
